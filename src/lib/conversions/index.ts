@@ -14,6 +14,10 @@ import {
   createTarArchive,
   extractTarArchive,
   extractZipArchive,
+  createRarArchive,
+  extractRarArchive,
+  create7zArchive,
+  extract7zArchive,
 } from './archive';
 
 export {
@@ -21,6 +25,10 @@ export {
   createTarArchive,
   extractTarArchive,
   extractZipArchive,
+  createRarArchive,
+  extractRarArchive,
+  create7zArchive,
+  extract7zArchive,
   convertToArchive,
   convertMedia,
   convertOffice,
@@ -62,7 +70,7 @@ export async function convertFile(
   // 1. Archive routing (including archive sources or archive targets)
   if (
     srcDef.category === 'archive' ||
-    ['zip', 'tar', 'gz', 'tgz', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.7z', '7z', 'rar'].includes(tgt) ||
+    ['zip', 'tar', 'gz', 'tgz', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.7z', '7z', 'rar', 'bz2', 'bz', 'tbz', 'tbz2'].includes(tgt) ||
     [
       'ace',
       'alz',

@@ -202,12 +202,37 @@ export function encodePsd(payload: Buffer, width: number, height: number): Buffe
   return Buffer.concat([header, colorModeData, imageResources, layerInfo, comp, payload]);
 }
 
-export function encodePostscript(rasterBuffer: Buffer, width: number, height: number, isEps: boolean): Buffer {
-  const header = isEps
-    ? `%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 ${width} ${height}\n%%Pages: 1\n`
-    : `%!PS-Adobe-3.0\n%%BoundingBox: 0 0 ${width} ${height}\n%%Pages: 1\n`;
-  const body = `gsave\n/DeviceRGB setcolorspace\n0 0 translate\n${width} ${height} scale\n`;
-  return Buffer.concat([Buffer.from(header + body, 'utf-8'), rasterBuffer, Buffer.from('\ngrestore\nshowpage\n%%EOF\n', 'utf-8')]);
+export function encodePostscript(
+  rgbBuffer: Buffer,
+  width: number,
+  height: number,
+  isEps: boolean
+): Buffer {
+  const hex = rgbBuffer.toString('hex');
+  const chunks: string[] = [];
+  for (let i = 0; i < hex.length; i += 72) {
+    chunks.push(hex.substring(i, i + 72));
+  }
+  const hexData = chunks.join('\n');
+
+  const ps = `%!PS-Adobe-3.0${isEps ? ' EPSF-3.0' : ''}
+%%BoundingBox: 0 0 ${width} ${height}
+%%Pages: 1
+%%LanguageLevel: 2
+%%Creator: EasyConvert Image Engine
+%%EndComments
+gsave
+0 0 translate
+${width} ${height} scale
+${width} ${height} 8 [${width} 0 0 -${height} 0 ${height}]
+currentfile /ASCIIHexDecode filter
+false 3 colorimage
+${hexData} >
+grestore
+showpage
+%%EOF
+`;
+  return Buffer.from(ps, 'utf-8');
 }
 
 export async function convertImage(
@@ -367,8 +392,11 @@ export async function convertImage(
 
     case 'eps':
     case 'ps': {
-      const { data: pngBuf, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
-      outputBuffer = encodePostscript(pngBuf, info.width, info.height, fmt === 'eps');
+      const { data: rawRgb, info } = await pipeline
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      outputBuffer = encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
       mimeType = 'application/postscript';
       break;
     }

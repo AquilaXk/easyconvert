@@ -1,9 +1,11 @@
 import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
+import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
 import { performOcr } from './ocr';
+import { encodeBmp, encodePostscript } from './image';
 
 /**
  * Office & Ebook Conversion Engine
@@ -2452,10 +2454,9 @@ async function convertEtSource(
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
   }
 
-  if (tgt === 'jpg' || tgt === 'png') {
-    const textTable = rows.map((r) => r.join(' | ')).join('\n');
-    const pdf = await generatePdfFromDocx([{ text: textTable, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
-    return { buffer: pdf, mimeType: tgt === 'jpg' ? 'image/jpeg' : 'image/png', filename: `${baseName}.${tgt}`, size: pdf.length };
+  if (['jpg', 'jpeg', 'png', 'webp', 'bmp'].includes(tgt)) {
+    const rendered = await renderTableToRaster(rows, tgt, baseName);
+    return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
   }
 
   const textTable = rows.map((r) => r.join(' | ')).join('\n');
@@ -2508,6 +2509,10 @@ async function convertGenericDocumentSource(
     const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
     return { buffer, mimeType: 'application/oxps', filename: `${baseName}.xps`, size: buffer.length };
   }
+  if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(tgt)) {
+    const rendered = await renderTextToRaster(text, tgt, baseName);
+    return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
+  }
 
   const pdfBuffer = await generatePdfFromDocx([{ text, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
   return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
@@ -2535,9 +2540,9 @@ async function convertOpenDocumentGraphicSource(
     const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
-  if (tgt === 'png' || tgt === 'jpg' || tgt === 'bmp') {
-    const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
-    return { buffer: pdfBuffer, mimeType: tgt === 'png' ? 'image/png' : 'image/jpeg', filename: `${baseName}.${tgt}`, size: pdfBuffer.length };
+  if (['png', 'jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'eps', 'ps', 'ico', 'psd'].includes(tgt)) {
+    const rendered = await renderTextToRaster(plainText, tgt, baseName);
+    return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
   }
 
   const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
@@ -2582,9 +2587,117 @@ async function convertGenericEbookSource(
     const buffer = Buffer.from(rtf, 'utf-8');
     return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
   }
+  if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(tgt)) {
+    const rendered = await renderTextToRaster(text, tgt, baseName);
+    return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
+  }
 
   const pdfBuffer = await generatePdfFromDocx([{ text, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
   return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+}
+
+async function rasterizePipeline(
+  pipeline: sharp.Sharp,
+  tgt: string
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  switch (tgt) {
+    case 'jpg':
+    case 'jpeg': {
+      const buffer = await pipeline.jpeg({ quality: 90 }).toBuffer();
+      return { buffer, mimeType: 'image/jpeg' };
+    }
+    case 'webp': {
+      const buffer = await pipeline.webp().toBuffer();
+      return { buffer, mimeType: 'image/webp' };
+    }
+    case 'avif': {
+      const buffer = await pipeline.avif().toBuffer();
+      return { buffer, mimeType: 'image/avif' };
+    }
+    case 'tiff': {
+      const buffer = await pipeline.tiff().toBuffer();
+      return { buffer, mimeType: 'image/tiff' };
+    }
+    case 'gif': {
+      const buffer = await pipeline.gif().toBuffer();
+      return { buffer, mimeType: 'image/gif' };
+    }
+    case 'bmp': {
+      const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      const buffer = encodeBmp(data, info.width, info.height, info.channels);
+      return { buffer, mimeType: 'image/bmp' };
+    }
+    case 'eps':
+    case 'ps': {
+      const { data, info } = await pipeline.removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      const buffer = encodePostscript(data, info.width, info.height, tgt === 'eps');
+      return { buffer, mimeType: 'application/postscript' };
+    }
+    case 'png':
+    default: {
+      const buffer = await pipeline.png().toBuffer();
+      return { buffer, mimeType: 'image/png' };
+    }
+  }
+}
+
+async function renderTableToRaster(
+  rows: string[][],
+  tgt: string,
+  baseName: string
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  const rowHeight = 26;
+  const colWidth = 140;
+  const numCols = Math.max(1, ...rows.map((r) => r.length));
+  const width = Math.min(2400, Math.max(640, numCols * colWidth + 40));
+  const height = Math.min(2400, Math.max(200, rows.length * rowHeight + 80));
+
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <rect width="${width}" height="${height}" fill="#ffffff" />
+    <text x="20" y="32" font-family="sans-serif" font-size="16" font-weight="bold" fill="#1e293b">${escapeXml(baseName)}</text>
+  `;
+
+  rows.slice(0, 80).forEach((row, rIdx) => {
+    const y = 50 + rIdx * rowHeight;
+    const isHeader = rIdx === 0;
+    const bgFill = isHeader ? '#f1f5f9' : (rIdx % 2 === 0 ? '#ffffff' : '#f8fafc');
+    svg += `<rect x="20" y="${y}" width="${width - 40}" height="${rowHeight}" fill="${bgFill}" stroke="#e2e8f0" />`;
+    row.forEach((cell, cIdx) => {
+      const x = 25 + cIdx * colWidth;
+      const fontWeight = isHeader ? 'bold' : 'normal';
+      svg += `<text x="${x}" y="${y + 18}" font-family="sans-serif" font-size="12" font-weight="${fontWeight}" fill="#334155">${escapeXml(cell.slice(0, 20))}</text>`;
+    });
+  });
+
+  svg += `</svg>`;
+
+  const pipeline = sharp(Buffer.from(svg, 'utf-8'));
+  return rasterizePipeline(pipeline, tgt);
+}
+
+async function renderTextToRaster(
+  text: string,
+  tgt: string,
+  baseName: string
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  const lines = text.split(/\\r?\\n/).slice(0, 60);
+  const width = 800;
+  const height = Math.min(2400, Math.max(240, lines.length * 24 + 80));
+
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <rect width="${width}" height="${height}" fill="#ffffff" />
+    <text x="30" y="36" font-family="sans-serif" font-size="18" font-weight="bold" fill="#0f172a">${escapeXml(baseName)}</text>
+  `;
+
+  lines.forEach((line, idx) => {
+    const y = 68 + idx * 24;
+    svg += `<text x="30" y="${y}" font-family="sans-serif" font-size="13" fill="#334155">${escapeXml(line.slice(0, 95))}</text>`;
+  });
+
+  svg += `</svg>`;
+
+  const pipeline = sharp(Buffer.from(svg, 'utf-8'));
+  return rasterizePipeline(pipeline, tgt);
 }
 
 
