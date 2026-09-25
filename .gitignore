@@ -1,0 +1,44 @@
+# OS & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing & Coverage
+coverage/
+*.lcov
+
+# Next.js build
+.next/
+out/
+build/
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Vercel & Turbopack
+.vercel
+.turbo
+
+# Temporary conversion uploads / caches
+tmp/
+uploads/
+conversions/
+
+# Local agent docs
+AGENTS.md
+GEMINI.md
+.agents/
+.codex/
