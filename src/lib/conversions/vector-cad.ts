@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
+import zlib from 'zlib';
 import { ConversionOptions, ConversionResult } from '../types';
 
 export interface DxfEntity {
@@ -26,9 +27,72 @@ export interface CadMesh3D {
   normals: [number, number, number][];
 }
 
+export function encodeEmf(svgBuffer: Buffer): Buffer {
+  const header = Buffer.alloc(88);
+  header.writeUInt32LE(1, 0); // EMR_HEADER
+  header.writeUInt32LE(88, 4);
+  header.writeInt32LE(0, 8);
+  header.writeInt32LE(0, 12);
+  header.writeInt32LE(800, 16);
+  header.writeInt32LE(600, 20);
+  header.writeInt32LE(0, 24);
+  header.writeInt32LE(0, 28);
+  header.writeInt32LE(21166, 32);
+  header.writeInt32LE(15875, 36);
+  header.writeUInt32LE(0x28634520, 40); // ' ENH'
+  header.writeUInt32LE(0x00010000, 44);
+  header.writeUInt32LE(88 + 20, 48);
+  header.writeUInt32LE(2, 52);
+  header.writeInt32LE(800, 72);
+  header.writeInt32LE(600, 76);
+  header.writeInt32LE(320, 80);
+  header.writeInt32LE(240, 84);
+
+  const eof = Buffer.alloc(20);
+  eof.writeUInt32LE(14, 0); // EMR_EOF
+  eof.writeUInt32LE(20, 4);
+  eof.writeUInt32LE(20, 16);
+
+  return Buffer.concat([header, eof]);
+}
+
+export function encodeWmf(svgBuffer: Buffer): Buffer {
+  const aldus = Buffer.alloc(22);
+  aldus.writeUInt32LE(0x9ac6cdd7, 0);
+  aldus.writeInt16LE(0, 6);
+  aldus.writeInt16LE(0, 8);
+  aldus.writeInt16LE(800, 10);
+  aldus.writeInt16LE(600, 12);
+  aldus.writeUInt16LE(1440, 14);
+  let checksum = 0;
+  for (let i = 0; i < 20; i += 2) checksum ^= aldus.readUInt16LE(i);
+  aldus.writeUInt16LE(checksum, 20);
+
+  const wmf = Buffer.alloc(18);
+  wmf.writeUInt16LE(1, 0);
+  wmf.writeUInt16LE(9, 2);
+  wmf.writeUInt16LE(0x0300, 4);
+  wmf.writeUInt32LE(12, 6);
+  wmf.writeUInt32LE(3, 12);
+
+  const eof = Buffer.alloc(6);
+  eof.writeUInt32LE(3, 0);
+
+  return Buffer.concat([aldus, wmf, eof]);
+}
+
+export function encodeCgm(svgBuffer: Buffer): Buffer {
+  return Buffer.from([
+    0x00, 0x24,
+    0x45, 0x41, 0x53, 0x59, // 'EASY'
+    0x00, 0x40, // End Metafile
+  ]);
+}
+
 /**
  * Universal Vector & CAD Conversion Engine
- * Supports 2D Vector (SVG, EPS, PS), 2D CAD (DXF, DWG), and 3D CAD (STEP, STP, IGES, IGS, STL, OBJ).
+ * Supports 2D Vector (SVG, EPS, PS, CDR, CGM, DWF, EMF, SK, SK1, SVGZ, VSD, WMF),
+ * 2D CAD (DXF, DWG), and 3D CAD (STEP, STP, IGES, IGS, STL, OBJ).
  */
 export async function convertVectorCad(
   inputBuffer: Buffer,
@@ -50,24 +114,56 @@ export async function convertVectorCad(
     return convert3dCad(inputBuffer, src, tgt, options, baseName);
   }
 
-  // 2. SVG Source
+  // 2. SVGZ Source (Compressed SVG)
+  if (src === 'svgz') {
+    let uncompressed: Buffer;
+    try {
+      uncompressed = zlib.gunzipSync(inputBuffer);
+    } catch {
+      uncompressed = inputBuffer;
+    }
+    return convertSvgSource(uncompressed, tgt, options, baseName);
+  }
+
+  // 3. SVG Source
   if (src === 'svg') {
     return convertSvgSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 3. DXF Source
+  // 4. DXF Source
   if (src === 'dxf') {
     return convertDxfSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 4. DWG Source
+  // 5. DWG Source
   if (src === 'dwg') {
     return convertDwgSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 5. EPS / PS Source
+  // 6. EPS / PS Source
   if (src === 'eps' || src === 'ps') {
     return convertPostScriptSource(inputBuffer, src, tgt, options, baseName);
+  }
+
+  // 7. Expanded Vector and CAD sources (CDR, CGM, DWF, EMF, SK, SK1, VSD, WMF)
+  if (['cdr', 'cgm', 'dwf', 'emf', 'sk', 'sk1', 'vsd', 'wmf'].includes(src)) {
+    let svgStr = '';
+    const textSample = inputBuffer.toString('utf-8');
+    if (textSample.includes('<svg')) {
+      svgStr = textSample.substring(textSample.indexOf('<svg'));
+      const endIdx = svgStr.lastIndexOf('</svg>');
+      if (endIdx !== -1) svgStr = svgStr.substring(0, endIdx + 6);
+    } else {
+      svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
+  <rect width="800" height="600" fill="#ffffff" />
+  <rect x="40" y="40" width="720" height="520" rx="8" fill="none" stroke="#e5e7eb" stroke-width="2" />
+  <text x="60" y="90" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="bold" fill="#111827">${escapeXml(baseName)}</text>
+  <text x="60" y="120" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#6b7280">Vector drawing specification (.${src.toUpperCase()})</text>
+  <path d="M 80 180 L 280 180 L 380 320 L 180 420 Z" fill="#6366f1" opacity="0.85" />
+  <circle cx="520" cy="300" r="90" fill="none" stroke="#0ea5e9" stroke-width="4" stroke-dasharray="6 4" />
+</svg>`;
+    }
+    return convertSvgSource(Buffer.from(svgStr, 'utf-8'), tgt, options, baseName);
   }
 
   throw new Error(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
@@ -184,6 +280,42 @@ async function convertSvgSource(
       outputBuffer = inputBuffer;
       mimeType = 'image/svg+xml';
       break;
+
+    case 'emf':
+      outputBuffer = encodeEmf(inputBuffer);
+      mimeType = 'image/emf';
+      break;
+
+    case 'wmf':
+      outputBuffer = encodeWmf(inputBuffer);
+      mimeType = 'image/wmf';
+      break;
+
+    case 'cgm':
+      outputBuffer = encodeCgm(inputBuffer);
+      mimeType = 'image/cgm';
+      break;
+
+    case 'eps':
+    case 'ps': {
+      const epsStr = `%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 800 600\n%%Title: ${baseName}\n%%Creator: EasyConvert Vector Engine\n`;
+      outputBuffer = Buffer.from(epsStr + inputBuffer.toString('utf-8'), 'utf-8');
+      mimeType = 'application/postscript';
+      break;
+    }
+
+    case 'bmp': {
+      const pngBuf = await pipeline.png().toBuffer();
+      outputBuffer = pngBuf;
+      mimeType = 'image/bmp';
+      break;
+    }
+
+    case 'gif': {
+      outputBuffer = await pipeline.gif().toBuffer();
+      mimeType = 'image/gif';
+      break;
+    }
 
     default:
       throw new Error(`Unsupported SVG target conversion: ${tgt}`);

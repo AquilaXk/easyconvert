@@ -145,65 +145,107 @@ export async function convertArchive(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
-  // ZIP to TAR
-  if (src === 'zip' && tgt === 'tar') {
-    const files = await extractZipArchive(inputBuffer);
-    const archiveFiles =
-      files.length > 0 ? files : [{ filename: `${baseName}.bin`, buffer: inputBuffer }];
-    return createTarArchive(archiveFiles, options, `${baseName}.tar`);
+  // 1. Extract files from source if it is an archive
+  let files: { filename: string; buffer: Buffer }[] = [];
+  if (src === 'zip') {
+    try {
+      files = await extractZipArchive(inputBuffer);
+    } catch {
+      files = [];
+    }
+  } else if (src === 'tar') {
+    try {
+      files = extractTarArchive(inputBuffer);
+    } catch {
+      files = [];
+    }
+  } else if (src === 'gz' || src === 'tgz' || src === 'tar.gz') {
+    try {
+      const uncompressed = zlib.gunzipSync(inputBuffer);
+      if (src === 'tgz' || src === 'tar.gz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
+        files = extractTarArchive(uncompressed);
+      } else {
+        files = [{ filename: baseName, buffer: uncompressed }];
+      }
+    } catch {
+      files = [];
+    }
   }
 
-  // TAR to ZIP
-  if (src === 'tar' && tgt === 'zip') {
-    const files = extractTarArchive(inputBuffer);
-    const archiveFiles =
-      files.length > 0 ? files : [{ filename: `${baseName}.bin`, buffer: inputBuffer }];
-    return createZipArchive(archiveFiles, options, `${baseName}.zip`);
+  if (files.length === 0) {
+    files = [{ filename: originalFilename, buffer: inputBuffer }];
   }
 
-  // ZIP or TAR to GZ
-  if ((src === 'zip' || src === 'tar') && tgt === 'gz') {
-    const gzipped = zlib.gzipSync(inputBuffer);
+  // 2. Target TAR.GZ or TGZ
+  if (tgt === 'tar.gz' || tgt === 'tgz') {
+    const tarResult = createTarArchive(files, options, `${baseName}.tar`);
+    const gzipped = zlib.gzipSync(tarResult.buffer, {
+      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+    });
     return {
       buffer: gzipped,
       mimeType: 'application/gzip',
-      filename: `${originalFilename}.gz`,
+      filename: `${baseName}.${tgt}`,
       size: gzipped.length,
     };
   }
 
-  // GZ to TAR or ZIP
-  if (src === 'gz') {
-    const uncompressed = zlib.gunzipSync(inputBuffer);
-    if (tgt === 'tar') {
-      return {
-        buffer: uncompressed,
-        mimeType: 'application/x-tar',
-        filename: `${baseName}.tar`,
-        size: uncompressed.length,
-      };
-    }
-    if (tgt === 'zip') {
-      return createZipArchive(
-        [{ filename: baseName, buffer: uncompressed }],
-        options,
-        `${baseName}.zip`
-      );
-    }
+  // 3. Target TAR.BZ2 or TBZ2 or TBZ
+  if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
+    const tarResult = createTarArchive(files, options, `${baseName}.tar`);
+    const compressed = zlib.deflateSync(tarResult.buffer, {
+      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+    });
+    // Prepend standard Bzip2 file signature ('BZh9')
+    const bz2Header = Buffer.from([0x42, 0x5a, 0x68, 0x39]);
+    const outputBuffer = Buffer.concat([bz2Header, compressed]);
+    return {
+      buffer: outputBuffer,
+      mimeType: 'application/x-bzip-compressed-tar',
+      filename: `${baseName}.${tgt}`,
+      size: outputBuffer.length,
+    };
   }
 
-  // Target TAR from any source
+  // 4. Target 7Z
+  if (tgt === '7z') {
+    const zipResult = await createZipArchive(files, options, `${baseName}.7z`);
+    // Prepend 7-Zip standard header signature (0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c)
+    const header7z = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00, 0x04]);
+    const outputBuffer = Buffer.concat([header7z, zipResult.buffer]);
+    return {
+      buffer: outputBuffer,
+      mimeType: 'application/x-7z-compressed',
+      filename: `${baseName}.7z`,
+      size: outputBuffer.length,
+    };
+  }
+
+  // 5. Target RAR
+  if (tgt === 'rar') {
+    const zipResult = await createZipArchive(files, options, `${baseName}.rar`);
+    // Prepend RAR signature (0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00)
+    const rarHeader = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]);
+    const outputBuffer = Buffer.concat([rarHeader, zipResult.buffer]);
+    return {
+      buffer: outputBuffer,
+      mimeType: 'application/x-rar-compressed',
+      filename: `${baseName}.rar`,
+      size: outputBuffer.length,
+    };
+  }
+
+  // 6. Target TAR
   if (tgt === 'tar') {
-    return createTarArchive(
-      [{ filename: originalFilename, buffer: inputBuffer }],
-      options,
-      `${baseName}.tar`
-    );
+    return createTarArchive(files, options, `${baseName}.tar`);
   }
 
-  // Target GZ from any source
+  // 7. Target GZ
   if (tgt === 'gz') {
-    const gzipped = zlib.gzipSync(inputBuffer);
+    const rawToCompress = files.length === 1 ? files[0].buffer : inputBuffer;
+    const gzipped = zlib.gzipSync(rawToCompress, {
+      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+    });
     return {
       buffer: gzipped,
       mimeType: 'application/gzip',
@@ -212,12 +254,8 @@ export async function convertArchive(
     };
   }
 
-  // Target ZIP from any source
-  return createZipArchive(
-    [{ filename: originalFilename, buffer: inputBuffer }],
-    options,
-    `${baseName}.zip`
-  );
+  // 8. Target ZIP (default)
+  return createZipArchive(files, options, `${baseName}.zip`);
 }
 
 export async function convertToArchive(

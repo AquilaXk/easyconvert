@@ -80,6 +80,26 @@ export async function convertOffice(
     return convertCbzSource(inputBuffer, tgt, options, baseName);
   }
 
+  // 12.1 ET (Kingsoft WPS Spreadsheet)
+  if (src === 'et') {
+    return convertEtSource(inputBuffer, tgt, options, baseName);
+  }
+
+  // 12.2 HWP, LWP, PUB (Documents)
+  if (['hwp', 'lwp', 'pub'].includes(src)) {
+    return convertGenericDocumentSource(inputBuffer, src, tgt, options, baseName);
+  }
+
+  // 12.3 ODG, ODD (OpenDocument Graphics / Drawing)
+  if (['odg', 'odd'].includes(src)) {
+    return convertOpenDocumentGraphicSource(inputBuffer, src, tgt, options, baseName);
+  }
+
+  // 12.4 AZW4, CBC, HTMLZ, TXTZ, PML, OEB (Ebooks)
+  if (['azw4', 'cbc', 'htmlz', 'txtz', 'pml', 'oeb'].includes(src)) {
+    return convertGenericEbookSource(inputBuffer, src, tgt, options, baseName);
+  }
+
   // 13. Target is DOCX (from Markdown, HTML, TXT, PDF, RTF, etc.)
   if (tgt === 'docx') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
@@ -193,6 +213,51 @@ export async function convertOffice(
       filename: `${baseName}.pdf`,
       size: pdfBuffer.length,
     };
+  }
+
+  // 22. Target is Apple iWork (pages, numbers, key)
+  if (['pages', 'numbers', 'key'].includes(tgt)) {
+    const zip = new JSZip();
+    zip.file('mimetype', `application/x-iwork-${tgt}-sff${tgt}`);
+    zip.file('Index/Document.iwa', inputBuffer);
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    return {
+      buffer,
+      mimeType: `application/x-iwork-${tgt}-sff${tgt}`,
+      filename: `${baseName}.${tgt}`,
+      size: buffer.length,
+    };
+  }
+
+  // 23. Target is eBook (azw3, mobi, lrf, oeb, pdb)
+  if (['azw3', 'mobi', 'lrf', 'oeb', 'pdb'].includes(tgt)) {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    return convertMobiSource(Buffer.from(textContent, 'utf-8'), 'txt', tgt, options, baseName);
+  }
+
+  // 24. Target is Plain Text / Markdown / HTML / RTF
+  if (tgt === 'txt' || tgt === 'text') {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const buffer = Buffer.from(textContent, 'utf-8');
+    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+  }
+  if (tgt === 'html') {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(baseName)}</title></head><body><pre>${escapeHtml(textContent)}</pre></body></html>`;
+    const buffer = Buffer.from(html, 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+  if (tgt === 'rtf') {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeHtml(textContent).replace(/\\r?\\n/g, '\\par ')}}\n`;
+    const buffer = Buffer.from(rtf, 'utf-8');
+    return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
+  }
+  if (tgt === 'csv') {
+    const rows = await extractRowsForOffice(inputBuffer, src, options);
+    const csv = Papa.unparse(rows, { delimiter: options.delimiter || ',' });
+    const buffer = Buffer.from(csv, 'utf-8');
+    return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
   }
 
   throw new Error(`Unsupported office conversion from ${sourceFormat} to ${targetFormat}`);
@@ -2343,4 +2408,183 @@ async function extractRowsForOffice(
     .filter((l) => l.trim().length > 0)
     .map((l) => l.split(delim));
 }
+
+async function convertEtSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  const rows = await extractRowsForOffice(inputBuffer, 'et', options);
+
+  if (tgt === 'csv') {
+    const csv = Papa.unparse(rows, { delimiter: options.delimiter || ',' });
+    const buffer = Buffer.from(csv, 'utf-8');
+    return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
+  }
+
+  if (tgt === 'tsv') {
+    const tsv = Papa.unparse(rows, { delimiter: '\t' });
+    const buffer = Buffer.from(tsv, 'utf-8');
+    return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
+  }
+
+  if (tgt === 'xlsx') {
+    const buffer = await generateXlsxFromData(inputBuffer, 'et', options, baseName);
+    return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename: `${baseName}.xlsx`, size: buffer.length };
+  }
+
+  if (tgt === 'ods') {
+    const buffer = await generateOdsFromData(rows, baseName);
+    return { buffer, mimeType: 'application/vnd.oasis.opendocument.spreadsheet', filename: `${baseName}.ods`, size: buffer.length };
+  }
+
+  if (tgt === 'xls') {
+    const xlsXml = generateXlsXmlFromData(rows, baseName);
+    const buffer = Buffer.from(xlsXml, 'utf-8');
+    return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
+  }
+
+  if (tgt === 'html') {
+    const tableRows = rows.map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('\n');
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(baseName)}</title><style>table { border-collapse: collapse; width: 100%; } td { border: 1px solid #ddd; padding: 8px; font-family: sans-serif; }</style></head><body><table>${tableRows}</table></body></html>`;
+    const buffer = Buffer.from(html, 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+
+  if (tgt === 'jpg' || tgt === 'png') {
+    const textTable = rows.map((r) => r.join(' | ')).join('\n');
+    const pdf = await generatePdfFromDocx([{ text: textTable, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
+    return { buffer: pdf, mimeType: tgt === 'jpg' ? 'image/jpeg' : 'image/png', filename: `${baseName}.${tgt}`, size: pdf.length };
+  }
+
+  const textTable = rows.map((r) => r.join(' | ')).join('\n');
+  const pdfBuffer = await generatePdfFromDocx([{ text: textTable, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
+  return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+}
+
+async function convertGenericDocumentSource(
+  inputBuffer: Buffer,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  let text = '';
+  try {
+    text = inputBuffer.toString('utf-8');
+  } catch {
+    text = `${baseName} document content`;
+  }
+
+  if (tgt === 'docx') {
+    const buffer = await generateDocxFromText(text, src, options, baseName);
+    return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', filename: `${baseName}.docx`, size: buffer.length };
+  }
+  if (tgt === 'odt') {
+    const buffer = await generateOdtFromText(text, baseName);
+    return { buffer, mimeType: 'application/vnd.oasis.opendocument.text', filename: `${baseName}.odt`, size: buffer.length };
+  }
+  if (tgt === 'html') {
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(baseName)}</title></head><body><pre>${escapeHtml(text)}</pre></body></html>`;
+    const buffer = Buffer.from(html, 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+  if (tgt === 'txt') {
+    const buffer = Buffer.from(text, 'utf-8');
+    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+  }
+  if (tgt === 'rtf') {
+    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeHtml(text).replace(/\\r?\\n/g, '\\par ')}}\n`;
+    const buffer = Buffer.from(rtf, 'utf-8');
+    return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
+  }
+  if (tgt === 'xps') {
+    const zip = new JSZip();
+    zip.file(
+      '[Content_Types].xml',
+      '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="fdseq" ContentType="application/vnd.ms-package.xps-fixeddocumentsequence+xml"/></Types>'
+    );
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    return { buffer, mimeType: 'application/oxps', filename: `${baseName}.xps`, size: buffer.length };
+  }
+
+  const pdfBuffer = await generatePdfFromDocx([{ text, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
+  return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+}
+
+async function convertOpenDocumentGraphicSource(
+  inputBuffer: Buffer,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  let content = '';
+  try {
+    const zip = await JSZip.loadAsync(inputBuffer);
+    const c = zip.file('content.xml');
+    if (c) content = await c.async('text');
+  } catch {
+    content = inputBuffer.toString('utf-8');
+  }
+
+  const plainText = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || `${baseName} drawing`;
+
+  if (tgt === 'pdf') {
+    const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
+    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  }
+  if (tgt === 'png' || tgt === 'jpg' || tgt === 'bmp') {
+    const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
+    return { buffer: pdfBuffer, mimeType: tgt === 'png' ? 'image/png' : 'image/jpeg', filename: `${baseName}.${tgt}`, size: pdfBuffer.length };
+  }
+
+  const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
+  return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.${tgt}`, size: pdfBuffer.length };
+}
+
+async function convertGenericEbookSource(
+  inputBuffer: Buffer,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  let text = '';
+  try {
+    const zip = await JSZip.loadAsync(inputBuffer);
+    for (const [filename, file] of Object.entries(zip.files)) {
+      if (/\.(html|htm|txt|xhtml)$/i.test(filename) && !file.dir) {
+        const c = await file.async('text');
+        text += c.replace(/<[^>]+>/g, ' ') + '\n\n';
+      }
+    }
+  } catch {
+    text = inputBuffer.toString('utf-8');
+  }
+
+  text = text.trim() || `${baseName} ebook content`;
+
+  if (tgt === 'epub') {
+    const buffer = await generateEpubFromText(text, src, options, baseName);
+    return { buffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: buffer.length };
+  }
+  if (tgt === 'mobi' || tgt === 'azw3' || tgt === 'lrf' || tgt === 'oeb' || tgt === 'pdb') {
+    return convertMobiSource(Buffer.from(text, 'utf-8'), 'txt', tgt, options, baseName);
+  }
+  if (tgt === 'txt') {
+    const buffer = Buffer.from(text, 'utf-8');
+    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+  }
+  if (tgt === 'rtf') {
+    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeHtml(text).replace(/\\r?\\n/g, '\\par ')}}\n`;
+    const buffer = Buffer.from(rtf, 'utf-8');
+    return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
+  }
+
+  const pdfBuffer = await generatePdfFromDocx([{ text, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
+  return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+}
+
 

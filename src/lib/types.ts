@@ -20,6 +20,8 @@ export interface FormatOptionsSchema {
   dpi?: boolean;
   orientation?: boolean;
   delimiter?: boolean;
+  hasHeaders?: boolean;
+  sheetIndex?: boolean;
   compressionLevel?: boolean;
   // Media options
   audioBitrate?: boolean;
