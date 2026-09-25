@@ -1,5 +1,71 @@
+import zlib from 'zlib';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult } from '../types';
+
+export function extractTextFromPdf(pdfBuffer: Buffer): string {
+  const binary = pdfBuffer.toString('binary');
+  const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
+  let match: RegExpExecArray | null;
+  const textPieces: string[] = [];
+
+  while ((match = streamRegex.exec(binary)) !== null) {
+    let content = '';
+    const rawStream = Buffer.from(match[1], 'binary');
+    try {
+      content = zlib.inflateSync(rawStream).toString('utf-8');
+    } catch {
+      try {
+        content = zlib.inflateRawSync(rawStream).toString('utf-8');
+      } catch {
+        content = match[1];
+      }
+    }
+
+    const btRegex = /BT[\s\S]*?ET/g;
+    let btMatch: RegExpExecArray | null;
+    while ((btMatch = btRegex.exec(content)) !== null) {
+      const block = btMatch[0];
+      const tjRegex = /\[(.*?)\]\s*TJ/g;
+      let tjMatch: RegExpExecArray | null;
+      while ((tjMatch = tjRegex.exec(block)) !== null) {
+        const inner = tjMatch[1];
+        const itemRegex = /\((.*?)\)|<([0-9a-fA-F]+)>/g;
+        let itemMatch: RegExpExecArray | null;
+        let line = '';
+        while ((itemMatch = itemRegex.exec(inner)) !== null) {
+          if (itemMatch[1] !== undefined) {
+            line += itemMatch[1].replace(/\\([()\\])/g, '$1');
+          } else if (itemMatch[2] !== undefined) {
+            const hex = itemMatch[2];
+            let str = '';
+            for (let i = 0; i < hex.length; i += 2) {
+              str += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+            }
+            line += str;
+          }
+        }
+        if (line.trim()) textPieces.push(line);
+      }
+
+      const singleTjRegex = /\((.*?)\)\s*Tj|<([0-9a-fA-F]+)>\s*Tj/g;
+      let sMatch: RegExpExecArray | null;
+      while ((sMatch = singleTjRegex.exec(block)) !== null) {
+        if (sMatch[1] !== undefined) {
+          textPieces.push(sMatch[1].replace(/\\([()\\])/g, '$1'));
+        } else if (sMatch[2] !== undefined) {
+          const hex = sMatch[2];
+          let str = '';
+          for (let i = 0; i < hex.length; i += 2) {
+            str += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+          }
+          textPieces.push(str);
+        }
+      }
+    }
+  }
+
+  return textPieces.join('\n').trim() || 'No extractable text found in PDF document.';
+}
 
 export async function convertDocument(
   inputBuffer: Buffer,
@@ -11,6 +77,46 @@ export async function convertDocument(
   const baseName = originalFilename.replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
+
+  // PDF as source format
+  if (src === 'pdf') {
+    const extractedText = extractTextFromPdf(inputBuffer);
+
+    if (tgt === 'txt') {
+      const buffer = Buffer.from(extractedText, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'text/plain',
+        filename: `${baseName}.txt`,
+        size: buffer.length,
+      };
+    }
+
+    if (tgt === 'html') {
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+        baseName
+      )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; }</style></head><body><pre>${escapeHtml(
+        extractedText
+      )}</pre></body></html>`;
+      const buffer = Buffer.from(html, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'text/html',
+        filename: `${baseName}.html`,
+        size: buffer.length,
+      };
+    }
+
+    if (tgt === 'md') {
+      const buffer = Buffer.from(extractedText, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'text/markdown',
+        filename: `${baseName}.md`,
+        size: buffer.length,
+      };
+    }
+  }
 
   const textContent = inputBuffer.toString('utf-8');
 
@@ -98,23 +204,17 @@ export async function convertDocument(
 }
 
 function markdownToHtml(md: string, title: string): string {
-  // Simple deterministic markdown parser for headers, lists, code, emphasis
   let html = md
-    // Escaping
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    // Headers
     .replace(/^### (.*$)/gim, '<h3>$1</h3>')
     .replace(/^## (.*$)/gim, '<h2>$1</h2>')
     .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-    // Bold & italic
     .replace(/\*\*\*(.*?)\*\*\*/gim, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
     .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-    // Inline code
     .replace(/`([^`]+)`/gim, '<code>$1</code>')
-    // Line breaks / paragraphs
     .replace(/\n\n+/g, '</p><p>')
     .replace(/\n/g, '<br/>');
 
@@ -137,7 +237,7 @@ function markdownToHtml(md: string, title: string): string {
 }
 
 function htmlToMarkdown(html: string): string {
-  let md = html
+  return html
     .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
     .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
     .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
@@ -151,8 +251,6 @@ function htmlToMarkdown(html: string): string {
     .replace(/<p[^>]*>/gi, '')
     .replace(/<[^>]+>/g, '')
     .trim();
-
-  return md;
 }
 
 function stripHtmlTags(html: string): string {
@@ -187,7 +285,12 @@ async function generatePdfFromText(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const content = sourceType === 'html' ? stripHtmlTags(text) : sourceType === 'md' ? stripMarkdownSyntax(text) : text;
+  const content =
+    sourceType === 'html'
+      ? stripHtmlTags(text)
+      : sourceType === 'md'
+      ? stripMarkdownSyntax(text)
+      : text;
 
   return new Promise((resolve, reject) => {
     const isLandscape = options.orientation === 'landscape';

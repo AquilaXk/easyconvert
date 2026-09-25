@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
     }
 
     const convertedFiles: { filename: string; buffer: Buffer }[] = [];
+    const usedNames = new Set<string>();
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -64,8 +65,18 @@ export async function POST(req: NextRequest) {
         file.name
       );
 
+      let finalName = result.filename;
+      let counter = 1;
+      while (usedNames.has(finalName)) {
+        const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
+        const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
+        finalName = `${nameWithoutExt} (${counter})${ext}`;
+        counter++;
+      }
+      usedNames.add(finalName);
+
       convertedFiles.push({
-        filename: result.filename,
+        filename: finalName,
         buffer: result.buffer,
       });
     }

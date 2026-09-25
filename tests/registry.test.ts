@@ -22,7 +22,8 @@ describe('Format Registry & Lookup Tests', () => {
     expect(detectFormatFromFilename('photo.PNG')?.id).toBe('png');
     expect(detectFormatFromFilename('DOCUMENT.PDF')?.id).toBe('pdf');
     expect(detectFormatFromFilename('data.metrics.CSV')?.id).toBe('csv');
-    expect(detectFormatFromFilename('archive.tar.gz')).toBeUndefined(); // Compound ext returns undefined unless registered
+    expect(detectFormatFromFilename('archive.tar.gz')?.id).toBe('gz');
+    expect(detectFormatFromFilename('archive.tar.bz2')).toBeUndefined(); // Unregistered extension returns undefined
     expect(detectFormatFromFilename('bundle.ZIP')?.id).toBe('zip');
     expect(detectFormatFromFilename('noextension')).toBeUndefined();
   });

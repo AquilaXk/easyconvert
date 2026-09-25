@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { convertFile, createZipArchive } from '../src/lib/conversions/index.ts';
+import PDFDocument from 'pdfkit';
+import {
+  convertFile,
+  createZipArchive,
+  createTarArchive,
+  extractTarArchive,
+} from '../src/lib/conversions/index.ts';
 
 describe('Conversion Engine Integration Tests', () => {
   // Helper to generate a valid test PNG image
@@ -17,6 +23,19 @@ describe('Conversion Engine Integration Tests', () => {
       .toBuffer();
   }
 
+  // Helper to generate a valid test PDF document
+  async function createTestPdfBuffer(text = 'Hello EasyConvert PDF'): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    const doc = new PDFDocument();
+    doc.on('data', (c) => chunks.push(c));
+    const p = new Promise<Buffer>((resolve) => {
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    doc.fontSize(14).text(text);
+    doc.end();
+    return p;
+  }
+
   describe('Image Conversions', () => {
     it('converts PNG to JPG with quality settings', async () => {
       const pngBuffer = await createTestPngBuffer();
@@ -26,7 +45,6 @@ describe('Conversion Engine Integration Tests', () => {
       expect(result.filename).toBe('test.jpg');
       expect(result.size).toBeGreaterThan(0);
 
-      // Verify converted buffer is valid JPEG via sharp metadata
       const meta = await sharp(result.buffer).metadata();
       expect(meta.format).toBe('jpeg');
       expect(meta.width).toBe(100);
@@ -59,6 +77,54 @@ describe('Conversion Engine Integration Tests', () => {
       expect(result.mimeType).toBe('application/pdf');
       expect(result.filename).toBe('photo.pdf');
       expect(result.buffer.toString('utf-8', 0, 4)).toBe('%PDF');
+    });
+
+    it('converts PNG to genuine BMP binary with BM header', async () => {
+      const pngBuffer = await createTestPngBuffer();
+      const result = await convertFile(pngBuffer, 'png', 'bmp', {}, 'sample.png');
+
+      expect(result.mimeType).toBe('image/bmp');
+      expect(result.filename).toBe('sample.bmp');
+      // Standard BMP signature
+      expect(result.buffer.toString('ascii', 0, 2)).toBe('BM');
+      expect(result.size).toBeGreaterThan(54);
+    });
+
+    it('decodes BMP input and converts to PNG', async () => {
+      const pngBuffer = await createTestPngBuffer();
+      const bmpResult = await convertFile(pngBuffer, 'png', 'bmp', {}, 'source.png');
+
+      const convertedBack = await convertFile(bmpResult.buffer, 'bmp', 'png', {}, 'source.bmp');
+      expect(convertedBack.mimeType).toBe('image/png');
+      expect(convertedBack.filename).toBe('source.png');
+
+      const meta = await sharp(convertedBack.buffer).metadata();
+      expect(meta.format).toBe('png');
+      expect(meta.width).toBe(100);
+      expect(meta.height).toBe(100);
+    });
+
+    it('converts PNG to genuine ICO binary with ICONDIR header', async () => {
+      const pngBuffer = await createTestPngBuffer();
+      const result = await convertFile(pngBuffer, 'png', 'ico', {}, 'favicon.png');
+
+      expect(result.mimeType).toBe('image/x-icon');
+      expect(result.filename).toBe('favicon.ico');
+      // Standard ICO signature [0x00, 0x00, 0x01, 0x00]
+      expect(result.buffer[0]).toBe(0x00);
+      expect(result.buffer[1]).toBe(0x00);
+      expect(result.buffer[2]).toBe(0x01);
+      expect(result.buffer[3]).toBe(0x00);
+    });
+
+    it('decodes ICO input and converts to PNG', async () => {
+      const pngBuffer = await createTestPngBuffer();
+      const icoResult = await convertFile(pngBuffer, 'png', 'ico', {}, 'icon.png');
+
+      const pngFromIco = await convertFile(icoResult.buffer, 'ico', 'png', {}, 'icon.ico');
+      expect(pngFromIco.mimeType).toBe('image/png');
+      const meta = await sharp(pngFromIco.buffer).metadata();
+      expect(meta.format).toBe('png');
     });
   });
 
@@ -95,6 +161,24 @@ describe('Conversion Engine Integration Tests', () => {
       expect(result.mimeType).toBe('text/html');
       expect(result.filename).toBe('notes.html');
       expect(result.buffer.toString('utf-8')).toContain('Simple line 1');
+    });
+
+    it('extracts text from PDF into plain TXT', async () => {
+      const pdfBuffer = await createTestPdfBuffer('Sample Document Content from EasyConvert PDF');
+      const result = await convertFile(pdfBuffer, 'pdf', 'txt', {}, 'contract.pdf');
+
+      expect(result.mimeType).toBe('text/plain');
+      expect(result.filename).toBe('contract.txt');
+      expect(result.buffer.toString('utf-8')).toContain('Sample Document Content from EasyConvert PDF');
+    });
+
+    it('converts PDF to HTML representation', async () => {
+      const pdfBuffer = await createTestPdfBuffer('Executive Summary 2026');
+      const result = await convertFile(pdfBuffer, 'pdf', 'html', {}, 'summary.pdf');
+
+      expect(result.mimeType).toBe('text/html');
+      expect(result.filename).toBe('summary.html');
+      expect(result.buffer.toString('utf-8')).toContain('Executive Summary 2026');
     });
   });
 
@@ -139,9 +223,31 @@ describe('Conversion Engine Integration Tests', () => {
       expect(yaml).toContain('port: 8080');
       expect(yaml).toContain('host: 0.0.0.0');
     });
+
+    it('converts XML to JSON structure', async () => {
+      const xml = '<root><title>EasyConvert</title><version>1.0</version></root>';
+      const buffer = Buffer.from(xml, 'utf-8');
+
+      const result = await convertFile(buffer, 'xml', 'json', {}, 'data.xml');
+      expect(result.mimeType).toBe('application/json');
+      const parsed = JSON.parse(result.buffer.toString('utf-8'));
+      expect(parsed.title).toBe('EasyConvert');
+      expect(parsed.version).toBe('1.0');
+    });
+
+    it('converts XML to plain text without throwing', async () => {
+      const xml = '<article><p>First paragraph.</p><p>Second paragraph.</p></article>';
+      const buffer = Buffer.from(xml, 'utf-8');
+
+      const result = await convertFile(buffer, 'xml', 'txt', {}, 'article.xml');
+      expect(result.mimeType).toBe('text/plain');
+      expect(result.filename).toBe('article.txt');
+      expect(result.buffer.toString('utf-8')).toContain('First paragraph.');
+      expect(result.buffer.toString('utf-8')).toContain('Second paragraph.');
+    });
   });
 
-  describe('Archive Packaging', () => {
+  describe('Archive Packaging & Cross-Conversion', () => {
     it('packages multiple files into a valid ZIP archive', async () => {
       const file1 = { filename: 'file1.txt', buffer: Buffer.from('hello 1', 'utf-8') };
       const file2 = { filename: 'file2.txt', buffer: Buffer.from('hello 2', 'utf-8') };
@@ -150,9 +256,45 @@ describe('Conversion Engine Integration Tests', () => {
       expect(zipResult.mimeType).toBe('application/zip');
       expect(zipResult.filename).toBe('test.zip');
       expect(zipResult.size).toBeGreaterThan(0);
-      // ZIP magic bytes: PK (0x50, 0x4B)
       expect(zipResult.buffer[0]).toBe(0x50);
       expect(zipResult.buffer[1]).toBe(0x4b);
+    });
+
+    it('converts ZIP archive to authentic POSIX TAR archive', async () => {
+      const file1 = { filename: 'doc.txt', buffer: Buffer.from('Archived content', 'utf-8') };
+      const zip = await createZipArchive([file1], {}, 'doc.zip');
+
+      const tarResult = await convertFile(zip.buffer, 'zip', 'tar', {}, 'doc.zip');
+      expect(tarResult.mimeType).toBe('application/x-tar');
+      expect(tarResult.filename).toBe('doc.tar');
+
+      const extracted = extractTarArchive(tarResult.buffer);
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0].filename).toBe('doc.txt');
+      expect(extracted[0].buffer.toString('utf-8')).toBe('Archived content');
+    });
+
+    it('converts TAR archive to ZIP archive', async () => {
+      const file1 = { filename: 'readme.txt', buffer: Buffer.from('TAR Readme', 'utf-8') };
+      const tar = createTarArchive([file1], {}, 'readme.tar');
+
+      const zipResult = await convertFile(tar.buffer, 'tar', 'zip', {}, 'readme.tar');
+      expect(zipResult.mimeType).toBe('application/zip');
+      expect(zipResult.filename).toBe('readme.zip');
+      expect(zipResult.buffer[0]).toBe(0x50);
+      expect(zipResult.buffer[1]).toBe(0x4b);
+    });
+
+    it('compresses TAR to GZ archive', async () => {
+      const file1 = { filename: 'data.bin', buffer: Buffer.from('raw binary', 'utf-8') };
+      const tar = createTarArchive([file1], {}, 'data.tar');
+
+      const gzResult = await convertFile(tar.buffer, 'tar', 'gz', {}, 'data.tar');
+      expect(gzResult.mimeType).toBe('application/gzip');
+      expect(gzResult.filename).toBe('data.tar.gz');
+      // GZIP magic header: 0x1F, 0x8B
+      expect(gzResult.buffer[0]).toBe(0x1f);
+      expect(gzResult.buffer[1]).toBe(0x8b);
     });
 
     it('converts any single file to ZIP archive', async () => {

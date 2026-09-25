@@ -24,23 +24,24 @@ export default function UrlUploadModal({ onAddFile, onClose }: UrlUploadModalPro
       // Validate URL format
       new URL(url);
 
-      const response = await fetch(url);
+      const response = await fetch('/api/fetch-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url.trim() }),
+      });
+
       if (!response.ok) {
-        throw new Error(`Failed to fetch file (HTTP ${response.status})`);
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || `Failed to fetch file (HTTP ${response.status})`);
       }
+
+      const rawFilename = response.headers.get('X-Filename');
+      const filename = rawFilename
+        ? decodeURIComponent(rawFilename)
+        : url.split('/').pop()?.split('?')[0] || 'remote_file.bin';
 
       const blob = await response.blob();
-      let filename = url.split('/').pop()?.split('?')[0] || 'remote_file';
-      if (!filename.includes('.')) {
-        // Fallback extension from mime
-        const mime = blob.type;
-        if (mime.includes('png')) filename += '.png';
-        else if (mime.includes('jpeg') || mime.includes('jpg')) filename += '.jpg';
-        else if (mime.includes('pdf')) filename += '.pdf';
-        else filename += '.bin';
-      }
-
-      const file = new File([blob], filename, { type: blob.type });
+      const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
       onAddFile(file);
       onClose();
     } catch (err: unknown) {

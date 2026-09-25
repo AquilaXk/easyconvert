@@ -10,7 +10,7 @@ import {
   ArrowRight,
   Sparkles,
 } from 'lucide-react';
-import { FORMAT_REGISTRY, getAllFormats } from '@/lib/registry';
+import { FORMAT_REGISTRY, getAllFormats, getAvailableTargetFormats } from '@/lib/registry';
 import FormatSelector from './FormatSelector';
 import UrlUploadModal from './UrlUploadModal';
 
@@ -215,10 +215,11 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
       {/* Target Selector Modal */}
       {isTargetSelectorOpen && (
         <FormatSelector
+          availableFormats={getAvailableTargetFormats(sourceFormat)}
           selectedFormatId={targetFormat}
           onSelect={(fmt) => setTargetFormat(fmt)}
           onClose={() => setIsTargetSelectorOpen(false)}
-          title="Convert to format:"
+          title={`Convert ${sourceFormat.toUpperCase()} to:`}
         />
       )}
 

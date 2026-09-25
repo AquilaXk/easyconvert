@@ -111,8 +111,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/pdf',
     category: 'document',
     description: 'Portable Document Format - Universal digital document standard.',
-    targetFormats: ['png', 'jpg', 'webp', 'txt'],
-    optionsSchema: { dpi: true, orientation: true },
+    targetFormats: ['txt', 'html', 'md', 'zip'],
+    optionsSchema: { orientation: true },
   },
   md: {
     id: 'md',
@@ -224,13 +224,22 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: 'Tape archive file format commonly used for packaging unix collections.',
     targetFormats: ['zip', 'gz'],
   },
+  gz: {
+    id: 'gz',
+    name: 'GZIP',
+    extension: 'gz',
+    mimeType: 'application/gzip',
+    category: 'archive',
+    description: 'GNU zip compression file format.',
+    targetFormats: ['zip', 'tar'],
+  },
 };
 
 export const CATEGORIES: { id: FormatCategory; label: string; count: number }[] = [
   { id: 'image', label: 'Images', count: 10 },
   { id: 'document', label: 'Documents', count: 4 },
   { id: 'data', label: 'Data & Tables', count: 6 },
-  { id: 'archive', label: 'Archives', count: 2 },
+  { id: 'archive', label: 'Archives', count: 3 },
 ];
 
 export function getFormatByExtension(ext: string): FormatDefinition | undefined {

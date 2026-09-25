@@ -56,6 +56,11 @@ export async function convertData(
       const buffer = Buffer.from(html, 'utf-8');
       return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
     }
+
+    if (tgt === 'txt') {
+      const buffer = Buffer.from(textContent, 'utf-8');
+      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+    }
   }
 
   // JSON -> Target
@@ -93,6 +98,15 @@ export async function convertData(
       return { buffer, mimeType: 'application/xml', filename: `${baseName}.xml`, size: buffer.length };
     }
 
+    if (tgt === 'html') {
+      const arrayData = Array.isArray(parsedJson)
+        ? (parsedJson as Record<string, unknown>[])
+        : [parsedJson as Record<string, unknown>];
+      const html = generateTableHtml(arrayData, baseName);
+      const buffer = Buffer.from(html, 'utf-8');
+      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+    }
+
     if (tgt === 'txt') {
       const buffer = Buffer.from(JSON.stringify(parsedJson, null, 2), 'utf-8');
       return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
@@ -121,13 +135,31 @@ export async function convertData(
     }
   }
 
-  // XML -> JSON
+  // XML -> Target
   if (src === 'xml') {
     if (tgt === 'json') {
       const parsed = simpleXmlToJson(textContent);
-      const json = JSON.stringify(parsed, null, 2);
+      const output =
+        parsed.root && typeof parsed.root === 'object' && Object.keys(parsed).length === 1
+          ? parsed.root
+          : parsed;
+      const json = JSON.stringify(output, null, 2);
       const buffer = Buffer.from(json, 'utf-8');
       return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+    }
+
+    if (tgt === 'txt') {
+      // Clean XML to plain text
+      const clean = textContent
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const buffer = Buffer.from(clean || textContent, 'utf-8');
+      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
     }
   }
 
@@ -140,7 +172,14 @@ function generateTableHtml(data: Record<string, unknown>[], title: string): stri
   }
 
   const headers = Object.keys(data[0] || {});
-  const headerHtml = headers.map((h) => `<th style="padding: 10px; border: 1px solid #CCD2FC; background: #F0F2FE; color: #1F2340;">${escapeHtml(h)}</th>`).join('');
+  const headerHtml = headers
+    .map(
+      (h) =>
+        `<th style="padding: 10px; border: 1px solid #CCD2FC; background: #F0F2FE; color: #1F2340;">${escapeHtml(
+          h
+        )}</th>`
+    )
+    .join('');
   const rowsHtml = data
     .map(
       (row) =>
@@ -199,16 +238,17 @@ function jsonToXml(obj: unknown, rootName = 'root'): string {
 }
 
 function simpleXmlToJson(xml: string): Record<string, unknown> {
+  const cleanXml = xml.replace(/<\?xml.*?\?>/gi, '').trim();
   const result: Record<string, unknown> = {};
-  const tagRegex = /<([a-zA-Z0-9_-]+)>(.*?)<\/\1>/gs;
+  const tagRegex = /<([a-zA-Z0-9_-]+)[^>]*>(.*?)<\/\1>/gs;
   let match;
-  while ((match = tagRegex.exec(xml)) !== null) {
+  while ((match = tagRegex.exec(cleanXml)) !== null) {
     const [, tag, content] = match;
-    if (content.includes('<')) {
+    if (content.includes('<') && /<[a-zA-Z0-9_-]+/.test(content)) {
       result[tag] = simpleXmlToJson(content);
     } else {
       result[tag] = content.trim();
     }
   }
-  return Object.keys(result).length > 0 ? result : { text: xml.replace(/<[^>]+>/g, '').trim() };
+  return Object.keys(result).length > 0 ? result : { text: cleanXml.replace(/<[^>]+>/g, '').trim() };
 }

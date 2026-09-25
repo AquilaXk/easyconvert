@@ -8,6 +8,7 @@ import Features from '@/components/Features';
 import FormatExplorer from '@/components/FormatExplorer';
 import FaqSection from '@/components/FaqSection';
 import Footer from '@/components/Footer';
+import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
 
@@ -142,33 +143,34 @@ export default function Home() {
     setIsConverting(false);
   };
 
-  // Download all as ZIP
+  // Download all completed items as consolidated ZIP archive
   const handleDownloadAllZip = async () => {
     const completedItems = queue.filter((i) => i.status === 'completed' && i.resultUrl);
     if (completedItems.length === 0) return;
 
     try {
-      const formData = new FormData();
-      const targetFormatsMap: Record<string, string> = {};
+      const zip = new JSZip();
+      const usedNames = new Set<string>();
 
-      for (const item of queue) {
-        formData.append('files', item.file);
-        targetFormatsMap[item.file.name] = item.targetFormat;
+      for (const item of completedItems) {
+        if (!item.resultUrl) continue;
+        const res = await fetch(item.resultUrl);
+        const blob = await res.blob();
+
+        const base = item.name.replace(/\.[^/.]+$/, '');
+        let outputName = `${base}.${item.targetFormat}`;
+        let counter = 1;
+        while (usedNames.has(outputName)) {
+          outputName = `${base} (${counter}).${item.targetFormat}`;
+          counter++;
+        }
+        usedNames.add(outputName);
+
+        zip.file(outputName, blob);
       }
 
-      formData.append('targetFormats', JSON.stringify(targetFormatsMap));
-
-      const res = await fetch('/api/convert/batch', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to generate batch zip archive');
-      }
-
-      const blob = await res.blob();
-      const zipUrl = URL.createObjectURL(blob);
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const zipUrl = URL.createObjectURL(zipBlob);
 
       const a = document.createElement('a');
       a.href = zipUrl;
