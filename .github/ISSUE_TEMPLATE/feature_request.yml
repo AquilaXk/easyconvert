@@ -1,0 +1,30 @@
+name: "Feature / Improvement Request"
+description: "Suggest a new feature or improvement for EasyConvert."
+title: "[Feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the proposed feature or conversion improvement clearly.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What problem does this solve or what use case does it address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed Solution
+      description: How should this work? (Supported formats, parameters, expected output)
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Specific conditions for this task to be considered complete.
+    validations:
+      required: true
