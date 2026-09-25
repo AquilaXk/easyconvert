@@ -33,9 +33,9 @@ dist/
 .turbo
 
 # Temporary conversion uploads / caches
-tmp/
-uploads/
-conversions/
+/tmp/
+/uploads/
+/.conversions/
 
 # Local agent docs
 AGENTS.md
