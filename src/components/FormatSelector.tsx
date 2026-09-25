@@ -156,7 +156,7 @@ export default function FormatSelector({
                     }}
                     className={`px-3 py-1.5 text-xs font-mono font-semibold rounded text-center border transition-all ${
                       isSelected
-                        ? 'bg-[#d9383a] border-[#d9383a] text-white shadow-md'
+                        ? 'bg-[#5C6BC0] border-[#5C6BC0] text-white shadow-md'
                         : 'bg-[#212529] hover:bg-neutral-700 text-white border-neutral-700/60'
                     }`}
                   >

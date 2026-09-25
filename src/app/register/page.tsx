@@ -56,7 +56,7 @@ export default function RegisterPage() {
             <h1 className="text-xl font-bold text-white tracking-tight">Sign Up</h1>
             <p className="mt-1 text-sm text-neutral-400">
               Already have an account?{' '}
-              <a href="/login" className="text-[#d9383a] hover:underline font-medium">
+              <a href="/login" className="text-[#5C6BC0] hover:underline font-medium">
                 Sign in
               </a>
               .
@@ -86,7 +86,7 @@ export default function RegisterPage() {
                     placeholder="Email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#d9383a] px-2.5 py-1.5 text-sm text-white placeholder-neutral-500 outline-none transition-colors"
+                    className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#5C6BC0] px-2.5 py-1.5 text-sm text-white placeholder-neutral-500 outline-none transition-colors"
                   />
                 </div>
               </div>
@@ -106,7 +106,7 @@ export default function RegisterPage() {
                     placeholder="Password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#d9383a] px-2.5 py-1.5 text-sm text-white placeholder-neutral-500 outline-none transition-colors pr-9"
+                    className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#5C6BC0] px-2.5 py-1.5 text-sm text-white placeholder-neutral-500 outline-none transition-colors pr-9"
                   />
                   <button
                     type="button"
@@ -134,7 +134,7 @@ export default function RegisterPage() {
                     placeholder="Confirm Password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#d9383a] px-2.5 py-1.5 text-sm text-white placeholder-neutral-500 outline-none transition-colors pr-9"
+                    className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#5C6BC0] px-2.5 py-1.5 text-sm text-white placeholder-neutral-500 outline-none transition-colors pr-9"
                   />
                   <button
                     type="button"
@@ -156,11 +156,11 @@ export default function RegisterPage() {
                   type="checkbox"
                   checked={termsAccepted}
                   onChange={(e) => setTermsAccepted(e.target.checked)}
-                  className="size-4 rounded-sm border-neutral-700 bg-[#18191d] text-[#d9383a] focus:ring-[#d9383a] accent-[#d9383a]"
+                  className="size-4 rounded-sm border-neutral-700 bg-[#18191d] text-[#5C6BC0] focus:ring-[#5C6BC0] accent-[#5C6BC0]"
                 />
                 <label htmlFor="terms" className="text-xs text-neutral-300 select-none cursor-pointer">
                   I accept the{' '}
-                  <a href="/terms" target="_blank" className="text-[#d9383a] hover:underline font-medium">
+                  <a href="/terms" target="_blank" className="text-[#5C6BC0] hover:underline font-medium">
                     terms and conditions
                   </a>
                   .
@@ -173,7 +173,7 @@ export default function RegisterPage() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-1.5 px-2.5 rounded-md bg-[#d9383a] hover:bg-[#c22e30] active:bg-[#a82325] text-white font-medium text-sm transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                className="w-full py-1.5 px-2.5 rounded-md bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] text-white font-medium text-sm transition-colors shadow-sm cursor-pointer disabled:opacity-50"
               >
                 {loading ? 'Signing Up...' : 'Sign Up'}
               </button>

@@ -47,7 +47,7 @@ export default function LoginPage() {
             <h1 className="text-xl font-semibold text-white tracking-tight">Login</h1>
             <p className="mt-1 text-base text-neutral-400">
               Don&apos;t have an account?{' '}
-              <a href="/register" className="text-[#d9383a] hover:underline font-medium">
+              <a href="/register" className="text-[#5C6BC0] hover:underline font-medium">
                 Sign up
               </a>
               .
@@ -128,7 +128,7 @@ export default function LoginPage() {
                   required
                   value={emailOrUser}
                   onChange={(e) => setEmailOrUser(e.target.value)}
-                  className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#d9383a] px-2.5 py-1.5 text-sm text-white outline-none transition-colors"
+                  className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#5C6BC0] px-2.5 py-1.5 text-sm text-white outline-none transition-colors"
                 />
               </div>
 
@@ -137,7 +137,7 @@ export default function LoginPage() {
                   <label htmlFor="loginPassword" className="block font-medium text-neutral-300">
                     Password
                   </label>
-                  <a href="/forgot-password" className="text-[#d9383a] hover:underline font-medium text-xs">
+                  <a href="/forgot-password" className="text-[#5C6BC0] hover:underline font-medium text-xs">
                     Forgot password?
                   </a>
                 </div>
@@ -148,14 +148,14 @@ export default function LoginPage() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#d9383a] px-2.5 py-1.5 text-sm text-white outline-none transition-colors"
+                  className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#5C6BC0] px-2.5 py-1.5 text-sm text-white outline-none transition-colors"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={loading}
-                className="rounded-md font-medium text-sm py-1.5 px-2.5 w-full justify-center text-white bg-[#d9383a] hover:bg-[#c22e30] active:bg-[#a82325] transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                className="rounded-md font-medium text-sm py-1.5 px-2.5 w-full justify-center text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] transition-colors shadow-sm cursor-pointer disabled:opacity-50"
               >
                 {loading ? 'Continuing...' : 'Continue'}
               </button>

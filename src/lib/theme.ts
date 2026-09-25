@@ -1,20 +1,20 @@
 /**
- * CloudConvert-Matched Design System Palette
- * Red CTA palette with dark neutral charcoal.
+ * Signature Lavender Design System
+ * Carefully calibrated for high contrast, accessibility, and elegance.
  */
-export const BRAND_PALETTE = {
+export const LAVENDER_PALETTE = {
   brand: {
-    50: '#FEF2F2',
-    100: '#FEE2E2',
-    200: '#FECACA',
-    300: '#FCA5A5',
-    400: '#F87171',
-    500: '#D9383A', // Primary CTA Red
-    600: '#C22E30', // Hover
-    700: '#A82325', // Active
-    800: '#8C1B1D',
-    900: '#701617',
-    950: '#450A0B',
+    50: '#F8F9FE',
+    100: '#F0F2FD',
+    200: '#E2E5FD',
+    300: '#CCD2FC',
+    400: '#8E9CE6',
+    500: '#5C6BC0', // Primary interaction / Signature Lavender
+    600: '#4D5CB5', // Hover
+    700: '#3F4EA3', // Active
+    800: '#333F85',
+    900: '#262F64',
+    950: '#171C3D',
   },
   neutral: {
     white: '#FFFFFF',
@@ -47,4 +47,4 @@ export const BRAND_PALETTE = {
   },
 } as const;
 
-export const LAVENDER_PALETTE = BRAND_PALETTE;
+export const BRAND_PALETTE = LAVENDER_PALETTE;

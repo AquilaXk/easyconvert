@@ -98,7 +98,7 @@ export default function OptionsModal({
                   type="text"
                   value={options.pages || ''}
                   onChange={(e) => setOptions({ ...options, pages: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white focus:outline-none focus:border-[#d9383a]"
+                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white focus:outline-none focus:border-[#5C6BC0]"
                 />
                 <p className="text-xs text-neutral-400">Page range to convert (e.g. 1-3).</p>
               </div>
@@ -126,7 +126,7 @@ export default function OptionsModal({
                   type="password"
                   value={options.password || ''}
                   onChange={(e) => setOptions({ ...options, password: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white focus:outline-none focus:border-[#d9383a]"
+                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white focus:outline-none focus:border-[#5C6BC0]"
                 />
                 <p className="text-xs text-neutral-400">
                   Password to open the {isSourcePdf ? 'PDF' : sourceFormat.toUpperCase()} file.
@@ -162,7 +162,7 @@ export default function OptionsModal({
                           name="connectHyphens"
                           checked={options.preserveLayout === false}
                           onChange={() => setOptions({ ...options, preserveLayout: false })}
-                          className="w-4 h-4 accent-[#d9383a]"
+                          className="w-4 h-4 accent-[#5C6BC0]"
                         />
                         <span>Yes</span>
                       </label>
@@ -172,7 +172,7 @@ export default function OptionsModal({
                           name="connectHyphens"
                           checked={options.preserveLayout !== false}
                           onChange={() => setOptions({ ...options, preserveLayout: true })}
-                          className="w-4 h-4 accent-[#d9383a]"
+                          className="w-4 h-4 accent-[#5C6BC0]"
                         />
                         <span>No</span>
                       </label>
@@ -190,7 +190,7 @@ export default function OptionsModal({
                           name="prioritizeVisual"
                           checked={options.preserveFonts === false}
                           onChange={() => setOptions({ ...options, preserveFonts: false })}
-                          className="w-4 h-4 accent-[#d9383a]"
+                          className="w-4 h-4 accent-[#5C6BC0]"
                         />
                         <span>Yes</span>
                       </label>
@@ -200,7 +200,7 @@ export default function OptionsModal({
                           name="prioritizeVisual"
                           checked={options.preserveFonts !== false}
                           onChange={() => setOptions({ ...options, preserveFonts: true })}
-                          className="w-4 h-4 accent-[#d9383a]"
+                          className="w-4 h-4 accent-[#5C6BC0]"
                         />
                         <span>No</span>
                       </label>
@@ -220,7 +220,7 @@ export default function OptionsModal({
                           name="ocrImages"
                           checked={options.ocrEnabled !== false}
                           onChange={() => setOptions({ ...options, ocrEnabled: true })}
-                          className="w-4 h-4 accent-[#d9383a]"
+                          className="w-4 h-4 accent-[#5C6BC0]"
                         />
                         <span>Yes</span>
                       </label>
@@ -230,7 +230,7 @@ export default function OptionsModal({
                           name="ocrImages"
                           checked={options.ocrEnabled === false}
                           onChange={() => setOptions({ ...options, ocrEnabled: false })}
-                          className="w-4 h-4 accent-[#d9383a]"
+                          className="w-4 h-4 accent-[#5C6BC0]"
                         />
                         <span>No</span>
                       </label>
@@ -286,7 +286,7 @@ export default function OptionsModal({
                   <div>
                     <div className="flex items-center justify-between text-xs font-semibold text-neutral-200 mb-1">
                       <span>Quality</span>
-                      <span className="font-mono text-[#d9383a]">{options.quality || 85}%</span>
+                      <span className="font-mono text-[#5C6BC0]">{options.quality || 85}%</span>
                     </div>
                     <input
                       type="range"
@@ -294,7 +294,7 @@ export default function OptionsModal({
                       max="100"
                       value={options.quality || 85}
                       onChange={(e) => setOptions({ ...options, quality: Number(e.target.value) })}
-                      className="w-full accent-[#d9383a] cursor-pointer"
+                      className="w-full accent-[#5C6BC0] cursor-pointer"
                     />
                   </div>
                 </div>
@@ -354,7 +354,7 @@ export default function OptionsModal({
           )}
         </div>
 
-        {/* Footer with ONLY the single red Apply button on bottom right */}
+        {/* Footer with ONLY the single Apply button on bottom right */}
         <div className="px-6 py-4 bg-[#18191d] border-t border-neutral-800 flex items-center justify-end">
           <button
             type="button"
@@ -362,7 +362,7 @@ export default function OptionsModal({
               onSave(options);
               onClose();
             }}
-            className="bg-[#d9383a] hover:bg-[#c93234] text-white px-5 py-2 rounded text-sm font-medium transition-colors"
+            className="bg-[#5C6BC0] hover:bg-[#4D5CB5] text-white px-5 py-2 rounded text-sm font-medium transition-colors"
           >
             Apply
           </button>

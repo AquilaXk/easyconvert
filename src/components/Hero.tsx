@@ -85,7 +85,7 @@ export default function Hero({
   const getFormatIcon = (fmt: string, isTarget = false) => {
     const def = FORMAT_REGISTRY[fmt?.toLowerCase()];
     const cat = def?.category;
-    const colorClass = isTarget ? 'text-red-200' : 'text-neutral-200';
+    const colorClass = isTarget ? 'text-indigo-200' : 'text-neutral-200';
     if (fmt?.toLowerCase() === 'pdf') {
       return (
         <svg className={`size-7 sm:size-8 ${colorClass}`} viewBox="0 0 576 512" fill="currentColor">
@@ -216,10 +216,10 @@ export default function Hero({
                   aria-hidden="true"
                   className="pointer-events-none absolute size-[200px] sm:size-[230px] rounded-full border border-white/[0.07] animate-orbit-fast"
                 />
-                {/* Red glow behind target */}
+                {/* Lavender glow behind target */}
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute size-40 rounded-full bg-[#d9383a]/15 blur-3xl"
+                  className="pointer-events-none absolute size-40 rounded-full bg-[#5C6BC0]/20 blur-3xl"
                 />
 
                 {/* The Two Cards Widget */}
@@ -232,7 +232,7 @@ export default function Hero({
                         setIsSourceSelectorOpen(!isSourceSelectorOpen);
                         setIsTargetSelectorOpen(false);
                       }}
-                      className="group/card relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_12px_30px_rgba(0,0,0,0.45)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9383a]/60 active:translate-y-0"
+                      className="group/card relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_12px_30px_rgba(0,0,0,0.45)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 active:translate-y-0"
                       aria-label={`Input format: ${sourceFormat.toUpperCase()}. Click to change.`}
                     >
                       <div
@@ -273,8 +273,8 @@ export default function Hero({
                   {/* Center Circle: TO Indicator */}
                   <div className="flex flex-col items-center gap-2">
                     <div className="flex items-center">
-                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-neutral-700 to-[#d9383a]/70" aria-hidden="true">
-                        <div className="absolute inset-0 h-px animate-arrow-sweep bg-gradient-to-r from-transparent via-[#f87171] to-transparent" />
+                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-neutral-700 to-[#5C6BC0]/70" aria-hidden="true">
+                        <div className="absolute inset-0 h-px animate-arrow-sweep bg-gradient-to-r from-transparent via-[#8E9CE6] to-transparent" />
                       </div>
 
                       <button
@@ -287,21 +287,21 @@ export default function Hero({
                         }}
                         disabled={targetFormat.toLowerCase() === 'any'}
                         title={targetFormat.toLowerCase() === 'any' ? 'Select specific output format to swap' : 'Swap formats'}
-                        className={`group/op relative mx-1 flex size-9 sm:size-10 items-center justify-center rounded-full border backdrop-blur-sm transition duration-300 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9383a]/60 ${
+                        className={`group/op relative mx-1 flex size-9 sm:size-10 items-center justify-center rounded-full border backdrop-blur-sm transition duration-300 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 ${
                           targetFormat.toLowerCase() === 'any'
                             ? 'opacity-40 cursor-not-allowed border-neutral-700 bg-neutral-800/40 text-neutral-500'
-                            : 'cursor-pointer border-[#d9383a]/40 bg-[#d9383a]/15 hover:scale-110 hover:border-[#d9383a]/70 hover:bg-[#d9383a]/25 text-[#d9383a]'
+                            : 'cursor-pointer border-[#5C6BC0]/40 bg-[#5C6BC0]/15 hover:scale-110 hover:border-[#5C6BC0]/70 hover:bg-[#5C6BC0]/25 text-[#5C6BC0]'
                         }`}
                         aria-label="Swap formats"
                       >
-                        <RefreshCw className={`size-4 transition-transform duration-300 text-red-300 animate-spin-pulse ${targetFormat.toLowerCase() !== 'any' ? 'group-hover/op:animate-none group-hover/op:rotate-180' : ''}`} />
+                        <RefreshCw className={`size-4 transition-transform duration-300 text-indigo-300 animate-spin-pulse ${targetFormat.toLowerCase() !== 'any' ? 'group-hover/op:animate-none group-hover/op:rotate-180' : ''}`} />
                         {targetFormat.toLowerCase() !== 'any' && (
-                          <div className="pointer-events-none absolute inset-0 animate-ping rounded-full ring-1 ring-[#d9383a]/20" aria-hidden="true" />
+                          <div className="pointer-events-none absolute inset-0 animate-ping rounded-full ring-1 ring-[#5C6BC0]/20" aria-hidden="true" />
                         )}
                       </button>
 
-                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-[#d9383a]/70 to-neutral-700" aria-hidden="true">
-                        <div className="absolute inset-0 h-px animate-arrow-sweep bg-gradient-to-r from-transparent via-[#f87171] to-transparent" />
+                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-[#5C6BC0]/70 to-neutral-700" aria-hidden="true">
+                        <div className="absolute inset-0 h-px animate-arrow-sweep bg-gradient-to-r from-transparent via-[#8E9CE6] to-transparent" />
                       </div>
                     </div>
                     <span className="text-[0.65rem] font-medium uppercase tracking-[0.25em] text-neutral-400">
@@ -309,7 +309,7 @@ export default function Hero({
                     </span>
                   </div>
 
-                  {/* Right Card: Target Format (Highlighted with Red Glow) */}
+                  {/* Right Card: Target Format (Highlighted with Lavender Glow) */}
                   <div className="relative">
                     <button
                       type="button"
@@ -317,7 +317,7 @@ export default function Hero({
                         setIsTargetSelectorOpen(!isTargetSelectorOpen);
                         setIsSourceSelectorOpen(false);
                       }}
-                      className="group/card relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-[#d9383a]/35 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_32px_rgba(217,56,58,0.22)] backdrop-blur-md transition duration-300 ease-out animate-output-pulse hover:-translate-y-0.5 hover:border-[#d9383a]/55 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_14px_38px_rgba(217,56,58,0.35)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9383a]/60 active:translate-y-0"
+                      className="group/card relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-[#5C6BC0]/40 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_32px_rgba(92,107,192,0.25)] backdrop-blur-md transition duration-300 ease-out animate-output-pulse hover:-translate-y-0.5 hover:border-[#5C6BC0]/60 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_14px_38px_rgba(92,107,192,0.40)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 active:translate-y-0"
                       aria-label={`Output format: ${targetFormat.toUpperCase()}. Click to change.`}
                     >
                       <div
@@ -327,11 +327,11 @@ export default function Hero({
                         <div className="transition-transform duration-300 group-hover/card:scale-110">
                           {getFormatIcon(targetFormat, true)}
                         </div>
-                        <span className="max-w-full truncate text-xs sm:text-sm font-bold tracking-wider text-red-100 uppercase">
+                        <span className="max-w-full truncate text-xs sm:text-sm font-bold tracking-wider text-indigo-100 uppercase">
                           {targetFormat}
                         </span>
                       </div>
-                      <ChevronDown className="absolute right-2 bottom-1.5 size-2.5 text-red-300/60 transition-colors group-hover/card:text-red-200" />
+                      <ChevronDown className="absolute right-2 bottom-1.5 size-2.5 text-indigo-300/60 transition-colors group-hover/card:text-indigo-200" />
                     </button>
 
                     {isTargetSelectorOpen && (
@@ -365,14 +365,14 @@ export default function Hero({
             onDrop={handleDrop}
             className={`group/dropzone relative mx-auto mb-10 w-full max-w-2xl overflow-visible rounded-3xl border bg-white px-6 py-8 text-center shadow-xl ring-1 transition-all duration-300 ease-out sm:px-10 sm:py-10 dark:bg-neutral-900 ${
               isDragOver
-                ? 'border-[#d9383a] ring-[#d9383a]/30 scale-[1.01]'
+                ? 'border-[#5C6BC0] ring-[#5C6BC0]/30 scale-[1.01]'
                 : 'border-neutral-200/80 ring-black/[0.04] shadow-neutral-950/10 hover:border-neutral-300 hover:shadow-neutral-950/15 dark:border-white/10 dark:ring-white/[0.06] dark:shadow-black/40 dark:hover:border-white/20 dark:hover:shadow-black/50'
             }`}
           >
-            {/* Subtle red background ambient */}
+            {/* Subtle lavender background ambient */}
             <div
               aria-hidden="true"
-              className="opacity-60 group-hover/dropzone:opacity-90 pointer-events-none absolute inset-0 rounded-3xl bg-[radial-gradient(ellipse_60%_60%_at_50%_45%,rgba(217,56,58,0.08),transparent_70%)] transition-opacity duration-300"
+              className="opacity-60 group-hover/dropzone:opacity-90 pointer-events-none absolute inset-0 rounded-3xl bg-[radial-gradient(ellipse_60%_60%_at_50%_45%,rgba(92,107,192,0.08),transparent_70%)] transition-opacity duration-300"
             />
             <div
               aria-hidden="true"
@@ -380,12 +380,12 @@ export default function Hero({
             />
 
             <div className="relative flex flex-col items-center gap-6">
-              {/* Cloud Upload Icon matching CloudConvert */}
+              {/* Cloud Upload Icon */}
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 aria-label="Select file"
-                className="inline-flex items-center justify-center rounded-md text-[#d9383a] transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9383a]/50 cursor-pointer"
+                className="inline-flex items-center justify-center rounded-md text-[#5C6BC0] transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/50 cursor-pointer"
               >
                 <svg className="size-11 fill-current" viewBox="0 0 576 512">
                   <path d="M144 480c-79.5 0-144-64.5-144-144 0-63.4 41-117.2 97.9-136.5-1.3-7.7-1.9-15.5-1.9-23.5 0-79.5 64.5-144 144-144 55.4 0 103.5 31.3 127.6 77.1 14.2-8.3 30.8-13.1 48.4-13.1 53 0 96 43 96 96 0 15.7-3.8 30.6-10.5 43.7 44 20.3 74.5 64.7 74.5 116.3 0 70.7-57.3 128-128 128l-304 0zM305 191c-9.4-9.4-24.6-9.4-33.9 0l-72 72c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0l31-31 0 102.1c0 13.3 10.7 24 24 24s24-10.7 24-24l0-102.1 31 31c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-72-72z" />
@@ -408,7 +408,7 @@ export default function Hero({
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="rounded-md font-medium inline-flex items-center transition-colors px-3 py-2 text-base gap-2 rounded-r-none focus-visible:z-[1] text-white bg-[#d9383a] hover:bg-[#c22e30] active:bg-[#a82325] outline-none"
+                    className="rounded-md font-medium inline-flex items-center transition-colors px-3 py-2 text-base gap-2 rounded-r-none focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] outline-none"
                   >
                     <svg className="size-5 fill-current shrink-0" viewBox="0 0 384 512">
                       <path d="M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM192 240c-13.3 0-24 10.7-24 24l0 48-48 0c-13.3 0-24 10.7-24 24s10.7 24 24 24l48 0 0 48c0 13.3 10.7 24 24 24s24-10.7 24-24l0-48 48 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-48 0 0-48c0-13.3-10.7-24-24-24z" />
@@ -420,7 +420,7 @@ export default function Hero({
                     type="button"
                     onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                     aria-label="Select file source"
-                    className="rounded-md font-medium inline-flex items-center transition-colors text-base rounded-l-none border-l border-white/20 focus-visible:z-[1] text-white bg-[#d9383a] hover:bg-[#c22e30] active:bg-[#a82325] p-2 outline-none"
+                    className="rounded-md font-medium inline-flex items-center transition-colors text-base rounded-l-none border-l border-white/20 focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] p-2 outline-none"
                   >
                     <ChevronDown className={`size-5 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
                   </button>

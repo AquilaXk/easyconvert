@@ -312,7 +312,7 @@ export default function Header() {
           {userEmail ? (
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold text-white bg-white/10 px-2.5 py-1.5 rounded-md border border-white/10 flex items-center gap-1.5">
-                <User className="w-3.5 h-3.5 text-[#d9383a]" />
+                <User className="w-3.5 h-3.5 text-[#5C6BC0]" />
                 <span className="truncate max-w-[120px]">{userEmail}</span>
               </span>
               <button
@@ -335,7 +335,7 @@ export default function Header() {
 
               <a
                 href="/register"
-                className="hidden lg:inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium text-white bg-[#d9383a] hover:bg-[#c22e30] active:bg-[#a82325] rounded-md shadow-sm transition-all"
+                className="hidden lg:inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] rounded-md shadow-sm transition-all"
               >
                 Sign up
               </a>
@@ -407,7 +407,7 @@ export default function Header() {
             <a
               href="/register"
               onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1 text-sm text-[#d9383a] hover:text-[#c22e30] font-semibold"
+              className="px-2 py-1 text-sm text-[#5C6BC0] hover:text-[#4D5CB5] font-semibold"
             >
               Sign up
             </a>

@@ -146,7 +146,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                   <label className="block text-xs font-semibold text-neutral-300 mb-1">Message</label>
                   <textarea required rows={4} placeholder="Tell us how we can help..." className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white text-sm" />
                 </div>
-                <button type="submit" className="px-6 py-2.5 bg-[#d9383a] hover:bg-[#c22e30] text-white font-semibold text-sm rounded-xl transition-colors shadow-md">
+                <button type="submit" className="px-6 py-2.5 bg-[#5C6BC0] hover:bg-[#4D5CB5] text-white font-semibold text-sm rounded-xl transition-colors shadow-md">
                   Send Message
                 </button>
               </form>
@@ -186,7 +186,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                   <label className="block text-xs font-semibold text-neutral-300 mb-1">Email Address</label>
                   <input required type="email" placeholder="name@example.com" className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white text-sm" />
                 </div>
-                <button type="submit" className="w-full py-2.5 bg-[#d9383a] hover:bg-[#c22e30] text-white font-semibold text-sm rounded-xl transition-colors shadow-md">
+                <button type="submit" className="w-full py-2.5 bg-[#5C6BC0] hover:bg-[#4D5CB5] text-white font-semibold text-sm rounded-xl transition-colors shadow-md">
                   Send Password Reset Link
                 </button>
               </form>
@@ -438,11 +438,11 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
           </div>
         )}
 
-        {/* 1:1 Format Information Card below Hero (Matching live CloudConvert subpage) */}
+        {/* 1:1 Format Information Card below Hero */}
         {queue.length === 0 && (
           <section className="max-w-5xl mx-auto px-4 sm:px-6 -mt-16 mb-16 relative z-20">
             <div className="bg-[#1e1e1e] border border-neutral-800 rounded-2xl p-6 sm:p-8 flex items-start gap-5 shadow-2xl">
-              <div className="p-3 rounded-xl bg-[#d9383a]/20 text-[#d9383a] border border-[#d9383a]/30 shrink-0">
+              <div className="p-3 rounded-xl bg-[#5C6BC0]/20 text-[#5C6BC0] border border-[#5C6BC0]/30 shrink-0">
                 <FileText className="w-7 h-7" />
               </div>
               <div className="space-y-2">
@@ -463,7 +463,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
             {/* Convert FROM [Source] */}
             {convertFromTargets.length > 0 && (
               <div className="bg-[#1a1a1a] border border-neutral-800 rounded-2xl p-6 sm:p-8 shadow-xl">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-[#d9383a] block mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#5C6BC0] block mb-1">
                   Conversion Types
                 </span>
                 <h3 className="text-xl font-bold text-white mb-1">
@@ -478,12 +478,12 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                     <a
                       key={tgt}
                       href={`/${parsed.sourceFormat.toLowerCase()}-to-${tgt.toLowerCase()}`}
-                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800 hover:border-[#d9383a]/70 hover:bg-[#d9383a]/10 text-xs font-semibold text-neutral-200 hover:text-white transition-all group"
+                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800 hover:border-[#5C6BC0]/70 hover:bg-[#5C6BC0]/10 text-xs font-semibold text-neutral-200 hover:text-white transition-all group"
                     >
                       <span>
                         {parsed.sourceFormat.toUpperCase()} TO {tgt.toUpperCase()}
                       </span>
-                      <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-[#d9383a] group-hover:translate-x-0.5 transition-all" />
+                      <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-[#5C6BC0] group-hover:translate-x-0.5 transition-all" />
                     </a>
                   ))}
                 </div>
@@ -493,7 +493,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
             {/* Convert TO [Target] */}
             {convertToSources.length > 0 && (
               <div className="bg-[#1a1a1a] border border-neutral-800 rounded-2xl p-6 sm:p-8 shadow-xl">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-[#d9383a] block mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#5C6BC0] block mb-1">
                   Conversion Types
                 </span>
                 <h3 className="text-xl font-bold text-white mb-1">
@@ -508,12 +508,12 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                     <a
                       key={src}
                       href={`/${src.toLowerCase()}-to-${targetForReverse.toLowerCase()}`}
-                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800 hover:border-[#d9383a]/70 hover:bg-[#d9383a]/10 text-xs font-semibold text-neutral-200 hover:text-white transition-all group"
+                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800 hover:border-[#5C6BC0]/70 hover:bg-[#5C6BC0]/10 text-xs font-semibold text-neutral-200 hover:text-white transition-all group"
                     >
                       <span>
                         {src.toUpperCase()} TO {targetForReverse.toUpperCase()}
                       </span>
-                      <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-[#d9383a] group-hover:translate-x-0.5 transition-all" />
+                      <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-[#5C6BC0] group-hover:translate-x-0.5 transition-all" />
                     </a>
                   ))}
                 </div>

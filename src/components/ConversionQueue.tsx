@@ -167,7 +167,7 @@ export default function ConversionQueue({
                       data-testid="queue-target-format-btn"
                       disabled={item.status === 'converting' || item.status === 'uploading'}
                       onClick={() => setActiveFormatSelectorId(activeFormatSelectorId === item.id ? null : item.id)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded border border-[#d9383a] text-[#d9383a] hover:bg-[#d9383a]/10 transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded border border-[#5C6BC0] text-[#5C6BC0] hover:bg-[#5C6BC0]/10 transition-colors"
                     >
                       <span>Select Format</span>
                       <ChevronDown className="w-3.5 h-3.5" />
@@ -192,10 +192,10 @@ export default function ConversionQueue({
                   {/* Progress / Status / Finished Actions */}
                   {(item.status === 'uploading' || item.status === 'converting') && (
                     <div className="flex items-center gap-2 min-w-[120px]">
-                      <Loader2 className="w-3.5 h-3.5 text-[#d9383a] animate-spin" />
+                      <Loader2 className="w-3.5 h-3.5 text-[#5C6BC0] animate-spin" />
                       <div className="w-full bg-neutral-700 h-1.5 rounded-full overflow-hidden">
                         <div
-                          className="bg-[#d9383a] h-full transition-all duration-300 rounded-full"
+                          className="bg-[#5C6BC0] h-full transition-all duration-300 rounded-full"
                           style={{ width: `${Math.max(15, item.progress)}%` }}
                         />
                       </div>
@@ -285,7 +285,7 @@ export default function ConversionQueue({
               <button
                 type="button"
                 onClick={onDownloadAllZip}
-                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-[#d9383a] bg-[#d9383a]/10 hover:bg-[#d9383a]/20 rounded transition-colors"
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-[#5C6BC0] bg-[#5C6BC0]/10 hover:bg-[#5C6BC0]/20 rounded transition-colors"
               >
                 <Package className="w-3.5 h-3.5" />
                 <span>Download All (ZIP)</span>
@@ -383,7 +383,7 @@ export default function ConversionQueue({
               type="button"
               disabled={isConverting || !allReady}
               onClick={onConvertAll}
-              className="bg-[#d9383a] hover:bg-[#c93234] text-white px-5 py-2.5 rounded font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+              className="bg-[#5C6BC0] hover:bg-[#4D5CB5] text-white px-5 py-2.5 rounded font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
             >
               {isConverting ? (
                 <>

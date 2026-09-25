@@ -14,29 +14,29 @@ const config: Config = {
       },
       colors: {
         brand: {
-          50: "#FEF2F2",
-          100: "#FEE2E2",
-          200: "#FECACA",
-          300: "#FCA5A5",
-          400: "#F87171",
-          500: "#D9383A", // CloudConvert Primary Red
-          600: "#C22E30", // Hover
-          700: "#A82325", // Active
-          800: "#8C1B1D",
-          900: "#701617",
-          950: "#450A0B",
+          50: "#F8F9FE",
+          100: "#F0F2FD",
+          200: "#E2E5FD",
+          300: "#CCD2FC",
+          400: "#8E9CE6",
+          500: "#5C6BC0", // Signature Lavender
+          600: "#4D5CB5", // Hover
+          700: "#3F4EA3", // Active
+          800: "#333F85",
+          900: "#262F64",
+          950: "#171C3D",
         },
         primary: {
-          DEFAULT: "#D9383A",
-          hover: "#C22E30",
-          50: "#FEF2F2",
-          100: "#FEE2E2",
-          200: "#FECACA",
-          300: "#FCA5A5",
-          400: "#F87171",
-          500: "#D9383A",
-          600: "#C22E30",
-          700: "#A82325",
+          DEFAULT: "#5C6BC0",
+          hover: "#4D5CB5",
+          50: "#F8F9FE",
+          100: "#F0F2FD",
+          200: "#E2E5FD",
+          300: "#CCD2FC",
+          400: "#8E9CE6",
+          500: "#5C6BC0",
+          600: "#4D5CB5",
+          700: "#3F4EA3",
         },
         neutral: {
           white: "#FFFFFF",
@@ -59,8 +59,8 @@ const config: Config = {
           infoSoft: "#EEF5FF",
         },
         dark: {
-          scaffold: "#18191D", // CloudConvert Dark Neutral Charcoal
-          surface: "#212529",  // CloudConvert Card / Elevated
+          scaffold: "#18191D", // Dark Neutral Charcoal Scaffold
+          surface: "#212529",  // Elevated Card
           elevated: "#2A2E33",
           border: "#343A40",
           text: "#F8F9FA",
@@ -101,10 +101,10 @@ const config: Config = {
         },
         "output-pulse": {
           "0%, 100%": {
-            boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 32px rgba(190, 50, 50, 0.18)",
+            boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 32px rgba(92, 107, 192, 0.22)",
           },
           "50%": {
-            boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 38px rgba(220, 80, 80, 0.32)",
+            boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 38px rgba(92, 107, 192, 0.38)",
           },
         },
         "card-flip": {

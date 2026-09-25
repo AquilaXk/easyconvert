@@ -194,7 +194,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           {/* Left Column: Format Catalog (2 cols on large screen) */}
           <div className="space-y-4 lg:col-span-2">
             <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-xl">
-              <svg className="size-3.5 text-[#d9383a]" viewBox="0 0 512 512" fill="currentColor">
+              <svg className="size-3.5 text-[#5C6BC0]" viewBox="0 0 512 512" fill="currentColor">
                 <path d="M256 0c11.2 0 21.7 5.9 27.4 15.5l96 160c5.9 9.9 6.1 22.2 .4 32.2S363.5 224 352 224l-192 0c-11.5 0-22.2-6.2-27.8-16.2s-5.5-22.3 .4-32.2l96-160C234.3 5.9 244.8 0 256 0zM128 272a112 112 0 1 1 0 224 112 112 0 1 1 0-224zm200 16l112 0c22.1 0 40 17.9 40 40l0 112c0 22.1-17.9 40-40 40l-112 0c-22.1 0-40-17.9-40-40l0-112c0-22.1 17.9-40 40-40z" />
               </svg>
               <span>Format Catalog</span>
@@ -215,11 +215,11 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
                     onClick={() => setSelectedCategory(cat.id)}
                     className={`group/g inline-flex items-center gap-1.5 py-1 text-left text-xs transition-colors cursor-pointer ${
                       isSelected
-                        ? 'text-[#d9383a] dark:text-red-400 font-semibold'
+                        ? 'text-[#5C6BC0] dark:text-[#949FE8] font-semibold'
                         : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
                     }`}
                   >
-                    <span className={isSelected ? 'text-[#d9383a]' : 'text-neutral-400 dark:text-neutral-500 group-hover/g:text-neutral-300'}>
+                    <span className={isSelected ? 'text-[#5C6BC0]' : 'text-neutral-400 dark:text-neutral-500 group-hover/g:text-neutral-300'}>
                       {cat.icon}
                     </span>
                     <span className="font-medium">{cat.name}</span>
@@ -248,7 +248,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
                         onSelectPreset?.(fmt.toLowerCase(), 'pdf');
                         window.scrollTo({ top: 0, behavior: 'smooth' });
                       }}
-                      className="inline-flex items-center bg-white dark:bg-[#212529] hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-700/80 hover:border-[#d9383a] dark:hover:border-[#d9383a] px-2 py-1 font-mono text-[11px] uppercase tracking-wide text-neutral-800 dark:text-neutral-200 hover:text-[#d9383a] dark:hover:text-red-400 transition-colors rounded-sm"
+                      className="inline-flex items-center bg-white dark:bg-[#212529] hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-700/80 hover:border-[#5C6BC0] dark:hover:border-[#5C6BC0] px-2 py-1 font-mono text-[11px] uppercase tracking-wide text-neutral-800 dark:text-neutral-200 hover:text-[#5C6BC0] dark:hover:text-[#949FE8] transition-colors rounded-sm"
                     >
                       {fmt}
                     </button>
@@ -270,11 +270,11 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
                         onSelectPreset?.(conv.from.toLowerCase(), conv.to.toLowerCase());
                         window.scrollTo({ top: 0, behavior: 'smooth' });
                       }}
-                      className="block text-left text-neutral-600 dark:text-neutral-400 hover:text-[#d9383a] dark:hover:text-[#d9383a] transition-colors group w-full"
+                      className="block text-left text-neutral-600 dark:text-neutral-400 hover:text-[#5C6BC0] dark:hover:text-[#949FE8] transition-colors group w-full"
                     >
-                      <div className="flex items-center gap-1.5 font-mono text-xs text-neutral-900 dark:text-white group-hover:text-[#d9383a] dark:group-hover:text-red-400">
+                      <div className="flex items-center gap-1.5 font-mono text-xs text-neutral-900 dark:text-white group-hover:text-[#5C6BC0] dark:group-hover:text-[#949FE8]">
                         <span>{conv.from}</span>
-                        <ArrowRight className="size-3 text-neutral-400 group-hover:text-[#d9383a]" />
+                        <ArrowRight className="size-3 text-neutral-400 group-hover:text-[#5C6BC0]" />
                         <span>{conv.to}</span>
                       </div>
                       <div className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate mt-0.5">
@@ -290,7 +290,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           {/* Right Column: Data Security (1 col on large screen) */}
           <div className="space-y-4 lg:col-span-1">
             <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-xl">
-              <svg className="size-3.5 text-[#d9383a]" viewBox="0 0 512 512" fill="currentColor">
+              <svg className="size-3.5 text-[#5C6BC0]" viewBox="0 0 512 512" fill="currentColor">
                 <path d="M256.1 0c4.6 0 9.2 1 13.3 2.9L457.8 82.8c22 9.3 38.4 31 38.3 57.2-.5 99.2-41.3 280.7-213.7 363.2-16.7 8-36.1 8-52.7 0-172.4-82.5-213.1-263.9-213.6-363.2-.1-26.2 16.3-47.9 38.3-57.2L242.7 2.9C246.8 1 251.4 0 256.1 0zm90.9 164.6c-10.7-7.8-25.7-5.4-33.5 5.3l-85.6 117.7-26.5-27.4c-9.2-9.5-24.4-9.8-33.9-.6-9.5 9.2-9.8 24.4-.6 33.9l46.4 48c4.9 5.1 11.8 7.8 18.9 7.3s13.6-4.1 17.8-9.8L352.3 198.1c7.8-10.7 5.4-25.7-5.3-33.5z" />
               </svg>
               <span>Data Security</span>
@@ -302,7 +302,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
 
             <ul className="mt-5 space-y-3">
               <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#d9383a]/10 text-[#d9383a]">
+                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
                   <Lock className="size-3.5" />
                 </span>
                 <span className="leading-snug">
@@ -311,7 +311,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </li>
 
               <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#d9383a]/10 text-[#d9383a]">
+                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
                   <Trash2 className="size-3.5" />
                 </span>
                 <span className="leading-snug">
@@ -320,7 +320,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </li>
 
               <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#d9383a]/10 text-[#d9383a]">
+                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
                   <Handshake className="size-3.5" />
                 </span>
                 <span className="leading-snug">
@@ -332,7 +332,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
             <div className="pt-2">
               <a
                 href="/security"
-                className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-[#d9383a] hover:underline"
+                className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-[#5C6BC0] hover:underline"
               >
                 <span>Read the security overview</span>
                 <ArrowRight className="size-3" />
@@ -351,7 +351,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           {/* Left Column: API & Integrations */}
           <div className="space-y-4 lg:col-span-2">
             <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-xl">
-              <svg className="size-3.5 text-[#d9383a]" viewBox="0 0 512 512" fill="currentColor">
+              <svg className="size-3.5 text-[#5C6BC0]" viewBox="0 0 512 512" fill="currentColor">
                 <path d="M9.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L146.7 256 9.4 118.6zM224 384l256 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-256 0c-17.7 0-32-14.3-32-32s14.3-32 32-32z" />
               </svg>
               <span>API &amp; Integrations</span>
@@ -361,7 +361,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               Build jobs from import, convert and export tasks, then connect them to your own storage and application logic. Usage-based pricing and volume discounts are available for production workloads.{' '}
               <a
                 href="/api/v2"
-                className="inline-flex items-center gap-1.5 text-sm font-medium text-[#d9383a] hover:underline"
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-[#5C6BC0] hover:underline"
               >
                 <span>Explore the API</span>
                 <ArrowRight className="size-3" />
@@ -409,8 +409,8 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           {/* Right Column: High-Quality Conversions */}
           <div className="space-y-4 lg:col-span-1">
             <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-xl">
-              <svg className="size-3.5 text-[#d9383a]" viewBox="0 0 576 512" fill="currentColor">
-                <path d="M96 0C60.7 0 32 28.7 32 64l0 384c0 35.3 28.7 64 64 64l180 0c-22.7-31.5-36-70.2-36-112 0-100.6 77.4-183.2 176-191.3l0-38.1c0-17-6.7-33.3-18.7-45.3L290.7 18.7C278.7 6.7 262.5 0 245.5 0L96 0zM357.5 176L264 176c-13.3 0-24-10.7-24-24L240 58.5 357.5 176zM576 400a144 144 0 1 0 -288 0 144 144 0 1 0 288 0zm-86.6-60.9c7.1 5.2 8.7 15.2 3.5 22.3l-64 88c-2.8 3.8-7 6.2-11.7 6.5s-9.3-1.3-12.6-4.6l-40-40c-6.2-6.2-6.2-16.4 0-22.6s16.4-6.2 22.6 0l26.8 26.8 53-72.9c5.2-7.1 15.2-8.7 22.4-3.5z" />
+              <svg className="size-3.5 text-[#5C6BC0]" viewBox="0 0 576 512" fill="currentColor">
+                <path d="M96 0C60.7 0 32 28.7 32 64l0 384c0 35.3 28.7 64 64 64l180 0c-22.7-31.5-36-70.2-36-112 0-100.6 77.4-183.2 176-191.3l0-38.1c0-17.7-6.7-33.3-18.7-45.3L290.7 18.7C278.7 6.7 262.5 0 245.5 0L96 0zM357.5 176L264 176c-13.3 0-24-10.7-24-24L240 58.5 357.5 176zM576 400a144 144 0 1 0 -288 0 144 144 0 1 0 288 0zm-86.6-60.9c7.1 5.2 8.7 15.2 3.5 22.3l-64 88c-2.8 3.8-7 6.2-11.7 6.5s-9.3-1.3-12.6-4.6l-40-40c-6.2-6.2-6.2-16.4 0-22.6s16.4-6.2 22.6 0l26.8 26.8 53-72.9c5.2-7.1 15.2-8.7 22.4-3.5z" />
               </svg>
               <span>High-Quality Conversions</span>
             </div>
@@ -421,7 +421,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
 
             <ul className="mt-5 space-y-3">
               <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#d9383a]/10 text-[#d9383a]">
+                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
                   <Cpu className="size-3.5" />
                 </span>
                 <span className="leading-snug">
@@ -430,7 +430,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </li>
 
               <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#d9383a]/10 text-[#d9383a]">
+                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
                   <Sliders className="size-3.5" />
                 </span>
                 <span className="leading-snug">
@@ -439,7 +439,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </li>
 
               <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#d9383a]/10 text-[#d9383a]">
+                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
                   <CheckCircle2 className="size-3.5" />
                 </span>
                 <span className="leading-snug">

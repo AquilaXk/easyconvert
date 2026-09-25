@@ -30,7 +30,7 @@ export default function PricingPage() {
   const baseCreditsCalculated = calculateBaseCredits(calcOperation, calcInputFmt, calcOutputFmt);
 
   const CheckIcon = () => (
-    <svg className="size-5 shrink-0 text-[#d9383a]" viewBox="0 0 512 512" fill="currentColor">
+    <svg className="size-5 shrink-0 text-[#5C6BC0]" viewBox="0 0 512 512" fill="currentColor">
       <path d="M256 512a256 256 0 1 1 0-512 256 256 0 1 1 0 512zM374 145.7c-10.7-7.8-25.7-5.4-33.5 5.3L221.1 315.2 169 263.1c-9.4-9.4-24.6-9.4-33.9 0s-9.4 24.6 0 33.9l72 72c5 5 11.8 7.5 18.8 7s13.4-4.1 17.5-9.8L379.3 179.2c7.8-10.7 5.4-25.7-5.3-33.5z" />
     </svg>
   );
@@ -46,9 +46,9 @@ export default function PricingPage() {
       <Header />
 
       <main className="flex-1">
-        {/* Top Hero Section matching CloudConvert */}
+        {/* Top Hero Section */}
         <section className="relative overflow-hidden bg-gradient-to-br from-neutral-900 via-neutral-800 to-neutral-900 pt-28 pb-16">
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(120,40,40,0.25),transparent)] pointer-events-none" />
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(92,107,192,0.20),transparent)] pointer-events-none" />
           <div
             className="absolute inset-0 opacity-[0.05] pointer-events-none"
             style={{
@@ -85,7 +85,7 @@ export default function PricingPage() {
                   onChange={(e) => setSliderIndex(Number(e.target.value))}
                   className="pricing-slider"
                   style={{
-                    background: `linear-gradient(to right, #d9383a ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
+                    background: `linear-gradient(to right, #5C6BC0 ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
                   }}
                   aria-label="Volume slider"
                 />
@@ -149,7 +149,7 @@ export default function PricingPage() {
                         <div className="mt-6 pt-6">
                           <a
                             href="/register"
-                            className="rounded-md font-medium inline-flex items-center px-3 py-2 text-sm gap-2 w-full justify-center text-white bg-[#d9383a] hover:bg-[#c22e30] transition-colors shadow-sm"
+                            className="rounded-md font-medium inline-flex items-center px-3 py-2 text-sm gap-2 w-full justify-center text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] transition-colors shadow-sm"
                           >
                             Buy Now
                           </a>
@@ -173,7 +173,7 @@ export default function PricingPage() {
                         <div className="mt-6 pt-6">
                           <a
                             href="/register"
-                            className="rounded-md font-medium inline-flex items-center px-3 py-2 text-sm gap-2 w-full justify-center text-white bg-[#d9383a] hover:bg-[#c22e30] transition-colors shadow-sm"
+                            className="rounded-md font-medium inline-flex items-center px-3 py-2 text-sm gap-2 w-full justify-center text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] transition-colors shadow-sm"
                           >
                             Subscribe
                           </a>
@@ -238,7 +238,7 @@ export default function PricingPage() {
                             onChange={(e) => setSliderIndex(Number(e.target.value))}
                             className="table-slider"
                             style={{
-                              background: `linear-gradient(to right, #d9383a ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
+                              background: `linear-gradient(to right, #5C6BC0 ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
                             }}
                             aria-label="Package slider"
                           />
@@ -257,7 +257,7 @@ export default function PricingPage() {
                             onChange={(e) => setSliderIndex(Number(e.target.value))}
                             className="table-slider"
                             style={{
-                              background: `linear-gradient(to right, #d9383a ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
+                              background: `linear-gradient(to right, #5C6BC0 ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
                             }}
                             aria-label="Subscription slider"
                           />
@@ -509,7 +509,7 @@ export default function PricingPage() {
                   <div className="text-lg font-semibold text-white">Package</div>
                   <div className="text-sm font-normal text-neutral-400 mt-1">One-time payment. Credits never expire.</div>
                   <div className="text-2xl font-semibold text-white mt-4">US${packagePrice.toFixed(2)}</div>
-                  <a href="/register" className="mt-6 py-2 px-3 text-center bg-[#d9383a] hover:bg-[#c22e30] rounded-md text-sm text-white font-medium">Buy Now</a>
+                  <a href="/register" className="mt-6 py-2 px-3 text-center bg-[#5C6BC0] hover:bg-[#4D5CB5] rounded-md text-sm text-white font-medium">Buy Now</a>
                   <div className="mt-6 pt-4 border-t border-neutral-800 text-xs space-y-2">
                     <div className="flex justify-between text-neutral-300"><span>Conversion Credits</span><span className="font-bold text-white">{credits.toLocaleString()}</span></div>
                     <div className="flex justify-between text-neutral-300"><span>Cost per Credit</span><span className="text-neutral-400">US${pkgCostPerCredit}</span></div>
@@ -522,7 +522,7 @@ export default function PricingPage() {
                   <div className="text-lg font-semibold text-white">Subscription</div>
                   <div className="text-sm font-normal text-neutral-400 mt-1">Monthly credits at our best rates.</div>
                   <div className="text-2xl font-semibold text-white mt-4">US${subPrice.toFixed(2)} /month</div>
-                  <a href="/register" className="mt-6 py-2 px-3 text-center bg-[#d9383a] hover:bg-[#c22e30] rounded-md text-sm text-white font-medium">Subscribe</a>
+                  <a href="/register" className="mt-6 py-2 px-3 text-center bg-[#5C6BC0] hover:bg-[#4D5CB5] rounded-md text-sm text-white font-medium">Subscribe</a>
                   <div className="mt-6 pt-4 border-t border-neutral-800 text-xs space-y-2">
                     <div className="flex justify-between text-neutral-300"><span>Conversion Credits</span><span className="font-bold text-white">{credits.toLocaleString()} / month</span></div>
                     <div className="flex justify-between text-neutral-300"><span>Cost per Credit</span><span className="text-neutral-400">US${subCostPerCredit}</span></div>
@@ -551,11 +551,11 @@ export default function PricingPage() {
               className="w-full flex items-center justify-between text-left group"
             >
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-[#d9383a]/10 text-[#d9383a]">
+                <div className="p-2.5 rounded-xl bg-[#5C6BC0]/10 text-[#5C6BC0]">
                   <Calculator className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-white group-hover:text-[#d9383a] transition-colors">
+                  <h3 className="text-lg font-bold text-white group-hover:text-[#5C6BC0] transition-colors">
                     Credits Calculator
                   </h3>
                   <p className="text-xs text-neutral-400">
@@ -565,7 +565,7 @@ export default function PricingPage() {
               </div>
               <ChevronDown
                 className={`w-5 h-5 text-neutral-400 transition-transform duration-200 ${
-                  isCalculatorOpen ? 'rotate-180 text-[#d9383a]' : ''
+                  isCalculatorOpen ? 'rotate-180 text-[#5C6BC0]' : ''
                 }`}
               />
             </button>
@@ -581,7 +581,7 @@ export default function PricingPage() {
                     <select
                       value={calcOperation}
                       onChange={(e) => setCalcOperation(e.target.value)}
-                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#d9383a]"
+                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#5C6BC0]"
                     >
                       <option value="convert">Convert</option>
                       <option value="compress">Compress</option>
@@ -600,7 +600,7 @@ export default function PricingPage() {
                       value={calcInputFmt}
                       onChange={(e) => setCalcInputFmt(e.target.value)}
                       disabled={calcOperation !== 'convert'}
-                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#d9383a] disabled:opacity-40"
+                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#5C6BC0] disabled:opacity-40"
                     >
                       <option value="pdf">PDF</option>
                       <option value="docx">DOCX (Office)</option>
@@ -623,7 +623,7 @@ export default function PricingPage() {
                       value={calcOutputFmt}
                       onChange={(e) => setCalcOutputFmt(e.target.value)}
                       disabled={calcOperation !== 'convert'}
-                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#d9383a] disabled:opacity-40"
+                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#5C6BC0] disabled:opacity-40"
                     >
                       <option value="docx">DOCX (Office Word)</option>
                       <option value="pdf">PDF Document</option>
@@ -638,14 +638,14 @@ export default function PricingPage() {
                 {/* Calculation Result */}
                 <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-700/80 flex flex-col sm:flex-row items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
-                    <Zap className="w-5 h-5 text-[#d9383a]" />
+                    <Zap className="w-5 h-5 text-[#5C6BC0]" />
                     <span className="text-xs text-neutral-300">
                       Calculated Base Cost for <strong>{calcOperation}</strong>
                       {calcOperation === 'convert' && ` (${calcInputFmt.toUpperCase()} → ${calcOutputFmt.toUpperCase()})`}:
                     </span>
                   </div>
                   <div className="flex items-baseline gap-2">
-                    <span className="text-2xl font-black text-[#d9383a]">
+                    <span className="text-2xl font-black text-[#5C6BC0]">
                       {baseCreditsCalculated}
                     </span>
                     <span className="text-xs text-neutral-400 font-semibold uppercase">
@@ -695,15 +695,15 @@ export default function PricingPage() {
                 <button
                   type="button"
                   onClick={() => setOpenFaq(openFaq === idx ? null : idx)}
-                  className="w-full flex items-center justify-between p-5 text-left text-sm font-semibold text-white hover:text-[#d9383a] transition-colors"
+                  className="w-full flex items-center justify-between p-5 text-left text-sm font-semibold text-white hover:text-[#5C6BC0] transition-colors"
                 >
                   <span className="flex items-center gap-2.5">
-                    <HelpCircle className="w-4 h-4 text-[#d9383a]" />
+                    <HelpCircle className="w-4 h-4 text-[#5C6BC0]" />
                     <span>{faq.q}</span>
                   </span>
                   <ChevronDown
                     className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${
-                      openFaq === idx ? 'rotate-180 text-[#d9383a]' : ''
+                      openFaq === idx ? 'rotate-180 text-[#5C6BC0]' : ''
                     }`}
                   />
                 </button>

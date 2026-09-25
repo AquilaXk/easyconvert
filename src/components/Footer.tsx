@@ -53,12 +53,12 @@ export default function Footer() {
                 <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Company</h3>
                 <ul className="space-y-4 mt-4">
                   <li>
-                    <a href="/about" className="group text-sm font-normal text-[#d9383a] dark:text-[#d9383a] hover:underline transition-colors">
+                    <a href="/about" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       About Us
                     </a>
                   </li>
                   <li>
-                    <a href="/security" className="group text-sm font-normal text-[#d9383a] dark:text-[#d9383a] hover:underline transition-colors">
+                    <a href="/security" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       Security
                     </a>
                   </li>
@@ -69,12 +69,12 @@ export default function Footer() {
                 <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Resources</h3>
                 <ul className="space-y-4 mt-4">
                   <li>
-                    <a href="/pricing" className="group text-sm font-normal text-[#d9383a] dark:text-[#d9383a] hover:underline transition-colors">
+                    <a href="/pricing" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       Pricing
                     </a>
                   </li>
                   <li>
-                    <a href="/api/v2" className="group text-sm font-normal text-[#d9383a] dark:text-[#d9383a] hover:underline transition-colors">
+                    <a href="/api/v2" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       Status
                     </a>
                   </li>
@@ -85,17 +85,17 @@ export default function Footer() {
                 <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Legal</h3>
                 <ul className="space-y-4 mt-4">
                   <li>
-                    <a href="/privacy" className="group text-sm font-normal text-[#d9383a] dark:text-[#d9383a] hover:underline transition-colors">
+                    <a href="/privacy" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       Privacy
                     </a>
                   </li>
                   <li>
-                    <a href="/terms" className="group text-sm font-normal text-[#d9383a] dark:text-[#d9383a] hover:underline transition-colors">
+                    <a href="/terms" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       Terms
                     </a>
                   </li>
                   <li>
-                    <a href="/about#imprint" className="group text-sm font-normal text-[#d9383a] dark:text-[#d9383a] hover:underline transition-colors">
+                    <a href="/about#imprint" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       Imprint
                     </a>
                   </li>
@@ -106,7 +106,7 @@ export default function Footer() {
                 <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Contact</h3>
                 <ul className="space-y-4 mt-4">
                   <li>
-                    <a href="/contact" className="group text-sm font-normal text-[#d9383a] dark:text-[#d9383a] hover:underline transition-colors">
+                    <a href="/contact" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       Contact Us
                     </a>
                   </li>

@@ -3,17 +3,17 @@
 @tailwind utilities;
 
 :root {
-  --brand-50: #FEF2F2;
-  --brand-100: #FEE2E2;
-  --brand-200: #FECACA;
-  --brand-300: #FCA5A5;
-  --brand-400: #F87171;
-  --brand-500: #D9383A;
-  --brand-600: #C22E30;
-  --brand-700: #A82325;
-  --brand-800: #8C1B1D;
-  --brand-900: #701617;
-  --brand-950: #450A0B;
+  --brand-50: #F8F9FE;
+  --brand-100: #F0F2FD;
+  --brand-200: #E2E5FD;
+  --brand-300: #CCD2FC;
+  --brand-400: #8E9CE6;
+  --brand-500: #5C6BC0;
+  --brand-600: #4D5CB5;
+  --brand-700: #3F4EA3;
+  --brand-800: #333F85;
+  --brand-900: #262F64;
+  --brand-950: #171C3D;
 
   --bg-scaffold: #F7F8FC;
   --surface-card: #FFFFFF;
@@ -62,19 +62,21 @@ body {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #D9383A;
+  background: #5C6BC0;
 }
 
-/* Glowing red effect */
+/* Glowing lavender effect */
+.lavender-glow,
 .red-glow {
-  box-shadow: 0 0 25px -5px rgba(217, 56, 58, 0.35);
+  box-shadow: 0 0 25px -5px rgba(92, 107, 192, 0.35);
 }
 
+.lavender-glow-sm,
 .red-glow-sm {
-  box-shadow: 0 0 15px -3px rgba(217, 56, 58, 0.25);
+  box-shadow: 0 0 15px -3px rgba(92, 107, 192, 0.25);
 }
 
-/* Authentic CloudConvert Keyframes & Animations */
+/* Authentic Keyframes & Animations */
 @keyframes orbit-spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
@@ -92,10 +94,10 @@ body {
 
 @keyframes output-pulse {
   0%, 100% {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 32px rgba(190, 50, 50, 0.18);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 32px rgba(92, 107, 192, 0.22);
   }
   50% {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 38px rgba(220, 80, 80, 0.32);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 38px rgba(92, 107, 192, 0.38);
   }
 }
 
@@ -153,7 +155,7 @@ input[type="range"].pricing-slider::-webkit-slider-thumb {
   height: 18px;
   border-radius: 50%;
   background: #ffffff;
-  border: 2px solid #d9383a;
+  border: 2px solid #5C6BC0;
   cursor: pointer;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   transition: transform 0.15s ease;
@@ -168,7 +170,7 @@ input[type="range"].pricing-slider::-moz-range-thumb {
   height: 18px;
   border-radius: 50%;
   background: #ffffff;
-  border: 2px solid #d9383a;
+  border: 2px solid #5C6BC0;
   cursor: pointer;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
@@ -190,7 +192,7 @@ input[type="range"].table-slider::-webkit-slider-thumb {
   height: 12px;
   border-radius: 50%;
   background: #ffffff;
-  border: 2px solid #d9383a;
+  border: 2px solid #5C6BC0;
   cursor: pointer;
 }
 
@@ -199,7 +201,7 @@ input[type="range"].table-slider::-moz-range-thumb {
   height: 12px;
   border-radius: 50%;
   background: #ffffff;
-  border: 2px solid #d9383a;
+  border: 2px solid #5C6BC0;
   cursor: pointer;
 }
 
