@@ -1,79 +1,73 @@
 'use client';
 
 import React from 'react';
-import { Sparkles, Github, Shield, Heart } from 'lucide-react';
+import { ArrowRightLeft, Github, Shield } from 'lucide-react';
 
 export default function Footer() {
   return (
     <footer className="border-t border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface transition-colors mt-auto">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-16">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-12">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 md:py-14">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-10">
           {/* Brand Info */}
-          <div className="space-y-4 md:col-span-1">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-brand-700 flex items-center justify-center text-white shadow-sm">
-                <Sparkles className="w-4 h-4 text-brand-100" />
+          <div className="space-y-3 md:col-span-1">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-brand-700 flex items-center justify-center text-white shadow-sm">
+                <ArrowRightLeft className="w-3.5 h-3.5 text-white" />
               </div>
-              <span className="text-lg font-bold tracking-tight text-brand-950 dark:text-white">
-                <span className="font-normal text-brand-700 dark:text-brand-400">Easy</span>
+              <span className="text-base font-bold tracking-tight text-brand-950 dark:text-white">
+                <span className="font-semibold text-brand-700 dark:text-brand-400">Easy</span>
                 <span>Convert</span>
               </span>
             </div>
             <p className="text-xs text-ink-secondary dark:text-dark-muted leading-relaxed">
-              Universal file conversion service supporting over 200+ formats across images, documents, structured
-              tables, and archives with our signature lavender aesthetic.
+              High-performance file conversion across 9 domains and 200+ formats with our signature lavender palette,
+              instant in-memory stream processing, and 100% zero data retention.
             </p>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-status-successSoft text-status-success">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
-                <span>All Systems Operational</span>
-              </span>
-            </div>
           </div>
 
-          {/* Tools */}
+          {/* Supported Domains */}
           <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-4">
-              Conversion Tools
+            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-3">
+              Supported Domains
             </h4>
-            <ul className="space-y-2.5 text-xs text-ink-secondary dark:text-dark-muted">
+            <ul className="space-y-2 text-xs text-ink-secondary dark:text-dark-muted">
               <li>
                 <a href="#format-directory" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Image Converter (PNG, WebP, JPG)
+                  Audio & Video (MP3, WAV, MP4, WebM)
                 </a>
               </li>
               <li>
                 <a href="#format-directory" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Document & PDF Converter
+                  Office Documents (DOCX, PDF, RTF)
                 </a>
               </li>
               <li>
                 <a href="#format-directory" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Data & Table Converter (CSV, JSON)
+                  Spreadsheets (XLSX, CSV, TSV)
                 </a>
               </li>
               <li>
                 <a href="#format-directory" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  ZIP Archive Creator
+                  Ebooks & Archives (EPUB, MOBI, ZIP)
                 </a>
               </li>
             </ul>
           </div>
 
-          {/* Developer Resources */}
+          {/* Developer & APIs */}
           <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-4">
-              Developer & API
+            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-3">
+              Developer APIs
             </h4>
-            <ul className="space-y-2.5 text-xs text-ink-secondary dark:text-dark-muted">
+            <ul className="space-y-2 text-xs text-ink-secondary dark:text-dark-muted">
               <li>
-                <a href="/api/formats" target="_blank" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
+                <a href="/api/formats" target="_blank" rel="noopener noreferrer" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
                   Format Registry API (/api/formats)
                 </a>
               </li>
               <li>
-                <a href="/api/health" target="_blank" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Health Check API (/api/health)
+                <a href="/api/health" target="_blank" rel="noopener noreferrer" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
+                  Health Diagnostic API (/api/health)
                 </a>
               </li>
               <li>
@@ -81,34 +75,29 @@ export default function Footer() {
                   GitHub Repository
                 </a>
               </li>
-              <li>
-                <a href="#docs" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  REST API Documentation
-                </a>
-              </li>
             </ul>
           </div>
 
-          {/* Security & Trust */}
+          {/* Security & Infrastructure */}
           <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-4">
-              Security & Privacy
+            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-3">
+              Privacy & Zero Retention
             </h4>
-            <ul className="space-y-2.5 text-xs text-ink-secondary dark:text-dark-muted">
+            <ul className="space-y-2 text-xs text-ink-secondary dark:text-dark-muted">
               <li className="flex items-center gap-1.5">
                 <Shield className="w-3.5 h-3.5 text-status-success" />
-                <span>Zero Data Retention</span>
+                <span>100% Zero Data Retention</span>
               </li>
-              <li>Ephemeral Processing Sandboxes</li>
-              <li>256-bit TLS In-Transit Encryption</li>
-              <li>Fail-Closed Integrity Checks</li>
+              <li>In-Memory Volatile Processing</li>
+              <li>Zero External Cloud Storage</li>
+              <li>Strict 100 MB Safety Threshold</li>
             </ul>
           </div>
         </div>
 
         {/* Bottom copyright */}
-        <div className="pt-8 border-t border-neutral-border dark:border-dark-border flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-ink-muted">
-          <p>&copy; {new Date().getFullYear()} EasyConvert. All rights reserved.</p>
+        <div className="pt-6 border-t border-neutral-border dark:border-dark-border flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-ink-muted">
+          <p>&copy; {new Date().getFullYear()} EasyConvert. High-Density Universal File Conversion.</p>
           <div className="flex items-center gap-4">
             <a
               href="https://github.com/AquilaXk/easyconvert"
@@ -116,7 +105,7 @@ export default function Footer() {
               rel="noopener noreferrer"
               className="flex items-center gap-1 hover:text-brand-700 dark:hover:text-brand-400 transition-colors"
             >
-              <Github className="w-4 h-4" />
+              <Github className="w-3.5 h-3.5" />
               <span>AquilaXk/easyconvert</span>
             </a>
           </div>

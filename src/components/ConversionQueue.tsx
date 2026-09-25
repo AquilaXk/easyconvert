@@ -6,6 +6,11 @@ import {
   FileImage,
   Database,
   Archive,
+  Music,
+  Video,
+  BookOpen,
+  Presentation,
+  Type,
   Trash2,
   Settings2,
   Download,
@@ -17,7 +22,7 @@ import {
   Package,
 } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
-import { getAvailableTargetFormats } from '@/lib/registry';
+import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
 
@@ -26,6 +31,7 @@ interface ConversionQueueProps {
   onRemoveItem: (id: string) => void;
   onClearAll: () => void;
   onUpdateTargetFormat: (id: string, targetFormat: string) => void;
+  onUpdateAllTargets?: (targetFormat: string) => void;
   onUpdateOptions: (id: string, options: ConversionOptions) => void;
   onConvertAll: () => void;
   onConvertSingle: (id: string) => void;
@@ -39,6 +45,7 @@ export default function ConversionQueue({
   onRemoveItem,
   onClearAll,
   onUpdateTargetFormat,
+  onUpdateAllTargets,
   onUpdateOptions,
   onConvertAll,
   onConvertSingle,
@@ -47,6 +54,7 @@ export default function ConversionQueue({
   isConverting,
 }: ConversionQueueProps) {
   const [activeFormatSelectorId, setActiveFormatSelectorId] = useState<string | null>(null);
+  const [isBatchSelectorOpen, setIsBatchSelectorOpen] = useState(false);
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
   const formatFileSize = (bytes: number) => {
@@ -57,18 +65,33 @@ export default function ConversionQueue({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const getFileIcon = (ext: string) => {
+  const getFileCategoryIcon = (ext: string) => {
     const clean = ext.toLowerCase();
-    if (['png', 'jpg', 'jpeg', 'webp', 'avif', 'gif', 'bmp', 'svg'].includes(clean)) {
-      return <FileImage className="w-5 h-5 text-brand-600 dark:text-brand-400" />;
+    const def = FORMAT_REGISTRY[clean];
+    const cat = def?.category || 'document';
+
+    switch (cat) {
+      case 'audio':
+        return <Music className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
+      case 'video':
+        return <Video className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
+      case 'image':
+        return <FileImage className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
+      case 'ebook':
+        return <BookOpen className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
+      case 'presentation':
+        return <Presentation className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
+      case 'spreadsheet':
+      case 'data':
+        return <Database className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
+      case 'archive':
+        return <Archive className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
+      case 'font':
+      case 'cad':
+        return <Type className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
+      default:
+        return <FileText className="w-4 h-4 text-brand-700 dark:text-brand-400" />;
     }
-    if (['pdf', 'md', 'html', 'txt'].includes(clean)) {
-      return <FileText className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
-    }
-    if (['csv', 'tsv', 'json', 'yaml', 'xml'].includes(clean)) {
-      return <Database className="w-5 h-5 text-brand-600 dark:text-brand-400" />;
-    }
-    return <Archive className="w-5 h-5 text-brand-600 dark:text-brand-400" />;
   };
 
   const completedCount = items.filter((i) => i.status === 'completed').length;
@@ -78,46 +101,61 @@ export default function ConversionQueue({
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
   return (
-    <div className="w-full bg-white dark:bg-dark-surface rounded-2xl border border-neutral-border dark:border-dark-border shadow-xl overflow-hidden mb-12">
-      {/* Table Header */}
-      <div className="p-4 sm:p-5 border-b border-neutral-border dark:border-dark-border flex items-center justify-between bg-neutral-scaffold/50 dark:bg-dark-scaffold/50">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-bold text-brand-950 dark:text-dark-text">Files Queue</span>
-          <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-brand-100 dark:bg-brand-950 text-brand-700 dark:text-brand-300">
+    <div className="w-full bg-white dark:bg-dark-surface rounded-2xl border border-neutral-border dark:border-dark-border shadow-md overflow-hidden">
+      {/* Table Header with Batch Target Action */}
+      <div className="p-4 border-b border-neutral-border dark:border-dark-border flex flex-wrap items-center justify-between gap-3 bg-neutral-scaffold/60 dark:bg-dark-scaffold/60">
+        <div className="flex items-center gap-2.5">
+          <span className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text">
+            Files Queue
+          </span>
+          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-brand-100 dark:bg-brand-950 text-brand-700 dark:text-brand-300">
             {items.length} {items.length === 1 ? 'file' : 'files'}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={onClearAll}
-          className="text-xs font-semibold text-ink-muted hover:text-status-danger transition-colors"
-        >
-          Clear Queue
-        </button>
+
+        <div className="flex items-center gap-3">
+          {/* Batch Convert All To button */}
+          {items.length > 1 && onUpdateAllTargets && (
+            <button
+              type="button"
+              onClick={() => setIsBatchSelectorOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-elevated hover:border-brand-500 text-brand-950 dark:text-dark-text transition-colors"
+            >
+              <span className="text-ink-muted">Convert all to:</span>
+              <ChevronDown className="w-3 h-3 text-ink-muted" />
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={onClearAll}
+            className="text-xs font-semibold text-ink-muted hover:text-status-danger transition-colors"
+          >
+            Clear All
+          </button>
+        </div>
       </div>
 
-      {/* Items List */}
+      {/* Items List (High Density) */}
       <div className="divide-y divide-neutral-border dark:divide-dark-border">
         {items.map((item) => {
-          const availableTargets = getAvailableTargetFormats(item.sourceFormat);
-
           return (
             <div
               key={item.id}
-              className="p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-neutral-scaffold/30 dark:hover:bg-dark-elevated/30 transition-colors"
+              className="p-3 sm:px-4 sm:py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:bg-neutral-scaffold/30 dark:hover:bg-dark-elevated/30 transition-colors"
             >
               {/* File Info */}
-              <div className="flex items-center gap-3.5 min-w-0 md:w-5/12">
-                <div className="p-2.5 rounded-xl bg-brand-50 dark:bg-dark-elevated border border-brand-200 dark:border-dark-border shrink-0">
-                  {getFileIcon(item.sourceFormat)}
+              <div className="flex items-center gap-3 min-w-0 md:w-5/12">
+                <div className="p-2 rounded-lg bg-brand-50 dark:bg-dark-elevated border border-brand-200 dark:border-dark-border shrink-0">
+                  {getFileCategoryIcon(item.sourceFormat)}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-brand-950 dark:text-dark-text truncate" title={item.name}>
+                  <p className="text-xs font-bold text-brand-950 dark:text-dark-text truncate" title={item.name}>
                     {item.name}
                   </p>
-                  <p className="text-xs text-ink-muted">
+                  <p className="text-[11px] text-ink-muted">
                     {formatFileSize(item.size)} &bull;{' '}
-                    <span className="uppercase font-medium text-brand-700 dark:text-brand-400">
+                    <span className="uppercase font-semibold text-brand-700 dark:text-brand-400">
                       {item.sourceFormat}
                     </span>
                   </p>
@@ -125,7 +163,7 @@ export default function ConversionQueue({
               </div>
 
               {/* Conversion Target & Settings */}
-              <div className="flex items-center gap-3 md:w-4/12">
+              <div className="flex items-center gap-2 md:w-4/12">
                 <span className="text-xs text-ink-muted shrink-0">to</span>
 
                 {/* Target selector dropdown button */}
@@ -133,7 +171,7 @@ export default function ConversionQueue({
                   type="button"
                   disabled={item.status === 'converting' || item.status === 'uploading'}
                   onClick={() => setActiveFormatSelectorId(item.id)}
-                  className="flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-bold uppercase rounded-lg border border-neutral-border dark:border-dark-border bg-neutral-scaffold dark:bg-dark-elevated text-brand-950 dark:text-dark-text hover:border-brand-500 transition-colors shrink-0 min-w-[90px]"
+                  className="flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-bold uppercase rounded-lg border border-neutral-border dark:border-dark-border bg-neutral-scaffold dark:bg-dark-elevated text-brand-950 dark:text-dark-text hover:border-brand-500 transition-colors shrink-0 min-w-[84px]"
                 >
                   <span>{item.targetFormat}</span>
                   <ChevronDown className="w-3.5 h-3.5 text-ink-muted" />
@@ -142,46 +180,53 @@ export default function ConversionQueue({
                 {/* Settings Wrench Button */}
                 <button
                   type="button"
-                  title="Configure conversion options"
+                  title="Configure parameters (Quality, Codec, OCR, etc.)"
                   onClick={() => setActiveOptionsModalId(item.id)}
                   disabled={item.status === 'converting' || item.status === 'uploading'}
-                  className="p-2 rounded-lg text-ink-secondary dark:text-dark-muted hover:text-brand-700 dark:hover:text-brand-300 hover:bg-brand-50 dark:hover:bg-dark-elevated transition-colors"
+                  className="p-1.5 rounded-lg text-ink-secondary dark:text-dark-muted hover:text-brand-700 dark:hover:text-brand-300 hover:bg-neutral-scaffold dark:hover:bg-dark-elevated transition-colors"
                 >
                   <Settings2 className="w-4 h-4" />
                 </button>
               </div>
 
               {/* Status & Actions */}
-              <div className="flex items-center justify-between md:justify-end gap-3 md:w-3/12">
+              <div className="flex items-center justify-between md:justify-end gap-2.5 md:w-3/12">
                 {/* Status Badges */}
                 {item.status === 'ready' && (
-                  <span className="px-2.5 py-1 rounded-md text-xs font-medium bg-neutral-subtle dark:bg-dark-elevated text-ink-secondary dark:text-dark-muted">
+                  <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-neutral-subtle dark:bg-dark-elevated text-ink-secondary dark:text-dark-muted">
                     READY
                   </span>
                 )}
 
                 {(item.status === 'uploading' || item.status === 'converting') && (
-                  <div className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 text-brand-700 dark:text-brand-400 animate-spin" />
-                    <span className="text-xs font-semibold text-brand-700 dark:text-brand-400">
-                      {item.status === 'uploading' ? 'UPLOADING...' : 'CONVERTING...'}
-                    </span>
+                  <div className="flex flex-col items-end gap-1 w-full max-w-[130px]">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold text-brand-700 dark:text-brand-400">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>{item.status === 'uploading' ? 'UPLOADING...' : `${item.progress}%`}</span>
+                    </div>
+                    {/* Real Progress Bar */}
+                    <div className="w-full bg-neutral-border dark:bg-dark-border h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className="bg-brand-700 h-full transition-all duration-300 rounded-full"
+                        style={{ width: `${Math.max(10, item.progress)}%` }}
+                      />
+                    </div>
                   </div>
                 )}
 
                 {item.status === 'completed' && (
                   <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-status-successSoft text-status-success">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-status-successSoft text-status-success">
+                      <CheckCircle2 className="w-3 h-3" />
                       <span>FINISHED</span>
                     </span>
                     {item.resultUrl && (
                       <a
                         href={item.resultUrl}
                         download={`converted_${item.name.replace(/\.[^/.]+$/, '')}.${item.targetFormat}`}
-                        className="flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-white bg-status-success hover:bg-emerald-700 rounded-lg shadow-sm transition-colors"
+                        className="flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-white bg-status-success hover:bg-emerald-700 rounded-lg shadow-sm transition-colors"
                       >
-                        <Download className="w-3.5 h-3.5" />
+                        <Download className="w-3 h-3" />
                         <span>Download</span>
                       </a>
                     )}
@@ -190,9 +235,9 @@ export default function ConversionQueue({
 
                 {item.status === 'error' && (
                   <div className="flex items-center gap-2" title={item.error}>
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-status-dangerSoft text-status-danger">
-                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                      <span className="truncate max-w-[100px]">Error</span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-status-dangerSoft text-status-danger">
+                      <AlertCircle className="w-3 h-3 shrink-0" />
+                      <span className="truncate max-w-[80px]">Error</span>
                     </span>
                     <button
                       type="button"
@@ -208,10 +253,10 @@ export default function ConversionQueue({
                 <button
                   type="button"
                   onClick={() => onRemoveItem(item.id)}
-                  title="Remove file"
-                  className="p-1.5 text-ink-muted hover:text-status-danger hover:bg-status-dangerSoft/50 rounded-lg transition-colors ml-1"
+                  title="Remove from queue"
+                  className="p-1 text-ink-muted hover:text-status-danger rounded-lg transition-colors ml-1"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
@@ -220,13 +265,13 @@ export default function ConversionQueue({
       </div>
 
       {/* Bottom Sticky Action Bar */}
-      <div className="p-4 sm:p-5 bg-neutral-scaffold/80 dark:bg-dark-scaffold/80 border-t border-neutral-border dark:border-dark-border flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div className="p-3.5 sm:px-5 bg-neutral-scaffold/80 dark:bg-dark-scaffold/80 border-t border-neutral-border dark:border-dark-border flex flex-col sm:flex-row items-center justify-between gap-3">
         <button
           type="button"
           onClick={onAddMoreFiles}
-          className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-brand-700 dark:text-brand-300 bg-white dark:bg-dark-surface border border-brand-300 dark:border-brand-800 hover:bg-brand-50 dark:hover:bg-dark-elevated rounded-xl shadow-sm transition-colors w-full sm:w-auto justify-center"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-brand-700 dark:text-brand-300 bg-white dark:bg-dark-surface border border-brand-300 dark:border-brand-800 hover:bg-brand-50 dark:hover:bg-dark-elevated rounded-lg shadow-sm transition-colors w-full sm:w-auto justify-center"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-3.5 h-3.5" />
           <span>Add more Files</span>
         </button>
 
@@ -235,9 +280,9 @@ export default function ConversionQueue({
             <button
               type="button"
               onClick={onDownloadAllZip}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-brand-900 dark:text-brand-100 bg-brand-200 dark:bg-brand-900 hover:bg-brand-300 dark:hover:bg-brand-800 rounded-xl transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-brand-900 dark:text-brand-100 bg-brand-200 dark:bg-brand-900 hover:bg-brand-300 dark:hover:bg-brand-800 rounded-lg transition-colors"
             >
-              <Package className="w-4 h-4" />
+              <Package className="w-3.5 h-3.5" />
               <span>Download All (ZIP)</span>
             </button>
           )}
@@ -246,11 +291,11 @@ export default function ConversionQueue({
             type="button"
             disabled={isConverting || readyCount === 0}
             onClick={onConvertAll}
-            className="flex items-center justify-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-md shadow-brand-700/25 transition-all hover:scale-[1.02] w-full sm:w-auto"
+            className="flex items-center justify-center gap-2 px-6 py-2 text-xs font-bold text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg shadow-sm shadow-brand-700/20 transition-all hover:scale-102 w-full sm:w-auto"
           >
             {isConverting ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span>Converting...</span>
               </>
             ) : (
@@ -260,7 +305,7 @@ export default function ConversionQueue({
         </div>
       </div>
 
-      {/* Format Selector Modal */}
+      {/* Format Selector Modal for single file */}
       {currentSelectorItem && (
         <FormatSelector
           availableFormats={getAvailableTargetFormats(currentSelectorItem.sourceFormat)}
@@ -268,6 +313,19 @@ export default function ConversionQueue({
           onSelect={(tgt) => onUpdateTargetFormat(currentSelectorItem.id, tgt)}
           onClose={() => setActiveFormatSelectorId(null)}
           title={`Convert ${currentSelectorItem.name} to:`}
+        />
+      )}
+
+      {/* Format Selector Modal for batch conversion */}
+      {isBatchSelectorOpen && onUpdateAllTargets && (
+        <FormatSelector
+          selectedFormatId="pdf"
+          onSelect={(tgt) => {
+            onUpdateAllTargets(tgt);
+            setIsBatchSelectorOpen(false);
+          }}
+          onClose={() => setIsBatchSelectorOpen(false)}
+          title="Convert all queue files to:"
         />
       )}
 

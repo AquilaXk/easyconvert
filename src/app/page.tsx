@@ -12,6 +12,8 @@ import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
 
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+
 export default function Home() {
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [isConverting, setIsConverting] = useState(false);
@@ -29,6 +31,8 @@ export default function Home() {
         }
       }
 
+      const isOverSize = file.size > MAX_FILE_SIZE;
+
       return {
         id: Math.random().toString(36).substring(2, 9) + Date.now().toString(36),
         file,
@@ -36,15 +40,26 @@ export default function Home() {
         size: file.size,
         sourceFormat,
         targetFormat,
-        status: 'ready',
+        status: isOverSize ? 'error' : 'ready',
+        error: isOverSize ? 'File exceeds 100 MB real-time conversion limit.' : undefined,
         progress: 0,
         options: {
           quality: 85,
           fit: 'contain',
           stripMetadata: false,
           orientation: 'portrait',
+          preserveLayout: true,
+          preserveTables: true,
+          ocrEnabled: false,
+          ocrLanguage: 'auto',
           delimiter: ',',
           compressionLevel: 6,
+          audioBitrate: '192k',
+          audioChannels: 'stereo',
+          audioSampleRate: 44100,
+          videoResolution: 'original',
+          videoFps: 30,
+          videoCodec: 'h264',
         },
       };
     });
@@ -75,14 +90,37 @@ export default function Home() {
     );
   };
 
+  const handleUpdateAllTargets = (targetFormat: string) => {
+    setQueue((prev) =>
+      prev.map((item) => {
+        const def = FORMAT_REGISTRY[item.sourceFormat.toLowerCase()];
+        if (def && def.targetFormats.includes(targetFormat.toLowerCase())) {
+          return { ...item, targetFormat };
+        }
+        return item;
+      })
+    );
+  };
+
   const handleUpdateOptions = (id: string, options: ConversionOptions) => {
     setQueue((prev) =>
       prev.map((item) => (item.id === id ? { ...item, options } : item))
     );
   };
 
-  // Convert a single item
+  // Convert a single item via direct in-memory zero-retention stream
   const convertSingleItem = async (item: ConversionQueueItem): Promise<void> => {
+    if (item.file.size > MAX_FILE_SIZE) {
+      setQueue((prev) =>
+        prev.map((i) =>
+          i.id === item.id
+            ? { ...i, status: 'error', error: 'File size exceeds 100 MB limit.' }
+            : i
+        )
+      );
+      return;
+    }
+
     setQueue((prev) =>
       prev.map((i) =>
         i.id === item.id ? { ...i, status: 'converting', progress: 30, error: undefined } : i
@@ -95,14 +133,23 @@ export default function Home() {
       formData.append('targetFormat', item.targetFormat);
       formData.append('options', JSON.stringify(item.options));
 
+      // Simulate streaming progress for realistic feedback
+      const progressTimer = setTimeout(() => {
+        setQueue((prev) =>
+          prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress: 75 } : i))
+        );
+      }, 350);
+
       const res = await fetch('/api/convert', {
         method: 'POST',
         body: formData,
       });
 
+      clearTimeout(progressTimer);
+
       if (!res.ok) {
         const errorJson = await res.json().catch(() => ({ error: 'Conversion failed' }));
-        throw new Error(errorJson.error || `Server returned error (${res.status})`);
+        throw new Error(errorJson.error || `Server error (${res.status})`);
       }
 
       const blob = await res.blob();
@@ -143,7 +190,7 @@ export default function Home() {
     setIsConverting(false);
   };
 
-  // Download all completed items as consolidated ZIP archive
+  // Download all completed items as consolidated ZIP
   const handleDownloadAllZip = async () => {
     const completedItems = queue.filter((i) => i.status === 'completed' && i.resultUrl);
     if (completedItems.length === 0) return;
@@ -180,7 +227,7 @@ export default function Home() {
       document.body.removeChild(a);
       URL.revokeObjectURL(zipUrl);
     } catch (err) {
-      alert('Could not download batch zip: ' + (err instanceof Error ? err.message : 'Unknown error'));
+      alert('Could not download consolidated ZIP: ' + (err instanceof Error ? err.message : 'Unknown error'));
     }
   };
 
@@ -202,12 +249,13 @@ export default function Home() {
         />
 
         {queue.length > 0 && (
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 -mt-8 mb-16 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 my-6 animate-in fade-in duration-200">
             <ConversionQueue
               items={queue}
               onRemoveItem={handleRemoveItem}
               onClearAll={handleClearAll}
               onUpdateTargetFormat={handleUpdateTargetFormat}
+              onUpdateAllTargets={handleUpdateAllTargets}
               onUpdateOptions={handleUpdateOptions}
               onConvertAll={handleConvertAll}
               onConvertSingle={(id) => {

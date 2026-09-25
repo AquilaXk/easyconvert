@@ -6,11 +6,11 @@ import {
   ChevronDown,
   Globe,
   HardDrive,
-  FolderOpen,
-  ArrowRight,
-  Sparkles,
+  Maximize2,
+  Minimize2,
+  Plus,
 } from 'lucide-react';
-import { FORMAT_REGISTRY, getAllFormats, getAvailableTargetFormats } from '@/lib/registry';
+import { FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import FormatSelector from './FormatSelector';
 import UrlUploadModal from './UrlUploadModal';
 
@@ -27,8 +27,11 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isUrlModalOpen, setIsUrlModalOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isForceExpanded, setIsForceExpanded] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const isCollapsed = hasActiveQueue && !isForceExpanded;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -57,85 +60,184 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
     }
   };
 
-  return (
-    <section className="relative pt-12 pb-16 md:pt-20 md:pb-24 overflow-hidden">
-      {/* Background lavender glow circles */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-brand-200/40 dark:bg-brand-900/10 rounded-full blur-3xl pointer-events-none -z-10" />
+  const popularShortcuts = [
+    { src: 'pdf', tgt: 'docx', label: 'PDF to Word' },
+    { src: 'mp4', tgt: 'mp3', label: 'MP4 to MP3' },
+    { src: 'docx', tgt: 'pdf', label: 'DOCX to PDF' },
+    { src: 'png', tgt: 'webp', label: 'PNG to WebP' },
+    { src: 'xlsx', tgt: 'csv', label: 'XLSX to CSV' },
+    { src: 'epub', tgt: 'pdf', label: 'EPUB to PDF' },
+    { src: 'wav', tgt: 'mp3', label: 'WAV to MP3' },
+    { src: 'webm', tgt: 'mp4', label: 'WEBM to MP4' },
+  ];
 
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 text-center">
-        {/* Badge */}
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-100 dark:bg-brand-950/80 border border-brand-300 dark:border-brand-800 text-brand-700 dark:text-brand-300 text-xs font-semibold mb-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>Universal High-Performance Conversion Engine</span>
+  const fileInput = (
+    <input
+      ref={fileInputRef}
+      type="file"
+      multiple
+      onChange={handleFileChange}
+      className="hidden"
+      id="main-file-input"
+    />
+  );
+
+  // 1. COLLAPSED VIEW (When files are in queue)
+  if (isCollapsed) {
+    return (
+      <section className="bg-neutral-scaffold/70 dark:bg-dark-surface/60 border-b border-neutral-border dark:border-dark-border py-4 transition-all">
+        {fileInput}
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-between gap-3">
+          {/* Quick preset indicator */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-ink-muted">Default preset:</span>
+            <button
+              type="button"
+              onClick={() => setIsSourceSelectorOpen(true)}
+              className="px-2.5 py-1 text-xs font-bold uppercase rounded-lg bg-white dark:bg-dark-elevated border border-neutral-border dark:border-dark-border hover:border-brand-500 text-brand-950 dark:text-dark-text flex items-center gap-1 transition-colors"
+            >
+              <span>{sourceFormat}</span>
+              <ChevronDown className="w-3 h-3 text-ink-muted" />
+            </button>
+            <span className="text-xs font-semibold text-ink-muted">to</span>
+            <button
+              type="button"
+              onClick={() => setIsTargetSelectorOpen(true)}
+              className="px-2.5 py-1 text-xs font-bold uppercase rounded-lg bg-white dark:bg-dark-elevated border border-neutral-border dark:border-dark-border hover:border-brand-500 text-brand-950 dark:text-dark-text flex items-center gap-1 transition-colors"
+            >
+              <span>{targetFormat}</span>
+              <ChevronDown className="w-3 h-3 text-ink-muted" />
+            </button>
+          </div>
+
+          {/* Add More Files button & Expand toggle */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-brand-700 hover:bg-brand-800 rounded-lg shadow-sm transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add More Files</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsForceExpanded(true)}
+              title="Expand converter description"
+              className="p-1.5 text-ink-muted hover:text-brand-700 dark:hover:text-brand-300 rounded-lg transition-colors"
+            >
+              <Maximize2 className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
+        {/* Source Selector Modal */}
+        {isSourceSelectorOpen && (
+          <FormatSelector
+            selectedFormatId={sourceFormat}
+            onSelect={(fmt) => {
+              setSourceFormat(fmt);
+              const def = FORMAT_REGISTRY[fmt];
+              if (def && def.targetFormats.length > 0 && !def.targetFormats.includes(targetFormat)) {
+                setTargetFormat(def.targetFormats[0]);
+              }
+            }}
+            onClose={() => setIsSourceSelectorOpen(false)}
+            title="Convert from format:"
+          />
+        )}
+
+        {/* Target Selector Modal */}
+        {isTargetSelectorOpen && (
+          <FormatSelector
+            availableFormats={getAvailableTargetFormats(sourceFormat)}
+            selectedFormatId={targetFormat}
+            onSelect={(fmt) => setTargetFormat(fmt)}
+            onClose={() => setIsTargetSelectorOpen(false)}
+            title={`Convert ${sourceFormat.toUpperCase()} to:`}
+          />
+        )}
+      </section>
+    );
+  }
+
+  // 2. EXPANDED / DEFAULT HERO VIEW
+  return (
+    <section className="relative pt-10 pb-16 md:pt-16 md:pb-20">
+      {fileInput}
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 text-center">
+        {hasActiveQueue && (
+          <div className="flex justify-end mb-2">
+            <button
+              type="button"
+              onClick={() => setIsForceExpanded(false)}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-ink-muted hover:text-brand-700 dark:hover:text-brand-300 transition-colors"
+            >
+              <Minimize2 className="w-3.5 h-3.5" />
+              <span>Collapse Hero</span>
+            </button>
+          </div>
+        )}
+
         {/* Title */}
-        <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tight text-brand-950 dark:text-white mb-6">
+        <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-brand-950 dark:text-white mb-4">
           File Converter
         </h1>
 
         {/* Subtitle */}
-        <p className="text-base sm:text-lg text-ink-secondary dark:text-dark-muted max-w-2xl mx-auto mb-10 leading-relaxed">
-          Convert your files to any format. EasyConvert supports 200+ formats across documents, images, spreadsheets,
-          and archives — straight from your browser with zero data retention.
+        <p className="text-xs sm:text-sm text-ink-secondary dark:text-dark-muted max-w-2xl mx-auto mb-8 leading-relaxed">
+          Convert audio, video, documents, spreadsheets, ebooks, presentations, and archives online.
+          Supports 200+ formats across 9 domains with 100% in-memory real-time zero data retention.
         </p>
 
-        {/* Interactive Converter Presets Widget */}
-        <div className="inline-flex flex-wrap items-center justify-center gap-2.5 p-2 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-lg mb-10">
-          <span className="text-sm font-semibold text-ink-muted pl-3">convert</span>
+        {/* Converter Presets Widget */}
+        <div className="inline-flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm mb-8">
+          <span className="text-xs font-semibold text-ink-muted pl-2">convert</span>
 
           {/* Source format trigger */}
           <button
             type="button"
             onClick={() => setIsSourceSelectorOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-50 dark:bg-dark-elevated border border-brand-200 dark:border-brand-800 hover:border-brand-600 text-brand-950 dark:text-dark-text text-sm font-bold uppercase transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border hover:border-brand-500 text-brand-950 dark:text-dark-text text-xs font-bold uppercase transition-colors"
           >
             <span>{sourceFormat}</span>
-            <ChevronDown className="w-3.5 h-3.5 text-ink-muted" />
+            <ChevronDown className="w-3 h-3 text-ink-muted" />
           </button>
 
-          <span className="text-sm font-semibold text-ink-muted">to</span>
+          <span className="text-xs font-semibold text-ink-muted">to</span>
 
           {/* Target format trigger */}
           <button
             type="button"
             onClick={() => setIsTargetSelectorOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-50 dark:bg-dark-elevated border border-brand-200 dark:border-brand-800 hover:border-brand-600 text-brand-950 dark:text-dark-text text-sm font-bold uppercase transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border hover:border-brand-500 text-brand-950 dark:text-dark-text text-xs font-bold uppercase transition-colors"
           >
             <span>{targetFormat}</span>
-            <ChevronDown className="w-3.5 h-3.5 text-ink-muted" />
+            <ChevronDown className="w-3 h-3 text-ink-muted" />
           </button>
         </div>
 
-        {/* Big CTA Select File Dropdown Zone */}
+        {/* CTA Dropzone */}
         <div
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`relative max-w-xl mx-auto rounded-3xl border-2 border-dashed p-8 transition-all ${
+          className={`relative max-w-lg mx-auto rounded-2xl border-2 border-dashed p-8 transition-all ${
             isDragOver
-              ? 'border-brand-700 bg-brand-100/50 dark:bg-brand-950/40 scale-102 shadow-xl shadow-brand-500/10'
-              : 'border-brand-300 dark:border-brand-900 bg-white/70 dark:bg-dark-surface/70 hover:border-brand-500 shadow-md'
+              ? 'border-brand-700 bg-brand-50/60 dark:bg-dark-elevated/80 scale-[1.01]'
+              : 'border-neutral-border dark:border-dark-border bg-white/80 dark:bg-dark-surface/80 hover:border-brand-500 shadow-sm'
           }`}
         >
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            onChange={handleFileChange}
-            className="hidden"
-            id="main-file-input"
-          />
-
           <div className="flex flex-col items-center justify-center">
             {/* Split CTA Button */}
-            <div className="relative inline-flex shadow-xl shadow-brand-700/20 rounded-2xl overflow-visible mb-4">
+            <div className="relative inline-flex shadow-sm rounded-xl overflow-visible mb-3">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-3 px-8 py-4 bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white font-bold text-base rounded-l-2xl transition-all"
+                className="flex items-center gap-2.5 px-6 py-3 bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white font-bold text-sm rounded-l-xl transition-all"
               >
-                <UploadCloud className="w-5 h-5" />
+                <UploadCloud className="w-4 h-4" />
                 <span>Select File</span>
               </button>
 
@@ -143,24 +245,24 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                 type="button"
                 onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                 onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
-                className="px-3.5 bg-brand-800 hover:bg-brand-900 active:bg-brand-950 text-white border-l border-brand-600 rounded-r-2xl transition-all"
+                className="px-3 bg-brand-800 hover:bg-brand-900 text-white border-l border-brand-600 rounded-r-xl transition-all"
                 aria-label="Upload options"
               >
-                <ChevronDown className={`w-5 h-5 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`w-4 h-4 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
               </button>
 
               {/* Upload Options Menu */}
               {isDropdownOpen && (
-                <div className="absolute top-full right-0 mt-2 w-56 bg-white dark:bg-dark-surface rounded-xl shadow-2xl border border-neutral-border dark:border-dark-border p-2 z-50 animate-in fade-in duration-150 text-left">
+                <div className="absolute top-full right-0 mt-2 w-48 bg-white dark:bg-dark-surface rounded-xl shadow-xl border border-neutral-border dark:border-dark-border p-1.5 z-50 animate-in fade-in duration-150 text-left">
                   <button
                     type="button"
                     onClick={() => {
                       setIsDropdownOpen(false);
                       fileInputRef.current?.click();
                     }}
-                    className="flex items-center gap-3 w-full px-3 py-2 text-xs font-semibold text-brand-950 dark:text-dark-text hover:bg-brand-50 dark:hover:bg-dark-elevated rounded-lg transition-colors"
+                    className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-brand-950 dark:text-dark-text hover:bg-neutral-scaffold dark:hover:bg-dark-elevated rounded-lg transition-colors"
                   >
-                    <HardDrive className="w-4 h-4 text-brand-700 dark:text-brand-400" />
+                    <HardDrive className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" />
                     <span>From my Computer</span>
                   </button>
 
@@ -170,29 +272,35 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                       setIsDropdownOpen(false);
                       setIsUrlModalOpen(true);
                     }}
-                    className="flex items-center gap-3 w-full px-3 py-2 text-xs font-semibold text-brand-950 dark:text-dark-text hover:bg-brand-50 dark:hover:bg-dark-elevated rounded-lg transition-colors"
+                    className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-brand-950 dark:text-dark-text hover:bg-neutral-scaffold dark:hover:bg-dark-elevated rounded-lg transition-colors"
                   >
-                    <Globe className="w-4 h-4 text-brand-700 dark:text-brand-400" />
+                    <Globe className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" />
                     <span>By URL</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsDropdownOpen(false);
-                      alert('Cloud storage integration is ready for OAuth credentials.');
-                    }}
-                    className="flex items-center gap-3 w-full px-3 py-2 text-xs font-semibold text-brand-950 dark:text-dark-text hover:bg-brand-50 dark:hover:bg-dark-elevated rounded-lg transition-colors"
-                  >
-                    <FolderOpen className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                    <span>From Google Drive</span>
                   </button>
                 </div>
               )}
             </div>
 
-            <p className="text-xs text-ink-muted">or drop files here (up to 100 MB per file)</p>
+            <p className="text-[11px] text-ink-muted">or drop files here (up to 100 MB per file, zero data retention)</p>
           </div>
+        </div>
+
+        {/* Popular Presets Quick Bar */}
+        <div className="flex flex-wrap items-center justify-center gap-2 mt-6">
+          {popularShortcuts.map((sc, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => {
+                setSourceFormat(sc.src);
+                setTargetFormat(sc.tgt);
+                fileInputRef.current?.click();
+              }}
+              className="px-2.5 py-1 text-[11px] font-semibold text-ink-secondary dark:text-dark-muted bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border hover:border-brand-500 rounded-lg transition-colors"
+            >
+              {sc.label}
+            </button>
+          ))}
         </div>
       </div>
 

@@ -1,60 +1,59 @@
 'use client';
 
 import React from 'react';
-import { ShieldCheck, Cpu, SlidersHorizontal, Terminal } from 'lucide-react';
+import { Layers, ShieldCheck, Zap, ScanText } from 'lucide-react';
 
 export default function Features() {
   const features = [
     {
-      icon: <Cpu className="w-6 h-6 text-brand-700 dark:text-brand-400" />,
-      title: '200+ Formats Supported',
+      icon: <Layers className="w-5 h-5 text-brand-700 dark:text-brand-400" />,
+      title: '200+ Formats across 9 Domains',
       description:
-        'Seamlessly convert across images, documents, structured tables, and archives. No software downloads required — everything runs in modern high-speed runtime pipelines.',
+        'Comprehensive conversion matrix covering Audio (MP3, WAV, FLAC), Video (MP4, MKV, WebM), Documents, Office, Ebooks, Spreadsheets, Presentations, Images, and Archives.',
     },
     {
-      icon: <ShieldCheck className="w-6 h-6 text-brand-700 dark:text-brand-400" />,
-      title: 'Privacy & Ephemeral Security',
+      icon: <ShieldCheck className="w-5 h-5 text-brand-700 dark:text-brand-400" />,
+      title: 'Zero-Retention In-Memory Pipeline',
       description:
-        'Your security is paramount. Uploads are strictly processed in isolated ephemeral instances and erased immediately upon completion. We never inspect or store your data.',
+        'Files are processed strictly in volatile memory or isolated ephemeral instances and erased immediately upon stream return. Zero cloud storage footprint, zero tracking, total privacy.',
     },
     {
-      icon: <SlidersHorizontal className="w-6 h-6 text-brand-700 dark:text-brand-400" />,
-      title: 'High-Quality & Custom Parameters',
+      icon: <Zap className="w-5 h-5 text-brand-700 dark:text-brand-400" />,
+      title: 'Real-Time Streaming Performance',
       description:
-        'Adjust image compression quality, resize dimensions, customize PDF orientation, set CSV delimiters, and choose archive compression levels for optimal fidelity.',
+        'Eliminates external storage latency with direct buffer stream delivery. Enforces a 100 MB per-file safety threshold to ensure lightning-fast transformations without server congestion.',
     },
     {
-      icon: <Terminal className="w-6 h-6 text-brand-700 dark:text-brand-400" />,
-      title: 'Developer REST API',
+      icon: <ScanText className="w-5 h-5 text-brand-700 dark:text-brand-400" />,
+      title: 'Document Layout, Tables & OCR Engine',
       description:
-        'Integrate file conversions effortlessly into your stack. Use our standard multipart endpoints with full format matrix discovery and automated job bundling.',
+        'Preserves typographic styling, font hierarchies, and complex table grids in Office documents, while optical character recognition (OCR) extracts text from scanned PDFs and bitmaps.',
     },
   ];
 
   return (
-    <section className="py-16 md:py-24 border-t border-neutral-border dark:border-dark-border bg-neutral-scaffold/50 dark:bg-dark-scaffold/50">
+    <section id="features" className="py-14 border-t border-neutral-border dark:border-dark-border bg-neutral-scaffold/40 dark:bg-dark-scaffold/40">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-3xl mx-auto mb-16">
-          <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-brand-950 dark:text-white mb-4">
-            Engineered for Precision & Reliability
+        <div className="text-center max-w-2xl mx-auto mb-12">
+          <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-brand-950 dark:text-white mb-2">
+            Engineered for Precision & Zero-Retention Privacy
           </h2>
-          <p className="text-sm sm:text-base text-ink-secondary dark:text-dark-muted">
-            EasyConvert combines industry-standard processing kernels with an intuitive lavender-infused user
-            interface for seamless transformations.
+          <p className="text-xs sm:text-sm text-ink-secondary dark:text-dark-muted">
+            EasyConvert combines high-density performance with our calibrated lavender design system and instant streaming pipeline.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {features.map((feature, idx) => (
             <div
               key={idx}
-              className="p-6 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm hover:shadow-md hover:border-brand-300 dark:hover:border-brand-800 transition-all group"
+              className="p-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm hover:border-brand-500 transition-colors"
             >
-              <div className="p-3 rounded-xl bg-brand-50 dark:bg-dark-elevated w-fit mb-4 group-hover:scale-105 transition-transform">
+              <div className="p-2.5 rounded-xl bg-brand-50 dark:bg-dark-elevated w-fit mb-3">
                 {feature.icon}
               </div>
-              <h3 className="text-base font-bold text-brand-950 dark:text-dark-text mb-2">{feature.title}</h3>
-              <p className="text-xs text-ink-secondary dark:text-dark-muted leading-relaxed">
+              <h3 className="text-xs font-bold text-brand-950 dark:text-dark-text mb-1.5">{feature.title}</h3>
+              <p className="text-[11px] text-ink-secondary dark:text-dark-muted leading-relaxed">
                 {feature.description}
               </p>
             </div>
