@@ -1,0 +1,433 @@
+{
+  "pricing": {
+    "title": "Pricing | CloudConvert",
+    "h1": "Pricing",
+    "h2s": [
+      "Ready to get started?"
+    ],
+    "navLinks": [
+      {
+        "text": "CloudConvert",
+        "href": "https://cloudconvert.com/"
+      },
+      {
+        "text": "Pricing",
+        "href": "https://cloudconvert.com/pricing"
+      },
+      {
+        "text": "Sign in",
+        "href": "https://cloudconvert.com/login"
+      },
+      {
+        "text": "Sign up",
+        "href": "https://cloudconvert.com/register"
+      },
+      {
+        "text": "About Us",
+        "href": "https://cloudconvert.com/about"
+      },
+      {
+        "text": "Security",
+        "href": "https://cloudconvert.com/security"
+      },
+      {
+        "text": "Blog",
+        "href": "https://cloudconvert.com/blog"
+      },
+      {
+        "text": "Status",
+        "href": "https://status.cloudconvert.com/"
+      },
+      {
+        "text": "Privacy",
+        "href": "https://cloudconvert.com/privacy"
+      },
+      {
+        "text": "Terms",
+        "href": "https://cloudconvert.com/terms"
+      },
+      {
+        "text": "Imprint",
+        "href": "https://cloudconvert.com/about#imprint"
+      },
+      {
+        "text": "Contact Us",
+        "href": "https://cloudconvert.com/contact"
+      }
+    ],
+    "mainClasses": "",
+    "contentStructure": "<!--[--><!--[--><!--[--><!--[--><!--[--><!--[--><!--[--><!----><!----><!----><header data-slot=\"root\" class=\"backdrop-blur-sm border-b border-default h-(--ui-header-height) sticky top-0 z-50 from-neutral-800/90 to-neutral-900/90 bg-neutral-900/5 border-none bg-none shadow-none\"><!--[--><!--]--><div class=\"w-full max-w-(--ui-container) mx-auto px-4 sm:px-6 lg:px-8 [main&gt;&amp;]:max-w-full [main&gt;&amp;]:px-0! flex items-center justify-between h-full null gap-6\" data-slot=\"container\"><!--[--><div data-slot=\"left\" class=\"flex items-center gap-1.5 dark lg:flex-none\"><!----><!--[--><a aria-label=\"CloudConvert\" data-slot=\"title\" ariacurrentvalue=\"page\" class=\"outline-primary/25 focus-visible:outline-3 rounded-md shrink-0 font-bold text-xl text-highlighted flex items-end gap-1.5 dark\" href=\"/\"><!--[--><!--[--><!--[--><div class=\"flex items-center gap-3 md:text-2xl w-auto shrink-0\"><img src=\"/build/assets/logo_without_border-BolpxNjG.svg\" width=\"43\" height=\"28\" class=\"hidden dark:block h-7 w-auto md:h-8\" alt=\"CloudConvert Logo\"><span class=\"lowercase font-sans tracking-wide\"><span class=\"font-normal\">Cloud</span><span class=\"font-bold\">Convert</span></span><!----></div><!--]--><!--]--><!--]--></a><!--]--></div><div data-slot=\"center\" class=\"hidden lg:flex dark lg:flex-1\"><!--[--><!--[--><!----><!----><nav data-slot=\"root\" class=\"relative flex gap-1.5 [&amp;&gt;div]:min-w-0 items-center justify-between w-full\" data-orientation=\"horizontal\" dir=\"ltr\" data-reka-navigation-menu=\"\"><!-"
+  },
+  "login": {
+    "title": "Login | CloudConvert",
+    "h2s": [],
+    "navLinks": [
+      {
+        "text": "CloudConvert",
+        "href": "https://cloudconvert.com/"
+      },
+      {
+        "text": "Pricing",
+        "href": "https://cloudconvert.com/pricing"
+      },
+      {
+        "text": "Sign in",
+        "href": "https://cloudconvert.com/login"
+      },
+      {
+        "text": "Sign up",
+        "href": "https://cloudconvert.com/register"
+      },
+      {
+        "text": "About Us",
+        "href": "https://cloudconvert.com/about"
+      },
+      {
+        "text": "Security",
+        "href": "https://cloudconvert.com/security"
+      },
+      {
+        "text": "Blog",
+        "href": "https://cloudconvert.com/blog"
+      },
+      {
+        "text": "Status",
+        "href": "https://status.cloudconvert.com/"
+      },
+      {
+        "text": "Privacy",
+        "href": "https://cloudconvert.com/privacy"
+      },
+      {
+        "text": "Terms",
+        "href": "https://cloudconvert.com/terms"
+      },
+      {
+        "text": "Imprint",
+        "href": "https://cloudconvert.com/about#imprint"
+      },
+      {
+        "text": "Contact Us",
+        "href": "https://cloudconvert.com/contact"
+      }
+    ],
+    "mainClasses": "",
+    "contentStructure": "<!----><!----><!----><header data-slot=\"root\" class=\"backdrop-blur-sm border-b border-default h-(--ui-header-height) sticky top-0 z-50 bg-linear-45 from-neutral-800/90 to-neutral-900/90 bg-neutral-900/5\"><div class=\"w-full max-w-(--ui-container) mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-full null gap-6\" data-slot=\"container\"><div data-slot=\"left\" class=\"flex items-center gap-1.5 dark lg:flex-none\"><!----><a aria-label=\"CloudConvert\" data-slot=\"title\" ariacurrentvalue=\"page\" class=\"outline-primary/25 focus-visible:outline-3 rounded-md shrink-0 font-bold text-xl text-highlighted flex items-end gap-1.5 dark\" href=\"/\"><div class=\"flex items-center gap-3 md:text-2xl w-auto shrink-0\"><img src=\"/build/assets/logo_without_border-BolpxNjG.svg\" width=\"43\" height=\"28\" class=\"hidden dark:block h-7 w-auto md:h-8\" alt=\"CloudConvert Logo\"><span class=\"lowercase font-sans tracking-wide\"><span class=\"font-normal\">Cloud</span><span class=\"font-bold\">Convert</span></span><!----></div></a></div><div data-slot=\"center\" class=\"hidden lg:flex dark lg:flex-1\"><!----><!----><nav data-slot=\"root\" class=\"relative flex gap-1.5 [&amp;&gt;div]:min-w-0 items-center justify-between w-full\" data-orientation=\"horizontal\" dir=\"ltr\" data-reka-navigation-menu=\"\"><div style=\"position: relative;\"><ul data-slot=\"list\" class=\"isolate min-w-0 flex items-center\" data-orientation=\"horizontal\"><li data-menu-item=\"\" data-slot=\"item\" class=\"min-w-0 data-[state=open]:mb-1.5 py-2\"><button type=\"button"
+  },
+  "register": {
+    "title": "Sign Up | CloudConvert",
+    "h2s": [],
+    "navLinks": [
+      {
+        "text": "CloudConvert",
+        "href": "https://cloudconvert.com/"
+      },
+      {
+        "text": "Pricing",
+        "href": "https://cloudconvert.com/pricing"
+      },
+      {
+        "text": "Sign in",
+        "href": "https://cloudconvert.com/login"
+      },
+      {
+        "text": "Sign up",
+        "href": "https://cloudconvert.com/register"
+      },
+      {
+        "text": "About Us",
+        "href": "https://cloudconvert.com/about"
+      },
+      {
+        "text": "Security",
+        "href": "https://cloudconvert.com/security"
+      },
+      {
+        "text": "Blog",
+        "href": "https://cloudconvert.com/blog"
+      },
+      {
+        "text": "Status",
+        "href": "https://status.cloudconvert.com/"
+      },
+      {
+        "text": "Privacy",
+        "href": "https://cloudconvert.com/privacy"
+      },
+      {
+        "text": "Terms",
+        "href": "https://cloudconvert.com/terms"
+      },
+      {
+        "text": "Imprint",
+        "href": "https://cloudconvert.com/about#imprint"
+      },
+      {
+        "text": "Contact Us",
+        "href": "https://cloudconvert.com/contact"
+      }
+    ],
+    "mainClasses": "",
+    "contentStructure": "<!----><!----><!----><header data-slot=\"root\" class=\"backdrop-blur-sm border-b border-default h-(--ui-header-height) sticky top-0 z-50 bg-linear-45 from-neutral-800/90 to-neutral-900/90 bg-neutral-900/5\"><div class=\"w-full max-w-(--ui-container) mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-full null gap-6\" data-slot=\"container\"><div data-slot=\"left\" class=\"flex items-center gap-1.5 dark lg:flex-none\"><!----><a aria-label=\"CloudConvert\" data-slot=\"title\" ariacurrentvalue=\"page\" class=\"outline-primary/25 focus-visible:outline-3 rounded-md shrink-0 font-bold text-xl text-highlighted flex items-end gap-1.5 dark\" href=\"/\"><div class=\"flex items-center gap-3 md:text-2xl w-auto shrink-0\"><img src=\"/build/assets/logo_without_border-BolpxNjG.svg\" width=\"43\" height=\"28\" class=\"hidden dark:block h-7 w-auto md:h-8\" alt=\"CloudConvert Logo\"><span class=\"lowercase font-sans tracking-wide\"><span class=\"font-normal\">Cloud</span><span class=\"font-bold\">Convert</span></span><!----></div></a></div><div data-slot=\"center\" class=\"hidden lg:flex dark lg:flex-1\"><!----><!----><nav data-slot=\"root\" class=\"relative flex gap-1.5 [&amp;&gt;div]:min-w-0 items-center justify-between w-full\" data-orientation=\"horizontal\" dir=\"ltr\" data-reka-navigation-menu=\"\"><div style=\"position: relative;\"><ul data-slot=\"list\" class=\"isolate min-w-0 flex items-center\" data-orientation=\"horizontal\"><li data-menu-item=\"\" data-slot=\"item\" class=\"min-w-0 data-[state=open]:mb-1.5 py-2\"><button type=\"button"
+  },
+  "pdf_converter": {
+    "title": "PDF Converter | CloudConvert",
+    "h1": "PDF Converter",
+    "h2s": [
+      "Select your file to convert"
+    ],
+    "navLinks": [
+      {
+        "text": "CloudConvert",
+        "href": "https://cloudconvert.com/"
+      },
+      {
+        "text": "Pricing",
+        "href": "https://cloudconvert.com/pricing"
+      },
+      {
+        "text": "Sign in",
+        "href": "https://cloudconvert.com/login"
+      },
+      {
+        "text": "Sign up",
+        "href": "https://cloudconvert.com/register"
+      },
+      {
+        "text": "About Us",
+        "href": "https://cloudconvert.com/about"
+      },
+      {
+        "text": "Security",
+        "href": "https://cloudconvert.com/security"
+      },
+      {
+        "text": "Blog",
+        "href": "https://cloudconvert.com/blog"
+      },
+      {
+        "text": "Status",
+        "href": "https://status.cloudconvert.com/"
+      },
+      {
+        "text": "Privacy",
+        "href": "https://cloudconvert.com/privacy"
+      },
+      {
+        "text": "Terms",
+        "href": "https://cloudconvert.com/terms"
+      },
+      {
+        "text": "Imprint",
+        "href": "https://cloudconvert.com/about#imprint"
+      },
+      {
+        "text": "Contact Us",
+        "href": "https://cloudconvert.com/contact"
+      }
+    ],
+    "mainClasses": "",
+    "contentStructure": "<!--[--><!--[--><!--[--><!--[--><!--[--><!--[--><!--[--><!----><!----><!----><header data-slot=\"root\" class=\"backdrop-blur-sm border-b border-default h-(--ui-header-height) sticky top-0 z-50 from-neutral-800/90 to-neutral-900/90 bg-neutral-900/5 border-none bg-none shadow-none\"><!--[--><!--]--><div class=\"w-full max-w-(--ui-container) mx-auto px-4 sm:px-6 lg:px-8 [main&gt;&amp;]:max-w-full [main&gt;&amp;]:px-0! flex items-center justify-between h-full null gap-6\" data-slot=\"container\"><!--[--><div data-slot=\"left\" class=\"flex items-center gap-1.5 dark lg:flex-none\"><!----><!--[--><a aria-label=\"CloudConvert\" data-slot=\"title\" ariacurrentvalue=\"page\" class=\"outline-primary/25 focus-visible:outline-3 rounded-md shrink-0 font-bold text-xl text-highlighted flex items-end gap-1.5 dark\" href=\"/\"><!--[--><!--[--><!--[--><div class=\"flex items-center gap-3 md:text-2xl w-auto shrink-0\"><img src=\"/build/assets/logo_without_border-BolpxNjG.svg\" width=\"43\" height=\"28\" class=\"hidden dark:block h-7 w-auto md:h-8\" alt=\"CloudConvert Logo\"><span class=\"lowercase font-sans tracking-wide\"><span class=\"font-normal\">Cloud</span><span class=\"font-bold\">Convert</span></span><!----></div><!--]--><!--]--><!--]--></a><!--]--></div><div data-slot=\"center\" class=\"hidden lg:flex dark lg:flex-1\"><!--[--><!--[--><!----><!----><nav data-slot=\"root\" class=\"relative flex gap-1.5 [&amp;&gt;div]:min-w-0 items-center justify-between w-full\" data-orientation=\"horizontal\" dir=\"ltr\" data-reka-navigation-menu=\"\"><!-"
+  },
+  "api_v2": {
+    "title": "API Documentation - CloudConvert",
+    "h1": "API Documentation",
+    "h2s": [
+      "SDKs",
+      "Integrations",
+      "Base URL and Region Endpoints",
+      "Sandbox API",
+      "Terminology",
+      "Authentication",
+      "Errors and Rate Limiting"
+    ],
+    "navLinks": [
+      {
+        "text": "CloudConvertdocs",
+        "href": "https://cloudconvert.com/"
+      },
+      {
+        "text": "Introduction",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction"
+      },
+      {
+        "text": "Quickstart Guide",
+        "href": "https://cloudconvert.com/docs/getting-started/quickstart-guide"
+      },
+      {
+        "text": "Jobs",
+        "href": "https://cloudconvert.com/docs/api-reference/jobs"
+      },
+      {
+        "text": "Tasks",
+        "href": "https://cloudconvert.com/docs/api-reference/tasks"
+      },
+      {
+        "text": "Operations",
+        "href": "https://cloudconvert.com/docs/api-reference/operations"
+      },
+      {
+        "text": "Users",
+        "href": "https://cloudconvert.com/docs/api-reference/users"
+      },
+      {
+        "text": "Webhooks",
+        "href": "https://cloudconvert.com/docs/api-reference/webhooks"
+      },
+      {
+        "text": "Convert Files",
+        "href": "https://cloudconvert.com/docs/operations/convert-files"
+      },
+      {
+        "text": "Optimize Files",
+        "href": "https://cloudconvert.com/docs/operations/optimize-files"
+      },
+      {
+        "text": "Add Watermarks",
+        "href": "https://cloudconvert.com/docs/operations/add-watermarks"
+      },
+      {
+        "text": "Capture Website",
+        "href": "https://cloudconvert.com/docs/operations/capture-website"
+      },
+      {
+        "text": "Create Thumbnails",
+        "href": "https://cloudconvert.com/docs/operations/create-thumbnails"
+      },
+      {
+        "text": "Merge Files",
+        "href": "https://cloudconvert.com/docs/operations/merge-files"
+      },
+      {
+        "text": "PDF Operations",
+        "href": "https://cloudconvert.com/docs/operations/pdf-operations"
+      },
+      {
+        "text": "Create Archives",
+        "href": "https://cloudconvert.com/docs/operations/create-archives"
+      },
+      {
+        "text": "File Metadata",
+        "href": "https://cloudconvert.com/docs/operations/file-metadata"
+      },
+      {
+        "text": "Execute Commands",
+        "href": "https://cloudconvert.com/docs/operations/execute-commands"
+      },
+      {
+        "text": "Import Files",
+        "href": "https://cloudconvert.com/docs/import-export/import-files"
+      },
+      {
+        "text": "Export Files",
+        "href": "https://cloudconvert.com/docs/import-export/export-files"
+      },
+      {
+        "text": "MCP Server",
+        "href": "https://cloudconvert.com/docs/integrations/mcp-server"
+      },
+      {
+        "text": "Signed URLs",
+        "href": "https://cloudconvert.com/docs/integrations/signed-urls"
+      },
+      {
+        "text": "Socket API",
+        "href": "https://cloudconvert.com/docs/integrations/socket"
+      },
+      {
+        "text": "SDKs",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#sdks"
+      },
+      {
+        "text": "Integrations",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#integrations"
+      },
+      {
+        "text": "Base URL and Region Endpoints",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#base-url-and-region-endpoints"
+      },
+      {
+        "text": "Sandbox API",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#sandbox-api"
+      },
+      {
+        "text": "Terminology",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#terminology"
+      },
+      {
+        "text": "Jobs & Tasks",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#jobs-tasks"
+      },
+      {
+        "text": "Import & Export Tasks",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#import-export-tasks"
+      },
+      {
+        "text": "Engine & Engine Versions",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#engine-engine-versions"
+      },
+      {
+        "text": "Authentication",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#authentication"
+      },
+      {
+        "text": "API Keys",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#api-keys"
+      },
+      {
+        "text": "Available Scopes",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#available-scopes"
+      },
+      {
+        "text": "OAuth 2.0 Clients",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#oauth-20-clients"
+      },
+      {
+        "text": "Errors and Rate Limiting",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#errors-and-rate-limiting"
+      },
+      {
+        "text": "Rate Limiting",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#rate-limiting"
+      },
+      {
+        "text": "Failed Jobs and Tasks",
+        "href": "https://cloudconvert.com/docs/getting-started/introduction#failed-jobs-and-tasks"
+      },
+      {
+        "text": "About Us",
+        "href": "https://cloudconvert.com/about"
+      },
+      {
+        "text": "Security",
+        "href": "https://cloudconvert.com/security"
+      },
+      {
+        "text": "Blog",
+        "href": "https://cloudconvert.com/blog"
+      },
+      {
+        "text": "Status",
+        "href": "https://status.cloudconvert.com/"
+      },
+      {
+        "text": "Privacy",
+        "href": "https://cloudconvert.com/privacy"
+      },
+      {
+        "text": "Terms",
+        "href": "https://cloudconvert.com/terms"
+      },
+      {
+        "text": "Imprint",
+        "href": "https://cloudconvert.com/about#imprint"
+      },
+      {
+        "text": "Contact Us",
+        "href": "https://cloudconvert.com/contact"
+      }
+    ],
+    "mainClasses": "",
+    "contentStructure": "<!--[--><div class=\"w-full max-w-(--ui-container) mx-auto px-4 sm:px-6 lg:px-8\"><!--[--><div data-slot=\"root\" class=\"flex flex-col lg:grid lg:grid-cols-10 lg:gap-10\"><aside data-slot=\"left\" class=\"hidden overflow-y-auto lg:block lg:max-h-[calc(100vh-var(--ui-header-height))] lg:sticky lg:top-(--ui-header-height) lg:ps-4 lg:-ms-4 lg:pe-6.5 py-4 lg:col-span-2\"><div data-slot=\"container\" class=\"relative\"><!----><!--[--><div></div><!--[--><!----><nav data-slot=\"root\"><ul class=\"isolate -mx-2.5 -mt-1.5\"><!--[--><!--[--><!--[--><li data-state=\"open\" data-disabled=\"\" data-orientation=\"vertical\" data-slot=\"itemWithChildren\" class=\"flex flex-col data-[state=open]:mb-1.5\"><!--[--><!--[--><button type=\"button\" aria-controls=\"\" aria-expanded=\"true\" data-state=\"open\" data-disabled=\"\" disabled=\"\" id=\"reka-accordion-trigger-v-0-1-0\" data-reka-collection-item=\"\" aria-disabled=\"true\" data-orientation=\"vertical\" class=\"group relative w-full px-2.5 py-1.5 before:inset-y-px before:inset-x-0 flex items-center gap-1.5 text-sm before:absolute before:z-[-1] before:rounded-md focus:outline-none focus-visible:outline-none focus-visible:before:outline-3 before:outline-primary/25 text-muted font-semibold data-[state=open]:text-highlighted\"><!--[--><!--[--><!--[--><!--[--><!----><!--]--><span data-slot=\"linkTitle\" class=\"truncate\"><!--[-->Getting Started<!--]--><!----></span><!----><!--]--><!--]--><!--]--></button><div role=\"region\" aria-labelledby=\"reka-accordion-trigger-v-0-1-0\" data-disabled=\"\" data-o"
+  }
+}

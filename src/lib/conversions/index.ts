@@ -3,6 +3,10 @@ import { FORMAT_REGISTRY } from '../registry';
 import { convertImage } from './image';
 import { convertDocument } from './document';
 import { convertData } from './data';
+import { convertMedia } from './media';
+import { convertOffice } from './office';
+import { convertFont } from './font';
+import { convertVectorCad } from './vector-cad';
 import {
   convertArchive,
   convertToArchive,
@@ -18,6 +22,13 @@ export {
   extractTarArchive,
   extractZipArchive,
   convertToArchive,
+  convertMedia,
+  convertOffice,
+  convertDocument,
+  convertImage,
+  convertData,
+  convertFont,
+  convertVectorCad,
 };
 
 export async function convertFile(
@@ -48,12 +59,53 @@ export async function convertFile(
     );
   }
 
-  // Archive routing (including archive sources or archive targets)
-  if (srcDef.category === 'archive' || tgt === 'zip' || tgt === 'tar' || tgt === 'gz') {
+  // 1. Archive routing (including archive sources or archive targets)
+  if (srcDef.category === 'archive' || tgt === 'zip' || tgt === 'tar' || tgt === 'gz' || tgt === 'tgz') {
     return convertArchive(inputBuffer, src, tgt, options, originalFilename);
   }
 
-  // Routing by source category
+  // 2. Media (Audio & Video) routing
+  if (
+    srcDef.category === 'audio' ||
+    srcDef.category === 'video' ||
+    ['mp3', 'wav', 'aac', 'flac', 'ogg', 'mp4', 'webm', 'mkv', 'avi', 'mov'].includes(tgt)
+  ) {
+    return convertMedia(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // 3. Font routing
+  if (srcDef.category === 'font' || ['woff', 'woff2', 'ttf', 'otf', 'eot', 'svgfont'].includes(tgt)) {
+    return convertFont(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // 4. Vector & CAD routing (including EPS and PS)
+  if (
+    src !== 'pdf' &&
+    (srcDef.category === 'vector' ||
+      srcDef.category === 'cad' ||
+      ['eps', 'ps', 'dxf', 'dwg', 'step', 'stp', 'iges', 'igs', 'stl', 'obj'].includes(src) ||
+      ['dxf', 'dwg', 'step', 'stp', 'iges', 'igs', 'stl', 'obj'].includes(tgt))
+  ) {
+    return convertVectorCad(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // 5. Data category routing (CSV, TSV, TAB, JSON, NDJSON, JSONL, YAML, XML)
+  if (srcDef.category === 'data' || ['csv', 'tsv', 'tab', 'ndjson', 'jsonl', 'json', 'yaml', 'yml', 'xml'].includes(src)) {
+    return convertData(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // 6. Office, Ebook, Presentation, and Spreadsheet container routing
+  if (
+    srcDef.category === 'ebook' ||
+    srcDef.category === 'presentation' ||
+    srcDef.category === 'spreadsheet' ||
+    ['docx', 'xlsx', 'pptx', 'epub', 'mobi', 'odp', 'ods', 'odt', 'xls', 'fb2', 'cbz'].includes(src) ||
+    ['docx', 'xlsx', 'epub', 'pptx', 'odp', 'ods', 'odt', 'xls'].includes(tgt)
+  ) {
+    return convertOffice(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // 7. Routing by source category
   switch (srcDef.category) {
     case 'image':
       return convertImage(inputBuffer, tgt, options, originalFilename, src);
@@ -61,10 +113,7 @@ export async function convertFile(
     case 'document':
       return convertDocument(inputBuffer, src, tgt, options, originalFilename);
 
-    case 'data':
-      return convertData(inputBuffer, src, tgt, options, originalFilename);
-
     default:
-      throw new Error(`Category "${srcDef.category}" has no registered conversion handler.`);
+      return convertDocument(inputBuffer, src, tgt, options, originalFilename);
   }
 }

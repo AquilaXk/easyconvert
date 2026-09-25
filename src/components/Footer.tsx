@@ -1,127 +1,128 @@
 'use client';
 
-import React from 'react';
-import { Sparkles, Github, Shield, Heart } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
 
 export default function Footer() {
+  const [isDark, setIsDark] = useState(true);
+
+  useEffect(() => {
+    const isDarkMode = document.documentElement.classList.contains('dark');
+    setIsDark(isDarkMode);
+  }, []);
+
+  const toggleDarkMode = () => {
+    if (isDark) {
+      document.documentElement.classList.remove('dark');
+      localStorage.theme = 'light';
+      setIsDark(false);
+    } else {
+      document.documentElement.classList.add('dark');
+      localStorage.theme = 'dark';
+      setIsDark(true);
+    }
+  };
+
   return (
-    <footer className="border-t border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface transition-colors mt-auto">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-16">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-12">
-          {/* Brand Info */}
-          <div className="space-y-4 md:col-span-1">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-brand-700 flex items-center justify-center text-white shadow-sm">
-                <Sparkles className="w-4 h-4 text-brand-100" />
-              </div>
-              <span className="text-lg font-bold tracking-tight text-brand-950 dark:text-white">
-                <span className="font-normal text-brand-700 dark:text-brand-400">Easy</span>
-                <span>Convert</span>
-              </span>
-            </div>
-            <p className="text-xs text-ink-secondary dark:text-dark-muted leading-relaxed">
-              Universal file conversion service supporting over 200+ formats across images, documents, structured
-              tables, and archives with our signature lavender aesthetic.
-            </p>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-status-successSoft text-status-success">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
-                <span>All Systems Operational</span>
-              </span>
-            </div>
-          </div>
-
-          {/* Tools */}
-          <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-4">
-              Conversion Tools
-            </h4>
-            <ul className="space-y-2.5 text-xs text-ink-secondary dark:text-dark-muted">
-              <li>
-                <a href="#format-directory" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Image Converter (PNG, WebP, JPG)
-                </a>
-              </li>
-              <li>
-                <a href="#format-directory" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Document & PDF Converter
-                </a>
-              </li>
-              <li>
-                <a href="#format-directory" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Data & Table Converter (CSV, JSON)
-                </a>
-              </li>
-              <li>
-                <a href="#format-directory" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  ZIP Archive Creator
-                </a>
-              </li>
-            </ul>
-          </div>
-
-          {/* Developer Resources */}
-          <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-4">
-              Developer & API
-            </h4>
-            <ul className="space-y-2.5 text-xs text-ink-secondary dark:text-dark-muted">
-              <li>
-                <a href="/api/formats" target="_blank" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Format Registry API (/api/formats)
-                </a>
-              </li>
-              <li>
-                <a href="/api/health" target="_blank" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  Health Check API (/api/health)
-                </a>
-              </li>
-              <li>
-                <a href="https://github.com/AquilaXk/easyconvert" target="_blank" rel="noopener noreferrer" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  GitHub Repository
-                </a>
-              </li>
-              <li>
-                <a href="#docs" className="hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                  REST API Documentation
-                </a>
-              </li>
-            </ul>
-          </div>
-
-          {/* Security & Trust */}
-          <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text mb-4">
-              Security & Privacy
-            </h4>
-            <ul className="space-y-2.5 text-xs text-ink-secondary dark:text-dark-muted">
-              <li className="flex items-center gap-1.5">
-                <Shield className="w-3.5 h-3.5 text-status-success" />
-                <span>Zero Data Retention</span>
-              </li>
-              <li>Ephemeral Processing Sandboxes</li>
-              <li>256-bit TLS In-Transit Encryption</li>
-              <li>Fail-Closed Integrity Checks</li>
-            </ul>
-          </div>
+    <footer className="bg-neutral-100/70 dark:bg-[#18191d]/80 border-t border-neutral-200 dark:border-neutral-800 transition-colors mt-auto">
+      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:flex lg:justify-between lg:gap-x-3 lg:items-start lg:py-8">
+        {/* Right Section (order-3): Theme Switch */}
+        <div className="lg:flex-1 flex items-center justify-center lg:justify-end gap-x-1.5 lg:order-3">
+          <button
+            type="button"
+            onClick={toggleDarkMode}
+            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="rounded-md font-medium inline-flex items-center text-sm gap-1.5 text-neutral-500 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200/50 dark:hover:bg-white/5 transition-colors p-1.5 cursor-pointer"
+          >
+            {isDark ? (
+              <svg className="size-4 shrink-0 text-neutral-400 hover:text-white" viewBox="0 0 512 512" fill="currentColor">
+                <path d="M256 0C114.6 0 0 114.6 0 256S114.6 512 256 512c68.8 0 131.3-27.2 177.3-71.4 7.3-7 9.4-17.9 5.3-27.1s-13.7-14.9-23.8-14.1c-4.9 .4-9.8 .6-14.8 .6-101.6 0-184-82.4-184-184 0-72.1 41.5-134.6 102.1-164.8 9.1-4.5 14.3-14.3 13.1-24.4S322.6 8.5 312.7 6.3C294.4 2.2 275.4 0 256 0z" />
+              </svg>
+            ) : (
+              <svg className="size-4 shrink-0 text-neutral-500 hover:text-neutral-900" viewBox="0 0 512 512" fill="currentColor">
+                <path d="M232 488c0 13.3 10.7 24 24 24s24-10.7 24-24l0-56c0-13.3-10.7-24-24-24s-24 10.7-24 24l0 56zm0-408c0 13.3 10.7 24 24 24s24-10.7 24-24l0-56c0-13.3-10.7-24-24-24s-24 10.7-24 24l0 56zM75 75c-9.4 9.4-9.4 24.6 0 33.9l39.6 39.6c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9L108.9 75c-9.4-9.4-24.6-9.4-33.9 0zM363.5 363.5c-9.4 9.4-9.4 24.6 0 33.9L403.1 437c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-39.6-39.6c-9.4-9.4-24.6-9.4-33.9 0zM0 256c0 13.3 10.7 24 24 24l56 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-56 0c-13.3 0-24 10.7-24 24zm408 0c0 13.3 10.7 24 24 24l56 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-56 0c-13.3 0-24 10.7-24 24zM75 437c9.4 9.4 24.6 9.4 33.9 0l39.6-39.6c9.4-9.4 9.4-24.6 0-33.9s-24.6-9.4-33.9 0L75 403.1c-9.4 9.4-9.4 24.6 0 33.9zM363.5 148.5c9.4 9.4 24.6 9.4 33.9 0L437 108.9c9.4-9.4 9.4-24.6 0-33.9s-24.6-9.4-33.9 0l-39.6 39.6c-9.4 9.4-9.4 24.6 0 33.9zM256 368a112 112 0 1 0 0-224 112 112 0 1 0 0 224z" />
+              </svg>
+            )}
+          </button>
         </div>
 
-        {/* Bottom copyright */}
-        <div className="pt-8 border-t border-neutral-border dark:border-dark-border flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-ink-muted">
-          <p>&copy; {new Date().getFullYear()} EasyConvert. All rights reserved.</p>
-          <div className="flex items-center gap-4">
-            <a
-              href="https://github.com/AquilaXk/easyconvert"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 hover:text-brand-700 dark:hover:text-brand-400 transition-colors"
-            >
-              <Github className="w-4 h-4" />
-              <span>AquilaXk/easyconvert</span>
-            </a>
-          </div>
+        {/* Center Section (order-2): 4-Column Navigation */}
+        <div className="lg:mt-0 lg:order-2 flex items-center justify-center mt-8">
+          <nav className="xl:grid xl:gap-8 xl:grid-cols-2">
+            <div className="flex-col lg:grid auto-cols-fr gap-8 xl:col-span-2 grid grid-cols-2 grid-flow-row md:grid-flow-col">
+              <div>
+                <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Company</h3>
+                <ul className="space-y-4 mt-4">
+                  <li>
+                    <a href="/about" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                      About Us
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/security" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                      Security
+                    </a>
+                  </li>
+                </ul>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Resources</h3>
+                <ul className="space-y-4 mt-4">
+                  <li>
+                    <a href="/pricing" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                      Pricing
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/api/v2" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                      Status
+                    </a>
+                  </li>
+                </ul>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Legal</h3>
+                <ul className="space-y-4 mt-4">
+                  <li>
+                    <a href="/privacy" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                      Privacy
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/terms" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                      Terms
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/about#imprint" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                      Imprint
+                    </a>
+                  </li>
+                </ul>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Contact</h3>
+                <ul className="space-y-4 mt-4">
+                  <li>
+                    <a href="/contact" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                      Contact Us
+                    </a>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </nav>
+        </div>
+
+        {/* Left Section (order-1): Copyright and Tagline */}
+        <div className="flex items-center justify-center lg:justify-start lg:flex-1 gap-x-1.5 lg:mt-0 lg:order-1 flex-col lg:items-start mt-8">
+          <div className="text-sm font-normal text-neutral-800 dark:text-neutral-300">© 2026 EasyConvert Inc.</div>
+          <div className="text-sm text-neutral-500 dark:text-neutral-400 mt-2">Universal High-Density File Conversion</div>
         </div>
       </div>
     </footer>
   );
 }
+

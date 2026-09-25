@@ -1,115 +1,151 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
-import { Search, Check, X, FileImage, FileText, Database, Archive } from 'lucide-react';
-import { FormatDefinition, FormatCategory } from '@/lib/types';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { Search, ChevronRight } from 'lucide-react';
+import { FormatDefinition } from '@/lib/types';
 import { getAllFormats } from '@/lib/registry';
 
 interface FormatSelectorProps {
   availableFormats?: FormatDefinition[];
-  selectedFormatId: string;
+  selectedFormatId?: string;
   onSelect: (formatId: string) => void;
   onClose: () => void;
   title?: string;
 }
-
-const CATEGORY_ICONS: Record<FormatCategory, React.ReactNode> = {
-  image: <FileImage className="w-4 h-4" />,
-  document: <FileText className="w-4 h-4" />,
-  data: <Database className="w-4 h-4" />,
-  archive: <Archive className="w-4 h-4" />,
-  audio: <FileText className="w-4 h-4" />,
-  video: <FileImage className="w-4 h-4" />,
-  ebook: <FileText className="w-4 h-4" />,
-};
 
 export default function FormatSelector({
   availableFormats,
   selectedFormatId,
   onSelect,
   onClose,
-  title = 'Select Target Format',
 }: FormatSelectorProps) {
   const [search, setSearch] = useState('');
-  const [activeTab, setActiveTab] = useState<string>('all');
+  const popoverRef = useRef<HTMLDivElement>(null);
 
-  const formats = availableFormats || getAllFormats();
+  const allFormats = availableFormats && availableFormats.length > 0 ? availableFormats : getAllFormats();
 
-  const filteredFormats = useMemo(() => {
-    return formats.filter((f) => {
-      const matchesSearch =
-        f.name.toLowerCase().includes(search.toLowerCase()) ||
-        f.extension.toLowerCase().includes(search.toLowerCase()) ||
-        f.description.toLowerCase().includes(search.toLowerCase());
-      const matchesTab = activeTab === 'all' || f.category === activeTab;
-      return matchesSearch && matchesTab;
+  // Group formats by category
+  const categoriesWithFormats = useMemo(() => {
+    const map = new Map<string, FormatDefinition[]>();
+    allFormats.forEach((f) => {
+      const cat = f.category || 'document';
+      if (!map.has(cat)) {
+        map.set(cat, []);
+      }
+      map.get(cat)!.push(f);
     });
-  }, [formats, search, activeTab]);
+    return map;
+  }, [allFormats]);
 
+  // Alphabetically sorted category list for format selection popover
   const categories = useMemo(() => {
-    const cats = new Set<string>();
-    formats.forEach((f) => cats.add(f.category));
-    return ['all', ...Array.from(cats)];
-  }, [formats]);
+    return Array.from(categoriesWithFormats.keys()).sort((a, b) => a.localeCompare(b));
+  }, [categoriesWithFormats]);
+
+  // Determine initial active category based on selectedFormatId
+  const initialCategory = useMemo(() => {
+    if (selectedFormatId) {
+      const found = allFormats.find((f) => f.id.toLowerCase() === selectedFormatId.toLowerCase());
+      if (found && categories.includes(found.category)) {
+        return found.category;
+      }
+    }
+    if (categories.includes('document')) return 'document';
+    return categories[0] || 'document';
+  }, [selectedFormatId, allFormats, categories]);
+
+  const [activeCategory, setActiveCategory] = useState<string>(initialCategory);
+
+  useEffect(() => {
+    setActiveCategory(initialCategory);
+  }, [initialCategory]);
+
+  // Close on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  // Capitalize category name (e.g. document -> Document, cad -> Cad)
+  const formatCategoryName = (cat: string) => {
+    if (cat.toLowerCase() === 'cad') return 'Cad';
+    if (cat.toLowerCase() === 'ebook') return 'Ebook';
+    return cat.charAt(0).toUpperCase() + cat.slice(1).toLowerCase();
+  };
+
+  // Formats to display in right column
+  const displayedFormats = useMemo(() => {
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      return allFormats.filter(
+        (f) =>
+          f.id.toLowerCase().includes(q) ||
+          f.name.toLowerCase().includes(q) ||
+          f.extension.toLowerCase().includes(q)
+      );
+    }
+    return categoriesWithFormats.get(activeCategory) || [];
+  }, [search, activeCategory, allFormats, categoriesWithFormats]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-950/40 backdrop-blur-sm animate-in fade-in duration-150">
-      <div className="relative w-full max-w-lg bg-white dark:bg-dark-surface rounded-2xl shadow-2xl border border-neutral-border dark:border-dark-border overflow-hidden flex flex-col max-h-[85vh]">
-        {/* Header */}
-        <div className="p-4 sm:p-5 border-b border-neutral-border dark:border-dark-border flex items-center justify-between">
-          <h3 className="text-lg font-bold text-brand-950 dark:text-dark-text">{title}</h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-ink-muted hover:text-brand-950 dark:hover:text-dark-text hover:bg-neutral-subtle dark:hover:bg-dark-elevated transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+    <div
+      ref={popoverRef}
+      onClick={(e) => e.stopPropagation()}
+      className="w-[420px] max-w-[95vw] bg-[#18191d] border border-neutral-800 rounded-lg shadow-2xl overflow-hidden flex flex-col text-white animate-in zoom-in-95 duration-150 text-left select-none"
+    >
+      {/* Top: Search Format Input matching live_cc_format_popover.png */}
+      <div className="flex items-center px-3 py-2 border-b border-neutral-800 bg-[#18191d]">
+        <Search className="w-4 h-4 text-neutral-500 shrink-0 mr-2" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search Format"
+          autoFocus
+          className="bg-transparent text-sm text-white placeholder-neutral-500 outline-none w-full"
+        />
+      </div>
 
-        {/* Search Input */}
-        <div className="p-4 border-b border-neutral-border dark:border-dark-border bg-neutral-scaffold/50 dark:bg-dark-scaffold/50">
-          <div className="relative">
-            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-muted" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search formats (e.g., pdf, webp, csv, json)..."
-              autoFocus
-              className="w-full pl-10 pr-4 py-2 text-sm bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500 text-brand-950 dark:text-dark-text placeholder:text-ink-muted"
-            />
+      {/* Two columns body */}
+      <div className="flex h-72">
+        {/* Left column (width ~140px, border-r border-neutral-800 py-1): Category list */}
+        {!search && (
+          <div className="w-[140px] border-r border-neutral-800 py-1 overflow-y-auto shrink-0">
+            {categories.map((cat) => {
+              const isActive = cat.toLowerCase() === activeCategory.toLowerCase();
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setActiveCategory(cat)}
+                  onMouseEnter={() => setActiveCategory(cat)}
+                  className={`flex items-center justify-between w-full px-3 py-1.5 text-xs text-left transition-colors ${
+                    isActive
+                      ? 'bg-neutral-800 text-white font-medium'
+                      : 'text-neutral-300 hover:bg-neutral-800/50 hover:text-white'
+                  }`}
+                >
+                  <span>{formatCategoryName(cat)}</span>
+                  {isActive && <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />}
+                </button>
+              );
+            })}
           </div>
+        )}
 
-          {/* Category Tabs */}
-          <div className="flex gap-1.5 mt-3 overflow-x-auto pb-1 scrollbar-none">
-            {categories.map((cat) => (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setActiveTab(cat)}
-                className={`px-3 py-1 text-xs font-semibold rounded-lg capitalize whitespace-nowrap transition-colors ${
-                  activeTab === cat
-                    ? 'bg-brand-700 text-white shadow-sm'
-                    : 'bg-white dark:bg-dark-surface text-ink-secondary dark:text-dark-muted hover:bg-brand-100 dark:hover:bg-dark-elevated'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Formats Grid */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {filteredFormats.length === 0 ? (
-            <div className="py-12 text-center text-ink-muted">
-              <p className="text-sm">No formats found matching &quot;{search}&quot;</p>
+        {/* Right column (padding p-3, grid grid-cols-3 gap-2): Format badges */}
+        <div className="flex-1 p-3 overflow-y-auto">
+          {displayedFormats.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-neutral-400 text-xs text-center py-8">
+              No formats matching &quot;{search}&quot;
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {filteredFormats.map((fmt) => {
-                const isSelected = fmt.id.toLowerCase() === selectedFormatId.toLowerCase();
+            <div className="grid grid-cols-3 gap-2">
+              {displayedFormats.map((fmt) => {
+                const isSelected = selectedFormatId?.toLowerCase() === fmt.id.toLowerCase();
                 return (
                   <button
                     key={fmt.id}
@@ -118,30 +154,13 @@ export default function FormatSelector({
                       onSelect(fmt.id);
                       onClose();
                     }}
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-left transition-all ${
+                    className={`px-3 py-1.5 text-xs font-mono font-semibold rounded text-center border transition-all ${
                       isSelected
-                        ? 'border-brand-600 bg-brand-50 dark:bg-brand-950/60 ring-1 ring-brand-600'
-                        : 'border-neutral-border dark:border-dark-border hover:border-brand-300 dark:hover:border-brand-800 hover:bg-brand-50/50 dark:hover:bg-dark-elevated'
+                        ? 'bg-[#5C6BC0] border-[#5C6BC0] text-white shadow-md'
+                        : 'bg-[#212529] hover:bg-neutral-700 text-white border-neutral-700/60'
                     }`}
                   >
-                    <div
-                      className={`p-1.5 rounded-lg shrink-0 mt-0.5 ${
-                        isSelected
-                          ? 'bg-brand-700 text-white'
-                          : 'bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-300'
-                      }`}
-                    >
-                      {CATEGORY_ICONS[fmt.category]}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold uppercase text-brand-950 dark:text-dark-text truncate">
-                          {fmt.name}
-                        </span>
-                        {isSelected && <Check className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400 shrink-0" />}
-                      </div>
-                      <p className="text-[11px] text-ink-muted capitalize truncate">{fmt.category}</p>
-                    </div>
+                    {fmt.extension.toUpperCase()}
                   </button>
                 );
               })}

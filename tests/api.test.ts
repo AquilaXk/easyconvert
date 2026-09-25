@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 import { GET as getFormats } from '../src/app/api/formats/route';
 import { GET as getHealth } from '../src/app/api/health/route';
 import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
+import { POST as convertRoute } from '../src/app/api/convert/route';
 
 describe('API Route Logic Tests', () => {
   it('GET /api/formats returns valid response structure', async () => {
@@ -52,5 +53,22 @@ describe('API Route Logic Tests', () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.success).toBe(false);
+  });
+
+  it('POST /api/convert executes zero-retention stream conversion', async () => {
+    const formData = new FormData();
+    formData.append('file', new File(['col1,col2\nval1,val2'], 'test.csv', { type: 'text/csv' }));
+    formData.append('targetFormat', 'ods');
+
+    const req = new NextRequest('http://localhost/api/convert', {
+      method: 'POST',
+      body: formData,
+    });
+
+    const res = await convertRoute(req);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-zero-data-retention')).toBe('true');
+    expect(res.headers.get('x-storage-footprint')).toBe('0-bytes');
+    expect(res.headers.get('content-type')).toBe('application/vnd.oasis.opendocument.spreadsheet');
   });
 });
