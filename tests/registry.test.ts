@@ -5,7 +5,7 @@ import {
   getFormatByExtension,
   getAvailableTargetFormats,
   getAllFormats,
-} from '../src/lib/registry';
+} from '@/lib/registry';
 
 describe('Format Registry & Lookup Tests', () => {
   it('should have all key format categories defined', () => {

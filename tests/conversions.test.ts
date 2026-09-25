@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { convertFile, createZipArchive } from '../src/lib/conversions';
+import { convertFile, createZipArchive } from '@/lib/conversions/index';
 
 describe('Conversion Engine Integration Tests', () => {
   // Helper to generate a valid test PNG image
