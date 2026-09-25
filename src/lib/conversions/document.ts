@@ -1,70 +1,68 @@
-import zlib from 'zlib';
+import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult } from '../types';
+import { convertOffice, extractTextFromRtf } from './office';
+import { performOcr } from './ocr';
+import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
 
-export function extractTextFromPdf(pdfBuffer: Buffer): string {
-  const binary = pdfBuffer.toString('binary');
-  const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
-  let match: RegExpExecArray | null;
-  const textPieces: string[] = [];
+export { extractTextFromPdf, extractEmbeddedImageFromPdf };
 
-  while ((match = streamRegex.exec(binary)) !== null) {
-    let content = '';
-    const rawStream = Buffer.from(match[1], 'binary');
-    try {
-      content = zlib.inflateSync(rawStream).toString('utf-8');
-    } catch {
-      try {
-        content = zlib.inflateRawSync(rawStream).toString('utf-8');
-      } catch {
-        content = match[1];
+/**
+ * Extracts plain text from ODT OpenDocument Text zip archive
+ */
+export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
+  try {
+    const zip = await JSZip.loadAsync(buffer);
+    const contentXml = zip.file('content.xml');
+    if (contentXml) {
+      const xml = await contentXml.async('text');
+      const paragraphs: string[] = [];
+      const pRegex = /<text:(?:p|h)[^>]*>([\s\S]*?)<\/text:(?:p|h)>/g;
+      let m: RegExpExecArray | null;
+      while ((m = pRegex.exec(xml)) !== null) {
+        const text = m[1].replace(/<[^>]+>/g, '').trim();
+        if (text) paragraphs.push(text);
       }
+      return paragraphs.join('\n\n');
     }
+  } catch {
+    // fallback
+  }
+  return buffer.toString('utf-8');
+}
 
-    const btRegex = /BT[\s\S]*?ET/g;
-    let btMatch: RegExpExecArray | null;
-    while ((btMatch = btRegex.exec(content)) !== null) {
-      const block = btMatch[0];
-      const tjRegex = /\[(.*?)\]\s*TJ/g;
-      let tjMatch: RegExpExecArray | null;
-      while ((tjMatch = tjRegex.exec(block)) !== null) {
-        const inner = tjMatch[1];
-        const itemRegex = /\((.*?)\)|<([0-9a-fA-F]+)>/g;
-        let itemMatch: RegExpExecArray | null;
-        let line = '';
-        while ((itemMatch = itemRegex.exec(inner)) !== null) {
-          if (itemMatch[1] !== undefined) {
-            line += itemMatch[1].replace(/\\([()\\])/g, '$1');
-          } else if (itemMatch[2] !== undefined) {
-            const hex = itemMatch[2];
-            let str = '';
-            for (let i = 0; i < hex.length; i += 2) {
-              str += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
-            }
-            line += str;
-          }
-        }
-        if (line.trim()) textPieces.push(line);
-      }
-
-      const singleTjRegex = /\((.*?)\)\s*Tj|<([0-9a-fA-F]+)>\s*Tj/g;
-      let sMatch: RegExpExecArray | null;
-      while ((sMatch = singleTjRegex.exec(block)) !== null) {
-        if (sMatch[1] !== undefined) {
-          textPieces.push(sMatch[1].replace(/\\([()\\])/g, '$1'));
-        } else if (sMatch[2] !== undefined) {
-          const hex = sMatch[2];
-          let str = '';
-          for (let i = 0; i < hex.length; i += 2) {
-            str += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
-          }
-          textPieces.push(str);
-        }
-      }
+/**
+ * Extracts readable text streams from binary legacy DOC (Word) files
+ */
+export function extractTextFromDoc(buffer: Buffer): string {
+  const strings: string[] = [];
+  let curr = '';
+  for (let i = 0; i < buffer.length; i++) {
+    const byte = buffer[i];
+    if (byte >= 32 && byte <= 126) {
+      curr += String.fromCharCode(byte);
+    } else if (byte === 10 || byte === 13) {
+      if (curr.trim().length >= 4) strings.push(curr.trim());
+      curr = '';
+    } else {
+      if (curr.trim().length >= 5) strings.push(curr.trim());
+      curr = '';
     }
   }
+  if (curr.trim().length >= 4) strings.push(curr.trim());
+  return strings.join('\n\n') || 'Extracted document content.';
+}
 
-  return textPieces.join('\n').trim() || 'No extractable text found in PDF document.';
+/**
+ * Strips LaTeX macro commands
+ */
+export function extractTextFromTex(tex: string): string {
+  return tex
+    .replace(/\\(?:section|chapter|subsection)\*?\{([^}]+)\}/g, '$1\n\n')
+    .replace(/\\[a-zA-Z]+(?:\[[^\]]*\])?(?:\{([^}]*)\})?/g, '$1 ')
+    .replace(/[{}]/g, '')
+    .replace(/\n\s*\n/g, '\n\n')
+    .trim();
 }
 
 export async function convertDocument(
@@ -78,9 +76,37 @@ export async function convertDocument(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
+  // Route Office formats to office engine
+  if (
+    ['docx', 'xlsx', 'pptx', 'epub'].includes(src) ||
+    ['docx', 'xlsx', 'epub', 'pptx'].includes(tgt)
+  ) {
+    return convertOffice(inputBuffer, src, tgt, options, originalFilename);
+  }
+
   // PDF as source format
   if (src === 'pdf') {
-    const extractedText = extractTextFromPdf(inputBuffer);
+    let extractedText = extractTextFromPdf(inputBuffer);
+    let ocrInfo: { text?: string; confidence?: number } = {};
+
+    // If scanned document or OCR is requested
+    const isScanned = extractedText === 'No extractable text found in PDF document.';
+    if (options.ocrEnabled || isScanned) {
+      const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
+      if (embeddedImg) {
+        const ocr = await performOcr(embeddedImg, options.ocrLanguage);
+        if (ocr.text) {
+          extractedText = ocr.text;
+          ocrInfo = { text: ocr.text, confidence: ocr.confidence };
+        }
+      } else if (isScanned) {
+        const ocr = await performOcr(inputBuffer, options.ocrLanguage);
+        if (ocr.text) {
+          extractedText = ocr.text;
+          ocrInfo = { text: ocr.text, confidence: ocr.confidence };
+        }
+      }
+    }
 
     if (tgt === 'txt') {
       const buffer = Buffer.from(extractedText, 'utf-8');
@@ -89,6 +115,8 @@ export async function convertDocument(
         mimeType: 'text/plain',
         filename: `${baseName}.txt`,
         size: buffer.length,
+        ocrExtractedText: ocrInfo.text,
+        ocrConfidence: ocrInfo.confidence,
       };
     }
 
@@ -104,6 +132,8 @@ export async function convertDocument(
         mimeType: 'text/html',
         filename: `${baseName}.html`,
         size: buffer.length,
+        ocrExtractedText: ocrInfo.text,
+        ocrConfidence: ocrInfo.confidence,
       };
     }
 
@@ -114,20 +144,67 @@ export async function convertDocument(
         mimeType: 'text/markdown',
         filename: `${baseName}.md`,
         size: buffer.length,
+        ocrExtractedText: ocrInfo.text,
+        ocrConfidence: ocrInfo.confidence,
+      };
+    }
+
+    if (tgt === 'pdf') {
+      return {
+        buffer: inputBuffer,
+        mimeType: 'application/pdf',
+        filename: `${baseName}.pdf`,
+        size: inputBuffer.length,
       };
     }
   }
 
-  const textContent = inputBuffer.toString('utf-8');
+  // Extract text representation according to source format
+  let textContent = '';
+  if (src === 'rtf') {
+    textContent = extractTextFromRtf(inputBuffer.toString('utf-8'));
+  } else if (src === 'odt') {
+    textContent = await extractTextFromOdt(inputBuffer);
+  } else if (src === 'doc') {
+    textContent = extractTextFromDoc(inputBuffer);
+  } else if (src === 'tex') {
+    textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
+  } else {
+    textContent = inputBuffer.toString('utf-8');
+  }
 
   // Convert to PDF
   if (tgt === 'pdf') {
     return generatePdfFromText(textContent, src, options, baseName);
   }
 
-  // Markdown -> HTML
-  if (src === 'md' && tgt === 'html') {
-    const html = markdownToHtml(textContent, baseName);
+  // Convert to Plain Text
+  if (tgt === 'txt') {
+    const cleanText =
+      src === 'html'
+        ? stripHtmlTags(textContent)
+        : src === 'md'
+        ? stripMarkdownSyntax(textContent)
+        : textContent;
+    const buffer = Buffer.from(cleanText, 'utf-8');
+    return {
+      buffer,
+      mimeType: 'text/plain',
+      filename: `${baseName}.txt`,
+      size: buffer.length,
+    };
+  }
+
+  // Convert to HTML
+  if (tgt === 'html') {
+    const html =
+      src === 'md'
+        ? markdownToHtml(textContent, baseName)
+        : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+            baseName
+          )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; color:#1F2340; }h1{color:#5C6BC0;}</style></head><body><h1>${escapeHtml(
+            baseName
+          )}</h1><pre>${escapeHtml(textContent)}</pre></body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
     return {
       buffer,
@@ -137,61 +214,10 @@ export async function convertDocument(
     };
   }
 
-  // HTML -> Markdown
-  if (src === 'html' && tgt === 'md') {
-    const md = htmlToMarkdown(textContent);
+  // Convert to Markdown
+  if (tgt === 'md') {
+    const md = src === 'html' ? htmlToMarkdown(textContent) : textContent;
     const buffer = Buffer.from(md, 'utf-8');
-    return {
-      buffer,
-      mimeType: 'text/markdown',
-      filename: `${baseName}.md`,
-      size: buffer.length,
-    };
-  }
-
-  // HTML -> Plain text
-  if (src === 'html' && tgt === 'txt') {
-    const text = stripHtmlTags(textContent);
-    const buffer = Buffer.from(text, 'utf-8');
-    return {
-      buffer,
-      mimeType: 'text/plain',
-      filename: `${baseName}.txt`,
-      size: buffer.length,
-    };
-  }
-
-  // Markdown -> Plain text
-  if (src === 'md' && tgt === 'txt') {
-    const text = stripMarkdownSyntax(textContent);
-    const buffer = Buffer.from(text, 'utf-8');
-    return {
-      buffer,
-      mimeType: 'text/plain',
-      filename: `${baseName}.txt`,
-      size: buffer.length,
-    };
-  }
-
-  // Plain text -> HTML
-  if (src === 'txt' && tgt === 'html') {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
-      baseName
-    )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; }</style></head><body><pre>${escapeHtml(
-      textContent
-    )}</pre></body></html>`;
-    const buffer = Buffer.from(html, 'utf-8');
-    return {
-      buffer,
-      mimeType: 'text/html',
-      filename: `${baseName}.html`,
-      size: buffer.length,
-    };
-  }
-
-  // Plain text -> Markdown
-  if (src === 'txt' && tgt === 'md') {
-    const buffer = Buffer.from(textContent, 'utf-8');
     return {
       buffer,
       mimeType: 'text/markdown',
@@ -204,10 +230,32 @@ export async function convertDocument(
 }
 
 function markdownToHtml(md: string, title: string): string {
-  let html = md
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+  // Convert markdown tables
+  let processed = md;
+  const tableRegex = /((?:\|[^\n]+\|\r?\n)+)/g;
+  processed = processed.replace(tableRegex, (match) => {
+    const lines = match.trim().split(/\r?\n/).map((l) => l.trim());
+    if (lines.length < 2) return match;
+    const headerRow = lines[0].split('|').slice(1, -1).map((c) => c.trim());
+    const dataRows = lines.slice(2).map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
+
+    let tableHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;margin:1.5rem 0;width:100%;border-color:#CCD2FC;">\n<thead><tr>';
+    headerRow.forEach((h) => {
+      tableHtml += `<th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(h)}</th>`;
+    });
+    tableHtml += '</tr></thead>\n<tbody>';
+    dataRows.forEach((r) => {
+      tableHtml += '<tr>';
+      r.forEach((c) => {
+        tableHtml += `<td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>`;
+      });
+      tableHtml += '</tr>\n';
+    });
+    tableHtml += '</tbody></table>\n';
+    return tableHtml;
+  });
+
+  let html = processed
     .replace(/^### (.*$)/gim, '<h3>$1</h3>')
     .replace(/^## (.*$)/gim, '<h2>$1</h2>')
     .replace(/^# (.*$)/gim, '<h1>$1</h1>')
@@ -285,13 +333,6 @@ async function generatePdfFromText(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const content =
-    sourceType === 'html'
-      ? stripHtmlTags(text)
-      : sourceType === 'md'
-      ? stripMarkdownSyntax(text)
-      : text;
-
   return new Promise((resolve, reject) => {
     const isLandscape = options.orientation === 'landscape';
     const doc = new PDFDocument({
@@ -325,14 +366,61 @@ async function generatePdfFromText(
     doc.fillColor('#1F2340').fontSize(18).text(baseName, { underline: false });
     doc.moveDown(0.5);
 
-    // Document Body
-    doc.fillColor('#4D536B').fontSize(11).lineGap(4).text(content);
+    // Check for markdown tables if source is md
+    const hasTable = sourceType === 'md' && /\|[^\n]+\|/.test(text);
+
+    if (hasTable && options.preserveTables !== false) {
+      // Parse markdown sections and tables
+      const lines = text.split(/\r?\n/);
+      let inTable = false;
+      let tableRows: string[][] = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('|') && line.endsWith('|')) {
+          if (/^\|[\s\-:]+\|\s*$/.test(line)) {
+            // Separator row
+            continue;
+          }
+          const cells = line.split('|').slice(1, -1).map((c) => c.trim());
+          tableRows.push(cells);
+          inTable = true;
+        } else {
+          if (inTable && tableRows.length > 0) {
+            // Render table
+            renderPdfTable(doc, tableRows);
+            tableRows = [];
+            inTable = false;
+          }
+          if (line.startsWith('# ')) {
+            doc.moveDown(0.5).fillColor('#5C6BC0').fontSize(14).text(line.replace(/^#+\s*/, ''));
+          } else if (line.startsWith('## ')) {
+            doc.moveDown(0.4).fillColor('#5C6BC0').fontSize(12).text(line.replace(/^#+\s*/, ''));
+          } else if (line.length > 0) {
+            doc.fillColor('#4D536B').fontSize(10).lineGap(3).text(line);
+          }
+        }
+      }
+      if (inTable && tableRows.length > 0) {
+        renderPdfTable(doc, tableRows);
+      }
+    } else {
+      const content =
+        sourceType === 'html'
+          ? stripHtmlTags(text)
+          : sourceType === 'md'
+          ? stripMarkdownSyntax(text)
+          : text;
+
+      // Document Body
+      doc.fillColor('#4D536B').fontSize(10.5).lineGap(4).text(content);
+    }
 
     // Footer
     const range = doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {
       doc.switchToPage(i);
-      doc.fillColor('#697089').fontSize(9).text(
+      doc.fillColor('#697089').fontSize(8.5).text(
         `Generated with EasyConvert — Page ${i + 1} of ${range.count}`,
         50,
         doc.page.height - 40,
@@ -342,4 +430,36 @@ async function generatePdfFromText(
 
     doc.end();
   });
+}
+
+function renderPdfTable(doc: any, rows: string[][]) {
+  if (rows.length === 0) return;
+  const colCount = Math.max(...rows.map((r) => r.length));
+  const tableWidth = doc.page.width - 100;
+  const colWidth = tableWidth / Math.max(1, colCount);
+
+  doc.moveDown(0.5);
+
+  rows.forEach((row, rIdx) => {
+    const y = doc.y;
+    if (y > doc.page.height - 70) {
+      doc.addPage();
+    }
+    if (rIdx === 0) {
+      doc.rect(50, doc.y, tableWidth, 20).fill('#F0F2FE');
+      doc.fillColor('#1F2340').fontSize(9);
+    } else {
+      doc.fillColor('#4D536B').fontSize(8.5);
+    }
+
+    row.forEach((cell, cIdx) => {
+      doc.text(cell, 55 + cIdx * colWidth, y + 4, {
+        width: colWidth - 10,
+        lineBreak: false,
+      });
+    });
+    doc.y = y + 20;
+  });
+
+  doc.moveDown(0.5);
 }

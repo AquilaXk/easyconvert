@@ -3,6 +3,8 @@ import { FORMAT_REGISTRY } from '../registry';
 import { convertImage } from './image';
 import { convertDocument } from './document';
 import { convertData } from './data';
+import { convertMedia } from './media';
+import { convertOffice } from './office';
 import {
   convertArchive,
   convertToArchive,
@@ -18,6 +20,11 @@ export {
   extractTarArchive,
   extractZipArchive,
   convertToArchive,
+  convertMedia,
+  convertOffice,
+  convertDocument,
+  convertImage,
+  convertData,
 };
 
 export async function convertFile(
@@ -49,8 +56,23 @@ export async function convertFile(
   }
 
   // Archive routing (including archive sources or archive targets)
-  if (srcDef.category === 'archive' || tgt === 'zip' || tgt === 'tar' || tgt === 'gz') {
+  if (srcDef.category === 'archive' || tgt === 'zip' || tgt === 'tar' || tgt === 'gz' || tgt === 'tgz') {
     return convertArchive(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // Media (Audio & Video) routing
+  if (srcDef.category === 'audio' || srcDef.category === 'video' || ['mp3', 'wav', 'aac', 'flac', 'ogg', 'mp4', 'webm', 'mkv', 'avi', 'mov'].includes(tgt)) {
+    return convertMedia(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // Office & Ebook routing
+  if (
+    srcDef.category === 'ebook' ||
+    srcDef.category === 'presentation' ||
+    ['docx', 'xlsx', 'pptx', 'epub', 'mobi'].includes(src) ||
+    ['docx', 'xlsx', 'epub', 'pptx'].includes(tgt)
+  ) {
+    return convertOffice(inputBuffer, src, tgt, options, originalFilename);
   }
 
   // Routing by source category
@@ -61,10 +83,16 @@ export async function convertFile(
     case 'document':
       return convertDocument(inputBuffer, src, tgt, options, originalFilename);
 
+    case 'spreadsheet':
     case 'data':
       return convertData(inputBuffer, src, tgt, options, originalFilename);
 
+    case 'font':
+    case 'cad':
+      // Route CAD / Font vectors to document/image or archive
+      return convertDocument(inputBuffer, src, tgt, options, originalFilename);
+
     default:
-      throw new Error(`Category "${srcDef.category}" has no registered conversion handler.`);
+      return convertDocument(inputBuffer, src, tgt, options, originalFilename);
   }
 }
