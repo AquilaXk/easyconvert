@@ -99,6 +99,17 @@ body {
   }
 }
 
+@keyframes card-flip {
+  0% {
+    opacity: 0;
+    transform: rotateX(-70deg) translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: rotateX(0deg) translateY(0px);
+  }
+}
+
 .animate-orbit-slow {
   animation: 90s linear 0s infinite normal none running orbit-spin;
 }
@@ -117,6 +128,12 @@ body {
 
 .animate-output-pulse {
   animation: 3s ease-in-out 0s infinite normal none running output-pulse;
+}
+
+.animate-card-flip {
+  animation: 0.45s cubic-bezier(0.34, 1.4, 0.6, 1) 0s 1 normal both running card-flip;
+  transform-style: preserve-3d;
+  perspective: 600px;
 }
 
 /* Pricing Volume Slider */

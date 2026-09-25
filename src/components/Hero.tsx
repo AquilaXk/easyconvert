@@ -235,7 +235,10 @@ export default function Hero({
                       className="group/card relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_12px_30px_rgba(0,0,0,0.45)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9383a]/60 active:translate-y-0"
                       aria-label={`Input format: ${sourceFormat.toUpperCase()}. Click to change.`}
                     >
-                      <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 px-2">
+                      <div
+                        key={sourceFormat}
+                        className="animate-card-flip relative flex h-full w-full flex-col items-center justify-center gap-2 px-2"
+                      >
                         <div className="transition-transform duration-300 group-hover/card:scale-110">
                           {getFormatIcon(sourceFormat, false)}
                         </div>
@@ -317,7 +320,10 @@ export default function Hero({
                       className="group/card relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-[#d9383a]/35 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_32px_rgba(217,56,58,0.22)] backdrop-blur-md transition duration-300 ease-out animate-output-pulse hover:-translate-y-0.5 hover:border-[#d9383a]/55 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_14px_38px_rgba(217,56,58,0.35)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9383a]/60 active:translate-y-0"
                       aria-label={`Output format: ${targetFormat.toUpperCase()}. Click to change.`}
                     >
-                      <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 px-2">
+                      <div
+                        key={targetFormat}
+                        className="animate-card-flip relative flex h-full w-full flex-col items-center justify-center gap-2 px-2"
+                      >
                         <div className="transition-transform duration-300 group-hover/card:scale-110">
                           {getFormatIcon(targetFormat, true)}
                         </div>
