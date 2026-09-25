@@ -101,11 +101,11 @@ export default function ConversionQueue({
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
   return (
-    <div className="w-full bg-white dark:bg-dark-surface rounded-2xl border border-neutral-border dark:border-dark-border shadow-md overflow-hidden">
+    <div className="w-full bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200/80 dark:border-white/10 shadow-2xl ring-1 ring-black/[0.04] dark:ring-white/[0.06] overflow-hidden">
       {/* Table Header with Batch Target Action */}
-      <div className="p-4 border-b border-neutral-border dark:border-dark-border flex flex-wrap items-center justify-between gap-3 bg-neutral-scaffold/60 dark:bg-dark-scaffold/60">
+      <div className="p-4 border-b border-neutral-200 dark:border-white/10 flex flex-wrap items-center justify-between gap-3 bg-neutral-50 dark:bg-white/[0.02]">
         <div className="flex items-center gap-2.5">
-          <span className="text-xs font-bold uppercase tracking-wider text-brand-950 dark:text-dark-text">
+          <span className="text-xs font-bold uppercase tracking-wider text-neutral-900 dark:text-white">
             Files Queue
           </span>
           <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-brand-100 dark:bg-brand-950 text-brand-700 dark:text-brand-300">
@@ -119,17 +119,17 @@ export default function ConversionQueue({
             <button
               type="button"
               onClick={() => setIsBatchSelectorOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-elevated hover:border-brand-500 text-brand-950 dark:text-dark-text transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-200 dark:border-white/10 bg-white dark:bg-neutral-800 hover:border-brand-500 text-neutral-900 dark:text-white transition-colors"
             >
-              <span className="text-ink-muted">Convert all to:</span>
-              <ChevronDown className="w-3 h-3 text-ink-muted" />
+              <span className="text-neutral-500 dark:text-neutral-400">Convert all to:</span>
+              <ChevronDown className="w-3 h-3 text-neutral-400" />
             </button>
           )}
 
           <button
             type="button"
             onClick={onClearAll}
-            className="text-xs font-semibold text-ink-muted hover:text-status-danger transition-colors"
+            className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 hover:text-red-500 transition-colors"
           >
             Clear All
           </button>
@@ -137,7 +137,7 @@ export default function ConversionQueue({
       </div>
 
       {/* Items List (High Density) */}
-      <div className="divide-y divide-neutral-border dark:divide-dark-border">
+      <div className="divide-y divide-neutral-200 dark:divide-white/10">
         {items.map((item) => {
           return (
             <div
@@ -265,11 +265,11 @@ export default function ConversionQueue({
       </div>
 
       {/* Bottom Sticky Action Bar */}
-      <div className="p-3.5 sm:px-5 bg-neutral-scaffold/80 dark:bg-dark-scaffold/80 border-t border-neutral-border dark:border-dark-border flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div className="p-3.5 sm:px-5 bg-neutral-50 dark:bg-white/[0.02] border-t border-neutral-200 dark:border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3">
         <button
           type="button"
           onClick={onAddMoreFiles}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-brand-700 dark:text-brand-300 bg-white dark:bg-dark-surface border border-brand-300 dark:border-brand-800 hover:bg-brand-50 dark:hover:bg-dark-elevated rounded-lg shadow-sm transition-colors w-full sm:w-auto justify-center"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200 bg-white dark:bg-neutral-800 border border-neutral-300 dark:border-white/10 hover:border-brand-500 rounded-lg shadow-sm transition-colors w-full sm:w-auto justify-center"
         >
           <Plus className="w-3.5 h-3.5" />
           <span>Add more Files</span>
