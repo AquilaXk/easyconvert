@@ -36,7 +36,7 @@ export default function Hero({
   categoryTitle,
   categoryDescription,
 }: HeroProps) {
-  // Default to PDF to DOCX matching live CloudConvert hero defaults
+  // Default to PDF to DOCX as standard format conversion pair
   const [sourceFormat, setSourceFormat] = useState(activeSourceFormat || 'pdf');
   const [targetFormat, setTargetFormat] = useState(activeTargetFormat || 'docx');
   const [isSourceSelectorOpen, setIsSourceSelectorOpen] = useState(false);
@@ -128,7 +128,7 @@ export default function Hero({
     }
   };
 
-  // Dynamic titles matching live CloudConvert behavior
+  // Dynamic titles based on active source and target formats
   const getHeroTitle = () => {
     if (categoryTitle) return categoryTitle;
     if (activeSourceFormat && (!targetFormat || targetFormat.toLowerCase() === 'any')) {

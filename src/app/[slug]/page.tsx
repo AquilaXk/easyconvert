@@ -457,7 +457,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
           </section>
         )}
 
-        {/* 1:1 CONVERSION TYPES Grids matching CloudConvert */}
+        {/* Conversion Type Grids */}
         {queue.length === 0 && (
           <section className="max-w-5xl mx-auto px-4 sm:px-6 mb-20 space-y-12">
             {/* Convert FROM [Source] */}

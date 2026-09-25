@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
@@ -39,32 +40,47 @@ export async function convertOffice(
     return convertOdpSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 5. Other presentation sources (ppt, potx, key)
-  if (['ppt', 'potx', 'key', 'odp'].includes(src)) {
+  // 5. ODS (OpenDocument Spreadsheet) Source
+  if (src === 'ods') {
+    return convertOdsSource(inputBuffer, tgt, options, baseName);
+  }
+
+  // 6. XLS Source
+  if (src === 'xls') {
+    return convertXlsSource(inputBuffer, tgt, options, baseName);
+  }
+
+  // 7. ODT (OpenDocument Text) Source
+  if (src === 'odt') {
+    return convertOdtSource(inputBuffer, tgt, options, baseName);
+  }
+
+  // 8. Other presentation sources (ppt, potx, key)
+  if (['ppt', 'potx', 'key'].includes(src)) {
     return convertGenericPresentationSource(inputBuffer, src, tgt, options, baseName);
   }
 
-  // 6. EPUB Source
+  // 9. EPUB Source
   if (src === 'epub') {
     return convertEpubSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 7. FB2 Source
+  // 10. FB2 Source
   if (src === 'fb2') {
     return convertFb2Source(inputBuffer, tgt, options, baseName);
   }
 
-  // 8. MOBI / AZW3 Source
+  // 11. MOBI / AZW3 Source
   if (['mobi', 'azw', 'azw3'].includes(src)) {
     return convertMobiSource(inputBuffer, src, tgt, options, baseName);
   }
 
-  // 9. CBZ Source (Comic Book Zip)
+  // 12. CBZ Source (Comic Book Zip)
   if (src === 'cbz') {
     return convertCbzSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 10. Target is DOCX (from Markdown, HTML, TXT, PDF, RTF, etc.)
+  // 13. Target is DOCX (from Markdown, HTML, TXT, PDF, RTF, etc.)
   if (tgt === 'docx') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
     const docxBuffer = await generateDocxFromText(textContent, src, options, baseName);
@@ -76,7 +92,7 @@ export async function convertOffice(
     };
   }
 
-  // 11. Target is PPTX (from Markdown, HTML, TXT, Presentation, etc.)
+  // 14. Target is PPTX (from Markdown, HTML, TXT, Presentation, etc.)
   if (tgt === 'pptx') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
     const pptxBuffer = await generatePptxFromText(textContent, src, options, baseName);
@@ -88,7 +104,7 @@ export async function convertOffice(
     };
   }
 
-  // 12. Target is XLSX (from CSV, TSV, JSON)
+  // 15. Target is XLSX (from CSV, TSV, JSON)
   if (tgt === 'xlsx') {
     const xlsxBuffer = await generateXlsxFromData(inputBuffer, src, options, baseName);
     return {
@@ -99,7 +115,63 @@ export async function convertOffice(
     };
   }
 
-  // 13. Target is EPUB (from MD, HTML, TXT, DOCX, etc.)
+  // 16. Target is ODS (OpenDocument Spreadsheet)
+  if (tgt === 'ods') {
+    const rows = await extractRowsForOffice(inputBuffer, src, options);
+    const odsBuffer = await generateOdsFromData(rows, baseName);
+    return {
+      buffer: odsBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
+      filename: `${baseName}.ods`,
+      size: odsBuffer.length,
+    };
+  }
+
+  // 17. Target is XLS
+  if (tgt === 'xls') {
+    const rows = await extractRowsForOffice(inputBuffer, src, options);
+    const xlsXml = generateXlsXmlFromData(rows, baseName);
+    const buffer = Buffer.from(xlsXml, 'utf-8');
+    return {
+      buffer,
+      mimeType: 'application/vnd.ms-excel',
+      filename: `${baseName}.xls`,
+      size: buffer.length,
+    };
+  }
+
+  // 18. Target is ODP (OpenDocument Presentation)
+  if (tgt === 'odp') {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const rawSlides = textContent.split(/\n\n+/).map((p, idx) => ({
+      number: idx + 1,
+      texts: p.split('\n').filter(Boolean),
+    }));
+    const odpBuffer = await generateOdpFromSlides(
+      rawSlides.length > 0 ? rawSlides : [{ number: 1, texts: [baseName] }],
+      baseName
+    );
+    return {
+      buffer: odpBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.presentation',
+      filename: `${baseName}.odp`,
+      size: odpBuffer.length,
+    };
+  }
+
+  // 19. Target is ODT (OpenDocument Text)
+  if (tgt === 'odt') {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const odtBuffer = await generateOdtFromText(textContent, baseName);
+    return {
+      buffer: odtBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.text',
+      filename: `${baseName}.odt`,
+      size: odtBuffer.length,
+    };
+  }
+
+  // 20. Target is EPUB (from MD, HTML, TXT, DOCX, etc.)
   if (tgt === 'epub') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
     const epubBuffer = await generateEpubFromText(textContent, src, options, baseName);
@@ -111,7 +183,7 @@ export async function convertOffice(
     };
   }
 
-  // 14. Target is PDF (from Office or Ebook sources)
+  // 21. Target is PDF (from Office or Ebook sources)
   if (tgt === 'pdf') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
     const pdfBuffer = await generatePdfFromDocx([{ text: textContent, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
@@ -174,7 +246,43 @@ async function extractTextContentForOffice(
     }
   }
 
+  if (src === 'doc') {
+    return extractTextFromDocBytes(inputBuffer);
+  }
+
+  if (src === 'tex') {
+    return extractTextFromTexString(inputBuffer.toString('utf-8'));
+  }
+
   return inputBuffer.toString('utf-8');
+}
+
+function extractTextFromDocBytes(buffer: Buffer): string {
+  const strings: string[] = [];
+  let curr = '';
+  for (let i = 0; i < buffer.length; i++) {
+    const byte = buffer[i];
+    if (byte >= 32 && byte <= 126) {
+      curr += String.fromCharCode(byte);
+    } else if (byte === 10 || byte === 13) {
+      if (curr.trim().length >= 4) strings.push(curr.trim());
+      curr = '';
+    } else {
+      if (curr.trim().length >= 5) strings.push(curr.trim());
+      curr = '';
+    }
+  }
+  if (curr.trim().length >= 4) strings.push(curr.trim());
+  return strings.join('\n\n') || 'Extracted document content.';
+}
+
+function extractTextFromTexString(tex: string): string {
+  return tex
+    .replace(/\\(?:section|chapter|subsection)\*?\{([^}]+)\}/g, '$1\n\n')
+    .replace(/\\[a-zA-Z]+(?:\[[^\]]*\])?(?:\{([^}]*)\})?/g, '$1 ')
+    .replace(/[{}]/g, '')
+    .replace(/\n\s*\n/g, '\n\n')
+    .trim();
 }
 
 /**
@@ -255,6 +363,28 @@ async function convertDocxSource(
       mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       filename: `${baseName}.pptx`,
       size: pptxBuffer.length,
+    };
+  }
+
+  // DOCX -> ODT
+  if (tgt === 'odt') {
+    const text = paragraphs.map((p) => p.text).join('\n\n');
+    const odtBuffer = await generateOdtFromText(text, baseName);
+    return {
+      buffer: odtBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.text',
+      filename: `${baseName}.odt`,
+      size: odtBuffer.length,
+    };
+  }
+
+  // DOCX -> DOCX (echo)
+  if (tgt === 'docx') {
+    return {
+      buffer: inputBuffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      filename: `${baseName}.docx`,
+      size: inputBuffer.length,
     };
   }
 
@@ -608,6 +738,39 @@ async function convertXlsxSource(
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
 
+  // XLSX -> ODS
+  if (tgt === 'ods') {
+    const odsBuffer = await generateOdsFromData(rows, baseName);
+    return {
+      buffer: odsBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
+      filename: `${baseName}.ods`,
+      size: odsBuffer.length,
+    };
+  }
+
+  // XLSX -> XLS
+  if (tgt === 'xls') {
+    const xlsContent = generateXlsXmlFromData(rows, baseName);
+    const buffer = Buffer.from(xlsContent, 'utf-8');
+    return {
+      buffer,
+      mimeType: 'application/vnd.ms-excel',
+      filename: `${baseName}.xls`,
+      size: buffer.length,
+    };
+  }
+
+  // XLSX -> XLSX (echo)
+  if (tgt === 'xlsx') {
+    return {
+      buffer: inputBuffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: `${baseName}.xlsx`,
+      size: inputBuffer.length,
+    };
+  }
+
   throw new Error(`Unsupported conversion from XLSX to ${tgt}`);
 }
 
@@ -678,6 +841,17 @@ async function convertPptxSource(
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       filename: `${baseName}.docx`,
       size: docxBuffer.length,
+    };
+  }
+
+  // PPTX -> ODP
+  if (tgt === 'odp') {
+    const odpBuffer = await generateOdpFromSlides(slides, baseName);
+    return {
+      buffer: odpBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.presentation',
+      filename: `${baseName}.odp`,
+      size: odpBuffer.length,
     };
   }
 
@@ -757,6 +931,26 @@ async function convertOdpSource(
       mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       filename: `${baseName}.pptx`,
       size: pptxBuffer.length,
+    };
+  }
+
+  if (tgt === 'docx') {
+    const text = slides.map((s) => `# Slide ${s.number}\n\n` + s.texts.join('\n')).join('\n\n---\n\n');
+    const docxBuffer = await generateDocxFromText(text, 'odp', options, baseName);
+    return {
+      buffer: docxBuffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      filename: `${baseName}.docx`,
+      size: docxBuffer.length,
+    };
+  }
+
+  if (tgt === 'odp') {
+    return {
+      buffer: inputBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.presentation',
+      filename: `${baseName}.odp`,
+      size: inputBuffer.length,
     };
   }
 
@@ -1397,7 +1591,7 @@ export async function generatePptxFromText(
 /**
  * Generates OpenXML XLSX Zip Archive from CSV / TSV / JSON
  */
-async function generateXlsxFromData(
+export async function generateXlsxFromData(
   inputBuffer: Buffer,
   sourceType: string,
   options: ConversionOptions,
@@ -1565,3 +1759,588 @@ function escapeHtml(str: string): string {
 function escapeXml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
+
+/**
+ * OpenDocument Spreadsheet (ODS) Parser & Converter
+ */
+export async function convertOdsSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  const zip = await JSZip.loadAsync(inputBuffer);
+  const contentXml = zip.file('content.xml');
+  if (!contentXml) {
+    throw new Error('Invalid ODS workbook: content.xml not found.');
+  }
+
+  const xml = await contentXml.async('text');
+  const rows: string[][] = [];
+  const rowRegex = /<table:table-row[\s\S]*?<\/table:table-row>/g;
+  let rMatch: RegExpExecArray | null;
+
+  while ((rMatch = rowRegex.exec(xml)) !== null) {
+    const rowXml = rMatch[0];
+    const cells: string[] = [];
+    const cellRegex = /<table:table-cell[\s\S]*?<\/table:table-cell>/g;
+    let cMatch: RegExpExecArray | null;
+
+    while ((cMatch = cellRegex.exec(rowXml)) !== null) {
+      const cellXml = cMatch[0];
+      const pMatch = cellXml.match(/<text:p>([\s\S]*?)<\/text:p>/);
+      const text = pMatch ? pMatch[1].replace(/<[^>]+>/g, '').trim() : '';
+
+      const repeatMatch = cellXml.match(/table:number-columns-repeated="(\d+)"/);
+      const repeat = repeatMatch ? Math.min(50, parseInt(repeatMatch[1], 10)) : 1;
+      for (let rep = 0; rep < repeat; rep++) {
+        cells.push(text);
+      }
+    }
+
+    while (cells.length > 0 && cells[cells.length - 1] === '') {
+      cells.pop();
+    }
+    if (cells.length > 0) {
+      rows.push(cells);
+    }
+  }
+
+  if (rows.length === 0) {
+    rows.push(['Data'], ['Empty ODS content']);
+  }
+
+  // ODS -> CSV
+  if (tgt === 'csv') {
+    const delim = options.delimiter || ',';
+    const csv = rows
+      .map((r) =>
+        r.map((c) => (c.includes(delim) || c.includes('"') ? `"${c.replace(/"/g, '""')}"` : c)).join(delim)
+      )
+      .join('\n');
+    const buffer = Buffer.from(csv, 'utf-8');
+    return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
+  }
+
+  // ODS -> TSV
+  if (tgt === 'tsv') {
+    const tsv = rows.map((r) => r.join('\t')).join('\n');
+    const buffer = Buffer.from(tsv, 'utf-8');
+    return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
+  }
+
+  // ODS -> JSON
+  if (tgt === 'json') {
+    let jsonArray: Record<string, string>[] = [];
+    if (rows.length > 1) {
+      const headers = rows[0];
+      jsonArray = rows.slice(1).map((row) => {
+        const obj: Record<string, string> = {};
+        headers.forEach((h, i) => {
+          obj[h || `col_${i + 1}`] = row[i] || '';
+        });
+        return obj;
+      });
+    }
+    const buffer = Buffer.from(JSON.stringify(jsonArray.length > 0 ? jsonArray : rows, null, 2), 'utf-8');
+    return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+  }
+
+  // ODS -> XLSX
+  if (tgt === 'xlsx') {
+    const csv = rows.map((r) => r.join(',')).join('\n');
+    const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
+    return {
+      buffer: xlsxBuffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: `${baseName}.xlsx`,
+      size: xlsxBuffer.length,
+    };
+  }
+
+  // ODS -> XLS
+  if (tgt === 'xls') {
+    const xls = generateXlsXmlFromData(rows, baseName);
+    const buffer = Buffer.from(xls, 'utf-8');
+    return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
+  }
+
+  // ODS -> HTML
+  if (tgt === 'html') {
+    let tableHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;border-color:#CCD2FC;">\n';
+    rows.forEach((r, idx) => {
+      tableHtml += '<tr>\n';
+      r.forEach((c) => {
+        tableHtml +=
+          idx === 0
+            ? `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(c)}</th>\n`
+            : `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>\n`;
+      });
+      tableHtml += '</tr>\n';
+    });
+    tableHtml += '</table>';
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+      baseName
+    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeHtml(
+      baseName
+    )}</h2>${tableHtml}</body></html>`;
+    const buffer = Buffer.from(html, 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+
+  // ODS -> PDF
+  if (tgt === 'pdf') {
+    const pdfBuffer = await generatePdfFromDocx([], [{ rows }], options, baseName);
+    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  }
+
+  // ODS -> ODS (echo)
+  if (tgt === 'ods') {
+    return {
+      buffer: inputBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
+      filename: `${baseName}.ods`,
+      size: inputBuffer.length,
+    };
+  }
+
+  throw new Error(`Unsupported conversion from ODS to ${tgt}`);
+}
+
+/**
+ * Excel XLS Parser & Converter
+ */
+export async function convertXlsSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  const text = inputBuffer.toString('utf-8');
+  const rows: string[][] = [];
+
+  // Parse Excel XML Spreadsheet (<Row><Cell><Data ...>)
+  if (text.includes('<Row') || text.includes('<row')) {
+    const rowRegex = /<Row[\s\S]*?<\/Row>/gi;
+    let rMatch: RegExpExecArray | null;
+    while ((rMatch = rowRegex.exec(text)) !== null) {
+      const rowXml = rMatch[0];
+      const cells: string[] = [];
+      const cellRegex = /<Data[^>]*>([\s\S]*?)<\/Data>/gi;
+      let cMatch: RegExpExecArray | null;
+      while ((cMatch = cellRegex.exec(rowXml)) !== null) {
+        cells.push(cMatch[1].replace(/<[^>]+>/g, '').trim());
+      }
+      if (cells.length > 0) rows.push(cells);
+    }
+  }
+
+  if (rows.length === 0) {
+    text.split(/\r?\n/).forEach((l) => {
+      const trimmed = l.trim();
+      if (trimmed) rows.push(trimmed.split('\t'));
+    });
+  }
+
+  if (rows.length === 0) {
+    rows.push(['Data'], ['XLS spreadsheet content']);
+  }
+
+  if (tgt === 'csv') {
+    const delim = options.delimiter || ',';
+    const csv = rows.map((r) => r.join(delim)).join('\n');
+    const buffer = Buffer.from(csv, 'utf-8');
+    return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
+  }
+
+  if (tgt === 'xlsx') {
+    const csv = rows.map((r) => r.join(',')).join('\n');
+    const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
+    return {
+      buffer: xlsxBuffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: `${baseName}.xlsx`,
+      size: xlsxBuffer.length,
+    };
+  }
+
+  if (tgt === 'ods') {
+    const odsBuffer = await generateOdsFromData(rows, baseName);
+    return {
+      buffer: odsBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
+      filename: `${baseName}.ods`,
+      size: odsBuffer.length,
+    };
+  }
+
+  if (tgt === 'pdf') {
+    const pdfBuffer = await generatePdfFromDocx([], [{ rows }], options, baseName);
+    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  }
+
+  if (tgt === 'json') {
+    const buffer = Buffer.from(JSON.stringify(rows, null, 2), 'utf-8');
+    return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+  }
+
+  if (tgt === 'tsv') {
+    const tsv = rows.map((r) => r.join('\t')).join('\n');
+    const buffer = Buffer.from(tsv, 'utf-8');
+    return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
+  }
+
+  if (tgt === 'html') {
+    let tableHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;border-color:#CCD2FC;">\n';
+    rows.forEach((r, idx) => {
+      tableHtml += '<tr>\n';
+      r.forEach((c) => {
+        tableHtml +=
+          idx === 0
+            ? `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(c)}</th>\n`
+            : `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>\n`;
+      });
+      tableHtml += '</tr>\n';
+    });
+    tableHtml += '</table>';
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+      baseName
+    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeHtml(
+      baseName
+    )}</h2>${tableHtml}</body></html>`;
+    const buffer = Buffer.from(html, 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+
+  if (tgt === 'xls') {
+    return { buffer: inputBuffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: inputBuffer.length };
+  }
+
+  throw new Error(`Unsupported conversion from XLS to ${tgt}`);
+}
+
+/**
+ * OpenDocument Text (ODT) Parser & Converter
+ */
+export async function convertOdtSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  let text = '';
+  try {
+    const zip = await JSZip.loadAsync(inputBuffer);
+    const contentXml = zip.file('content.xml');
+    if (contentXml) {
+      const xml = await contentXml.async('text');
+      const paragraphs: string[] = [];
+      const pRegex = /<text:(?:p|h)[^>]*>([\s\S]*?)<\/text:(?:p|h)>/g;
+      let m: RegExpExecArray | null;
+      while ((m = pRegex.exec(xml)) !== null) {
+        const t = m[1].replace(/<[^>]+>/g, '').trim();
+        if (t) paragraphs.push(t);
+      }
+      text = paragraphs.join('\n\n');
+    }
+  } catch {
+    text = inputBuffer.toString('utf-8');
+  }
+
+  if (!text) text = `Extracted content from ${baseName}.odt`;
+
+  if (tgt === 'txt') {
+    const buffer = Buffer.from(text, 'utf-8');
+    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+  }
+
+  if (tgt === 'html') {
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+      baseName
+    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h1>${escapeHtml(
+      baseName
+    )}</h1>${text.split('\n\n').map((p) => `<p>${escapeHtml(p)}</p>`).join('\n')}</body></html>`;
+    const buffer = Buffer.from(html, 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+
+  if (tgt === 'md') {
+    const buffer = Buffer.from(`# ${baseName}\n\n` + text, 'utf-8');
+    return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
+  }
+
+  if (tgt === 'pdf') {
+    const pdfBuffer = await generatePdfFromDocx([{ text, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
+    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  }
+
+  if (tgt === 'docx') {
+    const docxBuffer = await generateDocxFromText(text, 'odt', options, baseName);
+    return {
+      buffer: docxBuffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      filename: `${baseName}.docx`,
+      size: docxBuffer.length,
+    };
+  }
+
+  if (tgt === 'epub') {
+    const epubBuffer = await generateEpubFromText(text, 'odt', options, baseName);
+    return {
+      buffer: epubBuffer,
+      mimeType: 'application/epub+zip',
+      filename: `${baseName}.epub`,
+      size: epubBuffer.length,
+    };
+  }
+
+  if (tgt === 'odt') {
+    return { buffer: inputBuffer, mimeType: 'application/vnd.oasis.opendocument.text', filename: `${baseName}.odt`, size: inputBuffer.length };
+  }
+
+  throw new Error(`Unsupported conversion from ODT to ${tgt}`);
+}
+
+/**
+ * Generates OpenDocument Spreadsheet (ODS) Archive
+ */
+export async function generateOdsFromData(rows: string[][], baseName: string): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file('mimetype', 'application/vnd.oasis.opendocument.spreadsheet', { compression: 'STORE' });
+  zip.file(
+    'META-INF/manifest.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
+  <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/>
+  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>`
+  );
+
+  let rowsXml = '';
+  rows.forEach((row) => {
+    rowsXml += '<table:table-row>';
+    row.forEach((cell) => {
+      rowsXml += `<table:table-cell office:value-type="string"><text:p>${escapeXml(cell)}</text:p></table:table-cell>`;
+    });
+    rowsXml += '</table:table-row>';
+  });
+
+  zip.file(
+    'content.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  office:version="1.2">
+  <office:body>
+    <office:spreadsheet>
+      <table:table table:name="${escapeXml(baseName)}">
+        ${rowsXml}
+      </table:table>
+    </office:spreadsheet>
+  </office:body>
+</office:document-content>`
+  );
+
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+/**
+ * Generates Microsoft Excel XML Spreadsheet (2003)
+ */
+export function generateXlsXmlFromData(rows: string[][], baseName: string): string {
+  let rowsXml = '';
+  rows.forEach((row) => {
+    rowsXml += '   <Row>\n';
+    row.forEach((cell) => {
+      rowsXml += `    <Cell><Data ss:Type="String">${escapeXml(cell)}</Data></Cell>\n`;
+    });
+    rowsXml += '   </Row>\n';
+  });
+
+  return `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Worksheet ss:Name="${escapeXml(baseName)}">
+  <Table>
+${rowsXml}  </Table>
+ </Worksheet>
+</Workbook>`;
+}
+
+/**
+ * Generates OpenDocument Presentation (ODP) Archive
+ */
+export async function generateOdpFromSlides(
+  slides: { number: number; texts: string[] }[],
+  title: string
+): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file('mimetype', 'application/vnd.oasis.opendocument.presentation', { compression: 'STORE' });
+  zip.file(
+    'META-INF/manifest.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
+  <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.presentation"/>
+  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>`
+  );
+
+  let pagesXml = '';
+  slides.forEach((s, idx) => {
+    pagesXml += `<draw:page draw:name="page${idx + 1}">
+      <draw:frame draw:layer="layout" svg:width="25cm" svg:height="15cm" svg:x="1cm" svg:y="1cm">
+        <draw:text-box>
+          ${s.texts.map((t) => `<text:p>${escapeXml(t)}</text:p>`).join('\n          ')}
+        </draw:text-box>
+      </draw:frame>
+    </draw:page>`;
+  });
+
+  zip.file(
+    'content.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
+  office:version="1.2">
+  <office:body>
+    <office:presentation>
+      ${pagesXml}
+    </office:presentation>
+  </office:body>
+</office:document-content>`
+  );
+
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+/**
+ * Generates OpenDocument Text (ODT) Archive
+ */
+export async function generateOdtFromText(text: string, title: string): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file('mimetype', 'application/vnd.oasis.opendocument.text', { compression: 'STORE' });
+  zip.file(
+    'META-INF/manifest.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
+  <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>
+  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>`
+  );
+
+  const paragraphs = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => `<text:p>${escapeXml(l)}</text:p>`)
+    .join('\n');
+
+  zip.file(
+    'content.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  office:version="1.2">
+  <office:body>
+    <office:text>
+      <text:h text:outline-level="1">${escapeXml(title)}</text:h>
+      ${paragraphs}
+    </office:text>
+  </office:body>
+</office:document-content>`
+  );
+
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+/**
+ * Extracts 2D array of rows from CSV, TSV, JSON, or XLSX for Office Generation
+ */
+async function extractRowsForOffice(
+  inputBuffer: Buffer,
+  src: string,
+  options: ConversionOptions
+): Promise<string[][]> {
+  if (src === 'xlsx') {
+    try {
+      const zip = await JSZip.loadAsync(inputBuffer);
+      const sheetFile = zip.file('xl/worksheets/sheet1.xml');
+      if (sheetFile) {
+        const sstFile = zip.file('xl/sharedStrings.xml');
+        const sharedStrings: string[] = [];
+        if (sstFile) {
+          const sstXml = await sstFile.async('text');
+          const tRegex = /<t[^>]*>([\s\S]*?)<\/t>/g;
+          let m: RegExpExecArray | null;
+          while ((m = tRegex.exec(sstXml)) !== null) {
+            sharedStrings.push(m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+          }
+        }
+
+        const sheetXml = await sheetFile.async('text');
+        const rows: string[][] = [];
+        const rowRegex = /<row[\s\S]*?<\/row>/g;
+        let rMatch: RegExpExecArray | null;
+
+        while ((rMatch = rowRegex.exec(sheetXml)) !== null) {
+          const rowXml = rMatch[0];
+          const cells: string[] = [];
+          const cellRegex = /<c\s+([^>]*?)>([\s\S]*?)<\/c>/g;
+          let cMatch: RegExpExecArray | null;
+
+          while ((cMatch = cellRegex.exec(rowXml)) !== null) {
+            const attrs = cMatch[1];
+            const body = cMatch[2];
+            const isString = /t="s"/.test(attrs);
+            const vMatch = body.match(/<v>([\s\S]*?)<\/v>/);
+            if (vMatch) {
+              const val = vMatch[1];
+              cells.push(isString ? sharedStrings[parseInt(val, 10)] ?? '' : val);
+            } else {
+              cells.push('');
+            }
+          }
+          if (cells.length > 0) rows.push(cells);
+        }
+        if (rows.length > 0) return rows;
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  const text = inputBuffer.toString('utf-8');
+  if (src === 'json') {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
+        const headers = Object.keys(parsed[0]);
+        return [headers, ...parsed.map((item) => headers.map((h) => String(item[h] ?? '')))];
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  const delim = src === 'tsv' ? '\t' : options.delimiter || ',';
+  const parsedCsv = Papa.parse<string[]>(text, {
+    delimiter: delim,
+    skipEmptyLines: true,
+  });
+  if (parsedCsv.data && parsedCsv.data.length > 0) {
+    return parsedCsv.data;
+  }
+
+  return text
+    .split(/\r?\n/)
+    .filter((l) => l.trim().length > 0)
+    .map((l) => l.split(delim));
+}
+

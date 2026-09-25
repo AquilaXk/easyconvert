@@ -1,9 +1,11 @@
 import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
+import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
-import { convertOffice, extractTextFromRtf } from './office';
+import { convertOffice, extractTextFromRtf, generateOdtFromText } from './office';
 import { performOcr } from './ocr';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
+import { svgToDxf } from './vector-cad';
 
 export { extractTextFromPdf, extractEmbeddedImageFromPdf };
 
@@ -78,8 +80,8 @@ export async function convertDocument(
 
   // Route Office formats to office engine
   if (
-    ['docx', 'xlsx', 'pptx', 'epub'].includes(src) ||
-    ['docx', 'xlsx', 'epub', 'pptx'].includes(tgt)
+    ['docx', 'xlsx', 'pptx', 'epub', 'ods', 'odp', 'odt', 'xls'].includes(src) ||
+    ['docx', 'xlsx', 'epub', 'pptx', 'ods', 'odp', 'odt', 'xls'].includes(tgt)
   ) {
     return convertOffice(inputBuffer, src, tgt, options, originalFilename);
   }
@@ -157,6 +159,61 @@ export async function convertDocument(
         size: inputBuffer.length,
       };
     }
+
+    if (tgt === 'png') {
+      const embedded = extractEmbeddedImageFromPdf(inputBuffer);
+      let pngBuffer: Buffer;
+      if (embedded) {
+        pngBuffer = await sharp(embedded).png().toBuffer();
+      } else {
+        const svg = renderTextPageSvg(extractedText, baseName);
+        pngBuffer = await sharp(Buffer.from(svg, 'utf-8')).png().toBuffer();
+      }
+      return {
+        buffer: pngBuffer,
+        mimeType: 'image/png',
+        filename: `${baseName}.png`,
+        size: pngBuffer.length,
+        ocrExtractedText: ocrInfo.text,
+        ocrConfidence: ocrInfo.confidence,
+      };
+    }
+
+    if (tgt === 'svg') {
+      const svg = renderTextPageSvg(extractedText, baseName);
+      const buffer = Buffer.from(svg, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'image/svg+xml',
+        filename: `${baseName}.svg`,
+        size: buffer.length,
+        ocrExtractedText: ocrInfo.text,
+        ocrConfidence: ocrInfo.confidence,
+      };
+    }
+
+    if (tgt === 'dxf') {
+      const svg = renderTextPageSvg(extractedText, baseName);
+      const dxf = svgToDxf(svg);
+      const buffer = Buffer.from(dxf, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'image/vnd.dxf',
+        filename: `${baseName}.dxf`,
+        size: buffer.length,
+      };
+    }
+
+    if (tgt === 'rtf') {
+      const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeHtml(extractedText).replace(/\\r?\\n/g, '\\par ')}}\n`;
+      const buffer = Buffer.from(rtf, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'application/rtf',
+        filename: `${baseName}.rtf`,
+        size: buffer.length,
+      };
+    }
   }
 
   // Extract text representation according to source format
@@ -223,6 +280,17 @@ export async function convertDocument(
       mimeType: 'text/markdown',
       filename: `${baseName}.md`,
       size: buffer.length,
+    };
+  }
+
+  // Convert to ODT
+  if (tgt === 'odt') {
+    const odtBuffer = await generateOdtFromText(textContent, baseName);
+    return {
+      buffer: odtBuffer,
+      mimeType: 'application/vnd.oasis.opendocument.text',
+      filename: `${baseName}.odt`,
+      size: odtBuffer.length,
     };
   }
 
@@ -462,4 +530,25 @@ function renderPdfTable(doc: any, rows: string[][]) {
   });
 
   doc.moveDown(0.5);
+}
+
+function renderTextPageSvg(text: string, title: string): string {
+  const lines = text.split(/\r?\n/).slice(0, 45);
+  const textElements = lines
+    .map(
+      (l, idx) =>
+        `<text x="40" y="${50 + idx * 16}" fill="#1F2340" font-family="system-ui, -apple-system, sans-serif" font-size="11">${escapeHtml(
+          l
+        )}</text>`
+    )
+    .join('\n    ');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="595" height="842" viewBox="0 0 595 842">
+  <title>${escapeHtml(title)}</title>
+  <rect width="100%" height="100%" fill="#FFFFFF" />
+  <g>
+    ${textElements}
+  </g>
+</svg>`;
 }

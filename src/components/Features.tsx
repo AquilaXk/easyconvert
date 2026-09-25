@@ -368,7 +368,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </a>
             </p>
 
-            {/* Code Box matching CloudConvert */}
+            {/* Code Box for API integration */}
             <div className="relative my-5 group">
               <button
                 type="button"
@@ -450,7 +450,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           </div>
         </div>
 
-        {/* ROW 3: Stats Header matching CloudConvert */}
+        {/* ROW 3: Stats Header */}
         <header className="px-2 pt-8 text-center">
           <div className="mx-auto max-w-3xl">
             <div className="inline-flex items-center gap-3 text-[11px] font-medium uppercase tracking-[0.18em] text-neutral-400 dark:text-neutral-500">

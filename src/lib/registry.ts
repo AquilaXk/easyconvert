@@ -637,7 +637,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/markdown',
     category: 'document',
     description: 'Lightweight markup language with plain-text formatting syntax.',
-    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'zip'],
+    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip'],
     optionsSchema: { orientation: true, preserveTables: true },
   },
   html: {
@@ -1018,7 +1018,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/csv',
     category: 'data',
     description: 'Comma-Separated Values tabular structured spreadsheet format.',
-    targetFormats: ['xlsx', 'json', 'tsv', 'html', 'yaml', 'pdf', 'zip'],
+    targetFormats: ['xlsx', 'json', 'tsv', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true, preserveTables: true },
   },
   tsv: {
@@ -1028,7 +1028,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/tab-separated-values',
     category: 'data',
     description: 'Tab-Separated Values structured data exchange format.',
-    targetFormats: ['csv', 'xlsx', 'json', 'html', 'yaml', 'pdf', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'json', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true, preserveTables: true },
   },
   json: {
@@ -1038,7 +1038,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/json',
     category: 'data',
     description: 'JavaScript Object Notation universal lightweight data interchange format.',
-    targetFormats: ['csv', 'tsv', 'yaml', 'xml', 'xlsx', 'txt', 'zip'],
+    targetFormats: ['csv', 'tsv', 'yaml', 'xml', 'xlsx', 'txt', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true },
   },
   yaml: {
@@ -1121,7 +1121,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
     category: 'spreadsheet',
     description: 'OASIS OpenDocument Spreadsheet format used in LibreOffice Calc.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'pdf', 'json', 'html', 'zip'],
+    targetFormats: ['xlsx', 'csv', 'tsv', 'pdf', 'json', 'html', 'xls', 'zip'],
     optionsSchema: { preserveTables: true },
   },
   ots: {
@@ -1518,7 +1518,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/svg+xml',
     category: 'vector',
     description: 'Scalable Vector Graphics - XML-based resolution-independent 2D vector format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip'],
     optionsSchema: { dimensions: true },
   },
   ico: {
@@ -1990,7 +1990,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'font/ttf',
     category: 'font',
     description: 'TrueType outline typography font standard created by Apple and Microsoft.',
-    targetFormats: ['woff', 'woff2', 'eot', 'otf', 'zip'],
+    targetFormats: ['woff', 'woff2', 'eot', 'otf', 'svg', 'zip'],
   },
   otf: {
     id: 'otf',
@@ -2107,7 +2107,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/iges',
     category: 'cad',
     description: 'ANSI standard digital representation of CAD surface geometry.',
-    targetFormats: ['step', 'stl', 'dxf', 'zip'],
+    targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
   },
   igs: {
     id: 'igs',
@@ -2116,7 +2116,25 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/iges',
     category: 'cad',
     description: 'IGES CAD file short extension.',
-    targetFormats: ['step', 'stl', 'dxf', 'zip'],
+    targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
+  },
+  stl: {
+    id: 'stl',
+    name: 'Stereolithography 3D (STL)',
+    extension: 'stl',
+    mimeType: 'model/stl',
+    category: 'cad',
+    description: 'Stereolithography triangular mesh geometry for 3D printing and CAD.',
+    targetFormats: ['obj', 'step', 'iges', 'dxf', 'zip'],
+  },
+  obj: {
+    id: 'obj',
+    name: 'Wavefront 3D Object (OBJ)',
+    extension: 'obj',
+    mimeType: 'model/obj',
+    category: 'cad',
+    description: 'Wavefront 3D geometry format representing vertices, normals, and polygonal faces.',
+    targetFormats: ['stl', 'step', 'dxf', 'zip'],
   },
   svgfont: {
     id: 'svgfont',
@@ -2140,7 +2158,7 @@ export const CATEGORIES: { id: FormatCategory; label: string; count: number }[] 
   { id: 'image', label: 'Images', count: 42 },
   { id: 'archive', label: 'Archives', count: 18 },
   { id: 'font', label: 'Fonts', count: 10 },
-  { id: 'cad', label: 'CAD & 3D', count: 6 },
+  { id: 'cad', label: 'CAD & 3D', count: 8 },
 ];
 
 export function getFormatByExtension(ext: string): FormatDefinition | undefined {

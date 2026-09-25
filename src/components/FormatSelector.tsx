@@ -37,7 +37,7 @@ export default function FormatSelector({
     return map;
   }, [allFormats]);
 
-  // Alphabetically sorted category list matching CloudConvert live popover
+  // Alphabetically sorted category list for format selection popover
   const categories = useMemo(() => {
     return Array.from(categoriesWithFormats.keys()).sort((a, b) => a.localeCompare(b));
   }, [categoriesWithFormats]);

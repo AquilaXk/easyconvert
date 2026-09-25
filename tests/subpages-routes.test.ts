@@ -6,7 +6,7 @@ import { parseConverterSlug } from '../src/lib/slug-parser';
 
 describe('Subpages & Routes Verification', () => {
   describe('Pricing volume calculation logic & Credits Calculator', () => {
-    it('verifies 1,000 credits pricing matches live CloudConvert snapshot', () => {
+    it('verifies 1,000 credits pricing matches standard tier calculation', () => {
       const tier1000 = TIERS.find((t) => t.credits === 1000);
       expect(tier1000).toBeDefined();
       expect(tier1000!.packagePrice).toBe(18.0);
@@ -25,7 +25,7 @@ describe('Subpages & Routes Verification', () => {
       }
     });
 
-    it('correctly calculates base credits according to CloudConvert conversion matrices', () => {
+    it('correctly calculates base credits according to domain conversion matrices', () => {
       // General conversion -> 1 credit
       expect(calculateBaseCredits('convert', 'png', 'jpg')).toBe(1);
       expect(calculateBaseCredits('convert', 'mp4', 'mp3')).toBe(1);

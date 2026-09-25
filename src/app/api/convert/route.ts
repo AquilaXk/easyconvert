@@ -24,6 +24,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (file.size === 0) {
+      return NextResponse.json(
+        { success: false, error: 'Conversion payload is empty. File buffer has 0 bytes.' },
+        { status: 400 }
+      );
+    }
+
     if (file.size > MAX_FILE_SIZE) {
       return NextResponse.json(
         {
@@ -53,6 +60,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+    if (!detectedDef.targetFormats.includes(tgt)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Cannot convert from ${detectedDef.name} (.${detectedDef.extension}) to target format .${tgt}. Available targets: ${detectedDef.targetFormats.join(
+            ', '
+          )}`,
+        },
+        { status: 400 }
+      );
+    }
+
     let options: ConversionOptions = {};
     if (optionsRaw) {
       try {
@@ -72,7 +92,7 @@ export async function POST(req: NextRequest) {
     const result = await convertFile(
       inputBuffer,
       detectedDef.extension,
-      targetFormat,
+      tgt,
       options,
       file.name
     );
@@ -92,6 +112,14 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    const isValidationError =
+      message.includes('payload is empty') ||
+      message.includes('Cannot convert') ||
+      message.includes('Unsupported') ||
+      message.includes('Failed to parse');
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: isValidationError ? 400 : 500 }
+    );
   }
 }
