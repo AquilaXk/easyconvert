@@ -77,7 +77,7 @@ export default function UrlImportModal({
         {/* Modal Header */}
         <div className="p-4 sm:p-5 border-b border-neutral-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-[#5C6BC0]/20 text-[#5C6BC0] border border-[#5C6BC0]/30">
+            <div className="p-2 rounded-xl bg-[#d9383a]/20 text-[#d9383a] border border-[#d9383a]/30">
               <Globe className="w-5 h-5" />
             </div>
             <div>
@@ -109,7 +109,7 @@ export default function UrlImportModal({
               placeholder="https://example.com/document.pdf"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm bg-neutral-800/80 border border-neutral-700 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-[#5C6BC0] focus:border-transparent transition-all"
+              className="w-full px-3.5 py-2.5 text-sm bg-neutral-800/80 border border-neutral-700 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-[#d9383a] focus:border-transparent transition-all"
             />
           </div>
 
@@ -131,7 +131,7 @@ export default function UrlImportModal({
             <button
               type="submit"
               disabled={loading || !url.trim()}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#5C6BC0] hover:bg-[#4d5cb5] active:bg-[#3f4ea3] disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-md shadow-[#5C6BC0]/20 transition-all"
+              className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#d9383a] hover:bg-[#c22e30] active:bg-[#a82527] disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-md shadow-[#d9383a]/20 transition-all"
             >
               {loading ? (
                 <>

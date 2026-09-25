@@ -4,21 +4,15 @@ import React, { useState } from 'react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import {
-  Check,
   ChevronDown,
-  X,
   Calculator,
-  ArrowRight,
-  Shield,
   HelpCircle,
   Zap,
 } from 'lucide-react';
-import { FORMAT_REGISTRY } from '@/lib/registry';
-import { TierData, TIERS, calculateBaseCredits } from '@/lib/pricing';
+import { TIERS, calculateBaseCredits } from '@/lib/pricing';
 
 export default function PricingPage() {
   const [sliderIndex, setSliderIndex] = useState(1); // Default to 1,000 credits
-  const [activeTab, setActiveTab] = useState<'packages' | 'subscriptions'>('packages');
   const [openFaq, setOpenFaq] = useState<number | null>(0); // First FAQ open by default
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
 
@@ -35,789 +29,694 @@ export default function PricingPage() {
 
   const baseCreditsCalculated = calculateBaseCredits(calcOperation, calcInputFmt, calcOutputFmt);
 
+  const CheckIcon = () => (
+    <svg className="size-5 shrink-0 text-[#d9383a]" viewBox="0 0 512 512" fill="currentColor">
+      <path d="M256 512a256 256 0 1 1 0-512 256 256 0 1 1 0 512zM374 145.7c-10.7-7.8-25.7-5.4-33.5 5.3L221.1 315.2 169 263.1c-9.4-9.4-24.6-9.4-33.9 0s-9.4 24.6 0 33.9l72 72c5 5 11.8 7.5 18.8 7s13.4-4.1 17.5-9.8L379.3 179.2c7.8-10.7 5.4-25.7-5.3-33.5z" />
+    </svg>
+  );
+
+  const MinusIcon = () => (
+    <svg className="size-5 shrink-0 text-neutral-600" viewBox="0 0 448 512" fill="currentColor">
+      <path d="M0 256c0-17.7 14.3-32 32-32l384 0c17.7 0 32 14.3 32 32s-14.3 32-32 32L32 288c-17.7 0-32-14.3-32-32z" />
+    </svg>
+  );
+
   return (
-    <div className="flex flex-col min-h-screen bg-[#141414] text-white">
+    <div className="flex flex-col min-h-screen bg-[#18191d] text-white">
       <Header />
 
       <main className="flex-1">
-        {/* Top Hero Section */}
-        <section className="relative overflow-hidden pt-12 pb-16 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
-          {/* Subtle lavender gradient accent */}
+        {/* Top Hero Section matching CloudConvert */}
+        <section className="relative overflow-hidden bg-gradient-to-br from-neutral-900 via-neutral-800 to-neutral-900 pt-28 pb-16">
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(120,40,40,0.25),transparent)] pointer-events-none" />
           <div
-            aria-hidden="true"
-            className="absolute top-0 right-1/4 w-96 h-96 bg-[#5C6BC0]/15 rounded-full blur-3xl pointer-events-none"
+            className="absolute inset-0 opacity-[0.05] pointer-events-none"
+            style={{
+              backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3Cpattern id='g' width='60' height='60' patternUnits='userSpaceOnUse'%3E%3Cpath d='M 60 0 L 0 0 0 60' fill='none' stroke='white' stroke-width='0.5'/%3E%3C/pattern%3E%3C/defs%3E%3Crect width='100%25' height='100%25' fill='url(%23g)'/%3E%3C/svg%3E")`,
+            }}
           />
-
-          <div className="grid lg:grid-cols-2 gap-10 lg:gap-16 items-center">
-            {/* Left: Heading & Intro */}
-            <div>
-              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-white">
+          <div className="relative mx-auto max-w-7xl px-6 lg:grid lg:grid-cols-2 lg:items-center lg:gap-12">
+            <div className="text-center lg:text-left">
+              <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl lg:text-6xl">
                 Pricing
               </h1>
-              <p className="mt-4 text-base sm:text-lg text-neutral-300 leading-relaxed max-w-xl">
-                Pay only for what you need. Use the slider to choose the number of conversion credits
-                you want, and see prices update instantly.
+              <p className="mx-auto mt-6 max-w-3xl text-lg leading-relaxed text-neutral-300 lg:mx-0">
+                Pay only for what you need. Use the slider to choose the number of conversion credits you want, and see prices update instantly.
               </p>
             </div>
 
-            {/* Right: Dynamic Volume Selector Card with Packages vs Subscriptions Tab */}
-            <div className="bg-[#1e1e1e] border border-neutral-800 rounded-2xl p-6 sm:p-8 shadow-2xl relative">
-              <div className="text-center">
-                {/* Packages vs Subscriptions Toggle Tabs */}
-                <div className="inline-flex p-1 bg-neutral-900 border border-neutral-800 rounded-xl mb-6">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('packages')}
-                    className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-                      activeTab === 'packages'
-                        ? 'bg-[#5C6BC0] text-white shadow-md'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
-                  >
-                    Packages (Pay As You Go)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('subscriptions')}
-                    className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-                      activeTab === 'subscriptions'
-                        ? 'bg-[#5C6BC0] text-white shadow-md'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
-                  >
-                    Subscriptions (Save ~50%)
-                  </button>
-                </div>
-
-                <span className="text-xs uppercase tracking-widest text-neutral-400 font-bold block mb-2">
-                  Select Your Volume
+            <div className="mx-auto mt-8 w-full max-w-xl rounded-2xl border border-white/[0.08] bg-white/[0.04] p-6 backdrop-blur-sm lg:mt-0 lg:justify-self-end">
+              <label className="mb-6 block text-sm font-medium tracking-wide text-neutral-400 uppercase text-center">
+                Select your volume
+              </label>
+              <div className="flex items-baseline justify-center gap-2">
+                <span className="text-4xl font-bold tabular-nums text-white sm:text-5xl">
+                  {credits.toLocaleString()}
                 </span>
-                <div className="flex items-baseline justify-center gap-2 mb-6">
-                  <span className="text-4xl sm:text-5xl font-extrabold text-white tracking-tight">
-                    {credits.toLocaleString()}
-                  </span>
-                  <span className="text-neutral-400 font-medium text-lg">credits</span>
-                </div>
+                <span className="text-base text-neutral-400">credits</span>
+              </div>
+              <div className="mt-8 px-2">
+                <input
+                  type="range"
+                  min={0}
+                  max={TIERS.length - 1}
+                  step={1}
+                  value={sliderIndex}
+                  onChange={(e) => setSliderIndex(Number(e.target.value))}
+                  className="pricing-slider"
+                  style={{
+                    background: `linear-gradient(to right, #d9383a ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
+                  }}
+                  aria-label="Volume slider"
+                />
+              </div>
+              <div className="mt-2 flex justify-between text-xs text-neutral-500">
+                <span>500</span>
+                <span>1,000,000</span>
+              </div>
+              <p className="mt-3 text-sm text-neutral-400 text-center">
+                Packages from <strong className="text-white">US${packagePrice.toFixed(2)}</strong> · Subscriptions from <strong className="text-white">US${subPrice.toFixed(2)}/month</strong>
+              </p>
+            </div>
+          </div>
+        </section>
 
-                {/* Range Slider */}
-                <div className="relative px-2">
-                  <input
-                    type="range"
-                    min={0}
-                    max={TIERS.length - 1}
-                    step={1}
-                    value={sliderIndex}
-                    onChange={(e) => setSliderIndex(Number(e.target.value))}
-                    className="w-full h-2.5 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-[#5C6BC0]"
-                    aria-label="Volume slider"
-                  />
-                  <div className="flex justify-between text-xs text-neutral-400 font-medium mt-3">
-                    <span>500</span>
-                    <span>1,000,000</span>
+        {/* Unified Comparison Matrix Table Section */}
+        <section className="py-8 lg:py-12">
+          <div className="mx-auto max-w-7xl px-6">
+            <div className="w-full relative">
+              {/* Desktop Matrix Table */}
+              <table className="w-full table-fixed border-separate border-spacing-x-0 hidden md:table h-fit text-sm [&_td:nth-child(4)]:border-l-0 [&_th:nth-child(4)]:border-l-0">
+                <thead>
+                  <tr>
+                    <td className="w-1/4"></td>
+
+                    {/* Free Column */}
+                    <th scope="col" className="p-6 text-start font-normal align-top h-full w-[18.75%]">
+                      <div className="flex flex-col h-full">
+                        <div className="text-lg font-semibold text-white">Free</div>
+                        <div className="text-sm font-normal text-neutral-400 mt-1 min-h-[40px]">
+                          For personal use, testing and hobby projects.
+                        </div>
+                        <div className="flex items-center gap-1 mt-4">
+                          <div className="text-white text-2xl sm:text-3xl font-semibold whitespace-nowrap">
+                            US$0
+                          </div>
+                        </div>
+                        <div className="mt-6 pt-6">
+                          <a
+                            href="/register"
+                            className="rounded-md font-medium inline-flex items-center px-3 py-2 text-sm gap-2 w-full justify-center border border-neutral-700 text-white bg-transparent hover:bg-white/5 transition-colors"
+                          >
+                            Sign Up
+                          </a>
+                        </div>
+                      </div>
+                    </th>
+
+                    {/* Package Column */}
+                    <th scope="col" className="p-6 text-start font-normal align-top h-full w-[18.75%] bg-[#212529] border-l border-r border-t border-neutral-700/80 rounded-tl-lg rounded-tr-none">
+                      <div className="flex flex-col h-full">
+                        <div className="text-lg font-semibold text-white">Package</div>
+                        <div className="text-sm font-normal text-neutral-400 mt-1 min-h-[40px]">
+                          One-time payment. Credits never expire.
+                        </div>
+                        <div className="flex items-center gap-1 mt-4">
+                          <div className="text-white text-2xl sm:text-3xl font-semibold whitespace-nowrap">
+                            US${packagePrice.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className="mt-6 pt-6">
+                          <a
+                            href="/register"
+                            className="rounded-md font-medium inline-flex items-center px-3 py-2 text-sm gap-2 w-full justify-center text-white bg-[#d9383a] hover:bg-[#c22e30] transition-colors shadow-sm"
+                          >
+                            Buy Now
+                          </a>
+                        </div>
+                      </div>
+                    </th>
+
+                    {/* Subscription Column */}
+                    <th scope="col" className="p-6 text-start font-normal align-top h-full w-[18.75%] bg-[#212529] border-r border-t border-neutral-700/80 rounded-tr-lg rounded-tl-none">
+                      <div className="flex flex-col h-full">
+                        <div className="text-lg font-semibold text-white">Subscription</div>
+                        <div className="text-sm font-normal text-neutral-400 mt-1 min-h-[40px]">
+                          Monthly credits at our best rates.
+                        </div>
+                        <div className="flex items-baseline gap-1 mt-4">
+                          <div className="text-white text-2xl sm:text-3xl font-semibold whitespace-nowrap">
+                            US${subPrice.toFixed(2)}
+                          </div>
+                          <span className="text-neutral-400 text-xs font-medium">/month</span>
+                        </div>
+                        <div className="mt-6 pt-6">
+                          <a
+                            href="/register"
+                            className="rounded-md font-medium inline-flex items-center px-3 py-2 text-sm gap-2 w-full justify-center text-white bg-[#d9383a] hover:bg-[#c22e30] transition-colors shadow-sm"
+                          >
+                            Subscribe
+                          </a>
+                        </div>
+                      </div>
+                    </th>
+
+                    {/* Enterprise Column */}
+                    <th scope="col" className="p-6 text-start font-normal align-top h-full w-[18.75%]">
+                      <div className="flex flex-col h-full">
+                        <div className="text-lg font-semibold text-white">Enterprise</div>
+                        <div className="text-sm font-normal text-neutral-400 mt-1 min-h-[40px]">
+                          Custom plans for large-scale workloads.
+                        </div>
+                        <div className="flex items-center gap-1 mt-4">
+                          <div className="text-white text-2xl sm:text-3xl font-semibold whitespace-nowrap">
+                            Custom
+                          </div>
+                        </div>
+                        <div className="mt-6 pt-6">
+                          <a
+                            href="/contact"
+                            className="rounded-md font-medium inline-flex items-center px-3 py-2 text-sm gap-2 w-full justify-center text-black bg-white hover:bg-neutral-200 transition-colors"
+                          >
+                            Contact Sales
+                          </a>
+                        </div>
+                      </div>
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody className="[&>tr:nth-child(1)]:hidden">
+                  {/* SECTION 1: Pricing */}
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800">
+                      <div className="font-semibold text-sm text-white">Pricing</div>
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"></td>
+                  </tr>
+
+                  {/* Row: Conversion Credits */}
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800">
+                      <span className="text-sm font-bold text-white">Conversion Credits</span>
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800">
+                      <span className="text-sm font-bold text-white">10 / day</span>
+                    </td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80">
+                      <div className="flex flex-col items-center gap-1.5 w-full min-w-25">
+                        <span className="text-sm font-bold text-white">{credits.toLocaleString()}</span>
+                        <div className="w-full px-0.5">
+                          <input
+                            type="range"
+                            min={0}
+                            max={TIERS.length - 1}
+                            value={sliderIndex}
+                            onChange={(e) => setSliderIndex(Number(e.target.value))}
+                            className="table-slider"
+                            style={{
+                              background: `linear-gradient(to right, #d9383a ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
+                            }}
+                            aria-label="Package slider"
+                          />
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80">
+                      <div className="flex flex-col items-center gap-1.5 w-full min-w-25">
+                        <span className="text-sm font-bold text-white">{credits.toLocaleString()} / month</span>
+                        <div className="w-full px-0.5">
+                          <input
+                            type="range"
+                            min={0}
+                            max={TIERS.length - 1}
+                            value={sliderIndex}
+                            onChange={(e) => setSliderIndex(Number(e.target.value))}
+                            className="table-slider"
+                            style={{
+                              background: `linear-gradient(to right, #d9383a ${(sliderIndex / (TIERS.length - 1)) * 100}%, #2A2E33 ${(sliderIndex / (TIERS.length - 1)) * 100}%)`,
+                            }}
+                            aria-label="Subscription slider"
+                          />
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800">
+                      <span className="text-sm font-bold text-white">Custom</span>
+                    </td>
+                  </tr>
+
+                  {/* Row: Cost per Credit */}
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Cost per Credit
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Free</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">
+                      US${pkgCostPerCredit}
+                    </td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">
+                      US${subCostPerCredit}
+                    </td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Custom</td>
+                  </tr>
+
+                  {/* Row: Credit Expiry */}
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Credit Expiry
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Daily reset</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Never</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Monthly reset</td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Custom</td>
+                  </tr>
+
+                  {/* SECTION 2: Features */}
+                  <tr>
+                    <th scope="row" className="py-4 pt-8 font-normal text-start border-b border-neutral-800">
+                      <div className="font-semibold text-sm text-white">Features</div>
+                    </th>
+                    <td className="px-6 py-4 pt-8 text-center border-b border-neutral-800"></td>
+                    <td className="px-6 py-4 pt-8 text-center border-b bg-[#212529] border-x border-neutral-700/80"></td>
+                    <td className="px-6 py-4 pt-8 text-center border-b bg-[#212529] border-x border-neutral-700/80"></td>
+                    <td className="px-6 py-4 pt-8 text-center border-b border-neutral-800"></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      All API Features
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      All Bandwidth Included
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Processing Priority
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Low</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">High</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">High</td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">High</td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Max File Size
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">1 GB</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Unlimited</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Unlimited</td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Unlimited</td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Max Processing Time
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">5 minutes</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Unlimited</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Unlimited</td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Unlimited</td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Concurrent Tasks
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">5</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Unlimited</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Unlimited</td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Unlimited</td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Dedicated Capacity
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Optional</td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Install Custom Fonts
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  {/* SECTION 3: Support & Compliance */}
+                  <tr>
+                    <th scope="row" className="py-4 pt-8 font-normal text-start border-b border-neutral-800">
+                      <div className="font-semibold text-sm text-white">Support &amp; Compliance</div>
+                    </th>
+                    <td className="px-6 py-4 pt-8 text-center border-b border-neutral-800"></td>
+                    <td className="px-6 py-4 pt-8 text-center border-b bg-[#212529] border-x border-neutral-700/80"></td>
+                    <td className="px-6 py-4 pt-8 text-center border-b bg-[#212529] border-x border-neutral-700/80"></td>
+                    <td className="px-6 py-4 pt-8 text-center border-b border-neutral-800"></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Support
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Standard</td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 text-sm text-neutral-400">Standard</td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800 text-sm text-neutral-400">Priority</td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      99.9% SLA
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Data Processing Agreement
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Auto-Refill
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Team Billing
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><CheckIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      SSO / SAML 2.0
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Custom Security Reviews
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Custom Contracts &amp; NDAs
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+
+                  <tr>
+                    <th scope="row" className="py-4 font-normal text-start border-b border-neutral-800 text-sm text-neutral-300">
+                      Metered Billing / Invoicing
+                    </th>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 rounded-bl-lg"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b bg-[#212529] border-x border-neutral-700/80 rounded-br-lg"><div className="flex justify-center"><MinusIcon /></div></td>
+                    <td className="px-6 py-4 text-center border-b border-neutral-800"><div className="flex justify-center"><CheckIcon /></div></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              {/* Mobile View: 4 Stacked Cards */}
+              <div className="md:hidden flex flex-col gap-6 w-full">
+                {/* Free Mobile */}
+                <div className="p-6 flex flex-col border border-neutral-800 rounded-lg bg-neutral-900/60">
+                  <div className="text-lg font-semibold text-white">Free</div>
+                  <div className="text-sm font-normal text-neutral-400 mt-1">For personal use, testing and hobby projects.</div>
+                  <div className="text-2xl font-semibold text-white mt-4">US$0</div>
+                  <a href="/register" className="mt-6 py-2 px-3 text-center border border-neutral-700 rounded-md text-sm text-white">Sign Up</a>
+                  <div className="mt-6 pt-4 border-t border-neutral-800 text-xs space-y-2">
+                    <div className="flex justify-between text-neutral-300"><span>Conversion Credits</span><span className="font-bold text-white">10 / day</span></div>
+                    <div className="flex justify-between text-neutral-300"><span>Cost per Credit</span><span className="text-neutral-400">Free</span></div>
+                    <div className="flex justify-between text-neutral-300"><span>Credit Expiry</span><span className="text-neutral-400">Daily reset</span></div>
                   </div>
                 </div>
 
-                {/* Dynamic Price Summary line */}
-                <div className="mt-6 pt-5 border-t border-neutral-800/80 text-xs sm:text-sm text-neutral-300">
-                  <span>Packages from </span>
-                  <span className={`font-bold ${activeTab === 'packages' ? 'text-[#7986CB] underline decoration-2' : 'text-white'}`}>
-                    US${packagePrice.toFixed(2)}
-                  </span>
-                  <span> · Subscriptions from </span>
-                  <span className={`font-bold ${activeTab === 'subscriptions' ? 'text-[#7986CB] underline decoration-2' : 'text-white'}`}>
-                    US${subPrice.toFixed(2)}/month
-                  </span>
+                {/* Package Mobile */}
+                <div className="p-6 flex flex-col border border-neutral-700/80 rounded-lg bg-[#212529]">
+                  <div className="text-lg font-semibold text-white">Package</div>
+                  <div className="text-sm font-normal text-neutral-400 mt-1">One-time payment. Credits never expire.</div>
+                  <div className="text-2xl font-semibold text-white mt-4">US${packagePrice.toFixed(2)}</div>
+                  <a href="/register" className="mt-6 py-2 px-3 text-center bg-[#d9383a] hover:bg-[#c22e30] rounded-md text-sm text-white font-medium">Buy Now</a>
+                  <div className="mt-6 pt-4 border-t border-neutral-800 text-xs space-y-2">
+                    <div className="flex justify-between text-neutral-300"><span>Conversion Credits</span><span className="font-bold text-white">{credits.toLocaleString()}</span></div>
+                    <div className="flex justify-between text-neutral-300"><span>Cost per Credit</span><span className="text-neutral-400">US${pkgCostPerCredit}</span></div>
+                    <div className="flex justify-between text-neutral-300"><span>Credit Expiry</span><span className="text-neutral-400">Never</span></div>
+                  </div>
+                </div>
+
+                {/* Subscription Mobile */}
+                <div className="p-6 flex flex-col border border-neutral-700/80 rounded-lg bg-[#212529]">
+                  <div className="text-lg font-semibold text-white">Subscription</div>
+                  <div className="text-sm font-normal text-neutral-400 mt-1">Monthly credits at our best rates.</div>
+                  <div className="text-2xl font-semibold text-white mt-4">US${subPrice.toFixed(2)} /month</div>
+                  <a href="/register" className="mt-6 py-2 px-3 text-center bg-[#d9383a] hover:bg-[#c22e30] rounded-md text-sm text-white font-medium">Subscribe</a>
+                  <div className="mt-6 pt-4 border-t border-neutral-800 text-xs space-y-2">
+                    <div className="flex justify-between text-neutral-300"><span>Conversion Credits</span><span className="font-bold text-white">{credits.toLocaleString()} / month</span></div>
+                    <div className="flex justify-between text-neutral-300"><span>Cost per Credit</span><span className="text-neutral-400">US${subCostPerCredit}</span></div>
+                    <div className="flex justify-between text-neutral-300"><span>Credit Expiry</span><span className="text-neutral-400">Monthly reset</span></div>
+                  </div>
+                </div>
+
+                {/* Enterprise Mobile */}
+                <div className="p-6 flex flex-col border border-neutral-800 rounded-lg bg-neutral-900/60">
+                  <div className="text-lg font-semibold text-white">Enterprise</div>
+                  <div className="text-sm font-normal text-neutral-400 mt-1">Custom plans for large-scale workloads.</div>
+                  <div className="text-2xl font-semibold text-white mt-4">Custom</div>
+                  <a href="/contact" className="mt-6 py-2 px-3 text-center bg-white text-black hover:bg-neutral-200 rounded-md text-sm font-medium">Contact Sales</a>
                 </div>
               </div>
             </div>
           </div>
         </section>
 
-        {/* 4-Column Pricing Matrix Section */}
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-14">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {/* 1. Free Column */}
-            <div className="bg-[#181818] border border-neutral-800 rounded-2xl p-6 sm:p-7 flex flex-col justify-between hover:border-neutral-700 transition-all">
-              <div>
-                <h3 className="text-xl font-bold text-white mb-2">Free</h3>
-                <p className="text-xs text-neutral-400 min-h-[36px]">
-                  For personal use, testing and hobby projects.
-                </p>
-
-                <div className="my-6">
-                  <span className="text-3xl font-extrabold text-white">US$0</span>
-                </div>
-
-                <a
-                  href="/register"
-                  className="block text-center w-full py-2.5 px-4 rounded-lg border border-neutral-700 hover:border-neutral-500 text-white font-semibold text-sm transition-all"
-                >
-                  Sign Up
-                </a>
-
-                <div className="mt-8 space-y-4 pt-6 border-t border-neutral-800/80 text-xs">
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Conversion Credits</span>
-                    <span className="font-semibold text-white">10 / day</span>
-                  </div>
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Cost per Credit</span>
-                    <span className="font-semibold text-white">Free</span>
-                  </div>
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Credit Expiry</span>
-                    <span className="font-semibold text-white">Daily reset</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 2. Package Column */}
-            <div
-              className={`bg-[#1e1e1e] border-2 rounded-2xl p-6 sm:p-7 flex flex-col justify-between transition-all relative ${
-                activeTab === 'packages'
-                  ? 'border-[#5C6BC0] shadow-xl shadow-[#5C6BC0]/15'
-                  : 'border-neutral-800 hover:border-neutral-700'
-              }`}
+        {/* Interactive Credits Calculator Accordion */}
+        <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+          <div className="bg-[#212529] border border-neutral-700/80 rounded-2xl p-6 sm:p-8 shadow-xl">
+            <button
+              type="button"
+              onClick={() => setIsCalculatorOpen(!isCalculatorOpen)}
+              className="w-full flex items-center justify-between text-left group"
             >
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 bg-[#5C6BC0] text-white text-[10px] font-bold uppercase tracking-wider rounded-full shadow-md">
-                One-Time Payment
-              </div>
-              <div>
-                <h3 className="text-xl font-bold text-white mb-2">Package</h3>
-                <p className="text-xs text-neutral-400 min-h-[36px]">
-                  One-time payment. Credits never expire.
-                </p>
-
-                <div className="my-6">
-                  <span className="text-3xl font-extrabold text-white">
-                    US${packagePrice.toFixed(2)}
-                  </span>
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-[#d9383a]/10 text-[#d9383a]">
+                  <Calculator className="w-5 h-5" />
                 </div>
-
-                <a
-                  href="/register"
-                  className="block text-center w-full py-2.5 px-4 rounded-lg bg-[#5C6BC0] hover:bg-[#4d5cb5] active:bg-[#3f4ea3] text-white font-semibold text-sm shadow-md transition-all"
-                >
-                  Buy Now
-                </a>
-
-                <div className="mt-8 space-y-4 pt-6 border-t border-neutral-800/80 text-xs">
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Conversion Credits</span>
-                    <span className="font-semibold text-white">{credits.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Cost per Credit</span>
-                    <span className="font-semibold text-white">US${pkgCostPerCredit}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Credit Expiry</span>
-                    <span className="font-semibold text-white">Never</span>
-                  </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white group-hover:text-[#d9383a] transition-colors">
+                    Credits Calculator
+                  </h3>
+                  <p className="text-xs text-neutral-400">
+                    See exactly how many conversion credits each file type consumes.
+                  </p>
                 </div>
               </div>
-            </div>
+              <ChevronDown
+                className={`w-5 h-5 text-neutral-400 transition-transform duration-200 ${
+                  isCalculatorOpen ? 'rotate-180 text-[#d9383a]' : ''
+                }`}
+              />
+            </button>
 
-            {/* 3. Subscription Column */}
-            <div
-              className={`bg-[#1e1e1e] border-2 rounded-2xl p-6 sm:p-7 flex flex-col justify-between transition-all relative ${
-                activeTab === 'subscriptions'
-                  ? 'border-[#5C6BC0] shadow-xl shadow-[#5C6BC0]/15'
-                  : 'border-neutral-800 hover:border-neutral-700'
-              }`}
-            >
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 bg-[#5C6BC0] text-white text-[10px] font-bold uppercase tracking-wider rounded-full shadow-md">
-                Best Value
-              </div>
-              <div>
-                <h3 className="text-xl font-bold text-white mb-2">Subscription</h3>
-                <p className="text-xs text-neutral-400 min-h-[36px]">
-                  Monthly credits at our best rates.
-                </p>
+            {isCalculatorOpen && (
+              <div className="mt-6 pt-6 border-t border-neutral-700/80 animate-in fade-in duration-200 space-y-6">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {/* Operation Select */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-300 uppercase tracking-wider mb-2">
+                      Operation
+                    </label>
+                    <select
+                      value={calcOperation}
+                      onChange={(e) => setCalcOperation(e.target.value)}
+                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#d9383a]"
+                    >
+                      <option value="convert">Convert</option>
+                      <option value="compress">Compress</option>
+                      <option value="thumbnail">Thumbnail</option>
+                      <option value="capture">Website Capture</option>
+                      <option value="merge">Merge</option>
+                    </select>
+                  </div>
 
-                <div className="my-6 flex items-baseline gap-1">
-                  <span className="text-3xl font-extrabold text-white">
-                    US${subPrice.toFixed(2)}
-                  </span>
-                  <span className="text-xs text-neutral-400">/month</span>
+                  {/* Input Format */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-300 uppercase tracking-wider mb-2">
+                      Input Format
+                    </label>
+                    <select
+                      value={calcInputFmt}
+                      onChange={(e) => setCalcInputFmt(e.target.value)}
+                      disabled={calcOperation !== 'convert'}
+                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#d9383a] disabled:opacity-40"
+                    >
+                      <option value="pdf">PDF</option>
+                      <option value="docx">DOCX (Office)</option>
+                      <option value="xlsx">XLSX (Office)</option>
+                      <option value="pptx">PPTX (Office)</option>
+                      <option value="pages">Pages (Apple iWork)</option>
+                      <option value="numbers">Numbers (Apple iWork)</option>
+                      <option value="key">Keynote (Apple iWork)</option>
+                      <option value="png">PNG (Raster Image)</option>
+                      <option value="mp4">MP4 (Video)</option>
+                    </select>
+                  </div>
+
+                  {/* Output Format */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-300 uppercase tracking-wider mb-2">
+                      Output Format
+                    </label>
+                    <select
+                      value={calcOutputFmt}
+                      onChange={(e) => setCalcOutputFmt(e.target.value)}
+                      disabled={calcOperation !== 'convert'}
+                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-[#d9383a] disabled:opacity-40"
+                    >
+                      <option value="docx">DOCX (Office Word)</option>
+                      <option value="pdf">PDF Document</option>
+                      <option value="xlsx">XLSX (Excel)</option>
+                      <option value="pptx">PPTX (PowerPoint)</option>
+                      <option value="jpg">JPG (Image)</option>
+                      <option value="mp3">MP3 (Audio)</option>
+                    </select>
+                  </div>
                 </div>
 
-                <a
-                  href="/register"
-                  className="block text-center w-full py-2.5 px-4 rounded-lg bg-[#5C6BC0] hover:bg-[#4d5cb5] active:bg-[#3f4ea3] text-white font-semibold text-sm shadow-md transition-all"
-                >
-                  Subscribe
-                </a>
-
-                <div className="mt-8 space-y-4 pt-6 border-t border-neutral-800/80 text-xs">
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Conversion Credits</span>
-                    <span className="font-semibold text-white">{credits.toLocaleString()} / month</span>
+                {/* Calculation Result */}
+                <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-700/80 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <Zap className="w-5 h-5 text-[#d9383a]" />
+                    <span className="text-xs text-neutral-300">
+                      Calculated Base Cost for <strong>{calcOperation}</strong>
+                      {calcOperation === 'convert' && ` (${calcInputFmt.toUpperCase()} → ${calcOutputFmt.toUpperCase()})`}:
+                    </span>
                   </div>
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Cost per Credit</span>
-                    <span className="font-semibold text-white">US${subCostPerCredit}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Credit Expiry</span>
-                    <span className="font-semibold text-white">Monthly reset</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 4. Enterprise Column */}
-            <div className="bg-[#181818] border border-neutral-800 rounded-2xl p-6 sm:p-7 flex flex-col justify-between hover:border-neutral-700 transition-all">
-              <div>
-                <h3 className="text-xl font-bold text-white mb-2">Enterprise</h3>
-                <p className="text-xs text-neutral-400 min-h-[36px]">
-                  Custom plans for large-scale workloads.
-                </p>
-
-                <div className="my-6">
-                  <span className="text-3xl font-extrabold text-white">Custom</span>
-                </div>
-
-                <a
-                  href="/contact"
-                  className="block text-center w-full py-2.5 px-4 rounded-lg bg-white hover:bg-neutral-100 text-neutral-900 font-semibold text-sm transition-all"
-                >
-                  Contact Sales
-                </a>
-
-                <div className="mt-8 space-y-4 pt-6 border-t border-neutral-800/80 text-xs">
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Conversion Credits</span>
-                    <span className="font-semibold text-white">Custom</span>
-                  </div>
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Cost per Credit</span>
-                    <span className="font-semibold text-white">Custom</span>
-                  </div>
-                  <div className="flex justify-between items-center text-neutral-300">
-                    <span className="text-neutral-400">Credit Expiry</span>
-                    <span className="font-semibold text-white">Custom</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-[#d9383a]">
+                      {baseCreditsCalculated}
+                    </span>
+                    <span className="text-xs text-neutral-400 font-semibold uppercase">
+                      Credit{baseCreditsCalculated > 1 ? 's' : ''} / file
+                    </span>
                   </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         </section>
 
-        {/* 1:1 Detailed Comparison Matrix Tables matching CloudConvert */}
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-20">
-          <div className="bg-[#1a1a1a] border border-neutral-800 rounded-2xl overflow-hidden shadow-xl">
-            {/* Features Table */}
-            <div className="p-6 sm:p-8 border-b border-neutral-800">
-              <h3 className="text-lg font-bold text-white uppercase tracking-wider mb-6 pb-2 border-b border-neutral-800">
-                Features
-              </h3>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs sm:text-sm">
-                  <thead>
-                    <tr className="border-b border-neutral-800 text-neutral-400">
-                      <th className="py-3 px-4 font-semibold w-2/5">Feature</th>
-                      <th className="py-3 px-4 font-semibold text-center w-[15%]">Free</th>
-                      <th className="py-3 px-4 font-semibold text-center w-[15%]">Package</th>
-                      <th className="py-3 px-4 font-semibold text-center w-[15%]">Subscription</th>
-                      <th className="py-3 px-4 font-semibold text-center w-[15%]">Enterprise</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-800/60 text-neutral-300">
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">All API Features</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">All Bandwidth Included</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Processing Priority</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-400">Low</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">High</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">High</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">High</td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Max File Size</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-400">1 GB</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Max Processing Time</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-400">5 minutes</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Concurrent Tasks</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-400">5</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Unlimited</td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Dedicated Capacity</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-white font-semibold">Optional</td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Install Custom Fonts</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Support & Compliance Table */}
-            <div className="p-6 sm:p-8">
-              <h3 className="text-lg font-bold text-white uppercase tracking-wider mb-6 pb-2 border-b border-neutral-800">
-                Support & Compliance
-              </h3>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs sm:text-sm">
-                  <thead>
-                    <tr className="border-b border-neutral-800 text-neutral-400">
-                      <th className="py-3 px-4 font-semibold w-2/5">Capability</th>
-                      <th className="py-3 px-4 font-semibold text-center w-[15%]">Free</th>
-                      <th className="py-3 px-4 font-semibold text-center w-[15%]">Package</th>
-                      <th className="py-3 px-4 font-semibold text-center w-[15%]">Subscription</th>
-                      <th className="py-3 px-4 font-semibold text-center w-[15%]">Enterprise</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-800/60 text-neutral-300">
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Support</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-300">Standard</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-300">Standard</td>
-                      <td className="py-3.5 px-4 text-center text-[#5C6BC0] font-bold">Priority</td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">99.9% SLA</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Data Processing Agreement</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Auto-Refill</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Team Billing</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">SSO / SAML 2.0</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Custom Security Reviews</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Custom Contracts & NDAs</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                    <tr>
-                      <td className="py-3.5 px-4 font-medium text-white">Metered Billing / Invoicing</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center text-neutral-500">—</td>
-                      <td className="py-3.5 px-4 text-center"><Check className="w-4 h-4 text-[#5C6BC0] mx-auto" /></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* FAQ Accordion Section matching CloudConvert */}
-        <section className="py-16 px-4 sm:px-6 lg:px-8 max-w-4xl mx-auto">
-          <div className="text-center mb-12">
+        {/* FAQ Accordion Section */}
+        <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pb-20">
+          <div className="text-center mb-10">
             <h2 className="text-2xl sm:text-3xl font-bold text-white">Frequently Asked Questions</h2>
-            <p className="mt-2 text-sm text-neutral-400">
-              Have questions about credits or billing? We have answers.
-            </p>
+            <p className="mt-2 text-sm text-neutral-400">Everything you need to know about our billing and credits.</p>
           </div>
 
           <div className="space-y-4">
-            {/* 1. What are conversion credits? */}
-            <div className="border border-neutral-800 rounded-xl bg-neutral-900/50 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setOpenFaq(openFaq === 0 ? null : 0)}
-                className="w-full px-6 py-4 text-left flex items-center justify-between text-sm sm:text-base font-semibold text-white hover:text-[#5C6BC0] transition-colors"
+            {[
+              {
+                q: 'What is a conversion credit?',
+                a: 'A conversion credit is a standard metering unit used by EasyConvert. Simple conversions (such as PNG to JPG or MP4 to MP3) require 1 credit. High-fidelity Office conversions (e.g. DOCX or XLSX to PDF) require 2 credits, while converting complex PDFs back into editable Office documents requires 4 credits.',
+              },
+              {
+                q: 'Do package credits expire?',
+                a: 'No. Credits purchased as a Package never expire and can be consumed at your own pace over months or years.',
+              },
+              {
+                q: 'How do Subscriptions work?',
+                a: 'Subscriptions renew each month at approximately 50% discount compared to one-time packages. Unused subscription credits reset at the start of each billing period.',
+              },
+              {
+                q: 'Is there a free tier?',
+                a: 'Yes! Every registered user receives 10 free conversion credits per day with a 1 GB maximum file size limit.',
+              },
+              {
+                q: 'Can I cancel my subscription anytime?',
+                a: 'Yes, subscriptions can be cancelled immediately at any time from your account settings with zero cancellation penalties.',
+              },
+            ].map((faq, idx) => (
+              <div
+                key={idx}
+                className="bg-[#212529] border border-neutral-700/80 rounded-xl overflow-hidden transition-all"
               >
-                <span>What are conversion credits?</span>
-                <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${openFaq === 0 ? 'rotate-180 text-[#5C6BC0]' : ''}`} />
-              </button>
-              {openFaq === 0 && (
-                <div className="px-6 pb-5 text-xs sm:text-sm text-neutral-300 leading-relaxed border-t border-neutral-800/60 pt-4 space-y-4">
-                  <p>
-                    The longer a conversion takes, the more resources it consumes and the more expensive it becomes. Our packages and subscriptions typically consume one credit per minute of conversion time.
-                  </p>
-                  <p>
-                    Depending on the conversion type, each conversion also has a base credit cost. By default, conversions consume at least one credit, with additional credits charged for every extra minute if the conversion takes longer than one minute. We also offer a few premium conversion types that require more resources and therefore have a minimum base cost of two credits. Of course, only successful conversions are charged.
-                  </p>
-                  <div className="overflow-x-auto rounded-lg border border-neutral-800">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-neutral-800/80 text-white font-semibold">
-                        <tr>
-                          <th className="py-2.5 px-4">Conversion Type</th>
-                          <th className="py-2.5 px-4 text-right">Base Credits</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-neutral-800 text-neutral-300">
-                        <tr>
-                          <td className="py-2 px-4">General</td>
-                          <td className="py-2 px-4 text-right font-mono font-bold">1</td>
-                        </tr>
-                        <tr>
-                          <td className="py-2 px-4">Office to PDF</td>
-                          <td className="py-2 px-4 text-right font-mono font-bold">2</td>
-                        </tr>
-                        <tr>
-                          <td className="py-2 px-4">iWork to PDF</td>
-                          <td className="py-2 px-4 text-right font-mono font-bold">2</td>
-                        </tr>
-                        <tr>
-                          <td className="py-2 px-4">PDF to Office</td>
-                          <td className="py-2 px-4 text-right font-mono font-bold">4</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                <button
+                  type="button"
+                  onClick={() => setOpenFaq(openFaq === idx ? null : idx)}
+                  className="w-full flex items-center justify-between p-5 text-left text-sm font-semibold text-white hover:text-[#d9383a] transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <HelpCircle className="w-4 h-4 text-[#d9383a]" />
+                    <span>{faq.q}</span>
+                  </span>
+                  <ChevronDown
+                    className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${
+                      openFaq === idx ? 'rotate-180 text-[#d9383a]' : ''
+                    }`}
+                  />
+                </button>
+                {openFaq === idx && (
+                  <div className="px-5 pb-5 pt-1 text-xs text-neutral-400 leading-relaxed border-t border-neutral-700/80 animate-in fade-in duration-150">
+                    {faq.a}
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsCalculatorOpen(true)}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white font-medium text-xs border border-neutral-700 transition-colors shadow-sm"
-                  >
-                    <Calculator className="w-3.5 h-3.5 text-[#5C6BC0]" />
-                    <span>Credits Calculator</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* 2. Why do I have to pay for a base amount of credits per conversion? */}
-            <div className="border border-neutral-800 rounded-xl bg-neutral-900/50 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setOpenFaq(openFaq === 1 ? null : 1)}
-                className="w-full px-6 py-4 text-left flex items-center justify-between text-sm sm:text-base font-semibold text-white hover:text-[#5C6BC0] transition-colors"
-              >
-                <span>Why do I have to pay for a base amount of credits per conversion?</span>
-                <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${openFaq === 1 ? 'rotate-180 text-[#5C6BC0]' : ''}`} />
-              </button>
-              {openFaq === 1 && (
-                <div className="px-6 pb-4 text-xs sm:text-sm text-neutral-300 leading-relaxed border-t border-neutral-800/60 pt-3">
-                  Ninety-five percent of our conversions take only a few seconds, and we already account for that. To make costs more predictable, our pricing is based on a combination of the minimum credits consumed per conversion type and the total conversion time.
-                </div>
-              )}
-            </div>
-
-            {/* 3. What is the difference between a package and a subscription? */}
-            <div className="border border-neutral-800 rounded-xl bg-neutral-900/50 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setOpenFaq(openFaq === 2 ? null : 2)}
-                className="w-full px-6 py-4 text-left flex items-center justify-between text-sm sm:text-base font-semibold text-white hover:text-[#5C6BC0] transition-colors"
-              >
-                <span>What is the difference between a package and a subscription?</span>
-                <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${openFaq === 2 ? 'rotate-180 text-[#5C6BC0]' : ''}`} />
-              </button>
-              {openFaq === 2 && (
-                <div className="px-6 pb-4 text-xs sm:text-sm text-neutral-300 leading-relaxed border-t border-neutral-800/60 pt-3">
-                  Packages are one-time purchases — your credits never expire and you can use them whenever you like (&quot;pay as you go&quot;). Subscriptions charge a monthly fee for a fixed amount of credits at a lower per-credit price, but unused credits do not roll over at the end of the month. Subscriptions can be up to 50% cheaper than packages.
-                </div>
-              )}
-            </div>
-
-            {/* 4. Can I combine packages and subscriptions? */}
-            <div className="border border-neutral-800 rounded-xl bg-neutral-900/50 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setOpenFaq(openFaq === 3 ? null : 3)}
-                className="w-full px-6 py-4 text-left flex items-center justify-between text-sm sm:text-base font-semibold text-white hover:text-[#5C6BC0] transition-colors"
-              >
-                <span>Can I combine packages and subscriptions?</span>
-                <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${openFaq === 3 ? 'rotate-180 text-[#5C6BC0]' : ''}`} />
-              </button>
-              {openFaq === 3 && (
-                <div className="px-6 pb-4 text-xs sm:text-sm text-neutral-300 leading-relaxed border-t border-neutral-800/60 pt-3">
-                  Yes! Your credits from your monthly subscription will be consumed first, and then your package credits will be consumed.
-                </div>
-              )}
-            </div>
-
-            {/* 5. How can I make sure my account never runs out of credits? */}
-            <div className="border border-neutral-800 rounded-xl bg-neutral-900/50 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setOpenFaq(openFaq === 4 ? null : 4)}
-                className="w-full px-6 py-4 text-left flex items-center justify-between text-sm sm:text-base font-semibold text-white hover:text-[#5C6BC0] transition-colors"
-              >
-                <span>How can I make sure my account never runs out of credits?</span>
-                <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${openFaq === 4 ? 'rotate-180 text-[#5C6BC0]' : ''}`} />
-              </button>
-              {openFaq === 4 && (
-                <div className="px-6 pb-4 text-xs sm:text-sm text-neutral-300 leading-relaxed border-t border-neutral-800/60 pt-3">
-                  An auto-refill option is available for packages. When enabled, your account is automatically refilled as soon as it runs out of credits. You can activate it in the billing settings.
-                </div>
-              )}
-            </div>
-
-            {/* 6. Can I share my package/subscription with multiple accounts? */}
-            <div className="border border-neutral-800 rounded-xl bg-neutral-900/50 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setOpenFaq(openFaq === 5 ? null : 5)}
-                className="w-full px-6 py-4 text-left flex items-center justify-between text-sm sm:text-base font-semibold text-white hover:text-[#5C6BC0] transition-colors"
-              >
-                <span>Can I share my package/subscription with multiple accounts?</span>
-                <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${openFaq === 5 ? 'rotate-180 text-[#5C6BC0]' : ''}`} />
-              </button>
-              {openFaq === 5 && (
-                <div className="px-6 pb-4 text-xs sm:text-sm text-neutral-300 leading-relaxed border-t border-neutral-800/60 pt-3">
-                  Yes. Team billing is available, so organizations such as companies or schools can use one central billing account with unlimited team members. Only billing is shared across accounts; files and conversions remain private with our zero-retention guarantee.
-                </div>
-              )}
-            </div>
-
-            {/* 7. When can I cancel/change my subscription? */}
-            <div className="border border-neutral-800 rounded-xl bg-neutral-900/50 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setOpenFaq(openFaq === 6 ? null : 6)}
-                className="w-full px-6 py-4 text-left flex items-center justify-between text-sm sm:text-base font-semibold text-white hover:text-[#5C6BC0] transition-colors"
-              >
-                <span>When can I cancel/change my subscription?</span>
-                <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${openFaq === 6 ? 'rotate-180 text-[#5C6BC0]' : ''}`} />
-              </button>
-              {openFaq === 6 && (
-                <div className="px-6 pb-4 text-xs sm:text-sm text-neutral-300 leading-relaxed border-t border-neutral-800/60 pt-3">
-                  You can cancel your subscription at any time. There is no minimum term. You can also switch to a different subscription at any time, but any remaining conversion credits will expire at the end of the billing period.
-                </div>
-              )}
-            </div>
-
-            {/* 8. Which payment methods are available? */}
-            <div className="border border-neutral-800 rounded-xl bg-neutral-900/50 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setOpenFaq(openFaq === 7 ? null : 7)}
-                className="w-full px-6 py-4 text-left flex items-center justify-between text-sm sm:text-base font-semibold text-white hover:text-[#5C6BC0] transition-colors"
-              >
-                <span>Which payment methods are available?</span>
-                <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform duration-200 ${openFaq === 7 ? 'rotate-180 text-[#5C6BC0]' : ''}`} />
-              </button>
-              {openFaq === 7 && (
-                <div className="px-6 pb-4 text-xs sm:text-sm text-neutral-300 leading-relaxed border-t border-neutral-800/60 pt-3">
-                  We accept all major credit cards including Visa, MasterCard, and American Express. Invoicing and wire transfer are also supported for Enterprise contracts.
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* CTA Box matching CloudConvert */}
-          <div className="mt-16 bg-[#1a1a1a] border border-neutral-800 rounded-2xl p-8 sm:p-10 text-center shadow-2xl">
-            <h3 className="text-2xl sm:text-3xl font-bold text-white mb-2">Ready to get started?</h3>
-            <p className="text-sm text-neutral-400 max-w-lg mx-auto mb-6">
-              Start free with 10 conversions per day. No credit card required.
-            </p>
-            <div className="flex flex-wrap items-center justify-center gap-4">
-              <a
-                href="/register"
-                className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-[#5C6BC0] hover:bg-[#4d5cb5] text-white font-bold text-sm shadow-lg shadow-[#5C6BC0]/25 transition-all"
-              >
-                <span>Get Started Free</span>
-                <ArrowRight className="w-4 h-4" />
-              </a>
-              <a
-                href="/contact"
-                className="inline-flex items-center gap-2 px-6 py-3 rounded-xl border border-neutral-700 hover:border-neutral-500 bg-neutral-900/60 text-white font-semibold text-sm transition-all"
-              >
-                <span>Contact Sales</span>
-              </a>
-            </div>
+                )}
+              </div>
+            ))}
           </div>
         </section>
       </main>
-
-      {/* 1:1 Credits Calculator Modal matching CloudConvert */}
-      {isCalculatorOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
-          onClick={() => setIsCalculatorOpen(false)}
-        >
-          <div
-            className="relative w-full max-w-lg bg-[#1e1e1e] border border-neutral-700/80 rounded-2xl shadow-2xl overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal Header */}
-            <div className="p-4 sm:px-6 border-b border-neutral-800 flex items-center justify-between bg-neutral-900/50">
-              <div className="flex items-center gap-2">
-                <Calculator className="w-5 h-5 text-[#5C6BC0]" />
-                <h3 className="text-base font-bold text-white">Credits Calculator</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsCalculatorOpen(false)}
-                aria-label="Close"
-                className="p-1 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-6 space-y-5 text-sm">
-              {/* Operation */}
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  Operation
-                </label>
-                <select
-                  value={calcOperation}
-                  onChange={(e) => setCalcOperation(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-[#5C6BC0] text-sm"
-                >
-                  <option value="convert">Convert</option>
-                  <option value="compress">Compress / Optimize</option>
-                  <option value="thumbnail">Create Thumbnail</option>
-                  <option value="capture">Capture Website</option>
-                  <option value="merge">Merge</option>
-                </select>
-              </div>
-
-              {calcOperation === 'convert' ? (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                        Input Format
-                      </label>
-                      <select
-                        value={calcInputFmt}
-                        onChange={(e) => setCalcInputFmt(e.target.value)}
-                        className="w-full px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-[#5C6BC0] text-xs uppercase"
-                      >
-                        {Object.keys(FORMAT_REGISTRY).map((fmt) => (
-                          <option key={fmt} value={fmt}>
-                            {fmt.toUpperCase()}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                        Output Format
-                      </label>
-                      <select
-                        value={calcOutputFmt}
-                        onChange={(e) => setCalcOutputFmt(e.target.value)}
-                        className="w-full px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-[#5C6BC0] text-xs uppercase"
-                      >
-                        {(FORMAT_REGISTRY[calcInputFmt]?.targetFormats || ['pdf', 'docx', 'png']).map(
-                          (fmt) => (
-                            <option key={fmt} value={fmt}>
-                              {fmt.toUpperCase()}
-                            </option>
-                          )
-                        )}
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Calculation Result */}
-                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-2">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-neutral-400">Base credit cost:</span>
-                      <span className="font-mono font-bold text-white text-sm">
-                        {baseCreditsCalculated} {baseCreditsCalculated === 1 ? 'credit' : 'credits'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-neutral-400">Conversion time rate:</span>
-                      <span className="text-neutral-300 font-medium">
-                        1 credit / minute
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-neutral-400 pt-2 border-t border-neutral-800">
-                      Most standard conversions take 5-15 seconds and consume exactly{' '}
-                      <span className="text-white font-semibold">{baseCreditsCalculated} credit{baseCreditsCalculated > 1 ? 's' : ''}</span>.
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-2">
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-neutral-400">Base credit cost:</span>
-                    <span className="font-mono font-bold text-white text-sm">1 credit</span>
-                  </div>
-                  <p className="text-[11px] text-neutral-400 pt-2 border-t border-neutral-800">
-                    Operation requires standard compute resources and consumes 1 credit per minute.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 bg-neutral-900/50 border-t border-neutral-800 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setIsCalculatorOpen(false)}
-                className="px-4 py-2 rounded-xl bg-[#5C6BC0] hover:bg-[#4d5cb5] text-white font-semibold text-xs transition-colors"
-              >
-                Close Calculator
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <Footer />
     </div>

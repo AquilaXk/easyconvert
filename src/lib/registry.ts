@@ -524,7 +524,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/pdf',
     category: 'document',
     description: 'Portable Document Format - Industry standard fixed-layout document.',
-    targetFormats: ['docx', 'txt', 'html', 'md', 'epub', 'xlsx', 'png', 'zip'],
+    targetFormats: ['doc', 'docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'dxf', 'svg'],
     optionsSchema: { orientation: true, ocrEnabled: true, ocrLanguage: true, preserveLayout: true },
   },
   docx: {
@@ -1516,7 +1516,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     name: 'SVG Vector Graphics',
     extension: 'svg',
     mimeType: 'image/svg+xml',
-    category: 'image',
+    category: 'vector',
     description: 'Scalable Vector Graphics - XML-based resolution-independent 2D vector format.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip'],
     optionsSchema: { dimensions: true },

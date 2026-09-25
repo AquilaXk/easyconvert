@@ -15,7 +15,7 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 export default function Home() {
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [isConverting, setIsConverting] = useState(false);
-  const [presetTarget, setPresetTarget] = useState<string>('docx');
+  const [presetTarget, setPresetTarget] = useState<string>('');
 
   // Add files to queue
   const handleFilesSelected = (files: File[], defaultTarget?: string) => {
@@ -23,10 +23,15 @@ export default function Home() {
       const detected = detectFormatFromFilename(file.name);
       const sourceFormat = detected ? detected.extension : file.name.split('.').pop() || 'bin';
 
-      let targetFormat = defaultTarget || presetTarget || 'docx';
-      if (detected && detected.targetFormats.length > 0) {
-        if (!detected.targetFormats.includes(targetFormat.toLowerCase())) {
-          targetFormat = detected.targetFormats[0];
+      let targetFormat = '';
+      const preferred = defaultTarget || presetTarget;
+      if (preferred && preferred.toLowerCase() !== 'any') {
+        if (detected && detected.targetFormats.length > 0) {
+          if (detected.targetFormats.includes(preferred.toLowerCase())) {
+            targetFormat = preferred.toLowerCase();
+          }
+        } else {
+          targetFormat = preferred.toLowerCase();
         }
       }
 
@@ -235,7 +240,7 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 transition-colors">
+    <div className={`flex flex-col min-h-screen ${queue.length > 0 ? 'bg-[#18191d]' : 'bg-[#f4f4f5] dark:bg-[#18191d]'} text-neutral-900 dark:text-neutral-100 transition-colors`}>
       <Header />
 
       <main className="flex-1">
@@ -244,12 +249,12 @@ export default function Home() {
           onFilesSelected={handleFilesSelected}
           hasActiveQueue={queue.length > 0}
           activeSourceFormat={queue.length > 0 ? queue[0].sourceFormat : undefined}
-          activeTargetFormat={queue.length > 0 ? queue[0].targetFormat : undefined}
+          activeTargetFormat={queue.length > 0 ? (queue[0].targetFormat || 'any') : undefined}
         />
 
-        {/* Floating Queue Table when files are added (straddling Hero boundary) */}
+        {/* Floating Queue Table when files are added */}
         {queue.length > 0 && (
-          <div className="relative z-20 max-w-5xl mx-auto px-4 sm:px-6 -mt-32 mb-14 animate-in fade-in duration-200">
+          <div className="relative z-20 max-w-8xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 mb-14 animate-in fade-in duration-200 pb-24">
             <ConversionQueue
               items={queue}
               onRemoveItem={handleRemoveItem}
@@ -273,10 +278,10 @@ export default function Home() {
         )}
 
         {/* 2-Column Format Catalog & Data Security */}
-        <Features onSelectPreset={handleSelectPreset} />
+        {queue.length === 0 && <Features onSelectPreset={handleSelectPreset} />}
       </main>
 
-      <Footer />
+      {queue.length === 0 && <Footer />}
     </div>
   );
 }

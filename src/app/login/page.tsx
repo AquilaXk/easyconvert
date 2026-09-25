@@ -4,14 +4,10 @@ import React, { useState } from 'react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { useRouter } from 'next/navigation';
-import { Lock, Mail, Eye, EyeOff, Shield, ArrowRight } from 'lucide-react';
-
 export default function LoginPage() {
   const router = useRouter();
   const [emailOrUser, setEmailOrUser] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,176 +37,130 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-[#141414] text-white">
+    <div className="flex flex-col min-h-screen bg-[#18191d] text-white">
       <Header />
 
-      <main className="flex-1 flex items-center justify-center px-4 sm:px-6 py-16">
-        <div className="w-full max-w-[460px] bg-[#1e1e1e] border border-neutral-800 rounded-2xl p-8 sm:p-10 shadow-2xl animate-in fade-in duration-200">
-          {/* Card Header */}
-          <div className="text-center mb-7">
-            <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">Login</h1>
-            <p className="mt-2 text-sm text-neutral-400">
+      <main className="flex-1 flex items-center justify-center px-4 sm:px-6 py-12">
+        <div className="w-full max-w-md rounded-none bg-[#212529]/50 ring-1 ring-neutral-700/80 shadow-2xl p-4 sm:p-6 animate-in fade-in duration-200">
+          {/* Header */}
+          <div className="flex flex-col text-center mb-6">
+            <h1 className="text-xl font-semibold text-white tracking-tight">Login</h1>
+            <p className="mt-1 text-base text-neutral-400">
               Don&apos;t have an account?{' '}
-              <a
-                href="/register"
-                className="text-[#5C6BC0] hover:text-[#7986CB] font-medium transition-colors"
-              >
+              <a href="/register" className="text-[#d9383a] hover:underline font-medium">
                 Sign up
               </a>
               .
             </p>
           </div>
 
-          {/* Social Logins */}
-          <div className="space-y-2.5 mb-6">
-            <button
-              type="button"
-              onClick={() => handleSocialLogin('Google')}
-              className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-lg bg-neutral-800/80 hover:bg-neutral-800 border border-neutral-700/80 text-sm font-medium text-neutral-200 transition-colors"
-            >
-              <svg className="w-4 h-4" viewBox="0 0 24 24">
-                <path
-                  fill="currentColor"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                />
-              </svg>
-              <span>Google</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleSocialLogin('Facebook')}
-              className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-lg bg-neutral-800/80 hover:bg-neutral-800 border border-neutral-700/80 text-sm font-medium text-neutral-200 transition-colors"
-            >
-              <svg className="w-4 h-4 fill-current text-[#1877F2]" viewBox="0 0 24 24">
-                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-              </svg>
-              <span>Facebook</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleSocialLogin('Twitter')}
-              className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-lg bg-neutral-800/80 hover:bg-neutral-800 border border-neutral-700/80 text-sm font-medium text-neutral-200 transition-colors"
-            >
-              <svg className="w-4 h-4 fill-current text-white" viewBox="0 0 24 24">
-                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-              </svg>
-              <span>Twitter</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleSocialLogin('SSO')}
-              className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-lg bg-neutral-800/80 hover:bg-neutral-800 border border-neutral-700/80 text-sm font-medium text-neutral-200 transition-colors"
-            >
-              <Lock className="w-4 h-4 text-neutral-400" />
-              <span>SSO</span>
-            </button>
-          </div>
-
-          {/* Divider */}
-          <div className="relative flex items-center justify-center my-6">
-            <div className="border-t border-neutral-800 w-full" />
-            <span className="bg-[#1e1e1e] px-3 text-xs text-neutral-500 uppercase tracking-wider font-semibold">
-              or
-            </span>
-          </div>
-
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {error && (
-              <div className="p-3 rounded-lg bg-red-950/40 border border-red-500/40 text-red-300 text-xs">
-                {error}
-              </div>
-            )}
-
-            <div>
-              <label
-                htmlFor="emailOrUser"
-                className="block text-xs font-semibold text-neutral-300 mb-1.5"
+          <div className="flex flex-col gap-y-6">
+            {/* 4 Social Login Buttons */}
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => handleSocialLogin('Google')}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md ring-1 ring-inset ring-neutral-700 bg-[#212529] hover:bg-neutral-800 text-neutral-200 transition-colors cursor-pointer"
               >
-                Email or Username
-              </label>
-              <input
-                id="emailOrUser"
-                type="text"
-                required
-                value={emailOrUser}
-                onChange={(e) => setEmailOrUser(e.target.value)}
-                placeholder="name@example.com"
-                className="w-full px-3.5 py-2.5 text-sm bg-neutral-900 border border-neutral-700 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-[#5C6BC0] focus:border-transparent transition-all"
-              />
+                <svg className="size-4 shrink-0 fill-current" viewBox="0 0 512 512">
+                  <path d="M500 261.8C500 403.3 403.1 504 260 504 122.8 504 12 393.2 12 256S122.8 8 260 8c66.8 0 123 24.5 166.3 64.9l-67.5 64.9c-88.3-85.2-252.5-21.2-252.5 118.2 0 86.5 69.1 156.6 153.7 156.6 98.2 0 135-70.4 140.8-106.9l-140.8 0 0-85.3 236.1 0c2.3 12.7 3.9 24.9 3.9 41.4z" />
+                </svg>
+                <span>Google</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSocialLogin('Facebook')}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md ring-1 ring-inset ring-neutral-700 bg-[#212529] hover:bg-neutral-800 text-neutral-200 transition-colors cursor-pointer"
+              >
+                <svg className="size-4 shrink-0 fill-current" viewBox="0 0 512 512">
+                  <path d="M512 256C512 114.6 397.4 0 256 0S0 114.6 0 256C0 376 82.7 476.8 194.2 504.5l0-170.3-52.8 0 0-78.2 52.8 0 0-33.7c0-87.1 39.4-127.5 125-127.5 16.2 0 44.2 3.2 55.7 6.4l0 70.8c-6-.6-16.5-1-29.6-1-42 0-58.2 15.9-58.2 57.2l0 27.8 83.6 0-14.4 78.2-69.3 0 0 175.9C413.8 494.8 512 386.9 512 256z" />
+                </svg>
+                <span>Facebook</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSocialLogin('Twitter')}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md ring-1 ring-inset ring-neutral-700 bg-[#212529] hover:bg-neutral-800 text-neutral-200 transition-colors cursor-pointer"
+              >
+                <svg className="size-4 shrink-0 fill-current" viewBox="0 0 512 512">
+                  <path d="M459.4 151.7c.3 4.5 .3 9.1 .3 13.6 0 138.7-105.6 298.6-298.6 298.6-59.5 0-114.7-17.2-161.1-47.1 8.4 1 16.6 1.3 25.3 1.3 49.1 0 94.2-16.6 130.3-44.8-46.1-1-84.8-31.2-98.1-72.8 6.5 1 13 1.6 19.8 1.6 9.4 0 18.8-1.3 27.6-3.6-48.1-9.7-84.1-52-84.1-103l0-1.3c14 7.8 30.2 12.7 47.4 13.3-28.3-18.8-46.8-51-46.8-87.4 0-19.5 5.2-37.4 14.3-53 51.7 63.7 129.3 105.3 216.4 109.8-1.6-7.8-2.6-15.9-2.6-24 0-57.8 46.8-104.9 104.9-104.9 30.2 0 57.5 12.7 76.7 33.1 23.7-4.5 46.5-13.3 66.6-25.3-7.8 24.4-24.4 44.8-46.1 57.8 21.1-2.3 41.6-8.1 60.4-16.2-14.3 20.8-32.2 39.3-52.6 54.3z" />
+                </svg>
+                <span>Twitter</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSocialLogin('SSO')}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md ring-1 ring-inset ring-neutral-700 bg-[#212529] hover:bg-neutral-800 text-neutral-200 transition-colors cursor-pointer"
+              >
+                <svg className="size-4 shrink-0 fill-current" viewBox="0 0 384 512">
+                  <path d="M64 0C28.7 0 0 28.7 0 64L0 448c0 35.3 28.7 64 64 64l256 0c35.3 0 64-28.7 64-64l0-384c0-35.3-28.7-64-64-64L64 0zM176 352l32 0c17.7 0 32 14.3 32 32l0 80-96 0 0-80c0-17.7 14.3-32 32-32zM96 112c0-8.8 7.2-16 16-16l32 0c8.8 0 16 7.2 16 16l0 32c0 8.8-7.2 16-16 16l-32 0c-8.8 0-16-7.2-16-16l0-32zM240 96l32 0c8.8 0 16 7.2 16 16l0 32c0 8.8-7.2 16-16 16l-32 0c-8.8 0-16-7.2-16-16l0-32c0-8.8 7.2-16 16-16zM96 240c0-8.8 7.2-16 16-16l32 0c8.8 0 16 7.2 16 16l0 32c0 8.8-7.2 16-16 16l-32 0c-8.8 0-16-7.2-16-16l0-32zm144-16l32 0c8.8 0 16 7.2 16 16l0 32c0 8.8-7.2 16-16 16l-32 0c-8.8 0-16-7.2-16-16l0-32c0-8.8 7.2-16 16-16z" />
+                </svg>
+                <span>SSO</span>
+              </button>
             </div>
 
-            <div>
-              <div className="flex justify-between items-center mb-1.5">
-                <label
-                  htmlFor="loginPassword"
-                  className="block text-xs font-semibold text-neutral-300"
-                >
-                  Password
+            {/* Separator */}
+            <div className="flex items-center align-center text-center w-full">
+              <div className="border-neutral-700 w-full border-t" />
+              <span className="font-medium text-neutral-400 text-sm mx-3">or</span>
+              <div className="border-neutral-700 w-full border-t" />
+            </div>
+
+            {/* Form with empty inputs (no placeholders) */}
+            <form onSubmit={handleSubmit} className="space-y-5">
+              {error && (
+                <div className="p-2.5 rounded bg-red-950/50 border border-red-500/50 text-red-300 text-xs">
+                  {error}
+                </div>
+              )}
+
+              <div className="text-sm">
+                <label htmlFor="loginEmail" className="block font-medium text-neutral-300 mb-1">
+                  Email or Username
                 </label>
-                <a
-                  href="/forgot-password"
-                  className="text-xs text-[#5C6BC0] hover:text-[#7986CB] transition-colors"
-                >
-                  Forgot password?
-                </a>
+                <input
+                  id="loginEmail"
+                  type="text"
+                  name="email"
+                  required
+                  value={emailOrUser}
+                  onChange={(e) => setEmailOrUser(e.target.value)}
+                  className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#d9383a] px-2.5 py-1.5 text-sm text-white outline-none transition-colors"
+                />
               </div>
-              <div className="relative">
+
+              <div className="text-sm">
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="loginPassword" className="block font-medium text-neutral-300">
+                    Password
+                  </label>
+                  <a href="/forgot-password" className="text-[#d9383a] hover:underline font-medium text-xs">
+                    Forgot password?
+                  </a>
+                </div>
                 <input
                   id="loginPassword"
-                  type={showPassword ? 'text' : 'password'}
+                  type="password"
+                  name="password"
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full px-3.5 py-2.5 text-sm bg-neutral-900 border border-neutral-700 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-[#5C6BC0] focus:border-transparent transition-all pr-10"
+                  className="w-full rounded-md border-0 bg-[#18191d] ring-1 ring-inset ring-neutral-700/80 focus:ring-1 focus:ring-[#d9383a] px-2.5 py-1.5 text-sm text-white outline-none transition-colors"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-200"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
               </div>
-            </div>
 
-            <div className="flex items-center gap-2 pt-1">
-              <input
-                id="remember"
-                type="checkbox"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="w-4 h-4 rounded border-neutral-700 bg-neutral-900 text-[#5C6BC0] focus:ring-[#5C6BC0]"
-              />
-              <label htmlFor="remember" className="text-xs text-neutral-400 select-none cursor-pointer">
-                Remember me on this device
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full mt-3 py-2.5 px-4 rounded-lg bg-[#5C6BC0] hover:bg-[#4d5cb5] active:bg-[#3f4ea3] text-white font-semibold text-sm shadow-md transition-all flex items-center justify-center gap-2"
-            >
-              {loading ? <span>Signing in...</span> : <span>Continue</span>}
-            </button>
-          </form>
+              <button
+                type="submit"
+                disabled={loading}
+                className="rounded-md font-medium text-sm py-1.5 px-2.5 w-full justify-center text-white bg-[#d9383a] hover:bg-[#c22e30] active:bg-[#a82325] transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+              >
+                {loading ? 'Continuing...' : 'Continue'}
+              </button>
+            </form>
+          </div>
         </div>
       </main>
 

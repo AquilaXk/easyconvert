@@ -143,7 +143,7 @@ Retry-After: 60
       {/* Docs Sub-header */}
       <div className="border-b border-neutral-800 bg-[#181818]/80 backdrop-blur-md px-4 sm:px-8 py-3 flex items-center justify-between sticky top-16 z-30">
         <div className="flex items-center gap-3">
-          <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-[#5C6BC0]/20 text-[#5C6BC0] border border-[#5C6BC0]/30">
+          <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-[#d9383a]/20 text-[#d9383a] border border-[#d9383a]/30">
             API v2
           </span>
           <span className="text-xs text-neutral-400 hidden sm:inline">
@@ -171,7 +171,7 @@ Retry-After: 60
         <div className="flex items-center gap-3 text-xs font-semibold">
           <a
             href="/register"
-            className="px-3.5 py-1.5 rounded-md bg-[#5C6BC0] hover:bg-[#4d5cb5] text-white transition-colors shadow-sm"
+            className="px-3.5 py-1.5 rounded-md bg-[#d9383a] hover:bg-[#c22e30] text-white transition-colors shadow-sm"
           >
             Get API Key
           </a>
@@ -190,7 +190,7 @@ Retry-After: 60
               <li>
                 <a
                   href="#introduction"
-                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-[#5C6BC0]/15 text-[#5C6BC0] font-semibold border-l-2 border-[#5C6BC0]"
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-[#d9383a]/15 text-[#d9383a] font-semibold border-l-2 border-[#d9383a]"
                 >
                   Introduction
                 </a>
@@ -307,7 +307,7 @@ Retry-After: 60
         <main className="lg:col-span-7 space-y-12">
           {/* Breadcrumb & Title */}
           <div id="introduction">
-            <span className="text-xs font-semibold text-[#5C6BC0] uppercase tracking-wider">
+            <span className="text-xs font-semibold text-[#d9383a] uppercase tracking-wider">
               Getting Started &gt; API Documentation
             </span>
             <div className="flex items-center justify-between mt-2">
@@ -325,7 +325,7 @@ Retry-After: 60
             </div>
             <p className="mt-4 text-neutral-300 text-sm leading-relaxed">
               Welcome to the EasyConvert API Documentation! This is the documentation for version 2 of the API (
-              <code className="px-1.5 py-0.5 rounded bg-neutral-800 text-[#5C6BC0] font-mono text-xs">
+              <code className="px-1.5 py-0.5 rounded bg-neutral-800 text-[#d9383a] font-mono text-xs">
                 /v2
               </code>{' '}
               prefix).
@@ -351,7 +351,7 @@ Retry-After: 60
                   <div className="flex items-center gap-3">
                     <span className="text-xl">{sdk.icon}</span>
                     <div>
-                      <h4 className="text-sm font-bold text-white group-hover:text-[#5C6BC0] transition-colors">
+                      <h4 className="text-sm font-bold text-white group-hover:text-[#d9383a] transition-colors">
                         {sdk.name}
                       </h4>
                       <p className="text-[11px] text-neutral-400">{sdk.desc}</p>
@@ -387,7 +387,7 @@ Retry-After: 60
             </h2>
             <p className="text-xs sm:text-sm text-neutral-300 leading-relaxed">
               The base URL of the API is{' '}
-              <code className="px-1.5 py-0.5 rounded bg-neutral-800 text-[#5C6BC0] font-mono text-xs">
+              <code className="px-1.5 py-0.5 rounded bg-neutral-800 text-[#d9383a] font-mono text-xs">
                 https://api.easyconvert.com/v2
               </code>
               . By default, EasyConvert automatically selects the nearest processing region based on your IP address.
@@ -403,15 +403,15 @@ Retry-After: 60
                 </thead>
                 <tbody className="divide-y divide-neutral-800 text-neutral-300">
                   <tr>
-                    <td className="py-2.5 px-4 font-mono text-[#5C6BC0]">https://api.easyconvert.com</td>
+                    <td className="py-2.5 px-4 font-mono text-[#d9383a]">https://api.easyconvert.com</td>
                     <td className="py-2.5 px-4">Automatically selects the nearest processing region.</td>
                   </tr>
                   <tr>
-                    <td className="py-2.5 px-4 font-mono text-[#5C6BC0]">https://eu-central.api.easyconvert.com</td>
+                    <td className="py-2.5 px-4 font-mono text-[#d9383a]">https://eu-central.api.easyconvert.com</td>
                     <td className="py-2.5 px-4">eu-central: Frankfurt, Germany</td>
                   </tr>
                   <tr>
-                    <td className="py-2.5 px-4 font-mono text-[#5C6BC0]">https://us-east.api.easyconvert.com</td>
+                    <td className="py-2.5 px-4 font-mono text-[#d9383a]">https://us-east.api.easyconvert.com</td>
                     <td className="py-2.5 px-4">us-east: Virginia, USA</td>
                   </tr>
                 </tbody>
@@ -425,7 +425,7 @@ Retry-After: 60
             <p className="text-xs sm:text-sm text-neutral-300 leading-relaxed">
               Besides the Live API, EasyConvert provides a Sandbox API. The sandbox environment allows you to execute unlimited test jobs and tasks without consuming your credits.
             </p>
-            <div className="p-3.5 rounded-lg bg-neutral-900 border border-neutral-800 font-mono text-xs text-[#5C6BC0] flex items-center justify-between">
+            <div className="p-3.5 rounded-lg bg-neutral-900 border border-neutral-800 font-mono text-xs text-[#d9383a] flex items-center justify-between">
               <span>https://sandbox.api.easyconvert.com/v2</span>
               <button
                 type="button"
@@ -499,7 +499,7 @@ Retry-After: 60
                   {SCOPES.map((s, idx) => (
                     <tr key={idx}>
                       <td className="py-2.5 px-4 font-semibold text-white">{s.category}</td>
-                      <td className="py-2.5 px-4 font-mono text-[#5C6BC0]">{s.scope}</td>
+                      <td className="py-2.5 px-4 font-mono text-[#d9383a]">{s.scope}</td>
                       <td className="py-2.5 px-4 text-neutral-400">{s.desc}</td>
                     </tr>
                   ))}
@@ -528,7 +528,7 @@ Retry-After: 60
 
             <h3 className="text-base font-bold text-white pt-3">Rate Limiting</h3>
             <p className="text-xs sm:text-sm text-neutral-300 leading-relaxed">
-              Rate limits are returned in standard response headers. When rate limited, a 429 response is returned with a <code className="text-[#5C6BC0] font-mono">Retry-After</code> header:
+              Rate limits are returned in standard response headers. When rate limited, a 429 response is returned with a <code className="text-[#d9383a] font-mono">Retry-After</code> header:
             </p>
 
             <div className="rounded-xl bg-neutral-950 border border-neutral-800 p-4 font-mono text-xs text-neutral-300 overflow-x-auto">

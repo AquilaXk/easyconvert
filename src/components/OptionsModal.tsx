@@ -10,7 +10,6 @@ import {
   Image as ImageIcon,
   Video,
   Music,
-  RotateCcw,
 } from 'lucide-react';
 import { ConversionOptions } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
@@ -45,7 +44,6 @@ export default function OptionsModal({
     setOpenSections((prev) => ({ ...prev, [sec]: !prev[sec] }));
   };
 
-  const srcDef = FORMAT_REGISTRY[sourceFormat.toLowerCase()];
   const tgtDef = FORMAT_REGISTRY[targetFormat.toLowerCase()];
 
   const isAudio = tgtDef?.category === 'audio' || ['mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a'].includes(targetFormat.toLowerCase());
@@ -53,32 +51,7 @@ export default function OptionsModal({
   const isImage = tgtDef?.category === 'image';
   const isDocument = !isAudio && !isVideo && !isImage;
 
-  const handleReset = () => {
-    setOptions({
-      quality: 85,
-      width: undefined,
-      height: undefined,
-      fit: 'contain',
-      stripMetadata: false,
-      orientation: 'portrait',
-      preserveLayout: true,
-      preserveFonts: true,
-      preserveTables: true,
-      ocrEnabled: true,
-      ocrLanguage: 'auto',
-      margin: 'normal',
-      delimiter: ',',
-      hasHeaders: true,
-      compressionLevel: 6,
-      audioBitrate: '192k',
-      audioChannels: 'stereo',
-      audioSampleRate: 44100,
-      audioVolume: 100,
-      videoResolution: 'original',
-      videoFps: 30,
-      videoCodec: 'h264',
-    });
-  };
+  const isSourcePdf = sourceFormat.toLowerCase() === 'pdf';
 
   return (
     <div
@@ -87,15 +60,16 @@ export default function OptionsModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="relative w-full max-w-2xl bg-neutral-900 border border-neutral-700/80 rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white"
+        style={{ colorScheme: 'dark' }}
+        className="relative w-full max-w-4xl bg-[#18191d] border border-neutral-800 rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white [color-scheme:dark]"
       >
-        {/* Header */}
+        {/* Header matching live_cc_options_modal.png */}
         <div className="px-6 py-4 border-b border-neutral-800 flex items-center justify-between">
-          <h3 className="text-base font-bold text-white tracking-wide">Options</h3>
+          <h3 className="text-base font-semibold text-white tracking-wide">Options</h3>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-md border border-neutral-700/80 hover:border-neutral-500 text-neutral-400 hover:text-white transition-colors"
+            className="p-1 rounded border border-neutral-700 hover:border-neutral-500 text-neutral-400 hover:text-white transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -108,7 +82,7 @@ export default function OptionsModal({
             <button
               type="button"
               onClick={() => toggleSection('pages')}
-              className="flex items-center justify-between w-full text-left font-bold text-sm text-neutral-100 hover:text-white"
+              className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
             >
               <div className="flex items-center gap-2.5">
                 <FileText className="w-4 h-4 text-neutral-400" />
@@ -122,8 +96,9 @@ export default function OptionsModal({
                 <label className="text-xs font-semibold text-neutral-200 block">Pages</label>
                 <input
                   type="text"
-                  placeholder="e.g. 1-3"
-                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-700 rounded-md text-white placeholder-neutral-500 focus:outline-none focus:border-[#5C6BC0]"
+                  value={options.pages || ''}
+                  onChange={(e) => setOptions({ ...options, pages: e.target.value })}
+                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white focus:outline-none focus:border-[#d9383a]"
                 />
                 <p className="text-xs text-neutral-400">Page range to convert (e.g. 1-3).</p>
               </div>
@@ -135,7 +110,7 @@ export default function OptionsModal({
             <button
               type="button"
               onClick={() => toggleSection('security')}
-              className="flex items-center justify-between w-full text-left font-bold text-sm text-neutral-100 hover:text-white"
+              className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
             >
               <div className="flex items-center gap-2.5">
                 <Lock className="w-4 h-4 text-neutral-400" />
@@ -149,21 +124,24 @@ export default function OptionsModal({
                 <label className="text-xs font-semibold text-neutral-200 block">Password</label>
                 <input
                   type="password"
-                  placeholder=""
-                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-700 rounded-md text-white placeholder-neutral-500 focus:outline-none focus:border-[#5C6BC0]"
+                  value={options.password || ''}
+                  onChange={(e) => setOptions({ ...options, password: e.target.value })}
+                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white focus:outline-none focus:border-[#d9383a]"
                 />
-                <p className="text-xs text-neutral-400">Password to open the file.</p>
+                <p className="text-xs text-neutral-400">
+                  Password to open the {isSourcePdf ? 'PDF' : sourceFormat.toUpperCase()} file.
+                </p>
               </div>
             )}
           </div>
 
-          {/* 3. Document / Image / Audio / Video Format Specific Settings */}
+          {/* 3. Document Format Specific Settings */}
           {isDocument && (
             <div className="p-6">
               <button
                 type="button"
                 onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-bold text-sm text-neutral-100 hover:text-white"
+                className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
               >
                 <div className="flex items-center gap-2.5">
                   <FileText className="w-4 h-4 text-neutral-400" />
@@ -184,7 +162,7 @@ export default function OptionsModal({
                           name="connectHyphens"
                           checked={options.preserveLayout === false}
                           onChange={() => setOptions({ ...options, preserveLayout: false })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
+                          className="w-4 h-4 accent-[#d9383a]"
                         />
                         <span>Yes</span>
                       </label>
@@ -194,7 +172,7 @@ export default function OptionsModal({
                           name="connectHyphens"
                           checked={options.preserveLayout !== false}
                           onChange={() => setOptions({ ...options, preserveLayout: true })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
+                          className="w-4 h-4 accent-[#d9383a]"
                         />
                         <span>No</span>
                       </label>
@@ -212,7 +190,7 @@ export default function OptionsModal({
                           name="prioritizeVisual"
                           checked={options.preserveFonts === false}
                           onChange={() => setOptions({ ...options, preserveFonts: false })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
+                          className="w-4 h-4 accent-[#d9383a]"
                         />
                         <span>Yes</span>
                       </label>
@@ -222,13 +200,13 @@ export default function OptionsModal({
                           name="prioritizeVisual"
                           checked={options.preserveFonts !== false}
                           onChange={() => setOptions({ ...options, preserveFonts: true })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
+                          className="w-4 h-4 accent-[#d9383a]"
                         />
                         <span>No</span>
                       </label>
                     </div>
                     <p className="text-xs text-neutral-400">
-                      Specifies whether to prefer an exact visual replica at the expense of reflow.
+                      Specifies whether to prefer an exact visual replica of the PDF at the expense of preventing reflow of document paragraphs.
                     </p>
                   </div>
 
@@ -242,7 +220,7 @@ export default function OptionsModal({
                           name="ocrImages"
                           checked={options.ocrEnabled !== false}
                           onChange={() => setOptions({ ...options, ocrEnabled: true })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
+                          className="w-4 h-4 accent-[#d9383a]"
                         />
                         <span>Yes</span>
                       </label>
@@ -252,13 +230,13 @@ export default function OptionsModal({
                           name="ocrImages"
                           checked={options.ocrEnabled === false}
                           onChange={() => setOptions({ ...options, ocrEnabled: false })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
+                          className="w-4 h-4 accent-[#d9383a]"
                         />
                         <span>No</span>
                       </label>
                     </div>
                     <p className="text-xs text-neutral-400">
-                      Specifies whenever OCR will be performed on images and the recognized text replaces image pixels underneath (default).
+                      Specifies whenever OCR will be performed on images and the recognized text replaces the image pixels underneath (default).
                     </p>
                   </div>
                 </div>
@@ -271,7 +249,7 @@ export default function OptionsModal({
               <button
                 type="button"
                 onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-bold text-sm text-neutral-100 hover:text-white"
+                className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
               >
                 <div className="flex items-center gap-2.5">
                   <ImageIcon className="w-4 h-4 text-neutral-400" />
@@ -290,7 +268,7 @@ export default function OptionsModal({
                         value={options.width || ''}
                         onChange={(e) => setOptions({ ...options, width: e.target.value ? Number(e.target.value) : undefined })}
                         placeholder="Auto"
-                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-700 rounded-md text-white placeholder-neutral-500"
+                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white"
                       />
                     </div>
                     <div>
@@ -300,7 +278,7 @@ export default function OptionsModal({
                         value={options.height || ''}
                         onChange={(e) => setOptions({ ...options, height: e.target.value ? Number(e.target.value) : undefined })}
                         placeholder="Auto"
-                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-700 rounded-md text-white placeholder-neutral-500"
+                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white"
                       />
                     </div>
                   </div>
@@ -308,7 +286,7 @@ export default function OptionsModal({
                   <div>
                     <div className="flex items-center justify-between text-xs font-semibold text-neutral-200 mb-1">
                       <span>Quality</span>
-                      <span className="font-mono text-[#5C6BC0]">{options.quality || 85}%</span>
+                      <span className="font-mono text-[#d9383a]">{options.quality || 85}%</span>
                     </div>
                     <input
                       type="range"
@@ -316,7 +294,7 @@ export default function OptionsModal({
                       max="100"
                       value={options.quality || 85}
                       onChange={(e) => setOptions({ ...options, quality: Number(e.target.value) })}
-                      className="w-full accent-[#5C6BC0] cursor-pointer"
+                      className="w-full accent-[#d9383a] cursor-pointer"
                     />
                   </div>
                 </div>
@@ -329,7 +307,7 @@ export default function OptionsModal({
               <button
                 type="button"
                 onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-bold text-sm text-neutral-100 hover:text-white"
+                className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
               >
                 <div className="flex items-center gap-2.5">
                   {isVideo ? <Video className="w-4 h-4 text-neutral-400" /> : <Music className="w-4 h-4 text-neutral-400" />}
@@ -346,7 +324,7 @@ export default function OptionsModal({
                       <select
                         value={options.audioBitrate || '192k'}
                         onChange={(e) => setOptions({ ...options, audioBitrate: e.target.value as any })}
-                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-700 rounded-md text-white"
+                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white"
                       >
                         <option value="320k">320 kbps</option>
                         <option value="256k">256 kbps</option>
@@ -361,7 +339,7 @@ export default function OptionsModal({
                         <select
                           value={options.videoCodec || 'h264'}
                           onChange={(e) => setOptions({ ...options, videoCodec: e.target.value as any })}
-                          className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-700 rounded-md text-white"
+                          className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white"
                         >
                           <option value="h264">H.264 / AVC</option>
                           <option value="hevc">H.265 / HEVC</option>
@@ -376,36 +354,18 @@ export default function OptionsModal({
           )}
         </div>
 
-        {/* Footer */}
-        <div className="px-6 py-4 bg-neutral-900 border-t border-neutral-800 flex items-center justify-between">
+        {/* Footer with ONLY the single red Apply button on bottom right */}
+        <div className="px-6 py-4 bg-[#18191d] border-t border-neutral-800 flex items-center justify-end">
           <button
             type="button"
-            onClick={handleReset}
-            className="flex items-center gap-1.5 text-xs font-semibold text-neutral-400 hover:text-white transition-colors"
+            onClick={() => {
+              onSave(options);
+              onClose();
+            }}
+            className="bg-[#d9383a] hover:bg-[#c93234] text-white px-5 py-2 rounded text-sm font-medium transition-colors"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Reset Defaults</span>
+            Apply
           </button>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-neutral-300 hover:text-white transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onSave(options);
-                onClose();
-              }}
-              className="px-6 py-2 text-xs font-bold text-white bg-[#5C6BC0] hover:bg-[#4d5cb5] rounded-md shadow-sm transition-colors"
-            >
-              Apply
-            </button>
-          </div>
         </div>
       </div>
     </div>

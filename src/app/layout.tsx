@@ -4,7 +4,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'EasyConvert — File Converter Online',
   description:
-    'Universal online file converter supporting images, documents, spreadsheets, data structures, and archives with our signature lavender experience.',
+    'Universal online file converter supporting images, documents, spreadsheets, data structures, and archives with modern high-fidelity conversion engine.',
   icons: {
     icon: '/favicon.ico',
   },

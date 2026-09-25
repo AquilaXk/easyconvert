@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, ChevronRight, X } from 'lucide-react';
-import { FormatDefinition, FormatCategory } from '@/lib/types';
+import { Search, ChevronRight } from 'lucide-react';
+import { FormatDefinition } from '@/lib/types';
 import { getAllFormats } from '@/lib/registry';
 
 interface FormatSelectorProps {
@@ -11,7 +11,6 @@ interface FormatSelectorProps {
   onSelect: (formatId: string) => void;
   onClose: () => void;
   title?: string;
-  anchorRef?: React.RefObject<HTMLElement>;
 }
 
 export default function FormatSelector({
@@ -19,7 +18,6 @@ export default function FormatSelector({
   selectedFormatId,
   onSelect,
   onClose,
-  title = 'Select Format',
 }: FormatSelectorProps) {
   const [search, setSearch] = useState('');
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -39,8 +37,9 @@ export default function FormatSelector({
     return map;
   }, [allFormats]);
 
+  // Alphabetically sorted category list matching CloudConvert live popover
   const categories = useMemo(() => {
-    return Array.from(categoriesWithFormats.keys());
+    return Array.from(categoriesWithFormats.keys()).sort((a, b) => a.localeCompare(b));
   }, [categoriesWithFormats]);
 
   // Determine initial active category based on selectedFormatId
@@ -51,12 +50,17 @@ export default function FormatSelector({
         return found.category;
       }
     }
+    if (categories.includes('document')) return 'document';
     return categories[0] || 'document';
   }, [selectedFormatId, allFormats, categories]);
 
   const [activeCategory, setActiveCategory] = useState<string>(initialCategory);
 
-  // Close on Escape or click outside
+  useEffect(() => {
+    setActiveCategory(initialCategory);
+  }, [initialCategory]);
+
+  // Close on Escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -68,7 +72,8 @@ export default function FormatSelector({
   // Capitalize category name (e.g. document -> Document, cad -> Cad)
   const formatCategoryName = (cat: string) => {
     if (cat.toLowerCase() === 'cad') return 'Cad';
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    if (cat.toLowerCase() === 'ebook') return 'Ebook';
+    return cat.charAt(0).toUpperCase() + cat.slice(1).toLowerCase();
   };
 
   // Formats to display in right column
@@ -87,101 +92,80 @@ export default function FormatSelector({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/40 backdrop-blur-[2px] animate-in fade-in duration-100"
-      onClick={onClose}
+      ref={popoverRef}
+      onClick={(e) => e.stopPropagation()}
+      className="w-[420px] max-w-[95vw] bg-[#18191d] border border-neutral-800 rounded-lg shadow-2xl overflow-hidden flex flex-col text-white animate-in zoom-in-95 duration-150 text-left select-none"
     >
-      <div
-        ref={popoverRef}
-        onClick={(e) => e.stopPropagation()}
-        className="relative w-[440px] max-w-[95vw] bg-neutral-900 border border-neutral-700/80 rounded-xl shadow-2xl overflow-hidden flex flex-col text-white animate-in zoom-in-95 duration-150"
-      >
-        {/* Top: Search Format Input */}
-        <div className="p-2.5 border-b border-neutral-800 flex items-center gap-2 bg-neutral-900/90">
-          <Search className="w-4 h-4 text-neutral-400 shrink-0 ml-1" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search Format"
-            autoFocus
-            className="w-full bg-transparent text-sm text-white placeholder-neutral-400 focus:outline-none py-1"
-          />
-          {search && (
-            <button
-              type="button"
-              onClick={() => setSearch('')}
-              className="text-neutral-400 hover:text-white p-1"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1 rounded-md text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors ml-1"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+      {/* Top: Search Format Input matching live_cc_format_popover.png */}
+      <div className="flex items-center px-3 py-2 border-b border-neutral-800 bg-[#18191d]">
+        <Search className="w-4 h-4 text-neutral-500 shrink-0 mr-2" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search Format"
+          autoFocus
+          className="bg-transparent text-sm text-white placeholder-neutral-500 outline-none w-full"
+        />
+      </div>
 
-        {/* 2-Column Split: Categories on left, Formats grid on right */}
-        <div className="flex h-72">
-          {/* Left Column: Categories List */}
-          {!search && (
-            <div className="w-36 border-r border-neutral-800 py-2 overflow-y-auto shrink-0 select-none">
-              {categories.map((cat) => {
-                const isActive = cat === activeCategory;
+      {/* Two columns body */}
+      <div className="flex h-72">
+        {/* Left column (width ~140px, border-r border-neutral-800 py-1): Category list */}
+        {!search && (
+          <div className="w-[140px] border-r border-neutral-800 py-1 overflow-y-auto shrink-0">
+            {categories.map((cat) => {
+              const isActive = cat.toLowerCase() === activeCategory.toLowerCase();
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setActiveCategory(cat)}
+                  onMouseEnter={() => setActiveCategory(cat)}
+                  className={`flex items-center justify-between w-full px-3 py-1.5 text-xs text-left transition-colors ${
+                    isActive
+                      ? 'bg-neutral-800 text-white font-medium'
+                      : 'text-neutral-300 hover:bg-neutral-800/50 hover:text-white'
+                  }`}
+                >
+                  <span>{formatCategoryName(cat)}</span>
+                  {isActive && <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Right column (padding p-3, grid grid-cols-3 gap-2): Format badges */}
+        <div className="flex-1 p-3 overflow-y-auto">
+          {displayedFormats.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-neutral-400 text-xs text-center py-8">
+              No formats matching &quot;{search}&quot;
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2">
+              {displayedFormats.map((fmt) => {
+                const isSelected = selectedFormatId?.toLowerCase() === fmt.id.toLowerCase();
                 return (
                   <button
-                    key={cat}
+                    key={fmt.id}
                     type="button"
-                    onClick={() => setActiveCategory(cat)}
-                    onMouseEnter={() => setActiveCategory(cat)}
-                    className={`flex items-center justify-between w-full px-3 py-1.5 text-xs text-left transition-colors ${
-                      isActive
-                        ? 'bg-neutral-800 text-white font-semibold'
-                        : 'text-neutral-300 hover:bg-neutral-800/50 hover:text-white'
+                    onClick={() => {
+                      onSelect(fmt.id);
+                      onClose();
+                    }}
+                    className={`px-3 py-1.5 text-xs font-mono font-semibold rounded text-center border transition-all ${
+                      isSelected
+                        ? 'bg-[#d9383a] border-[#d9383a] text-white shadow-md'
+                        : 'bg-[#212529] hover:bg-neutral-700 text-white border-neutral-700/60'
                     }`}
                   >
-                    <span>{formatCategoryName(cat)}</span>
-                    {isActive && <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />}
+                    {fmt.extension.toUpperCase()}
                   </button>
                 );
               })}
             </div>
           )}
-
-          {/* Right Column: Format Buttons Grid */}
-          <div className="flex-1 p-3 overflow-y-auto">
-            {displayedFormats.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-neutral-400 text-xs text-center py-8">
-                No formats matching &quot;{search}&quot;
-              </div>
-            ) : (
-              <div className="grid grid-cols-3 gap-2">
-                {displayedFormats.map((fmt) => {
-                  const isSelected = selectedFormatId?.toLowerCase() === fmt.id.toLowerCase();
-                  return (
-                    <button
-                      key={fmt.id}
-                      type="button"
-                      onClick={() => {
-                        onSelect(fmt.id);
-                        onClose();
-                      }}
-                      className={`px-2 py-2 text-xs font-mono font-bold uppercase rounded-md text-center border transition-all ${
-                        isSelected
-                          ? 'bg-[#5C6BC0] border-[#5C6BC0] text-white shadow-md'
-                          : 'bg-neutral-800/80 border-neutral-700/60 text-neutral-200 hover:border-[#5C6BC0] hover:bg-[#5C6BC0] hover:text-white'
-                      }`}
-                    >
-                      {fmt.extension.toUpperCase()}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </div>

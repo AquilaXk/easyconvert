@@ -9,7 +9,8 @@ export type FormatCategory =
   | 'video'
   | 'ebook'
   | 'font'
-  | 'cad';
+  | 'cad'
+  | 'vector';
 
 export interface FormatOptionsSchema {
   quality?: boolean;
@@ -30,6 +31,8 @@ export interface FormatOptionsSchema {
   videoCodec?: boolean;
   aspectRatio?: boolean;
   // Document & Office options
+  pages?: boolean;
+  password?: boolean;
   preserveLayout?: boolean;
   preserveFonts?: boolean;
   preserveTables?: boolean;
@@ -58,6 +61,8 @@ export interface ConversionOptions {
   stripMetadata?: boolean;
   dpi?: number;
   // Document & PDF options
+  pages?: string;
+  password?: string;
   orientation?: 'portrait' | 'landscape';
   preserveLayout?: boolean;
   preserveFonts?: boolean;
