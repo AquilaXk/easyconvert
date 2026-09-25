@@ -21,6 +21,8 @@ import {
   Cpu,
   Sliders,
   CheckCircle2,
+  Type,
+  Compass,
 } from 'lucide-react';
 
 interface FeaturesProps {
@@ -146,6 +148,40 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
         { from: '7Z', to: 'ZIP', desc: 'standard extraction' },
       ],
     },
+    {
+      id: 'vector',
+      name: 'Vector',
+      count: 10,
+      icon: <Compass className="w-3.5 h-3.5" />,
+      formats: ['AI', 'CDR', 'CGM', 'DXF', 'EMF', 'EPS', 'SK', 'SK1', 'SVG', 'WMF'],
+      commonConversions: [
+        { from: 'SVG', to: 'PNG', desc: 'rasterized graphic' },
+        { from: 'AI', to: 'PDF', desc: 'vector document' },
+        { from: 'EPS', to: 'SVG', desc: 'scalable web vector' },
+      ],
+    },
+    {
+      id: 'cad',
+      name: 'CAD',
+      count: 3,
+      icon: <Compass className="w-3.5 h-3.5" />,
+      formats: ['DWG', 'DXF', 'DGN'],
+      commonConversions: [
+        { from: 'DWG', to: 'PDF', desc: 'printable technical drawing' },
+        { from: 'DXF', to: 'SVG', desc: 'scalable CAD vector' },
+      ],
+    },
+    {
+      id: 'fonts',
+      name: 'Fonts',
+      count: 5,
+      icon: <Type className="w-3.5 h-3.5" />,
+      formats: ['EOT', 'OTF', 'TTF', 'WOFF', 'WOFF2'],
+      commonConversions: [
+        { from: 'TTF', to: 'WOFF2', desc: 'modern optimized web font' },
+        { from: 'OTF', to: 'TTF', desc: 'TrueType desktop font' },
+      ],
+    },
   ];
 
   const activeCat = categories.find((c) => c.id === selectedCategory) || categories[0];
@@ -158,7 +194,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           {/* Left Column: Format Catalog */}
           <div className="space-y-4">
             <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400">
+              <div className="p-2 rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0]">
                 <FolderTree className="w-5 h-5" />
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-neutral-900 dark:text-white">
@@ -167,7 +203,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
             </div>
 
             <p className="text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
-              EasyConvert handles 200+ formats across 9 categories, from common office files to camera RAW,
+              EasyConvert handles 212 formats across 11 categories, from common office files to camera RAW,
               CAD drawings, archives, ebooks and production media.
             </p>
 
@@ -182,8 +218,8 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
                     onClick={() => setSelectedCategory(cat.id)}
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
                       isSelected
-                        ? 'bg-brand-700 text-white border-brand-700 shadow-sm'
-                        : 'bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-white/10 hover:border-brand-500 hover:text-brand-700 dark:hover:text-brand-400'
+                        ? 'bg-[#5C6BC0] text-white border-[#5C6BC0] shadow-sm'
+                        : 'bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-white/10 hover:border-[#5C6BC0] hover:text-[#5C6BC0] dark:hover:text-[#7986CB]'
                     }`}
                   >
                     <span>{cat.name}</span>
@@ -216,7 +252,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
                         onSelectPreset?.(fmt.toLowerCase(), 'pdf');
                         window.scrollTo({ top: 0, behavior: 'smooth' });
                       }}
-                      className="px-2 py-0.5 rounded text-[11px] font-mono font-medium uppercase bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-white/10 text-neutral-700 dark:text-neutral-300 hover:border-brand-500 hover:text-brand-700 dark:hover:text-brand-400 transition-colors"
+                      className="px-2 py-0.5 rounded text-[11px] font-mono font-medium uppercase bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-white/10 text-neutral-700 dark:text-neutral-300 hover:border-[#5C6BC0] hover:text-[#5C6BC0] dark:hover:text-[#7986CB] transition-colors"
                     >
                       {fmt}
                     </button>
@@ -238,11 +274,11 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
                         onSelectPreset?.(conv.from.toLowerCase(), conv.to.toLowerCase());
                         window.scrollTo({ top: 0, behavior: 'smooth' });
                       }}
-                      className="w-full text-left p-2 rounded-lg bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-white/10 hover:border-brand-500 transition-colors group"
+                      className="w-full text-left p-2 rounded-lg bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-white/10 hover:border-[#5C6BC0] transition-colors group"
                     >
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-900 dark:text-white group-hover:text-brand-700 dark:group-hover:text-brand-400">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-900 dark:text-white group-hover:text-[#5C6BC0] dark:group-hover:text-[#7986CB]">
                         <span>{conv.from}</span>
-                        <ArrowRight className="w-3 h-3 text-neutral-400 group-hover:text-brand-700 dark:group-hover:text-brand-400" />
+                        <ArrowRight className="w-3 h-3 text-neutral-400 group-hover:text-[#5C6BC0] dark:group-hover:text-[#7986CB]" />
                         <span>{conv.to}</span>
                       </div>
                       <div className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
@@ -258,7 +294,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           {/* Right Column: Data Security */}
           <div className="space-y-4">
             <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400">
+              <div className="p-2 rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0]">
                 <ShieldCheck className="w-5 h-5" />
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-neutral-900 dark:text-white">
@@ -267,14 +303,14 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
             </div>
 
             <p className="text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
-              Files are processed strictly for the conversion job you request, then immediately removed after
-              processing. The security model is documented and backed by zero data retention guarantees.
+              Files are processed for the conversion job you request, then removed after processing.
+              The security model is documented and backed by certification.
             </p>
 
             {/* 3 Pillars List layout */}
             <ul className="space-y-3.5 pt-2">
               <li className="flex items-start gap-3">
-                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400 border border-brand-200/50 dark:border-brand-800/50">
+                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0] border border-[#5C6BC0]/20">
                   <Lock className="w-4 h-4" />
                 </span>
                 <div className="text-sm leading-snug">
@@ -288,7 +324,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </li>
 
               <li className="flex items-start gap-3">
-                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400 border border-brand-200/50 dark:border-brand-800/50">
+                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0] border border-[#5C6BC0]/20">
                   <Trash2 className="w-4 h-4" />
                 </span>
                 <div className="text-sm leading-snug">
@@ -302,7 +338,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </li>
 
               <li className="flex items-start gap-3">
-                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400 border border-brand-200/50 dark:border-brand-800/50">
+                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0] border border-[#5C6BC0]/20">
                   <Handshake className="w-4 h-4" />
                 </span>
                 <div className="text-sm leading-snug">
@@ -319,7 +355,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
             <div className="pt-2">
               <a
                 href="#security"
-                className="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-700 dark:text-brand-400 hover:underline"
+                className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#5C6BC0] dark:text-[#7986CB] hover:underline"
               >
                 <span>Read the security overview</span>
                 <ArrowRight className="w-4 h-4" />
@@ -333,7 +369,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           {/* Left Column: API & Integrations */}
           <div className="space-y-4">
             <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400">
+              <div className="p-2 rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0]">
                 <Terminal className="w-5 h-5" />
               </div>
               <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-neutral-900 dark:text-white">
@@ -348,7 +384,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
                 href="/api/formats"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 font-semibold text-brand-700 dark:text-brand-400 hover:underline"
+                className="inline-flex items-center gap-1 font-semibold text-[#5C6BC0] dark:text-[#7986CB] hover:underline"
               >
                 <span>Explore the API</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -386,7 +422,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           {/* Right Column: High-Quality Conversions */}
           <div className="space-y-4">
             <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400">
+              <div className="p-2 rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0]">
                 <FileCheck2 className="w-5 h-5" />
               </div>
               <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-neutral-900 dark:text-white">
@@ -401,7 +437,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
 
             <ul className="space-y-3.5 pt-2">
               <li className="flex items-start gap-3 text-sm text-neutral-700 dark:text-neutral-300">
-                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400 border border-brand-200/50 dark:border-brand-800/50">
+                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0] border border-[#5C6BC0]/20">
                   <Cpu className="w-4 h-4" />
                 </span>
                 <span className="leading-snug">
@@ -410,7 +446,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </li>
 
               <li className="flex items-start gap-3 text-sm text-neutral-700 dark:text-neutral-300">
-                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400 border border-brand-200/50 dark:border-brand-800/50">
+                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0] border border-[#5C6BC0]/20">
                   <Sliders className="w-4 h-4" />
                 </span>
                 <span className="leading-snug">
@@ -419,7 +455,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               </li>
 
               <li className="flex items-start gap-3 text-sm text-neutral-700 dark:text-neutral-300">
-                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-400 border border-brand-200/50 dark:border-brand-800/50">
+                <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#5C6BC0]/10 text-[#5C6BC0] border border-[#5C6BC0]/20">
                   <CheckCircle2 className="w-4 h-4" />
                 </span>
                 <span className="leading-snug">

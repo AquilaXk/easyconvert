@@ -243,6 +243,8 @@ export default function Home() {
         <Hero
           onFilesSelected={handleFilesSelected}
           hasActiveQueue={queue.length > 0}
+          activeSourceFormat={queue.length > 0 ? queue[0].sourceFormat : undefined}
+          activeTargetFormat={queue.length > 0 ? queue[0].targetFormat : undefined}
         />
 
         {/* Floating Queue Table when files are added (straddling Hero boundary) */}

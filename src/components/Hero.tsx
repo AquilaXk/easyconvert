@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   ChevronDown,
   Globe,
@@ -18,16 +18,27 @@ import {
 } from 'lucide-react';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import FormatSelector from './FormatSelector';
-import UrlUploadModal from './UrlUploadModal';
+import UrlImportModal from './UrlImportModal';
 
 interface HeroProps {
   onFilesSelected: (files: File[], defaultTarget?: string) => void;
   hasActiveQueue: boolean;
+  activeSourceFormat?: string;
+  activeTargetFormat?: string;
+  categoryTitle?: string;
+  categoryDescription?: string;
 }
 
-export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
-  const [sourceFormat, setSourceFormat] = useState('pdf');
-  const [targetFormat, setTargetFormat] = useState('docx');
+export default function Hero({
+  onFilesSelected,
+  hasActiveQueue,
+  activeSourceFormat,
+  activeTargetFormat,
+  categoryTitle,
+  categoryDescription,
+}: HeroProps) {
+  const [sourceFormat, setSourceFormat] = useState(activeSourceFormat || 'pdf');
+  const [targetFormat, setTargetFormat] = useState(activeTargetFormat || 'docx');
   const [isSourceSelectorOpen, setIsSourceSelectorOpen] = useState(false);
   const [isTargetSelectorOpen, setIsTargetSelectorOpen] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -35,6 +46,14 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
   const [isDragOver, setIsDragOver] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (activeSourceFormat) setSourceFormat(activeSourceFormat);
+  }, [activeSourceFormat]);
+
+  useEffect(() => {
+    if (activeTargetFormat) setTargetFormat(activeTargetFormat);
+  }, [activeTargetFormat]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -63,9 +82,8 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
     }
   };
 
-  // Helper to get matching category icon for the dual cards
   const getFormatIcon = (fmt: string) => {
-    const def = FORMAT_REGISTRY[fmt];
+    const def = FORMAT_REGISTRY[fmt?.toLowerCase()];
     const cat = def?.category;
     switch (cat) {
       case 'audio':
@@ -84,6 +102,41 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
       default:
         return <FileText className="w-8 h-8 text-neutral-300" />;
     }
+  };
+
+  // Dynamic titles matching live CloudConvert behavior
+  const getHeroTitle = () => {
+    if (categoryTitle) return categoryTitle;
+    if (activeSourceFormat && (!targetFormat || targetFormat.toLowerCase() === 'any')) {
+      return `${activeSourceFormat.toUpperCase()} Converter`;
+    }
+    if (activeSourceFormat && activeTargetFormat && activeTargetFormat.toLowerCase() !== 'any') {
+      const srcName = activeSourceFormat.toUpperCase();
+      const tgtName = activeTargetFormat.toUpperCase();
+      return `${srcName} to ${tgtName} Converter`;
+    }
+    if (!hasActiveQueue && !activeSourceFormat) return 'Convert Any File';
+    if (sourceFormat && targetFormat && targetFormat.toLowerCase() !== 'any') {
+      const srcName = sourceFormat.toUpperCase();
+      const tgtName = targetFormat.toUpperCase();
+      if (srcName === 'PDF' && tgtName === 'DOCX') return 'PDF to Word Converter';
+      return `${srcName} to ${tgtName} Converter`;
+    }
+    if (sourceFormat) {
+      return `${sourceFormat.toUpperCase()} Converter`;
+    }
+    return 'Convert Any File';
+  };
+
+  const getHeroSubtitle = () => {
+    if (categoryDescription) return categoryDescription;
+    if (activeSourceFormat && (!targetFormat || targetFormat.toLowerCase() === 'any')) {
+      return `EasyConvert is an online document converter. Amongst many others, we support PDF, DOCX, PPTX, XLSX. Thanks to our advanced conversion technology the quality of the output will be as good as if the file was saved through the latest Microsoft Office suite.`;
+    }
+    if (!hasActiveQueue && !activeSourceFormat) {
+      return 'Drop a file and pick what to turn it into. EasyConvert handles 200+ formats across documents, images, audio, video, archives and more — straight from your browser.';
+    }
+    return `EasyConvert offers advanced, high-fidelity ${sourceFormat.toUpperCase()} to ${targetFormat.toUpperCase()} conversions. We preserve layouts, formatting, and tables straight from your browser.`;
   };
 
   return (
@@ -117,14 +170,13 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
 
         <div className="relative mx-auto max-w-7xl">
           <div className="grid items-center gap-10 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
-            {/* Left Column: Heading and Subtitle */}
+            {/* Left Column: Dynamic Heading and Subtitle */}
             <div className="text-center lg:text-left">
               <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-white leading-tight">
-                Convert Any File
+                {getHeroTitle()}
               </h1>
               <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-neutral-300 max-w-xl">
-                Drop a file and pick what to turn it into. EasyConvert handles 200+ formats across documents,
-                images, audio, video, archives and more — straight from your browser.
+                {getHeroSubtitle()}
               </p>
             </div>
 
@@ -143,7 +195,7 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                 {/* Lavender glow behind target */}
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute size-40 rounded-full bg-brand-500/20 blur-3xl"
+                  className="pointer-events-none absolute size-40 rounded-full bg-[#5C6BC0]/20 blur-3xl"
                 />
 
                 {/* The Two Cards Widget */}
@@ -152,7 +204,7 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                   <button
                     type="button"
                     onClick={() => setIsSourceSelectorOpen(true)}
-                    className="group relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_12px_30px_rgba(0,0,0,0.45)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60 active:translate-y-0"
+                    className="group relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_12px_30px_rgba(0,0,0,0.45)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 active:translate-y-0"
                     aria-label={`Input format: ${sourceFormat.toUpperCase()}. Click to change.`}
                   >
                     <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 px-2">
@@ -169,22 +221,30 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                   {/* Center Circle: TO Indicator */}
                   <div className="flex flex-col items-center gap-2">
                     <div className="flex items-center">
-                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-neutral-700 to-brand-500/70" aria-hidden="true" />
+                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-neutral-700 to-[#5C6BC0]/70" aria-hidden="true" />
                       <button
                         type="button"
                         onClick={() => {
+                          if (targetFormat.toLowerCase() === 'any') return;
                           const tmp = sourceFormat;
                           setSourceFormat(targetFormat);
                           setTargetFormat(tmp);
                         }}
-                        title="Swap source and target formats"
-                        className="group/op relative mx-1 flex size-9 sm:size-10 cursor-pointer items-center justify-center rounded-full border border-brand-500/40 bg-brand-500/15 backdrop-blur-sm transition duration-300 ease-out hover:scale-110 hover:border-brand-500/70 hover:bg-brand-500/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60"
+                        disabled={targetFormat.toLowerCase() === 'any'}
+                        title={targetFormat.toLowerCase() === 'any' ? 'Select specific output format to swap' : 'Swap formats'}
+                        className={`group/op relative mx-1 flex size-9 sm:size-10 items-center justify-center rounded-full border backdrop-blur-sm transition duration-300 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 ${
+                          targetFormat.toLowerCase() === 'any'
+                            ? 'opacity-40 cursor-not-allowed border-neutral-700 bg-neutral-800/40 text-neutral-500'
+                            : 'cursor-pointer border-[#5C6BC0]/40 bg-[#5C6BC0]/15 hover:scale-110 hover:border-[#5C6BC0]/70 hover:bg-[#5C6BC0]/25 text-[#5C6BC0]'
+                        }`}
                         aria-label="Swap formats"
                       >
-                        <RefreshCw className="size-4 text-brand-300 transition-transform duration-300 group-hover/op:rotate-180" />
-                        <div className="pointer-events-none absolute inset-0 animate-ping rounded-full ring-1 ring-brand-400/20" aria-hidden="true" />
+                        <RefreshCw className={`size-4 transition-transform duration-300 ${targetFormat.toLowerCase() !== 'any' ? 'group-hover/op:rotate-180' : ''}`} />
+                        {targetFormat.toLowerCase() !== 'any' && (
+                          <div className="pointer-events-none absolute inset-0 animate-ping rounded-full ring-1 ring-[#5C6BC0]/20" aria-hidden="true" />
+                        )}
                       </button>
-                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-brand-500/70 to-neutral-700" aria-hidden="true" />
+                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-[#5C6BC0]/70 to-neutral-700" aria-hidden="true" />
                     </div>
                     <span className="text-[0.65rem] font-medium uppercase tracking-[0.25em] text-neutral-400">
                       to
@@ -195,7 +255,7 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                   <button
                     type="button"
                     onClick={() => setIsTargetSelectorOpen(true)}
-                    className="group relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-brand-500/40 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_32px_rgba(92,107,192,0.25)] backdrop-blur-md transition duration-300 ease-out hover:-translate-y-0.5 hover:border-brand-500/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_14px_38px_rgba(92,107,192,0.4)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60 active:translate-y-0"
+                    className="group relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-[#5C6BC0]/40 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_32px_rgba(92,107,192,0.25)] backdrop-blur-md transition duration-300 ease-out hover:-translate-y-0.5 hover:border-[#5C6BC0]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_14px_38px_rgba(92,107,192,0.4)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 active:translate-y-0"
                     aria-label={`Output format: ${targetFormat.toUpperCase()}. Click to change.`}
                   >
                     <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 px-2">
@@ -206,7 +266,7 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                         {targetFormat}
                       </span>
                     </div>
-                    <ChevronDown className="absolute right-2 bottom-1.5 size-2.5 text-brand-300 transition-colors group-hover:text-brand-200" />
+                    <ChevronDown className="absolute right-2 bottom-1.5 size-2.5 text-[#5C6BC0] transition-colors group-hover:text-white" />
                   </button>
                 </div>
               </div>
@@ -224,7 +284,7 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
             onDrop={handleDrop}
             className={`group/dropzone relative mx-auto mb-10 w-full max-w-2xl overflow-visible rounded-3xl border bg-white px-6 py-8 text-center shadow-xl ring-1 transition-all duration-300 ease-out sm:px-10 sm:py-10 dark:bg-neutral-900 ${
               isDragOver
-                ? 'border-brand-500 ring-brand-500/30 scale-[1.01]'
+                ? 'border-[#5C6BC0] ring-[#5C6BC0]/30 scale-[1.01]'
                 : 'border-neutral-200/80 ring-black/[0.04] shadow-neutral-950/10 hover:border-neutral-300 hover:shadow-neutral-950/15 dark:border-white/10 dark:ring-white/[0.06] dark:shadow-black/40 dark:hover:border-white/20 dark:hover:shadow-black/50'
             }`}
           >
@@ -244,9 +304,9 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 aria-label="Select file"
-                className="inline-flex items-center justify-center rounded-md text-brand-600 dark:text-brand-400 transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 cursor-pointer"
+                className="inline-flex items-center justify-center rounded-md text-[#5C6BC0] transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/50 cursor-pointer"
               >
-                <svg className="size-11 fill-current" viewBox="0 0 576 512">
+                <svg className="size-12 fill-current" viewBox="0 0 576 512">
                   <path d="M144 480c-79.5 0-144-64.5-144-144 0-63.4 41-117.2 97.9-136.5-1.3-7.7-1.9-15.5-1.9-23.5 0-79.5 64.5-144 144-144 55.4 0 103.5 31.3 127.6 77.1 14.2-8.3 30.8-13.1 48.4-13.1 53 0 96 43 96 96 0 15.7-3.8 30.6-10.5 43.7 44 20.3 74.5 64.7 74.5 116.3 0 70.7-57.3 128-128 128l-304 0zM305 191c-9.4-9.4-24.6-9.4-33.9 0l-72 72c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0l31-31 0 102.1c0 13.3 10.7 24 24 24s24-10.7 24-24l0-102.1 31 31c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-72-72z" />
                 </svg>
               </button>
@@ -267,7 +327,7 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="rounded-md font-medium inline-flex items-center transition-colors px-4 py-2.5 text-base gap-2 rounded-r-none focus-visible:z-[1] text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 outline-none"
+                    className="rounded-md font-semibold inline-flex items-center transition-colors px-4 py-2.5 text-base gap-2 rounded-r-none focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4d5cb5] active:bg-[#3f4ea3] outline-none"
                   >
                     <FilePlus2 className="size-5 shrink-0" />
                     <span>Select File</span>
@@ -276,9 +336,8 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                   <button
                     type="button"
                     onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                    onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
                     aria-label="Select file source"
-                    className="rounded-md font-medium inline-flex items-center transition-colors text-base rounded-l-none border-l border-white/20 focus-visible:z-[1] text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 p-2.5 outline-none"
+                    className="rounded-md font-medium inline-flex items-center transition-colors text-base rounded-l-none border-l border-white/20 focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4d5cb5] active:bg-[#3f4ea3] p-2.5 outline-none"
                   >
                     <ChevronDown className={`size-5 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
                   </button>
@@ -290,69 +349,69 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
                         className="fixed inset-0 z-40"
                         onClick={() => setIsDropdownOpen(false)}
                       />
-                      <div className="absolute top-full right-0 mt-2 w-56 bg-white dark:bg-neutral-900 rounded-xl shadow-2xl border border-neutral-200 dark:border-white/10 p-1.5 z-50 animate-in fade-in duration-150 text-left">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsDropdownOpen(false);
-                          fileInputRef.current?.click();
-                        }}
-                        className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-white/5 rounded-lg transition-colors"
-                      >
-                        <HardDrive className="w-4 h-4 text-brand-600 dark:text-brand-400" />
-                        <span>From my Computer</span>
-                      </button>
+                      <div className="absolute top-full right-0 mt-2 w-56 bg-neutral-900 rounded-xl shadow-2xl border border-neutral-700/80 p-1.5 z-50 animate-in fade-in duration-150 text-left">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsDropdownOpen(false);
+                            fileInputRef.current?.click();
+                          }}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-white/5 rounded-lg transition-colors"
+                        >
+                          <HardDrive className="w-4 h-4 text-[#5C6BC0]" />
+                          <span>From my computer</span>
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsDropdownOpen(false);
-                          setIsUrlModalOpen(true);
-                        }}
-                        className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-white/5 rounded-lg transition-colors"
-                      >
-                        <Globe className="w-4 h-4 text-brand-600 dark:text-brand-400" />
-                        <span>By URL</span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsDropdownOpen(false);
+                            setIsUrlModalOpen(true);
+                          }}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-white/5 rounded-lg transition-colors"
+                        >
+                          <Globe className="w-4 h-4 text-[#5C6BC0]" />
+                          <span>By URL</span>
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsDropdownOpen(false);
-                          fileInputRef.current?.click();
-                        }}
-                        className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-white/5 rounded-lg transition-colors"
-                      >
-                        <FolderOpen className="w-4 h-4 text-brand-600 dark:text-brand-400" />
-                        <span>From Google Drive</span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsDropdownOpen(false);
+                            fileInputRef.current?.click();
+                          }}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-white/5 rounded-lg transition-colors"
+                        >
+                          <FolderOpen className="w-4 h-4 text-[#5C6BC0]" />
+                          <span>From Google Drive</span>
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsDropdownOpen(false);
-                          fileInputRef.current?.click();
-                        }}
-                        className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-white/5 rounded-lg transition-colors"
-                      >
-                        <Archive className="w-4 h-4 text-brand-600 dark:text-brand-400" />
-                        <span>From Dropbox</span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsDropdownOpen(false);
+                            fileInputRef.current?.click();
+                          }}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-white/5 rounded-lg transition-colors"
+                        >
+                          <Archive className="w-4 h-4 text-[#5C6BC0]" />
+                          <span>From Dropbox</span>
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsDropdownOpen(false);
-                          fileInputRef.current?.click();
-                        }}
-                        className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-white/5 rounded-lg transition-colors"
-                      >
-                        <FolderOpen className="w-4 h-4 text-brand-600 dark:text-brand-400" />
-                        <span>From OneDrive</span>
-                      </button>
-                    </div>
-                  </>
-                )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsDropdownOpen(false);
+                            fileInputRef.current?.click();
+                          }}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-white/5 rounded-lg transition-colors"
+                        >
+                          <FolderOpen className="w-4 h-4 text-[#5C6BC0]" />
+                          <span>From OneDrive</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -389,8 +448,9 @@ export default function Hero({ onFilesSelected, hasActiveQueue }: HeroProps) {
 
       {/* URL Ingestion Modal */}
       {isUrlModalOpen && (
-        <UrlUploadModal
-          onAddFile={(file) => onFilesSelected([file], targetFormat)}
+        <UrlImportModal
+          isOpen={isUrlModalOpen}
+          onAddFile={(file) => onFilesSelected([file], targetFormat === 'any' ? 'docx' : targetFormat)}
           onClose={() => setIsUrlModalOpen(false)}
         />
       )}
