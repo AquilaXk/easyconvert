@@ -148,7 +148,7 @@ export async function tryProcessClientEdge(
 
   // 3. Level 2: Client-side Edge OCR or SIMD Wasm Execution (Zero-Data Retention)
   if (resolution.tier === 'L2') {
-    if (item.options.ocrEnabled) {
+    if (item.options.ocrEnabled || src === 'pdf') {
       try {
         const edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);
         if (edgeOcrRes) {
@@ -163,17 +163,22 @@ export async function tryProcessClientEdge(
         // Propagate OCR error to respect fail-closed invariant
         throw err;
       }
+      return null;
     } else {
-      const arrayBuf = await item.file.arrayBuffer();
-      const taskRes = await executeWasmTask('rgba-grayscale', arrayBuf, {}, onProgress);
-      const blob = new Blob([taskRes.buffer], { type: 'image/png' });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L2',
-        tierName: 'Edge L2 (SIMD Wasm)',
-      };
+      const isImage = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(src);
+      if (isImage) {
+        const arrayBuf = await item.file.arrayBuffer();
+        const taskRes = await executeWasmTask('rgba-grayscale', arrayBuf, {}, onProgress);
+        const blob = new Blob([taskRes.buffer], { type: 'image/png' });
+        const resultUrl = URL.createObjectURL(blob);
+        return {
+          resultUrl,
+          resultSize: blob.size,
+          tier: 'L2',
+          tierName: 'Edge L2 (SIMD Wasm)',
+        };
+      }
+      return null;
     }
   }
 

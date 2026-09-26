@@ -4,6 +4,7 @@ import {
   calculateChunkCount,
   OpfsStreamTransformer,
   processOpfsStreaming,
+  streamWithSyncAccessHandle,
 } from '../src/lib/edge/workers/opfs-vfs.worker';
 import {
   createSessionId,
@@ -232,6 +233,114 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
       expect(res.tier).toBe('L4');
       expect(res.tierName).toBe('Cloud (Zero-Retention)');
       expect(res.isClientEdge).toBe(false);
+    });
+  });
+
+  describe('7. FileSystemSyncAccessHandle & Session Isolation Invariant', () => {
+    it('creates isolated session directory, uses sync access handles, and closes handles deterministically', async () => {
+      const originalNavigator = globalThis.navigator;
+
+      let inputClosed = false;
+      let outputClosed = false;
+      const writtenChunks: number[] = [];
+      const readChunks: number[] = [];
+
+      const mockInputAccess = {
+        write: vi.fn((buf: Uint8Array, opts: { at: number }) => {
+          writtenChunks.push(opts.at);
+        }),
+        read: vi.fn((buf: Uint8Array, opts: { at: number }) => {
+          readChunks.push(opts.at);
+        }),
+        flush: vi.fn(),
+        close: vi.fn(() => {
+          inputClosed = true;
+        }),
+      };
+
+      const mockOutputAccess = {
+        write: vi.fn(),
+        read: vi.fn(),
+        flush: vi.fn(),
+        close: vi.fn(() => {
+          outputClosed = true;
+        }),
+      };
+
+      const mockOutputFile = new File([new Uint8Array(1024)], 'output.bin');
+
+      const mockInputFileHandle = {
+        createSyncAccessHandle: vi.fn(async () => mockInputAccess),
+      };
+
+      const mockOutputFileHandle = {
+        createSyncAccessHandle: vi.fn(async () => mockOutputAccess),
+        getFile: vi.fn(async () => mockOutputFile),
+      };
+
+      let createdSessionDir = '';
+      let removedInputBin = false;
+
+      const mockSessionDir = {
+        getFileHandle: vi.fn(async (name: string) => {
+          if (name === 'input.bin') return mockInputFileHandle;
+          if (name === 'output.bin') return mockOutputFileHandle;
+          throw new Error('Not found');
+        }),
+        removeEntry: vi.fn(async (name: string) => {
+          if (name === 'input.bin') removedInputBin = true;
+        }),
+      };
+
+      const mockSessionsDir = {
+        getDirectoryHandle: vi.fn(async (name: string) => {
+          createdSessionDir = name;
+          return mockSessionDir;
+        }),
+      };
+
+      const mockEasyconvertDir = {
+        getDirectoryHandle: vi.fn(async (name: string) => {
+          if (name === 'sessions') return mockSessionsDir;
+          throw new Error('Not found');
+        }),
+      };
+
+      const mockRootDir = {
+        getDirectoryHandle: vi.fn(async (name: string) => {
+          if (name === 'easyconvert') return mockEasyconvertDir;
+          throw new Error('Not found');
+        }),
+      };
+
+      const mockNavigator = {
+        storage: {
+          getDirectory: vi.fn(async () => mockRootDir),
+        },
+      } as any;
+
+      Object.defineProperty(globalThis, 'navigator', {
+        value: mockNavigator,
+        configurable: true,
+      });
+
+      try {
+        const dummyFile = new File([new Uint8Array(10 * 1024 * 1024)], 'huge.bin'); // 10MB
+        const res = await streamWithSyncAccessHandle('session-test-uuid', dummyFile);
+
+        expect(res.outputSize).toBe(1024);
+        expect(createdSessionDir).toBe('session-test-uuid');
+        expect(mockInputAccess.write).toHaveBeenCalled();
+        expect(mockOutputAccess.write).toHaveBeenCalled();
+        expect(inputClosed).toBe(true);
+        expect(outputClosed).toBe(true);
+        expect(removedInputBin).toBe(true); // Temp input cleaned up
+      } finally {
+        Object.defineProperty(globalThis, 'navigator', {
+          value: originalNavigator,
+          configurable: true,
+        });
+      }
     });
   });
 });

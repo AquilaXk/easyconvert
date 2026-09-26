@@ -231,13 +231,23 @@ export function resolveConversionTier(
     };
   }
 
-  // 4. Level 2: Wasm SIMD OCR & PDF document pipeline
-  if (options.ocrEnabled || src === 'pdf') {
+  // 4. Level 2: Wasm SIMD OCR & Image Filter Pipeline
+  const isImageSrc = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(src);
+  const isImageTgt = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(tgt);
+  const isWasmFilterRequested = isImageSrc && isImageTgt && (
+    options.colorDepth !== undefined ||
+    options.palette === true ||
+    options.dither === true
+  );
+
+  if (options.ocrEnabled || src === 'pdf' || isWasmFilterRequested) {
     return {
       tier: 'L2',
       tierName: 'Edge L2 (SIMD Wasm)',
       isClientEdge: true,
-      reason: 'Client Wasm OCR and PDF memory vector processing',
+      reason: options.ocrEnabled || src === 'pdf'
+        ? 'Client Wasm OCR and PDF memory vector processing'
+        : 'Wasm SIMD vector image processing pipeline',
     };
   }
 

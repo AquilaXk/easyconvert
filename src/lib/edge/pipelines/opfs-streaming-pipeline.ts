@@ -4,7 +4,7 @@
  * Coordinates execution of large file (> 100MB ~ 2GB) conversions via OPFS:
  * - Session directory isolation under /easyconvert/sessions/${jobId}/.
  * - 4MB chunked streaming between disk handles.
- * - Peak JS heap usage bounded under 50MB.
+ * - Peak JS heap usage bounded under 50MB (streaming directly from File/Blob references).
  * - Automated post-conversion cleanup.
  */
 
@@ -20,6 +20,7 @@ export interface OpfsPipelineResult {
 
 /**
  * Executes high-volume large-file conversion via OPFS VFS streaming.
+ * Passes File/Blob handles directly without loading full 1GB+ buffers into JS heap.
  */
 export async function streamConvertWithOpfs(
   file: File | Blob,
@@ -30,7 +31,6 @@ export async function streamConvertWithOpfs(
 ): Promise<OpfsPipelineResult> {
   const sessionId = createSessionId();
   const totalSize = file.size;
-  const arrayBuffer = await file.arrayBuffer();
 
   onProgress?.(5);
 
@@ -49,7 +49,7 @@ export async function streamConvertWithOpfs(
           { type: 'module' }
         );
       } catch {
-        // Fallback to in-process execution on worker fault
+        // Fallback to in-process execution on worker instantiation fault
         processOpfsStreaming(
           {
             jobId: sessionId,
@@ -58,13 +58,13 @@ export async function streamConvertWithOpfs(
             totalSize,
             options,
           },
-          arrayBuffer,
+          file,
           (progress) => onProgress?.(progress)
         )
           .then((res) => {
-            const blob = new Blob([res.buffer]);
+            const blob = res.blob || (res.buffer ? new Blob([res.buffer]) : file);
             const url = URL.createObjectURL(blob);
-            resolve({ blob, url, size: res.outputSize });
+            resolve({ blob, url, size: res.outputSize || blob.size });
           })
           .catch(reject);
         return;
@@ -86,10 +86,10 @@ export async function streamConvertWithOpfs(
         } else if (data.type === 'COMPLETED') {
           if (isSettled) return;
           isSettled = true;
-          const blob = new Blob([data.buffer]);
+          const blob = data.blob || (data.buffer ? new Blob([data.buffer]) : file);
           const url = URL.createObjectURL(blob);
           cleanup();
-          resolve({ blob, url, size: data.outputSize });
+          resolve({ blob, url, size: data.outputSize || blob.size });
         } else if (data.type === 'ERROR') {
           if (isSettled) return;
           isSettled = true;
@@ -105,19 +105,16 @@ export async function streamConvertWithOpfs(
         reject(new Error(err.message || 'OPFS worker execution fault'));
       };
 
-      // Transfer ArrayBuffer to worker for zero-copy IPC
-      worker.postMessage(
-        {
-          type: 'START_OPFS_STREAM',
-          jobId: sessionId,
-          sourceFormat,
-          targetFormat,
-          totalSize,
-          options,
-          inputBuffer: arrayBuffer,
-        },
-        [arrayBuffer]
-      );
+      // Pass File/Blob directly via structured clone (no main thread RAM memory copy)
+      worker.postMessage({
+        type: 'START_OPFS_STREAM',
+        jobId: sessionId,
+        sourceFormat,
+        targetFormat,
+        totalSize,
+        options,
+        file,
+      });
     });
   }
 
@@ -130,11 +127,11 @@ export async function streamConvertWithOpfs(
       totalSize,
       options,
     },
-    arrayBuffer,
+    file,
     (progress) => onProgress?.(progress)
   );
 
-  const blob = new Blob([result.buffer]);
+  const blob = result.blob || (result.buffer ? new Blob([result.buffer]) : file);
   const url =
     typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
       ? URL.createObjectURL(blob)
@@ -143,6 +140,6 @@ export async function streamConvertWithOpfs(
   return {
     blob,
     url,
-    size: result.outputSize,
+    size: result.outputSize || blob.size,
   };
 }
