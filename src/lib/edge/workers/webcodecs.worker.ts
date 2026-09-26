@@ -78,8 +78,8 @@ export function denormalizeTimestampFromMicros(micros: number, timescale: number
  * Flow controller enforcing dual watermark backpressure between Demuxer and Hardware Encoder.
  */
 export class WatermarkFlowController {
-  private highWatermark: number;
-  private lowWatermark: number;
+  private readonly highWatermark: number;
+  private readonly lowWatermark: number;
   private isPaused: boolean = false;
   private resumeResolve: (() => void) | null = null;
   private currentQueueSize: number = 0;
@@ -289,8 +289,7 @@ export function muxWebmVideo(
       timeOffsetMs & 0xff,
       flags,
     ]);
-    parts.push(blockHeader);
-    parts.push(chunk.data);
+    parts.push(blockHeader, chunk.data);
   }
 
   // Calculate total length and concatenate
@@ -353,6 +352,156 @@ export function muxMp4Media(
 }
 
 /**
+ * Encodes frames using native browser WebCodecs VideoEncoder.
+ */
+async function encodeFramesHardware(
+  codec: string,
+  width: number,
+  height: number,
+  framerate: number,
+  videoBitrate: number,
+  flowController: WatermarkFlowController,
+  encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
+  onProgress?: (progress: number) => void
+): Promise<void> {
+  let encoderError: Error | null = null;
+  let encoderClosed = false;
+  const frameDurationMicros = Math.round(1_000_000 / framerate);
+
+  const encoder = new VideoEncoder({
+    output: (chunk: EncodedVideoChunk) => {
+      const chunkData = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(chunkData);
+      encodedChunks.push({
+        data: chunkData,
+        timestampMicros: chunk.timestamp,
+        isKeyFrame: chunk.type === 'key',
+      });
+      flowController.onDequeue(encoder.encodeQueueSize);
+    },
+    error: (err: any) => {
+      encoderError = err instanceof Error ? err : new Error(String(err));
+    },
+  });
+
+  (encoder as any).ondequeue = () => {
+    flowController.onDequeue(encoder.encodeQueueSize);
+  };
+
+  encoder.configure({
+    codec,
+    width,
+    height,
+    bitrate: videoBitrate,
+    framerate,
+  });
+
+  try {
+    const numFrames = 30;
+    for (let i = 0; i < numFrames; i++) {
+      if (encoderError) throw encoderError;
+
+      await flowController.checkBackpressure(encoder.encodeQueueSize);
+
+      const timestamp = i * frameDurationMicros;
+      const isKeyFrame = i % 15 === 0;
+
+      let inputFrame: VideoFrame | null = null;
+      try {
+        if (typeof OffscreenCanvas !== 'undefined') {
+          const canvas = new OffscreenCanvas(width, height);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = `rgb(${(i * 8) % 255}, 128, 200)`;
+            ctx.fillRect(0, 0, width, height);
+          }
+          inputFrame = new VideoFrame(canvas, { timestamp, duration: frameDurationMicros });
+        } else {
+          const planeData = new Uint8Array(width * height * 4);
+          inputFrame = new VideoFrame(planeData, {
+            format: 'RGBA',
+            codedWidth: width,
+            codedHeight: height,
+            timestamp,
+            duration: frameDurationMicros,
+          });
+        }
+        encoder.encode(inputFrame, { keyFrame: isKeyFrame });
+      } finally {
+        if (inputFrame) {
+          inputFrame.close();
+        }
+      }
+
+      onProgress?.(10 + Math.round((i / numFrames) * 75));
+    }
+
+    await encoder.flush();
+  } finally {
+    if (!encoderClosed) {
+      encoder.close();
+      encoderClosed = true;
+    }
+  }
+}
+
+/**
+ * Synthetic fallback encoding used in simulated or testing environments.
+ */
+async function encodeFramesSynthetic(
+  framerate: number,
+  flowController: WatermarkFlowController,
+  encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
+  onProgress?: (progress: number) => void
+): Promise<void> {
+  const numFrames = 15;
+  const frameDurationMicros = Math.round(1_000_000 / framerate);
+
+  for (let i = 0; i < numFrames; i++) {
+    const simulatedQueue = i % 5;
+    await flowController.checkBackpressure(simulatedQueue);
+    const timestamp = i * frameDurationMicros;
+    const isKeyFrame = i === 0;
+    const mockPayload = new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f, i]);
+    encodedChunks.push({
+      data: mockPayload,
+      timestampMicros: timestamp,
+      isKeyFrame,
+    });
+    flowController.onDequeue(Math.max(0, simulatedQueue - 1));
+    onProgress?.(10 + Math.round((i / numFrames) * 75));
+  }
+}
+
+/**
+ * Muxes encoded chunks into target container.
+ */
+function muxFinalMedia(
+  targetFormat: string,
+  encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
+  width: number,
+  height: number,
+  sampleRate: number = 44100,
+  channels: number = 2
+): Uint8Array {
+  if (targetFormat === 'webm') {
+    return muxWebmVideo(encodedChunks, width, height);
+  }
+  if (targetFormat === 'aac' || targetFormat === 'm4a') {
+    const parts = encodedChunks.map((c) => wrapAacWithAdts(c.data, sampleRate, channels));
+    const total = parts.reduce((acc, p) => acc + p.byteLength, 0);
+    const finalBytes = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) {
+      finalBytes.set(p, off);
+      off += p.byteLength;
+    }
+    return finalBytes;
+  }
+  return muxMp4Media(encodedChunks, width, height);
+}
+
+/**
  * Core Media Processing Engine for WebCodecs Pipeline.
  * Demuxer -> Decoder -> Canvas (optional) -> Encoder -> Muxer.
  * Guarantees VideoFrame.close() deterministic release in all conditions.
@@ -371,137 +520,32 @@ export async function processWebCodecsConversion(
   const width = options.width || 1280;
   const height = options.height || 720;
   const framerate = options.framerate || 30;
-  const frameDurationMicros = Math.round(1_000_000 / framerate);
 
-  // If in browser environment with WebCodecs VideoEncoder
   if (typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined') {
-    let encoderError: Error | null = null;
-    let encoderClosed = false;
-
-    const encoder = new VideoEncoder({
-      output: (chunk: EncodedVideoChunk) => {
-        const chunkData = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(chunkData);
-        encodedChunks.push({
-          data: chunkData,
-          timestampMicros: chunk.timestamp,
-          isKeyFrame: chunk.type === 'key',
-        });
-        flowController.onDequeue(encoder.encodeQueueSize);
-      },
-      error: (err: any) => {
-        encoderError = err instanceof Error ? err : new Error(String(err));
-      },
-    });
-
-    (encoder as any).ondequeue = () => {
-      flowController.onDequeue(encoder.encodeQueueSize);
-    };
-
-    encoder.configure({
-      codec: config.codec,
+    await encodeFramesHardware(
+      config.codec,
       width,
       height,
-      bitrate: options.videoBitrate || 2_000_000,
       framerate,
-    });
-
-    try {
-      // Create test frames / decode frames with strict try-finally deterministic VRAM cleanup
-      const numFrames = 30; // 1 second sample
-      for (let i = 0; i < numFrames; i++) {
-        if (encoderError) throw encoderError;
-
-        // Apply dual watermark backpressure check
-        await flowController.checkBackpressure(encoder.encodeQueueSize);
-
-        const timestamp = i * frameDurationMicros;
-        const isKeyFrame = i % 15 === 0;
-
-        // Generate or draw frame
-        let inputFrame: VideoFrame | null = null;
-        try {
-          if (typeof OffscreenCanvas !== 'undefined') {
-            const canvas = new OffscreenCanvas(width, height);
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-              ctx.fillStyle = `rgb(${(i * 8) % 255}, 128, 200)`;
-              ctx.fillRect(0, 0, width, height);
-            }
-            inputFrame = new VideoFrame(canvas, { timestamp, duration: frameDurationMicros });
-          } else {
-            // Buffer-based VideoFrame
-            const planeData = new Uint8Array(width * height * 4);
-            inputFrame = new VideoFrame(planeData, {
-              format: 'RGBA',
-              codedWidth: width,
-              codedHeight: height,
-              timestamp,
-              duration: frameDurationMicros,
-            });
-          }
-
-          // Encode frame
-          encoder.encode(inputFrame, { keyFrame: isKeyFrame });
-        } finally {
-          // DETERMINISTIC VRAM CLEANUP: MUST BE CALLED IMMEDIATELY
-          if (inputFrame) {
-            inputFrame.close();
-          }
-        }
-
-        const prog = 10 + Math.round((i / numFrames) * 75);
-        onProgress?.(prog);
-      }
-
-      await encoder.flush();
-    } finally {
-      if (!encoderClosed) {
-        encoder.close();
-        encoderClosed = true;
-      }
-    }
+      options.videoBitrate || 2_000_000,
+      flowController,
+      encodedChunks,
+      onProgress
+    );
   } else {
-    // Fallback/Synthetic edge encoding when WebCodecs is simulated or in test runtime
-    const numFrames = 15;
-    for (let i = 0; i < numFrames; i++) {
-      const simulatedQueue = i % 5;
-      await flowController.checkBackpressure(simulatedQueue);
-      const timestamp = i * frameDurationMicros;
-      const isKeyFrame = i === 0;
-      // Synthetic encoded NAL/VP9 payload
-      const mockPayload = new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f, i]);
-      encodedChunks.push({
-        data: mockPayload,
-        timestampMicros: timestamp,
-        isKeyFrame,
-      });
-      flowController.onDequeue(Math.max(0, simulatedQueue - 1));
-      onProgress?.(10 + Math.round((i / numFrames) * 75));
-    }
+    await encodeFramesSynthetic(framerate, flowController, encodedChunks, onProgress);
   }
 
   onProgress?.(90);
 
-  // Muxing step
-  let finalBytes: Uint8Array;
-  if (targetFormat === 'webm') {
-    finalBytes = muxWebmVideo(encodedChunks, width, height);
-  } else if (targetFormat === 'aac' || targetFormat === 'm4a') {
-    // Concatenate AAC ADTS frames
-    const parts = encodedChunks.map((c) =>
-      wrapAacWithAdts(c.data, options.audioSampleRate || 44100, options.audioChannels || 2)
-    );
-    const total = parts.reduce((acc, p) => acc + p.byteLength, 0);
-    finalBytes = new Uint8Array(total);
-    let off = 0;
-    for (const p of parts) {
-      finalBytes.set(p, off);
-      off += p.byteLength;
-    }
-  } else {
-    finalBytes = muxMp4Media(encodedChunks, width, height);
-  }
+  const finalBytes = muxFinalMedia(
+    targetFormat,
+    encodedChunks,
+    width,
+    height,
+    options.audioSampleRate,
+    options.audioChannels
+  );
 
   onProgress?.(100);
 

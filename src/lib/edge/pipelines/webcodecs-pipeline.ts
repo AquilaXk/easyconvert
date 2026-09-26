@@ -43,7 +43,10 @@ export async function convertWithWebCodecs(
   options: ConversionOptions = {},
   onProgress?: (progress: number) => void
 ): Promise<WebCodecsPipelineResult> {
-  const jobId = `webcodecs-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  const jobId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? `webcodecs-${crypto.randomUUID()}`
+      : `webcodecs-${Date.now()}`;
   const arrayBuffer = await file.arrayBuffer();
 
   onProgress?.(5);
@@ -72,7 +75,7 @@ export async function convertWithWebCodecs(
               width: options.width,
               height: options.height,
               videoBitrate: options.videoBitrate,
-              audioBitrate: options.audioBitrate ? parseInt(options.audioBitrate, 10) * 1000 : undefined,
+              audioBitrate: options.audioBitrate ? Number.parseInt(options.audioBitrate, 10) * 1000 : undefined,
               audioSampleRate: options.audioSampleRate,
               audioChannels: options.audioChannels === 'mono' ? 1 : 2,
               codec: options.videoCodec,
@@ -98,7 +101,7 @@ export async function convertWithWebCodecs(
 
       worker.onmessage = (e: MessageEvent) => {
         const data = e.data;
-        if (!data || data.jobId !== jobId) return;
+        if (data?.jobId !== jobId) return;
 
         if (data.type === 'PROGRESS') {
           onProgress?.(data.progress);
@@ -136,7 +139,7 @@ export async function convertWithWebCodecs(
             width: options.width,
             height: options.height,
             videoBitrate: options.videoBitrate,
-            audioBitrate: options.audioBitrate ? parseInt(options.audioBitrate, 10) * 1000 : undefined,
+            audioBitrate: options.audioBitrate ? Number.parseInt(options.audioBitrate, 10) * 1000 : undefined,
             audioSampleRate: options.audioSampleRate,
             audioChannels: options.audioChannels === 'mono' ? 1 : 2,
             codec: options.videoCodec,
@@ -158,7 +161,7 @@ export async function convertWithWebCodecs(
         width: options.width,
         height: options.height,
         videoBitrate: options.videoBitrate,
-        audioBitrate: options.audioBitrate ? parseInt(options.audioBitrate, 10) * 1000 : undefined,
+        audioBitrate: options.audioBitrate ? Number.parseInt(options.audioBitrate, 10) * 1000 : undefined,
         audioSampleRate: options.audioSampleRate,
         audioChannels: options.audioChannels === 'mono' ? 1 : 2,
         codec: options.videoCodec,

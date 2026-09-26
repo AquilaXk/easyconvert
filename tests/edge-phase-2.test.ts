@@ -191,7 +191,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
         });
 
         // 30 frames must have been created, and every single one must have close() called!
-        expect(closeSpies.length).toBe(30);
+        expect(closeSpies).toHaveLength(30);
         for (const spy of closeSpies) {
           expect(spy).toHaveBeenCalledTimes(1);
         }
@@ -226,7 +226,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
       const rawPayload = new Uint8Array([0x12, 0x34, 0x56]);
       const adts = wrapAacWithAdts(rawPayload, 44100, 2);
 
-      expect(adts.length).toBe(rawPayload.length + 7);
+      expect(adts).toHaveLength(rawPayload.length + 7);
       // Byte 0: 0xFF
       expect(adts[0]).toBe(0xff);
       // Byte 1: 0xF1 (syncword 0xFFF + layer 00 + protection absent 1)
@@ -254,7 +254,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
         { data: new Uint8Array([10, 20, 30, 40]), timestampMicros: 0, isKeyFrame: true },
       ];
       const mp4 = muxMp4Media(chunks, 1280, 720);
-      expect(mp4.length).toBe(32 + 8 + 4);
+      expect(mp4).toHaveLength(32 + 8 + 4);
       // 'ftyp' box
       const ftypTag = String.fromCharCode(...mp4.slice(4, 8));
       expect(ftypTag).toBe('ftyp');
