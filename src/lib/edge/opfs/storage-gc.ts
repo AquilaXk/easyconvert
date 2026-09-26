@@ -29,10 +29,18 @@ export const ROOT_SESSION_BASE_PATH = 'easyconvert/sessions';
  */
 export function createSessionId(): string {
   const timestamp = Date.now();
-  const uuid =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : Math.floor(Math.random() * 1_000_000).toString(16);
+  let uuid: string;
+
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    uuid = crypto.randomUUID();
+  } else if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const arr = new Uint8Array(8);
+    crypto.getRandomValues(arr);
+    uuid = Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
+  } else {
+    uuid = `${timestamp.toString(16)}-session`;
+  }
+
   return `${timestamp}-${uuid}`;
 }
 
@@ -101,6 +109,63 @@ export async function estimateStorageQuota(): Promise<StorageQuotaInfo> {
 }
 
 /**
+ * Traverses to the OPFS sessions directory.
+ */
+async function openSessionsDirectory(rootDir?: any): Promise<any | null> {
+  let directoryHandle = rootDir;
+  if (!directoryHandle && typeof navigator !== 'undefined' && navigator.storage?.getDirectory) {
+    try {
+      directoryHandle = await navigator.storage.getDirectory();
+    } catch {
+      return null;
+    }
+  }
+
+  if (!directoryHandle) return null;
+
+  try {
+    const easyconvertDir = await directoryHandle.getDirectoryHandle('easyconvert', { create: false });
+    return await easyconvertDir.getDirectoryHandle('sessions', { create: false });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sweeps directory entries in the OPFS sessions folder.
+ */
+async function sweepDirectoryEntries(
+  sessionsDir: any,
+  now: number,
+  maxAgeMs: number
+): Promise<{ sweptCount: number; remainingCount: number; errors: string[] }> {
+  let sweptCount = 0;
+  let remainingCount = 0;
+  const errors: string[] = [];
+
+  const entries = typeof sessionsDir.values === 'function' ? sessionsDir.values() : sessionsDir.entries();
+  for await (const entry of entries) {
+    const handle = Array.isArray(entry) ? entry[1] : entry;
+    const name = handle.name || (Array.isArray(entry) ? entry[0] : '');
+
+    if (handle.kind === 'directory') {
+      if (isSessionOrphaned(name, now, maxAgeMs)) {
+        try {
+          await sessionsDir.removeEntry(name, { recursive: true });
+          sweptCount += 1;
+        } catch (delErr: any) {
+          errors.push(`Failed to remove session ${name}: ${delErr.message}`);
+        }
+      } else {
+        remainingCount += 1;
+      }
+    }
+  }
+
+  return { sweptCount, remainingCount, errors };
+}
+
+/**
  * Recursively sweeps and deletes expired session directories from OPFS root.
  */
 export async function sweepOrphanedSessions(
@@ -108,62 +173,14 @@ export async function sweepOrphanedSessions(
   now: number = Date.now(),
   maxAgeMs: number = MAX_SESSION_AGE_MS
 ): Promise<StorageGcSweepResult> {
-  let sweptCount = 0;
-  let remainingCount = 0;
-  const errors: string[] = [];
-
-  let directoryHandle = rootDir;
-  if (!directoryHandle && typeof navigator !== 'undefined' && navigator.storage?.getDirectory) {
-    try {
-      directoryHandle = await navigator.storage.getDirectory();
-    } catch (err: any) {
-      errors.push(`Failed to open OPFS root: ${err.message}`);
-      return { sweptCount: 0, remainingCount: 0, errors };
-    }
-  }
-
-  if (!directoryHandle) {
-    return { sweptCount: 0, remainingCount: 0, errors };
+  const sessionsDir = await openSessionsDirectory(rootDir);
+  if (!sessionsDir) {
+    return { sweptCount: 0, remainingCount: 0, errors: [] };
   }
 
   try {
-    // Traverse down to easyconvert/sessions
-    let easyconvertDir: any;
-    try {
-      easyconvertDir = await directoryHandle.getDirectoryHandle('easyconvert', { create: false });
-    } catch {
-      return { sweptCount: 0, remainingCount: 0, errors: [] };
-    }
-
-    let sessionsDir: any;
-    try {
-      sessionsDir = await easyconvertDir.getDirectoryHandle('sessions', { create: false });
-    } catch {
-      return { sweptCount: 0, remainingCount: 0, errors: [] };
-    }
-
-    // Inspect entries in sessions directory
-    const entries = (sessionsDir as any).values ? (sessionsDir as any).values() : (sessionsDir as any).entries();
-    for await (const entry of entries) {
-      const handle = Array.isArray(entry) ? entry[1] : entry;
-      const name = handle.name || (Array.isArray(entry) ? entry[0] : '');
-
-      if (handle.kind === 'directory') {
-        if (isSessionOrphaned(name, now, maxAgeMs)) {
-          try {
-            await sessionsDir.removeEntry(name, { recursive: true });
-            sweptCount += 1;
-          } catch (delErr: any) {
-            errors.push(`Failed to remove session ${name}: ${delErr.message}`);
-          }
-        } else {
-          remainingCount += 1;
-        }
-      }
-    }
+    return await sweepDirectoryEntries(sessionsDir, now, maxAgeMs);
   } catch (err: any) {
-    errors.push(`Storage GC scan error: ${err.message}`);
+    return { sweptCount: 0, remainingCount: 0, errors: [`Storage GC scan error: ${err.message}`] };
   }
-
-  return { sweptCount, remainingCount, errors };
 }
