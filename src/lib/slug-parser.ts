@@ -12,12 +12,13 @@ export function parseConverterSlug(slug: string): ParsedSlug {
 
   // OCR utilities
   if (cleanSlug === 'pdf-ocr' || cleanSlug === 'ocr-pdf' || cleanSlug === 'ocr') {
+    const format = 'pdf';
     return {
       isInfoPage: false,
-      sourceFormat: 'pdf',
-      targetFormat: 'pdf',
+      sourceFormat: format,
+      targetFormat: format,
       pageTitle: 'PDF OCR Converter',
-      pageDescription: 'Perform optical character recognition on scanned PDFs and generate searchable, selectable documents with zero data retention.',
+      pageDescription: 'Optical character recognition utility producing searchable, selectable documents with zero data retention.',
     };
   }
 

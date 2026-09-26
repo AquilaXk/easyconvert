@@ -6,13 +6,15 @@ import { convertFile } from '../src/lib/conversions/index';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 
+async function createBlankPdfBuffer(): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  doc.addPage([300, 300]);
+  return Buffer.from(await doc.save());
+}
+
 describe('Phase 1: Fail-Closed Enforcement & Schema Sync', () => {
   it('throws clear error instead of silently returning input buffer when OCR is requested on blank/unsupported PDF', async () => {
-    // Create a valid blank PDF without raster images
-    const blankDoc = await PDFDocument.create();
-    blankDoc.addPage([300, 300]);
-    const blankBytes = await blankDoc.save();
-    const blankBuffer = Buffer.from(blankBytes);
+    const blankBuffer = await createBlankPdfBuffer();
 
     // Converting with ocrEnabled: true must FAIL-CLOSED
     await expect(
@@ -21,12 +23,10 @@ describe('Phase 1: Fail-Closed Enforcement & Schema Sync', () => {
   });
 
   it('returns HTTP 400 in API route when PDF OCR fails or unsupported compression is encountered', async () => {
-    const blankDoc = await PDFDocument.create();
-    blankDoc.addPage([300, 300]);
-    const blankBytes = await blankDoc.save();
+    const blankBuffer = await createBlankPdfBuffer();
 
     const formData = new FormData();
-    formData.append('file', new File([blankBytes], 'document.pdf', { type: 'application/pdf' }));
+    formData.append('file', new File([blankBuffer], 'document.pdf', { type: 'application/pdf' }));
     formData.append('targetFormat', 'pdf');
     formData.append('options', JSON.stringify({ ocrEnabled: true }));
 
