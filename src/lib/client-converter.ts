@@ -53,3 +53,50 @@ export async function executeItemConversion(
     callbacks.onError(err.message || 'Conversion failed. Please try another format.');
   }
 }
+
+/**
+ * Factory creating the stateful single-item converter callback for React queue components.
+ */
+export function createItemConverter(
+  setQueue: (action: (prev: ConversionQueueItem[]) => ConversionQueueItem[]) => void,
+  maxFileSize: number = 100 * 1024 * 1024
+) {
+  return async (item: ConversionQueueItem): Promise<void> => {
+    if (item.file.size > maxFileSize) {
+      setQueue((prev) =>
+        prev.map((i) =>
+          i.id === item.id ? { ...i, status: 'error', error: 'File size exceeds 100 MB limit.' } : i
+        )
+      );
+      return;
+    }
+
+    setQueue((prev) =>
+      prev.map((i) =>
+        i.id === item.id ? { ...i, status: 'converting', progress: 15, error: undefined } : i
+      )
+    );
+
+    await executeItemConversion(item, {
+      onProgress: (progress) => {
+        setQueue((prev) =>
+          prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress } : i))
+        );
+      },
+      onSuccess: (resultUrl, resultSize, edgeProcessed) => {
+        setQueue((prev) =>
+          prev.map((i) =>
+            i.id === item.id
+              ? { ...i, status: 'completed', progress: 100, resultUrl, resultSize, edgeProcessed }
+              : i
+          )
+        );
+      },
+      onError: (msg) => {
+        setQueue((prev) =>
+          prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: msg, progress: 0 } : i))
+        );
+      },
+    });
+  };
+}

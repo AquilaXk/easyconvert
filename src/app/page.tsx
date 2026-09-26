@@ -9,7 +9,7 @@ import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
-import { executeItemConversion } from '@/lib/client-converter';
+import { createItemConverter } from '@/lib/client-converter';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
@@ -112,55 +112,7 @@ export default function Home() {
   };
 
   // Convert a single item
-  const convertSingleItem = async (item: ConversionQueueItem): Promise<void> => {
-    if (item.file.size > MAX_FILE_SIZE) {
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id
-            ? { ...i, status: 'error', error: 'File size exceeds 100 MB limit.' }
-            : i
-        )
-      );
-      return;
-    }
-
-    setQueue((prev) =>
-      prev.map((i) =>
-        i.id === item.id ? { ...i, status: 'converting', progress: 15, error: undefined } : i
-      )
-    );
-
-    await executeItemConversion(item, {
-      onProgress: (progress) => {
-        setQueue((prev) =>
-          prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress } : i))
-        );
-      },
-      onSuccess: (resultUrl, resultSize, edgeProcessed) => {
-        setQueue((prev) =>
-          prev.map((i) =>
-            i.id === item.id
-              ? {
-                  ...i,
-                  status: 'completed',
-                  progress: 100,
-                  resultUrl,
-                  resultSize,
-                  edgeProcessed,
-                }
-              : i
-          )
-        );
-      },
-      onError: (errorMessage) => {
-        setQueue((prev) =>
-          prev.map((i) =>
-            i.id === item.id ? { ...i, status: 'error', error: errorMessage, progress: 0 } : i
-          )
-        );
-      },
-    });
-  };
+  const convertSingleItem = createItemConverter(setQueue, MAX_FILE_SIZE);
 
   // Convert all ready/error items
   const handleConvertAll = async () => {

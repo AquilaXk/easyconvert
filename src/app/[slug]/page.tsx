@@ -8,7 +8,7 @@ import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
-import { executeItemConversion } from '@/lib/client-converter';
+import { createItemConverter } from '@/lib/client-converter';
 import {
   FileText,
   ShieldCheck,
@@ -287,51 +287,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
     setQueue((prev) => prev.map((item) => (item.id === id ? { ...item, options } : item)));
   };
 
-  const convertSingleItem = async (item: ConversionQueueItem): Promise<void> => {
-    if (item.file.size > MAX_FILE_SIZE) {
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id ? { ...i, status: 'error', error: 'File size exceeds 100 MB limit.' } : i
-        )
-      );
-      return;
-    }
-
-    setQueue((prev) =>
-      prev.map((i) =>
-        i.id === item.id ? { ...i, status: 'converting', progress: 15, error: undefined } : i
-      )
-    );
-
-    await executeItemConversion(item, {
-      onProgress: (progress) => {
-        setQueue((prev) =>
-          prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress } : i))
-        );
-      },
-      onSuccess: (resultUrl, resultSize, edgeProcessed) => {
-        setQueue((prev) =>
-          prev.map((i) =>
-            i.id === item.id
-              ? {
-                  ...i,
-                  status: 'completed',
-                  progress: 100,
-                  resultUrl,
-                  resultSize,
-                  edgeProcessed,
-                }
-              : i
-          )
-        );
-      },
-      onError: (msg) => {
-        setQueue((prev) =>
-          prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: msg, progress: 0 } : i))
-        );
-      },
-    });
-  };
+  const convertSingleItem = createItemConverter(setQueue, MAX_FILE_SIZE);
 
   const handleConvertAll = async () => {
     setIsConverting(true);
