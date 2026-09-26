@@ -8,6 +8,7 @@ import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from '.
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
+import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
@@ -228,33 +229,13 @@ export async function executeItemConversion(
 
   // 3. Server-side conversion pipeline with Zero-Data Retention guarantee
   try {
-    const formData = new FormData();
-    formData.append('file', item.file);
-    formData.append('targetFormat', item.targetFormat);
-    formData.append('options', JSON.stringify(item.options));
-
-    const progressTimer = setTimeout(() => {
-      callbacks.onProgress(75);
-    }, 350);
-
-    const res = await fetch('/api/convert', {
-      method: 'POST',
-      headers: {
-        'X-Zero-Retention': 'true',
-      },
-      body: formData,
-    });
-
-    clearTimeout(progressTimer);
-
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Conversion failed. Please try another format.');
-    }
-
-    const blob = await res.blob();
-    const resultUrl = URL.createObjectURL(blob);
-    callbacks.onSuccess(resultUrl, blob.size, false, 'Cloud (Zero-Retention)');
+    const cloudRes = await executeServerlessCloudFallback(
+      item.file,
+      item.targetFormat,
+      item.options,
+      callbacks.onProgress
+    );
+    callbacks.onSuccess(cloudRes.url, cloudRes.size, false, 'Cloud (Zero-Retention)');
   } catch (err: any) {
     callbacks.onError(err.message || 'Conversion failed. Please try another format.');
   }
