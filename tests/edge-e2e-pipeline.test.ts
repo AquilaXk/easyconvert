@@ -35,85 +35,23 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
   });
 
   describe('1. Universal 5-Tier Adaptive Resolution Matrix', () => {
-    it('resolves Tier L0 for pure isomorphic structured data', () => {
-      const res = resolveConversionTier('csv', 'json', 1024);
-      expect(res.tier).toBe('L0');
-      expect(res.tierName).toBe('Edge L0 (Instant)');
-      expect(res.isClientEdge).toBe(true);
-    });
-
-    it('resolves Tier L0 for pure mathematical CAD B-spline tessellation', () => {
-      const res = resolveConversionTier('step', 'stl', 50_000);
-      expect(res.tier).toBe('L0');
-      expect(res.tierName).toBe('Edge L0 (Instant)');
-      expect(res.isClientEdge).toBe(true);
-    });
-
-    it('resolves Tier L0 for pure TypedArray WAV/MP3 audio', () => {
-      const res = resolveConversionTier('wav', 'mp3', 200_000);
-      expect(res.tier).toBe('L0');
-      expect(res.tierName).toBe('Edge L0 (Instant)');
-      expect(res.isClientEdge).toBe(true);
-    });
-
-    it('resolves Tier L0 for pure Canvas 2D image rasterization', () => {
-      const res = resolveConversionTier('png', 'webp', 100_000, {}, { hasCanvas: true });
-      expect(res.tier).toBe('L0');
-      expect(res.tierName).toBe('Edge L0 (Instant)');
-      expect(res.isClientEdge).toBe(true);
-    });
-
-    it('resolves Tier L1 for WebCodecs hardware accelerated media transcoding', () => {
-      const res = resolveConversionTier(
-        'mp4',
-        'webm',
-        10_000_000,
-        {},
-        { hasWebCodecsVideo: true }
-      );
-      expect(res.tier).toBe('L1');
-      expect(res.tierName).toBe('Edge L1 (Hardware VPU)');
-      expect(res.isClientEdge).toBe(true);
-    });
-
-    it('resolves Tier L2 for SIMD Wasm OCR & PDF processing', () => {
-      const res = resolveConversionTier('png', 'txt', 500_000, { ocrEnabled: true });
-      expect(res.tier).toBe('L2');
-      expect(res.tierName).toBe('Edge L2 (SIMD Wasm)');
-      expect(res.isClientEdge).toBe(true);
-    });
-
-    it('resolves Tier L3 for OPFS large-file streaming VFS (> 100MB)', () => {
-      const res = resolveConversionTier(
-        'mp4',
-        'webm',
-        150 * 1024 * 1024,
-        {},
-        { hasOpfsSyncAccess: true }
-      );
-      expect(res.tier).toBe('L3');
-      expect(res.tierName).toBe('Edge L3 (OPFS Stream)');
-      expect(res.isClientEdge).toBe(true);
-    });
-
-    it('resolves Tier L4 for Cloud serverless conversion when format is unsupported locally', () => {
-      const res = resolveConversionTier(
-        'mkv',
-        'avi',
-        5_000_000,
-        {},
-        { hasWebCodecsVideo: false, hasWebCodecsAudio: false }
-      );
-      expect(res.tier).toBe('L4');
-      expect(res.tierName).toBe('Cloud (Zero-Retention)');
-      expect(res.isClientEdge).toBe(false);
-    });
-
-    it('resolves Tier L4 when user explicitly opts out of client edge execution', () => {
-      const res = resolveConversionTier('csv', 'json', 1024, { clientEdgeMode: false });
-      expect(res.tier).toBe('L4');
-      expect(res.tierName).toBe('Cloud (Zero-Retention)');
-      expect(res.isClientEdge).toBe(false);
+    it.each([
+      { src: 'csv', tgt: 'json', size: 1024, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
+      { src: 'step', tgt: 'stl', size: 50_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
+      { src: 'wav', tgt: 'mp3', size: 200_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
+      { src: 'png', tgt: 'webp', size: 100_000, opts: {}, caps: { hasCanvas: true }, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
+      { src: 'mp4', tgt: 'webm', size: 10_000_000, opts: {}, caps: { hasWebCodecsVideo: true }, expectedTier: 'L1', expectedName: 'Edge L1 (Hardware VPU)', clientEdge: true },
+      { src: 'png', tgt: 'txt', size: 500_000, opts: { ocrEnabled: true }, caps: {}, expectedTier: 'L2', expectedName: 'Edge L2 (SIMD Wasm)', clientEdge: true },
+      { src: 'mp4', tgt: 'webm', size: 150 * 1024 * 1024, opts: {}, caps: { hasOpfsSyncAccess: true }, expectedTier: 'L3', expectedName: 'Edge L3 (OPFS Stream)', clientEdge: true },
+      { src: 'mkv', tgt: 'avi', size: 5_000_000, opts: {}, caps: { hasWebCodecsVideo: false, hasWebCodecsAudio: false }, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
+      { src: 'csv', tgt: 'json', size: 1024, opts: { clientEdgeMode: false }, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
+    ])('resolves $src->$tgt to $expectedTier ($expectedName)', ({ src, tgt, size, opts, caps, expectedTier, expectedName, clientEdge }) => {
+      const res = resolveConversionTier(src, tgt, size, opts, caps);
+      expect(res).toMatchObject({
+        tier: expectedTier,
+        tierName: expectedName,
+        isClientEdge: clientEdge,
+      });
     });
   });
 
