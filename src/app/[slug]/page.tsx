@@ -8,22 +8,8 @@ import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
-import { createItemConverter } from '@/lib/client-converter';
-import {
-  FileText,
-  ShieldCheck,
-  ArrowRight,
-  Send,
-  Lock,
-  Mail,
-  Shield,
-  Clock,
-  Sparkles,
-  Globe,
-  Database,
-} from 'lucide-react';
-
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+import { createItemConverter, getEffectiveMaxFileSize } from '@/lib/client-converter';
+import { FileText, ArrowRight } from 'lucide-react';
 
 import { parseConverterSlug } from '@/lib/slug-parser';
 
@@ -201,6 +187,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
 
   // File Queue Handler
   const handleFilesSelected = (files: File[], defaultTarget?: string) => {
+    const maxLimit = getEffectiveMaxFileSize();
     const effectiveDefaultTarget =
       defaultTarget && defaultTarget.toLowerCase() !== 'any'
         ? defaultTarget
@@ -222,7 +209,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
         }
       }
 
-      const isOverSize = file.size > MAX_FILE_SIZE;
+      const isOverSize = file.size > maxLimit;
 
       return {
         id: Math.random().toString(36).substring(2, 9) + Date.now().toString(36),
@@ -232,7 +219,9 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
         sourceFormat: srcFmt,
         targetFormat: tgtFmt,
         status: isOverSize ? 'error' : 'ready',
-        error: isOverSize ? 'File exceeds 100 MB real-time conversion limit.' : undefined,
+        error: isOverSize
+          ? `File exceeds ${Math.round(maxLimit / (1024 * 1024))} MB real-time conversion limit.`
+          : undefined,
         progress: 0,
         options: {
           quality: 85,
@@ -287,7 +276,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
     setQueue((prev) => prev.map((item) => (item.id === id ? { ...item, options } : item)));
   };
 
-  const convertSingleItem = createItemConverter(setQueue, MAX_FILE_SIZE);
+  const convertSingleItem = createItemConverter(setQueue);
 
   const handleConvertAll = async () => {
     setIsConverting(true);

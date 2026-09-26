@@ -10,6 +10,7 @@ import {
   Image as ImageIcon,
   Video,
   Music,
+  ShieldCheck,
 } from 'lucide-react';
 import { ConversionOptions } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
@@ -38,6 +39,7 @@ export default function OptionsModal({
     pages: true,
     security: true,
     domain: true,
+    privacy: true,
   });
 
   const toggleSection = (sec: string) => {
@@ -239,43 +241,6 @@ export default function OptionsModal({
                       Specifies whenever OCR will be performed on images and the recognized text replaces the image pixels underneath (default).
                     </p>
                   </div>
-
-                  {/* Client-Side Edge OCR Mode */}
-                  <div className="space-y-2 sm:col-span-2 pt-3 border-t border-neutral-800/80">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-neutral-200 block">
-                        Client-Side Edge Mode (Zero-Data Retention)
-                      </label>
-                      <span className="text-[10px] px-1.5 py-0.5 font-bold uppercase rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                        100% Local RAM
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-4 text-xs text-neutral-300">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="clientEdgeMode"
-                          checked={options.clientEdgeMode !== false}
-                          onChange={() => setOptions({ ...options, clientEdgeMode: true })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
-                        />
-                        <span>Enabled (Process in Browser Memory)</span>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="clientEdgeMode"
-                          checked={options.clientEdgeMode === false}
-                          onChange={() => setOptions({ ...options, clientEdgeMode: false })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
-                        />
-                        <span>Server Processing</span>
-                      </label>
-                    </div>
-                    <p className="text-xs text-neutral-400">
-                      Executes optical recognition entirely inside your device browser memory via WebAssembly and Web Workers. Zero file data is uploaded to any server.
-                    </p>
-                  </div>
                 </div>
               )}
             </div>
@@ -389,6 +354,59 @@ export default function OptionsModal({
               )}
             </div>
           )}
+
+          {/* 4. Universal Execution & Privacy Section */}
+          <div className="p-6">
+            <button
+              type="button"
+              onClick={() => toggleSection('privacy')}
+              className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
+            >
+              <div className="flex items-center gap-2.5">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>Execution & Privacy</span>
+              </div>
+              {openSections.privacy ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
+            </button>
+
+            {openSections.privacy && (
+              <div className="mt-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-neutral-200 block">
+                    Client-Side Edge Mode (Zero-Data Retention)
+                  </label>
+                  <span className="text-[10px] px-1.5 py-0.5 font-bold uppercase rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    100% Local RAM
+                  </span>
+                </div>
+                <div className="flex items-center gap-4 text-xs text-neutral-300">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="clientEdgeMode"
+                      checked={options.clientEdgeMode !== false}
+                      onChange={() => setOptions({ ...options, clientEdgeMode: true })}
+                      className="w-4 h-4 accent-[#5C6BC0]"
+                    />
+                    <span>Enabled (Process in Browser Memory)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="clientEdgeMode"
+                      checked={options.clientEdgeMode === false}
+                      onChange={() => setOptions({ ...options, clientEdgeMode: false })}
+                      className="w-4 h-4 accent-[#5C6BC0]"
+                    />
+                    <span>Server Processing</span>
+                  </label>
+                </div>
+                <p className="text-xs text-neutral-400">
+                  Executes conversions directly inside your device browser memory via WebAssembly, WebCodecs, and Web Workers. Zero file data is uploaded to any server.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Footer with ONLY the single Apply button on bottom right */}

@@ -10,6 +10,7 @@
  */
 
 import { ConversionOptions } from '../types';
+import { encodePureMp3 as pureEncodeMp3 } from '../edge/pure/pure-audio';
 
 // ============================================================================
 // 1. BitWriter Helper for Bitstream Packing (Exp-Golomb & Bitpacking)
@@ -102,33 +103,8 @@ function packageNalUnit(writer: BitWriter): Buffer {
 }
 
 // ============================================================================
-// 2. Pure TS MP3 Encoder (MDCT + Psychoacoustic Quantization + MPEG-1 Layer III)
+// 2. Pure TS MP3 Encoder (Delegates to Pure Isomorphic TypedArray Engine)
 // ============================================================================
-
-/**
- * Computes 576-point MDCT with sine window
- */
-function computeMdct576(samples: Float64Array): Float64Array {
-  const N = 576;
-  const out = new Float64Array(N);
-  const factor = Math.PI / N;
-
-  for (let k = 0; k < N; k++) {
-    let sum = 0.0;
-    const kFactor = (k + 0.5) * factor;
-
-    for (let n = 0; n < 2 * N; n++) {
-      // Sine window
-      const win = Math.sin((Math.PI / (2 * N)) * (n + 0.5));
-      const s = samples[n] * win;
-      const angle = (n + 0.5 + N * 0.5) * kFactor;
-      sum += s * Math.cos(angle);
-    }
-    out[k] = sum;
-  }
-
-  return out;
-}
 
 /**
  * Encodes PCM samples into valid MPEG-1 Audio Layer III (MP3) bitstream
@@ -140,140 +116,7 @@ export function encodePureMp3(
   bitrateStr = '192k',
   title = 'EasyConvert Audio'
 ): Buffer {
-  if (samples.length === 0) {
-    samples = new Int16Array(1152 * (channels || 2) * 4);
-  }
-
-  const bitrateKbps = parseInt(bitrateStr, 10) || 192;
-  const bitrateBps = bitrateKbps * 1000;
-  const frameLength = Math.floor((144 * bitrateBps) / (sampleRate || 44100));
-
-  const chunks: Buffer[] = [];
-
-  // 1. ID3v2.3 Tag Header
-  const titleBuf = Buffer.from(title, 'utf-8');
-  const frameSize = 1 + titleBuf.length;
-  const tagPayloadSize = 10 + frameSize;
-
-  const id3 = Buffer.alloc(10 + tagPayloadSize);
-  id3.write('ID3', 0);
-  id3.writeUInt8(3, 3); // ID3v2.3
-  id3.writeUInt8(0, 4);
-  id3.writeUInt8(0, 5); // flags
-  // Syncsafe integer for size
-  id3.writeUInt8((tagPayloadSize >> 21) & 0x7f, 6);
-  id3.writeUInt8((tagPayloadSize >> 14) & 0x7f, 7);
-  id3.writeUInt8((tagPayloadSize >> 7) & 0x7f, 8);
-  id3.writeUInt8(tagPayloadSize & 0x7f, 9);
-
-  // TIT2 frame (Title)
-  id3.write('TIT2', 10);
-  id3.writeUInt32BE(frameSize, 14);
-  id3.writeUInt16BE(0, 18);
-  id3.writeUInt8(0, 20); // ISO-8859-1
-  titleBuf.copy(id3, 21);
-  chunks.push(id3);
-
-  // 2. Encode MPEG-1 Layer III Frames
-  // Each frame has 1152 samples per channel
-  const samplesPerFrame = 1152;
-  const totalFrames = Math.max(4, Math.floor(samples.length / (samplesPerFrame * channels)));
-
-  // Bitrate index for MPEG-1 Layer III:
-  // 128k -> 9, 160k -> 10, 192k -> 11, 224k -> 12, 256k -> 13, 320k -> 14
-  let bitrateIdx = 11; // 192k default
-  if (bitrateKbps <= 64) bitrateIdx = 5;
-  else if (bitrateKbps <= 96) bitrateIdx = 7;
-  else if (bitrateKbps <= 128) bitrateIdx = 9;
-  else if (bitrateKbps <= 160) bitrateIdx = 10;
-  else if (bitrateKbps <= 192) bitrateIdx = 11;
-  else if (bitrateKbps <= 256) bitrateIdx = 13;
-  else bitrateIdx = 14;
-
-  const srIdx = sampleRate === 48000 ? 1 : sampleRate === 32000 ? 2 : 0;
-  const channelMode = channels === 1 ? 3 : 0; // 0 = Stereo, 3 = Single channel
-
-  // Side info size: 32 bytes for stereo, 17 bytes for mono
-  const sideInfoSize = channels === 1 ? 17 : 32;
-
-  // Granule sample window buffers
-  const granuleWindow = new Float64Array(1152);
-
-  for (let f = 0; f < totalFrames; f++) {
-    const frameBuf = Buffer.alloc(frameLength);
-
-    // Frame Header (4 bytes)
-    // 0xFF 0xFB (sync 11 bits, MPEG-1, Layer III, no CRC)
-    frameBuf[0] = 0xff;
-    frameBuf[1] = 0xfb;
-    // Byte 2: bitrateIdx (4 bits) | srIdx (2 bits) | padding (0) | private (0)
-    frameBuf[2] = (bitrateIdx << 4) | (srIdx << 2);
-    // Byte 3: mode (2 bits) | mode_ext (2 bits) | copyright (0) | original (1) | emphasis (0)
-    frameBuf[3] = (channelMode << 6) | 0x08;
-
-    // Side Info (bytes 4 .. 4 + sideInfoSize - 1)
-    // main_data_begin = 0
-    let sOff = 4;
-    frameBuf.writeUInt16BE(0, sOff); // main_data_begin (9 bits) + private
-    sOff += 2;
-
-    // scfsi (scalefactor selection info): 4 bits per channel packed
-    frameBuf.writeUInt8(0x00, sOff++);
-
-    // Granule parameters
-    const bigValues = 120;
-    const globalGain = 140;
-    const part23Len = Math.floor((frameLength - 4 - sideInfoSize) * 4); // target bit length
-
-    for (let gr = 0; gr < 2; gr++) {
-      for (let ch = 0; ch < channels; ch++) {
-        // Pack part2_3_length (12 bits), big_values (9 bits), global_gain (8 bits)
-        const p1 = (part23Len << 4) | ((bigValues >> 5) & 0x0f);
-        frameBuf.writeUInt16BE(p1, sOff);
-        sOff += 2;
-        frameBuf.writeUInt8((bigValues & 0x1f) << 3, sOff++);
-        frameBuf.writeUInt8(globalGain, sOff++);
-        // Window switching flag (0), table_select, subblock_gain
-        frameBuf.writeUInt16BE(0x0000, sOff);
-        sOff += 2;
-      }
-    }
-
-    // Main Data: Quantized MDCT Spectral Coefficients
-    const mainDataStart = 4 + sideInfoSize;
-    const mainDataLen = frameLength - mainDataStart;
-
-    // Fill granule window from input PCM samples
-    const frameSampleOffset = f * samplesPerFrame * channels;
-    for (let i = 0; i < 1152; i++) {
-      const idx = (frameSampleOffset + i * channels) % samples.length;
-      granuleWindow[i] = samples[idx] / 32768.0;
-    }
-
-    // Compute MDCT for granule 0
-    const mdct = computeMdct576(granuleWindow);
-
-    // Non-linear psychoacoustic quantization: ix = sign(x) * round((|x| / step)^0.75)
-    const qStep = 0.05;
-    let bOff = mainDataStart;
-
-    for (let k = 0; k < 576 && bOff + 1 < frameLength; k++) {
-      const val = mdct[k];
-      const sign = val < 0 ? 1 : 0;
-      const mag = Math.abs(val);
-      const qVal = Math.min(255, Math.round(Math.pow(mag / qStep, 0.75)));
-
-      // Pack quantized value with sign
-      frameBuf[bOff++] = qVal;
-      if (bOff < frameLength) {
-        frameBuf[bOff++] = sign ? 0x80 : 0x00;
-      }
-    }
-
-    chunks.push(frameBuf);
-  }
-
-  return Buffer.concat(chunks);
+  return Buffer.from(pureEncodeMp3(samples, sampleRate, channels, bitrateStr, title));
 }
 
 // ============================================================================

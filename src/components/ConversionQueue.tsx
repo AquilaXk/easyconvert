@@ -203,8 +203,10 @@ export default function ConversionQueue({
                   )}
 
                   {item.status === 'completed' && item.edgeProcessed && (
-                    <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
-                      <span>Edge (0B uploaded)</span>
+                    <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                      <span>{item.edgeTier || 'Edge L0 (Instant)'}</span>
+                      <span className="text-emerald-500/40">&bull;</span>
+                      <span>0B Uploaded</span>
                     </span>
                   )}
 
