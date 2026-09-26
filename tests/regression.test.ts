@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
-import { convertFile } from '../src/lib/conversions/index.ts';
+import { convertFile } from '../src/lib/conversions/index';
 
 describe('Skeptical Review: Breaking Prior Attempt', () => {
   async function createTestPngBuffer(): Promise<Buffer> {

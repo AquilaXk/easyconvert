@@ -6,7 +6,7 @@ import {
   createZipArchive,
   createTarArchive,
   extractTarArchive,
-} from '../src/lib/conversions/index.ts';
+} from '../src/lib/conversions/index';
 
 describe('Conversion Engine Integration Tests', () => {
   // Helper to generate a valid test PNG image

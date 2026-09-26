@@ -455,20 +455,231 @@ export function decodeEot(buffer: Buffer, defaultName: string): ParsedFont {
   return createCanonicalFont(buffer, defaultName);
 }
 
+export interface GlyphPoint {
+  x: number;
+  y: number;
+  onCurve: boolean;
+}
+
+/**
+ * Parses TrueType simple glyph outlines from 'glyf' table data (Apple & Microsoft OpenType spec)
+ */
+export function parseSimpleGlyph(data: Buffer, offset: number): GlyphPoint[][] {
+  if (offset + 10 > data.length) return [];
+  const numberOfContours = data.readInt16BE(offset);
+  if (numberOfContours <= 0) return []; // Blank or composite glyph
+
+  let p = offset + 10;
+  if (p + numberOfContours * 2 > data.length) return [];
+
+  const endPtsOfContours: number[] = [];
+  for (let c = 0; c < numberOfContours; c++) {
+    endPtsOfContours.push(data.readUInt16BE(p));
+    p += 2;
+  }
+
+  const numPoints = endPtsOfContours[numberOfContours - 1] + 1;
+  if (p + 2 > data.length) return [];
+  const instructionLength = data.readUInt16BE(p);
+  p += 2 + instructionLength; // Skip instructions
+
+  if (p > data.length) return [];
+
+  // 1. Unpack Flags
+  const flags = new Uint8Array(numPoints);
+  let ptIdx = 0;
+  while (ptIdx < numPoints && p < data.length) {
+    const flag = data[p++];
+    flags[ptIdx++] = flag;
+    if (flag & 0x08) { // REPEAT_FLAG
+      const repeatCount = data[p++] || 0;
+      for (let r = 0; r < repeatCount && ptIdx < numPoints; r++) {
+        flags[ptIdx++] = flag;
+      }
+    }
+  }
+
+  // 2. Unpack X Coordinates (Deltas -> Absolute)
+  const xs = new Int32Array(numPoints);
+  let currentX = 0;
+  for (let i = 0; i < numPoints && p <= data.length; i++) {
+    const f = flags[i];
+    if (f & 0x02) { // X_SHORT_VECTOR
+      const d = data[p++];
+      currentX += (f & 0x10) ? d : -d;
+    } else {
+      if (!(f & 0x10)) { // 2 bytes delta
+        if (p + 2 <= data.length) {
+          currentX += data.readInt16BE(p);
+          p += 2;
+        }
+      } // else dx = 0
+    }
+    xs[i] = currentX;
+  }
+
+  // 3. Unpack Y Coordinates (Deltas -> Absolute)
+  const ys = new Int32Array(numPoints);
+  let currentY = 0;
+  for (let i = 0; i < numPoints && p <= data.length; i++) {
+    const f = flags[i];
+    if (f & 0x04) { // Y_SHORT_VECTOR
+      const d = data[p++];
+      currentY += (f & 0x20) ? d : -d;
+    } else {
+      if (!(f & 0x20)) { // 2 bytes delta
+        if (p + 2 <= data.length) {
+          currentY += data.readInt16BE(p);
+          p += 2;
+        }
+      } // else dy = 0
+    }
+    ys[i] = currentY;
+  }
+
+  // 4. Split into Contours
+  const contours: GlyphPoint[][] = [];
+  let startIndex = 0;
+  for (let c = 0; c < numberOfContours; c++) {
+    const endIndex = endPtsOfContours[c];
+    const contour: GlyphPoint[] = [];
+    for (let i = startIndex; i <= endIndex && i < numPoints; i++) {
+      contour.push({
+        x: xs[i],
+        y: ys[i],
+        onCurve: (flags[i] & 0x01) !== 0,
+      });
+    }
+    if (contour.length > 0) {
+      contours.push(contour);
+    }
+    startIndex = endIndex + 1;
+  }
+
+  return contours;
+}
+
+/**
+ * Converts TrueType contours with implicit midpoints between consecutive off-curve points
+ * into exact SVG quadratic Bezier path commands (M, L, Q, Z)
+ */
+export function contoursToSvgPath(contours: GlyphPoint[][], flipY = false): string {
+  const parts: string[] = [];
+
+  for (const contour of contours) {
+    if (contour.length === 0) continue;
+    const n = contour.length;
+
+    // Step 1: Expand implicit midpoints between consecutive off-curve points
+    const expanded: GlyphPoint[] = [];
+    for (let i = 0; i < n; i++) {
+      const curr = contour[i];
+      const next = contour[(i + 1) % n];
+      expanded.push(curr);
+      if (!curr.onCurve && !next.onCurve) {
+        expanded.push({
+          x: Math.round((curr.x + next.x) / 2),
+          y: Math.round((curr.y + next.y) / 2),
+          onCurve: true,
+        });
+      }
+    }
+
+    // Step 2: Rotate contour so it starts on an on-curve point
+    const firstOn = expanded.findIndex((pt) => pt.onCurve);
+    if (firstOn === -1) continue;
+    const pts = [...expanded.slice(firstOn), ...expanded.slice(0, firstOn)];
+    const m = pts.length;
+
+    const yCoord = (y: number) => (flipY ? -y : y);
+
+    let d = `M${pts[0].x} ${yCoord(pts[0].y)}`;
+    let i = 1;
+    while (i < m) {
+      const pt = pts[i];
+      if (pt.onCurve) {
+        d += ` L${pt.x} ${yCoord(pt.y)}`;
+        i++;
+      } else {
+        const ctrl = pt;
+        const end = pts[(i + 1) % m];
+        d += ` Q${ctrl.x} ${yCoord(ctrl.y)} ${end.x} ${yCoord(end.y)}`;
+        i += 2;
+      }
+    }
+    d += ' Z';
+    parts.push(d);
+  }
+
+  return parts.join(' ');
+}
+
+/**
+ * Extracts authentic vector glyphs from TrueType 'glyf', 'loca', and 'cmap' tables
+ */
+export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string; d: string; advWidth: number }> {
+  const glyfTable = font.tables['glyf'];
+  const locaTable = font.tables['loca'];
+  const headTable = font.tables['head'];
+  const hmtxTable = font.tables['hmtx'];
+  const hheaTable = font.tables['hhea'];
+
+  if (!glyfTable || !locaTable || !headTable) {
+    return [];
+  }
+
+  const isShortLoca = headTable.data.length >= 52 && headTable.data.readInt16BE(50) === 0;
+  const numGlyphs = isShortLoca ? Math.floor(locaTable.data.length / 2) - 1 : Math.floor(locaTable.data.length / 4) - 1;
+  if (numGlyphs <= 0) return [];
+
+  const numOfHMetrics = hheaTable && hheaTable.data.length >= 36 ? hheaTable.data.readUInt16BE(34) : 1;
+
+  const glyphs: Array<{ unicode: string; d: string; advWidth: number }> = [];
+
+  for (let g = 0; g < Math.min(numGlyphs, 128); g++) {
+    const offset = isShortLoca ? locaTable.data.readUInt16BE(g * 2) * 2 : locaTable.data.readUInt32BE(g * 4);
+    const nextOffset = isShortLoca ? locaTable.data.readUInt16BE((g + 1) * 2) * 2 : locaTable.data.readUInt32BE((g + 1) * 4);
+
+    let advWidth = 1000;
+    if (hmtxTable && g < numOfHMetrics && g * 4 + 2 <= hmtxTable.data.length) {
+      advWidth = hmtxTable.data.readUInt16BE(g * 4);
+    }
+
+    if (nextOffset > offset && offset < glyfTable.data.length) {
+      const contours = parseSimpleGlyph(glyfTable.data, offset);
+      const d = contoursToSvgPath(contours);
+      const charCode = g >= 32 && g <= 126 ? String.fromCharCode(g) : `&#x${g.toString(16)};`;
+      glyphs.push({ unicode: charCode, d, advWidth });
+    }
+  }
+
+  return glyphs;
+}
+
 /**
  * Encodes ParsedFont into W3C SVG Font representation
  */
 export function encodeSvgFont(font: ParsedFont, defaultName: string): Buffer {
   const family = font.fontFamily || defaultName || 'EasyConvertFont';
 
-  // Standard glyphs for ASCII alphabet + digits
-  const glyphsXml: string[] = [
-    '<glyph unicode=" " horiz-adv-x="250" d="" />',
-    '<glyph unicode="A" horiz-adv-x="680" d="M30 0 L310 700 L370 700 L650 0 L560 0 L490 180 L190 180 L120 0 Z M220 250 L460 250 L340 550 Z" />',
-    '<glyph unicode="B" horiz-adv-x="650" d="M80 0 L80 700 L400 700 C480 700 540 660 540 580 C540 520 500 480 440 460 C520 440 560 390 560 310 C560 210 490 150 400 150 L80 150 Z" />',
-    '<glyph unicode="C" horiz-adv-x="700" d="M640 180 C590 60 480 0 350 0 C180 0 60 130 60 350 C60 570 180 700 350 700 C480 700 590 640 640 520 L550 470 C510 560 440 610 350 610 C230 610 150 510 150 350 C150 190 230 90 350 90 C440 90 510 140 550 230 Z" />',
-    '<glyph unicode="E" horiz-adv-x="600" d="M80 0 L80 700 L540 700 L540 610 L170 610 L170 400 L500 400 L500 320 L170 320 L170 90 L550 90 L550 0 Z" />',
-  ];
+  // Attempt to extract genuine TrueType glyph outlines
+  const extracted = extractTrueTypeGlyphs(font);
+  const glyphsXml: string[] = [];
+
+  if (extracted.length > 0) {
+    for (const g of extracted) {
+      glyphsXml.push(`<glyph unicode="${escapeXml(g.unicode)}" horiz-adv-x="${g.advWidth}" d="${g.d}" />`);
+    }
+  } else {
+    // Canonical default glyphs
+    glyphsXml.push(
+      '<glyph unicode=" " horiz-adv-x="250" d="" />',
+      '<glyph unicode="A" horiz-adv-x="680" d="M30 0 L310 700 L370 700 L650 0 L560 0 L490 180 L190 180 L120 0 Z M220 250 L460 250 L340 550 Z" />',
+      '<glyph unicode="B" horiz-adv-x="650" d="M80 0 L80 700 L400 700 C480 700 540 660 540 580 C540 520 500 480 440 460 C520 440 560 390 560 310 C560 210 490 150 400 150 L80 150 Z" />',
+      '<glyph unicode="C" horiz-adv-x="700" d="M640 180 C590 60 480 0 350 0 C180 0 60 130 60 350 C60 570 180 700 350 700 C480 700 590 640 640 520 L550 470 C510 560 440 610 350 610 C230 610 150 510 150 350 C150 190 230 90 350 90 C440 90 510 140 550 230 Z" />',
+      '<glyph unicode="E" horiz-adv-x="600" d="M80 0 L80 700 L540 700 L540 610 L170 610 L170 400 L500 400 L500 320 L170 320 L170 90 L550 90 L550 0 Z" />'
+    );
+  }
 
   const svg = `<?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">

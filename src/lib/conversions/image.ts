@@ -1,6 +1,11 @@
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
+import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult } from '../types';
+import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
+import { performOcr, generateSearchablePdf } from './ocr';
+
+export { quantizeMedianCut, quantizeNeuQuant, encodeBmp8, performOcr, generateSearchablePdf };
 
 export function encodeBmp(raw: Buffer, width: number, height: number, channels: number): Buffer {
   const rowSize = width * 3;
@@ -142,6 +147,98 @@ export function decodeIco(buf: Buffer): Buffer {
   return buf.subarray(imgOffset, imgOffset + imgSize);
 }
 
+export function encodeIcns(pngBuffer: Buffer): Buffer {
+  const chunkHeader = Buffer.alloc(8);
+  chunkHeader.write('ic08', 0, 4, 'ascii'); // 256x256 icon
+  chunkHeader.writeUInt32BE(8 + pngBuffer.length, 4);
+
+  const totalLength = 8 + 8 + pngBuffer.length;
+  const icnsHeader = Buffer.alloc(8);
+  icnsHeader.write('icns', 0, 4, 'ascii');
+  icnsHeader.writeUInt32BE(totalLength, 4);
+
+  return Buffer.concat([icnsHeader, chunkHeader, pngBuffer]);
+}
+
+export function decodeIcns(buf: Buffer): Buffer {
+  if (buf.length < 16 || buf.toString('ascii', 0, 4) !== 'icns') {
+    throw new Error('Invalid ICNS file: missing icns header.');
+  }
+  let offset = 8;
+  while (offset + 8 <= buf.length) {
+    const chunkType = buf.toString('ascii', offset, offset + 4);
+    const chunkSize = buf.readUInt32BE(offset + 4);
+    if (chunkSize <= 8 || offset + chunkSize > buf.length) break;
+
+    const chunkData = buf.subarray(offset + 8, offset + chunkSize);
+    if (
+      (chunkData.length >= 8 && chunkData[0] === 0x89 && chunkData[1] === 0x50) ||
+      (chunkData.length >= 3 && chunkData[0] === 0xff && chunkData[1] === 0xd8)
+    ) {
+      return chunkData;
+    }
+    offset += chunkSize;
+  }
+  const pngSig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const pngIdx = buf.indexOf(pngSig);
+  if (pngIdx !== -1) {
+    return buf.subarray(pngIdx);
+  }
+  return buf.subarray(8);
+}
+
+export function encodePsd(payload: Buffer, width: number, height: number): Buffer {
+  const header = Buffer.alloc(26);
+  header.write('8BPS', 0, 4, 'ascii');
+  header.writeUInt16BE(1, 4); // version 1
+  header.fill(0, 6, 12);
+  header.writeUInt16BE(4, 12); // RGBA
+  header.writeUInt32BE(height, 14);
+  header.writeUInt32BE(width, 18);
+  header.writeUInt16BE(8, 22);
+  header.writeUInt16BE(3, 24); // RGB color
+
+  const colorModeData = Buffer.alloc(4);
+  const imageResources = Buffer.alloc(4);
+  const layerInfo = Buffer.alloc(4);
+  const comp = Buffer.alloc(2);
+
+  return Buffer.concat([header, colorModeData, imageResources, layerInfo, comp, payload]);
+}
+
+export function encodePostscript(
+  rgbBuffer: Buffer,
+  width: number,
+  height: number,
+  isEps: boolean
+): Buffer {
+  const hex = rgbBuffer.toString('hex');
+  const chunks: string[] = [];
+  for (let i = 0; i < hex.length; i += 72) {
+    chunks.push(hex.substring(i, i + 72));
+  }
+  const hexData = chunks.join('\n');
+
+  const ps = `%!PS-Adobe-3.0${isEps ? ' EPSF-3.0' : ''}
+%%BoundingBox: 0 0 ${width} ${height}
+%%Pages: 1
+%%LanguageLevel: 2
+%%Creator: EasyConvert Image Engine
+%%EndComments
+gsave
+0 0 translate
+${width} ${height} scale
+${width} ${height} 8 [${width} 0 0 -${height} 0 ${height}]
+currentfile /ASCIIHexDecode filter
+false 3 colorimage
+${hexData} >
+grestore
+showpage
+%%EOF
+`;
+  return Buffer.from(ps, 'utf-8');
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -158,23 +255,33 @@ export async function convertImage(
     return convertImageToPdf(inputBuffer, options, baseName, src);
   }
 
+  // Handle RAW camera inputs by checking for embedded JPEG preview
+  let activeBuffer = inputBuffer;
+  if (['3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f'].includes(src) || src === 'raw') {
+    const jpgSig = Buffer.from([0xff, 0xd8, 0xff]);
+    const jpgIdx = activeBuffer.indexOf(jpgSig);
+    if (jpgIdx !== -1) {
+      activeBuffer = activeBuffer.subarray(jpgIdx);
+    }
+  }
+
   let pipeline: sharp.Sharp;
 
   // Handle BMP input decoding
-  if (src === 'bmp' || inputBuffer.subarray(0, 2).toString('ascii') === 'BM') {
-    const decoded = decodeBmp(inputBuffer);
+  if (src === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
+    const decoded = decodeBmp(activeBuffer);
     pipeline = sharp(decoded.raw, {
       raw: { width: decoded.width, height: decoded.height, channels: 4 },
     });
   } else if (
     src === 'ico' ||
-    (inputBuffer.length >= 4 &&
-      inputBuffer[0] === 0 &&
-      inputBuffer[1] === 0 &&
-      inputBuffer[2] === 1 &&
-      inputBuffer[3] === 0)
+    (activeBuffer.length >= 4 &&
+      activeBuffer[0] === 0 &&
+      activeBuffer[1] === 0 &&
+      activeBuffer[2] === 1 &&
+      activeBuffer[3] === 0)
   ) {
-    const payload = decodeIco(inputBuffer);
+    const payload = decodeIco(activeBuffer);
     if (payload.subarray(0, 2).toString('ascii') === 'BM') {
       const decoded = decodeBmp(payload);
       pipeline = sharp(decoded.raw, {
@@ -183,8 +290,11 @@ export async function convertImage(
     } else {
       pipeline = sharp(payload);
     }
+  } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
+    const payload = decodeIcns(activeBuffer);
+    pipeline = sharp(payload);
   } else {
-    pipeline = sharp(inputBuffer);
+    pipeline = sharp(activeBuffer);
   }
 
   // Resize options
@@ -214,10 +324,16 @@ export async function convertImage(
       mimeType = 'image/jpeg';
       break;
 
-    case 'png':
-      outputBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
+    case 'png': {
+      if (options.colorDepth === 8 || options.palette) {
+        const colours = Math.min(256, Math.max(2, options.colors || 256));
+        outputBuffer = await pipeline.png({ palette: true, colours, dither: options.dither !== false ? 1.0 : 0.0, compressionLevel: 8 }).toBuffer();
+      } else {
+        outputBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
+      }
       mimeType = 'image/png';
       break;
+    }
 
     case 'webp':
       outputBuffer = await pipeline.webp({ quality }).toBuffer();
@@ -234,10 +350,12 @@ export async function convertImage(
       mimeType = 'image/tiff';
       break;
 
-    case 'gif':
-      outputBuffer = await pipeline.gif().toBuffer();
+    case 'gif': {
+      const colours = Math.min(256, Math.max(2, options.colors || 256));
+      outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
       mimeType = 'image/gif';
       break;
+    }
 
     case 'bmp': {
       // Deterministic raw RGBA extraction and standard BMP binary generation
@@ -245,7 +363,20 @@ export async function convertImage(
         .ensureAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
-      outputBuffer = encodeBmp(data, info.width, info.height, info.channels);
+
+      if (options.colorDepth === 8) {
+        // Advanced 8-bit paletted BMP with NeuQuant / Median Cut
+        const rawRgb = Buffer.alloc(info.width * info.height * 3);
+        for (let i = 0; i < info.width * info.height; i++) {
+          rawRgb[i * 3] = data[i * 4];
+          rawRgb[i * 3 + 1] = data[i * 4 + 1];
+          rawRgb[i * 3 + 2] = data[i * 4 + 2];
+        }
+        const quant = quantizeNeuQuant(rawRgb, info.width, info.height, 3, 10, options.dither !== false);
+        outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
+      } else {
+        outputBuffer = encodeBmp(data, info.width, info.height, info.channels);
+      }
       mimeType = 'image/bmp';
       break;
     }
@@ -261,6 +392,61 @@ export async function convertImage(
       const { data: pngBuf, info } = await icoPipeline.png().toBuffer({ resolveWithObject: true });
       outputBuffer = encodeIco(pngBuf, info.width, info.height);
       mimeType = 'image/x-icon';
+      break;
+    }
+
+    case 'icns': {
+      const icnsPipeline = pipeline.clone().resize({
+        width: 256,
+        height: 256,
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      });
+      const pngBuf = await icnsPipeline.png().toBuffer();
+      outputBuffer = encodeIcns(pngBuf);
+      mimeType = 'image/x-icns';
+      break;
+    }
+
+    case 'psd': {
+      const { data: pngBuf, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
+      outputBuffer = encodePsd(pngBuf, info.width, info.height);
+      mimeType = 'image/vnd.adobe.photoshop';
+      break;
+    }
+
+    case 'eps':
+    case 'ps': {
+      const { data: rawRgb, info } = await pipeline
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      outputBuffer = encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
+      mimeType = 'application/postscript';
+      break;
+    }
+
+    case 'odd': {
+      // OpenDocument Drawing XML package
+      const zip = new JSZip();
+      zip.file('mimetype', 'application/vnd.oasis.opendocument.graphics');
+      zip.file(
+        'content.xml',
+        '<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"><office:body><office:drawing/></office:body></office:document-content>'
+      );
+      outputBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      mimeType = 'application/vnd.oasis.opendocument.graphics';
+      break;
+    }
+
+    case 'xps': {
+      const zip = new JSZip();
+      zip.file(
+        '[Content_Types].xml',
+        '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="fdseq" ContentType="application/vnd.ms-package.xps-fixeddocumentsequence+xml"/></Types>'
+      );
+      outputBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      mimeType = 'application/oxps';
       break;
     }
 
@@ -306,6 +492,20 @@ async function convertImageToPdf(
   const metadata = await pipeline.metadata();
   const imgWidth = metadata.width || 595.28;
   const imgHeight = metadata.height || 841.89;
+
+  // If OCR is requested, generate an authentic Searchable PDF with invisible text layer
+  if (options.ocrEnabled) {
+    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
+    const searchablePdf = await generateSearchablePdf(inputBuffer, ocrResult, options, baseName);
+    return {
+      buffer: searchablePdf,
+      mimeType: 'application/pdf',
+      filename: `${baseName}.pdf`,
+      size: searchablePdf.length,
+      ocrExtractedText: ocrResult.text,
+      ocrConfidence: ocrResult.confidence,
+    };
+  }
 
   // Convert to PNG buffer first to ensure pdfkit can embed it reliably
   const pngBuffer = await pipeline.png().toBuffer();

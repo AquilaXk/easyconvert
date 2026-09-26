@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { convertFile } from '../src/lib/conversions/index';
+import { convertFile, extractTextFromPdf, decodePdfHexString } from '../src/lib/conversions/index';
 import { performOcr } from '../src/lib/conversions/ocr';
 
 describe('Document Tables & OCR Recognition Engine', () => {
@@ -49,5 +49,52 @@ Additional summary notes below table.`;
     expect(ocrResult.confidence).toBeGreaterThan(0.7);
     expect(ocrResult.lines.length).toBeGreaterThan(0);
     expect(ocrResult.wordCount).toBeGreaterThan(0);
+  });
+
+  it('extracts text from PDF stream with octal and escaped sequences correctly', () => {
+    const pdfStream = Buffer.from(
+      '%PDF-1.4\n1 0 obj\n<< /Length 75 >>\nstream\nBT\n/F1 12 Tf\n(Hello\\040World\\nLine\\041) Tj\nET\nendstream\nendobj\n%%EOF',
+      'utf-8'
+    );
+    const text = extractTextFromPdf(pdfStream);
+    expect(text).toContain('Hello World\nLine!');
+  });
+
+  it('extracts UTF-16BE BOM hex strings and handles odd-length hex without crashing', () => {
+    // UTF-16BE encoded "Hello": 0048 0065 006c 006c 006f with BOM FEFF
+    const pdfStream = Buffer.from(
+      '%PDF-1.4\n1 0 obj\n<< /Length 85 >>\nstream\nBT\n<FEFF00480065006C006C006F> Tj\nET\nendstream\nendobj\n%%EOF',
+      'utf-8'
+    );
+    const text = extractTextFromPdf(pdfStream);
+    expect(text).toContain('Hello');
+
+    // Odd-length hex string with BOM: <FEFF48> or trailing odd nibble
+    const oddHex = '<FEFF48>';
+    const decoded = decodePdfHexString(oddHex);
+    expect(typeof decoded).toBe('string');
+  });
+
+  it('supports PDF single quote and double quote operators with both literal and hex strings', () => {
+    const pdfStream = Buffer.from(
+      `%PDF-1.4
+1 0 obj
+<< /Length 120 >>
+stream
+BT
+/F1 12 Tf
+(First Line) Tj
+(Second Line with \\(nested\\) parens) '
+0 0 <FEFF00540068006900720064> "
+ET
+endstream
+endobj
+%%EOF`,
+      'utf-8'
+    );
+    const text = extractTextFromPdf(pdfStream);
+    expect(text).toContain('First Line');
+    expect(text).toContain('Second Line with (nested) parens');
+    expect(text).toContain('Third');
   });
 });

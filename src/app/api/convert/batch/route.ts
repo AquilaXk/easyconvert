@@ -5,6 +5,9 @@ import { ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
+// Maximum allowed payload for real-time zero-retention in-memory conversion
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -15,6 +18,37 @@ export async function POST(req: NextRequest) {
     if (!files || files.length === 0) {
       return NextResponse.json(
         { success: false, error: 'No files provided for batch conversion.' },
+        { status: 400 }
+      );
+    }
+
+    let totalBatchSize = 0;
+    for (const f of files) {
+      if (f.size === 0) {
+        return NextResponse.json(
+          { success: false, error: `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.` },
+          { status: 400 }
+        );
+      }
+      if (f.size > MAX_FILE_SIZE) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `File "${f.name}" exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, files larger than 100 MB are not supported.`,
+          },
+          { status: 400 }
+        );
+      }
+      totalBatchSize += f.size;
+    }
+
+    if (totalBatchSize > MAX_FILE_SIZE) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Total batch payload size exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, batch conversions exceeding 100 MB are not supported.',
+        },
         { status: 400 }
       );
     }

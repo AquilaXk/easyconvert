@@ -3,7 +3,7 @@ import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
 import { convertOffice, extractTextFromRtf, generateOdtFromText } from './office';
-import { performOcr } from './ocr';
+import { performOcr, generateSearchablePdf, OcrResult } from './ocr';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
 import { svgToDxf } from './vector-cad';
 
@@ -90,6 +90,7 @@ export async function convertDocument(
   if (src === 'pdf') {
     let extractedText = extractTextFromPdf(inputBuffer);
     let ocrInfo: { text?: string; confidence?: number } = {};
+    let lastOcrResult: OcrResult | null = null;
 
     // If scanned document or OCR is requested
     const isScanned = extractedText === 'No extractable text found in PDF document.';
@@ -100,12 +101,14 @@ export async function convertDocument(
         if (ocr.text) {
           extractedText = ocr.text;
           ocrInfo = { text: ocr.text, confidence: ocr.confidence };
+          lastOcrResult = ocr;
         }
       } else if (isScanned) {
         const ocr = await performOcr(inputBuffer, options.ocrLanguage);
         if (ocr.text) {
           extractedText = ocr.text;
           ocrInfo = { text: ocr.text, confidence: ocr.confidence };
+          lastOcrResult = ocr;
         }
       }
     }
@@ -152,6 +155,23 @@ export async function convertDocument(
     }
 
     if (tgt === 'pdf') {
+      if ((options.ocrEnabled || isScanned) && lastOcrResult) {
+        const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
+        const imgToUse = embeddedImg || inputBuffer;
+        try {
+          const searchablePdf = await generateSearchablePdf(imgToUse, lastOcrResult, options, baseName);
+          return {
+            buffer: searchablePdf,
+            mimeType: 'application/pdf',
+            filename: `${baseName}.pdf`,
+            size: searchablePdf.length,
+            ocrExtractedText: ocrInfo.text,
+            ocrConfidence: ocrInfo.confidence,
+          };
+        } catch {
+          // fallback to input buffer
+        }
+      }
       return {
         buffer: inputBuffer,
         mimeType: 'application/pdf',

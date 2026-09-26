@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { convertFile } from '@/lib/conversions';
-import { detectFormatFromFilename } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -49,7 +49,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const detectedDef = detectFormatFromFilename(file.name);
+    const sourceFormatParam = formData.get('sourceFormat') as string | null;
+    let detectedDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
+    if (!detectedDef) {
+      detectedDef = detectFormatFromFilename(file.name);
+    }
+    if (!detectedDef && file.name.toLowerCase().endsWith('.tar.bz2')) {
+      detectedDef = FORMAT_REGISTRY['tar.bz2'] || FORMAT_REGISTRY['bz2'];
+    }
+
     if (!detectedDef) {
       return NextResponse.json(
         {
