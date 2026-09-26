@@ -210,6 +210,12 @@ export default function ConversionQueue({
                     </span>
                   )}
 
+                  {item.status === 'completed' && !item.edgeProcessed && (
+                    <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-sky-400 bg-sky-500/10 border border-sky-500/20 px-2 py-0.5 rounded">
+                      <span>{item.edgeTier || 'Cloud (Zero-Retention)'}</span>
+                    </span>
+                  )}
+
                   {item.status === 'completed' && item.resultUrl && (
                     <a
                       href={item.resultUrl}

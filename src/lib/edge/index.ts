@@ -7,3 +7,4 @@ export * from './pipelines/wasm-simd-pipeline';
 export * from './opfs/storage-gc';
 export * from './workers/opfs-vfs.worker';
 export * from './pipelines/opfs-streaming-pipeline';
+export * from './pipelines/fallback-pipeline';
