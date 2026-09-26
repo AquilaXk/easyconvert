@@ -2,60 +2,25 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
-import { convertOffice, extractTextFromRtf, generateOdtFromText } from './office';
+import {
+  convertOffice,
+  extractTextFromRtf,
+  generateOdtFromText,
+  extractTextFromOdt,
+  extractTextFromDoc,
+} from './office';
 import { performOcr, generateSearchablePdf, OcrResult } from './ocr';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { svgToDxf } from './vector-cad';
 
-export { extractTextFromPdf, extractEmbeddedImageFromPdf };
-
-/**
- * Extracts plain text from ODT OpenDocument Text zip archive
- */
-export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
-  try {
-    const zip = await JSZip.loadAsync(buffer);
-    const contentXml = zip.file('content.xml');
-    if (contentXml) {
-      const xml = await contentXml.async('text');
-      const paragraphs: string[] = [];
-      const pRegex = /<text:(?:p|h)[^>]*>([\s\S]*?)<\/text:(?:p|h)>/g;
-      let m: RegExpExecArray | null;
-      while ((m = pRegex.exec(xml)) !== null) {
-        const text = m[1].replace(/<[^>]+>/g, '').trim();
-        if (text) paragraphs.push(text);
-      }
-      return paragraphs.join('\n\n');
-    }
-  } catch {
-    // fallback
-  }
-  return buffer.toString('utf-8');
-}
-
-/**
- * Extracts readable text streams from binary legacy DOC (Word) files
- */
-export function extractTextFromDoc(buffer: Buffer): string {
-  const strings: string[] = [];
-  let curr = '';
-  for (let i = 0; i < buffer.length; i++) {
-    const byte = buffer[i];
-    if (byte >= 32 && byte <= 126) {
-      curr += String.fromCharCode(byte);
-    } else if (byte === 10 || byte === 13) {
-      if (curr.trim().length >= 4) strings.push(curr.trim());
-      curr = '';
-    } else {
-      if (curr.trim().length >= 5) strings.push(curr.trim());
-      curr = '';
-    }
-  }
-  if (curr.trim().length >= 4) strings.push(curr.trim());
-  return strings.join('\n\n') || 'Extracted document content.';
-}
+export {
+  extractTextFromPdf,
+  extractEmbeddedImageFromPdf,
+  extractTextFromOdt,
+  extractTextFromDoc,
+};
 
 /**
  * Strips LaTeX macro commands
