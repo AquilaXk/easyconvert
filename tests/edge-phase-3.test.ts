@@ -13,6 +13,7 @@ import {
   executeWasmTask,
 } from '../src/lib/edge/pipelines/wasm-simd-pipeline';
 import { resolveConversionTier, checkWasmSimdSupport } from '../src/lib/edge/tier-router';
+import { tryProcessClientEdge } from '../src/lib/client-converter';
 
 describe('Phase 3: Zero-COOP Single-Threaded SIMD Wasm & Module Caching (L2)', () => {
   beforeEach(async () => {
@@ -217,6 +218,30 @@ describe('Phase 3: Zero-COOP Single-Threaded SIMD Wasm & Module Caching (L2)', (
       expect(res.tier).toBe('L2');
       expect(res.tierName).toBe('Edge L2 (SIMD Wasm)');
       expect(res.isClientEdge).toBe(true);
+    });
+
+    it('does not corrupt non-image documents with rgba-grayscale when OCR is disabled', async () => {
+      const originalWindow = (globalThis as any).window;
+      (globalThis as any).window = globalThis;
+      try {
+        const item = {
+          id: 'test-pdf-non-corrupt',
+          file: new File(['%PDF-1.4 mock binary pdf stream'], 'doc.pdf', { type: 'application/pdf' }),
+          name: 'doc.pdf',
+          size: 32,
+          sourceFormat: 'pdf',
+          targetFormat: 'docx',
+          status: 'ready' as const,
+          progress: 0,
+          options: { ocrEnabled: false },
+        };
+        const result = await tryProcessClientEdge(item);
+        // Must return null to gracefully route to serverless convertDocument, rather than returning corrupted fake PNG
+        expect(result).toBeNull();
+      } finally {
+        if (originalWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = originalWindow;
+      }
     });
   });
 });

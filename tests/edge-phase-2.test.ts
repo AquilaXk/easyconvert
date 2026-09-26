@@ -8,6 +8,8 @@ import {
   muxWebmVideo,
   muxMp4Media,
   processWebCodecsConversion,
+  demuxMp4,
+  demuxWav,
 } from '../src/lib/edge/workers/webcodecs.worker';
 import {
   convertWithWebCodecs,
@@ -336,4 +338,145 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
       expect(res.isClientEdge).toBe(false);
     });
   });
+
+  describe('8. Universal Media Demuxing & Timescale Preservation', () => {
+    it('demuxes MP4 container and accurately extracts timescale and samples', () => {
+      // Build a minimal MP4 with ftyp, moov (mvhd with timescale 90,000), and mdat
+      const ftyp = new Uint8Array([
+        0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70,
+        0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02, 0x00,
+        0x69, 0x73, 0x6f, 0x6d,
+      ]);
+      // moov with mvhd
+      const mvhd = new Uint8Array([
+        0x00, 0x00, 0x00, 0x6c, 0x6d, 0x76, 0x68, 0x64,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x5f, 0x90, // timescale = 90,000 (0x015F90)
+        ...new Array(88).fill(0),
+      ]);
+      const moov = new Uint8Array(8 + mvhd.byteLength);
+      const moovView = new DataView(moov.buffer);
+      moovView.setUint32(0, moov.byteLength);
+      moov.set([0x6d, 0x6f, 0x6f, 0x76], 4); // 'moov'
+      moov.set(mvhd, 8);
+
+      // mdat with sample data
+      const mdatData = new Uint8Array(2048);
+      mdatData.fill(0xaa);
+      const mdat = new Uint8Array(8 + mdatData.byteLength);
+      const mdatView = new DataView(mdat.buffer);
+      mdatView.setUint32(0, mdat.byteLength);
+      mdat.set([0x6d, 0x64, 0x61, 0x74], 4);
+      mdat.set(mdatData, 8);
+
+      const mp4Buf = new Uint8Array(ftyp.byteLength + moov.byteLength + mdat.byteLength);
+      mp4Buf.set(ftyp, 0);
+      mp4Buf.set(moov, ftyp.byteLength);
+      mp4Buf.set(mdat, ftyp.byteLength + moov.byteLength);
+
+      const track = demuxMp4(mp4Buf.buffer);
+      expect(track).toBeDefined();
+      expect(track?.timescale).toBe(90000);
+      expect(track?.samples.length).toBeGreaterThan(0);
+      expect(track?.samples[0].timestampMicros).toBe(0);
+    });
+
+    it('demuxes WAV container and extracts audio PCM samples', () => {
+      // 44-byte WAV header + 4096 bytes PCM data
+      const sampleRate = 44100;
+      const channels = 2;
+      const pcmLen = 4096;
+      const totalLen = 44 + pcmLen;
+      const wavBuf = new ArrayBuffer(totalLen);
+      const view = new DataView(wavBuf);
+
+      // 'RIFF'
+      view.setUint32(0, 0x52494646, false);
+      view.setUint32(4, totalLen - 8, true);
+      // 'WAVE'
+      view.setUint32(8, 0x57415645, false);
+      // 'fmt '
+      view.setUint32(12, 0x666d7420, false);
+      view.setUint32(16, 16, true); // chunk size
+      view.setUint16(20, 1, true); // PCM format
+      view.setUint16(22, channels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * channels * 2, true);
+      view.setUint16(32, channels * 2, true);
+      view.setUint16(34, 16, true); // 16-bit
+      // 'data'
+      view.setUint32(36, 0x64617461, false);
+      view.setUint32(40, pcmLen, true);
+
+      const track = demuxWav(wavBuf);
+      expect(track).toBeDefined();
+      expect(track?.type).toBe('audio');
+      expect(track?.sampleRate).toBe(44100);
+      expect(track?.channels).toBe(2);
+      expect(track?.samples.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('9. WebCodecs Hardware Audio & Video Isolation Invariant', () => {
+    it('uses AudioEncoder for audio conversion and NEVER instantiates VideoEncoder with audio codec', async () => {
+      let videoEncoderConstructed = false;
+      let audioEncoderConstructed = false;
+      let audioCodecConfigured = '';
+
+      class MockAudioData {
+        public close = vi.fn();
+        constructor(public init: any) {}
+      }
+
+      class MockAudioEncoder {
+        public encodeQueueSize = 0;
+        public configure = vi.fn((config: any) => {
+          audioCodecConfigured = config.codec;
+        });
+        public encode = vi.fn((data: any) => {
+          data.close();
+        });
+        public flush = vi.fn(async () => {});
+        public close = vi.fn();
+        constructor(private init: any) {
+          audioEncoderConstructed = true;
+        }
+      }
+
+      class MockVideoEncoderFailOnAudio {
+        constructor() {
+          videoEncoderConstructed = true;
+        }
+      }
+
+      const originalAudioEncoder = (globalThis as any).AudioEncoder;
+      const originalAudioData = (globalThis as any).AudioData;
+      const originalVideoEncoder = (globalThis as any).VideoEncoder;
+
+      (globalThis as any).AudioEncoder = MockAudioEncoder;
+      (globalThis as any).AudioData = MockAudioData;
+      (globalThis as any).VideoEncoder = MockVideoEncoderFailOnAudio;
+
+      try {
+        const dummyAudio = new ArrayBuffer(500);
+        const result = await processWebCodecsConversion({
+          jobId: 'test-hardware-audio',
+          sourceFormat: 'wav',
+          targetFormat: 'aac',
+          fileBuffer: dummyAudio,
+          options: { audioSampleRate: 44100, audioChannels: 2 },
+        });
+
+        expect(result.mimeType).toBe('audio/mp4');
+        expect(audioEncoderConstructed).toBe(true);
+        expect(videoEncoderConstructed).toBe(false); // VideoEncoder must NEVER be called for audio!
+        expect(audioCodecConfigured).toBe('mp4a.40.2');
+      } finally {
+        (globalThis as any).AudioEncoder = originalAudioEncoder;
+        (globalThis as any).AudioData = originalAudioData;
+        (globalThis as any).VideoEncoder = originalVideoEncoder;
+      }
+    });
+  });
 });
+
