@@ -22,6 +22,7 @@ export interface EdgeCapabilities {
   hasWebCodecsAudio: boolean;
   hasOpfsSyncAccess: boolean;
   hasWasmSimd: boolean;
+  hasCanvas: boolean;
   isCrossOriginIsolated: boolean;
   hardwareConcurrency: number;
   supportedVideoEncoders: string[];
@@ -127,6 +128,7 @@ export async function checkWebCodecsSupport(): Promise<{
 export async function probeEdgeCapabilities(): Promise<EdgeCapabilities> {
   const hasWasmSimd = checkWasmSimdSupport();
   const hasOpfsSyncAccess = checkOpfsSupport();
+  const hasCanvas = isCanvasSupported();
   const isCrossOriginIsolated =
     typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : false;
   const hardwareConcurrency =
@@ -139,6 +141,7 @@ export async function probeEdgeCapabilities(): Promise<EdgeCapabilities> {
     hasWebCodecsAudio: webcodecs.audio,
     hasOpfsSyncAccess,
     hasWasmSimd,
+    hasCanvas,
     isCrossOriginIsolated,
     hardwareConcurrency,
     supportedVideoEncoders: webcodecs.supportedVideoEncoders,
@@ -218,7 +221,8 @@ export function resolveConversionTier(
     };
   }
 
-  if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
+  const canvasAvailable = capabilities?.hasCanvas ?? isCanvasSupported();
+  if (isPureCanvasConvertible(src, tgt) && canvasAvailable) {
     return {
       tier: 'L0',
       tierName: 'Edge L0 (Instant)',

@@ -66,6 +66,8 @@ export function parseWavPcm(bytes: Uint8Array): {
 
   let sampleRate = 44100;
   let channels = 2;
+  let bitsPerSample = 16;
+  let audioFormat = 1;
 
   if (isRiff) {
     let offset = 12;
@@ -79,22 +81,62 @@ export function parseWavPcm(bytes: Uint8Array): {
       const chunkSize = view.getUint32(offset + 4, true);
 
       if (chunkId === 'fmt ' && offset + 24 <= bytes.length) {
+        audioFormat = view.getUint16(offset + 8, true);
         channels = view.getUint16(offset + 10, true) || 2;
         sampleRate = view.getUint32(offset + 12, true) || 44100;
+        bitsPerSample = view.getUint16(offset + 22, true) || 16;
       }
 
       if (chunkId === 'data') {
         const dataOffset = offset + 8;
         const availableBytes = Math.max(0, Math.min(chunkSize, bytes.length - dataOffset));
-        const sampleCount = Math.floor(availableBytes / 2);
-        const samples = new Int16Array(sampleCount);
-        for (let i = 0; i < sampleCount; i++) {
-          samples[i] = view.getInt16(dataOffset + i * 2, true);
+
+        if (bitsPerSample === 8) {
+          const sampleCount = availableBytes;
+          const samples = new Int16Array(sampleCount);
+          for (let i = 0; i < sampleCount; i++) {
+            // Unsigned 8-bit PCM (0..255) -> Signed 16-bit (-32768..32767)
+            samples[i] = (bytes[dataOffset + i] - 128) << 8;
+          }
+          return { samples, sampleRate, channels };
+        } else if (bitsPerSample === 24) {
+          const sampleCount = Math.floor(availableBytes / 3);
+          const samples = new Int16Array(sampleCount);
+          for (let i = 0; i < sampleCount; i++) {
+            const b0 = bytes[dataOffset + i * 3];
+            const b1 = bytes[dataOffset + i * 3 + 1];
+            const b2 = bytes[dataOffset + i * 3 + 2];
+            let val = (b2 << 16) | (b1 << 8) | b0;
+            if (val & 0x800000) val |= 0xff000000;
+            samples[i] = val >> 8;
+          }
+          return { samples, sampleRate, channels };
+        } else if (bitsPerSample === 32 && audioFormat === 3) {
+          // 32-bit IEEE float
+          const sampleCount = Math.floor(availableBytes / 4);
+          const samples = new Int16Array(sampleCount);
+          for (let i = 0; i < sampleCount; i++) {
+            const f = view.getFloat32(dataOffset + i * 4, true);
+            samples[i] = Math.max(-32768, Math.min(32767, Math.round(f * 32767)));
+          }
+          return { samples, sampleRate, channels };
+        } else {
+          // Standard 16-bit PCM
+          const sampleCount = Math.floor(availableBytes / 2);
+          const samples = new Int16Array(sampleCount);
+          for (let i = 0; i < sampleCount; i++) {
+            samples[i] = view.getInt16(dataOffset + i * 2, true);
+          }
+          return { samples, sampleRate, channels };
         }
-        return { samples, sampleRate, channels };
       }
 
-      offset += 8 + chunkSize;
+      // Word alignment: RIFF chunks must be padded to an even byte boundary
+      const paddedSize = (chunkSize + 1) & ~1;
+      if (paddedSize <= 0 || offset + 8 + paddedSize <= offset) {
+        break;
+      }
+      offset += 8 + paddedSize;
     }
   }
 
@@ -194,12 +236,35 @@ export function encodePureMp3(
   }
 
   const bitrateKbps = parseInt(bitrateStr, 10) || 192;
-  const bitrateBps = bitrateKbps * 1000;
+
+  // MPEG-1 Layer III Bitrate Table (kbps)
+  const MPEG1_L3_BITRATES = [
+    0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+  ];
+
+  let bitrateIdx = 11; // 192 kbps default
+  if (bitrateKbps <= 32) bitrateIdx = 1;
+  else if (bitrateKbps <= 40) bitrateIdx = 2;
+  else if (bitrateKbps <= 48) bitrateIdx = 3;
+  else if (bitrateKbps <= 56) bitrateIdx = 4;
+  else if (bitrateKbps <= 64) bitrateIdx = 5;
+  else if (bitrateKbps <= 80) bitrateIdx = 6;
+  else if (bitrateKbps <= 96) bitrateIdx = 7;
+  else if (bitrateKbps <= 112) bitrateIdx = 8;
+  else if (bitrateKbps <= 128) bitrateIdx = 9;
+  else if (bitrateKbps <= 160) bitrateIdx = 10;
+  else if (bitrateKbps <= 192) bitrateIdx = 11;
+  else if (bitrateKbps <= 224) bitrateIdx = 12;
+  else if (bitrateKbps <= 256) bitrateIdx = 13;
+  else bitrateIdx = 14;
+
+  const actualBitrateKbps = MPEG1_L3_BITRATES[bitrateIdx];
+  const bitrateBps = actualBitrateKbps * 1000;
   const frameLength = Math.floor((144 * bitrateBps) / (sampleRate || 44100));
 
   // 1. Build ID3v2.3 Tag Header
   const titleBytes = new TextEncoder().encode(title);
-  const framePayloadSize = 1 + titleBytes.length; // encoding byte (0x00) + text
+  const framePayloadSize = 1 + titleBytes.length; // encoding byte (0x03 = UTF-8) + text
   const tagPayloadSize = 10 + framePayloadSize; // TIT2 header (10) + framePayloadSize
   const id3HeaderSize = 10;
   const totalId3Size = id3HeaderSize + tagPayloadSize;
@@ -221,21 +286,12 @@ export function encodePureMp3(
   writeAscii(id3View, 10, 'TIT2');
   id3View.setUint32(14, framePayloadSize, false); // Big endian frame size
   id3View.setUint16(18, 0, false); // flags
-  id3View.setUint8(20, 0); // ISO-8859-1 encoding flag
+  id3View.setUint8(20, 3); // UTF-8 encoding flag
   id3.set(titleBytes, 21);
 
   // 2. Prepare MPEG-1 Layer III Frames
   const samplesPerFrame = 1152;
   const totalFrames = Math.max(4, Math.floor(samples.length / (samplesPerFrame * channels)));
-
-  let bitrateIdx = 11; // 192k default
-  if (bitrateKbps <= 64) bitrateIdx = 5;
-  else if (bitrateKbps <= 96) bitrateIdx = 7;
-  else if (bitrateKbps <= 128) bitrateIdx = 9;
-  else if (bitrateKbps <= 160) bitrateIdx = 10;
-  else if (bitrateKbps <= 192) bitrateIdx = 11;
-  else if (bitrateKbps <= 256) bitrateIdx = 13;
-  else bitrateIdx = 14;
 
   const srIdx = sampleRate === 48000 ? 1 : sampleRate === 32000 ? 2 : 0;
   const channelMode = channels === 1 ? 3 : 0; // 0 = Stereo, 3 = Mono
