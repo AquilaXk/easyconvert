@@ -1,34 +1,15 @@
 import sharp from 'sharp';
 import { ConversionOptions } from '../types';
-import { createLosslessSandwichPdfFromImage } from './ocr-pdf-combiner';
+import {
+  createLosslessSandwichPdfFromImage,
+  parseTesseractBlocks,
+  OcrBBox,
+  OcrWord,
+  OcrLineBlock,
+  OcrResult,
+} from './ocr-pdf-combiner';
 
-export interface OcrBBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface OcrWord {
-  text: string;
-  bbox: OcrBBox;
-}
-
-export interface OcrLineBlock {
-  text: string;
-  bbox: OcrBBox;
-  words: OcrWord[];
-}
-
-export interface OcrResult {
-  text: string;
-  confidence: number;
-  wordCount: number;
-  lines: string[];
-  lineBlocks?: OcrLineBlock[];
-  imageWidth?: number;
-  imageHeight?: number;
-}
+export type { OcrBBox, OcrWord, OcrLineBlock, OcrResult };
 
 /**
  * Optical Character Recognition (OCR) Engine
@@ -60,50 +41,7 @@ export async function performOcr(
 
     if (ret && ret.data && ret.data.text && ret.data.text.trim()) {
       const fullText = ret.data.text.trim();
-      const recognizedLines: string[] = [];
-      const lineBlocks: OcrLineBlock[] = [];
-
-      if (ret.data.blocks && ret.data.blocks.length > 0) {
-        for (const block of ret.data.blocks) {
-          if (!block.paragraphs) continue;
-          for (const para of block.paragraphs) {
-            if (!para.lines) continue;
-            for (const line of para.lines) {
-              const text = (line.text || '').trim();
-              if (!text) continue;
-              recognizedLines.push(text);
-
-              const wordsInLine: OcrWord[] = [];
-              if (line.words) {
-                for (const w of line.words) {
-                  const wText = (w.text || '').trim();
-                  if (!wText) continue;
-                  wordsInLine.push({
-                    text: wText,
-                    bbox: {
-                      x: w.bbox.x0,
-                      y: w.bbox.y0,
-                      width: Math.max(1, w.bbox.x1 - w.bbox.x0),
-                      height: Math.max(1, w.bbox.y1 - w.bbox.y0),
-                    },
-                  });
-                }
-              }
-
-              lineBlocks.push({
-                text,
-                bbox: {
-                  x: line.bbox.x0,
-                  y: line.bbox.y0,
-                  width: Math.max(1, line.bbox.x1 - line.bbox.x0),
-                  height: Math.max(1, line.bbox.y1 - line.bbox.y0),
-                },
-                words: wordsInLine,
-              });
-            }
-          }
-        }
-      }
+      const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks);
 
       const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
       const words = fullText.split(/\s+/).filter(Boolean);
