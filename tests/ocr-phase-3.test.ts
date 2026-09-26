@@ -72,18 +72,15 @@ describe('Phase 3: Lossless Sandwich PDF Injection & Metadata Preservation', () 
     let has3Tr = false;
     let hasTm = false;
 
-    while ((match = streamRegex.exec(binary)) !== null) {
-      let inflated = '';
-      try {
-        inflated = zlib.inflateSync(Buffer.from(match[1], 'binary')).toString('latin1');
-      } catch {
-        try {
-          inflated = zlib.inflateRawSync(Buffer.from(match[1], 'binary')).toString('latin1');
-        } catch {
-          inflated = match[1];
-        }
-      }
+    const decompressStream = (raw: string): string => {
+      const buf = Buffer.from(raw, 'binary');
+      try { return zlib.inflateSync(buf).toString('latin1'); } catch {}
+      try { return zlib.inflateRawSync(buf).toString('latin1'); } catch {}
+      return raw;
+    };
 
+    while ((match = streamRegex.exec(binary)) !== null) {
+      const inflated = decompressStream(match[1]);
       if (inflated.includes('3 Tr')) has3Tr = true;
       if (inflated.includes('Tm')) hasTm = true;
     }

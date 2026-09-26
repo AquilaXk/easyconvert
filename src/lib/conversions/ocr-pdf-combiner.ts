@@ -43,6 +43,47 @@ function safeEncodeText(font: PDFFont, text: string): PDFHexString | null {
   }
 }
 
+function renderTextItem(
+  page: PDFPage,
+  font: PDFFont,
+  text: string,
+  bbox: { x: number; y: number; width: number; height: number },
+  pageHeight: number,
+  scaleX: number,
+  scaleY: number
+): void {
+  const scaledX = bbox.x * scaleX;
+  const scaledY = pageHeight - (bbox.y + bbox.height) * scaleY;
+  const scaledWidth = bbox.width * scaleX;
+  const scaledHeight = bbox.height * scaleY;
+
+  const fontSize = Math.max(6, Math.min(72, scaledHeight * 0.85));
+  const encodedText = safeEncodeText(font, text);
+  if (!encodedText) return;
+
+  let tz = 100;
+  try {
+    const rawWidth = font.widthOfTextAtSize(text.trim(), fontSize);
+    if (rawWidth > 0 && scaledWidth > 0) {
+      tz = Math.max(50, Math.min(250, (scaledWidth / rawWidth) * 100));
+    }
+  } catch {
+    tz = 100;
+  }
+
+  page.pushOperators(
+    pushGraphicsState(),
+    setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
+    beginText(),
+    setFontAndSize(font.name, fontSize),
+    PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]),
+    setTextMatrix(1, 0, 0, 1, scaledX, Math.max(0, scaledY)),
+    showText(encodedText),
+    endText(),
+    popGraphicsState()
+  );
+}
+
 /**
  * Injects an invisible searchable text layer into a PDF page's /Contents stream.
  * Uses PDF rendering mode 3 (3 Tr = Neither fill nor stroke), horizontal scaling (Tz),
@@ -64,70 +105,12 @@ export function injectInvisibleTextLayer(
 
       if (block.words && block.words.length > 0) {
         for (const word of block.words) {
-          if (!word.text.trim()) continue;
-
-          const scaledX = word.bbox.x * scaleX;
-          const scaledY = pageHeight - (word.bbox.y + word.bbox.height) * scaleY;
-          const scaledWidth = word.bbox.width * scaleX;
-          const scaledHeight = word.bbox.height * scaleY;
-
-          const fontSize = Math.max(6, Math.min(72, scaledHeight * 0.85));
-          const encodedText = safeEncodeText(font, word.text);
-          if (!encodedText) continue;
-
-          let tz = 100;
-          try {
-            const rawWidth = font.widthOfTextAtSize(word.text.trim(), fontSize);
-            if (rawWidth > 0 && scaledWidth > 0) {
-              tz = Math.max(50, Math.min(250, (scaledWidth / rawWidth) * 100));
-            }
-          } catch {
-            tz = 100;
+          if (word.text.trim()) {
+            renderTextItem(page, font, word.text, word.bbox, pageHeight, scaleX, scaleY);
           }
-
-          page.pushOperators(
-            pushGraphicsState(),
-            setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
-            beginText(),
-            setFontAndSize(font.name, fontSize),
-            PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]),
-            setTextMatrix(1, 0, 0, 1, scaledX, Math.max(0, scaledY)),
-            showText(encodedText),
-            endText(),
-            popGraphicsState()
-          );
         }
       } else {
-        const scaledX = block.bbox.x * scaleX;
-        const scaledY = pageHeight - (block.bbox.y + block.bbox.height) * scaleY;
-        const scaledWidth = block.bbox.width * scaleX;
-        const scaledHeight = block.bbox.height * scaleY;
-
-        const fontSize = Math.max(6, Math.min(72, scaledHeight * 0.85));
-        const encodedText = safeEncodeText(font, block.text);
-        if (!encodedText) continue;
-
-        let tz = 100;
-        try {
-          const rawWidth = font.widthOfTextAtSize(block.text.trim(), fontSize);
-          if (rawWidth > 0 && scaledWidth > 0) {
-            tz = Math.max(50, Math.min(250, (scaledWidth / rawWidth) * 100));
-          }
-        } catch {
-          tz = 100;
-        }
-
-        page.pushOperators(
-          pushGraphicsState(),
-          setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
-          beginText(),
-          setFontAndSize(font.name, fontSize),
-          PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]),
-          setTextMatrix(1, 0, 0, 1, scaledX, Math.max(0, scaledY)),
-          showText(encodedText),
-          endText(),
-          popGraphicsState()
-        );
+        renderTextItem(page, font, block.text, block.bbox, pageHeight, scaleX, scaleY);
       }
     }
   } else if (ocrResult.lines && ocrResult.lines.length > 0) {
