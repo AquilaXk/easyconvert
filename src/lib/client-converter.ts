@@ -6,6 +6,7 @@ import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
+import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
@@ -143,21 +144,34 @@ export async function tryProcessClientEdge(
     };
   }
 
-  // 3. Level 2: Client-side Edge OCR (Zero-Data Retention)
-  if (resolution.tier === 'L2' && item.options.ocrEnabled) {
-    try {
-      const edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);
-      if (edgeOcrRes) {
-        return {
-          resultUrl: edgeOcrRes.resultUrl,
-          resultSize: edgeOcrRes.resultSize,
-          tier: 'L2',
-          tierName: 'Edge L2 (SIMD Wasm)',
-        };
+  // 3. Level 2: Client-side Edge OCR or SIMD Wasm Execution (Zero-Data Retention)
+  if (resolution.tier === 'L2') {
+    if (item.options.ocrEnabled) {
+      try {
+        const edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);
+        if (edgeOcrRes) {
+          return {
+            resultUrl: edgeOcrRes.resultUrl,
+            resultSize: edgeOcrRes.resultSize,
+            tier: 'L2',
+            tierName: 'Edge L2 (SIMD Wasm)',
+          };
+        }
+      } catch (err: unknown) {
+        // Propagate OCR error to respect fail-closed invariant
+        throw err;
       }
-    } catch (err: unknown) {
-      // Propagate OCR error to respect fail-closed invariant
-      throw err;
+    } else {
+      const arrayBuf = await item.file.arrayBuffer();
+      const taskRes = await executeWasmTask('rgba-grayscale', arrayBuf, {}, onProgress);
+      const blob = new Blob([taskRes.buffer], { type: 'image/png' });
+      const resultUrl = URL.createObjectURL(blob);
+      return {
+        resultUrl,
+        resultSize: blob.size,
+        tier: 'L2',
+        tierName: 'Edge L2 (SIMD Wasm)',
+      };
     }
   }
 
