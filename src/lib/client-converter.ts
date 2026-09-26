@@ -5,6 +5,7 @@ import { isPureDataConvertible, convertPureData } from './edge/pure/pure-data';
 import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
+import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
@@ -125,7 +126,24 @@ export async function tryProcessClientEdge(
     }
   }
 
-  // 2. Level 2: Client-side Edge OCR (Zero-Data Retention)
+  // 2. Level 1: WebCodecs Hardware Media Pipeline (GPU/VPU)
+  if (resolution.tier === 'L1') {
+    const webcodecsRes = await convertWithWebCodecs(
+      item.file,
+      src,
+      tgt,
+      item.options,
+      onProgress
+    );
+    return {
+      resultUrl: webcodecsRes.url,
+      resultSize: webcodecsRes.size,
+      tier: 'L1',
+      tierName: 'Edge L1 (Hardware VPU)',
+    };
+  }
+
+  // 3. Level 2: Client-side Edge OCR (Zero-Data Retention)
   if (resolution.tier === 'L2' && item.options.ocrEnabled) {
     try {
       const edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);

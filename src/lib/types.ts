@@ -103,6 +103,7 @@ export interface ConversionOptions {
   videoResolution?: 'original' | '4k' | '1080p' | '720p' | '480p' | '360p';
   videoFps?: 24 | 30 | 60;
   videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores';
+  videoBitrate?: number;
   aspectRatio?: 'original' | '16:9' | '4:3' | '1:1' | '9:16';
 }
 
