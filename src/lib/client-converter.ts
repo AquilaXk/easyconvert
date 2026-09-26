@@ -7,6 +7,7 @@ import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
+import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
@@ -173,6 +174,23 @@ export async function tryProcessClientEdge(
         tierName: 'Edge L2 (SIMD Wasm)',
       };
     }
+  }
+
+  // 4. Level 3: OPFS Large File VFS Streaming Pipeline (100MB+ ~ 2GB)
+  if (resolution.tier === 'L3') {
+    const opfsRes = await streamConvertWithOpfs(
+      item.file,
+      src,
+      tgt,
+      item.options,
+      onProgress
+    );
+    return {
+      resultUrl: opfsRes.url,
+      resultSize: opfsRes.size,
+      tier: 'L3',
+      tierName: 'Edge L3 (OPFS Stream)',
+    };
   }
 
   return null;
