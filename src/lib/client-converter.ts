@@ -218,7 +218,15 @@ export async function executeItemConversion(
     return;
   }
 
-  // 2. Server-side conversion pipeline
+  // 2. Fail-closed check: if user strictly mandated client-only execution, block cloud upload
+  if (item.options.clientEdgeMode === true) {
+    callbacks.onError(
+      `Conversion from ${item.sourceFormat.toUpperCase()} to ${item.targetFormat.toUpperCase()} requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.`
+    );
+    return;
+  }
+
+  // 3. Server-side conversion pipeline with Zero-Data Retention guarantee
   try {
     const formData = new FormData();
     formData.append('file', item.file);
@@ -231,6 +239,9 @@ export async function executeItemConversion(
 
     const res = await fetch('/api/convert', {
       method: 'POST',
+      headers: {
+        'X-Zero-Retention': 'true',
+      },
       body: formData,
     });
 
@@ -243,7 +254,7 @@ export async function executeItemConversion(
 
     const blob = await res.blob();
     const resultUrl = URL.createObjectURL(blob);
-    callbacks.onSuccess(resultUrl, blob.size, false);
+    callbacks.onSuccess(resultUrl, blob.size, false, 'Cloud (Zero-Retention)');
   } catch (err: any) {
     callbacks.onError(err.message || 'Conversion failed. Please try another format.');
   }
