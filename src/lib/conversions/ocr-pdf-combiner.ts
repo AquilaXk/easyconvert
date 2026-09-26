@@ -18,7 +18,86 @@ import {
   PDFHexString,
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
-import { OcrResult } from './ocr';
+
+export interface OcrBBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OcrWord {
+  text: string;
+  bbox: OcrBBox;
+}
+
+export interface OcrLineBlock {
+  text: string;
+  bbox: OcrBBox;
+  words: OcrWord[];
+}
+
+export interface OcrResult {
+  text: string;
+  confidence: number;
+  wordCount: number;
+  lines: string[];
+  lineBlocks?: OcrLineBlock[];
+  imageWidth?: number;
+  imageHeight?: number;
+}
+
+/**
+ * Parses raw Tesseract recognition block hierarchy into clean lines and blocks.
+ * Shared between server and client edge pipelines.
+ */
+export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines: string[]; lineBlocks: OcrLineBlock[] } {
+  const lines: string[] = [];
+  const lineBlocks: OcrLineBlock[] = [];
+  if (!blocks || blocks.length === 0) return { lines, lineBlocks };
+
+  for (const block of blocks) {
+    if (!block.paragraphs) continue;
+    for (const para of block.paragraphs) {
+      if (!para.lines) continue;
+      for (const line of para.lines) {
+        const text = (line.text || '').trim();
+        if (!text) continue;
+        lines.push(text);
+
+        const words: OcrWord[] = [];
+        if (line.words) {
+          for (const w of line.words) {
+            const wText = (w.text || '').trim();
+            if (!wText) continue;
+            words.push({
+              text: wText,
+              bbox: {
+                x: w.bbox.x0,
+                y: w.bbox.y0,
+                width: Math.max(1, w.bbox.x1 - w.bbox.x0),
+                height: Math.max(1, w.bbox.y1 - w.bbox.y0),
+              },
+            });
+          }
+        }
+
+        lineBlocks.push({
+          text,
+          bbox: {
+            x: line.bbox.x0,
+            y: line.bbox.y0,
+            width: Math.max(1, line.bbox.x1 - line.bbox.x0),
+            height: Math.max(1, line.bbox.y1 - line.bbox.y0),
+          },
+          words,
+        });
+      }
+    }
+  }
+
+  return { lines, lineBlocks };
+}
 
 /**
  * Encodes text safely for WinAnsi standard font embedding.

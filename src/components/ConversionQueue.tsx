@@ -202,6 +202,12 @@ export default function ConversionQueue({
                     </div>
                   )}
 
+                  {item.status === 'completed' && item.edgeProcessed && (
+                    <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                      <span>Edge (0B uploaded)</span>
+                    </span>
+                  )}
+
                   {item.status === 'completed' && item.resultUrl && (
                     <a
                       href={item.resultUrl}

@@ -86,6 +86,7 @@ export interface ConversionOptions {
   preserveTables?: boolean;
   ocrEnabled?: boolean;
   ocrLanguage?: 'auto' | 'en' | 'ko' | 'de' | 'fr' | 'es' | 'ja' | 'zh';
+  clientEdgeMode?: boolean;
   margin?: 'normal' | 'narrow' | 'wide';
   // Data & Spreadsheet options
   delimiter?: string;
@@ -125,6 +126,7 @@ export interface ConversionQueueItem {
   resultSize?: number;
   error?: string;
   options: ConversionOptions;
+  edgeProcessed?: boolean;
 }
 
 export interface ConversionResult {

@@ -8,6 +8,7 @@ import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
+import { createItemConverter } from '@/lib/client-converter';
 import {
   FileText,
   ShieldCheck,
@@ -240,6 +241,8 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
           orientation: 'portrait',
           delimiter: ',',
           compressionLevel: 6,
+          ocrEnabled: Boolean(parsed.pageTitle?.includes('OCR') || (parsed.sourceFormat === 'pdf' && parsed.targetFormat === 'pdf')),
+          clientEdgeMode: true,
         },
       };
     });
@@ -284,65 +287,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
     setQueue((prev) => prev.map((item) => (item.id === id ? { ...item, options } : item)));
   };
 
-  const convertSingleItem = async (item: ConversionQueueItem): Promise<void> => {
-    if (item.file.size > MAX_FILE_SIZE) {
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id ? { ...i, status: 'error', error: 'File size exceeds 100 MB limit.' } : i
-        )
-      );
-      return;
-    }
-
-    setQueue((prev) =>
-      prev.map((i) =>
-        i.id === item.id ? { ...i, status: 'converting', progress: 30, error: undefined } : i
-      )
-    );
-
-    try {
-      const formData = new FormData();
-      formData.append('file', item.file);
-      formData.append('targetFormat', item.targetFormat);
-      formData.append('options', JSON.stringify(item.options));
-
-      const timer = setTimeout(() => {
-        setQueue((prev) =>
-          prev.map((i) =>
-            i.id === item.id && i.status === 'converting' ? { ...i, progress: 75 } : i
-          )
-        );
-      }, 350);
-
-      const res = await fetch('/api/convert', {
-        method: 'POST',
-        body: formData,
-      });
-
-      clearTimeout(timer);
-
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({ error: 'Conversion failed' }));
-        throw new Error(errJson.error || `Server error (${res.status})`);
-      }
-
-      const blob = await res.blob();
-      const resultUrl = URL.createObjectURL(blob);
-
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id
-            ? { ...i, status: 'completed', progress: 100, resultUrl, resultSize: blob.size }
-            : i
-        )
-      );
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Conversion failed';
-      setQueue((prev) =>
-        prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: msg, progress: 0 } : i))
-      );
-    }
-  };
+  const convertSingleItem = createItemConverter(setQueue, MAX_FILE_SIZE);
 
   const handleConvertAll = async () => {
     setIsConverting(true);

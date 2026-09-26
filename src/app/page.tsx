@@ -9,6 +9,7 @@ import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
+import { createItemConverter } from '@/lib/client-converter';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
@@ -111,73 +112,7 @@ export default function Home() {
   };
 
   // Convert a single item
-  const convertSingleItem = async (item: ConversionQueueItem): Promise<void> => {
-    if (item.file.size > MAX_FILE_SIZE) {
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id
-            ? { ...i, status: 'error', error: 'File size exceeds 100 MB limit.' }
-            : i
-        )
-      );
-      return;
-    }
-
-    setQueue((prev) =>
-      prev.map((i) =>
-        i.id === item.id ? { ...i, status: 'converting', progress: 30, error: undefined } : i
-      )
-    );
-
-    try {
-      const formData = new FormData();
-      formData.append('file', item.file);
-      formData.append('targetFormat', item.targetFormat);
-      formData.append('options', JSON.stringify(item.options));
-
-      const progressTimer = setTimeout(() => {
-        setQueue((prev) =>
-          prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress: 75 } : i))
-        );
-      }, 350);
-
-      const res = await fetch('/api/convert', {
-        method: 'POST',
-        body: formData,
-      });
-
-      clearTimeout(progressTimer);
-
-      if (!res.ok) {
-        const errorJson = await res.json().catch(() => ({ error: 'Conversion failed' }));
-        throw new Error(errorJson.error || `Server error (${res.status})`);
-      }
-
-      const blob = await res.blob();
-      const resultUrl = URL.createObjectURL(blob);
-
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id
-            ? {
-                ...i,
-                status: 'completed',
-                progress: 100,
-                resultUrl,
-                resultSize: blob.size,
-              }
-            : i
-        )
-      );
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Conversion failed';
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id ? { ...i, status: 'error', error: errorMessage, progress: 0 } : i
-        )
-      );
-    }
-  };
+  const convertSingleItem = createItemConverter(setQueue, MAX_FILE_SIZE);
 
   // Convert all ready/error items
   const handleConvertAll = async () => {
