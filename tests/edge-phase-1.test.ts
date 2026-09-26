@@ -143,21 +143,23 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
   // 3. Pure CAD Engine (STEP/IGES to STL/OBJ)
   // ==========================================================================
   describe('Pure CAD Engine (pure-cad.ts)', () => {
-    const SAMPLE_STEP = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('Sample STEP model'),'2;1');
-FILE_NAME('test.stp','2026-09-27',('Author'),('Org'),'','','');
-FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
-ENDSEC;
-DATA;
-#10 = CARTESIAN_POINT('P1', (0.0, 0.0, 0.0));
-#20 = CARTESIAN_POINT('P2', (10.0, 0.0, 0.0));
-#30 = CARTESIAN_POINT('P3', (0.0, 10.0, 0.0));
-#40 = CARTESIAN_POINT('P4', (10.0, 10.0, 0.0));
-#50 = CARTESIAN_POINT('P5', (5.0, 5.0, 10.0));
-#60 = CARTESIAN_POINT('P6', (0.0, 0.0, 0.0));
-ENDSEC;
-END-ISO-10303-21;`;
+    const SAMPLE_STEP = [
+      'ISO-10303-21;',
+      'HEADER;',
+      "FILE_DESCRIPTION(('EasyConvert Edge Fast-Path Mesh'), '2;1');",
+      "FILE_NAME('isomorphic_mesh.step', '2026-09-27', ('EdgeEngine'), ('EasyConvert'), '', '', '');",
+      "FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));",
+      'ENDSEC;',
+      'DATA;',
+      "#101 = CARTESIAN_POINT('Node_Origin', (1.25, 2.50, 3.75));",
+      "#202 = CARTESIAN_POINT('Node_X_Axis', (12.50, 2.50, 3.75));",
+      "#303 = CARTESIAN_POINT('Node_Y_Axis', (1.25, 14.50, 3.75));",
+      "#404 = CARTESIAN_POINT('Node_Diag', (12.50, 14.50, 3.75));",
+      "#505 = CARTESIAN_POINT('Node_Apex', (6.87, 8.50, 15.20));",
+      "#606 = CARTESIAN_POINT('Node_Base', (1.25, 2.50, 3.75));",
+      'ENDSEC;',
+      'END-ISO-10303-21;',
+    ].join('\n');
 
     it('correctly reports CAD format capability', () => {
       expect(isPureCadConvertible('step', 'stl')).toBe(true);
@@ -187,8 +189,8 @@ END-ISO-10303-21;`;
       expect(res.mimeType).toBe('model/obj');
       expect(res.extension).toBe('obj');
       expect(res.text).toContain('o test_model');
-      expect(res.text).toContain('v 0 0 0');
-      expect(res.text).toContain('v 10 0 0');
+      expect(res.text).toContain('v 1.25 2.5 3.75');
+      expect(res.text).toContain('v 12.5 2.5 3.75');
       expect(res.text).toContain('f ');
     });
 
