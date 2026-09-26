@@ -302,39 +302,29 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
       )
     );
 
-    // Check for client-side Edge OCR mode (100% in-browser memory execution)
-    if (
-      item.options.clientEdgeMode !== false &&
-      item.options.ocrEnabled &&
-      typeof window !== 'undefined'
-    ) {
-      try {
-        const { runClientEdgeOcr } = await import('@/lib/edge-ocr');
-        const edgeResult = await runClientEdgeOcr(item.file, item.options, (progress) => {
-          setQueue((prev) =>
-            prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress } : i))
-          );
-        });
+    const { tryProcessClientEdgeOcr } = await import('@/lib/edge-ocr');
+    const edgeRes = await tryProcessClientEdgeOcr(item, (progress) => {
+      setQueue((prev) =>
+        prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress } : i))
+      );
+    });
 
-        const resultUrl = URL.createObjectURL(edgeResult.blob);
-        setQueue((prev) =>
-          prev.map((i) =>
-            i.id === item.id
-              ? {
-                  ...i,
-                  status: 'completed',
-                  progress: 100,
-                  resultUrl,
-                  resultSize: edgeResult.blob.size,
-                  edgeProcessed: true,
-                }
-              : i
-          )
-        );
-        return;
-      } catch {
-        // Fall through gracefully to server conversion endpoint if client edge throws
-      }
+    if (edgeRes) {
+      setQueue((prev) =>
+        prev.map((i) =>
+          i.id === item.id
+            ? {
+                ...i,
+                status: 'completed',
+                progress: 100,
+                resultUrl: edgeRes.resultUrl,
+                resultSize: edgeRes.resultSize,
+                edgeProcessed: true,
+              }
+            : i
+        )
+      );
+      return;
     }
 
     try {

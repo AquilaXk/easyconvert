@@ -2,7 +2,7 @@ import {
   PDFDocument,
   StandardFonts,
 } from 'pdf-lib';
-import { ConversionOptions } from '../types';
+import { ConversionOptions, ConversionQueueItem } from '../types';
 import { injectInvisibleTextLayer, parseTesseractBlocks, OcrResult } from '../conversions/ocr-pdf-combiner';
 
 export interface EdgeOcrResult {
@@ -204,4 +204,32 @@ export async function runClientEdgeOcr(
     confidence: avgConfidence,
     filename: `${fileName}.pdf`,
   };
+}
+
+/**
+ * Convenience helper to execute client-side Edge OCR for a queue item if enabled.
+ * Returns result details on success, or null if edge mode is disabled or fails.
+ */
+export async function tryProcessClientEdgeOcr(
+  item: ConversionQueueItem,
+  onProgress?: (percent: number) => void
+): Promise<{ resultUrl: string; resultSize: number } | null> {
+  if (
+    item.options.clientEdgeMode === false ||
+    !item.options.ocrEnabled ||
+    typeof window === 'undefined'
+  ) {
+    return null;
+  }
+
+  try {
+    const edgeResult = await runClientEdgeOcr(item.file, item.options, onProgress);
+    const resultUrl = URL.createObjectURL(edgeResult.blob);
+    return {
+      resultUrl,
+      resultSize: edgeResult.blob.size,
+    };
+  } catch {
+    return null;
+  }
 }
