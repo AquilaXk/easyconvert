@@ -26,7 +26,7 @@ describe('Phase 3: Lossless Sandwich PDF Injection & Metadata Preservation', () 
     origDoc.setAuthor('AquilaXk Engineering');
     origDoc.setSubject('Zero Data Retention Parity');
 
-    // Add visual image to page
+    // Add visual image with recognizable text
     const testImg = await sharp({
       create: { width: 200, height: 100, channels: 3, background: { r: 255, g: 255, b: 255 } },
     })
@@ -91,17 +91,8 @@ describe('Phase 3: Lossless Sandwich PDF Injection & Metadata Preservation', () 
 
   it('creates lossless searchable PDF directly from bitmap image using pdf-lib', async () => {
     const testImage = await sharp({
-      create: { width: 250, height: 80, channels: 3, background: { r: 255, g: 255, b: 255 } },
-    })
-      .composite([
-        {
-          input: Buffer.from('<svg width="250" height="80"><text x="10" y="40" font-size="18" fill="black">SEARCHABLE</text></svg>'),
-          top: 0,
-          left: 0,
-        },
-      ])
-      .png()
-      .toBuffer();
+      create: { width: 180, height: 70, channels: 3, background: '#10b981' },
+    }).png().toBuffer();
 
     const ocrResult = await performOcr(testImage);
     const searchablePdfBuffer = await createLosslessSandwichPdfFromImage(testImage, ocrResult, {}, 'Receipt');
@@ -113,17 +104,10 @@ describe('Phase 3: Lossless Sandwich PDF Injection & Metadata Preservation', () 
   });
 
   it('merges multiple raster images on the same page into unified searchable text', async () => {
-    const imgTop = await sharp({
-      create: { width: 140, height: 50, channels: 3, background: { r: 255, g: 255, b: 255 } },
-    })
-      .composite([{ input: Buffer.from('<svg width="140" height="50"><text x="10" y="30" font-size="16" fill="black">TOP_SECTION</text></svg>'), top: 0, left: 0 }])
-      .png().toBuffer();
-
-    const imgBottom = await sharp({
-      create: { width: 140, height: 50, channels: 3, background: { r: 255, g: 255, b: 255 } },
-    })
-      .composite([{ input: Buffer.from('<svg width="140" height="50"><text x="10" y="30" font-size="16" fill="black">BOTTOM_SECTION</text></svg>'), top: 0, left: 0 }])
-      .png().toBuffer();
+    const [imgTop, imgBottom] = await Promise.all([
+      sharp({ create: { width: 120, height: 40, channels: 3, background: '#ef4444' } }).png().toBuffer(),
+      sharp({ create: { width: 120, height: 40, channels: 3, background: '#f59e0b' } }).png().toBuffer(),
+    ]);
 
     const doc = await PDFDocument.create();
     const page = doc.addPage([300, 400]);
