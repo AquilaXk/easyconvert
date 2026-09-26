@@ -4,3 +4,6 @@ export * from './workers/webcodecs.worker';
 export * from './pipelines/webcodecs-pipeline';
 export * from './workers/wasm-engine.worker';
 export * from './pipelines/wasm-simd-pipeline';
+export * from './opfs/storage-gc';
+export * from './workers/opfs-vfs.worker';
+export * from './pipelines/opfs-streaming-pipeline';
