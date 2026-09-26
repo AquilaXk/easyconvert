@@ -1,32 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument } from 'pdf-lib';
 import { NextRequest } from 'next/server';
 import { POST } from '../src/app/api/convert/route';
 import { convertFile } from '../src/lib/conversions/index';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 
-async function createBlankPdfBuffer(): Promise<Buffer> {
-  const doc = await PDFDocument.create();
-  doc.addPage([300, 300]);
-  return Buffer.from(await doc.save());
-}
+// Self-contained standard PDF-1.4 blank page without dependencies
+const BLANK_PDF_STREAM = Buffer.from(
+  '%PDF-1.4\n' +
+  '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n' +
+  '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n' +
+  '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >> endobj\n' +
+  'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n' +
+  'trailer << /Size 4 /Root 1 0 R >>\nstartxref\n190\n%%EOF'
+);
 
 describe('Phase 1: Fail-Closed Enforcement & Schema Sync', () => {
   it('throws clear error instead of silently returning input buffer when OCR is requested on blank/unsupported PDF', async () => {
-    const blankBuffer = await createBlankPdfBuffer();
-
-    // Converting with ocrEnabled: true must FAIL-CLOSED
+    // Converting blank document with ocrEnabled: true must FAIL-CLOSED
     await expect(
-      convertFile(blankBuffer, 'pdf', 'pdf', { ocrEnabled: true }, 'sample.pdf')
+      convertFile(BLANK_PDF_STREAM, 'pdf', 'pdf', { ocrEnabled: true }, 'sample.pdf')
     ).rejects.toThrow(/PDF OCR failed/);
   });
 
   it('returns HTTP 400 in API route when PDF OCR fails or unsupported compression is encountered', async () => {
-    const blankBuffer = await createBlankPdfBuffer();
-
     const formData = new FormData();
-    formData.append('file', new File([blankBuffer], 'document.pdf', { type: 'application/pdf' }));
+    formData.append('file', new File([BLANK_PDF_STREAM], 'document.pdf', { type: 'application/pdf' }));
     formData.append('targetFormat', 'pdf');
     formData.append('options', JSON.stringify({ ocrEnabled: true }));
 
