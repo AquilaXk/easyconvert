@@ -1,6 +1,6 @@
 import sharp from 'sharp';
-import PDFDocument from 'pdfkit';
 import { ConversionOptions } from '../types';
+import { createLosslessSandwichPdfFromImage } from './ocr-pdf-combiner';
 
 export interface OcrBBox {
   x: number;
@@ -298,11 +298,10 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
 }
 
 /**
- * Generates an authentic Searchable PDF ("Sandwich PDF") using PDFKit.
- * Sits the visual scanned bitmap on the page background, and positions
- * an invisible OCR text overlay layer directly on top matching the exact
- * glyph and word coordinates, enabling native PDF text selection, copying,
- * and Ctrl+F searching.
+ * Generates an authentic Lossless Searchable PDF ("Sandwich PDF") using pdf-lib.
+ * Positions an invisible OCR text overlay layer directly on top matching exact
+ * word and line coordinates (3 Tr, Tz, Tm), enabling native text selection,
+ * copying, and Ctrl+F searching with 100% metadata preservation.
  */
 export async function generateSearchablePdf(
   scannedImageBuffer: Buffer,
@@ -310,83 +309,7 @@ export async function generateSearchablePdf(
   options: ConversionOptions = {},
   title = 'Searchable Document'
 ): Promise<Buffer> {
-  const meta = await sharp(scannedImageBuffer).metadata();
-  const imgWidth = meta.width || ocrResult.imageWidth || 595.28;
-  const imgHeight = meta.height || ocrResult.imageHeight || 841.89;
-
-  // Convert image to PNG buffer to guarantee PDFKit compatibility
-  const pngBuffer = await sharp(scannedImageBuffer).png().toBuffer();
-
-  return new Promise((resolve, reject) => {
-    const isLandscape = options.orientation === 'landscape' || (imgWidth > imgHeight && !options.orientation);
-    const doc = new PDFDocument({
-      size: [imgWidth, imgHeight],
-      margin: 0,
-      layout: isLandscape ? 'landscape' : 'portrait',
-      info: {
-        Title: title,
-        Creator: 'EasyConvert OCR Searchable PDF Engine',
-      },
-    });
-
-    const chunks: Buffer[] = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', (err) => reject(err));
-
-    // 1. Layer 1: Draw scanned visual image covering the full page
-    doc.image(pngBuffer, 0, 0, {
-      width: imgWidth,
-      height: imgHeight,
-    });
-
-    // 2. Layer 2: Invisible searchable text overlay with precise positioning
-    // Using PDF text rendering mode 3 (Neither fill nor stroke = invisible text)
-    // and opacity 0 so text is selectable/searchable but completely transparent
-    doc.addContent('3 Tr');
-    doc.fillOpacity(0);
-    doc.strokeOpacity(0);
-
-    const blocks = ocrResult.lineBlocks || [];
-    if (blocks.length > 0) {
-      for (const line of blocks) {
-        if (!line.text) continue;
-        const fontSize = Math.max(6, Math.min(72, line.bbox.height * 0.85));
-        doc.fontSize(fontSize);
-
-        if (line.words && line.words.length > 0) {
-          for (const word of line.words) {
-            if (!word.text.trim()) continue;
-            const wFontSize = Math.max(6, Math.min(72, word.bbox.height * 0.85));
-            doc.fontSize(wFontSize);
-            doc.text(word.text, word.bbox.x, word.bbox.y, {
-              lineBreak: false,
-              continued: false,
-            });
-          }
-        } else {
-          doc.text(line.text, line.bbox.x, line.bbox.y, {
-            lineBreak: false,
-            continued: false,
-          });
-        }
-      }
-    } else if (ocrResult.lines.length > 0) {
-      // Fallback: estimate line heights evenly
-      const lineCount = ocrResult.lines.length;
-      const lineHeight = Math.min(24, imgHeight / (lineCount + 2));
-      doc.fontSize(Math.max(8, lineHeight * 0.8));
-      for (let i = 0; i < lineCount; i++) {
-        const y = 30 + i * lineHeight;
-        doc.text(ocrResult.lines[i], 30, y, {
-          lineBreak: false,
-          continued: false,
-        });
-      }
-    }
-
-    doc.end();
-  });
+  return createLosslessSandwichPdfFromImage(scannedImageBuffer, ocrResult, options, title);
 }
 
 /**
