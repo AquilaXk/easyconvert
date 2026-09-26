@@ -2,59 +2,25 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
-import { convertOffice, extractTextFromRtf, generateOdtFromText } from './office';
+import {
+  convertOffice,
+  extractTextFromRtf,
+  generateOdtFromText,
+  extractTextFromOdt,
+  extractTextFromDoc,
+} from './office';
 import { performOcr, generateSearchablePdf, OcrResult } from './ocr';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
+import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { svgToDxf } from './vector-cad';
 
-export { extractTextFromPdf, extractEmbeddedImageFromPdf };
-
-/**
- * Extracts plain text from ODT OpenDocument Text zip archive
- */
-export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
-  try {
-    const zip = await JSZip.loadAsync(buffer);
-    const contentXml = zip.file('content.xml');
-    if (contentXml) {
-      const xml = await contentXml.async('text');
-      const paragraphs: string[] = [];
-      const pRegex = /<text:(?:p|h)[^>]*>([\s\S]*?)<\/text:(?:p|h)>/g;
-      let m: RegExpExecArray | null;
-      while ((m = pRegex.exec(xml)) !== null) {
-        const text = m[1].replace(/<[^>]+>/g, '').trim();
-        if (text) paragraphs.push(text);
-      }
-      return paragraphs.join('\n\n');
-    }
-  } catch {
-    // fallback
-  }
-  return buffer.toString('utf-8');
-}
-
-/**
- * Extracts readable text streams from binary legacy DOC (Word) files
- */
-export function extractTextFromDoc(buffer: Buffer): string {
-  const strings: string[] = [];
-  let curr = '';
-  for (let i = 0; i < buffer.length; i++) {
-    const byte = buffer[i];
-    if (byte >= 32 && byte <= 126) {
-      curr += String.fromCharCode(byte);
-    } else if (byte === 10 || byte === 13) {
-      if (curr.trim().length >= 4) strings.push(curr.trim());
-      curr = '';
-    } else {
-      if (curr.trim().length >= 5) strings.push(curr.trim());
-      curr = '';
-    }
-  }
-  if (curr.trim().length >= 4) strings.push(curr.trim());
-  return strings.join('\n\n') || 'Extracted document content.';
-}
+export {
+  extractTextFromPdf,
+  extractEmbeddedImageFromPdf,
+  extractTextFromOdt,
+  extractTextFromDoc,
+};
 
 /**
  * Strips LaTeX macro commands
@@ -92,6 +58,7 @@ export async function convertDocument(
     let extractedText = extractTextFromPdf(inputBuffer);
     let ocrInfo: { text?: string; confidence?: number } = {};
     let lastOcrResult: OcrResult | null = null;
+    const pageOcrResults = new Map<number, OcrResult>();
 
     // If scanned document or OCR is requested
     const isScanned = extractedText === 'No extractable text found in PDF document.';
@@ -116,6 +83,28 @@ export async function convertDocument(
           const ocr = await performOcr(img.buffer, options.ocrLanguage);
           if (ocr && ocr.text) {
             ocrTexts.push(ocr.text);
+            const existing = pageOcrResults.get(img.pageNumber);
+            if (!existing) {
+              pageOcrResults.set(img.pageNumber, ocr);
+            } else {
+              const mergedText = `${existing.text}\n\n${ocr.text}`;
+              const mergedLines = [...existing.lines, ...ocr.lines];
+              const mergedBlocks = [
+                ...(existing.lineBlocks || []),
+                ...(ocr.lineBlocks || []),
+              ];
+              const mergedConfidence = (existing.confidence + ocr.confidence) / 2;
+              const mergedWordCount = existing.wordCount + ocr.wordCount;
+              pageOcrResults.set(img.pageNumber, {
+                text: mergedText,
+                confidence: mergedConfidence,
+                wordCount: mergedWordCount,
+                lines: mergedLines,
+                lineBlocks: mergedBlocks,
+                imageWidth: Math.max(existing.imageWidth || 0, img.width),
+                imageHeight: (existing.imageHeight || 0) + img.height,
+              });
+            }
             lastOcrResult = ocr;
             totalConfidence += ocr.confidence;
             count++;
@@ -191,13 +180,12 @@ export async function convertDocument(
 
     if (tgt === 'pdf') {
       if (options.ocrEnabled || isScanned) {
-        if (!lastOcrResult) {
+        if (pageOcrResults.size === 0 && !lastOcrResult) {
           throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
         }
+
         try {
-          const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
-          const imgToUse = embeddedImg || inputBuffer;
-          const searchablePdf = await generateSearchablePdf(imgToUse, lastOcrResult, options, baseName);
+          const searchablePdf = await createLosslessSandwichPdfFromPdf(inputBuffer, pageOcrResults);
           return {
             buffer: searchablePdf,
             mimeType: 'application/pdf',
@@ -207,7 +195,21 @@ export async function convertDocument(
             ocrConfidence: ocrInfo.confidence,
           };
         } catch (pdfErr: any) {
-          throw new Error(`PDF OCR failed: Failed to synthesize searchable PDF: ${pdfErr?.message || 'Synthesis error'}`);
+          if (lastOcrResult) {
+            const fallbackImg = extractEmbeddedImageFromPdf(inputBuffer);
+            if (fallbackImg) {
+              const searchablePdf = await generateSearchablePdf(fallbackImg, lastOcrResult, options, baseName);
+              return {
+                buffer: searchablePdf,
+                mimeType: 'application/pdf',
+                filename: `${baseName}.pdf`,
+                size: searchablePdf.length,
+                ocrExtractedText: ocrInfo.text,
+                ocrConfidence: ocrInfo.confidence,
+              };
+            }
+          }
+          throw new Error(`PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`);
         }
       }
       return {

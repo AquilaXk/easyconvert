@@ -324,27 +324,11 @@ async function extractTextContentForOffice(
   }
 
   if (src === 'odt') {
-    try {
-      const zip = await JSZip.loadAsync(inputBuffer);
-      const contentXml = zip.file('content.xml');
-      if (contentXml) {
-        const xml = await contentXml.async('text');
-        const paragraphs: string[] = [];
-        const pRegex = /<text:(?:p|h)[^>]*>([\s\S]*?)<\/text:(?:p|h)>/g;
-        let m: RegExpExecArray | null;
-        while ((m = pRegex.exec(xml)) !== null) {
-          const text = m[1].replace(/<[^>]+>/g, '').trim();
-          if (text) paragraphs.push(text);
-        }
-        return paragraphs.join('\n\n');
-      }
-    } catch {
-      // fallback
-    }
+    return extractTextFromOdt(inputBuffer);
   }
 
   if (src === 'doc') {
-    return extractTextFromDocBytes(inputBuffer);
+    return extractTextFromDoc(inputBuffer);
   }
 
   if (src === 'tex') {
@@ -363,7 +347,28 @@ async function extractTextContentForOffice(
   return inputBuffer.toString('utf-8');
 }
 
-function extractTextFromDocBytes(buffer: Buffer): string {
+export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
+  try {
+    const zip = await JSZip.loadAsync(buffer);
+    const contentXml = zip.file('content.xml');
+    if (contentXml) {
+      const xml = await contentXml.async('text');
+      const paragraphs: string[] = [];
+      const pRegex = /<text:(?:p|h)[^>]*>([\s\S]*?)<\/text:(?:p|h)>/g;
+      let m: RegExpExecArray | null;
+      while ((m = pRegex.exec(xml)) !== null) {
+        const text = m[1].replace(/<[^>]+>/g, '').trim();
+        if (text) paragraphs.push(text);
+      }
+      return paragraphs.join('\n\n');
+    }
+  } catch {
+    // fallback
+  }
+  return buffer.toString('utf-8');
+}
+
+export function extractTextFromDoc(buffer: Buffer): string {
   const strings: string[] = [];
   let curr = '';
   for (let i = 0; i < buffer.length; i++) {
