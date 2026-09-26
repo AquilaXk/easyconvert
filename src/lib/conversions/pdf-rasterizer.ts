@@ -1,6 +1,19 @@
 import sharp from 'sharp';
 import { extractEmbeddedImageFromPdf } from './pdf-utils';
 
+// Polyfill Promise.withResolvers for Node.js < 22 / 20.13 environments required by pdfjs-dist
+if (typeof (Promise as any).withResolvers === 'undefined') {
+  (Promise as any).withResolvers = function <T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: any) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+}
+
 export interface ExtractedPdfImage {
   pageNumber: number;
   buffer: Buffer;
