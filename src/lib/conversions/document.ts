@@ -102,6 +102,8 @@ export async function convertDocument(
           extractedText = ocr.text;
           ocrInfo = { text: ocr.text, confidence: ocr.confidence };
           lastOcrResult = ocr;
+        } else if (options.ocrEnabled) {
+          throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
       } else if (isScanned) {
         const ocr = await performOcr(inputBuffer, options.ocrLanguage);
@@ -109,7 +111,11 @@ export async function convertDocument(
           extractedText = ocr.text;
           ocrInfo = { text: ocr.text, confidence: ocr.confidence };
           lastOcrResult = ocr;
+        } else if (options.ocrEnabled) {
+          throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
+      } else if (options.ocrEnabled) {
+        throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
       }
     }
 
@@ -155,10 +161,13 @@ export async function convertDocument(
     }
 
     if (tgt === 'pdf') {
-      if ((options.ocrEnabled || isScanned) && lastOcrResult) {
-        const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
-        const imgToUse = embeddedImg || inputBuffer;
+      if (options.ocrEnabled || isScanned) {
+        if (!lastOcrResult) {
+          throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
+        }
         try {
+          const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
+          const imgToUse = embeddedImg || inputBuffer;
           const searchablePdf = await generateSearchablePdf(imgToUse, lastOcrResult, options, baseName);
           return {
             buffer: searchablePdf,
@@ -168,8 +177,8 @@ export async function convertDocument(
             ocrExtractedText: ocrInfo.text,
             ocrConfidence: ocrInfo.confidence,
           };
-        } catch {
-          // fallback to input buffer
+        } catch (pdfErr: any) {
+          throw new Error(`PDF OCR failed: Failed to synthesize searchable PDF: ${pdfErr?.message || 'Synthesis error'}`);
         }
       }
       return {

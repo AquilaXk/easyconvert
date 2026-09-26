@@ -8,7 +8,18 @@ export interface ParsedSlug {
 }
 
 export function parseConverterSlug(slug: string): ParsedSlug {
-  const cleanSlug = slug.toLowerCase().trim();
+  const cleanSlug = slug.toLowerCase().replace(/^\/+/, '').trim();
+
+  // OCR utilities
+  if (cleanSlug === 'pdf-ocr' || cleanSlug === 'ocr-pdf' || cleanSlug === 'ocr') {
+    return {
+      isInfoPage: false,
+      sourceFormat: 'pdf',
+      targetFormat: 'pdf',
+      pageTitle: 'PDF OCR Converter',
+      pageDescription: 'Perform optical character recognition on scanned PDFs and generate searchable, selectable documents with zero data retention.',
+    };
+  }
 
   // Informational pages
   if (cleanSlug === 'terms') {
