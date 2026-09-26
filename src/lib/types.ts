@@ -41,6 +41,14 @@ export interface FormatOptionsSchema {
   ocrEnabled?: boolean;
   ocrLanguage?: boolean;
   margin?: boolean;
+  // Color quantization options
+  colorDepth?: boolean;
+  colors?: boolean;
+  palette?: boolean;
+  dither?: boolean;
+  // CAD / NURBS options
+  uSamples?: boolean;
+  vSamples?: boolean;
 }
 
 export interface FormatDefinition {
@@ -62,6 +70,13 @@ export interface ConversionOptions {
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
   stripMetadata?: boolean;
   dpi?: number;
+  colorDepth?: number;
+  colors?: number;
+  palette?: boolean;
+  dither?: boolean;
+  // CAD & NURBS options
+  uSamples?: number;
+  vSamples?: number;
   // Document & PDF options
   pages?: string;
   password?: string;

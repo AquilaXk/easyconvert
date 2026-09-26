@@ -534,7 +534,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     category: 'document',
     description: 'Microsoft Word OpenXML document format with complete styles and tables.',
-    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'pages', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps'],
+    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'pages', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp'],
     optionsSchema: { preserveLayout: true, preserveFonts: true, preserveTables: true, orientation: true },
   },
   doc: {
@@ -580,7 +580,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/rtf',
     category: 'document',
     description: 'Cross-platform document format with text formatting and font tables.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp'],
     optionsSchema: { preserveLayout: true },
   },
   odt: {
@@ -590,7 +590,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.text',
     category: 'document',
     description: 'OASIS OpenDocument Text standard used in LibreOffice and OpenOffice.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp'],
     optionsSchema: { preserveLayout: true, preserveTables: true },
   },
   ott: {
@@ -618,7 +618,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'document',
     description: 'Standard unformatted plain text document.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp'],
     optionsSchema: { orientation: true },
   },
   text: {
@@ -628,7 +628,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'document',
     description: 'Generic text file standard.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'pptx', 'zip'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'pptx', 'zip', 'hwp'],
   },
   md: {
     id: 'md',
@@ -637,7 +637,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/markdown',
     category: 'document',
     description: 'Lightweight markup language with plain-text formatting syntax.',
-    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'doc', 'md', 'rst', 'rtf', 'tex', 'jpg', 'png'],
+    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'doc', 'md', 'rst', 'rtf', 'tex', 'jpg', 'png', 'hwp'],
     optionsSchema: { orientation: true, preserveTables: true },
   },
   html: {
@@ -647,7 +647,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/html',
     category: 'document',
     description: 'HyperText Markup Language - Standard document format for web pages.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp'],
     optionsSchema: { orientation: true, preserveLayout: true, preserveTables: true },
   },
   htm: {
@@ -888,7 +888,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-fictionbook+xml',
     category: 'ebook',
     description: 'XML-based Russian open ebook format with structured semantic metadata.',
-    targetFormats: ['epub', 'mobi', 'pdf', 'txt', 'docx', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'mobi', 'pdf', 'txt', 'docx', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb', 'html', 'md'],
   },
   ibooks: {
     id: 'ibooks',
@@ -2089,7 +2089,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/step',
     category: 'cad',
     description: 'Standard for the Exchange of Product Model Data (ISO 10303-21).',
-    targetFormats: ['stp', 'stl', 'obj', 'zip'],
+    targetFormats: ['stp', 'stl', 'obj', 'dxf', 'zip'],
   },
   stp: {
     id: 'stp',
@@ -2098,7 +2098,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/step',
     category: 'cad',
     description: 'ISO-standard STEP 3D CAD solid model geometry interchange.',
-    targetFormats: ['step', 'stl', 'obj', 'zip'],
+    targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
   },
   iges: {
     id: 'iges',

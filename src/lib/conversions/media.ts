@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ConversionOptions, ConversionResult } from '../types';
+import { encodePureMp3, encodePureH264Mp4 } from './media-encoder';
 
 let ffmpegAvailable: boolean | null = null;
 function checkFfmpeg(): boolean {
@@ -319,57 +320,7 @@ function encodeMp3Container(
   bitrateStr: string,
   title: string
 ): Buffer {
-  const chunks: Buffer[] = [];
-
-  // 1. ID3v2.3 Tag Header
-  const titleBuf = Buffer.from(title, 'utf-8');
-  const frameSize = 1 + titleBuf.length;
-  const tagPayloadSize = 10 + frameSize;
-
-  const id3 = Buffer.alloc(10 + tagPayloadSize);
-  id3.write('ID3', 0);
-  id3.writeUInt8(3, 3); // ID3v2.3
-  id3.writeUInt8(0, 4);
-  id3.writeUInt8(0, 5); // flags
-  // Syncsafe integer for size
-  id3.writeUInt8((tagPayloadSize >> 21) & 0x7f, 6);
-  id3.writeUInt8((tagPayloadSize >> 14) & 0x7f, 7);
-  id3.writeUInt8((tagPayloadSize >> 7) & 0x7f, 8);
-  id3.writeUInt8(tagPayloadSize & 0x7f, 9);
-
-  // TIT2 frame (Title)
-  id3.write('TIT2', 10);
-  id3.writeUInt32BE(frameSize, 14);
-  id3.writeUInt16BE(0, 18); // flags
-  id3.writeUInt8(0, 20); // ISO-8859-1
-  titleBuf.copy(id3, 21);
-
-  chunks.push(id3);
-
-  // 2. MPEG-1 Audio Layer III Frames
-  // Frame header: 0xFF 0xFB (sync 11 bits, MPEG-1, Layer III, No CRC)
-  // Byte 2: Bitrate (192kbps = 0b1001), SampleRate (44100 = 0b00), Padding = 0 -> 0x90
-  // Byte 3: Channel Mode (Stereo = 0b00) -> 0x00
-  const frameLength = 626; // 192kbps frame size for 44.1kHz: 144 * 192000 / 44100 = 626
-  const numFrames = Math.max(8, Math.min(100, Math.floor(samples.length / 1152)));
-
-  for (let f = 0; f < numFrames; f++) {
-    const frame = Buffer.alloc(frameLength);
-    frame[0] = 0xff;
-    frame[1] = 0xfb;
-    frame[2] = 0x90;
-    frame[3] = channels === 1 ? 0xc0 : 0x00;
-
-    // Fill audio granule payload from PCM samples
-    const startSample = f * 1152;
-    for (let s = 4; s < frameLength - 2; s += 2) {
-      const idx = (startSample + s) % samples.length;
-      frame.writeInt16LE(samples[idx], s);
-    }
-    chunks.push(frame);
-  }
-
-  return Buffer.concat(chunks);
+  return encodePureMp3(samples, sampleRate, channels, bitrateStr, title);
 }
 
 /**
@@ -520,7 +471,7 @@ function encodeAsfWmaContainer(samples: Int16Array, sampleRate: number, channels
 
 /**
  * Encodes ISO Base Media File Format (MP4 / MOV) container
- * Synthesizes valid ftyp, moov, mvhd, trak, and mdat boxes.
+ * Synthesizes valid ftyp, moov, trak, avc1, avcC, and mdat boxes with H.264 baseline NAL units.
  */
 function encodeMp4Container(
   samples: Int16Array,
@@ -529,47 +480,7 @@ function encodeMp4Container(
   options: ConversionOptions,
   title: string
 ): Buffer {
-  const boxes: Buffer[] = [];
-
-  // 1. 'ftyp' box (File Type Box)
-  const ftyp = Buffer.alloc(32);
-  ftyp.writeUInt32BE(32, 0); // Box size
-  ftyp.write('ftyp', 4);
-  ftyp.write('isom', 8); // Major brand: ISO Base Media
-  ftyp.writeUInt32BE(0x00000200, 12); // Minor version
-  ftyp.write('isom', 16); // Compatible brands
-  ftyp.write('iso2', 20);
-  ftyp.write('mp41', 24);
-  ftyp.write('mp42', 28);
-  boxes.push(ftyp);
-
-  // 2. 'mdat' box (Media Data Box with audio/video stream frames)
-  const mdatSize = 8 + samples.length * 2;
-  const mdat = Buffer.alloc(mdatSize);
-  mdat.writeUInt32BE(mdatSize, 0);
-  mdat.write('mdat', 4);
-  for (let i = 0; i < samples.length; i++) {
-    mdat.writeInt16LE(samples[i], 8 + i * 2);
-  }
-  boxes.push(mdat);
-
-  // 3. 'moov' box (Movie Metadata Box)
-  const moovPayload = Buffer.alloc(108);
-  // mvhd header
-  moovPayload.writeUInt32BE(108, 0);
-  moovPayload.write('mvhd', 4);
-  moovPayload.writeUInt32BE(1000, 20); // Time scale
-  moovPayload.writeUInt32BE(Math.floor((samples.length / sampleRate) * 1000), 24); // Duration
-  moovPayload.writeUInt32BE(0x00010000, 28); // Rate 1.0
-  moovPayload.writeUInt16BE(0x0100, 32); // Volume 1.0
-
-  const moovBox = Buffer.alloc(8 + moovPayload.length);
-  moovBox.writeUInt32BE(moovBox.length, 0);
-  moovBox.write('moov', 4);
-  moovPayload.copy(moovBox, 8);
-  boxes.push(moovBox);
-
-  return Buffer.concat(boxes);
+  return encodePureH264Mp4(samples, sampleRate, channels, options, title);
 }
 
 /**

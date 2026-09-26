@@ -6,6 +6,7 @@ import { ConversionOptions, ConversionResult } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
 import { performOcr } from './ocr';
 import { encodeBmp, encodePostscript } from './image';
+import { convertHwp, parseHwpDocument, buildHwpCompoundFile } from './hwp';
 
 /**
  * Office & Ebook Conversion Engine
@@ -87,8 +88,13 @@ export async function convertOffice(
     return convertEtSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 12.2 HWP, LWP, PUB (Documents)
-  if (['hwp', 'lwp', 'pub'].includes(src)) {
+  // 12.2 HWP Source (Hangul Word Processor)
+  if (src === 'hwp') {
+    return convertHwp(inputBuffer, tgt, options, baseName);
+  }
+
+  // 12.3 LWP, PUB (Documents)
+  if (['lwp', 'pub'].includes(src)) {
     return convertGenericDocumentSource(inputBuffer, src, tgt, options, baseName);
   }
 
@@ -100,6 +106,18 @@ export async function convertOffice(
   // 12.4 AZW4, CBC, HTMLZ, TXTZ, PML, OEB (Ebooks)
   if (['azw4', 'cbc', 'htmlz', 'txtz', 'pml', 'oeb'].includes(src)) {
     return convertGenericEbookSource(inputBuffer, src, tgt, options, baseName);
+  }
+
+  // 13.0 Target is HWP (from Markdown, HTML, TXT, DOCX, ODT, RTF, etc.)
+  if (tgt === 'hwp') {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const hwpBuffer = generateHwpFromText(textContent, baseName);
+    return {
+      buffer: hwpBuffer,
+      mimeType: 'application/x-hwp',
+      filename: `${baseName}.hwp`,
+      size: hwpBuffer.length,
+    };
   }
 
   // 13. Target is DOCX (from Markdown, HTML, TXT, PDF, RTF, etc.)
@@ -237,6 +255,18 @@ export async function convertOffice(
     return convertMobiSource(Buffer.from(textContent, 'utf-8'), 'txt', tgt, options, baseName);
   }
 
+  // 23.1 Target is FB2 (FictionBook 2.0 with semantic markup)
+  if (tgt === 'fb2') {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const fb2Buffer = generateFb2FromText(textContent, baseName, options);
+    return {
+      buffer: fb2Buffer,
+      mimeType: 'application/x-fictionbook+xml',
+      filename: `${baseName}.fb2`,
+      size: fb2Buffer.length,
+    };
+  }
+
   // 24. Target is Plain Text / Markdown / HTML / RTF
   if (tgt === 'txt' || tgt === 'text') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
@@ -321,6 +351,15 @@ async function extractTextContentForOffice(
     return extractTextFromTexString(inputBuffer.toString('utf-8'));
   }
 
+  if (src === 'hwp') {
+    const doc = parseHwpDocument(inputBuffer);
+    const parts = doc.paragraphs.map((p) => p.text);
+    doc.tables.forEach((t) => {
+      parts.push(t.rows.map((r) => r.join('\t')).join('\n'));
+    });
+    return parts.join('\n\n');
+  }
+
   return inputBuffer.toString('utf-8');
 }
 
@@ -384,39 +423,54 @@ async function convertDocxSource(
 
   const xmlText = await docXmlFile.async('text');
 
-  // Extract paragraphs, headings, and tables
-  const { paragraphs, tables } = parseDocxXml(xmlText);
+  // Extract paragraphs, headings, and tables in sequential document order
+  const { paragraphs, tables, elements } = parseDocxXml(xmlText);
 
   // DOCX -> TXT
   if (tgt === 'txt') {
-    const text = paragraphs.map((p) => p.text).join('\n\n');
+    const text = elements && elements.length > 0
+      ? elements
+          .map((el) =>
+            el.type === 'paragraph'
+              ? el.paragraph.text
+              : el.table.rows.map((r) => r.join('\t')).join('\n')
+          )
+          .join('\n\n')
+      : paragraphs.map((p) => p.text).join('\n\n');
     const buffer = Buffer.from(text, 'utf-8');
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
 
   // DOCX -> HTML
   if (tgt === 'html') {
-    const html = generateHtmlFromDocx(paragraphs, tables, baseName);
+    const html = generateHtmlFromDocx(paragraphs, tables, baseName, elements);
     const buffer = Buffer.from(html, 'utf-8');
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
   }
 
   // DOCX -> Markdown
   if (tgt === 'md') {
-    const md = generateMarkdownFromDocx(paragraphs, tables);
+    const md = generateMarkdownFromDocx(paragraphs, tables, elements);
     const buffer = Buffer.from(md, 'utf-8');
     return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
   }
 
   // DOCX -> PDF
   if (tgt === 'pdf') {
-    const pdfBuffer = await generatePdfFromDocx(paragraphs, tables, options, baseName);
+    const pdfBuffer = await generatePdfFromDocx(paragraphs, tables, options, baseName, elements);
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  }
+
+  // DOCX -> FB2
+  if (tgt === 'fb2') {
+    const md = generateMarkdownFromDocx(paragraphs, tables, elements);
+    const fb2Buffer = generateFb2FromText(md, baseName, options);
+    return { buffer: fb2Buffer, mimeType: 'application/x-fictionbook+xml', filename: `${baseName}.fb2`, size: fb2Buffer.length };
   }
 
   // DOCX -> EPUB
   if (tgt === 'epub') {
-    const text = paragraphs.map((p) => p.text).join('\n\n');
+    const text = generateMarkdownFromDocx(paragraphs, tables, elements);
     const epubBuffer = await generateEpubFromText(text, 'txt', options, baseName);
     return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
   }
@@ -458,128 +512,302 @@ async function convertDocxSource(
   throw new Error(`Unsupported conversion from DOCX to ${tgt}`);
 }
 
-interface DocxParagraph {
+export interface DocxRun {
   text: string;
-  isHeading: boolean;
   isBold: boolean;
   isItalic: boolean;
+  isUnderline: boolean;
+  isStrike: boolean;
+  color?: string;
+  fontSize?: number;
 }
 
-interface DocxTable {
+export interface DocxParagraph {
+  text: string;
+  runs?: DocxRun[];
+  isHeading?: boolean;
+  headingLevel?: number;
+  isBold?: boolean;
+  isItalic?: boolean;
+  alignment?: 'left' | 'center' | 'right' | 'both';
+  isBullet?: boolean;
+}
+
+export interface DocxTableCell {
+  text: string;
+  shading?: string;
+  isHeader?: boolean;
+  colSpan?: number;
+}
+
+export interface DocxTable {
+  rowCount?: number;
+  colCount?: number;
   rows: string[][];
+  structuredRows?: DocxTableCell[][];
 }
 
-function parseDocxXml(xml: string): { paragraphs: DocxParagraph[]; tables: DocxTable[] } {
+export type DocxBlockElement =
+  | { type: 'paragraph'; paragraph: DocxParagraph }
+  | { type: 'table'; table: DocxTable };
+
+function parseDocxXml(xml: string): {
+  paragraphs: DocxParagraph[];
+  tables: DocxTable[];
+  elements: DocxBlockElement[];
+} {
   const paragraphs: DocxParagraph[] = [];
   const tables: DocxTable[] = [];
+  const elements: DocxBlockElement[] = [];
 
-  // Parse tables (<w:tbl>)
-  const tableRegex = /<w:tbl[\s\S]*?<\/w:tbl>/g;
-  let tblMatch: RegExpExecArray | null;
-  while ((tblMatch = tableRegex.exec(xml)) !== null) {
-    const tblXml = tblMatch[0];
-    const rows: string[][] = [];
-    const trRegex = /<w:tr[\s\S]*?<\/w:tr>/g;
-    let trMatch: RegExpExecArray | null;
-    while ((trMatch = trRegex.exec(tblXml)) !== null) {
-      const rowCells: string[] = [];
-      const tcRegex = /<w:tc[\s\S]*?<\/w:tc>/g;
-      let tcMatch: RegExpExecArray | null;
-      while ((tcMatch = tcRegex.exec(trMatch[0])) !== null) {
-        const tMatches = tcMatch[0].match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
-        const cellText = tMatches
-          .map((m) => m.replace(/<[^>]+>/g, ''))
-          .join('')
-          .trim();
-        rowCells.push(cellText);
+  const bodyMatch = xml.match(/<w:body[\s\S]*?<\/w:body>/);
+  const bodyXml = bodyMatch ? bodyMatch[0] : xml;
+
+  // Match top-level blocks: <w:tbl> is matched as a single unit, avoiding duplicate extraction of inner paragraphs
+  const blockRegex = /(<w:tbl[\s\S]*?<\/w:tbl>|<w:p[\s\S]*?<\/w:p>)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = blockRegex.exec(bodyXml)) !== null) {
+    const chunk = match[0];
+
+    // If chunk is a Table (<w:tbl>)
+    if (chunk.startsWith('<w:tbl')) {
+      const rows: string[][] = [];
+      const structuredRows: DocxTableCell[][] = [];
+
+      const trRegex = /<w:tr[\s\S]*?<\/w:tr>/g;
+      let trMatch: RegExpExecArray | null;
+
+      while ((trMatch = trRegex.exec(chunk)) !== null) {
+        const trXml = trMatch[0];
+        const rowCells: string[] = [];
+        const sCells: DocxTableCell[] = [];
+        const isHeader = /<w:tblHeader(\/|>)/.test(trXml) || rows.length === 0;
+
+        const tcRegex = /<w:tc[\s\S]*?<\/w:tc>/g;
+        let tcMatch: RegExpExecArray | null;
+
+        while ((tcMatch = tcRegex.exec(trXml)) !== null) {
+          const tcXml = tcMatch[0];
+
+          const shdMatch = tcXml.match(/<w:shd[^>]*w:fill="([A-Fa-f0-9]{6})"/);
+          const shading = shdMatch ? shdMatch[1] : undefined;
+
+          const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
+          const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
+
+          const tMatches = tcXml.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
+          const cellText = tMatches
+            .map((m) => m.replace(/<[^>]+>/g, ''))
+            .join('')
+            .trim();
+
+          rowCells.push(cellText);
+          sCells.push({ text: cellText, shading, colSpan, isHeader });
+        }
+
+        if (rowCells.length > 0) {
+          rows.push(rowCells);
+          structuredRows.push(sCells);
+        }
       }
-      if (rowCells.length > 0) rows.push(rowCells);
+
+      if (rows.length > 0) {
+        const maxCols = Math.max(...rows.map((r) => r.length));
+        const tbl: DocxTable = {
+          rowCount: rows.length,
+          colCount: maxCols,
+          rows,
+          structuredRows,
+        };
+        tables.push(tbl);
+        elements.push({ type: 'table', table: tbl });
+      }
+      continue;
     }
-    if (rows.length > 0) tables.push({ rows });
-  }
 
-  // Parse paragraphs (<w:p>)
-  const pRegex = /<w:p[\s\S]*?<\/w:p>/g;
-  let pMatch: RegExpExecArray | null;
-  while ((pMatch = pRegex.exec(xml)) !== null) {
-    const pXml = pMatch[0];
-    const isHeading = /<w:pStyle\s+w:val="Heading/i.test(pXml);
-    const isBold = /<w:b(\/|>)/.test(pXml);
-    const isItalic = /<w:i(\/|>)/.test(pXml);
+    // Chunk is a Paragraph (<w:p>)
+    const isHeading1 = /<w:pStyle\s+[^>]*w:val="Heading1"/i.test(chunk);
+    const isHeading2 = /<w:pStyle\s+[^>]*w:val="Heading2"/i.test(chunk);
+    const isHeading3 = /<w:pStyle\s+[^>]*w:val="Heading3"/i.test(chunk);
+    const isHeading = isHeading1 || isHeading2 || isHeading3 || /<w:pStyle\s+[^>]*w:val="Heading/i.test(chunk);
+    const headingLevel = isHeading1 ? 1 : isHeading2 ? 2 : isHeading3 ? 3 : isHeading ? 2 : 0;
 
-    const tMatches = pXml.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
-    const text = tMatches
-      .map((m) => m.replace(/<[^>]+>/g, ''))
-      .join('')
-      .trim();
+    const jcMatch = chunk.match(/<w:jc\s+[^>]*w:val="([^"]+)"/);
+    const alignment = jcMatch ? (jcMatch[1] as any) : undefined;
+    const isBullet = /<w:numPr(\/|>)/.test(chunk);
 
+    // Extract runs (<w:r>)
+    const runs: DocxRun[] = [];
+    const rRegex = /<w:r[\s\S]*?<\/w:r>/g;
+    let rMatch: RegExpExecArray | null;
+    let overallBold = false;
+    let overallItalic = false;
+
+    while ((rMatch = rRegex.exec(chunk)) !== null) {
+      const rXml = rMatch[0];
+      const rBold = /<w:b(\/|>)/.test(rXml);
+      const rItalic = /<w:i(\/|>)/.test(rXml);
+      const rUnderline = /<w:u(\/|>)/.test(rXml);
+      const rStrike = /<w:strike(\/|>)/.test(rXml);
+
+      const colorMatch = rXml.match(/<w:color\s+[^>]*w:val="([A-Fa-f0-9]{6})"/);
+      const color = colorMatch ? colorMatch[1] : undefined;
+
+      const szMatch = rXml.match(/<w:sz\s+[^>]*w:val="(\d+)"/);
+      const fontSize = szMatch ? parseInt(szMatch[1], 10) / 2 : undefined;
+
+      const tMatches = rXml.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
+      const rText = tMatches
+        .map((m) => m.replace(/<[^>]+>/g, ''))
+        .join('');
+
+      if (rText) {
+        if (rBold) overallBold = true;
+        if (rItalic) overallItalic = true;
+        runs.push({
+          text: rText,
+          isBold: rBold,
+          isItalic: rItalic,
+          isUnderline: rUnderline,
+          isStrike: rStrike,
+          color,
+          fontSize,
+        });
+      }
+    }
+
+    const text = runs.map((r) => r.text).join('').trim();
     if (text.length > 0) {
-      paragraphs.push({ text, isHeading, isBold, isItalic });
+      const p: DocxParagraph = {
+        text,
+        runs,
+        isHeading,
+        headingLevel,
+        isBold: overallBold,
+        isItalic: overallItalic,
+        alignment,
+        isBullet,
+      };
+      paragraphs.push(p);
+      elements.push({ type: 'paragraph', paragraph: p });
     }
   }
 
-  return { paragraphs, tables };
+  return { paragraphs, tables, elements };
 }
 
-function generateHtmlFromDocx(paragraphs: DocxParagraph[], tables: DocxTable[], title: string): string {
+function generateHtmlFromDocx(
+  paragraphs: DocxParagraph[],
+  tables: DocxTable[],
+  title: string,
+  elements?: DocxBlockElement[]
+): string {
   let body = '';
-  for (const p of paragraphs) {
-    if (p.isHeading) {
-      body += `<h2>${escapeHtml(p.text)}</h2>\n`;
-    } else {
-      let t = escapeHtml(p.text);
-      if (p.isBold) t = `<strong>${t}</strong>`;
-      if (p.isItalic) t = `<em>${t}</em>`;
-      body += `<p>${t}</p>\n`;
-    }
-  }
 
-  for (const tbl of tables) {
-    body += '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;margin:1.5rem 0;width:100%;border-color:#CCD2FC;">\n';
+  const renderParagraph = (p: DocxParagraph): string => {
+    let pContent = '';
+    for (const r of (p.runs || [])) {
+      let t = escapeHtml(r.text);
+      if (r.isBold) t = `<strong>${t}</strong>`;
+      if (r.isItalic) t = `<em>${t}</em>`;
+      if (r.isUnderline) t = `<u>${t}</u>`;
+      if (r.isStrike) t = `<del>${t}</del>`;
+      if (r.color) t = `<span style="color:#${r.color}">${t}</span>`;
+      pContent += t;
+    }
+    if (!pContent) pContent = escapeHtml(p.text);
+
+    if (p.isHeading) {
+      const hTag = `h${p.headingLevel || 2}`;
+      return `<${hTag}>${pContent}</${hTag}>\n`;
+    }
+    if (p.isBullet) {
+      return `<ul><li>${pContent}</li></ul>\n`;
+    }
+    const alignStyle = p.alignment ? ` style="text-align:${p.alignment}"` : '';
+    return `<p${alignStyle}>${pContent}</p>\n`;
+  };
+
+  const renderTable = (tbl: DocxTable): string => {
+    let tblHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;margin:1.5rem 0;width:100%;border-color:#CCD2FC;">\n';
     tbl.rows.forEach((row, rIdx) => {
-      body += '<tr>\n';
+      tblHtml += '<tr>\n';
       row.forEach((cell) => {
         if (rIdx === 0) {
-          body += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(cell)}</th>\n`;
+          tblHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(cell)}</th>\n`;
         } else {
-          body += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(cell)}</td>\n`;
+          tblHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(cell)}</td>\n`;
         }
       });
-      body += '</tr>\n';
+      tblHtml += '</tr>\n';
     });
-    body += '</table>\n';
+    tblHtml += '</table>\n';
+    return tblHtml;
+  };
+
+  if (elements && elements.length > 0) {
+    for (const el of elements) {
+      if (el.type === 'paragraph') body += renderParagraph(el.paragraph);
+      else if (el.type === 'table') body += renderTable(el.table);
+    }
+  } else {
+    for (const p of paragraphs) body += renderParagraph(p);
+    for (const tbl of tables) body += renderTable(tbl);
   }
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
     title
-  )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.6;max-width:850px;margin:2rem auto;padding:0 1.5rem;color:#1F2340;}h1,h2{color:#5C6BC0;}</style></head><body><h1>${escapeHtml(
+  )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.6;max-width:850px;margin:2rem auto;padding:0 1.5rem;color:#1F2340;}h1,h2,h3{color:#5C6BC0;}</style></head><body><h1>${escapeHtml(
     title
   )}</h1>${body}</body></html>`;
 }
 
-function generateMarkdownFromDocx(paragraphs: DocxParagraph[], tables: DocxTable[]): string {
+function generateMarkdownFromDocx(
+  paragraphs: DocxParagraph[],
+  tables: DocxTable[],
+  elements?: DocxBlockElement[]
+): string {
   const parts: string[] = [];
-  for (const p of paragraphs) {
-    if (p.isHeading) {
-      parts.push(`## ${p.text}`);
-    } else {
-      let t = p.text;
-      if (p.isBold) t = `**${t}**`;
-      if (p.isItalic) t = `*${t}*`;
-      parts.push(t);
-    }
-  }
 
-  for (const tbl of tables) {
-    if (tbl.rows.length > 0) {
-      const header = `| ${tbl.rows[0].join(' | ')} |`;
-      const sep = `| ${tbl.rows[0].map(() => '---').join(' | ')} |`;
-      const body = tbl.rows
-        .slice(1)
-        .map((r) => `| ${r.join(' | ')} |`)
-        .join('\n');
-      parts.push(`${header}\n${sep}\n${body}`);
+  const renderParagraph = (p: DocxParagraph): string => {
+    if (p.isHeading) {
+      const hashes = '#'.repeat(p.headingLevel || 2);
+      return `${hashes} ${p.text}`;
     }
+    if (p.isBullet) {
+      return `- ${p.text}`;
+    }
+    let t = '';
+    for (const r of (p.runs || [])) {
+      let rText = r.text;
+      if (r.isBold) rText = `**${rText}**`;
+      if (r.isItalic) rText = `*${rText}*`;
+      if (r.isStrike) rText = `~~${rText}~~`;
+      t += rText;
+    }
+    return t || p.text;
+  };
+
+  const renderTable = (tbl: DocxTable): string => {
+    if (tbl.rows.length === 0) return '';
+    const header = `| ${tbl.rows[0].join(' | ')} |`;
+    const sep = `| ${tbl.rows[0].map(() => '---').join(' | ')} |`;
+    const body = tbl.rows
+      .slice(1)
+      .map((r) => `| ${r.join(' | ')} |`)
+      .join('\n');
+    return `${header}\n${sep}\n${body}`;
+  };
+
+  if (elements && elements.length > 0) {
+    for (const el of elements) {
+      if (el.type === 'paragraph') parts.push(renderParagraph(el.paragraph));
+      else if (el.type === 'table') parts.push(renderTable(el.table));
+    }
+  } else {
+    for (const p of paragraphs) parts.push(renderParagraph(p));
+    for (const tbl of tables) parts.push(renderTable(tbl));
   }
 
   return parts.join('\n\n');
@@ -589,7 +817,8 @@ async function generatePdfFromDocx(
   paragraphs: DocxParagraph[],
   tables: DocxTable[],
   options: ConversionOptions,
-  title: string
+  title: string,
+  elements?: DocxBlockElement[]
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const isLandscape = options.orientation === 'landscape';
@@ -613,30 +842,20 @@ async function generatePdfFromDocx(
     doc.fillColor('#1F2340').fontSize(20).text(title, { underline: false });
     doc.moveDown(1);
 
-    // Render paragraphs
-    for (const p of paragraphs) {
-      if (p.isHeading) {
-        doc.moveDown(0.5);
-        doc.fillColor('#5C6BC0').fontSize(14).text(p.text);
-        doc.moveDown(0.25);
-      } else {
-        doc.fillColor('#4D536B').fontSize(10.5).lineGap(3).text(p.text);
-        doc.moveDown(0.4);
-      }
-    }
-
-    // Render tables if any
-    for (const tbl of tables) {
-      if (tbl.rows.length === 0) continue;
+    const renderTable = (tbl: DocxTable) => {
+      if (tbl.rows.length === 0) return;
       doc.moveDown(0.8);
-      const colWidth = (doc.page.width - 100) / tbl.rows[0].length;
+      const colCount = Math.max(1, tbl.colCount || tbl.rows[0].length);
+      const colWidth = (doc.page.width - 100) / colCount;
 
       tbl.rows.forEach((row, rIdx) => {
         const y = doc.y;
         if (y > doc.page.height - 80) {
           doc.addPage();
         }
-        if (rIdx === 0) {
+        const isHdr = rIdx === 0;
+        doc.rect(50, doc.y, doc.page.width - 100, 20).strokeColor('#CCD2FC').lineWidth(0.5);
+        if (isHdr) {
           doc.rect(50, doc.y, doc.page.width - 100, 20).fill('#F0F2FE');
           doc.fillColor('#1F2340').fontSize(9);
         } else {
@@ -648,6 +867,30 @@ async function generatePdfFromDocx(
         });
         doc.y = y + 20;
       });
+      doc.moveDown(0.4);
+    };
+
+    const renderParagraph = (p: DocxParagraph) => {
+      if (p.isHeading) {
+        doc.moveDown(0.5);
+        doc.fillColor('#5C6BC0').fontSize(p.headingLevel === 1 ? 16 : 14).text(p.text);
+        doc.moveDown(0.25);
+      } else {
+        doc.fillColor(p.isBold ? '#1F2340' : '#4D536B').fontSize(10.5).lineGap(3).text(p.text, {
+          align: p.alignment === 'center' ? 'center' : p.alignment === 'right' ? 'right' : 'left',
+        });
+        doc.moveDown(0.4);
+      }
+    };
+
+    if (elements && elements.length > 0) {
+      for (const el of elements) {
+        if (el.type === 'paragraph') renderParagraph(el.paragraph);
+        else if (el.type === 'table') renderTable(el.table);
+      }
+    } else {
+      for (const p of paragraphs) renderParagraph(p);
+      for (const tbl of tables) renderTable(tbl);
     }
 
     doc.end();
@@ -1200,6 +1443,41 @@ async function convertFb2Source(
   baseName: string
 ): Promise<ConversionResult> {
   const xml = inputBuffer.toString('utf-8');
+
+  // Parse title and author
+  const titleMatch = xml.match(/<book-title>([\s\S]*?)<\/book-title>/);
+  const bookTitle = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : baseName;
+
+  const authorMatch = xml.match(/<author>([\s\S]*?)<\/author>/);
+  let authorStr = '';
+  if (authorMatch) {
+    const fn = (authorMatch[1].match(/<first-name>([\s\S]*?)<\/first-name>/) || [])[1] || '';
+    const ln = (authorMatch[1].match(/<last-name>([\s\S]*?)<\/last-name>/) || [])[1] || '';
+    authorStr = `${fn.replace(/<[^>]+>/g, '').trim()} ${ln.replace(/<[^>]+>/g, '').trim()}`.trim();
+  }
+
+  // Parse tables (<table ...>)
+  const tables: string[][][] = [];
+  const tblRegex = /<table[\s\S]*?<\/table>/g;
+  let tMatch: RegExpExecArray | null;
+  while ((tMatch = tblRegex.exec(xml)) !== null) {
+    const tblXml = tMatch[0];
+    const trRegex = /<tr[\s\S]*?<\/tr>/g;
+    let trMatch: RegExpExecArray | null;
+    const currentTbl: string[][] = [];
+    while ((trMatch = trRegex.exec(tblXml)) !== null) {
+      const cellRegex = /<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/g;
+      let cMatch: RegExpExecArray | null;
+      const row: string[] = [];
+      while ((cMatch = cellRegex.exec(trMatch[0])) !== null) {
+        row.push(cMatch[1].replace(/<[^>]+>/g, '').trim());
+      }
+      if (row.length > 0) currentTbl.push(row);
+    }
+    if (currentTbl.length > 0) tables.push(currentTbl);
+  }
+
+  // Parse paragraphs (<p>)
   const pRegex = /<p>([\s\S]*?)<\/p>/g;
   const paragraphs: string[] = [];
   let m: RegExpExecArray | null;
@@ -1208,22 +1486,71 @@ async function convertFb2Source(
     if (text) paragraphs.push(text);
   }
 
-  const titleMatch = xml.match(/<book-title>([\s\S]*?)<\/book-title>/);
-  const bookTitle = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : baseName;
   const fullText = paragraphs.join('\n\n');
 
+  if (tgt === 'fb2') {
+    return { buffer: inputBuffer, mimeType: 'application/x-fictionbook+xml', filename: `${baseName}.fb2`, size: inputBuffer.length };
+  }
+
   if (tgt === 'txt') {
-    const buffer = Buffer.from(fullText, 'utf-8');
+    let outText = fullText;
+    if (tables.length > 0) {
+      outText += '\n\n' + tables.map((t) => t.map((r) => r.join('\t')).join('\n')).join('\n\n');
+    }
+    const buffer = Buffer.from(outText, 'utf-8');
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
 
+  if (tgt === 'html') {
+    let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(bookTitle)}</title>`;
+    html += `<style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.7;max-width:800px;margin:2rem auto;padding:0 1.5rem;color:#1F2340;}h1{color:#5C6BC0;}table{border-collapse:collapse;width:100%;margin:1.5rem 0;}th,td{border:1px solid #CCD2FC;padding:8px 12px;text-align:left;}th{background:#F0F2FE;}</style></head><body>`;
+    html += `<h1>${escapeHtml(bookTitle)}</h1>`;
+    if (authorStr) html += `<p><em>${escapeHtml(authorStr)}</em></p>`;
+    html += paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('\n');
+    for (const t of tables) {
+      html += '<table>';
+      t.forEach((row, rIdx) => {
+        html += '<tr>' + row.map((c) => `<${rIdx === 0 ? 'th' : 'td'}>${escapeHtml(c)}</${rIdx === 0 ? 'th' : 'td'}>`).join('') + '</tr>';
+      });
+      html += '</table>';
+    }
+    html += '</body></html>';
+    const buffer = Buffer.from(html, 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+
+  if (tgt === 'md') {
+    let md = `# ${bookTitle}\n\n`;
+    if (authorStr) md += `*${authorStr}*\n\n`;
+    md += fullText;
+    for (const t of tables) {
+      if (t.length > 0) {
+        md += `\n\n| ${t[0].join(' | ')} |\n| ${t[0].map(() => '---').join(' | ')} |\n` + t.slice(1).map((r) => `| ${r.join(' | ')} |`).join('\n');
+      }
+    }
+    const buffer = Buffer.from(md, 'utf-8');
+    return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
+  }
+
   if (tgt === 'epub') {
-    const epubBuffer = await generateEpubFromText(fullText, 'fb2', options, bookTitle);
+    let md = `# ${bookTitle}\n\n` + fullText;
+    for (const t of tables) {
+      if (t.length > 0) {
+        md += `\n\n| ${t[0].join(' | ')} |\n| ${t[0].map(() => '---').join(' | ')} |\n` + t.slice(1).map((r) => `| ${r.join(' | ')} |`).join('\n');
+      }
+    }
+    const epubBuffer = await generateEpubFromText(md, 'fb2', options, bookTitle);
     return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
   }
 
   if (tgt === 'docx') {
-    const docxBuffer = await generateDocxFromText(fullText, 'fb2', options, bookTitle);
+    let md = `# ${bookTitle}\n\n` + fullText;
+    for (const t of tables) {
+      if (t.length > 0) {
+        md += `\n\n| ${t[0].join(' | ')} |\n| ${t[0].map(() => '---').join(' | ')} |\n` + t.slice(1).map((r) => `| ${r.join(' | ')} |`).join('\n');
+      }
+    }
+    const docxBuffer = await generateDocxFromText(md, 'fb2', options, bookTitle);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -1241,6 +1568,10 @@ async function convertFb2Source(
       doc.on('error', (err) => reject(err));
     });
     doc.fillColor('#1F2340').fontSize(18).text(bookTitle);
+    if (authorStr) {
+      doc.moveDown(0.3);
+      doc.fillColor('#5C6BC0').fontSize(12).text(authorStr);
+    }
     doc.moveDown(1);
     doc.fillColor('#4D536B').fontSize(10.5).lineGap(3).text(fullText || 'FB2 text content');
     doc.end();
@@ -1350,6 +1681,62 @@ async function convertCbzSource(
   }
 
   throw new Error(`Unsupported conversion from CBZ to ${tgt}`);
+}
+
+/**
+ * Generates authentic HWP 5.0 CFBF compound document from text and markdown tables
+ */
+export function generateHwpFromText(text: string, title: string): Buffer {
+  const lines = text.split(/\r?\n/);
+  const paragraphs: { text: string; isHeading?: boolean }[] = [];
+  const tables: { rows: string[][] }[] = [];
+  let currentTableRows: string[][] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) {
+      if (currentTableRows.length > 0) {
+        tables.push({ rows: currentTableRows });
+        currentTableRows = [];
+      }
+      continue;
+    }
+
+    // Markdown table row
+    if (line.startsWith('|') && line.endsWith('|')) {
+      const cells = line.split('|').map((c) => c.trim()).slice(1, -1);
+      if (cells.every((c) => /^[-:]+$/.test(c))) {
+        continue;
+      }
+      currentTableRows.push(cells);
+      continue;
+    }
+
+    if (currentTableRows.length > 0) {
+      tables.push({ rows: currentTableRows });
+      currentTableRows = [];
+    }
+
+    // Heading detection
+    if (line.startsWith('#')) {
+      const headingText = line.replace(/^#+\s*/, '').trim();
+      if (headingText) {
+        paragraphs.push({ text: headingText, isHeading: true });
+      }
+    } else {
+      paragraphs.push({ text: line, isHeading: paragraphs.length === 0 && line.length < 60 });
+    }
+  }
+
+  if (currentTableRows.length > 0) {
+    tables.push({ rows: currentTableRows });
+  }
+
+  if (paragraphs.length === 0) {
+    paragraphs.push({ text: title || 'Document', isHeading: true });
+  }
+
+  return buildHwpCompoundFile({ paragraphs, tables, compressed: true });
 }
 
 /**
@@ -1754,7 +2141,7 @@ export async function generateXlsxFromData(
 }
 
 /**
- * Generates IDPF EPUB Container
+ * Generates IDPF EPUB Container with EPUB 3 Navigation & NCX Semantic Markup
  */
 async function generateEpubFromText(
   text: string,
@@ -1777,11 +2164,68 @@ async function generateEpubFromText(
 </container>`
   );
 
-  const paragraphs = text
-    .split(/\r?\n\r?\n/)
-    .map((p) => `<p>${escapeXml(p.trim())}</p>`)
-    .join('\n');
+  const lines = text.split(/\r?\n/);
+  const bodyElements: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      i++;
+      continue;
+    }
 
+    // Markdown Table
+    if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length && lines[i + 1].trim().startsWith('|')) {
+      const tableLines: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+        tableLines.push(lines[i].trim());
+        i++;
+      }
+      if (tableLines.length >= 2) {
+        let tbl = '<table class="semantic-table">\n';
+        const headers = tableLines[0].split('|').slice(1, -1).map((c) => c.trim());
+        tbl += '  <thead>\n    <tr>\n' + headers.map((h) => `      <th>${escapeXml(h)}</th>\n`).join('') + '    </tr>\n  </thead>\n  <tbody>\n';
+        const rows = tableLines.slice(2).map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
+        for (const r of rows) {
+          tbl += '    <tr>\n' + r.map((c) => `      <td>${escapeXml(c)}</td>\n`).join('') + '    </tr>\n';
+        }
+        tbl += '  </tbody>\n</table>';
+        bodyElements.push(tbl);
+        continue;
+      }
+    }
+
+    // Headings & Blockquotes
+    if (trimmed.startsWith('# ')) {
+      bodyElements.push(`<h1>${escapeXml(trimmed.slice(2))}</h1>`);
+    } else if (trimmed.startsWith('## ')) {
+      bodyElements.push(`<h2>${escapeXml(trimmed.slice(3))}</h2>`);
+    } else if (trimmed.startsWith('### ')) {
+      bodyElements.push(`<h3>${escapeXml(trimmed.slice(4))}</h3>`);
+    } else if (trimmed.startsWith('> ')) {
+      bodyElements.push(`<blockquote><p>${escapeXml(trimmed.slice(2))}</p></blockquote>`);
+    } else {
+      bodyElements.push(`<p>${escapeXml(trimmed)}</p>`);
+    }
+    i++;
+  }
+
+  const contentHtml = bodyElements.join('\n');
+
+  // Stylesheet
+  zip.file(
+    'OEBPS/styles.css',
+    `body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Georgia, serif; line-height: 1.7; padding: 1.5rem; color: #1F2340; }
+h1, h2, h3 { color: #5C6BC0; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.8rem; }
+p { margin-bottom: 1rem; text-align: justify; }
+table.semantic-table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
+table.semantic-table th, table.semantic-table td { border: 1px solid #CCD2FC; padding: 8px 12px; text-align: left; }
+table.semantic-table th { background-color: #F0F2FE; color: #1F2340; font-weight: 600; }
+blockquote { border-left: 4px solid #5C6BC0; margin: 1.5rem 0; padding: 0.5rem 1rem; color: #4D536B; background: #F8F9FE; }`
+  );
+
+  // Chapter 1 XHTML with semantic markup
   zip.file(
     'OEBPS/chapter1.xhtml',
     `<?xml version="1.0" encoding="utf-8"?>
@@ -1789,34 +2233,197 @@ async function generateEpubFromText(
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en">
 <head>
   <title>${escapeXml(title)}</title>
-  <style>body{font-family:sans-serif;line-height:1.6;padding:1rem;color:#1F2340;}h1{color:#5C6BC0;}</style>
+  <link rel="stylesheet" type="text/css" href="styles.css"/>
 </head>
 <body>
-  <h1>${escapeXml(title)}</h1>
-  ${paragraphs}
+  <header>
+    <h1>${escapeXml(title)}</h1>
+  </header>
+  <main>
+    <article>
+      ${contentHtml}
+    </article>
+  </main>
 </body>
 </html>`
   );
 
+  // Navigation document (EPUB 3)
+  zip.file(
+    'OEBPS/nav.xhtml',
+    `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en">
+<head>
+  <title>Navigation</title>
+  <link rel="stylesheet" type="text/css" href="styles.css"/>
+</head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <h1>Table of Contents</h1>
+    <ol>
+      <li><a href="chapter1.xhtml">${escapeXml(title)}</a></li>
+    </ol>
+  </nav>
+</body>
+</html>`
+  );
+
+  // NCX (EPUB 2 backward compatibility for all e-readers)
+  zip.file(
+    'OEBPS/toc.ncx',
+    `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="urn:uuid:easyconvert-book"/>
+    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle><text>${escapeXml(title)}</text></docTitle>
+  <navMap>
+    <navPoint id="navpoint-1" playOrder="1">
+      <navLabel><text>${escapeXml(title)}</text></navLabel>
+      <content src="chapter1.xhtml"/>
+    </navPoint>
+  </navMap>
+</ncx>`
+  );
+
+  // Package manifest (content.opf)
   zip.file(
     'OEBPS/content.opf',
     `<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>${escapeXml(title)}</dc:title>
     <dc:language>en</dc:language>
+    <dc:identifier id="BookId">urn:uuid:easyconvert-book</dc:identifier>
     <dc:creator>EasyConvert Ebook Engine</dc:creator>
+    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
   </metadata>
   <manifest>
     <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="styles.css" media-type="text/css"/>
   </manifest>
-  <spine>
+  <spine toc="ncx">
     <itemref idref="chapter1"/>
   </spine>
 </package>`
   );
 
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+/**
+ * Generates valid, semantic FictionBook 2.0 (FB2) electronic book XML
+ */
+export function generateFb2FromText(
+  text: string,
+  title: string,
+  options: ConversionOptions = {}
+): Buffer {
+  const lines = text.split(/\r?\n/);
+  const sections: { title?: string; paragraphs: string[]; table?: string[][] }[] = [];
+  let currentSection: { title?: string; paragraphs: string[]; table?: string[][] } = {
+    paragraphs: [],
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      i++;
+      continue;
+    }
+
+    // Markdown Table check
+    if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length && lines[i + 1].trim().startsWith('|')) {
+      const tableLines: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+        tableLines.push(lines[i].trim());
+        i++;
+      }
+      if (tableLines.length >= 2) {
+        const rows = tableLines
+          .filter((_, idx) => idx !== 1)
+          .map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
+        currentSection.table = rows;
+        continue;
+      }
+    }
+
+    // Heading check
+    if (trimmed.startsWith('# ') || trimmed.startsWith('## ') || trimmed.startsWith('### ')) {
+      const hText = trimmed.replace(/^#+\s*/, '');
+      if (currentSection.paragraphs.length > 0 || currentSection.title || currentSection.table) {
+        sections.push(currentSection);
+      }
+      currentSection = { title: hText, paragraphs: [] };
+      i++;
+      continue;
+    }
+
+    currentSection.paragraphs.push(trimmed);
+    i++;
+  }
+
+  if (currentSection.paragraphs.length > 0 || currentSection.title || currentSection.table) {
+    sections.push(currentSection);
+  }
+
+  if (sections.length === 0) {
+    sections.push({ title, paragraphs: [text.trim() || 'Electronic Book Content'] });
+  }
+
+  let bodyXml = `    <title><p>${escapeXml(title)}</p></title>\n`;
+  for (const sec of sections) {
+    bodyXml += `    <section>\n`;
+    if (sec.title) {
+      bodyXml += `      <title><p>${escapeXml(sec.title)}</p></title>\n`;
+    }
+    for (const p of sec.paragraphs) {
+      bodyXml += `      <p>${escapeXml(p)}</p>\n`;
+    }
+    if (sec.table && sec.table.length > 0) {
+      bodyXml += `      <table>\n`;
+      sec.table.forEach((row, rIdx) => {
+        bodyXml += `        <tr>\n`;
+        const tag = rIdx === 0 ? 'th' : 'td';
+        row.forEach((cell) => {
+          bodyXml += `          <${tag}>${escapeXml(cell)}</${tag}>\n`;
+        });
+        bodyXml += `        </tr>\n`;
+      });
+      bodyXml += `      </table>\n`;
+    }
+    bodyXml += `    </section>\n`;
+  }
+
+  const dateStr = new Date().toISOString().split('T')[0];
+  const fb2 = `<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>prose</genre>
+      <author>
+        <first-name>EasyConvert</first-name>
+        <last-name>Author</last-name>
+      </author>
+      <book-title>${escapeXml(title)}</book-title>
+      <date>${dateStr}</date>
+      <lang>en</lang>
+    </title-info>
+  </description>
+  <body>
+${bodyXml}  </body>
+</FictionBook>`;
+
+  return Buffer.from(fb2, 'utf-8');
 }
 
 function escapeHtml(str: string): string {

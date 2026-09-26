@@ -3,6 +3,25 @@ import PDFDocument from 'pdfkit';
 import zlib from 'zlib';
 import { ConversionOptions, ConversionResult } from '../types';
 import { encodeBmp, encodePostscript } from './image';
+import {
+  tessellateCadBuffer,
+  evaluateCubicBezier,
+  evaluateCubicBezierDerivative,
+  adaptiveTessellateCubicBezier,
+  evaluateQuadraticBezier,
+  cubicBezierToBSpline,
+  tessellateSvgArc,
+  Point3D,
+} from './cad-nurbs';
+
+export {
+  evaluateCubicBezier,
+  evaluateCubicBezierDerivative,
+  adaptiveTessellateCubicBezier,
+  evaluateQuadraticBezier,
+  cubicBezierToBSpline,
+  tessellateSvgArc,
+};
 
 export interface DxfEntity {
   type: 'LINE' | 'CIRCLE' | 'ARC' | 'LWPOLYLINE' | 'TEXT';
@@ -520,6 +539,199 @@ async function convert3dCad(
 }
 
 /**
+ * Parses SVG path 'd' attribute commands and evaluates Cubic/Quadratic Bezier curves
+ * into high-fidelity adaptive polyline vertices.
+ */
+export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
+  const subpaths: Point3D[][] = [];
+  let currentSubpath: Point3D[] = [];
+  let currentX = 0;
+  let currentY = 0;
+  let lastCpX = 0;
+  let lastCpY = 0;
+  let lastCmd = '';
+
+  // Tokenize commands and signed/floating numbers
+  const regex = /([a-df-z])|([-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?)/gi;
+  let match: RegExpExecArray | null;
+  const tokens: string[] = [];
+  while ((match = regex.exec(d)) !== null) {
+    tokens.push(match[0]);
+  }
+
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (/^[a-df-z]$/i.test(token)) {
+      lastCmd = token;
+      i++;
+    } else if (!lastCmd) {
+      i++;
+      continue;
+    }
+
+    const cmd = lastCmd;
+    const isRel = cmd === cmd.toLowerCase();
+    const upper = cmd.toUpperCase();
+
+    if (upper === 'M') {
+      if (i + 1 >= tokens.length) break;
+      const x = parseFloat(tokens[i++]);
+      const y = parseFloat(tokens[i++]);
+      currentX = isRel ? currentX + x : x;
+      currentY = isRel ? currentY + y : y;
+      if (currentSubpath.length > 0) {
+        subpaths.push(currentSubpath);
+        currentSubpath = [];
+      }
+      currentSubpath.push({ x: currentX, y: currentY, z: 0 });
+      lastCpX = currentX;
+      lastCpY = currentY;
+      lastCmd = isRel ? 'l' : 'L';
+    } else if (upper === 'L') {
+      if (i + 1 >= tokens.length) break;
+      const x = parseFloat(tokens[i++]);
+      const y = parseFloat(tokens[i++]);
+      currentX = isRel ? currentX + x : x;
+      currentY = isRel ? currentY + y : y;
+      currentSubpath.push({ x: currentX, y: currentY, z: 0 });
+      lastCpX = currentX;
+      lastCpY = currentY;
+    } else if (upper === 'H') {
+      if (i >= tokens.length) break;
+      const x = parseFloat(tokens[i++]);
+      currentX = isRel ? currentX + x : x;
+      currentSubpath.push({ x: currentX, y: currentY, z: 0 });
+      lastCpX = currentX;
+    } else if (upper === 'V') {
+      if (i >= tokens.length) break;
+      const y = parseFloat(tokens[i++]);
+      currentY = isRel ? currentY + y : y;
+      currentSubpath.push({ x: currentX, y: currentY, z: 0 });
+      lastCpY = currentY;
+    } else if (upper === 'C') {
+      if (i + 5 >= tokens.length) break;
+      const x1 = parseFloat(tokens[i++]);
+      const y1 = parseFloat(tokens[i++]);
+      const x2 = parseFloat(tokens[i++]);
+      const y2 = parseFloat(tokens[i++]);
+      const x = parseFloat(tokens[i++]);
+      const y = parseFloat(tokens[i++]);
+
+      const p0: Point3D = { x: currentX, y: currentY, z: 0 };
+      const p1: Point3D = { x: isRel ? currentX + x1 : x1, y: isRel ? currentY + y1 : y1, z: 0 };
+      const p2: Point3D = { x: isRel ? currentX + x2 : x2, y: isRel ? currentY + y2 : y2, z: 0 };
+      const p3: Point3D = { x: isRel ? currentX + x : x, y: isRel ? currentY + y : y, z: 0 };
+
+      const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, 0.5);
+      for (let k = 1; k < curvePts.length; k++) {
+        currentSubpath.push(curvePts[k]);
+      }
+
+      currentX = p3.x;
+      currentY = p3.y;
+      lastCpX = p2.x;
+      lastCpY = p2.y;
+    } else if (upper === 'S') {
+      if (i + 3 >= tokens.length) break;
+      const p1X = ['C', 'c', 'S', 's'].includes(cmd) ? 2 * currentX - lastCpX : currentX;
+      const p1Y = ['C', 'c', 'S', 's'].includes(cmd) ? 2 * currentY - lastCpY : currentY;
+      const x2 = parseFloat(tokens[i++]);
+      const y2 = parseFloat(tokens[i++]);
+      const x = parseFloat(tokens[i++]);
+      const y = parseFloat(tokens[i++]);
+
+      const p0: Point3D = { x: currentX, y: currentY, z: 0 };
+      const p1: Point3D = { x: p1X, y: p1Y, z: 0 };
+      const p2: Point3D = { x: isRel ? currentX + x2 : x2, y: isRel ? currentY + y2 : y2, z: 0 };
+      const p3: Point3D = { x: isRel ? currentX + x : x, y: isRel ? currentY + y : y, z: 0 };
+
+      const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, 0.5);
+      for (let k = 1; k < curvePts.length; k++) {
+        currentSubpath.push(curvePts[k]);
+      }
+
+      currentX = p3.x;
+      currentY = p3.y;
+      lastCpX = p2.x;
+      lastCpY = p2.y;
+    } else if (upper === 'Q') {
+      if (i + 3 >= tokens.length) break;
+      const x1 = parseFloat(tokens[i++]);
+      const y1 = parseFloat(tokens[i++]);
+      const x = parseFloat(tokens[i++]);
+      const y = parseFloat(tokens[i++]);
+
+      const p0: Point3D = { x: currentX, y: currentY, z: 0 };
+      const cp: Point3D = { x: isRel ? currentX + x1 : x1, y: isRel ? currentY + y1 : y1, z: 0 };
+      const p2: Point3D = { x: isRel ? currentX + x : x, y: isRel ? currentY + y : y, z: 0 };
+
+      const p1: Point3D = { x: p0.x + (2 / 3) * (cp.x - p0.x), y: p0.y + (2 / 3) * (cp.y - p0.y), z: 0 };
+      const pCubic2: Point3D = { x: p2.x + (2 / 3) * (cp.x - p2.x), y: p2.y + (2 / 3) * (cp.y - p2.y), z: 0 };
+
+      const curvePts = adaptiveTessellateCubicBezier(p0, p1, pCubic2, p2, 0.5);
+      for (let k = 1; k < curvePts.length; k++) {
+        currentSubpath.push(curvePts[k]);
+      }
+
+      currentX = p2.x;
+      currentY = p2.y;
+      lastCpX = cp.x;
+      lastCpY = cp.y;
+    } else if (upper === 'A') {
+      if (i + 6 >= tokens.length) break;
+      const rx = parseFloat(tokens[i++]);
+      const ry = parseFloat(tokens[i++]);
+      const rot = parseFloat(tokens[i++]);
+      const largeArc = parseFloat(tokens[i++]) !== 0;
+      const sweep = parseFloat(tokens[i++]) !== 0;
+      const x = parseFloat(tokens[i++]);
+      const y = parseFloat(tokens[i++]);
+      const targetX = isRel ? currentX + x : x;
+      const targetY = isRel ? currentY + y : y;
+
+      const arcPoints = tessellateSvgArc(
+        currentX,
+        currentY,
+        rx,
+        ry,
+        rot,
+        largeArc,
+        sweep,
+        targetX,
+        targetY
+      );
+
+      for (const pt of arcPoints) {
+        currentSubpath.push(pt);
+      }
+
+      currentX = targetX;
+      currentY = targetY;
+      lastCpX = currentX;
+      lastCpY = currentY;
+    } else if (upper === 'Z') {
+      if (currentSubpath.length > 1) {
+        const first = currentSubpath[0];
+        currentSubpath.push({ x: first.x, y: first.y, z: first.z });
+        currentX = first.x;
+        currentY = first.y;
+      }
+      subpaths.push(currentSubpath);
+      currentSubpath = [];
+    } else {
+      i++;
+    }
+  }
+
+  if (currentSubpath.length > 0) {
+    subpaths.push(currentSubpath);
+  }
+
+  return subpaths;
+}
+
+/**
  * Converts SVG XML path and geometry elements into AutoCAD DXF ASCII format
  */
 export function svgToDxf(svgContent: string): string {
@@ -563,6 +775,21 @@ export function svgToDxf(svgContent: string): string {
       let polyDxf = `  0\nLWPOLYLINE\n  8\n0\n 90\n${numPts}\n 70\n1`;
       for (let i = 0; i < numPts; i++) {
         polyDxf += `\n 10\n${pts[i * 2]}\n 20\n${-pts[i * 2 + 1]}`;
+      }
+      entities.push(polyDxf);
+    }
+  }
+
+  // 5. Paths with Cubic / Quadratic Bezier curves (<path d="..." />)
+  const pathRegex = /<path\s+[^>]*?d="([^"]+)"[^>]*?\/?>/gi;
+  while ((m = pathRegex.exec(svgContent)) !== null) {
+    const dAttr = m[1];
+    const subpaths = parseSvgPathToBezierPoints(dAttr);
+    for (const sub of subpaths) {
+      if (sub.length < 2) continue;
+      let polyDxf = `  0\nLWPOLYLINE\n  8\n0\n 90\n${sub.length}\n 70\n0`;
+      for (const pt of sub) {
+        polyDxf += `\n 10\n${pt.x.toFixed(4)}\n 20\n${(-pt.y).toFixed(4)}`;
       }
       entities.push(polyDxf);
     }
@@ -960,43 +1187,61 @@ function parse3dCad(buffer: Buffer, format: string, defaultName: string): CadMes
     }
   }
 
-  // 3. STEP (ISO 10303-21) Parser
-  if (format === 'step' || format === 'stp' || text.includes('ISO-10303-21')) {
-    const vertices: [number, number, number][] = [];
-    const ptRegex = /CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*\)\s*\)/g;
-    let m: RegExpExecArray | null;
-
-    while ((m = ptRegex.exec(text)) !== null) {
-      vertices.push([parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])]);
+  // 3. STEP (ISO 10303-21) and IGES with de Boor NURBS Tessellator
+  if (
+    ['step', 'stp', 'iges', 'igs'].includes(format) ||
+    text.includes('ISO-10303-21') ||
+    text.includes('S      1') ||
+    text.includes('G      1')
+  ) {
+    try {
+      const cadFmt = ['iges', 'igs'].includes(format) || text.includes('S      1') ? 'iges' : 'step';
+      const mesh = tessellateCadBuffer(buffer, cadFmt, defaultName);
+      if (mesh.vertices.length > 0) {
+        return mesh;
+      }
+    } catch {
+      // Fall back to direct entity point parsing
     }
 
-    const faces: [number, number, number][] = [];
-    for (let j = 0; j + 2 < vertices.length; j += 3) {
-      faces.push([j, j + 1, j + 2]);
+    // Direct Cartesian point parsing for STEP
+    if (format === 'step' || format === 'stp' || text.includes('ISO-10303-21')) {
+      const vertices: [number, number, number][] = [];
+      const ptRegex = /CARTESIAN_POINT\s*\(\s*(?:'[^']*'|[^,()]+)?\s*,?\s*\(\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*\)\s*\)/g;
+      let m: RegExpExecArray | null;
+
+      while ((m = ptRegex.exec(text)) !== null) {
+        vertices.push([parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])]);
+      }
+
+      const faces: [number, number, number][] = [];
+      for (let j = 0; j + 2 < vertices.length; j += 3) {
+        faces.push([j, j + 1, j + 2]);
+      }
+
+      if (vertices.length > 0) {
+        return { name: defaultName, vertices, faces, normals: [] };
+      }
     }
 
-    if (vertices.length > 0) {
-      return { name: defaultName, vertices, faces, normals: [] };
-    }
-  }
+    // Direct Cartesian point parsing for IGES
+    if (format === 'iges' || format === 'igs' || text.includes('S      1') || text.includes('G      1')) {
+      const vertices: [number, number, number][] = [];
+      const ptRegex = /116\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)/g;
+      let m: RegExpExecArray | null;
 
-  // 4. IGES Parser (ANSI IGES 116 Cartesian points)
-  if (format === 'iges' || format === 'igs' || text.includes('S      1') || text.includes('G      1')) {
-    const vertices: [number, number, number][] = [];
-    const ptRegex = /116\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)/g;
-    let m: RegExpExecArray | null;
+      while ((m = ptRegex.exec(text)) !== null) {
+        vertices.push([parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])]);
+      }
 
-    while ((m = ptRegex.exec(text)) !== null) {
-      vertices.push([parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])]);
-    }
+      const faces: [number, number, number][] = [];
+      for (let j = 0; j + 2 < vertices.length; j += 3) {
+        faces.push([j, j + 1, j + 2]);
+      }
 
-    const faces: [number, number, number][] = [];
-    for (let j = 0; j + 2 < vertices.length; j += 3) {
-      faces.push([j, j + 1, j + 2]);
-    }
-
-    if (vertices.length > 0) {
-      return { name: defaultName, vertices, faces, normals: [] };
+      if (vertices.length > 0) {
+        return { name: defaultName, vertices, faces, normals: [] };
+      }
     }
   }
 
@@ -1082,10 +1327,21 @@ export function encodeObj(mesh: CadMesh3D): string {
     obj += `v ${v[0]} ${v[1]} ${v[2]}\n`;
   });
 
+  if (mesh.normals && mesh.normals.length === mesh.vertices.length) {
+    obj += '\n';
+    mesh.normals.forEach((n) => {
+      obj += `vn ${n[0]} ${n[1]} ${n[2]}\n`;
+    });
+  }
+
   obj += '\n';
 
   mesh.faces.forEach((f) => {
-    obj += `f ${f[0] + 1} ${f[1] + 1} ${f[2] + 1}\n`;
+    if (mesh.normals && mesh.normals.length === mesh.vertices.length) {
+      obj += `f ${f[0] + 1}//${f[0] + 1} ${f[1] + 1}//${f[1] + 1} ${f[2] + 1}//${f[2] + 1}\n`;
+    } else {
+      obj += `f ${f[0] + 1} ${f[1] + 1} ${f[2] + 1}\n`;
+    }
   });
 
   return obj;

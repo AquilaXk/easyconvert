@@ -2,6 +2,10 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult } from '../types';
+import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
+import { performOcr, generateSearchablePdf } from './ocr';
+
+export { quantizeMedianCut, quantizeNeuQuant, encodeBmp8, performOcr, generateSearchablePdf };
 
 export function encodeBmp(raw: Buffer, width: number, height: number, channels: number): Buffer {
   const rowSize = width * 3;
@@ -320,10 +324,16 @@ export async function convertImage(
       mimeType = 'image/jpeg';
       break;
 
-    case 'png':
-      outputBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
+    case 'png': {
+      if (options.colorDepth === 8 || options.palette) {
+        const colours = Math.min(256, Math.max(2, options.colors || 256));
+        outputBuffer = await pipeline.png({ palette: true, colours, dither: options.dither !== false ? 1.0 : 0.0, compressionLevel: 8 }).toBuffer();
+      } else {
+        outputBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
+      }
       mimeType = 'image/png';
       break;
+    }
 
     case 'webp':
       outputBuffer = await pipeline.webp({ quality }).toBuffer();
@@ -340,10 +350,12 @@ export async function convertImage(
       mimeType = 'image/tiff';
       break;
 
-    case 'gif':
-      outputBuffer = await pipeline.gif().toBuffer();
+    case 'gif': {
+      const colours = Math.min(256, Math.max(2, options.colors || 256));
+      outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
       mimeType = 'image/gif';
       break;
+    }
 
     case 'bmp': {
       // Deterministic raw RGBA extraction and standard BMP binary generation
@@ -351,7 +363,20 @@ export async function convertImage(
         .ensureAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
-      outputBuffer = encodeBmp(data, info.width, info.height, info.channels);
+
+      if (options.colorDepth === 8) {
+        // Advanced 8-bit paletted BMP with NeuQuant / Median Cut
+        const rawRgb = Buffer.alloc(info.width * info.height * 3);
+        for (let i = 0; i < info.width * info.height; i++) {
+          rawRgb[i * 3] = data[i * 4];
+          rawRgb[i * 3 + 1] = data[i * 4 + 1];
+          rawRgb[i * 3 + 2] = data[i * 4 + 2];
+        }
+        const quant = quantizeNeuQuant(rawRgb, info.width, info.height, 3, 10, options.dither !== false);
+        outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
+      } else {
+        outputBuffer = encodeBmp(data, info.width, info.height, info.channels);
+      }
       mimeType = 'image/bmp';
       break;
     }
@@ -467,6 +492,20 @@ async function convertImageToPdf(
   const metadata = await pipeline.metadata();
   const imgWidth = metadata.width || 595.28;
   const imgHeight = metadata.height || 841.89;
+
+  // If OCR is requested, generate an authentic Searchable PDF with invisible text layer
+  if (options.ocrEnabled) {
+    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
+    const searchablePdf = await generateSearchablePdf(inputBuffer, ocrResult, options, baseName);
+    return {
+      buffer: searchablePdf,
+      mimeType: 'application/pdf',
+      filename: `${baseName}.pdf`,
+      size: searchablePdf.length,
+      ocrExtractedText: ocrResult.text,
+      ocrConfidence: ocrResult.confidence,
+    };
+  }
 
   // Convert to PNG buffer first to ensure pdfkit can embed it reliably
   const pngBuffer = await pipeline.png().toBuffer();

@@ -1,12 +1,59 @@
 import { ConversionOptions, ConversionResult } from '../types';
 import { FORMAT_REGISTRY } from '../registry';
 import { convertImage } from './image';
-import { convertDocument } from './document';
+import { convertDocument, extractTextFromPdf } from './document';
 import { convertData } from './data';
 import { convertMedia } from './media';
 import { convertOffice } from './office';
 import { convertFont } from './font';
-import { convertVectorCad } from './vector-cad';
+import { convertVectorCad, svgToDxf, parseSvgPathToBezierPoints } from './vector-cad';
+import {
+  convertHwp,
+  parseHwpDocument,
+  buildHwpCompoundFile,
+  isCfbfContainer,
+  parseCfbf,
+  parseHwpRecords,
+  buildHwpRecord,
+  decodeHwpText,
+  decompressHwpStream,
+  HWP_TAGS,
+} from './hwp';
+import {
+  tessellateCadBuffer,
+  tessellateCurvesToMesh,
+  evaluateBSplineSurface,
+  evaluateBSplineCurve,
+  evaluateCubicBezier,
+  evaluateCubicBezierDerivative,
+  adaptiveTessellateCubicBezier,
+  evaluateQuadraticBezier,
+  cubicBezierToBSpline,
+  tessellateSvgArc,
+  tessellateBSplineSurface,
+  coxDeBoorBasis,
+  coxDeBoorBasisDerivative,
+  evaluateAllBasis,
+  evaluateAllBasisDerivatives,
+  parseStepEntities,
+  extractStepPoint,
+  expandKnotsWithMultiplicities,
+  extractStepBSplineSurfaces,
+  extractStepBSplineCurves,
+  parseIgesBSplineSurfaces,
+  parseIgesBSplineCurves,
+} from './cad-nurbs';
+import {
+  encodePureMp3,
+  encodePureH264Mp4,
+  generateH264Sps,
+  generateH264Pps,
+  generateH264IdrSlice,
+  generateH264NonIdrSlice,
+  escapeH264Rbsp,
+  BitWriter,
+} from './media-encoder';
+import { decodePdfHexString, unescapePdfString } from './pdf-utils';
 import {
   convertArchive,
   convertToArchive,
@@ -19,6 +66,10 @@ import {
   create7zArchive,
   extract7zArchive,
 } from './archive';
+
+import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
+import { performOcr, generateSearchablePdf } from './ocr';
+import { generateFb2FromText, generateHwpFromText } from './office';
 
 export {
   createZipArchive,
@@ -33,10 +84,62 @@ export {
   convertMedia,
   convertOffice,
   convertDocument,
+  extractTextFromPdf,
   convertImage,
   convertData,
   convertFont,
   convertVectorCad,
+  svgToDxf,
+  convertHwp,
+  parseHwpDocument,
+  buildHwpCompoundFile,
+  buildHwpRecord,
+  isCfbfContainer,
+  parseCfbf,
+  parseHwpRecords,
+  decodeHwpText,
+  decompressHwpStream,
+  HWP_TAGS,
+  tessellateCadBuffer,
+  tessellateCurvesToMesh,
+  evaluateBSplineSurface,
+  evaluateBSplineCurve,
+  evaluateCubicBezier,
+  evaluateCubicBezierDerivative,
+  adaptiveTessellateCubicBezier,
+  evaluateQuadraticBezier,
+  cubicBezierToBSpline,
+  tessellateSvgArc,
+  tessellateBSplineSurface,
+  coxDeBoorBasis,
+  coxDeBoorBasisDerivative,
+  evaluateAllBasis,
+  evaluateAllBasisDerivatives,
+  parseStepEntities,
+  extractStepPoint,
+  expandKnotsWithMultiplicities,
+  extractStepBSplineSurfaces,
+  extractStepBSplineCurves,
+  parseIgesBSplineSurfaces,
+  parseIgesBSplineCurves,
+  encodePureMp3,
+  encodePureH264Mp4,
+  generateH264Sps,
+  generateH264Pps,
+  generateH264IdrSlice,
+  generateH264NonIdrSlice,
+  escapeH264Rbsp,
+  BitWriter,
+  parseSvgPathToBezierPoints,
+  decodePdfHexString,
+  unescapePdfString,
+  quantizeMedianCut,
+  quantizeNeuQuant,
+  encodeBmp8,
+  performOcr,
+  generateSearchablePdf,
+  generateFb2FromText,
+  generateHwpFromText,
 };
 
 export async function convertFile(
@@ -248,7 +351,7 @@ export async function convertFile(
       'numbers',
       'pages',
     ].includes(src) ||
-    ['docx', 'xlsx', 'epub', 'pptx', 'odp', 'ods', 'odt', 'xls', 'key', 'numbers', 'pages', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'].includes(tgt)
+    ['docx', 'xlsx', 'epub', 'pptx', 'odp', 'ods', 'odt', 'xls', 'key', 'numbers', 'pages', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp'].includes(tgt)
   ) {
     return convertOffice(inputBuffer, src, tgt, options, originalFilename);
   }
