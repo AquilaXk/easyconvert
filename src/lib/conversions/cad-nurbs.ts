@@ -1188,15 +1188,14 @@ export function parseIgesBSplineCurves(content: string): BSplineCurve[] {
 // ============================================================================
 
 /**
- * Tessellates any STEP or IGES CAD model with B-spline curves/surfaces into
+ * Tessellates any STEP or IGES CAD model string with B-spline curves/surfaces into
  * a unified 3D mesh (TessellatedMesh) ready for STL, OBJ, or DXF export.
  */
-export function tessellateCadBuffer(
-  buffer: Buffer,
-  format: 'step' | 'stp' | 'iges' | 'igs',
+export function tessellateCadText(
+  text: string,
+  format: 'step' | 'stp' | 'iges' | 'igs' | string,
   modelName = 'cad_model'
 ): TessellatedMesh {
-  const text = buffer.toString('utf-8');
   const isIges = format === 'iges' || format === 'igs' || text.includes('S      1');
 
   if (isIges) {
@@ -1255,6 +1254,24 @@ export function tessellateCadBuffer(
   }
 
   throw new Error(`Failed to tessellate CAD geometry from ${format}: No valid B-spline surfaces or Cartesian points found.`);
+}
+
+/**
+ * Tessellates any STEP or IGES CAD model with B-spline curves/surfaces into
+ * a unified 3D mesh (TessellatedMesh) ready for STL, OBJ, or DXF export.
+ */
+export function tessellateCadBuffer(
+  buffer: Buffer | Uint8Array | string,
+  format: 'step' | 'stp' | 'iges' | 'igs',
+  modelName = 'cad_model'
+): TessellatedMesh {
+  const text =
+    typeof buffer === 'string'
+      ? buffer
+      : typeof Buffer !== 'undefined' && Buffer.isBuffer(buffer)
+      ? buffer.toString('utf-8')
+      : new TextDecoder('utf-8').decode(buffer);
+  return tessellateCadText(text, format, modelName);
 }
 
 /**

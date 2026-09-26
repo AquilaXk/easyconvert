@@ -9,9 +9,7 @@ import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
-import { createItemConverter } from '@/lib/client-converter';
-
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+import { createItemConverter, getEffectiveMaxFileSize } from '@/lib/client-converter';
 
 export default function Home() {
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
@@ -20,6 +18,7 @@ export default function Home() {
 
   // Add files to queue
   const handleFilesSelected = (files: File[], defaultTarget?: string) => {
+    const maxLimit = getEffectiveMaxFileSize();
     const newItems: ConversionQueueItem[] = files.map((file) => {
       const detected = detectFormatFromFilename(file.name);
       const sourceFormat = detected ? detected.extension : file.name.split('.').pop() || 'bin';
@@ -36,7 +35,7 @@ export default function Home() {
         }
       }
 
-      const isOverSize = file.size > MAX_FILE_SIZE;
+      const isOverSize = file.size > maxLimit;
 
       return {
         id: Math.random().toString(36).substring(2, 9) + Date.now().toString(36),
@@ -46,7 +45,9 @@ export default function Home() {
         sourceFormat,
         targetFormat,
         status: isOverSize ? 'error' : 'ready',
-        error: isOverSize ? 'File exceeds 100 MB real-time conversion limit.' : undefined,
+        error: isOverSize
+          ? `File exceeds ${Math.round(maxLimit / (1024 * 1024))} MB real-time conversion limit.`
+          : undefined,
         progress: 0,
         options: {
           quality: 85,
@@ -112,7 +113,7 @@ export default function Home() {
   };
 
   // Convert a single item
-  const convertSingleItem = createItemConverter(setQueue, MAX_FILE_SIZE);
+  const convertSingleItem = createItemConverter(setQueue);
 
   // Convert all ready/error items
   const handleConvertAll = async () => {

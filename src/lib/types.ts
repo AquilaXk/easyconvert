@@ -127,6 +127,7 @@ export interface ConversionQueueItem {
   error?: string;
   options: ConversionOptions;
   edgeProcessed?: boolean;
+  edgeTier?: string;
 }
 
 export interface ConversionResult {
