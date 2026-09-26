@@ -293,11 +293,169 @@ export function findClosestPaletteIndex(c: RgbColor, palette: RgbColor[]): numbe
     if (diff < minDiff) {
       minDiff = diff;
       bestIdx = i;
-      if (diff === 0) break;
+      if (diff < 1e-6) break;
     }
   }
 
   return bestIdx;
+}
+
+// ============================================================================
+// 3. Perceptual Color Spaces (OKLab & CIEDE2000)
+// ============================================================================
+
+export interface OklabColor {
+  L: number;
+  a: number;
+  b: number;
+}
+
+export interface LabColor {
+  L: number;
+  a: number;
+  b: number;
+}
+
+/**
+ * Converts standard sRGB (0-255) to OKLab (Björn Ottosson, 2020)
+ * Perceptually uniform color space with superior hue linearity for digital displays.
+ */
+export function srgbToOklab(r: number, g: number, b: number): OklabColor {
+  const toLinear = (c: number): number => {
+    const norm = c / 255;
+    return norm <= 0.04045 ? norm / 12.92 : Math.pow((norm + 0.055) / 1.055, 2.4);
+  };
+
+  const rL = toLinear(r);
+  const gL = toLinear(g);
+  const bL = toLinear(b);
+
+  const l = 0.4122214708 * rL + 0.5363325363 * gL + 0.0514459929 * bL;
+  const m = 0.2119034982 * rL + 0.6806995451 * gL + 0.1073969566 * bL;
+  const s = 0.0883024619 * rL + 0.2817188376 * gL + 0.6299787005 * bL;
+
+  const l_ = Math.cbrt(l);
+  const m_ = Math.cbrt(m);
+  const s_ = Math.cbrt(s);
+
+  return {
+    L: 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+    a: 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+    b: 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+  };
+}
+
+/**
+ * Computes Euclidean perceptual distance in OKLab color space
+ */
+export function deltaEOklab(c1: OklabColor, c2: OklabColor): number {
+  return Math.hypot(c1.L - c2.L, c1.a - c2.a, c1.b - c2.b);
+}
+
+/**
+ * Finds closest palette index using OKLab perceptual color space
+ */
+export function findClosestPaletteIndexOklab(
+  c: RgbColor,
+  palette: RgbColor[],
+  precomputedPaletteOklab?: OklabColor[]
+): number {
+  const cOk = srgbToOklab(c.r, c.g, c.b);
+  let minDiff = Number.MAX_SAFE_INTEGER;
+  let bestIdx = 0;
+
+  for (let i = 0; i < palette.length; i++) {
+    const pOk = precomputedPaletteOklab ? precomputedPaletteOklab[i] : srgbToOklab(palette[i].r, palette[i].g, palette[i].b);
+    const diff = deltaEOklab(cOk, pOk);
+    if (diff < minDiff) {
+      minDiff = diff;
+      bestIdx = i;
+      if (diff < 1e-6) break;
+    }
+  }
+
+  return bestIdx;
+}
+
+/**
+ * Authoritative CIEDE2000 (Sharma, Wu, Dalal 2005) formulation with rotation term RT
+ */
+export function ciede2000(c1: LabColor, c2: LabColor, kL = 1, kC = 1, kH = 1): number {
+  const { L: L1, a: a1, b: b1 } = c1;
+  const { L: L2, a: a2, b: b2 } = c2;
+
+  const degToRad = (d: number): number => d * (Math.PI / 180);
+  const radToDeg = (r: number): number => r * (180 / Math.PI);
+
+  const C1 = Math.hypot(a1, b1);
+  const C2 = Math.hypot(a2, b2);
+  const cBar = (C1 + C2) / 2;
+
+  const cBar7 = Math.pow(cBar, 7);
+  const g = 0.5 * (1 - Math.sqrt(cBar7 / (cBar7 + 6103515625))); // 25^7 = 6103515625
+
+  const a1Prime = (1 + g) * a1;
+  const a2Prime = (1 + g) * a2;
+
+  const c1Prime = Math.hypot(a1Prime, b1);
+  const c2Prime = Math.hypot(a2Prime, b2);
+
+  let h1Prime = radToDeg(Math.atan2(b1, a1Prime));
+  if (h1Prime < 0) h1Prime += 360;
+
+  let h2Prime = radToDeg(Math.atan2(b2, a2Prime));
+  if (h2Prime < 0) h2Prime += 360;
+
+  const deltaLPrime = L2 - L1;
+  const deltaCPrime = c2Prime - c1Prime;
+
+  let deltahPrime = 0;
+  if (c1Prime * c2Prime !== 0) {
+    const diff = h2Prime - h1Prime;
+    if (Math.abs(diff) <= 180) deltahPrime = diff;
+    else if (diff > 180) deltahPrime = diff - 360;
+    else deltahPrime = diff + 360;
+  }
+
+  const deltaHPrime = 2 * Math.sqrt(c1Prime * c2Prime) * Math.sin(degToRad(deltahPrime / 2));
+
+  const lBarPrime = (L1 + L2) / 2;
+  const cBarPrime = (c1Prime + c2Prime) / 2;
+
+  let hBarPrime = 0;
+  if (c1Prime * c2Prime !== 0) {
+    const diff = Math.abs(h1Prime - h2Prime);
+    const sum = h1Prime + h2Prime;
+    if (diff <= 180) hBarPrime = sum / 2;
+    else if (sum < 360) hBarPrime = (sum + 360) / 2;
+    else hBarPrime = (sum - 360) / 2;
+  } else {
+    hBarPrime = h1Prime + h2Prime;
+  }
+
+  const t =
+    1 -
+    0.17 * Math.cos(degToRad(hBarPrime - 30)) +
+    0.24 * Math.cos(degToRad(2 * hBarPrime)) +
+    0.32 * Math.cos(degToRad(3 * hBarPrime + 6)) -
+    0.2 * Math.cos(degToRad(4 * hBarPrime - 63));
+
+  const deltaTheta = 30 * Math.exp(-Math.pow((hBarPrime - 275) / 25, 2));
+  const cBarPrime7 = Math.pow(cBarPrime, 7);
+  const rc = 2 * Math.sqrt(cBarPrime7 / (cBarPrime7 + 6103515625));
+
+  const sL = 1 + (0.015 * Math.pow(lBarPrime - 50, 2)) / Math.sqrt(20 + Math.pow(lBarPrime - 50, 2));
+  const sC = 1 + 0.045 * cBarPrime;
+  const sH = 1 + 0.015 * cBarPrime * t;
+
+  const rT = -Math.sin(degToRad(2 * deltaTheta)) * rc;
+
+  return Math.sqrt(
+    Math.pow(deltaLPrime / (kL * sL), 2) +
+      Math.pow(deltaCPrime / (kC * sC), 2) +
+      Math.pow(deltaHPrime / (kH * sH), 2) +
+      rT * (deltaCPrime / (kC * sC)) * (deltaHPrime / (kH * sH))
+  );
 }
 
 export function applyFloydSteinbergDither(

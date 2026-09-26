@@ -897,6 +897,320 @@ async function generatePdfFromDocx(
   });
 }
 
+export type CellResolver = (cellRef: string) => any;
+
+type FormulaTokenType =
+  | 'NUMBER'
+  | 'STRING'
+  | 'BOOLEAN'
+  | 'RANGE'
+  | 'CELL_REF'
+  | 'FUNCTION'
+  | 'OP'
+  | 'OP_COMP'
+  | 'LPAREN'
+  | 'RPAREN'
+  | 'COMMA';
+
+interface FormulaToken {
+  type: FormulaTokenType;
+  val: any;
+}
+
+/**
+ * Pure TypeScript Spreadsheet Formula Evaluator
+ * Supports basic arithmetic (+, -, *, /, ^, %, &), comparisons (=, <>, <, <=, >, >=),
+ * cell references/ranges (A1, $B$2, A1:B10), and common functions (SUM, AVERAGE, COUNT, MIN, MAX, IF).
+ */
+export class SpreadsheetFormulaEvaluator {
+  constructor(private cellLookup: CellResolver) {}
+
+  public evaluate(formula: string): any {
+    if (formula.startsWith('=')) formula = formula.slice(1);
+    const tokens = this.tokenize(formula);
+    let pos = 0;
+
+    const peek = (): FormulaToken | undefined => tokens[pos];
+    const consume = (expectedType?: FormulaTokenType): FormulaToken => {
+      const t = tokens[pos];
+      if (!t) throw new Error('Unexpected end of formula');
+      if (expectedType && t.type !== expectedType) throw new Error(`Expected ${expectedType} but got ${t.type}`);
+      pos++;
+      return t;
+    };
+
+    const parseComparison = (): any => {
+      let left = parseConcat();
+      while (peek() && peek()!.type === 'OP_COMP') {
+        const op = consume().val;
+        const right = parseConcat();
+        if (op === '=') left = left == right;
+        else if (op === '<>') left = left != right;
+        else if (op === '<') left = left < right;
+        else if (op === '<=') left = left <= right;
+        else if (op === '>') left = left > right;
+        else if (op === '>=') left = left >= right;
+      }
+      return left;
+    };
+
+    const parseConcat = (): any => {
+      let left = parseAdditive();
+      while (peek() && peek()!.type === 'OP' && peek()!.val === '&') {
+        consume();
+        const right = parseAdditive();
+        left = String(left ?? '') + String(right ?? '');
+      }
+      return left;
+    };
+
+    const parseAdditive = (): any => {
+      let left = parseMultiplicative();
+      while (peek() && peek()!.type === 'OP' && (peek()!.val === '+' || peek()!.val === '-')) {
+        const op = consume().val;
+        const right = parseMultiplicative();
+        left = op === '+' ? Number(left) + Number(right) : Number(left) - Number(right);
+      }
+      return left;
+    };
+
+    const parseMultiplicative = (): any => {
+      let left = parsePower();
+      while (peek() && peek()!.type === 'OP' && (peek()!.val === '*' || peek()!.val === '/')) {
+        const op = consume().val;
+        const right = parsePower();
+        left = op === '*' ? Number(left) * Number(right) : Number(left) / Number(right);
+      }
+      return left;
+    };
+
+    const parsePower = (): any => {
+      let left = parseUnary();
+      while (peek() && peek()!.type === 'OP' && peek()!.val === '^') {
+        consume();
+        const right = parseUnary();
+        left = Math.pow(Number(left), Number(right));
+      }
+      return left;
+    };
+
+    const parseUnary = (): any => {
+      if (peek() && peek()!.type === 'OP' && (peek()!.val === '+' || peek()!.val === '-')) {
+        const op = consume().val;
+        const operand = parseUnary();
+        return op === '-' ? -Number(operand) : Number(operand);
+      }
+      let val = parsePrimary();
+      if (peek() && peek()!.type === 'OP' && peek()!.val === '%') {
+        consume();
+        val = Number(val) / 100;
+      }
+      return val;
+    };
+
+    const parsePrimary = (): any => {
+      const t = peek();
+      if (!t) throw new Error('Unexpected end of expression');
+      if (t.type === 'NUMBER' || t.type === 'STRING' || t.type === 'BOOLEAN') {
+        consume();
+        return t.val;
+      }
+      if (t.type === 'LPAREN') {
+        consume();
+        const val = parseComparison();
+        consume('RPAREN');
+        return val;
+      }
+      if (t.type === 'FUNCTION') {
+        return parseFunctionCall();
+      }
+      if (t.type === 'RANGE') {
+        consume();
+        return this.resolveRange(t.val);
+      }
+      if (t.type === 'CELL_REF') {
+        consume();
+        return this.cellLookup(t.val);
+      }
+      throw new Error(`Unexpected token: ${t.type} (${t.val})`);
+    };
+
+    const parseFunctionCall = (): any => {
+      const fnName = String(consume('FUNCTION').val).toUpperCase();
+      consume('LPAREN');
+      const args: any[] = [];
+      if (!peek() || peek()!.type !== 'RPAREN') {
+        while (true) {
+          args.push(parseComparison());
+          if (peek() && peek()!.type === 'COMMA') {
+            consume();
+          } else {
+            break;
+          }
+        }
+      }
+      consume('RPAREN');
+      return this.executeFunction(fnName, args);
+    };
+
+    return parseComparison();
+  }
+
+  private resolveRange(rangeStr: string): any[] {
+    const [start, end] = rangeStr.split(':');
+    const match1 = start.match(/^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/);
+    const match2 = end.match(/^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/);
+    if (!match1 || !match2) return [];
+
+    const colToNum = (s: string): number => {
+      let c = 0;
+      for (let i = 0; i < s.length; i++) c = c * 26 + (s.charCodeAt(i) - 64);
+      return c;
+    };
+
+    const c1 = colToNum(match1[2].toUpperCase());
+    const r1 = Number.parseInt(match1[4], 10);
+    const c2 = colToNum(match2[2].toUpperCase());
+    const r2 = Number.parseInt(match2[4], 10);
+    const minC = Math.min(c1, c2), maxC = Math.max(c1, c2);
+    const minR = Math.min(r1, r2), maxR = Math.max(r1, r2);
+
+    const values: any[] = [];
+    for (let r = minR; r <= maxR; r++) {
+      for (let c = minC; c <= maxC; c++) {
+        let colName = '';
+        let temp = c;
+        while (temp > 0) {
+          colName = String.fromCharCode(65 + ((temp - 1) % 26)) + colName;
+          temp = Math.floor((temp - 1) / 26);
+        }
+        values.push(this.cellLookup(`${colName}${r}`));
+      }
+    }
+    return values;
+  }
+
+  private executeFunction(name: string, args: any[]): any {
+    const flattenNumbers = (arr: any[]): number[] => {
+      const out: number[] = [];
+      const walk = (item: any) => {
+        if (Array.isArray(item)) {
+          item.forEach(walk);
+        } else if (item !== null && item !== undefined && item !== '' && !Number.isNaN(Number(item))) {
+          out.push(Number(item));
+        }
+      };
+      walk(arr);
+      return out;
+    };
+
+    switch (name) {
+      case 'SUM': {
+        const nums = flattenNumbers(args);
+        return nums.reduce((a, b) => a + b, 0);
+      }
+      case 'AVERAGE': {
+        const nums = flattenNumbers(args);
+        return nums.length === 0 ? 0 : nums.reduce((a, b) => a + b, 0) / nums.length;
+      }
+      case 'COUNT': {
+        const nums = flattenNumbers(args);
+        return nums.length;
+      }
+      case 'MIN': {
+        const nums = flattenNumbers(args);
+        return nums.length === 0 ? 0 : Math.min(...nums);
+      }
+      case 'MAX': {
+        const nums = flattenNumbers(args);
+        return nums.length === 0 ? 0 : Math.max(...nums);
+      }
+      case 'IF': {
+        const cond = Boolean(args[0]);
+        return cond ? args[1] : args.length > 2 ? args[2] : false;
+      }
+      default:
+        throw new Error(`Unsupported spreadsheet function: ${name}`);
+    }
+  }
+
+  private tokenize(expr: string): FormulaToken[] {
+    const tokens: FormulaToken[] = [];
+    let i = 0;
+    while (i < expr.length) {
+      const ch = expr[i];
+      if (/\s/.test(ch)) { i++; continue; }
+      if (ch === '(') { tokens.push({ type: 'LPAREN', val: '(' }); i++; continue; }
+      if (ch === ')') { tokens.push({ type: 'RPAREN', val: ')' }); i++; continue; }
+      if (ch === ',') { tokens.push({ type: 'COMMA', val: ',' }); i++; continue; }
+      if (ch === '"') {
+        let str = '';
+        i++;
+        while (i < expr.length) {
+          if (expr[i] === '"') {
+            if (i + 1 < expr.length && expr[i + 1] === '"') { str += '"'; i += 2; }
+            else { i++; break; }
+          } else { str += expr[i++]; }
+        }
+        tokens.push({ type: 'STRING', val: str });
+        continue;
+      }
+      if (ch === '<' || ch === '>' || ch === '=') {
+        let op = ch;
+        if (i + 1 < expr.length && ((ch === '<' && (expr[i + 1] === '>' || expr[i + 1] === '=')) || (ch === '>' && expr[i + 1] === '='))) {
+          op += expr[i + 1];
+          i += 2;
+        } else {
+          i++;
+        }
+        tokens.push({ type: 'OP_COMP', val: op });
+        continue;
+      }
+      if ('+-*/^%&'.includes(ch)) {
+        tokens.push({ type: 'OP', val: ch });
+        i++;
+        continue;
+      }
+      if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(expr[i + 1]))) {
+        const match = expr.slice(i).match(/^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?/)!;
+        tokens.push({ type: 'NUMBER', val: Number.parseFloat(match[0]) });
+        i += match[0].length;
+        continue;
+      }
+      const rangeMatch = expr.slice(i).match(/^(\$?[A-Za-z]+)(\$?)([0-9]+):(\$?[A-Za-z]+)(\$?)([0-9]+)/);
+      if (rangeMatch) {
+        tokens.push({ type: 'RANGE', val: rangeMatch[0] });
+        i += rangeMatch[0].length;
+        continue;
+      }
+      const cellMatch = expr.slice(i).match(/^(\$?[A-Za-z]+)(\$?)([0-9]+)/);
+      if (cellMatch && expr[i + cellMatch[0].length] !== '(') {
+        tokens.push({ type: 'CELL_REF', val: cellMatch[0] });
+        i += cellMatch[0].length;
+        continue;
+      }
+      const fnMatch = expr.slice(i).match(/^[A-Za-z_][A-Za-z0-9_.]*/);
+      if (fnMatch) {
+        const str = fnMatch[0];
+        const nextChar = expr[i + str.length];
+        if (nextChar === '(') {
+          tokens.push({ type: 'FUNCTION', val: str });
+        } else if (str.toUpperCase() === 'TRUE') {
+          tokens.push({ type: 'BOOLEAN', val: true });
+        } else if (str.toUpperCase() === 'FALSE') {
+          tokens.push({ type: 'BOOLEAN', val: false });
+        } else {
+          tokens.push({ type: 'CELL_REF', val: str });
+        }
+        i += str.length;
+        continue;
+      }
+      throw new Error(`Unexpected character: "${ch}" at index ${i}`);
+    }
+    return tokens;
+  }
+}
+
 /**
  * XLSX Source Parser & Converter
  */
@@ -927,6 +1241,9 @@ async function convertXlsxSource(
   // Parse sheet rows
   const sheetXml = await sheetFile.async('text');
   const rows: string[][] = [];
+  const cellMap: Record<string, any> = {};
+  const formulaCells: Array<{ ref: string; formula: string; rowIdx: number; colIdx: number }> = [];
+
   const rowRegex = /<row[\s\S]*?<\/row>/g;
   let rMatch: RegExpExecArray | null;
 
@@ -935,6 +1252,7 @@ async function convertXlsxSource(
     const cells: string[] = [];
     const cellRegex = /<c\s+([^>]*?)>([\s\S]*?)<\/c>/g;
     let cMatch: RegExpExecArray | null;
+    const rowIdx = rows.length;
 
     while ((cMatch = cellRegex.exec(rowXml)) !== null) {
       const attrs = cMatch[1];
@@ -943,24 +1261,60 @@ async function convertXlsxSource(
       const isInline = /t="inlineStr"/.test(attrs);
       const vMatch = body.match(/<v>([\s\S]*?)<\/v>/);
       const tMatch = body.match(/<t[^>]*>([\s\S]*?)<\/t>/);
+      const fMatch = body.match(/<f[^>]*>([\s\S]*?)<\/f>/);
+      const rRefMatch = attrs.match(/r="([A-Za-z0-9]+)"/);
+      const ref = rRefMatch ? rRefMatch[1].toUpperCase() : '';
 
+      let cellValue = '';
       if (isInline && tMatch) {
-        cells.push(tMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+        cellValue = tMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
       } else if (vMatch) {
         const val = vMatch[1];
         if (isString) {
-          const strIdx = parseInt(val, 10);
-          cells.push(sharedStrings[strIdx] ?? '');
+          const strIdx = Number.parseInt(val, 10);
+          cellValue = sharedStrings[strIdx] ?? '';
         } else {
-          cells.push(val);
+          cellValue = val;
         }
       } else if (tMatch) {
-        cells.push(tMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
-      } else {
-        cells.push('');
+        cellValue = tMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
       }
+
+      if (ref) {
+        cellMap[ref] = cellValue;
+      }
+
+      const colIdx = cells.length;
+      if (fMatch && (!cellValue || cellValue.trim() === '')) {
+        formulaCells.push({ ref, formula: fMatch[1], rowIdx, colIdx });
+      }
+
+      cells.push(cellValue);
     }
     if (cells.length > 0) rows.push(cells);
+  }
+
+  // Evaluate dynamic formulas if any values were missing
+  if (formulaCells.length > 0) {
+    const evaluator = new SpreadsheetFormulaEvaluator((ref) => {
+      const cleanRef = ref.replace(/\$/g, '').toUpperCase();
+      return cellMap[cleanRef] ?? 0;
+    });
+
+    for (const fc of formulaCells) {
+      try {
+        const result = evaluator.evaluate(fc.formula);
+        const strResult = result !== null && result !== undefined ? String(result) : '';
+        if (rows[fc.rowIdx] && fc.colIdx < rows[fc.rowIdx].length) {
+          rows[fc.rowIdx][fc.colIdx] = strResult;
+        }
+        if (fc.ref) {
+          cellMap[fc.ref] = result;
+        }
+      } catch {
+        // Fallback to empty if formula syntax is complex
+      }
+    }
   }
 
   // XLSX -> CSV

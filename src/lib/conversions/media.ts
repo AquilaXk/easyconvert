@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ConversionOptions, ConversionResult } from '../types';
-import { encodePureMp3, encodePureH264Mp4 } from './media-encoder';
+import { encodePureMp3, encodePureH264Mp4, encodeFlacStream } from './media-encoder';
 
 let ffmpegAvailable: boolean | null = null;
 function checkFfmpeg(): boolean {
@@ -427,28 +427,10 @@ function createOggPage(
 }
 
 /**
- * Encodes FLAC container with fLaC magic marker and STREAMINFO metadata
+ * Encodes FLAC container with fLaC magic marker, STREAMINFO metadata, and RFC 9639 frames
  */
 function encodeFlacContainer(samples: Int16Array, sampleRate: number, channels: number): Buffer {
-  const header = Buffer.alloc(4 + 4 + 34);
-  header.write('fLaC', 0); // Magic marker
-  // Metadata block header: Last block (0x80) | Block type 0 (STREAMINFO)
-  header.writeUInt8(0x80, 4);
-  header.writeUInt8(0x00, 5);
-  header.writeUInt16BE(34, 6); // Length 34 bytes
-
-  // STREAMINFO payload: min block size 4096, max block size 4096
-  header.writeUInt16BE(4096, 8);
-  header.writeUInt16BE(4096, 10);
-  // Sample rate (20 bits), channels - 1 (3 bits), bits per sample - 1 (5 bits)
-  header.writeUInt32BE((sampleRate << 12) | ((channels - 1) << 9) | (15 << 4), 18);
-
-  const audioPayload = Buffer.alloc(samples.length * 2);
-  for (let i = 0; i < samples.length; i++) {
-    audioPayload.writeInt16LE(samples[i], i * 2);
-  }
-
-  return Buffer.concat([header, audioPayload]);
+  return encodeFlacStream(samples, sampleRate, channels);
 }
 
 /**

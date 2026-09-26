@@ -55,7 +55,7 @@ export function coxDeBoorBasis(i: number, p: number, u: number, knots: number[])
   if (p === 0) {
     const uStart = knots[i];
     const uEnd = knots[i + 1];
-    const uMax = knots[knots.length - 1];
+    const uMax = knots.at(-1) ?? knots[0];
 
     // Boundary condition: include right endpoint for the last active knot interval
     if (u >= uStart && (u < uEnd || (u === uMax && u <= uEnd && uStart < uEnd))) {
@@ -251,7 +251,7 @@ export function adaptiveTessellateCubicBezier(
     const dx = a3.x - a0.x;
     const dy = a3.y - a0.y;
     const dz = a3.z - a0.z;
-    const lineLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const lineLen = Math.hypot(dx, dy, dz);
 
     let d1 = 0;
     let d2 = 0;
@@ -262,7 +262,7 @@ export function adaptiveTessellateCubicBezier(
       const cross1x = vy1 * dz - vz1 * dy;
       const cross1y = vz1 * dx - vx1 * dz;
       const cross1z = vx1 * dy - vy1 * dx;
-      d1 = Math.sqrt(cross1x * cross1x + cross1y * cross1y + cross1z * cross1z) / lineLen;
+      d1 = Math.hypot(cross1x, cross1y, cross1z) / lineLen;
 
       const vx2 = a2.x - a0.x;
       const vy2 = a2.y - a0.y;
@@ -270,7 +270,7 @@ export function adaptiveTessellateCubicBezier(
       const cross2x = vy2 * dz - vz2 * dy;
       const cross2y = vz2 * dx - vx2 * dz;
       const cross2z = vx2 * dy - vy2 * dx;
-      d2 = Math.sqrt(cross2x * cross2x + cross2y * cross2y + cross2z * cross2z) / lineLen;
+      d2 = Math.hypot(cross2x, cross2y, cross2z) / lineLen;
     }
 
     if ((d1 <= tolerance && d2 <= tolerance) || depth >= maxDepth) {
@@ -300,6 +300,23 @@ export function adaptiveTessellateCubicBezier(
  * Tessellates an SVG elliptical arc path command into discrete 3D points
  * using the W3C SVG 1.1 endpoint-to-center parameterization algorithm.
  */
+export interface SvgArcParams {
+  x1: number;
+  y1: number;
+  rx: number;
+  ry: number;
+  phiDeg: number;
+  largeArcFlag: boolean | number;
+  sweepFlag: boolean | number;
+  x2: number;
+  y2: number;
+}
+
+/**
+ * Tessellates an SVG elliptical arc path command into discrete 3D points
+ * using the W3C SVG 1.1 endpoint-to-center parameterization algorithm.
+ */
+export function tessellateSvgArc(params: SvgArcParams): Point3D[];
 export function tessellateSvgArc(
   x1: number,
   y1: number,
@@ -310,7 +327,36 @@ export function tessellateSvgArc(
   sweepFlag: boolean | number,
   x2: number,
   y2: number
+): Point3D[];
+export function tessellateSvgArc(
+  pOrX1: SvgArcParams | number,
+  ...args: any[]
 ): Point3D[] {
+  let x1: number, y1: number, rxIn: number, ryIn: number, phiDeg: number;
+  let largeArcFlag: boolean | number, sweepFlag: boolean | number, x2: number, y2: number;
+
+  if (typeof pOrX1 === 'object') {
+    x1 = pOrX1.x1;
+    y1 = pOrX1.y1;
+    rxIn = pOrX1.rx;
+    ryIn = pOrX1.ry;
+    phiDeg = pOrX1.phiDeg;
+    largeArcFlag = pOrX1.largeArcFlag;
+    sweepFlag = pOrX1.sweepFlag;
+    x2 = pOrX1.x2;
+    y2 = pOrX1.y2;
+  } else {
+    x1 = pOrX1;
+    y1 = args[0];
+    rxIn = args[1];
+    ryIn = args[2];
+    phiDeg = args[3];
+    largeArcFlag = args[4];
+    sweepFlag = args[5];
+    x2 = args[6];
+    y2 = args[7];
+  }
+
   if (Math.abs(x1 - x2) < 1e-7 && Math.abs(y1 - y2) < 1e-7) {
     return [{ x: x2, y: y2, z: 0 }];
   }
@@ -346,7 +392,9 @@ export function tessellateSvgArc(
   let num = rxSq * rySq - rxSq * y1PrimeSq - rySq * x1PrimeSq;
   if (num < 0) num = 0;
   const den = rxSq * y1PrimeSq + rySq * x1PrimeSq;
-  const sign = (largeArcFlag ? 1 : 0) === (sweepFlag ? 1 : 0) ? -1 : 1;
+  const flagA = largeArcFlag ? 1 : 0;
+  const flagB = sweepFlag ? 1 : 0;
+  const sign = flagA === flagB ? -1 : 1;
   const factor = sign * Math.sqrt(num / den);
 
   const cxPrime = factor * ((rx * y1Prime) / ry);
@@ -357,7 +405,7 @@ export function tessellateSvgArc(
 
   function angleBetween(ux: number, uy: number, vx: number, vy: number): number {
     const dot = ux * vx + uy * vy;
-    const len = Math.sqrt(ux * ux + uy * uy) * Math.sqrt(vx * vx + vy * vy);
+    const len = Math.hypot(ux, uy) * Math.hypot(vx, vy);
     let ang = Math.acos(Math.max(-1, Math.min(1, dot / (len || 1))));
     if (ux * vy - uy * vx < 0) ang = -ang;
     return ang;
@@ -490,7 +538,7 @@ export function evaluateBSplineSurface(
   const ny = dSud.z * dSvd.x - dSud.x * dSvd.z;
   const nz = dSud.x * dSvd.y - dSud.y * dSvd.x;
 
-  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  const len = Math.hypot(nx, ny, nz);
   let normal: Point3D;
 
   if (len > 1e-10) {
@@ -998,11 +1046,11 @@ export function parseIgesBSplineSurfaces(content: string): BSplineSurface[] {
   const surfaces: BSplineSurface[] = [];
   const lines = content.split(/\r?\n/);
 
-  // Clean lines: strip IGES sequence number and section code at the end of each line
+  // Clean lines: strip IGES sequence number and section code at the end of each line (columns 73-80)
   const cleanedLines: string[] = [];
   for (const line of lines) {
     if (!line.trim()) continue;
-    const stripped = line.replace(/\s*\d*\s*[PGDTS]\s*\d+\s*$/i, '').trim();
+    const stripped = (line.length > 72 ? line.substring(0, 72) : line.replace(/[PGDTS]\s*\d+$/i, '')).trim();
     if (stripped) {
       cleanedLines.push(stripped);
     }
@@ -1023,12 +1071,12 @@ export function parseIgesBSplineSurfaces(content: string): BSplineSurface[] {
     // Entity 128 parameters:
     // 128, K1, K2, M1, M2, PROP1, PROP2, PROP3, PROP4, PROP5,
     // S(0)..S(A), T(0)..T(B), W(0,0)..W(K1,K2), X(0,0)..Z(K1,K2), ...
-    const k1 = parseInt(parts[1], 10); // K1 = upper index in first direction = numU - 1
-    const k2 = parseInt(parts[2], 10); // K2 = upper index in second direction = numV - 1
-    const m1 = parseInt(parts[3], 10); // Degree in first direction
-    const m2 = parseInt(parts[4], 10); // Degree in second direction
+    const k1 = Number.parseInt(parts[1], 10); // K1 = upper index in first direction = numU - 1
+    const k2 = Number.parseInt(parts[2], 10); // K2 = upper index in second direction = numV - 1
+    const m1 = Number.parseInt(parts[3], 10); // Degree in first direction
+    const m2 = Number.parseInt(parts[4], 10); // Degree in second direction
 
-    if (isNaN(k1) || isNaN(k2) || isNaN(m1) || isNaN(m2)) continue;
+    if (Number.isNaN(k1) || Number.isNaN(k2) || Number.isNaN(m1) || Number.isNaN(m2)) continue;
 
     const numU = k1 + 1;
     const numV = k2 + 1;
@@ -1038,12 +1086,12 @@ export function parseIgesBSplineSurfaces(content: string): BSplineSurface[] {
     let idx = 10;
     const uKnots: number[] = [];
     for (let i = 0; i < sKnotCount && idx < parts.length; i++) {
-      uKnots.push(parseFloat(parts[idx++]) || 0);
+      uKnots.push(Number.parseFloat(parts[idx++]) || 0);
     }
 
     const vKnots: number[] = [];
     for (let i = 0; i < tKnotCount && idx < parts.length; i++) {
-      vKnots.push(parseFloat(parts[idx++]) || 0);
+      vKnots.push(Number.parseFloat(parts[idx++]) || 0);
     }
 
     // Weights W(0..k1, 0..k2)
@@ -1051,7 +1099,7 @@ export function parseIgesBSplineSurfaces(content: string): BSplineSurface[] {
     for (let u = 0; u < numU; u++) {
       weights[u] = [];
       for (let v = 0; v < numV; v++) {
-        weights[u][v] = idx < parts.length ? parseFloat(parts[idx++]) || 1.0 : 1.0;
+        weights[u][v] = idx < parts.length ? Number.parseFloat(parts[idx++]) || 1.0 : 1.0;
       }
     }
 
@@ -1060,9 +1108,9 @@ export function parseIgesBSplineSurfaces(content: string): BSplineSurface[] {
     for (let u = 0; u < numU; u++) {
       controlPoints[u] = [];
       for (let v = 0; v < numV; v++) {
-        const x = idx < parts.length ? parseFloat(parts[idx++]) || 0 : 0;
-        const y = idx < parts.length ? parseFloat(parts[idx++]) || 0 : 0;
-        const z = idx < parts.length ? parseFloat(parts[idx++]) || 0 : 0;
+        const x = idx < parts.length ? Number.parseFloat(parts[idx++]) || 0 : 0;
+        const y = idx < parts.length ? Number.parseFloat(parts[idx++]) || 0 : 0;
+        const z = idx < parts.length ? Number.parseFloat(parts[idx++]) || 0 : 0;
         controlPoints[u][v] = { x, y, z };
       }
     }
@@ -1089,7 +1137,7 @@ export function parseIgesBSplineCurves(content: string): BSplineCurve[] {
   const cleanedLines: string[] = [];
   for (const line of lines) {
     if (!line.trim()) continue;
-    const stripped = line.replace(/\s*\d*\s*[PGDTS]\s*\d+\s*$/i, '').trim();
+    const stripped = (line.length > 72 ? line.substring(0, 72) : line.replace(/[PGDTS]\s*\d+$/i, '')).trim();
     if (stripped) cleanedLines.push(stripped);
   }
   const pContent = cleanedLines.join('');
@@ -1103,9 +1151,9 @@ export function parseIgesBSplineCurves(content: string): BSplineCurve[] {
     const parts = entPayload.split(',').map((p) => p.trim());
     if (parts.length < 10) continue;
 
-    const k = parseInt(parts[1], 10);
-    const m = parseInt(parts[2], 10);
-    if (isNaN(k) || isNaN(m)) continue;
+    const k = Number.parseInt(parts[1], 10);
+    const m = Number.parseInt(parts[2], 10);
+    if (Number.isNaN(k) || Number.isNaN(m)) continue;
 
     const numCp = k + 1;
     const knotCount = 1 + k + m + 1;
@@ -1113,7 +1161,7 @@ export function parseIgesBSplineCurves(content: string): BSplineCurve[] {
     let idx = 7;
     const knots: number[] = [];
     for (let i = 0; i < knotCount && idx < parts.length; i++) {
-      knots.push(parseFloat(parts[idx++]) || 0);
+      knots.push(Number.parseFloat(parts[idx++]) || 0);
     }
 
     // Skip weights W(0)..W(K)
@@ -1121,9 +1169,9 @@ export function parseIgesBSplineCurves(content: string): BSplineCurve[] {
 
     const controlPoints: Point3D[] = [];
     for (let i = 0; i < numCp && idx + 2 < parts.length; i++) {
-      const x = parseFloat(parts[idx++]) || 0;
-      const y = parseFloat(parts[idx++]) || 0;
-      const z = parseFloat(parts[idx++]) || 0;
+      const x = Number.parseFloat(parts[idx++]) || 0;
+      const y = Number.parseFloat(parts[idx++]) || 0;
+      const z = Number.parseFloat(parts[idx++]) || 0;
       controlPoints.push({ x, y, z });
     }
 
@@ -1300,7 +1348,7 @@ export function tessellateCurvesToMesh(curves: BSplineCurve[], modelName: string
     const nx = ay * bz - az * by;
     const ny = az * bx - ax * bz;
     const nz = ax * by - ay * bx;
-    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    const len = Math.hypot(nx, ny, nz);
     if (len > 1e-8) {
       const fnx = nx / len;
       const fny = ny / len;
@@ -1315,7 +1363,7 @@ export function tessellateCurvesToMesh(curves: BSplineCurve[], modelName: string
 
   for (let i = 0; i < vertices.length; i++) {
     const n = accumNormals[i];
-    const len = Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    const len = Math.hypot(n[0], n[1], n[2]);
     if (len > 1e-8) {
       normals[i] = [n[0] / len, n[1] / len, n[2] / len];
     } else {
@@ -1367,7 +1415,7 @@ function buildTrianglesFromPoints(points: Point3D[], modelName: string): Tessell
     const nx = ay * bz - az * by;
     const ny = az * bx - ax * bz;
     const nz = ax * by - ay * bx;
-    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    const len = Math.hypot(nx, ny, nz);
     if (len > 1e-8) {
       normals.push([nx / len, ny / len, nz / len]);
       normals.push([nx / len, ny / len, nz / len]);

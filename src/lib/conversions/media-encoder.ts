@@ -42,6 +42,22 @@ export class BitWriter {
     this.writeUe(mapped);
   }
 
+  alignToByte(): void {
+    while (this.bits.length % 8 !== 0) {
+      this.writeBit(0);
+    }
+  }
+
+  writeRice(q: number, k: number, rem: number): void {
+    for (let i = 0; i < q; i++) {
+      this.writeBit(0);
+    }
+    this.writeBit(1);
+    if (k > 0) {
+      this.writeBits(rem, k);
+    }
+  }
+
   toBuffer(): Buffer {
     const totalBytes = Math.ceil(this.bits.length / 8);
     const buf = Buffer.alloc(totalBytes);
@@ -201,12 +217,8 @@ export function encodePureMp3(
     frameBuf.writeUInt16BE(0, sOff); // main_data_begin (9 bits) + private
     sOff += 2;
 
-    // scfsi (scalefactor selection info): 4 bits per channel
-    if (channels === 2) {
-      frameBuf.writeUInt8(0x00, sOff++);
-    } else {
-      frameBuf.writeUInt8(0x00, sOff++);
-    }
+    // scfsi (scalefactor selection info): 4 bits per channel packed
+    frameBuf.writeUInt8(0x00, sOff++);
 
     // Granule parameters
     const bigValues = 120;
@@ -671,4 +683,276 @@ export function encodePureH264Mp4(
   // In ISO BMFF, standard order is: ftyp -> mdat -> moov OR ftyp -> moov -> mdat
   // Because our chunk offsets in stco were computed relative to mdat immediately after ftyp:
   return Buffer.concat([ftypBox, mdatBox, moovBox]);
+}
+
+// ============================================================================
+// 4. Pure TypeScript FLAC Lossless Audio Encoder (RFC 9639)
+// ============================================================================
+
+export const FLAC_CRC8_TABLE = new Uint8Array(256);
+for (let i = 0; i < 256; i++) {
+  let crc = i;
+  for (let b = 0; b < 8; b++) {
+    crc = crc & 0x80 ? ((crc << 1) ^ 0x07) & 0xff : (crc << 1) & 0xff;
+  }
+  FLAC_CRC8_TABLE[i] = crc;
+}
+
+export function flacCrc8(data: Uint8Array | Buffer, length = data.length): number {
+  let crc = 0;
+  for (let i = 0; i < length; i++) {
+    crc = FLAC_CRC8_TABLE[crc ^ data[i]];
+  }
+  return crc;
+}
+
+export const FLAC_CRC16_TABLE = new Uint16Array(256);
+for (let i = 0; i < 256; i++) {
+  let crc = i << 8;
+  for (let b = 0; b < 8; b++) {
+    crc = crc & 0x8000 ? ((crc << 1) ^ 0x8005) & 0xffff : (crc << 1) & 0xffff;
+  }
+  FLAC_CRC16_TABLE[i] = crc;
+}
+
+export function flacCrc16(data: Uint8Array | Buffer, length = data.length): number {
+  let crc = 0;
+  for (let i = 0; i < length; i++) {
+    crc = ((crc << 8) ^ FLAC_CRC16_TABLE[((crc >> 8) ^ data[i]) & 0xff]) & 0xffff;
+  }
+  return crc;
+}
+
+/**
+ * Calculates optimal Rice coding parameter k in [0, 14] for given residuals
+ */
+export function findOptimalRiceParameter(residuals: Int32Array): { k: number; folded: Uint32Array } {
+  const count = residuals.length;
+  const folded = new Uint32Array(count);
+  let sum = 0n;
+
+  for (let i = 0; i < count; i++) {
+    const e = residuals[i];
+    const u = (e << 1) ^ (e >> 31);
+    folded[i] = u >>> 0;
+    sum += BigInt(u >>> 0);
+  }
+
+  if (count === 0 || sum === 0n) {
+    return { k: 0, folded };
+  }
+
+  const mean = Number(sum) / count;
+  let bestK = Math.max(0, Math.min(14, Math.floor(Math.log2(Math.max(1, mean * 0.69314718056)))));
+  let minBits = Number.MAX_SAFE_INTEGER;
+
+  const kMin = Math.max(0, bestK - 1);
+  const kMax = Math.min(14, bestK + 1);
+
+  for (let k = kMin; k <= kMax; k++) {
+    let bits = count * (k + 1);
+    for (let i = 0; i < count; i++) {
+      bits += folded[i] >> k;
+    }
+    if (bits < minBits) {
+      minBits = bits;
+      bestK = k;
+    }
+  }
+
+  return { k: bestK, folded };
+}
+
+/**
+ * Encodes PCM samples into an authentic RFC 9639 FLAC audio bitstream
+ */
+export function encodeFlacStream(
+  samples: Int16Array,
+  sampleRate: number,
+  channels: number
+): Buffer {
+  const chCount = Math.max(1, Math.min(2, channels));
+  const totalSamplesPerChannel = Math.floor(samples.length / chCount);
+
+  // 1. STREAMINFO Metadata Block (42 bytes: 4 bytes "fLaC" marker + 4 bytes header + 34 bytes payload)
+  const streamInfo = Buffer.alloc(42);
+  streamInfo.write('fLaC', 0, 'ascii'); // Stream marker
+
+  // Metadata block header: Last block (0x80) | Block type 0 (STREAMINFO), length 34 (24 bits)
+  streamInfo[4] = 0x80 | 0x00;
+  streamInfo[5] = 0x00;
+  streamInfo[6] = 0x00;
+  streamInfo[7] = 34;
+
+  const blockSize = Math.min(4096, Math.max(16, totalSamplesPerChannel));
+
+  // Minimum / Maximum block size (16 bits)
+  streamInfo.writeUInt16BE(blockSize, 8);
+  streamInfo.writeUInt16BE(blockSize, 10);
+
+  // Min / Max frame size (24 bits, 0 = unknown)
+  streamInfo.writeUIntBE(0, 12, 3);
+  streamInfo.writeUIntBE(0, 15, 3);
+
+  // Packed 64 bits: sampleRate (20b), channels-1 (3b), bps-1 (5b), totalSamples (36b)
+  const sr = sampleRate & 0xfffff;
+  const ch = (chCount - 1) & 0x07;
+  const bps = (16 - 1) & 0x1f; // 16-bit audio
+  const tot = BigInt(totalSamplesPerChannel) & 0xfffffffffn;
+
+  streamInfo[18] = (sr >> 12) & 0xff;
+  streamInfo[19] = (sr >> 4) & 0xff;
+  streamInfo[20] = ((sr & 0x0f) << 4) | (ch << 1) | ((bps >> 4) & 1);
+  streamInfo[21] = ((bps & 0x0f) << 4) | Number((tot >> 32n) & 0x0fn);
+  streamInfo[22] = Number((tot >> 24n) & 0xffn);
+  streamInfo[23] = Number((tot >> 16n) & 0xffn);
+  streamInfo[24] = Number((tot >> 8n) & 0xffn);
+  streamInfo[25] = Number(tot & 0xffn);
+  // Bytes 26..41: MD5 signature (16 zeros)
+
+  const frames: Buffer[] = [];
+  let frameNumber = 0;
+  let sampleOffset = 0;
+
+  // Map standard sample rates to FLAC 4-bit codes
+  let srCode = 0;
+  if (sampleRate === 44100) srCode = 9;
+  else if (sampleRate === 48000) srCode = 10;
+  else if (sampleRate === 32000) srCode = 8;
+  else if (sampleRate === 22050) srCode = 4;
+  else if (sampleRate === 16000) srCode = 3;
+  else if (sampleRate === 8000) srCode = 1;
+  else srCode = 13; // 16-bit Hz explicit in header
+
+  while (sampleOffset < totalSamplesPerChannel) {
+    const curBlockSize = Math.min(blockSize, totalSamplesPerChannel - sampleOffset);
+    const writer = new BitWriter();
+
+    // Frame Header:
+    // Sync code: 14 bits 0x3ffe
+    writer.writeBits(0x3ffe, 14);
+    // Reserved bit (0)
+    writer.writeBit(0);
+    // Blocking strategy: 0 (fixed)
+    writer.writeBit(0);
+
+    // Block size code (4 bits)
+    let bsExplicit = 0;
+    if (curBlockSize === 4096) {
+      writer.writeBits(12, 4);
+    } else if (curBlockSize <= 256) {
+      writer.writeBits(6, 4);
+      bsExplicit = 1;
+    } else {
+      writer.writeBits(7, 4);
+      bsExplicit = 2;
+    }
+
+    // Sample rate code (4 bits)
+    writer.writeBits(srCode, 4);
+
+    // Channel assignment (4 bits)
+    // 0 = mono, 1 = left/right stereo
+    writer.writeBits(chCount === 2 ? 1 : 0, 4);
+
+    // Sample size: 16-bit = 0b100 (4)
+    writer.writeBits(4, 3);
+    // Reserved bit
+    writer.writeBit(0);
+
+    // Frame number (UTF-8 variable length)
+    if (frameNumber < 128) {
+      writer.writeBits(frameNumber, 8);
+    } else {
+      writer.writeBits(0xc0 | (frameNumber >> 6), 8);
+      writer.writeBits(0x80 | (frameNumber & 0x3f), 8);
+    }
+
+    // Explicit block size if needed
+    if (bsExplicit === 1) {
+      writer.writeBits(curBlockSize - 1, 8);
+    } else if (bsExplicit === 2) {
+      writer.writeBits(curBlockSize - 1, 16);
+    }
+
+    // Explicit sample rate if code 13
+    if (srCode === 13) {
+      writer.writeBits(sampleRate, 16);
+    }
+
+    // Header CRC-8
+    writer.alignToByte();
+    const headerBytes = writer.toBuffer();
+    const crc8Val = flacCrc8(headerBytes);
+    writer.writeBits(crc8Val, 8);
+
+    // Subframes (one per channel)
+    for (let c = 0; c < chCount; c++) {
+      const channelSamples = new Int32Array(curBlockSize);
+      for (let s = 0; s < curBlockSize; s++) {
+        channelSamples[s] = samples[(sampleOffset + s) * chCount + c];
+      }
+
+      // Compute fixed predictor residuals (order 1: s[t] - s[t-1])
+      const residuals = new Int32Array(curBlockSize - 1);
+      for (let i = 1; i < curBlockSize; i++) {
+        residuals[i - 1] = channelSamples[i] - channelSamples[i - 1];
+      }
+
+      const { k, folded } = findOptimalRiceParameter(residuals);
+
+      // Subframe header:
+      // Zero bit (1b)
+      writer.writeBit(0);
+      // Subframe type (6b): 001001 = Fixed linear prediction order 1
+      writer.writeBits(0x09, 6);
+      // Wasted bits flag (1b)
+      writer.writeBit(0);
+
+      // Warm-up sample (order 1: 1 sample stored 16-bit signed)
+      const warmUp = channelSamples[0];
+      writer.writeBits(warmUp < 0 ? (1 << 16) + warmUp : warmUp, 16);
+
+      // Residual coding:
+      // Residual method: 2 bits '00' (Rice 4-bit)
+      writer.writeBits(0, 2);
+      // Partition order: 4 bits '0000' (0 order = 1 partition)
+      writer.writeBits(0, 4);
+      // Rice parameter k: 4 bits
+      writer.writeBits(k, 4);
+
+      // Rice encoded residuals
+      for (let i = 0; i < folded.length; i++) {
+        const u = folded[i];
+        const q = u >> k;
+        const rem = u & ((1 << k) - 1);
+        // Unary code: q zeros followed by 1 one
+        for (let b = 0; b < q; b++) {
+          writer.writeBit(0);
+        }
+        writer.writeBit(1);
+        if (k > 0) {
+          writer.writeBits(rem, k);
+        }
+      }
+    }
+
+    // Zero-padding to byte boundary
+    writer.alignToByte();
+
+    // Frame CRC-16 (covers whole frame up to footer)
+    const frameContent = writer.toBuffer();
+    const crc16Val = flacCrc16(frameContent);
+
+    const frameBuf = Buffer.alloc(frameContent.length + 2);
+    frameContent.copy(frameBuf, 0);
+    frameBuf.writeUInt16BE(crc16Val, frameContent.length);
+
+    frames.push(frameBuf);
+
+    frameNumber++;
+    sampleOffset += curBlockSize;
+  }
+
+  return Buffer.concat([streamInfo, ...frames]);
 }
