@@ -124,7 +124,10 @@ export async function POST(req: NextRequest) {
       message.includes('payload is empty') ||
       message.includes('Cannot convert') ||
       message.includes('Unsupported') ||
-      message.includes('Failed to parse');
+      message.includes('Failed to parse') ||
+      message.includes('OCR failed') ||
+      message.includes('PDF OCR') ||
+      message.includes('compression');
     return NextResponse.json(
       { success: false, error: message },
       { status: isValidationError ? 400 : 500 }

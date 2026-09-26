@@ -1430,7 +1430,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Portable Network Graphics - Lossless raster format with alpha transparency support.',
     targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, dpi: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true },
   },
   jpg: {
     id: 'jpg',
@@ -1440,7 +1440,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Joint Photographic Experts Group - Standard lossy image compression for photography.',
     targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true },
   },
   jpeg: {
     id: 'jpeg',
@@ -1450,7 +1450,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Joint Photographic Experts Group standard image format.',
     targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true },
   },
   webp: {
     id: 'webp',
@@ -1460,7 +1460,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Modern web image format providing superior lossless and lossy compression.',
     targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'eps', 'odd', 'ps', 'psd', 'webp', 'svg', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true },
   },
   avif: {
     id: 'avif',
@@ -1470,7 +1470,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Next-generation AV1 Image File Format delivering state-of-the-art compression.',
     targetFormats: ['png', 'jpg', 'webp', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd'],
-    optionsSchema: { quality: true, dimensions: true, fit: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, ocrEnabled: true, ocrLanguage: true },
   },
   tiff: {
     id: 'tiff',
@@ -1480,7 +1480,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Tagged Image File Format - High-depth raster format favored in publishing and printing.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg'],
-    optionsSchema: { quality: true, dimensions: true },
+    optionsSchema: { quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true },
   },
   tif: {
     id: 'tif',
@@ -1490,6 +1490,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Short extension for Tagged Image File Format.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg'],
+    optionsSchema: { quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true },
   },
   gif: {
     id: 'gif',
@@ -1499,7 +1500,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Graphics Interchange Format with animated frame and transparency support.',
     targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv'],
-    optionsSchema: { dimensions: true },
+    optionsSchema: { dimensions: true, ocrEnabled: true, ocrLanguage: true },
   },
   bmp: {
     id: 'bmp',
@@ -1509,7 +1510,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Bitmap Image File - Uncompressed standard raster image.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg'],
-    optionsSchema: { dimensions: true },
+    optionsSchema: { dimensions: true, colorDepth: true, dither: true, ocrEnabled: true, ocrLanguage: true },
   },
   svg: {
     id: 'svg',
@@ -1529,7 +1530,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Icon format used for website favicons and application icons.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
-    optionsSchema: { dimensions: true },
+    optionsSchema: { dimensions: true, ocrEnabled: true, ocrLanguage: true },
   },
   cur: {
     id: 'cur',
@@ -1548,7 +1549,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'High Efficiency Image Container format adopted by modern Apple iOS cameras.',
     targetFormats: ['jpg', 'png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
-    optionsSchema: { quality: true },
+    optionsSchema: { quality: true, ocrEnabled: true, ocrLanguage: true },
   },
   heif: {
     id: 'heif',
@@ -1558,6 +1559,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'High Efficiency Image File Format standardized by MPEG.',
     targetFormats: ['jpg', 'png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
+    optionsSchema: { quality: true, ocrEnabled: true, ocrLanguage: true },
   },
   psd: {
     id: 'psd',
@@ -1567,6 +1569,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Adobe Photoshop layered raster graphics document.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'tiff', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd'],
+    optionsSchema: { ocrEnabled: true, ocrLanguage: true },
   },
   psb: {
     id: 'psb',
@@ -1576,6 +1579,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Photoshop Big format for large documents up to 300,000 pixels.',
     targetFormats: ['png', 'jpg', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
+    optionsSchema: { ocrEnabled: true, ocrLanguage: true },
   },
   raw: {
     id: 'raw',
@@ -1585,6 +1589,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Minimally processed sensor data from digital cameras.',
     targetFormats: ['jpg', 'png', 'tiff', 'dng', 'zip', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
+    optionsSchema: { ocrEnabled: true, ocrLanguage: true },
   },
   cr2: {
     id: 'cr2',
