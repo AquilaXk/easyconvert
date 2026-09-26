@@ -126,15 +126,13 @@ describe('Phase 3: Lossless Sandwich PDF Injection & Metadata Preservation', () 
       .png().toBuffer();
 
     const doc = await PDFDocument.create();
-    const emb1 = await doc.embedPng(imgTop);
-    const emb2 = await doc.embedPng(imgBottom);
+    const page = doc.addPage([300, 400]);
+    const [embTop, embBottom] = await Promise.all([doc.embedPng(imgTop), doc.embedPng(imgBottom)]);
+    page.drawImage(embTop, { x: 20, y: 250, width: 140, height: 50 });
+    page.drawImage(embBottom, { x: 20, y: 50, width: 140, height: 50 });
 
-    const p1 = doc.addPage([300, 400]);
-    p1.drawImage(emb1, { x: 20, y: 250, width: 140, height: 50 });
-    p1.drawImage(emb2, { x: 20, y: 50, width: 140, height: 50 });
-
-    const pdfBytes = await doc.save();
-    const converted = await convertFile(Buffer.from(pdfBytes), 'pdf', 'txt', { ocrEnabled: true }, 'multi_img.pdf');
+    const pdfBuffer = Buffer.from(await doc.save());
+    const converted = await convertFile(pdfBuffer, 'pdf', 'txt', { ocrEnabled: true }, 'multi_img.pdf');
     const text = converted.buffer.toString('utf-8');
     expect(text.length).toBeGreaterThan(0);
   });
