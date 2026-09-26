@@ -32,13 +32,104 @@ export interface OcrResult {
 
 /**
  * Optical Character Recognition (OCR) Engine
- * Preprocesses scanned documents & bitmaps, removes noise, normalizes contrast,
- * and extracts text glyphs and structured text blocks.
+ * Powered by high-performance WebAssembly inference (Tesseract.js)
+ * with deterministic geometric computer-vision fallback.
  */
 export async function performOcr(
   imageBuffer: Buffer,
   language: string = 'auto'
 ): Promise<OcrResult> {
+  const langMap: Record<string, string> = {
+    auto: 'eng',
+    en: 'eng',
+    ko: 'kor',
+    de: 'deu',
+    fr: 'fra',
+    es: 'spa',
+    ja: 'jpn',
+    zh: 'chi_sim',
+  };
+  const tesseractLang = langMap[language.toLowerCase()] || 'eng';
+
+  // 1. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
+  try {
+    const Tesseract = await import('tesseract.js');
+    const worker = await Tesseract.createWorker(tesseractLang);
+    const ret = await worker.recognize(imageBuffer, {}, { blocks: true });
+    await worker.terminate();
+
+    if (ret && ret.data && ret.data.text && ret.data.text.trim()) {
+      const fullText = ret.data.text.trim();
+      const recognizedLines: string[] = [];
+      const lineBlocks: OcrLineBlock[] = [];
+
+      if (ret.data.blocks && ret.data.blocks.length > 0) {
+        for (const block of ret.data.blocks) {
+          if (!block.paragraphs) continue;
+          for (const para of block.paragraphs) {
+            if (!para.lines) continue;
+            for (const line of para.lines) {
+              const text = (line.text || '').trim();
+              if (!text) continue;
+              recognizedLines.push(text);
+
+              const wordsInLine: OcrWord[] = [];
+              if (line.words) {
+                for (const w of line.words) {
+                  const wText = (w.text || '').trim();
+                  if (!wText) continue;
+                  wordsInLine.push({
+                    text: wText,
+                    bbox: {
+                      x: w.bbox.x0,
+                      y: w.bbox.y0,
+                      width: Math.max(1, w.bbox.x1 - w.bbox.x0),
+                      height: Math.max(1, w.bbox.y1 - w.bbox.y0),
+                    },
+                  });
+                }
+              }
+
+              lineBlocks.push({
+                text,
+                bbox: {
+                  x: line.bbox.x0,
+                  y: line.bbox.y0,
+                  width: Math.max(1, line.bbox.x1 - line.bbox.x0),
+                  height: Math.max(1, line.bbox.y1 - line.bbox.y0),
+                },
+                words: wordsInLine,
+              });
+            }
+          }
+        }
+      }
+
+      const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
+      const words = fullText.split(/\s+/).filter(Boolean);
+
+      return {
+        text: fullText,
+        confidence: (ret.data.confidence || 90) / 100,
+        wordCount: words.length,
+        lines: recognizedLines.length > 0 ? recognizedLines : fullText.split('\n'),
+        lineBlocks,
+        imageWidth: meta.width || 800,
+        imageHeight: meta.height || 600,
+      };
+    }
+  } catch {
+    // Fall back to built-in geometric OCR engine
+  }
+
+  return performGeometricOcr(imageBuffer);
+}
+
+/**
+ * Geometric computer-vision based OCR fallback.
+ * Uses horizontal/vertical projection profiles and connected component analysis.
+ */
+export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResult> {
   try {
     // 1. Image preprocessing with sharp: Grayscale -> High Contrast -> Thresholding (Binarization)
     const processed = await sharp(imageBuffer)

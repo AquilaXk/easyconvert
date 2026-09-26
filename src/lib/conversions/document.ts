@@ -5,6 +5,7 @@ import { ConversionOptions, ConversionResult } from '../types';
 import { convertOffice, extractTextFromRtf, generateOdtFromText } from './office';
 import { performOcr, generateSearchablePdf, OcrResult } from './ocr';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
+import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
 import { svgToDxf } from './vector-cad';
 
 export { extractTextFromPdf, extractEmbeddedImageFromPdf };
@@ -95,27 +96,55 @@ export async function convertDocument(
     // If scanned document or OCR is requested
     const isScanned = extractedText === 'No extractable text found in PDF document.';
     if (options.ocrEnabled || isScanned) {
-      const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
-      if (embeddedImg) {
-        const ocr = await performOcr(embeddedImg, options.ocrLanguage);
-        if (ocr.text) {
-          extractedText = ocr.text;
-          ocrInfo = { text: ocr.text, confidence: ocr.confidence };
-          lastOcrResult = ocr;
+      let rasterImages: ExtractedPdfImage[] = [];
+      try {
+        rasterImages = await extractRasterImagesFromPdf(inputBuffer, options.dpi || 300);
+      } catch (err: any) {
+        if (options.ocrEnabled) {
+          const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
+          const cleanMsg = rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg;
+          throw new Error(`PDF OCR failed: ${cleanMsg}`);
+        }
+      }
+
+      if (rasterImages.length > 0) {
+        const ocrTexts: string[] = [];
+        let totalConfidence = 0;
+        let count = 0;
+
+        for (const img of rasterImages) {
+          const ocr = await performOcr(img.buffer, options.ocrLanguage);
+          if (ocr && ocr.text) {
+            ocrTexts.push(ocr.text);
+            lastOcrResult = ocr;
+            totalConfidence += ocr.confidence;
+            count++;
+          }
+        }
+
+        if (ocrTexts.length > 0) {
+          extractedText = ocrTexts.join('\n\n');
+          ocrInfo = {
+            text: extractedText,
+            confidence: count > 0 ? totalConfidence / count : 0.9,
+          };
         } else if (options.ocrEnabled) {
           throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
-      } else if (isScanned) {
-        const ocr = await performOcr(inputBuffer, options.ocrLanguage);
-        if (ocr.text) {
-          extractedText = ocr.text;
-          ocrInfo = { text: ocr.text, confidence: ocr.confidence };
-          lastOcrResult = ocr;
+      } else {
+        const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
+        if (embeddedImg) {
+          const ocr = await performOcr(embeddedImg, options.ocrLanguage);
+          if (ocr.text) {
+            extractedText = ocr.text;
+            ocrInfo = { text: ocr.text, confidence: ocr.confidence };
+            lastOcrResult = ocr;
+          } else if (options.ocrEnabled) {
+            throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
+          }
         } else if (options.ocrEnabled) {
-          throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
+          throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
         }
-      } else if (options.ocrEnabled) {
-        throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
       }
     }
 
