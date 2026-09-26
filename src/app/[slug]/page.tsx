@@ -8,6 +8,7 @@ import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
+import { executeItemConversion } from '@/lib/client-converter';
 import {
   FileText,
   ShieldCheck,
@@ -298,77 +299,38 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
 
     setQueue((prev) =>
       prev.map((i) =>
-        i.id === item.id ? { ...i, status: 'converting', progress: 30, error: undefined } : i
+        i.id === item.id ? { ...i, status: 'converting', progress: 15, error: undefined } : i
       )
     );
 
-    const { tryProcessClientEdgeOcr } = await import('@/lib/edge-ocr');
-    const edgeRes = await tryProcessClientEdgeOcr(item, (progress) => {
-      setQueue((prev) =>
-        prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress } : i))
-      );
-    });
-
-    if (edgeRes) {
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id
-            ? {
-                ...i,
-                status: 'completed',
-                progress: 100,
-                resultUrl: edgeRes.resultUrl,
-                resultSize: edgeRes.resultSize,
-                edgeProcessed: true,
-              }
-            : i
-        )
-      );
-      return;
-    }
-
-    try {
-      const formData = new FormData();
-      formData.append('file', item.file);
-      formData.append('targetFormat', item.targetFormat);
-      formData.append('options', JSON.stringify(item.options));
-
-      const timer = setTimeout(() => {
+    await executeItemConversion(item, {
+      onProgress: (progress) => {
+        setQueue((prev) =>
+          prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress } : i))
+        );
+      },
+      onSuccess: (resultUrl, resultSize, edgeProcessed) => {
         setQueue((prev) =>
           prev.map((i) =>
-            i.id === item.id && i.status === 'converting' ? { ...i, progress: 75 } : i
+            i.id === item.id
+              ? {
+                  ...i,
+                  status: 'completed',
+                  progress: 100,
+                  resultUrl,
+                  resultSize,
+                  edgeProcessed,
+                }
+              : i
           )
         );
-      }, 350);
-
-      const res = await fetch('/api/convert', {
-        method: 'POST',
-        body: formData,
-      });
-
-      clearTimeout(timer);
-
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({ error: 'Conversion failed' }));
-        throw new Error(errJson.error || `Server error (${res.status})`);
-      }
-
-      const blob = await res.blob();
-      const resultUrl = URL.createObjectURL(blob);
-
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id
-            ? { ...i, status: 'completed', progress: 100, resultUrl, resultSize: blob.size }
-            : i
-        )
-      );
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Conversion failed';
-      setQueue((prev) =>
-        prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: msg, progress: 0 } : i))
-      );
-    }
+      },
+      onError: (msg) => {
+        setQueue((prev) =>
+          prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: msg, progress: 0 } : i))
+        );
+      },
+    });
   };
 
   const handleConvertAll = async () => {
