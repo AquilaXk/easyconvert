@@ -45,26 +45,26 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
     {
       id: 'documents',
       name: 'Documents',
-      count: 23,
+      count: 40,
       icon: <FileText className="w-3.5 h-3.5" />,
       formats: [
-        'ABW', 'DJVU', 'DOC', 'DOCM', 'DOCX', 'DOT', 'DOTX', 'HTML', 'HWP', 'HWPX',
-        'LWP', 'MD', 'ODT', 'PAGES', 'PDF', 'RST', 'RTF', 'SDW', 'TEX', 'TXT', 'WPD', 'WPS', 'ZABW',
+        'ABW', 'AZW4', 'DJVU', 'DOC', 'DOCM', 'DOCX', 'DOT', 'DOTX', 'EPUB', 'HTML', 'HWP', 'HWPX',
+        'LWP', 'MD', 'ODT', 'PAGES', 'PDF', 'RST', 'RTF', 'SDW', 'TEX', 'TXT', 'WPD', 'WPS', 'XPS', 'ZABW',
       ],
       commonConversions: [
         { from: 'PDF', to: 'DOCX', desc: 'editable Word document' },
         { from: 'DOCX', to: 'PDF', desc: 'print-ready PDF' },
-        { from: 'HTML', to: 'TXT', desc: 'plain text export' },
+        { from: 'HWP', to: 'PDF', desc: 'Korean office document' },
       ],
     },
     {
       id: 'images',
       name: 'Images',
-      count: 42,
+      count: 49,
       icon: <FileImage className="w-3.5 h-3.5" />,
       formats: [
-        'AVIF', 'BMP', 'CR2', 'DNG', 'EPS', 'GIF', 'HEIC', 'ICO', 'JPEG', 'JPG',
-        'NEF', 'PNG', 'PSD', 'RAW', 'SVG', 'TIF', 'TIFF', 'WEBP',
+        '3FR', 'ARW', 'AVIF', 'BMP', 'CR2', 'CRW', 'DNG', 'EPS', 'GIF', 'HEIC', 'ICO', 'ICNS',
+        'JPEG', 'JPG', 'NEF', 'PNG', 'PSD', 'RAF', 'RAW', 'RW2', 'SVG', 'TIF', 'TIFF', 'WEBP',
       ],
       commonConversions: [
         { from: 'PNG', to: 'WEBP', desc: 'next-gen lightweight web image' },
@@ -75,10 +75,10 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
     {
       id: 'video',
       name: 'Video',
-      count: 28,
+      count: 38,
       icon: <Video className="w-3.5 h-3.5" />,
       formats: [
-        '3GP', 'AVI', 'FLV', 'MKV', 'MOV', 'MP4', 'MPEG', 'OGV', 'TS', 'VOB', 'WEBM', 'WMV',
+        '3GP', 'AVI', 'FLV', 'M4V', 'MKV', 'MOV', 'MP4', 'MPEG', 'OGV', 'TS', 'VOB', 'WEBM', 'WMV',
       ],
       commonConversions: [
         { from: 'MP4', to: 'MP3', desc: 'extract audio track' },
@@ -89,23 +89,23 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
     {
       id: 'audio',
       name: 'Audio',
-      count: 21,
+      count: 29,
       icon: <Music className="w-3.5 h-3.5" />,
       formats: [
-        'AAC', 'AIFF', 'FLAC', 'M4A', 'MP3', 'OGG', 'OPUS', 'WAV', 'WMA',
+        'AAC', 'AC3', 'AIFF', 'AMR', 'FLAC', 'M4A', 'MID', 'MP3', 'OGG', 'OPUS', 'WAV', 'WMA',
       ],
       commonConversions: [
         { from: 'WAV', to: 'MP3', desc: 'compressed 320 kbps stream' },
-        { from: 'M4A', to: 'MP3', desc: 'broad podcast compatibility' },
-        { from: 'FLAC', to: 'WAV', desc: 'lossless uncompressed audio' },
+        { from: 'FLAC', to: 'MP3', desc: 'lossless to universal audio' },
+        { from: 'M4A', to: 'WAV', desc: 'uncompressed audio stream' },
       ],
     },
     {
       id: 'spreadsheets',
       name: 'Spreadsheets',
-      count: 8,
+      count: 18,
       icon: <Database className="w-3.5 h-3.5" />,
-      formats: ['CSV', 'JSON', 'NUMBERS', 'ODS', 'TSV', 'XLS', 'XLSX', 'XML'],
+      formats: ['CSV', 'ET', 'JSON', 'NUMBERS', 'ODS', 'TSV', 'XLS', 'XLSB', 'XLSM', 'XLSX', 'XML'],
       commonConversions: [
         { from: 'XLSX', to: 'CSV', desc: 'comma-delimited data' },
         { from: 'CSV', to: 'JSON', desc: 'structured records' },
@@ -115,9 +115,9 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
     {
       id: 'slides',
       name: 'Slides',
-      count: 11,
+      count: 18,
       icon: <Presentation className="w-3.5 h-3.5" />,
-      formats: ['KEY', 'ODP', 'PPS', 'PPSX', 'PPT', 'PPTX', 'SXI'],
+      formats: ['DPS', 'KEY', 'ODP', 'POT', 'POTX', 'PPS', 'PPSX', 'PPT', 'PPTX', 'SXI', 'VSDX'],
       commonConversions: [
         { from: 'PPTX', to: 'PDF', desc: 'printable slide deck' },
         { from: 'PPTX', to: 'HTML', desc: 'interactive presentation' },
@@ -127,9 +127,9 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
     {
       id: 'ebooks',
       name: 'E-books',
-      count: 22,
+      count: 24,
       icon: <BookOpen className="w-3.5 h-3.5" />,
-      formats: ['AZW3', 'EPUB', 'FB2', 'LIT', 'MOBI', 'PDB', 'TCR'],
+      formats: ['AZW', 'AZW3', 'CBZ', 'CBR', 'EPUB', 'FB2', 'LIT', 'LRF', 'MOBI', 'PDB', 'TCR'],
       commonConversions: [
         { from: 'EPUB', to: 'PDF', desc: 'printable book pages' },
         { from: 'MOBI', to: 'EPUB', desc: 'open standard reader' },
@@ -139,9 +139,9 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
     {
       id: 'archives',
       name: 'Archives',
-      count: 39,
+      count: 41,
       icon: <Archive className="w-3.5 h-3.5" />,
-      formats: ['7Z', 'ACE', 'BZ2', 'GZ', 'ISO', 'RAR', 'TAR', 'XZ', 'ZIP'],
+      formats: ['7Z', 'ACE', 'ARJ', 'BZ2', 'CAB', 'GZ', 'ISO', 'RAR', 'TAR', 'TBZ2', 'TGZ', 'XZ', 'Z', 'ZIP'],
       commonConversions: [
         { from: 'RAR', to: 'ZIP', desc: 'open standard bundle' },
         { from: 'TAR', to: 'ZIP', desc: 'compressed folder' },
@@ -163,23 +163,36 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
     {
       id: 'cad',
       name: 'CAD',
-      count: 3,
+      count: 9,
       icon: <Compass className="w-3.5 h-3.5" />,
-      formats: ['DWG', 'DXF', 'DGN'],
+      formats: ['DGN', 'DWF', 'DWG', 'DXF', 'IGES', 'OBJ', 'PLY', 'STEP', 'STL'],
       commonConversions: [
         { from: 'DWG', to: 'PDF', desc: 'printable technical drawing' },
+        { from: 'STEP', to: 'STL', desc: '3D printing mesh' },
         { from: 'DXF', to: 'SVG', desc: 'scalable CAD vector' },
       ],
     },
     {
       id: 'fonts',
       name: 'Fonts',
-      count: 5,
+      count: 10,
       icon: <Type className="w-3.5 h-3.5" />,
-      formats: ['EOT', 'OTF', 'TTF', 'WOFF', 'WOFF2'],
+      formats: ['EOT', 'OTF', 'PFA', 'PFB', 'SVG', 'TTF', 'WOFF', 'WOFF2'],
       commonConversions: [
         { from: 'TTF', to: 'WOFF2', desc: 'modern optimized web font' },
         { from: 'OTF', to: 'TTF', desc: 'TrueType desktop font' },
+      ],
+    },
+    {
+      id: 'data',
+      name: 'Data',
+      count: 9,
+      icon: <Database className="w-3.5 h-3.5" />,
+      formats: ['CSV', 'JSON', 'JSONL', 'NDJSON', 'PLIST', 'SQL', 'TOML', 'TSV', 'YAML'],
+      commonConversions: [
+        { from: 'CSV', to: 'JSON', desc: 'structured records' },
+        { from: 'YAML', to: 'JSON', desc: 'parse config data' },
+        { from: 'JSON', to: 'CSV', desc: 'tabular export' },
       ],
     },
   ];
@@ -201,7 +214,7 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
             </div>
 
             <p className="mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
-              EasyConvert handles <span className="tabular-nums font-semibold">212</span> formats across 11 categories, from common office files to camera RAW, CAD drawings, archives, ebooks and production media.
+              EasyConvert handles <span className="tabular-nums font-semibold">292</span> formats across 12 categories, from common office files to camera RAW, CAD drawings, archives, ebooks and production media.
             </p>
 
             {/* Category Buttons Grid: Clean Borderless Inline */}

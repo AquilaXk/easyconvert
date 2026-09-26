@@ -158,7 +158,7 @@ export default function Hero({
       return `EasyConvert is an online document converter. Amongst many others, we support PDF, DOCX, PPTX, XLSX. Thanks to our advanced conversion technology the quality of the output will be as good as if the file was saved through the latest Microsoft Office suite.`;
     }
     if (!hasActiveQueue && !activeSourceFormat) {
-      return 'Drop a file and pick what to turn it into. EasyConvert handles 200+ formats across documents, images, audio, video, archives and more — straight from your browser.';
+      return 'Drop a file and pick what to turn it into. EasyConvert handles 292 formats across documents, images, audio, video, archives and more — straight from your browser.';
     }
     return `EasyConvert offers advanced, high-fidelity ${sourceFormat.toUpperCase()} to ${targetFormat.toUpperCase()} conversions. We preserve layouts, formatting, and tables straight from your browser.`;
   };
