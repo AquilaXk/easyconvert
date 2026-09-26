@@ -56,6 +56,7 @@ export default function Home() {
           orientation: 'portrait',
           delimiter: ',',
           compressionLevel: 6,
+          clientEdgeMode: true,
         },
       };
     });

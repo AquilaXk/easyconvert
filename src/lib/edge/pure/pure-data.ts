@@ -98,18 +98,31 @@ export function convertPureData(
   // 2. Serialize intermediate structure to target format
   let outputText = '';
   if (tgt === 'json') {
-    outputText = JSON.stringify(intermediate, null, 2);
+    outputText = JSON.stringify(intermediate ?? {}, null, 2);
   } else if (tgt === 'yaml' || tgt === 'yml') {
-    outputText = yaml.dump(intermediate);
+    outputText = yaml.dump(intermediate ?? {});
   } else if (tgt === 'csv' || tgt === 'tsv' || tgt === 'tab') {
     const targetDelim = tgt === 'tsv' || tgt === 'tab' ? '\t' : ',';
-    const arrayData = Array.isArray(intermediate) ? intermediate : [intermediate];
-    outputText = Papa.unparse(arrayData as Record<string, unknown>[], { delimiter: targetDelim });
+    let arrayData: Record<string, unknown>[];
+    if (Array.isArray(intermediate)) {
+      arrayData = intermediate.map((item) =>
+        typeof item === 'object' && item !== null
+          ? (item as Record<string, unknown>)
+          : { value: item }
+      );
+    } else if (typeof intermediate === 'object' && intermediate !== null) {
+      arrayData = [intermediate as Record<string, unknown>];
+    } else if (intermediate !== undefined) {
+      arrayData = [{ value: intermediate }];
+    } else {
+      arrayData = [];
+    }
+    outputText = Papa.unparse(arrayData, { delimiter: targetDelim });
   } else if (tgt === 'txt') {
     outputText =
       typeof intermediate === 'string'
         ? intermediate
-        : JSON.stringify(intermediate, null, 2);
+        : JSON.stringify(intermediate ?? '', null, 2);
   } else {
     throw new Error(`Unsupported target data format: ${tgt}`);
   }

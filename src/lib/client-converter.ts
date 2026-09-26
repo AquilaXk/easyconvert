@@ -49,84 +49,79 @@ export async function tryProcessClientEdge(
 
   // 1. Level 0: Pure Isomorphic Fast-Paths (0 MB Wasm)
   if (resolution.tier === 'L0') {
-    try {
-      onProgress?.(25);
+    onProgress?.(25);
 
-      // Pure Data conversion (CSV, TSV, JSON, YAML)
-      if (isPureDataConvertible(src, tgt)) {
-        const arrayBuf = await item.file.arrayBuffer();
-        onProgress?.(50);
-        const res = convertPureData(new Uint8Array(arrayBuf), src, tgt, item.options);
-        onProgress?.(95);
-        const blob = new Blob([res.data as any], { type: res.mimeType });
-        const resultUrl = URL.createObjectURL(blob);
-        return {
-          resultUrl,
-          resultSize: blob.size,
-          tier: 'L0',
-          tierName: 'Edge L0 (Instant)',
-        };
-      }
+    // Pure Data conversion (CSV, TSV, JSON, YAML)
+    if (isPureDataConvertible(src, tgt)) {
+      const arrayBuf = await item.file.arrayBuffer();
+      onProgress?.(50);
+      const res = convertPureData(new Uint8Array(arrayBuf), src, tgt, item.options);
+      onProgress?.(95);
+      const blob = new Blob([res.data as any], { type: res.mimeType });
+      const resultUrl = URL.createObjectURL(blob);
+      return {
+        resultUrl,
+        resultSize: blob.size,
+        tier: 'L0',
+        tierName: 'Edge L0 (Instant)',
+      };
+    }
 
-      // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
-      if (isPureCadConvertible(src, tgt)) {
-        const arrayBuf = await item.file.arrayBuffer();
-        onProgress?.(50);
-        const baseName = item.name.replace(/\.[^/.]+$/, '');
-        const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
-        onProgress?.(95);
-        const blob = new Blob([res.data as any], { type: res.mimeType });
-        const resultUrl = URL.createObjectURL(blob);
-        return {
-          resultUrl,
-          resultSize: blob.size,
-          tier: 'L0',
-          tierName: 'Edge L0 (Instant)',
-        };
-      }
+    // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
+    if (isPureCadConvertible(src, tgt)) {
+      const arrayBuf = await item.file.arrayBuffer();
+      onProgress?.(50);
+      const baseName = item.name.replace(/\.[^/.]+$/, '');
+      const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
+      onProgress?.(95);
+      const blob = new Blob([res.data as any], { type: res.mimeType });
+      const resultUrl = URL.createObjectURL(blob);
+      return {
+        resultUrl,
+        resultSize: blob.size,
+        tier: 'L0',
+        tierName: 'Edge L0 (Instant)',
+      };
+    }
 
-      // Pure Audio conversion (WAV, PCM, MP3)
-      if (isPureAudioConvertible(src, tgt)) {
-        const arrayBuf = await item.file.arrayBuffer();
-        onProgress?.(50);
-        const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
-          sampleRate: item.options.audioSampleRate,
-          channels: item.options.audioChannels === 'mono' ? 1 : 2,
-          bitrate: item.options.audioBitrate,
-        });
-        onProgress?.(95);
-        const blob = new Blob([res.data as any], { type: res.mimeType });
-        const resultUrl = URL.createObjectURL(blob);
-        return {
-          resultUrl,
-          resultSize: blob.size,
-          tier: 'L0',
-          tierName: 'Edge L0 (Instant)',
-        };
-      }
+    // Pure Audio conversion (WAV, PCM, MP3)
+    if (isPureAudioConvertible(src, tgt)) {
+      const arrayBuf = await item.file.arrayBuffer();
+      onProgress?.(50);
+      const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
+        sampleRate: item.options.audioSampleRate,
+        channels: item.options.audioChannels === 'mono' ? 1 : 2,
+        bitrate: item.options.audioBitrate,
+      });
+      onProgress?.(95);
+      const blob = new Blob([res.data as any], { type: res.mimeType });
+      const resultUrl = URL.createObjectURL(blob);
+      return {
+        resultUrl,
+        resultSize: blob.size,
+        tier: 'L0',
+        tierName: 'Edge L0 (Instant)',
+      };
+    }
 
-      // Pure Canvas 2D image transcoding (PNG, JPEG, WebP, BMP)
-      if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
-        onProgress?.(50);
-        const res = await convertPureCanvas(item.file, src, tgt, {
-          quality: item.options.quality,
-          width: item.options.width,
-          height: item.options.height,
-          fit: item.options.fit,
-        });
-        onProgress?.(95);
-        const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
-        const resultUrl = URL.createObjectURL(blob);
-        return {
-          resultUrl,
-          resultSize: blob.size,
-          tier: 'L0',
-          tierName: 'Edge L0 (Instant)',
-        };
-      }
-    } catch {
-      // In case pure execution fails on corrupt input, fallback closed or to server
-      return null;
+    // Pure Canvas 2D image transcoding (PNG, JPEG, WebP, BMP)
+    if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
+      onProgress?.(50);
+      const res = await convertPureCanvas(item.file, src, tgt, {
+        quality: item.options.quality,
+        width: item.options.width,
+        height: item.options.height,
+        fit: item.options.fit,
+      });
+      onProgress?.(95);
+      const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
+      const resultUrl = URL.createObjectURL(blob);
+      return {
+        resultUrl,
+        resultSize: blob.size,
+        tier: 'L0',
+        tierName: 'Edge L0 (Instant)',
+      };
     }
   }
 
@@ -142,8 +137,9 @@ export async function tryProcessClientEdge(
           tierName: 'Edge L2 (SIMD Wasm)',
         };
       }
-    } catch {
-      return null;
+    } catch (err: unknown) {
+      // Propagate OCR error to respect fail-closed invariant
+      throw err;
     }
   }
 
@@ -167,11 +163,9 @@ export async function executeItemConversion(
       return;
     }
   } catch (err: any) {
-    // If clientEdgeMode was strictly forced, fail-closed
-    if (item.options.clientEdgeMode === true) {
-      callbacks.onError(err.message || 'Client edge conversion failed.');
-      return;
-    }
+    // Fail-closed on client edge conversion errors: do not silently upload corrupted files to server
+    callbacks.onError(err.message || 'Client edge conversion failed.');
+    return;
   }
 
   // 2. Server-side conversion pipeline

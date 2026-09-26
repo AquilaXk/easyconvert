@@ -62,6 +62,9 @@ export function encodeBmpFromImageData(imageData: {
   data: Uint8ClampedArray | Uint8Array;
 }): Uint8Array {
   const { width, height, data } = imageData;
+  if (!data || width <= 0 || height <= 0) {
+    throw new Error('Invalid image dimensions or pixel data for BMP encoding.');
+  }
   // Each row is padded to a 4-byte boundary
   const rowSize = Math.floor((24 * width + 31) / 32) * 4;
   const pixelArraySize = rowSize * height;
@@ -140,19 +143,61 @@ export async function convertPureCanvas(
   const blob = input instanceof Blob ? input : new Blob([input as any], { type: srcMime });
 
   const bitmap = await createImageBitmap(blob);
-  const targetW = options.width || bitmap.width;
-  const targetH = options.height || bitmap.height;
+  const srcW = bitmap.width;
+  const srcH = bitmap.height;
+
+  let canvasW = srcW;
+  let canvasH = srcH;
+  let drawX = 0;
+  let drawY = 0;
+  let drawW = srcW;
+  let drawH = srcH;
+
+  const fit = options.fit || 'contain';
+
+  if (options.width && !options.height) {
+    canvasW = Math.max(1, Math.round(options.width));
+    canvasH = Math.max(1, Math.round((srcH * canvasW) / srcW));
+    drawW = canvasW;
+    drawH = canvasH;
+  } else if (!options.width && options.height) {
+    canvasH = Math.max(1, Math.round(options.height));
+    canvasW = Math.max(1, Math.round((srcW * canvasH) / srcH));
+    drawW = canvasW;
+    drawH = canvasH;
+  } else if (options.width && options.height) {
+    canvasW = Math.max(1, Math.round(options.width));
+    canvasH = Math.max(1, Math.round(options.height));
+
+    if (fit === 'fill') {
+      drawW = canvasW;
+      drawH = canvasH;
+    } else if (fit === 'cover') {
+      const scale = Math.max(canvasW / srcW, canvasH / srcH);
+      drawW = Math.round(srcW * scale);
+      drawH = Math.round(srcH * scale);
+      drawX = Math.round((canvasW - drawW) / 2);
+      drawY = Math.round((canvasH - drawH) / 2);
+    } else {
+      // 'contain' or 'inside'
+      const scale = Math.min(canvasW / srcW, canvasH / srcH);
+      drawW = Math.round(srcW * scale);
+      drawH = Math.round(srcH * scale);
+      drawX = Math.round((canvasW - drawW) / 2);
+      drawY = Math.round((canvasH - drawH) / 2);
+    }
+  }
 
   let canvas: HTMLCanvasElement | OffscreenCanvas;
   let ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;
 
   if (typeof OffscreenCanvas !== 'undefined') {
-    canvas = new OffscreenCanvas(targetW, targetH);
+    canvas = new OffscreenCanvas(canvasW, canvasH);
     ctx = canvas.getContext('2d');
   } else {
     canvas = document.createElement('canvas');
-    canvas.width = targetW;
-    canvas.height = targetH;
+    canvas.width = canvasW;
+    canvas.height = canvasH;
     ctx = canvas.getContext('2d');
   }
 
@@ -165,10 +210,10 @@ export async function convertPureCanvas(
     // Fill white background for JPEG/BMP to handle alpha transparency cleanly
     if (tgt === 'jpg' || tgt === 'jpeg' || tgt === 'bmp') {
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, targetW, targetH);
+      ctx.fillRect(0, 0, canvasW, canvasH);
     }
 
-    ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+    ctx.drawImage(bitmap, drawX, drawY, drawW, drawH);
   } finally {
     bitmap.close();
   }
@@ -178,7 +223,7 @@ export async function convertPureCanvas(
   const mimeType = CANVAS_MIME_MAP[normalizedTgt] || 'application/octet-stream';
 
   if (normalizedTgt === 'bmp') {
-    const imgData = ctx.getImageData(0, 0, targetW, targetH);
+    const imgData = ctx.getImageData(0, 0, canvasW, canvasH);
     const bmpBytes = encodeBmpFromImageData(imgData);
     const outBlob = new Blob([bmpBytes as any], { type: 'image/bmp' });
 
@@ -187,8 +232,8 @@ export async function convertPureCanvas(
       blob: outBlob,
       mimeType: 'image/bmp',
       extension: 'bmp',
-      width: targetW,
-      height: targetH,
+      width: canvasW,
+      height: canvasH,
     };
   }
 
@@ -213,7 +258,7 @@ export async function convertPureCanvas(
     blob: outBlob,
     mimeType,
     extension: normalizedTgt,
-    width: targetW,
-    height: targetH,
+    width: canvasW,
+    height: canvasH,
   };
 }

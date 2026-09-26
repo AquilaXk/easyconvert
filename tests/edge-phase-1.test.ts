@@ -31,12 +31,30 @@ import {
   getEffectiveMaxFileSize,
   tryProcessClientEdge,
   createItemConverter,
+  executeItemConversion,
 } from '@/lib/client-converter';
 import { ConversionQueueItem } from '@/lib/types';
 import * as fs from 'fs';
 import * as path from 'path';
 
 describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => {
+  let originalWindow: any;
+  let originalUrl: any;
+
+  beforeEach(() => {
+    originalWindow = (globalThis as any).window;
+    originalUrl = (globalThis as any).URL;
+  });
+
+  afterEach(() => {
+    if (originalWindow === undefined) {
+      delete (globalThis as any).window;
+    } else {
+      (globalThis as any).window = originalWindow;
+    }
+    (globalThis as any).URL = originalUrl;
+    vi.restoreAllMocks();
+  });
   // ==========================================================================
   // 1. Dependency Isolation & Purity Verification
   // ==========================================================================
@@ -137,6 +155,34 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
         /YAML parsing failed/
       );
     });
+
+    it('safely serializes JSON primitives and arrays of primitives to CSV/TSV without throwing', () => {
+      const arrayRes = convertPureData('[10, 20, 30]', 'json', 'csv');
+      expect(arrayRes.text).toContain('value');
+      expect(arrayRes.text).toContain('10');
+      expect(arrayRes.text).toContain('20');
+      expect(arrayRes.text).toContain('30');
+
+      const stringRes = convertPureData('"single string"', 'json', 'tsv');
+      expect(stringRes.text).toContain('value');
+      expect(stringRes.text).toContain('single string');
+
+      const numRes = convertPureData('42', 'json', 'csv');
+      expect(numRes.text).toContain('value');
+      expect(numRes.text).toContain('42');
+
+      const nullRes = convertPureData('null', 'json', 'csv');
+      expect(nullRes.text).toContain('value');
+    });
+
+    it('handles empty or whitespace YAML converting to JSON with valid object rather than string undefined', () => {
+      const resEmpty = convertPureData('', 'yaml', 'json');
+      expect(resEmpty.text).toBe('{}');
+      expect(resEmpty.text).not.toBe('undefined');
+
+      const resWhitespace = convertPureData('   \n  ', 'yaml', 'json');
+      expect(resWhitespace.text).toBe('{}');
+    });
   });
 
   // ==========================================================================
@@ -205,6 +251,30 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(() => convertPureCad('NOT A VALID STEP FILE', 'step', 'stl')).toThrow(
         /Failed to tessellate CAD geometry/
       );
+    });
+
+    it('sanitizes model names and handles quad/polygon faces in STL and OBJ', () => {
+      const quadMesh = {
+        name: 'My\nModel\rName',
+        vertices: [
+          [0, 0, 0],
+          [10, 0, 0],
+          [10, 10, 0],
+          [0, 10, 0],
+        ],
+        faces: [[0, 1, 2, 3]],
+      };
+
+      const stl = encodeStl(quadMesh);
+      expect(stl).toContain('solid My Model Name');
+      expect(stl).not.toContain('\nModel');
+      // Quad should be triangulated into 2 facets
+      const facetCount = (stl.match(/facet normal/g) || []).length;
+      expect(facetCount).toBe(2);
+
+      const obj = encodeObj(quadMesh);
+      expect(obj).toContain('o My Model Name');
+      expect(obj).toContain('f 1 2 3 4');
     });
   });
 
@@ -300,6 +370,136 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(res.extension).toBe('mp3');
       expect(res.data.length).toBeGreaterThan(0);
     });
+
+    it('parses WAV with odd-length metadata chunk preceding data chunk', () => {
+      // Create a WAV with fmt subchunk, an odd-sized JUNK chunk (15 bytes + 1 pad byte), then data
+      const sampleCount = 100;
+      const dataBytesLen = sampleCount * 2;
+      const junkPayloadLen = 15; // Odd size
+      const junkTotalLen = 8 + junkPayloadLen + 1; // 8 hdr + 15 payload + 1 pad = 24 bytes
+      const totalSize = 12 + 24 + junkTotalLen + 8 + dataBytesLen;
+
+      const buf = new Uint8Array(totalSize);
+      const view = new DataView(buf.buffer);
+
+      // RIFF
+      buf.set([0x52, 0x49, 0x46, 0x46], 0);
+      view.setUint32(4, totalSize - 8, true);
+      buf.set([0x57, 0x41, 0x56, 0x45], 8);
+
+      // fmt
+      buf.set([0x66, 0x6d, 0x74, 0x20], 12);
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true); // PCM
+      view.setUint16(22, 1, true); // mono
+      view.setUint32(24, 48000, true); // 48kHz
+      view.setUint32(28, 96000, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true); // 16-bit
+
+      // JUNK chunk (odd length 15)
+      let off = 36;
+      buf.set([0x4a, 0x55, 0x4e, 0x4b], off);
+      view.setUint32(off + 4, junkPayloadLen, true);
+      off += 8 + junkPayloadLen;
+      buf[off++] = 0x00; // Pad byte
+
+      // data chunk
+      buf.set([0x64, 0x61, 0x74, 0x61], off);
+      view.setUint32(off + 4, dataBytesLen, true);
+      off += 8;
+      for (let i = 0; i < sampleCount; i++) {
+        view.setInt16(off + i * 2, 1234, true);
+      }
+
+      const parsed = parseWavPcm(buf);
+      expect(parsed.sampleRate).toBe(48000);
+      expect(parsed.channels).toBe(1);
+      expect(parsed.samples.length).toBe(sampleCount);
+      expect(parsed.samples[0]).toBe(1234);
+    });
+
+    it('parses 8-bit unsigned and 24-bit signed PCM WAV files', () => {
+      // 1. 8-bit unsigned PCM
+      const count8 = 64;
+      const buf8 = new Uint8Array(44 + count8);
+      const v8 = new DataView(buf8.buffer);
+      buf8.set([0x52, 0x49, 0x46, 0x46], 0);
+      v8.setUint32(4, 36 + count8, true);
+      buf8.set([0x57, 0x41, 0x56, 0x45], 8);
+      buf8.set([0x66, 0x6d, 0x74, 0x20], 12);
+      v8.setUint32(16, 16, true);
+      v8.setUint16(20, 1, true); // PCM
+      v8.setUint16(22, 1, true); // mono
+      v8.setUint32(24, 22050, true);
+      v8.setUint32(28, 22050, true);
+      v8.setUint16(32, 1, true);
+      v8.setUint16(34, 8, true); // 8-bit!
+      buf8.set([0x64, 0x61, 0x74, 0x61], 36);
+      v8.setUint32(40, count8, true);
+      for (let i = 0; i < count8; i++) {
+        buf8[44 + i] = 128 + 50; // value +50
+      }
+
+      const parsed8 = parseWavPcm(buf8);
+      expect(parsed8.sampleRate).toBe(22050);
+      expect(parsed8.channels).toBe(1);
+      expect(parsed8.samples[0]).toBe(50 << 8);
+
+      // 2. 24-bit signed PCM
+      const count24 = 32;
+      const data24Len = count24 * 3;
+      const buf24 = new Uint8Array(44 + data24Len);
+      const v24 = new DataView(buf24.buffer);
+      buf24.set([0x52, 0x49, 0x46, 0x46], 0);
+      v24.setUint32(4, 36 + data24Len, true);
+      buf24.set([0x57, 0x41, 0x56, 0x45], 8);
+      buf24.set([0x66, 0x6d, 0x74, 0x20], 12);
+      v24.setUint32(16, 16, true);
+      v24.setUint16(20, 1, true); // PCM
+      v24.setUint16(22, 1, true); // mono
+      v24.setUint32(24, 44100, true);
+      v24.setUint32(28, 132300, true);
+      v24.setUint16(32, 3, true);
+      v24.setUint16(34, 24, true); // 24-bit!
+      buf24.set([0x64, 0x61, 0x74, 0x61], 36);
+      v24.setUint32(40, data24Len, true);
+      // Sample 0: 0x123456 -> high 16 bits: 0x1234
+      buf24[44] = 0x56;
+      buf24[45] = 0x34;
+      buf24[46] = 0x12;
+
+      const parsed24 = parseWavPcm(buf24);
+      expect(parsed24.samples[0]).toBe(0x1234);
+    });
+
+    it('synchronizes MP3 frame length with bitrate index for standard rates and encodes UTF-8 ID3 title', () => {
+      const samples = new Int16Array(1152 * 4);
+      const titleUtf8 = '한국어 오디오 트랙';
+      const mp3Bytes = encodePureMp3(samples, 44100, 2, '320k', titleUtf8);
+
+      // Frame length for 320k at 44.1kHz: Math.floor(144 * 320000 / 44100) = 1044 bytes
+      const expectedFrameLen = 1044;
+      const expectedBitrateIdx = 14; // 320kbps in MPEG-1 Layer III
+
+      // First sync frame header after ID3 header
+      let syncOffset = -1;
+      for (let i = 10; i < mp3Bytes.length - 1; i++) {
+        if (mp3Bytes[i] === 0xff && (mp3Bytes[i + 1] & 0xfe) === 0xfa) {
+          syncOffset = i;
+          break;
+        }
+      }
+      expect(syncOffset).toBeGreaterThan(0);
+      const headerByte2 = mp3Bytes[syncOffset + 2];
+      const actualBitrateIdx = (headerByte2 >> 4) & 0x0f;
+      expect(actualBitrateIdx).toBe(expectedBitrateIdx);
+
+      // Next sync word should be at syncOffset + expectedFrameLen
+      const nextSync = syncOffset + expectedFrameLen;
+      expect(mp3Bytes[nextSync]).toBe(0xff);
+      expect((mp3Bytes[nextSync + 1] & 0xfe)).toBe(0xfa);
+    });
   });
 
   // ==========================================================================
@@ -343,8 +543,17 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(view.getUint32(14, true)).toBe(40); // DIB header size
       expect(view.getInt32(18, true)).toBe(width);
       expect(view.getInt32(22, true)).toBe(height);
-      expect(view.getUint16(26, true)).toBe(1); // 1 plane
+      expect(view.getInt16(26, true)).toBe(1); // 1 plane
       expect(view.getUint16(28, true)).toBe(24); // 24-bit RGB
+    });
+
+    it('fails closed and validates input parameters for BMP encoder', () => {
+      expect(() =>
+        encodeBmpFromImageData({ width: 0, height: 10, data: new Uint8Array(10) })
+      ).toThrow(/Invalid image dimensions/);
+      expect(() =>
+        encodeBmpFromImageData({ width: 10, height: 0, data: new Uint8Array(10) })
+      ).toThrow(/Invalid image dimensions/);
     });
   });
 
@@ -362,6 +571,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(caps).toHaveProperty('hasWasmSimd');
       expect(caps).toHaveProperty('hasOpfsSyncAccess');
       expect(caps).toHaveProperty('hardwareConcurrency');
+      expect(caps).toHaveProperty('hasCanvas');
       expect(Array.isArray(caps.supportedVideoEncoders)).toBe(true);
     });
 
@@ -384,6 +594,17 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(res.tier).toBe('L0');
       expect(res.tierName).toBe('Edge L0 (Instant)');
       expect(res.isClientEdge).toBe(true);
+    });
+
+    it('routes Canvas format pairs based on hasCanvas capability', () => {
+      const resWithCanvas = resolveConversionTier('png', 'webp', 1000, {}, { hasCanvas: true });
+      expect(resWithCanvas.tier).toBe('L0');
+      expect(resWithCanvas.tierName).toBe('Edge L0 (Instant)');
+      expect(resWithCanvas.isClientEdge).toBe(true);
+
+      const resWithoutCanvas = resolveConversionTier('png', 'webp', 1000, {}, { hasCanvas: false });
+      expect(resWithoutCanvas.tier).toBe('L4');
+      expect(resWithoutCanvas.isClientEdge).toBe(false);
     });
 
     it('routes OCR tasks to Level 2 (SIMD Wasm)', () => {
@@ -459,6 +680,38 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(edgeRes?.resultUrl).toBe(fakeUrl);
       expect(edgeRes?.resultSize).toBeGreaterThan(0);
       expect(onProgress).toHaveBeenCalled();
+    });
+
+    it('strictly fails closed and reports error when pure edge conversion encounters corrupt input', async () => {
+      (globalThis as any).window = globalThis;
+      const fetchSpy = vi.fn();
+      (globalThis as any).fetch = fetchSpy;
+
+      const corruptFile = new File(['{"unclosed: json'], 'corrupt.json', { type: 'application/json' });
+      const queueItem: ConversionQueueItem = {
+        id: 'test-corrupt',
+        file: corruptFile,
+        name: 'corrupt.json',
+        size: corruptFile.size,
+        sourceFormat: 'json',
+        targetFormat: 'csv',
+        status: 'ready',
+        progress: 0,
+        options: { clientEdgeMode: true },
+      };
+
+      let capturedError = '';
+      await executeItemConversion(queueItem, {
+        onProgress: vi.fn(),
+        onSuccess: vi.fn(),
+        onError: (err) => {
+          capturedError = err;
+        },
+      });
+
+      expect(capturedError).toContain('JSON parsing failed');
+      // Crucial: Must NEVER make an unconsented network fetch to server when client edge fails!
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
 
     it('rejects oversized files in createItemConverter', async () => {
