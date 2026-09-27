@@ -1213,6 +1213,9 @@ export function extractStepBRepMesh(
   entityMap: Map<number, StepEntity>,
   modelName = 'step_brep'
 ): TessellatedMesh | null {
+  if (!entityMap || typeof entityMap.values !== 'function') {
+    return null;
+  }
   const faces = Array.from(entityMap.values()).filter(
     (e) => e.type === 'ADVANCED_FACE' || e.type === 'FACE_SURFACE' || e.type.endsWith('_FACE')
   );
