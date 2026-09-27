@@ -2527,7 +2527,11 @@ export interface OfficeWorksheet {
  * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
  * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
  */
-export async function parseAllXlsxWorksheets(zip: JSZip): Promise<OfficeWorksheet[]> {
+export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8Array): Promise<OfficeWorksheet[]> {
+  const zip = (zipOrBuffer && typeof (zipOrBuffer as JSZip).file === 'function')
+    ? (zipOrBuffer as JSZip)
+    : await JSZip.loadAsync(zipOrBuffer as Buffer | Uint8Array);
+
   // 1. Parse shared strings
   const sharedStrings: string[] = [];
   const sstFile = zip.file('xl/sharedStrings.xml');

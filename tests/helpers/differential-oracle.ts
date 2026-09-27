@@ -64,6 +64,31 @@ export function isOracleToolAvailable(tool: ExternalOracleTool): boolean {
   return getOracleToolPath(tool) !== null;
 }
 
+export interface OracleToolDiagnostic {
+  tool: ExternalOracleTool;
+  available: boolean;
+  path: string | null;
+}
+
+export function getOracleToolDiagnostics(): OracleToolDiagnostic[] {
+  const tools: ExternalOracleTool[] = [
+    'pdftotext',
+    'pdfinfo',
+    'ffmpeg',
+    'ffprobe',
+    'soffice',
+    'tesseract',
+    '7z',
+    'tar',
+    'zstd',
+  ];
+  return tools.map((tool) => ({
+    tool,
+    available: isOracleToolAvailable(tool),
+    path: getOracleToolPath(tool),
+  }));
+}
+
 // ============================================================================
 // 2. Structural AST Reference Oracle Models
 // ============================================================================
@@ -1061,6 +1086,13 @@ function checkJpegIntegrity(buffer: Buffer): void {
   }
 }
 
+function checkDxfIntegrity(buffer: Buffer): void {
+  const str = buffer.toString('utf-8', 0, Math.min(buffer.length, 512));
+  if (!str.includes('SECTION') && !str.includes('HEADER') && !str.includes('ENTITIES')) {
+    throw new Error('Integrity Violation: Missing AutoCAD DXF SECTION header');
+  }
+}
+
 export function assertFormatIntegrity(buffer: Buffer, format: string): void {
   const fmt = format.toLowerCase();
 
@@ -1114,7 +1146,13 @@ export function assertFormatIntegrity(buffer: Buffer, format: string): void {
     case 'docx':
     case 'xlsx':
     case 'pptx':
+    case 'ods':
+    case 'odt':
+    case 'odp':
       checkZipIntegrity(buffer);
+      break;
+    case 'dxf':
+      checkDxfIntegrity(buffer);
       break;
     case 'step':
     case 'stp':

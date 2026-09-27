@@ -30,6 +30,7 @@ import {
   runDifferentialComparison,
   calculateNormalizedTextSimilarity,
   assertFormatIntegrity,
+  getOracleToolDiagnostics,
 } from './helpers/differential-oracle';
 import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { convertFile } from '../src/lib/conversions';
@@ -463,7 +464,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       expect(ast.slides[2].shapes[0].text).toBe('Slide 10');
     });
 
-    it('2.12 assertFormatIntegrity validates full spectrum of supported formats', () => {
+    it('2.12 assertFormatIntegrity validates full spectrum of supported formats', async () => {
       const zstd = synthesizeEnterpriseZstd();
       expect(() => assertFormatIntegrity(zstd.buffer, 'zstd')).not.toThrow();
 
@@ -485,6 +486,34 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
 
       const jpegBuffer = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
       expect(() => assertFormatIntegrity(jpegBuffer, 'jpeg')).not.toThrow();
+
+      const dxf = synthesizeEnterpriseDxf();
+      expect(() => assertFormatIntegrity(dxf.buffer, 'dxf')).not.toThrow();
+
+      const xlsx = await synthesizeEnterpriseMultiSheetXlsx();
+      expect(() => assertFormatIntegrity(xlsx.buffer, 'ods')).not.toThrow();
+    });
+
+    it('2.13 getOracleToolDiagnostics provides comprehensive diagnostic status across external tool matrix', () => {
+      const diagnostics = getOracleToolDiagnostics();
+      expect(diagnostics.length).toBeGreaterThanOrEqual(9);
+
+      const toolNames = diagnostics.map((d) => d.tool);
+      expect(toolNames).toContain('pdftotext');
+      expect(toolNames).toContain('ffmpeg');
+      expect(toolNames).toContain('7z');
+      expect(toolNames).toContain('tar');
+      expect(toolNames).toContain('zstd');
+
+      for (const diag of diagnostics) {
+        expect(typeof diag.available).toBe('boolean');
+        if (diag.available) {
+          expect(diag.path).toBeDefined();
+          expect(typeof diag.path).toBe('string');
+        } else {
+          expect(diag.path).toBeNull();
+        }
+      }
     });
   });
 
@@ -493,8 +522,9 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
   // =========================================================================
   describe('3. Perceptual VRT Visual Regression CI Gates', () => {
     it('3.1 verifies exact image match achieves SSIM 1.0, PSNR Infinity, and zero delta ratio', async () => {
-      const gradient = await synthesizeGradientStressCard(64, 64);
-      const res = await compareImages(gradient, gradient);
+      const gradient1 = await synthesizeGradientStressCard(64, 64);
+      const gradient2 = await synthesizeGradientStressCard(64, 64);
+      const res = await compareImages(gradient1, gradient2);
 
       expect(res.passed).toBe(true);
       expect(res.ssim).toBe(1.0);
