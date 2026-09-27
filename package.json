@@ -24,7 +24,7 @@
     "sharp": "^0.33.5",
     "tailwind-merge": "^2.5.4",
     "tesseract.js": "^7.0.0",
-    "undici": "^8.11.2"
+    "undici": "^6.21.1"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
