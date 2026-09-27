@@ -23,6 +23,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install external conversion and oracle CLI tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            p7zip-full \
+            poppler-utils \
+            zstd \
+            tar \
+            libreoffice-calc \
+            libreoffice-writer \
+            libreoffice-impress
+
       - name: Run linter
         run: npm run lint
 

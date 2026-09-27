@@ -1,0 +1,62 @@
+name: 24h Endurance Soak Test
+
+on:
+  schedule:
+    # Run once every Sunday at midnight UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Soak duration (e.g. 1h, 6h, 24h)'
+        required: true
+        default: '1h'
+      target_gb:
+        description: 'Target payload size per cycle (in GB)'
+        required: true
+        default: '2'
+
+jobs:
+  endurance-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1500 # 25 hours budget
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install external conversion and oracle CLI tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            p7zip-full \
+            poppler-utils \
+            zstd \
+            tar \
+            libreoffice-calc \
+            libreoffice-writer \
+            libreoffice-impress
+
+      - name: Run Endurance Soak Test
+        run: |
+          SOAK_DURATION="${{ github.event.inputs.duration || '24h' }}"
+          SOAK_TARGET_GB="${{ github.event.inputs.target_gb || '2' }}"
+          echo "Starting Endurance Soak: Duration=${SOAK_DURATION}, TargetGB=${SOAK_TARGET_GB}"
+          npx tsx scripts/run-endurance-soak.ts --duration "${SOAK_DURATION}" --target-gb "${SOAK_TARGET_GB}"
+
+      - name: Upload Soak Telemetry Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-telemetry
+          path: tests/fixtures/soak-telemetry.json
+          retention-days: 30
