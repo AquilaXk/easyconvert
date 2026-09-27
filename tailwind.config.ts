@@ -14,29 +14,32 @@ const config: Config = {
       },
       colors: {
         brand: {
-          50: "#F8F9FE",
-          100: "#F0F2FD",
+          50: "#F8F9FF",
+          100: "#F0F2FE",
           200: "#E2E5FD",
           300: "#CCD2FC",
-          400: "#8E9CE6",
-          500: "#5C6BC0", // Signature Lavender
-          600: "#4D5CB5", // Hover
-          700: "#3F4EA3", // Active
-          800: "#333F85",
-          900: "#262F64",
-          950: "#171C3D",
+          400: "#B4BCFB",
+          500: "#8E9CE6",
+          600: "#7480D2",
+          700: "#5C6BC0", // Main signature accent (primary CTA button fill, main interaction, focus ring)
+          800: "#4A58A9", // Main CTA button pressed state
+          900: "#3B4890", // Signature surface text/border/focus
+          950: "#1F2340", // Content primary body text
         },
         primary: {
           DEFAULT: "#5C6BC0",
-          hover: "#4D5CB5",
-          50: "#F8F9FE",
-          100: "#F0F2FD",
+          hover: "#4A58A9",
+          active: "#3B4890",
+          50: "#F8F9FF",
+          100: "#F0F2FE",
           200: "#E2E5FD",
           300: "#CCD2FC",
-          400: "#8E9CE6",
-          500: "#5C6BC0",
-          600: "#4D5CB5",
-          700: "#3F4EA3",
+          400: "#B4BCFB",
+          500: "#8E9CE6",
+          600: "#7480D2",
+          700: "#5C6BC0",
+          800: "#4A58A9",
+          900: "#3B4890",
         },
         neutral: {
           white: "#FFFFFF",
@@ -45,6 +48,7 @@ const config: Config = {
           border: "#E1E4EE",
         },
         ink: {
+          primary: "#1F2340",
           secondary: "#4D536B",
           muted: "#697089",
         },
@@ -59,12 +63,12 @@ const config: Config = {
           infoSoft: "#EEF5FF",
         },
         dark: {
-          scaffold: "#18191D", // Dark Neutral Charcoal Scaffold
-          surface: "#212529",  // Elevated Card
-          elevated: "#2A2E33",
-          border: "#343A40",
-          text: "#F8F9FA",
-          muted: "#9CA3AF",
+          scaffold: "#141724", // Dark Indigo-Tinted Charcoal Scaffold
+          surface: "#1B2032",  // Elevated Card
+          elevated: "#242B42",
+          border: "#2C3452",
+          text: "#F8F9FD",
+          muted: "#8A94B8",
         },
       },
       fontFamily: {

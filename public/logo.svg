@@ -1,12 +1,69 @@
-<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 20010904//EN" "http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd">
-<svg xmlns="http://www.w3.org/2000/svg" version="1.0" width="1015px" height="668px" viewBox="0 0 10150 6680" preserveAspectRatio="xMidYMid meet">
-<defs><linearGradient id="outlineGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" style="stop-color:#707070;stop-opacity:1" /><stop offset="100%" style="stop-color:#292929;stop-opacity:1" /></linearGradient><linearGradient id="cloudGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" style="stop-color:#f9f9f9;stop-opacity:1" /><stop offset="100%" style="stop-color:#d5d5d5;stop-opacity:1" /></linearGradient><linearGradient id="redGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" style="stop-color:#ee5f5b;stop-opacity:1" /><stop offset="100%" style="stop-color:#941f1e;stop-opacity:1" /></linearGradient></defs>
-<g id="layer103" fill="url(#cloudGrad)" stroke="none">
- <path d="M1610 6109 c-228 -28 -420 -127 -600 -308 -331 -333 -502 -887 -435 -1408 50 -384 187 -691 413 -925 198 -205 402 -305 645 -315 l117 -6 0 -76 c1 -783 415 -1481 994 -1675 362 -122 770 -28 1073 247 61 55 83 68 83 47 0 -22 97 -234 152 -332 170 -300 438 -562 700 -682 394 -183 826 -148 1195 95 292 193 535 507 679 876 21 54 39 100 40 102 2 1 41 -23 88 -54 170 -113 326 -160 521 -158 148 1 239 23 380 91 256 124 471 358 630 685 92 187 140 343 201 645 4 19 11 22 48 22 55 0 177 31 265 68 105 44 206 116 311 222 235 235 385 555 457 975 24 145 24 491 0 640 -80 481 -272 841 -567 1062 -71 54 -195 115 -290 145 l-75 23 -3480 1 c-1914 1 -3509 -2 -3545 -7z" />
- </g>
-<g id="layer104" fill="url(#redGrad)" stroke="none">
- <path d="M1610 6109 m3845 -439 c161 -32 283 -73 430 -146 174 -85 294 -173 446 -324 191 -190 323 -404 405 -655 30 -91 31 -101 16 -107 -9 -4 -152 -41 -317 -83 -165 -42 -307 -78 -317 -81 -13 -4 -21 10 -38 63 -93 282 -323 518 -600 617 -270 97 -501 81 -773 -55 -104 -52 -238 -137 -244 -156 -2 -6 68 -75 157 -154 89 -80 155 -146 148 -148 -30 -10 -1373 -368 -1375 -367 -3 3 239 1400 243 1405 2 2 62 -50 135 -115 72 -66 142 -127 155 -137 l24 -19 77 63 c269 216 588 361 912 414 124 21 374 13 516 -15z m1193 -2446 c-67 -384 -123 -701 -124 -703 -2 -1 -71 58 -154 133 -83 75 -154 136 -158 136 -4 0 -38 -25 -77 -56 -382 -308 -857 -467 -1267 -425 -145 14 -242 35 -380 81 -158 52 -265 105 -406 199 -314 210 -559 537 -665 889 -14 45 -24 82 -23 82 3 0 630 160 647 165 13 4 23 -14 48 -84 106 -295 364 -538 660 -620 247 -69 450 -46 706 79 100 48 245 143 245 159 0 5 -72 74 -159 152 -88 79 -157 145 -153 146 21 8 1377 370 1379 369 1 -1 -52 -317 -119 -702z" />
- </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 120" width="420" height="120" fill="none">
+  <defs>
+    <linearGradient id="ecBrandGradMain" x1="16" y1="16" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7480D2" />
+      <stop offset="45%" stop-color="#5C6BC0" />
+      <stop offset="100%" stop-color="#4A58A9" />
+    </linearGradient>
 
+    <linearGradient id="ecBrandHighlight" x1="30" y1="18" x2="70" y2="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#B4BCFB" stop-opacity="0.8" />
+      <stop offset="50%" stop-color="#7480D2" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#3B4890" stop-opacity="0.6" />
+    </linearGradient>
 
+    <filter id="ecSoftShadow" x="-10%" y="-10%" width="125%" height="125%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#3B4890" flood-opacity="0.32" />
+    </filter>
+  </defs>
+
+  {/* Interlocking E-C Icon */}
+  <g transform="translate(6, 0)">
+    <g filter="url(#ecSoftShadow)">
+      {/* Left E Body */}
+      <path
+        d="M 28 20 C 21.37 20, 16 25.37, 16 32 L 16 88 C 16 94.63, 21.37 100, 28 100 L 60 100 C 65 100, 68 97, 68 92 L 68 85 C 68 81, 65 78, 60 78 L 34 78 C 31 78, 30 76, 30 73 L 30 65 C 30 62, 32 60, 35 60 L 58 60 C 63 60, 66 57, 66 52 L 66 48 C 66 43, 63 40, 58 40 L 35 40 C 32 40, 30 38, 30 35 L 30 32 C 30 29, 32 27, 35 27 L 60 27 C 65 27, 68 24, 68 19 L 68 22 C 68 20.89, 67.11 20, 66 20 Z"
+        fill="url(#ecBrandGradMain)"
+      />
+
+      {/* Ribbon connector */}
+      <path
+        d="M 52 46 C 52 32, 63 20, 80 20 C 96.57 20, 108 31.43, 108 48 C 108 53, 104 57, 98 57 C 93 57, 89 53, 89 48 C 89 39.5, 84.5 35, 78 35 C 71.5 35, 66 40.5, 66 50 C 66 58, 69 64, 76 68 L 76 68 C 84 72, 89 77, 89 86 C 89 91, 85 95, 80 95 L 60 95 C 54 95, 52 90, 52 84 L 52 46 Z"
+        fill="url(#ecBrandHighlight)"
+        fill-opacity="0.4"
+      />
+
+      {/* Right C Arch */}
+      <path
+        d="M 76 20 C 95.88 20, 110 34.12, 110 54 C 110 58.5, 106.5 62, 102 62 C 97.5 62, 94 58.5, 94 54 C 94 42.95, 85.05 34, 74 34 C 62.95 34, 54 42.95, 54 54 L 54 66 C 54 77.05, 62.95 86, 74 86 C 85.05 86, 94 77.05, 94 66 C 94 61.5, 97.5 58, 102 58 C 106.5 58, 110 61.5, 110 66 C 110 85.88, 95.88 100, 76 100 C 56.12 100, 40 83.88, 40 64 L 40 56 C 40 36.12, 56.12 20, 76 20 Z"
+        fill="url(#ecBrandGradMain)"
+      />
+
+      {/* Smooth Inner Bridge Flow */}
+      <path
+        d="M 42 42 C 42 34, 48 28, 56 28 L 72 28 C 86 28, 96 38, 96 52 C 96 56, 93 59, 89 59 C 85 59, 82 56, 82 52 C 82 44, 76 39, 70 39 L 56 39 C 52 39, 49 42, 49 46 L 49 74 C 49 78, 52 81, 56 81 L 70 81 C 76 81, 82 76, 82 68 C 82 64, 85 61, 89 61 C 93 61, 96 64, 96 68 C 96 82, 86 92, 72 92 L 56 92 C 48 92, 42 86, 42 78 Z"
+        fill="url(#ecBrandGradMain)"
+      />
+    </g>
+
+    {/* Top Arrow: Right (→) */}
+    <g>
+      <rect x="28" y="32" width="20" height="3" rx="1.5" fill="#1F2340" />
+      <path d="M 44 28.5 L 51 33.5 L 44 38.5 Z" fill="#1F2340" />
+    </g>
+
+    {/* Bottom Arrow: Left (←) */}
+    <g>
+      <rect x="30" y="85" width="20" height="3" rx="1.5" fill="#1F2340" />
+      <path d="M 33 80.5 L 26 86.5 L 33 92.5 Z" fill="#1F2340" />
+    </g>
+  </g>
+
+  {/* Typography: EasyConvert */}
+  <g transform="translate(136, 74)">
+    <text font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="44" font-weight="800" letter-spacing="-1">
+      <tspan fill="#1F2340">Easy</tspan>
+      <tspan fill="#5C6BC0">Convert</tspan>
+    </text>
+  </g>
 </svg>
