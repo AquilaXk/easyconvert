@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   normalizeTimestampToMicros,
   denormalizeTimestampFromMicros,
@@ -268,6 +268,66 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
   });
 
   describe('6. WebCodecs Pipeline Controller Execution', () => {
+    let origVideoEncoder: any;
+    let origVideoFrame: any;
+    let origAudioEncoder: any;
+    let origAudioData: any;
+
+    beforeEach(() => {
+      origVideoEncoder = (globalThis as any).VideoEncoder;
+      origVideoFrame = (globalThis as any).VideoFrame;
+      origAudioEncoder = (globalThis as any).AudioEncoder;
+      origAudioData = (globalThis as any).AudioData;
+
+      (globalThis as any).VideoFrame = class {
+        public close = vi.fn();
+        constructor(public source: any, public init: any) {}
+      };
+
+      (globalThis as any).VideoEncoder = class {
+        public encodeQueueSize = 0;
+        public configure = vi.fn();
+        public encode = vi.fn((frame: any, opts: any) => {
+          this.init.output({
+            byteLength: 9,
+            copyTo: (dest: Uint8Array) => dest.set(new Uint8Array([0, 0, 0, 1, 0x65, 1, 2, 3, 4])),
+            timestamp: frame.init?.timestamp || 0,
+            type: opts?.keyFrame ? 'key' : 'delta',
+          });
+        });
+        public flush = vi.fn(async () => {});
+        public close = vi.fn();
+        constructor(private init: any) {}
+      };
+
+      (globalThis as any).AudioData = class {
+        public close = vi.fn();
+        constructor(public init: any) {}
+      };
+
+      (globalThis as any).AudioEncoder = class {
+        public encodeQueueSize = 0;
+        public configure = vi.fn();
+        public encode = vi.fn((data: any) => {
+          this.init.output({
+            byteLength: 6,
+            copyTo: (dest: Uint8Array) => dest.set(new Uint8Array([0x21, 0x10, 0x04, 0x60, 0x8c, 0])),
+            timestamp: data.init?.timestamp || 0,
+          });
+        });
+        public flush = vi.fn(async () => {});
+        public close = vi.fn();
+        constructor(private init: any) {}
+      };
+    });
+
+    afterEach(() => {
+      (globalThis as any).VideoEncoder = origVideoEncoder;
+      (globalThis as any).VideoFrame = origVideoFrame;
+      (globalThis as any).AudioEncoder = origAudioEncoder;
+      (globalThis as any).AudioData = origAudioData;
+    });
+
     it('executes conversion and delivers progress telemetry from 5% to 100%', async () => {
       const progressUpdates: number[] = [];
       const dummyFile = new File([new Uint8Array(1024)], 'input-clip.mp4', { type: 'video/mp4' });

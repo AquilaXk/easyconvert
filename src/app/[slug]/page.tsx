@@ -323,7 +323,6 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
           delimiter: ',',
           compressionLevel: 6,
           ocrEnabled: Boolean(parsed.pageTitle?.includes('OCR') || (parsed.sourceFormat === 'pdf' && parsed.targetFormat === 'pdf')),
-          clientEdgeMode: true,
         },
       };
     });
