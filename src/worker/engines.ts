@@ -3,6 +3,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { ConversionOptions, ConversionResult } from '../lib/types';
 import { convertFile } from '../lib/conversions';
+import {
+  buildFfmpegArguments,
+  probeHardwareAcceleration,
+  HardwareAccelerationCapabilities,
+} from '../lib/conversions/media-ffmpeg-args';
 import { executeSandboxedBinary } from './sandbox';
 
 export interface WorkerEngineOptions extends ConversionOptions {
@@ -72,12 +77,15 @@ export function probeNativeEngines(): {
   ffmpeg: boolean;
   p7zip: boolean;
   pdftoppm: boolean;
+  hardwareAcceleration?: HardwareAccelerationCapabilities;
 } {
+  const ffmpegPath = resolveBinary(BINARY_PATHS.ffmpeg);
   return {
     soffice: resolveBinary(BINARY_PATHS.soffice) !== null,
-    ffmpeg: resolveBinary(BINARY_PATHS.ffmpeg) !== null,
+    ffmpeg: ffmpegPath !== null,
     p7zip: resolveBinary(BINARY_PATHS.p7zip) !== null,
     pdftoppm: resolveBinary(BINARY_PATHS.pdftoppm) !== null,
+    hardwareAcceleration: probeHardwareAcceleration(ffmpegPath),
   };
 }
 
@@ -177,28 +185,7 @@ export async function convertWithNativeFfmpeg(
 
     const timeout = Math.min(options.timeoutMs || 60000, 180000);
     const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
-    const args: string[] = ['-y', '-i', inputPath];
-
-    if (options.audioBitrate && /^\d+k$/.test(options.audioBitrate)) {
-      args.push('-b:a', options.audioBitrate);
-    }
-    if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate)) {
-      args.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
-    }
-    if (typeof options.audioSampleRate === 'number' && [8000, 11025, 16000, 22050, 32000, 44100, 48000, 96000].includes(options.audioSampleRate)) {
-      args.push('-ar', String(options.audioSampleRate));
-    }
-    if (options.audioChannels) {
-      let channelCount = '2';
-      if (options.audioChannels === 'mono') {
-        channelCount = '1';
-      } else if (options.audioChannels === '5.1') {
-        channelCount = '6';
-      }
-      args.push('-ac', channelCount);
-    }
-
-    args.push(outputPath);
+    const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin);
 
     await executeSandboxedBinary(ffmpegBin, args, {
       cwd: tempDir,
