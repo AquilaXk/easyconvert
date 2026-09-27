@@ -113,8 +113,11 @@ export async function convertMedia(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
-  // If system ffmpeg is available, execute transcoding
-  if (checkFfmpeg()) {
+  const isVideoTarget = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'flv', '3gp', '3gpp', 'm4v', 'ts', 'vob'].includes(tgt);
+  const isVideoSource = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'flv', '3gp', '3gpp', 'm4v', 'ts', 'vob'].includes(src);
+
+  // Prioritize system FFmpeg for video containers or when explicitly requested
+  if (checkFfmpeg() && (isVideoTarget || isVideoSource || options.useFfmpeg)) {
     try {
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch {
@@ -122,8 +125,15 @@ export async function convertMedia(
     }
   }
 
-  // Pure TypeScript zero-dependency audio & video processing pipeline
-  return processMediaPure(inputBuffer, src, tgt, options, baseName);
+  // Pure TypeScript zero-dependency audio processing pipeline
+  try {
+    return processMediaPure(inputBuffer, src, tgt, options, baseName);
+  } catch (err) {
+    if (checkFfmpeg()) {
+      return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -200,6 +210,9 @@ async function executeFfmpegTranscode(
     });
 
     const outputBuffer = fs.readFileSync(outputPath);
+    if (outputBuffer.length === 0) {
+      throw new Error(`FFmpeg output is empty (0 bytes) for ${src} -> ${tgt}`);
+    }
     return {
       buffer: outputBuffer,
       mimeType: getMimeTypeForMedia(tgt),

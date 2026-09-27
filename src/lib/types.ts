@@ -112,6 +112,7 @@ export interface ConversionOptions {
   videoBitrate?: number;
   duration?: number;
   aspectRatio?: 'original' | '16:9' | '4:3' | '1:1' | '9:16';
+  useFfmpeg?: boolean;
 }
 
 export type QueueItemStatus =

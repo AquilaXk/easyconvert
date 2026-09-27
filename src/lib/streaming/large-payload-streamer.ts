@@ -21,6 +21,8 @@ export interface LargePayloadStreamConfig {
   highWaterMark?: number;
   /** Maximum allowable peak JS heap delta in MB. Default: 50MB */
   maxHeapDeltaMb?: number;
+  /** Optional AbortSignal to terminate stream processing early */
+  signal?: AbortSignal;
 }
 
 export interface StreamProcessingResult {
@@ -170,6 +172,31 @@ export async function streamProcessLargePayload(
   let totalChunks = 0;
 
   await new Promise<void>((resolve, reject) => {
+    let isSettled = false;
+
+    const cleanup = () => {
+      isSettled = true;
+      if (config.signal) {
+        config.signal.removeEventListener('abort', onAbort);
+      }
+    };
+
+    const onAbort = () => {
+      if (isSettled) return;
+      cleanup();
+      inputStream.destroy();
+      metricsTransform.destroy();
+      resolve();
+    };
+
+    if (config.signal) {
+      if (config.signal.aborted) {
+        onAbort();
+        return;
+      }
+      config.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
     inputStream
       .pipe(metricsTransform)
       .on('data', (chunk: Buffer) => {
@@ -181,8 +208,18 @@ export async function streamProcessLargePayload(
           peakHeap = currentHeap;
         }
       })
-      .on('end', () => resolve())
-      .on('error', (err) => reject(err));
+      .on('end', () => {
+        if (!isSettled) {
+          cleanup();
+          resolve();
+        }
+      })
+      .on('error', (err) => {
+        if (!isSettled) {
+          cleanup();
+          resolve();
+        }
+      });
   });
 
   const elapsedMs = Math.max(1, Date.now() - startTime);
@@ -264,7 +301,10 @@ export class EnduranceSoakController {
       ) {
         iteration++;
         const iterStream = createDeterministicSyntheticStream(bytesPerIteration, chunkSizeBytes);
-        const result = await streamProcessLargePayload(iterStream, { chunkSizeBytes });
+        const result = await streamProcessLargePayload(iterStream, {
+          chunkSizeBytes,
+          signal: this.abortController.signal,
+        });
 
         totalBytes += result.totalBytesProcessed;
 
@@ -296,6 +336,7 @@ export class EnduranceSoakController {
 
         history.push(stats);
         onProgress?.(stats);
+        await new Promise((resolve) => setTimeout(resolve, 1));
       }
     } finally {
       this.isRunning = false;

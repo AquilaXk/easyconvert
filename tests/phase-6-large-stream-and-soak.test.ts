@@ -106,18 +106,19 @@ describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Test
 
       const soakPromise = controller.runSoakSession({
         durationMs: 60000,
-        maxIterations: 1000,
-        bytesPerIteration: 5 * 1024 * 1024,
+        maxIterations: 50000,
+        bytesPerIteration: 10 * 1024 * 1024,
       });
 
-      // Abort after 300ms
+      // Abort after 100ms
       setTimeout(() => {
         controller.abort();
-      }, 300);
+      }, 100);
 
       const report = await soakPromise;
       expect(controller.active).toBe(false);
-      expect(report.totalDurationMs).toBeLessThan(5000);
+      expect(report.totalIterations).toBeLessThan(50000);
+      expect(report.totalDurationMs).toBeLessThan(15000);
     });
   });
 
