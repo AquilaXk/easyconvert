@@ -28,11 +28,7 @@ import {
   Download,
   UploadCloud,
   Settings2,
-  RefreshCw,
-  ShieldCheck,
   Layers,
-  Sparkles,
-  Info,
 } from 'lucide-react';
 import UnitConverter from '@/components/UnitConverter';
 import StatusDashboard from '@/components/StatusDashboard';
@@ -977,7 +973,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
       q: isPair
         ? `Is it secure to convert ${srcMeta.extension.toUpperCase()} to ${tgtMeta?.extension.toUpperCase()} on EasyConvert?`
         : `Is it secure to convert ${srcMeta.extension.toUpperCase()} on EasyConvert?`,
-      a: 'Yes, completely secure. EasyConvert executes conversions client-side directly inside your browser whenever possible via WebAssembly and WebCodecs. Your files are processed entirely in ephemeral volatile memory with zero server retention and zero cloud storage, ensuring absolute confidentiality.',
+      a: 'Yes, completely secure. Conversions run directly in your web browser with zero remote data retention. Your files are processed locally in memory and never stored in the cloud, guaranteeing full privacy.',
     },
     {
       q: isPair
@@ -1098,25 +1094,22 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
           <>
             {/* Conversion Trust & Rating Card */}
             <div className="max-w-5xl mx-auto px-4 sm:px-6 mt-2 mb-8 relative z-20">
-              <div className="flex flex-wrap items-center justify-between gap-4 py-3.5 px-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-4 py-3 px-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-xs text-xs text-ink-secondary dark:text-neutral-400">
                 <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-0.5 text-amber-400">
+                  <div className="flex items-center gap-0.5 text-amber-500">
                     {[1, 2, 3, 4, 5].map((starIdx) => (
                       <Star key={`rating-star-${starIdx}`} className="size-3.5 fill-current" />
                     ))}
                   </div>
-                  <span className="font-bold text-brand-950 dark:text-white">4.8 / 5.0</span>
-                  <span className="text-ink-secondary dark:text-neutral-400">(14,200+ user ratings)</span>
+                  <span className="font-semibold text-brand-950 dark:text-white">4.8 / 5.0</span>
+                  <span>(14,200+ user ratings)</span>
                 </div>
-                <div className="flex items-center flex-wrap gap-4 text-ink-secondary dark:text-neutral-400 font-medium">
-                  <span className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span>100% Free & Unlimited</span>
-                  </span>
-                  <span className="hidden sm:inline-block text-neutral-300 dark:text-neutral-700">•</span>
+                <div className="flex items-center flex-wrap gap-3 font-medium">
+                  <span className="text-emerald-700 dark:text-emerald-400 font-semibold">100% Free & Unlimited</span>
+                  <span className="text-neutral-300 dark:text-neutral-700">&bull;</span>
                   <span>Zero Server Storage</span>
-                  <span className="hidden sm:inline-block text-neutral-300 dark:text-neutral-700">•</span>
-                  <span>Client-Side Isolation</span>
+                  <span className="text-neutral-300 dark:text-neutral-700">&bull;</span>
+                  <span>Private & Secure</span>
                 </div>
               </div>
             </div>
@@ -1133,7 +1126,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                     : `How to Convert ${srcMeta.extension.toUpperCase()} Files`}
                 </h2>
                 <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 max-w-xl mx-auto">
-                  Transform your files in three effortless steps directly inside your browser with enterprise-grade fidelity.
+                  Follow three simple steps to convert and download your files directly in your web browser.
                 </p>
               </div>
 
@@ -1153,7 +1146,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                       Upload {srcMeta.extension.toUpperCase()} File(s)
                     </h3>
                     <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 leading-relaxed">
-                      Click &apos;Choose Files&apos; or drag and drop your {srcMeta.extension.toUpperCase()} files into the dropzone. You can also import from URLs or cloud storage.
+                      Click &apos;Choose Files&apos; or drag and drop your {srcMeta.extension.toUpperCase()} files into the dropzone. You can also import from URLs or clipboard.
                     </p>
                   </div>
                 </div>

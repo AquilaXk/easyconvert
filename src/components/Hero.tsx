@@ -5,10 +5,7 @@ import {
   ChevronDown,
   Globe,
   HardDrive,
-  FolderOpen,
-  Archive,
   Sparkles,
-  CheckCircle2,
 } from 'lucide-react';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 import UrlImportModal from './UrlImportModal';
@@ -121,13 +118,37 @@ export default function Hero({
 
   const getHeroSubtitle = () => {
     if (categoryDescription) return categoryDescription;
-    if (activeSourceFormat && (!targetFormat || targetFormat.toLowerCase() === 'any')) {
-      return `EasyConvert is a high-fidelity online document and media converter. Supporting 292 formats directly in your browser with zero server data retention.`;
-    }
     if (!hasActiveQueue && !activeSourceFormat) {
-      return 'Convert your files to any format online and free. Fast, client-side conversion for 292 formats with zero server data retention.';
+      return 'Convert your files to any format online and free. Fast, private conversion for 292 formats with zero server data retention.';
     }
-    return `EasyConvert offers advanced, high-fidelity ${sourceFormat.toUpperCase()} to ${targetFormat.toUpperCase()} conversions. Preserves layouts, typography, and structure straight from your browser.`;
+
+    const src = (activeSourceFormat || sourceFormat || '').toLowerCase();
+    const tgt = (activeTargetFormat || targetFormat || '').toLowerCase();
+    const srcDef = FORMAT_REGISTRY[src];
+    const cat = srcDef?.category || 'document';
+
+    if (!tgt || tgt === 'any') {
+      return `EasyConvert is a high-fidelity online ${cat} and file converter. Supporting 292 formats directly in your browser with zero server data retention.`;
+    }
+
+    const srcUpper = src.toUpperCase();
+    const tgtUpper = tgt.toUpperCase();
+
+    switch (cat) {
+      case 'audio':
+      case 'video':
+        return `Convert ${srcUpper} to ${tgtUpper} online and free. High-fidelity audio and video processing directly in your browser with zero server retention.`;
+      case 'image':
+      case 'vector':
+        return `Convert ${srcUpper} to ${tgtUpper} online and free. Lossless rendering and rasterization straight from your browser.`;
+      case 'archive':
+        return `Extract and convert ${srcUpper} to ${tgtUpper} archives safely in your browser with zero cloud storage.`;
+      case 'spreadsheet':
+      case 'data':
+        return `Convert ${srcUpper} to ${tgtUpper} datasets and tables directly in your browser. Clean data structure preserved with zero retention.`;
+      default:
+        return `EasyConvert offers advanced, high-fidelity ${srcUpper} to ${tgtUpper} conversions. Preserves layouts, typography, and structure straight from your browser.`;
+    }
   };
 
   const popularPresets = [
@@ -164,12 +185,6 @@ export default function Hero({
         />
 
         <div className="relative mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 text-center">
-          {/* Brand Kicker Badge */}
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-brand-500/10 dark:bg-brand-500/15 border border-brand-400/30 text-brand-700 dark:text-brand-300 mb-4 shadow-sm">
-            <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Client-Side Engine • 292 Formats Supported • Zero Server Storage</span>
-          </div>
-
           {/* Clean Hero Title */}
           <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black tracking-tight text-brand-950 dark:text-white leading-[1.12]">
             {getHeroTitle()}
@@ -271,66 +286,21 @@ export default function Hero({
                             <Globe className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
                             <span>By URL</span>
                           </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIsDropdownOpen(false);
-                              fileInputRef.current?.click();
-                            }}
-                            className="flex items-center gap-2.5 w-full px-3.5 py-2.5 text-sm font-medium text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                          >
-                            <FolderOpen className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                            <span>From Google Drive</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIsDropdownOpen(false);
-                              fileInputRef.current?.click();
-                            }}
-                            className="flex items-center gap-2.5 w-full px-3.5 py-2.5 text-sm font-medium text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                          >
-                            <Archive className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                            <span>From Dropbox</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIsDropdownOpen(false);
-                              fileInputRef.current?.click();
-                            }}
-                            className="flex items-center gap-2.5 w-full px-3.5 py-2.5 text-sm font-medium text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                          >
-                            <FolderOpen className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                            <span>From OneDrive</span>
-                          </button>
                         </div>
                       </>
                     )}
                   </div>
                 </div>
 
-                {/* Trust & Architecture Badges */}
-                <div className="mt-8 flex items-center justify-center flex-wrap gap-x-6 gap-y-2 text-xs font-semibold text-ink-secondary dark:text-neutral-400 pt-4 border-t border-neutral-100 dark:border-[#242C48]">
-                  <span className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-                    100% Free &amp; Unlimited
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-full bg-brand-700" />
-                    Max 1 GB File Size
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-full bg-emerald-500" />
-                    Zero Cloud Retention
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle2 className="size-3.5 text-brand-700 dark:text-brand-400" />
-                    292 Formats Supported
-                  </span>
+                {/* Format & Architecture Summary */}
+                <div className="mt-8 flex items-center justify-center flex-wrap gap-x-4 gap-y-2 text-xs text-ink-secondary dark:text-neutral-400 pt-4 border-t border-neutral-100 dark:border-[#242C48] font-medium">
+                  <span className="font-semibold text-brand-950 dark:text-white">292 Formats Supported</span>
+                  <span className="text-neutral-300 dark:text-neutral-600">&bull;</span>
+                  <span>100% Free &amp; In-Browser</span>
+                  <span className="text-neutral-300 dark:text-neutral-600">&bull;</span>
+                  <span>Zero Server Storage</span>
+                  <span className="text-neutral-300 dark:text-neutral-600">&bull;</span>
+                  <span>Files Never Leave Your Device</span>
                 </div>
               </div>
 
