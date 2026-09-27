@@ -221,70 +221,66 @@ interface StblResult {
 
 function parseStts(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
   if (payloadOffset + 8 > maxOffset) return;
-  const entryCount = view.getUint32(payloadOffset + 4);
-  for (let i = 0; i < entryCount; i++) {
+  const rawEntryCount = view.getUint32(payloadOffset + 4);
+  const maxEntries = Math.min(rawEntryCount, Math.floor((maxOffset - (payloadOffset + 8)) / 8));
+  for (let i = 0; i < maxEntries; i++) {
     const eOff = payloadOffset + 8 + i * 8;
-    if (eOff + 8 <= maxOffset) {
-      res.stts.push({ count: view.getUint32(eOff), delta: view.getUint32(eOff + 4) });
-    }
+    res.stts.push({ count: view.getUint32(eOff), delta: view.getUint32(eOff + 4) });
   }
 }
 
 function parseStsz(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
   if (payloadOffset + 12 > maxOffset) return;
   const uniformSize = view.getUint32(payloadOffset + 4);
-  const sampleCount = view.getUint32(payloadOffset + 8);
+  const rawSampleCount = view.getUint32(payloadOffset + 8);
   if (uniformSize > 0) {
-    for (let i = 0; i < sampleCount; i++) {
+    const maxSamples = Math.min(rawSampleCount, 500_000);
+    for (let i = 0; i < maxSamples; i++) {
       res.sampleSizes.push(uniformSize);
     }
   } else {
-    for (let i = 0; i < sampleCount; i++) {
+    const maxSamples = Math.min(rawSampleCount, Math.floor((maxOffset - (payloadOffset + 12)) / 4));
+    for (let i = 0; i < maxSamples; i++) {
       const eOff = payloadOffset + 12 + i * 4;
-      if (eOff + 4 <= maxOffset) {
-        res.sampleSizes.push(view.getUint32(eOff));
-      }
+      res.sampleSizes.push(view.getUint32(eOff));
     }
   }
 }
 
 function parseStsc(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
   if (payloadOffset + 8 > maxOffset) return;
-  const entryCount = view.getUint32(payloadOffset + 4);
-  for (let i = 0; i < entryCount; i++) {
+  const rawEntryCount = view.getUint32(payloadOffset + 4);
+  const maxEntries = Math.min(rawEntryCount, Math.floor((maxOffset - (payloadOffset + 8)) / 12));
+  for (let i = 0; i < maxEntries; i++) {
     const eOff = payloadOffset + 8 + i * 12;
-    if (eOff + 12 <= maxOffset) {
-      res.stsc.push({
-        firstChunk: view.getUint32(eOff),
-        samplesPerChunk: view.getUint32(eOff + 4),
-        sampleDescIndex: view.getUint32(eOff + 8),
-      });
-    }
+    res.stsc.push({
+      firstChunk: view.getUint32(eOff),
+      samplesPerChunk: view.getUint32(eOff + 4),
+      sampleDescIndex: view.getUint32(eOff + 8),
+    });
   }
 }
 
 function parseStco(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult, is64: boolean): void {
   if (payloadOffset + 8 > maxOffset) return;
-  const entryCount = view.getUint32(payloadOffset + 4);
+  const rawEntryCount = view.getUint32(payloadOffset + 4);
   const step = is64 ? 8 : 4;
-  for (let i = 0; i < entryCount; i++) {
+  const maxEntries = Math.min(rawEntryCount, Math.floor((maxOffset - (payloadOffset + 8)) / step));
+  for (let i = 0; i < maxEntries; i++) {
     const eOff = payloadOffset + 8 + i * step;
-    if (eOff + step <= maxOffset) {
-      const off = is64 ? Number(view.getBigUint64(eOff)) : view.getUint32(eOff);
-      res.chunkOffsets.push(off);
-    }
+    const off = is64 ? Number(view.getBigUint64(eOff)) : view.getUint32(eOff);
+    res.chunkOffsets.push(off);
   }
 }
 
 function parseStss(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
   if (payloadOffset + 8 > maxOffset) return;
-  const entryCount = view.getUint32(payloadOffset + 4);
+  const rawEntryCount = view.getUint32(payloadOffset + 4);
+  const maxEntries = Math.min(rawEntryCount, Math.floor((maxOffset - (payloadOffset + 8)) / 4));
   res.syncSamples = new Set<number>();
-  for (let i = 0; i < entryCount; i++) {
+  for (let i = 0; i < maxEntries; i++) {
     const eOff = payloadOffset + 8 + i * 4;
-    if (eOff + 4 <= maxOffset) {
-      res.syncSamples.add(view.getUint32(eOff));
-    }
+    res.syncSamples.add(view.getUint32(eOff));
   }
 }
 
@@ -339,13 +335,12 @@ function parseStbl(view: DataView, offset: number, size: number, totalLen: numbe
   while (cur + 8 <= stblEnd) {
     const boxSize = view.getUint32(cur);
     const boxType = readFourCC(view, cur + 4);
-
-    const actualSize =
-      boxSize === 1 && cur + 16 <= stblEnd
-        ? Number(view.getBigUint64(cur + 8))
-        : boxSize === 0
-        ? stblEnd - cur
-        : boxSize;
+    let actualSize = boxSize;
+    if (boxSize === 1 && cur + 16 <= stblEnd) {
+      actualSize = Number(view.getBigUint64(cur + 8));
+    } else if (boxSize === 0) {
+      actualSize = stblEnd - cur;
+    }
 
     if (actualSize < 8 || cur + actualSize > stblEnd) {
       break;
@@ -498,12 +493,12 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
     const boxSize = view.getUint32(offset);
     const boxType = readFourCC(view, offset + 4);
 
-    const actualSize =
-      boxSize === 1 && offset + 16 <= totalLen
-        ? Number(view.getBigUint64(offset + 8))
-        : boxSize === 0
-        ? totalLen - offset
-        : boxSize;
+    let actualSize = boxSize;
+    if (boxSize === 1 && offset + 16 <= totalLen) {
+      actualSize = Number(view.getBigUint64(offset + 8));
+    } else if (boxSize === 0) {
+      actualSize = totalLen - offset;
+    }
 
     if (actualSize < 8 || offset + actualSize > totalLen) {
       break;
