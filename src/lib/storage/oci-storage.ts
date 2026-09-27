@@ -79,10 +79,10 @@ export class OciObjectStorageService implements IStorageBackend {
   private objects = new Map<string, OciStoredObject>();
 
   readonly config: OciStorageConfig = {
-    namespace: process.env.OCI_NAMESPACE || 'easyconvert_oci_ns',
+    namespace: process.env.OCI_NAMESPACE || 'axvym6vk8g7i',
     bucketName: process.env.OCI_BUCKET_NAME || 'easyconvert-transcode-bucket',
-    region: process.env.OCI_REGION || 'ap-chuncheon-1',
-    endpoint: process.env.OCI_ENDPOINT || 'https://easyconvert.compat.objectstorage.ap-chuncheon-1.oraclecloud.com',
+    region: process.env.OCI_REGION || 'ap-seoul-1',
+    endpoint: process.env.OCI_ENDPOINT || 'https://axvym6vk8g7i.compat.objectstorage.ap-seoul-1.oraclecloud.com',
   };
 
   // OCI Object Storage recommended minimum part size: 5MB

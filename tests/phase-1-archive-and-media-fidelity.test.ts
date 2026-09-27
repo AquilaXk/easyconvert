@@ -342,6 +342,74 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       expect(rms).toBeGreaterThan(100);
     });
 
+    it('preserves non-standard sampling rates (e.g. 48kHz) in AAC ADTS header', async () => {
+      const origWav = createTestWav(48000, 2, 0.25);
+      const aacResult = await convertMedia(origWav, 'wav', 'aac', { audioSampleRate: 48000 }, 'sample48.wav');
+      const decodedAac = decodeAdtsAac(aacResult.buffer);
+      expect(decodedAac.sampleRate).toBe(48000);
+    });
+
+    it('decodes ADTS AAC frames when prefixed by ID3v2 metadata and skips false syncwords', () => {
+      // 1. Build authentic 7-byte ADTS frame (44.1kHz stereo)
+      const validFrame = Buffer.alloc(14);
+      validFrame[0] = 0xff;
+      validFrame[1] = 0xf1;
+      validFrame[2] = 0x50;
+      validFrame[3] = (2 & 3) << 6 | ((14 >> 11) & 3);
+      validFrame[4] = (14 >> 3) & 0xff;
+      validFrame[5] = ((14 & 7) << 5) | 0x1f;
+      validFrame[6] = 0xfc;
+      validFrame.writeInt16LE(1234, 7);
+      validFrame.writeInt16LE(2345, 9);
+      validFrame.writeInt16LE(3456, 11);
+
+      // 2. Prepend ID3v2 tag (10 bytes header + 10 bytes payload)
+      const id3Header = Buffer.alloc(20);
+      id3Header.write('ID3', 0);
+      id3Header[3] = 3; // v2.3
+      id3Header[6] = 0;
+      id3Header[7] = 0;
+      id3Header[8] = 0;
+      id3Header[9] = 10; // tag size = 10 bytes
+
+      // 3. Prepend false syncword (0xff 0xf0) with length exceeding buffer
+      const falseSync = Buffer.from([0xff, 0xf0, 0x50, 0x07, 0xff, 0xff, 0x00]);
+
+      const testStream = Buffer.concat([id3Header, falseSync, validFrame]);
+      const decoded = decodeAdtsAac(testStream);
+      expect(decoded.sampleRate).toBe(44100);
+      expect(decoded.channels).toBe(2);
+      expect(decoded.samples.length).toBeGreaterThan(0);
+
+      // Verify routing in decodeAudioBuffer with hint
+      const routed = decodeAudioBuffer(testStream, 'aac');
+      expect(routed.sampleRate).toBe(44100);
+    });
+
+    it('recovers 100% of audio samples in Ogg Vorbis across multi-segment pages without truncation', async () => {
+      // Create WAV with 4096 samples (8192 bytes payload)
+      const wav = createTestWav(44100, 2, 0.1);
+      const oggResult = await convertMedia(wav, 'wav', 'ogg', {}, 'full.wav');
+      const decoded = decodeOgg(oggResult.buffer);
+
+      // Verify that all synthesized audio samples (not just the first 127) were decoded
+      expect(decoded.samples.length).toBeGreaterThan(1000);
+      expect(decoded.sampleRate).toBe(44100);
+      expect(decoded.channels).toBe(2);
+    });
+
+    it('fails closed safely on fuzzed short Vorbis identification packets (<16 bytes)', () => {
+      // Build Ogg page with packet 0 starting with \x01vorbis but only 10 bytes long
+      const shortHeader = Buffer.from([0x01, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73, 0x00, 0x00, 0x00]);
+      const ogg = Buffer.alloc(27 + 1 + shortHeader.length);
+      ogg.write('OggS', 0);
+      ogg[26] = 1;
+      ogg[27] = shortHeader.length;
+      shortHeader.copy(ogg, 28);
+
+      expect(() => decodeOgg(ogg)).toThrow(/Unsupported audio format/i);
+    });
+
     it('fails closed on malformed audio payloads passed to decoders', () => {
       const noise = Buffer.from('INVALID_AUDIO_DATA_FOR_DECODER_FUZZING');
       expect(() => decodeAdtsAac(noise)).toThrow(/Unsupported audio format/i);
@@ -352,9 +420,76 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
   });
 
   // ==========================================================================
-  // 4. L4 Server Environment FFmpeg Diagnostic Gate
+  // 4. Additional Archive Edge Cases (Canonical Varints, kEmptyStream, Bomb Guards)
   // ==========================================================================
-  describe('4. L4 Server FFmpeg Container Environment Detection', () => {
+  describe('4. Additional Archive Edge Cases', () => {
+    it('encodes standard 7z variable length numbers canonically without byte inflation', () => {
+      const arr10k: number[] = [];
+      write7zVarint(arr10k, 10000);
+      // 10000 in binary: 0010 0111 0001 0000 (14 bits) fits in 2 bytes: [0xa7, 0x10]
+      expect(arr10k).toEqual([0xa7, 0x10]);
+      expect(read7zVarint(Buffer.from(arr10k), 0)).toEqual({ value: 10000, nextOffset: 2 });
+
+      const arr16383: number[] = [];
+      write7zVarint(arr16383, 16383);
+      expect(arr16383).toEqual([0xbf, 0xff]);
+      expect(read7zVarint(Buffer.from(arr16383), 0)).toEqual({ value: 16383, nextOffset: 2 });
+
+      const arr16384: number[] = [];
+      write7zVarint(arr16384, 16384);
+      expect(arr16384).toEqual([0xc0, 0x00, 0x40]);
+      expect(read7zVarint(Buffer.from(arr16384), 0)).toEqual({ value: 16384, nextOffset: 3 });
+    });
+
+    it('extracts 7z archives correctly when kEmptyStream (0x0e) property is present', () => {
+      // Build a 7z archive where kFilesInfo has kEmptyStream (0x0e) before kName (0x11)
+      const files = [{ filename: 'test.txt', buffer: Buffer.from('hello 7z') }];
+      const arc = create7zArchive(files, { compressionLevel: 0 }, 'test.7z');
+
+      // The archive was created with proper UTF-16 terminal null in kName
+      const extracted = extract7zArchive(arc.buffer);
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0].filename).toBe('test.txt');
+      expect(extracted[0].buffer.toString()).toBe('hello 7z');
+    });
+
+    it('fails closed on RAR archives with uncompressed size exceeding bomb limits', () => {
+      const filename = 'huge.txt';
+      const filenameBuf = Buffer.from(filename, 'utf-8');
+      const headSize = 32 + filenameBuf.length;
+
+      const marker = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]);
+      const mainHead = Buffer.alloc(13);
+      mainHead.writeUInt16LE(0x1234, 0);
+      mainHead.writeUInt8(0x73, 2);
+      mainHead.writeUInt16LE(0x0000, 3);
+      mainHead.writeUInt16LE(13, 5);
+
+      const fileHead = Buffer.alloc(headSize);
+      fileHead.writeUInt16LE(0x5678, 0);
+      fileHead.writeUInt8(0x74, 2); // FILE_HEAD
+      fileHead.writeUInt16LE(0x8000, 3);
+      fileHead.writeUInt16LE(headSize, 5);
+      fileHead.writeUInt32LE(10, 7); // PACK_SIZE = 10
+      fileHead.writeUInt32LE(600 * 1024 * 1024, 11); // UNP_SIZE = 600MB (> 500MB bomb limit!)
+      fileHead.writeUInt8(3, 15);
+      fileHead.writeUInt32LE(0x11223344, 16);
+      fileHead.writeUInt32LE(0x50000000, 20);
+      fileHead.writeUInt8(20, 24);
+      fileHead.writeUInt8(0x30, 25); // METHOD = 0x30 (Stored)
+      fileHead.writeUInt16LE(filenameBuf.length, 26);
+      fileHead.writeUInt32LE(0x20, 28);
+      filenameBuf.copy(fileHead, 32);
+
+      const syntheticRar = Buffer.concat([marker, mainHead, fileHead, crypto.randomBytes(10)]);
+      expect(() => extractRarArchive(syntheticRar)).toThrow(/Archive bomb detected/i);
+    });
+  });
+
+  // ==========================================================================
+  // 5. L4 Server Environment FFmpeg Diagnostic Gate
+  // ==========================================================================
+  describe('5. L4 Server FFmpeg Container Environment Detection', () => {
     it('reports environment status with container flag and binary path safely', () => {
       const envInfo = detectFfmpegEnvironment();
       expect(envInfo).toHaveProperty('available');

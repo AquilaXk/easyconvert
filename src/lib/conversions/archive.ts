@@ -1,8 +1,8 @@
-import { execFileSync } from 'child_process';
-import crypto from 'crypto';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import JSZip from 'jszip';
 import zlib from 'zlib';
 import { ConversionOptions, ConversionResult } from '../types';
@@ -539,6 +539,12 @@ export function extractRarArchive(rarBuffer: Buffer): { filename: string; buffer
       const method = rarBuffer[offset + 25];
       const nameSize = rarBuffer.readUInt16LE(offset + 26);
 
+      if (unpSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        throw new Error(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        );
+      }
+
       // Enforce fail-closed verification: Method 0x30 is STORE (uncompressed)
       // Methods 0x31..0x35 are compressed and MUST NOT be sliced as raw corrupt data!
       if (method !== 0x30) {
@@ -772,7 +778,13 @@ export function decompressLzma(
       }
 
       outBuf[outPos++] = (symbol - 0x100) & 0xff;
-      state = state < 4 ? 0 : state < 10 ? state - 3 : state - 6;
+      if (state < 4) {
+        state = 0;
+      } else if (state < 10) {
+        state -= 3;
+      } else {
+        state -= 6;
+      }
     } else {
       // Match or Rep
       let len = 0;
@@ -850,12 +862,6 @@ export function decompressLzma2(
   props: Buffer | Uint8Array,
   unpackSize: number
 ): Buffer {
-  let dictSize = 4096;
-  if (props.length >= 1) {
-    const prop = props[0];
-    dictSize = (2 | (prop & 1)) << (Math.floor(prop / 2) + 11);
-  }
-
   const outBuf = Buffer.alloc(unpackSize);
   let outPos = 0;
   let inPos = 0;
@@ -901,20 +907,19 @@ export function write7zVarint(arr: number[], value: number): void {
     arr.push(value);
     return;
   }
-  let extraBytes = 0;
-  for (let i = 1; i <= 8; i++) {
-    if (value < Math.pow(2, 7 * (i + 1) - i)) {
+  let extraBytes = 8;
+  for (let i = 1; i <= 7; i++) {
+    if (value < Math.pow(2, 7 * (i + 1))) {
       extraBytes = i;
       break;
     }
   }
-  if (extraBytes === 0) extraBytes = 8;
-  const firstByteMask = ((0xff00 >> extraBytes) & 0xff);
+  const firstByteMask = (0xff00 >> extraBytes) & 0xff;
   const highBits = Math.floor(value / Math.pow(2, extraBytes * 8)) & (0x7f >> extraBytes);
   arr.push(firstByteMask | highBits);
   let temp = value;
   for (let b = 0; b < extraBytes; b++) {
-    arr.push(temp & 0xff);
+    arr.push(temp % 256);
     temp = Math.floor(temp / 256);
   }
 }
@@ -1000,13 +1005,9 @@ export function create7zArchive(
   for (let i = 0; i < files.length; i++) {
     nh.push(0x01); // numCoders = 1
     if (isCompressed) {
-      nh.push(0x03); // codecIdSize = 3
-      nh.push(0x04); // Deflate: 0x04 0x01 0x08
-      nh.push(0x01);
-      nh.push(0x08);
+      nh.push(0x03, 0x04, 0x01, 0x08); // Deflate: 0x04 0x01 0x08
     } else {
-      nh.push(0x01); // codecIdSize = 1
-      nh.push(0x00); // Copy: 0x00
+      nh.push(0x01, 0x00); // Copy: 0x00
     }
   }
 
@@ -1018,10 +1019,7 @@ export function create7zArchive(
   nh.push(0x0a); // kCRC
   nh.push(0x01); // allAreDefined = 1
   for (const c of crcs) {
-    nh.push(c & 0xff);
-    nh.push((c >>> 8) & 0xff);
-    nh.push((c >>> 16) & 0xff);
-    nh.push((c >>> 24) & 0xff);
+    nh.push(c & 0xff, (c >>> 8) & 0xff, (c >>> 16) & 0xff, (c >>> 24) & 0xff);
   }
   nh.push(0x00); // kEnd (UnpackInfo)
   nh.push(0x00); // kEnd (MainStreamsInfo)
@@ -1036,11 +1034,13 @@ export function create7zArchive(
     nameBufs.push(Buffer.from(f.filename + '\0', 'utf16le'));
   }
   const allNames = Buffer.concat(nameBufs);
-  write7zVarint(nh, allNames.length + 1);
+  // Per 7z spec, array of names in kName is terminated by an extra 16-bit zero
+  const namesWithTerminator = Buffer.concat([allNames, Buffer.from([0x00, 0x00])]);
+  write7zVarint(nh, namesWithTerminator.length + 1);
   nh.push(0x00); // external = 0
 
   const nhPrefix = Buffer.from(nh);
-  const nhBuffer = Buffer.concat([nhPrefix, allNames, Buffer.from([0x00, 0x00])]);
+  const nhBuffer = Buffer.concat([nhPrefix, namesWithTerminator, Buffer.from([0x00, 0x00])]);
 
   const nextHeaderOffset = packData.length;
   const nextHeaderSize = nhBuffer.length;
@@ -1119,6 +1119,7 @@ function decompress7zFolder(
 function decode7zEncodedHeader(sevenZipBuffer: Buffer, nh: Buffer): Buffer | null {
   try {
     let cur = 1;
+    let packPos = 0;
     let packSize = 0;
     let unpackSize = 0;
     const coder: SevenZipCoder = { codecId: Buffer.from([0]), properties: Buffer.alloc(0) };
@@ -1127,8 +1128,9 @@ function decode7zEncodedHeader(sevenZipBuffer: Buffer, nh: Buffer): Buffer | nul
       const p = nh[cur++];
       if (p === 0x06) {
         // kPackInfo
-        read7zVarint(nh, cur); // packPos
-        cur += 1;
+        const packPosVar = read7zVarint(nh, cur);
+        packPos = packPosVar.value;
+        cur = packPosVar.nextOffset;
         const numStreams = read7zVarint(nh, cur);
         cur = numStreams.nextOffset;
         if (nh[cur++] === 0x09) {
@@ -1176,7 +1178,7 @@ function decode7zEncodedHeader(sevenZipBuffer: Buffer, nh: Buffer): Buffer | nul
     }
 
     if (packSize > 0 && unpackSize > 0) {
-      const packSlice = Buffer.from(sevenZipBuffer.subarray(32, 32 + packSize));
+      const packSlice = Buffer.from(sevenZipBuffer.subarray(32 + packPos, 32 + packPos + packSize));
       return decompress7zFolder(packSlice, coder, unpackSize);
     }
   } catch {}
@@ -1364,12 +1366,12 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
               }
             } else if (subProp === 0x0a) {
               // kCRC
-              const allDefined = nh[cur++];
-              for (let f = 0; f < folders.length; f++) {
-                const numStreams = folders[f].numUnpackStreams || 1;
-                folders[f].unpackCrcs = [];
+              cur++; // skip allDefined flag
+              for (const folder of folders) {
+                const numStreams = folder.numUnpackStreams || 1;
+                folder.unpackCrcs = [];
                 for (let s = 0; s < numStreams && cur + 4 <= nh.length; s++) {
-                  folders[f].unpackCrcs!.push(nh.readUInt32LE(cur));
+                  folder.unpackCrcs.push(nh.readUInt32LE(cur));
                   cur += 4;
                 }
               }
@@ -1391,8 +1393,8 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
 
       while (cur < nh.length && nh[cur] !== 0x00) {
         const fileProp = nh[cur++];
-        if (fileProp === 0x11 || fileProp === 0x0e) {
-          // kName (0x11 standard, 0x0e legacy fallback)
+        if (fileProp === 0x11) {
+          // kName (0x11 standard)
           const nameLen = read7zVarint(nh, cur);
           cur = nameLen.nextOffset;
           const external = nh[cur++];
@@ -1501,7 +1503,7 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
         const fileBuf = Buffer.from(uncompressedData.subarray(subOffset, subOffset + sz));
         subOffset += sz;
 
-        if (folder.unpackCrcs && folder.unpackCrcs[s] !== undefined) {
+        if (folder.unpackCrcs?.[s] !== undefined) {
           if (crc32(fileBuf) !== folder.unpackCrcs[s]) {
             throw new Error(`Corrupted 7z archive: CRC mismatch for ${filenames[fileIdx]}`);
           }

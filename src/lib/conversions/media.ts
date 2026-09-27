@@ -1,7 +1,8 @@
-import { execFileSync } from 'child_process';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ConversionOptions, ConversionResult } from '../types';
 import { executeSandboxedBinary } from '../security/process-sandbox';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream } from './media-encoder';
@@ -10,7 +11,6 @@ import {
   decodeWav,
   decodeFlac,
   decodeMp3,
-  decodeAdtsAac,
   DecodedAudio,
 } from './media-decoder';
 
@@ -137,8 +137,9 @@ async function executeFfmpegTranscode(
   baseName: string
 ): Promise<ConversionResult> {
   const tmpDir = os.tmpdir();
-  const inputPath = path.join(tmpDir, `easyconvert_in_${Date.now()}_${Math.random().toString(36).substring(2)}.${src}`);
-  const outputPath = path.join(tmpDir, `easyconvert_out_${Date.now()}_${Math.random().toString(36).substring(2)}.${tgt}`);
+  const token = crypto.randomBytes(8).toString('hex');
+  const inputPath = path.join(tmpDir, `easyconvert_in_${Date.now()}_${token}.${src}`);
+  const outputPath = path.join(tmpDir, `easyconvert_out_${Date.now()}_${token}.${tgt}`);
 
   fs.writeFileSync(inputPath, inputBuffer);
 
@@ -413,6 +414,10 @@ function encodeMp3Container(
   return encodePureMp3(samples, sampleRate, channels, bitrateStr, title);
 }
 
+const AAC_SAMPLE_RATES = [
+  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
+];
+
 /**
  * Encodes valid ADTS AAC audio stream container
  */
@@ -425,13 +430,15 @@ function encodeAacContainer(
   const chunks: Buffer[] = [];
   const frames = Math.max(6, Math.min(60, Math.floor(samples.length / 1024)));
   const aacPacketSize = 350;
+  const srFound = AAC_SAMPLE_RATES.indexOf(sampleRate);
+  const srIdx = srFound !== -1 ? srFound : 4; // default to 44.1kHz
 
   for (let i = 0; i < frames; i++) {
     const packet = Buffer.alloc(7 + aacPacketSize);
     // ADTS Header (7 bytes)
     packet[0] = 0xff; // 11111111 (syncword)
     packet[1] = 0xf1; // 1111 (sync) + 0 (MPEG-4) + 00 (Layer 0) + 1 (protection absent)
-    packet[2] = 0x50; // 01 (AAC LC) + 0100 (44.1kHz index) + 0 + 00 (channel MSB)
+    packet[2] = (0x01 << 6) | (srIdx << 2) | ((channels >> 2) & 1); // 01 (AAC LC) + sample rate idx + channel MSB
     packet[3] = (channels & 0x03) << 6; // channel LSB
     const totalLen = 7 + aacPacketSize;
     packet[3] |= (totalLen >> 11) & 0x03;
@@ -502,7 +509,16 @@ function createOggPage(
   sequenceNum: number,
   serial: number
 ): Buffer {
-  const page = Buffer.alloc(27 + 1 + payload.length);
+  const segTable: number[] = [];
+  let rem = payload.length;
+  while (rem >= 255) {
+    segTable.push(255);
+    rem -= 255;
+  }
+  segTable.push(rem);
+
+  const headerSize = 27 + segTable.length;
+  const page = Buffer.alloc(headerSize + payload.length);
   page.write('OggS', 0);
   page.writeUInt8(0, 4); // Structure version
   page.writeUInt8(headerType, 5); // Flags (0x02 = BOS, 0x04 = EOS)
@@ -510,9 +526,11 @@ function createOggPage(
   page.writeUInt32LE(serial, 14);
   page.writeUInt32LE(sequenceNum, 18);
   page.writeUInt32LE(0, 22); // Checksum (0 for fast synth)
-  page.writeUInt8(1, 26); // Segment count
-  page.writeUInt8(Math.min(255, payload.length), 27);
-  payload.copy(page, 28);
+  page.writeUInt8(segTable.length, 26); // Segment count
+  for (let i = 0; i < segTable.length; i++) {
+    page.writeUInt8(segTable[i], 27 + i);
+  }
+  payload.copy(page, headerSize);
   return page;
 }
 

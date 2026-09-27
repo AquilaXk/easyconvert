@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # 1. Distributed Queue Broker
+  redis:
+    image: redis:7-alpine
+    container_name: easyconvert-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # 2. EasyConvert OCI Backend Worker Daemon
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: easyconvert-oci-worker
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OCI_NAMESPACE=${OCI_NAMESPACE:-axvym6vk8g7i}
+      - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-easyconvert-transcode-bucket}
+      - OCI_REGION=${OCI_REGION:-ap-seoul-1}
+      - OCI_ENDPOINT=${OCI_ENDPOINT:-https://axvym6vk8g7i.compat.objectstorage.ap-seoul-1.oraclecloud.com}
+      - WORKER_CONCURRENCY=3
+    volumes:
+      - worker-tmp:/tmp
+    deploy:
+      resources:
+        limits:
+          cpus: '2.5'
+          memory: 10G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+volumes:
+  redis-data:
+  worker-tmp:

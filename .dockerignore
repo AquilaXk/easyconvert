@@ -1,0 +1,36 @@
+# Git & Version Control
+.git
+.gitignore
+.github
+
+# Environment & Sensitive Secrets
+.env
+.env.*
+*.pem
+*.key
+*.cert
+
+# Node dependencies and build artifacts
+node_modules
+.next
+out
+build
+dist
+coverage
+*.tsbuildinfo
+
+# Tests & Testnet fixtures
+tests/
+__tests__/
+cypress/
+playwright/
+*.test.ts
+*.spec.ts
+
+# Documentation & Misc
+*.md
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
