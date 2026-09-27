@@ -9,6 +9,11 @@ import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
+import {
+  executeWebGpuCompute,
+  isWebGpuComputeSupported,
+  WebGpuComputeTask,
+} from './edge/pipelines/webgpu-compute-pipeline';
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
@@ -156,10 +161,18 @@ export async function tryProcessClientEdge(
 
   // 3. Level 1A: WebGPU Compute Pipeline
   if (resolution.tier === 'L1A') {
-    const l1aRes = await processL2Conversion(item, src, tgt, onProgress);
-    if (l1aRes) {
+    try {
+      const l1aRes = await processL1AWebGpuConversion(item, src, tgt, onProgress);
+      if (l1aRes) {
+        return l1aRes;
+      }
+    } catch {
+      // Graceful cascade to L2 Wasm
+    }
+    const l2Res = await processL2Conversion(item, src, tgt, onProgress);
+    if (l2Res) {
       return {
-        ...l1aRes,
+        ...l2Res,
         tier: 'L1A',
         tierName: 'Edge L1A (WebGPU Compute)',
       };
@@ -194,6 +207,144 @@ export async function tryProcessClientEdge(
   }
 
   return null;
+}
+
+/**
+ * Helper to process Level 1A (WebGPU Compute Shader) conversion.
+ */
+async function processL1AWebGpuConversion(
+  item: ConversionQueueItem,
+  src: string,
+  tgt: string,
+  onProgress?: (progress: number) => void
+): Promise<ClientEdgeResult | null> {
+  const isImage = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(src);
+  if (!isImage || !isWebGpuComputeSupported()) {
+    return null;
+  }
+
+  if (
+    typeof createImageBitmap === 'undefined' ||
+    (typeof OffscreenCanvas === 'undefined' && typeof document === 'undefined')
+  ) {
+    return null;
+  }
+
+  onProgress?.(10);
+  const bitmap = await createImageBitmap(item.file);
+  const width = bitmap.width;
+  const height = bitmap.height;
+
+  let canvas: any;
+  let ctx: any;
+  if (typeof OffscreenCanvas !== 'undefined') {
+    canvas = new OffscreenCanvas(width, height);
+    ctx = canvas.getContext('2d');
+  } else {
+    canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    ctx = canvas.getContext('2d');
+  }
+
+  if (!ctx) {
+    if (typeof bitmap.close === 'function') bitmap.close();
+    return null;
+  }
+
+  ctx.drawImage(bitmap, 0, 0);
+  if (typeof bitmap.close === 'function') bitmap.close();
+
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const pixelBytes = new Uint8Array(
+    imgData.data.buffer,
+    imgData.data.byteOffset,
+    imgData.data.byteLength
+  );
+
+  onProgress?.(30);
+
+  let task: WebGpuComputeTask;
+  if (item.options.colorDepth === 1 || (item.options as any).grayscale === true) {
+    task = { type: 'color-transform', options: { mode: 'grayscale' } };
+  } else if ((item.options as any).invert === true) {
+    task = { type: 'color-transform', options: { mode: 'invert' } };
+  } else if ((item.options as any).brightnessDelta !== undefined) {
+    task = {
+      type: 'color-transform',
+      options: { mode: 'brightness', param: (item.options as any).brightnessDelta },
+    };
+  } else if ((item.options as any).blurRadius !== undefined) {
+    task = {
+      type: 'gaussian-blur',
+      options: {
+        radius: (item.options as any).blurRadius,
+        sigma: (item.options as any).blurSigma ?? 1.5,
+      },
+    };
+  } else if (
+    item.options.palette === true ||
+    item.options.colorDepth !== undefined ||
+    item.options.colors !== undefined
+  ) {
+    const maxColors =
+      item.options.colors ?? (item.options.colorDepth ? 1 << item.options.colorDepth : 256);
+    const rLevels = maxColors <= 16 ? 4 : 8;
+    const gLevels = maxColors <= 16 ? 4 : 8;
+    const bLevels = maxColors <= 16 ? 2 : 4;
+    task = { type: 'quantize', options: { rLevels, gLevels, bLevels } };
+  } else {
+    task = { type: 'color-transform', options: { mode: 'grayscale' } };
+  }
+
+  onProgress?.(50);
+  const computeRes = await executeWebGpuCompute({
+    width,
+    height,
+    data: pixelBytes,
+    task,
+  });
+
+  if (!computeRes) {
+    return null;
+  }
+
+  onProgress?.(80);
+  const processedClamped = new Uint8ClampedArray(computeRes.data);
+  const newImgData = new ImageData(processedClamped as any, width, height);
+  ctx.putImageData(newImgData, 0, 0);
+
+  const mimeType =
+    tgt === 'jpg' || tgt === 'jpeg'
+      ? 'image/jpeg'
+      : tgt === 'webp'
+      ? 'image/webp'
+      : 'image/png';
+
+  let resultBlob: Blob;
+  if ('convertToBlob' in canvas) {
+    resultBlob = await canvas.convertToBlob({
+      type: mimeType,
+      quality: (item.options.quality || 90) / 100,
+    });
+  } else {
+    resultBlob = await new Promise<Blob>((resolve) => {
+      canvas.toBlob(
+        (b: Blob | null) => resolve(b || new Blob([])),
+        mimeType,
+        (item.options.quality || 90) / 100
+      );
+    });
+  }
+
+  onProgress?.(100);
+  const resultUrl = URL.createObjectURL(resultBlob);
+  return {
+    resultUrl,
+    resultSize: resultBlob.size,
+    tier: 'L1A',
+    tierName: 'Edge L1A (WebGPU Compute)',
+  };
 }
 
 /**
