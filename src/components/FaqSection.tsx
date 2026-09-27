@@ -64,7 +64,7 @@ export default function FaqSection() {
                   />
                 </button>
                 {isOpen && (
-                  <div className="px-5 pb-5 pt-0 text-xs sm:text-sm text-ink-secondary dark:text-dark-muted leading-relaxed border-t border-neutral-border/50 dark:border-dark-border/50 pt-4">
+                  <div className="px-5 pb-5 pt-4 text-xs sm:text-sm text-ink-secondary dark:text-dark-muted leading-relaxed border-t border-neutral-border/50 dark:border-dark-border/50">
                     {faq.a}
                   </div>
                 )}
