@@ -5,16 +5,38 @@ import path from 'path';
 import { ConversionOptions, ConversionResult } from '../types';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream } from './media-encoder';
 
-let ffmpegAvailable: boolean | null = null;
-function checkFfmpeg(): boolean {
-  if (ffmpegAvailable !== null) return ffmpegAvailable;
-  try {
-    execFileSync('which', ['ffmpeg'], { stdio: 'ignore' });
-    ffmpegAvailable = true;
-  } catch {
-    ffmpegAvailable = false;
+let resolvedFfmpegPath: string | null = null;
+function getFfmpegPath(): string | null {
+  if (resolvedFfmpegPath !== null) return resolvedFfmpegPath || null;
+  const fixedLocations = [
+    '/usr/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    '/opt/homebrew/bin/ffmpeg',
+  ];
+  for (const loc of fixedLocations) {
+    if (fs.existsSync(loc)) {
+      resolvedFfmpegPath = loc;
+      return loc;
+    }
   }
-  return ffmpegAvailable;
+  const whichBins = ['/usr/bin/which', '/bin/which'];
+  for (const whichBin of whichBins) {
+    if (fs.existsSync(whichBin)) {
+      try {
+        const out = execFileSync(whichBin, ['ffmpeg'], { stdio: 'pipe' }).toString().trim();
+        if (out && fs.existsSync(out)) {
+          resolvedFfmpegPath = out;
+          return out;
+        }
+      } catch {}
+    }
+  }
+  resolvedFfmpegPath = '';
+  return null;
+}
+
+function checkFfmpeg(): boolean {
+  return getFfmpegPath() !== null;
 }
 
 /**
@@ -109,8 +131,9 @@ async function executeFfmpegTranscode(
 
     args.push(outputPath);
 
-    // Invoke binary directly via kernel execve without shell invocation
-    execFileSync('ffmpeg', args, { stdio: 'pipe' });
+    // Invoke binary directly via kernel execve with resolved absolute path
+    const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
+    execFileSync(ffmpegBin, args, { stdio: 'pipe' });
 
     const outputBuffer = fs.readFileSync(outputPath);
     return {
