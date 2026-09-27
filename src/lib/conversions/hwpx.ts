@@ -2,8 +2,9 @@ import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult } from '../types';
 import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, parseHwpDocument, convertHwpDocument } from './hwp';
 
-function escapeXml(str: string): string {
-  return str
+function escapeXml(str?: string | null): string {
+  if (!str) return '';
+  return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -67,13 +68,13 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
   const hpfFile = zip.file('Contents/content.hpf') || zip.file('content.hpf');
   if (hpfFile) {
     const hpfXml = await hpfFile.async('text');
-    const titleMatch = hpfXml.match(/<(?:opf:)?title[^>]*>([\s\S]*?)<\/(?:opf:)?title>/i);
+    const titleMatch = hpfXml.match(/<(?:dc:|opf:)?title[^>]*>([\s\S]*?)<\/(?:dc:|opf:)?title>/i);
     if (titleMatch) title = titleMatch[1].trim();
 
-    const creatorMatch = hpfXml.match(/<(?:opf:)?creator[^>]*>([\s\S]*?)<\/(?:opf:)?creator>/i);
+    const creatorMatch = hpfXml.match(/<(?:dc:|opf:)?creator[^>]*>([\s\S]*?)<\/(?:dc:|opf:)?creator>/i);
     if (creatorMatch) author = creatorMatch[1].trim();
 
-    const dateMatch = hpfXml.match(/<(?:opf:)?date[^>]*>([\s\S]*?)<\/(?:opf:)?date>/i);
+    const dateMatch = hpfXml.match(/<(?:dc:|opf:)?date[^>]*>([\s\S]*?)<\/(?:dc:|opf:)?date>/i);
     if (dateMatch) date = dateMatch[1].trim();
   }
 
@@ -201,6 +202,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
     metadata: {
       title,
       author,
+      creator: author,
       date,
     },
   };
@@ -211,12 +213,21 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
  * Generates valid OPC archive with Contents/section0.xml, header.xml, version.xml, and content.hpf.
  */
 export async function buildHwpxContainer(doc: {
-  paragraphs: Array<{ text: string; isHeading?: boolean; isBold?: boolean; isItalic?: boolean }>;
-  tables?: Array<{ rows: string[][] }>;
+  paragraphs: Array<string | { text: string; isHeading?: boolean; isBold?: boolean; isItalic?: boolean }>;
+  tables?: Array<{ rows: string[][] } | string[][]>;
   metadata?: { title?: string; author?: string; date?: string };
+  title?: string;
+  creator?: string;
   version?: string;
 }): Promise<Buffer> {
   const zip = new JSZip();
+
+  const paragraphs = (doc.paragraphs || []).map((p) =>
+    typeof p === 'string' ? { text: p, isHeading: false } : p
+  );
+  const tables = (doc.tables || []).map((tbl) =>
+    Array.isArray(tbl) ? { rows: tbl } : tbl
+  );
 
   // 1. mimetype (Stored without compression per OPC / KS X 6101)
   zip.file('mimetype', 'application/hwp+zip', { compression: 'STORE' });
@@ -254,8 +265,8 @@ export async function buildHwpxContainer(doc: {
   );
 
   // 5. Contents/content.hpf
-  const title = doc.metadata?.title || doc.paragraphs[0]?.text || 'Hangul Document';
-  const creator = doc.metadata?.author || 'EasyConvert Engine';
+  const title = doc.metadata?.title || doc.title || paragraphs[0]?.text || 'Hangul Document';
+  const creator = doc.metadata?.author || doc.creator || 'EasyConvert Engine';
   const date = doc.metadata?.date || new Date().toISOString();
 
   zip.file(
@@ -300,7 +311,7 @@ export async function buildHwpxContainer(doc: {
 `;
 
   // Write paragraphs
-  doc.paragraphs.forEach((p, idx) => {
+  paragraphs.forEach((p, idx) => {
     const styleID = p.isHeading ? 1 : 0;
     sectionXml += `  <hp:p id="${idx}" styleID="${styleID}">
     <hp:run>
@@ -311,8 +322,8 @@ export async function buildHwpxContainer(doc: {
   });
 
   // Write tables if present
-  if (doc.tables && doc.tables.length > 0) {
-    doc.tables.forEach((tbl, tIdx) => {
+  if (tables && tables.length > 0) {
+    tables.forEach((tbl, tIdx) => {
       const rowCount = tbl.rows.length;
       const colCount = tbl.rows[0]?.length || 1;
       sectionXml += `  <hp:p id="tbl_p_${tIdx}">

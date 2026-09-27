@@ -57,6 +57,7 @@ import {
 } from './cad-nurbs';
 import {
   encodePureMp3,
+  encodeFlacStream,
   encodePureH264Mp4,
   generateH264Sps,
   generateH264Pps,
@@ -160,6 +161,7 @@ export {
   parseIgesBSplineSurfaces,
   parseIgesBSplineCurves,
   encodePureMp3,
+  encodeFlacStream,
   encodePureH264Mp4,
   generateH264Sps,
   generateH264Pps,

@@ -72,6 +72,7 @@ export interface HwpDocument {
   metadata: {
     title?: string;
     author?: string;
+    creator?: string;
     date?: string;
   };
 }

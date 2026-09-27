@@ -508,11 +508,13 @@ async function convertDocxSource(
   if (tgt === 'txt') {
     const text = elements && elements.length > 0
       ? elements
-          .map((el) =>
-            el.type === 'paragraph'
-              ? el.paragraph.text
-              : el.table.rows.map((r) => r.join('\t')).join('\n')
-          )
+          .map((el) => {
+            if (el.type === 'paragraph') return el.paragraph.text;
+            if (el.type === 'table') return el.table.rows.map((r) => r.join('\t')).join('\n');
+            if (el.type === 'drawing') return (el.shapes || []).map((s) => s.text).filter(Boolean).join(' ');
+            return '';
+          })
+          .filter(Boolean)
           .join('\n\n')
       : paragraphs.map((p) => p.text).join('\n\n');
     const buffer = Buffer.from(text, 'utf-8');
@@ -649,8 +651,10 @@ export interface DocxTable {
 export interface DrawingMlShape {
   id?: string;
   name?: string;
+  type?: string;
   geomType: 'preset' | 'custom';
   presetGeom?: string;
+  customPath?: string;
   svgPath?: string;
   x: number;
   y: number;
@@ -690,12 +694,20 @@ export function parseBorder(borderXml: string): TableBorder | undefined {
 export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
   const shapes: DrawingMlShape[] = [];
 
-  // Match all shape tags: <p:sp>, <wps:wsp>, or any block containing <a:spPr>
-  const shapeRegex = /<(?:(?:p|wps):sp|a:graphicData)\b[\s\S]*?<\/(?:(?:p|wps):sp|a:graphicData)>/gi;
+  // Match all shape tags: <p:sp>, <wps:wsp>, <a:graphicData>, <w:drawing>
+  const shapeRegex = /<(?:(?:p|wps):sp|a:graphicData|w:drawing)\b[\s\S]*?<\/(?:(?:p|wps):sp|a:graphicData|w:drawing)>/gi;
   let spMatch: RegExpExecArray | null;
+  const matches: string[] = [];
 
   while ((spMatch = shapeRegex.exec(xml)) !== null) {
-    const spXml = spMatch[0];
+    matches.push(spMatch[0]);
+  }
+
+  if (matches.length === 0 && (xml.includes('<a:prstGeom') || xml.includes('<a:custGeom') || xml.includes('<a:spPr'))) {
+    matches.push(xml);
+  }
+
+  for (const spXml of matches) {
 
     // 1. Transform: <a:xfrm rot="..."> <a:off x="..." y="..."/> <a:ext cx="..." cy="..."/>
     const xfrmMatch = spXml.match(/<a:xfrm\b([^>]*?)>([\s\S]*?)<\/a:xfrm>/i);
@@ -816,8 +828,10 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       .join(' ');
 
     shapes.push({
+      type: geomType === 'custom' ? 'custom' : presetGeom,
       geomType,
       presetGeom,
+      customPath: svgPath || undefined,
       svgPath,
       x,
       y,
@@ -838,10 +852,11 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
  * Renders OpenXML DrawingML specifications into an SVG vector graphic string.
  */
 export function renderDrawingMlToSvg(
-  xml: string,
-  options?: { width?: number; height?: number }
+  xmlOrShapes: string | DrawingMlShape[],
+  options?: { width?: number; height?: number } | number,
+  heightOption?: number
 ): { svg: string; shapes: DrawingMlShape[] } {
-  const shapes = parseDrawingMlShapes(xml);
+  const shapes = Array.isArray(xmlOrShapes) ? xmlOrShapes : parseDrawingMlShapes(xmlOrShapes);
   if (shapes.length === 0) {
     return {
       svg: '',
@@ -860,8 +875,11 @@ export function renderDrawingMlToSvg(
     maxY = Math.max(maxY, s.y + s.height);
   });
 
-  const totalWidth = options?.width || Math.max(100, maxX - minX + 20);
-  const totalHeight = options?.height || Math.max(60, maxY - minY + 20);
+  const optWidth = typeof options === 'number' ? options : options?.width;
+  const optHeight = typeof options === 'number' ? heightOption : options?.height;
+
+  const totalWidth = optWidth || Math.max(100, maxX - minX + 20);
+  const totalHeight = optHeight || Math.max(60, maxY - minY + 20);
 
   let svgElements = '';
   for (const s of shapes) {
@@ -2018,7 +2036,27 @@ export interface FormulaCellInfo {
  * and detects cycles safely without recursion stack overflow, assigning #CYCLE! standard error codes.
  */
 export class SpreadsheetDagEngine {
-  constructor(private cellMap: Record<string, any>) {}
+  private formulaCells: FormulaCellInfo[] = [];
+
+  constructor(private cellMap: Record<string, any> = {}) {}
+
+  public setCell(ref: string, value: any): void {
+    const cleanRef = ref.replace(/\$/g, '').toUpperCase();
+    if (typeof value === 'string' && value.startsWith('=')) {
+      this.formulaCells.push({ ref: cleanRef, formula: value });
+    } else {
+      this.cellMap[cleanRef] = value;
+    }
+  }
+
+  public getCellValue(ref: string): any {
+    const cleanRef = ref.replace(/\$/g, '').toUpperCase();
+    return this.cellMap[cleanRef];
+  }
+
+  public evaluate(rows?: string[][]): { evaluated: Record<string, any>; cycles: string[] } {
+    return this.evaluateWithDag(this.formulaCells, rows);
+  }
 
   /**
    * Extracts dependent cell references and ranges from formula expression.
