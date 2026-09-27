@@ -174,9 +174,9 @@ export async function convertVectorCad(
   sourceFormat: string,
   targetFormat: string,
   options: ConversionOptions = {},
-  originalFilename: string
+  originalFilename: string = 'model'
 ): Promise<ConversionResult> {
-  const baseName = originalFilename.replace(/\.[^/.]+$/, '');
+  const baseName = (originalFilename || 'model').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase().replace(/^\./, '').trim();
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
 
