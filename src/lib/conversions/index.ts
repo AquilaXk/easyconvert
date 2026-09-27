@@ -9,7 +9,7 @@ import {
 } from './image';
 import { convertDocument, extractTextFromPdf } from './document';
 import { convertData } from './data';
-import { convertMedia, resampleAudioSinc, encodeWebmContainer } from './media';
+import { convertMedia, resampleAudioSinc, encodeWebmContainer, detectFfmpegEnvironment, type FfmpegEnvironmentInfo } from './media';
 import { convertOffice, formatSpreadsheetCellValue } from './office';
 import {
   convertFont,
@@ -83,6 +83,8 @@ import {
   decodeWav,
   decodeFlac,
   decodeMp3,
+  decodeAdtsAac,
+  decodeOgg,
   type DecodedAudio,
   BitReader,
 } from './media-decoder';
@@ -98,6 +100,12 @@ import {
   extractRarArchive,
   create7zArchive,
   extract7zArchive,
+  decompressLzma,
+  decompressLzma2,
+  getUnrarBinaryPath,
+  ARCHIVE_SECURITY_LIMITS,
+  sanitizeArchivePath,
+  crc32,
 } from './archive';
 
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
@@ -199,6 +207,16 @@ export {
   decodeWav,
   decodeFlac,
   decodeMp3,
+  decodeAdtsAac,
+  decodeOgg,
+  decompressLzma,
+  decompressLzma2,
+  getUnrarBinaryPath,
+  ARCHIVE_SECURITY_LIMITS,
+  sanitizeArchivePath,
+  crc32,
+  detectFfmpegEnvironment,
+  type FfmpegEnvironmentInfo,
   BitReader,
   demosaicBayerCfa,
   decodeRawBayerSensor,
