@@ -1,11 +1,23 @@
 import { ConversionOptions, ConversionResult } from '../types';
 import { FORMAT_REGISTRY } from '../registry';
-import { convertImage } from './image';
+import {
+  convertImage,
+  demosaicBayerCfa,
+  decodeRawBayerSensor,
+  type BayerPattern,
+  type BayerSensorData,
+} from './image';
 import { convertDocument, extractTextFromPdf } from './document';
 import { convertData } from './data';
-import { convertMedia } from './media';
-import { convertOffice } from './office';
-import { convertFont } from './font';
+import { convertMedia, resampleAudioSinc, encodeWebmContainer } from './media';
+import { convertOffice, formatSpreadsheetCellValue } from './office';
+import {
+  convertFont,
+  convertFontToTrueType,
+  convertFontToOpenTypeCff,
+  cubicToQuadraticBezier,
+  quadraticToCubicBezier,
+} from './font';
 import { convertVectorCad, svgToDxf, parseSvgPathToBezierPoints } from './vector-cad';
 import {
   convertHwp,
@@ -187,8 +199,18 @@ export {
   decodeWav,
   decodeFlac,
   decodeMp3,
-  type DecodedAudio,
   BitReader,
+  demosaicBayerCfa,
+  decodeRawBayerSensor,
+  type BayerPattern,
+  type BayerSensorData,
+  convertFontToTrueType,
+  convertFontToOpenTypeCff,
+  cubicToQuadraticBezier,
+  quadraticToCubicBezier,
+  resampleAudioSinc,
+  encodeWebmContainer,
+  formatSpreadsheetCellValue,
 };
 
 export async function convertFile(

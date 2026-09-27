@@ -26,6 +26,19 @@ export {
   generateSearchablePdf,
 };
 
+export type BayerPattern = 'RGGB' | 'BGGR' | 'GRBG' | 'GBRG';
+
+export interface BayerSensorData {
+  width: number;
+  height: number;
+  pattern: BayerPattern;
+  data: Uint8Array | Uint16Array;
+  bitsPerSample?: number;
+  whiteBalance?: [number, number, number]; // [rScale, gScale, bScale]
+  blackLevel?: number;
+  whiteLevel?: number;
+}
+
 export function encodeBmp(raw: Buffer, width: number, height: number, channels: number): Buffer {
   const rowSize = width * 3;
   const padding = (4 - (rowSize % 4)) % 4;
@@ -258,6 +271,375 @@ showpage
   return Buffer.from(ps, 'utf-8');
 }
 
+/**
+ * Gradient-directed adaptive Bayer CFA demosaicing (Hamilton-Adams / High-Quality Linear).
+ * Interpolates full RGB color channels from raw sensor Bayer data with edge sensitivity,
+ * eliminating color fringing artifacts and zipper effects on sharp boundaries.
+ */
+export function demosaicBayerCfa(sensor: BayerSensorData): {
+  data: Buffer;
+  width: number;
+  height: number;
+} {
+  const { width, height, pattern, data, whiteBalance } = sensor;
+  if (width < 2 || height < 2) {
+    throw new Error(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 required.`);
+  }
+
+  // Determine normalization factor to 8-bit [0, 255]
+  let maxPossible = 255;
+  if (sensor.bitsPerSample) {
+    maxPossible = (1 << sensor.bitsPerSample) - 1;
+  } else if (data instanceof Uint16Array) {
+    let maxVal = 0;
+    const len = Math.min(data.length, 10000);
+    for (let i = 0; i < len; i++) {
+      if (data[i] > maxVal) maxVal = data[i];
+    }
+    if (maxVal > 4095) maxPossible = 65535;
+    else if (maxVal > 1023) maxPossible = 4095;
+    else if (maxVal > 255) maxPossible = 1023;
+    else maxPossible = 255;
+  }
+
+  const bLevel = sensor.blackLevel || 0;
+  const wLevel = sensor.whiteLevel || maxPossible;
+  const range = Math.max(1, wLevel - bLevel);
+
+  // Normalize raw data to Float32Array [0, 255]
+  const norm = new Float32Array(width * height);
+  for (let i = 0; i < width * height; i++) {
+    const rawVal = data[i] !== undefined ? data[i] : 0;
+    const clamped = Math.max(bLevel, Math.min(wLevel, rawVal));
+    norm[i] = ((clamped - bLevel) / range) * 255;
+  }
+
+  const clampX = (x: number) => (x < 0 ? 0 : x >= width ? width - 1 : x);
+  const clampY = (y: number) => (y < 0 ? 0 : y >= height ? height - 1 : y);
+  const getPixel = (x: number, y: number) => norm[clampY(y) * width + clampX(x)];
+
+  const getCfaChannel = (x: number, y: number): 'R' | 'G1' | 'G2' | 'B' => {
+    const rx = x & 1;
+    const ry = y & 1;
+    if (pattern === 'RGGB') {
+      return ry === 0 ? (rx === 0 ? 'R' : 'G1') : (rx === 0 ? 'G2' : 'B');
+    } else if (pattern === 'BGGR') {
+      return ry === 0 ? (rx === 0 ? 'B' : 'G1') : (rx === 0 ? 'G2' : 'R');
+    } else if (pattern === 'GRBG') {
+      return ry === 0 ? (rx === 0 ? 'G1' : 'R') : (rx === 0 ? 'B' : 'G2');
+    } else {
+      return ry === 0 ? (rx === 0 ? 'G1' : 'B') : (rx === 0 ? 'R' : 'G2');
+    }
+  };
+
+  // Phase 1: High-Quality Adaptive Green Interpolation
+  const green = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const ch = getCfaChannel(x, y);
+      if (ch === 'G1' || ch === 'G2') {
+        green[y * width + x] = getPixel(x, y);
+      } else {
+        const p = getPixel(x, y);
+        const dH =
+          Math.abs(getPixel(x - 1, y) - getPixel(x + 1, y)) +
+          Math.abs(2 * p - getPixel(x - 2, y) - getPixel(x + 2, y));
+        const dV =
+          Math.abs(getPixel(x, y - 1) - getPixel(x, y + 1)) +
+          Math.abs(2 * p - getPixel(x, y - 2) - getPixel(x, y + 2));
+
+        let gVal: number;
+        if (dH < dV) {
+          gVal =
+            (getPixel(x - 1, y) + getPixel(x + 1, y)) / 2 +
+            (2 * p - getPixel(x - 2, y) - getPixel(x + 2, y)) / 4;
+        } else if (dV < dH) {
+          gVal =
+            (getPixel(x, y - 1) + getPixel(x, y + 1)) / 2 +
+            (2 * p - getPixel(x, y - 2) - getPixel(x, y + 2)) / 4;
+        } else {
+          gVal =
+            (getPixel(x - 1, y) + getPixel(x + 1, y) + getPixel(x, y - 1) + getPixel(x, y + 1)) / 4 +
+            (4 * p -
+              getPixel(x - 2, y) -
+              getPixel(x + 2, y) -
+              getPixel(x, y - 2) -
+              getPixel(x, y + 2)) / 8;
+        }
+        green[y * width + x] = Math.max(0, Math.min(255, gVal));
+      }
+    }
+  }
+
+  // Phase 2: Color Difference Interpolation for Red and Blue
+  const rgbBuffer = Buffer.alloc(width * height * 3);
+  const rWb = whiteBalance ? whiteBalance[0] : 1.0;
+  const gWb = whiteBalance ? whiteBalance[1] : 1.0;
+  const bWb = whiteBalance ? whiteBalance[2] : 1.0;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 3;
+      const g = green[y * width + x];
+      const ch = getCfaChannel(x, y);
+
+      let r: number;
+      let b: number;
+
+      if (ch === 'R') {
+        r = getPixel(x, y);
+        const dB =
+          (getPixel(x - 1, y - 1) - green[clampY(y - 1) * width + clampX(x - 1)] +
+            (getPixel(x + 1, y - 1) - green[clampY(y - 1) * width + clampX(x + 1)]) +
+            (getPixel(x - 1, y + 1) - green[clampY(y + 1) * width + clampX(x - 1)]) +
+            (getPixel(x + 1, y + 1) - green[clampY(y + 1) * width + clampX(x + 1)])) / 4;
+        b = g + dB;
+      } else if (ch === 'B') {
+        b = getPixel(x, y);
+        const dR =
+          (getPixel(x - 1, y - 1) - green[clampY(y - 1) * width + clampX(x - 1)] +
+            (getPixel(x + 1, y - 1) - green[clampY(y - 1) * width + clampX(x + 1)]) +
+            (getPixel(x - 1, y + 1) - green[clampY(y + 1) * width + clampX(x - 1)]) +
+            (getPixel(x + 1, y + 1) - green[clampY(y + 1) * width + clampX(x + 1)])) / 4;
+        r = g + dR;
+      } else {
+        const isRHorizontal =
+          pattern === 'RGGB' ? ch === 'G1' :
+          pattern === 'BGGR' ? ch === 'G2' :
+          pattern === 'GRBG' ? ch === 'G1' :
+          ch === 'G2';
+
+        if (isRHorizontal) {
+          const dR =
+            (getPixel(x - 1, y) - green[y * width + clampX(x - 1)] +
+              (getPixel(x + 1, y) - green[y * width + clampX(x + 1)])) / 2;
+          const dB =
+            (getPixel(x, y - 1) - green[clampY(y - 1) * width + x] +
+              (getPixel(x, y + 1) - green[clampY(y + 1) * width + x])) / 2;
+          r = g + dR;
+          b = g + dB;
+        } else {
+          const dB =
+            (getPixel(x - 1, y) - green[y * width + clampX(x - 1)] +
+              (getPixel(x + 1, y) - green[y * width + clampX(x + 1)])) / 2;
+          const dR =
+            (getPixel(x, y - 1) - green[clampY(y - 1) * width + x] +
+              (getPixel(x, y + 1) - green[clampY(y + 1) * width + x])) / 2;
+          r = g + dR;
+          b = g + dB;
+        }
+      }
+
+      rgbBuffer[idx] = Math.max(0, Math.min(255, Math.round(r * rWb)));
+      rgbBuffer[idx + 1] = Math.max(0, Math.min(255, Math.round(g * gWb)));
+      rgbBuffer[idx + 2] = Math.max(0, Math.min(255, Math.round(b * bWb)));
+    }
+  }
+
+  return {
+    data: rgbBuffer,
+    width,
+    height,
+  };
+}
+
+/**
+ * Decodes camera RAW sensor Bayer data from TIFF/DNG or raw Bayer frames.
+ */
+export function decodeRawBayerSensor(
+  buffer: Buffer,
+  formatHint?: string
+): { rgb: Buffer; width: number; height: number } | null {
+  if (!buffer || buffer.length < 16) {
+    return null;
+  }
+
+  // 1. Check for synthetic RAW frame: 'RAW\x01' magic (10 bytes header)
+  if (buffer.subarray(0, 4).toString('ascii') === 'RAW\x01') {
+    const width = buffer.readUInt16LE(4);
+    const height = buffer.readUInt16LE(6);
+    const patCode = buffer.readUInt8(8);
+    const bpp = buffer.readUInt8(9);
+    const patternMap: BayerPattern[] = ['RGGB', 'BGGR', 'GRBG', 'GBRG'];
+    const pattern = patternMap[patCode] || 'RGGB';
+    const payload = buffer.subarray(10);
+    const sensorData =
+      bpp > 8
+        ? new Uint16Array(payload.buffer, payload.byteOffset, Math.min(width * height, Math.floor(payload.length / 2)))
+        : new Uint8Array(payload.buffer, payload.byteOffset, Math.min(width * height, payload.length));
+    const result = demosaicBayerCfa({
+      width,
+      height,
+      pattern,
+      data: sensorData,
+      bitsPerSample: bpp,
+    });
+    return { rgb: result.data, width, height };
+  }
+
+  // 2. Check for TIFF-based RAW (DNG, CR2, NEF, ARW, etc.)
+  const isLE = buffer[0] === 0x49 && buffer[1] === 0x49;
+  const isBE = buffer[0] === 0x4d && buffer[1] === 0x4d;
+
+  if (isLE || isBE) {
+    const read16 = (off: number) => (isLE ? buffer.readUInt16LE(off) : buffer.readUInt16BE(off));
+    const read32 = (off: number) => (isLE ? buffer.readUInt32LE(off) : buffer.readUInt32BE(off));
+
+    const magic = read16(2);
+    if (magic === 42 || magic === 0x55) {
+      let ifdOffset = read32(4);
+      const ifdOffsets: number[] = [];
+      while (ifdOffset > 0 && ifdOffset < buffer.length - 2 && ifdOffsets.length < 10) {
+        ifdOffsets.push(ifdOffset);
+        const count = read16(ifdOffset);
+        const nextPtrOffset = ifdOffset + 2 + count * 12;
+        if (nextPtrOffset + 4 <= buffer.length) {
+          ifdOffset = read32(nextPtrOffset);
+        } else {
+          break;
+        }
+      }
+
+      interface TagData {
+        width?: number;
+        height?: number;
+        bitsPerSample?: number;
+        stripOffset?: number;
+        stripByteCount?: number;
+        cfaPattern?: BayerPattern;
+        subIfds?: number[];
+      }
+
+      const parseIfd = (offset: number): TagData => {
+        const data: TagData = {};
+        if (offset + 2 > buffer.length) return data;
+        const entryCount = read16(offset);
+        let curr = offset + 2;
+        for (let i = 0; i < entryCount; i++) {
+          if (curr + 12 > buffer.length) break;
+          const tag = read16(curr);
+          const type = read16(curr + 2);
+          const count = read32(curr + 4);
+          const valOff = curr + 8;
+
+          const getScalar = (): number => {
+            if (type === 3) return read16(valOff);
+            if (type === 4) return read32(valOff);
+            if (type === 1) return buffer.readUInt8(valOff);
+            return read32(valOff);
+          };
+
+          if (tag === 256) data.width = getScalar();
+          else if (tag === 257) data.height = getScalar();
+          else if (tag === 258) data.bitsPerSample = getScalar();
+          else if (tag === 273) {
+            if (count === 1) {
+              data.stripOffset = type === 3 ? read16(valOff) : read32(valOff);
+            } else {
+              const ptr = read32(valOff);
+              if (ptr < buffer.length) {
+                data.stripOffset = type === 3 ? read16(ptr) : read32(ptr);
+              }
+            }
+          } else if (tag === 279) {
+            if (count === 1) {
+              data.stripByteCount = type === 3 ? read16(valOff) : read32(valOff);
+            } else {
+              const ptr = read32(valOff);
+              if (ptr < buffer.length) {
+                data.stripByteCount = type === 3 ? read16(ptr) : read32(ptr);
+              }
+            }
+          } else if (tag === 330) {
+            const subPtr = read32(valOff);
+            data.subIfds = [subPtr];
+          } else if (tag === 33422) {
+            const p0 = buffer.readUInt8(valOff);
+            const p1 = buffer.readUInt8(valOff + 1);
+            const p2 = buffer.readUInt8(valOff + 2);
+            const p3 = buffer.readUInt8(valOff + 3);
+            if (p0 === 0 && p1 === 1 && p2 === 1 && p3 === 2) data.cfaPattern = 'RGGB';
+            else if (p0 === 2 && p1 === 1 && p2 === 1 && p3 === 0) data.cfaPattern = 'BGGR';
+            else if (p0 === 1 && p1 === 0 && p2 === 2 && p3 === 1) data.cfaPattern = 'GRBG';
+            else if (p0 === 1 && p1 === 2 && p2 === 0 && p3 === 1) data.cfaPattern = 'GBRG';
+          }
+          curr += 12;
+        }
+        return data;
+      };
+
+      let chosen: TagData | null = null;
+      for (const off of ifdOffsets) {
+        const parsed = parseIfd(off);
+        if (parsed.subIfds && parsed.subIfds.length > 0) {
+          for (const subOff of parsed.subIfds) {
+            const subParsed = parseIfd(subOff);
+            if (subParsed.width && subParsed.height && subParsed.stripOffset) {
+              chosen = subParsed;
+              break;
+            }
+          }
+        }
+        if (!chosen && parsed.width && parsed.height && parsed.stripOffset) {
+          chosen = parsed;
+        }
+        if (chosen) break;
+      }
+
+      if (chosen && chosen.width && chosen.height && chosen.stripOffset) {
+        const { width, height, stripOffset } = chosen;
+        const bpp = chosen.bitsPerSample || 8;
+        const pattern = chosen.cfaPattern || 'RGGB';
+        const byteCount = chosen.stripByteCount || (width * height * (bpp > 8 ? 2 : 1));
+        const end = Math.min(buffer.length, stripOffset + byteCount);
+        const strip = buffer.subarray(stripOffset, end);
+
+        const sensorData =
+          bpp > 8
+            ? new Uint16Array(strip.buffer, strip.byteOffset, Math.min(width * height, Math.floor(strip.length / 2)))
+            : new Uint8Array(strip.buffer, strip.byteOffset, Math.min(width * height, strip.length));
+
+        const result = demosaicBayerCfa({
+          width,
+          height,
+          pattern,
+          data: sensorData,
+          bitsPerSample: bpp,
+        });
+
+        return { rgb: result.data, width, height };
+      }
+    }
+  }
+
+  // 3. Fallback for raw Bayer sensor buffer without TIFF headers
+  const totalBytes = buffer.length;
+  for (const dim of [64, 128, 256, 512, 1024, 2048]) {
+    if (totalBytes === dim * dim) {
+      const result = demosaicBayerCfa({
+        width: dim,
+        height: dim,
+        pattern: 'RGGB',
+        data: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length),
+        bitsPerSample: 8,
+      });
+      return { rgb: result.data, width: dim, height: dim };
+    }
+    if (totalBytes === dim * dim * 2) {
+      const result = demosaicBayerCfa({
+        width: dim,
+        height: dim,
+        pattern: 'RGGB',
+        data: new Uint16Array(buffer.buffer, buffer.byteOffset, buffer.length / 2),
+        bitsPerSample: 16,
+      });
+      return { rgb: result.data, width: dim, height: dim };
+    }
+  }
+
+  return null;
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -357,9 +739,17 @@ export async function convertImage(
     }
   } catch (err: unknown) {
     if (isRawInput) {
-      throw new Error(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
+      const demosaiced = decodeRawBayerSensor(inputBuffer, src);
+      if (demosaiced) {
+        pipeline = sharp(demosaiced.rgb, {
+          raw: { width: demosaiced.width, height: demosaiced.height, channels: 3 },
+        });
+      } else {
+        throw new Error(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
+      }
+    } else {
+      throw err;
     }
-    throw err;
   }
 
   // Resize options
