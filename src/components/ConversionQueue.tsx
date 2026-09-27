@@ -236,8 +236,8 @@ export default function ConversionQueue({
                   )}
 
                   {item.status === 'completed' && !item.edgeProcessed && (
-                    <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-sky-700 dark:text-sky-400 bg-sky-500/10 border border-sky-500/25 px-2.5 py-1 rounded-lg">
-                      <span>{item.edgeTier || 'Cloud'}</span>
+                    <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg">
+                      <span>{item.edgeTier || 'Client Edge'}</span>
                     </span>
                   )}
 

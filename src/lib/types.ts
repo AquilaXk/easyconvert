@@ -75,6 +75,8 @@ export interface ConversionOptions {
   colors?: number;
   palette?: boolean;
   dither?: boolean;
+  quantizer?: string;
+  ditherMethod?: string;
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;

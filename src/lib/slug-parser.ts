@@ -2,7 +2,7 @@ import { FORMAT_REGISTRY } from './registry';
 
 export interface ParsedSlug {
   isInfoPage: boolean;
-  infoType?: 'terms' | 'privacy' | 'contact' | 'about' | 'security' | 'forgot-password' | 'status' | 'unit';
+  infoType?: 'terms' | 'privacy' | 'contact' | 'about' | 'security' | 'status' | 'unit';
   sourceFormat: string;
   targetFormat: string;
   pageTitle: string;
@@ -68,7 +68,7 @@ export function parseConverterSlug(slug: string): ParsedSlug {
       sourceFormat: 'pdf',
       targetFormat: 'docx',
       pageTitle: 'Contact Us',
-      pageDescription: 'Get in touch with our team for enterprise inquiries, sales, or technical support.',
+      pageDescription: 'Get in touch with our team for questions, feedback, or open-source issues.',
     };
   }
   if (cleanSlug === 'about') {
@@ -98,17 +98,7 @@ export function parseConverterSlug(slug: string): ParsedSlug {
       sourceFormat: 'pdf',
       targetFormat: 'docx',
       pageTitle: 'System Status',
-      pageDescription: 'Real-time operational status of EasyConvert browser-edge conversion pipelines.',
-    };
-  }
-  if (cleanSlug === 'forgot-password') {
-    return {
-      isInfoPage: true,
-      infoType: 'forgot-password',
-      sourceFormat: 'pdf',
-      targetFormat: 'docx',
-      pageTitle: 'Reset Password',
-      pageDescription: 'Enter your email address to receive password reset instructions.',
+      pageDescription: 'Real-time operational status and diagnostics of EasyConvert browser-edge conversion pipelines.',
     };
   }
 

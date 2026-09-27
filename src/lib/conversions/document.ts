@@ -28,6 +28,7 @@ import {
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { svgToDxf } from './vector-cad';
+import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
 
 export {
   extractTextFromPdf,
@@ -36,12 +37,13 @@ export {
   parseToUnicodeCMap,
   extractPdfFontCMaps,
   recursiveXyCut,
+  analyzeDocumentLayout,
   extractTextFromOdt,
   extractTextFromDoc,
   renderDrawingMlToSvg,
   parseDrawingMlShapes,
 };
-export type { DrawingMlShape, TableBorder, PdfTextBlock, PdfToUnicodeCMap, XyCutOptions };
+export type { DrawingMlShape, TableBorder, PdfTextBlock, PdfToUnicodeCMap, XyCutOptions, DlaBoundingBox, DlaBlock, DlaPageLayout };
 
 /**
  * Strips LaTeX macro commands
@@ -76,7 +78,8 @@ export async function convertDocument(
 
   // PDF as source format
   if (src === 'pdf') {
-    let extractedText = extractTextFromPdf(inputBuffer);
+    const structuredPdf = extractStructuredTextFromPdf(inputBuffer);
+    let extractedText = structuredPdf.text;
     let ocrInfo: { text?: string; confidence?: number } = {};
     let lastOcrResult: OcrResult | null = null;
     const pageOcrResults = new Map<number, OcrResult>();
@@ -158,8 +161,73 @@ export async function convertDocument(
       }
     }
 
+    // Collect bounding boxes for Document Layout Analysis (DLA)
+    let dlaBoxes: DlaBoundingBox[] = [];
+    if (pageOcrResults.size > 0) {
+      for (const [, ocr] of pageOcrResults) {
+        if (ocr.lineBlocks && ocr.lineBlocks.length > 0) {
+          for (const lb of ocr.lineBlocks) {
+            const b = lb.bbox as any;
+            const x = b.x ?? b.x0 ?? 0;
+            const y = b.y ?? b.y0 ?? 0;
+            const width = b.width ?? (b.x1 != null ? Math.max(1, b.x1 - x) : 100);
+            const height = b.height ?? (b.y1 != null ? Math.max(1, b.y1 - y) : 20);
+            dlaBoxes.push({
+              x,
+              y,
+              width,
+              height,
+              text: lb.text,
+              confidence: (lb as any).confidence ?? ocr.confidence ?? 1.0,
+            });
+          }
+        } else if (ocr.lines && ocr.lines.length > 0) {
+          let lineY = 0;
+          for (const l of (ocr.lines as any[])) {
+            if (typeof l === 'object' && l !== null && l.bbox) {
+              const b = l.bbox as any;
+              const x = b.x ?? b.x0 ?? 0;
+              const y = b.y ?? b.y0 ?? 0;
+              const width = b.width ?? (b.x1 != null ? Math.max(1, b.x1 - x) : 100);
+              const height = b.height ?? (b.y1 != null ? Math.max(1, b.y1 - y) : 20);
+              dlaBoxes.push({
+                x,
+                y,
+                width,
+                height,
+                text: l.text || '',
+                confidence: l.confidence ?? ocr.confidence ?? 1.0,
+              });
+            } else if (typeof l === 'string') {
+              dlaBoxes.push({
+                x: 50,
+                y: lineY,
+                width: 500,
+                height: 20,
+                text: l,
+                confidence: ocr.confidence ?? 1.0,
+              });
+              lineY += 24;
+            }
+          }
+        }
+      }
+    } else if (structuredPdf.blocks && structuredPdf.blocks.length > 0) {
+      dlaBoxes = structuredPdf.blocks.map((b) => ({
+        x: b.x,
+        y: b.y,
+        width: Math.max(1, b.width),
+        height: Math.max(1, b.height),
+        text: b.text,
+        fontSize: b.fontSize,
+      }));
+    }
+
+    const dlaLayout = dlaBoxes.length > 0 ? analyzeDocumentLayout(dlaBoxes, 612, 792) : null;
+
     if (tgt === 'txt') {
-      const buffer = Buffer.from(extractedText, 'utf-8');
+      const textToEmit = dlaLayout && dlaLayout.fullText ? dlaLayout.fullText : extractedText;
+      const buffer = Buffer.from(textToEmit, 'utf-8');
       return {
         buffer,
         mimeType: 'text/plain',
@@ -171,11 +239,34 @@ export async function convertDocument(
     }
 
     if (tgt === 'html') {
+      let bodyContent: string;
+      if (dlaLayout && dlaLayout.blocks.length > 0) {
+        bodyContent = dlaLayout.blocks
+          .map((b) => {
+            switch (b.type) {
+              case 'header':
+                return `<header style="font-size:0.875rem;color:#6E768E;border-bottom:1px solid #E1E4EE;margin-bottom:1.5rem;padding-bottom:0.5rem;">${escapeHtml(b.text)}</header>`;
+              case 'footer':
+                return `<footer style="font-size:0.875rem;color:#6E768E;border-top:1px solid #E1E4EE;margin-top:2rem;padding-top:0.5rem;text-align:center;">${escapeHtml(b.text)}</footer>`;
+              case 'heading':
+                return `<h2 style="font-size:1.5rem;color:#1F2340;margin-top:1.5rem;margin-bottom:0.5rem;">${escapeHtml(b.text)}</h2>`;
+              case 'list_item':
+                return `<ul style="margin:0 0 0.5rem 1.5rem;padding:0;"><li>${escapeHtml(b.text.replace(/^[•\-\*]\s*/, ''))}</li></ul>`;
+              case 'table':
+                return `<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;margin-bottom:1rem;border-color:#CCD2FC;"><tr><td>${escapeHtml(b.text)}</td></tr></table>`;
+              case 'paragraph':
+              default:
+                return `<p style="margin-bottom:1rem;color:#373D54;">${escapeHtml(b.text)}</p>`;
+            }
+          })
+          .join('\n');
+      } else {
+        bodyContent = `<pre>${escapeHtml(extractedText)}</pre>`;
+      }
+
       const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
         baseName
-      )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; }</style></head><body><pre>${escapeHtml(
-        extractedText
-      )}</pre></body></html>`;
+      )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; }</style></head><body>${bodyContent}</body></html>`;
       const buffer = Buffer.from(html, 'utf-8');
       return {
         buffer,
@@ -188,7 +279,31 @@ export async function convertDocument(
     }
 
     if (tgt === 'md') {
-      const buffer = Buffer.from(extractedText, 'utf-8');
+      let mdText: string;
+      if (dlaLayout && dlaLayout.blocks.length > 0) {
+        mdText = dlaLayout.blocks
+          .map((b) => {
+            switch (b.type) {
+              case 'header':
+                return `*${b.text}*\n\n---`;
+              case 'footer':
+                return `---\n*${b.text}*`;
+              case 'heading':
+                return `## ${b.text}`;
+              case 'list_item':
+                return `- ${b.text.replace(/^[•\-\*]\s*/, '')}`;
+              case 'table':
+                return `| ${b.text} |`;
+              case 'paragraph':
+              default:
+                return b.text;
+            }
+          })
+          .join('\n\n');
+      } else {
+        mdText = extractedText;
+      }
+      const buffer = Buffer.from(mdText, 'utf-8');
       return {
         buffer,
         mimeType: 'text/markdown',

@@ -853,6 +853,8 @@ export function quantizeXiaolinWu(
   return { palette, paletteBuffer, indexedPixels, width, height };
 }
 
+export const quantizeWuOklab = quantizeXiaolinWu;
+
 // ============================================================================
 // 6. Void-and-Cluster Blue Noise Dithering Matrix
 // ============================================================================

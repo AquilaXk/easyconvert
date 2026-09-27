@@ -115,9 +115,9 @@ describe('Subpages & Routes Verification', () => {
       expect(security.isInfoPage).toBe(true);
       expect(security.infoType).toBe('security');
 
+      // forgot-password is completely purged as EasyConvert has zero auth/accounts
       const forgot = parseConverterSlug('forgot-password');
-      expect(forgot.isInfoPage).toBe(true);
-      expect(forgot.infoType).toBe('forgot-password');
+      expect(forgot.infoType).toBeUndefined();
     });
   });
 
