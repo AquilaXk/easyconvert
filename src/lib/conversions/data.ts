@@ -445,6 +445,9 @@ export function simpleXmlToJson(xml: string): Record<string, unknown> {
   const cleanXml = xml
     .replace(/<\?xml.*?\?>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script\b[^>]*\/>/gi, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
     .trim();
   if (!cleanXml) return {};
 

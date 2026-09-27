@@ -14,6 +14,7 @@ import {
   Point3D,
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
+import { sanitizeSvgString } from '../security/svg-sanitizer';
 
 export {
   evaluateCubicBezier,
@@ -156,12 +157,14 @@ export async function convertVectorCad(
     } catch {
       uncompressed = inputBuffer;
     }
-    return convertSvgSource(uncompressed, tgt, options, baseName);
+    const cleanSvg = sanitizeSvgString(uncompressed.toString('utf-8'));
+    return convertSvgSource(Buffer.from(cleanSvg, 'utf-8'), tgt, options, baseName);
   }
 
   // 3. SVG Source
   if (src === 'svg') {
-    return convertSvgSource(inputBuffer, tgt, options, baseName);
+    const cleanSvg = sanitizeSvgString(inputBuffer.toString('utf-8'));
+    return convertSvgSource(Buffer.from(cleanSvg, 'utf-8'), tgt, options, baseName);
   }
 
   // 4. DXF Source
@@ -311,7 +314,7 @@ async function convertSvgSource(
       break;
 
     case 'svg':
-      outputBuffer = inputBuffer;
+      outputBuffer = Buffer.from(sanitizeSvgString(inputBuffer.toString('utf-8')), 'utf-8');
       mimeType = 'image/svg+xml';
       break;
 
