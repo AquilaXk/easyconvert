@@ -42,7 +42,9 @@ export function useClientQueue(options?: UseClientQueueOptions) {
       const isOverSize = file.size > maxLimit;
 
       return {
-        id: Math.random().toString(36).substring(2, 9) + Date.now().toString(36),
+        id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `item-${Date.now()}-${file.name}`,
         file,
         name: file.name,
         size: file.size,

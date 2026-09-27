@@ -1101,8 +1101,8 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
               <div className="flex flex-wrap items-center justify-between gap-4 py-3.5 px-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm text-xs">
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-0.5 text-amber-400">
-                    {[...Array(5)].map((_, i) => (
-                      <Star key={i} className="size-3.5 fill-current" />
+                    {[1, 2, 3, 4, 5].map((starIdx) => (
+                      <Star key={`rating-star-${starIdx}`} className="size-3.5 fill-current" />
                     ))}
                   </div>
                   <span className="font-bold text-brand-950 dark:text-white">4.8 / 5.0</span>
