@@ -75,7 +75,7 @@ export function verifyJwt<T = SessionPayload>(
 
   try {
     const header = JSON.parse(base64UrlDecode(encodedHeader));
-    if (!header || typeof header !== 'object' || header.alg !== 'HS256') {
+    if (!header || typeof header !== 'object' || Array.isArray(header) || header.alg !== 'HS256') {
       return null;
     }
   } catch {

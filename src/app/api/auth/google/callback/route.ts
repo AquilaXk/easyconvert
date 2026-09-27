@@ -9,7 +9,6 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const code = searchParams.get('code');
   const state = searchParams.get('state');
-  const isMock = searchParams.get('mock') === 'true';
 
   const host = req.headers.get('host') || 'localhost:3000';
   const proto = req.headers.get('x-forwarded-proto') || 'http';

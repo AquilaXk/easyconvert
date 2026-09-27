@@ -45,8 +45,11 @@ export function getGoogleOAuthUrl(redirectUri: string, customState?: string): st
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const state = customState || generateOAuthState();
 
-  // If Google Client ID is missing, provide local mock sandbox callback
+  // If Google Client ID is missing, provide local mock sandbox callback in non-production
   if (!clientId) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('OAuth configuration error: GOOGLE_CLIENT_ID is not configured in production');
+    }
     const mockUrl = new URL(redirectUri);
     mockUrl.searchParams.set('code', `mock_code_${state}`);
     mockUrl.searchParams.set('state', state);
