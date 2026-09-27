@@ -38,6 +38,12 @@ export interface StoredObject {
 
 export type OciStoredObject = StoredObject;
 
+export interface PresignedUrlResult {
+  url: string;
+  expiresAt: number;
+  signature: string;
+}
+
 export interface IStorageBackend {
   readonly providerName: string;
   initiateMultipartUpload(filename: string, mimeType: string, totalSize: number): MultipartUploadInit;
@@ -51,6 +57,16 @@ export interface IStorageBackend {
   getObjectsCount(): number;
   sweepExpiredObjects?(now?: number): number;
   stopGc?(): void;
+  generatePresignedUploadUrl?(key: string, partNumber: number, uploadId: string, expiresInSeconds?: number): PresignedUrlResult;
+  generatePresignedDownloadUrl?(key: string, expiresInSeconds?: number): PresignedUrlResult;
+  verifyPresignedSignature?(
+    method: 'GET' | 'PUT',
+    key: string,
+    expiresAt: number,
+    signature: string,
+    uploadId?: string,
+    partNumber?: number
+  ): boolean;
 }
 
 /**
@@ -351,6 +367,61 @@ export class OciObjectStorageService implements IStorageBackend {
   getObjectsCount(): number {
     return new Set(this.objects.values()).size;
   }
+
+  /**
+   * Generates a signed Presigned Upload URL for direct client-to-storage multipart chunk PUT
+   */
+  generatePresignedUploadUrl(
+    key: string,
+    partNumber: number,
+    uploadId: string,
+    expiresInSeconds: number = 3600
+  ): PresignedUrlResult {
+    const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
+    const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
+    const secret = process.env.STORAGE_SIGNING_SECRET || 'easyconvert-secure-storage-secret';
+    const signature = crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
+    const endpoint = this.config.endpoint || 'https://storage.easyconvert.app';
+    const url = `${endpoint}/${key}?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&expires=${expiresAt}&signature=${signature}`;
+    return { url, expiresAt, signature };
+  }
+
+  /**
+   * Generates a signed Presigned Download URL for secure time-limited direct object retrieval
+   */
+  generatePresignedDownloadUrl(
+    key: string,
+    expiresInSeconds: number = 3600
+  ): PresignedUrlResult {
+    const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
+    const stringToSign = `GET\n${key}\n${expiresAt}`;
+    const secret = process.env.STORAGE_SIGNING_SECRET || 'easyconvert-secure-storage-secret';
+    const signature = crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
+    const endpoint = this.config.endpoint || 'https://storage.easyconvert.app';
+    const url = `${endpoint}/${key}?expires=${expiresAt}&signature=${signature}`;
+    return { url, expiresAt, signature };
+  }
+
+  /**
+   * Verifies authenticity of a signed presigned request
+   */
+  verifyPresignedSignature(
+    method: 'GET' | 'PUT',
+    key: string,
+    expiresAt: number,
+    signature: string,
+    uploadId?: string,
+    partNumber?: number
+  ): boolean {
+    if (Math.floor(Date.now() / 1000) > expiresAt) return false;
+    const stringToSign =
+      method === 'PUT'
+        ? `PUT\n${key}\n${uploadId || ''}\n${partNumber ?? ''}\n${expiresAt}`
+        : `GET\n${key}\n${expiresAt}`;
+    const secret = process.env.STORAGE_SIGNING_SECRET || 'easyconvert-secure-storage-secret';
+    const expectedSig = crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSig, 'hex'));
+  }
 }
 
 /**
@@ -409,6 +480,30 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
 
   getObjectsCount(): number {
     return this.backend.getObjectsCount();
+  }
+
+  generatePresignedUploadUrl(
+    key: string,
+    partNumber: number,
+    uploadId: string,
+    expiresInSeconds?: number
+  ): PresignedUrlResult {
+    return this.backend.generatePresignedUploadUrl(key, partNumber, uploadId, expiresInSeconds);
+  }
+
+  generatePresignedDownloadUrl(key: string, expiresInSeconds?: number): PresignedUrlResult {
+    return this.backend.generatePresignedDownloadUrl(key, expiresInSeconds);
+  }
+
+  verifyPresignedSignature(
+    method: 'GET' | 'PUT',
+    key: string,
+    expiresAt: number,
+    signature: string,
+    uploadId?: string,
+    partNumber?: number
+  ): boolean {
+    return this.backend.verifyPresignedSignature(method, key, expiresAt, signature, uploadId, partNumber);
   }
 }
 

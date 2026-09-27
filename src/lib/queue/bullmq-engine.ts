@@ -65,6 +65,16 @@ export class Job<T = any, R = any> {
   }
 }
 
+export interface DlqEntry<T = any> {
+  jobId: string;
+  name: string;
+  data: T;
+  failedReason: string;
+  attemptsMade: number;
+  timestamp: number;
+  stacktrace: string[];
+}
+
 export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   readonly name: string;
   readonly isDistributed: boolean;
@@ -82,6 +92,10 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   close(): Promise<void>;
   _popNextWaiting?(): Job<T, R> | undefined;
   _requeue?(job: Job<T, R>, delayMs?: number): void;
+  getDlqEntries?(): Promise<DlqEntry<T>[]>;
+  moveToDlq?(job: Job<T, R>, reason: string): Promise<void>;
+  purgeDlq?(): Promise<number>;
+  ping?(): Promise<{ ok: boolean; latencyMs: number }>;
 }
 
 export interface IQueueWorker<T = any, R = any> extends EventEmitter {
@@ -96,6 +110,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   private waitingIds: string[] = [];
   private delayedIds: string[] = [];
   private delayTimers = new Map<string, NodeJS.Timeout>();
+  private dlq: DlqEntry<T>[] = [];
 
   constructor(name: string) {
     super();
@@ -193,6 +208,34 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     return removed;
   }
 
+  async getDlqEntries(): Promise<DlqEntry<T>[]> {
+    return [...this.dlq];
+  }
+
+  async moveToDlq(job: Job<T, R>, reason: string): Promise<void> {
+    const entry: DlqEntry<T> = {
+      jobId: job.id,
+      name: job.name,
+      data: job.data,
+      failedReason: reason,
+      attemptsMade: job.attemptsMade,
+      timestamp: Date.now(),
+      stacktrace: [...job.stacktrace],
+    };
+    this.dlq.push(entry);
+    this.emit('dlq', entry);
+  }
+
+  async purgeDlq(): Promise<number> {
+    const count = this.dlq.length;
+    this.dlq = [];
+    return count;
+  }
+
+  async ping(): Promise<{ ok: boolean; latencyMs: number }> {
+    return { ok: true, latencyMs: 0 };
+  }
+
   async close(): Promise<void> {
     for (const timer of this.delayTimers.values()) {
       clearTimeout(timer);
@@ -207,6 +250,21 @@ export interface WorkerOptions {
 }
 
 export type Processor<T, R> = (job: Job<T, R>) => Promise<R>;
+
+export function calculateBackoffWithJitter(
+  attempt: number,
+  baseDelayMs: number = 1000,
+  maxDelayMs: number = 30000
+): number {
+  const exponential = baseDelayMs * Math.pow(2, Math.max(0, attempt - 1));
+  const capped = Math.min(exponential, maxDelayMs);
+  const minFloor = Math.max(10, Math.floor(baseDelayMs * 0.25));
+  if (capped <= minFloor) {
+    return capped;
+  }
+  const jitter = crypto.randomInt(minFloor, capped + 1);
+  return Math.min(capped, jitter);
+}
 
 export class Worker<T = any, R = any> extends EventEmitter implements IQueueWorker<T, R> {
   readonly name: string;
@@ -266,31 +324,38 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
 
       this.emit('completed', job, result);
     } catch (err: any) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      job.failedReason = errorMessage;
-      if (err instanceof Error && err.stack) {
-        job.stacktrace.push(err.stack);
-      }
-
-      const maxAttempts = job.opts.attempts || 1;
-      if (job.attemptsMade < maxAttempts) {
-        // Calculate backoff delay
-        const backoffCfg = job.opts.backoff || { type: 'fixed', delay: 1000 };
-        const delay =
-          backoffCfg.type === 'exponential'
-            ? backoffCfg.delay * Math.pow(2, job.attemptsMade - 1)
-            : backoffCfg.delay;
-
-        await job.log(`Job attempt ${job.attemptsMade} failed. Retrying in ${delay}ms...`);
-        if (this.queue._requeue) {
-          this.queue._requeue(job, delay);
-        }
-      } else {
-        job.state = 'failed';
-        job.finishedOn = Date.now();
-        this.emit('failed', job, err);
-      }
+      await this.handleJobFailure(job, err);
     }
+  }
+
+  private async handleJobFailure(job: Job<T, R>, err: any): Promise<void> {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    job.failedReason = errorMessage;
+    if (err instanceof Error && err.stack) {
+      job.stacktrace.push(err.stack);
+    }
+
+    const maxAttempts = job.opts.attempts || 1;
+    if (job.attemptsMade < maxAttempts) {
+      const backoffCfg = job.opts.backoff || { type: 'exponential', delay: 1000 };
+      const delay =
+        backoffCfg.type === 'exponential'
+          ? calculateBackoffWithJitter(job.attemptsMade, backoffCfg.delay)
+          : backoffCfg.delay;
+
+      await job.log(`Job attempt ${job.attemptsMade} failed. Retrying in ${delay}ms...`);
+      if (this.queue._requeue) {
+        this.queue._requeue(job, delay);
+      }
+      return;
+    }
+
+    job.state = 'failed';
+    job.finishedOn = Date.now();
+    if (this.queue.moveToDlq) {
+      await this.queue.moveToDlq(job, errorMessage);
+    }
+    this.emit('failed', job, err);
   }
 
   async close(): Promise<void> {
@@ -327,6 +392,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     this.memoryFallback.on('completed', (job, result) => this.emit('completed', job, result));
     this.memoryFallback.on('failed', (job, err) => this.emit('failed', job, err));
     this.memoryFallback.on('progress', (job, progress) => this.emit('progress', job, progress));
+    this.memoryFallback.on('dlq', (entry) => this.emit('dlq', entry));
 
     const redisHost = connectionOpts?.host || process.env.REDIS_HOST;
     const redisUrl = connectionOpts?.url || process.env.REDIS_URL;
@@ -365,6 +431,25 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback.clean(grace, limit, type);
   }
 
+  async getDlqEntries(): Promise<DlqEntry<T>[]> {
+    return this.memoryFallback.getDlqEntries ? this.memoryFallback.getDlqEntries() : [];
+  }
+
+  async moveToDlq(job: Job<T, R>, reason: string): Promise<void> {
+    if (this.memoryFallback.moveToDlq) {
+      await this.memoryFallback.moveToDlq(job, reason);
+    }
+  }
+
+  async purgeDlq(): Promise<number> {
+    return this.memoryFallback.purgeDlq ? this.memoryFallback.purgeDlq() : 0;
+  }
+
+  async ping(): Promise<{ ok: boolean; latencyMs: number }> {
+    const start = Date.now();
+    return { ok: true, latencyMs: Date.now() - start };
+  }
+
   async close(): Promise<void> {
     await this.memoryFallback.close();
     this.removeAllListeners();
@@ -395,4 +480,45 @@ export function createQueueEngine<T = any, R = any>(
   }
 
   return new Queue<T, R>(name);
+}
+
+export interface JobTelemetryEvent {
+  event: 'progress' | 'completed' | 'failed' | 'log';
+  data: any;
+}
+
+/**
+ * Subscribes to real-time job events for Server-Sent Events (SSE) telemetry.
+ * Returns an unsubscription function.
+ */
+export function subscribeToJobTelemetry(
+  queue: IQueueEngine,
+  jobId: string,
+  onEvent: (event: JobTelemetryEvent) => void
+): () => void {
+  const onProgress = (job: Job, progress: number) => {
+    if (job.id === jobId) {
+      onEvent({ event: 'progress', data: { jobId, progress, state: job.state } });
+    }
+  };
+  const onCompleted = (job: Job, result: any) => {
+    if (job.id === jobId) {
+      onEvent({ event: 'completed', data: { jobId, progress: 100, state: 'completed', result } });
+    }
+  };
+  const onFailed = (job: Job, err: any) => {
+    if (job.id === jobId) {
+      onEvent({ event: 'failed', data: { jobId, state: 'failed', error: job.failedReason } });
+    }
+  };
+
+  queue.on('progress', onProgress);
+  queue.on('completed', onCompleted);
+  queue.on('failed', onFailed);
+
+  return () => {
+    queue.off('progress', onProgress);
+    queue.off('completed', onCompleted);
+    queue.off('failed', onFailed);
+  };
 }
