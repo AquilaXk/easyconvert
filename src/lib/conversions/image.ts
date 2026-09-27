@@ -255,46 +255,87 @@ export async function convertImage(
     return convertImageToPdf(inputBuffer, options, baseName, src);
   }
 
-  // Handle RAW camera inputs by checking for embedded JPEG preview
+  // Handle RAW camera inputs by checking for embedded high-resolution JPEG preview
   let activeBuffer = inputBuffer;
-  if (['3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f'].includes(src) || src === 'raw') {
-    const jpgSig = Buffer.from([0xff, 0xd8, 0xff]);
-    const jpgIdx = activeBuffer.indexOf(jpgSig);
-    if (jpgIdx !== -1) {
-      activeBuffer = activeBuffer.subarray(jpgIdx);
+  const rawExtensions = [
+    'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'pef', 'orf', 'srw', 'kdc',
+    '3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f', 'raw'
+  ];
+  const isRawInput = rawExtensions.includes(src);
+
+  if (isRawInput) {
+    let largestJpg: Buffer | null = null;
+    let searchPos = 0;
+    while (searchPos < activeBuffer.length - 4) {
+      const startIdx = activeBuffer.indexOf(Buffer.from([0xff, 0xd8, 0xff]), searchPos);
+      if (startIdx === -1) break;
+      const endIdx = activeBuffer.indexOf(Buffer.from([0xff, 0xd9]), startIdx + 3);
+      if (endIdx !== -1) {
+        const candidate = activeBuffer.subarray(startIdx, endIdx + 2);
+        if (!largestJpg || candidate.length > largestJpg.length) {
+          largestJpg = candidate;
+        }
+        searchPos = endIdx + 2;
+      } else {
+        const candidate = activeBuffer.subarray(startIdx);
+        if (!largestJpg || candidate.length > largestJpg.length) {
+          largestJpg = candidate;
+        }
+        break;
+      }
+    }
+
+    if (largestJpg && largestJpg.length >= 64) {
+      activeBuffer = largestJpg;
     }
   }
 
   let pipeline: sharp.Sharp;
 
-  // Handle BMP input decoding
-  if (src === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
-    const decoded = decodeBmp(activeBuffer);
-    pipeline = sharp(decoded.raw, {
-      raw: { width: decoded.width, height: decoded.height, channels: 4 },
-    });
-  } else if (
-    src === 'ico' ||
-    (activeBuffer.length >= 4 &&
-      activeBuffer[0] === 0 &&
-      activeBuffer[1] === 0 &&
-      activeBuffer[2] === 1 &&
-      activeBuffer[3] === 0)
-  ) {
-    const payload = decodeIco(activeBuffer);
-    if (payload.subarray(0, 2).toString('ascii') === 'BM') {
-      const decoded = decodeBmp(payload);
+  try {
+    // Handle BMP input decoding
+    if (src === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
+      const decoded = decodeBmp(activeBuffer);
       pipeline = sharp(decoded.raw, {
         raw: { width: decoded.width, height: decoded.height, channels: 4 },
       });
-    } else {
+    } else if (
+      src === 'ico' ||
+      (activeBuffer.length >= 4 &&
+        activeBuffer[0] === 0 &&
+        activeBuffer[1] === 0 &&
+        activeBuffer[2] === 1 &&
+        activeBuffer[3] === 0)
+    ) {
+      const payload = decodeIco(activeBuffer);
+      if (payload.subarray(0, 2).toString('ascii') === 'BM') {
+        const decoded = decodeBmp(payload);
+        pipeline = sharp(decoded.raw, {
+          raw: { width: decoded.width, height: decoded.height, channels: 4 },
+        });
+      } else {
+        pipeline = sharp(payload);
+      }
+    } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
+      const payload = decodeIcns(activeBuffer);
       pipeline = sharp(payload);
+    } else {
+      pipeline = sharp(activeBuffer);
     }
-  } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
-    const payload = decodeIcns(activeBuffer);
-    pipeline = sharp(payload);
-  } else {
-    pipeline = sharp(activeBuffer);
+
+    if (isRawInput) {
+      await pipeline.metadata();
+    }
+
+    // Preserve ICC color profiles and EXIF metadata unless explicitly stripped
+    if (options.stripMetadata !== true) {
+      pipeline = pipeline.withMetadata();
+    }
+  } catch (err: unknown) {
+    if (isRawInput) {
+      throw new Error(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
+    }
+    throw err;
   }
 
   // Resize options
