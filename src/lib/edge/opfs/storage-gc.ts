@@ -184,3 +184,68 @@ export async function sweepOrphanedSessions(
     return { sweptCount: 0, remainingCount: 0, errors: [`Storage GC scan error: ${err.message}`] };
   }
 }
+
+/**
+ * Immediately and physically destroys an OPFS session directory.
+ * Fulfills Zero-Retention guarantee by eradicating all files and the directory handle.
+ */
+export async function destroySessionImmediately(sessionId: string, rootDir?: any): Promise<boolean> {
+  if (!sessionId) return false;
+  const sessionsDir = await openSessionsDirectory(rootDir);
+  if (!sessionsDir) return false;
+
+  try {
+    if (typeof sessionsDir.removeEntry === 'function') {
+      await sessionsDir.removeEntry(sessionId, { recursive: true });
+      return true;
+    }
+    return false;
+  } catch {
+    try {
+      const sessionDir = await sessionsDir.getDirectoryHandle(sessionId, { create: false });
+      for (const name of ['input.bin', 'output.bin', 'metadata.json']) {
+        try {
+          await sessionDir.removeEntry(name);
+        } catch {}
+      }
+      await sessionsDir.removeEntry(sessionId, { recursive: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Global lifecycle hook registry for zero-retention physical cleanup.
+ * Listens for browser unload/pagehide events to eradicate any remaining active session directories.
+ */
+export function registerZeroRetentionLifecycleHooks(
+  activeSessionIds: Set<string>,
+  rootDir?: any
+): () => void {
+  if (typeof window === 'undefined' && typeof self === 'undefined') {
+    return () => {};
+  }
+
+  const target = typeof window !== 'undefined' ? window : (self as any);
+  if (!target || typeof target.addEventListener !== 'function') {
+    return () => {};
+  }
+
+  const cleanupHandler = () => {
+    if (activeSessionIds.size === 0) return;
+    for (const sid of activeSessionIds) {
+      destroySessionImmediately(sid, rootDir).catch(() => {});
+    }
+    activeSessionIds.clear();
+  };
+
+  target.addEventListener('beforeunload', cleanupHandler);
+  target.addEventListener('pagehide', cleanupHandler);
+
+  return () => {
+    target.removeEventListener('beforeunload', cleanupHandler);
+    target.removeEventListener('pagehide', cleanupHandler);
+  };
+}
