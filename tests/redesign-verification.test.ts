@@ -217,4 +217,34 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(footerContent).toContain('grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8');
     expect(footerContent).toContain('easyconvert-theme-change');
   });
+
+  it('verifies Hero implements bespoke Conversion Console without AI-slop concentric radar rings', () => {
+    const heroPath = path.join(rootDir, 'src', 'components', 'Hero.tsx');
+    const heroContent = fs.readFileSync(heroPath, 'utf-8');
+
+    // Bespoke console structure
+    expect(heroContent).toContain('Conversion Console');
+    expect(heroContent).toContain('292 Standards Supported');
+    expect(heroContent).toContain('FROM');
+    expect(heroContent).toContain('INTO');
+    expect(heroContent).toContain('POPULAR:');
+    expect(heroContent).toContain('animate-card-flip');
+
+    // Concentric orbit radar rings removed
+    expect(heroContent).not.toContain('animate-orbit-slow');
+    expect(heroContent).not.toContain('animate-orbit-fast');
+  });
+
+  it('verifies design token alignment across Console, FormatSelector, and Features', () => {
+    const selectorPath = path.join(rootDir, 'src', 'components', 'FormatSelector.tsx');
+    const selectorContent = fs.readFileSync(selectorPath, 'utf-8');
+    expect(selectorContent).toContain('#14182B');
+    expect(selectorContent).toContain('#2B3556');
+
+    const featuresPath = path.join(rootDir, 'src', 'components', 'Features.tsx');
+    const featuresContent = fs.readFileSync(featuresPath, 'utf-8');
+    expect(featuresContent).toContain('dark:bg-[#151A2E]');
+    expect(featuresContent).toContain('dark:border-[#2B3556]');
+  });
 });
+

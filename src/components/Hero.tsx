@@ -14,6 +14,8 @@ import {
   Archive,
   BookOpen,
   FolderOpen,
+  Sparkles,
+  CheckCircle2,
 } from 'lucide-react';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import FormatSelector from './FormatSelector';
@@ -152,6 +154,39 @@ export default function Hero({
     }
   };
 
+  const getFormatCategoryName = (fmt: string) => {
+    const def = FORMAT_REGISTRY[fmt?.toLowerCase()];
+    if (!def) return 'File Format';
+    switch (def.category) {
+      case 'document':
+        return 'Document';
+      case 'image':
+        return 'Raster Image';
+      case 'audio':
+        return 'Audio Media';
+      case 'video':
+        return 'Video Media';
+      case 'archive':
+        return 'Archive Package';
+      case 'ebook':
+        return 'Digital E-Book';
+      case 'spreadsheet':
+        return 'Spreadsheet';
+      case 'presentation':
+        return 'Slide Deck';
+      case 'cad':
+        return 'CAD Drawing';
+      case 'vector':
+        return 'Vector Graphic';
+      case 'font':
+        return 'Vector Font';
+      case 'data':
+        return 'Structured Data';
+      default:
+        return def.name || 'Format';
+    }
+  };
+
   // Dynamic titles based on active source and target formats
   const getHeroTitle = () => {
     if (categoryTitle) return categoryTitle;
@@ -199,183 +234,263 @@ export default function Hero({
         id="main-file-input"
       />
 
-      {/* 1. DARK HERO SECTION */}
-      <section className={`group relative overflow-hidden bg-gradient-to-br from-neutral-900 via-neutral-800 to-neutral-900 text-white ${hasActiveQueue ? 'condensed pb-8 pt-20' : 'pb-44 pt-24'}`}>
-        {/* Signature brand lavender radial gradient */}
+      {/* 1. EASYCONVERT OBSIDIAN BRAND HERO SECTION */}
+      <section className={`group relative overflow-hidden bg-[#0B0E1B] text-white ${hasActiveQueue ? 'condensed pb-8 pt-16' : 'pb-36 pt-20 sm:pt-24'} border-b border-white/[0.06]`}>
+        {/* Signature brand luminous gradient backdrop */}
         <div
           aria-hidden="true"
-          className="absolute inset-0 bg-[radial-gradient(ellipse_70%_50%_at_70%_-10%,rgba(92,107,192,0.22),transparent)] pointer-events-none"
+          className="absolute inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_-15%,rgba(92,107,192,0.22),transparent_75%)] pointer-events-none"
         />
 
-        {/* Subtle grid pattern background */}
+        {/* Ambient spotlight for the console dock */}
         <div
           aria-hidden="true"
-          className="absolute inset-0 opacity-[0.05] pointer-events-none"
+          className="absolute inset-0 bg-[radial-gradient(circle_500px_at_80%_35%,rgba(142,156,230,0.1),transparent)] pointer-events-none"
+        />
+
+        {/* Precision blueprint micro-lattice */}
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 opacity-[0.06] pointer-events-none"
           style={{
-            backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3Cpattern id='g' width='60' height='60' patternUnits='userSpaceOnUse'%3E%3Cpath d='M 60 0 L 0 0 0 60' fill='none' stroke='white' stroke-width='0.5'/%3E%3C/pattern%3E%3C/defs%3E%3Crect width='100%25' height='100%25' fill='url(%23g)'/%3E%3C/svg%3E")`,
+            backgroundImage: `radial-gradient(rgba(255, 255, 255, 0.5) 1px, transparent 1px)`,
+            backgroundSize: '24px 24px',
           }}
         />
 
-        <div className="relative mx-auto max-w-7xl px-8 lg:py-8">
-          <div className="grid items-center gap-10 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
-            {/* Left Column: Heading and Subtitle */}
+        <div className="relative mx-auto max-w-7xl px-6 sm:px-8 lg:py-6">
+          <div className="grid items-center gap-10 lg:grid-cols-[1.1fr_1fr] lg:gap-14">
+            {/* Left Column: Heading, Subtitle & Value Proposition */}
             <div className="text-center lg:text-left">
-              <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white">
+              {/* Brand Kicker Badge */}
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-brand-500/15 border border-brand-400/30 text-brand-200 mb-4 shadow-sm">
+                <span className="size-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Client-Side Engine • 292 Formats • Zero Server Storage</span>
+              </div>
+
+              <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-white leading-[1.12]">
                 {getHeroTitle()}
               </h1>
-              <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-neutral-300 max-w-xl">
+              <p className="mt-4 text-base sm:text-lg sm:leading-relaxed text-neutral-300 max-w-xl">
                 {getHeroSubtitle()}
               </p>
+
+              {/* Value Proposition Micro-badges */}
+              <div className="mt-6 flex flex-wrap items-center justify-center lg:justify-start gap-x-5 gap-y-2 text-xs font-medium text-neutral-300">
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="size-3.5 text-brand-400 shrink-0" />
+                  <span>Zero queue latency</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="size-3.5 text-brand-400 shrink-0" />
+                  <span>Preserves layouts &amp; tables</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="size-3.5 text-brand-400 shrink-0" />
+                  <span>100% In-browser sandbox</span>
+                </span>
+              </div>
             </div>
 
-            {/* Right Column: Signature 2-Card Interactive Widget with Orbit Rings */}
-            <div className="relative flex justify-center lg:justify-end lg:pt-10">
-              <div className="relative flex w-full max-w-md items-center justify-center">
-                {/* Orbit rings */}
+            {/* Right Column: EasyConvert Signature Conversion Console Deck */}
+            <div className="relative flex justify-center lg:justify-end">
+              <div className="relative w-full max-w-lg lg:max-w-xl">
+                {/* Luminous aura behind console */}
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute size-[280px] sm:size-[320px] rounded-full border border-white/[0.05] animate-orbit-slow"
-                />
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute size-[200px] sm:size-[230px] rounded-full border border-white/[0.07] animate-orbit-fast"
-                />
-                {/* Lavender glow behind target */}
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute size-40 rounded-full bg-[#5C6BC0]/20 blur-3xl"
+                  className="pointer-events-none absolute -inset-1 rounded-3xl bg-gradient-to-r from-brand-700/20 via-brand-500/15 to-brand-700/20 blur-xl opacity-75"
                 />
 
-                {/* The Two Cards Widget */}
-                <div className="relative z-10 flex items-center gap-3 sm:gap-4">
-                  {/* Left Card: Source Format */}
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsSourceSelectorOpen(!isSourceSelectorOpen);
-                        setIsTargetSelectorOpen(false);
-                      }}
-                      className="group/card relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_12px_30px_rgba(0,0,0,0.45)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 active:translate-y-0"
-                      aria-label={`Input format: ${sourceFormat.toUpperCase()}. Click to change.`}
-                    >
-                      <div
-                        key={sourceFormat}
-                        className="animate-card-flip relative flex h-full w-full flex-col items-center justify-center gap-2 px-2"
-                      >
-                        <div className="transition-transform duration-300 group-hover/card:scale-110">
-                          {getFormatIcon(sourceFormat, false)}
-                        </div>
-                        <span className="max-w-full truncate text-xs sm:text-sm font-bold tracking-wider text-neutral-100 uppercase">
-                          {sourceFormat}
-                        </span>
-                      </div>
-                      <ChevronDown className="absolute right-2 bottom-1.5 size-2.5 text-neutral-500 transition-colors group-hover/card:text-neutral-300" />
-                    </button>
-
-                    {isSourceSelectorOpen && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setIsSourceSelectorOpen(false)} />
-                        <div className="absolute left-0 top-full mt-2 z-50">
-                          <FormatSelector
-                            selectedFormatId={sourceFormat}
-                            onSelect={(fmt) => {
-                              setSourceFormat(fmt);
-                              const def = FORMAT_REGISTRY[fmt];
-                              if (def && def.targetFormats.length > 0 && !def.targetFormats.includes(targetFormat)) {
-                                setTargetFormat(def.targetFormats[0]);
-                              }
-                            }}
-                            onClose={() => setIsSourceSelectorOpen(false)}
-                            title="Convert from format:"
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Center Circle: TO Indicator */}
-                  <div className="flex flex-col items-center gap-2">
-                    <div className="flex items-center">
-                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-neutral-700 to-[#5C6BC0]/70" aria-hidden="true">
-                        <div className="absolute inset-0 h-px animate-arrow-sweep bg-gradient-to-r from-transparent via-[#8E9CE6] to-transparent" />
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (targetFormat.toLowerCase() === 'any') return;
-                          const tmp = sourceFormat;
-                          setSourceFormat(targetFormat);
-                          setTargetFormat(tmp);
-                          targetFormatRef.current = tmp;
-                        }}
-                        disabled={targetFormat.toLowerCase() === 'any'}
-                        title={targetFormat.toLowerCase() === 'any' ? 'Select specific output format to swap' : 'Swap formats'}
-                        className={`group/op relative mx-1 flex size-9 sm:size-10 items-center justify-center rounded-full border backdrop-blur-sm transition duration-300 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 ${
-                          targetFormat.toLowerCase() === 'any'
-                            ? 'opacity-40 cursor-not-allowed border-neutral-700 bg-neutral-800/40 text-neutral-500'
-                            : 'cursor-pointer border-[#5C6BC0]/40 bg-[#5C6BC0]/15 hover:scale-110 hover:border-[#5C6BC0]/70 hover:bg-[#5C6BC0]/25 text-[#5C6BC0]'
-                        }`}
-                        aria-label="Swap formats"
-                      >
-                        <RefreshCw className={`size-4 transition-transform duration-300 text-indigo-300 animate-spin-pulse ${targetFormat.toLowerCase() !== 'any' ? 'group-hover/op:animate-none group-hover/op:rotate-180' : ''}`} />
-                        {targetFormat.toLowerCase() !== 'any' && (
-                          <div className="pointer-events-none absolute inset-0 animate-ping rounded-full ring-1 ring-[#5C6BC0]/20" aria-hidden="true" />
-                        )}
-                      </button>
-
-                      <div className="relative h-px w-5 sm:w-7 overflow-hidden bg-gradient-to-r from-[#5C6BC0]/70 to-neutral-700" aria-hidden="true">
-                        <div className="absolute inset-0 h-px animate-arrow-sweep bg-gradient-to-r from-transparent via-[#8E9CE6] to-transparent" />
-                      </div>
+                {/* Console Housing */}
+                <div className="relative rounded-3xl bg-[#14182B]/95 border border-[#2B3556] p-4 sm:p-5 shadow-[0_24px_50px_-12px_rgba(6,8,18,0.7),inset_0_1px_0_0_rgba(255,255,255,0.08)] backdrop-blur-xl">
+                  {/* Console Header Bar */}
+                  <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/[0.08] text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="size-2 rounded-full bg-brand-400 animate-pulse" />
+                      <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-brand-300">
+                        Conversion Console
+                      </span>
                     </div>
-                    <span className="text-[0.65rem] font-medium uppercase tracking-[0.25em] text-neutral-400">
-                      to
+                    <span className="text-[11px] text-neutral-400 font-mono">
+                      292 Standards Supported
                     </span>
                   </div>
 
-                  {/* Right Card: Target Format (Highlighted with Lavender Glow) */}
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsTargetSelectorOpen(!isTargetSelectorOpen);
-                        setIsSourceSelectorOpen(false);
-                      }}
-                      className="group/card relative flex h-[6.75rem] w-24 sm:h-[7.5rem] sm:w-28 cursor-pointer items-center justify-center rounded-[0.85rem] border border-[#5C6BC0]/40 bg-gradient-to-br from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_32px_rgba(92,107,192,0.25)] backdrop-blur-md transition duration-300 ease-out animate-output-pulse hover:-translate-y-0.5 hover:border-[#5C6BC0]/60 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_14px_38px_rgba(92,107,192,0.40)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/60 active:translate-y-0"
-                      aria-label={`Output format: ${targetFormat.toUpperCase()}. Click to change.`}
-                    >
-                      <div
-                        key={targetFormat}
-                        className="animate-card-flip relative flex h-full w-full flex-col items-center justify-center gap-2 px-2"
+                  {/* The Two Cards & Central Swap Bridge */}
+                  <div className="relative z-10 flex items-center justify-between gap-2 sm:gap-3 py-1">
+                    {/* Left Card: Source Format */}
+                    <div className="relative flex-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsSourceSelectorOpen(!isSourceSelectorOpen);
+                          setIsTargetSelectorOpen(false);
+                        }}
+                        className="group/card relative w-full flex flex-col justify-between p-3 sm:p-4 h-[7.75rem] sm:h-[8.5rem] rounded-2xl bg-white/[0.04] hover:bg-white/[0.07] border border-white/10 hover:border-brand-400/50 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_20px_rgba(0,0,0,0.3)] transition-all duration-200 text-left outline-none focus-visible:ring-2 focus-visible:ring-brand-700 active:scale-[0.98] cursor-pointer"
+                        aria-label={`Input format: ${sourceFormat.toUpperCase()}. Click to change.`}
                       >
-                        <div className="transition-transform duration-300 group-hover/card:scale-110">
-                          {getFormatIcon(targetFormat, true)}
+                        <div className="flex items-center justify-between w-full">
+                          <span className="text-[10px] font-mono font-bold tracking-widest uppercase text-neutral-400 group-hover/card:text-brand-300">
+                            FROM
+                          </span>
+                          <span className="p-1 rounded-md bg-white/[0.05] group-hover/card:bg-white/[0.1] text-neutral-400 group-hover/card:text-white transition-colors">
+                            <ChevronDown className="size-3" />
+                          </span>
                         </div>
-                        <span className="max-w-full truncate text-xs sm:text-sm font-bold tracking-wider text-indigo-100 uppercase">
-                          {targetFormat}
-                        </span>
-                      </div>
-                      <ChevronDown className="absolute right-2 bottom-1.5 size-2.5 text-indigo-300/60 transition-colors group-hover/card:text-indigo-200" />
-                    </button>
 
-                    {isTargetSelectorOpen && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setIsTargetSelectorOpen(false)} />
-                        <div className="absolute right-0 top-full mt-2 z-50">
-                          <FormatSelector
-                            availableFormats={getAvailableTargetFormats(sourceFormat)}
-                            selectedFormatId={targetFormat}
-                            onSelect={(fmt) => {
-                              setTargetFormat(fmt);
-                              targetFormatRef.current = fmt;
-                            }}
-                            onClose={() => setIsTargetSelectorOpen(false)}
-                            title={`Convert ${sourceFormat.toUpperCase()} to:`}
-                          />
+                        <div key={sourceFormat} className="animate-card-flip flex items-center gap-2.5 sm:gap-3">
+                          <div className="p-2 rounded-xl bg-white/[0.06] border border-white/10 group-hover/card:border-brand-400/40 text-brand-300 shrink-0 transition-transform duration-200 group-hover/card:scale-105">
+                            {getFormatIcon(sourceFormat, false)}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-base sm:text-lg font-black tracking-tight text-white uppercase truncate">
+                              {sourceFormat}
+                            </div>
+                            <div className="text-[10px] sm:text-[11px] font-medium text-neutral-400 truncate">
+                              {getFormatCategoryName(sourceFormat)}
+                            </div>
+                          </div>
                         </div>
-                      </>
-                    )}
+                      </button>
+
+                      {isSourceSelectorOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setIsSourceSelectorOpen(false)} />
+                          <div className="absolute left-1/2 -translate-x-1/2 sm:translate-x-0 sm:left-0 top-full mt-2 z-50">
+                            <FormatSelector
+                              selectedFormatId={sourceFormat}
+                              onSelect={(fmt) => {
+                                setSourceFormat(fmt);
+                                const def = FORMAT_REGISTRY[fmt];
+                                if (def && def.targetFormats.length > 0 && !def.targetFormats.includes(targetFormat)) {
+                                  setTargetFormat(def.targetFormats[0]);
+                                }
+                              }}
+                              onClose={() => setIsSourceSelectorOpen(false)}
+                              title="Convert from format:"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Center Flow Bridge & Swap */}
+                    <div className="flex flex-col items-center justify-center shrink-0 px-0.5 sm:px-1 gap-1.5">
+                      <div className="flex items-center">
+                        <div className="h-0.5 w-1.5 sm:w-2.5 bg-gradient-to-r from-transparent to-brand-500/50" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (targetFormat.toLowerCase() === 'any') return;
+                            const tmp = sourceFormat;
+                            setSourceFormat(targetFormat);
+                            setTargetFormat(tmp);
+                            targetFormatRef.current = tmp;
+                          }}
+                          disabled={targetFormat.toLowerCase() === 'any'}
+                          title={targetFormat.toLowerCase() === 'any' ? 'Select specific output format to swap' : 'Swap formats'}
+                          className={`group/swap relative flex size-9 sm:size-10 items-center justify-center rounded-full border transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 ${
+                            targetFormat.toLowerCase() === 'any'
+                              ? 'opacity-40 cursor-not-allowed border-neutral-700 bg-neutral-800/40 text-neutral-500'
+                              : 'cursor-pointer border-brand-400/40 bg-gradient-to-b from-[#6878D0] to-[#4A58A9] hover:from-[#7484DC] hover:to-[#5564B5] active:scale-95 text-white shadow-lg shadow-brand-700/30 hover:shadow-brand-700/50 hover:scale-105'
+                          }`}
+                          aria-label="Swap formats"
+                        >
+                          <RefreshCw className={`size-4 transition-transform duration-300 text-white ${targetFormat.toLowerCase() !== 'any' ? 'group-hover/swap:rotate-180' : ''}`} />
+                        </button>
+                        <div className="h-0.5 w-1.5 sm:w-2.5 bg-gradient-to-r from-brand-500/50 to-transparent" />
+                      </div>
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase tracking-wider text-brand-300 bg-brand-900/70 border border-brand-500/30">
+                        TO
+                      </span>
+                    </div>
+
+                    {/* Right Card: Target Format */}
+                    <div className="relative flex-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsTargetSelectorOpen(!isTargetSelectorOpen);
+                          setIsSourceSelectorOpen(false);
+                        }}
+                        className="group/card relative w-full flex flex-col justify-between p-3 sm:p-4 h-[7.75rem] sm:h-[8.5rem] rounded-2xl bg-gradient-to-br from-brand-600/15 to-brand-900/25 hover:from-brand-600/20 hover:to-brand-900/35 border border-brand-500/50 hover:border-brand-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_0_24px_rgba(92,107,192,0.22)] transition-all duration-200 text-left outline-none focus-visible:ring-2 focus-visible:ring-brand-700 active:scale-[0.98] cursor-pointer"
+                        aria-label={`Output format: ${targetFormat.toUpperCase()}. Click to change.`}
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <span className="text-[10px] font-mono font-bold tracking-widest uppercase text-brand-300">
+                            INTO
+                          </span>
+                          <span className="p-1 rounded-md bg-brand-500/20 group-hover/card:bg-brand-500/30 text-brand-200 group-hover/card:text-white transition-colors">
+                            <ChevronDown className="size-3" />
+                          </span>
+                        </div>
+
+                        <div key={targetFormat} className="animate-card-flip flex items-center gap-2.5 sm:gap-3">
+                          <div className="p-2 rounded-xl bg-brand-500/20 border border-brand-400/40 text-brand-200 shrink-0 transition-transform duration-200 group-hover/card:scale-105">
+                            {getFormatIcon(targetFormat, true)}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-base sm:text-lg font-black tracking-tight text-brand-100 uppercase truncate">
+                              {targetFormat}
+                            </div>
+                            <div className="text-[10px] sm:text-[11px] font-medium text-brand-300/80 truncate">
+                              {getFormatCategoryName(targetFormat)}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+
+                      {isTargetSelectorOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setIsTargetSelectorOpen(false)} />
+                          <div className="absolute left-1/2 -translate-x-1/2 sm:translate-x-0 sm:left-auto sm:right-0 top-full mt-2 z-50">
+                            <FormatSelector
+                              availableFormats={getAvailableTargetFormats(sourceFormat)}
+                              selectedFormatId={targetFormat}
+                              onSelect={(fmt) => {
+                                setTargetFormat(fmt);
+                                targetFormatRef.current = fmt;
+                              }}
+                              onClose={() => setIsTargetSelectorOpen(false)}
+                              title={`Convert ${sourceFormat.toUpperCase()} to:`}
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Popular Presets Workflows */}
+                  <div className="mt-4 pt-3.5 border-t border-white/[0.08]">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider uppercase text-neutral-400 mb-2">
+                      <Sparkles className="size-3 text-brand-400 shrink-0" />
+                      <span>POPULAR:</span>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 sm:gap-2">
+                      {[
+                        { label: 'PDF to Word', src: 'pdf', tgt: 'docx' },
+                        { label: 'Word to PDF', src: 'docx', tgt: 'pdf' },
+                        { label: 'Image to WebP', src: 'png', tgt: 'webp' },
+                        { label: 'Video to MP3', src: 'mp4', tgt: 'mp3' },
+                        { label: 'HEIC to JPG', src: 'heic', tgt: 'jpg' },
+                        { label: 'EPUB to PDF', src: 'epub', tgt: 'pdf' },
+                      ].map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => {
+                            setSourceFormat(preset.src);
+                            setTargetFormat(preset.tgt);
+                            targetFormatRef.current = preset.tgt;
+                            fileInputRef.current?.click();
+                          }}
+                          className="flex items-center justify-between px-2.5 py-1.5 text-xs font-semibold rounded-xl bg-white/[0.04] hover:bg-brand-700/25 text-neutral-300 hover:text-white border border-white/[0.08] hover:border-brand-500/50 transition-all cursor-pointer shadow-sm group/btn text-left"
+                        >
+                          <span className="truncate">{preset.label}</span>
+                          <span className="text-[10px] text-neutral-500 group-hover/btn:text-brand-300 ml-1">→</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -386,50 +501,21 @@ export default function Hero({
 
       {/* 2. FLOATING DROPZONE CARD */}
       {!hasActiveQueue && (
-        <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-col px-4 pb-6 sm:px-6 -mt-32">
-          {/* Quick Preset Pills */}
-          <div className="flex items-center justify-center flex-wrap gap-2 mb-5">
-            <span className="text-xs font-semibold text-neutral-300 dark:text-neutral-400 uppercase tracking-wider mr-1">
-              Popular:
-            </span>
-            {[
-              { label: 'PDF to Word', src: 'pdf', tgt: 'docx' },
-              { label: 'Word to PDF', src: 'docx', tgt: 'pdf' },
-              { label: 'Image to WebP', src: 'png', tgt: 'webp' },
-              { label: 'Video to MP3', src: 'mp4', tgt: 'mp3' },
-              { label: 'HEIC to JPG', src: 'heic', tgt: 'jpg' },
-              { label: 'EPUB to PDF', src: 'epub', tgt: 'pdf' },
-            ].map((preset) => (
-              <button
-                key={preset.label}
-                type="button"
-                onClick={() => {
-                  setSourceFormat(preset.src);
-                  setTargetFormat(preset.tgt);
-                  targetFormatRef.current = preset.tgt;
-                  fileInputRef.current?.click();
-                }}
-                className="px-3 py-1 text-xs font-medium rounded-full bg-neutral-900/80 hover:bg-neutral-800 text-neutral-200 border border-neutral-700 hover:border-[#5C6BC0] hover:text-white transition-all cursor-pointer shadow-sm"
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
-
+        <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-col px-4 pb-6 sm:px-6 -mt-24">
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            className={`group/dropzone relative mx-auto mb-10 w-full max-w-2xl overflow-visible rounded-3xl border bg-white px-6 py-9 text-center shadow-xl ring-1 transition-all duration-300 ease-out sm:px-10 sm:py-11 dark:bg-[#1a1c20] ${
+            className={`group/dropzone relative mx-auto mb-10 w-full max-w-3xl overflow-visible rounded-3xl border bg-white px-6 py-9 text-center shadow-xl ring-1 transition-all duration-300 ease-out sm:px-10 sm:py-11 dark:bg-[#151A2E] ${
               isDragOver
-                ? 'border-[#5C6BC0] border-2 border-dashed ring-[#5C6BC0]/30 scale-[1.01] bg-[#5C6BC0]/5'
-                : 'border-neutral-200/80 ring-black/[0.04] shadow-neutral-950/10 hover:border-neutral-300 hover:shadow-neutral-950/15 dark:border-white/10 dark:ring-white/[0.06] dark:shadow-black/40 dark:hover:border-white/20 dark:hover:shadow-black/50'
+                ? 'border-brand-700 border-2 border-dashed ring-4 ring-brand-700/20 scale-[1.01] bg-brand-50/50 dark:bg-brand-950/20'
+                : 'border-neutral-200/90 ring-black/[0.03] shadow-brand-950/5 hover:border-brand-300 hover:shadow-brand-950/10 dark:border-[#283252] dark:ring-white/[0.04] dark:shadow-black/50 dark:hover:border-brand-500/40'
             }`}
           >
             {/* Subtle lavender background ambient */}
             <div
               aria-hidden="true"
-              className="opacity-60 group-hover/dropzone:opacity-90 pointer-events-none absolute inset-0 rounded-3xl bg-[radial-gradient(ellipse_60%_60%_at_50%_45%,rgba(92,107,192,0.1),transparent_70%)] transition-opacity duration-300"
+              className="opacity-50 group-hover/dropzone:opacity-90 pointer-events-none absolute inset-0 rounded-3xl bg-[radial-gradient(ellipse_60%_60%_at_50%_45%,rgba(92,107,192,0.1),transparent_70%)] transition-opacity duration-300"
             />
             <div
               aria-hidden="true"
@@ -442,7 +528,7 @@ export default function Hero({
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 aria-label="Select files to convert"
-                className="group/icon relative inline-flex items-center justify-center p-3.5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-md shadow-brand-700/10 hover:shadow-lg hover:shadow-brand-700/20 transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-700/50 cursor-pointer"
+                className="group/icon relative inline-flex items-center justify-center p-4 rounded-2xl bg-brand-50/80 dark:bg-[#1E2540] border border-brand-200/80 dark:border-brand-600/30 shadow-md shadow-brand-700/10 hover:shadow-lg hover:shadow-brand-700/20 transition-all duration-300 group-hover/dropzone:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 cursor-pointer"
               >
                 <BrandIcon size={44} />
               </button>
@@ -487,14 +573,14 @@ export default function Hero({
                         className="fixed inset-0 z-40"
                         onClick={() => setIsDropdownOpen(false)}
                       />
-                      <div className="absolute top-full right-0 mt-2 w-56 bg-[#212529] rounded-xl shadow-2xl border border-neutral-700/80 p-1.5 z-50 animate-in fade-in duration-150 text-left">
+                      <div className="absolute top-full right-0 mt-2 w-56 bg-[#161B2E] rounded-2xl shadow-2xl border border-[#283252] p-1.5 z-50 animate-in fade-in duration-150 text-left">
                         <button
                           type="button"
                           onClick={() => {
                             setIsDropdownOpen(false);
                             fileInputRef.current?.click();
                           }}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-neutral-800/60 rounded-lg transition-colors"
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-brand-700/20 rounded-xl transition-colors"
                         >
                           <HardDrive className="w-4 h-4 text-neutral-400" />
                           <span>From my computer</span>
@@ -506,7 +592,7 @@ export default function Hero({
                             setIsDropdownOpen(false);
                             setIsUrlModalOpen(true);
                           }}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-neutral-800/60 rounded-lg transition-colors"
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-brand-700/20 rounded-xl transition-colors"
                         >
                           <Globe className="w-4 h-4 text-neutral-400" />
                           <span>By URL</span>
@@ -518,7 +604,7 @@ export default function Hero({
                             setIsDropdownOpen(false);
                             fileInputRef.current?.click();
                           }}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-neutral-800/60 rounded-lg transition-colors"
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-brand-700/20 rounded-xl transition-colors"
                         >
                           <FolderOpen className="w-4 h-4 text-neutral-400" />
                           <span>From Google Drive</span>
@@ -530,7 +616,7 @@ export default function Hero({
                             setIsDropdownOpen(false);
                             fileInputRef.current?.click();
                           }}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-neutral-800/60 rounded-lg transition-colors"
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-brand-700/20 rounded-xl transition-colors"
                         >
                           <Archive className="w-4 h-4 text-neutral-400" />
                           <span>From Dropbox</span>
@@ -542,7 +628,7 @@ export default function Hero({
                             setIsDropdownOpen(false);
                             fileInputRef.current?.click();
                           }}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-neutral-800/60 rounded-lg transition-colors"
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-neutral-300 hover:text-white hover:bg-brand-700/20 rounded-xl transition-colors"
                         >
                           <FolderOpen className="w-4 h-4 text-neutral-400" />
                           <span>From OneDrive</span>
@@ -554,17 +640,17 @@ export default function Hero({
               </div>
 
               {/* Trust & Spec Badges */}
-              <div className="flex items-center justify-center flex-wrap gap-x-6 gap-y-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 pt-1">
+              <div className="flex items-center justify-center flex-wrap gap-x-6 gap-y-2 text-xs font-semibold text-neutral-500 dark:text-neutral-400 pt-1">
                 <span className="flex items-center gap-1.5">
-                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
                   100% Free &amp; Unlimited
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="size-1.5 rounded-full bg-[#5C6BC0]" />
+                  <span className="size-2 rounded-full bg-brand-700" />
                   Max 1 GB File Size
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  <span className="size-2 rounded-full bg-emerald-500" />
                   Zero Cloud Retention
                 </span>
               </div>

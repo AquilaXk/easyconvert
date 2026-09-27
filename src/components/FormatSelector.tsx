@@ -94,26 +94,26 @@ export default function FormatSelector({
     <div
       ref={popoverRef}
       onClick={(e) => e.stopPropagation()}
-      className="w-[420px] max-w-[95vw] bg-[#18191d] border border-neutral-800 rounded-lg shadow-2xl overflow-hidden flex flex-col text-white animate-in zoom-in-95 duration-150 text-left select-none"
+      className="w-[420px] max-w-[95vw] bg-[#14182B] border border-[#2B3556] rounded-2xl shadow-2xl overflow-hidden flex flex-col text-white animate-in zoom-in-95 duration-150 text-left select-none ring-1 ring-white/10"
     >
-      {/* Top: Search Format Input matching live_cc_format_popover.png */}
-      <div className="flex items-center px-3 py-2 border-b border-neutral-800 bg-[#18191d]">
-        <Search className="w-4 h-4 text-neutral-500 shrink-0 mr-2" />
+      {/* Top: Search Format Input */}
+      <div className="flex items-center px-3.5 py-2.5 border-b border-[#252D48] bg-[#111424]">
+        <Search className="w-4 h-4 text-brand-400 shrink-0 mr-2" />
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search Format"
           autoFocus
-          className="bg-transparent text-sm text-white placeholder-neutral-500 outline-none w-full"
+          className="bg-transparent text-sm text-white placeholder-neutral-400 outline-none w-full"
         />
       </div>
 
       {/* Two columns body */}
       <div className="flex h-72">
-        {/* Left column (width ~140px, border-r border-neutral-800 py-1): Category list */}
+        {/* Left column: Category list */}
         {!search && (
-          <div className="w-[140px] border-r border-neutral-800 py-1 overflow-y-auto shrink-0">
+          <div className="w-[130px] border-r border-[#252D48] py-1.5 overflow-y-auto shrink-0 bg-[#0E1120]">
             {categories.map((cat) => {
               const isActive = cat.toLowerCase() === activeCategory.toLowerCase();
               return (
@@ -122,22 +122,22 @@ export default function FormatSelector({
                   type="button"
                   onClick={() => setActiveCategory(cat)}
                   onMouseEnter={() => setActiveCategory(cat)}
-                  className={`flex items-center justify-between w-full px-3 py-1.5 text-xs text-left transition-colors ${
+                  className={`flex items-center justify-between w-full px-3 py-2 text-xs text-left transition-colors cursor-pointer ${
                     isActive
-                      ? 'bg-neutral-800 text-white font-medium'
-                      : 'text-neutral-300 hover:bg-neutral-800/50 hover:text-white'
+                      ? 'bg-brand-700/20 text-brand-200 font-semibold border-l-2 border-brand-500'
+                      : 'text-neutral-300 hover:bg-white/[0.04] hover:text-white'
                   }`}
                 >
-                  <span>{formatCategoryName(cat)}</span>
-                  {isActive && <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />}
+                  <span className="truncate">{formatCategoryName(cat)}</span>
+                  {isActive && <ChevronRight className="w-3.5 h-3.5 text-brand-400 shrink-0" />}
                 </button>
               );
             })}
           </div>
         )}
 
-        {/* Right column (padding p-3, grid grid-cols-3 gap-2): Format badges */}
-        <div className="flex-1 p-3 overflow-y-auto">
+        {/* Right column: Format badges */}
+        <div className="flex-1 p-3 overflow-y-auto bg-[#14182B]">
           {displayedFormats.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-neutral-400 text-xs text-center py-8">
               No formats matching &quot;{search}&quot;
@@ -154,10 +154,10 @@ export default function FormatSelector({
                       onSelect(fmt.id);
                       onClose();
                     }}
-                    className={`px-3 py-1.5 text-xs font-mono font-semibold rounded text-center border transition-all ${
+                    className={`px-3 py-2 text-xs font-mono font-semibold rounded-xl text-center border transition-all cursor-pointer ${
                       isSelected
-                        ? 'bg-[#5C6BC0] border-[#5C6BC0] text-white shadow-md'
-                        : 'bg-[#212529] hover:bg-neutral-700 text-white border-neutral-700/60'
+                        ? 'bg-brand-700 border-brand-500 text-white shadow-md shadow-brand-700/30'
+                        : 'bg-[#1A2035] hover:bg-brand-700/20 text-neutral-200 hover:text-white border border-[#2B3556] hover:border-brand-500/40'
                     }`}
                   >
                     {fmt.extension.toUpperCase()}
