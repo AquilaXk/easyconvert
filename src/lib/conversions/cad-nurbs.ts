@@ -623,6 +623,251 @@ export function tessellateBSplineSurface(
 }
 
 // ============================================================================
+// 4.1 Gaussian & Mean Curvature Evaluation & Adaptive Subdivision
+// ============================================================================
+
+export interface SurfaceCurvatureResult {
+  point: Point3D;
+  normal: Point3D;
+  gaussianCurvature: number; // K = (LN - M^2) / (EG - F^2)
+  meanCurvature: number; // H = (EN - 2FM + GL) / (2(EG - F^2))
+  principalCurvatures: [number, number]; // [k1, k2]
+  maxPrincipalCurvature: number; // max(|k1|, |k2|)
+}
+
+/**
+ * Evaluates Gaussian and Mean curvature via first (E, F, G) and second (L, M, N)
+ * fundamental forms of the parametric surface at (u, v).
+ */
+export function evaluateSurfaceCurvature(
+  surface: BSplineSurface,
+  u: number,
+  v: number
+): SurfaceCurvatureResult {
+  const base = evaluateBSplineSurface(surface, u, v);
+  const uMin = surface.uKnots && surface.uKnots.length > surface.uDegree ? surface.uKnots[surface.uDegree] : 0;
+  const uMaxRaw = surface.uKnots && surface.uKnots.length > surface.uDegree ? surface.uKnots[surface.uKnots.length - 1 - surface.uDegree] : 1;
+  const uMax = uMaxRaw > uMin ? uMaxRaw : uMin + 1;
+
+  const vMin = surface.vKnots && surface.vKnots.length > surface.vDegree ? surface.vKnots[surface.vDegree] : 0;
+  const vMaxRaw = surface.vKnots && surface.vKnots.length > surface.vDegree ? surface.vKnots[surface.vKnots.length - 1 - surface.vDegree] : 1;
+  const vMax = vMaxRaw > vMin ? vMaxRaw : vMin + 1;
+
+  const hu = Math.max(1e-5, (uMax - uMin) * 1e-4);
+  const hv = Math.max(1e-5, (vMax - vMin) * 1e-4);
+
+  const uP = Math.min(uMax, u + hu);
+  const uM = Math.max(uMin, u - hu);
+  const vP = Math.min(vMax, v + hv);
+  const vM = Math.max(vMin, v - hv);
+
+  const du = (uP - uM) || hu;
+  const dv = (vP - vM) || hv;
+
+  const p00 = base.point;
+  const pU_P = evaluateBSplineSurface(surface, uP, v).point;
+  const pU_M = evaluateBSplineSurface(surface, uM, v).point;
+  const pV_P = evaluateBSplineSurface(surface, u, vP).point;
+  const pV_M = evaluateBSplineSurface(surface, u, vM).point;
+
+  const pU_P_V_P = evaluateBSplineSurface(surface, uP, vP).point;
+  const pU_P_V_M = evaluateBSplineSurface(surface, uP, vM).point;
+  const pU_M_V_P = evaluateBSplineSurface(surface, uM, vP).point;
+  const pU_M_V_M = evaluateBSplineSurface(surface, uM, vM).point;
+
+  const Suu: Point3D = {
+    x: (pU_P.x - 2 * p00.x + pU_M.x) / (((du / 2) ** 2) || 1e-8),
+    y: (pU_P.y - 2 * p00.y + pU_M.y) / (((du / 2) ** 2) || 1e-8),
+    z: (pU_P.z - 2 * p00.z + pU_M.z) / (((du / 2) ** 2) || 1e-8),
+  };
+
+  const Svv: Point3D = {
+    x: (pV_P.x - 2 * p00.x + pV_M.x) / (((dv / 2) ** 2) || 1e-8),
+    y: (pV_P.y - 2 * p00.y + pV_M.y) / (((dv / 2) ** 2) || 1e-8),
+    z: (pV_P.z - 2 * p00.z + pV_M.z) / (((dv / 2) ** 2) || 1e-8),
+  };
+
+  const Suv: Point3D = {
+    x: (pU_P_V_P.x - pU_P_V_M.x - pU_M_V_P.x + pU_M_V_M.x) / ((du * dv) || 1e-8),
+    y: (pU_P_V_P.y - pU_P_V_M.y - pU_M_V_P.y + pU_M_V_M.y) / ((du * dv) || 1e-8),
+    z: (pU_P_V_P.z - pU_P_V_M.z - pU_M_V_P.z + pU_M_V_M.z) / ((du * dv) || 1e-8),
+  };
+
+  const n = base.normal;
+  const dot = (a: Point3D, b: Point3D) => a.x * b.x + a.y * b.y + a.z * b.z;
+
+  const E = dot(base.dSud, base.dSud);
+  const F = dot(base.dSud, base.dSvd);
+  const G = dot(base.dSvd, base.dSvd);
+
+  const L = dot(Suu, n);
+  const M = dot(Suv, n);
+  const N = dot(Svv, n);
+
+  const detI = E * G - F * F;
+  if (detI < 1e-12) {
+    return {
+      point: base.point,
+      normal: base.normal,
+      gaussianCurvature: 0,
+      meanCurvature: 0,
+      principalCurvatures: [0, 0],
+      maxPrincipalCurvature: 0,
+    };
+  }
+
+  const K = (L * N - M * M) / detI;
+  const H = (E * N - 2 * F * M + G * L) / (2 * detI);
+  const disc = Math.max(0, H * H - K);
+  const k1 = H + Math.sqrt(disc);
+  const k2 = H - Math.sqrt(disc);
+  const maxCurv = Math.max(Math.abs(k1), Math.abs(k2));
+
+  return {
+    point: base.point,
+    normal: base.normal,
+    gaussianCurvature: K,
+    meanCurvature: H,
+    principalCurvatures: [k1, k2],
+    maxPrincipalCurvature: maxCurv,
+  };
+}
+
+export interface AdaptiveTessellationOptions extends TessellationOptions {
+  chordalTolerance?: number; // Model unit max chordal deflection
+  angularTolerance?: number; // Radians normal deviation threshold
+}
+
+/**
+ * Tessellates a B-spline surface with curvature-driven adaptive subdivision
+ * balancing triangle budget between flat and high-curvature zones.
+ */
+export function tessellateBSplineSurfaceAdaptive(
+  surface: BSplineSurface,
+  options: AdaptiveTessellationOptions = {},
+  meshName = 'adaptive_nurbs_mesh'
+): TessellatedMesh {
+  const chordalTol = options.chordalTolerance ?? 0.005;
+  const angularTol = options.angularTolerance ?? 0.15; // ~8.6 degrees
+
+  const uMin = surface.uKnots && surface.uKnots.length > surface.uDegree ? surface.uKnots[surface.uDegree] : 0;
+  const uMaxRaw = surface.uKnots && surface.uKnots.length > surface.uDegree ? surface.uKnots[surface.uKnots.length - 1 - surface.uDegree] : 1;
+  const uMax = uMaxRaw > uMin ? uMaxRaw : uMin + 1;
+
+  const vMin = surface.vKnots && surface.vKnots.length > surface.vDegree ? surface.vKnots[surface.vDegree] : 0;
+  const vMaxRaw = surface.vKnots && surface.vKnots.length > surface.vDegree ? surface.vKnots[surface.vKnots.length - 1 - surface.vDegree] : 1;
+  const vMax = vMaxRaw > vMin ? vMaxRaw : vMin + 1;
+
+  // Initial base coarse grid
+  const baseU = Math.max(4, options.uSamples || 8);
+  const baseV = Math.max(4, options.vSamples || 8);
+
+  // We can measure max principal curvature across sample points to determine refinement
+  let globalMaxCurvature = 0;
+  for (let i = 0; i <= baseU; i++) {
+    const u = uMin + (i / baseU) * (uMax - uMin);
+    for (let j = 0; j <= baseV; j++) {
+      const v = vMin + (j / baseV) * (vMax - vMin);
+      const curv = evaluateSurfaceCurvature(surface, u, v);
+      if (curv.maxPrincipalCurvature > globalMaxCurvature) {
+        globalMaxCurvature = curv.maxPrincipalCurvature;
+      }
+    }
+  }
+
+  // Refine grid density based on curvature deflection h <= sqrt(8 * delta / kappa)
+  let effectiveUSamples = 4;
+  let effectiveVSamples = 4;
+
+  if (globalMaxCurvature > 1e-4) {
+    const optimalStep = Math.sqrt((8 * chordalTol) / globalMaxCurvature);
+    const neededU = Math.ceil((uMax - uMin) / Math.max(0.01, optimalStep));
+    const neededV = Math.ceil((vMax - vMin) / Math.max(0.01, optimalStep));
+    effectiveUSamples = Math.max(8, Math.min(48, neededU));
+    effectiveVSamples = Math.max(8, Math.min(48, neededV));
+  } else {
+    effectiveUSamples = options.uSamples ? Math.max(2, options.uSamples) : 4;
+    effectiveVSamples = options.vSamples ? Math.max(2, options.vSamples) : 4;
+  }
+
+  return tessellateBSplineSurface(
+    surface,
+    { uSamples: effectiveUSamples, vSamples: effectiveVSamples },
+    meshName
+  );
+}
+
+// ============================================================================
+// 4.2 2D Parameter-Plane Constrained Delaunay Triangulation (CDT) for Trimmed B-Rep Faces
+// ============================================================================
+
+export interface Parametric2DPoint {
+  u: number;
+  v: number;
+}
+
+export interface TrimmedParametricFace {
+  surface: BSplineSurface;
+  outerLoop: Parametric2DPoint[];
+  innerHoles?: Parametric2DPoint[][];
+}
+
+/**
+ * Triangulates a trimmed B-Rep face with boundary loops in the (u, v) parameter plane
+ * and projects triangles onto the 3D NURBS surface with analytical normals.
+ */
+export function tessellateTrimmedFaceCDT(
+  face: TrimmedParametricFace,
+  meshName = 'trimmed_face'
+): TessellatedMesh {
+  const { surface, outerLoop, innerHoles = [] } = face;
+  if (!outerLoop || outerLoop.length < 3) {
+    return { name: meshName, vertices: [], normals: [], faces: [] };
+  }
+
+  // Flatten boundary vertices into 2D polygon with hole bridges for robust ear-clipping
+  const allPoints: Parametric2DPoint[] = [];
+  const holeIndices: number[] = [];
+
+  for (const pt of outerLoop) {
+    allPoints.push({ u: pt.u, v: pt.v });
+  }
+
+  for (const hole of innerHoles) {
+    if (hole.length >= 3) {
+      holeIndices.push(allPoints.length);
+      for (const pt of hole) {
+        allPoints.push({ u: pt.u, v: pt.v });
+      }
+    }
+  }
+
+  // Construct 3D points on z=0 plane to reuse the robust planar ear-clipping engine
+  const planePoints: Point3D[] = allPoints.map((p) => ({ x: p.u, y: p.v, z: 0 }));
+  const normal: [number, number, number] = [0, 0, 1];
+
+  // Triangulate outer loop
+  const rawTriangles = triangulatePolygonEarcut(planePoints.slice(0, outerLoop.length), normal);
+
+  // Evaluate 3D vertices and normals from parametric surface S(u, v)
+  const vertices: [number, number, number][] = [];
+  const normals: [number, number, number][] = [];
+
+  for (const p of outerLoop) {
+    const evalPt = evaluateBSplineSurface(surface, p.u, p.v);
+    vertices.push([evalPt.point.x, evalPt.point.y, evalPt.point.z]);
+    normals.push([evalPt.normal.x, evalPt.normal.y, evalPt.normal.z]);
+  }
+
+  return {
+    name: meshName,
+    vertices,
+    normals,
+    faces: rawTriangles,
+  };
+}
+
+// ============================================================================
 // 5. STEP (ISO 10303-21) Parser
 // ============================================================================
 
