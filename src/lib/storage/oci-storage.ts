@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { MultipartUploadInit, UploadedPart, MultipartUploadComplete } from '../types';
+import { secureShredBuffer } from '../security/memory-shredder';
 
 export interface OciStorageConfig {
   namespace: string;
@@ -94,11 +95,7 @@ export class OciObjectStorageService implements IStorageBackend {
    */
   private shredBuffer(buf?: Buffer): void {
     if (!buf) return;
-    try {
-      buf.fill(0);
-    } catch {
-      // Ignore if buffer is frozen or detached
-    }
+    secureShredBuffer(buf, 2);
   }
 
   /**
