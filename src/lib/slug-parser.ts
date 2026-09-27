@@ -1,3 +1,5 @@
+import { FORMAT_REGISTRY } from './registry';
+
 export interface ParsedSlug {
   isInfoPage: boolean;
   infoType?: 'terms' | 'privacy' | 'contact' | 'about' | 'security' | 'forgot-password' | 'status' | 'unit';
@@ -131,7 +133,7 @@ export function parseConverterSlug(slug: string): ParsedSlug {
         sourceFormat: rawSrc,
         targetFormat: rawTgt,
         pageTitle: `${rawSrc.toUpperCase()} to ${rawTgt.toUpperCase()} Unit Converter`,
-        pageDescription: `Convert ${srcLabel} to ${tgtLabel} instantly with client-side precision.`,
+        pageDescription: `Convert ${srcLabel} to ${tgtLabel} in real time with instant calculation precision.`,
       };
     }
 
@@ -153,12 +155,34 @@ export function parseConverterSlug(slug: string): ParsedSlug {
     const srcDisplay = formatTitleName(rawSrc, src);
     const tgtDisplay = formatTitleName(rawTgt, tgt);
 
+    const getPairDescription = (srcD: string, tgtD: string, s: string, t: string) => {
+      const srcCat = FORMAT_REGISTRY[s]?.category || 'document';
+      const tgtCat = FORMAT_REGISTRY[t]?.category || 'document';
+
+      if (srcCat === 'video' && tgtCat === 'audio') {
+        return `Convert ${srcD} to ${tgtD} online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.`;
+      }
+      if (srcCat === 'audio' || tgtCat === 'audio' || srcCat === 'video' || tgtCat === 'video') {
+        return `Convert ${srcD} to ${tgtD} online and free. Fast, high-fidelity media transcoding directly in your browser with zero server retention.`;
+      }
+      if (srcCat === 'image' || srcCat === 'vector' || tgtCat === 'image' || tgtCat === 'vector') {
+        return `Convert ${srcD} to ${tgtD} online and free. High-precision rendering and lossless rasterization straight from your browser.`;
+      }
+      if (srcCat === 'archive' || tgtCat === 'archive') {
+        return `Convert and extract ${srcD} to ${tgtD} archives safely in your browser with zero cloud storage.`;
+      }
+      if (srcCat === 'spreadsheet' || srcCat === 'data' || tgtCat === 'spreadsheet' || tgtCat === 'data') {
+        return `Convert ${srcD} to ${tgtD} datasets and tables directly in your browser. Clean data structure preserved with zero retention.`;
+      }
+      return `Convert ${srcD} to ${tgtD} online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage.`;
+    };
+
     return {
       isInfoPage: false,
       sourceFormat: src,
       targetFormat: tgt,
       pageTitle: `${srcDisplay} to ${tgtDisplay} Converter`,
-      pageDescription: `EasyConvert offers advanced, high-fidelity ${srcDisplay} to ${tgtDisplay} conversions. We preserve original layouts, fonts, and data formatting straight from your browser.`,
+      pageDescription: getPairDescription(srcDisplay, tgtDisplay, src, tgt),
     };
   }
 
@@ -172,7 +196,7 @@ export function parseConverterSlug(slug: string): ParsedSlug {
         sourceFormat: 'lbs',
         targetFormat: 'kg',
         pageTitle: 'Unit Converter',
-        pageDescription: 'Convert weight, length, volume, and data units in real time with client-side zero-latency precision.',
+        pageDescription: 'Convert weight, length, volume, and data units in real time with instant calculation precision.',
       };
     }
 
@@ -198,12 +222,37 @@ export function parseConverterSlug(slug: string): ParsedSlug {
       html: 'HTML',
     };
     const prefix = ACRONYMS[rawFmt] || (rawFmt.charAt(0).toUpperCase() + rawFmt.slice(1));
+
+    const getFormatDescription = (p: string, s: string) => {
+      const cat = FORMAT_REGISTRY[s]?.category || 'document';
+      switch (cat) {
+        case 'audio':
+          return `Convert ${p} audio files online and free to MP3, WAV, AAC, and more. High-fidelity audio encoding with zero server storage.`;
+        case 'video':
+          return `Convert ${p} video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.`;
+        case 'image':
+        case 'vector':
+          return `Convert ${p} files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.`;
+        case 'archive':
+          return `Convert and extract ${p} compressed archives safely in your browser with zero cloud uploads.`;
+        case 'spreadsheet':
+        case 'data':
+          return `Convert ${p} spreadsheets and datasets to CSV, Excel, JSON, and other structured formats with high precision.`;
+        case 'presentation':
+          return `Convert ${p} presentation slides to PDF, PPTX, images, and other formats with preserved layouts.`;
+        case 'ebook':
+          return `Convert ${p} ebooks to EPUB, PDF, MOBI, and other reader formats seamlessly in your browser.`;
+        default:
+          return `Convert ${p} documents online and free to PDF, DOCX, and other formats. Preserves layouts, typography, and tables with zero server storage.`;
+      }
+    };
+
     return {
       isInfoPage: false,
       sourceFormat: src,
       targetFormat: 'any',
       pageTitle: `${prefix} Converter`,
-      pageDescription: `EasyConvert is an online document converter. Amongst many others, we support PDF, DOCX, PPTX, XLSX. Thanks to our advanced conversion technology the quality of the output will be as good as if the file was saved through the latest Microsoft Office suite.`,
+      pageDescription: getFormatDescription(prefix, src),
     };
   }
 
