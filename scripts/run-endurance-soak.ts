@@ -15,6 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   EnduranceSoakController,
   SoakIterationStats,
@@ -28,6 +29,24 @@ interface CliOptions {
   outputPath: string;
 }
 
+function printUsage(): void {
+  console.log(`
+EasyConvert 2GB Endurance Soak Test Runner
+
+Usage:
+  npx tsx scripts/run-endurance-soak.ts [options]
+
+Options:
+  --duration <time>    Duration of test (e.g. 24h, 30m, 60s). Default: 30s
+  --target-gb <num>    Payload size per iteration in gigabytes. Default: 0.1 (100MB)
+  --target-mb <num>    Payload size per iteration in megabytes.
+  --chunk-kb <num>     Transfer chunk size in kilobytes. Default: 128 (128KB)
+  --output <path>      Output path for telemetry JSON report.
+  --quiet              Suppress per-iteration telemetry logging
+  --help, -h           Show this help message
+`);
+}
+
 function parseCliArgs(): CliOptions {
   const args = process.argv.slice(2);
   let durationMs = 30_000; // Default 30 seconds for quick local/CI runs
@@ -38,7 +57,10 @@ function parseCliArgs(): CliOptions {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--duration' && i + 1 < args.length) {
+    if (arg === '--help' || arg === '-h') {
+      printUsage();
+      process.exit(0);
+    } else if (arg === '--duration' && i + 1 < args.length) {
       const val = args[++i];
       if (val.endsWith('h')) {
         durationMs = parseFloat(val) * 3600 * 1000;
@@ -51,6 +73,8 @@ function parseCliArgs(): CliOptions {
       }
     } else if (arg === '--target-gb' && i + 1 < args.length) {
       targetBytes = Math.floor(parseFloat(args[++i]) * 1024 * 1024 * 1024);
+    } else if (arg === '--target-mb' && i + 1 < args.length) {
+      targetBytes = Math.floor(parseFloat(args[++i]) * 1024 * 1024);
     } else if (arg === '--chunk-kb' && i + 1 < args.length) {
       chunkSizeBytes = Math.floor(parseFloat(args[++i]) * 1024);
     } else if (arg === '--output' && i + 1 < args.length) {
@@ -133,7 +157,12 @@ async function main(): Promise<void> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectInvocation =
+  process.argv[1] &&
+  (import.meta.url === `file://${process.argv[1]}` ||
+    fileURLToPath(import.meta.url) === path.resolve(process.argv[1]));
+
+if (isDirectInvocation) {
   main().catch((err) => {
     console.error('Fatal error during soak execution:', err);
     process.exit(1);

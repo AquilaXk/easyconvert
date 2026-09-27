@@ -120,6 +120,10 @@ export function extractTextWithExternalPdftotext(buffer: Buffer): string | null 
  * Validates 7z archive structure using real 7-Zip CLI engine.
  */
 export function verifyArchiveWith7z(buffer: Buffer): boolean {
+  const sevenZMagic = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
+  if (buffer.length < 32 || !buffer.subarray(0, 6).equals(sevenZMagic)) {
+    return false;
+  }
   const toolPath = getOracleToolPath('7z');
   if (!toolPath) return true;
   const tmpPath = path.join(os.tmpdir(), `oracle_7z_${crypto.randomUUID()}.7z`);
@@ -142,6 +146,7 @@ export function verifyArchiveWith7z(buffer: Buffer): boolean {
  * Validates TAR archive stream using standard system tar CLI.
  */
 export function verifyArchiveWithTar(buffer: Buffer): boolean {
+  if (buffer.length < 512) return false;
   const toolPath = getOracleToolPath('tar');
   if (!toolPath) return true;
   try {
@@ -159,6 +164,10 @@ export function verifyArchiveWithTar(buffer: Buffer): boolean {
  * Validates Zstandard compressed stream using standard zstd CLI.
  */
 export function verifyArchiveWithZstd(buffer: Buffer): boolean {
+  const zstdMagic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+  if (buffer.length < 4 || !buffer.subarray(0, 4).equals(zstdMagic)) {
+    return false;
+  }
   const toolPath = getOracleToolPath('zstd');
   if (!toolPath) return true;
   try {

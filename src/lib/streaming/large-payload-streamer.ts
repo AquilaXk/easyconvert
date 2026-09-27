@@ -63,11 +63,14 @@ export interface SoakSessionReport {
  */
 export function getOpenFileDescriptorCount(): number {
   try {
+    if (fs.existsSync('/proc/self/fd')) {
+      return fs.readdirSync('/proc/self/fd').length;
+    }
     if (fs.existsSync('/dev/fd')) {
       return fs.readdirSync('/dev/fd').length;
     }
   } catch {
-    // Platform does not support /dev/fd enumeration
+    // Platform does not support /proc/self/fd or /dev/fd enumeration
   }
   return 0;
 }
@@ -83,30 +86,39 @@ export function createDeterministicSyntheticStream(
   totalSizeBytes: number,
   chunkSizeBytes: number = 64 * 1024
 ): Readable {
-  let bytesRemaining = totalSizeBytes;
+  const safeChunkSize = Math.max(1, Math.floor(chunkSizeBytes || 64 * 1024));
+  const safeTotalSize = Math.max(0, Math.floor(totalSizeBytes || 0));
+  let bytesRemaining = safeTotalSize;
   let chunkSequence = 0;
 
-  // Pre-allocate a single reusable template block to avoid GC pressure
-  const templateBlock = Buffer.alloc(chunkSizeBytes);
-  for (let i = 0; i < chunkSizeBytes; i++) {
+  // Pre-allocate a single reusable template block bounded to max of min(totalSize, chunkSize) or 1 byte
+  const templateSize = Math.max(
+    1,
+    Math.min(safeTotalSize > 0 ? safeTotalSize : safeChunkSize, safeChunkSize)
+  );
+  const templateBlock = Buffer.alloc(templateSize);
+  for (let i = 0; i < templateSize; i++) {
     templateBlock[i] = (i + (i >> 8)) & 0xff;
   }
 
   return new Readable({
-    highWaterMark: chunkSizeBytes,
+    highWaterMark: safeChunkSize,
     read() {
       if (bytesRemaining <= 0) {
         this.push(null);
         return;
       }
 
-      const currentChunkSize = Math.min(bytesRemaining, chunkSizeBytes);
+      const currentChunkSize = Math.min(bytesRemaining, safeChunkSize);
       bytesRemaining -= currentChunkSize;
       chunkSequence++;
 
       // Clone from reusable template, marking header with sequence index for uniqueness
       const chunk = Buffer.alloc(currentChunkSize);
-      templateBlock.copy(chunk, 0, 0, currentChunkSize);
+      for (let offset = 0; offset < currentChunkSize; offset += templateSize) {
+        const copyLen = Math.min(templateSize, currentChunkSize - offset);
+        templateBlock.copy(chunk, offset, 0, copyLen);
+      }
 
       if (currentChunkSize >= 8) {
         chunk.writeUInt32BE(chunkSequence, 0);
@@ -179,6 +191,8 @@ export async function streamProcessLargePayload(
       if (config.signal) {
         config.signal.removeEventListener('abort', onAbort);
       }
+      inputStream.removeListener('error', onError);
+      metricsTransform.removeListener('error', onError);
     };
 
     const onAbort = () => {
@@ -189,6 +203,14 @@ export async function streamProcessLargePayload(
       resolve();
     };
 
+    const onError = (err: unknown) => {
+      if (isSettled) return;
+      cleanup();
+      inputStream.destroy();
+      metricsTransform.destroy();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+
     if (config.signal) {
       if (config.signal.aborted) {
         onAbort();
@@ -196,6 +218,9 @@ export async function streamProcessLargePayload(
       }
       config.signal.addEventListener('abort', onAbort, { once: true });
     }
+
+    inputStream.on('error', onError);
+    metricsTransform.on('error', onError);
 
     inputStream
       .pipe(metricsTransform)
@@ -209,12 +234,6 @@ export async function streamProcessLargePayload(
         }
       })
       .on('end', () => {
-        if (!isSettled) {
-          cleanup();
-          resolve();
-        }
-      })
-      .on('error', (err) => {
         if (!isSettled) {
           cleanup();
           resolve();
