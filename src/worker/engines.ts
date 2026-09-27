@@ -17,10 +17,32 @@ export interface WorkerConversionResult extends ConversionResult {
 
 // Fixed standard locations for native CLI binaries (hardened against injection)
 const BINARY_PATHS: Record<string, string[]> = {
-  soffice: ['/usr/bin/soffice', '/usr/local/bin/soffice', '/opt/homebrew/bin/soffice'],
-  ffmpeg: ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg'],
-  p7zip: ['/usr/bin/7z', '/usr/bin/7za', '/usr/local/bin/7z', '/opt/homebrew/bin/7z'],
-  pdftoppm: ['/usr/bin/pdftoppm', '/usr/local/bin/pdftoppm', '/opt/homebrew/bin/pdftoppm'],
+  soffice: [
+    ...(process.env.SOFFICE_PATH ? [process.env.SOFFICE_PATH] : []),
+    '/usr/bin/soffice',
+    '/usr/local/bin/soffice',
+    '/opt/homebrew/bin/soffice',
+    '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+  ],
+  ffmpeg: [
+    ...(process.env.FFMPEG_PATH ? [process.env.FFMPEG_PATH] : []),
+    '/usr/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    '/opt/homebrew/bin/ffmpeg',
+  ],
+  p7zip: [
+    ...(process.env.P7ZIP_PATH ? [process.env.P7ZIP_PATH] : []),
+    '/usr/bin/7z',
+    '/usr/bin/7za',
+    '/usr/local/bin/7z',
+    '/opt/homebrew/bin/7z',
+  ],
+  pdftoppm: [
+    ...(process.env.PDFTOPPM_PATH ? [process.env.PDFTOPPM_PATH] : []),
+    '/usr/bin/pdftoppm',
+    '/usr/local/bin/pdftoppm',
+    '/opt/homebrew/bin/pdftoppm',
+  ],
 };
 
 const SAFE_ALPHANUMERIC_REGEX = /^[a-zA-Z0-9]{1,16}$/;
