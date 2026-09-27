@@ -777,41 +777,54 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
         const sy = height / (ph || 1);
 
         const dParts: string[] = [];
-        // moveTo
-        const moveRegex = /<a:moveTo>[\s\S]*?<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
-        let mMatch: RegExpExecArray | null;
-        while ((mMatch = moveRegex.exec(pathBody)) !== null) {
-          const px = Math.round(parseInt(mMatch[1], 10) * sx + x);
-          const py = Math.round(parseInt(mMatch[2], 10) * sy + y);
-          dParts.push(`M ${px} ${py}`);
-        }
-        // lnTo
-        const lnRegex = /<a:lnTo>[\s\S]*?<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
-        let lMatch: RegExpExecArray | null;
-        while ((lMatch = lnRegex.exec(pathBody)) !== null) {
-          const px = Math.round(parseInt(lMatch[1], 10) * sx + x);
-          const py = Math.round(parseInt(lMatch[2], 10) * sy + y);
-          dParts.push(`L ${px} ${py}`);
-        }
-        // cubicBezTo
-        const cBezRegex = /<a:cubicBezTo>([\s\S]*?)<\/a:cubicBezTo>/gi;
-        let cMatch: RegExpExecArray | null;
-        while ((cMatch = cBezRegex.exec(pathBody)) !== null) {
-          const ptRegex = /<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
-          const pts: string[] = [];
-          let ptM: RegExpExecArray | null;
-          while ((ptM = ptRegex.exec(cMatch[1])) !== null) {
-            const px = Math.round(parseInt(ptM[1], 10) * sx + x);
-            const py = Math.round(parseInt(ptM[2], 10) * sy + y);
-            pts.push(`${px} ${py}`);
+        // Process path commands in sequential document order to preserve geometry
+        const cmdRegex = /<a:(moveTo|lnTo|cubicBezTo|quadBezTo|arcTo|close)\b([^>]*?)>([\s\S]*?)<\/a:\1>|<a:(close)\b[^>]*\/>/gi;
+        let cmdMatch: RegExpExecArray | null;
+        while ((cmdMatch = cmdRegex.exec(pathBody)) !== null) {
+          const cmdName = (cmdMatch[1] || cmdMatch[4]).toLowerCase();
+          const cmdContent = cmdMatch[3] || '';
+
+          if (cmdName === 'moveto') {
+            const ptMatch = cmdContent.match(/<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
+            if (ptMatch) {
+              const px = Math.round(parseInt(ptMatch[1], 10) * sx + x);
+              const py = Math.round(parseInt(ptMatch[2], 10) * sy + y);
+              dParts.push(`M ${px} ${py}`);
+            }
+          } else if (cmdName === 'lnto') {
+            const ptMatch = cmdContent.match(/<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
+            if (ptMatch) {
+              const px = Math.round(parseInt(ptMatch[1], 10) * sx + x);
+              const py = Math.round(parseInt(ptMatch[2], 10) * sy + y);
+              dParts.push(`L ${px} ${py}`);
+            }
+          } else if (cmdName === 'cubicbezto') {
+            const ptRegex = /<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+            const pts: string[] = [];
+            let ptM: RegExpExecArray | null;
+            while ((ptM = ptRegex.exec(cmdContent)) !== null) {
+              const px = Math.round(parseInt(ptM[1], 10) * sx + x);
+              const py = Math.round(parseInt(ptM[2], 10) * sy + y);
+              pts.push(`${px} ${py}`);
+            }
+            if (pts.length >= 3) {
+              dParts.push(`C ${pts[0]}, ${pts[1]}, ${pts[2]}`);
+            }
+          } else if (cmdName === 'quadbezto') {
+            const ptRegex = /<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+            const pts: string[] = [];
+            let ptM: RegExpExecArray | null;
+            while ((ptM = ptRegex.exec(cmdContent)) !== null) {
+              const px = Math.round(parseInt(ptM[1], 10) * sx + x);
+              const py = Math.round(parseInt(ptM[2], 10) * sy + y);
+              pts.push(`${px} ${py}`);
+            }
+            if (pts.length >= 2) {
+              dParts.push(`Q ${pts[0]}, ${pts[1]}`);
+            }
+          } else if (cmdName === 'close') {
+            dParts.push('Z');
           }
-          if (pts.length >= 3) {
-            dParts.push(`C ${pts[0]}, ${pts[1]}, ${pts[2]}`);
-          }
-        }
-        // close
-        if (/<a:close\b/i.test(pathBody)) {
-          dParts.push('Z');
         }
         svgPath = dParts.join(' ');
       }
@@ -878,8 +891,10 @@ export function renderDrawingMlToSvg(
   const optWidth = typeof options === 'number' ? options : options?.width;
   const optHeight = typeof options === 'number' ? heightOption : options?.height;
 
-  const totalWidth = optWidth || Math.max(100, maxX - minX + 20);
-  const totalHeight = optHeight || Math.max(60, maxY - minY + 20);
+  const contentWidth = Math.max(10, maxX - minX + 20);
+  const contentHeight = Math.max(10, maxY - minY + 20);
+  const totalWidth = optWidth || contentWidth;
+  const totalHeight = optHeight || contentHeight;
 
   let svgElements = '';
   for (const s of shapes) {
@@ -950,7 +965,7 @@ export function renderDrawingMlToSvg(
     svgElements += `  ${elementStr}\n`;
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX - 10} ${minY - 10} ${totalWidth} ${totalHeight}" width="${totalWidth}" height="${totalHeight}">\n${svgElements}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX - 10} ${minY - 10} ${contentWidth} ${contentHeight}" width="${totalWidth}" height="${totalHeight}">\n${svgElements}</svg>`;
   return { svg, shapes };
 }
 
@@ -1362,6 +1377,12 @@ function generateMarkdownFromDocx(
     for (const el of elements) {
       if (el.type === 'paragraph') parts.push(renderParagraph(el.paragraph));
       else if (el.type === 'table') parts.push(renderTable(el.table));
+      else if (el.type === 'drawing' && el.shapes) {
+        const shapeTexts = el.shapes.map((s) => s.text).filter(Boolean);
+        if (shapeTexts.length > 0) {
+          parts.push(shapeTexts.map((t) => `> **[Drawing]** ${t}`).join('\n'));
+        }
+      }
     }
   } else {
     for (const p of paragraphs) parts.push(renderParagraph(p));
@@ -1469,6 +1490,16 @@ async function generatePdfFromDocx(
       for (const el of elements) {
         if (el.type === 'paragraph') renderParagraph(el.paragraph);
         else if (el.type === 'table') renderTable(el.table);
+        else if (el.type === 'drawing' && el.shapes) {
+          const shapeTexts = el.shapes.map((s) => s.text).filter(Boolean);
+          if (shapeTexts.length > 0) {
+            doc.moveDown(0.3);
+            for (const st of shapeTexts) {
+              doc.fillColor('#5C6BC0').fontSize(10).text(`[Drawing: ${st}]`, { align: 'center' });
+            }
+            doc.moveDown(0.3);
+          }
+        }
       }
     } else {
       for (const p of paragraphs) renderParagraph(p);
@@ -1521,11 +1552,15 @@ export class SpreadsheetFormulaEvaluator {
       return t;
     };
 
+    const isErrorCode = (v: any): boolean => typeof v === 'string' && v.startsWith('#');
+
     const parseComparison = (): any => {
       let left = parseConcat();
       while (peek() && peek()!.type === 'OP_COMP') {
         const op = consume().val;
         const right = parseConcat();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         if (op === '=') left = left == right;
         else if (op === '<>') left = left != right;
         else if (op === '<') left = left < right;
@@ -1541,6 +1576,8 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && peek()!.val === '&') {
         consume();
         const right = parseAdditive();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         left = String(left ?? '') + String(right ?? '');
       }
       return left;
@@ -1551,6 +1588,8 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && (peek()!.val === '+' || peek()!.val === '-')) {
         const op = consume().val;
         const right = parseMultiplicative();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         left = op === '+' ? Number(left) + Number(right) : Number(left) - Number(right);
       }
       return left;
@@ -1561,6 +1600,8 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && (peek()!.val === '*' || peek()!.val === '/')) {
         const op = consume().val;
         const right = parsePower();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         if (op === '/') {
           if (Number(right) === 0) return '#DIV/0!';
           left = Number(left) / Number(right);
@@ -1576,6 +1617,8 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && peek()!.val === '^') {
         consume();
         const right = parseUnary();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         left = Math.pow(Number(left), Number(right));
       }
       return left;
@@ -1585,11 +1628,13 @@ export class SpreadsheetFormulaEvaluator {
       if (peek() && peek()!.type === 'OP' && (peek()!.val === '+' || peek()!.val === '-')) {
         const op = consume().val;
         const operand = parseUnary();
+        if (isErrorCode(operand)) return operand;
         return op === '-' ? -Number(operand) : Number(operand);
       }
       let val = parsePrimary();
       if (peek() && peek()!.type === 'OP' && peek()!.val === '%') {
         consume();
+        if (isErrorCode(val)) return val;
         val = Number(val) / 100;
       }
       return val;
@@ -1706,9 +1751,15 @@ export class SpreadsheetFormulaEvaluator {
   }
 
   private executeFunction(name: string, args: any[]): any {
-    const flattenNumbers = (arr: any[]): number[] => {
+    const flattenNumbers = (arr: any[]): number[] | string => {
       const out: number[] = [];
+      let err: string | null = null;
       const walk = (item: any) => {
+        if (err) return;
+        if (typeof item === 'string' && item.startsWith('#')) {
+          err = item;
+          return;
+        }
         if (Array.isArray(item)) {
           item.forEach(walk);
         } else if (item !== null && item !== undefined && item !== '' && !Number.isNaN(Number(item))) {
@@ -1716,28 +1767,49 @@ export class SpreadsheetFormulaEvaluator {
         }
       };
       walk(arr);
-      return out;
+      return err || out;
+    };
+
+    const isCellMatch = (cellVal: any, lookupVal: any): boolean => {
+      if (cellVal === undefined || cellVal === null) return false;
+      if (cellVal === lookupVal) return true;
+      if (String(cellVal).toLowerCase() === String(lookupVal).toLowerCase()) return true;
+      const sCell = String(cellVal).trim();
+      const sLookup = String(lookupVal).trim();
+      if (sCell !== '' && sLookup !== '') {
+        const numCell = Number(sCell);
+        const numLookup = Number(sLookup);
+        if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
+          return numCell === numLookup;
+        }
+      }
+      return false;
     };
 
     switch (name) {
       case 'SUM': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.reduce((a, b) => a + b, 0);
       }
       case 'AVERAGE': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.length === 0 ? 0 : nums.reduce((a, b) => a + b, 0) / nums.length;
       }
       case 'COUNT': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.length;
       }
       case 'MIN': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.length === 0 ? 0 : Math.min(...nums);
       }
       case 'MAX': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.length === 0 ? 0 : Math.max(...nums);
       }
       case 'IF': {
@@ -1812,11 +1884,7 @@ export class SpreadsheetFormulaEvaluator {
           // Exact match
           for (let r = 0; r < grid.length; r++) {
             const cellVal = grid[r][0];
-            if (
-              cellVal !== undefined &&
-              (String(cellVal).toLowerCase() === String(lookupVal).toLowerCase() ||
-                Number(cellVal) === Number(lookupVal))
-            ) {
+            if (isCellMatch(cellVal, lookupVal)) {
               return colIdx - 1 < grid[r].length ? grid[r][colIdx - 1] : '';
             }
           }
@@ -1855,11 +1923,7 @@ export class SpreadsheetFormulaEvaluator {
         if (!rangeLookup) {
           for (let c = 0; c < firstRow.length; c++) {
             const cellVal = firstRow[c];
-            if (
-              cellVal !== undefined &&
-              (String(cellVal).toLowerCase() === String(lookupVal).toLowerCase() ||
-                Number(cellVal) === Number(lookupVal))
-            ) {
+            if (isCellMatch(cellVal, lookupVal)) {
               return c < grid[rowIdx - 1].length ? grid[rowIdx - 1][c] : '';
             }
           }
@@ -1906,10 +1970,7 @@ export class SpreadsheetFormulaEvaluator {
 
         if (matchType === 0) {
           for (let i = 0; i < arr.length; i++) {
-            if (
-              String(arr[i]).toLowerCase() === String(lookupVal).toLowerCase() ||
-              Number(arr[i]) === Number(lookupVal)
-            ) {
+            if (isCellMatch(arr[i], lookupVal)) {
               return i + 1;
             }
           }
@@ -2042,8 +2103,10 @@ export class SpreadsheetDagEngine {
 
   public setCell(ref: string, value: any): void {
     const cleanRef = ref.replace(/\$/g, '').toUpperCase();
+    this.formulaCells = this.formulaCells.filter((fc) => fc.ref !== cleanRef);
     if (typeof value === 'string' && value.startsWith('=')) {
       this.formulaCells.push({ ref: cleanRef, formula: value });
+      delete this.cellMap[cleanRef];
     } else {
       this.cellMap[cleanRef] = value;
     }
@@ -2083,8 +2146,8 @@ export class SpreadsheetDagEngine {
       return s;
     };
 
-    // 1. Ranges like A1:B5 or $A$1:$B$5
-    const rangeRegex = /(\$?)([A-Za-z]+)(\$?)([0-9]+)\s*:\s*(\$?)([A-Za-z]+)(\$?)([0-9]+)/g;
+    // 1. Ranges like A1:B5 or $A$1:$B$5 (supporting whitespace around colon)
+    const rangeRegex = /(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)\s*:\s*(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)/g;
     let rMatch: RegExpExecArray | null;
     while ((rMatch = rangeRegex.exec(stripped)) !== null) {
       const c1 = rMatch[2].toUpperCase();
@@ -2104,13 +2167,17 @@ export class SpreadsheetDagEngine {
       }
     }
 
+    // Replace all extracted ranges with spaces to avoid duplicate endpoint matches
+    const strippedWithoutRanges = stripped.replace(rangeRegex, ' ');
+
     // 2. Individual cell references like A1, $B$2
-    const cellRegex = /\b(\$?)([A-Za-z]+)(\$?)([0-9]+)\b/g;
+    const cellRegex = /\b(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)\b/g;
     let cMatch: RegExpExecArray | null;
-    while ((cMatch = cellRegex.exec(stripped)) !== null) {
+    while ((cMatch = cellRegex.exec(strippedWithoutRanges)) !== null) {
       const afterIdx = cMatch.index + cMatch[0].length;
-      if (stripped[afterIdx] === '(' || stripped[afterIdx] === ':') {
-        continue; // Function name or already handled range
+      const afterStr = strippedWithoutRanges.slice(afterIdx).trimStart();
+      if (afterStr.startsWith('(')) {
+        continue; // Function name
       }
       const ref = `${cMatch[2].toUpperCase()}${cMatch[4]}`;
       refs.add(ref);
@@ -2270,7 +2337,7 @@ export class SpreadsheetDagEngine {
     const evaluator = new SpreadsheetFormulaEvaluator((ref) => {
       const cleanRef = ref.replace(/\$/g, '').toUpperCase();
       const val = this.cellMap[cleanRef];
-      if (val === undefined || val === null || val === '') return 0;
+      if (val === undefined || val === null) return '';
       return val;
     });
 

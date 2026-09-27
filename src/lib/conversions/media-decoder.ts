@@ -422,9 +422,13 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
     else if (bsCode >= 8 && bsCode <= 15) curBlockSize = 256 * (1 << (bsCode - 8));
 
     // Explicit sample rate if needed
-    if (srCode === 12) reader.readBits(8);
-    else if (srCode === 13) reader.readBits(16);
-    else if (srCode === 14) reader.readBits(16);
+    if (srCode === 12) {
+      sampleRate = reader.readBits(8) * 1000;
+    } else if (srCode === 13) {
+      sampleRate = reader.readBits(16);
+    } else if (srCode === 14) {
+      sampleRate = reader.readBits(16) * 10;
+    }
 
     // Frame header CRC-8
     reader.readBits(8);

@@ -23,11 +23,21 @@ export async function isHwpxContainer(buffer: Buffer): Promise<boolean> {
   }
   try {
     const zip = await JSZip.loadAsync(buffer);
-    const hasSection = Object.keys(zip.files).some((name) => /section\d*\.xml$/i.test(name));
+    const mimeFile = zip.file('mimetype');
+    if (mimeFile) {
+      const mime = (await mimeFile.async('text')).trim();
+      if (mime === 'application/hwp+zip') return true;
+    }
+    const hasSection = Object.keys(zip.files).some((name) => /(?:Contents\/)?section\d*\.xml$/i.test(name));
     const hasVersion = Boolean(zip.file('version.xml') || zip.file('Contents/version.xml'));
-    const hasHeader = Boolean(zip.file('Contents/header.xml') || zip.file('header.xml'));
-    const hasManifest = Boolean(zip.file('Contents/content.hpf') || zip.file('META-INF/container.xml'));
-    return hasSection || hasVersion || hasHeader || hasManifest;
+    const hasHpf = Boolean(zip.file('Contents/content.hpf') || zip.file('content.hpf'));
+    const containerFile = zip.file('META-INF/container.xml');
+    let hasHwpxContainerXml = false;
+    if (containerFile) {
+      const cXml = await containerFile.async('text');
+      hasHwpxContainerXml = cXml.includes('content.hpf') || cXml.includes('application/hwp+zip');
+    }
+    return (hasSection && (hasVersion || hasHpf)) || hasHpf || hasHwpxContainerXml;
   } catch {
     return false;
   }
@@ -147,10 +157,12 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
       }
     }
 
-    // Extract paragraphs (<hp:p> ... </hp:p>) outside or inside body
+    // Extract document-level paragraphs (<hp:p> ... </hp:p>)
+    // Strip table blocks first to avoid capturing nested table cell paragraphs
+    const secXmlWithoutTables = secXml.replace(/<(?:hp:)?tbl\b[\s\S]*?<\/(?:hp:)?tbl>/gi, '');
     const pRegex = /<(?:hp:)?p\b([^>]*?)>([\s\S]*?)<\/(?:hp:)?p>/gi;
     let pMatch: RegExpExecArray | null;
-    while ((pMatch = pRegex.exec(secXml)) !== null) {
+    while ((pMatch = pRegex.exec(secXmlWithoutTables)) !== null) {
       const pAttrs = pMatch[1];
       const pBody = pMatch[2];
 

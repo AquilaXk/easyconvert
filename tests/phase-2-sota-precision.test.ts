@@ -52,7 +52,7 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       const parsed = await parseHwpxDocument(hwpxBuffer);
       expect(parsed.metadata.title).toBe('HWPX Precision Specification');
       expect(parsed.metadata.creator).toBe('EasyConvert Testnet');
-      expect(parsed.paragraphs.length).toBeGreaterThanOrEqual(2);
+      expect(parsed.paragraphs.length).toBe(2);
       expect(parsed.paragraphs[0].text).toContain('First paragraph');
       expect(parsed.tables.length).toBe(1);
       expect(parsed.tables[0].rows.length).toBe(3);
@@ -130,6 +130,17 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       await expect(parseHwpxDocument(emptyZipBuf)).rejects.toThrow(
         /Missing.*Section/i
       );
+    });
+
+    it('does not falsely classify non-HWPX zip containers as HWPX', async () => {
+      const epubZip = new JSZip();
+      epubZip.file('mimetype', 'application/epub+zip');
+      epubZip.file(
+        'META-INF/container.xml',
+        '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'
+      );
+      const epubBuf = await epubZip.generateAsync({ type: 'nodebuffer' });
+      expect(await isHwpxContainer(epubBuf)).toBe(false);
     });
   });
 
@@ -254,6 +265,60 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       expect(evaluator.evaluate('=MID("EasyConvert", 5, 7)')).toBe('Convert');
       expect(evaluator.evaluate('=DATE(2026, 9, 27)')).toBe('2026-09-27');
     });
+
+    it('propagates error codes like #DIV/0! and #CYCLE! across arithmetic operators', () => {
+      const evaluator = new SpreadsheetFormulaEvaluator((ref) => {
+        if (ref === 'A1') return '#DIV/0!';
+        if (ref === 'B1') return '#CYCLE!';
+        return 10;
+      });
+
+      expect(evaluator.evaluate('=A1 + 5')).toBe('#DIV/0!');
+      expect(evaluator.evaluate('=B1 * 2')).toBe('#CYCLE!');
+      expect(evaluator.evaluate('=SUM(A1, 10, 20)')).toBe('#DIV/0!');
+      expect(evaluator.evaluate('=IFERROR(A1 + 5, 999)')).toBe(999);
+    });
+
+    it('does not falsely match empty strings with numeric zero in VLOOKUP and MATCH', () => {
+      const dag = new SpreadsheetDagEngine();
+      dag.setCell('A1', '');
+      dag.setCell('B1', 'EmptyLabel');
+      dag.setCell('A2', 0);
+      dag.setCell('B2', 'ZeroLabel');
+
+      dag.setCell('C1', '=VLOOKUP(0, A1:B2, 2, FALSE)');
+      dag.setCell('C2', '=MATCH(0, A1:A2, 0)');
+
+      dag.evaluate();
+
+      expect(dag.getCellValue('C1')).toBe('ZeroLabel');
+      expect(dag.getCellValue('C2')).toBe(2);
+    });
+
+    it('handles setCell overwrites cleanly and avoids duplicate formula evaluation', () => {
+      const dag = new SpreadsheetDagEngine();
+      dag.setCell('A1', '=10 + 20');
+      // Overwrite with non-formula literal
+      dag.setCell('A1', 42);
+      dag.setCell('B1', '=A1 * 2');
+
+      dag.evaluate();
+
+      expect(dag.getCellValue('A1')).toBe(42);
+      expect(dag.getCellValue('B1')).toBe(84);
+    });
+
+    it('extracts dependencies robustly with whitespace around ranges and function names', () => {
+      const deps1 = SpreadsheetDagEngine.extractDependencies('=SUM( A1 : B2 ) + C3');
+      expect(deps1).toContain('A1');
+      expect(deps1).toContain('A2');
+      expect(deps1).toContain('B1');
+      expect(deps1).toContain('B2');
+      expect(deps1).toContain('C3');
+
+      const deps2 = SpreadsheetDagEngine.extractDependencies('=ROUND ( D10 , 2 )');
+      expect(deps2).toEqual(['D10']);
+    });
   });
 
   // ==========================================================================
@@ -345,6 +410,41 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       expect(shapes.length).toBe(1);
       expect(shapes[0].type).toBe('custom');
       expect(shapes[0].customPath).toBe('M 0 0 L 50 0 C 75 25, 100 50, 100 100 Z');
+    });
+
+    it('preserves sequential order of interleaved DrawingML path commands', () => {
+      const xml = `
+        <w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                   xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <a:xfrm>
+            <a:off x="0" y="0"/>
+            <a:ext cx="1270000" cy="1270000"/>
+          </a:xfrm>
+          <a:custGeom>
+            <a:pathLst>
+              <a:path w="100" h="100">
+                <a:moveTo><a:pt x="0" y="0"/></a:moveTo>
+                <a:lnTo><a:pt x="20" y="0"/></a:lnTo>
+                <a:cubicBezTo>
+                  <a:pt x="30" y="10"/>
+                  <a:pt x="40" y="20"/>
+                  <a:pt x="50" y="20"/>
+                </a:cubicBezTo>
+                <a:lnTo><a:pt x="80" y="50"/></a:lnTo>
+                <a:quadBezTo>
+                  <a:pt x="90" y="60"/>
+                  <a:pt x="100" y="80"/>
+                </a:quadBezTo>
+                <a:close/>
+              </a:path>
+            </a:pathLst>
+          </a:custGeom>
+        </w:drawing>
+      `;
+
+      const shapes = parseDrawingMlShapes(xml);
+      expect(shapes.length).toBe(1);
+      expect(shapes[0].customPath).toBe('M 0 0 L 20 0 C 30 10, 40 20, 50 20 L 80 50 Q 90 60, 100 80 Z');
     });
 
     it('renders DrawingML shapes into SVG element strings', () => {
