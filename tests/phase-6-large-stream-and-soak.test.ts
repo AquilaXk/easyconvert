@@ -187,5 +187,59 @@ describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Test
         expect(report.oracleType).toBe('external_cli');
       }
     });
+
+    it('rejects corrupt and zero-byte archives in differential oracle verifiers', () => {
+      // Empty buffer should never be accepted as valid tar, 7z, or zstd
+      expect(verifyArchiveWithTar(Buffer.alloc(0))).toBe(false);
+      expect(verifyArchiveWithTar(Buffer.from('too short'))).toBe(false);
+      expect(verifyArchiveWith7z(Buffer.alloc(0))).toBe(false);
+      expect(verifyArchiveWith7z(Buffer.from('not 7z magic'))).toBe(false);
+      expect(verifyArchiveWithZstd(Buffer.alloc(0))).toBe(false);
+      expect(verifyArchiveWithZstd(Buffer.from('not zstd'))).toBe(false);
+    });
+  });
+
+  // =========================================================================
+  // 4. Robustness, Edge-Case Boundary & Fail-Closed Error Propagation
+  // =========================================================================
+  describe('4. Robustness, Edge-Case Boundary & Fail-Closed Error Propagation', () => {
+    it('propagates stream errors fail-closed without unhandled event crashes', async () => {
+      const { Readable } = await import('node:stream');
+      const errorStream = new Readable({
+        read() {
+          this.destroy(new Error('Simulated I/O stream failure'));
+        },
+      });
+
+      await expect(
+        streamProcessLargePayload(errorStream)
+      ).rejects.toThrow('Simulated I/O stream failure');
+    });
+
+    it('handles zero-byte and edge-case chunk sizes deterministically', async () => {
+      // 0-byte stream
+      const zeroStream = createDeterministicSyntheticStream(0, 1024);
+      const zeroResult = await streamProcessLargePayload(zeroStream);
+      expect(zeroResult.totalBytesProcessed).toBe(0);
+      expect(zeroResult.totalChunks).toBe(0);
+      expect(zeroResult.sha256Digest).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+
+      // 1-byte chunk size
+      const tinyStream = createDeterministicSyntheticStream(16, 1);
+      const tinyResult = await streamProcessLargePayload(tinyStream, { chunkSizeBytes: 1 });
+      expect(tinyResult.totalBytesProcessed).toBe(16);
+      expect(tinyResult.totalChunks).toBe(16);
+
+      // Safe fallback on invalid chunk sizes
+      const fallbackStream = createDeterministicSyntheticStream(50, -1);
+      const fallbackResult = await streamProcessLargePayload(fallbackStream);
+      expect(fallbackResult.totalBytesProcessed).toBe(50);
+    });
+
+    it('inspects open file descriptors safely across operating environments', () => {
+      const fdCount = getOpenFileDescriptorCount();
+      expect(typeof fdCount).toBe('number');
+      expect(fdCount).toBeGreaterThanOrEqual(0);
+    });
   });
 });
