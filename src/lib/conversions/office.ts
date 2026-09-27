@@ -1109,7 +1109,12 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && (peek()!.val === '*' || peek()!.val === '/')) {
         const op = consume().val;
         const right = parsePower();
-        left = op === '*' ? Number(left) * Number(right) : Number(left) / Number(right);
+        if (op === '/') {
+          if (Number(right) === 0) return '#DIV/0!';
+          left = Number(left) / Number(right);
+        } else {
+          left = Number(left) * Number(right);
+        }
       }
       return left;
     };
@@ -1156,7 +1161,11 @@ export class SpreadsheetFormulaEvaluator {
       }
       if (t.type === 'RANGE') {
         consume();
-        return this.resolveRange(t.val);
+        const r2d = this.resolveRange2D(t.val);
+        const flat = r2d.flat();
+        (flat as any)._range2D = r2d;
+        (flat as any)._isRange = true;
+        return flat;
       }
       if (t.type === 'CELL_REF') {
         consume();
@@ -1168,6 +1177,24 @@ export class SpreadsheetFormulaEvaluator {
     const parseFunctionCall = (): any => {
       const fnName = String(consume('FUNCTION').val).toUpperCase();
       consume('LPAREN');
+
+      if (fnName === 'IFERROR') {
+        let val: any;
+        let isErr = false;
+        try {
+          val = parseComparison();
+          if (typeof val === 'string' && val.startsWith('#')) {
+            isErr = true;
+          }
+        } catch {
+          isErr = true;
+        }
+        consume('COMMA');
+        const fallback = parseComparison();
+        consume('RPAREN');
+        return isErr ? fallback : val;
+      }
+
       const args: any[] = [];
       if (!peek() || peek()!.type !== 'RPAREN') {
         while (true) {
@@ -1186,7 +1213,7 @@ export class SpreadsheetFormulaEvaluator {
     return parseComparison();
   }
 
-  private resolveRange(rangeStr: string): any[] {
+  public resolveRange2D(rangeStr: string): any[][] {
     const [start, end] = rangeStr.split(':');
     const match1 = start.match(/^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/);
     const match2 = end.match(/^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/);
@@ -1205,8 +1232,9 @@ export class SpreadsheetFormulaEvaluator {
     const minC = Math.min(c1, c2), maxC = Math.max(c1, c2);
     const minR = Math.min(r1, r2), maxR = Math.max(r1, r2);
 
-    const values: any[] = [];
+    const rows: any[][] = [];
     for (let r = minR; r <= maxR; r++) {
+      const row: any[] = [];
       for (let c = minC; c <= maxC; c++) {
         let colName = '';
         let temp = c;
@@ -1214,10 +1242,15 @@ export class SpreadsheetFormulaEvaluator {
           colName = String.fromCharCode(65 + ((temp - 1) % 26)) + colName;
           temp = Math.floor((temp - 1) / 26);
         }
-        values.push(this.cellLookup(`${colName}${r}`));
+        row.push(this.cellLookup(`${colName}${r}`));
       }
+      rows.push(row);
     }
-    return values;
+    return rows;
+  }
+
+  private resolveRange(rangeStr: string): any[] {
+    return this.resolveRange2D(rangeStr).flat();
   }
 
   private executeFunction(name: string, args: any[]): any {
@@ -1258,6 +1291,203 @@ export class SpreadsheetFormulaEvaluator {
       case 'IF': {
         const cond = Boolean(args[0]);
         return cond ? args[1] : args.length > 2 ? args[2] : false;
+      }
+      case 'ROUND': {
+        const val = Number(args[0]);
+        const digits = args.length > 1 ? Number(args[1]) : 0;
+        if (Number.isNaN(val) || Number.isNaN(digits)) return '#VALUE!';
+        const factor = Math.pow(10, digits);
+        return Math.round(val * factor) / factor;
+      }
+      case 'IFERROR': {
+        const v = args[0];
+        if (typeof v === 'string' && v.startsWith('#')) return args[1];
+        return v;
+      }
+      case 'CONCAT': {
+        const parts: string[] = [];
+        const walk = (item: any) => {
+          if (Array.isArray(item)) item.forEach(walk);
+          else if (item !== null && item !== undefined) parts.push(String(item));
+        };
+        args.forEach(walk);
+        return parts.join('');
+      }
+      case 'LEFT': {
+        const str = String(args[0] ?? '');
+        const n = args.length > 1 ? Number(args[1]) : 1;
+        return str.slice(0, Math.max(0, n));
+      }
+      case 'RIGHT': {
+        const str = String(args[0] ?? '');
+        const n = args.length > 1 ? Number(args[1]) : 1;
+        return str.slice(Math.max(0, str.length - n));
+      }
+      case 'MID': {
+        const str = String(args[0] ?? '');
+        const start = Number(args[1]);
+        const n = Number(args[2]);
+        if (Number.isNaN(start) || Number.isNaN(n) || start < 1) return '#VALUE!';
+        return str.substring(start - 1, start - 1 + n);
+      }
+      case 'DATE': {
+        const y = Number(args[0]);
+        const m = Number(args[1]);
+        const d = Number(args[2]);
+        if (Number.isNaN(y) || Number.isNaN(m) || Number.isNaN(d)) return '#VALUE!';
+        const dt = new Date(Date.UTC(y, m - 1, d));
+        return dt.toISOString().slice(0, 10);
+      }
+      case 'VLOOKUP': {
+        const lookupVal = args[0];
+        const tableArg = args[1];
+        const colIdx = Number(args[2]);
+        const rangeLookup = args.length > 3 ? Boolean(args[3]) : true;
+
+        const grid: any[][] =
+          (tableArg as any)?._range2D ||
+          (Array.isArray(tableArg) && Array.isArray(tableArg[0])
+            ? tableArg
+            : Array.isArray(tableArg)
+            ? tableArg.map((x) => [x])
+            : [[tableArg]]);
+
+        if (grid.length === 0 || colIdx < 1) return '#REF!';
+        const maxCols = Math.max(...grid.map((r) => r.length));
+        if (colIdx > maxCols) return '#REF!';
+
+        if (!rangeLookup) {
+          // Exact match
+          for (let r = 0; r < grid.length; r++) {
+            const cellVal = grid[r][0];
+            if (
+              cellVal !== undefined &&
+              (String(cellVal).toLowerCase() === String(lookupVal).toLowerCase() ||
+                Number(cellVal) === Number(lookupVal))
+            ) {
+              return colIdx - 1 < grid[r].length ? grid[r][colIdx - 1] : '';
+            }
+          }
+          return '#N/A';
+        } else {
+          // Approximate match
+          let bestRow = -1;
+          for (let r = 0; r < grid.length; r++) {
+            const cellVal = grid[r][0];
+            if (cellVal === undefined || cellVal === '') continue;
+            const numCell = Number(cellVal);
+            const numLookup = Number(lookupVal);
+            if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
+              if (numCell <= numLookup) bestRow = r;
+            } else {
+              if (String(cellVal).localeCompare(String(lookupVal)) <= 0) bestRow = r;
+            }
+          }
+          if (bestRow === -1) return '#N/A';
+          return colIdx - 1 < grid[bestRow].length ? grid[bestRow][colIdx - 1] : '';
+        }
+      }
+      case 'HLOOKUP': {
+        const lookupVal = args[0];
+        const tableArg = args[1];
+        const rowIdx = Number(args[2]);
+        const rangeLookup = args.length > 3 ? Boolean(args[3]) : true;
+
+        const grid: any[][] =
+          (tableArg as any)?._range2D ||
+          (Array.isArray(tableArg) && Array.isArray(tableArg[0]) ? tableArg : [tableArg]);
+
+        if (grid.length === 0 || rowIdx < 1 || rowIdx > grid.length) return '#REF!';
+        const firstRow = grid[0];
+
+        if (!rangeLookup) {
+          for (let c = 0; c < firstRow.length; c++) {
+            const cellVal = firstRow[c];
+            if (
+              cellVal !== undefined &&
+              (String(cellVal).toLowerCase() === String(lookupVal).toLowerCase() ||
+                Number(cellVal) === Number(lookupVal))
+            ) {
+              return c < grid[rowIdx - 1].length ? grid[rowIdx - 1][c] : '';
+            }
+          }
+          return '#N/A';
+        } else {
+          let bestCol = -1;
+          for (let c = 0; c < firstRow.length; c++) {
+            const cellVal = firstRow[c];
+            if (cellVal === undefined || cellVal === '') continue;
+            const numCell = Number(cellVal);
+            const numLookup = Number(lookupVal);
+            if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
+              if (numCell <= numLookup) bestCol = c;
+            } else {
+              if (String(cellVal).localeCompare(String(lookupVal)) <= 0) bestCol = c;
+            }
+          }
+          if (bestCol === -1) return '#N/A';
+          return bestCol < grid[rowIdx - 1].length ? grid[rowIdx - 1][bestCol] : '';
+        }
+      }
+      case 'INDEX': {
+        const tableArg = args[0];
+        const rowNum = Number(args[1]);
+        const colNum = args.length > 2 ? Number(args[2]) : 1;
+
+        const grid: any[][] =
+          (tableArg as any)?._range2D ||
+          (Array.isArray(tableArg) && Array.isArray(tableArg[0])
+            ? tableArg
+            : Array.isArray(tableArg)
+            ? [tableArg]
+            : [[tableArg]]);
+
+        if (rowNum < 1 || rowNum > grid.length) return '#REF!';
+        const targetRow = grid[rowNum - 1];
+        if (colNum < 1 || colNum > targetRow.length) return '#REF!';
+        return targetRow[colNum - 1];
+      }
+      case 'MATCH': {
+        const lookupVal = args[0];
+        const arr = Array.isArray(args[1]) ? args[1] : [args[1]];
+        const matchType = args.length > 2 ? Number(args[2]) : 1;
+
+        if (matchType === 0) {
+          for (let i = 0; i < arr.length; i++) {
+            if (
+              String(arr[i]).toLowerCase() === String(lookupVal).toLowerCase() ||
+              Number(arr[i]) === Number(lookupVal)
+            ) {
+              return i + 1;
+            }
+          }
+          return '#N/A';
+        } else if (matchType === 1) {
+          let bestIdx = -1;
+          for (let i = 0; i < arr.length; i++) {
+            const numA = Number(arr[i]);
+            const numL = Number(lookupVal);
+            if (!Number.isNaN(numA) && !Number.isNaN(numL)) {
+              if (numA <= numL) bestIdx = i;
+            } else if (String(arr[i]).localeCompare(String(lookupVal)) <= 0) {
+              bestIdx = i;
+            }
+          }
+          return bestIdx === -1 ? '#N/A' : bestIdx + 1;
+        } else if (matchType === -1) {
+          let bestIdx = -1;
+          for (let i = 0; i < arr.length; i++) {
+            const numA = Number(arr[i]);
+            const numL = Number(lookupVal);
+            if (!Number.isNaN(numA) && !Number.isNaN(numL)) {
+              if (numA >= numL) bestIdx = i;
+            } else if (String(arr[i]).localeCompare(String(lookupVal)) >= 0) {
+              bestIdx = i;
+            }
+          }
+          return bestIdx === -1 ? '#N/A' : bestIdx + 1;
+        }
+        return '#N/A';
       }
       default:
         throw new Error(`Unsupported spreadsheet function: ${name}`);
@@ -1338,6 +1568,262 @@ export class SpreadsheetFormulaEvaluator {
       throw new Error(`Unexpected character: "${ch}" at index ${i}`);
     }
     return tokens;
+  }
+}
+
+export interface FormulaCellInfo {
+  ref: string;
+  formula: string;
+  rowIdx?: number;
+  colIdx?: number;
+}
+
+/**
+ * Directed Acyclic Graph (DAG) Dependency Topological Sorter & Circular Reference Engine
+ * Solves multi-layer cell dependencies, evaluates formulas in correct topological order,
+ * and detects cycles safely without recursion stack overflow, assigning #CYCLE! standard error codes.
+ */
+export class SpreadsheetDagEngine {
+  constructor(private cellMap: Record<string, any>) {}
+
+  /**
+   * Extracts dependent cell references and ranges from formula expression.
+   */
+  public static extractDependencies(formula: string): string[] {
+    if (!formula) return [];
+    if (formula.startsWith('=')) formula = formula.slice(1);
+    // Remove string literals to avoid false positives
+    const stripped = formula.replace(/"(?:[^"\\]|\\.)*"/g, '');
+    const refs = new Set<string>();
+
+    const colToNum = (s: string): number => {
+      let c = 0;
+      for (let i = 0; i < s.length; i++) c = c * 26 + (s.charCodeAt(i) - 64);
+      return c;
+    };
+    const numToCol = (n: number): string => {
+      let s = '';
+      let temp = n;
+      while (temp > 0) {
+        s = String.fromCharCode(65 + ((temp - 1) % 26)) + s;
+        temp = Math.floor((temp - 1) / 26);
+      }
+      return s;
+    };
+
+    // 1. Ranges like A1:B5 or $A$1:$B$5
+    const rangeRegex = /(\$?)([A-Za-z]+)(\$?)([0-9]+)\s*:\s*(\$?)([A-Za-z]+)(\$?)([0-9]+)/g;
+    let rMatch: RegExpExecArray | null;
+    while ((rMatch = rangeRegex.exec(stripped)) !== null) {
+      const c1 = rMatch[2].toUpperCase();
+      const row1 = parseInt(rMatch[4], 10);
+      const c2 = rMatch[6].toUpperCase();
+      const row2 = parseInt(rMatch[8], 10);
+
+      const startC = Math.min(colToNum(c1), colToNum(c2));
+      const endC = Math.max(colToNum(c1), colToNum(c2));
+      const startR = Math.min(row1, row2);
+      const endR = Math.max(row1, row2);
+
+      for (let r = startR; r <= endR; r++) {
+        for (let c = startC; c <= endC; c++) {
+          refs.add(`${numToCol(c)}${r}`);
+        }
+      }
+    }
+
+    // 2. Individual cell references like A1, $B$2
+    const cellRegex = /\b(\$?)([A-Za-z]+)(\$?)([0-9]+)\b/g;
+    let cMatch: RegExpExecArray | null;
+    while ((cMatch = cellRegex.exec(stripped)) !== null) {
+      const afterIdx = cMatch.index + cMatch[0].length;
+      if (stripped[afterIdx] === '(' || stripped[afterIdx] === ':') {
+        continue; // Function name or already handled range
+      }
+      const ref = `${cMatch[2].toUpperCase()}${cMatch[4]}`;
+      refs.add(ref);
+    }
+
+    return Array.from(refs);
+  }
+
+  /**
+   * Evaluates all formula cells in topological dependency order.
+   * Detects cycles and safely sets #CYCLE! error codes without stack overflows.
+   */
+  public evaluateWithDag(
+    formulaCells: FormulaCellInfo[],
+    rows?: string[][]
+  ): { evaluated: Record<string, any>; cycles: string[] } {
+    const formulaMap = new Map<string, FormulaCellInfo>();
+    for (const fc of formulaCells) {
+      if (fc.ref) {
+        formulaMap.set(fc.ref.toUpperCase(), fc);
+      }
+    }
+
+    // Build dependency graph among formula cells
+    const deps = new Map<string, Set<string>>();
+    const reverseDeps = new Map<string, Set<string>>(); // who depends on me
+    for (const [ref, fc] of formulaMap.entries()) {
+      const referenced = SpreadsheetDagEngine.extractDependencies(fc.formula);
+      const formulaReferenced = new Set<string>();
+      for (const r of referenced) {
+        if (formulaMap.has(r)) {
+          formulaReferenced.add(r);
+        }
+      }
+      deps.set(ref, formulaReferenced);
+
+      for (const parent of formulaReferenced) {
+        if (!reverseDeps.has(parent)) reverseDeps.set(parent, new Set());
+        reverseDeps.get(parent)!.add(ref);
+      }
+    }
+
+    // Detect cycles using 3-color DFS
+    const UNVISITED = 0,
+      VISITING = 1,
+      VISITED = 2;
+    const state = new Map<string, number>();
+    const cyclicCells = new Set<string>();
+    const stack: string[] = [];
+
+    const dfs = (u: string) => {
+      state.set(u, VISITING);
+      stack.push(u);
+
+      const neighbors = deps.get(u) || new Set();
+      for (const v of neighbors) {
+        if (v === u) {
+          // Self-cycle
+          cyclicCells.add(u);
+          continue;
+        }
+        const vState = state.get(v) || UNVISITED;
+        if (vState === VISITING) {
+          // Cycle detected!
+          const cycleStart = stack.indexOf(v);
+          if (cycleStart !== -1) {
+            for (let i = cycleStart; i < stack.length; i++) {
+              cyclicCells.add(stack[i]);
+            }
+          } else {
+            cyclicCells.add(v);
+            cyclicCells.add(u);
+          }
+        } else if (vState === UNVISITED) {
+          dfs(v);
+        }
+      }
+
+      stack.pop();
+      state.set(u, VISITED);
+    };
+
+    for (const node of formulaMap.keys()) {
+      if ((state.get(node) || UNVISITED) === UNVISITED) {
+        dfs(node);
+      }
+    }
+
+    // Propagate cyclic status to all downstream dependent cells
+    const queue = Array.from(cyclicCells);
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      const dependents = reverseDeps.get(curr) || new Set();
+      for (const dep of dependents) {
+        if (!cyclicCells.has(dep)) {
+          cyclicCells.add(dep);
+          queue.push(dep);
+        }
+      }
+    }
+
+    // Assign #CYCLE! error code to all cyclic cells
+    for (const cRef of cyclicCells) {
+      this.cellMap[cRef] = '#CYCLE!';
+      const fc = formulaMap.get(cRef);
+      if (fc && rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
+        rows[fc.rowIdx][fc.colIdx] = '#CYCLE!';
+      }
+    }
+
+    // Topological Sort on non-cyclic cells (Kahn's algorithm)
+    const inDegree = new Map<string, number>();
+    const nonCyclicNodes: string[] = [];
+    for (const node of formulaMap.keys()) {
+      if (!cyclicCells.has(node)) {
+        nonCyclicNodes.push(node);
+        let deg = 0;
+        for (const dep of deps.get(node) || []) {
+          if (!cyclicCells.has(dep)) deg++;
+        }
+        inDegree.set(node, deg);
+      }
+    }
+
+    const topoQueue: string[] = [];
+    for (const node of nonCyclicNodes) {
+      if ((inDegree.get(node) || 0) === 0) {
+        topoQueue.push(node);
+      }
+    }
+
+    const topoOrder: string[] = [];
+    while (topoQueue.length > 0) {
+      const curr = topoQueue.shift()!;
+      topoOrder.push(curr);
+
+      const dependents = reverseDeps.get(curr) || new Set();
+      for (const dep of dependents) {
+        if (!cyclicCells.has(dep)) {
+          const newDeg = (inDegree.get(dep) || 1) - 1;
+          inDegree.set(dep, newDeg);
+          if (newDeg === 0) {
+            topoQueue.push(dep);
+          }
+        }
+      }
+    }
+
+    // Any remaining non-cyclic nodes without degree 0 (safeguard)
+    for (const node of nonCyclicNodes) {
+      if (!topoOrder.includes(node)) {
+        topoOrder.push(node);
+      }
+    }
+
+    // Evaluate in topological order
+    const evaluator = new SpreadsheetFormulaEvaluator((ref) => {
+      const cleanRef = ref.replace(/\$/g, '').toUpperCase();
+      const val = this.cellMap[cleanRef];
+      if (val === undefined || val === null || val === '') return 0;
+      return val;
+    });
+
+    for (const node of topoOrder) {
+      const fc = formulaMap.get(node);
+      if (!fc) continue;
+      try {
+        const result = evaluator.evaluate(fc.formula);
+        this.cellMap[node] = result;
+        const strResult = result !== null && result !== undefined ? String(result) : '';
+        if (rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
+          rows[fc.rowIdx][fc.colIdx] = strResult;
+        }
+      } catch {
+        this.cellMap[node] = '#REF!';
+        if (rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
+          rows[fc.rowIdx][fc.colIdx] = '#REF!';
+        }
+      }
+    }
+
+    return {
+      evaluated: this.cellMap,
+      cycles: Array.from(cyclicCells),
+    };
   }
 }
 
@@ -1448,27 +1934,10 @@ async function convertXlsxSource(
     rows.push(cells);
   }
 
-  // Evaluate dynamic formulas if any values were missing
+  // Evaluate dynamic formulas with DAG dependency sorter & cycle detection
   if (formulaCells.length > 0) {
-    const evaluator = new SpreadsheetFormulaEvaluator((ref) => {
-      const cleanRef = ref.replace(/\$/g, '').toUpperCase();
-      return cellMap[cleanRef] ?? 0;
-    });
-
-    for (const fc of formulaCells) {
-      try {
-        const result = evaluator.evaluate(fc.formula);
-        const strResult = result !== null && result !== undefined ? String(result) : '';
-        if (rows[fc.rowIdx] && fc.colIdx < rows[fc.rowIdx].length) {
-          rows[fc.rowIdx][fc.colIdx] = strResult;
-        }
-        if (fc.ref) {
-          cellMap[fc.ref] = result;
-        }
-      } catch {
-        // Fallback to empty if formula syntax is complex
-      }
-    }
+    const dagEngine = new SpreadsheetDagEngine(cellMap);
+    dagEngine.evaluateWithDag(formulaCells, rows);
   }
 
   // XLSX -> CSV

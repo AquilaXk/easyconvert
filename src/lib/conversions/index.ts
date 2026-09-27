@@ -81,7 +81,7 @@ import {
 
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
 import { performOcr, generateSearchablePdf } from './ocr';
-import { generateFb2FromText, generateHwpFromText } from './office';
+import { generateFb2FromText, generateHwpFromText, SpreadsheetFormulaEvaluator, SpreadsheetDagEngine } from './office';
 
 export {
   createZipArchive,
@@ -162,6 +162,8 @@ export {
   generateSearchablePdf,
   generateFb2FromText,
   generateHwpFromText,
+  SpreadsheetFormulaEvaluator,
+  SpreadsheetDagEngine,
 };
 
 export async function convertFile(
