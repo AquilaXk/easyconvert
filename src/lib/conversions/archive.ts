@@ -897,25 +897,51 @@ export function decompressLzma2(
 }
 
 export function write7zVarint(arr: number[], value: number): void {
-  let v = value;
-  while (v >= 0x80) {
-    arr.push((v & 0x7f) | 0x80);
-    v >>>= 7;
+  if (value < 0x80) {
+    arr.push(value);
+    return;
   }
-  arr.push(v & 0x7f);
+  let extraBytes = 0;
+  for (let i = 1; i <= 8; i++) {
+    if (value < Math.pow(2, 7 * (i + 1) - i)) {
+      extraBytes = i;
+      break;
+    }
+  }
+  if (extraBytes === 0) extraBytes = 8;
+  const firstByteMask = ((0xff00 >> extraBytes) & 0xff);
+  const highBits = Math.floor(value / Math.pow(2, extraBytes * 8)) & (0x7f >> extraBytes);
+  arr.push(firstByteMask | highBits);
+  let temp = value;
+  for (let b = 0; b < extraBytes; b++) {
+    arr.push(temp & 0xff);
+    temp = Math.floor(temp / 256);
+  }
 }
 
-export function read7zVarint(buf: Buffer | Uint8Array, offset: number): { value: number; nextOffset: number } {
-  let val = 0;
-  let shift = 0;
-  let cur = offset;
-  while (cur < buf.length) {
-    const b = buf[cur++];
-    val |= (b & 0x7f) << shift;
-    shift += 7;
-    if ((b & 0x80) === 0) break;
+export function read7zVarint(
+  buf: Buffer | Uint8Array,
+  offset: number
+): { value: number; nextOffset: number } {
+  if (offset >= buf.length) {
+    return { value: 0, nextOffset: offset };
   }
-  return { value: val, nextOffset: cur };
+  const firstByte = buf[offset++];
+  let mask = 0x80;
+  let value = 0;
+  for (let i = 0; i < 8; i++) {
+    if ((firstByte & mask) === 0) {
+      const highPart = firstByte & (mask - 1);
+      value += highPart * Math.pow(2, i * 8);
+      return { value, nextOffset: offset };
+    }
+    if (offset >= buf.length) {
+      return { value, nextOffset: offset };
+    }
+    value += buf[offset++] * Math.pow(2, i * 8);
+    mask >>= 1;
+  }
+  return { value, nextOffset: offset };
 }
 
 // ============================================================================

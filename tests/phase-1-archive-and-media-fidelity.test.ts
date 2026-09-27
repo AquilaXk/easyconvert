@@ -18,6 +18,8 @@ import {
   ARCHIVE_SECURITY_LIMITS,
   sanitizeArchivePath,
   crc32,
+  write7zVarint,
+  read7zVarint,
 } from '../src/lib/conversions';
 
 describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)', () => {
@@ -138,6 +140,36 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       expect(sanitizeArchivePath('..\\..\\windows\\system32\\cmd.exe')).toBe('windows/system32/cmd.exe');
       expect(sanitizeArchivePath('C:\\Users\\admin\\file.txt')).toBe('Users/admin/file.txt');
       expect(sanitizeArchivePath('/absolute/path/file.txt')).toBe('absolute/path/file.txt');
+    });
+
+    it('encodes and decodes standard 7z variable-length numbers across boundary ranges', () => {
+      const boundaryValues = [
+        0,
+        1,
+        63,
+        127,
+        128,
+        255,
+        256,
+        8400,
+        16383,
+        16384,
+        65535,
+        100000,
+        2097151,
+        2097152,
+        268435455,
+        268435456,
+        1000000000,
+      ];
+
+      for (const val of boundaryValues) {
+        const arr: number[] = [];
+        write7zVarint(arr, val);
+        const read = read7zVarint(Buffer.from(arr), 0);
+        expect(read.value).toBe(val);
+        expect(read.nextOffset).toBe(arr.length);
+      }
     });
   });
 

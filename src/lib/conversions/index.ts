@@ -106,6 +106,8 @@ import {
   ARCHIVE_SECURITY_LIMITS,
   sanitizeArchivePath,
   crc32,
+  write7zVarint,
+  read7zVarint,
 } from './archive';
 
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
@@ -215,6 +217,8 @@ export {
   ARCHIVE_SECURITY_LIMITS,
   sanitizeArchivePath,
   crc32,
+  write7zVarint,
+  read7zVarint,
   detectFfmpegEnvironment,
   type FfmpegEnvironmentInfo,
   BitReader,
