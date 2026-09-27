@@ -259,7 +259,10 @@ export function calculateBackoffWithJitter(
   const exponential = baseDelayMs * Math.pow(2, Math.max(0, attempt - 1));
   const capped = Math.min(exponential, maxDelayMs);
   const minFloor = Math.max(10, Math.floor(baseDelayMs * 0.25));
-  const jitter = minFloor + Math.floor(Math.random() * Math.max(1, capped - minFloor));
+  if (capped <= minFloor) {
+    return capped;
+  }
+  const jitter = crypto.randomInt(minFloor, capped + 1);
   return Math.min(capped, jitter);
 }
 
@@ -321,34 +324,38 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
 
       this.emit('completed', job, result);
     } catch (err: any) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      job.failedReason = errorMessage;
-      if (err instanceof Error && err.stack) {
-        job.stacktrace.push(err.stack);
-      }
-
-      const maxAttempts = job.opts.attempts || 1;
-      if (job.attemptsMade < maxAttempts) {
-        // Calculate backoff delay with jitter
-        const backoffCfg = job.opts.backoff || { type: 'exponential', delay: 1000 };
-        const delay =
-          backoffCfg.type === 'exponential'
-            ? calculateBackoffWithJitter(job.attemptsMade, backoffCfg.delay)
-            : backoffCfg.delay;
-
-        await job.log(`Job attempt ${job.attemptsMade} failed. Retrying in ${delay}ms...`);
-        if (this.queue._requeue) {
-          this.queue._requeue(job, delay);
-        }
-      } else {
-        job.state = 'failed';
-        job.finishedOn = Date.now();
-        if (this.queue.moveToDlq) {
-          await this.queue.moveToDlq(job, errorMessage);
-        }
-        this.emit('failed', job, err);
-      }
+      await this.handleJobFailure(job, err);
     }
+  }
+
+  private async handleJobFailure(job: Job<T, R>, err: any): Promise<void> {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    job.failedReason = errorMessage;
+    if (err instanceof Error && err.stack) {
+      job.stacktrace.push(err.stack);
+    }
+
+    const maxAttempts = job.opts.attempts || 1;
+    if (job.attemptsMade < maxAttempts) {
+      const backoffCfg = job.opts.backoff || { type: 'exponential', delay: 1000 };
+      const delay =
+        backoffCfg.type === 'exponential'
+          ? calculateBackoffWithJitter(job.attemptsMade, backoffCfg.delay)
+          : backoffCfg.delay;
+
+      await job.log(`Job attempt ${job.attemptsMade} failed. Retrying in ${delay}ms...`);
+      if (this.queue._requeue) {
+        this.queue._requeue(job, delay);
+      }
+      return;
+    }
+
+    job.state = 'failed';
+    job.finishedOn = Date.now();
+    if (this.queue.moveToDlq) {
+      await this.queue.moveToDlq(job, errorMessage);
+    }
+    this.emit('failed', job, err);
   }
 
   async close(): Promise<void> {

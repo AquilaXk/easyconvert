@@ -62,7 +62,7 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       expect(job.progress).toBe(50);
 
       await job.log('Processing step 1 completed');
-      expect(job.logs.length).toBe(1);
+      expect(job.logs).toHaveLength(1);
       expect(job.logs[0]).toContain('Processing step 1 completed');
     });
 
@@ -74,16 +74,16 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       await queue.moveToDlq(job, 'Simulated critical parser error');
 
       const dlqEntries = await queue.getDlqEntries();
-      expect(dlqEntries.length).toBe(1);
+      expect(dlqEntries).toHaveLength(1);
       expect(dlqEntries[0].jobId).toBe(job.id);
       expect(dlqEntries[0].failedReason).toBe('Simulated critical parser error');
-      expect(dlqEvents.length).toBe(1);
+      expect(dlqEvents).toHaveLength(1);
 
       const purgedCount = await queue.purgeDlq();
       expect(purgedCount).toBe(1);
 
       const emptyDlq = await queue.getDlqEntries();
-      expect(emptyDlq.length).toBe(0);
+      expect(emptyDlq).toHaveLength(0);
     });
 
     it('Worker executes jobs and automatically pushes exhausted jobs to DLQ', async () => {
@@ -181,7 +181,7 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       await job.updateProgress(25);
       await job.updateProgress(75);
 
-      expect(events.length).toBe(2);
+      expect(events).toHaveLength(2);
       expect(events[0]).toEqual({
         event: 'progress',
         data: { jobId: job.id, progress: 25, state: 'waiting' },
@@ -194,7 +194,7 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       unsubscribe();
 
       await job.updateProgress(100);
-      expect(events.length).toBe(2); // No new events after unsubscription
+      expect(events).toHaveLength(2); // No new events after unsubscription
 
       await queue.close();
     });
