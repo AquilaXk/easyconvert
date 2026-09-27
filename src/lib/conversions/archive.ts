@@ -100,7 +100,17 @@ export async function extractZipArchive(
       );
     }
 
-    files.push({ filename, buffer });
+    // Zip-slip defense: sanitize path and strip leading / or drive letters or ..
+    const sanitizedName = filename
+      .replace(/^[a-zA-Z]:[\\/]+/, '')
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter((part) => part !== '..' && part !== '.' && part.length > 0)
+      .join('/');
+
+    if (!sanitizedName) continue;
+
+    files.push({ filename: sanitizedName, buffer });
   }
 
   return files;
