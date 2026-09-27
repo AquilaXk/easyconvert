@@ -57,7 +57,19 @@ export async function performOcr(
       };
     }
   } catch {
-    // Fall back to built-in geometric OCR engine
+    // Fall back to built-in geometric OCR engine or CJK pipeline
+  }
+
+  // 2. If CJK script requested (ko, ja, zh), route through ONNX CJK OCR Pipeline
+  const langLower = language.toLowerCase();
+  const isCjk = ['ko', 'kor', 'korean', 'ja', 'jpn', 'japanese', 'zh', 'chi_sim', 'chi_tra', 'chinese', 'cjk'].includes(langLower);
+  if (isCjk) {
+    try {
+      const mappedLang = (langLower.startsWith('ko') ? 'ko' : langLower.startsWith('ja') ? 'ja' : 'zh') as "ko" | "ja" | "zh";
+      return await runOnnxCjkOcrPipeline(imageBuffer, { ocrLanguage: mappedLang });
+    } catch {
+      // Fallback
+    }
   }
 
   return performGeometricOcr(imageBuffer);

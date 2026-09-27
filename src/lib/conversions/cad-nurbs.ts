@@ -1279,19 +1279,30 @@ export function triangulatePolygonEarcut(
   if (n < 3) return [];
   if (n === 3) return [[0, 1, 2]];
 
-  const absX = Math.abs(normal[0]);
-  const absY = Math.abs(normal[1]);
-  const absZ = Math.abs(normal[2]);
+  const nLen = Math.hypot(normal[0], normal[1], normal[2]) || 1;
+  const nz = [normal[0] / nLen, normal[1] / nLen, normal[2] / nLen];
 
-  const p2d: Array<{ u: number; v: number; origIdx: number }> = points.map((p, idx) => {
-    if (absZ >= absX && absZ >= absY) {
-      return { u: p.x, v: p.y, origIdx: idx };
-    }
-    if (absX >= absY) {
-      return { u: p.y, v: p.z, origIdx: idx };
-    }
-    return { u: p.z, v: p.x, origIdx: idx };
-  });
+  // Construct invariant right-handed orthonormal basis (ux, vx, nz) on the plane
+  const ax = Math.abs(nz[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  let ux = [
+    ax[1] * nz[2] - ax[2] * nz[1],
+    ax[2] * nz[0] - ax[0] * nz[2],
+    ax[0] * nz[1] - ax[1] * nz[0],
+  ];
+  const uLen = Math.hypot(ux[0], ux[1], ux[2]) || 1;
+  ux = [ux[0] / uLen, ux[1] / uLen, ux[2] / uLen];
+
+  const vx = [
+    nz[1] * ux[2] - nz[2] * ux[1],
+    nz[2] * ux[0] - nz[0] * ux[2],
+    nz[0] * ux[1] - nz[1] * ux[0],
+  ];
+
+  const p2d: Array<{ u: number; v: number; origIdx: number }> = points.map((p, idx) => ({
+    u: p.x * ux[0] + p.y * ux[1] + p.z * ux[2],
+    v: p.x * vx[0] + p.y * vx[1] + p.z * vx[2],
+    origIdx: idx,
+  }));
 
   let area = 0;
   for (let i = 0; i < n; i++) {

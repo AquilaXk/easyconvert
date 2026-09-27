@@ -24,7 +24,6 @@ import AuthModal from './AuthModal';
 export default function Header() {
   const [isDark, setIsDark] = useState(false);
   const [isToolsOpen, setIsToolsOpen] = useState(false);
-  const [isApiOpen, setIsApiOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
@@ -62,12 +61,11 @@ export default function Header() {
   return (
     <header className="sticky top-0 z-50 backdrop-blur-sm bg-neutral-900/95 border-b border-white/[0.08] text-white transition-colors">
       {/* Invisible backdrop to dismiss menus */}
-      {(isToolsOpen || isApiOpen) && (
+      {isToolsOpen && (
         <div
           className="fixed inset-0 z-30"
           onClick={() => {
             setIsToolsOpen(false);
-            setIsApiOpen(false);
           }}
         />
       )}
@@ -98,7 +96,6 @@ export default function Header() {
                 type="button"
                 onClick={() => {
                   setIsToolsOpen(!isToolsOpen);
-                  setIsApiOpen(false);
                 }}
                 className={`group relative flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md transition-colors ${
                   isToolsOpen ? 'text-white bg-white/10' : 'text-neutral-300 hover:text-white hover:bg-white/5'
@@ -192,118 +189,26 @@ export default function Header() {
               )}
             </div>
 
-            {/* API Mega-Menu */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsApiOpen(!isApiOpen);
-                  setIsToolsOpen(false);
-                }}
-                className={`group relative flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                  isApiOpen ? 'text-white bg-white/10' : 'text-neutral-300 hover:text-white hover:bg-white/5'
-                }`}
-              >
-                <span>API</span>
-                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isApiOpen ? 'rotate-180 text-white' : 'text-neutral-400'}`} />
-              </button>
-
-              {isApiOpen && (
-                <div
-                  className="absolute top-full left-0 mt-2 w-[820px] max-w-4xl rounded-xl bg-[#212529] border border-neutral-700/80 shadow-2xl p-6 z-50 animate-in fade-in slide-in-from-top-2 duration-150"
-                >
-                  {/* Top Row: Convert Files, Capture Websites, Optimize Files */}
-                  <div className="grid grid-cols-3 gap-6">
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2">
-                        <RefreshCw className="w-4 h-4 text-neutral-400" />
-                        <span>Convert Files</span>
-                      </div>
-                      <div className="space-y-1.5 text-xs text-neutral-300">
-                        <a href="/api/v2#convert-files" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">File Conversion API</a>
-                        <a href="/api/v2#office-pdf" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Office to PDF API</a>
-                        <a href="/api/v2#iwork-pdf" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">iWork to PDF API</a>
-                        <a href="/api/v2#pdf-office" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">PDF to Office API</a>
-                        <a href="/api/v2#video-encoding" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Video Encoding API</a>
-                        <a href="/api/v2#markdown-llms" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Markdown for LLMs</a>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2">
-                        <Globe className="w-4 h-4 text-neutral-400" />
-                        <span>Capture Websites</span>
-                      </div>
-                      <div className="space-y-1.5 text-xs text-neutral-300">
-                        <a href="/api/v2#html-pdf" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">HTML to PDF API</a>
-                        <a href="/api/v2#screenshot" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Website Screenshot API</a>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2">
-                        <Sparkles className="w-4 h-4 text-neutral-400" />
-                        <span>Optimize Files</span>
-                      </div>
-                      <div className="space-y-1.5 text-xs text-neutral-300">
-                        <a href="/api/v2#compress-pdf" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Compress PDF API</a>
-                        <a href="/api/v2#compress-images" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Compress Images API</a>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Horizontal Split Line */}
-                  <div className="border-t border-neutral-700/60 my-5" />
-
-                  {/* Bottom Row: Other APIs, Integrations, Documentation */}
-                  <div className="grid grid-cols-3 gap-6">
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2.5 pb-1 border-b border-neutral-800">
-                        <Layers className="w-4 h-4 text-neutral-400" />
-                        <span>Other APIs</span>
-                      </div>
-                      <div className="space-y-1.5 text-xs text-neutral-300">
-                        <a href="/api/v2#merge-pdf" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Merge PDF API</a>
-                        <a href="/api/v2#thumbnails" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Thumbnail API</a>
-                        <a href="/api/v2#watermark" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Watermark API</a>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2.5 pb-1 border-b border-neutral-800">
-                        <Cpu className="w-4 h-4 text-neutral-400" />
-                        <span>Integrations</span>
-                      </div>
-                      <div className="space-y-1.5 text-xs text-neutral-300">
-                        <a href="/api/v2#integrations" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">No-Code Automation</a>
-                        <a href="/api/v2#mcp-server" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">MCP Server</a>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2.5 pb-1 border-b border-neutral-800">
-                        <BookOpen className="w-4 h-4 text-neutral-400" />
-                        <span>Documentation</span>
-                      </div>
-                      <div className="space-y-1.5 text-xs text-neutral-300">
-                        <a href="/api/v2" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">API Documentation</a>
-                        <a href="/api/v2#quickstart" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Quickstart Guide</a>
-                        <a href="/api/v2#job-builder" onClick={() => setIsApiOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Job Builder</a>
-                        <a href="/api/formats" target="_blank" rel="noopener noreferrer" className="hover:text-white hover:underline transition-colors block py-0.5 text-neutral-400">Capability Matrix JSON</a>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Pricing */}
+              {/* Supported Formats */}
             <a
-              href="/pricing"
+              href="#format-catalog"
               className="px-2.5 py-1.5 text-sm font-medium text-neutral-300 hover:text-white rounded-md hover:bg-white/5 transition-colors"
             >
-              Pricing
+              Formats
             </a>
+
+            {/* How It Works */}
+            <a
+              href="#how-it-works"
+              className="px-2.5 py-1.5 text-sm font-medium text-neutral-300 hover:text-white rounded-md hover:bg-white/5 transition-colors"
+            >
+              How It Works
+            </a>
+
+            {/* 100% Free Static Edge Badge */}
+            <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+              100% Free
+            </span>
           </nav>
         </div>
 
@@ -384,18 +289,18 @@ export default function Header() {
           </div>
           <div className="border-t border-white/10 pt-2 flex flex-col gap-1">
             <a
-              href="/api/v2"
+              href="#format-catalog"
               onClick={() => setIsMobileMenuOpen(false)}
               className="px-2 py-1 text-sm text-neutral-300 hover:text-white"
             >
-              API
+              Formats
             </a>
             <a
-              href="/pricing"
+              href="#how-it-works"
               onClick={() => setIsMobileMenuOpen(false)}
               className="px-2 py-1 text-sm text-neutral-300 hover:text-white"
             >
-              Pricing
+              How It Works
             </a>
             <a
               href="/login"

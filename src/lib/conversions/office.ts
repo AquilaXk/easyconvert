@@ -1355,11 +1355,19 @@ async function convertXlsxSource(
   const cellMap: Record<string, any> = {};
   const formulaCells: Array<{ ref: string; formula: string; rowIdx: number; colIdx: number }> = [];
 
-  const rowRegex = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
+  const rowRegex = /<row\b([^>]*?)(?:>([\s\S]*?)<\/row>|\/>)/g;
   let rMatch: RegExpExecArray | null;
 
   while ((rMatch = rowRegex.exec(sheetXml)) !== null) {
-    const rowXml = rMatch[1];
+    const rowAttrs = rMatch[1];
+    const rowXml = rMatch[2] || '';
+    const rRowAttr = /r="(\d+)"/i.exec(rowAttrs);
+    if (rRowAttr) {
+      const targetRowIdx = parseInt(rRowAttr[1], 10) - 1;
+      while (rows.length < targetRowIdx) {
+        rows.push([]);
+      }
+    }
     const cells: string[] = [];
     const cellRegex = /<c\s+([^>]*?)(?:>([\s\S]*?)<\/c>|\/>)/g;
     let cMatch: RegExpExecArray | null;
@@ -1418,7 +1426,7 @@ async function convertXlsxSource(
       cells[colIdx] = cellValue;
       nextColIdx = colIdx + 1;
     }
-    if (cells.length > 0) rows.push(cells);
+    rows.push(cells);
   }
 
   // Evaluate dynamic formulas if any values were missing
@@ -3636,11 +3644,19 @@ async function extractRowsForOffice(
 
         const sheetXml = await sheetFile.async('text');
         const rows: string[][] = [];
-        const rowRegex = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
+        const rowRegex = /<row\b([^>]*?)(?:>([\s\S]*?)<\/row>|\/>)/g;
         let rMatch: RegExpExecArray | null;
 
         while ((rMatch = rowRegex.exec(sheetXml)) !== null) {
-          const rowXml = rMatch[1];
+          const rowAttrs = rMatch[1];
+          const rowXml = rMatch[2] || '';
+          const rRowAttr = /r="(\d+)"/i.exec(rowAttrs);
+          if (rRowAttr) {
+            const targetRowIdx = parseInt(rRowAttr[1], 10) - 1;
+            while (rows.length < targetRowIdx) {
+              rows.push([]);
+            }
+          }
           const cells: string[] = [];
           const cellRegex = /<c\s+([^>]*?)(?:>([\s\S]*?)<\/c>|\/>)/g;
           let cMatch: RegExpExecArray | null;
@@ -3699,7 +3715,7 @@ async function extractRowsForOffice(
             cells[colIdx] = cellValue;
             nextColIdx = colIdx + 1;
           }
-          if (cells.length > 0) rows.push(cells);
+          rows.push(cells);
         }
         if (rows.length > 0) return rows;
       }
