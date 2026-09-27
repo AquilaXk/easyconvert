@@ -220,9 +220,54 @@ export function getProcessRssMb(pid: number): number | null {
   return null;
 }
 
+export interface UnshareCapability {
+  available: boolean;
+  path: string;
+  args: string[];
+}
+
+let unshareCapability: UnshareCapability | null = null;
+
+export function resetUnshareCapabilityCache(): void {
+  unshareCapability = null;
+}
+
+/**
+ * Probes the operating system to determine whether Linux unshare can actually create network namespaces.
+ */
+export function getUnshareCapability(): UnshareCapability {
+  if (unshareCapability !== null) return unshareCapability;
+  if (process.platform !== 'linux') {
+    unshareCapability = { available: false, path: '', args: [] };
+    return unshareCapability;
+  }
+
+  const unsharePaths = ['/usr/bin/unshare', '/bin/unshare'];
+  for (const p of unsharePaths) {
+    if (fs.existsSync(p)) {
+      // First probe -r -n (unprivileged user + net namespace)
+      try {
+        execFileSync(p, ['-r', '-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
+        unshareCapability = { available: true, path: p, args: ['-r', '-n'] };
+        return unshareCapability;
+      } catch {}
+
+      // Second probe -n (net namespace, requires CAP_SYS_ADMIN)
+      try {
+        execFileSync(p, ['-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
+        unshareCapability = { available: true, path: p, args: ['-n'] };
+        return unshareCapability;
+      } catch {}
+    }
+  }
+
+  unshareCapability = { available: false, path: '', args: [] };
+  return unshareCapability;
+}
+
 /**
  * Resolves the final execution command, wrapping with unshare network namespace isolation
- * when networkIsolated is requested and running on a supported Linux host.
+ * when networkIsolated is requested and running on a supported Linux host with unshare capabilities.
  */
 export function resolveSandboxedCommand(
   binaryPath: string,
@@ -230,15 +275,13 @@ export function resolveSandboxedCommand(
   networkIsolated: boolean
 ): { binary: string; args: string[]; wrapped: boolean } {
   if (process.platform === 'linux' && networkIsolated) {
-    const unsharePaths = ['/usr/bin/unshare', '/bin/unshare'];
-    for (const p of unsharePaths) {
-      if (fs.existsSync(p)) {
-        return {
-          binary: p,
-          args: ['-n', '--', binaryPath, ...args],
-          wrapped: true,
-        };
-      }
+    const cap = getUnshareCapability();
+    if (cap.available) {
+      return {
+        binary: cap.path,
+        args: [...cap.args, '--', binaryPath, ...args],
+        wrapped: true,
+      };
     }
   }
   return { binary: binaryPath, args, wrapped: false };

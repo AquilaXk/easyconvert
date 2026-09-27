@@ -3,6 +3,7 @@ import {
   executeSandboxedBinary,
   getSanitizedEnvironment,
   resolveSandboxedCommand,
+  getUnshareCapability,
   SandboxedTimeoutError,
   SandboxedBufferLimitError,
 } from '../src/lib/security/process-sandbox';
@@ -60,6 +61,13 @@ describe('Phase 3: Zero-Trust Enterprise Security, Sandboxing & Privacy Hardenin
         expect(res.binary).toBe('/bin/echo');
         expect(res.args).toEqual(['hello']);
       }
+    });
+
+    it('probes Linux unshare capability correctly and caches result', () => {
+      const cap = getUnshareCapability();
+      expect(typeof cap.available).toBe('boolean');
+      expect(typeof cap.path).toBe('string');
+      expect(Array.isArray(cap.args)).toBe(true);
     });
 
     it('enforces execution timeout and throws SandboxedTimeoutError', async () => {
