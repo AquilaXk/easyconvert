@@ -39,7 +39,7 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(BRAND_PALETTE.ink.primary.toUpperCase()).toBe('#1F2340');
   });
 
-  it('verifies official logo.svg and icon.svg contain the signature conversion loop elements, badges, and valid XML', () => {
+  it('verifies official logo.svg and icon.svg contain the circular emblem badge, EC monogram, lavender arrow, and valid XML', () => {
     const logoSvg = fs.readFileSync(path.join(process.cwd(), 'public/logo.svg'), 'utf-8');
     const iconSvg = fs.readFileSync(path.join(process.cwd(), 'public/icon.svg'), 'utf-8');
 
@@ -49,17 +49,24 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(iconSvg).not.toContain('{/*');
     expect(iconSvg).not.toContain('*/}');
 
-    // Check signature palette color and elements
+    // Check signature palette colors and elements
     expect(logoSvg).toContain('#5C6BC0');
     expect(iconSvg).toContain('#5C6BC0');
-    expect(logoSvg).toContain('PDF');
-    expect(iconSvg).toContain('PDF');
-    expect(logoSvg).toContain('DOC');
-    expect(iconSvg).toContain('DOC');
+    expect(logoSvg).toContain('#B4BCFB');
+    expect(iconSvg).toContain('#B4BCFB');
+    expect(logoSvg).toContain('#F4F5FD');
+    expect(iconSvg).toContain('#F4F5FD');
+    expect(logoSvg).toContain('#1F2340');
     expect(logoSvg).toContain('EasyConvert');
 
     // Background plate for icon.svg
-    expect(iconSvg).toContain('#F8F9FF');
+    expect(iconSvg).toContain('<rect width="120" height="120" rx="28" fill="#F8F9FF" />');
+
+    // Must not contain obsolete loop badge strings
+    expect(logoSvg).not.toContain('badge-pdf');
+    expect(iconSvg).not.toContain('badge-pdf');
+    expect(logoSvg).not.toContain('badge-doc');
+    expect(iconSvg).not.toContain('badge-doc');
   });
 });
 
