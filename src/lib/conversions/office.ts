@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
@@ -586,8 +587,37 @@ async function convertDocxSource(
 
   const xmlText = await docXmlFile.async('text');
 
+  // Load chart relationships and parts if present
+  const chartMap = new Map<string, string>();
+  const docRelsFile = zip.file('word/_rels/document.xml.rels');
+  if (docRelsFile) {
+    const relsXml = await docRelsFile.async('text');
+    const relRegex = /<Relationship\s+[^>]*?Id="([^"]+)"[^>]*?Target="([^"]+)"/gi;
+    let rMatch: RegExpExecArray | null;
+    while ((rMatch = relRegex.exec(relsXml)) !== null) {
+      const rId = rMatch[1];
+      const target = rMatch[2];
+      const chartPath = target.startsWith('/')
+        ? target.slice(1)
+        : target.startsWith('word/')
+        ? target
+        : `word/${target}`;
+      const cFile = zip.file(chartPath) || zip.file(target);
+      if (cFile) {
+        const cXml = await cFile.async('text');
+        chartMap.set(rId, cXml);
+      }
+    }
+  }
+  for (const fName of Object.keys(zip.files)) {
+    if (/^word\/charts\/chart\d+\.xml$/i.test(fName)) {
+      const cXml = await zip.files[fName].async('text');
+      chartMap.set(fName, cXml);
+    }
+  }
+
   // Extract paragraphs, headings, and tables in sequential document order
-  const { paragraphs, tables, elements } = parseDocxXml(xmlText);
+  const { paragraphs, tables, elements } = parseDocxXml(xmlText, chartMap);
 
   // DOCX -> TXT
   if (tgt === 'txt') {
@@ -596,7 +626,12 @@ async function convertDocxSource(
           .map((el) => {
             if (el.type === 'paragraph') return el.paragraph.text;
             if (el.type === 'table') return el.table.rows.map((r) => r.join('\t')).join('\n');
-            if (el.type === 'drawing') return (el.shapes || []).map((s) => s.text).filter(Boolean).join(' ');
+            if (el.type === 'drawing') {
+              if (el.chart) {
+                return `[Chart: ${el.chart.title || el.chart.type}] ${el.chart.categories.join(' ')} ${el.chart.series.map((s) => s.values.join(' ')).join(' ')}`;
+              }
+              return (el.shapes || []).map((s) => s.text).filter(Boolean).join(' ');
+            }
             return '';
           })
           .filter(Boolean)
@@ -710,6 +745,7 @@ export interface DocxTableCell {
   isHeader?: boolean;
   colSpan?: number;
   rowSpan?: number;
+  alignment?: 'left' | 'center' | 'right';
   borders?: {
     top?: TableBorder;
     bottom?: TableBorder;
@@ -733,6 +769,20 @@ export interface DocxTable {
   };
 }
 
+export interface OpenXmlChartSeries {
+  name: string;
+  values: number[];
+  categories?: string[];
+  color?: string;
+}
+
+export interface OpenXmlChartData {
+  type: 'bar' | 'line' | 'pie' | 'area' | 'doughnut' | 'scatter';
+  title?: string;
+  categories: string[];
+  series: OpenXmlChartSeries[];
+}
+
 export interface DrawingMlShape {
   id?: string;
   name?: string;
@@ -746,16 +796,25 @@ export interface DrawingMlShape {
   width: number;
   height: number;
   rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
   fillColor?: string;
   strokeColor?: string;
   strokeWidth?: number;
   text?: string;
+  fontSize?: number;
+  fontColor?: string;
+  bold?: boolean;
+  adjustValues?: Record<string, number>;
+  guides?: Record<string, number>;
+  chart?: OpenXmlChartData;
+  chartSvg?: string;
 }
 
 export type DocxBlockElement =
   | { type: 'paragraph'; paragraph: DocxParagraph }
   | { type: 'table'; table: DocxTable }
-  | { type: 'drawing'; svg: string; shapes?: DrawingMlShape[] };
+  | { type: 'drawing'; svg: string; shapes?: DrawingMlShape[]; chart?: OpenXmlChartData };
 
 export function parseBorder(borderXml: string): TableBorder | undefined {
   if (!borderXml) return undefined;
@@ -769,6 +828,456 @@ export function parseBorder(borderXml: string): TableBorder | undefined {
   const style =
     val === 'double' ? 'double' : val.includes('dash') ? 'dashed' : val.includes('dot') ? 'dotted' : 'solid';
   return { style, size: sz, color };
+}
+
+/**
+ * Evaluates an ISO/IEC 29500 DrawingML guide formula (val, mulDiv `* /`, addSub `+-`, `?:`, min, max, abs, sqrt, pin, sin, cos, tan, atan2, cat2, sat2, mod).
+ */
+export function evaluateDrawingMlGuideFormula(
+  fmla: string,
+  variables: Record<string, number>
+): number {
+  const tokens = fmla.trim().split(/\s+/);
+  if (tokens.length === 0) return 0;
+  const op = tokens[0].toLowerCase();
+  const getVal = (token: string | undefined): number => {
+    if (!token) return 0;
+    const num = parseFloat(token);
+    if (!isNaN(num)) return num;
+    return variables[token] ?? 0;
+  };
+
+  switch (op) {
+    case 'val':
+      return getVal(tokens[1]);
+    case '*/': {
+      const z = getVal(tokens[3]);
+      return z !== 0 ? (getVal(tokens[1]) * getVal(tokens[2])) / z : 0;
+    }
+    case '+-':
+      return getVal(tokens[1]) + getVal(tokens[2]) - getVal(tokens[3]);
+    case '?:':
+      return getVal(tokens[1]) > 0 ? getVal(tokens[2]) : getVal(tokens[3]);
+    case 'min':
+      return Math.min(getVal(tokens[1]), getVal(tokens[2]));
+    case 'max':
+      return Math.max(getVal(tokens[1]), getVal(tokens[2]));
+    case 'abs':
+      return Math.abs(getVal(tokens[1]));
+    case 'sqrt':
+      return Math.sqrt(Math.max(0, getVal(tokens[1])));
+    case 'pin': {
+      const x = getVal(tokens[1]);
+      const y = getVal(tokens[2]);
+      const z = getVal(tokens[3]);
+      return Math.max(x, Math.min(y, z));
+    }
+    case 'sin': {
+      // Angle in 60,000ths of a degree (ISO/IEC 29500: x * sin(y))
+      const x = getVal(tokens[1]);
+      const y = getVal(tokens[2]);
+      return x * Math.sin(y * (Math.PI / 10800000));
+    }
+    case 'cos': {
+      // Angle in 60,000ths of a degree (ISO/IEC 29500: x * cos(y))
+      const x = getVal(tokens[1]);
+      const y = getVal(tokens[2]);
+      return x * Math.cos(y * (Math.PI / 10800000));
+    }
+    case 'tan': {
+      const x = getVal(tokens[1]);
+      const y = getVal(tokens[2]);
+      return x * Math.tan(y * (Math.PI / 10800000));
+    }
+    case 'atan2': {
+      // Returns angle in 60,000ths of a degree (ISO/IEC 29500: atan2(y, x))
+      const x = getVal(tokens[1]);
+      const y = getVal(tokens[2]);
+      return Math.atan2(y, x) * (10800000 / Math.PI);
+    }
+    case 'cat2': {
+      // ISO/IEC 29500: x * cos(atan2(z, y))
+      const x = getVal(tokens[1]);
+      const y = getVal(tokens[2]);
+      const z = getVal(tokens[3]);
+      return x * Math.cos(Math.atan2(z, y));
+    }
+    case 'sat2': {
+      // ISO/IEC 29500: x * sin(atan2(z, y))
+      const x = getVal(tokens[1]);
+      const y = getVal(tokens[2]);
+      const z = getVal(tokens[3]);
+      return x * Math.sin(Math.atan2(z, y));
+    }
+    case 'mod': {
+      // ISO/IEC 29500: sqrt(x^2 + y^2 + z^2)
+      const x = getVal(tokens[1]);
+      const y = getVal(tokens[2]);
+      const z = getVal(tokens[3]);
+      return Math.hypot(x, y, z);
+    }
+    default:
+      return getVal(tokens[1]);
+  }
+}
+
+/**
+ * Parses guide lists (<a:avLst>, <a:gdLst>) and evaluates guide variables sequentially with multi-pass dependency resolution.
+ */
+export function parseDrawingMlGuides(
+  xml: string,
+  initialVars: Record<string, number> = {}
+): Record<string, number> {
+  const vars: Record<string, number> = { ...initialVars };
+  const gdRegex = /<a:gd\b[^>]*\bname="([^"]+)"[^>]*\bfmla="([^"]+)"/gi;
+  let match: RegExpExecArray | null;
+  const guideDefs: Array<{ name: string; fmla: string }> = [];
+  while ((match = gdRegex.exec(xml)) !== null) {
+    guideDefs.push({ name: match[1], fmla: match[2] });
+  }
+
+  // Multi-pass evaluation to resolve out-of-order forward references (up to 3 passes)
+  for (let pass = 0; pass < 3; pass++) {
+    let changed = false;
+    for (const gd of guideDefs) {
+      const prev = vars[gd.name];
+      const next = evaluateDrawingMlGuideFormula(gd.fmla, vars);
+      if (prev !== next) {
+        vars[gd.name] = next;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return vars;
+}
+
+function extractValuesFromPtXml(containerXml: string): string[] {
+  const ptRegex = /<c:pt\b([^>]*?)>([\s\S]*?)<\/c:pt>/gi;
+  const results: Array<{ idx: number; val: string }> = [];
+  let m: RegExpExecArray | null;
+  let fallbackIdx = 0;
+  while ((m = ptRegex.exec(containerXml)) !== null) {
+    const ptAttrs = m[1];
+    const ptBody = m[2];
+    const idxMatch = ptAttrs.match(/idx="(\d+)"/i);
+    const idx = idxMatch ? parseInt(idxMatch[1], 10) : fallbackIdx++;
+    const vMatch = ptBody.match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/i);
+    if (vMatch) {
+      results.push({ idx, val: vMatch[1].replace(/<[^>]+>/g, '').trim() });
+    }
+  }
+  if (results.length > 0) {
+    results.sort((a, b) => a.idx - b.idx);
+    return results.map((r) => r.val);
+  }
+  const vRegex = /<c:v\b[^>]*>([\s\S]*?)<\/c:v>/gi;
+  const fallback: string[] = [];
+  while ((m = vRegex.exec(containerXml)) !== null) {
+    fallback.push(m[1].replace(/<[^>]+>/g, '').trim());
+  }
+  return fallback;
+}
+
+/**
+ * Parses embedded OpenXML <c:chart> XML parts into structured chart model.
+ */
+export function parseOpenXmlChart(chartXml: string): OpenXmlChartData | null {
+  if (
+    !chartXml ||
+    (!chartXml.includes('<c:chart') &&
+      !chartXml.includes('<c:plotArea') &&
+      !chartXml.includes('<c:chartSpace>'))
+  ) {
+    return null;
+  }
+
+  // 1. Chart title
+  let title: string | undefined;
+  const titleMatch = chartXml.match(/<c:title\b[\s\S]*?<\/c:title>/i);
+  if (titleMatch) {
+    const tList = titleMatch[0].match(/<(?:a:t|c:v)\b[^>]*>([\s\S]*?)<\/(?:a:t|c:v)>/gi) || [];
+    const joined = tList.map((t) => t.replace(/<[^>]+>/g, '').trim()).filter(Boolean).join(' ');
+    if (joined) title = joined;
+  }
+
+  // 2. Chart type
+  let type: OpenXmlChartData['type'] = 'bar';
+  if (/<c:pie(?:3D)?Chart\b/i.test(chartXml)) type = 'pie';
+  else if (/<c:line(?:3D)?Chart\b/i.test(chartXml)) type = 'line';
+  else if (/<c:area(?:3D)?Chart\b/i.test(chartXml)) type = 'area';
+  else if (/<c:doughnutChart\b/i.test(chartXml)) type = 'doughnut';
+  else if (/<c:scatterChart\b/i.test(chartXml)) type = 'scatter';
+  else if (/<c:bar(?:3D)?Chart\b/i.test(chartXml)) type = 'bar';
+
+  // 3. Series
+  const serRegex = /<c:ser\b[\s\S]*?<\/c:ser>/gi;
+  const series: OpenXmlChartSeries[] = [];
+  let sharedCategories: string[] = [];
+  let sMatch: RegExpExecArray | null;
+  let serIndex = 1;
+
+  while ((sMatch = serRegex.exec(chartXml)) !== null) {
+    const serXml = sMatch[0];
+
+    // Series name
+    let name = `Series ${serIndex++}`;
+    const txMatch = serXml.match(/<c:tx\b[\s\S]*?<\/c:tx>/i);
+    if (txMatch) {
+      const vMatch =
+        txMatch[0].match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/i) ||
+        txMatch[0].match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/i);
+      if (vMatch) name = vMatch[1].replace(/<[^>]+>/g, '').trim() || name;
+    }
+
+    // Categories
+    const catMatch = serXml.match(/<c:cat\b[\s\S]*?<\/c:cat>/i);
+    const categories = catMatch ? extractValuesFromPtXml(catMatch[0]) : [];
+    if (categories.length > 0 && sharedCategories.length === 0) {
+      sharedCategories = categories;
+    }
+
+    // Values
+    const valMatch = serXml.match(/<c:(?:val|yVal)\b[\s\S]*?<\/c:(?:val|yVal)>/i);
+    const numStrings = valMatch ? extractValuesFromPtXml(valMatch[0]) : [];
+    const values = numStrings.map((v) => parseFloat(v)).filter((v) => !isNaN(v));
+
+    series.push({
+      name,
+      values,
+      categories: categories.length > 0 ? categories : undefined,
+    });
+  }
+
+  // Fallback categories if not in series
+  if (sharedCategories.length === 0) {
+    const axCatMatch = chartXml.match(/<c:cat\b[\s\S]*?<\/c:cat>/i);
+    if (axCatMatch) {
+      sharedCategories = extractValuesFromPtXml(axCatMatch[0]);
+    }
+  }
+
+  if (sharedCategories.length === 0 && series.length > 0) {
+    const maxVals = Math.max(0, ...series.map((s) => s.values.length));
+    sharedCategories = Array.from({ length: maxVals }, (_, i) => `Item ${i + 1}`);
+  }
+
+  return {
+    type,
+    title,
+    categories: sharedCategories,
+    series,
+  };
+}
+
+const CHART_PALETTE = [
+  '#5C6BC0',
+  '#26A69A',
+  '#FFA726',
+  '#EF5350',
+  '#AB47BC',
+  '#42A5F5',
+  '#8D6E63',
+  '#78909C',
+];
+
+function adjustHexBrightness(hex: string | undefined, factor: number): string {
+  if (!hex || hex === 'none' || !/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+    return hex || 'none';
+  }
+  const r = Math.min(255, Math.max(0, Math.round(parseInt(hex.slice(1, 3), 16) * factor)));
+  const g = Math.min(255, Math.max(0, Math.round(parseInt(hex.slice(3, 5), 16) * factor)));
+  const b = Math.min(255, Math.max(0, Math.round(parseInt(hex.slice(5, 7), 16) * factor)));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+/**
+ * Renders an OpenXML chart specification into an authentic SVG vector chart element.
+ */
+export function renderChartToSvg(
+  chart: OpenXmlChartData,
+  width: number = 500,
+  height: number = 300
+): string {
+  const w = Math.max(200, width);
+  const h = Math.max(150, height);
+  const titleH = chart.title ? 36 : 16;
+  const plotLeft = 60;
+  const plotRight = w - 30;
+  const plotTop = titleH + 10;
+  const plotBottom = h - 45;
+  const pw = Math.max(10, plotRight - plotLeft);
+  const ph = Math.max(10, plotBottom - plotTop);
+
+  const allVals = chart.series.flatMap((s) => s.values);
+  const maxVal = Math.max(1, ...allVals);
+
+  let elements = '';
+
+  // Background and border
+  elements += `<rect width="${w}" height="${h}" rx="8" fill="#F8F9FE" stroke="#CCD2FC" stroke-width="1"/>\n`;
+
+  // Title
+  if (chart.title) {
+    elements += `<text x="${w / 2}" y="24" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="14" font-weight="600" fill="#1F2340">${escapeHtml(
+      chart.title
+    )}</text>\n`;
+  }
+
+  // Gridlines & Y-axis labels
+  const gridSteps = 4;
+  for (let i = 0; i <= gridSteps; i++) {
+    const gy = plotBottom - (i / gridSteps) * ph;
+    const gVal = Math.round((i / gridSteps) * maxVal);
+    elements += `<line x1="${plotLeft}" y1="${gy}" x2="${plotRight}" y2="${gy}" stroke="#E1E4EE" stroke-width="0.8"/>\n`;
+    elements += `<text x="${plotLeft - 8}" y="${
+      gy + 4
+    }" text-anchor="end" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="9" fill="#78909C">${gVal}</text>\n`;
+  }
+
+  // X & Y Axes
+  elements += `<line x1="${plotLeft}" y1="${plotTop}" x2="${plotLeft}" y2="${plotBottom}" stroke="#CCD2FC" stroke-width="1.2"/>\n`;
+  elements += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotRight}" y2="${plotBottom}" stroke="#CCD2FC" stroke-width="1.2"/>\n`;
+
+  // Draw chart type
+  if (chart.type === 'bar') {
+    const numCats = Math.max(1, chart.categories.length);
+    const catWidth = pw / numCats;
+    const numSeries = Math.max(1, chart.series.length);
+    const barWidth = Math.max(3, (catWidth * 0.7) / numSeries);
+
+    chart.categories.forEach((cat, cIdx) => {
+      chart.series.forEach((s, sIdx) => {
+        const val = s.values[cIdx] || 0;
+        const bHeight = Math.max(0, (val / maxVal) * ph);
+        const bx = plotLeft + cIdx * catWidth + catWidth * 0.15 + sIdx * barWidth;
+        const by = plotBottom - bHeight;
+        const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+        elements += `<rect x="${bx}" y="${by}" width="${Math.max(
+          1,
+          barWidth - 2
+        )}" height="${bHeight}" rx="2" fill="${color}"/>\n`;
+      });
+      elements += `<text x="${plotLeft + cIdx * catWidth + catWidth / 2}" y="${
+        plotBottom + 16
+      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeHtml(
+        cat
+      )}</text>\n`;
+    });
+  } else if (chart.type === 'line' || chart.type === 'scatter') {
+    const numCats = Math.max(1, chart.categories.length);
+    const catStep = pw / Math.max(1, numCats - 1);
+
+    chart.series.forEach((s, sIdx) => {
+      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+      const pts: string[] = [];
+      s.values.forEach((val, vIdx) => {
+        const px = plotLeft + vIdx * catStep;
+        const py = plotBottom - Math.max(0, (val / maxVal) * ph);
+        pts.push(`${px},${py}`);
+        elements += `<circle cx="${px}" cy="${py}" r="3.5" fill="${color}" stroke="#FFFFFF" stroke-width="1.5"/>\n`;
+      });
+      if (pts.length > 1) {
+        elements += `<polyline points="${pts.join(
+          ' '
+        )}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>\n`;
+      }
+    });
+
+    chart.categories.forEach((cat, cIdx) => {
+      elements += `<text x="${plotLeft + cIdx * catStep}" y="${
+        plotBottom + 16
+      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeHtml(
+        cat
+      )}</text>\n`;
+    });
+  } else if (chart.type === 'pie' || chart.type === 'doughnut') {
+    const cx = plotLeft + pw / 2;
+    const cy = plotTop + ph / 2;
+    const rOuter = (Math.min(pw, ph) / 2) * 0.85;
+    const rInner = chart.type === 'doughnut' ? rOuter * 0.55 : 0;
+    const total = allVals.reduce((a, b) => a + b, 0) || 1;
+    let startAngle = -Math.PI / 2;
+
+    allVals.forEach((val, vIdx) => {
+      const sliceAngle = (val / total) * 2 * Math.PI;
+      const endAngle = startAngle + sliceAngle;
+      const color = CHART_PALETTE[vIdx % CHART_PALETTE.length];
+
+      if (sliceAngle >= 2 * Math.PI - 0.001) {
+        if (rInner > 0) {
+          const dRing = `M ${cx} ${cy - rOuter} A ${rOuter} ${rOuter} 0 1 1 ${cx} ${cy + rOuter} A ${rOuter} ${rOuter} 0 1 1 ${cx} ${cy - rOuter} M ${cx} ${cy - rInner} A ${rInner} ${rInner} 0 1 0 ${cx} ${cy + rInner} A ${rInner} ${rInner} 0 1 0 ${cx} ${cy - rInner} Z`;
+          elements += `<path d="${dRing}" fill="${color}" stroke="#FFFFFF" stroke-width="1.5" fill-rule="evenodd"/>\n`;
+        } else {
+          elements += `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="${color}" stroke="#FFFFFF" stroke-width="1.5"/>\n`;
+        }
+        return;
+      }
+
+      const x1 = cx + rOuter * Math.cos(startAngle);
+      const y1 = cy + rOuter * Math.sin(startAngle);
+      const x2 = cx + rOuter * Math.cos(endAngle);
+      const y2 = cy + rOuter * Math.sin(endAngle);
+      const largeArc = sliceAngle > Math.PI ? 1 : 0;
+
+      let d = '';
+      if (rInner > 0) {
+        const x3 = cx + rInner * Math.cos(endAngle);
+        const y3 = cy + rInner * Math.sin(endAngle);
+        const x4 = cx + rInner * Math.cos(startAngle);
+        const y4 = cy + rInner * Math.sin(startAngle);
+        d = `M ${x1} ${y1} A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${rInner} ${rInner} 0 ${largeArc} 0 ${x4} ${y4} Z`;
+      } else {
+        d = `M ${cx} ${cy} L ${x1} ${y1} A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+      }
+
+      elements += `<path d="${d}" fill="${color}" stroke="#FFFFFF" stroke-width="1.5"/>\n`;
+      startAngle = endAngle;
+    });
+  } else if (chart.type === 'area') {
+    const numCats = Math.max(1, chart.categories.length);
+    const catStep = pw / Math.max(1, numCats - 1);
+
+    chart.series.forEach((s, sIdx) => {
+      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+      const pts: string[] = [];
+      s.values.forEach((val, vIdx) => {
+        const px = plotLeft + vIdx * catStep;
+        const py = plotBottom - Math.max(0, (val / maxVal) * ph);
+        pts.push(`${px},${py}`);
+      });
+      if (pts.length > 1) {
+        const areaPath = `M ${plotLeft} ${plotBottom} L ${pts.join(' L ')} L ${
+          plotLeft + (s.values.length - 1) * catStep
+        } ${plotBottom} Z`;
+        elements += `<path d="${areaPath}" fill="${color}" fill-opacity="0.3" stroke="${color}" stroke-width="2"/>\n`;
+      }
+    });
+
+    chart.categories.forEach((cat, cIdx) => {
+      elements += `<text x="${plotLeft + cIdx * catStep}" y="${
+        plotBottom + 16
+      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeHtml(
+        cat
+      )}</text>\n`;
+    });
+  }
+
+  // Legend if multiple series or pie/doughnut slices
+  if (chart.series.length > 1) {
+    let lx = plotLeft;
+    const ly = h - 12;
+    chart.series.forEach((s, sIdx) => {
+      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+      elements += `<rect x="${lx}" y="${ly - 7}" width="8" height="8" rx="2" fill="${color}"/>\n`;
+      elements += `<text x="${lx + 12}" y="${ly}" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="9" fill="#4D536B">${escapeHtml(
+        s.name
+      )}</text>\n`;
+      lx += s.name.length * 6 + 28;
+    });
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">\n${elements}</svg>`;
 }
 
 /**
@@ -788,24 +1297,34 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
     matches.push(spMatch[0]);
   }
 
-  if (matches.length === 0 && (xml.includes('<a:prstGeom') || xml.includes('<a:custGeom') || xml.includes('<a:spPr'))) {
+  if (
+    matches.length === 0 &&
+    (xml.includes('<a:prstGeom') ||
+      xml.includes('<a:custGeom') ||
+      xml.includes('<a:spPr') ||
+      xml.includes('<c:chart') ||
+      xml.includes('<c:plotArea'))
+  ) {
     matches.push(xml);
   }
 
   for (const spXml of matches) {
-
-    // 1. Transform: <a:xfrm rot="..."> <a:off x="..." y="..."/> <a:ext cx="..." cy="..."/>
+    // 1. Transform: <a:xfrm rot="..." flipH="..." flipV="..."> <a:off x="..." y="..."/> <a:ext cx="..." cy="..."/>
     const xfrmMatch = spXml.match(/<a:xfrm\b([^>]*?)>([\s\S]*?)<\/a:xfrm>/i);
     let x = 0,
       y = 0,
       width = 100,
       height = 60,
-      rotation = 0;
+      rotation = 0,
+      flipH = false,
+      flipV = false;
     if (xfrmMatch) {
       const xfrmAttrs = xfrmMatch[1];
       const xfrmBody = xfrmMatch[2];
       const rotMatch = xfrmAttrs.match(/rot="(\d+)"/i);
       if (rotMatch) rotation = parseInt(rotMatch[1], 10) / 60000;
+      if (/flipH="(?:1|true)"/i.test(xfrmAttrs)) flipH = true;
+      if (/flipV="(?:1|true)"/i.test(xfrmAttrs)) flipV = true;
 
       const offMatch = xfrmBody.match(/<a:off\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
       if (offMatch) {
@@ -819,6 +1338,37 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       }
     }
 
+    // Check if shape contains an embedded chart
+    if (
+      spXml.includes('<c:chart') ||
+      spXml.includes('<c:plotArea') ||
+      spXml.includes('<c:chartSpace>')
+    ) {
+      const chartData = parseOpenXmlChart(spXml);
+      if (chartData) {
+        const chartSvg = renderChartToSvg(chartData, width, height);
+        shapes.push({
+          type: 'chart',
+          geomType: 'preset',
+          presetGeom: 'rect',
+          x,
+          y,
+          width,
+          height,
+          rotation: rotation || undefined,
+          flipH: flipH || undefined,
+          flipV: flipV || undefined,
+          fillColor: 'none',
+          strokeColor: 'none',
+          strokeWidth: 0,
+          text: chartData.title || `${chartData.type} chart`,
+          chart: chartData,
+          chartSvg,
+        });
+        continue;
+      }
+    }
+
     // 2. Fills and Lines
     let fillColor = '#5C6BC0';
     let strokeColor = '#1F2340';
@@ -827,7 +1377,9 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
     if (spXml.includes('<a:noFill/>') || spXml.includes('<a:noFill />')) {
       fillColor = 'none';
     } else {
-      const fillMatch = spXml.match(/<a:solidFill>[\s\S]*?<a:srgbClr\b[^>]*val="([A-Fa-f0-9]{6})"/i);
+      const fillMatch = spXml.match(
+        /<a:solidFill>[\s\S]*?<a:srgbClr\b[^>]*val="([A-Fa-f0-9]{6})"/i
+      );
       if (fillMatch) fillColor = `#${fillMatch[1]}`;
     }
 
@@ -839,7 +1391,24 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       if (lnClrMatch) strokeColor = `#${lnClrMatch[1]}`;
     }
 
-    // 3. Geometry (Preset vs Custom)
+    // 3. Guides & Adjust Values (<a:avLst>, <a:gdLst>)
+    const initialVars: Record<string, number> = {
+      w: width,
+      h: height,
+      l: x,
+      t: y,
+      r: x + width,
+      b: y + height,
+      hc: width / 2,
+      vc: height / 2,
+      ss: Math.min(width, height),
+      ls: Math.max(width, height),
+    };
+    const guides = parseDrawingMlGuides(spXml, initialVars);
+    const avMatch = spXml.match(/<a:avLst\b[\s\S]*?<\/a:avLst>/i);
+    const adjustValues = avMatch ? parseDrawingMlGuides(avMatch[0], {}) : undefined;
+
+    // 4. Geometry (Preset vs Custom)
     let geomType: 'preset' | 'custom' = 'preset';
     let presetGeom = 'rect';
     let svgPath = '';
@@ -862,8 +1431,8 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
         const sy = height / (ph || 1);
 
         const dParts: string[] = [];
-        // Process path commands in sequential document order to preserve geometry
-        const cmdRegex = /<a:(moveTo|lnTo|cubicBezTo|quadBezTo|arcTo|close)\b([^>]*?)>([\s\S]*?)<\/a:\1>|<a:(close)\b[^>]*\/>/gi;
+        const cmdRegex =
+          /<a:(moveTo|lnTo|cubicBezTo|quadBezTo|arcTo|close)\b([^>]*?)>([\s\S]*?)<\/a:\1>|<a:(close)\b[^>]*\/>/gi;
         let cmdMatch: RegExpExecArray | null;
         while ((cmdMatch = cmdRegex.exec(pathBody)) !== null) {
           const cmdName = (cmdMatch[1] || cmdMatch[4]).toLowerCase();
@@ -918,7 +1487,7 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       presetGeom = prstMatch[1].toLowerCase();
     }
 
-    // 4. Text inside shape
+    // 5. Text inside shape
     const tTags = spXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi) || [];
     const text = tTags
       .map((t) => t.replace(/<[^>]+>/g, '').trim())
@@ -935,15 +1504,165 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       y,
       width,
       height,
-      rotation,
+      rotation: rotation || undefined,
+      flipH: flipH || undefined,
+      flipV: flipV || undefined,
       fillColor,
       strokeColor,
       strokeWidth,
       text: text || undefined,
+      adjustValues,
+      guides:
+        Object.keys(guides).length > Object.keys(initialVars).length ? guides : undefined,
     });
   }
 
   return shapes;
+}
+
+/**
+ * Renders a single DrawingML shape into an SVG element string.
+ */
+export function renderSingleShapeSvg(s: DrawingMlShape): string {
+  if (s.chartSvg) {
+    return s.chartSvg;
+  }
+
+  const cx = s.x + s.width / 2;
+  const cy = s.y + s.height / 2;
+  const transforms: string[] = [];
+  if (s.rotation) {
+    transforms.push(`rotate(${s.rotation} ${cx} ${cy})`);
+  }
+  if (s.flipH || s.flipV) {
+    const sx = s.flipH ? -1 : 1;
+    const sy = s.flipV ? -1 : 1;
+    transforms.push(`translate(${cx} ${cy}) scale(${sx} ${sy}) translate(${-cx} ${-cy})`);
+  }
+  const rotAttr = transforms.length > 0 ? ` transform="${transforms.join(' ')}"` : '';
+
+  let elementStr = '';
+
+  if (s.geomType === 'custom' && s.svgPath) {
+    elementStr = `<path d="${s.svgPath}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+  } else {
+    const geom = (s.presetGeom || 'rect').toLowerCase();
+    switch (geom) {
+      case 'ellipse':
+      case 'circle':
+        elementStr = `<ellipse cx="${cx}" cy="${cy}" rx="${s.width / 2}" ry="${
+          s.height / 2
+        }" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      case 'roundrect':
+        elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="8" ry="8" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      case 'triangle': {
+        const pts = `${cx},${s.y} ${s.x + s.width},${s.y + s.height} ${s.x},${s.y + s.height}`;
+        elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      }
+      case 'diamond':
+      case 'flowchartdecision': {
+        const pts = `${cx},${s.y} ${s.x + s.width},${cy} ${cx},${s.y + s.height} ${s.x},${cy}`;
+        elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      }
+      case 'rightarrow': {
+        const pts = `${s.x},${s.y + s.height * 0.25} ${s.x + s.width * 0.6},${
+          s.y + s.height * 0.25
+        } ${s.x + s.width * 0.6},${s.y} ${s.x + s.width},${cy} ${s.x + s.width * 0.6},${
+          s.y + s.height
+        } ${s.x + s.width * 0.6},${s.y + s.height * 0.75} ${s.x},${s.y + s.height * 0.75}`;
+        elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      }
+      case 'leftrightarrow': {
+        const pts = `${s.x},${cy} ${s.x + s.width * 0.25},${s.y} ${s.x + s.width * 0.25},${
+          s.y + s.height * 0.25
+        } ${s.x + s.width * 0.75},${s.y + s.height * 0.25} ${s.x + s.width * 0.75},${s.y} ${
+          s.x + s.width
+        },${cy} ${s.x + s.width * 0.75},${s.y + s.height} ${s.x + s.width * 0.75},${
+          s.y + s.height * 0.75
+        } ${s.x + s.width * 0.25},${s.y + s.height * 0.75} ${s.x + s.width * 0.25},${s.y + s.height}`;
+        elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      }
+      case 'wedgerectcallout': {
+        const d = `M ${s.x} ${s.y} L ${s.x + s.width} ${s.y} L ${s.x + s.width} ${
+          s.y + s.height * 0.75
+        } L ${s.x + s.width * 0.55} ${s.y + s.height * 0.75} L ${s.x + s.width * 0.3} ${
+          s.y + s.height
+        } L ${s.x + s.width * 0.38} ${s.y + s.height * 0.75} L ${s.x} ${s.y + s.height * 0.75} Z`;
+        elementStr = `<path d="${d}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      }
+      case 'chevron': {
+        const pts = `${s.x},${s.y} ${s.x + s.width * 0.75},${s.y} ${s.x + s.width},${cy} ${
+          s.x + s.width * 0.75
+        },${s.y + s.height} ${s.x},${s.y + s.height} ${s.x + s.width * 0.25},${cy}`;
+        elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      }
+      case 'cube': {
+        const cd = Math.min(s.width, s.height) * 0.2;
+        const fill = s.fillColor || '#5C6BC0';
+        elementStr = `<g${rotAttr}><polygon points="${s.x},${s.y + cd} ${s.x + cd},${s.y} ${
+          s.x + s.width
+        },${s.y} ${s.x + s.width - cd},${s.y + cd}" fill="${adjustHexBrightness(
+          fill,
+          1.2
+        )}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}" /><polygon points="${
+          s.x + s.width - cd
+        },${s.y + cd} ${s.x + s.width},${s.y} ${s.x + s.width},${s.y + s.height - cd} ${
+          s.x + s.width - cd
+        },${s.y + s.height}" fill="${adjustHexBrightness(fill, 0.8)}" stroke="${
+          s.strokeColor || '#1F2340'
+        }" stroke-width="${s.strokeWidth ?? 1}" /><rect x="${s.x}" y="${s.y + cd}" width="${
+          s.width - cd
+        }" height="${s.height - cd}" fill="${fill}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${
+          s.strokeWidth ?? 1
+        }" /></g>`;
+        break;
+      }
+      case 'line':
+        elementStr = `<line x1="${s.x}" y1="${s.y}" x2="${s.x + s.width}" y2="${
+          s.y + s.height
+        }" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      case 'star5': {
+        const rOuter = Math.min(s.width, s.height) / 2;
+        const rInner = rOuter * 0.4;
+        const pts: string[] = [];
+        for (let i = 0; i < 10; i++) {
+          const angle = (i * Math.PI) / 5 - Math.PI / 2;
+          const r = i % 2 === 0 ? rOuter : rInner;
+          pts.push(`${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`);
+        }
+        elementStr = `<polygon points="${pts.join(' ')}" fill="${s.fillColor || '#5C6BC0'}" stroke="${
+          s.strokeColor || '#1F2340'
+        }" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+      }
+      case 'flowchartprocess':
+      case 'rect':
+      default:
+        elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+        break;
+    }
+  }
+
+  if (s.text && !elementStr.startsWith('<g')) {
+    const textFill =
+      s.fillColor === '#5C6BC0' || s.fillColor === '#1F2340' ? '#FFFFFF' : '#1F2340';
+    elementStr += `\n  <text x="${cx}" y="${
+      cy + 4
+    }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="12" font-weight="500" fill="${textFill}">${escapeHtml(
+      s.text
+    )}</text>`;
+  }
+
+  return elementStr;
 }
 
 /**
@@ -954,6 +1673,37 @@ export function renderDrawingMlToSvg(
   options?: { width?: number; height?: number } | number,
   heightOption?: number
 ): { svg: string; shapes: DrawingMlShape[] } {
+  // If input is an XML string containing an embedded chart part
+  if (
+    typeof xmlOrShapes === 'string' &&
+    (xmlOrShapes.includes('<c:chart') ||
+      xmlOrShapes.includes('<c:plotArea') ||
+      xmlOrShapes.includes('<c:chartSpace>'))
+  ) {
+    const chartData = parseOpenXmlChart(xmlOrShapes);
+    if (chartData) {
+      const optW = typeof options === 'number' ? options : options?.width || 500;
+      const optH = typeof options === 'number' ? heightOption || 300 : options?.height || 300;
+      const svg = renderChartToSvg(chartData, optW, optH);
+      return {
+        svg,
+        shapes: [
+          {
+            geomType: 'preset',
+            presetGeom: 'rect',
+            x: 0,
+            y: 0,
+            width: optW,
+            height: optH,
+            chart: chartData,
+            chartSvg: svg,
+            text: chartData.title || `${chartData.type} chart`,
+          },
+        ],
+      };
+    }
+  }
+
   const shapes = Array.isArray(xmlOrShapes) ? xmlOrShapes : parseDrawingMlShapes(xmlOrShapes);
   if (shapes.length === 0) {
     return {
@@ -983,74 +1733,12 @@ export function renderDrawingMlToSvg(
 
   let svgElements = '';
   for (const s of shapes) {
-    const rotAttr = s.rotation ? ` transform="rotate(${s.rotation} ${s.x + s.width / 2} ${s.y + s.height / 2})"` : '';
-    let elementStr = '';
-
-    if (s.geomType === 'custom' && s.svgPath) {
-      elementStr = `<path d="${s.svgPath}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
-    } else {
-      switch (s.presetGeom) {
-        case 'ellipse':
-          elementStr = `<ellipse cx="${s.x + s.width / 2}" cy="${s.y + s.height / 2}" rx="${s.width / 2}" ry="${
-            s.height / 2
-          }" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
-          break;
-        case 'roundrect':
-          elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="8" ry="8" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
-          break;
-        case 'triangle': {
-          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height} ${s.x},${s.y + s.height}`;
-          elementStr = `<polygon points="${pts}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
-          break;
-        }
-        case 'diamond': {
-          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height / 2} ${s.x + s.width / 2},${
-            s.y + s.height
-          } ${s.x},${s.y + s.height / 2}`;
-          elementStr = `<polygon points="${pts}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
-          break;
-        }
-        case 'line':
-          elementStr = `<line x1="${s.x}" y1="${s.y}" x2="${s.x + s.width}" y2="${s.y + s.height}" stroke="${
-            s.strokeColor
-          }" stroke-width="${s.strokeWidth}"${rotAttr} />`;
-          break;
-        case 'star5': {
-          const cx = s.x + s.width / 2;
-          const cy = s.y + s.height / 2;
-          const rOuter = Math.min(s.width, s.height) / 2;
-          const rInner = rOuter * 0.4;
-          const pts: string[] = [];
-          for (let i = 0; i < 10; i++) {
-            const angle = (i * Math.PI) / 5 - Math.PI / 2;
-            const r = i % 2 === 0 ? rOuter : rInner;
-            pts.push(`${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`);
-          }
-          elementStr = `<polygon points="${pts.join(' ')}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${
-            s.strokeWidth
-          }"${rotAttr} />`;
-          break;
-        }
-        case 'rect':
-        default:
-          elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
-          break;
-      }
-    }
-
-    if (s.text) {
-      const textFill = s.fillColor === '#5C6BC0' || s.fillColor === '#1F2340' ? '#FFFFFF' : '#1F2340';
-      elementStr += `\n  <text x="${s.x + s.width / 2}" y="${
-        s.y + s.height / 2 + 4
-      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="12" font-weight="500" fill="${textFill}">${escapeHtml(
-        s.text
-      )}</text>`;
-    }
-
-    svgElements += `  ${elementStr}\n`;
+    svgElements += `  ${renderSingleShapeSvg(s)}\n`;
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX - 10} ${minY - 10} ${contentWidth} ${contentHeight}" width="${totalWidth}" height="${totalHeight}">\n${svgElements}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX - 10} ${
+    minY - 10
+  } ${contentWidth} ${contentHeight}" width="${totalWidth}" height="${totalHeight}">\n${svgElements}</svg>`;
   return { svg, shapes };
 }
 
@@ -1112,7 +1800,67 @@ function safeExtractDocxBlocks(bodyXml: string): string[] {
   return blocks;
 }
 
-function parseDocxXml(xml: string): {
+function parseDrawingBlockElement(
+  dXml: string,
+  chartMap?: Map<string, string>
+): DocxBlockElement | null {
+  const chartRefMatch = dXml.match(/<c:chart\b[^>]*?(?:r:id|id)="([^"]+)"/i);
+  let parsedChart: OpenXmlChartData | null = null;
+  if (chartRefMatch && chartMap?.has(chartRefMatch[1])) {
+    parsedChart = parseOpenXmlChart(chartMap.get(chartRefMatch[1])!);
+  } else if (
+    dXml.includes('<c:chart') ||
+    dXml.includes('<c:plotArea') ||
+    dXml.includes('<c:chartSpace>')
+  ) {
+    parsedChart = parseOpenXmlChart(dXml);
+  }
+
+  if (parsedChart) {
+    const extMatch =
+      dXml.match(/<wp:extent\b[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i) ||
+      dXml.match(/<a:ext\b[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
+    const chartW = extMatch ? Math.max(100, Math.round(parseInt(extMatch[1], 10) / 12700)) : 500;
+    const chartH = extMatch ? Math.max(80, Math.round(parseInt(extMatch[2], 10) / 12700)) : 300;
+    const chartSvg = renderChartToSvg(parsedChart, chartW, chartH);
+    return {
+      type: 'drawing',
+      svg: chartSvg,
+      chart: parsedChart,
+      shapes: [
+        {
+          geomType: 'preset',
+          presetGeom: 'rect',
+          x: 0,
+          y: 0,
+          width: chartW,
+          height: chartH,
+          chart: parsedChart,
+          chartSvg,
+          text: parsedChart.title || `${parsedChart.type} chart`,
+        },
+      ],
+    };
+  }
+
+  const res = renderDrawingMlToSvg(dXml);
+  if (res.shapes.length > 0) {
+    const chartShape = res.shapes.find((s) => s.chart);
+    return {
+      type: 'drawing',
+      svg: res.svg,
+      shapes: res.shapes,
+      chart: chartShape?.chart,
+    };
+  }
+
+  return null;
+}
+
+function parseDocxXml(
+  xml: string,
+  chartMap?: Map<string, string>
+): {
   paragraphs: DocxParagraph[];
   tables: DocxTable[];
   elements: DocxBlockElement[];
@@ -1133,10 +1881,8 @@ function parseDocxXml(xml: string): {
   for (const chunk of blocks) {
     // If chunk is a standalone Drawing (<w:drawing>)
     if (chunk.startsWith('<w:drawing')) {
-      const res = renderDrawingMlToSvg(chunk);
-      if (res.shapes.length > 0) {
-        elements.push({ type: 'drawing', svg: res.svg, shapes: res.shapes });
-      }
+      const el = parseDrawingBlockElement(chunk, chartMap);
+      if (el) elements.push(el);
       continue;
     }
 
@@ -1197,6 +1943,12 @@ function parseDocxXml(xml: string): {
             };
           }
 
+          const jcMatch = tcXml.match(/<w:jc\b[^>]*w:val="([^"]+)"/i);
+          const alignment =
+            jcMatch && ['left', 'center', 'right'].includes(jcMatch[1])
+              ? (jcMatch[1] as 'left' | 'center' | 'right')
+              : undefined;
+
           const tTags = safeExtractXmlTags(tcXml, 'w:t');
           const cellText = tTags
             .map((m) => m.replace(/<[^>]+>/g, ''))
@@ -1204,7 +1956,7 @@ function parseDocxXml(xml: string): {
             .trim();
 
           rowCells.push(cellText);
-          sCells.push({ text: cellText, shading, colSpan, isHeader, borders });
+          sCells.push({ text: cellText, shading, colSpan, isHeader, borders, alignment });
         }
 
         if (rowCells.length > 0) {
@@ -1299,10 +2051,8 @@ function parseDocxXml(xml: string): {
     if (chunk.includes('<w:drawing')) {
       const drawingMatches = chunk.match(/<w:drawing\b[\s\S]*?<\/w:drawing>/gi) || [];
       for (const dXml of drawingMatches) {
-        const res = renderDrawingMlToSvg(dXml);
-        if (res.shapes.length > 0) {
-          elements.push({ type: 'drawing', svg: res.svg, shapes: res.shapes });
-        }
+        const el = parseDrawingBlockElement(dXml, chartMap);
+        if (el) elements.push(el);
       }
     }
   }
@@ -1477,6 +2227,623 @@ function generateMarkdownFromDocx(
   return parts.join('\n\n');
 }
 
+const WIN_ANSI_SPECIAL_CODES = new Set([
+  0x20ac, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030,
+  0x0160, 0x2039, 0x0152, 0x017d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022,
+  0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x017e, 0x0178,
+]);
+
+/**
+ * Detects whether text contains characters unencodable in standard WinAnsi encoding.
+ */
+export function isNonWinAnsi(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (
+      (code >= 0x20 && code <= 0x7e) ||
+      code === 0x09 ||
+      code === 0x0a ||
+      code === 0x0d ||
+      (code >= 0xa0 && code <= 0xff) ||
+      WIN_ANSI_SPECIAL_CODES.has(code)
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Sanitizes unencodable non-WinAnsi code points gracefully.
+ */
+export function sanitizeWinAnsi(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (
+      (code >= 0x20 && code <= 0x7e) ||
+      code === 0x09 ||
+      code === 0x0a ||
+      code === 0x0d ||
+      (code >= 0xa0 && code <= 0xff) ||
+      WIN_ANSI_SPECIAL_CODES.has(code)
+    ) {
+      out += text[i];
+    }
+  }
+  return out;
+}
+
+const CANDIDATE_UNICODE_FONT_PATHS = [
+  '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+  '/Library/Fonts/Arial Unicode.ttf',
+  '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+  '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+  '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+  '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+  '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+  'C:\\Windows\\Fonts\\malgun.ttf',
+  'C:\\Windows\\Fonts\\msyh.ttc',
+  'C:\\Windows\\Fonts\\arialuni.ttf',
+];
+
+let cachedFontPath: string | null | undefined = undefined;
+
+/**
+ * Resolves an available CJK / Unicode TrueType font from system paths or custom options.
+ */
+export function resolveUnicodeFallbackFont(customPath?: string): string | null {
+  if (customPath && fs.existsSync(customPath)) {
+    return customPath;
+  }
+  if (cachedFontPath !== undefined) {
+    return cachedFontPath;
+  }
+  for (const p of CANDIDATE_UNICODE_FONT_PATHS) {
+    try {
+      if (fs.existsSync(p)) {
+        cachedFontPath = p;
+        return p;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  cachedFontPath = null;
+  return null;
+}
+
+/**
+ * Registers and configures a Unicode fallback font in PDFKit if available.
+ */
+export function configurePdfKitFontFallback(
+  doc: PDFKit.PDFDocument,
+  customPath?: string
+): { hasUnicodeFont: boolean; fontName?: string } {
+  const fontPath = resolveUnicodeFallbackFont(customPath);
+  if (fontPath) {
+    try {
+      let fontSubName: any = undefined;
+      if (fontPath.toLowerCase().endsWith('.ttc')) {
+        try {
+          const fontkit = require('fontkit');
+          const col = fontkit.openSync(fontPath);
+          if (col && col.fonts && col.fonts.length > 0) {
+            fontSubName = col.fonts[0].postscriptName;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      doc.registerFont('UnicodeFallback', fontPath, fontSubName);
+      doc.font('UnicodeFallback');
+      return { hasUnicodeFont: true, fontName: 'UnicodeFallback' };
+    } catch {
+      // fallback
+    }
+  }
+  return { hasUnicodeFont: false };
+}
+
+/**
+ * Writes text into a PDFKit document safely, preventing WinAnsi encoding crashes on CJK text.
+ */
+export function renderSafePdfText(
+  doc: PDFKit.PDFDocument,
+  text: string,
+  hasUnicodeFont: boolean,
+  options?: PDFKit.Mixins.TextOptions,
+  x?: number,
+  y?: number
+): PDFKit.PDFDocument {
+  const stringText = String(text ?? '');
+  if (!stringText) return doc;
+
+  if (hasUnicodeFont) {
+    try {
+      if (x !== undefined && y !== undefined) {
+        return doc.text(stringText, x, y, options);
+      }
+      return doc.text(stringText, options);
+    } catch {
+      // fallback to WinAnsi sanitizer if font threw on edge code point
+    }
+  }
+
+  const safe = sanitizeWinAnsi(stringText);
+  const toWrite = safe.trim()
+    ? safe
+    : stringText.trim()
+    ? `[Text: ${stringText.length} chars]`
+    : '';
+
+  if (x !== undefined && y !== undefined) {
+    return doc.text(toWrite, x, y, options);
+  }
+  return doc.text(toWrite, options);
+}
+
+export function renderPdfChart(
+  doc: PDFKit.PDFDocument,
+  chart: OpenXmlChartData,
+  hasUnicodeFont: boolean,
+  x?: number,
+  y?: number,
+  width?: number,
+  height?: number
+): void {
+  const startX = x !== undefined ? x : 50;
+  const chartWidth = width !== undefined ? width : doc.page.width - 100;
+  const chartHeight = height !== undefined ? height : 220;
+
+  if (y === undefined && doc.y + chartHeight > doc.page.height - 60) {
+    doc.addPage();
+  }
+  const startY = y !== undefined ? y : doc.y;
+
+  // Chart container background & border
+  doc.rect(startX, startY, chartWidth, chartHeight).fillAndStroke('#F8F9FE', '#CCD2FC');
+
+  // Title
+  if (chart.title) {
+    doc.fillColor('#1F2340').fontSize(11);
+    renderSafePdfText(
+      doc,
+      chart.title,
+      hasUnicodeFont,
+      { width: chartWidth - 20, align: 'center' },
+      startX + 10,
+      startY + 8
+    );
+  }
+
+  // Plot dimensions
+  const titleH = chart.title ? 26 : 12;
+  const plotLeft = startX + 45;
+  const plotRight = startX + chartWidth - 25;
+  const plotTop = startY + titleH;
+  const plotBottom = startY + chartHeight - 35;
+  const pw = Math.max(10, plotRight - plotLeft);
+  const ph = Math.max(10, plotBottom - plotTop);
+
+  const allVals = chart.series.flatMap((s) => s.values);
+  const maxVal = Math.max(1, ...allVals);
+
+  // Axes
+  doc
+    .moveTo(plotLeft, plotTop)
+    .lineTo(plotLeft, plotBottom)
+    .lineTo(plotRight, plotBottom)
+    .lineWidth(1)
+    .strokeColor('#CCD2FC')
+    .stroke();
+
+  // Gridlines
+  const gridSteps = 3;
+  for (let i = 0; i <= gridSteps; i++) {
+    const gy = plotBottom - (i / gridSteps) * ph;
+    doc.moveTo(plotLeft, gy).lineTo(plotRight, gy).lineWidth(0.5).strokeColor('#E1E4EE').stroke();
+  }
+
+  if (chart.type === 'bar') {
+    const numCats = Math.max(1, chart.categories.length);
+    const catWidth = pw / numCats;
+    const numSeries = Math.max(1, chart.series.length);
+    const barWidth = Math.max(3, (catWidth * 0.7) / numSeries);
+
+    chart.categories.forEach((cat, cIdx) => {
+      chart.series.forEach((s, sIdx) => {
+        const val = s.values[cIdx] || 0;
+        const bHeight = Math.max(0, (val / maxVal) * ph);
+        const bx = plotLeft + cIdx * catWidth + catWidth * 0.15 + sIdx * barWidth;
+        const by = plotBottom - bHeight;
+        const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+        doc.rect(bx, by, Math.max(1, barWidth - 1), bHeight).fill(color);
+      });
+      doc.fillColor('#4D536B').fontSize(7.5);
+      renderSafePdfText(
+        doc,
+        cat,
+        hasUnicodeFont,
+        { width: catWidth, align: 'center', lineBreak: false },
+        plotLeft + cIdx * catWidth,
+        plotBottom + 6
+      );
+    });
+  } else if (chart.type === 'line' || chart.type === 'scatter') {
+    const numCats = Math.max(1, chart.categories.length);
+    const catStep = pw / Math.max(1, numCats - 1);
+
+    chart.series.forEach((s, sIdx) => {
+      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+      const pts: Array<{ x: number; y: number }> = [];
+      s.values.forEach((val, vIdx) => {
+        const px = plotLeft + vIdx * catStep;
+        const py = plotBottom - Math.max(0, (val / maxVal) * ph);
+        pts.push({ x: px, y: py });
+      });
+      if (pts.length > 1) {
+        doc.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) {
+          doc.lineTo(pts[i].x, pts[i].y);
+        }
+        doc.lineWidth(1.8).strokeColor(color).stroke();
+      }
+      pts.forEach((p) => {
+        doc.circle(p.x, p.y, 2.5).fill(color);
+      });
+    });
+
+    chart.categories.forEach((cat, cIdx) => {
+      doc.fillColor('#4D536B').fontSize(7.5);
+      renderSafePdfText(
+        doc,
+        cat,
+        hasUnicodeFont,
+        { width: catStep, align: 'center', lineBreak: false },
+        plotLeft + cIdx * catStep - catStep / 2,
+        plotBottom + 6
+      );
+    });
+  } else if (chart.type === 'area') {
+    const numCats = Math.max(1, chart.categories.length);
+    const catStep = pw / Math.max(1, numCats - 1);
+
+    chart.series.forEach((s, sIdx) => {
+      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+      const pts: Array<{ x: number; y: number }> = [];
+      s.values.forEach((val, vIdx) => {
+        const px = plotLeft + vIdx * catStep;
+        const py = plotBottom - Math.max(0, (val / maxVal) * ph);
+        pts.push({ x: px, y: py });
+      });
+      if (pts.length > 1) {
+        doc.save();
+        doc.moveTo(plotLeft, plotBottom);
+        pts.forEach((p) => doc.lineTo(p.x, p.y));
+        doc.lineTo(plotLeft + (s.values.length - 1) * catStep, plotBottom);
+        doc.closePath();
+        doc.fillColor(color).fillOpacity(0.3).fill();
+        doc.restore();
+
+        doc.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) {
+          doc.lineTo(pts[i].x, pts[i].y);
+        }
+        doc.lineWidth(1.8).strokeColor(color).stroke();
+      }
+    });
+
+    chart.categories.forEach((cat, cIdx) => {
+      doc.fillColor('#4D536B').fontSize(7.5);
+      renderSafePdfText(
+        doc,
+        cat,
+        hasUnicodeFont,
+        { width: catStep, align: 'center', lineBreak: false },
+        plotLeft + cIdx * catStep - catStep / 2,
+        plotBottom + 6
+      );
+    });
+  } else if (chart.type === 'pie' || chart.type === 'doughnut') {
+    const cx = plotLeft + pw / 2;
+    const cy = plotTop + ph / 2;
+    const radius = (Math.min(pw, ph) / 2) * 0.8;
+    const rInner = chart.type === 'doughnut' ? radius * 0.55 : 0;
+    const total = allVals.reduce((a, b) => a + b, 0) || 1;
+    let startAngle = -Math.PI / 2;
+
+    allVals.forEach((val, vIdx) => {
+      const sliceAngle = (val / total) * 2 * Math.PI;
+      const endAngle = startAngle + sliceAngle;
+      const color = CHART_PALETTE[vIdx % CHART_PALETTE.length];
+
+      doc.save();
+      if (sliceAngle >= 2 * Math.PI - 0.001) {
+        if (rInner > 0) {
+          doc.circle(cx, cy, radius).fill(color);
+          doc.circle(cx, cy, rInner).fill('#F8F9FE');
+        } else {
+          doc.circle(cx, cy, radius).fill(color);
+        }
+      } else {
+        const steps = Math.max(8, Math.ceil(sliceAngle / 0.1));
+        if (rInner > 0) {
+          doc.moveTo(cx + radius * Math.cos(startAngle), cy + radius * Math.sin(startAngle));
+          for (let step = 0; step <= steps; step++) {
+            const theta = startAngle + (step / steps) * sliceAngle;
+            doc.lineTo(cx + radius * Math.cos(theta), cy + radius * Math.sin(theta));
+          }
+          for (let step = steps; step >= 0; step--) {
+            const theta = startAngle + (step / steps) * sliceAngle;
+            doc.lineTo(cx + rInner * Math.cos(theta), cy + rInner * Math.sin(theta));
+          }
+          doc.closePath();
+          doc.fillColor(color).fill();
+        } else {
+          doc.moveTo(cx, cy);
+          for (let step = 0; step <= steps; step++) {
+            const theta = startAngle + (step / steps) * sliceAngle;
+            doc.lineTo(cx + radius * Math.cos(theta), cy + radius * Math.sin(theta));
+          }
+          doc.closePath();
+          doc.fillColor(color).fill();
+        }
+      }
+      doc.restore();
+      startAngle = endAngle;
+    });
+  }
+
+  // Draw legend if multiple series
+  if (chart.series.length > 1) {
+    let lx = plotLeft;
+    const ly = startY + chartHeight - 12;
+    chart.series.forEach((s, sIdx) => {
+      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+      doc.rect(lx, ly - 6, 8, 8).fill(color);
+      doc.fillColor('#4D536B').fontSize(7.5);
+      renderSafePdfText(doc, s.name, hasUnicodeFont, undefined, lx + 11, ly - 6);
+      lx += s.name.length * 5 + 24;
+    });
+  }
+
+  if (y === undefined) {
+    doc.y = startY + chartHeight + 14;
+  }
+}
+
+export function renderSinglePdfShape(
+  doc: PDFKit.PDFDocument,
+  s: DrawingMlShape,
+  hasUnicodeFont: boolean,
+  posX: number,
+  posY: number,
+  sw: number,
+  sh: number
+): void {
+  doc.save();
+  const cx = posX + sw / 2;
+  const cy = posY + sh / 2;
+  doc.translate(cx, cy);
+  if (s.rotation) doc.rotate(s.rotation);
+  if (s.flipH || s.flipV) doc.scale(s.flipH ? -1 : 1, s.flipV ? -1 : 1);
+  doc.translate(-cx, -cy);
+
+  const geom = (s.presetGeom || 'rect').toLowerCase();
+  const hasFill = s.fillColor && s.fillColor !== 'none';
+  const strokeColor = s.strokeColor || '#1F2340';
+  const strokeWidth = s.strokeWidth ?? 1;
+  const hasStroke = strokeWidth > 0 && strokeColor !== 'none';
+
+  if (s.geomType === 'custom' && s.svgPath) {
+    try {
+      doc.path(s.svgPath);
+    } catch {
+      doc.rect(posX, posY, sw, sh);
+    }
+  } else {
+    switch (geom) {
+      case 'ellipse':
+      case 'circle':
+        doc.ellipse(posX + sw / 2, posY + sh / 2, sw / 2, sh / 2);
+        break;
+      case 'roundrect':
+        doc.roundedRect(posX, posY, sw, sh, Math.min(8, sw * 0.15));
+        break;
+      case 'triangle':
+        doc.polygon([posX + sw / 2, posY], [posX + sw, posY + sh], [posX, posY + sh]);
+        break;
+      case 'diamond':
+      case 'flowchartdecision':
+        doc.polygon(
+          [posX + sw / 2, posY],
+          [posX + sw, posY + sh / 2],
+          [posX + sw / 2, posY + sh],
+          [posX, posY + sh / 2]
+        );
+        break;
+      case 'line':
+        doc.moveTo(posX, posY).lineTo(posX + sw, posY + sh);
+        break;
+      case 'rightarrow':
+        doc.polygon(
+          [posX, posY + sh * 0.25],
+          [posX + sw * 0.6, posY + sh * 0.25],
+          [posX + sw * 0.6, posY],
+          [posX + sw, posY + sh * 0.5],
+          [posX + sw * 0.6, posY + sh],
+          [posX + sw * 0.6, posY + sh * 0.75],
+          [posX, posY + sh * 0.75]
+        );
+        break;
+      case 'leftrightarrow':
+        doc.polygon(
+          [posX, posY + sh * 0.5],
+          [posX + sw * 0.25, posY],
+          [posX + sw * 0.25, posY + sh * 0.25],
+          [posX + sw * 0.75, posY + sh * 0.25],
+          [posX + sw * 0.75, posY],
+          [posX + sw, posY + sh * 0.5],
+          [posX + sw * 0.75, posY + sh],
+          [posX + sw * 0.75, posY + sh * 0.75],
+          [posX + sw * 0.25, posY + sh * 0.75],
+          [posX + sw * 0.25, posY + sh]
+        );
+        break;
+      case 'chevron':
+        doc.polygon(
+          [posX, posY],
+          [posX + sw * 0.75, posY],
+          [posX + sw, posY + sh * 0.5],
+          [posX + sw * 0.75, posY + sh],
+          [posX, posY + sh],
+          [posX + sw * 0.25, posY + sh * 0.5]
+        );
+        break;
+      case 'cube': {
+        const cd = Math.min(sw, sh) * 0.2;
+        const fill = s.fillColor || '#5C6BC0';
+        const topFill = adjustHexBrightness(fill, 1.2);
+        const rightFill = adjustHexBrightness(fill, 0.8);
+
+        // Top face
+        doc.polygon(
+          [posX, posY + cd],
+          [posX + cd, posY],
+          [posX + sw, posY],
+          [posX + sw - cd, posY + cd]
+        );
+        if (topFill && topFill !== 'none') doc.fill(topFill);
+        if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
+
+        // Right face
+        doc.polygon(
+          [posX + sw - cd, posY + cd],
+          [posX + sw, posY],
+          [posX + sw, posY + sh - cd],
+          [posX + sw - cd, posY + sh]
+        );
+        if (rightFill && rightFill !== 'none') doc.fill(rightFill);
+        if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
+
+        // Front face
+        doc.rect(posX, posY + cd, sw - cd, sh - cd);
+        if (fill && fill !== 'none') doc.fill(fill);
+        if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
+        break;
+      }
+      case 'wedgerectcallout':
+        doc.polygon(
+          [posX, posY],
+          [posX + sw, posY],
+          [posX + sw, posY + sh * 0.75],
+          [posX + sw * 0.55, posY + sh * 0.75],
+          [posX + sw * 0.3, posY + sh],
+          [posX + sw * 0.38, posY + sh * 0.75],
+          [posX, posY + sh * 0.75]
+        );
+        break;
+      case 'star5': {
+        const rOuter = Math.min(sw, sh) / 2;
+        const rInner = rOuter * 0.4;
+        const pts: Array<[number, number]> = [];
+        for (let i = 0; i < 10; i++) {
+          const angle = (i * Math.PI) / 5 - Math.PI / 2;
+          const r = i % 2 === 0 ? rOuter : rInner;
+          pts.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)]);
+        }
+        if (pts.length > 0) doc.polygon(...pts);
+        break;
+      }
+      case 'flowchartprocess':
+      case 'rect':
+      default:
+        doc.rect(posX, posY, sw, sh);
+        break;
+    }
+  }
+
+  if (geom !== 'cube') {
+    if (hasFill && hasStroke) {
+      doc.lineWidth(strokeWidth).fillAndStroke(s.fillColor!, strokeColor);
+    } else if (hasFill) {
+      doc.fill(s.fillColor!);
+    } else if (hasStroke) {
+      doc.lineWidth(strokeWidth).stroke(strokeColor);
+    }
+  }
+  doc.restore();
+
+  if (s.text) {
+    const textFill =
+      s.fillColor === '#5C6BC0' || s.fillColor === '#1F2340' ? '#FFFFFF' : '#1F2340';
+    doc.fillColor(textFill).fontSize(Math.max(8, Math.min(12, sh * 0.3)));
+    renderSafePdfText(
+      doc,
+      s.text,
+      hasUnicodeFont,
+      { width: Math.max(10, sw - 8), align: 'center' },
+      posX + 4,
+      posY + sh / 2 - 6
+    );
+  }
+}
+
+function renderPdfDrawingShapes(
+  doc: PDFKit.PDFDocument,
+  shapes: DrawingMlShape[],
+  hasUnicodeFont: boolean
+): void {
+  if (shapes.length === 0) return;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  shapes.forEach((s) => {
+    minX = Math.min(minX, s.x);
+    minY = Math.min(minY, s.y);
+    maxX = Math.max(maxX, s.x + s.width);
+    maxY = Math.max(maxY, s.y + s.height);
+  });
+
+  const drawWidth = Math.max(20, maxX - minX);
+  const drawHeight = Math.max(20, maxY - minY);
+
+  if (doc.y + drawHeight > doc.page.height - 60) {
+    doc.addPage();
+  }
+  const baseY = doc.y;
+  const startX = 50;
+  const maxW = doc.page.width - 100;
+  const scale = drawWidth > maxW ? maxW / drawWidth : 1;
+
+  for (const s of shapes) {
+    if (s.chart) {
+      renderPdfChart(
+        doc,
+        s.chart,
+        hasUnicodeFont,
+        startX + (s.x - minX) * scale,
+        baseY + (s.y - minY) * scale,
+        s.width * scale,
+        s.height * scale
+      );
+      continue;
+    }
+
+    const posX = startX + (s.x - minX) * scale;
+    const posY = baseY + (s.y - minY) * scale;
+    const sw = s.width * scale;
+    const sh = s.height * scale;
+    renderSinglePdfShape(doc, s, hasUnicodeFont, posX, posY, sw, sh);
+  }
+
+  doc.y = baseY + drawHeight * scale + 15;
+}
+
 async function generatePdfFromDocx(
   paragraphs: DocxParagraph[],
   tables: DocxTable[],
@@ -1498,12 +2865,15 @@ async function generatePdfFromDocx(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', (err) => reject(err));
 
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+
     // Accent header line in signature lavender
     doc.rect(50, 40, doc.page.width - 100, 3).fill('#5C6BC0');
     doc.moveDown(1.5);
 
     // Title
-    doc.fillColor('#1F2340').fontSize(20).text(title, { underline: false });
+    doc.fillColor('#1F2340').fontSize(20);
+    renderSafePdfText(doc, title, hasUnicodeFont, { underline: false });
     doc.moveDown(1);
 
     const renderTable = (tbl: DocxTable) => {
@@ -1525,12 +2895,60 @@ async function generatePdfFromDocx(
             } else if (cell.isHeader || rIdx === 0) {
               doc.rect(x, y, colWidth, 20).fill('#F0F2FE');
             }
-            const borderCol = cell.borders?.bottom?.color || '#CCD2FC';
-            const borderW = cell.borders?.bottom?.size || 0.5;
-            doc.rect(x, y, colWidth, 20).strokeColor(borderCol).lineWidth(borderW).stroke();
+
+            const topBorder = cell.borders?.top || tbl.tblBorders?.top;
+            const bottomBorder = cell.borders?.bottom || tbl.tblBorders?.bottom;
+            const leftBorder = cell.borders?.left || tbl.tblBorders?.left;
+            const rightBorder = cell.borders?.right || tbl.tblBorders?.right;
+
+            if (cell.borders || tbl.tblBorders) {
+              if (topBorder && topBorder.style !== 'none') {
+                doc
+                  .moveTo(x, y)
+                  .lineTo(x + colWidth, y)
+                  .lineWidth(topBorder.size || 0.5)
+                  .strokeColor(topBorder.color || '#CCD2FC')
+                  .stroke();
+              }
+              if (bottomBorder && bottomBorder.style !== 'none') {
+                doc
+                  .moveTo(x, y + 20)
+                  .lineTo(x + colWidth, y + 20)
+                  .lineWidth(bottomBorder.size || 0.5)
+                  .strokeColor(bottomBorder.color || '#CCD2FC')
+                  .stroke();
+              }
+              if (leftBorder && leftBorder.style !== 'none') {
+                doc
+                  .moveTo(x, y)
+                  .lineTo(x, y + 20)
+                  .lineWidth(leftBorder.size || 0.5)
+                  .strokeColor(leftBorder.color || '#CCD2FC')
+                  .stroke();
+              }
+              if (rightBorder && rightBorder.style !== 'none') {
+                doc
+                  .moveTo(x + colWidth, y)
+                  .lineTo(x + colWidth, y + 20)
+                  .lineWidth(rightBorder.size || 0.5)
+                  .strokeColor(rightBorder.color || '#CCD2FC')
+                  .stroke();
+              }
+            } else {
+              doc.rect(x, y, colWidth, 20).strokeColor('#CCD2FC').lineWidth(0.5).stroke();
+            }
+
             const textCol = cell.isHeader || rIdx === 0 ? '#1F2340' : '#4D536B';
             doc.fillColor(textCol).fontSize(cell.isHeader || rIdx === 0 ? 9 : 8.5);
-            doc.text(cell.text, x + 5, y + 4, { width: colWidth - 10, lineBreak: false });
+            const align = cell.alignment || (cell.isHeader || rIdx === 0 ? 'center' : 'left');
+            renderSafePdfText(
+              doc,
+              cell.text,
+              hasUnicodeFont,
+              { width: colWidth - 10, lineBreak: false, align },
+              x + 5,
+              y + 4
+            );
           });
           doc.y = y + 20;
         });
@@ -1550,7 +2968,14 @@ async function generatePdfFromDocx(
           }
 
           row.forEach((cell, cIdx) => {
-            doc.text(cell, 55 + cIdx * colWidth, y + 4, { width: colWidth - 10, lineBreak: false });
+            renderSafePdfText(
+              doc,
+              cell,
+              hasUnicodeFont,
+              { width: colWidth - 10, lineBreak: false },
+              55 + cIdx * colWidth,
+              y + 4
+            );
           });
           doc.y = y + 20;
         });
@@ -1561,11 +2986,14 @@ async function generatePdfFromDocx(
     const renderParagraph = (p: DocxParagraph) => {
       if (p.isHeading) {
         doc.moveDown(0.5);
-        doc.fillColor('#5C6BC0').fontSize(p.headingLevel === 1 ? 16 : 14).text(p.text);
+        doc.fillColor('#5C6BC0').fontSize(p.headingLevel === 1 ? 16 : 14);
+        renderSafePdfText(doc, p.text, hasUnicodeFont);
         doc.moveDown(0.25);
       } else {
-        doc.fillColor(p.isBold ? '#1F2340' : '#4D536B').fontSize(10.5).lineGap(3).text(p.text, {
-          align: p.alignment === 'center' ? 'center' : p.alignment === 'right' ? 'right' : 'left',
+        doc.fillColor(p.isBold ? '#1F2340' : '#4D536B').fontSize(10.5).lineGap(3);
+        renderSafePdfText(doc, p.text, hasUnicodeFont, {
+          align:
+            p.alignment === 'center' ? 'center' : p.alignment === 'right' ? 'right' : 'left',
         });
         doc.moveDown(0.4);
       }
@@ -1575,14 +3003,11 @@ async function generatePdfFromDocx(
       for (const el of elements) {
         if (el.type === 'paragraph') renderParagraph(el.paragraph);
         else if (el.type === 'table') renderTable(el.table);
-        else if (el.type === 'drawing' && el.shapes) {
-          const shapeTexts = el.shapes.map((s) => s.text).filter(Boolean);
-          if (shapeTexts.length > 0) {
-            doc.moveDown(0.3);
-            for (const st of shapeTexts) {
-              doc.fillColor('#5C6BC0').fontSize(10).text(`[Drawing: ${st}]`, { align: 'center' });
-            }
-            doc.moveDown(0.3);
+        else if (el.type === 'drawing') {
+          if (el.chart) {
+            renderPdfChart(doc, el.chart, hasUnicodeFont);
+          } else if (el.shapes && el.shapes.length > 0) {
+            renderPdfDrawingShapes(doc, el.shapes, hasUnicodeFont);
           }
         }
       }
@@ -3244,7 +4669,7 @@ export interface VisualSlideShape {
   y: number;
   width: number;
   height: number;
-  shapeType?: 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'diamond' | 'star5' | 'line' | 'picture' | 'table' | string;
+  shapeType?: 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'diamond' | 'star5' | 'line' | 'picture' | 'table' | 'chart' | string;
   geometryPath?: string;
   fillColor?: string;
   strokeColor?: string;
@@ -3255,6 +4680,8 @@ export interface VisualSlideShape {
   bold?: boolean;
   imageData?: Buffer;
   imageMimeType?: string;
+  chartData?: OpenXmlChartData;
+  chartSvg?: string;
   tableData?: {
     rows: Array<Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }>>;
     colWidths?: number[];
@@ -3500,24 +4927,57 @@ async function convertPptxSource(
             },
           });
         } else {
-          const chartTexts: string[] = [];
-          const tRegexInner = /<a:t>([\s\S]*?)<\/a:t>/gi;
-          let tM: RegExpExecArray | null;
-          while ((tM = tRegexInner.exec(gfXml)) !== null) {
-            const clean = tM[1].trim();
-            if (clean) chartTexts.push(clean);
+          // Check if graphicFrame contains or references an OpenXML chart
+          const chartRefMatch = gfXml.match(/<c:chart\b[^>]*r:id="([^"]+)"/i);
+          let chartData: OpenXmlChartData | null = null;
+          if (chartRefMatch && relsMap.has(chartRefMatch[1])) {
+            const target = relsMap.get(chartRefMatch[1])!;
+            const chartPath = resolveZipPath('ppt/slides', target);
+            const chartFile = zip.file(chartPath) || zip.file(`ppt/${target}`);
+            if (chartFile) {
+              const chartXml = await chartFile.async('text');
+              chartData = parseOpenXmlChart(chartXml);
+            }
+          } else if (
+            gfXml.includes('<c:chart') ||
+            gfXml.includes('<c:plotArea') ||
+            gfXml.includes('<c:chartSpace>')
+          ) {
+            chartData = parseOpenXmlChart(gfXml);
           }
-          shapes.push({
-            x,
-            y,
-            width: w,
-            height: h,
-            shapeType: 'rect',
-            fillColor: '#F8F9FE',
-            strokeColor: '#CCD2FC',
-            strokeWidth: 1,
-            text: chartTexts.join(' ') || undefined,
-          });
+
+          if (chartData) {
+            const chartSvg = renderChartToSvg(chartData, w, h);
+            shapes.push({
+              x,
+              y,
+              width: w,
+              height: h,
+              shapeType: 'chart',
+              chartData,
+              chartSvg,
+              text: chartData.title || `${chartData.type} chart`,
+            });
+          } else {
+            const chartTexts: string[] = [];
+            const tRegexInner = /<a:t>([\s\S]*?)<\/a:t>/gi;
+            let tM: RegExpExecArray | null;
+            while ((tM = tRegexInner.exec(gfXml)) !== null) {
+              const clean = tM[1].trim();
+              if (clean) chartTexts.push(clean);
+            }
+            shapes.push({
+              x,
+              y,
+              width: w,
+              height: h,
+              shapeType: 'rect',
+              fillColor: '#F8F9FE',
+              strokeColor: '#CCD2FC',
+              strokeWidth: 1,
+              text: chartTexts.join(' ') || undefined,
+            });
+          }
         }
       }
     }
@@ -3913,7 +5373,9 @@ function generateHtmlFromSlides(
         const stroke = s.strokeColor || 'none';
         const strokeW = s.strokeWidth || 1;
 
-        if (type === 'picture' && s.imageData) {
+        if (type === 'chart' && s.chartSvg) {
+          svgElements += `        <g transform="translate(${s.x}, ${s.y})">\n${s.chartSvg}\n        </g>\n`;
+        } else if (type === 'picture' && s.imageData) {
           const mime = s.imageMimeType || 'image/png';
           svgElements += `        <image href="data:${mime};base64,${s.imageData.toString('base64')}" x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" preserveAspectRatio="none"/>\n`;
         } else if (type === 'table' && s.tableData) {
@@ -3933,31 +5395,20 @@ function generateHtmlFromSlides(
               curX += colW;
             });
           });
-        } else if (type === 'ellipse' || type === 'circle') {
-          const cx = s.x + s.width / 2;
-          const cy = s.y + s.height / 2;
-          const rx = s.width / 2;
-          const ry = s.height / 2;
-          svgElements += `        <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
-        } else if (type === 'roundRect') {
-          const r = Math.min(s.width, s.height) * 0.15;
-          svgElements += `        <rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
-        } else if (type === 'triangle') {
-          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height} ${s.x},${s.y + s.height}`;
-          svgElements += `        <polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
-        } else if (type === 'diamond') {
-          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height / 2} ${s.x + s.width / 2},${s.y + s.height} ${s.x},${s.y + s.height / 2}`;
-          svgElements += `        <polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
-        } else if (type === 'line') {
-          svgElements += `        <line x1="${s.x}" y1="${s.y}" x2="${s.x + s.width}" y2="${s.y + s.height}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
         } else {
-          svgElements += `        <rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
-        }
-
-        if (s.text) {
-          const tx = s.x + 10;
-          const ty = s.y + (s.fontSize || 14) + 6;
-          svgElements += `        <text x="${tx}" y="${ty}" font-size="${s.fontSize || 14}" fill="${s.fontColor || '#1F2340'}" font-weight="${s.bold ? 'bold' : 'normal'}" font-family="sans-serif">${escapeHtml(s.text)}</text>\n`;
+          svgElements += `        ${renderSingleShapeSvg({
+            geomType: s.shapeType === 'custom' ? 'custom' : 'preset',
+            presetGeom: s.shapeType || 'rect',
+            svgPath: s.geometryPath,
+            x: s.x,
+            y: s.y,
+            width: s.width,
+            height: s.height,
+            fillColor: s.fillColor,
+            strokeColor: s.strokeColor,
+            strokeWidth: s.strokeWidth,
+            text: s.text,
+          })}\n`;
         }
       });
 
@@ -4009,6 +5460,8 @@ async function generatePdfFromSlides(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', (err) => reject(err));
 
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+
     slides.forEach((slide, idx) => {
       const sWidth = slide.width || width;
       const sHeight = slide.height || height;
@@ -4027,7 +5480,17 @@ async function generatePdfFromSlides(
           if (shape.width > 0 && shape.height > 0) {
             const type = shape.shapeType || 'rect';
 
-            if (type === 'picture' && shape.imageData) {
+            if (type === 'chart' && shape.chartData) {
+              renderPdfChart(
+                doc,
+                shape.chartData,
+                hasUnicodeFont,
+                shape.x,
+                shape.y,
+                shape.width,
+                shape.height
+              );
+            } else if (type === 'picture' && shape.imageData) {
               try {
                 doc.image(shape.imageData, shape.x, shape.y, {
                   width: shape.width,
@@ -4054,76 +5517,60 @@ async function generatePdfFromSlides(
                   if (cell.text) {
                     doc.fillColor(cell.fontColor || (isHeader ? '#1F2340' : '#4D536B'));
                     doc.fontSize(cell.bold || isHeader ? 9 : 8.5);
-                    doc.text(cell.text, curX + 4, curY + 4, {
-                      width: Math.max(10, colW - 8),
-                      height: rowHeight - 8,
-                      lineBreak: false,
-                      ellipsis: true,
-                    });
+                    renderSafePdfText(
+                      doc,
+                      cell.text,
+                      hasUnicodeFont,
+                      {
+                        width: Math.max(10, colW - 8),
+                        height: rowHeight - 8,
+                        lineBreak: false,
+                        ellipsis: true,
+                      },
+                      curX + 4,
+                      curY + 4
+                    );
                   }
                   curX += colW;
                 });
               });
             } else {
-              const drawPath = () => {
-                if (type === 'ellipse' || type === 'circle') {
-                  const rx = shape.width / 2;
-                  const ry = shape.height / 2;
-                  doc.ellipse(shape.x + rx, shape.y + ry, rx, ry);
-                } else if (type === 'roundRect') {
-                  const r = Math.min(shape.width, shape.height) * 0.15;
-                  doc.roundedRect(shape.x, shape.y, shape.width, shape.height, r);
-                } else if (type === 'triangle') {
-                  doc.polygon(
-                    [shape.x + shape.width / 2, shape.y],
-                    [shape.x + shape.width, shape.y + shape.height],
-                    [shape.x, shape.y + shape.height]
-                  );
-                } else if (type === 'diamond') {
-                  doc.polygon(
-                    [shape.x + shape.width / 2, shape.y],
-                    [shape.x + shape.width, shape.y + shape.height / 2],
-                    [shape.x + shape.width / 2, shape.y + shape.height],
-                    [shape.x, shape.y + shape.height / 2]
-                  );
-                } else if (type === 'line') {
-                  doc.moveTo(shape.x, shape.y).lineTo(shape.x + shape.width, shape.y + shape.height);
-                } else {
-                  doc.rect(shape.x, shape.y, shape.width, shape.height);
-                }
-              };
-
-              if (shape.fillColor && shape.strokeColor) {
-                drawPath();
-                doc.lineWidth(shape.strokeWidth || 1).fillAndStroke(shape.fillColor, shape.strokeColor);
-              } else if (shape.fillColor) {
-                drawPath();
-                doc.fill(shape.fillColor);
-              } else if (shape.strokeColor) {
-                drawPath();
-                doc.lineWidth(shape.strokeWidth || 1).stroke(shape.strokeColor);
-              }
-
-              if (shape.text) {
-                doc.fillColor(shape.fontColor || '#1F2340');
-                doc.fontSize(shape.fontSize || 14);
-                doc.text(shape.text, shape.x + 6, shape.y + 6, {
-                  width: Math.max(20, shape.width - 12),
-                  height: Math.max(14, shape.height - 12),
-                  ellipsis: true,
-                });
-              }
+              renderSinglePdfShape(
+                doc,
+                {
+                  geomType: shape.shapeType === 'custom' ? 'custom' : 'preset',
+                  presetGeom: shape.shapeType || 'rect',
+                  svgPath: shape.geometryPath,
+                  x: shape.x,
+                  y: shape.y,
+                  width: shape.width,
+                  height: shape.height,
+                  fillColor: shape.fillColor,
+                  strokeColor: shape.strokeColor,
+                  strokeWidth: shape.strokeWidth,
+                  text: shape.text,
+                  fontSize: shape.fontSize,
+                  fontColor: shape.fontColor,
+                },
+                hasUnicodeFont,
+                shape.x,
+                shape.y,
+                shape.width,
+                shape.height
+              );
             }
           }
         });
       } else {
         // Fallback layout for text-only presentations
         doc.rect(40, 40, sWidth - 80, 4).fill('#5C6BC0');
-        doc.fillColor('#1F2340').fontSize(20).text(`${title} — Slide ${slide.number}`, 40, 55);
+        doc.fillColor('#1F2340').fontSize(20);
+        renderSafePdfText(doc, `${title} — Slide ${slide.number}`, hasUnicodeFont, undefined, 40, 55);
         doc.moveDown(1.5);
 
         slide.texts.forEach((line) => {
-          doc.fillColor('#4D536B').fontSize(14).lineGap(6).text(`• ${line}`);
+          doc.fillColor('#4D536B').fontSize(14).lineGap(6);
+          renderSafePdfText(doc, `• ${line}`, hasUnicodeFont);
           doc.moveDown(0.5);
         });
       }
