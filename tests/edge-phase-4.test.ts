@@ -226,7 +226,7 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
   describe('6. Tier Router Level 3 Routing', () => {
     it('routes files > 100MB to Tier L3 when OPFS is available', () => {
       const fileSize = 150 * 1024 * 1024; // 150 MB
-      const res = resolveConversionTier('mp4', 'webm', fileSize, {}, { hasOpfsSyncAccess: true });
+      const res = resolveConversionTier('csv', 'tsv', fileSize, {}, { hasOpfsSyncAccess: true });
 
       expect(res.tier).toBe('L3');
       expect(res.tierName).toBe('Edge L3 (OPFS Stream)');
@@ -235,7 +235,7 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
 
     it('falls back to Tier L4 when file > 100MB but OPFS is unavailable in browser', () => {
       const fileSize = 150 * 1024 * 1024; // 150 MB
-      const res = resolveConversionTier('mp4', 'webm', fileSize, {}, { hasOpfsSyncAccess: false });
+      const res = resolveConversionTier('csv', 'tsv', fileSize, {}, { hasOpfsSyncAccess: false });
 
       expect(res.tier).toBe('L4');
       expect(res.tierName).toBe('Cloud (Zero-Retention)');
