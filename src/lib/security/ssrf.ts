@@ -1,4 +1,5 @@
 import dns from 'dns';
+import { Agent } from 'undici';
 
 export const MAX_STREAM_BYTES = 100 * 1024 * 1024; // 100MB limit
 export const MAX_REDIRECTS = 5;
@@ -119,4 +120,48 @@ export async function validateUrlForSsrf(targetUrl: URL): Promise<boolean> {
   }
 
   return true;
+}
+
+/**
+ * Creates an Undici Agent that enforces socket-level IP pinning on every connection.
+ * This eliminates Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding vulnerabilities
+ * by verifying the resolved destination IP address inside the connection lookup hook.
+ */
+export function createSsrfSafeAgent(): Agent {
+  return new Agent({
+    connect: {
+      lookup: (hostname, _options, callback) => {
+        const rawHost = hostname.toLowerCase();
+        const cleanHost = rawHost.startsWith('[') && rawHost.endsWith(']')
+          ? rawHost.slice(1, -1)
+          : rawHost;
+
+        if (
+          cleanHost === 'localhost' ||
+          cleanHost.endsWith('.local') ||
+          cleanHost.endsWith('.internal') ||
+          cleanHost.endsWith('.localhost') ||
+          isBlockedIp(cleanHost)
+        ) {
+          return callback(new Error(`SSRF blocked: host ${hostname} is restricted`), '', 4);
+        }
+
+        dns.lookup(cleanHost, { all: true }, (err, addresses) => {
+          if (err) {
+            return callback(err, '', 4);
+          }
+          if (!addresses || addresses.length === 0) {
+            return callback(new Error(`SSRF blocked: could not resolve host ${hostname}`), '', 4);
+          }
+          for (const addr of addresses) {
+            if (isBlockedIp(addr.address)) {
+              return callback(new Error(`SSRF blocked: resolved IP ${addr.address} is restricted`), '', 4);
+            }
+          }
+          const chosen = addresses[0];
+          callback(null, chosen.address, chosen.family);
+        });
+      },
+    },
+  });
 }

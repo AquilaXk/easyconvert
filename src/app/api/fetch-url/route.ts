@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { fetch as undiciFetch } from 'undici';
 import {
   MAX_STREAM_BYTES,
   MAX_REDIRECTS,
   validateUrlForSsrf,
+  createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  const ssrfAgent = createSsrfSafeAgent();
   try {
     const body = await req.json();
     const { url } = body;
@@ -49,13 +52,23 @@ export async function POST(req: NextRequest) {
       const timeout = setTimeout(() => controller.abort(), 12000);
 
       try {
-        res = await fetch(currentUrl.toString(), {
-          signal: controller.signal,
+        res = (await undiciFetch(currentUrl.toString(), {
+          dispatcher: ssrfAgent,
+          signal: controller.signal as any,
           redirect: 'manual',
           headers: {
             'User-Agent': 'EasyConvert-Universal-Ingestion/1.0',
           },
-        });
+        })) as unknown as Response;
+      } catch (fetchErr: unknown) {
+        const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        if (msg.includes('SSRF blocked') || msg.includes('restricted')) {
+          return NextResponse.json(
+            { success: false, error: 'Requests to internal/private addresses are blocked.' },
+            { status: 403 }
+          );
+        }
+        throw fetchErr;
       } finally {
         clearTimeout(timeout);
       }
@@ -191,5 +204,7 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch remote URL';
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
+  } finally {
+    ssrfAgent.close().catch(() => {});
   }
 }

@@ -122,8 +122,8 @@ export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: str
     }
   }
 
-  // Fallback: If buffer is raw or non-SFNT container, synthesize a valid canonical font container with input bytes
-  return createCanonicalFont(buffer, defaultName);
+  // Fail-closed: invalid or non-SFNT container must throw error
+  throw new Error('Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font.');
 }
 
 /**

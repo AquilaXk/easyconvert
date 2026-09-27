@@ -63,7 +63,7 @@ export async function createZipArchive(
 export const ARCHIVE_SECURITY_LIMITS = {
   MAX_FILES: 1000,
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB limit
-  MAX_RATIO: 10, // 10:1 compression ratio
+  MAX_RATIO: 100, // 100:1 compression ratio
 };
 
 export async function extractZipArchive(

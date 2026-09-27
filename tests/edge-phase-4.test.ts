@@ -206,13 +206,20 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
     });
 
     it('streams File/Blob via streamConvertWithOpfs controller', async () => {
-      const dummyFile = new File([new Uint8Array(1024 * 64)], 'big-video.mp4', {
-        type: 'video/mp4',
+      const csvContent = 'id,name,role\n1,Alice,Engineer\n2,Bob,Scientist\n';
+      const dummyFile = new File([new TextEncoder().encode(csvContent)], 'big-data.csv', {
+        type: 'text/csv',
       });
 
-      const res = await streamConvertWithOpfs(dummyFile, 'mp4', 'webm');
-      expect(res.size).toBe(1024 * 64);
+      const res = await streamConvertWithOpfs(dummyFile, 'csv', 'tsv');
+      expect(res.size).toBe(dummyFile.size);
       expect(res.url).toBeDefined();
+
+      // Enforces fail-closed on unsupported streaming formats
+      const unsupportedFile = new File([new Uint8Array(1024)], 'unsupported.mp4', { type: 'video/mp4' });
+      await expect(streamConvertWithOpfs(unsupportedFile, 'mp4', 'webm')).rejects.toThrow(
+        /Unsupported streaming transformation/
+      );
     });
   });
 

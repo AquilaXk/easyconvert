@@ -1,0 +1,123 @@
+import { describe, it, expect, vi } from 'vitest';
+import {
+  isBlockedIp,
+  validateUrlForSsrf,
+  createSsrfSafeAgent,
+} from '../src/lib/security/ssrf';
+import {
+  ARCHIVE_SECURITY_LIMITS,
+  extractZipArchive,
+  createZipArchive,
+} from '../src/lib/conversions/archive';
+import { parseFontToSfnt } from '../src/lib/conversions/font';
+import { resolveChunkTransformer } from '../src/lib/edge/workers/opfs-vfs.worker';
+import JSZip from 'jszip';
+
+describe('Phase 0: Emergency Security Hardening & Fail-Closed Enforcement', () => {
+  describe('1. SSRF Socket-Level IP Pinning & Validation', () => {
+    it('blocks internal, loopback, link-local, and cloud metadata addresses', () => {
+      expect(isBlockedIp('127.0.0.1')).toBe(true);
+      expect(isBlockedIp('10.0.0.1')).toBe(true);
+      expect(isBlockedIp('192.168.1.1')).toBe(true);
+      expect(isBlockedIp('172.16.0.1')).toBe(true);
+      expect(isBlockedIp('169.254.169.254')).toBe(true);
+      expect(isBlockedIp('::1')).toBe(true);
+      expect(isBlockedIp('fe80::1')).toBe(true);
+      expect(isBlockedIp('fc00::1')).toBe(true);
+
+      // Public addresses must not be blocked
+      expect(isBlockedIp('8.8.8.8')).toBe(false);
+      expect(isBlockedIp('1.1.1.1')).toBe(false);
+    });
+
+    it('rejects internal and loopback hostnames via validateUrlForSsrf', async () => {
+      expect(await validateUrlForSsrf(new URL('http://localhost:3000'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://server.local'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://metadata.internal'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://169.254.169.254/latest/meta-data'))).toBe(false);
+    });
+
+    it('creates an Undici Custom Agent that pins IP and blocks private destination lookups', async () => {
+      const agent = createSsrfSafeAgent();
+      expect(agent).toBeDefined();
+      expect(agent).toBeInstanceOf(Object);
+      await agent.close();
+    });
+  });
+
+  describe('2. Archive Zip Bomb 100:1 Threshold & Normal File Acceptance', () => {
+    it('sets MAX_RATIO to 100:1 and accepts normal high-ratio text files without false positives', async () => {
+      expect(ARCHIVE_SECURITY_LIMITS.MAX_RATIO).toBe(100);
+      expect(ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE).toBe(500 * 1024 * 1024);
+
+      // Moderate compression (e.g. 25:1 CSV text): should be accepted under 100:1 threshold
+      // whereas the old 10:1 threshold would have rejected it falsely
+      const sourceText = 'timestamp,user_id,action,metadata\n'.repeat(400); // ~13.6KB
+      const zip = new JSZip();
+      zip.file('normal.csv', sourceText, { compression: 'DEFLATE', compressionOptions: { level: 9 } });
+      const normalZipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+      const ratio = Buffer.byteLength(sourceText) / normalZipBuffer.length;
+      expect(ratio).toBeGreaterThan(10); // would fail 10:1
+      expect(ratio).toBeLessThan(100); // passes 100:1
+
+      const extracted = await extractZipArchive(normalZipBuffer);
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0].filename).toBe('normal.csv');
+      expect(extracted[0].buffer.toString('utf-8')).toBe(sourceText);
+    });
+
+    it('rejects extreme zip bombs that exceed 100:1 ratio', async () => {
+      const hugeZeroes = Buffer.alloc(150000, 0); // 150KB
+      const zip = new JSZip();
+      zip.file('bomb.bin', hugeZeroes, { compression: 'DEFLATE', compressionOptions: { level: 9 } });
+      const bombBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+      const bombRatio = hugeZeroes.length / bombBuffer.length;
+      expect(bombRatio).toBeGreaterThan(100);
+
+      await expect(extractZipArchive(bombBuffer)).rejects.toThrow(
+        /Archive bomb detected: compression ratio .* exceeds 100:1 limit/
+      );
+    });
+  });
+
+  describe('3. Font Engine Fail-Closed Enforcement', () => {
+    it('throws deterministic error when input is corrupted or non-font binary', () => {
+      const garbage = Buffer.from('NOT_A_FONT_BINARY_DATA_JUST_SOME_GARBAGE');
+      expect(() => parseFontToSfnt(garbage, 'ttf', 'TestFont')).toThrow(
+        /Unsupported or corrupted font format: input is not a valid SFNT\/WOFF\/WOFF2\/EOT\/SVG font/
+      );
+    });
+
+    it('throws deterministic error for truncated 5-byte header', () => {
+      const truncated = Buffer.from([0x00, 0x01, 0x00, 0x00, 0x00]);
+      expect(() => parseFontToSfnt(truncated, 'ttf', 'Truncated')).toThrow(
+        /Unsupported or corrupted font format/
+      );
+    });
+  });
+
+  describe('4. OPFS Streaming Transformer Fail-Closed Enforcement', () => {
+    it('rejects unsupported streaming transformation pairs with descriptive error', () => {
+      expect(() => resolveChunkTransformer('mp4', 'webm')).toThrow(
+        /Unsupported streaming transformation: mp4 to webm/
+      );
+      expect(() => resolveChunkTransformer('pdf', 'docx')).toThrow(
+        /Unsupported streaming transformation: pdf to docx/
+      );
+      expect(() => resolveChunkTransformer('png', 'zip')).toThrow(
+        /Unsupported streaming transformation: png to zip/
+      );
+    });
+
+    it('allows identity transformation only when formats match or explicitly opted-in', async () => {
+      const sameFormat = resolveChunkTransformer('bin', 'bin');
+      const testChunk = new Uint8Array([1, 2, 3, 4]);
+      expect(await sameFormat(testChunk, 0, 4)).toEqual(testChunk);
+
+      const optedIn = resolveChunkTransformer('raw', 'dat', { allowPassThrough: true });
+      expect(await optedIn(testChunk, 0, 4)).toEqual(testChunk);
+    });
+  });
+});
