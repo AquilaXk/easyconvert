@@ -1217,6 +1217,132 @@ function resolveVertexPoint(
   return null;
 }
 
+function isPointInTriangle(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number
+): boolean {
+  const v0x = cx - ax;
+  const v0y = cy - ay;
+  const v1x = bx - ax;
+  const v1y = by - ay;
+  const v2x = px - ax;
+  const v2y = py - ay;
+
+  const dot00 = v0x * v0x + v0y * v0y;
+  const dot01 = v0x * v1x + v0y * v1y;
+  const dot02 = v0x * v2x + v0y * v2y;
+  const dot11 = v1x * v1x + v1y * v1y;
+  const dot12 = v1x * v2x + v1y * v2y;
+
+  const invDenom = 1 / (dot00 * dot11 - dot01 * dot01);
+  if (!Number.isFinite(invDenom) || invDenom === 0) return false;
+  const u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+  const v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+  return u >= 0 && v >= 0 && u + v < 1;
+}
+
+function checkEar(
+  prevIdx: number,
+  earIdx: number,
+  nextIdx: number,
+  p2d: Array<{ u: number; v: number; origIdx: number }>,
+  indices: number[]
+): boolean {
+  const a = p2d[prevIdx];
+  const b = p2d[earIdx];
+  const c = p2d[nextIdx];
+
+  const cross = (b.u - a.u) * (c.v - a.v) - (b.v - a.v) * (c.u - a.u);
+  if (cross <= 1e-12) return false;
+
+  for (const otherIdx of indices) {
+    if (otherIdx === prevIdx || otherIdx === earIdx || otherIdx === nextIdx) continue;
+    const p = p2d[otherIdx];
+    if (isPointInTriangle(p.u, p.v, a.u, a.v, b.u, b.v, c.u, c.v)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function triangulatePolygonEarcut(
+  points: Point3D[],
+  normal: [number, number, number]
+): Array<[number, number, number]> {
+  const n = points.length;
+  if (n < 3) return [];
+  if (n === 3) return [[0, 1, 2]];
+
+  const absX = Math.abs(normal[0]);
+  const absY = Math.abs(normal[1]);
+  const absZ = Math.abs(normal[2]);
+
+  const p2d: Array<{ u: number; v: number; origIdx: number }> = points.map((p, idx) => {
+    if (absZ >= absX && absZ >= absY) {
+      return { u: p.x, v: p.y, origIdx: idx };
+    }
+    if (absX >= absY) {
+      return { u: p.y, v: p.z, origIdx: idx };
+    }
+    return { u: p.z, v: p.x, origIdx: idx };
+  });
+
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += p2d[i].u * p2d[j].v - p2d[j].u * p2d[i].v;
+  }
+
+  const indices: number[] = [];
+  if (area < 0) {
+    for (let i = n - 1; i >= 0; i--) indices.push(i);
+  } else {
+    for (let i = 0; i < n; i++) indices.push(i);
+  }
+
+  const triangles: Array<[number, number, number]> = [];
+  let iterations = 0;
+  const maxIterations = n * n * 2;
+
+  while (indices.length > 3 && iterations < maxIterations) {
+    iterations++;
+    let earFound = false;
+
+    for (let i = 0; i < indices.length; i++) {
+      const prev = indices[(i + indices.length - 1) % indices.length];
+      const cur = indices[i];
+      const next = indices[(i + 1) % indices.length];
+
+      if (checkEar(prev, cur, next, p2d, indices)) {
+        triangles.push([p2d[prev].origIdx, p2d[cur].origIdx, p2d[next].origIdx]);
+        indices.splice(i, 1);
+        earFound = true;
+        break;
+      }
+    }
+
+    if (!earFound) {
+      const prev = indices[0];
+      const cur = indices[1];
+      const next = indices[2];
+      triangles.push([p2d[prev].origIdx, p2d[cur].origIdx, p2d[next].origIdx]);
+      indices.splice(1, 1);
+    }
+  }
+
+  if (indices.length === 3) {
+    triangles.push([p2d[indices[0]].origIdx, p2d[indices[1]].origIdx, p2d[indices[2]].origIdx]);
+  }
+
+  return triangles;
+}
+
 /**
  * Extracts B-Rep solid boundary topology from STEP entity map (ADVANCED_FACE, FACE_OUTER_BOUND,
  * EDGE_LOOP, ORIENTED_EDGE, EDGE_CURVE, VERTEX_POINT, CARTESIAN_POINT) and tessellates
@@ -1365,9 +1491,10 @@ export function extractStepBRepMesh(
         normals.push(normal);
       }
 
-      // Fan triangulation from vertex 0 of this face
-      for (let i = 1; i < uniquePoints.length - 1; i++) {
-        facesList.push([startIdx, startIdx + i, startIdx + i + 1]);
+      // Constrained planar polygon / Ear-clipping triangulation preserving boundary topology
+      const localTriangles = triangulatePolygonEarcut(uniquePoints, normal);
+      for (const [i0, i1, i2] of localTriangles) {
+        facesList.push([startIdx + i0, startIdx + i1, startIdx + i2]);
       }
     }
   }

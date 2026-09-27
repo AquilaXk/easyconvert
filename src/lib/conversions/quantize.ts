@@ -464,14 +464,23 @@ export function applyFloydSteinbergDither(
   height: number,
   channels: number,
   palette: RgbColor[],
-  dither: boolean
+  dither: boolean,
+  useOklab: boolean = true
 ): Uint8Array {
   const indexed = new Uint8Array(width * height);
+  const precomputedOklab = useOklab ? palette.map((p) => srgbToOklab(p.r, p.g, p.b)) : undefined;
+
+  const getClosest = (c: RgbColor): number => {
+    return useOklab
+      ? findClosestPaletteIndexOklab(c, palette, precomputedOklab)
+      : findClosestPaletteIndex(c, palette);
+  };
+
   if (!dither) {
     for (let i = 0; i < width * height; i++) {
       const idx = i * channels;
       const c = { r: rgbBuffer[idx], g: rgbBuffer[idx + 1], b: rgbBuffer[idx + 2] };
-      indexed[i] = findClosestPaletteIndex(c, palette);
+      indexed[i] = getClosest(c);
     }
     return indexed;
   }
@@ -490,7 +499,7 @@ export function applyFloydSteinbergDither(
       const g = Math.max(0, Math.min(255, Math.round(rgbBuffer[bIdx + 1] + gErrors[pIdx])));
       const b = Math.max(0, Math.min(255, Math.round(rgbBuffer[bIdx + 2] + bErrors[pIdx])));
 
-      const palIdx = findClosestPaletteIndex({ r, g, b }, palette);
+      const palIdx = getClosest({ r, g, b });
       indexed[pIdx] = palIdx;
 
       const chosen = palette[palIdx];

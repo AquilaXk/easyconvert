@@ -2,10 +2,28 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult } from '../types';
-import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
+import {
+  quantizeMedianCut,
+  quantizeNeuQuant,
+  encodeBmp8,
+  srgbToOklab,
+  deltaEOklab,
+  findClosestPaletteIndexOklab,
+  applyFloydSteinbergDither,
+} from './quantize';
 import { performOcr, generateSearchablePdf } from './ocr';
 
-export { quantizeMedianCut, quantizeNeuQuant, encodeBmp8, performOcr, generateSearchablePdf };
+export {
+  quantizeMedianCut,
+  quantizeNeuQuant,
+  encodeBmp8,
+  srgbToOklab,
+  deltaEOklab,
+  findClosestPaletteIndexOklab,
+  applyFloydSteinbergDither,
+  performOcr,
+  generateSearchablePdf,
+};
 
 export function encodeBmp(raw: Buffer, width: number, height: number, channels: number): Buffer {
   const rowSize = width * 3;
