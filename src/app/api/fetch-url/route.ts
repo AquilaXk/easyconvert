@@ -1,38 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  MAX_STREAM_BYTES,
+  MAX_REDIRECTS,
+  validateUrlForSsrf,
+} from '@/lib/security/ssrf';
 
 export const dynamic = 'force-dynamic';
-
-function isPrivateIpOrHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase();
-  if (
-    lower === 'localhost' ||
-    lower === '127.0.0.1' ||
-    lower === '0.0.0.0' ||
-    lower === '::1' ||
-    lower.endsWith('.local') ||
-    lower.endsWith('.internal')
-  ) {
-    return true;
-  }
-
-  // Check IPv4 private ranges
-  const ipv4Parts = hostname.split('.').map(Number);
-  if (ipv4Parts.length === 4 && !ipv4Parts.some(isNaN)) {
-    const [a, b] = ipv4Parts;
-    // 10.0.0.0/8
-    if (a === 10) return true;
-    // 172.16.0.0/12 (172.16 - 172.31)
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    // 192.168.0.0/16
-    if (a === 192 && b === 168) return true;
-    // 169.254.0.0/16 (link-local)
-    if (a === 169 && b === 254) return true;
-    // 127.0.0.0/8 (loopback)
-    if (a === 127) return true;
-  }
-
-  return false;
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -60,24 +33,72 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (isPrivateIpOrHost(parsedUrl.hostname)) {
-      return NextResponse.json(
-        { success: false, error: 'Requests to internal/private addresses are blocked.' },
-        { status: 403 }
-      );
+    let currentUrl = parsedUrl;
+    let res: Response | null = null;
+
+    for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+      const isValid = await validateUrlForSsrf(currentUrl);
+      if (!isValid) {
+        return NextResponse.json(
+          { success: false, error: 'Requests to internal/private addresses are blocked.' },
+          { status: 403 }
+        );
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+
+      try {
+        res = await fetch(currentUrl.toString(), {
+          signal: controller.signal,
+          redirect: 'manual',
+          headers: {
+            'User-Agent': 'EasyConvert-Universal-Ingestion/1.0',
+          },
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      // Handle redirect manually with recursive DNS/IP validation
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location) {
+          return NextResponse.json(
+            { success: false, error: `Redirect status ${res.status} missing Location header` },
+            { status: 502 }
+          );
+        }
+        if (redirectCount === MAX_REDIRECTS) {
+          return NextResponse.json(
+            { success: false, error: 'Too many redirects encountered.' },
+            { status: 502 }
+          );
+        }
+        try {
+          const nextUrl = new URL(location, currentUrl);
+          if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
+            return NextResponse.json(
+              { success: false, error: 'Only HTTP and HTTPS URLs are permitted.' },
+              { status: 400 }
+            );
+          }
+          currentUrl = nextUrl;
+          continue;
+        } catch {
+          return NextResponse.json(
+            { success: false, error: 'Invalid redirect location URL.' },
+            { status: 502 }
+          );
+        }
+      }
+
+      break;
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
-
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'EasyConvert-Universal-Ingestion/1.0',
-      },
-    });
-
-    clearTimeout(timeout);
+    if (!res) {
+      return NextResponse.json({ success: false, error: 'Failed to fetch remote URL' }, { status: 502 });
+    }
 
     if (!res.ok) {
       return NextResponse.json(
@@ -85,6 +106,50 @@ export async function POST(req: NextRequest) {
         { status: res.status >= 400 && res.status < 500 ? 400 : 502 }
       );
     }
+
+    // Check Content-Length upfront if provided
+    const contentLengthHeader = res.headers.get('content-length');
+    if (contentLengthHeader) {
+      const contentLength = parseInt(contentLengthHeader, 10);
+      if (!isNaN(contentLength) && contentLength > MAX_STREAM_BYTES) {
+        return NextResponse.json(
+          { success: false, error: 'File size exceeds 100MB limit.' },
+          { status: 413 }
+        );
+      }
+    }
+
+    if (!res.body) {
+      return NextResponse.json({ success: false, error: 'Empty response body from remote server' }, { status: 502 });
+    }
+
+    // Stream chunks with strict 100MB limit counter
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          totalBytes += value.length;
+          if (totalBytes > MAX_STREAM_BYTES) {
+            await reader.cancel();
+            return NextResponse.json(
+              { success: false, error: 'File size exceeds 100MB limit.' },
+              { status: 413 }
+            );
+          }
+          chunks.push(value);
+        }
+      }
+    } catch (streamErr: unknown) {
+      await reader.cancel().catch(() => {});
+      throw streamErr;
+    }
+
+    const buffer = Buffer.concat(chunks);
 
     // Determine filename
     let filename = '';
@@ -97,7 +162,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!filename) {
-      const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
+      const pathParts = currentUrl.pathname.split('/').filter(Boolean);
       filename = pathParts[pathParts.length - 1] || 'remote_file';
     }
 
@@ -113,9 +178,6 @@ export async function POST(req: NextRequest) {
       else if (contentType.includes('application/json')) filename += '.json';
       else filename += '.bin';
     }
-
-    const arrayBuffer = await res.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
 
     return new NextResponse(new Uint8Array(buffer), {
       status: 200,

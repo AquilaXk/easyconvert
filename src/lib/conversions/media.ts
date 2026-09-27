@@ -141,11 +141,10 @@ function processMediaPure(
   let sampleRate = options.audioSampleRate || 44100;
   let channels = options.audioChannels === 'mono' ? 1 : 2;
 
-  if (src === 'wav' && inputBuffer.length >= 44 && inputBuffer.toString('ascii', 0, 4) === 'RIFF') {
+  if (inputBuffer.length >= 44 && inputBuffer.toString('ascii', 0, 4) === 'RIFF') {
     pcmData = parseWavPcm(inputBuffer);
   } else {
-    // Synthesize or adapt audio samples from payload
-    pcmData = synthesizePcmFromInput(inputBuffer, sampleRate, channels);
+    throw new Error('Unsupported audio format: decoder unavailable');
   }
 
   // Apply volume adjustment if requested
@@ -252,27 +251,6 @@ function parseWavPcm(buffer: Buffer): Int16Array {
   return samples;
 }
 
-/**
- * Synthesizes coherent audio waveform from binary stream
- */
-function synthesizePcmFromInput(input: Buffer, sampleRate: number, channels: number): Int16Array {
-  const durationSec = Math.max(1, Math.min(10, Math.floor(input.length / 8000)));
-  const totalSamples = sampleRate * durationSec * channels;
-  const samples = new Int16Array(totalSamples);
-
-  // Generate pleasant harmonic carrier wave based on input hash
-  const hash = input.reduce((acc, b) => (acc * 31 + b) % 10007, 7);
-  const freq = 220 + (hash % 440); // 220Hz - 660Hz tone
-
-  for (let i = 0; i < totalSamples; i++) {
-    const t = i / (sampleRate * channels);
-    // Sine wave with slight harmonic decay
-    const val = Math.sin(2 * Math.PI * freq * t) * 0.5 + Math.sin(4 * Math.PI * freq * t) * 0.25;
-    samples[i] = Math.round(val * 24000);
-  }
-
-  return samples;
-}
 
 /**
  * Encodes PCM samples into standard RIFF WAV format
