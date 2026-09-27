@@ -77,11 +77,14 @@ export interface ConversionOptions {
   dither?: boolean;
   quantizer?: string;
   ditherMethod?: string;
+  useWebGpu?: boolean;
+  gpuAcceleration?: boolean;
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;
   // Document & PDF options
   pages?: string;
+  pageCount?: number;
   password?: string;
   orientation?: 'portrait' | 'landscape';
   preserveLayout?: boolean;

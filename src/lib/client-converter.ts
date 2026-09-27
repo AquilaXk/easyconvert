@@ -154,7 +154,19 @@ export async function tryProcessClientEdge(
     }
   }
 
-  // 3. Level 2: Client-side Edge OCR or SIMD Wasm Execution (Zero-Data Retention)
+  // 3. Level 1A: WebGPU Compute Pipeline
+  if (resolution.tier === 'L1A') {
+    const l1aRes = await processL2Conversion(item, src, tgt, onProgress);
+    if (l1aRes) {
+      return {
+        ...l1aRes,
+        tier: 'L1A',
+        tierName: 'Edge L1A (WebGPU Compute)',
+      };
+    }
+  }
+
+  // 4. Level 2: Client-side Edge OCR or SIMD Wasm Execution (Zero-Data Retention)
   if (resolution.tier === 'L2') {
     return await processL2Conversion(item, src, tgt, onProgress);
   }

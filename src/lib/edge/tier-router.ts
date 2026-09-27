@@ -15,7 +15,27 @@ import { isPureCadConvertible } from './pure/pure-cad';
 import { isPureAudioConvertible } from './pure/pure-audio';
 import { isPureCanvasConvertible, isCanvasSupported } from './pure/pure-canvas';
 
-export type ConversionTier = 'L0' | 'L1' | 'L2' | 'L3' | 'L4';
+export type ConversionTier = 'L0' | 'L1' | 'L1A' | 'L2' | 'L3' | 'L4';
+
+export interface WebGpuCapabilities {
+  hasWebGpu: boolean;
+  adapterInfo?: {
+    vendor?: string;
+    architecture?: string;
+    device?: string;
+    description?: string;
+  };
+  limits?: {
+    maxComputeWorkgroupSizeX?: number;
+    maxComputeWorkgroupSizeY?: number;
+    maxComputeWorkgroupSizeZ?: number;
+    maxComputeInvocationsPerWorkgroup?: number;
+    maxBufferSize?: number;
+    maxStorageBufferBindingSize?: number;
+  };
+  features?: string[];
+  supportedShaderFormats?: string[];
+}
 
 export interface EdgeCapabilities {
   hasWebCodecsVideo: boolean;
@@ -27,6 +47,9 @@ export interface EdgeCapabilities {
   hardwareConcurrency: number;
   supportedVideoEncoders: string[];
   supportedAudioEncoders: string[];
+  hasWebGpu?: boolean;
+  webGpu?: WebGpuCapabilities;
+  deviceMemory?: number;
 }
 
 export interface TierResolution {
@@ -123,6 +146,81 @@ export async function checkWebCodecsSupport(): Promise<{
 }
 
 /**
+ * Checks browser WebGPU API existence.
+ */
+export function checkWebGpuSupport(): boolean {
+  return (
+    typeof navigator !== 'undefined' &&
+    'gpu' in navigator &&
+    Boolean((navigator as any).gpu)
+  );
+}
+
+/**
+ * Probes browser WebGPU adapter limits, features, and compute shader capabilities.
+ */
+export async function probeWebGpuCapabilities(): Promise<WebGpuCapabilities> {
+  if (!checkWebGpuSupport()) {
+    return { hasWebGpu: false };
+  }
+
+  try {
+    const gpu = (navigator as any).gpu;
+    if (typeof gpu.requestAdapter !== 'function') {
+      return { hasWebGpu: false };
+    }
+
+    const adapter = await gpu.requestAdapter({
+      powerPreference: 'high-performance',
+    });
+
+    if (!adapter) {
+      return { hasWebGpu: false };
+    }
+
+    const adapterInfo =
+      typeof adapter.requestAdapterInfo === 'function'
+        ? await adapter.requestAdapterInfo().catch(() => undefined)
+        : (adapter.info ?? undefined);
+
+    const limits = adapter.limits
+      ? {
+          maxComputeWorkgroupSizeX: adapter.limits.maxComputeWorkgroupSizeX,
+          maxComputeWorkgroupSizeY: adapter.limits.maxComputeWorkgroupSizeY,
+          maxComputeWorkgroupSizeZ: adapter.limits.maxComputeWorkgroupSizeZ,
+          maxComputeInvocationsPerWorkgroup: adapter.limits.maxComputeInvocationsPerWorkgroup,
+          maxBufferSize: adapter.limits.maxBufferSize,
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+        }
+      : undefined;
+
+    const features: string[] = [];
+    if (adapter.features) {
+      for (const f of adapter.features) {
+        features.push(f);
+      }
+    }
+
+    return {
+      hasWebGpu: true,
+      adapterInfo: adapterInfo
+        ? {
+            vendor: adapterInfo.vendor,
+            architecture: adapterInfo.architecture,
+            device: adapterInfo.device,
+            description: adapterInfo.description,
+          }
+        : undefined,
+      limits,
+      features,
+      supportedShaderFormats: ['wgsl'],
+    };
+  } catch {
+    return { hasWebGpu: false };
+  }
+}
+
+/**
  * Probes complete runtime capabilities of current environment.
  */
 export async function probeEdgeCapabilities(): Promise<EdgeCapabilities> {
@@ -133,8 +231,13 @@ export async function probeEdgeCapabilities(): Promise<EdgeCapabilities> {
     typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : false;
   const hardwareConcurrency =
     typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+  const deviceMemory =
+    typeof navigator !== 'undefined' ? (navigator as any).deviceMemory : undefined;
 
-  const webcodecs = await checkWebCodecsSupport();
+  const [webcodecs, webGpu] = await Promise.all([
+    checkWebCodecsSupport(),
+    probeWebGpuCapabilities(),
+  ]);
 
   return {
     hasWebCodecsVideo: webcodecs.video,
@@ -144,6 +247,9 @@ export async function probeEdgeCapabilities(): Promise<EdgeCapabilities> {
     hasCanvas,
     isCrossOriginIsolated,
     hardwareConcurrency,
+    deviceMemory,
+    hasWebGpu: webGpu.hasWebGpu,
+    webGpu,
     supportedVideoEncoders: webcodecs.supportedVideoEncoders,
     supportedAudioEncoders: webcodecs.supportedAudioEncoders,
   };
@@ -196,6 +302,153 @@ export function isOpfsStreamingSupported(
 }
 
 /**
+ * Section 7 MicroVM Payload Offload Budgets
+ */
+export const MICROVM_PAYLOAD_BUDGETS = {
+  OFFICE_MAX_BYTES: 30 * 1024 * 1024, // 30 MB
+  OCR_MAX_PAGES: 50,                  // 50 pages
+  RAW_MAX_BYTES: 35 * 1024 * 1024,    // 35 MB
+  CAD_MAX_BYTES: 15 * 1024 * 1024,    // 15 MB
+  VIDEO_MAX_BYTES: 100 * 1024 * 1024, // 100 MB
+  LOW_SPEC_CONCURRENCY_THRESHOLD: 2,  // <= 2 CPU cores
+  LOW_SPEC_MEMORY_GB_THRESHOLD: 4,    // < 4 GB device memory
+  LOW_SPEC_PAYLOAD_MAX_BYTES: 5 * 1024 * 1024, // 5 MB threshold on low-spec devices
+} as const;
+
+export interface MicroVMOffloadEvaluation {
+  shouldOffload: boolean;
+  reason?: string;
+  category: 'office' | 'ocr' | 'raw' | 'cad' | 'video' | 'low-spec' | 'none';
+  budgetLimit?: number;
+}
+
+/**
+ * Evaluates whether a workload exceeds client-edge memory/compute budgets
+ * and must be offloaded to an isolated serverless MicroVM.
+ */
+export function evaluateMicroVMOffload(
+  sourceFormat: string,
+  fileSize: number,
+  options: ConversionOptions = {},
+  capabilities?: Partial<EdgeCapabilities>
+): MicroVMOffloadEvaluation {
+  const src = (sourceFormat || '').toLowerCase();
+
+  // 1. OCR page count budget (> 50 pages)
+  const isOcr = Boolean(options.ocrEnabled || src === 'ocr');
+  let pageCount = options.pageCount;
+  if (pageCount === undefined && typeof options.pages === 'string') {
+    const parts = options.pages.split(/[,-]/);
+    let max = 0;
+    for (const p of parts) {
+      const n = parseInt(p.trim(), 10);
+      if (!isNaN(n) && n > max) max = n;
+    }
+    if (max > 0) pageCount = max;
+  }
+  if (isOcr && pageCount !== undefined && pageCount > MICROVM_PAYLOAD_BUDGETS.OCR_MAX_PAGES) {
+    return {
+      shouldOffload: true,
+      category: 'ocr',
+      reason: `OCR document exceeds client edge budget of ${MICROVM_PAYLOAD_BUDGETS.OCR_MAX_PAGES} pages (${pageCount} pages requested)`,
+      budgetLimit: MICROVM_PAYLOAD_BUDGETS.OCR_MAX_PAGES,
+    };
+  }
+
+  // 2. Office document budget (> 30 MB)
+  const OFFICE_FORMATS = new Set([
+    'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'odt', 'ods', 'odp', 'rtf', 'pdf',
+    'hwp', 'hwpx', 'wps', 'et', 'dps', 'pages', 'numbers', 'key',
+  ]);
+  if (OFFICE_FORMATS.has(src) && fileSize > MICROVM_PAYLOAD_BUDGETS.OFFICE_MAX_BYTES) {
+    return {
+      shouldOffload: true,
+      category: 'office',
+      reason: `Office payload (${(fileSize / (1024 * 1024)).toFixed(1)}MB) exceeds client edge budget of 30MB`,
+      budgetLimit: MICROVM_PAYLOAD_BUDGETS.OFFICE_MAX_BYTES,
+    };
+  }
+
+  // 3. RAW camera budget (> 35 MB)
+  const RAW_FORMATS = new Set([
+    'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'orf', 'pef', 'raw',
+    'sr2', 'srf', 'kdc', 'mrw', 'x3f', 'erf',
+  ]);
+  if (RAW_FORMATS.has(src) && fileSize > MICROVM_PAYLOAD_BUDGETS.RAW_MAX_BYTES) {
+    return {
+      shouldOffload: true,
+      category: 'raw',
+      reason: `RAW camera image payload (${(fileSize / (1024 * 1024)).toFixed(1)}MB) exceeds client edge budget of 35MB`,
+      budgetLimit: MICROVM_PAYLOAD_BUDGETS.RAW_MAX_BYTES,
+    };
+  }
+
+  // 4. CAD model budget (> 15 MB)
+  const CAD_FORMATS = new Set([
+    'step', 'stp', 'iges', 'igs', 'brep', 'dxf', 'dwg', 'stl', 'obj', 'ply', '3ds', 'dae', 'ifc',
+  ]);
+  if (CAD_FORMATS.has(src) && fileSize > MICROVM_PAYLOAD_BUDGETS.CAD_MAX_BYTES) {
+    return {
+      shouldOffload: true,
+      category: 'cad',
+      reason: `CAD geometry payload (${(fileSize / (1024 * 1024)).toFixed(1)}MB) exceeds client edge budget of 15MB`,
+      budgetLimit: MICROVM_PAYLOAD_BUDGETS.CAD_MAX_BYTES,
+    };
+  }
+
+  // 5. Video budget (> 100 MB)
+  const VIDEO_FORMATS = new Set([
+    'mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv', 'm4v', '3gp', 'ts', 'ogv', 'vob', 'mts', 'm2ts',
+  ]);
+  if (VIDEO_FORMATS.has(src) && fileSize > MICROVM_PAYLOAD_BUDGETS.VIDEO_MAX_BYTES) {
+    return {
+      shouldOffload: true,
+      category: 'video',
+      reason: `Video payload (${(fileSize / (1024 * 1024)).toFixed(1)}MB) exceeds client edge budget of 100MB`,
+      budgetLimit: MICROVM_PAYLOAD_BUDGETS.VIDEO_MAX_BYTES,
+    };
+  }
+
+  // 6. Low-spec device heuristics
+  const cores =
+    capabilities?.hardwareConcurrency ??
+    (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined);
+  const memoryGb =
+    capabilities?.deviceMemory ??
+    (typeof navigator !== 'undefined' ? (navigator as any).deviceMemory : undefined);
+
+  const isLowSpec =
+    (cores !== undefined && cores <= MICROVM_PAYLOAD_BUDGETS.LOW_SPEC_CONCURRENCY_THRESHOLD) ||
+    (memoryGb !== undefined && memoryGb < MICROVM_PAYLOAD_BUDGETS.LOW_SPEC_MEMORY_GB_THRESHOLD);
+
+  if (isLowSpec && fileSize > MICROVM_PAYLOAD_BUDGETS.LOW_SPEC_PAYLOAD_MAX_BYTES) {
+    return {
+      shouldOffload: true,
+      category: 'low-spec',
+      reason: `Low-spec client device (${cores ?? 'unknown'} cores, ${memoryGb ?? 'unknown'}GB RAM) offloading payload to isolated MicroVM to prevent tab OOM crash`,
+      budgetLimit: MICROVM_PAYLOAD_BUDGETS.LOW_SPEC_PAYLOAD_MAX_BYTES,
+    };
+  }
+
+  return {
+    shouldOffload: false,
+    category: 'none',
+  };
+}
+
+/**
+ * Checks whether the given conversion task should be offloaded to MicroVM.
+ */
+export function shouldOffloadToMicroVM(
+  sourceFormat: string,
+  fileSize: number,
+  options: ConversionOptions = {},
+  capabilities?: Partial<EdgeCapabilities>
+): boolean {
+  return evaluateMicroVMOffload(sourceFormat, fileSize, options, capabilities).shouldOffload;
+}
+
+/**
  * Resolves the optimal conversion tier given format pair, file size, options, and capabilities.
  */
 export function resolveConversionTier(
@@ -220,10 +473,11 @@ export function resolveConversionTier(
 
   // 2. High-volume streaming file (> 100 MB)
   const isLargeFile = fileSize > 100 * 1024 * 1024;
+  const opfsAvailable = capabilities?.hasOpfsSyncAccess ?? checkOpfsSupport();
+  const isOpfsEligible = isLargeFile && opfsAvailable && isOpfsStreamingSupported(src, tgt, options);
+
   if (isLargeFile) {
-    const opfsAvailable =
-      capabilities?.hasOpfsSyncAccess ?? checkOpfsSupport();
-    if (opfsAvailable && isOpfsStreamingSupported(src, tgt, options)) {
+    if (isOpfsEligible) {
       return {
         tier: 'L3',
         tierName: 'Edge L3 (OPFS Stream)',
@@ -241,7 +495,18 @@ export function resolveConversionTier(
     };
   }
 
-  // 3. Level 0: Pure Isomorphic Fast-Path (0 MB Wasm, instant execution)
+  // 3. Evaluate MicroVM payload offload budgets (Section 7)
+  const offloadEval = evaluateMicroVMOffload(src, fileSize, options, capabilities);
+  if (offloadEval.shouldOffload) {
+    return {
+      tier: 'L4',
+      tierName: 'Cloud (Zero-Retention)',
+      isClientEdge: false,
+      reason: offloadEval.reason || 'Payload exceeds edge budget, offloading to serverless MicroVM',
+    };
+  }
+
+  // 4. Level 0: Pure Isomorphic Fast-Path (0 MB Wasm, instant execution)
   if (isPureDataConvertible(src, tgt)) {
     return {
       tier: 'L0',
@@ -279,26 +544,6 @@ export function resolveConversionTier(
     };
   }
 
-  // 4. Level 2: Wasm SIMD OCR & Image Filter Pipeline
-  const isImageSrc = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(src);
-  const isImageTgt = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(tgt);
-  const isWasmFilterRequested = isImageSrc && isImageTgt && (
-    options.colorDepth !== undefined ||
-    options.palette === true ||
-    options.dither === true
-  );
-
-  if (options.ocrEnabled || src === 'pdf' || isWasmFilterRequested) {
-    return {
-      tier: 'L2',
-      tierName: 'Edge L2 (SIMD Wasm)',
-      isClientEdge: true,
-      reason: options.ocrEnabled || src === 'pdf'
-        ? 'Client Wasm OCR and PDF memory vector processing'
-        : 'Wasm SIMD vector image processing pipeline',
-    };
-  }
-
   // 5. Level 1: WebCodecs Hardware Media
   const isVideoOrAudio = ['mp4', 'webm', 'mov', 'm4a', 'aac', 'opus'].includes(tgt);
   if (isVideoOrAudio && (capabilities?.hasWebCodecsVideo || capabilities?.hasWebCodecsAudio)) {
@@ -310,7 +555,48 @@ export function resolveConversionTier(
     };
   }
 
-  // 6. Level 4: Serverless API fallback (Fail-closed or Zero-Data Retention cloud)
+  // 6. Level 1A: WebGPU Compute Pipeline (with graceful cascade to L2 Wasm)
+  const isImageSrc = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(src);
+  const isImageTgt = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(tgt);
+  const isWasmFilterRequested = isImageSrc && isImageTgt && (
+    options.colorDepth !== undefined ||
+    options.palette === true ||
+    options.dither === true ||
+    Boolean(options.quantizer)
+  );
+
+  const hasWebGpu = Boolean(
+    capabilities?.hasWebGpu ||
+    capabilities?.webGpu?.hasWebGpu
+  );
+
+  const isWebGpuRequested = Boolean(options.useWebGpu || options.gpuAcceleration);
+  const isWebGpuComputeEligible =
+    (isWebGpuRequested || (isWasmFilterRequested && options.quantizer === 'oklab')) &&
+    hasWebGpu;
+
+  if (isWebGpuComputeEligible) {
+    return {
+      tier: 'L1A',
+      tierName: 'Edge L1A (WebGPU Compute)',
+      isClientEdge: true,
+      reason: 'WebGPU parallel compute shader execution pipeline',
+    };
+  }
+
+  // 7. Level 2: Wasm SIMD OCR & Image Filter Pipeline (fallback cascade from L1A)
+  if (options.ocrEnabled || src === 'pdf' || isWasmFilterRequested || isWebGpuRequested) {
+    return {
+      tier: 'L2',
+      tierName: 'Edge L2 (SIMD Wasm)',
+      isClientEdge: true,
+      reason: options.ocrEnabled || src === 'pdf'
+        ? 'Client Wasm OCR and PDF memory vector processing'
+        : 'Wasm SIMD vector image processing pipeline',
+    };
+  }
+
+  // 8. Level 4: Serverless API fallback (Fail-closed or Zero-Data Retention cloud)
   return {
     tier: 'L4',
     tierName: 'Cloud (Zero-Retention)',
