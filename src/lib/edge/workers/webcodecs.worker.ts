@@ -1193,6 +1193,253 @@ export function muxIsoBmffMp4(
 }
 
 /**
+ * Generates an fMP4 / CMAF initialization segment containing ftyp and moov (with mvex/trex).
+ */
+export function buildFmp4InitSegment(
+  width: number = 1280,
+  height: number = 720,
+  codec: string = 'avc1.4d002a',
+  timescale: number = 90000
+): Uint8Array {
+  // 1. ftyp box
+  const ftypPayload = new Uint8Array(24);
+  const ftypView = new DataView(ftypPayload.buffer);
+  ftypPayload.set([0x69, 0x73, 0x6f, 0x36], 0); // 'iso6'
+  ftypView.setUint32(4, 1); // minor_version
+  ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 8); // 'isom'
+  ftypPayload.set([0x69, 0x73, 0x6f, 0x36], 12); // 'iso6'
+  ftypPayload.set([0x63, 0x6d, 0x66, 0x63], 16); // 'cmfc'
+  ftypPayload.set([0x6d, 0x70, 0x34, 0x31], 20); // 'mp41'
+  const ftypBox = buildIsoBmffBox('ftyp', ftypPayload);
+
+  // 2. mvhd box
+  const mvhdPayload = new Uint8Array(100);
+  const mvhdView = new DataView(mvhdPayload.buffer);
+  mvhdView.setUint32(12, timescale); // timescale
+  mvhdView.setUint32(16, 0); // duration = 0 for streaming
+  mvhdView.setUint32(20, 0x00010000); // rate 1.0
+  mvhdView.setUint16(24, 0x0100); // volume 1.0
+  mvhdView.setUint32(36, 0x00010000);
+  mvhdView.setUint32(52, 0x00010000);
+  mvhdView.setUint32(68, 0x40000000);
+  mvhdView.setUint32(96, 2); // next_track_ID = 2
+  const mvhdBox = buildIsoBmffBox('mvhd', mvhdPayload);
+
+  // 3. mvex -> trex
+  const trexPayload = new Uint8Array(28);
+  const trexView = new DataView(trexPayload.buffer);
+  trexView.setUint32(4, 1); // track_ID = 1
+  trexView.setUint32(8, 1); // default_sample_description_index = 1
+  trexView.setUint32(12, Math.round(timescale / 30)); // default_sample_duration
+  trexView.setUint32(16, 0); // default_sample_size
+  trexView.setUint32(20, 0x01010000); // default_sample_flags (non-sync by default)
+  const trexBox = buildIsoBmffBox('trex', trexPayload);
+  const mvexBox = buildIsoBmffBox('mvex', trexBox);
+
+  // 4. trak -> tkhd, mdia
+  const tkhdPayload = new Uint8Array(84);
+  const tkhdView = new DataView(tkhdPayload.buffer);
+  tkhdView.setUint32(0, 0x00000007); // flags: enabled | in_movie | in_preview
+  tkhdView.setUint32(12, 1); // track_ID = 1
+  tkhdView.setUint32(20, 0); // duration = 0
+  tkhdView.setUint32(36, 0x00010000);
+  tkhdView.setUint32(52, 0x00010000);
+  tkhdView.setUint32(68, 0x40000000);
+  tkhdView.setUint32(76, width << 16);
+  tkhdView.setUint32(80, height << 16);
+  const tkhdBox = buildIsoBmffBox('tkhd', tkhdPayload);
+
+  // mdhd
+  const mdhdPayload = new Uint8Array(24);
+  const mdhdView = new DataView(mdhdPayload.buffer);
+  mdhdView.setUint32(12, timescale);
+  mdhdView.setUint32(16, 0);
+  mdhdView.setUint16(20, 0x55c4); // language 'und'
+  const mdhdBox = buildIsoBmffBox('mdhd', mdhdPayload);
+
+  // hdlr
+  const hdlrPayload = new Uint8Array(25);
+  hdlrPayload.set([0x76, 0x69, 0x64, 0x65], 8); // 'vide'
+  const hdlrBox = buildIsoBmffBox('hdlr', hdlrPayload);
+
+  // vmhd
+  const vmhdPayload = new Uint8Array(12);
+  const vmhdView = new DataView(vmhdPayload.buffer);
+  vmhdView.setUint32(0, 0x00000001);
+  const vmhdBox = buildIsoBmffBox('vmhd', vmhdPayload);
+
+  // dinf -> dref
+  const drefPayload = new Uint8Array(20);
+  const drefView = new DataView(drefPayload.buffer);
+  drefView.setUint32(4, 1);
+  drefView.setUint32(8, 12);
+  drefPayload.set([0x75, 0x72, 0x6c, 0x20], 12); // 'url '
+  drefView.setUint32(16, 0x00000001);
+  const dinfBox = buildIsoBmffBox('dinf', buildIsoBmffBox('dref', drefPayload));
+
+  // stbl with empty sample tables for fMP4
+  const avc1Payload = new Uint8Array(78);
+  const avc1View = new DataView(avc1Payload.buffer);
+  avc1View.setUint16(6, 1); // data_reference_index
+  avc1View.setUint16(24, width);
+  avc1View.setUint16(26, height);
+  avc1View.setUint32(28, 0x00480000);
+  avc1View.setUint32(32, 0x00480000);
+  avc1View.setUint16(40, 1);
+  avc1View.setUint16(74, 0x0018);
+  avc1View.setInt16(76, -1);
+  const avc1Box = buildIsoBmffBox('avc1', avc1Payload);
+
+  const stsdPayload = new Uint8Array(8);
+  const stsdView = new DataView(stsdPayload.buffer);
+  stsdView.setUint32(4, 1); // 1 entry
+  const stsdBox = buildIsoBmffBox('stsd', concatUint8Arrays(stsdPayload, avc1Box));
+
+  // Empty stts, stsc, stsz, stco for fMP4
+  const emptyBoxPayload = new Uint8Array(8);
+  const sttsBox = buildIsoBmffBox('stts', emptyBoxPayload);
+  const stscBox = buildIsoBmffBox('stsc', emptyBoxPayload);
+  const stszBox = buildIsoBmffBox('stsz', new Uint8Array(12));
+  const stcoBox = buildIsoBmffBox('stco', emptyBoxPayload);
+
+  const stblBox = buildIsoBmffBox('stbl', concatUint8Arrays(stsdBox, sttsBox, stscBox, stszBox, stcoBox));
+  const minfBox = buildIsoBmffBox('minf', concatUint8Arrays(vmhdBox, dinfBox, stblBox));
+  const mdiaBox = buildIsoBmffBox('mdia', concatUint8Arrays(mdhdBox, hdlrBox, minfBox));
+  const trakBox = buildIsoBmffBox('trak', concatUint8Arrays(tkhdBox, mdiaBox));
+
+  const moovBox = buildIsoBmffBox('moov', concatUint8Arrays(mvhdBox, mvexBox, trakBox));
+  return concatUint8Arrays(ftypBox, moovBox);
+}
+
+/**
+ * Builds an fMP4 / CMAF media segment (moof + mdat) for a sequence of encoded chunks.
+ */
+export function buildFmp4MediaSegment(
+  sequenceNumber: number,
+  chunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
+  baseDecodeTimeMicros: number = 0,
+  timescale: number = 90000
+): Uint8Array {
+  const sampleCount = chunks.length;
+  const defaultDuration = Math.round(timescale / 30);
+
+  // 1. mfhd box
+  const mfhdPayload = new Uint8Array(8);
+  const mfhdView = new DataView(mfhdPayload.buffer);
+  mfhdView.setUint32(4, sequenceNumber);
+  const mfhdBox = buildIsoBmffBox('mfhd', mfhdPayload);
+
+  // 2. tfhd box (default-base-is-moof = 0x020000)
+  const tfhdPayload = new Uint8Array(8);
+  const tfhdView = new DataView(tfhdPayload.buffer);
+  tfhdView.setUint32(0, 0x020000); // flags
+  tfhdView.setUint32(4, 1); // track_ID = 1
+  const tfhdBox = buildIsoBmffBox('tfhd', tfhdPayload);
+
+  // 3. tfdt box (version 1 with 64-bit baseMediaDecodeTime)
+  const tfdtPayload = new Uint8Array(12);
+  const tfdtView = new DataView(tfdtPayload.buffer);
+  tfdtView.setUint8(0, 1); // version 1
+  const baseTimeUnits = Math.round((baseDecodeTimeMicros * timescale) / 1_000_000);
+  tfdtView.setBigUint64(4, BigInt(baseTimeUnits));
+  const tfdtBox = buildIsoBmffBox('tfdt', tfdtPayload);
+
+  // 4. Compute total media payload size
+  let totalMediaBytes = 0;
+  for (const c of chunks) {
+    totalMediaBytes += c.data.byteLength;
+  }
+
+  // 5. trun box
+  const trunFlags = 0x000701;
+  const trunHeaderSize = 12; // version+flags(4) + sample_count(4) + data_offset(4)
+  const trunEntrySize = 12; // duration(4) + size(4) + flags(4)
+  const trunPayload = new Uint8Array(trunHeaderSize + sampleCount * trunEntrySize);
+  const trunView = new DataView(trunPayload.buffer);
+  trunView.setUint32(0, trunFlags);
+  trunView.setUint32(4, sampleCount);
+
+  for (let i = 0; i < sampleCount; i++) {
+    const chunk = chunks[i];
+    const off = trunHeaderSize + i * trunEntrySize;
+    let dur = defaultDuration;
+    if (i + 1 < sampleCount) {
+      const deltaMicros = chunks[i + 1].timestampMicros - chunk.timestampMicros;
+      if (deltaMicros > 0) dur = Math.round((deltaMicros * timescale) / 1_000_000);
+    }
+    trunView.setUint32(off, dur);
+    trunView.setUint32(off + 4, chunk.data.byteLength);
+    trunView.setUint32(off + 8, chunk.isKeyFrame ? 0x02000000 : 0x01010000);
+  }
+
+  // Calculate size of traf and moof to find exact mdat data offset
+  const trunBoxWithoutOffset = buildIsoBmffBox('trun', trunPayload);
+  const trafBoxTest = buildIsoBmffBox('traf', concatUint8Arrays(tfhdBox, tfdtBox, trunBoxWithoutOffset));
+  const moofBoxTest = buildIsoBmffBox('moof', concatUint8Arrays(mfhdBox, trafBoxTest));
+
+  const dataOffset = moofBoxTest.byteLength + 8; // moof length + 8 bytes of mdat box header
+  trunView.setInt32(8, dataOffset); // write exact data_offset
+
+  const trunBox = buildIsoBmffBox('trun', trunPayload);
+  const trafBox = buildIsoBmffBox('traf', concatUint8Arrays(tfhdBox, tfdtBox, trunBox));
+  const moofBox = buildIsoBmffBox('moof', concatUint8Arrays(mfhdBox, trafBox));
+
+  // 6. mdat box
+  const mdatBoxHeader = new Uint8Array(8);
+  const mdatView = new DataView(mdatBoxHeader.buffer);
+  mdatView.setUint32(0, 8 + totalMediaBytes);
+  mdatBoxHeader.set([0x6d, 0x64, 0x61, 0x74], 4);
+
+  const mdatPayload = new Uint8Array(totalMediaBytes);
+  let pOff = 0;
+  for (const c of chunks) {
+    mdatPayload.set(c.data, pOff);
+    pOff += c.data.byteLength;
+  }
+
+  return concatUint8Arrays(moofBox, mdatBoxHeader, mdatPayload);
+}
+
+/**
+ * Streams media frames as fragmented MP4 (CMAF / fMP4) sequentially.
+ * If onSegment callback is provided, emits segments progressively to avoid memory accumulation.
+ */
+export function muxFmp4Stream(
+  chunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
+  width: number = 1280,
+  height: number = 720,
+  options: {
+    timescale?: number;
+    fragmentChunkCount?: number;
+    onSegment?: (segment: Uint8Array) => void;
+  } = {}
+): Uint8Array {
+  const timescale = options.timescale || 90000;
+  const fragmentSize = options.fragmentChunkCount || 15;
+  const initSegment = buildFmp4InitSegment(width, height, 'avc1.4d002a', timescale);
+
+  if (options.onSegment) {
+    options.onSegment(initSegment);
+  }
+
+  const segments: Uint8Array[] = [initSegment];
+  let seq = 1;
+
+  for (let i = 0; i < chunks.length; i += fragmentSize) {
+    const slice = chunks.slice(i, i + fragmentSize);
+    const baseTime = slice[0]?.timestampMicros || 0;
+    const mediaSeg = buildFmp4MediaSegment(seq++, slice, baseTime, timescale);
+
+    if (options.onSegment) {
+      options.onSegment(mediaSeg);
+    }
+    segments.push(mediaSeg);
+  }
+
+  return concatUint8Arrays(...segments);
+}
+
+/**
  * Decodes and encodes video frames with WebCodecs hardware pipeline.
  * Guarantees VideoFrame.close() in try ... finally on every frame.
  */
