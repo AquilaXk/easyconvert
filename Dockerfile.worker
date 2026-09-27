@@ -6,39 +6,37 @@ FROM node:20-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
-# 1. Install Native Conversion Engines & Korean/CJK Fonts
+# 1. Install Native Conversion Engines, Korean/CJK Fonts, and create dedicated non-root user
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-nogpu \
-    libreoffice-writer \
-    libreoffice-calc \
-    libreoffice-impress \
-    ffmpeg \
-    poppler-utils \
-    p7zip-full \
-    fonts-noto-cjk \
-    fonts-dejavu-core \
-    fonts-freefont-ttf \
     ca-certificates \
     curl \
+    ffmpeg \
+    fonts-dejavu-core \
+    fonts-freefont-ttf \
+    fonts-noto-cjk \
+    libreoffice-calc \
+    libreoffice-impress \
+    libreoffice-nogpu \
+    libreoffice-writer \
+    p7zip-full \
+    poppler-utils \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# 2. Security: Create dedicated non-root user
-RUN groupadd -r easyconvert && useradd -r -g easyconvert -m -s /bin/bash easyconvert
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r easyconvert && useradd -r -g easyconvert -m -s /bin/bash easyconvert
 
 WORKDIR /app
 
-# 3. Copy dependency manifests
+# 2. Copy dependency manifests
 COPY package*.json ./
 
-# 4. Install production & dev dependencies needed for tsx execution
-RUN npm ci --include=dev
+# 3. Install production & dev dependencies with lifecycle scripts ignored for security
+RUN npm ci --include=dev --ignore-scripts
 
-# 5. Copy application source explicitly
+# 4. Copy application source explicitly
 COPY tsconfig.json ./
 COPY src/ ./src/
 
-# 6. Ensure non-root ownership for app & temp directory
+# 5. Ensure non-root ownership for app & temp directory
 RUN chown -R easyconvert:easyconvert /app
 
 USER easyconvert

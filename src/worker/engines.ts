@@ -167,7 +167,12 @@ export async function convertWithNativeFfmpeg(
       args.push('-ar', String(options.audioSampleRate));
     }
     if (options.audioChannels) {
-      const channelCount = options.audioChannels === 'mono' ? '1' : options.audioChannels === 'stereo' ? '2' : '6';
+      let channelCount = '2';
+      if (options.audioChannels === 'mono') {
+        channelCount = '1';
+      } else if (options.audioChannels === 'surround') {
+        channelCount = '6';
+      }
       args.push('-ac', channelCount);
     }
 

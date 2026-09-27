@@ -1,15 +1,3 @@
-import {
-  executeSandboxedBinary,
-  detectSandboxEnvironment,
-  getSanitizedEnvironment,
-  SandboxedExecutionOptions,
-  SandboxedExecutionResult,
-  SandboxedProcessError,
-  SandboxedTimeoutError,
-  SandboxedBufferLimitError,
-  SandboxEnvironment,
-} from '../lib/security/process-sandbox';
-
 export {
   executeSandboxedBinary,
   detectSandboxEnvironment,
@@ -17,8 +5,19 @@ export {
   SandboxedProcessError,
   SandboxedTimeoutError,
   SandboxedBufferLimitError,
-};
-export type { SandboxedExecutionOptions, SandboxedExecutionResult, SandboxEnvironment };
+} from '../lib/security/process-sandbox';
+
+export type {
+  SandboxedExecutionOptions,
+  SandboxedExecutionResult,
+  SandboxEnvironment,
+} from '../lib/security/process-sandbox';
+
+import {
+  executeSandboxedBinary,
+  SandboxedExecutionOptions,
+  SandboxedExecutionResult,
+} from '../lib/security/process-sandbox';
 
 /**
  * Worker-specific security sandbox orchestrator.
@@ -29,7 +28,6 @@ export async function runInWorkerSandbox(
   args: string[],
   options: SandboxedExecutionOptions = {}
 ): Promise<SandboxedExecutionResult> {
-  const envInfo = detectSandboxEnvironment();
   return executeSandboxedBinary(binaryPath, args, {
     ...options,
     networkIsolated: options.networkIsolated ?? true,
