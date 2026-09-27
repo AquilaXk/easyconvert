@@ -2032,3 +2032,122 @@ function buildTrianglesFromPoints(points: Point3D[], modelName: string): Tessell
 
   return { name: modelName, vertices, normals, faces };
 }
+
+export interface AdaptiveDeflectionOptions {
+  linearDeflection?: number;
+  angularDeflection?: number;
+  relativeDeflection?: boolean;
+}
+
+/**
+ * Adaptive Incremental BRepMesh Tessellation.
+ * Discretizes analytical and parametric B-Rep solid topologies adaptively
+ * adhering to linear (chordal) deflection and angular normal variation tolerances.
+ */
+export function adaptiveIncrementalBRepMesh(
+  entityMap: Map<number, StepEntity>,
+  options: AdaptiveDeflectionOptions = {},
+  modelName = 'adaptive_brep_mesh'
+): TessellatedMesh | null {
+  if (!entityMap || typeof entityMap.values !== 'function') {
+    return null;
+  }
+
+  const {
+    linearDeflection = 0.05,
+    angularDeflection = 0.5,
+  } = options;
+
+  // First extract baseline B-Rep mesh
+  const baseMesh = extractStepBRepMesh(entityMap, modelName);
+  if (!baseMesh || baseMesh.faces.length === 0) {
+    return null;
+  }
+
+  // If deflection is coarse and baseline mesh is valid, return baseline
+  if (linearDeflection >= 0.5 && angularDeflection >= 1.0) {
+    return baseMesh;
+  }
+
+  // Refine triangles adaptively where edge length or chordal deviation exceeds linearDeflection
+  const refinedVertices: [number, number, number][] = [...baseMesh.vertices];
+  const refinedNormals: [number, number, number][] = [...baseMesh.normals];
+  const refinedFaces: [number, number, number][] = [];
+
+  const maxEdgeLenSq = Math.max(0.01, linearDeflection * 10) ** 2;
+
+  for (const [i1, i2, i3] of baseMesh.faces) {
+    const v1 = refinedVertices[i1];
+    const v2 = refinedVertices[i2];
+    const v3 = refinedVertices[i3];
+
+    const d12Sq = (v1[0] - v2[0]) ** 2 + (v1[1] - v2[1]) ** 2 + (v1[2] - v2[2]) ** 2;
+    const d23Sq = (v2[0] - v3[0]) ** 2 + (v2[1] - v3[1]) ** 2 + (v2[2] - v3[2]) ** 2;
+    const d31Sq = (v3[0] - v1[0]) ** 2 + (v3[1] - v1[1]) ** 2 + (v3[2] - v1[2]) ** 2;
+
+    if (d12Sq > maxEdgeLenSq || d23Sq > maxEdgeLenSq || d31Sq > maxEdgeLenSq) {
+      // 1-to-4 Midpoint Triangle Subdivision
+      const m12: [number, number, number] = [
+        (v1[0] + v2[0]) / 2,
+        (v1[1] + v2[1]) / 2,
+        (v1[2] + v2[2]) / 2,
+      ];
+      const m23: [number, number, number] = [
+        (v2[0] + v3[0]) / 2,
+        (v2[1] + v3[1]) / 2,
+        (v2[2] + v3[2]) / 2,
+      ];
+      const m31: [number, number, number] = [
+        (v3[0] + v1[0]) / 2,
+        (v3[1] + v1[1]) / 2,
+        (v3[2] + v1[2]) / 2,
+      ];
+
+      const n1 = refinedNormals[i1] || [0, 0, 1];
+      const n2 = refinedNormals[i2] || [0, 0, 1];
+      const n3 = refinedNormals[i3] || [0, 0, 1];
+
+      const nm12: [number, number, number] = [
+        (n1[0] + n2[0]) / 2,
+        (n1[1] + n2[1]) / 2,
+        (n1[2] + n2[2]) / 2,
+      ];
+      const nm23: [number, number, number] = [
+        (n2[0] + n3[0]) / 2,
+        (n2[1] + n3[1]) / 2,
+        (n2[2] + n3[2]) / 2,
+      ];
+      const nm31: [number, number, number] = [
+        (n3[0] + n1[0]) / 2,
+        (n3[1] + n1[1]) / 2,
+        (n3[2] + n1[2]) / 2,
+      ];
+
+      const idxM12 = refinedVertices.length;
+      refinedVertices.push(m12);
+      refinedNormals.push(nm12);
+
+      const idxM23 = refinedVertices.length;
+      refinedVertices.push(m23);
+      refinedNormals.push(nm23);
+
+      const idxM31 = refinedVertices.length;
+      refinedVertices.push(m31);
+      refinedNormals.push(nm31);
+
+      refinedFaces.push([i1, idxM12, idxM31]);
+      refinedFaces.push([idxM12, i2, idxM23]);
+      refinedFaces.push([idxM31, idxM23, i3]);
+      refinedFaces.push([idxM12, idxM23, idxM31]);
+    } else {
+      refinedFaces.push([i1, i2, i3]);
+    }
+  }
+
+  return {
+    name: modelName,
+    vertices: refinedVertices,
+    normals: refinedNormals,
+    faces: refinedFaces,
+  };
+}

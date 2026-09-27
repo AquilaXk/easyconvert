@@ -213,6 +213,13 @@ export {
   formatSpreadsheetCellValue,
 };
 
+export * from './color-quantizer';
+export * from './dla-engine';
+export {
+  adaptiveIncrementalBRepMesh,
+  type AdaptiveDeflectionOptions,
+} from './cad-nurbs';
+
 export async function convertFile(
   inputBuffer: Buffer,
   sourceFormat: string,
