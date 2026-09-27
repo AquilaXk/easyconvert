@@ -773,6 +773,18 @@ export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
   }
 
   let offset = 0;
+
+  // Strip ID3v2 metadata prefix if present
+  if (buffer.length >= 10 && buffer.toString('ascii', 0, 3) === 'ID3') {
+    const tagSize =
+      ((buffer[6] & 0x7f) << 21) |
+      ((buffer[7] & 0x7f) << 14) |
+      ((buffer[8] & 0x7f) << 7) |
+      (buffer[9] & 0x7f);
+    offset = 10 + tagSize;
+    if (buffer[5] & 0x10) offset += 10;
+  }
+
   let sampleRate = 44100;
   let channels = 2;
   const outSamples: number[] = [];
@@ -807,7 +819,16 @@ export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
       (buffer[offset + 4] << 3) |
       (buffer[offset + 5] >> 5);
 
-    if (frameLength < 7 || offset + frameLength > buffer.length) {
+    if (frameLength < 7) {
+      offset++;
+      continue;
+    }
+
+    if (offset + frameLength > buffer.length) {
+      if (frameCount === 0) {
+        offset++;
+        continue;
+      }
       break;
     }
 
@@ -917,12 +938,12 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
 
   // Check codec in packet 0
   const p0 = packets[0];
-  let sampleRate = 44100;
-  let channels = 2;
+  let sampleRate: number;
+  let channels: number;
   let isVorbis = false;
   let isOpus = false;
 
-  if (p0.length >= 7 && p0[0] === 0x01 && p0.toString('ascii', 1, 7) === 'vorbis') {
+  if (p0.length >= 16 && p0[0] === 0x01 && p0.toString('ascii', 1, 7) === 'vorbis') {
     isVorbis = true;
     channels = p0[11] || 2;
     sampleRate = p0.readUInt32LE(12) || 44100;
@@ -979,6 +1000,23 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
 
   const hint = (formatHint || '').toLowerCase().trim();
 
+  // Explicit hint priority when container magic is ambiguous or wrapped
+  if (hint === 'aac' || hint === 'adts' || hint === 'm4a') {
+    return decodeAdtsAac(buffer);
+  }
+  if (hint === 'ogg' || hint === 'oga' || hint === 'opus' || hint === 'vorbis') {
+    return decodeOgg(buffer);
+  }
+  if (hint === 'flac') {
+    return decodeFlac(buffer);
+  }
+  if (hint === 'mp3') {
+    return decodeMp3(buffer);
+  }
+  if (hint === 'wav' || hint === 'wave' || hint === 'aiff' || hint === 'aif' || hint === 'pcm') {
+    return decodeWav(buffer);
+  }
+
   // 1. RIFF / RIFX WAV or AIFF
   if (buffer.length >= 12) {
     const magic4 = buffer.toString('ascii', 0, 4);
@@ -996,20 +1034,12 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
     return decodeFlac(buffer);
   }
 
-  // 3. MP3 (starts with ID3 or sync word 0xFFE0..0xFFFF, layer != 00)
-  if (
-    (buffer.length >= 3 && buffer.toString('ascii', 0, 3) === 'ID3') ||
-    (buffer.length >= 2 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0 && (buffer[1] & 0x06) !== 0)
-  ) {
-    return decodeMp3(buffer);
-  }
-
-  // 4. Ogg (starts with OggS)
+  // 3. Ogg (starts with OggS)
   if (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'OggS') {
     return decodeOgg(buffer);
   }
 
-  // 5. AAC ADTS (starts with 0xFF followed by 0xF0..0xFF with layer == 00)
+  // 4. AAC ADTS (starts with 0xFF followed by 0xF0..0xFF with layer == 00)
   if (
     buffer.length >= 7 &&
     buffer[0] === 0xff &&
@@ -1018,21 +1048,42 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
     return decodeAdtsAac(buffer);
   }
 
-  // 6. Use formatHint if magic didn't immediately match
-  if (hint === 'wav' || hint === 'wave' || hint === 'aiff' || hint === 'aif' || hint === 'pcm') {
-    return decodeWav(buffer);
-  }
-  if (hint === 'flac') {
-    return decodeFlac(buffer);
-  }
-  if (hint === 'mp3') {
+  // 5. MP3 (sync word 0xFFE0..0xFFFF, layer != 00)
+  if (
+    buffer.length >= 2 &&
+    buffer[0] === 0xff &&
+    (buffer[1] & 0xe0) === 0xe0 &&
+    (buffer[1] & 0x06) !== 0
+  ) {
     return decodeMp3(buffer);
   }
-  if (hint === 'aac' || hint === 'adts' || hint === 'm4a') {
-    return decodeAdtsAac(buffer);
-  }
-  if (hint === 'ogg' || hint === 'oga' || hint === 'opus' || hint === 'vorbis') {
-    return decodeOgg(buffer);
+
+  // 6. Audio stream with ID3v2 header: inspect post-ID3 payload
+  if (buffer.length >= 10 && buffer.toString('ascii', 0, 3) === 'ID3') {
+    const tagSize =
+      ((buffer[6] & 0x7f) << 21) |
+      ((buffer[7] & 0x7f) << 14) |
+      ((buffer[8] & 0x7f) << 7) |
+      (buffer[9] & 0x7f);
+    let postId3 = 10 + tagSize;
+    if (buffer[5] & 0x10) postId3 += 10;
+
+    if (postId3 < buffer.length) {
+      if (
+        buffer.length - postId3 >= 7 &&
+        buffer[postId3] === 0xff &&
+        (buffer[postId3 + 1] & 0xf6) === 0xf0
+      ) {
+        return decodeAdtsAac(buffer);
+      }
+      if (
+        buffer.length - postId3 >= 4 &&
+        buffer.toString('ascii', postId3, postId3 + 4) === 'fLaC'
+      ) {
+        return decodeFlac(buffer.subarray(postId3));
+      }
+    }
+    return decodeMp3(buffer);
   }
 
   // Unsupported formats (video containers like MP4, MKV, WebM or unknown codecs)

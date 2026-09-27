@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
+    "worker": "tsx src/worker/index.ts",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts"
   },
   "dependencies": {

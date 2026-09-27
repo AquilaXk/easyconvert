@@ -1,0 +1,240 @@
+import { execFile } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import crypto from 'crypto';
+import { promisify } from 'util';
+import { ConversionOptions, ConversionResult } from '../lib/types';
+import { convertFile } from '../lib/conversions';
+import { secureShredBuffer } from '../lib/security/memory-shredder';
+
+const execFileAsync = promisify(execFile);
+
+export interface WorkerEngineOptions extends ConversionOptions {
+  timeoutMs?: number;
+  maxBufferBytes?: number;
+}
+
+export interface WorkerConversionResult extends ConversionResult {
+  engineUsed: 'native-soffice' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'internal-fallback';
+  executionTimeMs: number;
+}
+
+// Fixed standard locations for native CLI binaries
+const BINARY_PATHS = {
+  soffice: ['/usr/bin/soffice', '/usr/local/bin/soffice', '/opt/homebrew/bin/soffice', 'soffice'],
+  ffmpeg: ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg', 'ffmpeg'],
+  p7zip: ['/usr/bin/7z', '/usr/bin/7za', '/usr/local/bin/7z', '/opt/homebrew/bin/7z', '7z'],
+  pdftoppm: ['/usr/bin/pdftoppm', '/usr/local/bin/pdftoppm', '/opt/homebrew/bin/pdftoppm', 'pdftoppm'],
+};
+
+function resolveBinary(candidates: string[]): string | null {
+  for (const candidate of candidates) {
+    if (path.isAbsolute(candidate) && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  // Try PATH lookup
+  return null;
+}
+
+/**
+ * Checks availability of native conversion engines in the execution environment.
+ */
+export function probeNativeEngines(): {
+  soffice: boolean;
+  ffmpeg: boolean;
+  p7zip: boolean;
+  pdftoppm: boolean;
+} {
+  return {
+    soffice: resolveBinary(BINARY_PATHS.soffice) !== null,
+    ffmpeg: resolveBinary(BINARY_PATHS.ffmpeg) !== null,
+    p7zip: resolveBinary(BINARY_PATHS.p7zip) !== null,
+    pdftoppm: resolveBinary(BINARY_PATHS.pdftoppm) !== null,
+  };
+}
+
+/**
+ * Safely converts an Office document (DOCX, PPTX, XLSX, ODT, RTF, etc.) using headless LibreOffice.
+ */
+export async function convertWithHeadlessOffice(
+  inputBuffer: Buffer,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {}
+): Promise<WorkerConversionResult | null> {
+  const sofficeBin = resolveBinary(BINARY_PATHS.soffice);
+  if (!sofficeBin) return null;
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-office-'));
+  const inputPath = path.join(tempDir, `input.${sourceFormat.toLowerCase()}`);
+  fs.writeFileSync(inputPath, inputBuffer);
+
+  const startTime = Date.now();
+  try {
+    const timeout = options.timeoutMs || 45000;
+    await execFileAsync(
+      sofficeBin,
+      ['--headless', '--convert-to', targetFormat.toLowerCase(), '--outdir', tempDir, inputPath],
+      {
+        timeout,
+        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
+        env: { ...process.env, HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+      }
+    );
+
+    const generatedFiles = fs.readdirSync(tempDir).filter((f) => f.startsWith('input.') && !f.endsWith(`.${sourceFormat.toLowerCase()}`));
+    if (generatedFiles.length === 0) {
+      return null;
+    }
+
+    const outputPath = path.join(tempDir, generatedFiles[0]);
+    const outputBuffer = fs.readFileSync(outputPath);
+
+    return {
+      buffer: outputBuffer,
+      mimeType: getMimeType(targetFormat),
+      filename: `converted.${targetFormat.toLowerCase()}`,
+      size: outputBuffer.length,
+      engineUsed: 'native-soffice',
+      executionTimeMs: Date.now() - startTime,
+    };
+  } catch {
+    return null;
+  } finally {
+    // Cleanup temporary files
+    try {
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+}
+
+/**
+ * Safely transcode media using native FFmpeg.
+ */
+export async function convertWithNativeFfmpeg(
+  inputBuffer: Buffer,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {}
+): Promise<WorkerConversionResult | null> {
+  const ffmpegBin = resolveBinary(BINARY_PATHS.ffmpeg);
+  if (!ffmpegBin) return null;
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-ffmpeg-'));
+  const inputPath = path.join(tempDir, `input.${sourceFormat.toLowerCase()}`);
+  const outputPath = path.join(tempDir, `output.${targetFormat.toLowerCase()}`);
+  fs.writeFileSync(inputPath, inputBuffer);
+
+  const startTime = Date.now();
+  try {
+    const timeout = options.timeoutMs || 60000;
+    const args = ['-y', '-i', inputPath];
+
+    if (options.audioBitrate) {
+      args.push('-b:a', options.audioBitrate);
+    }
+    if (options.videoBitrate) {
+      args.push('-b:v', `${options.videoBitrate}k`);
+    }
+    if (options.audioSampleRate) {
+      args.push('-ar', String(options.audioSampleRate));
+    }
+    if (options.audioChannels) {
+      const ch = options.audioChannels === 'mono' ? '1' : options.audioChannels === 'stereo' ? '2' : '6';
+      args.push('-ac', ch);
+    }
+
+    args.push(outputPath);
+
+    await execFileAsync(ffmpegBin, args, {
+      timeout,
+      maxBuffer: options.maxBufferBytes || 200 * 1024 * 1024,
+    });
+
+    if (!fs.existsSync(outputPath)) {
+      return null;
+    }
+
+    const outputBuffer = fs.readFileSync(outputPath);
+    return {
+      buffer: outputBuffer,
+      mimeType: getMimeType(targetFormat),
+      filename: `converted.${targetFormat.toLowerCase()}`,
+      size: outputBuffer.length,
+      engineUsed: 'native-ffmpeg',
+      executionTimeMs: Date.now() - startTime,
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+}
+
+/**
+ * Universal Worker Conversion Orchestrator.
+ * Tries native container engines first, then falls back to internal pure TS conversion engines.
+ */
+export async function executeWorkerConversion(
+  inputBuffer: Buffer,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult> {
+  const src = sourceFormat.toLowerCase();
+  const tgt = targetFormat.toLowerCase();
+  const startTime = Date.now();
+
+  const officeFormats = ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf'];
+  const mediaFormats = ['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma'];
+
+  // 1. Try Native Headless Office
+  if (officeFormats.includes(src) && (tgt === 'pdf' || officeFormats.includes(tgt))) {
+    const officeRes = await convertWithHeadlessOffice(inputBuffer, src, tgt, options);
+    if (officeRes) {
+      return officeRes;
+    }
+  }
+
+  // 2. Try Native FFmpeg
+  if (mediaFormats.includes(src) && mediaFormats.includes(tgt)) {
+    const ffmpegRes = await convertWithNativeFfmpeg(inputBuffer, src, tgt, options);
+    if (ffmpegRes) {
+      return ffmpegRes;
+    }
+  }
+
+  // 3. Fallback to in-repo conversion engine (Zero Data Loss)
+  const internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
+  return {
+    ...internalRes,
+    engineUsed: 'internal-fallback',
+    executionTimeMs: Date.now() - startTime,
+  };
+}
+
+function getMimeType(format: string): string {
+  const map: Record<string, string> = {
+    pdf: 'application/pdf',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    zip: 'application/zip',
+    '7z': 'application/x-7z-compressed',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+  };
+  return map[format.toLowerCase()] || 'application/octet-stream';
+}
