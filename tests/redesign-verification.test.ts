@@ -468,6 +468,38 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(slugContent).not.toContain('From Google Drive');
     expect(slugContent).not.toContain('From Dropbox');
   });
+
+  it('verifies ConversionQueue bottom dock has harmonious surface styling without stark dark navy light-mode block', () => {
+    const queuePath = path.join(rootDir, 'src', 'components', 'ConversionQueue.tsx');
+    const queueContent = fs.readFileSync(queuePath, 'utf-8');
+
+    // Must NOT have jarring dark navy background in light mode
+    expect(queueContent).not.toContain('bg-[#1F2340]');
+
+    // Must have harmonious subtle light surface and dark mode surface
+    expect(queueContent).toContain('bg-[#F8F9FD]');
+    expect(queueContent).toContain('dark:bg-[#121629]');
+
+    // Must have tactile Add more files button styling
+    expect(queueContent).toContain('border-neutral-300');
+    expect(queueContent).toContain('dark:border-[#2C3452]');
+
+    // Must have high legibility text tokens
+    expect(queueContent).toContain('text-ink-secondary');
+    expect(queueContent).toContain('dark:text-neutral-300');
+    expect(queueContent).toContain('text-amber-600');
+    expect(queueContent).toContain('dark:text-amber-400');
+
+    // Must have prominent brand.700 Convert CTA styling
+    expect(queueContent).toContain('bg-brand-700 hover:bg-brand-800 active:bg-brand-900');
+
+    // Must have refined secondary brand ZIP styling
+    expect(queueContent).toContain('bg-brand-50 hover:bg-brand-100');
+    expect(queueContent).toContain('border-brand-200');
+
+    // Must have responsive layout classes preventing mobile overflow
+    expect(queueContent).toContain('flex-wrap sm:flex-nowrap');
+  });
 });
 
 

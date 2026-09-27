@@ -282,39 +282,39 @@ export default function ConversionQueue({
           })}
         </div>
 
-        {/* Attached Conversion Dock directly on the table card matching Reference 1 */}
-        <div className="bg-[#1F2340] dark:bg-[#111424] text-white px-5 sm:px-6 py-4 rounded-b-2xl border-t border-neutral-200 dark:border-[#2C375A] flex items-center justify-between gap-4 flex-wrap">
-          {/* Left: Add more files button matching Reference 1 */}
+        {/* Attached Conversion Dock directly on the table card with harmonious surface styling */}
+        <div className="bg-[#F8F9FD] dark:bg-[#121629] px-5 sm:px-6 py-4 rounded-b-2xl border-t border-neutral-200/80 dark:border-[#263050] flex items-center justify-between gap-4 flex-wrap transition-colors">
+          {/* Left: Add more files button with tactile secondary styling */}
           <button
             type="button"
             onClick={onAddMoreFiles}
-            className="bg-white hover:bg-neutral-100 active:bg-neutral-200 text-brand-950 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-2 px-4 py-2.5 transition-colors cursor-pointer shadow-sm"
+            className="bg-white hover:bg-neutral-50 active:bg-neutral-100 dark:bg-[#1B2032] dark:hover:bg-[#242B42] text-brand-950 dark:text-neutral-200 border border-neutral-300 dark:border-[#2C3452] rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 px-4 py-2.5 transition-all cursor-pointer shadow-xs hover:shadow-sm w-full sm:w-auto"
           >
-            <span className="text-brand-700 font-bold text-base leading-none">+</span>
+            <span className="text-brand-700 dark:text-brand-400 font-bold text-base leading-none">+</span>
             <span>Add more files</span>
           </button>
 
-          {/* Center helper hint matching Reference 1 & 2 */}
-          <div className="hidden lg:flex items-center gap-2 text-xs text-neutral-300 dark:text-neutral-400 font-normal">
-            {!allReady ? (
-              <span className="text-amber-300 font-medium flex items-center gap-1.5">
-                <Info className="w-3.5 h-3.5 shrink-0" />
-                <span>Please select output format</span>
-              </span>
-            ) : (
+          {/* Center helper hint with high legibility */}
+          {!allReady ? (
+            <div className="flex items-center justify-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400 w-full lg:w-auto order-first lg:order-none py-0.5">
+              <Info className="w-3.5 h-3.5 shrink-0" />
+              <span>Please select output format</span>
+            </div>
+          ) : (
+            <div className="hidden lg:flex items-center gap-2 text-xs font-medium text-ink-secondary dark:text-neutral-300">
               <span>Ctrl or Shift to select multiple files</span>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Right: Download all zip and Convert button */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap w-full sm:w-auto justify-end">
             {completedCount > 1 && (
               <button
                 type="button"
                 onClick={onDownloadAllZip}
-                className="flex items-center gap-1.5 px-4 py-2.5 text-xs sm:text-sm font-bold text-white bg-brand-800 hover:bg-brand-900 rounded-xl transition-colors border border-white/10 cursor-pointer"
+                className="flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs sm:text-sm font-bold text-brand-800 dark:text-brand-200 bg-brand-50 hover:bg-brand-100 dark:bg-brand-900/40 dark:hover:bg-brand-900/60 border border-brand-200 dark:border-brand-700/50 rounded-xl transition-all cursor-pointer shadow-xs w-full sm:w-auto"
               >
-                <Package className="w-4 h-4" />
+                <Package className="w-4 h-4 text-brand-700 dark:text-brand-300" />
                 <span>Download All (ZIP)</span>
               </button>
             )}
@@ -323,7 +323,7 @@ export default function ConversionQueue({
               type="button"
               disabled={isConverting || !allReady}
               onClick={onConvertAll}
-              className="bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white px-8 sm:px-10 py-3 rounded-xl font-bold text-sm sm:text-base flex items-center gap-2.5 shadow-lg shadow-brand-700/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
+              className="bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white px-8 sm:px-10 py-3 rounded-xl font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-md shadow-brand-700/25 hover:shadow-lg hover:shadow-brand-700/30 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none disabled:active:scale-100 transition-all cursor-pointer w-full sm:w-auto"
             >
               {isConverting ? (
                 <>
