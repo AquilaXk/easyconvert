@@ -31,6 +31,7 @@ export interface FormatOptionsSchema {
   videoResolution?: boolean;
   videoFps?: boolean;
   videoCodec?: boolean;
+  duration?: boolean;
   aspectRatio?: boolean;
   // Document & Office options
   pages?: boolean;
@@ -104,6 +105,7 @@ export interface ConversionOptions {
   videoFps?: 24 | 30 | 60;
   videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores';
   videoBitrate?: number;
+  duration?: number;
   aspectRatio?: 'original' | '16:9' | '4:3' | '1:1' | '9:16';
 }
 

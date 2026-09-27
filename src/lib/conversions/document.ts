@@ -221,13 +221,18 @@ export async function convertDocument(
     }
 
     if (tgt === 'png') {
-      const embedded = extractEmbeddedImageFromPdf(inputBuffer);
+      const rasterImages = await extractRasterImagesFromPdf(inputBuffer, 300);
       let pngBuffer: Buffer;
-      if (embedded) {
-        pngBuffer = await sharp(embedded).png().toBuffer();
+      if (rasterImages.length > 0) {
+        pngBuffer = rasterImages[0].buffer;
       } else {
-        const svg = renderTextPageSvg(extractedText, baseName);
-        pngBuffer = await sharp(Buffer.from(svg, 'utf-8')).png().toBuffer();
+        const embedded = extractEmbeddedImageFromPdf(inputBuffer);
+        if (embedded) {
+          pngBuffer = await sharp(embedded).png().toBuffer();
+        } else {
+          const svg = renderTextPageSvg(extractedText, baseName);
+          pngBuffer = await sharp(Buffer.from(svg, 'utf-8')).png().toBuffer();
+        }
       }
       return {
         buffer: pngBuffer,
@@ -593,18 +598,23 @@ function renderPdfTable(doc: any, rows: string[][]) {
 }
 
 function renderTextPageSvg(text: string, title: string): string {
-  const lines = text.split(/\r?\n/).slice(0, 45);
+  const lines = text.split(/\r?\n/);
+  const lineHeight = 16;
+  const topMargin = 50;
+  const bottomMargin = 50;
+  const totalHeight = Math.max(842, topMargin + lines.length * lineHeight + bottomMargin);
+
   const textElements = lines
     .map(
       (l, idx) =>
-        `<text x="40" y="${50 + idx * 16}" fill="#1F2340" font-family="system-ui, -apple-system, sans-serif" font-size="11">${escapeHtml(
+        `<text x="40" y="${topMargin + idx * lineHeight}" fill="#1F2340" font-family="system-ui, -apple-system, sans-serif" font-size="11">${escapeHtml(
           l
         )}</text>`
     )
     .join('\n    ');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="595" height="842" viewBox="0 0 595 842">
+<svg xmlns="http://www.w3.org/2000/svg" width="595" height="${totalHeight}" viewBox="0 0 595 ${totalHeight}">
   <title>${escapeHtml(title)}</title>
   <rect width="100%" height="100%" fill="#FFFFFF" />
   <g>

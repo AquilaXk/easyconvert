@@ -332,8 +332,22 @@ export function encodePureH264Mp4(
   const height = Math.min(1080, Math.max(64, Math.ceil(rawH / 16) * 16));
   const fps = options.videoFps && options.videoFps > 0 ? Math.min(60, Math.max(1, Math.round(options.videoFps))) : 30;
   const frameDurationMs = Math.round(1000 / fps);
-  const totalFrames = 15; // 0.5s duration
-  const totalDurationMs = totalFrames * frameDurationMs;
+
+  // Dynamically calculate duration and frame count based on audio stream or explicit duration
+  let totalDurationMs: number;
+  let totalFrames: number;
+
+  if (pcmSamples && pcmSamples.length > 0 && sampleRate > 0 && channels > 0) {
+    const audioSec = pcmSamples.length / channels / sampleRate;
+    totalDurationMs = Math.max(frameDurationMs, Math.round(audioSec * 1000));
+    totalFrames = Math.max(1, Math.round((totalDurationMs / 1000) * fps));
+  } else if (options.duration && options.duration > 0) {
+    totalDurationMs = Math.round(options.duration * 1000);
+    totalFrames = Math.max(1, Math.round(options.duration * fps));
+  } else {
+    totalFrames = 15;
+    totalDurationMs = totalFrames * frameDurationMs;
+  }
 
   // 1. Generate H.264 NAL units
   const sps = generateH264Sps(width, height);
@@ -452,8 +466,23 @@ export function encodePureH264Mp4(
   }
   const stcoBox = makeBox('stco', stcoPayload);
 
+  // 'stss' (Sync Sample Box)
+  const keyframeIndices: number[] = [];
+  for (let f = 0; f < totalFrames; f++) {
+    if (f === 0 || f % 15 === 0) {
+      keyframeIndices.push(f + 1); // 1-indexed
+    }
+  }
+  const stssPayload = Buffer.alloc(8 + keyframeIndices.length * 4);
+  stssPayload.writeUInt32BE(0, 0);
+  stssPayload.writeUInt32BE(keyframeIndices.length, 4);
+  for (let k = 0; k < keyframeIndices.length; k++) {
+    stssPayload.writeUInt32BE(keyframeIndices[k], 8 + k * 4);
+  }
+  const stssBox = makeBox('stss', stssPayload);
+
   // 'stbl'
-  const stblBox = makeBox('stbl', Buffer.concat([stsdBox, sttsBox, stscBox, stszBox, stcoBox]));
+  const stblBox = makeBox('stbl', Buffer.concat([stsdBox, sttsBox, stscBox, stszBox, stcoBox, stssBox]));
 
   // 'vmhd' (Video Media Header)
   const vmhdPayload = Buffer.alloc(12);
