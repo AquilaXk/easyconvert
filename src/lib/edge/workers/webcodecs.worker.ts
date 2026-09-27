@@ -196,6 +196,15 @@ export function resolveWebCodecsConfig(targetFormat: string, userCodec?: string)
   }
 }
 
+function readFourCC(view: DataView, offset: number): string {
+  return String.fromCodePoint(
+    view.getUint8(offset),
+    view.getUint8(offset + 1),
+    view.getUint8(offset + 2),
+    view.getUint8(offset + 3)
+  );
+}
+
 interface StblResult {
   codec?: string;
   width?: number;
@@ -210,6 +219,112 @@ interface StblResult {
   syncSamples?: Set<number>;
 }
 
+function parseStts(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
+  if (payloadOffset + 8 > maxOffset) return;
+  const entryCount = view.getUint32(payloadOffset + 4);
+  for (let i = 0; i < entryCount; i++) {
+    const eOff = payloadOffset + 8 + i * 8;
+    if (eOff + 8 <= maxOffset) {
+      res.stts.push({ count: view.getUint32(eOff), delta: view.getUint32(eOff + 4) });
+    }
+  }
+}
+
+function parseStsz(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
+  if (payloadOffset + 12 > maxOffset) return;
+  const uniformSize = view.getUint32(payloadOffset + 4);
+  const sampleCount = view.getUint32(payloadOffset + 8);
+  if (uniformSize > 0) {
+    for (let i = 0; i < sampleCount; i++) {
+      res.sampleSizes.push(uniformSize);
+    }
+  } else {
+    for (let i = 0; i < sampleCount; i++) {
+      const eOff = payloadOffset + 12 + i * 4;
+      if (eOff + 4 <= maxOffset) {
+        res.sampleSizes.push(view.getUint32(eOff));
+      }
+    }
+  }
+}
+
+function parseStsc(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
+  if (payloadOffset + 8 > maxOffset) return;
+  const entryCount = view.getUint32(payloadOffset + 4);
+  for (let i = 0; i < entryCount; i++) {
+    const eOff = payloadOffset + 8 + i * 12;
+    if (eOff + 12 <= maxOffset) {
+      res.stsc.push({
+        firstChunk: view.getUint32(eOff),
+        samplesPerChunk: view.getUint32(eOff + 4),
+        sampleDescIndex: view.getUint32(eOff + 8),
+      });
+    }
+  }
+}
+
+function parseStco(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult, is64: boolean): void {
+  if (payloadOffset + 8 > maxOffset) return;
+  const entryCount = view.getUint32(payloadOffset + 4);
+  const step = is64 ? 8 : 4;
+  for (let i = 0; i < entryCount; i++) {
+    const eOff = payloadOffset + 8 + i * step;
+    if (eOff + step <= maxOffset) {
+      const off = is64 ? Number(view.getBigUint64(eOff)) : view.getUint32(eOff);
+      res.chunkOffsets.push(off);
+    }
+  }
+}
+
+function parseStss(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
+  if (payloadOffset + 8 > maxOffset) return;
+  const entryCount = view.getUint32(payloadOffset + 4);
+  res.syncSamples = new Set<number>();
+  for (let i = 0; i < entryCount; i++) {
+    const eOff = payloadOffset + 8 + i * 4;
+    if (eOff + 4 <= maxOffset) {
+      res.syncSamples.add(view.getUint32(eOff));
+    }
+  }
+}
+
+function parseStsd(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
+  if (payloadOffset + 16 > maxOffset) return;
+  const entryCount = view.getUint32(payloadOffset + 4);
+  const entryCur = payloadOffset + 8;
+  if (entryCount === 0 || entryCur + 8 > maxOffset) return;
+
+  const entrySize = view.getUint32(entryCur);
+  const entryCodec = readFourCC(view, entryCur + 4);
+  res.codec = entryCodec;
+
+  if (['avc1', 'hvc1', 'hev1', 'vp09', 'av01'].includes(entryCodec) && entryCur + 36 <= maxOffset) {
+    const w = view.getUint16(entryCur + 32);
+    const h = view.getUint16(entryCur + 34);
+    if (w > 0) res.width = w;
+    if (h > 0) res.height = h;
+
+    let subCur = entryCur + 86;
+    const subEnd = Math.min(maxOffset, entryCur + entrySize);
+    while (subCur + 8 <= subEnd) {
+      const subSize = view.getUint32(subCur);
+      const subType = readFourCC(view, subCur + 4);
+      if (subType === 'avcC' && subSize >= 8 && subCur + subSize <= subEnd) {
+        const descBuf = new Uint8Array(subSize - 8);
+        for (let d = 0; d < subSize - 8; d++) {
+          descBuf[d] = view.getUint8(subCur + 8 + d);
+        }
+        res.description = descBuf;
+        break;
+      }
+      subCur += subSize > 0 ? subSize : 8;
+    }
+  } else if (['mp4a', 'opus', 'alac'].includes(entryCodec) && entryCur + 36 <= maxOffset) {
+    res.channels = view.getUint16(entryCur + 24);
+    res.sampleRate = view.getUint32(entryCur + 32) >>> 16;
+  }
+}
+
 function parseStbl(view: DataView, offset: number, size: number, totalLen: number): StblResult {
   const result: StblResult = {
     stts: [],
@@ -219,16 +334,11 @@ function parseStbl(view: DataView, offset: number, size: number, totalLen: numbe
   };
 
   const stblEnd = Math.min(totalLen, offset + size);
-  let cur = offset + 8; // skip 4 bytes size, 4 bytes 'stbl'
+  let cur = offset + 8;
 
   while (cur + 8 <= stblEnd) {
     const boxSize = view.getUint32(cur);
-    const boxType = String.fromCharCode(
-      view.getUint8(cur + 4),
-      view.getUint8(cur + 5),
-      view.getUint8(cur + 6),
-      view.getUint8(cur + 7)
-    );
+    const boxType = readFourCC(view, cur + 4);
 
     const actualSize =
       boxSize === 1 && cur + 16 <= stblEnd
@@ -242,120 +352,65 @@ function parseStbl(view: DataView, offset: number, size: number, totalLen: numbe
     }
 
     const payloadOffset = cur + (boxSize === 1 ? 16 : 8);
+    const maxOffset = cur + actualSize;
 
-    if (boxType === 'stts' && payloadOffset + 8 <= cur + actualSize) {
-      const entryCount = view.getUint32(payloadOffset + 4);
-      for (let i = 0; i < entryCount; i++) {
-        const eOff = payloadOffset + 8 + i * 8;
-        if (eOff + 8 <= cur + actualSize) {
-          result.stts.push({
-            count: view.getUint32(eOff),
-            delta: view.getUint32(eOff + 4),
-          });
-        }
-      }
-    } else if (boxType === 'stsz' && payloadOffset + 12 <= cur + actualSize) {
-      const uniformSize = view.getUint32(payloadOffset + 4);
-      const sampleCount = view.getUint32(payloadOffset + 8);
-      if (uniformSize > 0) {
-        for (let i = 0; i < sampleCount; i++) {
-          result.sampleSizes.push(uniformSize);
-        }
-      } else {
-        for (let i = 0; i < sampleCount; i++) {
-          const eOff = payloadOffset + 12 + i * 4;
-          if (eOff + 4 <= cur + actualSize) {
-            result.sampleSizes.push(view.getUint32(eOff));
-          }
-        }
-      }
-    } else if (boxType === 'stsc' && payloadOffset + 8 <= cur + actualSize) {
-      const entryCount = view.getUint32(payloadOffset + 4);
-      for (let i = 0; i < entryCount; i++) {
-        const eOff = payloadOffset + 8 + i * 12;
-        if (eOff + 12 <= cur + actualSize) {
-          result.stsc.push({
-            firstChunk: view.getUint32(eOff),
-            samplesPerChunk: view.getUint32(eOff + 4),
-            sampleDescIndex: view.getUint32(eOff + 8),
-          });
-        }
-      }
-    } else if (boxType === 'stco' && payloadOffset + 8 <= cur + actualSize) {
-      const entryCount = view.getUint32(payloadOffset + 4);
-      for (let i = 0; i < entryCount; i++) {
-        const eOff = payloadOffset + 8 + i * 4;
-        if (eOff + 4 <= cur + actualSize) {
-          result.chunkOffsets.push(view.getUint32(eOff));
-        }
-      }
-    } else if (boxType === 'co64' && payloadOffset + 8 <= cur + actualSize) {
-      const entryCount = view.getUint32(payloadOffset + 4);
-      for (let i = 0; i < entryCount; i++) {
-        const eOff = payloadOffset + 8 + i * 8;
-        if (eOff + 8 <= cur + actualSize) {
-          result.chunkOffsets.push(Number(view.getBigUint64(eOff)));
-        }
-      }
-    } else if (boxType === 'stss' && payloadOffset + 8 <= cur + actualSize) {
-      const entryCount = view.getUint32(payloadOffset + 4);
-      result.syncSamples = new Set<number>();
-      for (let i = 0; i < entryCount; i++) {
-        const eOff = payloadOffset + 8 + i * 4;
-        if (eOff + 4 <= cur + actualSize) {
-          result.syncSamples.add(view.getUint32(eOff));
-        }
-      }
-    } else if (boxType === 'stsd' && payloadOffset + 8 <= cur + actualSize) {
-      const entryCount = view.getUint32(payloadOffset + 4);
-      const entryCur = payloadOffset + 8;
-      if (entryCount > 0 && entryCur + 8 <= cur + actualSize) {
-        const entrySize = view.getUint32(entryCur);
-        const entryCodec = String.fromCharCode(
-          view.getUint8(entryCur + 4),
-          view.getUint8(entryCur + 5),
-          view.getUint8(entryCur + 6),
-          view.getUint8(entryCur + 7)
-        );
-        result.codec = entryCodec;
-
-        if (['avc1', 'hvc1', 'hev1', 'vp09', 'av01'].includes(entryCodec) && entryCur + 36 <= cur + actualSize) {
-          const w = view.getUint16(entryCur + 32);
-          const h = view.getUint16(entryCur + 34);
-          if (w > 0) result.width = w;
-          if (h > 0) result.height = h;
-
-          let subCur = entryCur + 86;
-          const subEnd = Math.min(cur + actualSize, entryCur + entrySize);
-          while (subCur + 8 <= subEnd) {
-            const subSize = view.getUint32(subCur);
-            const subType = String.fromCharCode(
-              view.getUint8(subCur + 4),
-              view.getUint8(subCur + 5),
-              view.getUint8(subCur + 6),
-              view.getUint8(subCur + 7)
-            );
-            if (subType === 'avcC' && subSize >= 8 && subCur + subSize <= subEnd) {
-              const descBuf = new Uint8Array(subSize - 8);
-              for (let d = 0; d < subSize - 8; d++) {
-                descBuf[d] = view.getUint8(subCur + 8 + d);
-              }
-              result.description = descBuf;
-              break;
-            }
-            subCur += subSize > 0 ? subSize : 8;
-          }
-        } else if (['mp4a', 'opus', 'alac'].includes(entryCodec) && entryCur + 36 <= cur + actualSize) {
-          result.channels = view.getUint16(entryCur + 24);
-          result.sampleRate = view.getUint32(entryCur + 32) >>> 16;
-        }
-      }
+    switch (boxType) {
+      case 'stts':
+        parseStts(view, payloadOffset, maxOffset, result);
+        break;
+      case 'stsz':
+        parseStsz(view, payloadOffset, maxOffset, result);
+        break;
+      case 'stsc':
+        parseStsc(view, payloadOffset, maxOffset, result);
+        break;
+      case 'stco':
+        parseStco(view, payloadOffset, maxOffset, result, false);
+        break;
+      case 'co64':
+        parseStco(view, payloadOffset, maxOffset, result, true);
+        break;
+      case 'stss':
+        parseStss(view, payloadOffset, maxOffset, result);
+        break;
+      case 'stsd':
+        parseStsd(view, payloadOffset, maxOffset, result);
+        break;
+      default:
+        break;
     }
 
     cur += actualSize > 0 ? actualSize : 8;
   }
 
   return result;
+}
+
+function computeSampleTimestamps(
+  stts: Array<{ count: number; delta: number }>,
+  sampleCount: number
+): { samplePts: number[]; sampleDur: number[] } {
+  const samplePts: number[] = new Array(sampleCount);
+  const sampleDur: number[] = new Array(sampleCount);
+
+  let currentPts = 0;
+  let sIdx = 0;
+  for (const entry of stts) {
+    for (let k = 0; k < entry.count && sIdx < sampleCount; k++) {
+      samplePts[sIdx] = currentPts;
+      sampleDur[sIdx] = entry.delta;
+      currentPts += entry.delta;
+      sIdx++;
+    }
+  }
+  const lastDelta = stts.length > 0 ? (stts.at(-1)?.delta ?? 1000) : 1000;
+  while (sIdx < sampleCount) {
+    samplePts[sIdx] = currentPts;
+    sampleDur[sIdx] = lastDelta;
+    currentPts += lastDelta;
+    sIdx++;
+  }
+  return { samplePts, sampleDur };
 }
 
 function reconstructSamples(
@@ -370,26 +425,7 @@ function reconstructSamples(
   }
 
   const sampleCount = sampleSizes.length;
-  const samplePts: number[] = new Array(sampleCount);
-  const sampleDur: number[] = new Array(sampleCount);
-
-  let currentPts = 0;
-  let sIdx = 0;
-  for (const entry of stts) {
-    for (let k = 0; k < entry.count && sIdx < sampleCount; k++) {
-      samplePts[sIdx] = currentPts;
-      sampleDur[sIdx] = entry.delta;
-      currentPts += entry.delta;
-      sIdx++;
-    }
-  }
-  const lastDelta = stts.length > 0 ? stts[stts.length - 1].delta : 1000;
-  while (sIdx < sampleCount) {
-    samplePts[sIdx] = currentPts;
-    sampleDur[sIdx] = lastDelta;
-    currentPts += lastDelta;
-    sIdx++;
-  }
+  const { samplePts, sampleDur } = computeSampleTimestamps(stts, sampleCount);
 
   const samples: DemuxedMediaSample[] = [];
   let globalSampleIdx = 0;
@@ -411,11 +447,13 @@ function reconstructSamples(
         const sampleData = new Uint8Array(buffer, currentSampleOffset, size);
         const pts = samplePts[globalSampleIdx] ?? 0;
         const dur = sampleDur[globalSampleIdx] ?? 0;
-        const isKeyFrame = syncSamples
-          ? syncSamples.has(globalSampleIdx + 1)
-          : isVideo
-          ? globalSampleIdx === 0
-          : true;
+
+        let isKeyFrame = true;
+        if (syncSamples) {
+          isKeyFrame = syncSamples.has(globalSampleIdx + 1);
+        } else if (isVideo) {
+          isKeyFrame = globalSampleIdx === 0;
+        }
 
         samples.push({
           data: sampleData,
@@ -458,12 +496,7 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
 
   while (offset + 8 <= totalLen) {
     const boxSize = view.getUint32(offset);
-    const boxType = String.fromCharCode(
-      view.getUint8(offset + 4),
-      view.getUint8(offset + 5),
-      view.getUint8(offset + 6),
-      view.getUint8(offset + 7)
-    );
+    const boxType = readFourCC(view, offset + 4);
 
     const actualSize =
       boxSize === 1 && offset + 16 <= totalLen
@@ -480,18 +513,12 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
       mdatOffset = offset + (boxSize === 1 ? 16 : 8);
       mdatSize = actualSize - (boxSize === 1 ? 16 : 8);
     } else if (boxType === 'moov') {
-      // Traverse inside moov
       let moovOffset = offset + (boxSize === 1 ? 16 : 8);
       const moovEnd = offset + actualSize;
 
       while (moovOffset + 8 <= moovEnd) {
         const subSize = view.getUint32(moovOffset);
-        const subType = String.fromCharCode(
-          view.getUint8(moovOffset + 4),
-          view.getUint8(moovOffset + 5),
-          view.getUint8(moovOffset + 6),
-          view.getUint8(moovOffset + 7)
-        );
+        const subType = readFourCC(view, moovOffset + 4);
         const subActual = subSize === 0 ? moovEnd - moovOffset : subSize;
 
         if (subType === 'mvhd' && moovOffset + 20 <= moovEnd) {
@@ -503,12 +530,7 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
           let trakCur = moovOffset + 8;
           while (trakCur + 8 <= trakEnd) {
             const tSize = view.getUint32(trakCur);
-            const tType = String.fromCharCode(
-              view.getUint8(trakCur + 4),
-              view.getUint8(trakCur + 5),
-              view.getUint8(trakCur + 6),
-              view.getUint8(trakCur + 7)
-            );
+            const tType = readFourCC(view, trakCur + 4);
             if (tType === 'tkhd' && trakCur + 84 <= trakEnd) {
               const w = view.getUint32(trakCur + tSize - 8) >> 16;
               const h = view.getUint32(trakCur + tSize - 4) >> 16;
@@ -521,23 +543,13 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
               let mdiaCur = trakCur + 8;
               while (mdiaCur + 8 <= mdiaEnd) {
                 const mSize = view.getUint32(mdiaCur);
-                const mType = String.fromCharCode(
-                  view.getUint8(mdiaCur + 4),
-                  view.getUint8(mdiaCur + 5),
-                  view.getUint8(mdiaCur + 6),
-                  view.getUint8(mdiaCur + 7)
-                );
+                const mType = readFourCC(view, mdiaCur + 4);
                 if (mType === 'mdhd' && mdiaCur + 28 <= mdiaEnd) {
                   const version = view.getUint8(mdiaCur + 8);
                   const trackTs = version === 0 ? view.getUint32(mdiaCur + 20) : view.getUint32(mdiaCur + 28);
                   if (trackTs > 0) timescale = trackTs;
                 } else if (mType === 'hdlr' && mdiaCur + 20 <= mdiaEnd) {
-                  const handler = String.fromCharCode(
-                    view.getUint8(mdiaCur + 16),
-                    view.getUint8(mdiaCur + 17),
-                    view.getUint8(mdiaCur + 18),
-                    view.getUint8(mdiaCur + 19)
-                  );
+                  const handler = readFourCC(view, mdiaCur + 16);
                   if (handler === 'soun') {
                     isVideo = false;
                     codec = 'mp4a.40.2';
@@ -547,12 +559,7 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
                   let minfCur = mdiaCur + 8;
                   while (minfCur + 8 <= minfEnd) {
                     const miSize = view.getUint32(minfCur);
-                    const miType = String.fromCharCode(
-                      view.getUint8(minfCur + 4),
-                      view.getUint8(minfCur + 5),
-                      view.getUint8(minfCur + 6),
-                      view.getUint8(minfCur + 7)
-                    );
+                    const miType = readFourCC(view, minfCur + 4);
                     if (miType === 'stbl') {
                       const stblData = parseStbl(view, minfCur, miSize, minfEnd);
                       if (stblData.codec) codec = stblData.codec;

@@ -359,6 +359,19 @@ export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
   return buffer.toString('utf-8');
 }
 
+function sanitizeControlChars(text: string): string {
+  let result = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if ((code >= 0 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31)) {
+      result += ' ';
+    } else {
+      result += text[i];
+    }
+  }
+  return result;
+}
+
 export function extractTextFromDoc(buffer: Buffer): string {
   // 1. OLE2 Compound File Binary Format (.doc)
   if (isCfbfContainer(buffer)) {
@@ -379,12 +392,9 @@ export function extractTextFromDoc(buffer: Buffer): string {
             const textSlice = wordDoc.subarray(fcMin, fcMin + textBytes);
 
             // Attempt UTF-16LE decode
-            const decodedUtf16 = textSlice
-              .toString('utf16le')
-              .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ' ')
-              .trim();
+            const decodedUtf16 = sanitizeControlChars(textSlice.toString('utf16le')).trim();
 
-            if (decodedUtf16.length > 0 && !/^[\x00\s]+$/.test(decodedUtf16)) {
+            if (decodedUtf16.length > 0) {
               const paragraphs = decodedUtf16
                 .split(/\r?\n/)
                 .map((p) => p.trim())
@@ -397,10 +407,8 @@ export function extractTextFromDoc(buffer: Buffer): string {
         }
 
         // If FIB offsets point outside or 8-bit text: inspect WordDocument stream directly
-        const utf16Candidate = wordDoc
-          .toString('utf16le')
-          .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ' ')
-          .replace(/[^\P{C}\n\t]/u, '')
+        const rawUtf16 = sanitizeControlChars(wordDoc.toString('utf16le'));
+        const utf16Candidate = rawUtf16
           .split(/\r?\n/)
           .map((s) => s.trim())
           .filter((s) => s.length >= 3);

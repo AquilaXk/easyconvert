@@ -68,7 +68,7 @@ describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
       const csvResult = await convertOffice(xlsxBuffer, 'xlsx', 'csv');
       const csvLines = csvResult.buffer.toString('utf-8').trim().split('\n');
 
-      expect(csvLines.length).toBe(2);
+      expect(csvLines).toHaveLength(2);
       const row1Cols = csvLines[0].split(',');
       expect(row1Cols[0]).toBe('100');
       expect(row1Cols[1]).toBe('');
