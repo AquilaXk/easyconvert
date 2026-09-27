@@ -34,18 +34,28 @@ export default function Header() {
     setIsDark(isDarkMode);
     const saved = localStorage.getItem('easyconvert_user');
     if (saved) setUserEmail(saved);
+
+    const handleThemeChange = (e: CustomEvent) => {
+      if (e.detail?.theme) {
+        setIsDark(e.detail.theme === 'dark');
+      }
+    };
+    window.addEventListener('easyconvert-theme-change' as any, handleThemeChange);
+    return () => {
+      window.removeEventListener('easyconvert-theme-change' as any, handleThemeChange);
+    };
   }, []);
 
   const toggleDarkMode = () => {
-    if (isDark) {
-      document.documentElement.classList.remove('dark');
-      localStorage.theme = 'light';
-      setIsDark(false);
-    } else {
+    const nextTheme = isDark ? 'light' : 'dark';
+    if (nextTheme === 'dark') {
       document.documentElement.classList.add('dark');
-      localStorage.theme = 'dark';
-      setIsDark(true);
+    } else {
+      document.documentElement.classList.remove('dark');
     }
+    localStorage.theme = nextTheme;
+    setIsDark(!isDark);
+    window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: nextTheme } }));
   };
 
   const handleAuthSuccess = (email: string) => {

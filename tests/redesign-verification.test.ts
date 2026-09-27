@@ -120,5 +120,55 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const privacy = parseConverterSlug('privacy');
     expect(privacy.isInfoPage).toBe(true);
     expect(privacy.infoType).toBe('privacy');
+
+    const status = parseConverterSlug('status');
+    expect(status.isInfoPage).toBe(true);
+    expect(status.infoType).toBe('status');
+    expect(status.pageTitle).toBe('System Status');
+
+    const unitConverter = parseConverterSlug('unit-converter');
+    expect(unitConverter.isInfoPage).toBe(true);
+    expect(unitConverter.infoType).toBe('unit');
+
+    const lbsToKg = parseConverterSlug('lbs-to-kg');
+    expect(lbsToKg.isInfoPage).toBe(true);
+    expect(lbsToKg.infoType).toBe('unit');
+    expect(lbsToKg.pageTitle).toContain('LBS to KG');
+  });
+
+  it('verifies category and alias slugs resolve to registered canonical formats', () => {
+    const testCases = [
+      { slug: 'video-to-gif', expectedSrc: 'mp4', expectedTgt: 'gif', expectedTitle: 'Video to GIF Converter' },
+      { slug: 'video-to-mp3', expectedSrc: 'mp4', expectedTgt: 'mp3', expectedTitle: 'Video to MP3 Converter' },
+      { slug: 'image-to-pdf', expectedSrc: 'jpg', expectedTgt: 'pdf', expectedTitle: 'Image to PDF Converter' },
+      { slug: 'pdf-to-word', expectedSrc: 'pdf', expectedTgt: 'docx', expectedTitle: 'PDF to Word Converter' },
+      { slug: 'word-to-pdf', expectedSrc: 'docx', expectedTgt: 'pdf', expectedTitle: 'Word to PDF Converter' },
+      { slug: 'cad-converter', expectedSrc: 'dxf', expectedTgt: 'any', expectedTitle: 'CAD Converter' },
+      { slug: 'font-converter', expectedSrc: 'ttf', expectedTgt: 'any', expectedTitle: 'Font Converter' },
+      { slug: 'vector-converter', expectedSrc: 'svg', expectedTgt: 'any', expectedTitle: 'Vector Converter' },
+      { slug: 'presentation-converter', expectedSrc: 'pptx', expectedTgt: 'any', expectedTitle: 'Presentation Converter' },
+      { slug: 'spreadsheet-converter', expectedSrc: 'xlsx', expectedTgt: 'any', expectedTitle: 'Spreadsheet Converter' },
+      { slug: 'data-converter', expectedSrc: 'csv', expectedTgt: 'any', expectedTitle: 'Data Converter' },
+    ];
+
+    for (const tc of testCases) {
+      const parsed = parseConverterSlug(tc.slug);
+      expect(parsed.isInfoPage).toBe(false);
+      expect(parsed.sourceFormat).toBe(tc.expectedSrc);
+      expect(parsed.targetFormat).toBe(tc.expectedTgt);
+      expect(parsed.pageTitle).toBe(tc.expectedTitle);
+
+      const srcDef = FORMAT_REGISTRY[parsed.sourceFormat];
+      expect(srcDef, `Format registry must define ${parsed.sourceFormat}`).toBeDefined();
+    }
+  });
+
+  it('verifies footer directory grid uses balanced responsive layout with status link', () => {
+    const footerPath = path.join(rootDir, 'src', 'components', 'Footer.tsx');
+    const footerContent = fs.readFileSync(footerPath, 'utf-8');
+
+    expect(footerContent).toContain('href="/status"');
+    expect(footerContent).toContain('grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8');
+    expect(footerContent).toContain('easyconvert-theme-change');
   });
 });

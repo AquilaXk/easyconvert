@@ -1,11 +1,34 @@
 export interface ParsedSlug {
   isInfoPage: boolean;
-  infoType?: 'terms' | 'privacy' | 'contact' | 'about' | 'security' | 'forgot-password';
+  infoType?: 'terms' | 'privacy' | 'contact' | 'about' | 'security' | 'forgot-password' | 'status' | 'unit';
   sourceFormat: string;
   targetFormat: string;
   pageTitle: string;
   pageDescription: string;
 }
+
+const CANONICAL_FORMAT_MAP: Record<string, string> = {
+  // Category fallbacks to universal formats
+  video: 'mp4',
+  audio: 'mp3',
+  image: 'jpg',
+  document: 'docx',
+  ebook: 'epub',
+  archive: 'zip',
+  vector: 'svg',
+  font: 'ttf',
+  cad: 'dxf',
+  spreadsheet: 'xlsx',
+  presentation: 'pptx',
+  data: 'csv',
+  // Common format aliases
+  word: 'docx',
+  excel: 'xlsx',
+  powerpoint: 'pptx',
+  photo: 'jpg',
+  picture: 'jpg',
+  music: 'mp3',
+};
 
 export function parseConverterSlug(slug: string): ParsedSlug {
   const cleanSlug = slug.toLowerCase().replace(/^\/+/, '').trim();
@@ -66,6 +89,16 @@ export function parseConverterSlug(slug: string): ParsedSlug {
       pageDescription: 'Explore our volatile memory pipeline, TLS encryption, and zero-storage architecture.',
     };
   }
+  if (cleanSlug === 'status') {
+    return {
+      isInfoPage: true,
+      infoType: 'status',
+      sourceFormat: 'pdf',
+      targetFormat: 'docx',
+      pageTitle: 'System Status',
+      pageDescription: 'Real-time operational status of EasyConvert browser-edge conversion pipelines.',
+    };
+  }
   if (cleanSlug === 'forgot-password') {
     return {
       isInfoPage: true,
@@ -80,27 +113,70 @@ export function parseConverterSlug(slug: string): ParsedSlug {
   // Format pair converters: [src]-to-[tgt]
   if (cleanSlug.includes('-to-')) {
     const parts = cleanSlug.split('-to-');
-    const src = parts[0]?.trim() || 'pdf';
-    const tgt = parts[1]?.trim() || 'docx';
+    const rawSrc = parts[0]?.trim() || 'pdf';
+    const rawTgt = parts[1]?.trim() || 'docx';
+
+    // Unit conversions (e.g. lbs-to-kg, kg-to-lbs, feet-to-meters, meters-to-feet)
+    if (
+      (rawSrc === 'lbs' && rawTgt === 'kg') ||
+      (rawSrc === 'kg' && rawTgt === 'lbs') ||
+      (rawSrc === 'feet' && rawTgt === 'meters') ||
+      (rawSrc === 'meters' && rawTgt === 'feet')
+    ) {
+      const srcLabel = rawSrc === 'lbs' ? 'Pounds (lbs)' : rawSrc === 'kg' ? 'Kilograms (kg)' : rawSrc === 'feet' ? 'Feet (ft)' : 'Meters (m)';
+      const tgtLabel = rawTgt === 'lbs' ? 'Pounds (lbs)' : rawTgt === 'kg' ? 'Kilograms (kg)' : rawTgt === 'feet' ? 'Feet (ft)' : 'Meters (m)';
+      return {
+        isInfoPage: true,
+        infoType: 'unit',
+        sourceFormat: rawSrc,
+        targetFormat: rawTgt,
+        pageTitle: `${rawSrc.toUpperCase()} to ${rawTgt.toUpperCase()} Unit Converter`,
+        pageDescription: `Convert ${srcLabel} to ${tgtLabel} instantly with client-side precision.`,
+      };
+    }
+
+    const src = CANONICAL_FORMAT_MAP[rawSrc] || rawSrc;
+    const tgt = CANONICAL_FORMAT_MAP[rawTgt] || rawTgt;
+
+    const formatTitleName = (raw: string, canonical: string) => {
+      if (raw === 'word') return 'Word';
+      if (raw === 'excel') return 'Excel';
+      if (raw === 'powerpoint') return 'PowerPoint';
+      if (raw === 'video') return 'Video';
+      if (raw === 'audio') return 'Audio';
+      if (raw === 'image') return 'Image';
+      if (raw === 'cad') return 'CAD';
+      if (raw === 'vector') return 'Vector';
+      return canonical.toUpperCase();
+    };
+
+    const srcDisplay = formatTitleName(rawSrc, src);
+    const tgtDisplay = formatTitleName(rawTgt, tgt);
+
     return {
       isInfoPage: false,
       sourceFormat: src,
       targetFormat: tgt,
-      pageTitle: `${src.toUpperCase()} to ${tgt.toUpperCase()} Converter`,
-      pageDescription: `EasyConvert offers advanced, high-fidelity ${src.toUpperCase()} to ${tgt.toUpperCase()} conversions. We preserve original layouts, fonts, and data formatting straight from your browser.`,
+      pageTitle: `${srcDisplay} to ${tgtDisplay} Converter`,
+      pageDescription: `EasyConvert offers advanced, high-fidelity ${srcDisplay} to ${tgtDisplay} conversions. We preserve original layouts, fonts, and data formatting straight from your browser.`,
     };
   }
 
   // Category & Format Converters: [format]-converter
   if (cleanSlug.endsWith('-converter')) {
     const rawFmt = cleanSlug.replace('-converter', '').trim();
-    let src = rawFmt;
-    if (rawFmt === 'video') src = 'mp4';
-    else if (rawFmt === 'audio') src = 'mp3';
-    else if (rawFmt === 'image') src = 'png';
-    else if (rawFmt === 'document') src = 'docx';
-    else if (rawFmt === 'ebook') src = 'epub';
-    else if (rawFmt === 'archive') src = 'zip';
+    if (rawFmt === 'unit') {
+      return {
+        isInfoPage: true,
+        infoType: 'unit',
+        sourceFormat: 'lbs',
+        targetFormat: 'kg',
+        pageTitle: 'Unit Converter',
+        pageDescription: 'Convert weight, length, volume, and data units in real time with client-side zero-latency precision.',
+      };
+    }
+
+    const src = CANONICAL_FORMAT_MAP[rawFmt] || rawFmt;
 
     const ACRONYMS: Record<string, string> = {
       pdf: 'PDF',

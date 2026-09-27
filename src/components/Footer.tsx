@@ -59,9 +59,9 @@ const DIRECTORY_CATEGORIES: DirectoryCategory[] = [
   {
     title: 'Data & Unit Tools',
     links: [
+      { label: 'CSV to JSON', href: '/csv-to-json' },
+      { label: 'JSON to CSV', href: '/json-to-csv' },
       { label: 'Lbs to Kg', href: '/lbs-to-kg' },
-      { label: 'Kg to Lbs', href: '/kg-to-lbs' },
-      { label: 'Feet to Meters', href: '/feet-to-meters' },
       { label: 'Unit Converter', href: '/unit-converter' },
     ],
   },
@@ -105,32 +105,45 @@ export default function Footer() {
     const isDarkMode = document.documentElement.classList.contains('dark');
     setIsDark(isDarkMode);
 
+    const savedLang = localStorage.getItem('easyconvert_lang');
+    if (savedLang) setCurrentLang(savedLang);
+
+    const handleThemeChange = (e: CustomEvent) => {
+      if (e.detail?.theme) {
+        setIsDark(e.detail.theme === 'dark');
+      }
+    };
+    window.addEventListener('easyconvert-theme-change' as any, handleThemeChange);
+
     const handleClickOutside = (event: MouseEvent) => {
       if (langRef.current && !langRef.current.contains(event.target as Node)) {
         setIsLangOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    return () => {
+      window.removeEventListener('easyconvert-theme-change' as any, handleThemeChange);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
   }, []);
 
   const toggleDarkMode = () => {
-    if (isDark) {
-      document.documentElement.classList.remove('dark');
-      localStorage.theme = 'light';
-      setIsDark(false);
-    } else {
+    const nextTheme = isDark ? 'light' : 'dark';
+    if (nextTheme === 'dark') {
       document.documentElement.classList.add('dark');
-      localStorage.theme = 'dark';
-      setIsDark(true);
+    } else {
+      document.documentElement.classList.remove('dark');
     }
+    localStorage.theme = nextTheme;
+    setIsDark(!isDark);
+    window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: nextTheme } }));
   };
 
   return (
     <footer className="bg-[#0B0F19] text-slate-300 border-t border-[#1E2640] transition-colors mt-auto font-sans">
       <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-14 pb-10">
         {/* Categorized Converter Directory Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-x-8 gap-y-10">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-x-8 gap-y-10">
           {DIRECTORY_CATEGORIES.map((category) => (
             <div key={category.title} className="flex flex-col">
               <h3 className="text-white font-semibold text-[15px] mb-3.5 tracking-tight">
@@ -162,7 +175,7 @@ export default function Footer() {
             <a href="/terms" className="text-slate-400 hover:text-white transition-colors duration-150 font-medium">Terms</a>
             <a href="/security" className="text-slate-400 hover:text-white transition-colors duration-150 font-medium">Security</a>
             <a href="/contact" className="text-slate-400 hover:text-white transition-colors duration-150 font-medium">Contact</a>
-            <a href="/about#status" className="text-slate-400 hover:text-white transition-colors duration-150 font-medium">Status</a>
+            <a href="/status" className="text-slate-400 hover:text-white transition-colors duration-150 font-medium">Status</a>
           </nav>
         </div>
 
@@ -222,6 +235,7 @@ export default function Footer() {
                       type="button"
                       onClick={() => {
                         setCurrentLang(lang.label);
+                        localStorage.setItem('easyconvert_lang', lang.label);
                         setIsLangOpen(false);
                       }}
                       className={`w-full text-left px-3 py-1.5 text-xs transition-colors flex items-center justify-between ${

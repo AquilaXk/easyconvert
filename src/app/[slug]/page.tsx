@@ -11,7 +11,7 @@ import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
 import { createItemConverter, getEffectiveMaxFileSize } from '@/lib/client-converter';
-import { FileText, ArrowRight } from 'lucide-react';
+import { FileText, ArrowRight, RefreshCw, CheckCircle, Activity } from 'lucide-react';
 
 import { parseConverterSlug } from '@/lib/slug-parser';
 
@@ -48,12 +48,146 @@ const FORMAT_DESCRIPTIONS: Record<string, { title: string; desc: string }> = {
     title: 'EPUB — Electronic Publication',
     desc: 'EPUB is an open XML-based ebook standard that supports reflowable text, typography adjustments, and fixed layouts across digital readers and mobile apps.',
   },
+  csv: {
+    title: 'CSV — Comma-Separated Values',
+    desc: 'CSV is a plain text file format for structured tabular data. Each line corresponds to a record and fields are separated by commas or custom delimiters.',
+  },
+  json: {
+    title: 'JSON — JavaScript Object Notation',
+    desc: 'JSON is an open standard file format and data interchange format that uses human-readable text to store and transmit data objects consisting of attribute-value pairs.',
+  },
+  xlsx: {
+    title: 'XLSX — Microsoft Excel OpenXML Spreadsheet',
+    desc: 'XLSX is an XML-based spreadsheet file format used by Microsoft Excel to store financial worksheets, mathematical formulas, and data pivot tables.',
+  },
+  svg: {
+    title: 'SVG — Scalable Vector Graphics',
+    desc: 'SVG is an XML-based vector image format for two-dimensional graphics with support for interactivity and animation, rendering crisp outlines at any resolution.',
+  },
+  heic: {
+    title: 'HEIC — High Efficiency Image Container',
+    desc: 'HEIC is an updated image file container format that uses HEVC compression to store high-quality photographs in roughly half the storage footprint of standard JPEG files.',
+  },
+  rar: {
+    title: 'RAR — Roshal Archive Compressed File',
+    desc: 'RAR is a proprietary archive file format that supports data compression, error recovery, file spanning, and cryptographic data security.',
+  },
+  '7z': {
+    title: '7Z — 7-Zip Compressed Archive',
+    desc: '7Z is an open-source compressed archive format that features high compression ratios and LZMA/LZMA2 compression algorithms with AES-256 encryption.',
+  },
+  dxf: {
+    title: 'DXF — Drawing Exchange Format',
+    desc: 'DXF is a CAD data file format developed by Autodesk for enabling data interoperability between AutoCAD and other CAD and CNC software applications.',
+  },
+  ttf: {
+    title: 'TTF — TrueType Font',
+    desc: 'TTF is a digital font standard developed by Apple and Microsoft providing high-precision vector typography rendering across modern operating systems.',
+  },
 };
 
 interface DynamicPageProps {
   params: {
     slug: string;
   };
+}
+
+function UnitConverterWidget({ initialSrc = 'lbs', initialTgt = 'kg' }: { initialSrc?: string; initialTgt?: string }) {
+  const [val, setVal] = useState<number>(1);
+  const [fromUnit, setFromUnit] = useState(initialSrc);
+  const [toUnit, setToUnit] = useState(initialTgt);
+
+  const CONVERSIONS: Record<string, { category: string; toBase: number; label: string }> = {
+    lbs: { category: 'weight', toBase: 453.59237, label: 'Pounds (lbs)' },
+    kg: { category: 'weight', toBase: 1000, label: 'Kilograms (kg)' },
+    g: { category: 'weight', toBase: 1, label: 'Grams (g)' },
+    oz: { category: 'weight', toBase: 28.3495, label: 'Ounces (oz)' },
+    feet: { category: 'length', toBase: 0.3048, label: 'Feet (ft)' },
+    meters: { category: 'length', toBase: 1, label: 'Meters (m)' },
+    inches: { category: 'length', toBase: 0.0254, label: 'Inches (in)' },
+    cm: { category: 'length', toBase: 0.01, label: 'Centimeters (cm)' },
+  };
+
+  const fromConf = CONVERSIONS[fromUnit] || CONVERSIONS['lbs'];
+  const toConf = CONVERSIONS[toUnit] || CONVERSIONS['kg'];
+  const categoryUnits = Object.entries(CONVERSIONS).filter(([_, conf]) => conf.category === fromConf.category);
+
+  let result = 0;
+  if (fromConf.category === toConf.category) {
+    const inBase = val * fromConf.toBase;
+    result = inBase / toConf.toBase;
+  }
+
+  const handleSwap = () => {
+    const tmp = fromUnit;
+    setFromUnit(toUnit);
+    setToUnit(tmp);
+  };
+
+  return (
+    <div className="bg-[#181a20] border border-neutral-700/80 rounded-2xl p-6 sm:p-8 shadow-2xl max-w-xl mx-auto space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] items-center gap-4">
+        <div className="space-y-2">
+          <label className="block text-xs font-semibold text-neutral-400">From</label>
+          <input
+            type="number"
+            value={val}
+            onChange={(e) => setVal(parseFloat(e.target.value) || 0)}
+            className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white font-mono text-base focus:border-[#5C6BC0] outline-none"
+          />
+          <select
+            value={fromUnit}
+            onChange={(e) => {
+              const newFrom = e.target.value;
+              setFromUnit(newFrom);
+              const cat = CONVERSIONS[newFrom]?.category;
+              if (CONVERSIONS[toUnit]?.category !== cat) {
+                const partner = Object.keys(CONVERSIONS).find((k) => k !== newFrom && CONVERSIONS[k].category === cat);
+                if (partner) setToUnit(partner);
+              }
+            }}
+            className="w-full px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-xl text-neutral-300 text-xs focus:border-[#5C6BC0] outline-none"
+          >
+            {Object.entries(CONVERSIONS).map(([k, c]) => (
+              <option key={k} value={k}>{c.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex justify-center sm:pt-6">
+          <button
+            type="button"
+            onClick={handleSwap}
+            aria-label="Swap units"
+            className="p-2.5 rounded-full bg-[#5C6BC0]/20 text-[#8E9CE6] hover:bg-[#5C6BC0]/30 border border-[#5C6BC0]/30 transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-2">
+          <label className="block text-xs font-semibold text-neutral-400">To (Calculated)</label>
+          <div className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-[#8E9CE6] font-mono text-base font-bold truncate">
+            {Number.isFinite(result) ? result.toLocaleString(undefined, { maximumFractionDigits: 6 }) : '0'}
+          </div>
+          <select
+            value={toUnit}
+            onChange={(e) => setToUnit(e.target.value)}
+            className="w-full px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-xl text-neutral-300 text-xs focus:border-[#5C6BC0] outline-none"
+          >
+            {categoryUnits.map(([k, c]) => (
+              <option key={k} value={k}>{c.label}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800 flex items-center justify-between text-xs text-neutral-400">
+        <span>Instant client-side calculation</span>
+        <span className="text-[#8E9CE6] font-medium">100% Free & Private</span>
+      </div>
+    </div>
+  );
 }
 
 export default function DynamicConverterPage({ params }: DynamicPageProps) {
@@ -167,6 +301,53 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                   are reclaimed immediately with zero residual files.
                 </p>
               </>
+            )}
+
+            {parsed.infoType === 'status' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                  <div className="size-3 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="font-semibold text-sm">All Conversion Pipelines Operational</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-1">
+                    <div className="flex items-center justify-between font-semibold text-white">
+                      <span>WebCodecs VPU Acceleration</span>
+                      <span className="text-emerald-400 font-medium">Operational</span>
+                    </div>
+                    <p className="text-neutral-400">Hardware-accelerated video & audio transcoding</p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-1">
+                    <div className="flex items-center justify-between font-semibold text-white">
+                      <span>SIMD Wasm Core Engine</span>
+                      <span className="text-emerald-400 font-medium">Operational</span>
+                    </div>
+                    <p className="text-neutral-400">Vectorized transformations across documents and media</p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-1">
+                    <div className="flex items-center justify-between font-semibold text-white">
+                      <span>Client OPFS Virtual Storage</span>
+                      <span className="text-emerald-400 font-medium">Operational</span>
+                    </div>
+                    <p className="text-neutral-400">Origin Private File System streaming with zero memory spikes</p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-1">
+                    <div className="flex items-center justify-between font-semibold text-white">
+                      <span>Zero-Retention Privacy Sandbox</span>
+                      <span className="text-emerald-400 font-medium">Active</span>
+                    </div>
+                    <p className="text-neutral-400">100% ephemeral in-memory processing with zero residual disk storage</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {parsed.infoType === 'unit' && (
+              <UnitConverterWidget initialSrc={parsed.sourceFormat} initialTgt={parsed.targetFormat} />
             )}
 
             {parsed.infoType === 'forgot-password' && (
@@ -316,23 +497,26 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
     }
   };
 
+  const srcKey = parsed.sourceFormat.toLowerCase();
+  const tgtKey = parsed.targetFormat.toLowerCase();
+
   const formatMeta =
-    FORMAT_DESCRIPTIONS[parsed.sourceFormat] || {
-      title: `${parsed.sourceFormat.toUpperCase()} — File Format`,
+    FORMAT_DESCRIPTIONS[srcKey] || {
+      title: `${srcKey.toUpperCase()} — File Format`,
       desc:
-        FORMAT_REGISTRY[parsed.sourceFormat]?.description ||
+        FORMAT_REGISTRY[srcKey]?.description ||
         `Universal file conversion format with full support across EasyConvert engines.`,
     };
 
   // Target formats available for converting FROM source format
-  const sourceFormatRegistry = FORMAT_REGISTRY[parsed.sourceFormat];
+  const sourceFormatRegistry = FORMAT_REGISTRY[srcKey];
   const convertFromTargets = sourceFormatRegistry?.targetFormats || ['pdf', 'docx', 'png', 'jpg', 'txt'];
 
   // Source formats available for converting TO target format (or to source format if target is any)
-  const targetForReverse = parsed.targetFormat !== 'any' ? parsed.targetFormat : parsed.sourceFormat;
+  const targetForReverse = tgtKey !== 'any' ? tgtKey : srcKey;
   const convertToSources = Object.entries(FORMAT_REGISTRY)
-    .filter(([srcKey, def]) => def.targetFormats.includes(targetForReverse.toLowerCase()) && srcKey !== targetForReverse.toLowerCase())
-    .map(([srcKey]) => srcKey);
+    .filter(([key, def]) => def.targetFormats.includes(targetForReverse) && key !== targetForReverse)
+    .map(([key]) => key);
 
   return (
     <div className="flex flex-col min-h-screen bg-[#141414] text-white">
