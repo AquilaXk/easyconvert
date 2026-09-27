@@ -534,7 +534,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     category: 'document',
     description: 'Microsoft Word OpenXML document format with complete styles and tables.',
-    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'pages', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp'],
+    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'pages', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
     optionsSchema: { preserveLayout: true, preserveFonts: true, preserveTables: true, orientation: true },
   },
   doc: {
@@ -580,7 +580,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/rtf',
     category: 'document',
     description: 'Cross-platform document format with text formatting and font tables.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
     optionsSchema: { preserveLayout: true },
   },
   odt: {
@@ -590,7 +590,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.text',
     category: 'document',
     description: 'OASIS OpenDocument Text standard used in LibreOffice and OpenOffice.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
     optionsSchema: { preserveLayout: true, preserveTables: true },
   },
   ott: {
@@ -618,7 +618,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'document',
     description: 'Standard unformatted plain text document.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true },
   },
   text: {
@@ -628,7 +628,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'document',
     description: 'Generic text file standard.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'pptx', 'zip', 'hwp'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'pptx', 'zip', 'hwp', 'hwpx'],
   },
   md: {
     id: 'md',
@@ -637,7 +637,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/markdown',
     category: 'document',
     description: 'Lightweight markup language with plain-text formatting syntax.',
-    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'doc', 'md', 'rst', 'rtf', 'tex', 'jpg', 'png', 'hwp'],
+    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'doc', 'md', 'rst', 'rtf', 'tex', 'jpg', 'png', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true, preserveTables: true },
   },
   html: {
@@ -647,7 +647,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/html',
     category: 'document',
     description: 'HyperText Markup Language - Standard document format for web pages.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true, preserveLayout: true, preserveTables: true },
   },
   htm: {
@@ -2701,7 +2701,17 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-hwp',
     category: 'document',
     description: 'Standard Korean word processor document format by Hancom.',
-    targetFormats: ['doc', 'docx', 'html', 'odt', 'pdf', 'rtf', 'txt', 'jpg', 'png', 'xps'],
+    targetFormats: ['hwpx', 'doc', 'docx', 'html', 'odt', 'pdf', 'rtf', 'txt', 'md', 'jpg', 'png', 'xps'],
+    optionsSchema: {pages:true,preserveLayout:true,preserveFonts:true},
+  },
+  hwpx: {
+    id: 'hwpx',
+    name: 'Hancom Hangul Word Processor XML',
+    extension: 'hwpx',
+    mimeType: 'application/hwp+zip',
+    category: 'document',
+    description: 'KS X 6101 Standard Open Packaging Convention XML-based Korean word processor document.',
+    targetFormats: ['hwp', 'doc', 'docx', 'html', 'odt', 'pdf', 'rtf', 'txt', 'md', 'jpg', 'png', 'xps'],
     optionsSchema: {pages:true,preserveLayout:true,preserveFonts:true},
   },
   lwp: {

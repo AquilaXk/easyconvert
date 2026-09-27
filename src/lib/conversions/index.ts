@@ -18,7 +18,19 @@ import {
   decodeHwpText,
   decompressHwpStream,
   HWP_TAGS,
+  convertHwpDocument,
 } from './hwp';
+import {
+  convertHwpx,
+  parseHwpxDocument,
+  buildHwpxContainer,
+  isHwpxContainer,
+  hwpxToHwp,
+  hwpToHwpx,
+  hwpxToMarkdown,
+  markdownToHwpx,
+  hwpxToPlainText,
+} from './hwpx';
 import {
   tessellateCadBuffer,
   tessellateCurvesToMesh,
@@ -91,6 +103,16 @@ export {
   convertVectorCad,
   svgToDxf,
   convertHwp,
+  convertHwpDocument,
+  convertHwpx,
+  parseHwpxDocument,
+  buildHwpxContainer,
+  isHwpxContainer,
+  hwpxToHwp,
+  hwpToHwpx,
+  hwpxToMarkdown,
+  markdownToHwpx,
+  hwpxToPlainText,
   parseHwpDocument,
   buildHwpCompoundFile,
   buildHwpRecord,
@@ -330,6 +352,7 @@ export async function convertFile(
       'cbz',
       'et',
       'hwp',
+      'hwpx',
       'lwp',
       'pub',
       'odg',
@@ -351,7 +374,7 @@ export async function convertFile(
       'numbers',
       'pages',
     ].includes(src) ||
-    ['docx', 'xlsx', 'epub', 'pptx', 'odp', 'ods', 'odt', 'xls', 'key', 'numbers', 'pages', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp'].includes(tgt)
+    ['docx', 'xlsx', 'epub', 'pptx', 'odp', 'ods', 'odt', 'xls', 'key', 'numbers', 'pages', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx'].includes(tgt)
   ) {
     return convertOffice(inputBuffer, src, tgt, options, originalFilename);
   }

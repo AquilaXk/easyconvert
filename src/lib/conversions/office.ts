@@ -93,6 +93,12 @@ export async function convertOffice(
     return convertHwp(inputBuffer, tgt, options, baseName);
   }
 
+  // 12.21 HWPX Source (KS X 6101 Hangul Word Processor XML)
+  if (src === 'hwpx') {
+    const { convertHwpx } = await import('./hwpx');
+    return convertHwpx(inputBuffer, tgt, options, baseName);
+  }
+
   // 12.3 LWP, PUB (Documents)
   if (['lwp', 'pub'].includes(src)) {
     return convertGenericDocumentSource(inputBuffer, src, tgt, options, baseName);
@@ -117,6 +123,19 @@ export async function convertOffice(
       mimeType: 'application/x-hwp',
       filename: `${baseName}.hwp`,
       size: hwpBuffer.length,
+    };
+  }
+
+  // 13.01 Target is HWPX (from Markdown, HTML, TXT, DOCX, ODT, RTF, etc.)
+  if (tgt === 'hwpx') {
+    const { markdownToHwpx } = await import('./hwpx');
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const hwpxBuffer = await markdownToHwpx(textContent, baseName);
+    return {
+      buffer: hwpxBuffer,
+      mimeType: 'application/hwp+zip',
+      filename: `${baseName}.hwpx`,
+      size: hwpxBuffer.length,
     };
   }
 

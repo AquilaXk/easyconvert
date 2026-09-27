@@ -749,18 +749,70 @@ export function buildHwpCompoundFile(params: {
 }
 
 /**
- * Converts HWP 5.0 documents to PDF, OpenXML DOCX, ODT, HTML, TXT, RTF.
+ * Converts parsed HWP document AST to PDF, OpenXML DOCX, ODT, HTML, TXT, RTF, MD, HWPX, or raster images.
  */
-export async function convertHwp(
-  inputBuffer: Buffer,
+export async function convertHwpDocument(
+  doc: HwpDocument,
   targetFormat: string,
   options: ConversionOptions = {},
   baseName: string
 ): Promise<ConversionResult> {
-  const doc = parseHwpDocument(inputBuffer);
   const tgt = targetFormat.toLowerCase();
 
-  // 1. Target: PDF with structured tables and paragraphs
+  // 1. Target: HWPX (KS X 6101 standard Open Packaging Convention XML container)
+  if (tgt === 'hwpx') {
+    const { buildHwpxContainer } = await import('./hwpx');
+    const hwpxBuffer = await buildHwpxContainer(doc);
+    return {
+      buffer: hwpxBuffer,
+      mimeType: 'application/hwp+zip',
+      filename: `${baseName}.hwpx`,
+      size: hwpxBuffer.length,
+    };
+  }
+
+  // 2. Target: HWP (HWP 5.0 CFBF compound binary)
+  if (tgt === 'hwp') {
+    const hwpBuffer = buildHwpCompoundFile({
+      paragraphs: doc.paragraphs,
+      tables: doc.tables,
+    });
+    return {
+      buffer: hwpBuffer,
+      mimeType: 'application/x-hwp',
+      filename: `${baseName}.hwp`,
+      size: hwpBuffer.length,
+    };
+  }
+
+  // 3. Target: Markdown (MD)
+  if (tgt === 'md' || tgt === 'markdown') {
+    let md = '';
+    if (doc.metadata?.title) {
+      md += `# ${doc.metadata.title}\n\n`;
+    }
+    doc.paragraphs.forEach((p) => {
+      if (p.isHeading) {
+        md += `## ${p.text}\n\n`;
+      } else {
+        md += `${p.text}\n\n`;
+      }
+    });
+    doc.tables.forEach((t) => {
+      if (t.rows.length > 0) {
+        md += '| ' + t.rows[0].join(' | ') + ' |\n';
+        md += '| ' + t.rows[0].map(() => '---').join(' | ') + ' |\n';
+        t.rows.slice(1).forEach((r) => {
+          md += '| ' + r.join(' | ') + ' |\n';
+        });
+        md += '\n';
+      }
+    });
+    const buffer = Buffer.from(md.trim(), 'utf-8');
+    return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
+  }
+
+  // 4. Target: PDF with structured tables and paragraphs
   if (tgt === 'pdf') {
     const pdfBuffer = await generatePdfFromHwp(doc, options, baseName);
     return {
@@ -771,7 +823,7 @@ export async function convertHwp(
     };
   }
 
-  // 2. Target: DOCX with OpenXML tables and formatted paragraphs
+  // 5. Target: DOCX with OpenXML tables and formatted paragraphs
   if (tgt === 'docx') {
     const docxBuffer = await generateDocxFromHwp(doc, baseName);
     return {
@@ -782,7 +834,7 @@ export async function convertHwp(
     };
   }
 
-  // 3. Target: HTML with structured markup
+  // 6. Target: HTML with structured markup
   if (tgt === 'html') {
     let html = `<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n<title>${escapeHtml(baseName)}</title>\n`;
     html += `<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:40px;color:#1F2340}h1,h2{color:#5C6BC0}table{border-collapse:collapse;width:100%;margin:20px 0}th,td{border:1px solid #CCD2FC;padding:8px 12px;text-align:left}th{background:#F0F2FE}</style>\n</head>\n<body>\n`;
@@ -813,7 +865,7 @@ export async function convertHwp(
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
   }
 
-  // 4. Target: TXT
+  // 7. Target: TXT
   if (tgt === 'txt') {
     const parts: string[] = doc.paragraphs.map((p) => p.text);
     doc.tables.forEach((t) => {
@@ -824,7 +876,7 @@ export async function convertHwp(
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
 
-  // 5. Target: RTF
+  // 8. Target: RTF
   if (tgt === 'rtf') {
     const bodyParts: string[] = [];
     doc.paragraphs.forEach((p) => {
@@ -840,7 +892,7 @@ export async function convertHwp(
     return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
   }
 
-  // 6. Target: ODT (OpenDocument Text)
+  // 9. Target: ODT (OpenDocument Text)
   if (tgt === 'odt') {
     const odtBuffer = await generateOdtFromHwp(doc, baseName);
     return {
@@ -851,9 +903,9 @@ export async function convertHwp(
     };
   }
 
-  // 7. Target: DOC (Word RTF-based)
+  // 10. Target: DOC (Word RTF-based)
   if (tgt === 'doc') {
-    const rtfResult = await convertHwp(inputBuffer, 'rtf', options, baseName);
+    const rtfResult = await convertHwpDocument(doc, 'rtf', options, baseName);
     return {
       buffer: rtfResult.buffer,
       mimeType: 'application/msword',
@@ -862,7 +914,7 @@ export async function convertHwp(
     };
   }
 
-  // 8. Target: XPS
+  // 11. Target: XPS
   if (tgt === 'xps') {
     const xpsBuffer = await generateXpsFromHwp(doc, baseName);
     return {
@@ -873,7 +925,7 @@ export async function convertHwp(
     };
   }
 
-  // 9. Target: Raster Images (PNG, JPG, WEBP, BMP)
+  // 12. Target: Raster Images (PNG, JPG, WEBP, BMP)
   if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(tgt)) {
     const raster = await renderHwpToRaster(doc, tgt, baseName);
     return {
@@ -892,6 +944,19 @@ export async function convertHwp(
     filename: `${baseName}.pdf`,
     size: pdfBuffer.length,
   };
+}
+
+/**
+ * Converts HWP 5.0 documents to PDF, OpenXML DOCX, ODT, HTML, TXT, RTF, HWPX.
+ */
+export async function convertHwp(
+  inputBuffer: Buffer,
+  targetFormat: string,
+  options: ConversionOptions = {},
+  baseName: string
+): Promise<ConversionResult> {
+  const doc = parseHwpDocument(inputBuffer);
+  return convertHwpDocument(doc, targetFormat, options, baseName);
 }
 
 /**
