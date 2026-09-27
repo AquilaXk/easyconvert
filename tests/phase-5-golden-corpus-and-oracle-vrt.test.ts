@@ -35,7 +35,7 @@ import { convertFile } from '../src/lib/conversions';
 import { demosaicBayerCfa, decodeRawBayerSensor } from '../src/lib/conversions/image';
 import { convertOffice } from '../src/lib/conversions/office';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
-import { decompressZstd } from '../src/lib/conversions/archive';
+import { decompressZstd, createTarArchive } from '../src/lib/conversions/archive';
 import {
   synthesizeVariableFontCorpus,
   synthesizeParquetColumnarCorpus,
@@ -393,6 +393,73 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
         expect(typeof record).toBe('object');
       }
     });
+
+    it('2.9 differential archive oracle parses TAR archives and extracts file structure', async () => {
+      const tarArchive = createTarArchive([
+        { filename: 'hello.txt', buffer: Buffer.from('Hello EasyConvert TAR', 'utf-8') },
+        { filename: 'data/info.json', buffer: Buffer.from('{"test":true}', 'utf-8') },
+      ]);
+      assertFormatIntegrity(tarArchive.buffer, 'tar');
+
+      const ast = await parseArchiveToAst(tarArchive.buffer, 'tar');
+      expect(ast.format).toBe('tar');
+      expect(ast.fileCount).toBe(2);
+      expect(ast.files.map((f) => f.name)).toEqual(['hello.txt', 'data/info.json']);
+    });
+
+    it('2.10 differential archive oracle parses 7z archives using AST and exact sizes', async () => {
+      const golden7z = synthesizeEnterprise7z();
+      assertFormatIntegrity(golden7z.buffer, '7z');
+
+      const ast = await parseArchiveToAst(golden7z.buffer, '7z');
+      expect(ast.format).toBe('7z');
+      expect(ast.fileCount).toBe(2);
+      expect(ast.files.map((f) => f.name)).toEqual(['config.json', 'manifest.txt']);
+      expect(ast.files[0].size).toBe(42);
+      expect(ast.files[1].size).toBe(55);
+    });
+
+    it('2.11 differential PPTX oracle sorts slide numbers numerically', async () => {
+      const zip = new JSZip();
+      zip.file('ppt/presentation.xml', `<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldSz cx="9144000" cy="5143500"/></p:presentation>`);
+      zip.file('ppt/slides/slide1.xml', `<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>Slide 1</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`);
+      zip.file('ppt/slides/slide2.xml', `<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>Slide 2</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`);
+      zip.file('ppt/slides/slide10.xml', `<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>Slide 10</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`);
+      const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+      const ast = await parsePptxToAst(buffer);
+      expect(ast.slideCount).toBe(3);
+      expect(ast.slides[0].slideIndex).toBe(1);
+      expect(ast.slides[1].slideIndex).toBe(2);
+      expect(ast.slides[2].slideIndex).toBe(3);
+      expect(ast.slides[0].shapes[0].text).toBe('Slide 1');
+      expect(ast.slides[1].shapes[0].text).toBe('Slide 2');
+      expect(ast.slides[2].shapes[0].text).toBe('Slide 10');
+    });
+
+    it('2.12 assertFormatIntegrity validates full spectrum of supported formats', () => {
+      const zstd = synthesizeEnterpriseZstd();
+      expect(() => assertFormatIntegrity(zstd.buffer, 'zstd')).not.toThrow();
+
+      const font = synthesizeVariableFontCorpus();
+      const woff2 = encodeWoff2(font.parsedFont);
+      expect(() => assertFormatIntegrity(woff2, 'woff2')).not.toThrow();
+
+      const hwp = synthesizeHwp5CompoundCorpus();
+      expect(() => assertFormatIntegrity(hwp.buffer, 'hwp')).not.toThrow();
+
+      const parquet = synthesizeParquetColumnarCorpus(5);
+      expect(() => assertFormatIntegrity(parquet.buffer, 'parquet')).not.toThrow();
+
+      const wavBuffer = Buffer.alloc(44);
+      wavBuffer.write('RIFF', 0, 'ascii');
+      wavBuffer.writeUInt32LE(36, 4);
+      wavBuffer.write('WAVE', 8, 'ascii');
+      expect(() => assertFormatIntegrity(wavBuffer, 'wav')).not.toThrow();
+
+      const jpegBuffer = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+      expect(() => assertFormatIntegrity(jpegBuffer, 'jpeg')).not.toThrow();
+    });
   });
 
   // =========================================================================
@@ -529,9 +596,9 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
 
     it('4.5 fails closed on truncated 7z archive headers', async () => {
       expect(() => assertFormatIntegrity(corrupt.archiveTruncated7z, '7z')).not.toThrow(); // Magic bytes exist
-      const ast = parseArchiveToAst(corrupt.archiveTruncated7z, '7z');
-      // Must not crash
-      await expect(ast).resolves.toBeDefined();
+      const ast = await parseArchiveToAst(corrupt.archiveTruncated7z, '7z');
+      expect(ast.fileCount).toBe(0);
+      expect(ast.files).toHaveLength(0);
     });
 
     it('4.6 fails closed on unsupported binary formats without emitting mojibake', async () => {
@@ -561,6 +628,20 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
 
       const truncatedAst = await parsePdfToAst(corrupt.pdfTruncatedStream);
       expect(truncatedAst).toBeDefined();
+    });
+
+    it('4.9 assertFormatIntegrity fails closed on truncated/corrupt headers across all formats', () => {
+      const garbage = Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
+      expect(() => assertFormatIntegrity(garbage, 'tar')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'zstd')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'woff2')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'hwp')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'parquet')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'wav')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'webp')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'flac')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'mp3')).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(garbage, 'jpeg')).toThrow(/Integrity Violation/);
     });
   });
 

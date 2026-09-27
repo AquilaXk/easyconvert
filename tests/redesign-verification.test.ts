@@ -111,7 +111,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(footerContent).toContain('href: \'/rar-to-zip\'');
 
     // Privacy badge and copyright
-    expect(footerContent).toContain('100% Client-Side & Zero-Server Retention');
+    expect(footerContent).toMatch(/100% Client-Side (&|&amp;) Zero-Server Retention/);
     expect(footerContent).toContain('© 2026 EasyConvert.com');
   });
 
@@ -218,19 +218,19 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(footerContent).toContain('easyconvert-theme-change');
   });
 
-  it('verifies Hero implements bespoke Conversion Console without AI-slop concentric radar rings', () => {
+  it('verifies Hero implements spacious converter architecture with Choose Files CTA and eliminates 2-card console box', () => {
     const heroPath = path.join(rootDir, 'src', 'components', 'Hero.tsx');
     const heroContent = fs.readFileSync(heroPath, 'utf-8');
 
-    // Bespoke console structure
-    expect(heroContent).toContain('Conversion Console');
-    expect(heroContent).toContain('292 Standards Supported');
-    expect(heroContent).toContain('FROM');
-    expect(heroContent).toContain('INTO');
+    // Spacious hero structure with prominent Choose Files CTA
+    expect(heroContent).toContain('Choose Files');
+    expect(heroContent).toContain('292 Formats Supported');
+    expect(heroContent).toContain('bg-brand-700');
     expect(heroContent).toContain('POPULAR:');
-    expect(heroContent).toContain('animate-card-flip');
 
-    // Concentric orbit radar rings removed
+    // 2-card converter box and obsolete animations completely eliminated
+    expect(heroContent).not.toContain('animate-card-flip');
+    expect(heroContent).not.toContain('Conversion Console');
     expect(heroContent).not.toContain('animate-orbit-slow');
     expect(heroContent).not.toContain('animate-orbit-fast');
   });
@@ -246,5 +246,96 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(featuresContent).toContain('dark:bg-[#151A2E]');
     expect(featuresContent).toContain('dark:border-[#2B3556]');
   });
+
+  it('verifies Dynamic Converter Page implements dynamic breadcrumb navigation', () => {
+    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+
+    // Breadcrumb navigation elements
+    expect(slugContent).toContain('aria-label="Breadcrumb"');
+    expect(slugContent).toContain('categoryLabel');
+    expect(slugContent).toContain('srcKey');
+    expect(slugContent).toContain('tgtKey');
+    expect(slugContent).toContain('ChevronRight');
+    expect(slugContent).toContain('Home');
+  });
+
+  it('verifies Dynamic Converter Page implements 3-step visual conversion workflow', () => {
+    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+
+    // 3-step guide presence and structure
+    expect(slugContent).toContain('Step-by-Step Guide');
+    expect(slugContent).toContain('How to Convert');
+    expect(slugContent).toContain('UploadCloud');
+    expect(slugContent).toContain('Settings2');
+    expect(slugContent).toContain('Download');
+    expect(slugContent).toContain('01');
+    expect(slugContent).toContain('02');
+    expect(slugContent).toContain('03');
+  });
+
+  it('verifies Side-by-Side Format Specification Comparison Deck and technical dossier', () => {
+    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+
+    // Specification deck structure
+    expect(slugContent).toContain('Technical Specifications');
+    expect(slugContent).toContain('SOURCE FORMAT');
+    expect(slugContent).toContain('TARGET FORMAT');
+    expect(slugContent).toContain('Full Name');
+    expect(slugContent).toContain('Developer');
+    expect(slugContent).toContain('MIME Type');
+    expect(slugContent).toContain('Key Capabilities');
+    expect(slugContent).toContain('FORMAT_SPECIFICATIONS');
+  });
+
+  it('verifies top leaderboard ad unit has CLS protection container', () => {
+    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+
+    expect(slugContent).toContain('min-h-[50px] sm:min-h-[64px]');
+  });
+
+  it('verifies conversion trust and rating pill with client-side zero-retention guarantee', () => {
+    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+
+    expect(slugContent).toContain('4.8 / 5.0');
+    expect(slugContent).toContain('14,200+ user ratings');
+    expect(slugContent).toContain('100% Free & Unlimited');
+    expect(slugContent).toContain('Zero Server Storage');
+    expect(slugContent).toContain('Client-Side Isolation');
+  });
+
+  it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
+    const faqPath = path.join(rootDir, 'src', 'components', 'FaqSection.tsx');
+    const faqContent = fs.readFileSync(faqPath, 'utf-8');
+
+    expect(faqContent).toContain('aria-expanded={isOpen}');
+    expect(faqContent).toContain('aria-controls={`faq-answer-${idx}`}');
+    expect(faqContent).toContain('id={`faq-answer-${idx}`}');
+    expect(faqContent).toContain('role="region"');
+  });
+
+  it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {
+    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+
+    expect(slugContent).toContain(
+      'className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors"'
+    );
+  });
+
+  it('verifies Dynamic Converter Page handles category slugs and protects specification arrays', () => {
+    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+
+    expect(slugContent).toContain('isCategorySlug');
+    expect(slugContent).toContain('(meta.advantages || []).map');
+    expect(slugContent).toContain('FormatDossierCard');
+    expect(slugContent).toContain('useClientQueue');
+  });
 });
+
 

@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { demosaicBayerCfa, BayerPattern, BayerSensorData } from '../../src/lib/conversions/image';
-import { crc32, compressZstd } from '../../src/lib/conversions/archive';
+import { crc32, compressZstd, create7zArchive } from '../../src/lib/conversions/archive';
 
 // ============================================================================
 // 1. Enterprise Multi-Sheet XLSX with NumberFormat & Formula Engine
@@ -1000,43 +1000,22 @@ export interface Golden7zResult {
 
 export function synthesizeEnterprise7z(): Golden7zResult {
   const files = [
-    { name: 'config.json', content: '{"engine":"EasyConvert","version":"5.0.0"}', size: 44 },
+    { name: 'config.json', content: '{"engine":"EasyConvert","version":"5.0.0"}', size: 42 },
     { name: 'manifest.txt', content: 'Golden multi-stream archive payload for differential QA', size: 55 },
   ];
 
-  // 7z 32-byte header:
-  // Signature (6 bytes): 0x37 0x7A 0xBC 0xAF 0x27 0x1C
-  // Major/Minor version (2 bytes): 0x00 0x04
-  // StartHeaderCRC (4 bytes): CRC32 of bytes 12..31
-  // NextHeaderOffset (8 bytes LE): offset from byte 32 to Header
-  // NextHeaderSize (8 bytes LE): size of Header
-  // NextHeaderCRC (4 bytes LE): CRC32 of Header
-  const headerBuf = Buffer.alloc(32);
-  headerBuf.set([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c], 0);
-  headerBuf[6] = 0x00; // Major
-  headerBuf[7] = 0x04; // Minor
-
-  // Payload: concatenation of file contents
-  const payloadBuf = Buffer.concat(files.map((f) => Buffer.from(f.content, 'utf-8')));
-
-  // Next header data (simulated 7z EndHeader)
-  const endHeader = Buffer.from([0x17, 0x01, 0x00]); // kHeader, kEnd
-  const nextHeaderOffset = payloadBuf.length;
-  const nextHeaderSize = endHeader.length;
-  const nextHeaderCrcVal = crc32(endHeader);
-
-  headerBuf.writeBigUInt64LE(BigInt(nextHeaderOffset), 12);
-  headerBuf.writeBigUInt64LE(BigInt(nextHeaderSize), 20);
-  headerBuf.writeUInt32LE(nextHeaderCrcVal, 28);
-
-  const startHeaderCrcVal = crc32(headerBuf.slice(12, 32));
-  headerBuf.writeUInt32LE(startHeaderCrcVal, 8);
-
-  const buffer = Buffer.concat([headerBuf, payloadBuf, endHeader]);
+  const archive = create7zArchive(
+    files.map((f) => ({
+      filename: f.name,
+      buffer: Buffer.from(f.content, 'utf-8'),
+    })),
+    {},
+    'enterprise_golden.7z'
+  );
 
   return {
-    buffer,
-    signature: headerBuf.slice(0, 6),
+    buffer: archive.buffer,
+    signature: archive.buffer.subarray(0, 6),
     files,
   };
 }

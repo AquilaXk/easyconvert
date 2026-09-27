@@ -50,7 +50,7 @@ export default function Header() {
   };
 
   return (
-    <header className="sticky top-0 z-50 backdrop-blur-md bg-brand-50/95 dark:bg-dark-surface/95 border-b border-neutral-border dark:border-dark-border text-brand-950 dark:text-white transition-colors duration-150">
+    <header className="sticky top-0 z-50 backdrop-blur-md bg-white/95 dark:bg-dark-surface/95 border-b border-neutral-border dark:border-dark-border text-brand-950 dark:text-white transition-colors duration-150">
       {/* Invisible backdrop to dismiss menus */}
       {isToolsOpen && (
         <div
