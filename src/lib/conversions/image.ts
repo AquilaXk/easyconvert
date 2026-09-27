@@ -459,6 +459,184 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
 }
 
 /**
+ * Decodes Lossless JPEG (ISO/IEC 10918-1 / ITU-T T.81 / LJ92) camera RAW sensor strips.
+ */
+export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
+  width: number;
+  height: number;
+  data: Uint16Array;
+  bpp: number;
+} | null {
+  if (strip.length < 16) return null;
+  const buf = Buffer.isBuffer(strip) ? strip : Buffer.from(strip);
+
+  // Must begin with SOI (0xFF, 0xD8)
+  if (buf[0] !== 0xff || buf[1] !== 0xd8) {
+    return null;
+  }
+
+  let pos = 2;
+  let width = 0;
+  let height = 0;
+  let bpp = 16;
+  let predictor = 1;
+  let pointTransform = 0;
+  let huffmanCounts: number[] = [];
+  let huffmanSymbols: number[] = [];
+  let scanStart = -1;
+
+  while (pos < buf.length - 2) {
+    if (buf[pos] !== 0xff) {
+      pos++;
+      continue;
+    }
+    const marker = buf[pos + 1];
+    pos += 2;
+
+    if (marker === 0xd8) continue; // SOI
+    if (marker === 0xd9) break;    // EOI
+
+    const segLen = buf.readUInt16BE(pos);
+    const segDataStart = pos + 2;
+
+    if (marker === 0xc3) {
+      // SOF3 (Lossless Sequential Huffman)
+      bpp = buf[segDataStart];
+      height = buf.readUInt16BE(segDataStart + 1);
+      width = buf.readUInt16BE(segDataStart + 3);
+    } else if (marker === 0xc4) {
+      // DHT (Define Huffman Table)
+      let dhtPos = segDataStart + 1; // skip table class/id
+      huffmanCounts = Array.from(buf.subarray(dhtPos, dhtPos + 16));
+      dhtPos += 16;
+      const totalSymbols = huffmanCounts.reduce((a, b) => a + b, 0);
+      huffmanSymbols = Array.from(buf.subarray(dhtPos, dhtPos + totalSymbols));
+    } else if (marker === 0xda) {
+      // SOS (Start of Scan)
+      const compCount = buf[segDataStart];
+      const predPos = segDataStart + 1 + compCount * 2;
+      predictor = buf[predPos];
+      pointTransform = buf[predPos + 1] || 0;
+      scanStart = pos + segLen;
+      break;
+    }
+
+    pos += segLen;
+  }
+
+  if (width <= 0 || height <= 0 || scanStart < 0 || scanStart >= buf.length) {
+    return null;
+  }
+
+  // Build canonical Huffman decoding tree
+  interface HuffmanNode {
+    symbol?: number;
+    children?: [HuffmanNode?, HuffmanNode?];
+  }
+
+  const root: HuffmanNode = { children: [] };
+  let symbolIdx = 0;
+  let currentCode = 0;
+
+  for (let len = 1; len <= 16; len++) {
+    const count = huffmanCounts[len - 1] || 0;
+    for (let c = 0; c < count; c++) {
+      const sym = huffmanSymbols[symbolIdx++];
+      let node = root;
+      for (let bitIdx = len - 1; bitIdx >= 0; bitIdx--) {
+        const bit = (currentCode >> bitIdx) & 1;
+        if (!node.children) node.children = [];
+        if (!node.children[bit]) {
+          node.children[bit] = { children: [] };
+        }
+        node = node.children[bit]!;
+      }
+      node.symbol = sym;
+      currentCode++;
+    }
+    currentCode <<= 1;
+  }
+
+  // Bit reader handling 0xFF00 byte stuffing
+  let bitBuffer = 0;
+  let bitsCount = 0;
+  let bytePtr = scanStart;
+
+  const readBit = (): number => {
+    if (bitsCount === 0) {
+      if (bytePtr >= buf.length) return 0;
+      let b = buf[bytePtr++];
+      if (b === 0xff && bytePtr < buf.length && buf[bytePtr] === 0x00) {
+        bytePtr++; // Skip stuffed zero
+      }
+      bitBuffer = b;
+      bitsCount = 8;
+    }
+    bitsCount--;
+    return (bitBuffer >> bitsCount) & 1;
+  };
+
+  const readBits = (num: number): number => {
+    let res = 0;
+    for (let i = 0; i < num; i++) {
+      res = (res << 1) | readBit();
+    }
+    return res;
+  };
+
+  const decodeSymbol = (): number => {
+    let node = root;
+    while (node && node.symbol === undefined) {
+      const bit = readBit();
+      node = node.children ? node.children[bit]! : undefined!;
+    }
+    return node?.symbol ?? 0;
+  };
+
+  const totalPixels = width * height;
+  const outputData = new Uint16Array(totalPixels);
+  const maxVal = (1 << bpp) - 1;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const cat = decodeSymbol();
+      let diff = 0;
+      if (cat > 0) {
+        const rawBits = readBits(cat);
+        diff = rawBits < 1 << (cat - 1) ? rawBits - ((1 << cat) - 1) : rawBits;
+      }
+
+      let predVal = 0;
+      if (x === 0 && y === 0) {
+        predVal = 1 << (bpp - 1 - pointTransform);
+      } else if (y === 0) {
+        predVal = outputData[x - 1];
+      } else if (x === 0) {
+        predVal = outputData[(y - 1) * width];
+      } else {
+        const a = outputData[y * width + (x - 1)];
+        const b = outputData[(y - 1) * width + x];
+        const c = outputData[(y - 1) * width + (x - 1)];
+
+        if (predictor === 1) predVal = a;
+        else if (predictor === 2) predVal = b;
+        else if (predictor === 3) predVal = c;
+        else if (predictor === 4) predVal = a + b - c;
+        else if (predictor === 5) predVal = a + ((b - c) >> 1);
+        else if (predictor === 6) predVal = b + ((a - c) >> 1);
+        else if (predictor === 7) predVal = (a + b) >> 1;
+        else predVal = a;
+      }
+
+      const sample = (predVal + diff) & maxVal;
+      outputData[y * width + x] = sample;
+    }
+  }
+
+  return { width, height, data: outputData, bpp };
+}
+
+/**
  * Decodes camera RAW sensor Bayer data from TIFF/DNG or raw Bayer frames.
  */
 export function decodeRawBayerSensor(
@@ -609,20 +787,48 @@ export function decodeRawBayerSensor(
         const end = Math.min(buffer.length, stripOffset + byteCount);
         const strip = buffer.subarray(stripOffset, end);
 
-        const sensorData =
-          bpp > 8
-            ? new Uint16Array(strip.buffer, strip.byteOffset, Math.min(width * height, Math.floor(strip.length / 2)))
-            : new Uint8Array(strip.buffer, strip.byteOffset, Math.min(width * height, strip.length));
+        let sensorData: Uint16Array | Uint8Array;
+        let sensorWidth = width;
+        let sensorHeight = height;
+        let sensorBpp = bpp;
+
+        if (strip.length >= 4 && strip[0] === 0xff && strip[1] === 0xd8) {
+          const lj92 = decodeLosslessJpegStrip(strip);
+          if (lj92) {
+            sensorData = lj92.data;
+            sensorWidth = lj92.width;
+            sensorHeight = lj92.height;
+            sensorBpp = lj92.bpp;
+          } else {
+            sensorData =
+              bpp > 8
+                ? new Uint16Array(
+                    strip.buffer,
+                    strip.byteOffset,
+                    Math.min(width * height, Math.floor(strip.length / 2))
+                  )
+                : new Uint8Array(strip.buffer, strip.byteOffset, Math.min(width * height, strip.length));
+          }
+        } else {
+          sensorData =
+            bpp > 8
+              ? new Uint16Array(
+                  strip.buffer,
+                  strip.byteOffset,
+                  Math.min(width * height, Math.floor(strip.length / 2))
+                )
+              : new Uint8Array(strip.buffer, strip.byteOffset, Math.min(width * height, strip.length));
+        }
 
         const result = demosaicBayerCfa({
-          width,
-          height,
+          width: sensorWidth,
+          height: sensorHeight,
           pattern,
           data: sensorData,
-          bitsPerSample: bpp,
+          bitsPerSample: sensorBpp,
         });
 
-        return { rgb: result.data, width, height };
+        return { rgb: result.data, width: sensorWidth, height: sensorHeight };
       }
     }
   }
@@ -677,14 +883,18 @@ export async function convertImage(
     activeBuffer = sanitizeSvgBuffer(activeBuffer);
   }
 
-  // Handle RAW camera inputs by checking for embedded high-resolution JPEG preview
+  // Handle RAW camera inputs by decoding true RAW sensor Bayer/LJ92 data first
   const rawExtensions = [
     'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'pef', 'orf', 'srw', 'kdc',
     '3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f', 'raw'
   ];
   const isRawInput = rawExtensions.includes(src);
 
-  if (isRawInput) {
+  let rawDemosaiced = isRawInput ? decodeRawBayerSensor(activeBuffer, src) : null;
+
+  if (isRawInput && !rawDemosaiced) {
+    // Only if true sensor Bayer / LJ92 decoding is not present (e.g. mock camera payload),
+    // probe embedded preview stream as fallback
     let largestJpg: Buffer | null = null;
     let searchPos = 0;
     while (searchPos < activeBuffer.length - 4) {
@@ -714,8 +924,11 @@ export async function convertImage(
   let pipeline: sharp.Sharp;
 
   try {
-    // Handle BMP input decoding
-    if (src === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
+    if (rawDemosaiced) {
+      pipeline = sharp(rawDemosaiced.rgb, {
+        raw: { width: rawDemosaiced.width, height: rawDemosaiced.height, channels: 3 },
+      });
+    } else if (src === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
       const decoded = decodeBmp(activeBuffer);
       pipeline = sharp(decoded.raw, {
         raw: { width: decoded.width, height: decoded.height, channels: 4 },
