@@ -135,8 +135,10 @@ export function extractTextFromPdf(pdfBuffer: Buffer): string {
  */
 export function extractEmbeddedImageFromPdf(pdfBuffer: Buffer): Buffer | null {
   const binary = pdfBuffer.toString('binary');
-  const dctIndex = binary.indexOf('/Filter/DCTDecode');
-  if (dctIndex !== -1) {
+  const dctRegex = /\/Filter\s*(\[\s*)?\/DCTDecode/i;
+  const match = dctRegex.exec(binary);
+  if (match) {
+    const dctIndex = match.index;
     const streamStart = binary.indexOf('stream', dctIndex);
     if (streamStart !== -1) {
       const start =
@@ -146,8 +148,14 @@ export function extractEmbeddedImageFromPdf(pdfBuffer: Buffer): Buffer | null {
           : binary[streamStart + 6] === '\n'
           ? 7
           : 6);
-      const end = binary.indexOf('endstream', start);
+      let end = binary.indexOf('endstream', start);
       if (end !== -1 && end > start) {
+        if (binary[end - 1] === '\n') {
+          end--;
+          if (binary[end - 1] === '\r') {
+            end--;
+          }
+        }
         return Buffer.from(binary.substring(start, end), 'binary');
       }
     }

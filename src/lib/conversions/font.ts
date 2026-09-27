@@ -313,8 +313,8 @@ export function decodeWoff(buffer: Buffer, defaultName: string): ParsedFont {
     if (compLength < origLength) {
       try {
         rawData = zlib.inflateSync(compData);
-      } catch {
-        rawData = Buffer.from(compData);
+      } catch (err: any) {
+        throw new Error(`Failed to decode WOFF table '${tag}': decompression failed: ${err.message}`);
       }
     } else {
       rawData = Buffer.from(compData);
@@ -377,7 +377,7 @@ export function decodeUIntBase128(buffer: Buffer, cursor: { offset: number }): n
       throw new Error('Unexpected EOF reading UIntBase128 in WOFF2');
     }
     const byte = buffer[cursor.offset++];
-    accum = (accum << 7) | (byte & 0x7f);
+    accum = accum * 128 + (byte & 0x7f);
     if ((byte & 0x80) === 0) {
       return accum >>> 0;
     }
@@ -506,8 +506,8 @@ export function decodeWoff2(buffer: Buffer, defaultName: string): ParsedFont {
         fontFamily,
       };
     }
-  } catch {
-    // If Brotli fails, try zlib inflate or fallback
+  } catch (brotliErr: any) {
+    // If Brotli fails, try zlib inflate fallback
     try {
       const inflated = zlib.inflateSync(compressedStream);
       if (inflated.length >= 12) {
@@ -516,9 +516,10 @@ export function decodeWoff2(buffer: Buffer, defaultName: string): ParsedFont {
     } catch {
       // Ignored
     }
+    throw new Error(`Failed to decode WOFF2: compressed table stream is corrupted or invalid: ${brotliErr.message}`);
   }
 
-  return createCanonicalFont(buffer, defaultName);
+  throw new Error('Failed to decode WOFF2: no valid table entries found.');
 }
 
 /**

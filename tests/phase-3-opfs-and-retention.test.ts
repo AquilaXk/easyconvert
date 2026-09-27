@@ -65,6 +65,40 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       expect(tsvText).toContain('2\t"Smith, Alice"\tScientist');
     });
 
+    it('preserves CSV quoted string state across multiple sequential streaming chunk boundaries', async () => {
+      const transformer = resolveChunkTransformer('csv', 'tsv');
+      // Chunk 1 ends inside a quoted field: '"Doe, '
+      const chunk1Str = 'id,name,role\n101,"Doe, ';
+      // Chunk 2 continues and closes the quoted field: 'Jane",Manager\n'
+      const chunk2Str = 'Jane",Manager\n';
+
+      const res1 = await transformer(new TextEncoder().encode(chunk1Str), 0, chunk1Str.length + chunk2Str.length);
+      const res2 = await transformer(new TextEncoder().encode(chunk2Str), chunk1Str.length, chunk1Str.length + chunk2Str.length);
+
+      const combinedText = new TextDecoder().decode(res1) + new TextDecoder().decode(res2);
+      expect(combinedText).toContain('id\tname\trole');
+      // The comma inside "Doe, Jane" MUST NOT be converted to tab
+      expect(combinedText).toContain('101\t"Doe, Jane"\tManager');
+    });
+
+    it('handles odd-length byte chunks without sample misalignment or data corruption in PCM streaming', async () => {
+      const transformer = resolveChunkTransformer('pcm', 'pcm_be');
+      // 3 bytes in chunk 1 (1.5 samples), 3 bytes in chunk 2 (1.5 samples) -> 3 complete samples
+      // Samples in LE: [0x11, 0x22], [0x33, 0x44], [0x55, 0x66]
+      const chunk1 = new Uint8Array([0x11, 0x22, 0x33]); // 0x33 is first half of sample 2
+      const chunk2 = new Uint8Array([0x44, 0x55, 0x66]); // 0x44 completes sample 2, [0x55, 0x66] is sample 3
+
+      const out1 = await transformer(chunk1, 0, 6);
+      const out2 = await transformer(chunk2, 3, 6);
+
+      // Expected swapped BE: [0x22, 0x11], [0x44, 0x33], [0x66, 0x55]
+      const combined = new Uint8Array(out1.length + out2.length);
+      combined.set(out1, 0);
+      combined.set(out2, out1.length);
+
+      expect(combined).toEqual(new Uint8Array([0x22, 0x11, 0x44, 0x33, 0x66, 0x55]));
+    });
+
     it('transforms raw RGBA stream to fixed-point Grayscale preserving Alpha channel', async () => {
       const transformer = resolveChunkTransformer('rgba', 'grayscale');
       // 2 pixels: Pure Red (255, 0, 0, 255), Pure Green (0, 255, 0, 200)
@@ -206,6 +240,13 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       const destroyed = await result.destroy();
       expect(typeof destroyed).toBe('boolean');
     });
+
+    it('rejects path traversal attempts in destroySessionImmediately for security', async () => {
+      expect(await destroySessionImmediately('../../../etc')).toBe(false);
+      expect(await destroySessionImmediately('..')).toBe(false);
+      expect(await destroySessionImmediately('sessions/../malicious')).toBe(false);
+      expect(await destroySessionImmediately('sub\\dir')).toBe(false);
+    });
   });
 
   describe('3. Distributed Infrastructure Interface Abstractions', () => {
@@ -289,6 +330,19 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       const deleted = s3Backend.deleteObject(stored.key);
       expect(deleted).toBe(true);
       expect(s3Backend.getObject(stored.key)).toBeUndefined();
+    });
+
+    it('clears all pending delay timers when Queue.close() is invoked to prevent event loop leaks', async () => {
+      const queue = new Queue<{ id: number }>('timer-cleanup-test');
+      await queue.add('delayed-1', { id: 1 }, { delay: 60000 });
+      await queue.add('delayed-2', { id: 2 }, { delay: 120000 });
+
+      const counts = await queue.getJobCounts();
+      expect(counts.delayed).toBe(2);
+
+      // Closing queue must clear internal timers
+      await queue.close();
+      expect(queue.listenerCount('waiting')).toBe(0);
     });
   });
 });

@@ -58,15 +58,25 @@ export function resolveChunkTransformer(
 
   // 1. Audio PCM Endianness swap (pcm_le <-> pcm_be)
   if ((src === 'pcm' && tgt === 'pcm_be') || (src === 'pcm_le' && tgt === 'pcm_be') || (src === 'pcm_be' && tgt === 'pcm_le')) {
+    let leftoverByte: number | null = null;
     return (chunk: Uint8Array) => {
-      const out = new Uint8Array(chunk.byteLength);
-      const len = chunk.byteLength - (chunk.byteLength % 2);
-      for (let i = 0; i < len; i += 2) {
-        out[i] = chunk[i + 1];
-        out[i + 1] = chunk[i];
+      let data = chunk;
+      if (leftoverByte !== null) {
+        const combined = new Uint8Array(chunk.byteLength + 1);
+        combined[0] = leftoverByte;
+        combined.set(chunk, 1);
+        data = combined;
+        leftoverByte = null;
       }
-      if (chunk.byteLength % 2 !== 0) {
-        out[chunk.byteLength - 1] = chunk[chunk.byteLength - 1];
+      const hasOdd = data.byteLength % 2 !== 0;
+      const len = hasOdd ? data.byteLength - 1 : data.byteLength;
+      if (hasOdd) {
+        leftoverByte = data[data.byteLength - 1];
+      }
+      const out = new Uint8Array(len);
+      for (let i = 0; i < len; i += 2) {
+        out[i] = data[i + 1];
+        out[i + 1] = data[i];
       }
       return out;
     };
@@ -74,10 +84,24 @@ export function resolveChunkTransformer(
 
   // 2. Audio 16-bit to 8-bit unsigned PCM
   if ((src === 'pcm' || src === 'wav') && (tgt === 'pcm_u8' || tgt === 'u8')) {
+    let leftoverByte: number | null = null;
     return (chunk: Uint8Array) => {
-      const sampleCount = Math.floor(chunk.byteLength / 2);
+      let data = chunk;
+      if (leftoverByte !== null) {
+        const combined = new Uint8Array(chunk.byteLength + 1);
+        combined[0] = leftoverByte;
+        combined.set(chunk, 1);
+        data = combined;
+        leftoverByte = null;
+      }
+      const hasOdd = data.byteLength % 2 !== 0;
+      if (hasOdd) {
+        leftoverByte = data[data.byteLength - 1];
+        data = data.subarray(0, data.byteLength - 1);
+      }
+      const sampleCount = Math.floor(data.byteLength / 2);
       const out = new Uint8Array(sampleCount);
-      const view = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
       for (let i = 0; i < sampleCount; i++) {
         const s16 = view.getInt16(i * 2, true);
         out[i] = Math.max(0, Math.min(255, Math.floor((s16 + 32768) / 256)));
@@ -88,9 +112,9 @@ export function resolveChunkTransformer(
 
   // 3. Delimited Text: CSV -> TSV streaming conversion
   if (src === 'csv' && (tgt === 'tsv' || tgt === 'tab')) {
+    let inQuotes = false;
     return (chunk: Uint8Array) => {
       const out = new Uint8Array(chunk.byteLength);
-      let inQuotes = false;
       for (let i = 0; i < chunk.byteLength; i++) {
         const b = chunk[i];
         if (b === 34) {
