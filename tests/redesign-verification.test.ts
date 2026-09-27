@@ -297,15 +297,37 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(slugContent).toContain('min-h-[50px] sm:min-h-[64px]');
   });
 
-  it('verifies conversion trust and rating pill with client-side zero-retention guarantee', () => {
+  it('verifies fake rating pills are purged and replaced with genuine client-side zero-retention guarantee', () => {
     const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
     const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
 
-    expect(slugContent).toContain('4.8 / 5.0');
-    expect(slugContent).toContain('14,200+ user ratings');
+    // Fake social proof and manufactured ratings must be purged completely
+    expect(slugContent).not.toContain('4.8 / 5.0');
+    expect(slugContent).not.toContain('14,200+ user ratings');
+    expect(slugContent).not.toContain('rating-star-');
+
+    // Genuine verifiable architecture guarantees must be present
     expect(slugContent).toContain('100% Free & Unlimited');
     expect(slugContent).toContain('Zero Server Storage');
     expect(slugContent).toContain('Private & Secure');
+    expect(slugContent).toContain('Client-Side WebAssembly Pipeline');
+  });
+
+  it('verifies AdBanner implements industry-standard IAB units and eliminates fake SaaS marketing cards', () => {
+    const adBannerPath = path.join(rootDir, 'src', 'components', 'AdBanner.tsx');
+    const adBannerContent = fs.readFileSync(adBannerPath, 'utf-8');
+
+    // Must NOT contain fake feature/sponsored cards pretending to be ads
+    expect(adBannerContent).not.toContain('High-speed edge cloud network');
+    expect(adBannerContent).not.toContain('Fast & Secure Storage Sponsor');
+    expect(adBannerContent).not.toContain('Enterprise Cloud Infrastructure');
+    expect(adBannerContent).not.toContain('100% Free Service');
+
+    // Must contain standardized Advertisement header and IAB dimension labels
+    expect(adBannerContent).toContain('Advertisement');
+    expect(adBannerContent).toContain('Ad Choices');
+    expect(adBannerContent).toContain('728 × 90 Leaderboard');
+    expect(adBannerContent).toContain('300 × 250 Medium Rectangle');
   });
 
   it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {

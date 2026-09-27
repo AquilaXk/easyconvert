@@ -476,6 +476,28 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(clean).toContain('<circle');
     });
 
+    it('sanitizes external <use href> and CSS @import / url() SSRF vectors', () => {
+      const ssrfSvg = `
+        <svg xmlns="http://www.w3.org/2000/svg">
+          <style>
+            @import url("http://169.254.169.254/latest/meta-data");
+            .badge { background: url('https://attacker.com/tracking.png'); }
+          </style>
+          <use href="http://169.254.169.254/latest/user-data" />
+          <use xlink:href="//internal.corp.net/secret.svg#icon" />
+          <use href="#local-symbol" />
+          <rect width="100" height="100" style="background-image: url(http://attacker.com/leak);" />
+        </svg>
+      `;
+      const clean = sanitizeSvgString(ssrfSvg);
+      expect(clean).not.toContain('http://169.254.169.254');
+      expect(clean).not.toContain('https://attacker.com');
+      expect(clean).not.toContain('//internal.corp.net');
+      expect(clean).not.toContain('@import');
+      expect(clean).toContain('href="#"');
+      expect(clean).toContain('href="#local-symbol"');
+    });
+
     it('sanitizes XML data in simpleXmlToJson and convertData', async () => {
       const maliciousXml = `<root><item><name>Product</name><script>alert(1)</script><desc onclick="evil()">Desc</desc></item></root>`;
       const parsed = simpleXmlToJson(maliciousXml) as any;

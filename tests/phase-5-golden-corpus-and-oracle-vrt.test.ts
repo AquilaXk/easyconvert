@@ -3,6 +3,7 @@ import path from 'path';
 import { describe, it, expect, beforeAll } from 'vitest';
 import sharp from 'sharp';
 import JSZip from 'jszip';
+import { PDFDocument } from 'pdf-lib';
 import {
   synthesizeEnterpriseMultiSheetXlsx,
   synthesizeEnterpriseMultiSlidePptx,
@@ -292,14 +293,29 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       }
     });
 
-    it('2.2 differential PDF comparison scores matching PDF documents at 100% structural fidelity', async () => {
-      const goldenPdf = await synthesizeEnterprisePdf();
+    it('2.2 differential PDF comparison scores matching PDF documents and detects structural variance', async () => {
+      const goldenPdf1 = await synthesizeEnterprisePdf();
+      const goldenPdf2 = await synthesizeEnterprisePdf();
 
-      const report = await runDifferentialComparison(goldenPdf.buffer, goldenPdf.buffer, 'pdf');
+      const report = await runDifferentialComparison(goldenPdf1.buffer, goldenPdf2.buffer, 'pdf');
       expect(report.matched).toBe(true);
       expect(report.structuralScore).toBe(1.0);
       expect(report.textSimilarity).toBe(1.0);
       expect(report.discrepancies).toHaveLength(0);
+
+      // Mutate PDF by removing a page to verify differential detector catches structural variance
+      const doc = await PDFDocument.load(goldenPdf1.buffer);
+      if (doc.getPageCount() > 1) {
+        doc.removePage(doc.getPageCount() - 1);
+      } else {
+        doc.addPage([200, 200]);
+      }
+      const mutatedBuffer = Buffer.from(await doc.save());
+
+      const diffReport = await runDifferentialComparison(mutatedBuffer, goldenPdf1.buffer, 'pdf');
+      expect(diffReport.matched).toBe(false);
+      expect(diffReport.structuralScore).toBeLessThan(1.0);
+      expect(diffReport.discrepancies.length).toBeGreaterThan(0);
     });
 
     it('2.3 differential XLSX comparison detects missing worksheets and structural variance', async () => {
@@ -321,13 +337,23 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       expect(report.discrepancies.some((d) => d.includes('Q1_Financials'))).toBe(true);
     });
 
-    it('2.4 differential PPTX comparison verifies visual canvas dimensions and slide counts', async () => {
-      const goldenPptx = await synthesizeEnterpriseMultiSlidePptx();
+    it('2.4 differential PPTX comparison verifies visual canvas dimensions, slide counts, and structural variance', async () => {
+      const goldenPptx1 = await synthesizeEnterpriseMultiSlidePptx();
+      const goldenPptx2 = await synthesizeEnterpriseMultiSlidePptx();
 
-      const report = await runDifferentialComparison(goldenPptx.buffer, goldenPptx.buffer, 'pptx');
+      const report = await runDifferentialComparison(goldenPptx1.buffer, goldenPptx2.buffer, 'pptx');
       expect(report.matched).toBe(true);
       expect(report.structuralScore).toBe(1.0);
       expect(report.discrepancies).toHaveLength(0);
+
+      // Mutate PPTX by removing slide2 to verify differential oracle detects variance
+      const zip = await JSZip.loadAsync(goldenPptx1.buffer);
+      zip.remove('ppt/slides/slide2.xml');
+      const mutatedBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+      const diffReport = await runDifferentialComparison(mutatedBuffer, goldenPptx1.buffer, 'pptx');
+      expect(diffReport.matched).toBe(false);
+      expect(diffReport.discrepancies.some((d) => d.includes('Slide count mismatch') || d.includes('missing'))).toBe(true);
     });
 
     it('2.5 differential CAD comparison detects deviations in topological Euler characteristic', () => {

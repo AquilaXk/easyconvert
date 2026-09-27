@@ -91,7 +91,7 @@ export function sanitizeSvgString(svg: string): string {
   // 3. Strip all inline on* event handler attributes
   result = result.replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
 
-  // 4. Sanitize dangerous URI protocols (javascript:, vbscript:, data:text/html, data:image/svg+xml)
+  // 4. Sanitize dangerous URI protocols (javascript:, vbscript:, data:text/html, data:image/svg+xml, http:, https:, file:, ftp:, //)
   result = result.replace(
     /(?:(?:xlink:)?href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
     (full, v1, v2, v3) => {
@@ -102,7 +102,12 @@ export function sanitizeSvgString(svg: string): string {
         decoded.startsWith('vbscript:') ||
         decoded.startsWith('data:text/html') ||
         decoded.startsWith('data:image/svg+xml') ||
-        decoded.startsWith('data:application/javascript')
+        decoded.startsWith('data:application/javascript') ||
+        decoded.startsWith('http:') ||
+        decoded.startsWith('https:') ||
+        decoded.startsWith('file:') ||
+        decoded.startsWith('ftp:') ||
+        decoded.startsWith('//')
       ) {
         return 'href="#"';
       }
@@ -121,13 +126,34 @@ export function sanitizeSvgString(svg: string): string {
         decoded.startsWith('vbscript:') ||
         decoded.startsWith('data:text/html') ||
         decoded.startsWith('data:image/svg+xml') ||
-        decoded.startsWith('data:application/javascript')
+        decoded.startsWith('data:application/javascript') ||
+        decoded.startsWith('http:') ||
+        decoded.startsWith('https:') ||
+        decoded.startsWith('file:') ||
+        decoded.startsWith('ftp:') ||
+        decoded.startsWith('//')
       ) {
         return 'to="#"';
       }
       return full;
     }
   );
+
+  // 6. Sanitize <style> blocks and inline style attributes against SSRF and data exfiltration
+  result = result.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_, styleBody) => {
+    const cleanStyle = styleBody
+      .replace(/@import\s+[^;]+;?/gi, '')
+      .replace(/url\s*\(\s*(['"]?)(?:https?:|file:|ftp:|\/\/)[^)]*\1\s*\)/gi, 'none');
+    return `<style>${cleanStyle}</style>`;
+  });
+
+  result = result.replace(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (full, s1, s2, s3) => {
+    const styleBody = s1 !== undefined ? s1 : (s2 !== undefined ? s2 : s3);
+    const cleanStyle = styleBody
+      .replace(/@import\s+[^;]+;?/gi, '')
+      .replace(/url\s*\(\s*(['"]?)(?:https?:|file:|ftp:|\/\/)[^)]*\1\s*\)/gi, 'none');
+    return `style="${cleanStyle}"`;
+  });
 
   return result.trim();
 }

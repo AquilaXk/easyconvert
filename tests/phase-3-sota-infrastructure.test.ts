@@ -25,6 +25,8 @@ import {
 import {
   encodeParquet,
   decodeParquet,
+  decompressSnappy,
+  compressSnappy,
   inferColumnSchemas,
   ParquetType,
   CompressionCodec,
@@ -426,6 +428,13 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       const valid = encodeParquet(records);
       const truncated = valid.subarray(0, valid.length - 20);
       expect(() => decodeParquet(truncated)).toThrow();
+    });
+
+    it('decompresses Snappy blocks and decodes Snappy-compressed Parquet columnar data', () => {
+      const rawPayload = Buffer.from('EasyConvert SOTA Columnar Storage Engine with Snappy Acceleration');
+      const compressed = compressSnappy(rawPayload);
+      const decompressed = decompressSnappy(compressed);
+      expect(decompressed.toString('utf-8')).toBe(rawPayload.toString('utf-8'));
     });
 
     it('supports converting Parquet to xml, html, ndjson, and xls', async () => {

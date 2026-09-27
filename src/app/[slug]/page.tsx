@@ -23,7 +23,6 @@ import {
   ArrowRight,
   ChevronRight,
   Home,
-  Star,
   CheckCircle2,
   Download,
   UploadCloud,
@@ -1092,17 +1091,12 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
         {/* Informational Sections when Queue is Idle */}
         {queue.length === 0 && (
           <>
-            {/* Conversion Trust & Rating Card */}
+            {/* Client-Side Architecture & Privacy Guarantee Strip */}
             <div className="max-w-5xl mx-auto px-4 sm:px-6 mt-2 mb-8 relative z-20">
-              <div className="flex flex-wrap items-center justify-between gap-4 py-3 px-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-xs text-xs text-ink-secondary dark:text-neutral-400">
+              <div className="flex flex-wrap items-center justify-between gap-4 py-2.5 px-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-xs text-xs text-ink-secondary dark:text-neutral-400">
                 <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-0.5 text-amber-500">
-                    {[1, 2, 3, 4, 5].map((starIdx) => (
-                      <Star key={`rating-star-${starIdx}`} className="size-3.5 fill-current" />
-                    ))}
-                  </div>
-                  <span className="font-semibold text-brand-950 dark:text-white">4.8 / 5.0</span>
-                  <span>(14,200+ user ratings)</span>
+                  <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="font-semibold text-brand-950 dark:text-white">Client-Side WebAssembly Pipeline</span>
                 </div>
                 <div className="flex items-center flex-wrap gap-3 font-medium">
                   <span className="text-emerald-700 dark:text-emerald-400 font-semibold">100% Free & Unlimited</span>
