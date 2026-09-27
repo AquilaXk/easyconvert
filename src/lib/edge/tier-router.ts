@@ -150,29 +150,6 @@ export async function probeEdgeCapabilities(): Promise<EdgeCapabilities> {
 }
 
 /**
- * Resolves the optimal conversion tier given format pair, file size, options, and capabilities.
- */
-export function resolveConversionTier(
-  sourceFormat: string,
-  targetFormat: string,
-  fileSize: number,
-  options: ConversionOptions = {},
-  capabilities?: Partial<EdgeCapabilities>
-): TierResolution {
-  const src = sourceFormat.toLowerCase();
-  const tgt = targetFormat.toLowerCase();
-
-  // 1. Explicit user opt-out to server
-  if (options.clientEdgeMode === false) {
-    return {
-      tier: 'L4',
-      tierName: 'Cloud (Zero-Retention)',
-      isClientEdge: false,
-      reason: 'Client edge mode disabled by user options',
-    };
-  }
-
-/**
  * Whitelist of supported streaming transformations in OPFS worker.
  */
 export const SUPPORTED_OPFS_STREAMING_CONVERSIONS = new Set<string>([
@@ -200,6 +177,29 @@ export function isOpfsStreamingSupported(
   }
   return SUPPORTED_OPFS_STREAMING_CONVERSIONS.has(`${src}:${tgt}`);
 }
+
+/**
+ * Resolves the optimal conversion tier given format pair, file size, options, and capabilities.
+ */
+export function resolveConversionTier(
+  sourceFormat: string,
+  targetFormat: string,
+  fileSize: number,
+  options: ConversionOptions = {},
+  capabilities?: Partial<EdgeCapabilities>
+): TierResolution {
+  const src = sourceFormat.toLowerCase();
+  const tgt = targetFormat.toLowerCase();
+
+  // 1. Explicit user opt-out to server
+  if (options.clientEdgeMode === false) {
+    return {
+      tier: 'L4',
+      tierName: 'Cloud (Zero-Retention)',
+      isClientEdge: false,
+      reason: 'Client edge mode disabled by user options',
+    };
+  }
 
   // 2. High-volume streaming file (> 100 MB)
   const isLargeFile = fileSize > 100 * 1024 * 1024;

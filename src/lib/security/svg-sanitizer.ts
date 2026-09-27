@@ -41,11 +41,14 @@ export function isSvg(input: string | Buffer): boolean {
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) return false; // JSON
   if (trimmed.startsWith('GIF87a') || trimmed.startsWith('GIF89a')) return false;
 
-  return (
-    trimmed.startsWith('<svg') ||
-    trimmed.includes('<svg') ||
-    trimmed.includes('xmlns="http://www.w3.org/2000/svg"')
-  );
+  // Strip XML declaration, comments, and doctypes to verify root element
+  const stripped = trimmed
+    .replace(/^<\?xml[^>]*\?>/i, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<!DOCTYPE[^>]*>/i, '')
+    .trim();
+
+  return /^<svg\b/i.test(stripped);
 }
 
 /**

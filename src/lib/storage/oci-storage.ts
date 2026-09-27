@@ -331,12 +331,16 @@ export class OciObjectStorageService implements IStorageBackend {
       }
     }
 
+    const shreddedObjects = new Set<OciStoredObject>();
     for (const key of expiredKeys) {
       const obj = this.objects.get(key);
       if (obj) {
-        this.shredBuffer(obj.buffer);
+        if (!shreddedObjects.has(obj)) {
+          this.shredBuffer(obj.buffer);
+          shreddedObjects.add(obj);
+          count++;
+        }
         this.objects.delete(key);
-        count++;
       }
     }
 
