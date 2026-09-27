@@ -124,6 +124,46 @@ ENDMF;
   return Buffer.from(cgm, 'utf-8');
 }
 
+export function parseCgmToSvg(cgmText: string): string | null {
+  if (!cgmText.includes('BEGMF')) return null;
+
+  let width = 800;
+  let height = 600;
+  const vdcMatch = cgmText.match(/VDCEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i);
+  if (vdcMatch) {
+    const w = parseFloat(vdcMatch[3]) - parseFloat(vdcMatch[1]);
+    const h = parseFloat(vdcMatch[4]) - parseFloat(vdcMatch[2]);
+    if (w > 0 && h > 0) {
+      width = Math.round(w);
+      height = Math.round(h);
+    }
+  }
+
+  const elements: string[] = [];
+
+  // Parse LINE (x1,y1) (x2,y2)
+  const lineRegex = /LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
+  let lineMatch: RegExpExecArray | null;
+  while ((lineMatch = lineRegex.exec(cgmText)) !== null) {
+    elements.push(
+      `<line x1="${lineMatch[1]}" y1="${lineMatch[2]}" x2="${lineMatch[3]}" y2="${lineMatch[4]}" stroke="#111827" stroke-width="2" />`
+    );
+  }
+
+  // Parse TEXT (x,y) ... "content"
+  const textRegex = /TEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)[^"]*"([^"]+)"/gi;
+  let textMatch: RegExpExecArray | null;
+  while ((textMatch = textRegex.exec(cgmText)) !== null) {
+    elements.push(
+      `<text x="${textMatch[1]}" y="${textMatch[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeXml(textMatch[3])}</text>`
+    );
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
+  ${elements.join('\n  ')}
+</svg>`;
+}
+
 /**
  * Universal Vector & CAD Conversion Engine
  * Supports 2D Vector (SVG, EPS, PS, CDR, CGM, DWF, EMF, SK, SK1, SVGZ, VSD, WMF),
@@ -182,6 +222,7 @@ export async function convertVectorCad(
     return convertPostScriptSource(inputBuffer, src, tgt, options, baseName);
   }
 
+
   // 7. Expanded Vector and CAD sources (CDR, CGM, DWF, EMF, SK, SK1, VSD, WMF)
   if (['cdr', 'cgm', 'dwf', 'emf', 'sk', 'sk1', 'vsd', 'wmf'].includes(src)) {
     let svgStr = '';
@@ -190,15 +231,19 @@ export async function convertVectorCad(
       svgStr = textSample.substring(textSample.indexOf('<svg'));
       const endIdx = svgStr.lastIndexOf('</svg>');
       if (endIdx !== -1) svgStr = svgStr.substring(0, endIdx + 6);
+    } else if (src === 'cgm') {
+      const parsedCgm = parseCgmToSvg(textSample);
+      if (parsedCgm) {
+        svgStr = parsedCgm;
+      } else {
+        throw new Error(
+          `Unsupported or unparseable .${src} vector format: fail-closed against dummy placeholder synthesis.`
+        );
+      }
     } else {
-      svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
-  <rect width="800" height="600" fill="#ffffff" />
-  <rect x="40" y="40" width="720" height="520" rx="8" fill="none" stroke="#e5e7eb" stroke-width="2" />
-  <text x="60" y="90" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="bold" fill="#111827">${escapeXml(baseName)}</text>
-  <text x="60" y="120" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#6b7280">Vector drawing specification (.${src.toUpperCase()})</text>
-  <path d="M 80 180 L 280 180 L 380 320 L 180 420 Z" fill="#6366f1" opacity="0.85" />
-  <circle cx="520" cy="300" r="90" fill="none" stroke="#0ea5e9" stroke-width="4" stroke-dasharray="6 4" />
-</svg>`;
+      throw new Error(
+        `Unsupported or unparseable .${src} vector format: fail-closed against dummy placeholder synthesis.`
+      );
     }
     return convertSvgSource(Buffer.from(sanitizeSvgString(svgStr), 'utf-8'), tgt, options, baseName);
   }

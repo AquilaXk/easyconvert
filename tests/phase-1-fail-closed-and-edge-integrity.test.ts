@@ -1,0 +1,332 @@
+import { describe, it, expect } from 'vitest';
+import crypto from 'crypto';
+import JSZip from 'jszip';
+import { convertVectorCad, encodeCgm, parseCgmToSvg } from '../src/lib/conversions/vector-cad';
+import { convertOffice, extractTextContentForOffice } from '../src/lib/conversions/office';
+import { create7zArchive, extract7zArchive } from '../src/lib/conversions/archive';
+import {
+  applyRgbaQuantize,
+  WasmEngine,
+} from '../src/lib/edge/workers/wasm-engine.worker';
+import { executeWasmTask, WasmWorkerManager } from '../src/lib/edge/pipelines/wasm-simd-pipeline';
+import {
+  isPdfVulnerableToActiveContent,
+  sanitizePdf,
+  decodePdfNames,
+} from '../src/lib/security/pdf-sanitizer';
+
+describe('Phase 1: Fail-Closed Principle, L2 Wasm Color Integrity & 7z Multi-file Extraction', () => {
+  // ==========================================================================
+  // Gate 1: Vector/CAD Fail-Closed Integrity & Removal of Dummy SVGs
+  // ==========================================================================
+  describe('Gate 1: Vector/CAD Fail-Closed Integrity', () => {
+    it('fails closed on unsupported binary vector formats instead of generating dummy purple SVGs', async () => {
+      const mockBinaryCdr = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0x00, 0x01, 0x02, 0x03]);
+
+      await expect(
+        convertVectorCad(mockBinaryCdr, 'cdr', 'svg', {}, 'design.cdr')
+      ).rejects.toThrow(/Unsupported or unparseable \.cdr vector format/);
+
+      await expect(
+        convertVectorCad(mockBinaryCdr, 'wmf', 'svg', {}, 'sketch.wmf')
+      ).rejects.toThrow(/Unsupported or unparseable \.wmf vector format/);
+
+      await expect(
+        convertVectorCad(mockBinaryCdr, 'emf', 'png', {}, 'layout.emf')
+      ).rejects.toThrow(/Unsupported or unparseable \.emf vector format/);
+
+      await expect(
+        convertVectorCad(mockBinaryCdr, 'dwf', 'svg', {}, 'blueprint.dwf')
+      ).rejects.toThrow(/Unsupported or unparseable \.dwf vector format/);
+
+      await expect(
+        convertVectorCad(mockBinaryCdr, 'vsd', 'svg', {}, 'diagram.vsd')
+      ).rejects.toThrow(/Unsupported or unparseable \.vsd vector format/);
+    });
+
+    it('parses genuine CGM commands into real SVG elements without dummy templates', async () => {
+      const cgmData = encodeCgm(Buffer.from(''), 'authentic-drawing');
+      const res = await convertVectorCad(cgmData, 'cgm', 'svg', {}, 'authentic-drawing.cgm');
+
+      expect(res.filename).toBe('authentic-drawing.svg');
+      expect(res.mimeType).toBe('image/svg+xml');
+      const svgText = res.buffer.toString('utf-8');
+
+      // Must contain real CGM elements (LINE, TEXT) and viewbox
+      expect(svgText).toContain('<svg');
+      expect(svgText).toContain('<line');
+      expect(svgText).toContain('authentic-drawing');
+
+      // Must NEVER contain the dummy placeholder path or lavender signature
+      expect(svgText).not.toContain('#6366f1');
+      expect(svgText).not.toContain('M 80 180');
+      expect(svgText).not.toContain('stroke-dasharray="6 4"');
+    });
+
+    it('fails closed when CGM input contains arbitrary non-CGM text', async () => {
+      const badCgm = Buffer.from('NOT_A_CGM_FILE_RANDOM_GARBAGE');
+      await expect(
+        convertVectorCad(badCgm, 'cgm', 'svg', {}, 'corrupted.cgm')
+      ).rejects.toThrow(/Unsupported or unparseable \.cgm vector format/);
+    });
+  });
+
+  // ==========================================================================
+  // Gate 2: Office Fail-Closed Protection Against Silent Mojibake Corruption
+  // ==========================================================================
+  describe('Gate 2: Office Fail-Closed Text Extraction', () => {
+    it('rejects unsupported binary/compressed container formats (pages, numbers, epub, pub, lwp)', async () => {
+      // Mock Apple Pages ZIP archive
+      const zip = new JSZip();
+      zip.file('Index/Document.iwa', Buffer.from([0x00, 0x11, 0x22, 0x33]));
+      const pagesBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+      // pages -> docx must reject fail-closed instead of packing mojibake into docx
+      await expect(
+        convertOffice(pagesBuffer, 'pages', 'docx', {}, 'notes.pages')
+      ).rejects.toThrow(/Unsupported binary or compressed format '\.pages'/);
+
+      // numbers -> docx must reject fail-closed
+      await expect(
+        convertOffice(pagesBuffer, 'numbers', 'docx', {}, 'sheet.numbers')
+      ).rejects.toThrow(/Unsupported binary or compressed format '\.numbers'/);
+
+      // extractTextContentForOffice must reject epub/pages/numbers directly to prevent mojibake corruption
+      await expect(
+        extractTextContentForOffice(pagesBuffer, 'epub', {}, 'book.epub')
+      ).rejects.toThrow(/Unsupported binary or compressed format '\.epub'/);
+
+      await expect(
+        extractTextContentForOffice(pagesBuffer, 'pages', {}, 'doc.pages')
+      ).rejects.toThrow(/Unsupported binary or compressed format '\.pages'/);
+    });
+
+    it('rejects binary CFBF/OLE2 documents (pub, lwp) with null bytes', async () => {
+      const pubMock = Buffer.concat([
+        Buffer.from([0xd0, 0xcf, 0x11, 0xe0]),
+        Buffer.from('Microsoft Publisher 2000 Document\0\0\0\x05\x00'),
+        crypto.randomBytes(64),
+      ]);
+
+      await expect(
+        convertOffice(pubMock, 'pub', 'docx', {}, 'flyer.pub')
+      ).rejects.toThrow(/fail-closed against mojibake corruption/);
+
+      await expect(
+        convertOffice(pubMock, 'lwp', 'docx', {}, 'memo.lwp')
+      ).rejects.toThrow(/fail-closed against mojibake corruption/);
+    });
+
+    it('allows clean UTF-8 text formats (txt, md, csv) to convert normally', async () => {
+      const mdBuffer = Buffer.from('# Executive Report\n\nAll metrics are verified.', 'utf-8');
+      const res = await convertOffice(mdBuffer, 'md', 'docx', {}, 'report.md');
+      expect(res.mimeType).toBe(
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      );
+      expect(res.buffer.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ==========================================================================
+  // Gate 3: L2 Wasm Color Integrity & Quantization
+  // ==========================================================================
+  describe('Gate 3: L2 Wasm Color Integrity', () => {
+    it('preserves chromatic RGB channels and prevents forced grayscale under palette quantization', () => {
+      // 4 pixels: Pure Red, Pure Green, Pure Blue, Pure Yellow
+      const input = new Uint8Array([
+        255, 0, 0, 255,       // Red
+        0, 255, 0, 255,       // Green
+        0, 0, 255, 255,       // Blue
+        255, 255, 0, 255,     // Yellow
+      ]);
+
+      const quantized = applyRgbaQuantize(input, 4, 1, 256, false);
+      expect(quantized).toHaveLength(16);
+
+      // Red pixel: Red channel MUST be vibrant, NOT grayscale (76, 76, 76)
+      expect(quantized[0]).toBe(255);
+      expect(quantized[1]).toBe(0);
+      expect(quantized[2]).toBe(0);
+      expect(quantized[3]).toBe(255);
+
+      // Green pixel: Green channel MUST be vibrant, NOT grayscale (149, 149, 149)
+      expect(quantized[4]).toBe(0);
+      expect(quantized[5]).toBe(255);
+      expect(quantized[6]).toBe(0);
+      expect(quantized[7]).toBe(255);
+
+      // Blue pixel: Blue channel MUST be vibrant, NOT grayscale (28, 28, 28)
+      expect(quantized[8]).toBe(0);
+      expect(quantized[9]).toBe(0);
+      expect(quantized[10]).toBe(255);
+      expect(quantized[11]).toBe(255);
+
+      // Yellow pixel: Red + Green vibrant, Blue zero
+      expect(quantized[12]).toBe(255);
+      expect(quantized[13]).toBe(255);
+      expect(quantized[14]).toBe(0);
+      expect(quantized[15]).toBe(255);
+    });
+
+    it('applies Floyd-Steinberg error diffusion dithering when dither option is active', () => {
+      const gradient = new Uint8Array([
+        100, 150, 200, 255,
+        110, 160, 210, 255,
+        120, 170, 220, 255,
+        130, 180, 230, 255,
+      ]);
+
+      const dithered = applyRgbaQuantize(gradient, 2, 2, 64, true);
+      expect(dithered).toHaveLength(16);
+      // Dithered pixels should have non-zero chromatic color values
+      expect(dithered[0]).toBeGreaterThan(0);
+      expect(dithered[1]).toBeGreaterThan(0);
+      expect(dithered[2]).toBeGreaterThan(0);
+      expect(dithered[3]).toBe(255);
+    });
+
+    it('executes rgba-quantize task through WasmWorkerManager', async () => {
+      const input = new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]).buffer;
+      const res = await executeWasmTask('rgba-quantize', input, {
+        width: 2,
+        height: 1,
+        colors: 256,
+        palette: true,
+      });
+
+      expect(res.bytesProcessed).toBe(8);
+      const out = new Uint8Array(res.buffer);
+      // Colors must be preserved
+      expect(out[0]).toBe(255);
+      expect(out[5]).toBe(255);
+    });
+  });
+
+  // ==========================================================================
+  // Gate 4: 7z Archive Multi-File Extraction Integrity
+  // ==========================================================================
+  describe('Gate 4: 7z Archive Multi-File Extraction Integrity', () => {
+    it('extracts distinct byte buffers for each file without duplicate slice assignment', () => {
+      const file1 = {
+        filename: 'document.txt',
+        buffer: Buffer.from('First file content: ' + crypto.randomUUID()),
+      };
+      const file2 = {
+        filename: 'data.json',
+        buffer: Buffer.from(JSON.stringify({ service: 'EasyConvert', version: '2026.1', secure: true })),
+      };
+      const file3 = {
+        filename: 'binary.dat',
+        buffer: crypto.randomBytes(64),
+      };
+
+      // 1. Pack into 7z
+      const archiveResult = create7zArchive([file1, file2, file3], {}, 'bundle.7z');
+      expect(archiveResult.mimeType).toBe('application/x-7z-compressed');
+      expect(archiveResult.buffer.length).toBeGreaterThan(32);
+
+      // 2. Extract files
+      const extracted = extract7zArchive(archiveResult.buffer);
+
+      expect(extracted).toHaveLength(3);
+
+      // Verify file 1
+      expect(extracted[0].filename).toBe('document.txt');
+      expect(extracted[0].buffer.equals(file1.buffer)).toBe(true);
+      expect(
+        crypto.createHash('sha256').update(extracted[0].buffer).digest('hex')
+      ).toBe(
+        crypto.createHash('sha256').update(file1.buffer).digest('hex')
+      );
+
+      // Verify file 2
+      expect(extracted[1].filename).toBe('data.json');
+      expect(extracted[1].buffer.equals(file2.buffer)).toBe(true);
+      expect(
+        crypto.createHash('sha256').update(extracted[1].buffer).digest('hex')
+      ).toBe(
+        crypto.createHash('sha256').update(file2.buffer).digest('hex')
+      );
+
+      // Verify file 3
+      expect(extracted[2].filename).toBe('binary.dat');
+      expect(extracted[2].buffer.equals(file3.buffer)).toBe(true);
+      expect(
+        crypto.createHash('sha256').update(extracted[2].buffer).digest('hex')
+      ).toBe(
+        crypto.createHash('sha256').update(file3.buffer).digest('hex')
+      );
+
+      // Critical check: buffers must NOT be identical in content across files
+      expect(extracted[0].buffer.equals(extracted[1].buffer)).toBe(false);
+      expect(extracted[1].buffer.equals(extracted[2].buffer)).toBe(false);
+    });
+
+    it('correctly extracts single file 7z archives without regression', () => {
+      const singleFile = {
+        filename: 'solo.txt',
+        buffer: Buffer.from('Solo payload for single file test'),
+      };
+
+      const archive = create7zArchive([singleFile], {}, 'solo.7z');
+      const extracted = extract7zArchive(archive.buffer);
+
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0].filename).toBe('solo.txt');
+      expect(extracted[0].buffer.toString('utf-8')).toBe('Solo payload for single file test');
+    });
+  });
+
+  // ==========================================================================
+  // Gate 5: PDF Active Content Hex-Obfuscation CDR Sanitization
+  // ==========================================================================
+  describe('Gate 5: PDF Active Content Hex-Obfuscation Sanitization', () => {
+    it('decodes hex-escaped PDF names per ISO 32000-1 section 7.3.5', () => {
+      const escaped = '/#4a#61#76#61#53#63#72#69#70#74 and /#4c#61#75#6e#63#68 and /#4f#70#65#6e#41#63#74#69#6f#6e';
+      const decoded = decodePdfNames(escaped);
+      expect(decoded).toBe('/JavaScript and /Launch and /OpenAction');
+    });
+
+    it('detects and disarms hex-obfuscated active content threats', () => {
+      const obfuscatedPdf = Buffer.from(`%PDF-1.4
+1 0 obj
+<<
+  /#54#79#70#65 /Catalog
+  /#4f#70#65#6e#41#63#74#69#6f#6e 2 0 R
+>>
+endobj
+2 0 obj
+<<
+  /#54#79#70#65 /Action
+  /#53 /#4a#61#76#61#53#63#72#69#70#74
+  /#4a#53 (app.alert("pwned"))
+>>
+endobj
+3 0 obj
+<<
+  /#54#79#70#65 /Action
+  /#53 /#4c#61#75#6e#63#68
+  /#46 (malicious.exe)
+>>
+endobj
+%%EOF`);
+
+      expect(isPdfVulnerableToActiveContent(obfuscatedPdf)).toBe(true);
+
+      const { buffer, report } = sanitizePdf(obfuscatedPdf);
+      const sanitized = buffer.toString('latin1');
+
+      expect(report.isSanitized).toBe(true);
+      expect(report.threatsRemoved.javaScriptCount).toBeGreaterThanOrEqual(1);
+      expect(report.threatsRemoved.launchCount).toBeGreaterThanOrEqual(1);
+      expect(report.threatsRemoved.openActionCount).toBeGreaterThanOrEqual(1);
+
+      expect(sanitized).not.toContain('/JavaScript');
+      expect(sanitized).not.toContain('/#4a#61#76#61#53#63#72#69#70#74');
+      expect(sanitized).not.toContain('/Launch');
+      expect(sanitized).not.toContain('/#4c#61#75#6e#63#68');
+      expect(sanitized).toContain('/S /None');
+    });
+  });
+});
+

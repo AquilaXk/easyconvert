@@ -308,7 +308,7 @@ export async function convertOffice(
 /**
  * Extracts clean text content from various source formats for Office generation
  */
-async function extractTextContentForOffice(
+export async function extractTextContentForOffice(
   inputBuffer: Buffer,
   src: string,
   options: ConversionOptions,
@@ -354,6 +354,68 @@ async function extractTextContentForOffice(
     return parts.join('\n\n');
   }
 
+  const UNSUPPORTED_BINARY_OFFICE_FORMATS = new Set([
+    'pages',
+    'numbers',
+    'key',
+    'pub',
+    'lwp',
+    'epub',
+    'et',
+    'mobi',
+    'azw',
+    'azw3',
+    'azw4',
+    'cbz',
+    'cbr',
+    'cbc',
+    'fb2',
+    'ibooks',
+    'lit',
+    'prc',
+    'snb',
+    'tcr',
+    'chm',
+    'djvu',
+    'xps',
+    'oxps',
+    'xlsx',
+    'xls',
+    'docx',
+    'docm',
+    'pptx',
+    'pptm',
+    'potx',
+    'potm',
+    'ods',
+    'odp',
+    'odg',
+    'odd',
+  ]);
+
+  if (UNSUPPORTED_BINARY_OFFICE_FORMATS.has(src)) {
+    throw new Error(
+      `Unsupported binary or compressed format '.${src}' for text extraction: fail-closed against mojibake corruption.`
+    );
+  }
+
+  if (
+    inputBuffer.length >= 4 &&
+    ((inputBuffer[0] === 0x50 && inputBuffer[1] === 0x4b && inputBuffer[2] === 0x03 && inputBuffer[3] === 0x04) ||
+      (inputBuffer[0] === 0xd0 && inputBuffer[1] === 0xcf && inputBuffer[2] === 0x11 && inputBuffer[3] === 0xe0) ||
+      (inputBuffer[0] === 0x37 && inputBuffer[1] === 0x7a && inputBuffer[2] === 0xbc && inputBuffer[3] === 0xaf))
+  ) {
+    throw new Error(
+      `Cannot extract plain text from binary/compressed container for format '.${src}': fail-closed against mojibake corruption.`
+    );
+  }
+
+  if (inputBuffer.subarray(0, Math.min(inputBuffer.length, 4096)).includes(0x00)) {
+    throw new Error(
+      `Binary null bytes detected in source format '.${src}': fail-closed against mojibake corruption.`
+    );
+  }
+
   return inputBuffer.toString('utf-8');
 }
 
@@ -375,7 +437,7 @@ export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
   } catch {
     // fallback
   }
-  return buffer.toString('utf-8');
+  throw new Error('Failed to extract text content from ODT document: fail-closed.');
 }
 
 function sanitizeControlChars(text: string): string {
@@ -4839,6 +4901,23 @@ async function convertGenericDocumentSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
+  if (
+    inputBuffer.length >= 4 &&
+    ((inputBuffer[0] === 0x50 && inputBuffer[1] === 0x4b && inputBuffer[2] === 0x03 && inputBuffer[3] === 0x04) ||
+      (inputBuffer[0] === 0xd0 && inputBuffer[1] === 0xcf && inputBuffer[2] === 0x11 && inputBuffer[3] === 0xe0) ||
+      (inputBuffer[0] === 0x37 && inputBuffer[1] === 0x7a && inputBuffer[2] === 0xbc && inputBuffer[3] === 0xaf))
+  ) {
+    throw new Error(
+      `Cannot extract plain text from binary/compressed container for format '.${src}': fail-closed against mojibake corruption.`
+    );
+  }
+
+  if (inputBuffer.subarray(0, Math.min(inputBuffer.length, 4096)).includes(0x00)) {
+    throw new Error(
+      `Binary null bytes detected in source format '.${src}': fail-closed against mojibake corruption.`
+    );
+  }
+
   let text = '';
   try {
     text = inputBuffer.toString('utf-8');

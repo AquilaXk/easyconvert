@@ -508,6 +508,19 @@ export function create7zArchive(
   };
 }
 
+function read7zVarint(buf: Buffer | Uint8Array, offset: number): { value: number; nextOffset: number } {
+  let val = 0;
+  let shift = 0;
+  let cur = offset;
+  while (cur < buf.length) {
+    const b = buf[cur++];
+    val |= (b & 0x7f) << shift;
+    shift += 7;
+    if ((b & 0x80) === 0) break;
+  }
+  return { value: val, nextOffset: cur };
+}
+
 export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; buffer: Buffer }[] {
   const files: { filename: string; buffer: Buffer }[] = [];
   if (sevenZipBuffer.length < 32) return files;
@@ -530,39 +543,196 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
   if (nhStart + nextHeaderSize > sevenZipBuffer.length) return files;
   const nh = sevenZipBuffer.subarray(nhStart, nhStart + nextHeaderSize);
 
-  // Look for kName (0x0e) in NextHeader
-  let nameIdx = -1;
-  for (let i = 0; i < nh.length; i++) {
-    if (nh[i] === 0x0e) {
-      nameIdx = i;
+  // Robust grammar-aware 7z NextHeader parser
+  const sizes: number[] = [];
+  const filenames: string[] = [];
+
+  let cur = 0;
+  if (cur < nh.length && nh[cur] === 0x01) cur++; // skip kHeader (0x01)
+
+  while (cur < nh.length && nh[cur] !== 0x00) {
+    const propId = nh[cur++];
+    if (propId === 0x04) {
+      // kMainStreamsInfo
+      while (cur < nh.length && nh[cur] !== 0x00) {
+        const streamProp = nh[cur++];
+        if (streamProp === 0x06) {
+          // kPackInfo
+          const packPos = read7zVarint(nh, cur);
+          cur = packPos.nextOffset;
+          const numStreams = read7zVarint(nh, cur);
+          cur = numStreams.nextOffset;
+          const streamCount = numStreams.value;
+
+          while (cur < nh.length && nh[cur] !== 0x00) {
+            const packSub = nh[cur++];
+            if (packSub === 0x09) {
+              // kSize
+              for (let s = 0; s < streamCount && cur < nh.length; s++) {
+                const sz = read7zVarint(nh, cur);
+                sizes.push(sz.value);
+                cur = sz.nextOffset;
+              }
+            } else if (packSub === 0x0a) {
+              // kCRC
+              const allDefined = nh[cur++];
+              if (allDefined === 1) {
+                cur += streamCount * 4;
+              } else {
+                cur += Math.ceil(streamCount / 8) + streamCount * 4;
+              }
+            } else {
+              break;
+            }
+          }
+          if (cur < nh.length && nh[cur] === 0x00) cur++;
+        } else if (streamProp === 0x07) {
+          // kUnpackInfo
+          while (cur < nh.length && nh[cur] !== 0x00) {
+            const unpackSub = nh[cur++];
+            if (unpackSub === 0x0b) {
+              // kFolder
+              const numFolders = read7zVarint(nh, cur);
+              cur = numFolders.nextOffset;
+              const external = nh[cur++];
+              if (external === 0) {
+                for (let f = 0; f < numFolders.value && cur < nh.length; f++) {
+                  const numCoders = read7zVarint(nh, cur);
+                  cur = numCoders.nextOffset;
+                  for (let c = 0; c < numCoders.value && cur < nh.length; c++) {
+                    const flags = nh[cur++];
+                    cur += flags & 0x0f;
+                    if ((flags & 0x10) !== 0) {
+                      const numIn = read7zVarint(nh, cur);
+                      cur = numIn.nextOffset;
+                      const numOut = read7zVarint(nh, cur);
+                      cur = numOut.nextOffset;
+                    }
+                    if ((flags & 0x20) !== 0) {
+                      const propSize = read7zVarint(nh, cur);
+                      cur = propSize.nextOffset + propSize.value;
+                    }
+                  }
+                }
+              }
+            } else if (unpackSub === 0x0c) {
+              // kCodersUnpackSize
+              const unpackSizes: number[] = [];
+              while (cur < nh.length && nh[cur] !== 0x0a && nh[cur] !== 0x00) {
+                const sz = read7zVarint(nh, cur);
+                unpackSizes.push(sz.value);
+                cur = sz.nextOffset;
+              }
+              if (sizes.length === 0) {
+                sizes.push(...unpackSizes);
+              }
+            } else if (unpackSub === 0x0a) {
+              // kCRC
+              const allDefined = nh[cur++];
+              const count = sizes.length || 1;
+              cur += allDefined === 1 ? count * 4 : Math.ceil(count / 8) + count * 4;
+            } else {
+              break;
+            }
+          }
+          if (cur < nh.length && nh[cur] === 0x00) cur++;
+        } else {
+          break;
+        }
+      }
+      if (cur < nh.length && nh[cur] === 0x00) cur++;
+    } else if (propId === 0x05) {
+      // kFilesInfo
+      const numFiles = read7zVarint(nh, cur);
+      cur = numFiles.nextOffset;
+      const fileCount = numFiles.value;
+
+      while (cur < nh.length && nh[cur] !== 0x00) {
+        const fileProp = nh[cur++];
+        if (fileProp === 0x0e) {
+          // kName
+          const nameLen = read7zVarint(nh, cur);
+          cur = nameLen.nextOffset;
+          const external = nh[cur++];
+          if (external === 0) {
+            const rawNames = Buffer.from(nh.subarray(cur, cur + nameLen.value - 1));
+            cur += nameLen.value - 1;
+
+            let nameOffset = 0;
+            while (nameOffset + 2 <= rawNames.length && filenames.length < fileCount) {
+              let end = nameOffset;
+              while (end + 2 <= rawNames.length && (rawNames[end] !== 0 || rawNames[end + 1] !== 0)) {
+                end += 2;
+              }
+              if (end === nameOffset) break;
+              const fn = rawNames.toString('utf16le', nameOffset, end);
+              if (fn) filenames.push(fn);
+              nameOffset = end + 2;
+            }
+          }
+        } else {
+          // Other file property (e.g. kEmptyStream)
+          const propLen = read7zVarint(nh, cur);
+          cur = propLen.nextOffset + propLen.value;
+        }
+      }
+      if (cur < nh.length && nh[cur] === 0x00) cur++;
+    } else {
       break;
     }
   }
 
-  if (nameIdx !== -1) {
-    // Read names after length varint and external flag
-    let idx = nameIdx + 1;
-    while (idx < nh.length && (nh[idx] & 0x80) !== 0) idx++;
-    idx++; // skip last varint byte
-    idx++; // skip external byte (0x00)
-
-    const rawNames = nh.subarray(idx);
-    let nameOffset = 0;
-    while (nameOffset + 2 <= rawNames.length) {
-      let end = nameOffset;
-      while (end + 2 <= rawNames.length && (rawNames[end] !== 0 || rawNames[end + 1] !== 0)) {
-        end += 2;
+  // Fallback: heuristic scan if structural parse yielded no filenames
+  if (filenames.length === 0) {
+    let nameIdx = -1;
+    for (let i = 0; i < nh.length; i++) {
+      if (nh[i] === 0x05 && i + 2 < nh.length && nh[i + 2] === 0x0e) {
+        nameIdx = i + 2;
+        break;
       }
-      if (end === nameOffset) break;
-      const fn = rawNames.toString('utf16le', nameOffset, end);
-      if (fn) {
-        files.push({
-          filename: fn,
-          buffer: Buffer.from(sevenZipBuffer.subarray(32, 32 + nextHeaderOffset)),
-        });
-      }
-      nameOffset = end + 2;
     }
+    if (nameIdx !== -1) {
+      let idx = nameIdx + 1;
+      while (idx < nh.length && (nh[idx] & 0x80) !== 0) idx++;
+      idx++;
+      idx++;
+      const rawNames = nh.subarray(idx);
+      let nameOffset = 0;
+      while (nameOffset + 2 <= rawNames.length) {
+        let end = nameOffset;
+        while (end + 2 <= rawNames.length && (rawNames[end] !== 0 || rawNames[end + 1] !== 0)) {
+          end += 2;
+        }
+        if (end === nameOffset) break;
+        const fn = rawNames.toString('utf16le', nameOffset, end);
+        if (fn) filenames.push(fn);
+        nameOffset = end + 2;
+      }
+    }
+  }
+
+  let curOffset = 32;
+  const totalPackSize = nextHeaderOffset;
+  for (let i = 0; i < filenames.length; i++) {
+    const fn = filenames[i];
+    let size: number;
+    if (i < sizes.length) {
+      size = sizes[i];
+    } else if (filenames.length === 1) {
+      size = totalPackSize;
+    } else {
+      size =
+        i === filenames.length - 1
+          ? Math.max(0, 32 + totalPackSize - curOffset)
+          : Math.floor(totalPackSize / filenames.length);
+    }
+
+    const endOffset = Math.min(32 + totalPackSize, curOffset + size);
+    files.push({
+      filename: fn,
+      buffer: Buffer.from(sevenZipBuffer.subarray(curOffset, endOffset)),
+    });
+    curOffset += size;
   }
 
   return files;

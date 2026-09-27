@@ -25,6 +25,10 @@ export interface WasmPipelineOptions {
   brightnessDelta?: number;
   width?: number;
   height?: number;
+  colors?: number;
+  palette?: boolean;
+  dither?: boolean;
+  colorDepth?: number;
   customWasmBytes?: ArrayBuffer;
 }
 
@@ -215,7 +219,7 @@ export class WasmWorkerManager {
    * Executes a Wasm task either via dedicated worker or in-process engine.
    */
   public static async execute(
-    task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'custom-module',
+    task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | 'custom-module',
     buffer: ArrayBuffer,
     options?: WasmPipelineOptions,
     onProgress?: (progress: number) => void
@@ -353,7 +357,7 @@ export class WasmWorkerManager {
  * Public execution helper for SIMD Wasm operations.
  */
 export async function executeWasmTask(
-  task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'custom-module',
+  task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | 'custom-module',
   buffer: ArrayBuffer,
   options?: WasmPipelineOptions,
   onProgress?: (progress: number) => void
