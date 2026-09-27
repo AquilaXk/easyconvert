@@ -155,11 +155,20 @@ export async function probeEdgeCapabilities(): Promise<EdgeCapabilities> {
 export const SUPPORTED_OPFS_STREAMING_CONVERSIONS = new Set<string>([
   'pcm:pcm_be',
   'pcm_be:pcm',
-  'pcm:wav',
+  'pcm_le:pcm_be',
+  'pcm_be:pcm_le',
+  'pcm:pcm_u8',
+  'pcm:u8',
+  'wav:pcm_u8',
+  'wav:u8',
   'csv:tsv',
+  'csv:tab',
   'tsv:csv',
+  'tab:csv',
   'rgba:grayscale',
-  'grayscale:rgba',
+  'rgba:gray',
+  'raw:grayscale',
+  'raw:gray',
 ]);
 
 /**

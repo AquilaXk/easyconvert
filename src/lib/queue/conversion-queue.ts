@@ -19,6 +19,7 @@ export const conversionWorker = new Worker<ConversionJobData, ConversionJobResul
     let inputBuffer: Buffer | undefined;
     let shouldShredInput = false;
 
+    let conversionSucceeded = false;
     try {
       if (job.data.storageKey) {
         const stored = s3Storage.getObject(job.data.storageKey);
@@ -58,6 +59,7 @@ export const conversionWorker = new Worker<ConversionJobData, ConversionJobResul
         60 * 60 * 1000
       );
 
+      conversionSucceeded = true;
       const durationMs = Date.now() - startTime;
       await job.updateProgress(100);
       await job.log(`Result persisted. Available at: /api/storage/file/${encodeURIComponent(resultKey)} (took ${durationMs}ms)`);
@@ -82,8 +84,9 @@ export const conversionWorker = new Worker<ConversionJobData, ConversionJobResul
           // Ignore if detached
         }
       }
-      // Clean up temporary input object from storage backend
-      if (job.data.storageKey) {
+      // Clean up temporary input object from storage backend upon job success or when retry attempts are exhausted
+      const isFinalAttempt = !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
+      if (job.data.storageKey && (conversionSucceeded || isFinalAttempt)) {
         try {
           s3Storage.deleteObject(job.data.storageKey);
         } catch {

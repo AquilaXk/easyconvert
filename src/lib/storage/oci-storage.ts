@@ -352,7 +352,7 @@ export class OciObjectStorageService implements IStorageBackend {
   }
 
   getObjectsCount(): number {
-    return this.objects.size;
+    return new Set(this.objects.values()).size;
   }
 }
 

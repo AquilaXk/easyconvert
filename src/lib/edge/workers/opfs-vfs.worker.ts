@@ -57,7 +57,7 @@ export function resolveChunkTransformer(
   const tgt = (targetFormat || '').toLowerCase();
 
   // 1. Audio PCM Endianness swap (pcm_le <-> pcm_be)
-  if ((src === 'pcm' && tgt === 'pcm_be') || (src === 'pcm_le' && tgt === 'pcm_be') || (src === 'pcm_be' && tgt === 'pcm_le')) {
+  if (((src === 'pcm' || src === 'pcm_le') && tgt === 'pcm_be') || (src === 'pcm_be' && (tgt === 'pcm' || tgt === 'pcm_le'))) {
     let leftoverByte: number | null = null;
     return (chunk: Uint8Array) => {
       let data = chunk;
@@ -110,7 +110,7 @@ export function resolveChunkTransformer(
     };
   }
 
-  // 3. Delimited Text: CSV -> TSV streaming conversion
+  // 3. Delimited Text: CSV <-> TSV streaming conversion
   if (src === 'csv' && (tgt === 'tsv' || tgt === 'tab')) {
     let inQuotes = false;
     return (chunk: Uint8Array) => {
@@ -122,6 +122,25 @@ export function resolveChunkTransformer(
           out[i] = b;
         } else if (b === 44 && !inQuotes) {
           out[i] = 9; // '\t'
+        } else {
+          out[i] = b;
+        }
+      }
+      return out;
+    };
+  }
+
+  if ((src === 'tsv' || src === 'tab') && tgt === 'csv') {
+    let inQuotes = false;
+    return (chunk: Uint8Array) => {
+      const out = new Uint8Array(chunk.byteLength);
+      for (let i = 0; i < chunk.byteLength; i++) {
+        const b = chunk[i];
+        if (b === 34) {
+          inQuotes = !inQuotes;
+          out[i] = b;
+        } else if (b === 9 && !inQuotes) {
+          out[i] = 44; // ','
         } else {
           out[i] = b;
         }

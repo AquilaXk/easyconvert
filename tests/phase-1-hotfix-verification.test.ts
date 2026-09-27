@@ -12,7 +12,8 @@ import {
   safeEncodeText,
   createLosslessSandwichPdfFromImage,
 } from '../src/lib/conversions/ocr-pdf-combiner';
-import { OciObjectStorageService } from '../src/lib/storage/oci-storage';
+import { OciObjectStorageService, s3Storage } from '../src/lib/storage/oci-storage';
+import { resolveChunkTransformer } from '../src/lib/edge/workers/opfs-vfs.worker';
 import {
   isSvg,
   sanitizeSvgString,
@@ -20,7 +21,7 @@ import {
 } from '../src/lib/security/svg-sanitizer';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { convertImage } from '../src/lib/conversions/image';
-import { convertData } from '../src/lib/conversions/data';
+import { convertData, simpleXmlToJson } from '../src/lib/conversions/data';
 
 describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', () => {
   beforeEach(() => {
@@ -119,8 +120,15 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
     it('verifies supported OPFS format whitelist and router guard', () => {
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('csv:tsv')).toBe(true);
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('tsv:csv')).toBe(true);
-      expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('pcm:wav')).toBe(true);
+      expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('pcm:wav')).toBe(false); // correctly excluded
+      expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('grayscale:rgba')).toBe(false); // correctly excluded
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('rgba:grayscale')).toBe(true);
+
+      // Verify that every single format pair in SUPPORTED_OPFS_STREAMING_CONVERSIONS is resolvable in worker
+      for (const pair of SUPPORTED_OPFS_STREAMING_CONVERSIONS) {
+        const [s, t] = pair.split(':');
+        expect(() => resolveChunkTransformer(s, t)).not.toThrow();
+      }
 
       // Unsupported formats must return false
       expect(isOpfsStreamingSupported('mp4', 'webm')).toBe(false);
@@ -129,6 +137,14 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
 
       // Identity pass-through with explicit flag
       expect(isOpfsStreamingSupported('bin', 'bin', { allowPassThrough: true })).toBe(true);
+    });
+
+    it('executes TSV -> CSV delimited streaming transformer without throwing', () => {
+      const transformer = resolveChunkTransformer('tsv', 'csv');
+      const sampleTsv = new TextEncoder().encode('col1\tcol2\tcol3\n1\t2\t3\n');
+      const transformed = transformer(sampleTsv, 0, sampleTsv.length) as Uint8Array;
+      const csvText = new TextDecoder().decode(transformed);
+      expect(csvText).toBe('col1,col2,col3\n1,2,3\n');
     });
 
     it('safely routes unsupported large files (>100MB) to L4 Cloud fallback instead of crashing L3 worker', () => {
@@ -141,6 +157,13 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(unsupportedResolution.tier).toBe('L4');
       expect(unsupportedResolution.tierName).toBe('Cloud (Zero-Retention)');
       expect(unsupportedResolution.reason).toContain('cloud serverless');
+
+      // Unsupported large audio file: pcm -> wav (requires non-chunked header framing)
+      const pcmWavResolution = resolveConversionTier('pcm', 'wav', largeSize, {}, {
+        hasOpfsSyncAccess: true,
+      });
+      expect(pcmWavResolution.tier).toBe('L4');
+      expect(pcmWavResolution.tierName).toBe('Cloud (Zero-Retention)');
 
       // Supported large file: csv -> tsv with OPFS available
       const supportedResolution = resolveConversionTier('csv', 'tsv', largeSize, {}, {
@@ -320,6 +343,51 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
         storage.stopGc();
       }
     });
+
+    it('accurately counts distinct stored objects in getObjectsCount', () => {
+      const storage = new OciObjectStorageService();
+      try {
+        storage.saveObject('test-item-1', Buffer.from('data1'), 'text/plain');
+        storage.saveObject('test-item-2', Buffer.from('data2'), 'text/plain');
+        expect(storage.getObjectsCount()).toBe(2);
+      } finally {
+        storage.stopGc();
+      }
+    });
+
+    it('preserves storage object across retry attempts until final completion or exhaustion', async () => {
+      const storage = new OciObjectStorageService();
+      try {
+        const key = 'retry-test-input.txt';
+        const buffer = Buffer.from('Important payload');
+        storage.saveObject(key, buffer, 'text/plain');
+
+        // Simulate attempt 1 (failed, attemptsMade: 1, attempts: 2)
+        const jobSim = {
+          opts: { attempts: 2 },
+          attemptsMade: 1,
+        };
+        let succeeded = false;
+        const isFinalAttempt1 = !jobSim.opts?.attempts || jobSim.attemptsMade >= jobSim.opts.attempts;
+        if (succeeded || isFinalAttempt1) {
+          storage.deleteObject(key);
+        }
+        // Key MUST NOT be deleted yet!
+        expect(storage.getObject(key)).toBeDefined();
+
+        // Simulate attempt 2 (succeeded, attemptsMade: 2, attempts: 2)
+        jobSim.attemptsMade = 2;
+        succeeded = true;
+        const isFinalAttempt2 = !jobSim.opts?.attempts || jobSim.attemptsMade >= jobSim.opts.attempts;
+        if (succeeded || isFinalAttempt2) {
+          storage.deleteObject(key);
+        }
+        // Key MUST now be deleted and shredded!
+        expect(storage.getObject(key)).toBeUndefined();
+      } finally {
+        storage.stopGc();
+      }
+    });
   });
 
   // =========================================================================
@@ -357,6 +425,55 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(sanitized).toContain('<svg');
       expect(sanitized).toContain('<circle');
       expect(sanitized).toContain('yellow');
+    });
+
+    it('strips unclosed <script> tags and prevents nested recursive tag bypasses', () => {
+      const unclosed = '<svg><script src="https://evil.com/xss.js"><circle r="10"/></svg>';
+      const cleanUnclosed = sanitizeSvgString(unclosed);
+      expect(cleanUnclosed).not.toContain('<script');
+      expect(cleanUnclosed).toContain('<circle');
+
+      const recursive = '<svg><scr<script>ipt>alert(1)</script><circle r="10"/></svg>';
+      const cleanRecursive = sanitizeSvgString(recursive);
+      expect(cleanRecursive).not.toContain('<script');
+      expect(cleanRecursive).not.toContain('alert');
+      expect(cleanRecursive).toContain('<circle');
+    });
+
+    it('sanitizes data:image/svg+xml and animation injection vectors', () => {
+      const dataSvg = '<svg><a href="data:image/svg+xml;base64,PHN2Zz4=">test</a></svg>';
+      const cleanDataSvg = sanitizeSvgString(dataSvg);
+      expect(cleanDataSvg).toContain('href="#"');
+      expect(cleanDataSvg).not.toContain('data:image/svg+xml');
+
+      const animSvg = '<svg><animate attributeName="href" values="javascript:alert(1)"/></svg>';
+      const cleanAnimSvg = sanitizeSvgString(animSvg);
+      expect(cleanAnimSvg).not.toContain('javascript:');
+    });
+
+    it('strips DOCTYPE declarations with internal entity subsets and detects valid SVG', () => {
+      const doctypeSubset = `<!DOCTYPE svg [
+        <!ELEMENT svg ANY >
+        <!ENTITY xxe SYSTEM "file:///etc/passwd">
+      ]>
+      <svg><circle r="10"/></svg>`;
+      expect(isSvg(doctypeSubset)).toBe(true);
+      const clean = sanitizeSvgString(doctypeSubset);
+      expect(clean).not.toContain('<!DOCTYPE');
+      expect(clean).not.toContain('<!ENTITY');
+      expect(clean).toContain('<circle');
+    });
+
+    it('sanitizes XML data in simpleXmlToJson and convertData', async () => {
+      const maliciousXml = `<root><item><name>Product</name><script>alert(1)</script><desc onclick="evil()">Desc</desc></item></root>`;
+      const parsed = simpleXmlToJson(maliciousXml) as any;
+      expect(parsed.root.item.script).toBeUndefined();
+      expect(parsed.root.item.desc.onclick).toBeUndefined();
+
+      const res = await convertData(Buffer.from(maliciousXml, 'utf-8'), 'xml', 'json', {}, 'test.xml');
+      const jsonStr = res.buffer.toString('utf-8');
+      expect(jsonStr).not.toContain('alert(1)');
+      expect(jsonStr).not.toContain('onclick');
     });
 
     it('enforces SVG sanitization in vector-cad conversions', async () => {

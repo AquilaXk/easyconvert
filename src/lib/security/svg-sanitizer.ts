@@ -41,11 +41,11 @@ export function isSvg(input: string | Buffer): boolean {
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) return false; // JSON
   if (trimmed.startsWith('GIF87a') || trimmed.startsWith('GIF89a')) return false;
 
-  // Strip XML declaration, comments, and doctypes to verify root element
+  // Strip XML declaration, comments, and doctypes (including internal subsets) to verify root element
   const stripped = trimmed
     .replace(/^<\?xml[^>]*\?>/i, '')
     .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<!DOCTYPE[^>]*>/i, '')
+    .replace(/<!DOCTYPE\b[^>[]*(?:\[[\s\S]*?\]\s*)?>/gi, '')
     .trim();
 
   return /^<svg\b/i.test(stripped);
@@ -59,31 +59,39 @@ export function sanitizeSvgString(svg: string): string {
 
   let result = svg;
 
-  // 1. Strip DOCTYPE and ENTITY definitions (XXE prevention)
-  result = result.replace(/<!DOCTYPE\b[^>]*>/gi, '');
+  // 1. Strip DOCTYPE and ENTITY definitions (including multiline internal subsets)
+  result = result.replace(/<!DOCTYPE\b[^>[]*(?:\[[\s\S]*?\]\s*)?>/gi, '');
   result = result.replace(/<!ENTITY\b[^>]*>/gi, '');
 
-  // 2. Strip dangerous executable and embedding tags (self-closing first, then paired block)
-  result = result.replace(/<script\b[^>]*\/>/gi, '');
-  result = result.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  // 2. Iteratively strip dangerous executable and embedding tags (both paired and unclosed/self-closing)
+  // to defeat recursive tag injection attacks like <scr<script>ipt>
+  let prev = '';
+  while (prev !== result) {
+    prev = result;
 
-  result = result.replace(/<foreignObject\b[^>]*\/>/gi, '');
-  result = result.replace(/<foreignObject\b[^>]*>[\s\S]*?<\/foreignObject>/gi, '');
+    result = result.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+    result = result.replace(/<script\b[^>]*\/?>/gi, '');
 
-  result = result.replace(/<iframe\b[^>]*\/>/gi, '');
-  result = result.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+    result = result.replace(/<foreignObject\b[^>]*>[\s\S]*?<\/foreignObject>/gi, '');
+    result = result.replace(/<foreignObject\b[^>]*\/?>/gi, '');
 
-  result = result.replace(/<object\b[^>]*\/>/gi, '');
-  result = result.replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '');
+    result = result.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+    result = result.replace(/<iframe\b[^>]*\/?>/gi, '');
 
-  result = result.replace(/<embed\b[^>]*\/>/gi, '');
-  result = result.replace(/<embed\b[^>]*>[\s\S]*?<\/embed>/gi, '');
-  result = result.replace(/<embed\b[^>]*>/gi, '');
+    result = result.replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '');
+    result = result.replace(/<object\b[^>]*\/?>/gi, '');
+
+    result = result.replace(/<embed\b[^>]*>[\s\S]*?<\/embed>/gi, '');
+    result = result.replace(/<embed\b[^>]*\/?>/gi, '');
+
+    result = result.replace(/<meta\b[^>]*\/?>/gi, '');
+    result = result.replace(/<link\b[^>]*\/?>/gi, '');
+  }
 
   // 3. Strip all inline on* event handler attributes
   result = result.replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
 
-  // 4. Sanitize dangerous URI protocols (javascript:, vbscript:, data:text/html)
+  // 4. Sanitize dangerous URI protocols (javascript:, vbscript:, data:text/html, data:image/svg+xml)
   result = result.replace(
     /(?:(?:xlink:)?href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
     (full, v1, v2, v3) => {
@@ -93,9 +101,29 @@ export function sanitizeSvgString(svg: string): string {
         decoded.startsWith('javascript:') ||
         decoded.startsWith('vbscript:') ||
         decoded.startsWith('data:text/html') ||
+        decoded.startsWith('data:image/svg+xml') ||
         decoded.startsWith('data:application/javascript')
       ) {
         return 'href="#"';
+      }
+      return full;
+    }
+  );
+
+  // 5. Sanitize animation values and attributes (prevent SVG animation script vectors)
+  result = result.replace(
+    /\b(?:values|to|from)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+    (full, v1, v2, v3) => {
+      const rawVal = v1 !== undefined ? v1 : (v2 !== undefined ? v2 : v3);
+      const decoded = decodeHtmlEntities(rawVal).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
+      if (
+        decoded.startsWith('javascript:') ||
+        decoded.startsWith('vbscript:') ||
+        decoded.startsWith('data:text/html') ||
+        decoded.startsWith('data:image/svg+xml') ||
+        decoded.startsWith('data:application/javascript')
+      ) {
+        return 'to="#"';
       }
       return full;
     }
