@@ -379,16 +379,30 @@ export default function OptionsModal({
                     100% Local RAM
                   </span>
                 </div>
-                <div className="flex items-center gap-4 text-xs text-neutral-300">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-xs text-neutral-300">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
                       name="clientEdgeMode"
-                      checked={options.clientEdgeMode !== false}
+                      checked={options.clientEdgeMode === undefined}
+                      onChange={() => {
+                        const updated = { ...options };
+                        delete updated.clientEdgeMode;
+                        setOptions(updated);
+                      }}
+                      className="w-4 h-4 accent-[#5C6BC0]"
+                    />
+                    <span>Adaptive Auto</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="clientEdgeMode"
+                      checked={options.clientEdgeMode === true}
                       onChange={() => setOptions({ ...options, clientEdgeMode: true })}
                       className="w-4 h-4 accent-[#5C6BC0]"
                     />
-                    <span>Enabled (Process in Browser Memory)</span>
+                    <span>Client-Only Edge</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -398,11 +412,11 @@ export default function OptionsModal({
                       onChange={() => setOptions({ ...options, clientEdgeMode: false })}
                       className="w-4 h-4 accent-[#5C6BC0]"
                     />
-                    <span>Server Processing</span>
+                    <span>Server Only</span>
                   </label>
                 </div>
                 <p className="text-xs text-neutral-400">
-                  Executes conversions directly inside your device browser memory via WebAssembly, WebCodecs, and Web Workers. Zero file data is uploaded to any server.
+                  Adaptive Auto executes conversions directly inside browser memory when supported, and falls back to Zero-Retention Cloud for server-required formats.
                 </p>
               </div>
             )}

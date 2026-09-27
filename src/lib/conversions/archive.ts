@@ -85,23 +85,94 @@ export async function extractZipArchive(
   let totalUncompressedSize = 0;
 
   for (const [filename, file] of entries) {
-    const buffer = await file.async('nodebuffer');
-    totalUncompressedSize += buffer.length;
-
-    if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+    // Fast-path header check: if uncompressed size is recorded in header and exceeds limit
+    const headerUncompressedSize = (file as any)._data?.uncompressedSize;
+    if (
+      typeof headerUncompressedSize === 'number' &&
+      headerUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE
+    ) {
       throw new Error(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
 
-    if (
-      zipBuffer.length > 0 &&
-      totalUncompressedSize / zipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
-    ) {
-      throw new Error(
-        `Archive bomb detected: compression ratio (${(totalUncompressedSize / zipBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-      );
+    const chunks: Buffer[] = [];
+
+    // Stream-check uncompressed chunks before full buffer allocation in V8 heap
+    if (typeof (file as any).nodeStream === 'function') {
+      await new Promise<void>((resolve, reject) => {
+        const stream = (file as any).nodeStream('nodebuffer');
+        let rejected = false;
+
+        const fail = (err: Error) => {
+          if (!rejected) {
+            rejected = true;
+            if (typeof stream.pause === 'function') stream.pause();
+            if (typeof stream.destroy === 'function') stream.destroy();
+            reject(err);
+          }
+        };
+
+        stream.on('data', (chunk: Buffer) => {
+          if (rejected) return;
+          const chunkBuf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          totalUncompressedSize += chunkBuf.length;
+
+          if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+            fail(
+              new Error(
+                `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+              )
+            );
+            return;
+          }
+
+          if (
+            zipBuffer.length > 0 &&
+            totalUncompressedSize / zipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
+          ) {
+            fail(
+              new Error(
+                `Archive bomb detected: compression ratio (${(totalUncompressedSize / zipBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+              )
+            );
+            return;
+          }
+
+          chunks.push(chunkBuf);
+        });
+
+        stream.on('error', (err: any) => {
+          fail(err instanceof Error ? err : new Error(String(err)));
+        });
+
+        stream.on('end', () => {
+          if (!rejected) resolve();
+        });
+      });
+    } else {
+      const buffer = await file.async('nodebuffer');
+      totalUncompressedSize += buffer.length;
+
+      if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        throw new Error(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        );
+      }
+
+      if (
+        zipBuffer.length > 0 &&
+        totalUncompressedSize / zipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
+      ) {
+        throw new Error(
+          `Archive bomb detected: compression ratio (${(totalUncompressedSize / zipBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+        );
+      }
+
+      chunks.push(buffer);
     }
+
+    const buffer = Buffer.concat(chunks);
 
     // Zip-slip defense: sanitize path and strip leading / or drive letters or ..
     const sanitizedName = filename

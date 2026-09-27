@@ -22,6 +22,18 @@ import {
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { convertImage } from '../src/lib/conversions/image';
 import { convertData, simpleXmlToJson } from '../src/lib/conversions/data';
+import JSZip from 'jszip';
+import {
+  extractZipArchive,
+  ARCHIVE_SECURITY_LIMITS,
+  createZipArchive,
+} from '../src/lib/conversions/archive';
+import {
+  processWebCodecsConversion,
+  buildMp4MoovBox,
+  muxMp4Media,
+  muxWebmVideo,
+} from '../src/lib/edge/workers/webcodecs.worker';
 
 describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', () => {
   beforeEach(() => {
@@ -531,6 +543,254 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(sanitizedText).not.toContain('<script');
       expect(sanitizedText).toContain('<circle');
       expect(sanitizedText).toContain('fill="blue"');
+    });
+  });
+
+  // =========================================================================
+  // 6. Adaptive Queue Routing & Fail-Closed Refusal (Issue #64 Target 1)
+  // =========================================================================
+  describe('6. Adaptive Queue Routing & Fail-Closed Refusal', () => {
+    it('cascades non-edge formats (DOCX, HWP) to L4 Cloud fallback when clientEdgeMode is undefined', async () => {
+      const dummyDocxBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+      const file = new File([dummyDocxBytes], 'document.docx', {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      });
+
+      const item: ConversionQueueItem = {
+        id: 'test-docx-adaptive',
+        file,
+        sourceFormat: 'docx',
+        targetFormat: 'pdf',
+        size: file.size,
+        status: 'ready',
+        progress: 0,
+        options: { clientEdgeMode: undefined }, // Default Adaptive Auto
+      };
+
+      (globalThis as any).window = {};
+
+      // tryProcessClientEdge should return null because docx -> pdf requires cloud
+      const edgeRes = await tryProcessClientEdge(item);
+      expect(edgeRes).toBeNull();
+
+      const mockBlob = new Blob(['mock-pdf-output'], { type: 'application/pdf' });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+        ok: true,
+        blob: async () => mockBlob,
+      } as any);
+
+      let successTier: string | undefined;
+      let errorOccurred = false;
+
+      await executeItemConversion(item, {
+        onProgress: () => {},
+        onSuccess: (_url, _size, _edge, tier) => {
+          successTier = tier;
+        },
+        onError: () => {
+          errorOccurred = true;
+        },
+      });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0][0]).toBe('/api/convert');
+      expect(errorOccurred).toBe(false);
+      expect(successTier).toBe('Cloud (Zero-Retention)');
+    });
+
+    it('refuses non-edge formats with Fail-Closed error when clientEdgeMode is strictly true', async () => {
+      const dummyHwpBytes = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0]);
+      const file = new File([dummyHwpBytes], 'report.hwp', {
+        type: 'application/x-hwp',
+      });
+
+      const item: ConversionQueueItem = {
+        id: 'test-hwp-fail-closed',
+        file,
+        sourceFormat: 'hwp',
+        targetFormat: 'pdf',
+        size: file.size,
+        status: 'ready',
+        progress: 0,
+        options: { clientEdgeMode: true }, // Strictly client-only edge mode
+      };
+
+      (globalThis as any).window = {};
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      let errorMessage = '';
+
+      await executeItemConversion(item, {
+        onProgress: () => {},
+        onSuccess: () => {},
+        onError: (err) => {
+          errorMessage = err;
+        },
+      });
+
+      // Fetch should never be called when client-only edge mode is strictly enabled
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(errorMessage).toContain('requires cloud serverless processing');
+      expect(errorMessage).toContain('client-only edge mode is strictly enabled');
+    });
+  });
+
+  // =========================================================================
+  // 7. Fail-Closed WebCodecs Missing Hardware Encoders (Issue #64 Target 2)
+  // =========================================================================
+  describe('7. Fail-Closed WebCodecs Missing Hardware Encoders', () => {
+    let origVideoEncoder: any;
+    let origVideoFrame: any;
+    let origAudioEncoder: any;
+    let origAudioData: any;
+
+    beforeEach(() => {
+      origVideoEncoder = (globalThis as any).VideoEncoder;
+      origVideoFrame = (globalThis as any).VideoFrame;
+      origAudioEncoder = (globalThis as any).AudioEncoder;
+      origAudioData = (globalThis as any).AudioData;
+
+      delete (globalThis as any).VideoEncoder;
+      delete (globalThis as any).VideoFrame;
+      delete (globalThis as any).AudioEncoder;
+      delete (globalThis as any).AudioData;
+    });
+
+    afterEach(() => {
+      (globalThis as any).VideoEncoder = origVideoEncoder;
+      (globalThis as any).VideoFrame = origVideoFrame;
+      (globalThis as any).AudioEncoder = origAudioEncoder;
+      (globalThis as any).AudioData = origAudioData;
+    });
+
+    it('throws fail-closed error instead of generating synthetic dummy video frames', async () => {
+      await expect(
+        processWebCodecsConversion({
+          jobId: 'test-fail-closed-video',
+          sourceFormat: 'mp4',
+          targetFormat: 'webm',
+          fileBuffer: new ArrayBuffer(32),
+          options: {},
+        })
+      ).rejects.toThrow('WebCodecs VideoEncoder or VideoFrame is not supported in this browser environment');
+    });
+
+    it('throws fail-closed error instead of generating synthetic dummy audio frames', async () => {
+      await expect(
+        processWebCodecsConversion({
+          jobId: 'test-fail-closed-audio',
+          sourceFormat: 'wav',
+          targetFormat: 'aac',
+          fileBuffer: new ArrayBuffer(44),
+          options: {},
+        })
+      ).rejects.toThrow('WebCodecs AudioEncoder or AudioData is not supported in this browser environment');
+    });
+  });
+
+  // =========================================================================
+  // 8. Hardened Archive Decompression Bomb Defense & Stream Chunking (Issue #64 Target 3)
+  // =========================================================================
+  describe('8. Hardened Archive Decompression Bomb Defense & Stream Chunking', () => {
+    it('aborts stream early and throws when archive compression ratio exceeds security limits', async () => {
+      const zip = new JSZip();
+      // 500KB of zeros compresses down to a few hundred bytes (> 500:1 ratio, exceeding 100:1 limit)
+      zip.file('bomb.bin', Buffer.alloc(500 * 1024, 0));
+      const zipBuffer = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+      });
+
+      await expect(extractZipArchive(zipBuffer)).rejects.toThrow(
+        /Archive bomb detected: compression ratio.*exceeds 100:1 limit/
+      );
+    });
+
+    it('extracts normal archives correctly using chunked streaming without corrupting output', async () => {
+      const testFiles = [
+        { filename: 'hello.txt', buffer: Buffer.from('Hello, World! EasyConvert Phase 1.') },
+        { filename: 'data/test.json', buffer: Buffer.from(JSON.stringify({ status: 'ok', tier: 'L4' })) },
+      ];
+
+      const archiveRes = await createZipArchive(testFiles);
+      const extracted = await extractZipArchive(archiveRes.buffer);
+
+      expect(extracted).toHaveLength(2);
+      const helloEntry = extracted.find((e) => e.filename === 'hello.txt');
+      const jsonEntry = extracted.find((e) => e.filename === 'data/test.json');
+
+      expect(helloEntry).toBeDefined();
+      expect(helloEntry?.buffer.toString('utf-8')).toBe('Hello, World! EasyConvert Phase 1.');
+      expect(jsonEntry).toBeDefined();
+      expect(JSON.parse(jsonEntry!.buffer.toString('utf-8'))).toEqual({ status: 'ok', tier: 'L4' });
+    });
+  });
+
+  // =========================================================================
+  // 9. Dual Audio/Video Track Demuxing, Preservation, and Muxing (Issue #64 Target 4)
+  // =========================================================================
+  describe('9. Dual Audio/Video Track Demuxing, Preservation, and Muxing', () => {
+    const videoChunks = [
+      { data: new Uint8Array([0, 0, 0, 1, 0x65, 1, 2, 3]), timestampMicros: 0, isKeyFrame: true },
+      { data: new Uint8Array([0, 0, 0, 1, 0x41, 4, 5, 6]), timestampMicros: 33333, isKeyFrame: false },
+    ];
+    const audioChunks = [
+      { data: new Uint8Array([0x21, 0x10, 0x04, 0x60, 0x8c, 0x00]), timestampMicros: 0, isKeyFrame: true },
+      { data: new Uint8Array([0x21, 0x10, 0x04, 0x60, 0x8c, 0x01]), timestampMicros: 23220, isKeyFrame: true },
+    ];
+
+    it('buildMp4MoovBox creates dual-track moov with vide and soun track descriptors', () => {
+      const moovBox = buildMp4MoovBox(
+        videoChunks,
+        1280,
+        720,
+        40,
+        1000,
+        audioChunks,
+        44100,
+        2
+      );
+
+      const moovStr = String.fromCharCode(...moovBox);
+      expect(moovStr).toContain('moov');
+      expect(moovStr).toContain('mvhd');
+      expect(moovStr).toContain('vide');
+      expect(moovStr).toContain('vmhd');
+      expect(moovStr).toContain('soun');
+      expect(moovStr).toContain('smhd');
+      expect(moovStr).toContain('mp4a');
+      expect(moovStr).toContain('esds');
+    });
+
+    it('muxMp4Media embeds both video and audio tracks in fastStart ISO BMFF container', () => {
+      const mp4Bytes = muxMp4Media(videoChunks, 1280, 720, {
+        includeMoov: true,
+        fastStart: true,
+        audioChunks,
+        sampleRate: 44100,
+        channels: 2,
+      });
+
+      const mp4Str = String.fromCharCode(...mp4Bytes);
+      expect(mp4Str).toContain('ftyp');
+      expect(mp4Str).toContain('moov');
+      expect(mp4Str).toContain('mdat');
+      expect(mp4Str).toContain('soun');
+      expect(mp4Str).toContain('smhd');
+    });
+
+    it('muxWebmVideo builds dual-track EBML container with VP9 video and Opus audio tracks', () => {
+      const webmBytes = muxWebmVideo(videoChunks, 640, 480, audioChunks);
+
+      // Verify EBML Header
+      expect(webmBytes[0]).toBe(0x1a);
+      expect(webmBytes[1]).toBe(0x45);
+      expect(webmBytes[2]).toBe(0xdf);
+      expect(webmBytes[3]).toBe(0xa3);
+
+      const webmStr = String.fromCharCode(...webmBytes);
+      expect(webmStr).toContain('V_VP9');
+      expect(webmStr).toContain('A_OPUS');
     });
   });
 });
