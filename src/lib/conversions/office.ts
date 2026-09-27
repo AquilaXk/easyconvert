@@ -6,7 +6,7 @@ import { ConversionOptions, ConversionResult } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
 import { performOcr } from './ocr';
 import { encodeBmp, encodePostscript } from './image';
-import { convertHwp, parseHwpDocument, buildHwpCompoundFile } from './hwp';
+import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 
 /**
  * Office & Ebook Conversion Engine
@@ -17,9 +17,9 @@ export async function convertOffice(
   sourceFormat: string,
   targetFormat: string,
   options: ConversionOptions = {},
-  originalFilename: string
+  originalFilename: string = 'document'
 ): Promise<ConversionResult> {
-  const baseName = originalFilename.replace(/\.[^/.]+$/, '');
+  const baseName = (originalFilename || 'document').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
@@ -360,6 +360,61 @@ export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
 }
 
 export function extractTextFromDoc(buffer: Buffer): string {
+  // 1. OLE2 Compound File Binary Format (.doc)
+  if (isCfbfContainer(buffer)) {
+    try {
+      const cfbf = parseCfbf(buffer);
+      const wordDoc = cfbf.streams.get('WordDocument') || cfbf.streams.get('worddocument');
+      if (wordDoc && wordDoc.length >= 0x0100) {
+        // Parse File Information Block (FIB)
+        const wIdent = wordDoc.readUInt16LE(0);
+        // Standard Microsoft Word binary signatures: 0xA5EC (Word 97-2003), 0xA5DC (Word 95)
+        if (wIdent === 0xa5ec || wIdent === 0xa5dc || wIdent === 0xa5cd) {
+          const fcMin = wordDoc.length > 0x001c ? wordDoc.readUInt32LE(0x0018) : 0;
+          const ccpText = wordDoc.length > 0x0050 ? wordDoc.readUInt32LE(0x004c) : 0;
+
+          if (fcMin > 0 && fcMin < wordDoc.length && ccpText > 0) {
+            // Text stream starting at fcMin
+            const textBytes = Math.min(ccpText * 2, wordDoc.length - fcMin);
+            const textSlice = wordDoc.subarray(fcMin, fcMin + textBytes);
+
+            // Attempt UTF-16LE decode
+            const decodedUtf16 = textSlice
+              .toString('utf16le')
+              .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ' ')
+              .trim();
+
+            if (decodedUtf16.length > 0 && !/^[\x00\s]+$/.test(decodedUtf16)) {
+              const paragraphs = decodedUtf16
+                .split(/\r?\n/)
+                .map((p) => p.trim())
+                .filter((p) => p.length > 0);
+              if (paragraphs.length > 0) {
+                return paragraphs.join('\n\n');
+              }
+            }
+          }
+        }
+
+        // If FIB offsets point outside or 8-bit text: inspect WordDocument stream directly
+        const utf16Candidate = wordDoc
+          .toString('utf16le')
+          .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ' ')
+          .replace(/[^\P{C}\n\t]/u, '')
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter((s) => s.length >= 3);
+
+        if (utf16Candidate.length > 0) {
+          return utf16Candidate.join('\n\n');
+        }
+      }
+    } catch {
+      // Fallback to byte scraping on malformed CFBF
+    }
+  }
+
+  // 2. Fallback character scanner for raw or fragmented text
   const strings: string[] = [];
   let curr = '';
   for (let i = 0; i < buffer.length; i++) {
@@ -1292,30 +1347,46 @@ async function convertXlsxSource(
   const cellMap: Record<string, any> = {};
   const formulaCells: Array<{ ref: string; formula: string; rowIdx: number; colIdx: number }> = [];
 
-  const rowRegex = /<row[\s\S]*?<\/row>/g;
+  const rowRegex = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
   let rMatch: RegExpExecArray | null;
 
   while ((rMatch = rowRegex.exec(sheetXml)) !== null) {
-    const rowXml = rMatch[0];
+    const rowXml = rMatch[1];
     const cells: string[] = [];
-    const cellRegex = /<c\s+([^>]*?)>([\s\S]*?)<\/c>/g;
+    const cellRegex = /<c\s+([^>]*?)(?:>([\s\S]*?)<\/c>|\/>)/g;
     let cMatch: RegExpExecArray | null;
     const rowIdx = rows.length;
+    let nextColIdx = 0;
 
     while ((cMatch = cellRegex.exec(rowXml)) !== null) {
       const attrs = cMatch[1];
-      const body = cMatch[2];
-      const isString = /t="s"/.test(attrs);
-      const isInline = /t="inlineStr"/.test(attrs);
-      const vMatch = body.match(/<v>([\s\S]*?)<\/v>/);
-      const tMatch = body.match(/<t[^>]*>([\s\S]*?)<\/t>/);
-      const fMatch = body.match(/<f[^>]*>([\s\S]*?)<\/f>/);
-      const rRefMatch = attrs.match(/r="([A-Za-z0-9]+)"/);
-      const ref = rRefMatch ? rRefMatch[1].toUpperCase() : '';
+      const body = cMatch[2] || '';
+      const isString = /t="s"/i.test(attrs);
+      const isInline = /t="inlineStr"/i.test(attrs);
+      const isBool = /t="b"/i.test(attrs);
+      const vMatch = body.match(/<v>([\s\S]*?)<\/v>/i);
+      const tMatch = body.match(/<t[^>]*>([\s\S]*?)<\/t>/i);
+      const fMatch = body.match(/<f[^>]*>([\s\S]*?)<\/f>/i);
+      const rRefMatch = attrs.match(/r="([A-Za-z]+)(\d+)"/i);
+      const ref = rRefMatch ? (rRefMatch[1] + rRefMatch[2]).toUpperCase() : '';
+
+      let colIdx = nextColIdx;
+      if (rRefMatch && rRefMatch[1]) {
+        colIdx = getExcelColumnIndex(rRefMatch[1]);
+      }
+
+      while (cells.length < colIdx) {
+        cells.push('');
+      }
 
       let cellValue = '';
-      if (isInline && tMatch) {
-        cellValue = tMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+      if (isInline) {
+        const isMatch = /<is>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/is>/i.exec(body) || tMatch;
+        if (isMatch) {
+          cellValue = isMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+        }
+      } else if (isBool && vMatch) {
+        cellValue = vMatch[1] === '1' ? 'TRUE' : 'FALSE';
       } else if (vMatch) {
         const val = vMatch[1];
         if (isString) {
@@ -1332,12 +1403,12 @@ async function convertXlsxSource(
         cellMap[ref] = cellValue;
       }
 
-      const colIdx = cells.length;
       if (fMatch && (!cellValue || cellValue.trim() === '')) {
         formulaCells.push({ ref, formula: fMatch[1], rowIdx, colIdx });
       }
 
-      cells.push(cellValue);
+      cells[colIdx] = cellValue;
+      nextColIdx = colIdx + 1;
     }
     if (cells.length > 0) rows.push(cells);
   }
@@ -2618,6 +2689,21 @@ export function getExcelColumnName(colIndex: number): string {
 }
 
 /**
+ * Inverse Bijective Base-26 column index calculation ('A' -> 0, 'Z' -> 25, 'AA' -> 26, 'C' -> 2, etc.)
+ */
+export function getExcelColumnIndex(colLetters: string): number {
+  let idx = 0;
+  const upper = colLetters.toUpperCase();
+  for (let i = 0; i < upper.length; i++) {
+    const code = upper.charCodeAt(i);
+    if (code >= 65 && code <= 90) {
+      idx = idx * 26 + (code - 64);
+    }
+  }
+  return Math.max(0, idx - 1);
+}
+
+/**
  * Generates OpenXML XLSX Zip Archive from CSV / TSV / JSON
  */
 export async function generateXlsxFromData(
@@ -3542,26 +3628,68 @@ async function extractRowsForOffice(
 
         const sheetXml = await sheetFile.async('text');
         const rows: string[][] = [];
-        const rowRegex = /<row[\s\S]*?<\/row>/g;
+        const rowRegex = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
         let rMatch: RegExpExecArray | null;
 
         while ((rMatch = rowRegex.exec(sheetXml)) !== null) {
-          const rowXml = rMatch[0];
+          const rowXml = rMatch[1];
           const cells: string[] = [];
-          const cellRegex = /<c\s+([^>]*?)>([\s\S]*?)<\/c>/g;
+          const cellRegex = /<c\s+([^>]*?)(?:>([\s\S]*?)<\/c>|\/>)/g;
           let cMatch: RegExpExecArray | null;
+          let nextColIdx = 0;
 
           while ((cMatch = cellRegex.exec(rowXml)) !== null) {
             const attrs = cMatch[1];
-            const body = cMatch[2];
-            const isString = /t="s"/.test(attrs);
-            const vMatch = body.match(/<v>([\s\S]*?)<\/v>/);
-            if (vMatch) {
-              const val = vMatch[1];
-              cells.push(isString ? sharedStrings[parseInt(val, 10)] ?? '' : val);
-            } else {
+            const body = cMatch[2] || '';
+
+            // Extract column index from r="C1" coordinate
+            const rAttr = /r="([A-Za-z]+)(\d+)"/.exec(attrs);
+            let colIdx = nextColIdx;
+            if (rAttr && rAttr[1]) {
+              colIdx = getExcelColumnIndex(rAttr[1]);
+            }
+
+            // Fill sparse empty cells prior to colIdx to maintain table structure
+            while (cells.length < colIdx) {
               cells.push('');
             }
+
+            let cellValue = '';
+
+            // 1. Inline string: <c t="inlineStr"><is><t>Text</t></is></c>
+            if (/t="inlineStr"/i.test(attrs)) {
+              const isMatch = /<is>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/is>/i.exec(body) || /<t[^>]*>([\s\S]*?)<\/t>/i.exec(body);
+              if (isMatch) {
+                cellValue = isMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+              }
+            } else if (/t="s"/i.test(attrs)) {
+              // 2. Shared string
+              const vMatch = body.match(/<v>([\s\S]*?)<\/v>/i);
+              if (vMatch) {
+                const sIdx = parseInt(vMatch[1], 10);
+                cellValue = sharedStrings[sIdx] ?? '';
+              }
+            } else if (/t="b"/i.test(attrs)) {
+              // 3. Boolean
+              const vMatch = body.match(/<v>([\s\S]*?)<\/v>/i);
+              if (vMatch) {
+                cellValue = vMatch[1] === '1' ? 'TRUE' : 'FALSE';
+              }
+            } else {
+              // 4. Number or direct formula value
+              const vMatch = body.match(/<v>([\s\S]*?)<\/v>/i);
+              if (vMatch) {
+                cellValue = vMatch[1];
+              } else {
+                const tMatch = body.match(/<t[^>]*>([\s\S]*?)<\/t>/i);
+                if (tMatch) {
+                  cellValue = tMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+                }
+              }
+            }
+
+            cells[colIdx] = cellValue;
+            nextColIdx = colIdx + 1;
           }
           if (cells.length > 0) rows.push(cells);
         }
