@@ -65,6 +65,14 @@ import {
   escapeH264Rbsp,
   BitWriter,
 } from './media-encoder';
+import {
+  decodeAudioBuffer,
+  decodeWav,
+  decodeFlac,
+  decodeMp3,
+  type DecodedAudio,
+  BitReader,
+} from './media-decoder';
 import { decodePdfHexString, unescapePdfString } from './pdf-utils';
 import {
   convertArchive,
@@ -173,6 +181,12 @@ export {
   SpreadsheetDagEngine,
   renderDrawingMlToSvg,
   parseDrawingMlShapes,
+  decodeAudioBuffer,
+  decodeWav,
+  decodeFlac,
+  decodeMp3,
+  type DecodedAudio,
+  BitReader,
 };
 
 export async function convertFile(

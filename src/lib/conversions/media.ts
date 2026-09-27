@@ -4,6 +4,13 @@ import os from 'os';
 import path from 'path';
 import { ConversionOptions, ConversionResult } from '../types';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream } from './media-encoder';
+import {
+  decodeAudioBuffer,
+  decodeWav,
+  decodeFlac,
+  decodeMp3,
+  DecodedAudio,
+} from './media-decoder';
 
 let resolvedFfmpegPath: string | null = null;
 function getFfmpegPath(): string | null {
@@ -160,15 +167,58 @@ function processMediaPure(
   options: ConversionOptions,
   baseName: string
 ): ConversionResult {
-  // 1. Extract PCM audio samples from source
-  let pcmData: Int16Array;
-  let sampleRate = options.audioSampleRate || 44100;
-  let channels = options.audioChannels === 'mono' ? 1 : 2;
+  // 1. Extract PCM audio samples from source using pure audio decoder stack
+  const decoded = decodeAudioBuffer(inputBuffer, src);
+  let pcmData = decoded.samples;
+  let sampleRate = options.audioSampleRate || decoded.sampleRate || 44100;
+  let channels =
+    options.audioChannels === 'mono'
+      ? 1
+      : options.audioChannels === 'stereo'
+      ? 2
+      : decoded.channels;
 
-  if (inputBuffer.length >= 44 && inputBuffer.toString('ascii', 0, 4) === 'RIFF') {
-    pcmData = parseWavPcm(inputBuffer);
-  } else {
-    throw new Error('Unsupported audio format: decoder unavailable');
+  // Remap channels if requested count differs from decoded source
+  if (channels !== decoded.channels) {
+    if (decoded.channels === 2 && channels === 1) {
+      // Stereo -> Mono downmix
+      const mono = new Int16Array(Math.floor(pcmData.length / 2));
+      for (let i = 0; i < mono.length; i++) {
+        mono[i] = Math.round((pcmData[i * 2] + pcmData[i * 2 + 1]) / 2);
+      }
+      pcmData = mono;
+    } else if (decoded.channels === 1 && channels === 2) {
+      // Mono -> Stereo upmix
+      const stereo = new Int16Array(pcmData.length * 2);
+      for (let i = 0; i < pcmData.length; i++) {
+        stereo[i * 2] = pcmData[i];
+        stereo[i * 2 + 1] = pcmData[i];
+      }
+      pcmData = stereo;
+    }
+  }
+
+  // Resample if requested sample rate differs from decoded source
+  if (options.audioSampleRate && options.audioSampleRate !== decoded.sampleRate) {
+    const ratio = options.audioSampleRate / decoded.sampleRate;
+    const srcFrames = Math.floor(pcmData.length / channels);
+    const tgtFrames = Math.floor(srcFrames * ratio);
+    const resampled = new Int16Array(tgtFrames * channels);
+
+    for (let f = 0; f < tgtFrames; f++) {
+      const srcPos = f / ratio;
+      const idx0 = Math.floor(srcPos);
+      const idx1 = Math.min(srcFrames - 1, idx0 + 1);
+      const frac = srcPos - idx0;
+
+      for (let c = 0; c < channels; c++) {
+        const s0 = pcmData[idx0 * channels + c];
+        const s1 = pcmData[idx1 * channels + c];
+        const interpolated = Math.round(s0 + frac * (s1 - s0));
+        resampled[f * channels + c] = Math.max(-32768, Math.min(32767, interpolated));
+      }
+    }
+    pcmData = resampled;
   }
 
   // Apply volume adjustment if requested
@@ -590,3 +640,11 @@ function getMimeTypeForMedia(ext: string): string {
   };
   return map[ext.toLowerCase()] || 'application/octet-stream';
 }
+
+export {
+  decodeAudioBuffer,
+  decodeWav,
+  decodeFlac,
+  decodeMp3,
+  type DecodedAudio,
+};
