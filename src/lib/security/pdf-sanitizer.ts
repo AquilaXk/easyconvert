@@ -40,11 +40,26 @@ export function isPdf(buffer: Buffer): boolean {
 }
 
 /**
+ * Decodes hexadecimal escape sequences (e.g. /#4a#61#76#61#53#63#72#69#70#74 -> /JavaScript)
+ * per ISO 32000-1 Section 7.3.5 to neutralize obfuscation bypasses in active content detection.
+ */
+export function decodePdfNames(text: string): string {
+  return text.replace(/\/([^\s<>[\]{}/%]+)/g, (fullMatch, nameBody) => {
+    if (!nameBody.includes('#')) return fullMatch;
+    const decoded = nameBody.replace(/#([0-9a-fA-F]{2})/g, (_: string, hex: string) => {
+      return String.fromCharCode(parseInt(hex, 16));
+    });
+    return '/' + decoded;
+  });
+}
+
+/**
  * Scans a PDF buffer for potential active executable content vulnerabilities
  */
 export function isPdfVulnerableToActiveContent(pdfBuffer: Buffer): boolean {
   if (!isPdf(pdfBuffer)) return false;
-  const content = pdfBuffer.toString('latin1');
+  const rawContent = pdfBuffer.toString('latin1');
+  const content = decodePdfNames(rawContent);
   const activeKeys = [
     /\/JavaScript\b/i,
     /\/JS\b/i,
@@ -68,7 +83,7 @@ export function sanitizePdf(pdfBuffer: Buffer): { buffer: Buffer; report: PdfCdr
     throw new Error('PDF CDR Sanitizer: input is not a valid PDF document (missing %PDF- header).');
   }
 
-  let text = pdfBuffer.toString('latin1');
+  let text = decodePdfNames(pdfBuffer.toString('latin1'));
   const originalSize = pdfBuffer.length;
 
   let javaScriptCount = 0;

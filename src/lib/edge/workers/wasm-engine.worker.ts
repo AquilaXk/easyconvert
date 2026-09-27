@@ -10,12 +10,16 @@
 
 export interface WasmTaskRequest {
   jobId: string;
-  task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'custom-module';
+  task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | 'custom-module';
   buffer: ArrayBuffer;
   options?: {
     brightnessDelta?: number;
     width?: number;
     height?: number;
+    colors?: number;
+    palette?: boolean;
+    dither?: boolean;
+    colorDepth?: number;
     customWasmBytes?: ArrayBuffer;
   };
 }
@@ -117,6 +121,105 @@ export function applyRgbaBrightness(input: Uint8Array, delta: number = 20): Uint
 }
 
 /**
+ * Applies RGBA color quantization and optional error diffusion dithering.
+ * Preserves chromatic color channels instead of forcing grayscale.
+ */
+export function applyRgbaQuantize(
+  input: Uint8Array,
+  width: number = 0,
+  height: number = 0,
+  maxColors: number = 256,
+  dither: boolean = false
+): Uint8Array {
+  const output = new Uint8Array(input.byteLength);
+  const len = input.byteLength;
+
+  if (len === 0) return output;
+
+  // Determine channel bit depths based on maxColors
+  const rLevels = maxColors <= 16 ? 4 : 8;
+  const gLevels = maxColors <= 16 ? 4 : 8;
+  const bLevels = maxColors <= 16 ? 2 : 4;
+
+  const quantizeChannel = (val: number, levels: number) => {
+    const step = 255 / (levels - 1);
+    return Math.max(0, Math.min(255, Math.round(Math.round(val / step) * step)));
+  };
+
+  if (!dither || width <= 0 || height <= 0 || width * height * 4 !== len) {
+    for (let i = 0; i < len; i += 4) {
+      output[i] = quantizeChannel(input[i], rLevels);
+      output[i + 1] = quantizeChannel(input[i + 1], gLevels);
+      output[i + 2] = quantizeChannel(input[i + 2], bLevels);
+      output[i + 3] = input[i + 3];
+    }
+    return output;
+  }
+
+  // Floyd-Steinberg error diffusion dithering
+  const curRowErrR = new Float32Array(width + 2);
+  const curRowErrG = new Float32Array(width + 2);
+  const curRowErrB = new Float32Array(width + 2);
+  const nextRowErrR = new Float32Array(width + 2);
+  const nextRowErrG = new Float32Array(width + 2);
+  const nextRowErrB = new Float32Array(width + 2);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const xOffset = x + 1;
+
+      const r = Math.max(0, Math.min(255, input[idx] + curRowErrR[xOffset]));
+      const g = Math.max(0, Math.min(255, input[idx + 1] + curRowErrG[xOffset]));
+      const b = Math.max(0, Math.min(255, input[idx + 2] + curRowErrB[xOffset]));
+
+      const qr = quantizeChannel(r, rLevels);
+      const qg = quantizeChannel(g, gLevels);
+      const qb = quantizeChannel(b, bLevels);
+
+      output[idx] = qr;
+      output[idx + 1] = qg;
+      output[idx + 2] = qb;
+      output[idx + 3] = input[idx + 3]; // Preserve alpha
+
+      const errR = r - qr;
+      const errG = g - qg;
+      const errB = b - qb;
+
+      // Diffuse Floyd-Steinberg errors:
+      // (x+1, y)   * 7/16
+      curRowErrR[xOffset + 1] += (errR * 7) / 16;
+      curRowErrG[xOffset + 1] += (errG * 7) / 16;
+      curRowErrB[xOffset + 1] += (errB * 7) / 16;
+
+      // (x-1, y+1) * 3/16
+      nextRowErrR[xOffset - 1] += (errR * 3) / 16;
+      nextRowErrG[xOffset - 1] += (errG * 3) / 16;
+      nextRowErrB[xOffset - 1] += (errB * 3) / 16;
+
+      // (x, y+1)   * 5/16
+      nextRowErrR[xOffset] += (errR * 5) / 16;
+      nextRowErrG[xOffset] += (errG * 5) / 16;
+      nextRowErrB[xOffset] += (errB * 5) / 16;
+
+      // (x+1, y+1) * 1/16
+      nextRowErrR[xOffset + 1] += (errR * 1) / 16;
+      nextRowErrG[xOffset + 1] += (errG * 1) / 16;
+      nextRowErrB[xOffset + 1] += (errB * 1) / 16;
+    }
+
+    curRowErrR.set(nextRowErrR);
+    curRowErrG.set(nextRowErrG);
+    curRowErrB.set(nextRowErrB);
+    nextRowErrR.fill(0);
+    nextRowErrG.fill(0);
+    nextRowErrB.fill(0);
+  }
+
+  return output;
+}
+
+/**
  * Wasm Engine Executor class with memory bounding and statistics tracking.
  */
 export class WasmEngine {
@@ -169,6 +272,15 @@ export class WasmEngine {
         break;
       case 'rgba-brightness':
         outputBytes = applyRgbaBrightness(inputBytes, request.options?.brightnessDelta ?? 25);
+        break;
+      case 'rgba-quantize':
+        outputBytes = applyRgbaQuantize(
+          inputBytes,
+          request.options?.width || 0,
+          request.options?.height || 0,
+          request.options?.colors ?? 256,
+          request.options?.dither ?? false
+        );
         break;
       case 'custom-module':
         outputBytes = await this.executeCustomWasm(inputBytes, request.options?.customWasmBytes);

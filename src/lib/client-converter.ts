@@ -241,11 +241,50 @@ async function processL2Conversion(
           const imgData = ctx.getImageData(0, 0, width, height);
           const pixelBuffer = imgData.data.buffer;
 
-          const taskRes = await executeWasmTask('rgba-grayscale', pixelBuffer, { width, height }, onProgress);
+          // Determine appropriate Wasm task based on requested options
+          let task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | null = null;
+          const wasmOpts: {
+            width: number;
+            height: number;
+            colors?: number;
+            palette?: boolean;
+            dither?: boolean;
+            colorDepth?: number;
+            brightnessDelta?: number;
+          } = {
+            width,
+            height,
+            colors: item.options.colors,
+            palette: item.options.palette,
+            dither: item.options.dither,
+            colorDepth: item.options.colorDepth,
+          };
 
-          const processedClamped = new Uint8ClampedArray(taskRes.buffer);
-          const newImgData = new ImageData(processedClamped, width, height);
-          ctx.putImageData(newImgData, 0, 0);
+          if (item.options.colorDepth === 1 || (item.options as any).grayscale === true) {
+            task = 'rgba-grayscale';
+          } else if ((item.options as any).invert === true) {
+            task = 'rgba-invert';
+          } else if ((item.options as any).brightnessDelta !== undefined) {
+            task = 'rgba-brightness';
+            wasmOpts.brightnessDelta = (item.options as any).brightnessDelta;
+          } else if (
+            item.options.palette === true ||
+            item.options.dither === true ||
+            item.options.colorDepth !== undefined ||
+            item.options.colors !== undefined
+          ) {
+            task = 'rgba-quantize';
+            if (!wasmOpts.colors && item.options.colorDepth) {
+              wasmOpts.colors = Math.min(256, 1 << item.options.colorDepth);
+            }
+          }
+
+          if (task) {
+            const taskRes = await executeWasmTask(task, pixelBuffer, wasmOpts, onProgress);
+            const processedClamped = new Uint8ClampedArray(taskRes.buffer);
+            const newImgData = new ImageData(processedClamped, width, height);
+            ctx.putImageData(newImgData, 0, 0);
+          }
 
           const mimeType = tgt === 'jpg' || tgt === 'jpeg' ? 'image/jpeg' : (tgt === 'webp' ? 'image/webp' : 'image/png');
           let resultBlob: Blob;

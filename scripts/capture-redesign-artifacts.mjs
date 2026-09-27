@@ -9,6 +9,7 @@ const ARTIFACT_DIR_1 = '/Users/aquila/.gemini/antigravity/brain/1c7356b0-bbb5-4a
 const ARTIFACT_DIR_2 = '/Users/aquila/.gemini/antigravity/brain/86e17bd1-af3f-4a06-8090-3ff8a2e991e9';
 const ARTIFACT_DIR_CURRENT = '/Users/aquila/.gemini/antigravity/brain/c241f35c-d78b-4c1d-a16c-3c0a577756dd';
 const ARTIFACT_DIR_SESSION = '/Users/aquila/.gemini/antigravity/brain/0f3d257b-4440-460b-8716-bdf70c4b31f8';
+const ARTIFACT_DIR_TASK = '/Users/aquila/.gemini/antigravity/brain/3639b263-bfed-4bec-9e4e-dd185925448b';
 const PUBLIC_DIR = path.resolve('public/screenshots');
 
 function saveImage(filename, buffer) {
@@ -24,6 +25,9 @@ function saveImage(filename, buffer) {
   }
   if (fs.existsSync(ARTIFACT_DIR_SESSION)) {
     fs.writeFileSync(path.join(ARTIFACT_DIR_SESSION, filename), buffer);
+  }
+  if (fs.existsSync(ARTIFACT_DIR_TASK)) {
+    fs.writeFileSync(path.join(ARTIFACT_DIR_TASK, filename), buffer);
   }
 }
 
