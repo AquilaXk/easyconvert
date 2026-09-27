@@ -1,0 +1,158 @@
+{
+  "version": "1.0.0",
+  "generatedAt": "2026-09-27T12:55:57.856Z",
+  "totalFiles": 15,
+  "totalSizeBytes": 67053,
+  "files": [
+    {
+      "name": "multi-sheet-enterprise.xlsx",
+      "category": "office",
+      "format": "xlsx",
+      "relativePath": "tests/fixtures/golden/office/multi-sheet-enterprise.xlsx",
+      "sizeBytes": 3890,
+      "sha256": "140678375bae0172aaa85e3df01332a5da229cf8f404289c301c705648cb8a98",
+      "verified": true,
+      "description": "3-sheet workbook with custom number formats ($#,##0.00, 0.0%) and SUM/AVERAGE formula trees"
+    },
+    {
+      "name": "multi-sheet-enterprise.ods",
+      "category": "office",
+      "format": "ods",
+      "relativePath": "tests/fixtures/golden/office/multi-sheet-enterprise.ods",
+      "sizeBytes": 1156,
+      "sha256": "bfd9f168d154e0ba87d2d1e95d37d3de3876d070b54455f4423d147564ceba95",
+      "verified": true,
+      "description": "OpenDocument Spreadsheet with multi-table manifest and OASIS XML table definitions"
+    },
+    {
+      "name": "drawingml-shapes-presentation.pptx",
+      "category": "office",
+      "format": "pptx",
+      "relativePath": "tests/fixtures/golden/office/drawingml-shapes-presentation.pptx",
+      "sizeBytes": 3744,
+      "sha256": "8feba751aff0683f4f22e34ed14b577306e41b2bfd855289eae20835d844764b",
+      "verified": true,
+      "description": "3-slide 16:9 presentation with DrawingML vector preset shapes (rect, ellipse, triangle) and tables"
+    },
+    {
+      "name": "multi-column-annotated.docx",
+      "category": "office",
+      "format": "docx",
+      "relativePath": "tests/fixtures/golden/office/multi-column-annotated.docx",
+      "sizeBytes": 2185,
+      "sha256": "45038bf68bce76e524311f2ffe4c63fa2cd261c95ff780c1887f44e9d099c4ec",
+      "verified": true,
+      "description": "WordprocessingML document with multi-column layout, footnotes, and nested 2x2 data table"
+    },
+    {
+      "name": "differential-layout.pdf",
+      "category": "document",
+      "format": "pdf",
+      "relativePath": "tests/fixtures/golden/document/differential-layout.pdf",
+      "sizeBytes": 1734,
+      "sha256": "3c6027d8b55e8a399335ed13b93fcc6032b80314bdd31616679de3292c62c403",
+      "verified": true,
+      "description": "A4 multi-column PDF with Helvetica font embedding, compressed object streams, and sandwich OCR"
+    },
+    {
+      "name": "enterprise-compound-document.hwp",
+      "category": "document",
+      "format": "hwp",
+      "relativePath": "tests/fixtures/golden/document/enterprise-compound-document.hwp",
+      "sizeBytes": 3584,
+      "sha256": "8448db27603ca63684b3b86a2769c4e17b599b96ca26d4b730801de11a8c27ab",
+      "verified": true,
+      "description": "Hancom HWP 5.0 CFBF compound binary file with DocInfo, FileHeader, and paragraph text streams"
+    },
+    {
+      "name": "brep-solid.step",
+      "category": "cad",
+      "format": "step",
+      "relativePath": "tests/fixtures/golden/cad/brep-solid.step",
+      "sizeBytes": 2723,
+      "sha256": "6c595a2c1c1906b39a54ae798fdd6664258b73774f553b2f9fc0d76ea81764cf",
+      "verified": true,
+      "description": "ISO-10303-21 STEP B-Rep manifold solid with Euler characteristic χ = 2 and vertex topologies"
+    },
+    {
+      "name": "multi-layer-drawing.dxf",
+      "category": "cad",
+      "format": "dxf",
+      "relativePath": "tests/fixtures/golden/cad/multi-layer-drawing.dxf",
+      "sizeBytes": 794,
+      "sha256": "fb7c4d218465f09676305081f109b0a646b3163e66d7bf7dffe85b13c521c11a",
+      "verified": true,
+      "description": "AutoCAD DXF release R12/2000 drawing with LINE, CIRCLE, ARC, and 3DFACE layer entities"
+    },
+    {
+      "name": "sensor-raw-frame.raw",
+      "category": "media",
+      "format": "raw",
+      "relativePath": "tests/fixtures/golden/media/sensor-raw-frame.raw",
+      "sizeBytes": 8192,
+      "sha256": "ea9d7590ff5bb785e4379493473b287abf3912e9f5dcf6b87c5d34dad050ce84",
+      "verified": true,
+      "description": "64x64 14-bit RGGB Bayer Color Filter Array (CFA) raw camera sensor frame with color checker patches"
+    },
+    {
+      "name": "perceptual-stress-card.png",
+      "category": "media",
+      "format": "png",
+      "relativePath": "tests/fixtures/golden/media/perceptual-stress-card.png",
+      "sizeBytes": 27517,
+      "sha256": "37e3855660eaad57450185b2fc171a41766dd68a515a3f955c005f4336314010",
+      "verified": true,
+      "description": "96x96 RGB perceptual gradient and high-frequency edge stress card for SSIM and PSNR verification"
+    },
+    {
+      "name": "columnar-snappy-records.parquet",
+      "category": "data",
+      "format": "parquet",
+      "relativePath": "tests/fixtures/golden/data/columnar-snappy-records.parquet",
+      "sizeBytes": 7197,
+      "sha256": "3e674dd6dd7e506ea7bb9f4e8e2aac6fa43741374e897388841bc306628e9eb6",
+      "verified": true,
+      "description": "Apache Parquet columnar dataset containing 60 records across 10 typed columns with Snappy block compression"
+    },
+    {
+      "name": "variable-geometric.otf",
+      "category": "font",
+      "format": "otf",
+      "relativePath": "tests/fixtures/golden/font/variable-geometric.otf",
+      "sizeBytes": 952,
+      "sha256": "969718815245727f9d64a058f5b336d45fb398e092c0d04d661d3ce73ccdfbc7",
+      "verified": true,
+      "description": "OpenType variable font with head, hhea, maxp, OS/2, fvar, and STAT tables for dynamic weight/width axes"
+    },
+    {
+      "name": "enterprise-bundle.7z",
+      "category": "archive",
+      "format": "7z",
+      "relativePath": "tests/fixtures/golden/archive/enterprise-bundle.7z",
+      "sizeBytes": 220,
+      "sha256": "8d15d9ba09e622e08c8bdb88e5b3651a7b1d9874abf98843c55b44680caa5f74",
+      "verified": true,
+      "description": "7-Zip archive with multi-stream LZMA2 compression, folder structures, and valid header CRC"
+    },
+    {
+      "name": "compressed-stream.zst",
+      "category": "archive",
+      "format": "zstd",
+      "relativePath": "tests/fixtures/golden/archive/compressed-stream.zst",
+      "sizeBytes": 93,
+      "sha256": "3a57982dcbafd91e6399446fa8ac962d7826a3fcb73af8f9af2bac02cea5fbd9",
+      "verified": true,
+      "description": "RFC 8878 Zstandard compressed stream with frame magic 0x28B52FFD and raw decompressed text"
+    },
+    {
+      "name": "conformance-bundle.tar",
+      "category": "archive",
+      "format": "tar",
+      "relativePath": "tests/fixtures/golden/archive/conformance-bundle.tar",
+      "sizeBytes": 3072,
+      "sha256": "b17a2f85c3505c90587add0554f3559f111635f3bb23132b8bf4df89af3c07ae",
+      "verified": true,
+      "description": "Standard POSIX ustar TAR archive with structured directory hierarchy and exact byte offsets"
+    }
+  ]
+}

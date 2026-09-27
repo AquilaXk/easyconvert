@@ -1,0 +1,146 @@
+  0
+SECTION
+  2
+HEADER
+  9
+$ACADVER
+  1
+AC1015
+  0
+ENDSEC
+  0
+SECTION
+  2
+TABLES
+  0
+TABLE
+  2
+LAYER
+  0
+LAYER
+  2
+0
+ 70
+0
+ 62
+7
+  0
+LAYER
+  2
+STRUCTURAL_CONTOUR
+ 70
+0
+ 62
+1
+  0
+LAYER
+  2
+ANNOTATIONS
+ 70
+0
+ 62
+3
+  0
+ENDTAB
+  0
+ENDSEC
+  0
+SECTION
+  2
+ENTITIES
+  0
+LINE
+  8
+STRUCTURAL_CONTOUR
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+ 11
+100.0
+ 21
+0.0
+ 31
+0.0
+  0
+LINE
+  8
+STRUCTURAL_CONTOUR
+ 10
+100.0
+ 20
+0.0
+ 30
+0.0
+ 11
+100.0
+ 21
+50.0
+ 31
+0.0
+  0
+CIRCLE
+  8
+STRUCTURAL_CONTOUR
+ 10
+50.0
+ 20
+25.0
+ 30
+0.0
+ 40
+15.0
+  0
+3DFACE
+  8
+STRUCTURAL_CONTOUR
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+ 11
+10.0
+ 21
+0.0
+ 31
+0.0
+ 12
+10.0
+ 22
+10.0
+ 32
+0.0
+ 13
+0.0
+ 23
+10.0
+ 33
+0.0
+  0
+TEXT
+  8
+ANNOTATIONS
+ 10
+10.0
+ 20
+-10.0
+ 30
+0.0
+ 40
+5.0
+  1
+EasyConvert Golden CAD Tolerance Specification
+  0
+ENDSEC
+  0
+SECTION
+  2
+OBJECTS
+  0
+ENDSEC
+  0
+EOF
