@@ -79,6 +79,43 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: aborted });
     }
 
+    // 5. Generate Presigned URL for Direct Chunk Streaming
+    if (action === 'presign') {
+      const body = await req.json();
+      const { type = 'upload', key, partNumber, uploadId, expiresInSeconds } = body;
+
+      if (!key) {
+        return NextResponse.json(
+          { success: false, error: 'Missing required "key" in presign payload.' },
+          { status: 400 }
+        );
+      }
+
+      if (type === 'upload') {
+        if (!uploadId || typeof partNumber !== 'number') {
+          return NextResponse.json(
+            { success: false, error: 'Missing required "uploadId" or "partNumber" for presigned upload URL.' },
+            { status: 400 }
+          );
+        }
+
+        if (s3Storage.generatePresignedUploadUrl) {
+          const presigned = s3Storage.generatePresignedUploadUrl(key, partNumber, uploadId, expiresInSeconds);
+          return NextResponse.json({ success: true, ...presigned });
+        }
+      } else if (type === 'download') {
+        if (s3Storage.generatePresignedDownloadUrl) {
+          const presigned = s3Storage.generatePresignedDownloadUrl(key, expiresInSeconds);
+          return NextResponse.json({ success: true, ...presigned });
+        }
+      }
+
+      return NextResponse.json(
+        { success: false, error: 'Storage provider does not support presigned URLs or invalid type specified.' },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json(
       { success: false, error: `Unknown multipart action: "${action}"` },
       { status: 400 }
