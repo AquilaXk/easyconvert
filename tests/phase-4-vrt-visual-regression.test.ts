@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { compareImages, computeSsim } from './helpers/vrt-engine';
+import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { renderDrawingMlToSvg } from '../src/lib/conversions/office';
 import { applyFloydSteinbergDither, ColorRgb } from '../src/lib/conversions/quantize';
 
@@ -338,6 +338,92 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
       expect(res.passed).toBe(false);
       expect(res.percentage).toBeGreaterThan(5.0); // Over 5% layout difference
       expect(res.ssim).toBeLessThan(0.95);
+    });
+  });
+
+  // =========================================================================
+  // 6. Direct Pixelmatch API & Multi-Channel SSIM Invariance
+  // =========================================================================
+  describe('6. Direct Pixelmatch API & Multi-Channel SSIM Invariance', () => {
+    it('executes pixelmatch directly and returns 0 diff on identical buffers with dimmed context output', () => {
+      const width = 20;
+      const height = 20;
+      const totalBytes = width * height * 4;
+      const buf1 = Buffer.alloc(totalBytes, 100);
+      const buf2 = Buffer.alloc(totalBytes, 100);
+      const output = Buffer.alloc(totalBytes);
+
+      const diffs = pixelmatch(buf1, buf2, output, width, height, { threshold: 0.05 });
+
+      expect(diffs).toBe(0);
+      // All output pixels should be filled with dimmed context
+      expect(output[0]).toBeGreaterThan(0);
+      expect(output[3]).toBe(255); // Alpha is 255
+    });
+
+    it('detects exact single pixel perturbation and highlights magenta diffColor', () => {
+      const width = 10;
+      const height = 10;
+      const totalBytes = width * height * 4;
+      const buf1 = Buffer.alloc(totalBytes, 50);
+      const buf2 = Buffer.alloc(totalBytes, 50);
+      const output = Buffer.alloc(totalBytes);
+
+      // Mutate pixel at (5, 5)
+      const targetIdx = (5 * width + 5) * 4;
+      buf2[targetIdx] = 250;
+      buf2[targetIdx + 1] = 250;
+      buf2[targetIdx + 2] = 250;
+
+      const diffs = pixelmatch(buf1, buf2, output, width, height, { threshold: 0.05 });
+
+      expect(diffs).toBe(1);
+      // Output pixel at targetIdx should be magenta [255, 0, 127]
+      expect(output[targetIdx]).toBe(255);
+      expect(output[targetIdx + 1]).toBe(0);
+      expect(output[targetIdx + 2]).toBe(127);
+    });
+
+    it('throws error when buffer dimensions or output buffer do not match', () => {
+      const buf1 = Buffer.alloc(16);
+      const buf2 = Buffer.alloc(12);
+
+      expect(() => pixelmatch(buf1, buf2, null, 2, 2)).toThrow(/Image buffer size mismatch/i);
+    });
+
+    it('computes SSIM accurately for 1-channel (grayscale) and 3-channel (RGB) images without NaN', () => {
+      const width = 10;
+      const height = 10;
+
+      // 1-channel Grayscale
+      const gray1 = Buffer.alloc(width * height, 120);
+      const gray2 = Buffer.alloc(width * height, 120);
+      const ssimGrayIdentical = computeSsim(gray1, gray2, width, height, 1);
+      expect(ssimGrayIdentical).toBe(1.0);
+      expect(Number.isNaN(ssimGrayIdentical)).toBe(false);
+
+      // Mutate grayscale
+      gray2[0] = 0;
+      const ssimGrayDiff = computeSsim(gray1, gray2, width, height, 1);
+      expect(ssimGrayDiff).toBeLessThan(1.0);
+      expect(ssimGrayDiff).toBeGreaterThan(0.2);
+      expect(Number.isNaN(ssimGrayDiff)).toBe(false);
+
+      // 3-channel RGB (previously produced NaN due to out-of-bounds index access)
+      const rgb1 = Buffer.alloc(width * height * 3, 150);
+      const rgb2 = Buffer.alloc(width * height * 3, 150);
+      const ssimRgbIdentical = computeSsim(rgb1, rgb2, width, height, 3);
+      expect(ssimRgbIdentical).toBe(1.0);
+      expect(Number.isNaN(ssimRgbIdentical)).toBe(false);
+
+      // Mutate RGB
+      rgb2[0] = 50;
+      rgb2[1] = 50;
+      rgb2[2] = 50;
+      const ssimRgbDiff = computeSsim(rgb1, rgb2, width, height, 3);
+      expect(ssimRgbDiff).toBeLessThan(1.0);
+      expect(ssimRgbDiff).toBeGreaterThan(0.2);
+      expect(Number.isNaN(ssimRgbDiff)).toBe(false);
     });
   });
 });

@@ -280,7 +280,7 @@ describe('Phase 4: Universal Golden Corpus Synthesizer & Enterprise Testnet', ()
       expect(isId3 || isSyncFrame).toBe(true);
     });
 
-    it('synthesizes valid FLAC bitstream with fLaC stream marker and CRC checksums', () => {
+    it('synthesizes valid FLAC bitstream with fLaC stream marker and verifies with pure audio decoder', () => {
       const audioCorpus = synthesizeAudioBitstreamCorpus(0.4);
 
       expect(audioCorpus.flac.subarray(0, 4).toString('ascii')).toBe('fLaC');
@@ -290,6 +290,12 @@ describe('Phase 4: Universal Golden Corpus Synthesizer & Enterprise Testnet', ()
       expect(audioCorpus.flac[4]).toBe(0x80);
       // Length = 34 bytes
       expect(audioCorpus.flac.readUInt16BE(6)).toBe(34);
+
+      // Verify with EasyConvert's pure audio decoder
+      const decoded = decodeAudioBuffer(audioCorpus.flac, 'flac');
+      expect(decoded.sampleRate).toBe(44100);
+      expect(decoded.channels).toBe(2);
+      expect(decoded.samples.length).toBeGreaterThan(0);
     });
   });
 });

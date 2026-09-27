@@ -191,15 +191,6 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
     }
   }
 
-  if (paragraphs.length === 0 && tables.length === 0) {
-    paragraphs.push({
-      text: 'Hangul Document',
-      isHeading: true,
-      isBold: true,
-      isItalic: false,
-    });
-  }
-
   if (!title && paragraphs.length > 0) {
     title = paragraphs[0].text.slice(0, 80);
   }

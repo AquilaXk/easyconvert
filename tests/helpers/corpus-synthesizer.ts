@@ -24,7 +24,7 @@ import {
   DrawingMlShape,
 } from '../../src/lib/conversions/office';
 import { buildHwpxContainer } from '../../src/lib/conversions/hwpx';
-import { flacCrc8, flacCrc16, encodePureMp3 } from '../../src/lib/conversions/media-encoder';
+import { encodePureMp3, encodeFlacStream } from '../../src/lib/conversions/media-encoder';
 
 // ============================================================================
 // 1. Enterprise Multi-Column Document Corpus Synthesizer
@@ -867,58 +867,8 @@ export function synthesizeAudioBitstreamCorpus(durationSeconds = 0.5): AudioBits
   // 2. Pure MP3 bitstream via engine's encodePureMp3
   const mp3Buf = encodePureMp3(pcmSamples, sampleRate, channels, '192k', 'Golden Audio Corpus');
 
-  // 3. FLAC Stream with fLaC marker, STREAMINFO, and valid frames
-  const flacStreamHeader = Buffer.from('fLaC', 'ascii');
-
-  // STREAMINFO metadata block (type 0, last block flag = 1: 0x80)
-  const streamInfo = Buffer.alloc(38);
-  streamInfo.writeUInt8(0x80, 0); // last metadata block, type = 0 (STREAMINFO)
-  // length = 34 bytes (24-bit uint)
-  streamInfo.writeUInt8(0x00, 1);
-  streamInfo.writeUInt16BE(34, 2);
-
-  // STREAMINFO payload:
-  // minBlockSize = 1152, maxBlockSize = 1152
-  streamInfo.writeUInt16BE(1152, 4);
-  streamInfo.writeUInt16BE(1152, 6);
-  // minFrameSize = 0, maxFrameSize = 0
-  streamInfo.writeUIntBE(0, 8, 3);
-  streamInfo.writeUIntBE(0, 11, 3);
-
-  // sampleRate (20 bits), channels - 1 (3 bits), bitsPerSample - 1 (5 bits), totalSamples (36 bits)
-  const sr = sampleRate; // 44100
-  const ch = channels - 1; // 1
-  const bps = 16 - 1; // 15
-  const b1 = (sr >> 12) & 0xff;
-  const b2 = (sr >> 4) & 0xff;
-  const b3 = ((sr & 0x0f) << 4) | ((ch & 0x07) << 1) | ((bps >> 4) & 0x01);
-  const b4 = ((bps & 0x0f) << 4) | Number((BigInt(totalSamples) >> 32n) & 0x0fn);
-  streamInfo.writeUInt8(b1, 14);
-  streamInfo.writeUInt8(b2, 15);
-  streamInfo.writeUInt8(b3, 16);
-  streamInfo.writeUInt8(b4, 17);
-  streamInfo.writeUInt32BE(Number(BigInt(totalSamples) & 0xffffffffn), 18);
-
-  // Audio Frame with CRC-8 and CRC-16
-  const frameHeader = Buffer.alloc(6);
-  frameHeader.writeUInt16BE(0xfff8, 0); // Sync code 14 bits (11111111111110) + mandatory 0 + variable block 0
-  frameHeader.writeUInt8(0x19, 2); // 1152 samples blocksize, 44.1kHz
-  frameHeader.writeUInt8(0x18, 3); // 2 channels left/right, 16 bps
-  frameHeader.writeUInt8(0x00, 4); // frame number 0
-  frameHeader.writeUInt8(flacCrc8(frameHeader.subarray(0, 5)), 5); // CRC-8
-
-  // Subframe (Constant or Verbatim subframe for simplicity and validation)
-  const subframe = Buffer.alloc(1152 * channels * 2);
-  for (let i = 0; i < 1152 * channels; i++) {
-    subframe.writeInt16BE(pcmSamples[i % pcmSamples.length], i * 2);
-  }
-
-  const frameBody = Buffer.concat([frameHeader, subframe]);
-  const frameCrc = flacCrc16(frameBody);
-  const crcBuf = Buffer.alloc(2);
-  crcBuf.writeUInt16BE(frameCrc, 0);
-
-  const flacBuf = Buffer.concat([flacStreamHeader, streamInfo, frameBody, crcBuf]);
+  // 3. Authentic RFC 9639 FLAC Stream
+  const flacBuf = encodeFlacStream(pcmSamples, sampleRate, channels);
 
   return {
     wav: wavBuf,

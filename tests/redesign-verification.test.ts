@@ -17,6 +17,15 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(fs.existsSync(apiV2PagePath)).toBe(false);
   });
 
+  it('verifies login and register routes and AuthModal have been completely eliminated', () => {
+    const loginPath = path.join(rootDir, 'src', 'app', 'login');
+    const registerPath = path.join(rootDir, 'src', 'app', 'register');
+    const authModalPath = path.join(rootDir, 'src', 'components', 'AuthModal.tsx');
+    expect(fs.existsSync(loginPath)).toBe(false);
+    expect(fs.existsSync(registerPath)).toBe(false);
+    expect(fs.existsSync(authModalPath)).toBe(false);
+  });
+
   it('verifies Header uses root-relative anchor links to prevent dead links on subpages', () => {
     const headerPath = path.join(rootDir, 'src', 'components', 'Header.tsx');
     const headerContent = fs.readFileSync(headerPath, 'utf-8');
@@ -31,6 +40,43 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     // Should contain 100% Free badge
     expect(headerContent).toContain('100% Free');
+  });
+
+  it('verifies Header is sleek without auth/login/signup residue and contains key elements', () => {
+    const headerPath = path.join(rootDir, 'src', 'components', 'Header.tsx');
+    const headerContent = fs.readFileSync(headerPath, 'utf-8');
+
+    // No auth/login/signup residue or state handlers
+    expect(headerContent).not.toContain('AuthModal');
+    expect(headerContent).not.toContain('Sign in');
+    expect(headerContent).not.toContain('Sign up');
+    expect(headerContent).not.toContain('href="/login"');
+    expect(headerContent).not.toContain('href="/register"');
+    expect(headerContent).not.toContain('easyconvert_user');
+    expect(headerContent).not.toContain('handleAuthSuccess');
+    expect(headerContent).not.toContain('handleSignOut');
+    expect(headerContent).not.toContain('userEmail');
+    expect(headerContent).not.toContain('isAuthOpen');
+    expect(headerContent).not.toContain('authMode');
+
+    // Key elements present: Brand Logo, Tools dropdown, Formats, How It Works, 100% Free badge, Dark/Light mode toggle
+    expect(headerContent).toContain('<BrandLogo');
+    expect(headerContent).toContain('<span>Tools</span>');
+    expect(headerContent).toContain('aria-expanded={isToolsOpen}');
+    expect(headerContent).toContain('aria-expanded={isMobileMenuOpen}');
+    expect(headerContent).toContain('href="/#format-catalog"');
+    expect(headerContent).toContain('href="/#how-it-works"');
+    expect(headerContent).toContain('100% Free');
+    expect(headerContent).toContain('toggleDarkMode');
+  });
+
+  it('verifies subpage scripts do not target eliminated auth routes', () => {
+    const captureScriptPath = path.join(rootDir, 'scripts', 'capture-all-subpages.mjs');
+    if (fs.existsSync(captureScriptPath)) {
+      const scriptContent = fs.readFileSync(captureScriptPath, 'utf-8');
+      expect(scriptContent).not.toContain("path: '/login'");
+      expect(scriptContent).not.toContain("path: '/register'");
+    }
   });
 
   it('verifies Footer uses root-relative anchor links to prevent dead links on subpages', () => {

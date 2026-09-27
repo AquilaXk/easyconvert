@@ -11,7 +11,11 @@ import {
   parseDrawingMlShapes,
   renderDrawingMlToSvg,
 } from '../src/lib/conversions/office';
-import { synthesizeVariableFontCorpus } from './helpers/corpus-synthesizer';
+import {
+  synthesizeVariableFontCorpus,
+  synthesizeAudioBitstreamCorpus,
+} from './helpers/corpus-synthesizer';
+import { decodeAudioBuffer } from '../src/lib/conversions/media-decoder';
 
 /**
  * Returns list of open file descriptors on Unix/macOS or empty list if unavailable.
@@ -36,6 +40,18 @@ describe('Phase 4: 1,000-Iteration Memory Leak & File Descriptor Soak Test', () 
     const memInitial = process.memoryUsage();
 
     const fontCorpus = synthesizeVariableFontCorpus();
+    const audioCorpus = synthesizeAudioBitstreamCorpus(0.05);
+    const samplePng = await sharp({
+      create: {
+        width: 32,
+        height: 32,
+        channels: 4,
+        background: { r: 92, g: 107, b: 192, alpha: 1 },
+      },
+    })
+      .png()
+      .toBuffer();
+
     const testRecords = [
       { id: 101, name: 'Alice', score: 98.5, active: true },
       { id: 102, name: 'Bob', score: 85.0, active: false },
@@ -54,14 +70,12 @@ describe('Phase 4: 1,000-Iteration Memory Leak & File Descriptor Soak Test', () 
       </p:sp>`;
 
     const totalIterations = 1000;
-    const batchSize = 250;
-
     let heapAtWarmup = 0;
     const startTime = Date.now();
 
-    // 2. Execute 1,000 Iteration Conversion Soak
+    // 2. Execute 1,000 Iteration Conversion Soak across 5 Core Domains
     for (let i = 0; i < totalIterations; i++) {
-      const mode = i % 4;
+      const mode = i % 5;
 
       if (mode === 0) {
         // Tabular Parquet Columnar Serialization & Deserialization
@@ -90,6 +104,16 @@ describe('Phase 4: 1,000-Iteration Memory Leak & File Descriptor Soak Test', () 
         const { svg } = renderDrawingMlToSvg(shapes);
         if (!svg.includes('<svg')) {
           throw new Error('DrawingML soak integrity check failed');
+        }
+      } else if (mode === 4) {
+        // Media: Pure Audio Bitstream Decoding & Sharp Raster Image Transformation
+        const audio = decodeAudioBuffer(audioCorpus.wav, 'wav');
+        if (audio.sampleRate !== 44100) {
+          throw new Error('Audio soak integrity check failed');
+        }
+        const resized = await sharp(samplePng).resize(16, 16).toBuffer();
+        if (resized.length === 0) {
+          throw new Error('Sharp soak integrity check failed');
         }
       }
 

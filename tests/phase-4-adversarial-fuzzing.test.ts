@@ -8,7 +8,9 @@ import {
 import {
   decodeParquet,
   encodeParquet,
+  CompactProtocolReader,
 } from '../src/lib/conversions/parquet';
+import { decodeAudioBuffer } from '../src/lib/conversions/media-decoder';
 import {
   decompressZstd,
   compressZstd,
@@ -26,6 +28,7 @@ import {
   parseHwpRecords,
   isCfbfContainer,
 } from '../src/lib/conversions/hwp';
+import { synthesizeVariableFontCorpus } from './helpers/corpus-synthesizer';
 
 // ============================================================================
 // Adversarial Mutator Primitives
@@ -89,16 +92,11 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       zip.file('Contents/section0.xml', '<<<malformed unclosed << << xml ??? & not escaped');
       const malformedZip = await zip.generateAsync({ type: 'nodebuffer' });
 
-      // Parsing malformed XML should either return empty paragraphs or throw handled error
-      let threw = false;
-      try {
-        const doc = await parseHwpxDocument(malformedZip);
-        expect(doc.paragraphs).toBeDefined();
-      } catch (err: any) {
-        threw = true;
-        expect(err).toBeInstanceOf(Error);
-      }
-      expect(typeof threw).toBe('boolean');
+      // Parsing malformed XML should fail-closed and return safe empty AST without crash
+      const doc = await parseHwpxDocument(malformedZip);
+      expect(doc.paragraphs).toEqual([]);
+      expect(doc.tables).toEqual([]);
+      expect(doc.version).toBe('1.0.0.0');
     });
 
     it('fails closed on completely random non-ZIP garbage buffers', async () => {
@@ -164,6 +162,33 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
         expect(() => decodeParquet(truncated)).toThrow();
       }
     });
+
+    it('fails closed on Thrift varint continuation bomb (200 consecutive 0x80 bytes)', () => {
+      const bomb = Buffer.alloc(200, 0x80);
+      const reader = new CompactProtocolReader(bomb, 0);
+      expect(() => reader.readVarint()).toThrow(/varint exceeds 10 bytes/i);
+    });
+
+    it('fails closed on Thrift list allocation bomb (claiming 100,000,000 items in small payload)', () => {
+      // 0xf0 = size >= 15 | list type 0. Followed by varint 100,000,000 (0xc0, 0x94, 0xa3, 0x2f)
+      const listBomb = Buffer.from([0xf0, 0xc0, 0x94, 0xa3, 0x2f, 0x00, 0x00]);
+      const reader = new CompactProtocolReader(listBomb, 0);
+      expect(() => reader.readListBegin()).toThrow(/exceeds remaining buffer bytes/i);
+    });
+
+    it('fails closed when footer length is 0 or overlaps magic header', () => {
+      const validParquet = encodeParquet([{ a: 1 }]);
+
+      // Footer length = 0
+      const zeroLen = Buffer.from(validParquet);
+      zeroLen.writeUInt32LE(0, zeroLen.length - 8);
+      expect(() => decodeParquet(zeroLen)).toThrow(/invalid footer length 0/i);
+
+      // Footer length causing overlap with 'PAR1' header (offset < 4)
+      const overlap = Buffer.from(validParquet);
+      overlap.writeUInt32LE(overlap.length - 8, overlap.length - 8); // metaOffset = 0 < 4
+      expect(() => decodeParquet(overlap)).toThrow(/overlaps magic header/i);
+    });
   });
 
   // =========================================================================
@@ -211,6 +236,20 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
 
       // Corrupted bitstreams should either throw handled error or rarely succeed if flips are benign
       expect(handledErrors).toBeGreaterThanOrEqual(1);
+    });
+
+    it('handles large window descriptor exponents (>= 21) without 32-bit bitwise integer overflow or negative window size', () => {
+      // Magic (4 bytes) + Frame Header Descriptor (1 byte: singleSegment=0, dictId=0)
+      // + Window Descriptor byte: exponent = 21, mantissa = 0. (21 << 3) = 168 (0xA8)
+      const frameWithLargeWindow = Buffer.from([
+        0x28, 0xb5, 0x2f, 0xfd, // Magic
+        0x00,                   // FHD: singleSegment = 0, fcsFlag = 0
+        0xa8,                   // WD: exponent = 21, mantissa = 0
+      ]);
+
+      const header = parseZstdFrameHeader(frameWithLargeWindow, 0);
+      expect(header.windowSize).toBeGreaterThan(0);
+      expect(header.windowSize).toBe(2147483648); // 2GB, strictly positive without signed overflow
     });
   });
 
@@ -265,6 +304,50 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
 
       const meta = inspectVariableFont(truncatedFont);
       expect(meta.isVariableFont).toBe(false);
+    });
+
+    it('fails closed when fvar axisSize is less than minimum 20 bytes', () => {
+      const hostileFvar = Buffer.alloc(32);
+      hostileFvar.writeUInt16BE(1, 0);
+      hostileFvar.writeUInt16BE(0, 2);
+      hostileFvar.writeUInt16BE(16, 4);
+      hostileFvar.writeUInt16BE(2, 6);
+      hostileFvar.writeUInt16BE(1, 8); // 1 axis
+      hostileFvar.writeUInt16BE(4, 10); // Malicious axisSize = 4 (needs >= 20)
+
+      expect(() => parseFvarTable(hostileFvar)).toThrow(/axisSize 4 is less than minimum 20 bytes/i);
+    });
+
+    it('fails closed when fvar instanceSize is less than coordinates footprint', () => {
+      const hostileFvar = Buffer.alloc(64);
+      hostileFvar.writeUInt16BE(1, 0);
+      hostileFvar.writeUInt16BE(0, 2);
+      hostileFvar.writeUInt16BE(16, 4);
+      hostileFvar.writeUInt16BE(2, 6);
+      hostileFvar.writeUInt16BE(1, 8); // 1 axis
+      hostileFvar.writeUInt16BE(20, 10); // axisSize = 20
+      hostileFvar.writeUInt16BE(1, 12); // 1 instance
+      hostileFvar.writeUInt16BE(2, 14); // Malicious instanceSize = 2 (needs >= 8)
+
+      // Mock 1 valid axis
+      hostileFvar.write('wght', 16, 4, 'ascii');
+
+      expect(() => parseFvarTable(hostileFvar)).toThrow(/instanceSize 2 is less than minimum required 8 bytes/i);
+    });
+
+    it('handles NaN or infinite coordinates in instantiateVariableFont safely by falling back to default values', () => {
+      const fontCorpus = synthesizeVariableFontCorpus();
+      const instantiated = instantiateVariableFont(fontCorpus.fontBuffer, {
+        wght: NaN,
+        wdth: Infinity,
+      });
+
+      expect(instantiated).toBeDefined();
+      expect(instantiated.length).toBeGreaterThan(100);
+      const meta = inspectVariableFont(instantiated);
+      expect(meta.isVariableFont).toBe(true);
+      const wghtAxis = meta.axes.find((a) => a.tag === 'wght');
+      expect(wghtAxis?.defaultValue).toBe(400); // Fell back to default 400
     });
   });
 
@@ -352,6 +435,27 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
 
       const elapsed = Date.now() - startTime;
       expect(elapsed).toBeLessThan(1500); // 100 iterations completed rapidly with zero hangs
+    });
+  });
+
+  // =========================================================================
+  // 7. Audio Bitstream Adversarial Fuzzing
+  // =========================================================================
+  describe('7. Audio Bitstream Adversarial Fuzzing', () => {
+    it('fails closed on truncated WAV bitstreams missing subchunk header', () => {
+      const badWav = Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt '); // Truncated mid fmt chunk
+      expect(() => decodeAudioBuffer(badWav, 'wav')).toThrow();
+    });
+
+    it('fails closed on corrupted FLAC stream with broken sync word or truncated header', () => {
+      const badFlac = Buffer.from('fLaC\x80\x00\x00\x22TRUNCATED_STREAMINFO_LESS_THAN_34_BYTES');
+      expect(() => decodeAudioBuffer(badFlac, 'flac')).toThrow();
+    });
+
+    it('fails closed on non-audio random noise bitstreams without unhandled crashes', () => {
+      const noise = Buffer.from('RANDOM_NOISE_NON_AUDIO_BYTES_0123456789');
+      expect(() => decodeAudioBuffer(noise, 'wav')).toThrow();
+      expect(() => decodeAudioBuffer(noise, 'flac')).toThrow();
     });
   });
 });
