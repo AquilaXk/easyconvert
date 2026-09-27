@@ -40,6 +40,7 @@ export interface WasmWorkerStats {
 }
 
 import { checkWasmSimdSupport } from '../tier-router';
+import { instantiateSimdEngine, WasmSimdExports } from './simd-bytecode';
 
 /**
  * Detects whether the current runtime environment is cross-origin isolated.
@@ -226,14 +227,20 @@ export class WasmEngine {
   private cumulativeBytes: number = 0;
   private tasksCompleted: number = 0;
   private readonly memory: WebAssembly.Memory | null = null;
+  private readonly simdExports: WasmSimdExports | null = null;
   private readonly hasSimd: boolean;
 
   constructor() {
     this.hasSimd = checkWasmSimdSupport();
     try {
-      this.memory = createBoundedWasmMemory(64, 512); // Safe initialization in workers
+      this.memory = createBoundedWasmMemory(64, 16384); // Safe initialization in workers
+      if (this.hasSimd && this.memory) {
+        const { exports } = instantiateSimdEngine(this.memory);
+        this.simdExports = exports;
+      }
     } catch {
       this.memory = null;
+      this.simdExports = null;
     }
   }
 
@@ -253,6 +260,68 @@ export class WasmEngine {
     };
   }
 
+  private ensureMemoryCapacity(byteLength: number): boolean {
+    if (!this.memory) return false;
+    const currentBytes = this.memory.buffer.byteLength;
+    if (currentBytes >= byteLength) return true;
+    const neededPages = Math.ceil((byteLength - currentBytes) / 65536);
+    try {
+      this.memory.grow(neededPages);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public executeGrayscale(input: Uint8Array): Uint8Array {
+    if (this.simdExports && this.memory && this.ensureMemoryCapacity(input.byteLength)) {
+      const u8 = new Uint8Array(this.memory.buffer);
+      u8.set(input, 0);
+      this.simdExports.rgba_grayscale(0, input.byteLength);
+      return new Uint8Array(u8.subarray(0, input.byteLength));
+    }
+    return applyRgbaGrayscale(input);
+  }
+
+  public executeInvert(input: Uint8Array): Uint8Array {
+    if (this.simdExports && this.memory && this.ensureMemoryCapacity(input.byteLength)) {
+      const u8 = new Uint8Array(this.memory.buffer);
+      u8.set(input, 0);
+      this.simdExports.rgba_invert(0, input.byteLength);
+      return new Uint8Array(u8.subarray(0, input.byteLength));
+    }
+    return applyRgbaInvert(input);
+  }
+
+  public executeBrightness(input: Uint8Array, delta: number = 20): Uint8Array {
+    if (this.simdExports && this.memory && this.ensureMemoryCapacity(input.byteLength)) {
+      const u8 = new Uint8Array(this.memory.buffer);
+      u8.set(input, 0);
+      this.simdExports.rgba_brightness(0, input.byteLength, delta);
+      return new Uint8Array(u8.subarray(0, input.byteLength));
+    }
+    return applyRgbaBrightness(input, delta);
+  }
+
+  public executeQuantize(
+    input: Uint8Array,
+    width: number = 0,
+    height: number = 0,
+    maxColors: number = 256,
+    dither: boolean = false
+  ): Uint8Array {
+    if (!dither && this.simdExports && this.memory && this.ensureMemoryCapacity(input.byteLength)) {
+      const rLevels = maxColors <= 16 ? 4 : 8;
+      const gLevels = maxColors <= 16 ? 4 : 8;
+      const bLevels = maxColors <= 16 ? 2 : 4;
+      const u8 = new Uint8Array(this.memory.buffer);
+      u8.set(input, 0);
+      this.simdExports.rgba_quantize(0, input.byteLength, rLevels, gLevels, bLevels);
+      return new Uint8Array(u8.subarray(0, input.byteLength));
+    }
+    return applyRgbaQuantize(input, width, height, maxColors, dither);
+  }
+
   public async executeTask(
     request: WasmTaskRequest,
     onProgress?: (progress: number) => void
@@ -265,16 +334,16 @@ export class WasmEngine {
 
     switch (request.task) {
       case 'rgba-grayscale':
-        outputBytes = applyRgbaGrayscale(inputBytes);
+        outputBytes = this.executeGrayscale(inputBytes);
         break;
       case 'rgba-invert':
-        outputBytes = applyRgbaInvert(inputBytes);
+        outputBytes = this.executeInvert(inputBytes);
         break;
       case 'rgba-brightness':
-        outputBytes = applyRgbaBrightness(inputBytes, request.options?.brightnessDelta ?? 25);
+        outputBytes = this.executeBrightness(inputBytes, request.options?.brightnessDelta ?? 25);
         break;
       case 'rgba-quantize':
-        outputBytes = applyRgbaQuantize(
+        outputBytes = this.executeQuantize(
           inputBytes,
           request.options?.width || 0,
           request.options?.height || 0,
