@@ -177,10 +177,10 @@ export default function Hero({
 
       {/* 1. DARK HERO SECTION */}
       <section className={`group relative overflow-hidden bg-gradient-to-br from-neutral-900 via-neutral-800 to-neutral-900 text-white ${hasActiveQueue ? 'condensed pb-8 pt-20' : 'pb-44 pt-24'}`}>
-        {/* Exact red radial gradient */}
+        {/* Signature brand lavender radial gradient */}
         <div
           aria-hidden="true"
-          className="absolute inset-0 bg-[radial-gradient(ellipse_70%_50%_at_70%_-10%,rgba(120,40,40,0.3),transparent)] pointer-events-none"
+          className="absolute inset-0 bg-[radial-gradient(ellipse_70%_50%_at_70%_-10%,rgba(92,107,192,0.22),transparent)] pointer-events-none"
         />
 
         {/* Subtle grid pattern background */}
@@ -359,20 +359,48 @@ export default function Hero({
       {/* 2. FLOATING DROPZONE CARD */}
       {!hasActiveQueue && (
         <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-col px-4 pb-6 sm:px-6 -mt-32">
+          {/* Quick Preset Pills */}
+          <div className="flex items-center justify-center flex-wrap gap-2 mb-5">
+            <span className="text-xs font-semibold text-neutral-300 dark:text-neutral-400 uppercase tracking-wider mr-1">
+              Popular:
+            </span>
+            {[
+              { label: 'PDF to Word', src: 'pdf', tgt: 'docx' },
+              { label: 'Word to PDF', src: 'docx', tgt: 'pdf' },
+              { label: 'Image to WebP', src: 'png', tgt: 'webp' },
+              { label: 'Video to MP3', src: 'mp4', tgt: 'mp3' },
+              { label: 'HEIC to JPG', src: 'heic', tgt: 'jpg' },
+              { label: 'EPUB to PDF', src: 'epub', tgt: 'pdf' },
+            ].map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  setSourceFormat(preset.src);
+                  setTargetFormat(preset.tgt);
+                  fileInputRef.current?.click();
+                }}
+                className="px-3 py-1 text-xs font-medium rounded-full bg-neutral-900/80 hover:bg-neutral-800 text-neutral-200 border border-neutral-700 hover:border-[#5C6BC0] hover:text-white transition-all cursor-pointer shadow-sm"
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            className={`group/dropzone relative mx-auto mb-10 w-full max-w-2xl overflow-visible rounded-3xl border bg-white px-6 py-8 text-center shadow-xl ring-1 transition-all duration-300 ease-out sm:px-10 sm:py-10 dark:bg-neutral-900 ${
+            className={`group/dropzone relative mx-auto mb-10 w-full max-w-2xl overflow-visible rounded-3xl border bg-white px-6 py-9 text-center shadow-xl ring-1 transition-all duration-300 ease-out sm:px-10 sm:py-11 dark:bg-[#1a1c20] ${
               isDragOver
-                ? 'border-[#5C6BC0] ring-[#5C6BC0]/30 scale-[1.01]'
+                ? 'border-[#5C6BC0] border-2 border-dashed ring-[#5C6BC0]/30 scale-[1.01] bg-[#5C6BC0]/5'
                 : 'border-neutral-200/80 ring-black/[0.04] shadow-neutral-950/10 hover:border-neutral-300 hover:shadow-neutral-950/15 dark:border-white/10 dark:ring-white/[0.06] dark:shadow-black/40 dark:hover:border-white/20 dark:hover:shadow-black/50'
             }`}
           >
             {/* Subtle lavender background ambient */}
             <div
               aria-hidden="true"
-              className="opacity-60 group-hover/dropzone:opacity-90 pointer-events-none absolute inset-0 rounded-3xl bg-[radial-gradient(ellipse_60%_60%_at_50%_45%,rgba(92,107,192,0.08),transparent_70%)] transition-opacity duration-300"
+              className="opacity-60 group-hover/dropzone:opacity-90 pointer-events-none absolute inset-0 rounded-3xl bg-[radial-gradient(ellipse_60%_60%_at_50%_45%,rgba(92,107,192,0.1),transparent_70%)] transition-opacity duration-300"
             />
             <div
               aria-hidden="true"
@@ -385,42 +413,42 @@ export default function Hero({
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 aria-label="Select file"
-                className="inline-flex items-center justify-center rounded-md text-[#5C6BC0] transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/50 cursor-pointer"
+                className="inline-flex items-center justify-center rounded-2xl p-3 bg-[#5C6BC0]/10 text-[#5C6BC0] transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/50 cursor-pointer"
               >
-                <svg className="size-11 fill-current" viewBox="0 0 576 512">
+                <svg className="size-10 fill-current" viewBox="0 0 576 512">
                   <path d="M144 480c-79.5 0-144-64.5-144-144 0-63.4 41-117.2 97.9-136.5-1.3-7.7-1.9-15.5-1.9-23.5 0-79.5 64.5-144 144-144 55.4 0 103.5 31.3 127.6 77.1 14.2-8.3 30.8-13.1 48.4-13.1 53 0 96 43 96 96 0 15.7-3.8 30.6-10.5 43.7 44 20.3 74.5 64.7 74.5 116.3 0 70.7-57.3 128-128 128l-304 0zM305 191c-9.4-9.4-24.6-9.4-33.9 0l-72 72c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0l31-31 0 102.1c0 13.3 10.7 24 24 24s24-10.7 24-24l0-102.1 31 31c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-72-72z" />
                 </svg>
               </button>
 
               {/* Text */}
               <div className="space-y-1">
-                <h2 className="text-xl font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-2xl">
-                  Select your file to convert
+                <h2 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-white sm:text-2xl">
+                  Choose Files to Convert
                 </h2>
                 <p className="text-sm text-neutral-500 dark:text-neutral-400 sm:text-base">
-                  or drop your file here.
+                  Drop files here, or paste from clipboard
                 </p>
               </div>
 
               {/* Signature Split CTA Button */}
               <div className="inline-flex">
-                <div className="relative inline-flex -space-x-px w-full shadow-sm rounded-md overflow-visible">
+                <div className="relative inline-flex -space-x-px w-full shadow-md rounded-xl overflow-visible">
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="rounded-md font-medium inline-flex items-center transition-colors px-3 py-2 text-base gap-2 rounded-r-none focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] outline-none"
+                    className="rounded-l-xl font-semibold inline-flex items-center transition-all px-5 py-3 text-base gap-2.5 focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] outline-none shadow-sm cursor-pointer"
                   >
                     <svg className="size-5 fill-current shrink-0" viewBox="0 0 384 512">
                       <path d="M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM192 240c-13.3 0-24 10.7-24 24l0 48-48 0c-13.3 0-24 10.7-24 24s10.7 24 24 24l48 0 0 48c0 13.3 10.7 24 24 24s24-10.7 24-24l0-48 48 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-48 0 0-48c0-13.3-10.7-24-24-24z" />
                     </svg>
-                    <span>Select File</span>
+                    <span>Choose Files</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                     aria-label="Select file source"
-                    className="rounded-md font-medium inline-flex items-center transition-colors text-base rounded-l-none border-l border-white/20 focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] p-2 outline-none"
+                    className="rounded-r-xl font-semibold inline-flex items-center transition-all text-base border-l border-white/20 focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] px-3.5 py-3 outline-none cursor-pointer"
                   >
                     <ChevronDown className={`size-5 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
                   </button>
@@ -496,6 +524,22 @@ export default function Hero({
                     </>
                   )}
                 </div>
+              </div>
+
+              {/* Trust & Spec Badges */}
+              <div className="flex items-center justify-center flex-wrap gap-x-6 gap-y-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 pt-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  100% Free &amp; Unlimited
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="size-1.5 rounded-full bg-[#5C6BC0]" />
+                  Max 1 GB File Size
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  Zero Cloud Retention
+                </span>
               </div>
             </div>
           </div>
