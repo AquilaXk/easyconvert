@@ -2518,9 +2518,25 @@ export function formatSpreadsheetCellValue(
   return rawVal;
 }
 
+export interface OfficeWorksheetCell {
+  value: string;
+  formattedValue?: string;
+  type?: string;
+  isHeader?: boolean;
+  bold?: boolean;
+  italic?: boolean;
+  fontSize?: number;
+  fontColor?: string;
+  fillColor?: string;
+  borderColor?: string;
+  align?: 'left' | 'center' | 'right';
+}
+
 export interface OfficeWorksheet {
   name: string;
   rows: string[][];
+  structuredRows?: OfficeWorksheetCell[][];
+  columnWidths?: number[];
 }
 
 /**
@@ -2546,9 +2562,18 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     }
   }
 
-  // 2. Parse NumberFormats from xl/styles.xml
+  // 2. Parse NumberFormats, Fonts, Fills, Borders, and Cell Styles from xl/styles.xml
   const styleNumFmtMap = new Map<number, number>();
   const customNumFmtMap = new Map<number, string>();
+
+  interface ParsedCellStyle {
+    numFmtId?: number;
+    font?: { bold?: boolean; italic?: boolean; size?: number; color?: string };
+    fillColor?: string;
+    hasBorder?: boolean;
+    align?: 'left' | 'center' | 'right';
+  }
+  const cellStylesMap = new Map<number, ParsedCellStyle>();
 
   const stylesFile = zip.file('xl/styles.xml');
   if (stylesFile) {
@@ -2561,14 +2586,101 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       customNumFmtMap.set(parseInt(nfMatch[1], 10), nfMatch[2]);
     }
 
+    // Parse fonts: <fonts><font>...<b/>...<sz val="11"/>...<color rgb="FF0000"/></font></fonts>
+    const parsedFonts: Array<{ bold?: boolean; italic?: boolean; size?: number; color?: string }> = [];
+    const fontsMatch = stylesXml.match(/<fonts\b[^>]*>([\s\S]*?)<\/fonts>/i);
+    if (fontsMatch) {
+      const fontRegex = /<font\b[^>]*>([\s\S]*?)<\/font>/gi;
+      let fMatch: RegExpExecArray | null;
+      while ((fMatch = fontRegex.exec(fontsMatch[1])) !== null) {
+        const fBody = fMatch[1];
+        const isBold = /<b\b/i.test(fBody);
+        const isItalic = /<i\b/i.test(fBody);
+        const szMatch = fBody.match(/<sz\s+[^>]*?val="([\d.]+)"/i);
+        const sz = szMatch ? parseFloat(szMatch[1]) : undefined;
+        const clrMatch = fBody.match(/<color\s+[^>]*?rgb="([A-Fa-f0-9]{6,8})"/i);
+        let color: string | undefined;
+        if (clrMatch) {
+          const rawClr = clrMatch[1];
+          color = '#' + (rawClr.length === 8 ? rawClr.slice(2) : rawClr);
+        }
+        parsedFonts.push({ bold: isBold, italic: isItalic, size: sz, color });
+      }
+    }
+
+    // Parse fills: <fills><fill><patternFill ...><fgColor rgb="FFF0F2FE"/></patternFill></fill></fills>
+    const parsedFills: Array<{ fillColor?: string }> = [];
+    const fillsMatch = stylesXml.match(/<fills\b[^>]*>([\s\S]*?)<\/fills>/i);
+    if (fillsMatch) {
+      const fillRegex = /<fill\b[^>]*>([\s\S]*?)<\/fill>/gi;
+      let flMatch: RegExpExecArray | null;
+      while ((flMatch = fillRegex.exec(fillsMatch[1])) !== null) {
+        const flBody = flMatch[1];
+        const fgMatch = flBody.match(/<fgColor\s+[^>]*?rgb="([A-Fa-f0-9]{6,8})"/i);
+        let fillColor: string | undefined;
+        if (fgMatch) {
+          const rawClr = fgMatch[1];
+          fillColor = '#' + (rawClr.length === 8 ? rawClr.slice(2) : rawClr);
+        }
+        parsedFills.push({ fillColor });
+      }
+    }
+
+    // Parse borders: <borders><border><left style="thin">...
+    const parsedBorders: Array<{ hasBorder?: boolean }> = [];
+    const bordersMatch = stylesXml.match(/<borders\b[^>]*>([\s\S]*?)<\/borders>/i);
+    if (bordersMatch) {
+      const borderRegex = /<border\b[^>]*>([\s\S]*?)<\/border>/gi;
+      let bMatch: RegExpExecArray | null;
+      while ((bMatch = borderRegex.exec(bordersMatch[1])) !== null) {
+        const bBody = bMatch[1];
+        const hasBorder = /<(left|right|top|bottom)\s+style="(?!none)[^"]+"/i.test(bBody);
+        parsedBorders.push({ hasBorder });
+      }
+    }
+
     // Parse <cellXfs><xf numFmtId="..." .../>
     const cellXfsMatch = stylesXml.match(/<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/i);
     if (cellXfsMatch) {
-      const xfRegex = /<xf\b[^>]*?numFmtId="(\d+)"/gi;
+      const xfRegex = /<xf\b([^>]*?)(?:>([\s\S]*?)<\/xf>|\/>)/gi;
       let xfMatch: RegExpExecArray | null;
       let xfIdx = 0;
       while ((xfMatch = xfRegex.exec(cellXfsMatch[1])) !== null) {
-        styleNumFmtMap.set(xfIdx++, parseInt(xfMatch[1], 10));
+        const xfAttrs = xfMatch[1];
+        const xfBody = xfMatch[2] || '';
+
+        const nfId = xfAttrs.match(/numFmtId="(\d+)"/i);
+        const fontId = xfAttrs.match(/fontId="(\d+)"/i);
+        const fillId = xfAttrs.match(/fillId="(\d+)"/i);
+        const borderId = xfAttrs.match(/borderId="(\d+)"/i);
+
+        const alignMatch = (xfAttrs + xfBody).match(/<alignment\s+[^>]*?horizontal="([a-zA-Z]+)"/i);
+        let align: 'left' | 'center' | 'right' | undefined;
+        if (alignMatch) {
+          const hAlign = alignMatch[1].toLowerCase();
+          if (hAlign === 'left' || hAlign === 'center' || hAlign === 'right') {
+            align = hAlign;
+          }
+        }
+
+        const numFmtVal = nfId ? parseInt(nfId[1], 10) : undefined;
+        if (numFmtVal !== undefined) {
+          styleNumFmtMap.set(xfIdx, numFmtVal);
+        }
+
+        const font = fontId ? parsedFonts[parseInt(fontId[1], 10)] : undefined;
+        const fill = fillId ? parsedFills[parseInt(fillId[1], 10)] : undefined;
+        const border = borderId ? parsedBorders[parseInt(borderId[1], 10)] : undefined;
+
+        cellStylesMap.set(xfIdx, {
+          numFmtId: numFmtVal,
+          font,
+          fillColor: fill?.fillColor,
+          hasBorder: border?.hasBorder,
+          align,
+        });
+
+        xfIdx++;
       }
     }
   }
@@ -2634,8 +2746,26 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
     const sheetXml = await sFile.async('text');
     const rows: string[][] = [];
+    const structuredRows: OfficeWorksheetCell[][] = [];
     const cellMap: Record<string, any> = {};
     const formulaCells: Array<{ ref: string; formula: string; rowIdx: number; colIdx: number }> = [];
+
+    // Parse column widths from <cols><col min="1" max="1" width="15" customWidth="1"/></cols>
+    const columnWidths: number[] = [];
+    const colsMatch = sheetXml.match(/<cols\b[^>]*>([\s\S]*?)<\/cols>/i);
+    if (colsMatch) {
+      const colRegex = /<col\s+[^>]*?min="(\d+)"[^>]*?max="(\d+)"[^>]*?width="([\d.]+)"/gi;
+      let clMatch: RegExpExecArray | null;
+      while ((clMatch = colRegex.exec(colsMatch[1])) !== null) {
+        const min = parseInt(clMatch[1], 10) - 1;
+        const max = parseInt(clMatch[2], 10) - 1;
+        const width = parseFloat(clMatch[3]);
+        const ptWidth = Math.round(width * 7.5);
+        for (let c = min; c <= max; c++) {
+          columnWidths[c] = ptWidth;
+        }
+      }
+    }
 
     const rowRegex = /<row\b([^>]*?)(?:>([\s\S]*?)<\/row>|\/>)/g;
     let rMatch: RegExpExecArray | null;
@@ -2648,9 +2778,11 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
         const targetRowIdx = parseInt(rRowAttr[1], 10) - 1;
         while (rows.length < targetRowIdx) {
           rows.push([]);
+          structuredRows.push([]);
         }
       }
       const cells: string[] = [];
+      const structuredCells: OfficeWorksheetCell[] = [];
       const cellRegex = /<c\s+([^>]*?)(?:>([\s\S]*?)<\/c>|\/>)/g;
       let cMatch: RegExpExecArray | null;
       const rowIdx = rows.length;
@@ -2681,6 +2813,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
         while (cells.length < colIdx) {
           cells.push('');
+          structuredCells.push({ value: '' });
         }
 
         let cellValue = '';
@@ -2720,21 +2853,184 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
         }
 
         cells[colIdx] = cellValue;
+
+        const style = styleIdx !== undefined ? cellStylesMap.get(styleIdx) : undefined;
+        const isNum = !isNaN(Number(cellValue)) && cellValue.trim() !== '';
+        const cellAlign = style?.align || (isNum ? 'right' : 'left');
+
+        structuredCells[colIdx] = {
+          value: cellValue,
+          bold: style?.font?.bold,
+          italic: style?.font?.italic,
+          fontSize: style?.font?.size,
+          fontColor: style?.font?.color,
+          fillColor: style?.fillColor,
+          borderColor: style?.hasBorder ? '#CBD5E1' : undefined,
+          align: cellAlign,
+        };
+
         nextColIdx = colIdx + 1;
       }
       rows.push(cells);
+      structuredRows.push(structuredCells);
     }
 
     // Evaluate dynamic formulas with DAG dependency sorter & cycle detection
     if (formulaCells.length > 0) {
       const dagEngine = new SpreadsheetDagEngine(cellMap);
       dagEngine.evaluateWithDag(formulaCells, rows);
+      for (const fc of formulaCells) {
+        if (structuredRows[fc.rowIdx] && structuredRows[fc.rowIdx][fc.colIdx]) {
+          structuredRows[fc.rowIdx][fc.colIdx].value = rows[fc.rowIdx][fc.colIdx] || '';
+        }
+      }
     }
 
-    allSheets.push({ name: entry.name, rows });
+    allSheets.push({
+      name: entry.name,
+      rows,
+      structuredRows,
+      columnWidths: columnWidths.length > 0 ? columnWidths : undefined,
+    });
   }
 
   return allSheets;
+}
+
+async function generatePdfFromWorksheets(
+  sheets: OfficeWorksheet[],
+  options: ConversionOptions,
+  title: string
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let maxCols = 1;
+    sheets.forEach((s) => {
+      s.rows.forEach((r) => {
+        if (r.length > maxCols) maxCols = r.length;
+      });
+    });
+
+    const isLandscape = options.orientation === 'landscape' || maxCols > 6;
+    const doc = new PDFDocument({
+      size: 'A4',
+      layout: isLandscape ? 'landscape' : 'portrait',
+      margin: 36,
+      info: { Title: title, Creator: 'EasyConvert Spreadsheet Engine' },
+    });
+
+    const chunks: Buffer[] = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', (err) => reject(err));
+
+    const pageWidth = doc.page.width;
+    const pageHeight = doc.page.height;
+    const margin = 36;
+    const availableWidth = pageWidth - margin * 2;
+
+    sheets.forEach((sheet, sheetIdx) => {
+      if (sheetIdx > 0) doc.addPage();
+
+      // Top lavender brand accent bar
+      doc.rect(margin, 28, availableWidth, 3).fill('#5C6BC0');
+      doc.y = 40;
+
+      // Title & Sheet Name
+      doc.fillColor('#1F2340').font('Helvetica-Bold').fontSize(16).text(title, margin, doc.y);
+      if (sheets.length > 1) {
+        doc.fillColor('#5C6BC0').font('Helvetica-Bold').fontSize(11).text(`Sheet: ${sheet.name}`, margin, doc.y + 4);
+      }
+      doc.y += 12;
+
+      if (sheet.rows.length === 0) return;
+
+      const colCount = Math.max(1, ...sheet.rows.map((r) => r.length));
+
+      // Calculate dynamic column widths
+      const colWidths: number[] = new Array(colCount).fill(0);
+      let totalAssigned = 0;
+
+      for (let c = 0; c < colCount; c++) {
+        if (sheet.columnWidths && sheet.columnWidths[c] && sheet.columnWidths[c] > 20) {
+          colWidths[c] = sheet.columnWidths[c];
+        } else {
+          let maxLen = 4;
+          sheet.rows.forEach((r) => {
+            const val = r[c] || '';
+            if (val.length > maxLen) maxLen = Math.min(30, val.length);
+          });
+          colWidths[c] = maxLen * 7.5;
+        }
+        totalAssigned += colWidths[c];
+      }
+
+      const scale = availableWidth / Math.max(1, totalAssigned);
+      for (let c = 0; c < colCount; c++) {
+        colWidths[c] = Math.round(colWidths[c] * scale);
+      }
+
+      const rowHeight = 20;
+
+      const renderRow = (rIdx: number, isHeader = false) => {
+        const row = sheet.rows[rIdx] || [];
+        const structuredRow = sheet.structuredRows?.[rIdx] || [];
+        const curY = doc.y;
+
+        let curX = margin;
+        for (let cIdx = 0; cIdx < colCount; cIdx++) {
+          const colW = colWidths[cIdx];
+          const cell = structuredRow[cIdx];
+          const text = cell?.value ?? (row[cIdx] || '');
+
+          const isHdr = isHeader || rIdx === 0;
+          let fill = cell?.fillColor;
+          if (!fill) {
+            if (isHdr) fill = '#F0F2FE';
+            else if (rIdx % 2 === 1) fill = '#FAFAFE';
+            else fill = '#FFFFFF';
+          }
+          doc.rect(curX, curY, colW, rowHeight).fill(fill);
+
+          const borderCol = cell?.borderColor || (isHdr ? '#CCD2FC' : '#E1E4EE');
+          doc.rect(curX, curY, colW, rowHeight).strokeColor(borderCol).lineWidth(0.5).stroke();
+
+          if (text) {
+            const bold = isHdr || !!cell?.bold;
+            const italic = !!cell?.italic;
+            const fontName = bold && italic ? 'Helvetica-BoldOblique' : bold ? 'Helvetica-Bold' : italic ? 'Helvetica-Oblique' : 'Helvetica';
+            const fontCol = cell?.fontColor || (isHdr ? '#1F2340' : '#4D536B');
+            const align = cell?.align || 'left';
+
+            doc.font(fontName)
+              .fontSize(isHdr ? 9 : 8.5)
+              .fillColor(fontCol)
+              .text(text, curX + 4, curY + 5, {
+                width: Math.max(10, colW - 8),
+                height: rowHeight - 8,
+                align,
+                lineBreak: false,
+                ellipsis: true,
+              });
+          }
+
+          curX += colW;
+        }
+
+        doc.y = curY + rowHeight;
+      };
+
+      sheet.rows.forEach((_, rIdx) => {
+        if (doc.y + rowHeight > pageHeight - margin) {
+          doc.addPage();
+          doc.y = margin;
+          renderRow(0, true);
+        }
+        renderRow(rIdx, rIdx === 0);
+      });
+    });
+
+    doc.end();
+  });
 }
 
 /**
@@ -2900,8 +3196,7 @@ async function convertXlsxSource(
 
   // XLSX -> PDF
   if (tgt === 'pdf') {
-    const tableSections = allSheets.map((s) => ({ rows: s.rows }));
-    const pdfBuffer = await generatePdfFromDocx([], tableSections, options, baseName);
+    const pdfBuffer = await generatePdfFromWorksheets(allSheets, options, baseName);
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
 
@@ -2949,7 +3244,7 @@ export interface VisualSlideShape {
   y: number;
   width: number;
   height: number;
-  shapeType?: 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'diamond' | 'star5' | 'line' | string;
+  shapeType?: 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'diamond' | 'star5' | 'line' | 'picture' | 'table' | string;
   geometryPath?: string;
   fillColor?: string;
   strokeColor?: string;
@@ -2958,6 +3253,12 @@ export interface VisualSlideShape {
   fontSize?: number;
   fontColor?: string;
   bold?: boolean;
+  imageData?: Buffer;
+  imageMimeType?: string;
+  tableData?: {
+    rows: Array<Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }>>;
+    colWidths?: number[];
+  };
 }
 
 export interface VisualSlide {
@@ -2967,6 +3268,23 @@ export interface VisualSlide {
   width: number;
   height: number;
   backgroundColor?: string;
+}
+
+function resolveZipPath(baseDir: string, relativePath: string): string {
+  if (relativePath.startsWith('/')) {
+    return relativePath.slice(1);
+  }
+  const parts = `${baseDir}/${relativePath}`.split('/');
+  const resolved: string[] = [];
+  for (const part of parts) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      resolved.pop();
+    } else {
+      resolved.push(part);
+    }
+  }
+  return resolved.join('/');
 }
 
 async function convertPptxSource(
@@ -3025,12 +3343,242 @@ async function convertPptxSource(
       if (clean) texts.push(clean);
     }
 
-    // Extract DrawingML shapes (<p:sp>)
+    // Load relationships for media and parts
+    const relsFileName = slideFiles[i].replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+    const relsFile = zip.file(relsFileName);
+    const relsMap = new Map<string, string>();
+    if (relsFile) {
+      const relsXml = await relsFile.async('text');
+      const relRegex = /<Relationship\s+[^>]*?Id="([^"]+)"[^>]*?Target="([^"]+)"/gi;
+      let rMatch: RegExpExecArray | null;
+      while ((rMatch = relRegex.exec(relsXml)) !== null) {
+        relsMap.set(rMatch[1], rMatch[2]);
+      }
+    }
+
     const shapes: VisualSlideShape[] = [];
+
+    // 1. Group shapes (<p:grpSp>)
+    const grpRegex = /<p:grpSp\b[\s\S]*?<\/p:grpSp>/g;
+    let grpMatch: RegExpExecArray | null;
+    while ((grpMatch = grpRegex.exec(xml)) !== null) {
+      const grpXml = grpMatch[0];
+      const offMatch = grpXml.match(/<p:grpSpPr>[\s\S]*?<a:xfrm>[\s\S]*?<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
+      const extMatch = grpXml.match(/<p:grpSpPr>[\s\S]*?<a:xfrm>[\s\S]*?<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
+      const chOffMatch = grpXml.match(/<p:grpSpPr>[\s\S]*?<a:xfrm>[\s\S]*?<a:chOff\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
+      const chExtMatch = grpXml.match(/<p:grpSpPr>[\s\S]*?<a:xfrm>[\s\S]*?<a:chExt\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
+
+      const gx = offMatch ? Math.round(parseInt(offMatch[1], 10) / 12700) : 0;
+      const gy = offMatch ? Math.round(parseInt(offMatch[2], 10) / 12700) : 0;
+      const gw = extMatch ? Math.round(parseInt(extMatch[1], 10) / 12700) : slideWidth;
+      const gh = extMatch ? Math.round(parseInt(extMatch[2], 10) / 12700) : slideHeight;
+      const chx = chOffMatch ? Math.round(parseInt(chOffMatch[1], 10) / 12700) : gx;
+      const chy = chOffMatch ? Math.round(parseInt(chOffMatch[2], 10) / 12700) : gy;
+      const chw = chExtMatch ? Math.max(1, Math.round(parseInt(chExtMatch[1], 10) / 12700)) : gw;
+      const chh = chExtMatch ? Math.max(1, Math.round(parseInt(chExtMatch[2], 10) / 12700)) : gh;
+
+      const scaleX = gw / chw;
+      const scaleY = gh / chh;
+
+      const childSpRegex = /<p:sp\b[\s\S]*?<\/p:sp>/g;
+      let childSpMatch: RegExpExecArray | null;
+      while ((childSpMatch = childSpRegex.exec(grpXml)) !== null) {
+        const childXml = childSpMatch[0];
+        const cOff = childXml.match(/<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
+        const cExt = childXml.match(/<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
+        if (cOff && cExt) {
+          const rawX = Math.round(parseInt(cOff[1], 10) / 12700);
+          const rawY = Math.round(parseInt(cOff[2], 10) / 12700);
+          const rawW = Math.round(parseInt(cExt[1], 10) / 12700);
+          const rawH = Math.round(parseInt(cExt[2], 10) / 12700);
+
+          const x = Math.round(gx + (rawX - chx) * scaleX);
+          const y = Math.round(gy + (rawY - chy) * scaleY);
+          const width = Math.round(rawW * scaleX);
+          const height = Math.round(rawH * scaleY);
+
+          let fillColor: string | undefined;
+          const fillMatch = childXml.match(/<p:spPr>[\s\S]*?<a:solidFill>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
+          if (fillMatch) fillColor = `#${fillMatch[1]}`;
+
+          let shapeText = '';
+          const tMatches: string[] = [];
+          const rRegex = /<a:t>([\s\S]*?)<\/a:t>/g;
+          let tM: RegExpExecArray | null;
+          while ((tM = rRegex.exec(childXml)) !== null) {
+            tMatches.push(tM[1].trim());
+          }
+          if (tMatches.length > 0) shapeText = tMatches.join(' ');
+
+          shapes.push({
+            x,
+            y,
+            width,
+            height,
+            shapeType: 'rect',
+            fillColor,
+            text: shapeText || undefined,
+          });
+        }
+      }
+    }
+
+    // 2. Graphic frames (<p:graphicFrame> for tables & charts)
+    const gfRegex = /<p:graphicFrame\b[\s\S]*?<\/p:graphicFrame>/g;
+    let gfMatch: RegExpExecArray | null;
+    while ((gfMatch = gfRegex.exec(xml)) !== null) {
+      const gfXml = gfMatch[0];
+      const offMatch = gfXml.match(/<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
+      const extMatch = gfXml.match(/<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
+      if (offMatch && extMatch) {
+        const x = Math.round(parseInt(offMatch[1], 10) / 12700);
+        const y = Math.round(parseInt(offMatch[2], 10) / 12700);
+        const w = Math.round(parseInt(extMatch[1], 10) / 12700);
+        const h = Math.round(parseInt(extMatch[2], 10) / 12700);
+
+        const tblMatch = gfXml.match(/<a:tbl\b[\s\S]*?<\/a:tbl>/i);
+        if (tblMatch) {
+          const tblXml = tblMatch[0];
+          const colWidths: number[] = [];
+          const gridColRegex = /<a:gridCol\s+[^>]*?w="(\d+)"/gi;
+          let gcMatch: RegExpExecArray | null;
+          while ((gcMatch = gridColRegex.exec(tblXml)) !== null) {
+            colWidths.push(Math.round(parseInt(gcMatch[1], 10) / 12700));
+          }
+
+          const tblRows: Array<Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }>> = [];
+          const trRegex = /<a:tr\b[\s\S]*?<\/a:tr>/gi;
+          let trMatch: RegExpExecArray | null;
+          while ((trMatch = trRegex.exec(tblXml)) !== null) {
+            const trXml = trMatch[0];
+            const rowCells: Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }> = [];
+            const tcRegex = /<a:tc\b[\s\S]*?<\/a:tc>/gi;
+            let tcMatch: RegExpExecArray | null;
+            while ((tcMatch = tcRegex.exec(trXml)) !== null) {
+              const tcXml = tcMatch[0];
+              const cellTexts: string[] = [];
+              const tRegexInner = /<a:t>([\s\S]*?)<\/a:t>/gi;
+              let tM: RegExpExecArray | null;
+              while ((tM = tRegexInner.exec(tcXml)) !== null) {
+                const clean = tM[1].trim();
+                if (clean) cellTexts.push(clean);
+              }
+              const cellText = cellTexts.join(' ');
+              if (cellText && !texts.includes(cellText)) {
+                texts.push(cellText);
+              }
+
+              let cellFill: string | undefined;
+              const fillMatch = tcXml.match(/<a:tcPr>[\s\S]*?<a:solidFill>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
+              if (fillMatch) cellFill = `#${fillMatch[1]}`;
+
+              let cellBold = false;
+              if (tcXml.includes('b="1"')) cellBold = true;
+              let cellFontColor: string | undefined;
+              const clrMatch = tcXml.match(/<a:rPr>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
+              if (clrMatch) cellFontColor = `#${clrMatch[1]}`;
+
+              rowCells.push({
+                text: cellText,
+                fillColor: cellFill,
+                fontColor: cellFontColor,
+                bold: cellBold,
+              });
+            }
+            tblRows.push(rowCells);
+          }
+
+          shapes.push({
+            x,
+            y,
+            width: w,
+            height: h,
+            shapeType: 'table',
+            tableData: {
+              rows: tblRows,
+              colWidths: colWidths.length > 0 ? colWidths : undefined,
+            },
+          });
+        } else {
+          const chartTexts: string[] = [];
+          const tRegexInner = /<a:t>([\s\S]*?)<\/a:t>/gi;
+          let tM: RegExpExecArray | null;
+          while ((tM = tRegexInner.exec(gfXml)) !== null) {
+            const clean = tM[1].trim();
+            if (clean) chartTexts.push(clean);
+          }
+          shapes.push({
+            x,
+            y,
+            width: w,
+            height: h,
+            shapeType: 'rect',
+            fillColor: '#F8F9FE',
+            strokeColor: '#CCD2FC',
+            strokeWidth: 1,
+            text: chartTexts.join(' ') || undefined,
+          });
+        }
+      }
+    }
+
+    // 3. Pictures (<p:pic>)
+    const picRegex = /<p:pic\b[\s\S]*?<\/p:pic>/g;
+    let picMatch: RegExpExecArray | null;
+    while ((picMatch = picRegex.exec(xml)) !== null) {
+      const picXml = picMatch[0];
+      const offMatch = picXml.match(/<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
+      const extMatch = picXml.match(/<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
+      if (offMatch && extMatch) {
+        const x = Math.round(parseInt(offMatch[1], 10) / 12700);
+        const y = Math.round(parseInt(offMatch[2], 10) / 12700);
+        const w = Math.round(parseInt(extMatch[1], 10) / 12700);
+        const h = Math.round(parseInt(extMatch[2], 10) / 12700);
+
+        const blipMatch = picXml.match(/<a:blip\s+[^>]*?(?:r:)?embed="([^"]+)"/i);
+        if (blipMatch) {
+          const rId = blipMatch[1];
+          const target = relsMap.get(rId);
+          if (target) {
+            const mediaPath = resolveZipPath('ppt/slides', target);
+            const mediaFile = zip.file(mediaPath);
+            if (mediaFile) {
+              let imgBuffer = await mediaFile.async('nodebuffer');
+              let mimeType = 'image/png';
+              const lower = mediaPath.toLowerCase();
+              if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+                mimeType = 'image/jpeg';
+              } else if (!lower.endsWith('.png')) {
+                try {
+                  imgBuffer = await sharp(imgBuffer).png().toBuffer();
+                  mimeType = 'image/png';
+                } catch {}
+              }
+              shapes.push({
+                x,
+                y,
+                width: w,
+                height: h,
+                shapeType: 'picture',
+                imageData: imgBuffer,
+                imageMimeType: mimeType,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Extract DrawingML shapes (<p:sp>) excluding groups, pics, and graphic frames
+    const spOnlyXml = xml
+      .replace(/<p:grpSp\b[\s\S]*?<\/p:grpSp>/g, '')
+      .replace(/<p:pic\b[\s\S]*?<\/p:pic>/g, '')
+      .replace(/<p:graphicFrame\b[\s\S]*?<\/p:graphicFrame>/g, '');
+
     const spRegex = /<p:sp\b[\s\S]*?<\/p:sp>/g;
     let spMatch: RegExpExecArray | null;
 
-    while ((spMatch = spRegex.exec(xml)) !== null) {
+    while ((spMatch = spRegex.exec(spOnlyXml)) !== null) {
       const spXml = spMatch[0];
 
       // Coordinate transform (<a:off x="..." y="..."/> and <a:ext cx="..." cy="..."/>)
@@ -3365,7 +3913,27 @@ function generateHtmlFromSlides(
         const stroke = s.strokeColor || 'none';
         const strokeW = s.strokeWidth || 1;
 
-        if (type === 'ellipse' || type === 'circle') {
+        if (type === 'picture' && s.imageData) {
+          const mime = s.imageMimeType || 'image/png';
+          svgElements += `        <image href="data:${mime};base64,${s.imageData.toString('base64')}" x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" preserveAspectRatio="none"/>\n`;
+        } else if (type === 'table' && s.tableData) {
+          const rowCount = Math.max(1, s.tableData.rows.length);
+          const rowH = Math.max(18, Math.round(s.height / rowCount));
+          const defaultColW = Math.round(s.width / Math.max(1, s.tableData.rows[0]?.length || 1));
+          s.tableData.rows.forEach((r, rIdx) => {
+            let curX = s.x;
+            const curY = s.y + rIdx * rowH;
+            r.forEach((c, cIdx) => {
+              const colW = s.tableData?.colWidths?.[cIdx] || defaultColW;
+              const fill = c.fillColor || (rIdx === 0 ? '#F0F2FE' : '#FFFFFF');
+              svgElements += `        <rect x="${curX}" y="${curY}" width="${colW}" height="${rowH}" fill="${fill}" stroke="#CCD2FC" stroke-width="0.5"/>\n`;
+              if (c.text) {
+                svgElements += `        <text x="${curX + 4}" y="${curY + 12}" font-size="9" fill="${c.fontColor || '#1F2340'}" font-weight="${c.bold || rIdx === 0 ? 'bold' : 'normal'}" font-family="sans-serif">${escapeHtml(c.text)}</text>\n`;
+              }
+              curX += colW;
+            });
+          });
+        } else if (type === 'ellipse' || type === 'circle') {
           const cx = s.x + s.width / 2;
           const cy = s.y + s.height / 2;
           const rx = s.width / 2;
@@ -3458,53 +4026,93 @@ async function generatePdfFromSlides(
         slide.shapes.forEach((shape) => {
           if (shape.width > 0 && shape.height > 0) {
             const type = shape.shapeType || 'rect';
-            const drawPath = () => {
-              if (type === 'ellipse' || type === 'circle') {
-                const rx = shape.width / 2;
-                const ry = shape.height / 2;
-                doc.ellipse(shape.x + rx, shape.y + ry, rx, ry);
-              } else if (type === 'roundRect') {
-                const r = Math.min(shape.width, shape.height) * 0.15;
-                doc.roundedRect(shape.x, shape.y, shape.width, shape.height, r);
-              } else if (type === 'triangle') {
-                doc.polygon(
-                  [shape.x + shape.width / 2, shape.y],
-                  [shape.x + shape.width, shape.y + shape.height],
-                  [shape.x, shape.y + shape.height]
-                );
-              } else if (type === 'diamond') {
-                doc.polygon(
-                  [shape.x + shape.width / 2, shape.y],
-                  [shape.x + shape.width, shape.y + shape.height / 2],
-                  [shape.x + shape.width / 2, shape.y + shape.height],
-                  [shape.x, shape.y + shape.height / 2]
-                );
-              } else if (type === 'line') {
-                doc.moveTo(shape.x, shape.y).lineTo(shape.x + shape.width, shape.y + shape.height);
-              } else {
-                doc.rect(shape.x, shape.y, shape.width, shape.height);
+
+            if (type === 'picture' && shape.imageData) {
+              try {
+                doc.image(shape.imageData, shape.x, shape.y, {
+                  width: shape.width,
+                  height: shape.height,
+                });
+              } catch {
+                doc.rect(shape.x, shape.y, shape.width, shape.height).strokeColor('#CCD2FC').lineWidth(1).stroke();
               }
-            };
+            } else if (type === 'table' && shape.tableData) {
+              const tbl = shape.tableData;
+              const rowCount = Math.max(1, tbl.rows.length);
+              const rowHeight = Math.max(18, Math.round(shape.height / rowCount));
+              const defaultColWidth = Math.round(shape.width / Math.max(1, tbl.rows[0]?.length || 1));
 
-            if (shape.fillColor && shape.strokeColor) {
-              drawPath();
-              doc.lineWidth(shape.strokeWidth || 1).fillAndStroke(shape.fillColor, shape.strokeColor);
-            } else if (shape.fillColor) {
-              drawPath();
-              doc.fill(shape.fillColor);
-            } else if (shape.strokeColor) {
-              drawPath();
-              doc.lineWidth(shape.strokeWidth || 1).stroke(shape.strokeColor);
-            }
-
-            if (shape.text) {
-              doc.fillColor(shape.fontColor || '#1F2340');
-              doc.fontSize(shape.fontSize || 14);
-              doc.text(shape.text, shape.x + 6, shape.y + 6, {
-                width: Math.max(20, shape.width - 12),
-                height: Math.max(14, shape.height - 12),
-                ellipsis: true,
+              tbl.rows.forEach((row, rIdx) => {
+                const curY = shape.y + rIdx * rowHeight;
+                let curX = shape.x;
+                row.forEach((cell, cIdx) => {
+                  const colW = tbl.colWidths?.[cIdx] || defaultColWidth;
+                  const isHeader = rIdx === 0;
+                  const fill = cell.fillColor || (isHeader ? '#F0F2FE' : '#FFFFFF');
+                  doc.rect(curX, curY, colW, rowHeight).fill(fill);
+                  doc.rect(curX, curY, colW, rowHeight).strokeColor('#CCD2FC').lineWidth(0.5).stroke();
+                  if (cell.text) {
+                    doc.fillColor(cell.fontColor || (isHeader ? '#1F2340' : '#4D536B'));
+                    doc.fontSize(cell.bold || isHeader ? 9 : 8.5);
+                    doc.text(cell.text, curX + 4, curY + 4, {
+                      width: Math.max(10, colW - 8),
+                      height: rowHeight - 8,
+                      lineBreak: false,
+                      ellipsis: true,
+                    });
+                  }
+                  curX += colW;
+                });
               });
+            } else {
+              const drawPath = () => {
+                if (type === 'ellipse' || type === 'circle') {
+                  const rx = shape.width / 2;
+                  const ry = shape.height / 2;
+                  doc.ellipse(shape.x + rx, shape.y + ry, rx, ry);
+                } else if (type === 'roundRect') {
+                  const r = Math.min(shape.width, shape.height) * 0.15;
+                  doc.roundedRect(shape.x, shape.y, shape.width, shape.height, r);
+                } else if (type === 'triangle') {
+                  doc.polygon(
+                    [shape.x + shape.width / 2, shape.y],
+                    [shape.x + shape.width, shape.y + shape.height],
+                    [shape.x, shape.y + shape.height]
+                  );
+                } else if (type === 'diamond') {
+                  doc.polygon(
+                    [shape.x + shape.width / 2, shape.y],
+                    [shape.x + shape.width, shape.y + shape.height / 2],
+                    [shape.x + shape.width / 2, shape.y + shape.height],
+                    [shape.x, shape.y + shape.height / 2]
+                  );
+                } else if (type === 'line') {
+                  doc.moveTo(shape.x, shape.y).lineTo(shape.x + shape.width, shape.y + shape.height);
+                } else {
+                  doc.rect(shape.x, shape.y, shape.width, shape.height);
+                }
+              };
+
+              if (shape.fillColor && shape.strokeColor) {
+                drawPath();
+                doc.lineWidth(shape.strokeWidth || 1).fillAndStroke(shape.fillColor, shape.strokeColor);
+              } else if (shape.fillColor) {
+                drawPath();
+                doc.fill(shape.fillColor);
+              } else if (shape.strokeColor) {
+                drawPath();
+                doc.lineWidth(shape.strokeWidth || 1).stroke(shape.strokeColor);
+              }
+
+              if (shape.text) {
+                doc.fillColor(shape.fontColor || '#1F2340');
+                doc.fontSize(shape.fontSize || 14);
+                doc.text(shape.text, shape.x + 6, shape.y + 6, {
+                  width: Math.max(20, shape.width - 12),
+                  height: Math.max(14, shape.height - 12),
+                  ellipsis: true,
+                });
+              }
             }
           }
         });
