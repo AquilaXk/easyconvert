@@ -172,12 +172,41 @@ export function resolveConversionTier(
     };
   }
 
+/**
+ * Whitelist of supported streaming transformations in OPFS worker.
+ */
+export const SUPPORTED_OPFS_STREAMING_CONVERSIONS = new Set<string>([
+  'pcm:pcm_be',
+  'pcm_be:pcm',
+  'pcm:wav',
+  'csv:tsv',
+  'tsv:csv',
+  'rgba:grayscale',
+  'grayscale:rgba',
+]);
+
+/**
+ * Validates whether the given conversion pair is supported by L3 OPFS streaming pipeline.
+ */
+export function isOpfsStreamingSupported(
+  sourceFormat: string,
+  targetFormat: string,
+  options?: ConversionOptions & { allowPassThrough?: boolean }
+): boolean {
+  const src = sourceFormat.toLowerCase();
+  const tgt = targetFormat.toLowerCase();
+  if (options?.allowPassThrough && src === tgt) {
+    return true;
+  }
+  return SUPPORTED_OPFS_STREAMING_CONVERSIONS.has(`${src}:${tgt}`);
+}
+
   // 2. High-volume streaming file (> 100 MB)
   const isLargeFile = fileSize > 100 * 1024 * 1024;
   if (isLargeFile) {
     const opfsAvailable =
       capabilities?.hasOpfsSyncAccess ?? checkOpfsSupport();
-    if (opfsAvailable) {
+    if (opfsAvailable && isOpfsStreamingSupported(src, tgt, options)) {
       return {
         tier: 'L3',
         tierName: 'Edge L3 (OPFS Stream)',
@@ -189,7 +218,9 @@ export function resolveConversionTier(
       tier: 'L4',
       tierName: 'Cloud (Zero-Retention)',
       isClientEdge: false,
-      reason: 'Large file exceeds client RAM and OPFS is unavailable in this browser',
+      reason: opfsAvailable
+        ? 'Format conversion requires cloud serverless streaming engine'
+        : 'Large file exceeds client RAM and OPFS is unavailable in this browser',
     };
   }
 

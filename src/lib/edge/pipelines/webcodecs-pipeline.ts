@@ -127,14 +127,15 @@ export async function convertWithWebCodecs(
         reject(new Error(err.message || 'WebCodecs worker runtime error'));
       };
 
-      // Transfer fileBuffer to worker to avoid memory duplication
+      // Transfer sliced copy to worker to preserve arrayBuffer on main thread for cascade fallback
+      const transferBuffer = arrayBuffer.slice(0);
       worker.postMessage(
         {
           type: 'START_CONVERSION',
           jobId,
           sourceFormat,
           targetFormat,
-          fileBuffer: arrayBuffer,
+          fileBuffer: transferBuffer,
           options: {
             width: options.width,
             height: options.height,
@@ -145,7 +146,7 @@ export async function convertWithWebCodecs(
             codec: options.videoCodec,
           },
         },
-        [arrayBuffer]
+        [transferBuffer]
       );
     });
   }
@@ -156,7 +157,7 @@ export async function convertWithWebCodecs(
       jobId,
       sourceFormat,
       targetFormat,
-      fileBuffer: arrayBuffer,
+      fileBuffer: arrayBuffer.slice(0),
       options: {
         width: options.width,
         height: options.height,
