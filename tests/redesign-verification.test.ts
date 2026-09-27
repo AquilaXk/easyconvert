@@ -45,6 +45,28 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // Obsolete pricing and api links should not exist
     expect(footerContent).not.toContain('/pricing');
     expect(footerContent).not.toContain('/api/v2');
+
+    // Categorized converter directory headings
+    expect(footerContent).toContain('Video Converter');
+    expect(footerContent).toContain('Audio Converter');
+    expect(footerContent).toContain('Image Converter');
+    expect(footerContent).toContain('Document & Ebook');
+    expect(footerContent).toContain('Archive & Compression');
+    expect(footerContent).toContain('Data & Unit Tools');
+    expect(footerContent).toContain('Web Apps');
+    expect(footerContent).toContain('Client & Edge Tools');
+
+    // Key conversion routes
+    expect(footerContent).toContain('href: \'/mp4-to-mp3\'');
+    expect(footerContent).toContain('href: \'/jpg-to-pdf\'');
+    expect(footerContent).toContain('href: \'/pdf-to-docx\'');
+    expect(footerContent).toContain('href: \'/video-to-gif\'');
+    expect(footerContent).toContain('href: \'/heic-to-jpg\'');
+    expect(footerContent).toContain('href: \'/rar-to-zip\'');
+
+    // Privacy badge and copyright
+    expect(footerContent).toContain('100% Client-Side & Zero-Server Retention');
+    expect(footerContent).toContain('© 2026 EasyConvert.com');
   });
 
   it('verifies Terms of Service has no obsolete daily quotas or paid credits mentions', () => {
