@@ -1,10 +1,11 @@
-import { Queue, Worker, Job } from './bullmq-engine';
+import { Queue, Worker, Job, createQueueEngine, IQueueEngine } from './bullmq-engine';
 import { ConversionJobData, ConversionJobResult } from '../types';
 import { convertFile } from '../conversions';
 import { s3Storage } from '../storage/s3-storage';
 
-// 1. Initialize Conversion Queue
-export const conversionQueue = new Queue<ConversionJobData, ConversionJobResult>('easyconvert-jobs');
+// 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
+export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResult> =
+  createQueueEngine<ConversionJobData, ConversionJobResult>('easyconvert-jobs');
 
 // 2. Initialize Worker with Concurrency = 5
 export const conversionWorker = new Worker<ConversionJobData, ConversionJobResult>(

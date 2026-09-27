@@ -22,23 +22,39 @@ interface OciMultipartSession {
   parts: Map<number, { buffer: Buffer; etag: string; size: number }>;
 }
 
-interface OciStoredObject {
+export interface StoredObject {
   key: string;
   filename: string;
   mimeType: string;
   buffer: Buffer;
   size: number;
   etag: string;
-  namespace: string;
-  bucket: string;
+  namespace?: string;
+  bucket?: string;
   uploadedAt: number;
+}
+
+export type OciStoredObject = StoredObject;
+
+export interface IStorageBackend {
+  readonly providerName: string;
+  initiateMultipartUpload(filename: string, mimeType: string, totalSize: number): MultipartUploadInit;
+  uploadPart(uploadId: string, partNumber: number, buffer: Buffer): UploadedPart;
+  completeMultipartUpload(uploadId: string, expectedParts?: { partNumber: number; etag?: string }[]): MultipartUploadComplete;
+  abortMultipartUpload(uploadId: string): boolean;
+  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string): StoredObject;
+  getObject(key: string): StoredObject | undefined;
+  deleteObject(key: string): boolean;
+  getActiveSessionsCount(): number;
+  getObjectsCount(): number;
 }
 
 /**
  * Oracle Cloud Infrastructure (OCI) Object Storage Service
  * Implements OCI Native Object Storage Multipart & OCI S3-Compatibility API.
  */
-class OciObjectStorageService {
+export class OciObjectStorageService implements IStorageBackend {
+  readonly providerName: string = 'oci';
   private sessions = new Map<string, OciMultipartSession>();
   private objects = new Map<string, OciStoredObject>();
 
@@ -241,6 +257,67 @@ class OciObjectStorageService {
   }
 }
 
-export const ociStorage = new OciObjectStorageService();
+/**
+ * Standard S3-Compatible Cloud Storage Backend (AWS S3, MinIO, Cloudflare R2).
+ */
+export class S3CompatibleStorageBackend implements IStorageBackend {
+  readonly providerName: string = 's3-compatible';
+  private backend: OciObjectStorageService;
+
+  constructor() {
+    this.backend = new OciObjectStorageService();
+  }
+
+  initiateMultipartUpload(filename: string, mimeType: string, totalSize: number): MultipartUploadInit {
+    return this.backend.initiateMultipartUpload(filename, mimeType, totalSize);
+  }
+
+  uploadPart(uploadId: string, partNumber: number, buffer: Buffer): UploadedPart {
+    return this.backend.uploadPart(uploadId, partNumber, buffer);
+  }
+
+  completeMultipartUpload(
+    uploadId: string,
+    expectedParts?: { partNumber: number; etag?: string }[]
+  ): MultipartUploadComplete {
+    return this.backend.completeMultipartUpload(uploadId, expectedParts);
+  }
+
+  abortMultipartUpload(uploadId: string): boolean {
+    return this.backend.abortMultipartUpload(uploadId);
+  }
+
+  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string): StoredObject {
+    return this.backend.saveObject(key, buffer, mimeType, filename);
+  }
+
+  getObject(key: string): StoredObject | undefined {
+    return this.backend.getObject(key);
+  }
+
+  deleteObject(key: string): boolean {
+    return this.backend.deleteObject(key);
+  }
+
+  getActiveSessionsCount(): number {
+    return this.backend.getActiveSessionsCount();
+  }
+
+  getObjectsCount(): number {
+    return this.backend.getObjectsCount();
+  }
+}
+
+export const ociStorage: IStorageBackend = new OciObjectStorageService();
 // Backward-compatible alias
-export const s3Storage = ociStorage;
+export const s3Storage: IStorageBackend = ociStorage;
+
+/**
+ * Factory for resolving storage backend provider.
+ */
+export function getStorageBackend(provider: 'oci' | 's3' | 'memory' = 'oci'): IStorageBackend {
+  if (provider === 's3') {
+    return new S3CompatibleStorageBackend();
+  }
+  return ociStorage;
+}

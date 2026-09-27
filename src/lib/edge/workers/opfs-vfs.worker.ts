@@ -39,6 +39,114 @@ export interface OpfsJobError {
   message: string;
 }
 
+export type ChunkTransformerFn = (
+  chunk: Uint8Array,
+  offset: number,
+  totalSize: number
+) => Uint8Array | Promise<Uint8Array>;
+
+/**
+ * Resolves a chunk-level transformer for streaming format conversion.
+ */
+export function resolveChunkTransformer(
+  sourceFormat?: string,
+  targetFormat?: string,
+  options?: Record<string, any>
+): ChunkTransformerFn {
+  const src = (sourceFormat || '').toLowerCase();
+  const tgt = (targetFormat || '').toLowerCase();
+
+  // 1. Audio PCM Endianness swap (pcm_le <-> pcm_be)
+  if ((src === 'pcm' && tgt === 'pcm_be') || (src === 'pcm_le' && tgt === 'pcm_be') || (src === 'pcm_be' && tgt === 'pcm_le')) {
+    return (chunk: Uint8Array) => {
+      const out = new Uint8Array(chunk.byteLength);
+      const len = chunk.byteLength - (chunk.byteLength % 2);
+      for (let i = 0; i < len; i += 2) {
+        out[i] = chunk[i + 1];
+        out[i + 1] = chunk[i];
+      }
+      if (chunk.byteLength % 2 !== 0) {
+        out[chunk.byteLength - 1] = chunk[chunk.byteLength - 1];
+      }
+      return out;
+    };
+  }
+
+  // 2. Audio 16-bit to 8-bit unsigned PCM
+  if ((src === 'pcm' || src === 'wav') && (tgt === 'pcm_u8' || tgt === 'u8')) {
+    return (chunk: Uint8Array) => {
+      const sampleCount = Math.floor(chunk.byteLength / 2);
+      const out = new Uint8Array(sampleCount);
+      const view = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      for (let i = 0; i < sampleCount; i++) {
+        const s16 = view.getInt16(i * 2, true);
+        out[i] = Math.max(0, Math.min(255, Math.floor((s16 + 32768) / 256)));
+      }
+      return out;
+    };
+  }
+
+  // 3. Delimited Text: CSV -> TSV streaming conversion
+  if (src === 'csv' && (tgt === 'tsv' || tgt === 'tab')) {
+    return (chunk: Uint8Array) => {
+      const out = new Uint8Array(chunk.byteLength);
+      let inQuotes = false;
+      for (let i = 0; i < chunk.byteLength; i++) {
+        const b = chunk[i];
+        if (b === 34) {
+          inQuotes = !inQuotes;
+          out[i] = b;
+        } else if (b === 44 && !inQuotes) {
+          out[i] = 9; // '\t'
+        } else {
+          out[i] = b;
+        }
+      }
+      return out;
+    };
+  }
+
+  // 4. RGBA Grayscale streaming transformation
+  if ((src === 'rgba' || src === 'raw') && (tgt === 'grayscale' || tgt === 'gray')) {
+    return (chunk: Uint8Array) => {
+      const out = new Uint8Array(chunk.byteLength);
+      const pixelCount = Math.floor(chunk.byteLength / 4);
+      for (let i = 0; i < pixelCount; i++) {
+        const idx = i * 4;
+        const r = chunk[idx];
+        const g = chunk[idx + 1];
+        const b = chunk[idx + 2];
+        const a = chunk[idx + 3];
+        const gray = (77 * r + 150 * g + 29 * b) >> 8;
+        out[idx] = gray;
+        out[idx + 1] = gray;
+        out[idx + 2] = gray;
+        out[idx + 3] = a;
+      }
+      return out;
+    };
+  }
+
+  // 5. Invert byte filter
+  if (options?.invert || tgt === 'invert') {
+    return (chunk: Uint8Array) => {
+      const out = new Uint8Array(chunk.byteLength);
+      for (let i = 0; i < chunk.byteLength; i++) {
+        out[i] = chunk[i] ^ 0xff;
+      }
+      return out;
+    };
+  }
+
+  // 6. Custom chunk transformer
+  if (typeof options?.chunkTransformer === 'function') {
+    return options.chunkTransformer;
+  }
+
+  // Default: identity pass-through
+  return (chunk: Uint8Array) => chunk;
+}
+
 /**
  * Calculates number of 4MB chunks required for a given file size.
  */
@@ -70,10 +178,12 @@ export class OpfsStreamTransformer {
     totalSize: number,
     readChunkFn: (offset: number, size: number) => Promise<Uint8Array>,
     writeChunkFn: (offset: number, data: Uint8Array) => Promise<void>,
-    onProgress?: (progress: number, bytesProcessed: number) => void
+    onProgress?: (progress: number, bytesProcessed: number) => void,
+    chunkTransformer?: ChunkTransformerFn
   ): Promise<number> {
     const chunkCount = calculateChunkCount(totalSize, this.chunkSize);
     let bytesProcessed = 0;
+    let outputOffset = 0;
     this.peakAllocatedBytes = this.chunkSize;
 
     for (let i = 0; i < chunkCount; i++) {
@@ -83,12 +193,16 @@ export class OpfsStreamTransformer {
       // 1. Read bounded chunk from VFS disk handle
       const chunkData = await readChunkFn(offset, currentChunkSize);
 
-      // 2. Perform streaming transformation (bounded in-place or copy)
-      const transformed = new Uint8Array(chunkData.byteLength);
-      transformed.set(chunkData);
+      // 2. Perform streaming transformation (bounded in-place or custom transformer)
+      const transformed = chunkTransformer
+        ? await chunkTransformer(chunkData, offset, totalSize)
+        : chunkData;
+
+      this.peakAllocatedBytes = Math.max(this.peakAllocatedBytes, transformed.byteLength);
 
       // 3. Write bounded chunk to destination VFS handle
-      await writeChunkFn(offset, transformed);
+      await writeChunkFn(outputOffset, transformed);
+      outputOffset += transformed.byteLength;
 
       bytesProcessed += currentChunkSize;
       const progress = Math.min(99, Math.round((bytesProcessed / totalSize) * 95));
@@ -96,7 +210,7 @@ export class OpfsStreamTransformer {
     }
 
     onProgress?.(100, bytesProcessed);
-    return bytesProcessed;
+    return outputOffset;
   }
 }
 
@@ -104,13 +218,19 @@ export class OpfsStreamTransformer {
  * Synchronously streams data through OPFS FileSystemSyncAccessHandle with session isolation.
  */
 export async function streamWithSyncAccessHandle(
-  jobId: string,
+  jobOrId: string | OpfsConversionJob,
   file: Blob | File,
   onProgress?: (progress: number, bytesProcessed: number) => void
 ): Promise<{ blob: Blob; outputSize: number }> {
   if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) {
     throw new Error('OPFS is not supported in this runtime environment');
   }
+
+  const job: OpfsConversionJob = typeof jobOrId === 'string'
+    ? { jobId: jobOrId, sourceFormat: 'bin', targetFormat: 'bin', totalSize: file.size }
+    : jobOrId;
+  const jobId = job.jobId;
+  const transformer = resolveChunkTransformer(job.sourceFormat, job.targetFormat, job.options);
 
   const root = await navigator.storage.getDirectory();
   const easyconvertDir = await root.getDirectoryHandle('easyconvert', { create: true });
@@ -130,6 +250,7 @@ export async function streamWithSyncAccessHandle(
     const totalBytes = file.size;
     const chunkCount = calculateChunkCount(totalBytes, OPFS_CHUNK_SIZE);
     let bytesProcessed = 0;
+    let outputOffset = 0;
 
     // 1. Stream input file into OPFS via bounded 4MB chunks
     for (let i = 0; i < chunkCount; i++) {
@@ -148,12 +269,17 @@ export async function streamWithSyncAccessHandle(
       const readBuf = new Uint8Array(currentSize);
       inputAccess.read(readBuf, { at: start });
 
-      // Write chunk to output
-      outputAccess.write(readBuf, { at: start });
+      const transformed = await transformer(readBuf, start, totalBytes);
+      outputAccess.write(transformed, { at: outputOffset });
+      outputOffset += transformed.byteLength;
 
       bytesProcessed += currentSize;
       const progress = Math.min(99, Math.round((bytesProcessed / totalBytes) * 95));
       onProgress?.(progress, bytesProcessed);
+    }
+
+    if (typeof outputAccess.truncate === 'function') {
+      outputAccess.truncate(outputOffset);
     }
     outputAccess.flush();
     onProgress?.(100, bytesProcessed);
@@ -189,13 +315,14 @@ export async function streamWithSyncAccessHandle(
  * Fallback streaming chunk transformer without sync access handles.
  */
 async function streamWithChunkTransformer(
-  _job: OpfsConversionJob,
+  job: OpfsConversionJob,
   input: Blob | File | ArrayBuffer,
   onProgress?: (progress: number, bytesProcessed: number) => void
 ): Promise<{ buffer?: ArrayBuffer; blob?: Blob; outputSize: number }> {
   const isBlob = typeof Blob !== 'undefined' && input instanceof Blob;
   const totalSize = isBlob ? (input as Blob).size : (input as ArrayBuffer).byteLength;
   const transformer = new OpfsStreamTransformer(OPFS_CHUNK_SIZE);
+  const chunkTransformer = resolveChunkTransformer(job.sourceFormat, job.targetFormat, job.options);
 
   if (isBlob) {
     const blob = input as Blob;
@@ -211,7 +338,8 @@ async function streamWithChunkTransformer(
       async (_offset, data) => {
         outputChunks.push(data);
       },
-      onProgress
+      onProgress,
+      chunkTransformer
     );
 
     const outBlob = new Blob(outputChunks as any);
@@ -231,7 +359,8 @@ async function streamWithChunkTransformer(
     async (_offset, data) => {
       outputChunks.push(data);
     },
-    onProgress
+    onProgress,
+    chunkTransformer
   );
 
   const totalLen = outputChunks.reduce((acc, c) => acc + c.byteLength, 0);
@@ -264,7 +393,7 @@ export async function processOpfsStreaming(
 
   if (hasSyncAccess && (typeof Blob !== 'undefined' && input instanceof Blob)) {
     try {
-      const res = await streamWithSyncAccessHandle(job.jobId, input as Blob, onProgress);
+      const res = await streamWithSyncAccessHandle(job, input as Blob, onProgress);
       return res;
     } catch {
       // Graceful fallback to chunk transformer if sync access handle throws (e.g. in test mock)

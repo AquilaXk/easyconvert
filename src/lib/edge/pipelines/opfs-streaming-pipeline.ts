@@ -9,13 +9,26 @@
  */
 
 import { ConversionOptions } from '../../types';
-import { createSessionId, sweepOrphanedSessions } from '../opfs/storage-gc';
+import {
+  createSessionId,
+  sweepOrphanedSessions,
+  destroySessionImmediately,
+  registerZeroRetentionLifecycleHooks,
+} from '../opfs/storage-gc';
 import { processOpfsStreaming } from '../workers/opfs-vfs.worker';
 
 export interface OpfsPipelineResult {
   blob: Blob;
   url: string;
   size: number;
+  sessionId: string;
+  destroy: () => Promise<boolean>;
+}
+
+// Active OPFS conversion session registry for zero-retention guarantee
+const activePipelineSessions = new Set<string>();
+if (typeof window !== 'undefined' || typeof self !== 'undefined') {
+  registerZeroRetentionLifecycleHooks(activePipelineSessions);
 }
 
 /**
@@ -31,11 +44,17 @@ export async function streamConvertWithOpfs(
 ): Promise<OpfsPipelineResult> {
   const sessionId = createSessionId();
   const totalSize = file.size;
+  activePipelineSessions.add(sessionId);
 
   onProgress?.(5);
 
   // Trigger opportunistic storage GC in background to keep disk clean
   sweepOrphanedSessions().catch(() => {});
+
+  const createDestroyHandler = (sid: string) => async () => {
+    activePipelineSessions.delete(sid);
+    return destroySessionImmediately(sid);
+  };
 
   // Browser environment with Worker support
   if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
@@ -64,9 +83,19 @@ export async function streamConvertWithOpfs(
           .then((res) => {
             const blob = res.blob || (res.buffer ? new Blob([res.buffer]) : file);
             const url = URL.createObjectURL(blob);
-            resolve({ blob, url, size: res.outputSize || blob.size });
+            resolve({
+              blob,
+              url,
+              size: res.outputSize || blob.size,
+              sessionId,
+              destroy: createDestroyHandler(sessionId),
+            });
           })
-          .catch(reject);
+          .catch((err) => {
+            activePipelineSessions.delete(sessionId);
+            destroySessionImmediately(sessionId).catch(() => {});
+            reject(err);
+          });
         return;
       }
 
@@ -89,11 +118,19 @@ export async function streamConvertWithOpfs(
           const blob = data.blob || (data.buffer ? new Blob([data.buffer]) : file);
           const url = URL.createObjectURL(blob);
           cleanup();
-          resolve({ blob, url, size: data.outputSize || blob.size });
+          resolve({
+            blob,
+            url,
+            size: data.outputSize || blob.size,
+            sessionId,
+            destroy: createDestroyHandler(sessionId),
+          });
         } else if (data.type === 'ERROR') {
           if (isSettled) return;
           isSettled = true;
           cleanup();
+          activePipelineSessions.delete(sessionId);
+          destroySessionImmediately(sessionId).catch(() => {});
           reject(new Error(data.message || 'OPFS streaming conversion failed'));
         }
       };
@@ -102,6 +139,8 @@ export async function streamConvertWithOpfs(
         if (isSettled) return;
         isSettled = true;
         cleanup();
+        activePipelineSessions.delete(sessionId);
+        destroySessionImmediately(sessionId).catch(() => {});
         reject(new Error(err.message || 'OPFS worker execution fault'));
       };
 
@@ -119,27 +158,35 @@ export async function streamConvertWithOpfs(
   }
 
   // Node.js or Test environment fallback
-  const result = await processOpfsStreaming(
-    {
-      jobId: sessionId,
-      sourceFormat,
-      targetFormat,
-      totalSize,
-      options,
-    },
-    file,
-    (progress) => onProgress?.(progress)
-  );
+  try {
+    const result = await processOpfsStreaming(
+      {
+        jobId: sessionId,
+        sourceFormat,
+        targetFormat,
+        totalSize,
+        options,
+      },
+      file,
+      (progress) => onProgress?.(progress)
+    );
 
-  const blob = result.blob || (result.buffer ? new Blob([result.buffer]) : file);
-  const url =
-    typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
-      ? URL.createObjectURL(blob)
-      : `blob:mock-opfs-url-${Date.now()}`;
+    const blob = result.blob || (result.buffer ? new Blob([result.buffer]) : file);
+    const url =
+      typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+        ? URL.createObjectURL(blob)
+        : `blob:mock-opfs-url-${Date.now()}`;
 
-  return {
-    blob,
-    url,
-    size: result.outputSize || blob.size,
-  };
+    return {
+      blob,
+      url,
+      size: result.outputSize || blob.size,
+      sessionId,
+      destroy: createDestroyHandler(sessionId),
+    };
+  } catch (err) {
+    activePipelineSessions.delete(sessionId);
+    destroySessionImmediately(sessionId).catch(() => {});
+    throw err;
+  }
 }

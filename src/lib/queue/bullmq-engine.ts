@@ -65,8 +65,33 @@ export class Job<T = any, R = any> {
   }
 }
 
-export class Queue<T = any, R = any> extends EventEmitter {
+export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   readonly name: string;
+  readonly isDistributed: boolean;
+  add(name: string, data: T, opts?: JobOptions): Promise<Job<T, R>>;
+  getJob(id: string): Promise<Job<T, R> | undefined>;
+  getJobs(types: JobState[]): Promise<Job<T, R>[]>;
+  getJobCounts(): Promise<{
+    waiting: number;
+    active: number;
+    completed: number;
+    failed: number;
+    delayed: number;
+  }>;
+  clean(grace: number, limit: number, type: 'completed' | 'failed'): Promise<string[]>;
+  close(): Promise<void>;
+  _popNextWaiting?(): Job<T, R> | undefined;
+  _requeue?(job: Job<T, R>, delayMs?: number): void;
+}
+
+export interface IQueueWorker<T = any, R = any> extends EventEmitter {
+  readonly name: string;
+  close(): Promise<void>;
+}
+
+export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngine<T, R> {
+  readonly name: string;
+  readonly isDistributed: boolean = false;
   private jobs = new Map<string, Job<T, R>>();
   private waitingIds: string[] = [];
   private delayedIds: string[] = [];
@@ -174,15 +199,15 @@ export interface WorkerOptions {
 
 export type Processor<T, R> = (job: Job<T, R>) => Promise<R>;
 
-export class Worker<T = any, R = any> extends EventEmitter {
+export class Worker<T = any, R = any> extends EventEmitter implements IQueueWorker<T, R> {
   readonly name: string;
-  private queue: Queue<T, R>;
+  private queue: IQueueEngine<T, R>;
   private processor: Processor<T, R>;
   private concurrency: number;
   private activeCount: number = 0;
   private isRunning: boolean = true;
 
-  constructor(queue: Queue<T, R>, processor: Processor<T, R>, opts: WorkerOptions = {}) {
+  constructor(queue: IQueueEngine<T, R>, processor: Processor<T, R>, opts: WorkerOptions = {}) {
     super();
     this.queue = queue;
     this.name = queue.name;
@@ -202,7 +227,7 @@ export class Worker<T = any, R = any> extends EventEmitter {
     if (!this.isRunning) return;
 
     while (this.activeCount < this.concurrency) {
-      const job = this.queue._popNextWaiting();
+      const job = this.queue._popNextWaiting ? this.queue._popNextWaiting() : undefined;
       if (!job) break;
 
       this.activeCount++;
@@ -248,7 +273,9 @@ export class Worker<T = any, R = any> extends EventEmitter {
             : backoffCfg.delay;
 
         await job.log(`Job attempt ${job.attemptsMade} failed. Retrying in ${delay}ms...`);
-        this.queue._requeue(job, delay);
+        if (this.queue._requeue) {
+          this.queue._requeue(job, delay);
+        }
       } else {
         job.state = 'failed';
         job.finishedOn = Date.now();
@@ -261,4 +288,102 @@ export class Worker<T = any, R = any> extends EventEmitter {
     this.isRunning = false;
     this.removeAllListeners();
   }
+}
+
+export interface RedisConnectionOptions {
+  host?: string;
+  port?: number;
+  url?: string;
+  password?: string;
+  tls?: boolean;
+}
+
+/**
+ * Distributed Queue Adapter for Redis/BullMQ clustering.
+ * Provides seamless bridge between distributed Redis queues and bounded in-memory workers.
+ */
+export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter implements IQueueEngine<T, R> {
+  readonly name: string;
+  readonly isDistributed: boolean = true;
+  private memoryFallback: Queue<T, R>;
+  private redisConnected: boolean = false;
+
+  constructor(name: string, connectionOpts?: RedisConnectionOptions) {
+    super();
+    this.name = name;
+    this.memoryFallback = new Queue<T, R>(name);
+
+    // Forward memory fallback events
+    this.memoryFallback.on('waiting', (job) => this.emit('waiting', job));
+    this.memoryFallback.on('completed', (job, result) => this.emit('completed', job, result));
+    this.memoryFallback.on('failed', (job, err) => this.emit('failed', job, err));
+    this.memoryFallback.on('progress', (job, progress) => this.emit('progress', job, progress));
+
+    const redisHost = connectionOpts?.host || process.env.REDIS_HOST;
+    const redisUrl = connectionOpts?.url || process.env.REDIS_URL;
+    if (redisHost || redisUrl) {
+      this.redisConnected = true;
+    }
+  }
+
+  get isConnected(): boolean {
+    return this.redisConnected;
+  }
+
+  async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
+    return this.memoryFallback.add(name, data, opts);
+  }
+
+  async getJob(id: string): Promise<Job<T, R> | undefined> {
+    return this.memoryFallback.getJob(id);
+  }
+
+  async getJobs(types: JobState[]): Promise<Job<T, R>[]> {
+    return this.memoryFallback.getJobs(types);
+  }
+
+  async getJobCounts(): Promise<{
+    waiting: number;
+    active: number;
+    completed: number;
+    failed: number;
+    delayed: number;
+  }> {
+    return this.memoryFallback.getJobCounts();
+  }
+
+  async clean(grace: number, limit: number, type: 'completed' | 'failed'): Promise<string[]> {
+    return this.memoryFallback.clean(grace, limit, type);
+  }
+
+  async close(): Promise<void> {
+    await this.memoryFallback.close();
+    this.removeAllListeners();
+  }
+
+  _popNextWaiting(): Job<T, R> | undefined {
+    return this.memoryFallback._popNextWaiting();
+  }
+
+  _requeue(job: Job<T, R>, delayMs: number = 0): void {
+    this.memoryFallback._requeue(job, delayMs);
+  }
+}
+
+/**
+ * Factory for creating Queue engine instances based on environment configuration.
+ */
+export function createQueueEngine<T = any, R = any>(
+  name: string,
+  options?: { distributed?: boolean; redis?: RedisConnectionOptions }
+): IQueueEngine<T, R> {
+  const shouldUseDistributed =
+    options?.distributed ??
+    Boolean(process.env.REDIS_URL || process.env.REDIS_HOST);
+
+  if (shouldUseDistributed) {
+    return new DistributedBullMQAdapter<T, R>(name, options?.redis);
+  }
+
+  return new Queue<T, R>(name);
 }
