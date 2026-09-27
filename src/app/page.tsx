@@ -182,7 +182,7 @@ export default function Home() {
   };
 
   return (
-    <div className={`flex flex-col min-h-screen ${queue.length > 0 ? 'bg-[#18191d]' : 'bg-[#f4f4f5] dark:bg-[#18191d]'} text-neutral-900 dark:text-neutral-100 transition-colors`}>
+    <div className={`flex flex-col min-h-screen ${queue.length > 0 ? 'bg-dark-scaffold' : 'bg-neutral-scaffold dark:bg-dark-scaffold'} text-brand-950 dark:text-dark-text transition-colors`}>
       <Header />
 
       {/* Top Leaderboard Ad Unit */}

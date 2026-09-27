@@ -1,14 +1,13 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import Image from 'next/image';
+import BrandLogo from './BrandLogo';
 import {
   Sun,
   Moon,
   ChevronDown,
   Menu,
   X,
-  FileText,
   User,
   LogOut,
   RefreshCw,
@@ -16,8 +15,8 @@ import {
   Layers,
   Globe,
   Archive,
-  BookOpen,
-  Cpu,
+  Calculator,
+  Activity,
 } from 'lucide-react';
 import AuthModal from './AuthModal';
 
@@ -69,7 +68,7 @@ export default function Header() {
   };
 
   return (
-    <header className="sticky top-0 z-50 backdrop-blur-sm bg-neutral-900/95 border-b border-white/[0.08] text-white transition-colors">
+    <header className="sticky top-0 z-50 backdrop-blur-md bg-brand-50/95 dark:bg-dark-surface/95 border-b border-neutral-border dark:border-dark-border text-brand-950 dark:text-white transition-colors duration-150">
       {/* Invisible backdrop to dismiss menus */}
       {isToolsOpen && (
         <div
@@ -82,24 +81,12 @@ export default function Header() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between relative z-40">
         {/* Brand Logo & Navigation */}
         <div className="flex items-center gap-8">
-          <a aria-label="EasyConvert" href="/" className="flex items-center gap-1.5 outline-none group shrink-0">
-            <div className="flex items-center gap-3 md:text-2xl w-auto shrink-0">
-              <Image
-                src="/logo.svg"
-                width={43}
-                height={28}
-                className="h-7 w-auto md:h-8 transition-transform duration-200 group-hover:scale-105"
-                alt="EasyConvert Logo"
-              />
-              <span className="lowercase font-sans tracking-wide text-xl md:text-2xl text-white">
-                <span className="font-normal">easy</span>
-                <span className="font-bold">convert</span>
-              </span>
-            </div>
+          <a aria-label="EasyConvert Home" href="/" className="outline-none group shrink-0">
+            <BrandLogo size="md" />
           </a>
 
-          {/* Desktop Navigation: Tools, API, Pricing */}
-          <nav className="hidden lg:flex items-center gap-1">
+          {/* Desktop Navigation: Tools, Formats, How It Works, Status */}
+          <nav className="hidden lg:flex items-center gap-1.5">
             {/* Tools Mega-Menu */}
             <div className="relative">
               <button
@@ -107,91 +94,101 @@ export default function Header() {
                 onClick={() => {
                   setIsToolsOpen(!isToolsOpen);
                 }}
-                className={`group relative flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                  isToolsOpen ? 'text-white bg-white/10' : 'text-neutral-300 hover:text-white hover:bg-white/5'
+                className={`group relative flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                  isToolsOpen
+                    ? 'text-brand-900 bg-brand-100 dark:text-white dark:bg-white/10'
+                    : 'text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5'
                 }`}
               >
                 <span>Tools</span>
-                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isToolsOpen ? 'rotate-180 text-white' : 'text-neutral-400'}`} />
+                <ChevronDown
+                  className={`w-3.5 h-3.5 transition-transform duration-200 ${
+                    isToolsOpen ? 'rotate-180 text-brand-700 dark:text-white' : 'text-ink-muted dark:text-neutral-400'
+                  }`}
+                />
               </button>
 
               {isToolsOpen && (
                 <div
-                  className="absolute top-full left-0 mt-2 w-[820px] max-w-4xl rounded-xl bg-[#212529] border border-neutral-700/80 shadow-2xl p-6 z-50 animate-in fade-in slide-in-from-top-2 duration-150"
+                  className="absolute top-full left-0 mt-2 w-[840px] max-w-4xl rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-2xl p-6 z-50 animate-in fade-in slide-in-from-top-2 duration-150"
                 >
                   {/* Top section: Convert Files (2 cols) & Optimize Files (1 col) */}
                   <div className="grid grid-cols-3 gap-6">
                     {/* Convert Files */}
                     <div className="col-span-2 space-y-2">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2">
-                        <RefreshCw className="w-4 h-4 text-neutral-400" />
+                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
+                        <RefreshCw className="w-4 h-4 text-brand-700 dark:text-brand-400" />
                         <span>Convert Files</span>
                       </div>
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-neutral-300 pt-1">
-                        <a href="/archive-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Archive Converter</a>
-                        <a href="/audio-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Audio Converter</a>
-                        <a href="/cad-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">CAD Converter</a>
-                        <a href="/document-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Document Converter</a>
-                        <a href="/ebook-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Ebook Converter</a>
-                        <a href="/font-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Font Converter</a>
-                        <a href="/image-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Image Converter</a>
-                        <a href="/presentation-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Presentation Converter</a>
-                        <a href="/spreadsheet-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Spreadsheet Converter</a>
-                        <a href="/vector-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Vector Converter</a>
-                        <a href="/video-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors py-0.5">Video Converter</a>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-ink-secondary dark:text-neutral-300 pt-1">
+                        <a href="/unit-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-brand-400 font-semibold flex items-center gap-1.5 py-0.5 text-brand-700 dark:text-brand-300">
+                          <Calculator className="w-3.5 h-3.5" />
+                          <span>Unit Converter</span>
+                        </a>
+                        <a href="/archive-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Archive Converter</a>
+                        <a href="/audio-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Audio Converter</a>
+                        <a href="/cad-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">CAD Converter</a>
+                        <a href="/document-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Document Converter</a>
+                        <a href="/ebook-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Ebook Converter</a>
+                        <a href="/font-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Font Converter</a>
+                        <a href="/image-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Image Converter</a>
+                        <a href="/presentation-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Presentation Converter</a>
+                        <a href="/spreadsheet-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Spreadsheet Converter</a>
+                        <a href="/vector-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Vector Converter</a>
+                        <a href="/video-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Video Converter</a>
                       </div>
                     </div>
 
                     {/* Optimize Files */}
                     <div className="space-y-2">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2">
-                        <Sparkles className="w-4 h-4 text-neutral-400" />
+                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
+                        <Sparkles className="w-4 h-4 text-brand-700 dark:text-brand-400" />
                         <span>Optimize Files</span>
                       </div>
-                      <div className="space-y-1.5 text-xs text-neutral-300 pt-1">
-                        <a href="/compress-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Compress PDF</a>
-                        <a href="/compress-png" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Compress PNG</a>
-                        <a href="/compress-jpg" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Compress JPG</a>
-                        <a href="/pdf-ocr" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">PDF OCR</a>
+                      <div className="space-y-1.5 text-xs text-ink-secondary dark:text-neutral-300 pt-1">
+                        <a href="/compress-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Compress PDF</a>
+                        <a href="/compress-png" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Compress PNG</a>
+                        <a href="/compress-jpg" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Compress JPG</a>
+                        <a href="/pdf-ocr" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">PDF OCR</a>
                       </div>
                     </div>
                   </div>
 
-                  {/* Horizontal Divider */}
-                  <div className="border-t border-neutral-700/60 my-5" />
+                  {/* Decorative Brand Divider */}
+                  <div className="border-t border-brand-300/60 dark:border-dark-border my-5" />
 
                   {/* Bottom section: Merge Files, Capture Websites, Archives */}
                   <div className="grid grid-cols-3 gap-6">
                     <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2">
-                        <Layers className="w-4 h-4 text-neutral-400" />
+                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
+                        <Layers className="w-4 h-4 text-brand-700 dark:text-brand-400" />
                         <span>Merge Files</span>
                       </div>
-                      <div className="space-y-1 text-xs text-neutral-300">
-                        <a href="/merge-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Merge PDF</a>
+                      <div className="space-y-1 text-xs text-ink-secondary dark:text-neutral-300">
+                        <a href="/merge-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Merge PDF</a>
                       </div>
                     </div>
 
                     <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2">
-                        <Globe className="w-4 h-4 text-neutral-400" />
+                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
+                        <Globe className="w-4 h-4 text-brand-700 dark:text-brand-400" />
                         <span>Capture Websites</span>
                       </div>
-                      <div className="space-y-1 text-xs text-neutral-300">
-                        <a href="/save-website-as-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Save Website as PDF</a>
-                        <a href="/website-png-screenshot" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Website PNG Screenshot</a>
-                        <a href="/website-jpg-screenshot" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Website JPG Screenshot</a>
+                      <div className="space-y-1 text-xs text-ink-secondary dark:text-neutral-300">
+                        <a href="/save-website-as-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Save Website as PDF</a>
+                        <a href="/website-png-screenshot" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Website PNG Screenshot</a>
+                        <a href="/website-jpg-screenshot" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Website JPG Screenshot</a>
                       </div>
                     </div>
 
                     <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold text-neutral-300 mb-2">
-                        <Archive className="w-4 h-4 text-neutral-400" />
+                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
+                        <Archive className="w-4 h-4 text-brand-700 dark:text-brand-400" />
                         <span>Archives</span>
                       </div>
-                      <div className="space-y-1 text-xs text-neutral-300">
-                        <a href="/create-archive" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Create Archive</a>
-                        <a href="/extract-archive" onClick={() => setIsToolsOpen(false)} className="hover:text-white hover:underline transition-colors block py-0.5">Extract Archive</a>
+                      <div className="space-y-1 text-xs text-ink-secondary dark:text-neutral-300">
+                        <a href="/create-archive" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Create Archive</a>
+                        <a href="/extract-archive" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Extract Archive</a>
                       </div>
                     </div>
                   </div>
@@ -199,10 +196,19 @@ export default function Header() {
               )}
             </div>
 
-              {/* Supported Formats */}
+            {/* Direct Unit Converter Link */}
+            <a
+              href="/unit-converter"
+              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors flex items-center gap-1.5"
+            >
+              <Calculator className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" />
+              <span>Unit Converter</span>
+            </a>
+
+            {/* Supported Formats */}
             <a
               href="/#format-catalog"
-              className="px-2.5 py-1.5 text-sm font-medium text-neutral-300 hover:text-white rounded-md hover:bg-white/5 transition-colors"
+              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors"
             >
               Formats
             </a>
@@ -210,31 +216,41 @@ export default function Header() {
             {/* How It Works */}
             <a
               href="/#how-it-works"
-              className="px-2.5 py-1.5 text-sm font-medium text-neutral-300 hover:text-white rounded-md hover:bg-white/5 transition-colors"
+              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors"
             >
               How It Works
             </a>
 
+            {/* Live Edge Status */}
+            <a
+              href="/status"
+              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors flex items-center gap-1.5"
+            >
+              <Activity className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>Status</span>
+            </a>
+
             {/* 100% Free Static Edge Badge */}
-            <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+            <span className="ml-2 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-wide uppercase bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
+              <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
               100% Free
             </span>
           </nav>
         </div>
 
         {/* Right Section: Sign In, Sign Up, Theme Toggle */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           {userEmail ? (
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-white bg-white/10 px-2.5 py-1.5 rounded-md border border-white/10 flex items-center gap-1.5">
-                <User className="w-3.5 h-3.5 text-[#5C6BC0]" />
+              <span className="text-xs font-semibold text-brand-950 dark:text-white bg-brand-100 dark:bg-white/10 px-3 py-1.5 rounded-lg border border-brand-300 dark:border-white/10 flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" />
                 <span className="truncate max-w-[120px]">{userEmail}</span>
               </span>
               <button
                 type="button"
                 onClick={handleSignOut}
                 title="Sign out"
-                className="p-1.5 text-neutral-400 hover:text-red-400 rounded-md transition-colors"
+                className="p-1.5 text-ink-muted hover:text-red-500 rounded-lg transition-colors"
               >
                 <LogOut className="w-4 h-4" />
               </button>
@@ -243,14 +259,14 @@ export default function Header() {
             <div className="flex items-center gap-2">
               <a
                 href="/login"
-                className="hidden lg:inline-flex text-sm font-medium text-neutral-300 hover:text-white px-2.5 py-1.5 rounded-md hover:bg-white/5 transition-colors"
+                className="hidden lg:inline-flex text-sm font-medium text-ink-secondary hover:text-brand-950 dark:text-neutral-300 dark:hover:text-white px-3 py-1.5 rounded-lg hover:bg-brand-100/70 dark:hover:bg-white/5 transition-colors"
               >
                 Sign in
               </a>
 
               <a
                 href="/register"
-                className="hidden lg:inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] rounded-md shadow-sm transition-all"
+                className="hidden lg:inline-flex items-center justify-center px-3.5 py-1.5 text-sm font-semibold text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 rounded-lg shadow-sm shadow-brand-700/25 transition-all"
               >
                 Sign up
               </a>
@@ -262,16 +278,12 @@ export default function Header() {
             type="button"
             onClick={toggleDarkMode}
             aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-            className="p-1.5 text-neutral-300 hover:text-white rounded-md hover:bg-white/5 transition-colors"
+            className="p-2 rounded-lg text-ink-secondary hover:text-brand-950 dark:text-neutral-300 dark:hover:text-white hover:bg-brand-100/70 dark:hover:bg-white/5 transition-colors"
           >
             {isDark ? (
-              <svg className="size-4 shrink-0 text-neutral-300 hover:text-white" viewBox="0 0 512 512" fill="currentColor">
-                <path d="M256 0C114.6 0 0 114.6 0 256S114.6 512 256 512c68.8 0 131.3-27.2 177.3-71.4 7.3-7 9.4-17.9 5.3-27.1s-13.7-14.9-23.8-14.1c-4.9 .4-9.8 .6-14.8 .6-101.6 0-184-82.4-184-184 0-72.1 41.5-134.6 102.1-164.8 9.1-4.5 14.3-14.3 13.1-24.4S322.6 8.5 312.7 6.3C294.4 2.2 275.4 0 256 0z" />
-              </svg>
+              <Sun className="size-4 shrink-0 text-amber-400" />
             ) : (
-              <svg className="size-4 shrink-0 text-neutral-300 hover:text-white" viewBox="0 0 512 512" fill="currentColor">
-                <path d="M232 488c0 13.3 10.7 24 24 24s24-10.7 24-24l0-56c0-13.3-10.7-24-24-24s-24 10.7-24 24l0 56zm0-408c0 13.3 10.7 24 24 24s24-10.7 24-24l0-56c0-13.3-10.7-24-24-24s-24 10.7-24 24l0 56zM75 75c-9.4 9.4-9.4 24.6 0 33.9l39.6 39.6c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9L108.9 75c-9.4-9.4-24.6-9.4-33.9 0zM363.5 363.5c-9.4 9.4-9.4 24.6 0 33.9L403.1 437c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-39.6-39.6c-9.4-9.4-24.6-9.4-33.9 0zM0 256c0 13.3 10.7 24 24 24l56 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-56 0c-13.3 0-24 10.7-24 24zm408 0c0 13.3 10.7 24 24 24l56 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-56 0c-13.3 0-24 10.7-24 24zM75 437c9.4 9.4 24.6 9.4 33.9 0l39.6-39.6c9.4-9.4 9.4-24.6 0-33.9s-24.6-9.4-33.9 0L75 403.1c-9.4 9.4-9.4 24.6 0 33.9zM363.5 148.5c9.4 9.4 24.6 9.4 33.9 0L437 108.9c9.4-9.4 9.4-24.6 0-33.9s-24.6-9.4-33.9 0l-39.6 39.6c-9.4 9.4-9.4 24.6 0 33.9zM256 368a112 112 0 1 0 0-224 112 112 0 1 0 0 224z" />
-              </svg>
+              <Moon className="size-4 shrink-0 text-brand-700" />
             )}
           </button>
 
@@ -280,7 +292,7 @@ export default function Header() {
             type="button"
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
             aria-label="Open menu"
-            className="lg:hidden p-1.5 text-neutral-300 hover:text-white"
+            className="lg:hidden p-2 text-ink-secondary hover:text-brand-950 dark:text-neutral-300 dark:hover:text-white rounded-lg hover:bg-brand-100/70 dark:hover:bg-white/5 transition-colors"
           >
             {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
@@ -289,40 +301,55 @@ export default function Header() {
 
       {/* Mobile Drawer */}
       {isMobileMenuOpen && (
-        <div className="lg:hidden bg-neutral-900 border-b border-white/10 px-4 py-4 space-y-3">
-          <div className="font-semibold text-xs text-neutral-400 uppercase tracking-wider">Tools</div>
-          <div className="grid grid-cols-2 gap-2 text-xs text-neutral-300 pb-2">
-            <a href="/pdf-converter" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-white">PDF Converter</a>
-            <a href="/video-converter" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-white">Video Converter</a>
-            <a href="/merge-pdf" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-white">Merge PDF</a>
-            <a href="/compress-pdf" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-white">Compress PDF</a>
+        <div className="lg:hidden bg-brand-50 dark:bg-dark-surface border-b border-neutral-border dark:border-dark-border px-4 py-4 space-y-3">
+          <div className="font-bold text-xs text-brand-700 dark:text-brand-400 uppercase tracking-wider">Quick Tools</div>
+          <div className="grid grid-cols-2 gap-2 text-xs text-ink-secondary dark:text-neutral-300 pb-2">
+            <a href="/unit-converter" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white font-medium flex items-center gap-1 text-brand-700 dark:text-brand-300">
+              <Calculator className="w-3.5 h-3.5" />
+              <span>Unit Converter</span>
+            </a>
+            <a href="/pdf-converter" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white">PDF Converter</a>
+            <a href="/video-converter" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white">Video Converter</a>
+            <a href="/merge-pdf" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white">Merge PDF</a>
+            <a href="/compress-pdf" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white">Compress PDF</a>
+            <a href="/status" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white flex items-center gap-1">
+              <Activity className="w-3.5 h-3.5 text-emerald-500" />
+              <span>Edge Status</span>
+            </a>
           </div>
-          <div className="border-t border-white/10 pt-2 flex flex-col gap-1">
+          <div className="border-t border-brand-300/60 dark:border-dark-border pt-2 flex flex-col gap-1">
             <a
               href="/#format-catalog"
               onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1 text-sm text-neutral-300 hover:text-white"
+              className="px-2 py-1.5 text-sm text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white"
             >
               Formats
             </a>
             <a
               href="/#how-it-works"
               onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1 text-sm text-neutral-300 hover:text-white"
+              className="px-2 py-1.5 text-sm text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white"
             >
               How It Works
             </a>
             <a
+              href="/status"
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="px-2 py-1.5 text-sm text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white"
+            >
+              System Status
+            </a>
+            <a
               href="/login"
               onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1 text-sm text-neutral-300 hover:text-white"
+              className="px-2 py-1.5 text-sm text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white"
             >
               Sign in
             </a>
             <a
               href="/register"
               onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1 text-sm text-[#5C6BC0] hover:text-[#4D5CB5] font-semibold"
+              className="px-2 py-1.5 text-sm text-brand-700 dark:text-brand-400 hover:underline font-bold"
             >
               Sign up
             </a>

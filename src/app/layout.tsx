@@ -6,7 +6,9 @@ export const metadata: Metadata = {
   description:
     'Universal online file converter supporting images, documents, spreadsheets, data structures, and archives with modern high-fidelity conversion engine.',
   icons: {
-    icon: '/favicon.ico',
+    icon: '/icon.svg',
+    shortcut: '/icon.svg',
+    apple: '/icon.svg',
   },
 };
 

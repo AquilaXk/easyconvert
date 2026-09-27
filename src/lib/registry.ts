@@ -1018,7 +1018,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/csv',
     category: 'data',
     description: 'Comma-Separated Values tabular structured spreadsheet format.',
-    targetFormats: ['xlsx', 'json', 'tsv', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip', 'jpg', 'png'],
+    targetFormats: ['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip', 'jpg', 'png'],
     optionsSchema: { delimiter: true, preserveTables: true },
   },
   tsv: {
@@ -1028,7 +1028,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/tab-separated-values',
     category: 'data',
     description: 'Tab-Separated Values structured data exchange format.',
-    targetFormats: ['csv', 'xlsx', 'json', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'json', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true, preserveTables: true },
   },
   json: {
@@ -1038,7 +1038,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/json',
     category: 'data',
     description: 'JavaScript Object Notation universal lightweight data interchange format.',
-    targetFormats: ['csv', 'tsv', 'yaml', 'xml', 'xlsx', 'txt', 'pdf', 'ods', 'xls', 'zip'],
+    targetFormats: ['csv', 'tsv', 'parquet', 'yaml', 'xml', 'xlsx', 'txt', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true },
   },
   yaml: {
@@ -1230,7 +1230,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-ndjson',
     category: 'data',
     description: 'Streaming structured data formatted with one valid JSON value per line.',
-    targetFormats: ['json', 'csv', 'tsv', 'zip'],
+    targetFormats: ['json', 'csv', 'tsv', 'parquet', 'zip'],
   },
   jsonl: {
     id: 'jsonl',
@@ -1239,7 +1239,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-jsonlines',
     category: 'data',
     description: 'Convenient format for storing records that can be processed one line at a time.',
-    targetFormats: ['json', 'csv', 'tsv', 'zip'],
+    targetFormats: ['json', 'csv', 'tsv', 'parquet', 'zip'],
   },
   tab: {
     id: 'tab',
@@ -1248,7 +1248,16 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/tab-separated-values',
     category: 'data',
     description: 'Tab-delimited text data table.',
-    targetFormats: ['csv', 'json', 'xlsx', 'tsv', 'zip'],
+    targetFormats: ['csv', 'json', 'xlsx', 'tsv', 'parquet', 'zip'],
+  },
+  parquet: {
+    id: 'parquet',
+    name: 'Apache Parquet Columnar Data',
+    extension: 'parquet',
+    mimeType: 'application/vnd.apache.parquet',
+    category: 'data',
+    description: 'Open-source columnar storage format optimized for high-performance analytics and queries.',
+    targetFormats: ['json', 'csv', 'tsv', 'yaml', 'xlsx', 'ods', 'pdf', 'txt', 'xml', 'html', 'ndjson', 'xls'],
   },
 
   // ==========================================
@@ -1827,7 +1836,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/zip',
     category: 'archive',
     description: 'Universal lossless compression archive container.',
-    targetFormats: ['tar', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['tar', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
     optionsSchema: { compressionLevel: true },
   },
   tar: {
@@ -1837,7 +1846,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-tar',
     category: 'archive',
     description: 'Tape archive file format commonly used for packaging unix collections.',
-    targetFormats: ['zip', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
   },
   gz: {
     id: 'gz',
@@ -1846,7 +1855,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/gzip',
     category: 'archive',
     description: 'GNU zip single-file compression format.',
-    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst'],
   },
   tgz: {
     id: 'tgz',
@@ -1855,7 +1864,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/gzip',
     category: 'archive',
     description: 'Tarball compressed using GNU zip.',
-    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz', 'tar.zst'],
   },
   '7z': {
     id: '7z',
@@ -1864,7 +1873,37 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-7z-compressed',
     category: 'archive',
     description: 'Open-architecture high compression ratio LZMA/LZMA2 archive.',
-    targetFormats: ['zip', 'tar', 'gz', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', 'gz', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
+    optionsSchema: { compressionLevel: true },
+  },
+  zst: {
+    id: 'zst',
+    name: 'Zstandard Compressed Archive',
+    extension: 'zst',
+    mimeType: 'application/zstd',
+    category: 'archive',
+    description: 'Real-time compression algorithm developed by Yann Collet with high compression ratios and ultra-fast decompression.',
+    targetFormats: ['tar', 'zip', 'gz', 'bz2', 'tar.zst', 'zstd'],
+    optionsSchema: { compressionLevel: true },
+  },
+  zstd: {
+    id: 'zstd',
+    name: 'Zstandard Archive',
+    extension: 'zstd',
+    mimeType: 'application/zstd',
+    category: 'archive',
+    description: 'High-speed lossless compression format RFC 8878.',
+    targetFormats: ['tar', 'zip', 'gz', 'bz2', 'tar.zst', 'zst'],
+    optionsSchema: { compressionLevel: true },
+  },
+  'tar.zst': {
+    id: 'tar.zst',
+    name: 'Zstandard Compressed Tarball',
+    extension: 'tar.zst',
+    mimeType: 'application/x-zstd-compressed-tar',
+    category: 'archive',
+    description: 'Tarball compressed using Zstandard algorithm.',
+    targetFormats: ['zip', 'tar', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst'],
     optionsSchema: { compressionLevel: true },
   },
   tbz2: {

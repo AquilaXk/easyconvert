@@ -464,7 +464,7 @@ export default function Hero({
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="rounded-l-xl font-semibold inline-flex items-center transition-all px-5 py-3 text-base gap-2.5 focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] outline-none shadow-sm cursor-pointer"
+                    className="rounded-l-xl font-semibold inline-flex items-center transition-all px-5 py-3 text-base gap-2.5 focus-visible:z-[1] text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 outline-none shadow-md shadow-brand-700/20 cursor-pointer"
                   >
                     <svg className="size-5 fill-current shrink-0" viewBox="0 0 384 512">
                       <path d="M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM192 240c-13.3 0-24 10.7-24 24l0 48-48 0c-13.3 0-24 10.7-24 24s10.7 24 24 24l48 0 0 48c0 13.3 10.7 24 24 24s24-10.7 24-24l0-48 48 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-48 0 0-48c0-13.3-10.7-24-24-24z" />
@@ -476,7 +476,7 @@ export default function Hero({
                     type="button"
                     onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                     aria-label="Select file source"
-                    className="rounded-r-xl font-semibold inline-flex items-center transition-all text-base border-l border-white/20 focus-visible:z-[1] text-white bg-[#5C6BC0] hover:bg-[#4D5CB5] active:bg-[#3F4EA3] px-3.5 py-3 outline-none cursor-pointer"
+                    className="rounded-r-xl font-semibold inline-flex items-center transition-all text-base border-l border-white/20 focus-visible:z-[1] text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 px-3.5 py-3 outline-none cursor-pointer"
                   >
                     <ChevronDown className={`size-5 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
                   </button>

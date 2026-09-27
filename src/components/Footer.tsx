@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import Image from 'next/image';
+import BrandLogo from './BrandLogo';
 import { Globe, ChevronDown, Moon, Sun, ShieldCheck } from 'lucide-react';
 
 interface DirectoryCategory {
@@ -184,17 +184,7 @@ export default function Footer() {
           {/* Brand & Identity */}
           <div className="flex items-center gap-3">
             <a href="/" className="flex items-center gap-2.5 group">
-              <Image
-                src="/logo.svg"
-                width={30}
-                height={20}
-                className="h-6 w-auto transition-transform duration-200 group-hover:scale-105"
-                alt="EasyConvert Logo"
-              />
-              <span className="text-white tracking-wide text-lg">
-                <span className="font-light">easy</span>
-                <span className="font-bold">convert</span>
-              </span>
+              <BrandLogo size="sm" textClassName="text-white" />
             </a>
           </div>
 

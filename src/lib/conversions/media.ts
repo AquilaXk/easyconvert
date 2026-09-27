@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ConversionOptions, ConversionResult } from '../types';
+import { executeSandboxedBinary } from '../security/process-sandbox';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream } from './media-encoder';
 import {
   decodeAudioBuffer,
@@ -138,9 +139,13 @@ async function executeFfmpegTranscode(
 
     args.push(outputPath);
 
-    // Invoke binary directly via kernel execve with resolved absolute path
+    // Invoke binary under defensive sandboxed execution guards
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
-    execFileSync(ffmpegBin, args, { stdio: 'pipe' });
+    await executeSandboxedBinary(ffmpegBin, args, {
+      timeoutMs: 30000,
+      maxBuffer: 50 * 1024 * 1024,
+      networkIsolated: true,
+    });
 
     const outputBuffer = fs.readFileSync(outputPath);
     return {

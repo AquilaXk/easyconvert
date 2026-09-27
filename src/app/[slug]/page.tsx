@@ -11,9 +11,10 @@ import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
 import { createItemConverter, getEffectiveMaxFileSize } from '@/lib/client-converter';
-import { FileText, ArrowRight, RefreshCw, CheckCircle, Activity } from 'lucide-react';
-
 import { parseConverterSlug } from '@/lib/slug-parser';
+import { FileText, ArrowRight, RefreshCw, CheckCircle, Activity } from 'lucide-react';
+import UnitConverter from '@/components/UnitConverter';
+import StatusDashboard from '@/components/StatusDashboard';
 
 const FORMAT_DESCRIPTIONS: Record<string, { title: string; desc: string }> = {
   pdf: {
@@ -92,104 +93,6 @@ interface DynamicPageProps {
   };
 }
 
-function UnitConverterWidget({ initialSrc = 'lbs', initialTgt = 'kg' }: { initialSrc?: string; initialTgt?: string }) {
-  const [val, setVal] = useState<number>(1);
-  const [fromUnit, setFromUnit] = useState(initialSrc);
-  const [toUnit, setToUnit] = useState(initialTgt);
-
-  const CONVERSIONS: Record<string, { category: string; toBase: number; label: string }> = {
-    lbs: { category: 'weight', toBase: 453.59237, label: 'Pounds (lbs)' },
-    kg: { category: 'weight', toBase: 1000, label: 'Kilograms (kg)' },
-    g: { category: 'weight', toBase: 1, label: 'Grams (g)' },
-    oz: { category: 'weight', toBase: 28.3495, label: 'Ounces (oz)' },
-    feet: { category: 'length', toBase: 0.3048, label: 'Feet (ft)' },
-    meters: { category: 'length', toBase: 1, label: 'Meters (m)' },
-    inches: { category: 'length', toBase: 0.0254, label: 'Inches (in)' },
-    cm: { category: 'length', toBase: 0.01, label: 'Centimeters (cm)' },
-  };
-
-  const fromConf = CONVERSIONS[fromUnit] || CONVERSIONS['lbs'];
-  const toConf = CONVERSIONS[toUnit] || CONVERSIONS['kg'];
-  const categoryUnits = Object.entries(CONVERSIONS).filter(([_, conf]) => conf.category === fromConf.category);
-
-  let result = 0;
-  if (fromConf.category === toConf.category) {
-    const inBase = val * fromConf.toBase;
-    result = inBase / toConf.toBase;
-  }
-
-  const handleSwap = () => {
-    const tmp = fromUnit;
-    setFromUnit(toUnit);
-    setToUnit(tmp);
-  };
-
-  return (
-    <div className="bg-[#181a20] border border-neutral-700/80 rounded-2xl p-6 sm:p-8 shadow-2xl max-w-xl mx-auto space-y-6">
-      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] items-center gap-4">
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold text-neutral-400">From</label>
-          <input
-            type="number"
-            value={val}
-            onChange={(e) => setVal(parseFloat(e.target.value) || 0)}
-            className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white font-mono text-base focus:border-[#5C6BC0] outline-none"
-          />
-          <select
-            value={fromUnit}
-            onChange={(e) => {
-              const newFrom = e.target.value;
-              setFromUnit(newFrom);
-              const cat = CONVERSIONS[newFrom]?.category;
-              if (CONVERSIONS[toUnit]?.category !== cat) {
-                const partner = Object.keys(CONVERSIONS).find((k) => k !== newFrom && CONVERSIONS[k].category === cat);
-                if (partner) setToUnit(partner);
-              }
-            }}
-            className="w-full px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-xl text-neutral-300 text-xs focus:border-[#5C6BC0] outline-none"
-          >
-            {Object.entries(CONVERSIONS).map(([k, c]) => (
-              <option key={k} value={k}>{c.label}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex justify-center sm:pt-6">
-          <button
-            type="button"
-            onClick={handleSwap}
-            aria-label="Swap units"
-            className="p-2.5 rounded-full bg-[#5C6BC0]/20 text-[#8E9CE6] hover:bg-[#5C6BC0]/30 border border-[#5C6BC0]/30 transition-colors"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold text-neutral-400">To (Calculated)</label>
-          <div className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-[#8E9CE6] font-mono text-base font-bold truncate">
-            {Number.isFinite(result) ? result.toLocaleString(undefined, { maximumFractionDigits: 6 }) : '0'}
-          </div>
-          <select
-            value={toUnit}
-            onChange={(e) => setToUnit(e.target.value)}
-            className="w-full px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-xl text-neutral-300 text-xs focus:border-[#5C6BC0] outline-none"
-          >
-            {categoryUnits.map(([k, c]) => (
-              <option key={k} value={k}>{c.label}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800 flex items-center justify-between text-xs text-neutral-400">
-        <span>Instant client-side calculation</span>
-        <span className="text-[#8E9CE6] font-medium">100% Free & Private</span>
-      </div>
-    </div>
-  );
-}
-
 export default function DynamicConverterPage({ params }: DynamicPageProps) {
   const { slug } = params;
   const parsed = parseConverterSlug(slug);
@@ -199,32 +102,85 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
 
   // Informational Page Renderers
   if (parsed.isInfoPage) {
+    if (parsed.infoType === 'status') {
+      return (
+        <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
+          <Header />
+          <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
+            <div className="mb-8 text-center sm:text-left">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-brand-100 dark:bg-white/10 text-brand-700 dark:text-brand-300 border border-brand-300 dark:border-white/10 mb-3">
+                <span>Edge Infrastructure Telemetry</span>
+              </div>
+              <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-brand-950 dark:text-white">
+                {parsed.pageTitle}
+              </h1>
+              <p className="mt-2 text-sm sm:text-base text-ink-secondary dark:text-neutral-400 max-w-3xl">
+                {parsed.pageDescription}
+              </p>
+            </div>
+            <StatusDashboard />
+          </main>
+          <Footer />
+        </div>
+      );
+    }
+
+    if (parsed.infoType === 'unit') {
+      return (
+        <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
+          <Header />
+          <AdBanner slot="top-leaderboard" className="pt-2 pb-0" />
+          <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
+            <div className="mb-10 text-center">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-brand-100 dark:bg-white/10 text-brand-700 dark:text-brand-300 border border-brand-300 dark:border-white/10 mb-3">
+                <span>Instant Client-Side Calculation</span>
+              </div>
+              <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-brand-950 dark:text-white">
+                {parsed.pageTitle}
+              </h1>
+              <p className="mt-3 text-sm sm:text-base text-ink-secondary dark:text-neutral-400 max-w-2xl mx-auto">
+                {parsed.pageDescription}
+              </p>
+            </div>
+            <UnitConverter initialSrc={parsed.sourceFormat} initialTgt={parsed.targetFormat} />
+            <div className="mt-16">
+              <AdBanner slot="mid-content" />
+            </div>
+            <div className="mt-12">
+              <FaqSection />
+            </div>
+          </main>
+          <Footer />
+        </div>
+      );
+    }
+
     return (
-      <div className="flex flex-col min-h-screen bg-[#141414] text-white">
+      <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
         <Header />
         <main className="flex-1 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
           <div className="mb-10 text-center">
-            <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
+            <h1 className="text-3xl sm:text-4xl font-extrabold text-brand-950 dark:text-white tracking-tight">
               {parsed.pageTitle}
             </h1>
-            <p className="mt-3 text-neutral-400 text-sm">{parsed.pageDescription}</p>
+            <p className="mt-3 text-ink-secondary dark:text-neutral-400 text-sm">{parsed.pageDescription}</p>
           </div>
 
-          <div className="bg-[#1e1e1e] border border-neutral-800 rounded-2xl p-6 sm:p-10 shadow-2xl space-y-6 text-sm text-neutral-300 leading-relaxed">
+          <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-10 shadow-xl space-y-6 text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
             {parsed.infoType === 'privacy' && (
               <>
-                <h3 className="text-lg font-bold text-white">Zero Data Retention Guarantee</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">Zero Data Retention Guarantee</h3>
                 <p>
                   At EasyConvert, privacy is not an afterthought; it is our primary architectural pillar.
                   All conversions take place entirely within ephemeral, volatile system memory.
                 </p>
-                <h3 className="text-lg font-bold text-white">Transient Execution</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">Transient Execution</h3>
                 <p>
                   Incoming streams are piped directly to converter engines without writing temporary
                   blobs to permanent disks. Once your conversion is complete or your download begins,
                   all associated memory buffers are wiped immediately.
                 </p>
-                <h3 className="text-lg font-bold text-white">No Tracking or Third-Party Analytics</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">No Tracking or Third-Party Analytics</h3>
                 <p>
                   We do not sell, rent, or inspect your document contents. Your data belongs solely to you.
                 </p>
@@ -233,17 +189,17 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
 
             {parsed.infoType === 'terms' && (
               <>
-                <h3 className="text-lg font-bold text-white">1. Acceptance of Terms</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">1. Acceptance of Terms</h3>
                 <p>
                   By accessing or using EasyConvert, you agree to be bound by these Terms of Service. If you do
                   not agree, do not use our services.
                 </p>
-                <h3 className="text-lg font-bold text-white">2. Acceptable Use</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">2. Acceptable Use</h3>
                 <p>
                   You agree not to upload copyrighted content that you do not own or possess explicit license
                   to convert, nor upload malicious binaries, malware, or illicit material.
                 </p>
-                <h3 className="text-lg font-bold text-white">3. Service Availability & Free Use</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">3. Service Availability & Free Use</h3>
                 <p>
                   EasyConvert is 100% free with unlimited conversions. All file conversions are processed
                   directly in your browser on the edge with zero subscriptions, paywalls, or credit restrictions.
@@ -254,22 +210,22 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
             {parsed.infoType === 'contact' && (
               <form onSubmit={(e) => { e.preventDefault(); alert('Message received! Our team will respond shortly.'); }} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1">Your Name</label>
-                  <input required type="text" placeholder="Jane Doe" className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white text-sm" />
+                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Your Name</label>
+                  <input required type="text" placeholder="Jane Doe" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1">Email Address</label>
-                  <input required type="email" placeholder="jane@example.com" className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white text-sm" />
+                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Email Address</label>
+                  <input required type="email" placeholder="jane@example.com" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1">Subject</label>
-                  <input required type="text" placeholder="Enterprise licensing inquiry" className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white text-sm" />
+                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Subject</label>
+                  <input required type="text" placeholder="Enterprise licensing inquiry" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1">Message</label>
-                  <textarea required rows={4} placeholder="Tell us how we can help..." className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white text-sm" />
+                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Message</label>
+                  <textarea required rows={4} placeholder="Tell us how we can help..." className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
                 </div>
-                <button type="submit" className="px-6 py-2.5 bg-[#5C6BC0] hover:bg-[#4D5CB5] text-white font-semibold text-sm rounded-xl transition-colors shadow-md">
+                <button type="submit" className="px-6 py-2.5 bg-brand-700 hover:bg-brand-800 text-white font-semibold text-sm rounded-xl transition-colors shadow-md shadow-brand-700/25">
                   Send Message
                 </button>
               </form>
@@ -277,7 +233,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
 
             {parsed.infoType === 'about' && (
               <>
-                <h3 className="text-lg font-bold text-white">High-Performance File Transformation</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">High-Performance File Transformation</h3>
                 <p>
                   EasyConvert was built to deliver enterprise-grade file conversions with modern aesthetic,
                   exceptional rendering fidelity, and unmatched security.
@@ -291,72 +247,25 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
 
             {parsed.infoType === 'security' && (
               <>
-                <h3 className="text-lg font-bold text-white">End-to-End Encryption</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">End-to-End Encryption</h3>
                 <p>
                   All client transmissions are secured using modern TLS 1.3 encryption with strict HSTS policies.
                 </p>
-                <h3 className="text-lg font-bold text-white">Volatile Memory Sandboxing</h3>
+                <h3 className="text-lg font-bold text-brand-950 dark:text-white">Volatile Memory Sandboxing</h3>
                 <p>
-                  Worker processes run within isolated Linux sandboxes. Once processing terminates, memory spaces
+                  Worker processes run within isolated in-browser sandboxes. Once processing terminates, memory spaces
                   are reclaimed immediately with zero residual files.
                 </p>
               </>
             )}
 
-            {parsed.infoType === 'status' && (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-                  <div className="size-3 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className="font-semibold text-sm">All Conversion Pipelines Operational</span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-1">
-                    <div className="flex items-center justify-between font-semibold text-white">
-                      <span>WebCodecs VPU Acceleration</span>
-                      <span className="text-emerald-400 font-medium">Operational</span>
-                    </div>
-                    <p className="text-neutral-400">Hardware-accelerated video & audio transcoding</p>
-                  </div>
-
-                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-1">
-                    <div className="flex items-center justify-between font-semibold text-white">
-                      <span>SIMD Wasm Core Engine</span>
-                      <span className="text-emerald-400 font-medium">Operational</span>
-                    </div>
-                    <p className="text-neutral-400">Vectorized transformations across documents and media</p>
-                  </div>
-
-                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-1">
-                    <div className="flex items-center justify-between font-semibold text-white">
-                      <span>Client OPFS Virtual Storage</span>
-                      <span className="text-emerald-400 font-medium">Operational</span>
-                    </div>
-                    <p className="text-neutral-400">Origin Private File System streaming with zero memory spikes</p>
-                  </div>
-
-                  <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-1">
-                    <div className="flex items-center justify-between font-semibold text-white">
-                      <span>Zero-Retention Privacy Sandbox</span>
-                      <span className="text-emerald-400 font-medium">Active</span>
-                    </div>
-                    <p className="text-neutral-400">100% ephemeral in-memory processing with zero residual disk storage</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {parsed.infoType === 'unit' && (
-              <UnitConverterWidget initialSrc={parsed.sourceFormat} initialTgt={parsed.targetFormat} />
-            )}
-
             {parsed.infoType === 'forgot-password' && (
               <form onSubmit={(e) => { e.preventDefault(); alert('Reset link sent to your email.'); }} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1">Email Address</label>
-                  <input required type="email" placeholder="name@example.com" className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-white text-sm" />
+                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Email Address</label>
+                  <input required type="email" placeholder="name@example.com" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
                 </div>
-                <button type="submit" className="w-full py-2.5 bg-[#5C6BC0] hover:bg-[#4D5CB5] text-white font-semibold text-sm rounded-xl transition-colors shadow-md">
+                <button type="submit" className="w-full py-2.5 bg-brand-700 hover:bg-brand-800 text-white font-semibold text-sm rounded-xl transition-colors shadow-md shadow-brand-700/25">
                   Send Password Reset Link
                 </button>
               </form>
@@ -519,7 +428,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
     .map(([key]) => key);
 
   return (
-    <div className="flex flex-col min-h-screen bg-[#141414] text-white">
+    <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
       <Header />
 
       {/* Top Leaderboard Ad Unit */}
@@ -567,15 +476,15 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
             <AdBanner slot="mid-content" />
 
             <section className="max-w-5xl mx-auto px-4 sm:px-6 mb-16 relative z-20">
-              <div className="bg-[#1e1e1e] border border-neutral-800 rounded-2xl p-6 sm:p-8 flex items-start gap-5 shadow-2xl">
-                <div className="p-3 rounded-xl bg-[#5C6BC0]/20 text-[#5C6BC0] border border-[#5C6BC0]/30 shrink-0">
+              <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 flex items-start gap-5 shadow-xl">
+                <div className="p-3.5 rounded-2xl bg-brand-700/15 text-brand-700 dark:text-brand-400 border border-brand-600/30 shrink-0">
                   <FileText className="w-7 h-7" />
                 </div>
                 <div className="space-y-2">
-                  <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                  <h3 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white tracking-tight">
                     {formatMeta.title}
                   </h3>
-                  <p className="text-xs sm:text-sm text-neutral-400 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 leading-relaxed">
                     {formatMeta.desc}
                   </p>
                 </div>
@@ -589,14 +498,14 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
           <section className="max-w-5xl mx-auto px-4 sm:px-6 mb-20 space-y-12">
             {/* Convert FROM [Source] */}
             {convertFromTargets.length > 0 && (
-              <div className="bg-[#1a1a1a] border border-neutral-800 rounded-2xl p-6 sm:p-8 shadow-xl">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-[#5C6BC0] block mb-1">
+              <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 shadow-xl">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block mb-1">
                   Conversion Types
                 </span>
-                <h3 className="text-xl font-bold text-white mb-1">
+                <h3 className="text-xl font-bold text-brand-950 dark:text-white mb-1">
                   Convert from {parsed.sourceFormat.toUpperCase()}
                 </h3>
-                <p className="text-xs sm:text-sm text-neutral-400 mb-6">
+                <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mb-6">
                   Pick a target format to start a {parsed.sourceFormat.toUpperCase()} conversion.
                 </p>
 
@@ -605,12 +514,12 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                     <a
                       key={tgt}
                       href={`/${parsed.sourceFormat.toLowerCase()}-to-${tgt.toLowerCase()}`}
-                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800 hover:border-[#5C6BC0]/70 hover:bg-[#5C6BC0]/10 text-xs font-semibold text-neutral-200 hover:text-white transition-all group"
+                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border hover:border-brand-700 hover:bg-brand-50 dark:hover:bg-white/10 text-xs font-semibold text-brand-950 dark:text-neutral-200 transition-all group"
                     >
                       <span>
                         {parsed.sourceFormat.toUpperCase()} TO {tgt.toUpperCase()}
                       </span>
-                      <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-[#5C6BC0] group-hover:translate-x-0.5 transition-all" />
+                      <ArrowRight className="w-3.5 h-3.5 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-400 group-hover:translate-x-0.5 transition-all" />
                     </a>
                   ))}
                 </div>
@@ -619,14 +528,14 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
 
             {/* Convert TO [Target] */}
             {convertToSources.length > 0 && (
-              <div className="bg-[#1a1a1a] border border-neutral-800 rounded-2xl p-6 sm:p-8 shadow-xl">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-[#5C6BC0] block mb-1">
+              <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 shadow-xl">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block mb-1">
                   Conversion Types
                 </span>
-                <h3 className="text-xl font-bold text-white mb-1">
+                <h3 className="text-xl font-bold text-brand-950 dark:text-white mb-1">
                   Convert to {targetForReverse.toUpperCase()}
                 </h3>
-                <p className="text-xs sm:text-sm text-neutral-400 mb-6">
+                <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mb-6">
                   Pick a source format to convert into {targetForReverse.toUpperCase()}.
                 </p>
 
@@ -635,12 +544,12 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                     <a
                       key={src}
                       href={`/${src.toLowerCase()}-to-${targetForReverse.toLowerCase()}`}
-                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800 hover:border-[#5C6BC0]/70 hover:bg-[#5C6BC0]/10 text-xs font-semibold text-neutral-200 hover:text-white transition-all group"
+                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border hover:border-brand-700 hover:bg-brand-50 dark:hover:bg-white/10 text-xs font-semibold text-brand-950 dark:text-neutral-200 transition-all group"
                     >
                       <span>
                         {src.toUpperCase()} TO {targetForReverse.toUpperCase()}
                       </span>
-                      <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-[#5C6BC0] group-hover:translate-x-0.5 transition-all" />
+                      <ArrowRight className="w-3.5 h-3.5 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-400 group-hover:translate-x-0.5 transition-all" />
                     </a>
                   ))}
                 </div>
