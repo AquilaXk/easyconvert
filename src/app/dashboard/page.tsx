@@ -2,10 +2,17 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, QuotaUsage, UserConversionFile } from '@/lib/api-keys/types';
+
+const TAB_LABELS: Record<'curl' | 'node' | 'python', string> = {
+  curl: 'cURL',
+  node: 'Node.js',
+  python: 'Python',
+};
 import {
   Key,
   FileText,
@@ -94,7 +101,7 @@ print(response.json())`,
                   : 'text-ink-secondary dark:text-dark-muted'
               }`}
             >
-              {tab === 'curl' ? 'cURL' : tab === 'node' ? 'Node.js' : 'Python'}
+              {TAB_LABELS[tab]}
             </button>
           ))}
         </div>
@@ -295,6 +302,44 @@ export default function DashboardPage() {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${Number.parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  };
+
+  const renderKeyAction = (key: ApiKey) => {
+    if (key.status !== 'active') {
+      return <span className="text-xs text-ink-muted">Revoked</span>;
+    }
+
+    if (revokingKeyId === key.id) {
+      return (
+        <div className="inline-flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => handleRevokeKey(key.id)}
+            className="text-xs text-rose-600 font-bold hover:underline"
+          >
+            Confirm
+          </button>
+          <span className="text-ink-muted text-xs">/</span>
+          <button
+            type="button"
+            onClick={() => setRevokingKeyId(null)}
+            className="text-xs text-ink-secondary hover:underline"
+          >
+            Cancel
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={() => setRevokingKeyId(key.id)}
+        className="text-xs text-status-danger hover:underline font-medium"
+      >
+        Revoke
+      </button>
+    );
   };
 
   if (loading) {
@@ -611,37 +656,7 @@ export default function DashboardPage() {
                               </span>
                             </td>
                             <td className="py-4 text-right">
-                              {isActive ? (
-                                revokingKeyId === key.id ? (
-                                  <div className="inline-flex items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRevokeKey(key.id)}
-                                      className="text-xs text-rose-600 font-bold hover:underline"
-                                    >
-                                      Confirm
-                                    </button>
-                                    <span className="text-ink-muted text-xs">/</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => setRevokingKeyId(null)}
-                                      className="text-xs text-ink-secondary hover:underline"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => setRevokingKeyId(key.id)}
-                                    className="text-xs text-status-danger hover:underline font-medium"
-                                  >
-                                    Revoke
-                                  </button>
-                                )
-                              ) : (
-                                <span className="text-xs text-ink-muted">Revoked</span>
-                              )}
+                              {renderKeyAction(key)}
                             </td>
                           </tr>
                         );
@@ -686,12 +701,12 @@ export default function DashboardPage() {
                 <p className="text-xs text-ink-muted dark:text-dark-muted mt-1 max-w-sm mx-auto">
                   Files you convert programmatically or through the web interface will appear here with an active 1-hour expiration countdown.
                 </p>
-                <a
+                <Link
                   href="/"
                   className="inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-xl bg-brand-700 hover:bg-brand-800 text-white text-xs font-semibold shadow-sm"
                 >
                   <span>Start Converting Files</span>
-                </a>
+                </Link>
               </div>
             ) : (
               <div className="overflow-x-auto">

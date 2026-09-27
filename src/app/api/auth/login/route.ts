@@ -10,13 +10,23 @@ const DUMMY_HASH = '0'.repeat(128);
 const DUMMY_SALT = '0'.repeat(32);
 
 export async function POST(req: NextRequest) {
+  let body: Record<string, unknown>;
   try {
-    const body = await req.json();
-    const { email, password } = body;
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { success: false, error: 'Invalid JSON request payload.' },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const email = typeof body.email === 'string' ? body.email.trim() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
 
     if (!email || !password) {
       return NextResponse.json(
-        { success: false, error: 'Email and password are required.' },
+        { success: false, error: 'Email and password are required strings.' },
         { status: 400 }
       );
     }

@@ -17,12 +17,10 @@ interface ValidatedConvertInput {
 }
 
 function parseConvertFormData(formData: FormData): { error?: string; status?: number; data?: ValidatedConvertInput } {
-  const file = formData.get('file') as File | null;
-  const targetFormat = formData.get('targetFormat') as string | null;
-  const optionsRaw = formData.get('options') as string | null;
+  const file = formData.get('file');
 
-  if (!file) {
-    return { error: 'Missing required "file" in multipart request.', status: 400 };
+  if (!file || typeof file === 'string' || !(file instanceof Blob)) {
+    return { error: 'Missing required "file" or invalid file binary in multipart request.', status: 400 };
   }
 
   if (file.size === 0) {
@@ -33,12 +31,14 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
     return { error: 'File size exceeds the 100 MB memory conversion boundary.', status: 400 };
   }
 
-  if (!targetFormat) {
+  const targetFormatEntry = formData.get('targetFormat');
+  if (!targetFormatEntry || typeof targetFormatEntry !== 'string') {
     return { error: 'Missing required "targetFormat" parameter.', status: 400 };
   }
+  const targetFormat = targetFormatEntry.trim();
 
-  const sourceFormatParam = formData.get('sourceFormat') as string | null;
-  let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
+  const sourceFormatParam = formData.get('sourceFormat');
+  let sourceDef = typeof sourceFormatParam === 'string' ? getFormatByExtension(sourceFormatParam) : undefined;
   sourceDef ??= detectFormatFromFilename(file.name);
 
   if (!sourceDef) {
@@ -59,15 +59,20 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
   }
 
   let options: ConversionOptions = {};
-  if (optionsRaw) {
+  const optionsRaw = formData.get('options');
+  if (typeof optionsRaw === 'string' && optionsRaw.trim()) {
     try {
-      options = JSON.parse(optionsRaw);
+      const parsed = JSON.parse(optionsRaw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { error: 'The "options" field must be a valid JSON object.', status: 400 };
+      }
+      options = parsed;
     } catch {
       return { error: 'Invalid JSON string provided in "options" field.', status: 400 };
     }
   }
 
-  return { data: { file, sourceDef, targetDef, options } };
+  return { data: { file: file as File, sourceDef, targetDef, options } };
 }
 
 export async function POST(req: NextRequest) {
