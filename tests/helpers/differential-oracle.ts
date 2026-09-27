@@ -343,14 +343,14 @@ export async function parsePptxToAst(buffer: Buffer): Promise<PptxStructuralAst>
 
   const slideFiles = Object.keys(zip.files)
     .filter((f) => /^ppt\/slides\/slide\d+\.xml$/i.test(f))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 
   const slides: PptxStructuralAst['slides'] = [];
 
   for (let i = 0; i < slideFiles.length; i++) {
     const xml = await zip.files[slideFiles[i]].async('text');
 
-    const bgMatch = xml.match(/<a:srgbClr\s+val="([0-9a-fA-F]{6})"/i);
+    const bgMatch = xml.match(/<a:srgbClr\s+val="([0-9a-f]{6})"/i);
     const backgroundColor = bgMatch ? `#${bgMatch[1].toUpperCase()}` : undefined;
 
     const shapes: PptxStructuralAst['slides'][0]['shapes'] = [];
@@ -361,7 +361,7 @@ export async function parsePptxToAst(buffer: Buffer): Promise<PptxStructuralAst>
       const spXml = spMatch[1];
       const nameMatch = spXml.match(/<p:cNvPr\s+[^>]*?name="([^"]*)"/i);
       const prstMatch = spXml.match(/<a:prstGeom\s+[^>]*?prst="([^"]*)"/i);
-      const fillMatch = spXml.match(/<a:srgbClr\s+val="([0-9a-fA-F]{6})"/i);
+      const fillMatch = spXml.match(/<a:srgbClr\s+val="([0-9a-f]{6})"/i);
 
       let bounds = { x: 0, y: 0, cx: 0, cy: 0 };
       const offMatch = spXml.match(/<a:off\s+[^>]*?x="(\d+)"\s+y="(\d+)"/i);

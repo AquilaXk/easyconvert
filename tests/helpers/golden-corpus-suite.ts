@@ -1,5 +1,4 @@
 import fs from 'fs';
-import path from 'path';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
