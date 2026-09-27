@@ -4,6 +4,9 @@ import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
 import { sanitizeSvgString } from '../security/svg-sanitizer';
+import { encodeParquet, decodeParquet } from './parquet';
+
+export { encodeParquet, decodeParquet };
 
 export async function convertData(
   inputBuffer: Buffer,
@@ -15,6 +18,68 @@ export async function convertData(
   const baseName = originalFilename.replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
+
+  // PARQUET -> Target
+  if (src === 'parquet') {
+    const records = decodeParquet(inputBuffer);
+    if (tgt === 'json') {
+      const json = JSON.stringify(records, null, 2);
+      const buffer = Buffer.from(json, 'utf-8');
+      return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+    }
+    if (tgt === 'csv' || tgt === 'tsv') {
+      const targetDelim = tgt === 'tsv' ? '\t' : ',';
+      const outputStr = Papa.unparse(records, { delimiter: targetDelim });
+      const buffer = Buffer.from(outputStr, 'utf-8');
+      return {
+        buffer,
+        mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
+        filename: `${baseName}.${tgt}`,
+        size: buffer.length,
+      };
+    }
+    if (tgt === 'yaml' || tgt === 'yml') {
+      const yamlStr = yaml.dump(records);
+      const buffer = Buffer.from(yamlStr, 'utf-8');
+      return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
+    }
+    if (tgt === 'xlsx') {
+      const csvStr = Papa.unparse(records);
+      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csvStr, 'utf-8'), 'csv', options, baseName);
+      return {
+        buffer: xlsxBuffer,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        filename: `${baseName}.xlsx`,
+        size: xlsxBuffer.length,
+      };
+    }
+    if (tgt === 'ods') {
+      const headers = Object.keys((records[0] || {}) as Record<string, unknown>);
+      const rows = [
+        headers,
+        ...records.map((d) => headers.map((h) => String(d[h] ?? ''))),
+      ];
+      const odsBuffer = await generateOdsFromData(rows, baseName);
+      return {
+        buffer: odsBuffer,
+        mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
+        filename: `${baseName}.ods`,
+        size: odsBuffer.length,
+      };
+    }
+    if (tgt === 'pdf') {
+      const pdfBuffer = await renderDataToPdf(records, baseName, options);
+      return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+    }
+    if (tgt === 'txt') {
+      const buffer = Buffer.from(JSON.stringify(records, null, 2), 'utf-8');
+      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+    }
+    if (tgt === 'parquet') {
+      return { buffer: inputBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: inputBuffer.length };
+    }
+  }
+
   const textContent = inputBuffer.toString('utf-8');
 
   // CSV, TSV, or TAB -> Target
@@ -104,6 +169,11 @@ export async function convertData(
       const html = generateTableHtml(parsed.data as Record<string, unknown>[], baseName);
       const buffer = Buffer.from(html, 'utf-8');
       return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+    }
+
+    if (tgt === 'parquet') {
+      const parquetBuffer = encodeParquet(parsed.data as Record<string, unknown>[]);
+      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
     }
 
     if (tgt === 'txt') {
@@ -205,6 +275,14 @@ export async function convertData(
       return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
     }
 
+    if (tgt === 'parquet') {
+      const arrayData = Array.isArray(parsedJson)
+        ? (parsedJson as Record<string, unknown>[])
+        : [parsedJson as Record<string, unknown>];
+      const parquetBuffer = encodeParquet(arrayData);
+      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
+    }
+
     if (tgt === 'txt') {
       const buffer = Buffer.from(JSON.stringify(parsedJson, null, 2), 'utf-8');
       return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
@@ -225,6 +303,14 @@ export async function convertData(
       const json = JSON.stringify(parsedYaml, null, 2);
       const buffer = Buffer.from(json, 'utf-8');
       return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+    }
+
+    if (tgt === 'parquet') {
+      const arrayData = Array.isArray(parsedYaml)
+        ? (parsedYaml as Record<string, unknown>[])
+        : [parsedYaml as Record<string, unknown>];
+      const parquetBuffer = encodeParquet(arrayData);
+      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
     }
 
     if (tgt === 'txt') {
@@ -265,6 +351,12 @@ export async function convertData(
         filename: `${baseName}.${tgt}`,
         size: buffer.length,
       };
+    }
+
+    if (tgt === 'parquet') {
+      const records = extractTabularRecordsFromXml(output);
+      const parquetBuffer = encodeParquet(records);
+      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
     }
 
     if (tgt === 'txt') {
@@ -361,6 +453,11 @@ export async function convertData(
       const xlsXml = generateXlsXmlFromData(rows, baseName);
       const buffer = Buffer.from(xlsXml, 'utf-8');
       return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
+    }
+
+    if (tgt === 'parquet') {
+      const parquetBuffer = encodeParquet(parsedData);
+      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
     }
 
     if (tgt === 'txt') {

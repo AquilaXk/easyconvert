@@ -1018,7 +1018,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/csv',
     category: 'data',
     description: 'Comma-Separated Values tabular structured spreadsheet format.',
-    targetFormats: ['xlsx', 'json', 'tsv', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip', 'jpg', 'png'],
+    targetFormats: ['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip', 'jpg', 'png'],
     optionsSchema: { delimiter: true, preserveTables: true },
   },
   tsv: {
@@ -1028,7 +1028,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/tab-separated-values',
     category: 'data',
     description: 'Tab-Separated Values structured data exchange format.',
-    targetFormats: ['csv', 'xlsx', 'json', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'json', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true, preserveTables: true },
   },
   json: {
@@ -1038,7 +1038,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/json',
     category: 'data',
     description: 'JavaScript Object Notation universal lightweight data interchange format.',
-    targetFormats: ['csv', 'tsv', 'yaml', 'xml', 'xlsx', 'txt', 'pdf', 'ods', 'xls', 'zip'],
+    targetFormats: ['csv', 'tsv', 'parquet', 'yaml', 'xml', 'xlsx', 'txt', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true },
   },
   yaml: {
@@ -1230,7 +1230,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-ndjson',
     category: 'data',
     description: 'Streaming structured data formatted with one valid JSON value per line.',
-    targetFormats: ['json', 'csv', 'tsv', 'zip'],
+    targetFormats: ['json', 'csv', 'tsv', 'parquet', 'zip'],
   },
   jsonl: {
     id: 'jsonl',
@@ -1239,7 +1239,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-jsonlines',
     category: 'data',
     description: 'Convenient format for storing records that can be processed one line at a time.',
-    targetFormats: ['json', 'csv', 'tsv', 'zip'],
+    targetFormats: ['json', 'csv', 'tsv', 'parquet', 'zip'],
   },
   tab: {
     id: 'tab',
@@ -1248,7 +1248,16 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/tab-separated-values',
     category: 'data',
     description: 'Tab-delimited text data table.',
-    targetFormats: ['csv', 'json', 'xlsx', 'tsv', 'zip'],
+    targetFormats: ['csv', 'json', 'xlsx', 'tsv', 'parquet', 'zip'],
+  },
+  parquet: {
+    id: 'parquet',
+    name: 'Apache Parquet Columnar Data',
+    extension: 'parquet',
+    mimeType: 'application/vnd.apache.parquet',
+    category: 'data',
+    description: 'Open-source columnar storage format optimized for high-performance analytics and queries.',
+    targetFormats: ['json', 'csv', 'tsv', 'yaml', 'xlsx', 'ods', 'pdf', 'txt'],
   },
 
   // ==========================================
