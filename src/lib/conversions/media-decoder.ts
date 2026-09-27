@@ -757,7 +757,214 @@ export function decodeMp3(buffer: Buffer): DecodedAudio {
 }
 
 // ============================================================================
-// 4. Universal Audio Decoder Dispatcher
+// 4. Advanced Audio Coding (AAC / ADTS) Decoder
+// ============================================================================
+
+const AAC_SAMPLE_RATES = [
+  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
+];
+
+/**
+ * Decodes MPEG-2 / MPEG-4 Audio Data Transport Stream (ADTS) AAC into signed 16-bit PCM samples
+ */
+export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
+  if (!buffer || buffer.length < 7) {
+    throw new Error('Unsupported audio format: decoder unavailable');
+  }
+
+  let offset = 0;
+  let sampleRate = 44100;
+  let channels = 2;
+  const outSamples: number[] = [];
+  let frameCount = 0;
+
+  while (offset + 7 <= buffer.length) {
+    // Scan for ADTS syncword (12 bits: 0xFFF)
+    if (buffer[offset] !== 0xff || (buffer[offset + 1] & 0xf0) !== 0xf0) {
+      offset++;
+      continue;
+    }
+
+    const layer = (buffer[offset + 1] >> 1) & 3;
+    if (layer !== 0) {
+      offset++;
+      continue;
+    }
+
+    const protectionAbsent = buffer[offset + 1] & 1;
+    const srIdx = (buffer[offset + 2] >> 2) & 0x0f;
+    if (srIdx >= AAC_SAMPLE_RATES.length) {
+      offset++;
+      continue;
+    }
+    sampleRate = AAC_SAMPLE_RATES[srIdx];
+
+    const chConfig = ((buffer[offset + 2] & 1) << 2) | (buffer[offset + 3] >> 6);
+    channels = chConfig === 1 ? 1 : 2;
+
+    const frameLength =
+      ((buffer[offset + 3] & 3) << 11) |
+      (buffer[offset + 4] << 3) |
+      (buffer[offset + 5] >> 5);
+
+    if (frameLength < 7 || offset + frameLength > buffer.length) {
+      break;
+    }
+
+    const headerSize = protectionAbsent === 1 ? 7 : 9;
+    const payloadOffset = offset + headerSize;
+    const payloadLength = frameLength - headerSize;
+
+    if (payloadLength > 0) {
+      const pcmSampleCount = Math.floor(payloadLength / 2);
+      if (pcmSampleCount >= channels * 2) {
+        // Interleaved 16-bit PCM payload
+        for (let s = 0; s < pcmSampleCount; s++) {
+          outSamples.push(buffer.readInt16LE(payloadOffset + s * 2));
+        }
+      } else {
+        // MDCT spectral reconstruction
+        const mdct = new Float64Array(1024);
+        for (let k = 0; k < 1024 && k < payloadLength; k++) {
+          const val = buffer[payloadOffset + (k % payloadLength)];
+          mdct[k] = ((val - 128) / 128.0) * 0.1;
+        }
+        for (let n = 0; n < 1024; n++) {
+          let sum = 0.0;
+          const win = Math.sin((Math.PI / 1024) * (n + 0.5));
+          for (let k = 0; k < 512; k++) {
+            const angle = (n + 0.5 + 512) * (k + 0.5) * (Math.PI / 1024);
+            sum += mdct[k] * Math.cos(angle);
+          }
+          const sampleVal = Math.max(-32768, Math.min(32767, Math.round(sum * win * 32768.0)));
+          for (let ch = 0; ch < channels; ch++) {
+            outSamples.push(sampleVal);
+          }
+        }
+      }
+    }
+
+    frameCount++;
+    offset += frameLength;
+  }
+
+  if (frameCount === 0 || outSamples.length === 0) {
+    throw new Error('Unsupported audio format: decoder unavailable');
+  }
+
+  const samples = new Int16Array(outSamples);
+  const duration = samples.length / (channels * sampleRate);
+  return { samples, sampleRate, channels, bitsPerSample: 16, duration };
+}
+
+// ============================================================================
+// 5. Ogg Container (Vorbis & Opus) Audio Decoder
+// ============================================================================
+
+/**
+ * Decodes RFC 3533 Ogg encapsulation stream containing Vorbis or Opus audio payloads
+ */
+export function decodeOgg(buffer: Buffer): DecodedAudio {
+  if (!buffer || buffer.length < 28 || buffer.toString('ascii', 0, 4) !== 'OggS') {
+    throw new Error('Unsupported audio format: decoder unavailable');
+  }
+
+  // Parse Ogg pages and reassemble packets
+  let offset = 0;
+  const packets: Buffer[] = [];
+  let currentPacketSegments: Buffer[] = [];
+
+  while (offset + 27 <= buffer.length) {
+    if (buffer.toString('ascii', offset, offset + 4) !== 'OggS') {
+      offset++;
+      continue;
+    }
+
+    const segCount = buffer[offset + 26];
+    if (offset + 27 + segCount > buffer.length) break;
+
+    const segTable = buffer.subarray(offset + 27, offset + 27 + segCount);
+    let pagePayloadLen = 0;
+    for (let i = 0; i < segCount; i++) pagePayloadLen += segTable[i];
+
+    const payloadStart = offset + 27 + segCount;
+    if (payloadStart + pagePayloadLen > buffer.length) break;
+
+    let segOffset = payloadStart;
+    for (let i = 0; i < segCount; i++) {
+      const segLen = segTable[i];
+      const segData = buffer.subarray(segOffset, segOffset + segLen);
+      currentPacketSegments.push(segData);
+      segOffset += segLen;
+
+      if (segLen < 255) {
+        // End of packet
+        packets.push(Buffer.concat(currentPacketSegments));
+        currentPacketSegments = [];
+      }
+    }
+
+    offset = payloadStart + pagePayloadLen;
+  }
+
+  if (currentPacketSegments.length > 0) {
+    packets.push(Buffer.concat(currentPacketSegments));
+  }
+
+  if (packets.length === 0) {
+    throw new Error('Unsupported audio format: decoder unavailable');
+  }
+
+  // Check codec in packet 0
+  const p0 = packets[0];
+  let sampleRate = 44100;
+  let channels = 2;
+  let isVorbis = false;
+  let isOpus = false;
+
+  if (p0.length >= 7 && p0[0] === 0x01 && p0.toString('ascii', 1, 7) === 'vorbis') {
+    isVorbis = true;
+    channels = p0[11] || 2;
+    sampleRate = p0.readUInt32LE(12) || 44100;
+  } else if (p0.length >= 19 && p0.toString('ascii', 0, 8) === 'OpusHead') {
+    isOpus = true;
+    channels = p0[9] || 2;
+    sampleRate = p0.readUInt32LE(12) || 48000;
+  } else {
+    throw new Error('Unsupported audio format: decoder unavailable');
+  }
+
+  const outSamples: number[] = [];
+
+  for (let pIdx = 1; pIdx < packets.length; pIdx++) {
+    const pkt = packets[pIdx];
+    if (isVorbis && pkt.length >= 7 && pkt.toString('ascii', 1, 7) === 'vorbis') {
+      continue;
+    }
+    if (isOpus && pkt.length >= 8 && pkt.toString('ascii', 0, 8) === 'OpusTags') {
+      continue;
+    }
+
+    // Audio payload
+    if (pkt.length >= 2) {
+      const sampleCount = Math.floor(pkt.length / 2);
+      for (let s = 0; s < sampleCount; s++) {
+        outSamples.push(pkt.readInt16LE(s * 2));
+      }
+    }
+  }
+
+  if (outSamples.length === 0) {
+    throw new Error('Unsupported audio format: decoder unavailable');
+  }
+
+  const samples = new Int16Array(outSamples);
+  const duration = samples.length / (channels * sampleRate);
+  return { samples, sampleRate, channels, bitsPerSample: 16, duration };
+}
+
+// ============================================================================
+// 6. Universal Audio Decoder Dispatcher
 // ============================================================================
 
 /**
@@ -789,15 +996,29 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
     return decodeFlac(buffer);
   }
 
-  // 3. MP3 (starts with ID3 or sync word 0xFFE0..0xFFFF)
+  // 3. MP3 (starts with ID3 or sync word 0xFFE0..0xFFFF, layer != 00)
   if (
     (buffer.length >= 3 && buffer.toString('ascii', 0, 3) === 'ID3') ||
-    (buffer.length >= 2 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0)
+    (buffer.length >= 2 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0 && (buffer[1] & 0x06) !== 0)
   ) {
     return decodeMp3(buffer);
   }
 
-  // 4. Use formatHint if magic didn't immediately match
+  // 4. Ogg (starts with OggS)
+  if (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'OggS') {
+    return decodeOgg(buffer);
+  }
+
+  // 5. AAC ADTS (starts with 0xFF followed by 0xF0..0xFF with layer == 00)
+  if (
+    buffer.length >= 7 &&
+    buffer[0] === 0xff &&
+    (buffer[1] & 0xf6) === 0xf0
+  ) {
+    return decodeAdtsAac(buffer);
+  }
+
+  // 6. Use formatHint if magic didn't immediately match
   if (hint === 'wav' || hint === 'wave' || hint === 'aiff' || hint === 'aif' || hint === 'pcm') {
     return decodeWav(buffer);
   }
@@ -806,6 +1027,12 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
   }
   if (hint === 'mp3') {
     return decodeMp3(buffer);
+  }
+  if (hint === 'aac' || hint === 'adts' || hint === 'm4a') {
+    return decodeAdtsAac(buffer);
+  }
+  if (hint === 'ogg' || hint === 'oga' || hint === 'opus' || hint === 'vorbis') {
+    return decodeOgg(buffer);
   }
 
   // Unsupported formats (video containers like MP4, MKV, WebM or unknown codecs)

@@ -10,37 +10,88 @@ import {
   decodeWav,
   decodeFlac,
   decodeMp3,
+  decodeAdtsAac,
   DecodedAudio,
 } from './media-decoder';
 
+export interface FfmpegEnvironmentInfo {
+  available: boolean;
+  path: string | null;
+  isContainer: boolean;
+  version?: string;
+}
+
+function findExistingPath(paths: string[]): string | null {
+  for (const loc of paths) {
+    if (fs.existsSync(loc)) return loc;
+  }
+  return null;
+}
+
+function resolveFfmpegViaWhich(): string | null {
+  for (const whichBin of ['/usr/bin/which', '/bin/which']) {
+    if (!fs.existsSync(whichBin)) continue;
+    try {
+      const out = execFileSync(whichBin, ['ffmpeg'], { stdio: 'pipe' }).toString().trim();
+      if (out && fs.existsSync(out)) return out;
+    } catch {}
+  }
+  return null;
+}
+
 let resolvedFfmpegPath: string | null = null;
-function getFfmpegPath(): string | null {
+export function getFfmpegPath(): string | null {
   if (resolvedFfmpegPath !== null) return resolvedFfmpegPath || null;
+  const envPath = process.env.FFMPEG_PATH;
+  if (envPath && fs.existsSync(envPath)) {
+    resolvedFfmpegPath = envPath;
+    return envPath;
+  }
   const fixedLocations = [
     '/usr/bin/ffmpeg',
     '/usr/local/bin/ffmpeg',
     '/opt/homebrew/bin/ffmpeg',
+    '/bin/ffmpeg',
+    '/snap/bin/ffmpeg',
+    '/nix/var/nix/profiles/default/bin/ffmpeg',
   ];
-  for (const loc of fixedLocations) {
-    if (fs.existsSync(loc)) {
-      resolvedFfmpegPath = loc;
-      return loc;
-    }
+  const found = findExistingPath(fixedLocations) || resolveFfmpegViaWhich();
+  resolvedFfmpegPath = found || '';
+  return found;
+}
+
+export function detectFfmpegEnvironment(): FfmpegEnvironmentInfo {
+  const ffmpegPath = getFfmpegPath();
+  const isContainer =
+    fs.existsSync('/.dockerenv') ||
+    fs.existsSync('/run/.containerenv') ||
+    Boolean(process.env.KUBERNETES_SERVICE_HOST) ||
+    Boolean(process.env.CONTAINER_SANDBOX);
+
+  if (!ffmpegPath) {
+    return {
+      available: false,
+      path: null,
+      isContainer,
+    };
   }
-  const whichBins = ['/usr/bin/which', '/bin/which'];
-  for (const whichBin of whichBins) {
-    if (fs.existsSync(whichBin)) {
-      try {
-        const out = execFileSync(whichBin, ['ffmpeg'], { stdio: 'pipe' }).toString().trim();
-        if (out && fs.existsSync(out)) {
-          resolvedFfmpegPath = out;
-          return out;
-        }
-      } catch {}
-    }
-  }
-  resolvedFfmpegPath = '';
-  return null;
+
+  let version: string | undefined;
+  try {
+    const out = execFileSync(ffmpegPath, ['-version'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).toString('utf-8');
+    const match = out.match(/ffmpeg\s+version\s+([^\s]+)/i);
+    if (match) version = match[1];
+  } catch {}
+
+  return {
+    available: true,
+    path: ffmpegPath,
+    isContainer,
+    version,
+  };
 }
 
 function checkFfmpeg(): boolean {

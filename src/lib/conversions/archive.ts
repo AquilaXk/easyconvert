@@ -1,3 +1,8 @@
+import { execFileSync } from 'child_process';
+import crypto from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import JSZip from 'jszip';
 import zlib from 'zlib';
 import { ConversionOptions, ConversionResult } from '../types';
@@ -378,39 +383,196 @@ export function createRarArchive(
   };
 }
 
-export function extractRarArchive(rarBuffer: Buffer): { filename: string; buffer: Buffer }[] {
-  const files: { filename: string; buffer: Buffer }[] = [];
-  if (rarBuffer.length < 14) return files;
+let resolvedUnrarPath: string | null = null;
+export function getUnrarBinaryPath(): string | null {
+  if (resolvedUnrarPath !== null) return resolvedUnrarPath || null;
+  const envPath = process.env.UNRAR_PATH;
+  if (envPath && fs.existsSync(envPath)) {
+    resolvedUnrarPath = envPath;
+    return envPath;
+  }
+  const fixedLocations = [
+    '/usr/bin/unrar',
+    '/usr/local/bin/unrar',
+    '/opt/homebrew/bin/unrar',
+    '/bin/unrar',
+    '/usr/bin/rar',
+  ];
+  for (const loc of fixedLocations) {
+    if (fs.existsSync(loc)) {
+      resolvedUnrarPath = loc;
+      return loc;
+    }
+  }
+  const whichBins = ['/usr/bin/which', '/bin/which'];
+  for (const whichBin of whichBins) {
+    if (fs.existsSync(whichBin)) {
+      try {
+        const out = execFileSync(whichBin, ['unrar'], { stdio: 'pipe' }).toString().trim();
+        if (out && fs.existsSync(out)) {
+          resolvedUnrarPath = out;
+          return out;
+        }
+      } catch {}
+    }
+  }
+  resolvedUnrarPath = '';
+  return null;
+}
 
-  const isRar =
+export function extractRarArchive(rarBuffer: Buffer): { filename: string; buffer: Buffer }[] {
+  if (!rarBuffer || rarBuffer.length < 14) {
+    throw new Error('Invalid RAR archive: buffer too small');
+  }
+
+  const isRar4 =
     rarBuffer[0] === 0x52 &&
     rarBuffer[1] === 0x61 &&
     rarBuffer[2] === 0x72 &&
     rarBuffer[3] === 0x21 &&
     rarBuffer[4] === 0x1a &&
-    rarBuffer[5] === 0x07;
+    rarBuffer[5] === 0x07 &&
+    rarBuffer[6] === 0x00;
 
-  if (!isRar) return files;
+  const isRar5 =
+    rarBuffer[0] === 0x52 &&
+    rarBuffer[1] === 0x61 &&
+    rarBuffer[2] === 0x72 &&
+    rarBuffer[3] === 0x21 &&
+    rarBuffer[4] === 0x1a &&
+    rarBuffer[5] === 0x07 &&
+    rarBuffer[6] === 0x01 &&
+    rarBuffer[7] === 0x00;
 
+  if (!isRar4 && !isRar5) {
+    throw new Error('Invalid RAR archive: signature mismatch');
+  }
+
+  // If unrar binary is available on the system, execute under defensive limits
+  const unrarBin = getUnrarBinaryPath();
+  if (unrarBin) {
+    const tmpDir = os.tmpdir();
+    const token = crypto.randomBytes(8).toString('hex');
+    const tmpFile = path.join(tmpDir, `easyconvert_rar_${Date.now()}_${token}.rar`);
+    const extractDir = path.join(tmpDir, `easyconvert_rar_out_${Date.now()}_${token}`);
+    fs.writeFileSync(tmpFile, rarBuffer);
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    try {
+      execFileSync(unrarBin, ['x', '-inul', '-y', tmpFile, extractDir], {
+        timeout: 30000,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      });
+
+      const extracted: { filename: string; buffer: Buffer }[] = [];
+      let totalUncompressedSize = 0;
+
+      function walkDir(dir: string, base: string) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          const relPath = base ? `${base}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            walkDir(fullPath, relPath);
+          } else if (entry.isFile()) {
+            if (extracted.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+              throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+            }
+            const buf = fs.readFileSync(fullPath);
+            totalUncompressedSize += buf.length;
+            if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+              throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+            }
+            if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+              throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+            }
+            const sanitized = sanitizeArchivePath(relPath);
+            if (sanitized) {
+              extracted.push({ filename: sanitized, buffer: buf });
+            }
+          }
+        }
+      }
+
+      walkDir(extractDir, '');
+      return extracted;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+        throw err;
+      }
+      // If unrar execution failed on non-bomb error, fallback to stored extractor below
+    } finally {
+      try {
+        if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+        if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true, force: true });
+      } catch {}
+    }
+  }
+
+  // Pure TypeScript parser for stored RAR archives with fail-closed validation
+  if (isRar5) {
+    throw new Error('Unsupported RAR format: RAR5 compressed archives require unrar decompressor');
+  }
+
+  const files: { filename: string; buffer: Buffer }[] = [];
   let offset = 7;
+  let totalUncompressedSize = 0;
+
   while (offset + 7 <= rarBuffer.length) {
     const headType = rarBuffer[offset + 2];
     const headSize = rarBuffer.readUInt16LE(offset + 5);
     if (headSize < 7 || offset + headSize > rarBuffer.length) break;
 
     if (headType === 0x7b) {
+      // ENDARC_HEAD
       break;
     }
 
     if (headType === 0x74 && offset + 32 <= rarBuffer.length) {
+      if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+      }
+
       const packSize = rarBuffer.readUInt32LE(offset + 7);
+      const unpSize = rarBuffer.readUInt32LE(offset + 11);
+      const fileCrc = rarBuffer.readUInt32LE(offset + 16);
+      const method = rarBuffer[offset + 25];
       const nameSize = rarBuffer.readUInt16LE(offset + 26);
+
+      // Enforce fail-closed verification: Method 0x30 is STORE (uncompressed)
+      // Methods 0x31..0x35 are compressed and MUST NOT be sliced as raw corrupt data!
+      if (method !== 0x30) {
+        throw new Error(
+          `Unsupported RAR compression method (0x${method.toString(16)}): unrar binary is required for compressed RAR archives`
+        );
+      }
+
       if (offset + 32 + nameSize <= rarBuffer.length) {
         const filename = rarBuffer.toString('utf-8', offset + 32, offset + 32 + nameSize);
         const sanitizedName = sanitizeArchivePath(filename);
         const dataOffset = offset + headSize;
-        if (sanitizedName && dataOffset + packSize <= rarBuffer.length) {
-          const fileBuf = Buffer.from(rarBuffer.subarray(dataOffset, dataOffset + packSize));
+
+        if (dataOffset + packSize > rarBuffer.length) {
+          throw new Error('Corrupted RAR archive: truncated file data');
+        }
+
+        const fileBuf = Buffer.from(rarBuffer.subarray(dataOffset, dataOffset + packSize));
+
+        // Verify CRC32
+        const computedCrc = crc32(fileBuf);
+        if (computedCrc !== fileCrc) {
+          throw new Error(`Corrupted RAR archive: CRC mismatch for ${filename} (expected 0x${fileCrc.toString(16)}, got 0x${computedCrc.toString(16)})`);
+        }
+
+        totalUncompressedSize += fileBuf.length;
+        if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+          throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+        }
+        if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+          throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+        }
+
+        if (sanitizedName) {
           files.push({ filename: sanitizedName, buffer: fileBuf });
         }
       }
@@ -423,57 +585,439 @@ export function extractRarArchive(rarBuffer: Buffer): { filename: string; buffer
   return files;
 }
 
+// ============================================================================
+// Pure TypeScript LZMA & LZMA2 Decompression Engine
+// ============================================================================
+
+export function decompressLzma(
+  input: Buffer | Uint8Array,
+  props: Buffer | Uint8Array,
+  unpackSize: number
+): Buffer {
+  if (props.length < 5) {
+    throw new Error('Invalid LZMA properties header: expected at least 5 bytes');
+  }
+
+  const d = props[0];
+  const lc = d % 9;
+  const remainder = Math.floor(d / 9);
+  const lp = remainder % 5;
+  const pb = Math.floor(remainder / 5);
+
+  let dictSize =
+    ((props[1] |
+      (props[2] << 8) |
+      (props[3] << 16) |
+      (props[4] << 24)) >>>
+      0);
+  if (dictSize < 4096) dictSize = 4096;
+
+  if (unpackSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+    throw new Error(`Archive bomb detected: unpack size (${unpackSize}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes`);
+  }
+
+  const outBuf = Buffer.alloc(unpackSize);
+  let outPos = 0;
+  let inPos = 0;
+
+  function readByte(): number {
+    return inPos < input.length ? input[inPos++] : 0;
+  }
+
+  // LZMA range decoder header: first byte is 0 (or ignored), then 4 bytes of initial code
+  readByte();
+  let code =
+    (((readByte() << 24) |
+      (readByte() << 16) |
+      (readByte() << 8) |
+      readByte()) >>>
+      0);
+  let range = 0xffffffff;
+
+  function decodeBit(probs: Uint16Array, index: number): number {
+    const prob = probs[index];
+    const bound = (range >>> 11) * prob;
+    if ((code >>> 0) < (bound >>> 0)) {
+      range = bound >>> 0;
+      probs[index] = (prob + ((2048 - prob) >>> 5)) & 0xffff;
+      if (range < 0x01000000) {
+        code = (((code << 8) | readByte()) >>> 0);
+        range = ((range << 8) >>> 0);
+      }
+      return 0;
+    } else {
+      range = ((range - bound) >>> 0);
+      code = ((code - bound) >>> 0);
+      probs[index] = (prob - (prob >>> 5)) & 0xffff;
+      if (range < 0x01000000) {
+        code = (((code << 8) | readByte()) >>> 0);
+        range = ((range << 8) >>> 0);
+      }
+      return 1;
+    }
+  }
+
+  function decodeDirectBits(numBits: number): number {
+    let res = 0;
+    for (let i = 0; i < numBits; i++) {
+      range >>>= 1;
+      code = ((code - range) >>> 0);
+      const t = (code >> 31) & 1;
+      if (t !== 0) {
+        code = ((code + range) >>> 0);
+      }
+      if (range < 0x01000000) {
+        code = (((code << 8) | readByte()) >>> 0);
+        range = ((range << 8) >>> 0);
+      }
+      res = (res << 1) | (1 - t);
+    }
+    return res >>> 0;
+  }
+
+  function decodeBitTree(probs: Uint16Array, offset: number, numBits: number): number {
+    let m = 1;
+    for (let i = 0; i < numBits; i++) {
+      m = (m << 1) | decodeBit(probs, offset + m);
+    }
+    return m - (1 << numBits);
+  }
+
+  function decodeReverseBitTree(probs: Uint16Array, offset: number, numBits: number): number {
+    let m = 1;
+    let symbol = 0;
+    for (let i = 0; i < numBits; i++) {
+      const bit = decodeBit(probs, offset + m);
+      m = (m << 1) | bit;
+      symbol |= (bit << i);
+    }
+    return symbol;
+  }
+
+  // Model arrays
+  const isMatch = new Uint16Array(12 * 16).fill(1024);
+  const isRep = new Uint16Array(12).fill(1024);
+  const isRepG0 = new Uint16Array(12).fill(1024);
+  const isRepG1 = new Uint16Array(12).fill(1024);
+  const isRepG2 = new Uint16Array(12).fill(1024);
+  const isRep0Long = new Uint16Array(12 * 16).fill(1024);
+  const posSlot = new Uint16Array(4 * 64).fill(1024);
+  const specPos = new Uint16Array(128).fill(1024);
+  const align = new Uint16Array(16).fill(1024);
+
+  class LenDecoder {
+    choice1 = new Uint16Array(1).fill(1024);
+    choice2 = new Uint16Array(1).fill(1024);
+    low = new Uint16Array(16 * 8).fill(1024);
+    mid = new Uint16Array(16 * 8).fill(1024);
+    high = new Uint16Array(256).fill(1024);
+
+    decode(posState: number): number {
+      if (decodeBit(this.choice1, 0) === 0) {
+        return decodeBitTree(this.low, posState * 8, 3);
+      }
+      if (decodeBit(this.choice2, 0) === 0) {
+        return 8 + decodeBitTree(this.mid, posState * 8, 3);
+      }
+      return 16 + decodeBitTree(this.high, 0, 8);
+    }
+  }
+
+  const lenDecoder = new LenDecoder();
+  const repLenDecoder = new LenDecoder();
+
+  const numLitContexts = 1 << (lc + lp);
+  const litProbs = new Uint16Array(numLitContexts * 0x300).fill(1024);
+
+  let state = 0;
+  let rep0 = 0;
+  let rep1 = 0;
+  let rep2 = 0;
+  let rep3 = 0;
+
+  const posStateMask = (1 << pb) - 1;
+
+  while (outPos < unpackSize) {
+    const posState = outPos & posStateMask;
+    const isMatchIdx = (state << 4) + posState;
+
+    if (decodeBit(isMatch, isMatchIdx) === 0) {
+      // Literal
+      const prevByte = outPos > 0 ? outBuf[outPos - 1] : 0;
+      const litContext = (((outPos & ((1 << lp) - 1)) << lc) | (prevByte >> (8 - lc)));
+      const baseIdx = litContext * 0x300;
+
+      let symbol = 1;
+      if (state >= 7) {
+        // Matched literal
+        const matchByte = outPos > rep0 ? outBuf[outPos - rep0 - 1] : 0;
+        let matchBit = 0x100;
+        while (symbol < 0x100) {
+          matchBit <<= 1;
+          const bit = (matchByte & (matchBit >> 1)) !== 0 ? 1 : 0;
+          const probIdx = baseIdx + matchBit + (bit << 8) + symbol;
+          const subBit = decodeBit(litProbs, probIdx);
+          symbol = (symbol << 1) | subBit;
+          if (subBit !== bit) {
+            while (symbol < 0x100) {
+              symbol = (symbol << 1) | decodeBit(litProbs, baseIdx + symbol);
+            }
+            break;
+          }
+        }
+      } else {
+        while (symbol < 0x100) {
+          symbol = (symbol << 1) | decodeBit(litProbs, baseIdx + symbol);
+        }
+      }
+
+      outBuf[outPos++] = (symbol - 0x100) & 0xff;
+      state = state < 4 ? 0 : state < 10 ? state - 3 : state - 6;
+    } else {
+      // Match or Rep
+      let len = 0;
+      if (decodeBit(isRep, state) === 1) {
+        if (decodeBit(isRepG0, state) === 0) {
+          if (decodeBit(isRep0Long, (state << 4) + posState) === 0) {
+            // Short Rep
+            state = state < 7 ? 9 : 11;
+            outBuf[outPos] = outBuf[outPos - rep0 - 1];
+            outPos++;
+            continue;
+          }
+        } else {
+          let dist = 0;
+          if (decodeBit(isRepG1, state) === 0) {
+            dist = rep1;
+          } else {
+            if (decodeBit(isRepG2, state) === 0) {
+              dist = rep2;
+            } else {
+              dist = rep3;
+              rep3 = rep2;
+            }
+            rep2 = rep1;
+          }
+          rep1 = rep0;
+          rep0 = dist;
+        }
+        len = repLenDecoder.decode(posState) + 2;
+        state = state < 7 ? 8 : 11;
+      } else {
+        // Simple match
+        rep3 = rep2;
+        rep2 = rep1;
+        rep1 = rep0;
+        len = lenDecoder.decode(posState) + 2;
+        state = state < 7 ? 7 : 10;
+
+        const lenToPosState = Math.min(len - 2, 3);
+        const slot = decodeBitTree(posSlot, lenToPosState * 64, 6);
+        if (slot >= 4) {
+          const numDirectBits = (slot >> 1) - 1;
+          rep0 = ((2 | (slot & 1)) << numDirectBits);
+          if (slot < 14) {
+            rep0 += decodeReverseBitTree(specPos, rep0 - slot - 1, numDirectBits);
+          } else {
+            rep0 += (decodeDirectBits(numDirectBits - 4) << 4);
+            rep0 += decodeReverseBitTree(align, 0, 4);
+          }
+        } else {
+          rep0 = slot;
+        }
+        if (rep0 === 0xffffffff) {
+          break;
+        }
+      }
+
+      if (rep0 >= outPos && rep0 >= dictSize) {
+        throw new Error(`Corrupted LZMA stream: rep distance ${rep0} exceeds dictionary size`);
+      }
+
+      const copyLen = Math.min(len, unpackSize - outPos);
+      for (let i = 0; i < copyLen; i++) {
+        outBuf[outPos] = outBuf[outPos - rep0 - 1];
+        outPos++;
+      }
+    }
+  }
+
+  return outBuf.subarray(0, outPos);
+}
+
+export function decompressLzma2(
+  input: Buffer | Uint8Array,
+  props: Buffer | Uint8Array,
+  unpackSize: number
+): Buffer {
+  let dictSize = 4096;
+  if (props.length >= 1) {
+    const prop = props[0];
+    dictSize = (2 | (prop & 1)) << (Math.floor(prop / 2) + 11);
+  }
+
+  const outBuf = Buffer.alloc(unpackSize);
+  let outPos = 0;
+  let inPos = 0;
+  let curProps = Buffer.from([0x5d, 0, 0, 0, 0]);
+
+  while (inPos < input.length && outPos < unpackSize) {
+    const control = input[inPos++];
+    if (control === 0) break; // EOS
+
+    if (control >= 0xe0 || control === 1) {
+      // Uncompressed chunk
+      const chunkSize = ((input[inPos++] << 8) | input[inPos++]) + 1;
+      for (let i = 0; i < chunkSize && inPos < input.length && outPos < unpackSize; i++) {
+        outBuf[outPos++] = input[inPos++];
+      }
+    } else if (control >= 0x80) {
+      // LZMA chunk
+      const chunkUnpackSize = (((control & 0x1f) << 16) | (input[inPos++] << 8) | input[inPos++]) + 1;
+      const chunkPackSize = ((input[inPos++] << 8) | input[inPos++]) + 1;
+
+      const mode = (control >> 5) & 3;
+      if (mode === 2 || mode === 3) {
+        const propByte = input[inPos++];
+        curProps = Buffer.from([propByte, 0, 0, 0, 0]);
+      }
+
+      const chunkData = input.subarray(inPos, inPos + chunkPackSize);
+      inPos += chunkPackSize;
+
+      const decoded = decompressLzma(chunkData, curProps, chunkUnpackSize);
+      decoded.copy(outBuf, outPos);
+      outPos += decoded.length;
+    } else {
+      break;
+    }
+  }
+
+  return outBuf.subarray(0, outPos);
+}
+
+export function write7zVarint(arr: number[], value: number): void {
+  if (value < 0x80) {
+    arr.push(value);
+    return;
+  }
+  let extraBytes = 0;
+  for (let i = 1; i <= 8; i++) {
+    if (value < Math.pow(2, 7 * (i + 1) - i)) {
+      extraBytes = i;
+      break;
+    }
+  }
+  if (extraBytes === 0) extraBytes = 8;
+  const firstByteMask = ((0xff00 >> extraBytes) & 0xff);
+  const highBits = Math.floor(value / Math.pow(2, extraBytes * 8)) & (0x7f >> extraBytes);
+  arr.push(firstByteMask | highBits);
+  let temp = value;
+  for (let b = 0; b < extraBytes; b++) {
+    arr.push(temp & 0xff);
+    temp = Math.floor(temp / 256);
+  }
+}
+
+export function read7zVarint(
+  buf: Buffer | Uint8Array,
+  offset: number
+): { value: number; nextOffset: number } {
+  if (offset >= buf.length) {
+    return { value: 0, nextOffset: offset };
+  }
+  const firstByte = buf[offset++];
+  let mask = 0x80;
+  let value = 0;
+  for (let i = 0; i < 8; i++) {
+    if ((firstByte & mask) === 0) {
+      const highPart = firstByte & (mask - 1);
+      value += highPart * Math.pow(2, i * 8);
+      return { value, nextOffset: offset };
+    }
+    if (offset >= buf.length) {
+      return { value, nextOffset: offset };
+    }
+    value += buf[offset++] * Math.pow(2, i * 8);
+    mask >>= 1;
+  }
+  return { value, nextOffset: offset };
+}
+
+// ============================================================================
+// 7z Archive Creation with Authentic Compression
+// ============================================================================
+
 export function create7zArchive(
   files: { filename: string; buffer: Buffer }[],
   options: ConversionOptions = {},
   archiveName = 'converted_files.7z'
 ): ConversionResult {
+  const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;
+  const compressionLevel = options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6;
+
   const packBuffers: Buffer[] = [];
+  const packSizes: number[] = [];
+  const unpackSizes: number[] = [];
+  const crcs: number[] = [];
+
   for (const f of files) {
-    packBuffers.push(f.buffer);
+    unpackSizes.push(f.buffer.length);
+    crcs.push(crc32(f.buffer));
+
+    if (isCompressed) {
+      const deflated = zlib.deflateRawSync(f.buffer, { level: compressionLevel });
+      packBuffers.push(deflated);
+      packSizes.push(deflated.length);
+    } else {
+      packBuffers.push(f.buffer);
+      packSizes.push(f.buffer.length);
+    }
   }
+
   const packData = Buffer.concat(packBuffers);
 
   // Build NextHeader
   const nh: number[] = [];
   nh.push(0x01); // kHeader
   nh.push(0x04); // kMainStreamsInfo
+
+  // kPackInfo
   nh.push(0x06); // kPackInfo
   nh.push(0x00); // packPos = 0
-  nh.push(files.length); // numPackStreams
+  write7zVarint(nh, files.length); // numPackStreams
   nh.push(0x09); // kSize
-  for (const f of files) {
-    let s = f.buffer.length;
-    while (s >= 0x80) {
-      nh.push((s & 0x7f) | 0x80);
-      s >>>= 7;
-    }
-    nh.push(s & 0x7f);
+  for (const sz of packSizes) {
+    write7zVarint(nh, sz);
   }
   nh.push(0x00); // kEnd (PackInfo)
 
+  // kUnpackInfo
   nh.push(0x07); // kUnpackInfo
   nh.push(0x0b); // kFolder
-  nh.push(files.length); // numFolders
+  write7zVarint(nh, files.length); // numFolders
   nh.push(0x00); // external = 0
   for (let i = 0; i < files.length; i++) {
     nh.push(0x01); // numCoders = 1
-    nh.push(0x00); // method size = 1
-    nh.push(0x00); // method = Copy (0x00)
-  }
-  nh.push(0x0c); // kCodersUnpackSize
-  for (const f of files) {
-    let s = f.buffer.length;
-    while (s >= 0x80) {
-      nh.push((s & 0x7f) | 0x80);
-      s >>>= 7;
+    if (isCompressed) {
+      nh.push(0x03); // codecIdSize = 3
+      nh.push(0x04); // Deflate: 0x04 0x01 0x08
+      nh.push(0x01);
+      nh.push(0x08);
+    } else {
+      nh.push(0x01); // codecIdSize = 1
+      nh.push(0x00); // Copy: 0x00
     }
-    nh.push(s & 0x7f);
   }
+
+  nh.push(0x0c); // kCodersUnpackSize
+  for (const us of unpackSizes) {
+    write7zVarint(nh, us);
+  }
+
   nh.push(0x0a); // kCRC
   nh.push(0x01); // allAreDefined = 1
-  for (const f of files) {
-    const c = crc32(f.buffer);
+  for (const c of crcs) {
     nh.push(c & 0xff);
     nh.push((c >>> 8) & 0xff);
     nh.push((c >>> 16) & 0xff);
@@ -482,21 +1026,19 @@ export function create7zArchive(
   nh.push(0x00); // kEnd (UnpackInfo)
   nh.push(0x00); // kEnd (MainStreamsInfo)
 
+  // kFilesInfo
   nh.push(0x05); // kFilesInfo
-  nh.push(files.length); // numFiles
-  nh.push(0x0e); // kName
+  write7zVarint(nh, files.length); // numFiles
+  nh.push(0x11); // kName (0x11 per standard 7z spec)
+
   const nameBufs: Buffer[] = [];
   for (const f of files) {
     nameBufs.push(Buffer.from(f.filename + '\0', 'utf16le'));
   }
   const allNames = Buffer.concat(nameBufs);
-  let nLen = allNames.length + 1;
-  while (nLen >= 0x80) {
-    nh.push((nLen & 0x7f) | 0x80);
-    nLen >>>= 7;
-  }
-  nh.push(nLen & 0x7f);
+  write7zVarint(nh, allNames.length + 1);
   nh.push(0x00); // external = 0
+
   const nhPrefix = Buffer.from(nh);
   const nhBuffer = Buffer.concat([nhPrefix, allNames, Buffer.from([0x00, 0x00])]);
 
@@ -524,17 +1066,121 @@ export function create7zArchive(
   };
 }
 
-function read7zVarint(buf: Buffer | Uint8Array, offset: number): { value: number; nextOffset: number } {
-  let val = 0;
-  let shift = 0;
-  let cur = offset;
-  while (cur < buf.length) {
-    const b = buf[cur++];
-    val |= (b & 0x7f) << shift;
-    shift += 7;
-    if ((b & 0x80) === 0) break;
+// ============================================================================
+// 7z Archive Extraction with Authentic Decompression
+// ============================================================================
+
+interface SevenZipCoder {
+  codecId: Buffer;
+  properties: Buffer;
+}
+
+interface SevenZipFolder {
+  coders: SevenZipCoder[];
+  unpackSize: number;
+  crc?: number;
+  numUnpackStreams?: number;
+  unpackSizes?: number[];
+  unpackCrcs?: number[];
+}
+
+function decompress7zFolder(
+  packSlice: Buffer,
+  coder: SevenZipCoder,
+  unpackSize: number
+): Buffer {
+  const id = coder.codecId;
+  if (id.length === 1 && id[0] === 0x00) {
+    // Copy
+    return packSlice.subarray(0, unpackSize);
   }
-  return { value: val, nextOffset: cur };
+  if (
+    (id.length === 3 && id[0] === 0x04 && id[1] === 0x01 && (id[2] === 0x08 || id[2] === 0x09)) ||
+    (id.length === 1 && id[0] === 0x04)
+  ) {
+    // Deflate
+    return zlib.inflateRawSync(packSlice);
+  }
+  if (id.length === 3 && id[0] === 0x03 && id[1] === 0x01 && id[2] === 0x01) {
+    // LZMA
+    return decompressLzma(packSlice, coder.properties, unpackSize);
+  }
+  if (id.length === 1 && id[0] === 0x21) {
+    // LZMA2
+    return decompressLzma2(packSlice, coder.properties, unpackSize);
+  }
+  if (id.length === 3 && id[0] === 0x04 && id[1] === 0x02 && id[2] === 0x02) {
+    // BZip2
+    return decompressBzip2(packSlice);
+  }
+  throw new Error(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
+}
+
+function decode7zEncodedHeader(sevenZipBuffer: Buffer, nh: Buffer): Buffer | null {
+  try {
+    let cur = 1;
+    let packSize = 0;
+    let unpackSize = 0;
+    const coder: SevenZipCoder = { codecId: Buffer.from([0]), properties: Buffer.alloc(0) };
+
+    while (cur < nh.length && nh[cur] !== 0x00) {
+      const p = nh[cur++];
+      if (p === 0x06) {
+        // kPackInfo
+        read7zVarint(nh, cur); // packPos
+        cur += 1;
+        const numStreams = read7zVarint(nh, cur);
+        cur = numStreams.nextOffset;
+        if (nh[cur++] === 0x09) {
+          const sz = read7zVarint(nh, cur);
+          packSize = sz.value;
+          cur = sz.nextOffset;
+        }
+        while (cur < nh.length && nh[cur] !== 0x00) cur++;
+        if (cur < nh.length && nh[cur] === 0x00) cur++;
+      } else if (p === 0x07) {
+        // kUnpackInfo
+        while (cur < nh.length && nh[cur] !== 0x00) {
+          const up = nh[cur++];
+          if (up === 0x0b) {
+            // kFolder
+            const numF = read7zVarint(nh, cur);
+            cur = numF.nextOffset;
+            const ext = nh[cur++];
+            if (ext === 0) {
+              const numC = read7zVarint(nh, cur);
+              cur = numC.nextOffset;
+              const flags = nh[cur++];
+              const idSz = flags & 0x0f;
+              coder.codecId = Buffer.from(nh.subarray(cur, cur + idSz));
+              cur += idSz;
+              if ((flags & 0x20) !== 0) {
+                const propSz = read7zVarint(nh, cur);
+                cur = propSz.nextOffset;
+                coder.properties = Buffer.from(nh.subarray(cur, cur + propSz.value));
+                cur += propSz.value;
+              }
+            }
+          } else if (up === 0x0c) {
+            const sz = read7zVarint(nh, cur);
+            unpackSize = sz.value;
+            cur = sz.nextOffset;
+          } else {
+            break;
+          }
+        }
+        if (cur < nh.length && nh[cur] === 0x00) cur++;
+      } else {
+        break;
+      }
+    }
+
+    if (packSize > 0 && unpackSize > 0) {
+      const packSlice = Buffer.from(sevenZipBuffer.subarray(32, 32 + packSize));
+      return decompress7zFolder(packSlice, coder, unpackSize);
+    }
+  } catch {}
+  return null;
 }
 
 export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; buffer: Buffer }[] {
@@ -554,31 +1200,54 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
 
   const nextHeaderOffset = Number(sevenZipBuffer.readBigUInt64LE(12));
   const nextHeaderSize = Number(sevenZipBuffer.readBigUInt64LE(20));
+  const nextHeaderCrc = sevenZipBuffer.readUInt32LE(28);
+
+  const startHeaderCrc = crc32(sevenZipBuffer.subarray(12, 32));
+  if (startHeaderCrc !== sevenZipBuffer.readUInt32LE(8)) {
+    return files;
+  }
+
   const nhStart = 32 + nextHeaderOffset;
+  if (nhStart + nextHeaderSize > sevenZipBuffer.length) {
+    return files;
+  }
 
-  if (nhStart + nextHeaderSize > sevenZipBuffer.length) return files;
-  const nh = sevenZipBuffer.subarray(nhStart, nhStart + nextHeaderSize);
+  let nh = sevenZipBuffer.subarray(nhStart, nhStart + nextHeaderSize);
+  if (crc32(nh) !== nextHeaderCrc) {
+    return files;
+  }
 
-  // Robust grammar-aware 7z NextHeader parser
-  const sizes: number[] = [];
-  const filenames: string[] = [];
+  // Handle kEncodedHeader (0x17)
+  if (nh.length > 0 && nh[0] === 0x17) {
+    const decodedNh = decode7zEncodedHeader(sevenZipBuffer, nh);
+    if (decodedNh) {
+      nh = decodedNh;
+    }
+  }
 
+  // Parse kHeader
   let cur = 0;
   if (cur < nh.length && nh[cur] === 0x01) cur++; // skip kHeader (0x01)
 
+  const folders: SevenZipFolder[] = [];
+  const packSizes: number[] = [];
+  const filenames: string[] = [];
+
   while (cur < nh.length && nh[cur] !== 0x00) {
     const propId = nh[cur++];
+
     if (propId === 0x04) {
       // kMainStreamsInfo
       while (cur < nh.length && nh[cur] !== 0x00) {
         const streamProp = nh[cur++];
+
         if (streamProp === 0x06) {
           // kPackInfo
-          const packPos = read7zVarint(nh, cur);
-          cur = packPos.nextOffset;
-          const numStreams = read7zVarint(nh, cur);
-          cur = numStreams.nextOffset;
-          const streamCount = numStreams.value;
+          const packPosVar = read7zVarint(nh, cur);
+          cur = packPosVar.nextOffset;
+          const numStreamsVar = read7zVarint(nh, cur);
+          cur = numStreamsVar.nextOffset;
+          const streamCount = numStreamsVar.value;
 
           while (cur < nh.length && nh[cur] !== 0x00) {
             const packSub = nh[cur++];
@@ -586,7 +1255,7 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
               // kSize
               for (let s = 0; s < streamCount && cur < nh.length; s++) {
                 const sz = read7zVarint(nh, cur);
-                sizes.push(sz.value);
+                packSizes.push(sz.value);
                 cur = sz.nextOffset;
               }
             } else if (packSub === 0x0a) {
@@ -608,45 +1277,102 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
             const unpackSub = nh[cur++];
             if (unpackSub === 0x0b) {
               // kFolder
-              const numFolders = read7zVarint(nh, cur);
-              cur = numFolders.nextOffset;
+              const numFoldersVar = read7zVarint(nh, cur);
+              cur = numFoldersVar.nextOffset;
               const external = nh[cur++];
               if (external === 0) {
-                for (let f = 0; f < numFolders.value && cur < nh.length; f++) {
-                  const numCoders = read7zVarint(nh, cur);
-                  cur = numCoders.nextOffset;
-                  for (let c = 0; c < numCoders.value && cur < nh.length; c++) {
+                for (let f = 0; f < numFoldersVar.value && cur < nh.length; f++) {
+                  const numCodersVar = read7zVarint(nh, cur);
+                  cur = numCodersVar.nextOffset;
+                  const folderCoders: SevenZipCoder[] = [];
+
+                  for (let c = 0; c < numCodersVar.value && cur < nh.length; c++) {
                     const flags = nh[cur++];
-                    cur += flags & 0x0f;
+                    const idSize = flags & 0x0f;
+                    const codecId = Buffer.from(nh.subarray(cur, cur + idSize));
+                    cur += idSize;
+
                     if ((flags & 0x10) !== 0) {
                       const numIn = read7zVarint(nh, cur);
                       cur = numIn.nextOffset;
                       const numOut = read7zVarint(nh, cur);
                       cur = numOut.nextOffset;
                     }
+
+                    let properties = Buffer.alloc(0);
                     if ((flags & 0x20) !== 0) {
-                      const propSize = read7zVarint(nh, cur);
-                      cur = propSize.nextOffset + propSize.value;
+                      const propSizeVar = read7zVarint(nh, cur);
+                      cur = propSizeVar.nextOffset;
+                      properties = Buffer.from(nh.subarray(cur, cur + propSizeVar.value));
+                      cur += propSizeVar.value;
                     }
+
+                    folderCoders.push({ codecId, properties });
                   }
+
+                  folders.push({ coders: folderCoders, unpackSize: 0 });
                 }
               }
             } else if (unpackSub === 0x0c) {
               // kCodersUnpackSize
-              const unpackSizes: number[] = [];
-              while (cur < nh.length && nh[cur] !== 0x0a && nh[cur] !== 0x00) {
+              for (let f = 0; f < folders.length && cur < nh.length; f++) {
                 const sz = read7zVarint(nh, cur);
-                unpackSizes.push(sz.value);
+                folders[f].unpackSize = sz.value;
                 cur = sz.nextOffset;
-              }
-              if (sizes.length === 0) {
-                sizes.push(...unpackSizes);
               }
             } else if (unpackSub === 0x0a) {
               // kCRC
               const allDefined = nh[cur++];
-              const count = sizes.length || 1;
-              cur += allDefined === 1 ? count * 4 : Math.ceil(count / 8) + count * 4;
+              if (allDefined === 1) {
+                for (let f = 0; f < folders.length && cur + 4 <= nh.length; f++) {
+                  folders[f].crc = nh.readUInt32LE(cur);
+                  cur += 4;
+                }
+              } else {
+                const maskBytes = Math.ceil(folders.length / 8);
+                cur += maskBytes + folders.length * 4;
+              }
+            } else {
+              break;
+            }
+          }
+          if (cur < nh.length && nh[cur] === 0x00) cur++;
+        } else if (streamProp === 0x08) {
+          // kSubStreamsInfo
+          while (cur < nh.length && nh[cur] !== 0x00) {
+            const subProp = nh[cur++];
+            if (subProp === 0x0d) {
+              // kNumUnpackStream
+              for (let f = 0; f < folders.length && cur < nh.length; f++) {
+                const num = read7zVarint(nh, cur);
+                folders[f].numUnpackStreams = num.value;
+                cur = num.nextOffset;
+              }
+            } else if (subProp === 0x09) {
+              // kSize
+              for (let f = 0; f < folders.length && cur < nh.length; f++) {
+                const numStreams = folders[f].numUnpackStreams || 1;
+                folders[f].unpackSizes = [];
+                let sum = 0;
+                for (let s = 0; s < numStreams - 1 && cur < nh.length; s++) {
+                  const sz = read7zVarint(nh, cur);
+                  folders[f].unpackSizes!.push(sz.value);
+                  sum += sz.value;
+                  cur = sz.nextOffset;
+                }
+                folders[f].unpackSizes!.push(Math.max(0, folders[f].unpackSize - sum));
+              }
+            } else if (subProp === 0x0a) {
+              // kCRC
+              const allDefined = nh[cur++];
+              for (let f = 0; f < folders.length; f++) {
+                const numStreams = folders[f].numUnpackStreams || 1;
+                folders[f].unpackCrcs = [];
+                for (let s = 0; s < numStreams && cur + 4 <= nh.length; s++) {
+                  folders[f].unpackCrcs!.push(nh.readUInt32LE(cur));
+                  cur += 4;
+                }
+              }
             } else {
               break;
             }
@@ -659,14 +1385,14 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
       if (cur < nh.length && nh[cur] === 0x00) cur++;
     } else if (propId === 0x05) {
       // kFilesInfo
-      const numFiles = read7zVarint(nh, cur);
-      cur = numFiles.nextOffset;
-      const fileCount = numFiles.value;
+      const numFilesVar = read7zVarint(nh, cur);
+      cur = numFilesVar.nextOffset;
+      const fileCount = numFilesVar.value;
 
       while (cur < nh.length && nh[cur] !== 0x00) {
         const fileProp = nh[cur++];
-        if (fileProp === 0x0e) {
-          // kName
+        if (fileProp === 0x11 || fileProp === 0x0e) {
+          // kName (0x11 standard, 0x0e legacy fallback)
           const nameLen = read7zVarint(nh, cur);
           cur = nameLen.nextOffset;
           const external = nh[cur++];
@@ -687,7 +1413,6 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
             }
           }
         } else {
-          // Other file property (e.g. kEmptyStream)
           const propLen = read7zVarint(nh, cur);
           cur = propLen.nextOffset + propLen.value;
         }
@@ -702,7 +1427,7 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
   if (filenames.length === 0) {
     let nameIdx = -1;
     for (let i = 0; i < nh.length; i++) {
-      if (nh[i] === 0x05 && i + 2 < nh.length && nh[i + 2] === 0x0e) {
+      if ((nh[i] === 0x11 || nh[i] === 0x05) && i + 2 < nh.length && (nh[i + 2] === 0x0e || nh[i + 2] === 0x11)) {
         nameIdx = i + 2;
         break;
       }
@@ -727,31 +1452,76 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
     }
   }
 
-  let curOffset = 32;
-  const totalPackSize = nextHeaderOffset;
-  for (let i = 0; i < filenames.length; i++) {
-    const fn = filenames[i];
-    let size: number;
-    if (i < sizes.length) {
-      size = sizes[i];
-    } else if (filenames.length === 1) {
-      size = totalPackSize;
-    } else {
-      size =
-        i === filenames.length - 1
-          ? Math.max(0, 32 + totalPackSize - curOffset)
-          : Math.floor(totalPackSize / filenames.length);
+  // Decompress each folder and extract files
+  let packOffset = 32;
+  let fileIdx = 0;
+  let totalUncompressedSize = 0;
+
+  for (let f = 0; f < folders.length; f++) {
+    const folder = folders[f];
+    const packSize = f < packSizes.length ? packSizes[f] : nextHeaderOffset - (packOffset - 32);
+    if (packOffset + packSize > sevenZipBuffer.length) {
+      throw new Error('Corrupted 7z archive: truncated pack stream');
     }
 
-    const endOffset = Math.min(32 + totalPackSize, curOffset + size);
-    const sanitizedName = sanitizeArchivePath(fn);
-    if (sanitizedName) {
-      files.push({
-        filename: sanitizedName,
-        buffer: Buffer.from(sevenZipBuffer.subarray(curOffset, endOffset)),
-      });
+    const packSlice = Buffer.from(sevenZipBuffer.subarray(packOffset, packOffset + packSize));
+    packOffset += packSize;
+
+    // Decompress folder stream using primary coder
+    const primaryCoder = folder.coders.length > 0 ? folder.coders[0] : { codecId: Buffer.from([0]), properties: Buffer.alloc(0) };
+    const uncompressedData = decompress7zFolder(packSlice, primaryCoder, folder.unpackSize);
+
+    if (uncompressedData.length !== folder.unpackSize) {
+      throw new Error(`Corrupted 7z archive: unpack size mismatch (expected ${folder.unpackSize}, got ${uncompressedData.length})`);
     }
-    curOffset += size;
+
+    if (folder.crc !== undefined) {
+      const computedCrc = crc32(uncompressedData);
+      if (computedCrc !== folder.crc) {
+        throw new Error(`Corrupted 7z archive: CRC mismatch (expected 0x${folder.crc.toString(16)}, got 0x${computedCrc.toString(16)})`);
+      }
+    }
+
+    totalUncompressedSize += uncompressedData.length;
+    if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+    }
+    if (sevenZipBuffer.length > 0 && totalUncompressedSize / sevenZipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+      throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+    }
+
+    // Distribute uncompressed folder data to files
+    if (folder.unpackSizes && folder.unpackSizes.length > 0) {
+      let subOffset = 0;
+      for (let s = 0; s < folder.unpackSizes.length && fileIdx < filenames.length; s++) {
+        if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+          throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+        }
+        const sz = folder.unpackSizes[s];
+        const fileBuf = Buffer.from(uncompressedData.subarray(subOffset, subOffset + sz));
+        subOffset += sz;
+
+        if (folder.unpackCrcs && folder.unpackCrcs[s] !== undefined) {
+          if (crc32(fileBuf) !== folder.unpackCrcs[s]) {
+            throw new Error(`Corrupted 7z archive: CRC mismatch for ${filenames[fileIdx]}`);
+          }
+        }
+
+        const sanitizedName = sanitizeArchivePath(filenames[fileIdx++]);
+        if (sanitizedName) {
+          files.push({ filename: sanitizedName, buffer: fileBuf });
+        }
+      }
+    } else {
+      if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+      }
+      const fname = fileIdx < filenames.length ? filenames[fileIdx++] : `file_${f}`;
+      const sanitizedName = sanitizeArchivePath(fname);
+      if (sanitizedName) {
+        files.push({ filename: sanitizedName, buffer: uncompressedData });
+      }
+    }
   }
 
   return files;
@@ -837,23 +1607,9 @@ export async function convertArchive(
       files = [];
     }
   } else if (src === 'rar') {
-    try {
-      files = extractRarArchive(inputBuffer);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
-        throw err;
-      }
-      files = [];
-    }
+    files = extractRarArchive(inputBuffer);
   } else if (src === '7z' || src === 'tar.7z') {
-    try {
-      files = extract7zArchive(inputBuffer);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
-        throw err;
-      }
-      files = [];
-    }
+    files = extract7zArchive(inputBuffer);
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
     const uncompressed = decompressZstd(inputBuffer);
     if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
