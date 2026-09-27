@@ -16,6 +16,7 @@ const ARTIFACT_DIR_CALLER = '/Users/aquila/.gemini/antigravity/brain/540f9cdd-6f
 const ARTIFACT_DIR_CONVERSATION = '/Users/aquila/.gemini/antigravity/brain/f959c1c8-ae0d-401f-881f-8e51a8733aa6';
 const ARTIFACT_DIR_ACTIVE = '/Users/aquila/.gemini/antigravity/brain/e1204587-6eb4-445e-a857-442399a17170';
 const ARTIFACT_DIR_CONVERSATION_2 = '/Users/aquila/.gemini/antigravity/brain/82af80c2-ce22-48c1-954d-037137d07256';
+const ARTIFACT_DIR_CURRENT_CONV = '/Users/aquila/.gemini/antigravity/brain/d005226f-d8ac-44c7-9016-1c3ea57a4940';
 const PUBLIC_DIR = path.resolve('public/screenshots');
 
 function saveImage(filename, buffer) {
@@ -32,6 +33,7 @@ function saveImage(filename, buffer) {
     ARTIFACT_DIR_CONVERSATION,
     ARTIFACT_DIR_ACTIVE,
     ARTIFACT_DIR_CONVERSATION_2,
+    ARTIFACT_DIR_CURRENT_CONV,
   ];
   for (const d of dirs) {
     if (fs.existsSync(d)) {
@@ -40,9 +42,15 @@ function saveImage(filename, buffer) {
   }
 }
 
-console.log('Starting headless Chrome on port', DEBUG_PORT);
+const USER_DATA_DIR = path.join('/tmp', `chrome-ec-${Date.now()}`);
+fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+
+console.log('Starting headless Chrome on port', DEBUG_PORT, 'with isolated profile', USER_DATA_DIR);
 const chromeProc = spawn(CHROME_PATH, [
   `--remote-debugging-port=${DEBUG_PORT}`,
+  `--user-data-dir=${USER_DATA_DIR}`,
+  '--no-first-run',
+  '--no-default-browser-check',
   '--headless=new',
   '--disable-gpu',
   'about:blank'
@@ -129,12 +137,13 @@ await new Promise(r => setTimeout(r, 2000));
 // Ensure light mode is active
 await send('Runtime.evaluate', {
   expression: `
-    document.documentElement.classList.remove('dark');
+    localStorage.clear();
     localStorage.theme = 'light';
+    document.documentElement.classList.remove('dark');
     window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: 'light' } }));
   `
 });
-await new Promise(r => setTimeout(r, 500));
+await new Promise(r => setTimeout(r, 600));
 
 let ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('desktop_hero.png', Buffer.from(ss.data, 'base64'));
@@ -281,4 +290,7 @@ saveImage('unit_converter_page.png', Buffer.from(ss.data, 'base64'));
 
 ws.close();
 chromeProc.kill();
+try {
+  fs.rmSync(USER_DATA_DIR, { recursive: true, force: true });
+} catch (_) {}
 console.log('Artifacts captured successfully');

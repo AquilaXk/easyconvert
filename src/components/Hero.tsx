@@ -190,7 +190,7 @@ export default function Hero({
                 className={`relative mx-auto mt-8 sm:mt-10 w-full max-w-3xl rounded-3xl border-2 border-dashed p-8 sm:p-12 text-center transition-all duration-300 ease-out shadow-xl ${
                   isDragOver
                     ? 'border-brand-700 border-solid ring-4 ring-brand-700/20 bg-brand-50/70 dark:bg-brand-950/40 scale-[1.01]'
-                    : 'bg-white border-neutral-border hover:border-brand-400 shadow-brand-700/5 dark:bg-[#181D30] dark:border-[#2C375A] dark:hover:border-brand-500/50 dark:shadow-black/50'
+                    : 'bg-white border-brand-300 hover:border-brand-600 shadow-brand-700/5 dark:bg-[#181D30] dark:border-[#2C375A] dark:hover:border-brand-500/50 dark:shadow-black/50'
                 }`}
               >
                 {/* Official Brand Vector Mark on Tactile Squircle */}

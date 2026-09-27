@@ -111,7 +111,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(footerContent).toContain('href: \'/rar-to-zip\'');
 
     // Privacy badge and copyright
-    expect(footerContent).toContain('100% Client-Side & Zero-Server Retention');
+    expect(footerContent).toMatch(/100% Client-Side (&|&amp;) Zero-Server Retention/);
     expect(footerContent).toContain('© 2026 EasyConvert.com');
   });
 
@@ -318,12 +318,12 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(faqContent).toContain('role="region"');
   });
 
-  it('verifies Dynamic Converter Page synchronizes dark scaffold theme during active queue', () => {
+  it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {
     const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
     const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
 
     expect(slugContent).toContain(
-      "queue.length > 0 ? 'bg-dark-scaffold' : 'bg-neutral-scaffold dark:bg-dark-scaffold'"
+      'className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors"'
     );
   });
 
@@ -332,9 +332,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
 
     expect(slugContent).toContain('isCategorySlug');
-    expect(slugContent).toContain('(srcMeta.advantages || []).map');
-    expect(slugContent).toContain('(tgtMeta.advantages || []).map');
-    expect(slugContent).toContain('__addTestFile');
+    expect(slugContent).toContain('(meta.advantages || []).map');
+    expect(slugContent).toContain('FormatDossierCard');
+    expect(slugContent).toContain('useClientQueue');
   });
 });
 

@@ -1,17 +1,15 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ConversionQueue from '@/components/ConversionQueue';
 import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
 import Footer from '@/components/Footer';
-import JSZip from 'jszip';
-import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
-import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
-import { createItemConverter, getEffectiveMaxFileSize } from '@/lib/client-converter';
+import { FORMAT_REGISTRY } from '@/lib/registry';
 import { parseConverterSlug } from '@/lib/slug-parser';
+import { useClientQueue } from '@/hooks/useClientQueue';
 import {
   FileText,
   FileImage,
@@ -610,6 +608,128 @@ function getCategoryIcon(cat: string) {
   }
 }
 
+function FormatDossierCard({
+  meta,
+  role,
+}: {
+  meta: FormatSpecification;
+  role: 'SOURCE' | 'TARGET';
+}) {
+  return (
+    <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 shadow-xl flex flex-col justify-between">
+      <div>
+        <div className="flex items-center justify-between pb-4 mb-4 border-b border-neutral-border/60 dark:border-dark-border/60">
+          <div className="flex items-center gap-3">
+            <div className="p-3 rounded-2xl bg-brand-700/15 text-brand-700 dark:text-brand-400 border border-brand-600/30 shrink-0">
+              {getCategoryIcon(meta.category)}
+            </div>
+            <div>
+              <span className="text-[10px] font-bold tracking-widest uppercase text-brand-700 dark:text-brand-400 block">
+                {role === 'SOURCE' ? 'SOURCE FORMAT' : 'TARGET FORMAT'}
+              </span>
+              <h3 className="text-lg font-bold text-brand-950 dark:text-white leading-tight">
+                {meta.title}
+              </h3>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border uppercase text-brand-950 dark:text-neutral-200">
+            .{meta.extension}
+          </span>
+        </div>
+
+        <div className="space-y-3 mb-6 text-xs sm:text-sm">
+          <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
+            <span className="text-ink-secondary dark:text-neutral-400">Full Name</span>
+            <span className="font-semibold text-brand-950 dark:text-white text-right truncate max-w-[200px]">
+              {meta.fullName}
+            </span>
+          </div>
+          <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
+            <span className="text-ink-secondary dark:text-neutral-400">Developer</span>
+            <span className="font-semibold text-brand-950 dark:text-white text-right truncate max-w-[200px]">
+              {meta.developer}
+            </span>
+          </div>
+          <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
+            <span className="text-ink-secondary dark:text-neutral-400">MIME Type</span>
+            <span className="font-mono text-xs text-brand-700 dark:text-brand-400 text-right truncate max-w-[200px]">
+              {meta.mimeType}
+            </span>
+          </div>
+          <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
+            <span className="text-ink-secondary dark:text-neutral-400">Category</span>
+            <span className="font-semibold text-brand-950 dark:text-white text-right">
+              {meta.category}
+            </span>
+          </div>
+        </div>
+
+        <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed mb-6">
+          {meta.desc}
+        </p>
+
+        <div className="space-y-2 pt-2">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block mb-1">
+            Key Capabilities
+          </span>
+          {(meta.advantages || []).map((adv, idx) => (
+            <div key={idx} className="flex items-start gap-2 text-xs text-ink-secondary dark:text-neutral-300">
+              <CheckCircle2 className="size-3.5 text-brand-700 dark:text-brand-400 shrink-0 mt-0.5" />
+              <span>{adv}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConversionGridCard({
+  formatName,
+  formats,
+  direction,
+}: {
+  formatName: string;
+  formats: string[];
+  direction: 'from' | 'to';
+}) {
+  const isFrom = direction === 'from';
+  return (
+    <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 shadow-xl">
+      <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block mb-1">
+        Conversion Types
+      </span>
+      <h3 className="text-xl font-bold text-brand-950 dark:text-white mb-1">
+        Convert {direction} {formatName.toUpperCase()}
+      </h3>
+      <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mb-6">
+        {isFrom
+          ? `Pick a target format to start a ${formatName.toUpperCase()} conversion.`
+          : `Pick a source format to convert into ${formatName.toUpperCase()}.`}
+      </p>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
+        {formats.map((fmt) => {
+          const fromFmt = isFrom ? formatName : fmt;
+          const toFmt = isFrom ? fmt : formatName;
+          return (
+            <a
+              key={fmt}
+              href={`/${fromFmt.toLowerCase()}-to-${toFmt.toLowerCase()}`}
+              className="flex items-center justify-between px-3 py-2 rounded-xl bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border hover:border-brand-700 hover:bg-brand-50 dark:hover:bg-white/10 text-xs font-semibold text-brand-950 dark:text-neutral-200 transition-all group"
+            >
+              <span>
+                {fromFmt.toUpperCase()} TO {toFmt.toUpperCase()}
+              </span>
+              <ArrowRight className="w-3.5 h-3.5 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-400 group-hover:translate-x-0.5 transition-all" />
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 interface DynamicPageProps {
   params: {
     slug: string;
@@ -620,68 +740,28 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
   const { slug } = params;
   const parsed = parseConverterSlug(slug);
 
-  const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
-  const [isConverting, setIsConverting] = useState(false);
+  const defaultTarget =
+    parsed.targetFormat && parsed.targetFormat.toLowerCase() !== 'any'
+      ? parsed.targetFormat
+      : undefined;
+  const bundlePrefix = `easyconvert_${parsed.sourceFormat}_to_${parsed.targetFormat || 'files'}`;
 
-  // File Queue Handler
-  const handleFilesSelected = (files: File[], defaultTarget?: string) => {
-    const maxLimit = getEffectiveMaxFileSize();
-    const effectiveDefaultTarget =
-      defaultTarget && defaultTarget.toLowerCase() !== 'any'
-        ? defaultTarget
-        : parsed.targetFormat && parsed.targetFormat.toLowerCase() !== 'any'
-        ? parsed.targetFormat
-        : '';
-
-    const newItems: ConversionQueueItem[] = files.map((file) => {
-      const detected = detectFormatFromFilename(file.name);
-      const srcFmt = detected ? detected.extension : file.name.split('.').pop() || parsed.sourceFormat;
-
-      let tgtFmt = '';
-      if (effectiveDefaultTarget) {
-        tgtFmt = effectiveDefaultTarget;
-        if (detected && detected.targetFormats.length > 0) {
-          if (!detected.targetFormats.includes(tgtFmt.toLowerCase())) {
-            tgtFmt = '';
-          }
-        }
-      }
-
-      const isOverSize = file.size > maxLimit;
-
-      return {
-        id: Math.random().toString(36).substring(2, 9) + Date.now().toString(36),
-        file,
-        name: file.name,
-        size: file.size,
-        sourceFormat: srcFmt.toLowerCase(),
-        targetFormat: tgtFmt.toLowerCase(),
-        status: isOverSize ? 'error' : 'ready',
-        error: isOverSize
-          ? `File exceeds ${Math.round(maxLimit / (1024 * 1024))} MB real-time conversion limit.`
-          : undefined,
-        progress: 0,
-        options: {
-          quality: 85,
-          fit: 'contain',
-          stripMetadata: false,
-          orientation: 'portrait',
-          delimiter: ',',
-          compressionLevel: 6,
-        },
-      };
-    });
-
-    setQueue((prev) => [...prev, ...newItems]);
-  };
-
-  React.useEffect(() => {
-    (window as any).__addTestFile = (name: string, target?: string) => {
-      const f = new File(['mock test data content'], name, { type: 'application/pdf' });
-      handleFilesSelected([f], target);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const {
+    queue,
+    isConverting,
+    handleFilesSelected,
+    handleRemoveItem,
+    handleClearAll,
+    handleUpdateTargetFormat,
+    handleUpdateAllTargets,
+    handleUpdateOptions,
+    convertSingleItem,
+    handleConvertAll,
+    handleDownloadAllZip,
+  } = useClientQueue({
+    defaultTarget,
+    bundlePrefix,
+  });
 
   // Informational Page Renderers
   if (parsed.isInfoPage) {
@@ -861,101 +941,6 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
       </div>
     );
   }
-
-
-  const handleRemoveItem = (id: string) => {
-    setQueue((prev) => {
-      const target = prev.find((i) => i.id === id);
-      if (target?.resultUrl) {
-        URL.revokeObjectURL(target.resultUrl);
-      }
-      return prev.filter((i) => i.id !== id);
-    });
-  };
-
-  const handleClearAll = () => {
-    queue.forEach((item) => {
-      if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
-    });
-    setQueue([]);
-  };
-
-  const handleUpdateTargetFormat = (id: string, targetFormat: string) => {
-    setQueue((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, targetFormat } : item))
-    );
-  };
-
-  const handleUpdateAllTargets = (targetFormat: string) => {
-    setQueue((prev) =>
-      prev.map((item) => {
-        const def = FORMAT_REGISTRY[item.sourceFormat];
-        if (def && def.targetFormats.includes(targetFormat.toLowerCase())) {
-          return { ...item, targetFormat };
-        }
-        return item;
-      })
-    );
-  };
-
-  const handleUpdateOptions = (id: string, options: ConversionOptions) => {
-    setQueue((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, options } : item))
-    );
-  };
-
-  const convertSingleItem = createItemConverter(setQueue);
-
-  const handleConvertAll = async () => {
-    setIsConverting(true);
-    const pendingItems = queue.filter((i) => i.status === 'ready' || i.status === 'error');
-
-    for (const item of pendingItems) {
-      await convertSingleItem(item);
-    }
-    setIsConverting(false);
-  };
-
-  const handleDownloadAllZip = async () => {
-    const completedItems = queue.filter((i) => i.status === 'completed' && i.resultUrl);
-    if (completedItems.length === 0) return;
-
-    try {
-      const zip = new JSZip();
-      const usedFilenames = new Set<string>();
-
-      for (const item of completedItems) {
-        if (!item.resultUrl) continue;
-        const res = await fetch(item.resultUrl);
-        const blob = await res.blob();
-
-        const baseName = item.name.substring(0, item.name.lastIndexOf('.')) || item.name;
-        let finalFilename = `${baseName}.${item.targetFormat}`;
-
-        let counter = 1;
-        while (usedFilenames.has(finalFilename)) {
-          finalFilename = `${baseName}_(${counter}).${item.targetFormat}`;
-          counter++;
-        }
-        usedFilenames.add(finalFilename);
-
-        zip.file(finalFilename, blob);
-      }
-
-      const zipBlob = await zip.generateAsync({ type: 'blob' });
-      const zipUrl = URL.createObjectURL(zipBlob);
-      const a = document.createElement('a');
-      a.href = zipUrl;
-      a.download = `easyconvert_${parsed.sourceFormat}_to_${parsed.targetFormat || 'files'}_${Date.now()}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(zipUrl);
-    } catch (err: unknown) {
-      alert('Could not download ZIP: ' + (err instanceof Error ? err.message : 'Unknown error'));
-    }
-  };
-
   const srcKey = parsed.sourceFormat.toLowerCase();
   const tgtKey = parsed.targetFormat.toLowerCase();
   const isPair = Boolean(tgtKey && tgtKey !== 'any' && tgtKey !== srcKey);
@@ -1011,7 +996,7 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
   ];
 
   return (
-    <div className={`flex flex-col min-h-screen ${queue.length > 0 ? 'bg-dark-scaffold' : 'bg-neutral-scaffold dark:bg-dark-scaffold'} text-brand-950 dark:text-dark-text transition-colors`}>
+    <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
       <Header />
 
       {/* Top Leaderboard Ad Unit with Layout Stability */}
@@ -1241,204 +1226,27 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
               </div>
 
               <div className={`grid grid-cols-1 ${isPair ? 'lg:grid-cols-2' : ''} gap-6`}>
-                {/* Source Format Dossier */}
-                <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 shadow-xl flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between pb-4 mb-4 border-b border-neutral-border/60 dark:border-dark-border/60">
-                      <div className="flex items-center gap-3">
-                        <div className="p-3 rounded-2xl bg-brand-700/15 text-brand-700 dark:text-brand-400 border border-brand-600/30 shrink-0">
-                          {getCategoryIcon(srcMeta.category)}
-                        </div>
-                        <div>
-                          <span className="text-[10px] font-bold tracking-widest uppercase text-brand-700 dark:text-brand-400 block">
-                            SOURCE FORMAT
-                          </span>
-                          <h3 className="text-lg font-bold text-brand-950 dark:text-white leading-tight">
-                            {srcMeta.title}
-                          </h3>
-                        </div>
-                      </div>
-                      <span className="px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border uppercase text-brand-950 dark:text-neutral-200">
-                        .{srcMeta.extension}
-                      </span>
-                    </div>
-
-                    <div className="space-y-3 mb-6 text-xs sm:text-sm">
-                      <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
-                        <span className="text-ink-secondary dark:text-neutral-400">Full Name</span>
-                        <span className="font-semibold text-brand-950 dark:text-white text-right truncate max-w-[200px]">
-                          {srcMeta.fullName}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
-                        <span className="text-ink-secondary dark:text-neutral-400">Developer</span>
-                        <span className="font-semibold text-brand-950 dark:text-white text-right truncate max-w-[200px]">
-                          {srcMeta.developer}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
-                        <span className="text-ink-secondary dark:text-neutral-400">MIME Type</span>
-                        <span className="font-mono text-xs text-brand-700 dark:text-brand-400 text-right truncate max-w-[200px]">
-                          {srcMeta.mimeType}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
-                        <span className="text-ink-secondary dark:text-neutral-400">Category</span>
-                        <span className="font-semibold text-brand-950 dark:text-white text-right">
-                          {srcMeta.category}
-                        </span>
-                      </div>
-                    </div>
-
-                    <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed mb-6">
-                      {srcMeta.desc}
-                    </p>
-
-                    <div className="space-y-2 pt-2">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block mb-1">
-                        Key Capabilities
-                      </span>
-                      {(srcMeta.advantages || []).map((adv, idx) => (
-                        <div key={idx} className="flex items-start gap-2 text-xs text-ink-secondary dark:text-neutral-300">
-                          <CheckCircle2 className="size-3.5 text-brand-700 dark:text-brand-400 shrink-0 mt-0.5" />
-                          <span>{adv}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Target Format Dossier */}
-                {isPair && tgtMeta && (
-                  <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 shadow-xl flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-center justify-between pb-4 mb-4 border-b border-neutral-border/60 dark:border-dark-border/60">
-                        <div className="flex items-center gap-3">
-                          <div className="p-3 rounded-2xl bg-brand-700/15 text-brand-700 dark:text-brand-400 border border-brand-600/30 shrink-0">
-                            {getCategoryIcon(tgtMeta.category)}
-                          </div>
-                          <div>
-                            <span className="text-[10px] font-bold tracking-widest uppercase text-brand-700 dark:text-brand-400 block">
-                              TARGET FORMAT
-                            </span>
-                            <h3 className="text-lg font-bold text-brand-950 dark:text-white leading-tight">
-                              {tgtMeta.title}
-                            </h3>
-                          </div>
-                        </div>
-                        <span className="px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border uppercase text-brand-950 dark:text-neutral-200">
-                          .{tgtMeta.extension}
-                        </span>
-                      </div>
-
-                      <div className="space-y-3 mb-6 text-xs sm:text-sm">
-                        <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
-                          <span className="text-ink-secondary dark:text-neutral-400">Full Name</span>
-                          <span className="font-semibold text-brand-950 dark:text-white text-right truncate max-w-[200px]">
-                            {tgtMeta.fullName}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
-                          <span className="text-ink-secondary dark:text-neutral-400">Developer</span>
-                          <span className="font-semibold text-brand-950 dark:text-white text-right truncate max-w-[200px]">
-                            {tgtMeta.developer}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
-                          <span className="text-ink-secondary dark:text-neutral-400">MIME Type</span>
-                          <span className="font-mono text-xs text-brand-700 dark:text-brand-400 text-right truncate max-w-[200px]">
-                            {tgtMeta.mimeType}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between py-1.5 border-b border-neutral-border/40 dark:border-dark-border/40">
-                          <span className="text-ink-secondary dark:text-neutral-400">Category</span>
-                          <span className="font-semibold text-brand-950 dark:text-white text-right">
-                            {tgtMeta.category}
-                          </span>
-                        </div>
-                      </div>
-
-                      <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed mb-6">
-                        {tgtMeta.desc}
-                      </p>
-
-                      <div className="space-y-2 pt-2">
-                        <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block mb-1">
-                          Key Capabilities
-                        </span>
-                        {(tgtMeta.advantages || []).map((adv, idx) => (
-                          <div key={idx} className="flex items-start gap-2 text-xs text-ink-secondary dark:text-neutral-300">
-                            <CheckCircle2 className="size-3.5 text-brand-700 dark:text-brand-400 shrink-0 mt-0.5" />
-                            <span>{adv}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
+                <FormatDossierCard meta={srcMeta} role="SOURCE" />
+                {isPair && tgtMeta && <FormatDossierCard meta={tgtMeta} role="TARGET" />}
               </div>
             </section>
 
             {/* Conversion Type Grids */}
             <section className="max-w-5xl mx-auto px-4 sm:px-6 mb-20 space-y-12 relative z-20">
-              {/* Convert FROM [Source] */}
               {convertFromTargets.length > 0 && (
-                <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 shadow-xl">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block mb-1">
-                    Conversion Types
-                  </span>
-                  <h3 className="text-xl font-bold text-brand-950 dark:text-white mb-1">
-                    Convert from {parsed.sourceFormat.toUpperCase()}
-                  </h3>
-                  <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mb-6">
-                    Pick a target format to start a {parsed.sourceFormat.toUpperCase()} conversion.
-                  </p>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
-                    {convertFromTargets.map((tgt) => (
-                      <a
-                        key={tgt}
-                        href={`/${parsed.sourceFormat.toLowerCase()}-to-${tgt.toLowerCase()}`}
-                        className="flex items-center justify-between px-3 py-2 rounded-xl bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border hover:border-brand-700 hover:bg-brand-50 dark:hover:bg-white/10 text-xs font-semibold text-brand-950 dark:text-neutral-200 transition-all group"
-                      >
-                        <span>
-                          {parsed.sourceFormat.toUpperCase()} TO {tgt.toUpperCase()}
-                        </span>
-                        <ArrowRight className="w-3.5 h-3.5 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-400 group-hover:translate-x-0.5 transition-all" />
-                      </a>
-                    ))}
-                  </div>
-                </div>
+                <ConversionGridCard
+                  formatName={parsed.sourceFormat}
+                  formats={convertFromTargets}
+                  direction="from"
+                />
               )}
 
-              {/* Convert TO [Target] */}
               {convertToSources.length > 0 && (
-                <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-3xl p-6 sm:p-8 shadow-xl">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block mb-1">
-                    Conversion Types
-                  </span>
-                  <h3 className="text-xl font-bold text-brand-950 dark:text-white mb-1">
-                    Convert to {targetForReverse.toUpperCase()}
-                  </h3>
-                  <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mb-6">
-                    Pick a source format to convert into {targetForReverse.toUpperCase()}.
-                  </p>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
-                    {convertToSources.slice(0, 30).map((src) => (
-                      <a
-                        key={src}
-                        href={`/${src.toLowerCase()}-to-${targetForReverse.toLowerCase()}`}
-                        className="flex items-center justify-between px-3 py-2 rounded-xl bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border hover:border-brand-700 hover:bg-brand-50 dark:hover:bg-white/10 text-xs font-semibold text-brand-950 dark:text-neutral-200 transition-all group"
-                      >
-                        <span>
-                          {src.toUpperCase()} TO {targetForReverse.toUpperCase()}
-                        </span>
-                        <ArrowRight className="w-3.5 h-3.5 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-400 group-hover:translate-x-0.5 transition-all" />
-                      </a>
-                    ))}
-                  </div>
-                </div>
+                <ConversionGridCard
+                  formatName={targetForReverse}
+                  formats={convertToSources.slice(0, 30)}
+                  direction="to"
+                />
               )}
 
               {/* In-feed Ad Banner */}

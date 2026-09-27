@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   Type,
   Compass,
+  Sparkles,
 } from 'lucide-react';
 
 interface FeaturesProps {
@@ -200,294 +201,309 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
   const activeCat = categories.find((c) => c.id === selectedCategory) || categories[0];
 
   return (
-    <section id="format-catalog" className="relative isolate mx-auto max-w-7xl px-6 lg:px-8 py-16 transition-colors">
-      <div className="space-y-12">
-        {/* ROW 1: Format Catalog (Left) + Data Security (Right) */}
-        <div className="grid gap-12 lg:grid-cols-3 lg:gap-16 items-start">
-          {/* Left Column: Format Catalog (2 cols on large screen) */}
-          <div className="space-y-4 lg:col-span-2">
-            <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-xl">
-              <svg className="size-3.5 text-[#5C6BC0]" viewBox="0 0 512 512" fill="currentColor">
-                <path d="M256 0c11.2 0 21.7 5.9 27.4 15.5l96 160c5.9 9.9 6.1 22.2 .4 32.2S363.5 224 352 224l-192 0c-11.5 0-22.2-6.2-27.8-16.2s-5.5-22.3 .4-32.2l96-160C234.3 5.9 244.8 0 256 0zM128 272a112 112 0 1 1 0 224 112 112 0 1 1 0-224zm200 16l112 0c22.1 0 40 17.9 40 40l0 112c0 22.1-17.9 40-40 40l-112 0c-22.1 0-40-17.9-40-40l0-112c0-22.1 17.9-40 40-40z" />
-              </svg>
-              <span>Format Catalog</span>
+    <div className="space-y-16 py-12 md:py-16">
+      {/* 1. Universal Core Advantages Grid */}
+      <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="text-center max-w-3xl mx-auto mb-12">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-brand-500/10 text-brand-700 dark:text-brand-300 border border-brand-400/20 mb-3">
+            <Sparkles className="size-3.5" />
+            <span>Modern In-Browser Conversion</span>
+          </span>
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-brand-950 dark:text-white">
+            Why Choose EasyConvert?
+          </h2>
+          <p className="mt-3 text-sm sm:text-base text-ink-secondary dark:text-neutral-300 leading-relaxed">
+            The fast, client-side conversion engine designed for universal file transformation with zero server retention.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Advantage 1: 300+ Formats */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
+            <div>
+              <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center mb-5 shadow-sm">
+                <FolderTree className="size-5" />
+              </div>
+              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
+                300+ Formats Supported
+              </h3>
+              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Universal conversion across audio, video, documents, images, ebooks, archives, presentations, CAD, and vector files.
+              </p>
             </div>
-
-            <p className="mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
-              EasyConvert handles <span className="tabular-nums font-semibold">292</span> formats across 12 categories, from common office files to camera RAW, CAD drawings, archives, ebooks and production media.
-            </p>
-
-            {/* Category Buttons Grid: Clean Tactile Inline */}
-            <div className="mt-5 flex flex-wrap gap-2 pt-1">
-              {categories.map((cat) => {
-                const isSelected = selectedCategory === cat.id;
-                return (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => setSelectedCategory(cat.id)}
-                    className={`group/g inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-left text-xs transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-brand-700/15 text-brand-700 dark:text-brand-300 font-semibold border border-brand-500/30 shadow-sm'
-                        : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    <span className={isSelected ? 'text-brand-700 dark:text-brand-300' : 'text-neutral-400 dark:text-neutral-500 group-hover/g:text-neutral-300'}>
-                      {cat.icon}
-                    </span>
-                    <span className="font-medium">{cat.name}</span>
-                    <span className="font-mono text-[10px] tabular-nums text-neutral-400 dark:text-neutral-500">
-                      {cat.count}
-                    </span>
-                  </button>
-                );
-              })}
+            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
+              <CheckCircle2 className="size-3.5 text-emerald-500" />
+              <span>Full cross-format matrix</span>
             </div>
+          </div>
 
-            {/* Sub-panel: Formats listed + Common Conversion Types */}
-            <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Left Sub-column: Formats Listed */}
-              <div>
-                <div className="flex items-center justify-between text-[11px] font-mono uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-2.5">
-                  <span>{activeCat.name} Formats</span>
-                  <span className="tabular-nums">{activeCat.formats.length} listed</span>
+          {/* Advantage 2: 100% In-Browser Privacy */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
+            <div>
+              <div className="size-11 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-5 shadow-sm">
+                <ShieldCheck className="size-5" />
+              </div>
+              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
+                100% In-Browser Privacy
+              </h3>
+              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Zero server uploads. Conversions execute strictly inside your local browser sandbox via WebAssembly. Your files never leave your device.
+              </p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
+              <CheckCircle2 className="size-3.5 text-emerald-500" />
+              <span>Zero server retention guaranteed</span>
+            </div>
+          </div>
+
+          {/* Advantage 3: Instant Local Processing */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
+            <div>
+              <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center mb-5 shadow-sm">
+                <Cpu className="size-5" />
+              </div>
+              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
+                Blazing Fast Local Engine
+              </h3>
+              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Zero network upload delays or server waiting queues. Multi-threaded processing takes direct advantage of your hardware.
+              </p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
+              <CheckCircle2 className="size-3.5 text-emerald-500" />
+              <span>Hardware-accelerated speed</span>
+            </div>
+          </div>
+
+          {/* Advantage 4: Custom Settings & Quality Tuning */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
+            <div>
+              <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center mb-5 shadow-sm">
+                <Sliders className="size-5" />
+              </div>
+              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
+                Granular Custom Settings
+              </h3>
+              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Fine-tune output resolution, video codecs, audio bitrate, quality compression, delimiter formats, and OCR page ranges with ease.
+              </p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
+              <CheckCircle2 className="size-3.5 text-emerald-500" />
+              <span>Advanced conversion controls</span>
+            </div>
+          </div>
+
+          {/* Advantage 5: Universal Device Compatibility */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
+            <div>
+              <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center mb-5 shadow-sm">
+                <Compass className="size-5" />
+              </div>
+              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
+                All Devices Supported
+              </h3>
+              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Seamless operation on Chrome, Safari, Firefox, and Edge across macOS, Windows, Linux, iOS, and Android.
+              </p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
+              <CheckCircle2 className="size-3.5 text-emerald-500" />
+              <span>No plugins or installation required</span>
+            </div>
+          </div>
+
+          {/* Advantage 6: 100% Free & Unlimited */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
+            <div>
+              <div className="size-11 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-5 shadow-sm">
+                <FileCheck2 className="size-5" />
+              </div>
+              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
+                Always Free &amp; Unlimited
+              </h3>
+              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Zero paywalls, daily conversion quotas, or credit limitations. Convert unlimited files with full privacy without creating an account.
+              </p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
+              <CheckCircle2 className="size-3.5 text-emerald-500" />
+              <span>No sign-up or credit card</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* 2. Categorized Converter Directory */}
+      <section id="format-catalog" className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-4">
+        <div className="text-center max-w-3xl mx-auto mb-10">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">
+            Comprehensive Directory
+          </span>
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-brand-950 dark:text-white mt-1">
+            Supported Formats &amp; Conversions
+          </h2>
+          <p className="mt-2.5 text-sm sm:text-base text-ink-secondary dark:text-neutral-300">
+            EasyConvert supports <span className="font-semibold text-brand-950 dark:text-white">292</span> formats across 12 categories with instant browser-based processing.
+          </p>
+
+          {/* Category Tabs */}
+          <div className="mt-6 flex flex-wrap justify-center gap-2">
+            {categories.map((cat) => {
+              const isSelected = selectedCategory === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setSelectedCategory(cat.id)}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                    isSelected
+                      ? 'bg-brand-700 text-white shadow-md shadow-brand-700/25 font-semibold'
+                      : 'bg-white dark:bg-[#181D30] text-ink-secondary dark:text-neutral-300 border border-neutral-border dark:border-[#283252] hover:border-brand-400 hover:text-brand-700 dark:hover:text-white'
+                  }`}
+                >
+                  <span>{cat.icon}</span>
+                  <span>{cat.name}</span>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
+                    isSelected ? 'bg-white/20 text-white' : 'bg-neutral-100 dark:bg-white/10 text-ink-muted dark:text-neutral-400'
+                  }`}>
+                    {cat.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Selected Category Details Card */}
+        <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-8 shadow-sm">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+            {/* Formats Grid */}
+            <div className="lg:col-span-2 space-y-4">
+              <div className="flex items-center justify-between border-b border-neutral-100 dark:border-[#252E4B] pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-brand-700 dark:text-brand-300">{activeCat.icon}</span>
+                  <h3 className="font-bold text-brand-950 dark:text-white text-base">
+                    {activeCat.name} Formats ({activeCat.formats.length})
+                  </h3>
                 </div>
-                <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto pr-1">
-                  {activeCat.formats.map((fmt) => (
-                    <button
-                      key={fmt}
-                      type="button"
-                      onClick={() => {
-                        onSelectPreset?.(fmt.toLowerCase(), 'pdf');
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                      }}
-                      className="inline-flex items-center bg-white dark:bg-[#1A2035] hover:bg-brand-50 dark:hover:bg-brand-700/20 border border-neutral-200 dark:border-[#2B3556] hover:border-brand-700 dark:hover:border-brand-400 px-2.5 py-1 font-mono text-[11px] uppercase tracking-wide text-neutral-800 dark:text-neutral-200 hover:text-brand-700 dark:hover:text-brand-300 transition-colors rounded-lg shadow-sm"
-                    >
-                      {fmt}
-                    </button>
-                  ))}
-                </div>
+                <span className="text-xs text-ink-muted dark:text-neutral-400 font-medium">
+                  Click format to start
+                </span>
               </div>
 
-              {/* Right Sub-column: Common Conversion Types */}
-              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-4 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
-                <div className="text-[11px] font-mono uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-2.5">
-                  Common conversion types
-                </div>
-                <div className="space-y-2.5">
-                  {activeCat.commonConversions.map((conv, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => {
-                        onSelectPreset?.(conv.from.toLowerCase(), conv.to.toLowerCase());
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                      }}
-                      className="block text-left text-neutral-600 dark:text-neutral-400 hover:text-[#5C6BC0] dark:hover:text-[#949FE8] transition-colors group w-full"
-                    >
-                      <div className="flex items-center gap-1.5 font-mono text-xs text-neutral-900 dark:text-white group-hover:text-[#5C6BC0] dark:group-hover:text-[#949FE8]">
+              <div className="flex flex-wrap gap-2 pt-1 max-h-56 overflow-y-auto pr-1">
+                {activeCat.formats.map((fmt) => (
+                  <button
+                    key={fmt}
+                    type="button"
+                    onClick={() => {
+                      onSelectPreset?.(fmt.toLowerCase(), 'pdf');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className="inline-flex items-center bg-neutral-50 dark:bg-[#181D30] hover:bg-brand-50 dark:hover:bg-brand-700/20 border border-neutral-border dark:border-[#283252] hover:border-brand-700 dark:hover:border-brand-400 px-3 py-1.5 font-mono text-xs uppercase tracking-wide text-brand-950 dark:text-neutral-200 hover:text-brand-700 dark:hover:text-brand-300 transition-colors rounded-xl shadow-xs cursor-pointer"
+                  >
+                    {fmt}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Popular Conversion Pairs for Active Category */}
+            <div className="space-y-4 border-t lg:border-t-0 lg:border-l border-neutral-100 dark:border-[#252E4B] pt-6 lg:pt-0 lg:pl-8">
+              <div className="border-b border-neutral-100 dark:border-[#252E4B] pb-3">
+                <h4 className="font-bold text-brand-950 dark:text-white text-sm">
+                  Popular {activeCat.name} Conversions
+                </h4>
+              </div>
+
+              <div className="space-y-2.5">
+                {activeCat.commonConversions.map((conv, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      onSelectPreset?.(conv.from.toLowerCase(), conv.to.toLowerCase());
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className="w-full text-left p-3 rounded-2xl bg-neutral-50 hover:bg-brand-50/70 dark:bg-[#181D30] dark:hover:bg-brand-900/30 border border-neutral-border dark:border-[#283252] hover:border-brand-300 dark:hover:border-brand-700 transition-all group cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 font-mono font-bold text-xs text-brand-950 dark:text-white group-hover:text-brand-700 dark:group-hover:text-brand-300">
                         <span>{conv.from}</span>
-                        <ArrowRight className="size-3 text-neutral-400 group-hover:text-[#5C6BC0]" />
+                        <ArrowRight className="size-3 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-300" />
                         <span>{conv.to}</span>
                       </div>
-                      <div className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate mt-0.5">
-                        {conv.desc}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column: Data Security (1 col on large screen) */}
-          <div className="space-y-4 lg:col-span-1">
-            <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-xl">
-              <svg className="size-3.5 text-[#5C6BC0]" viewBox="0 0 512 512" fill="currentColor">
-                <path d="M256.1 0c4.6 0 9.2 1 13.3 2.9L457.8 82.8c22 9.3 38.4 31 38.3 57.2-.5 99.2-41.3 280.7-213.7 363.2-16.7 8-36.1 8-52.7 0-172.4-82.5-213.1-263.9-213.6-363.2-.1-26.2 16.3-47.9 38.3-57.2L242.7 2.9C246.8 1 251.4 0 256.1 0zm90.9 164.6c-10.7-7.8-25.7-5.4-33.5 5.3l-85.6 117.7-26.5-27.4c-9.2-9.5-24.4-9.8-33.9-.6-9.5 9.2-9.8 24.4-.6 33.9l46.4 48c4.9 5.1 11.8 7.8 18.9 7.3s13.6-4.1 17.8-9.8L352.3 198.1c7.8-10.7 5.4-25.7-5.3-33.5z" />
-              </svg>
-              <span>Data Security</span>
-            </div>
-
-            <p className="mt-3 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
-              Files are processed for the conversion job you request, then removed after processing. The security model is documented and backed by certification.
-            </p>
-
-            <ul className="mt-5 space-y-3">
-              <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
-                  <Lock className="size-3.5" />
-                </span>
-                <span className="leading-snug">
-                  <span className="font-medium text-neutral-900 dark:text-white">Certification:</span> information security management audited by independent assessors
-                </span>
-              </li>
-
-              <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
-                  <Trash2 className="size-3.5" />
-                </span>
-                <span className="leading-snug">
-                  <span className="font-medium text-neutral-900 dark:text-white">Automatic deletion:</span> files are removed after processing according to the retention policy
-                </span>
-              </li>
-
-              <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
-                  <Handshake className="size-3.5" />
-                </span>
-                <span className="leading-snug">
-                  <span className="font-medium text-neutral-900 dark:text-white">Business model:</span> EasyConvert does not sell customer file data nor mine any data from it
-                </span>
-              </li>
-            </ul>
-
-            <div className="pt-2">
-              <a
-                href="/security"
-                className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-[#5C6BC0] hover:underline"
-              >
-                <span>Read the security overview</span>
-                <ArrowRight className="size-3" />
-              </a>
-            </div>
-          </div>
-        </div>
-
-        {/* Separator between rows */}
-        <div className="mx-auto my-12 max-w-3xl px-2">
-          <div className="h-px bg-gradient-to-r from-transparent via-neutral-300 dark:via-neutral-700/60 to-transparent" />
-        </div>
-
-        {/* ROW 2: How It Works (3 Steps) */}
-        <div id="how-it-works" className="space-y-8 pt-4">
-          <div className="text-center max-w-2xl mx-auto">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#5C6BC0] dark:text-[#949FE8]">
-              Simple &amp; Fast Process
-            </span>
-            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-neutral-900 dark:text-white mt-1">
-              How to Convert Files in 3 Steps
-            </h2>
-            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
-              Convert your documents, media, and archives in seconds with zero complicated settings.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Step 1 */}
-            <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4">
-              <div className="size-10 rounded-xl bg-[#5C6BC0]/10 text-[#5C6BC0] flex items-center justify-center font-bold text-base">
-                1
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-neutral-900 dark:text-white">Choose Files</h3>
-                <p className="mt-1.5 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                  Select files from your device, drag and drop into the dropzone, or import directly from URL and cloud drives.
-                </p>
-              </div>
-            </div>
-
-            {/* Step 2 */}
-            <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4">
-              <div className="size-10 rounded-xl bg-[#5C6BC0]/10 text-[#5C6BC0] flex items-center justify-center font-bold text-base">
-                2
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-neutral-900 dark:text-white">Select Format</h3>
-                <p className="mt-1.5 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                  Pick your desired output format from 290+ supported standards. Customize optional quality or resolution settings.
-                </p>
-              </div>
-            </div>
-
-            {/* Step 3 */}
-            <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4">
-              <div className="size-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-base">
-                3
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-neutral-900 dark:text-white">Download Result</h3>
-                <p className="mt-1.5 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                  Click Convert and download your converted files immediately or save all items together as a clean ZIP package.
-                </p>
+                      <span className="text-[11px] font-semibold text-brand-700 dark:text-brand-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                        Convert &rarr;
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-ink-secondary dark:text-neutral-400 mt-1 truncate">
+                      {conv.desc}
+                    </p>
+                  </button>
+                ))}
               </div>
             </div>
           </div>
         </div>
+      </section>
 
-        {/* Separator between rows */}
-        <div className="mx-auto my-12 max-w-3xl px-2">
-          <div className="h-px bg-gradient-to-r from-transparent via-neutral-300 dark:via-neutral-700/60 to-transparent" />
+      {/* 3. Standardized 3-Step Conversion Workflow */}
+      <section id="how-it-works" className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-4">
+        <div className="text-center max-w-2xl mx-auto mb-10">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">
+            Effortless 3-Step Process
+          </span>
+          <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-brand-950 dark:text-white mt-1">
+            How to Convert Files with EasyConvert
+          </h2>
+          <p className="mt-2 text-sm text-ink-secondary dark:text-neutral-300">
+            Convert your documents, media, and archives in seconds with zero complicated settings.
+          </p>
         </div>
 
-        {/* ROW 3: High-Quality Conversions & Zero-Retention Security Highlights */}
-        <div id="features" className="grid gap-8 md:grid-cols-2 lg:gap-12 items-start">
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-8 shadow-sm space-y-4">
-            <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">
-              <svg className="size-4 text-[#5C6BC0]" viewBox="0 0 576 512" fill="currentColor">
-                <path d="M96 0C60.7 0 32 28.7 32 64l0 384c0 35.3 28.7 64 64 64l180 0c-22.7-31.5-36-70.2-36-112 0-100.6 77.4-183.2 176-191.3l0-38.1c0-17.7-6.7-33.3-18.7-45.3L290.7 18.7C278.7 6.7 262.5 0 245.5 0L96 0zM357.5 176L264 176c-13.3 0-24-10.7-24-24L240 58.5 357.5 176zM576 400a144 144 0 1 0 -288 0 144 144 0 1 0 288 0zm-86.6-60.9c7.1 5.2 8.7 15.2 3.5 22.3l-64 88c-2.8 3.8-7 6.2-11.7 6.5s-9.3-1.3-12.6-4.6l-40-40c-6.2-6.2-6.2-16.4 0-22.6s16.4-6.2 22.6 0l26.8 26.8 53-72.9c5.2-7.1 15.2-8.7 22.4-3.5z" />
-              </svg>
-              <span>High-Fidelity Engine</span>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Step 1 */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4 hover:border-brand-400 transition-all">
+            <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center font-black text-base shadow-sm">
+              1
             </div>
-            <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
-              Every conversion is processed using high-precision encoders to guarantee font accuracy, correct color matrices, vector clarity, and exact table formatting.
-            </p>
-            <ul className="space-y-2 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400">
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                <span>Lossless and high-bitrate media transcoding</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                <span>Preserves complex OpenXML layouts and formulas</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                <span>Multi-lingual OCR recognition and sandwich PDFs</span>
-              </li>
-            </ul>
+            <div>
+              <h3 className="text-base font-bold text-brand-950 dark:text-white">1. Choose Files</h3>
+              <p className="mt-1.5 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Select files from your device, drag &amp; drop them directly into the dropzone, or paste from your clipboard.
+              </p>
+            </div>
           </div>
 
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-8 shadow-sm space-y-4">
-            <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">
-              <ShieldCheck className="size-4 text-emerald-500" />
-              <span>100% Free &amp; Private</span>
+          {/* Step 2 */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4 hover:border-brand-400 transition-all">
+            <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center font-black text-base shadow-sm">
+              2
             </div>
-            <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
-              No credit cards, subscription fees, or hidden payment walls. EasyConvert runs directly in your browser with complete privacy.
-            </p>
-            <ul className="space-y-2 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400">
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                <span>Zero server file retention &amp; memory-only processing</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                <span>Unlimited free conversions for all users</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                <span>No registration or personal information required</span>
-              </li>
-            </ul>
+            <div>
+              <h3 className="text-base font-bold text-brand-950 dark:text-white">2. Select Target Format</h3>
+              <p className="mt-1.5 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Choose your desired output format from 290+ standards. Optionally tune quality, bitrate, or page settings.
+              </p>
+            </div>
+          </div>
+
+          {/* Step 3 */}
+          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4 hover:border-brand-400 transition-all">
+            <div className="size-11 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-black text-base shadow-sm">
+              3
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-brand-950 dark:text-white">3. Download Result</h3>
+              <p className="mt-1.5 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+                Click Convert and immediately download your converted file, or package all finished items into a single ZIP archive.
+              </p>
+            </div>
           </div>
         </div>
-
-        {/* ROW 3: Stats Header */}
-        <header className="px-2 pt-8 text-center">
-          <div className="mx-auto max-w-3xl">
-            <div className="inline-flex items-center gap-3 text-[11px] font-medium uppercase tracking-[0.18em] text-neutral-400 dark:text-neutral-500">
-              <span>Trusted since 2012</span>
-            </div>
-            <p className="mx-auto mt-2 max-w-xl text-base leading-relaxed text-neutral-600 dark:text-neutral-400">
-              <strong className="font-semibold text-neutral-900 dark:text-white tabular-nums">2,420,185,920</strong> files converted — <strong className="font-semibold text-neutral-900 dark:text-white tabular-nums">19,425 TB</strong> of data processed — and counting.
-            </p>
-          </div>
-          <div className="mx-auto mt-10 max-w-3xl">
-            <div className="h-px bg-gradient-to-r from-transparent via-neutral-300 dark:via-neutral-700/60 to-transparent" />
-          </div>
-        </header>
-      </div>
-    </section>
+      </section>
+    </div>
   );
 }

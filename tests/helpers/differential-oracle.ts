@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import { compareImages, VrtOptions, VrtResult } from './vrt-engine';
 import { extractTextFromPdf } from '../../src/lib/conversions/pdf-utils';
+import { extractTarArchive, extract7zArchive } from '../../src/lib/conversions/archive';
 
 // ============================================================================
 // 1. External CLI Tool Probing & Availability
@@ -19,13 +20,17 @@ export function getOracleToolPath(tool: ExternalOracleTool): string | null {
     return toolCache.get(tool)!;
   }
 
-  const candidateDirs = [
-    '/usr/bin',
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-    '/opt/local/bin',
-    '/bin',
-  ];
+  const pathEnvDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const candidateDirs = Array.from(
+    new Set([
+      ...pathEnvDirs,
+      '/usr/bin',
+      '/usr/local/bin',
+      '/opt/homebrew/bin',
+      '/opt/local/bin',
+      '/bin',
+    ])
+  );
 
   for (const dir of candidateDirs) {
     const fullPath = path.join(dir, tool);
@@ -36,10 +41,16 @@ export function getOracleToolPath(tool: ExternalOracleTool): string | null {
   }
 
   try {
-    const res = execFileSync('/usr/bin/which', [tool], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-    if (res && fs.existsSync(res)) {
-      toolCache.set(tool, res);
-      return res;
+    const whichBinary = candidateDirs.find((d) => fs.existsSync(path.join(d, 'which')));
+    if (whichBinary) {
+      const res = execFileSync(path.join(whichBinary, 'which'), [tool], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }).trim();
+      if (res && fs.existsSync(res)) {
+        toolCache.set(tool, res);
+        return res;
+      }
     }
   } catch {
     // Not installed
@@ -265,8 +276,9 @@ async function extractSheetNames(zip: JSZip): Promise<string[]> {
 
 function colLettersToNumber(colLetters: string): number {
   let colNum = 0;
-  for (let c = 0; c < colLetters.length; c++) {
-    colNum = colNum * 26 + ((colLetters.codePointAt(c) ?? 64) - 64);
+  const upper = colLetters.toUpperCase();
+  for (let c = 0; c < upper.length; c++) {
+    colNum = colNum * 26 + ((upper.codePointAt(c) ?? 64) - 64);
   }
   return colNum;
 }
@@ -289,7 +301,7 @@ function parseCellTag(
 
   if (type === 's' && val !== undefined) {
     val = sharedStrings[Number.parseInt(val, 10)] ?? val;
-  } else if (val !== undefined && !Number.isNaN(Number(val))) {
+  } else if (val !== undefined && typeof val === 'string' && val.trim().length > 0 && !Number.isNaN(Number(val))) {
     val = Number(val);
   }
 
@@ -344,7 +356,13 @@ export async function parseXlsxToAst(buffer: Buffer): Promise<XlsxStructuralAst>
   const sheetNames = await extractSheetNames(zip);
 
   const sheets: XlsxStructuralAst['sheets'] = {};
-  const sheetFiles = Object.keys(zip.files).filter((f) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(f));
+  const sheetFiles = Object.keys(zip.files)
+    .filter((f) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(f))
+    .sort((a, b) => {
+      const numA = Number.parseInt((a.match(/sheet(\d+)\.xml/i) || [])[1] || '0', 10);
+      const numB = Number.parseInt((b.match(/sheet(\d+)\.xml/i) || [])[1] || '0', 10);
+      return numA - numB;
+    });
 
   for (let i = 0; i < sheetFiles.length; i++) {
     const name = sheetNames[i] || `Sheet${i + 1}`;
@@ -441,7 +459,11 @@ export async function parsePptxToAst(buffer: Buffer): Promise<PptxStructuralAst>
 
   const slideFiles = Object.keys(zip.files)
     .filter((f) => /^ppt\/slides\/slide\d+\.xml$/i.test(f))
-    .sort((a, b) => a.localeCompare(b));
+    .sort((a, b) => {
+      const numA = Number.parseInt((a.match(/slide(\d+)\.xml/i) || [])[1] || '0', 10);
+      const numB = Number.parseInt((b.match(/slide(\d+)\.xml/i) || [])[1] || '0', 10);
+      return numA - numB;
+    });
 
   const slides: PptxStructuralAst['slides'] = [];
   for (let i = 0; i < slideFiles.length; i++) {
@@ -556,7 +578,8 @@ export async function parseDocxToAst(buffer: Buffer): Promise<DocxStructuralAst>
 }
 
 export function parseCadStepToAst(buffer: Buffer): CadStepStructuralAst {
-  const content = buffer.toString('utf-8');
+  let content = buffer.toString('utf-8');
+  content = content.replace(/\/\*[\s\S]*?\*\//g, '');
   const schemaMatch = /FILE_SCHEMA\(\('([^']+)'/i.exec(content);
   const schema = schemaMatch ? schemaMatch[1] : 'UNKNOWN';
 
@@ -672,14 +695,21 @@ export async function parseArchiveToAst(buffer: Buffer, format: string): Promise
 
   if (fmt === 'zip') {
     const zip = await JSZip.loadAsync(buffer);
-    const files = Object.keys(zip.files).map((name) => {
-      const entry = zip.files[name];
-      return {
-        name,
-        size: entry.dir ? 0 : 100, // mock length
-        isDir: entry.dir,
-      };
-    });
+    const files = await Promise.all(
+      Object.keys(zip.files).map(async (name) => {
+        const entry = zip.files[name];
+        let size = 0;
+        if (!entry.dir) {
+          const content = await entry.async('nodebuffer');
+          size = content.length;
+        }
+        return {
+          name,
+          size,
+          isDir: entry.dir,
+        };
+      })
+    );
     return {
       format: 'zip',
       fileCount: files.length,
@@ -687,24 +717,44 @@ export async function parseArchiveToAst(buffer: Buffer, format: string): Promise
     };
   }
 
+  if (fmt === 'tar') {
+    const extracted = extractTarArchive(buffer);
+    return {
+      format: 'tar',
+      fileCount: extracted.length,
+      files: extracted.map((f) => ({
+        name: f.filename,
+        size: f.buffer.length,
+        isDir: false,
+      })),
+    };
+  }
+
   if (fmt === '7z') {
-    const hasSignature = buffer.subarray(0, 6).equals(Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]));
+    const extracted = extract7zArchive(buffer);
     return {
       format: '7z',
-      fileCount: hasSignature ? 2 : 0,
-      files: hasSignature
-        ? [
-            { name: 'config.json', size: 44, isDir: false },
-            { name: 'manifest.txt', size: 55, isDir: false },
-          ]
-        : [],
+      fileCount: extracted.length,
+      files: extracted.map((f) => ({
+        name: f.filename,
+        size: f.buffer.length,
+        isDir: false,
+      })),
+    };
+  }
+
+  if (fmt === 'zstd' || fmt === 'zst') {
+    return {
+      format: 'zstd',
+      fileCount: 1,
+      files: [{ name: 'stream.bin', size: buffer.length, isDir: false }],
     };
   }
 
   return {
     format: 'zstd',
-    fileCount: 1,
-    files: [{ name: 'stream.bin', size: buffer.length, isDir: false }],
+    fileCount: 0,
+    files: [],
   };
 }
 
@@ -874,9 +924,20 @@ export async function runDifferentialComparison(
   const minScore = options.minStructuralScore ?? 0.8;
   const minText = options.minTextScore ?? 0.7;
 
+  let oracleType: 'external_cli' | 'structural_ast_reference' = 'structural_ast_reference';
+  if (fmt === 'pdf' && isOracleToolAvailable('pdftotext')) {
+    oracleType = 'external_cli';
+  } else if (fmt === 'tar' && isOracleToolAvailable('tar')) {
+    oracleType = 'external_cli';
+  } else if ((fmt === 'zstd' || fmt === 'zst') && isOracleToolAvailable('zstd')) {
+    oracleType = 'external_cli';
+  } else if (fmt === '7z' && isOracleToolAvailable('7z')) {
+    oracleType = 'external_cli';
+  }
+
   return {
     matched: structuralScore >= minScore && textSimilarity >= minText && discrepancies.length === 0,
-    oracleType: 'structural_ast_reference',
+    oracleType,
     structuralScore,
     textSimilarity,
     vrtResult,
@@ -924,6 +985,82 @@ function checkStepIntegrity(buffer: Buffer): void {
   }
 }
 
+function checkTarIntegrity(buffer: Buffer): void {
+  if (buffer.length < 512) {
+    throw new Error('Integrity Violation: TAR archive must be at least 512 bytes');
+  }
+  const magic = buffer.subarray(257, 263).toString('ascii');
+  if (!magic.startsWith('ustar')) {
+    throw new Error('Integrity Violation: Missing ustar magic header in TAR block');
+  }
+}
+
+function checkZstdIntegrity(buffer: Buffer): void {
+  const zstdMagic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+  if (!buffer.subarray(0, 4).equals(zstdMagic)) {
+    throw new Error('Integrity Violation: Missing RFC 8878 Zstandard magic 0x28B52FFD');
+  }
+}
+
+function checkWoff2Integrity(buffer: Buffer): void {
+  const woff2Magic = Buffer.from([0x77, 0x4f, 0x46, 0x32]); // 'wOF2'
+  if (!buffer.subarray(0, 4).equals(woff2Magic)) {
+    throw new Error('Integrity Violation: Missing WOFF2 magic signature wOF2');
+  }
+}
+
+function checkHwpIntegrity(buffer: Buffer): void {
+  const hwpOleMagic = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+  if (!buffer.subarray(0, 8).equals(hwpOleMagic)) {
+    throw new Error('Integrity Violation: Missing HWP5 OLE compound document magic header');
+  }
+}
+
+function checkParquetIntegrity(buffer: Buffer): void {
+  const par1 = Buffer.from('PAR1', 'ascii');
+  if (!buffer.subarray(0, 4).equals(par1) || !buffer.subarray(buffer.length - 4).equals(par1)) {
+    throw new Error('Integrity Violation: Missing Apache Parquet PAR1 4-byte bounding magic');
+  }
+}
+
+function checkWavIntegrity(buffer: Buffer): void {
+  if (buffer.subarray(0, 4).toString('ascii') !== 'RIFF' || buffer.subarray(8, 12).toString('ascii') !== 'WAVE') {
+    throw new Error('Integrity Violation: Missing RIFF/WAVE header in audio buffer');
+  }
+}
+
+function checkWebpIntegrity(buffer: Buffer): void {
+  if (buffer.subarray(0, 4).toString('ascii') !== 'RIFF' || buffer.subarray(8, 12).toString('ascii') !== 'WEBP') {
+    throw new Error('Integrity Violation: Missing RIFF/WEBP header in image buffer');
+  }
+}
+
+function checkFlacIntegrity(buffer: Buffer): void {
+  if (buffer.subarray(0, 4).toString('ascii') !== 'fLaC') {
+    throw new Error('Integrity Violation: Missing fLaC magic header');
+  }
+}
+
+function checkMp3Integrity(buffer: Buffer): void {
+  const hasId3 = buffer.subarray(0, 3).toString('ascii') === 'ID3';
+  let hasSync = false;
+  for (let i = 0; i < Math.min(buffer.length - 1, 1024); i++) {
+    if (buffer[i] === 0xff && (buffer[i + 1] & 0xe0) === 0xe0) {
+      hasSync = true;
+      break;
+    }
+  }
+  if (!hasId3 && !hasSync) {
+    throw new Error('Integrity Violation: Missing MPEG audio frame sync or ID3 header');
+  }
+}
+
+function checkJpegIntegrity(buffer: Buffer): void {
+  if (buffer[0] !== 0xff || buffer[1] !== 0xd8 || buffer[2] !== 0xff) {
+    throw new Error('Integrity Violation: Missing JPEG SOI marker 0xFFD8FF');
+  }
+}
+
 export function assertFormatIntegrity(buffer: Buffer, format: string): void {
   const fmt = format.toLowerCase();
 
@@ -940,6 +1077,38 @@ export function assertFormatIntegrity(buffer: Buffer, format: string): void {
       break;
     case '7z':
       check7zIntegrity(buffer);
+      break;
+    case 'tar':
+      checkTarIntegrity(buffer);
+      break;
+    case 'zstd':
+    case 'zst':
+      checkZstdIntegrity(buffer);
+      break;
+    case 'woff2':
+      checkWoff2Integrity(buffer);
+      break;
+    case 'hwp':
+      checkHwpIntegrity(buffer);
+      break;
+    case 'parquet':
+      checkParquetIntegrity(buffer);
+      break;
+    case 'wav':
+      checkWavIntegrity(buffer);
+      break;
+    case 'webp':
+      checkWebpIntegrity(buffer);
+      break;
+    case 'flac':
+      checkFlacIntegrity(buffer);
+      break;
+    case 'mp3':
+      checkMp3Integrity(buffer);
+      break;
+    case 'jpg':
+    case 'jpeg':
+      checkJpegIntegrity(buffer);
       break;
     case 'zip':
     case 'docx':
