@@ -887,16 +887,40 @@ export async function convertImage(
           .raw()
           .toBuffer({ resolveWithObject: true });
 
-        const oklabRes = applyOklabQuantizationAndDither(
-          { data, width: info.width, height: info.height },
-          colours,
-          options.dither !== false
-        );
+        let rgbaBuffer: Buffer;
+        if (options.ditherMethod === 'blue-noise') {
+          const rawRgb = Buffer.alloc(info.width * info.height * 3);
+          for (let i = 0; i < info.width * info.height; i++) {
+            rawRgb[i * 3] = data[i * 4];
+            rawRgb[i * 3 + 1] = data[i * 4 + 1];
+            rawRgb[i * 3 + 2] = data[i * 4 + 2];
+          }
+          const wu = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
+            dither: options.dither !== false,
+            ditherMethod: 'blue-noise',
+          });
+          const reconstructed = Buffer.alloc(info.width * info.height * 4);
+          for (let i = 0; i < wu.indexedPixels.length; i++) {
+            const c = wu.palette[wu.indexedPixels[i]] || { r: 0, g: 0, b: 0 };
+            const off = i * 4;
+            reconstructed[off] = c.r;
+            reconstructed[off + 1] = c.g;
+            reconstructed[off + 2] = c.b;
+            reconstructed[off + 3] = data[off + 3] !== undefined ? data[off + 3] : 255;
+          }
+          rgbaBuffer = reconstructed;
+        } else {
+          const oklabRes = applyOklabQuantizationAndDither(
+            { data, width: info.width, height: info.height },
+            colours,
+            options.dither !== false
+          );
+          rgbaBuffer = Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength);
+        }
 
-        outputBuffer = await sharp(
-          Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength),
-          { raw: { width: info.width, height: info.height, channels: 4 } }
-        )
+        outputBuffer = await sharp(rgbaBuffer, {
+          raw: { width: info.width, height: info.height, channels: 4 },
+        })
           .gif({ colours, dither: 0.0 })
           .toBuffer();
       } else {
@@ -922,19 +946,19 @@ export async function convertImage(
           rawRgb[i * 3 + 2] = data[i * 4 + 2];
         }
 
-        if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma') {
+        if (options.ditherMethod === 'blue-noise') {
+          const quant = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
+            dither: options.dither !== false,
+            ditherMethod: 'blue-noise',
+          });
+          outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
+        } else if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma') {
           const res = applyOklabQuantizationAndDither(
             { data, width: info.width, height: info.height },
             colours,
             options.dither !== false
           );
           outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
-        } else if (options.ditherMethod === 'blue-noise') {
-          const quant = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
-            dither: options.dither !== false,
-            ditherMethod: 'blue-noise',
-          });
-          outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
         } else {
           const quant = quantizeNeuQuant(rawRgb, info.width, info.height, 3, 10, options.dither !== false);
           outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
@@ -955,21 +979,51 @@ export async function convertImage(
         background: { r: 0, g: 0, b: 0, alpha: 0 },
       });
 
-      if (options.colorDepth === 8 || options.quantizer === 'oklab') {
+      if (
+        options.colorDepth === 8 ||
+        options.palette ||
+        options.quantizer === 'oklab' ||
+        options.ditherMethod === 'riemersma' ||
+        options.ditherMethod === 'blue-noise'
+      ) {
         const { data, info } = await icoPipeline
           .ensureAlpha()
           .raw()
           .toBuffer({ resolveWithObject: true });
         const colours = Math.min(256, Math.max(2, options.colors || 256));
-        const oklabRes = applyOklabQuantizationAndDither(
-          { data, width: info.width, height: info.height },
-          colours,
-          options.dither !== false
-        );
-        const pngBuf = await sharp(
-          Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength),
-          { raw: { width: info.width, height: info.height, channels: 4 } }
-        )
+        let rgbaBuffer: Buffer;
+        if (options.ditherMethod === 'blue-noise') {
+          const rawRgb = Buffer.alloc(info.width * info.height * 3);
+          for (let i = 0; i < info.width * info.height; i++) {
+            rawRgb[i * 3] = data[i * 4];
+            rawRgb[i * 3 + 1] = data[i * 4 + 1];
+            rawRgb[i * 3 + 2] = data[i * 4 + 2];
+          }
+          const wu = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
+            dither: options.dither !== false,
+            ditherMethod: 'blue-noise',
+          });
+          const reconstructed = Buffer.alloc(info.width * info.height * 4);
+          for (let i = 0; i < wu.indexedPixels.length; i++) {
+            const c = wu.palette[wu.indexedPixels[i]] || { r: 0, g: 0, b: 0 };
+            const off = i * 4;
+            reconstructed[off] = c.r;
+            reconstructed[off + 1] = c.g;
+            reconstructed[off + 2] = c.b;
+            reconstructed[off + 3] = data[off + 3] !== undefined ? data[off + 3] : 255;
+          }
+          rgbaBuffer = reconstructed;
+        } else {
+          const oklabRes = applyOklabQuantizationAndDither(
+            { data, width: info.width, height: info.height },
+            colours,
+            options.dither !== false
+          );
+          rgbaBuffer = Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength);
+        }
+        const pngBuf = await sharp(rgbaBuffer, {
+          raw: { width: info.width, height: info.height, channels: 4 },
+        })
           .png({ palette: true, colours, compressionLevel: 8 })
           .toBuffer();
         outputBuffer = encodeIco(pngBuf, info.width, info.height);
