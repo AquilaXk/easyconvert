@@ -125,6 +125,251 @@ function decodeImaAdpcmSample(
   return state.predictedSample;
 }
 
+function isEndianSwapPair(src: string, tgt: string): boolean {
+  return (
+    ((src === 'pcm' || src === 'pcm_le') && tgt === 'pcm_be') ||
+    (src === 'pcm_be' && (tgt === 'pcm' || tgt === 'pcm_le'))
+  );
+}
+
+function isU8PcmPair(src: string, tgt: string): boolean {
+  return (src === 'pcm' || src === 'wav') && (tgt === 'pcm_u8' || tgt === 'u8');
+}
+
+function isGrayscalePair(src: string, tgt: string): boolean {
+  return (src === 'rgba' || src === 'raw') && (tgt === 'grayscale' || tgt === 'gray');
+}
+
+function isArchivePair(src: string, tgt: string): boolean {
+  return (
+    (src === 'tar' && (tgt === 'tar_gz' || tgt === 'gz')) ||
+    (src === 'gz' && tgt === 'tar') ||
+    (src === 'tar_gz' && tgt === 'tar')
+  );
+}
+
+function buildEndianSwapTransformer(): ChunkTransformerFn {
+  let leftoverByte: number | null = null;
+  return (chunk: Uint8Array) => {
+    let data = chunk;
+    if (leftoverByte !== null) {
+      const combined = new Uint8Array(chunk.byteLength + 1);
+      combined[0] = leftoverByte;
+      combined.set(chunk, 1);
+      data = combined;
+      leftoverByte = null;
+    }
+    const hasOdd = data.byteLength % 2 !== 0;
+    const len = hasOdd ? data.byteLength - 1 : data.byteLength;
+    if (hasOdd) {
+      leftoverByte = data[data.byteLength - 1];
+    }
+    const out = new Uint8Array(len);
+    for (let i = 0; i < len; i += 2) {
+      out[i] = data[i + 1];
+      out[i + 1] = data[i];
+    }
+    return out;
+  };
+}
+
+function buildU8PcmTransformer(): ChunkTransformerFn {
+  let leftoverByte: number | null = null;
+  return (chunk: Uint8Array) => {
+    let data = chunk;
+    if (leftoverByte !== null) {
+      const combined = new Uint8Array(chunk.byteLength + 1);
+      combined[0] = leftoverByte;
+      combined.set(chunk, 1);
+      data = combined;
+      leftoverByte = null;
+    }
+    const hasOdd = data.byteLength % 2 !== 0;
+    if (hasOdd) {
+      leftoverByte = data[data.byteLength - 1];
+      data = data.subarray(0, data.byteLength - 1);
+    }
+    const sampleCount = Math.floor(data.byteLength / 2);
+    const out = new Uint8Array(sampleCount);
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    for (let i = 0; i < sampleCount; i++) {
+      const s16 = view.getInt16(i * 2, true);
+      out[i] = Math.max(0, Math.min(255, Math.floor((s16 + 32768) / 256)));
+    }
+    return out;
+  };
+}
+
+function buildCsvTsvTransformer(fromCode: number, toCode: number): ChunkTransformerFn {
+  let inQuotes = false;
+  return (chunk: Uint8Array) => {
+    const out = new Uint8Array(chunk.byteLength);
+    for (let i = 0; i < chunk.byteLength; i++) {
+      const b = chunk[i];
+      if (b === 34) {
+        inQuotes = !inQuotes;
+        out[i] = b;
+      } else if (b === fromCode && !inQuotes) {
+        out[i] = toCode;
+      } else {
+        out[i] = b;
+      }
+    }
+    return out;
+  };
+}
+
+function buildGrayscaleTransformer(): ChunkTransformerFn {
+  return (chunk: Uint8Array) => {
+    const out = new Uint8Array(chunk.byteLength);
+    const pixelCount = Math.floor(chunk.byteLength / 4);
+    for (let i = 0; i < pixelCount; i++) {
+      const idx = i * 4;
+      const r = chunk[idx];
+      const g = chunk[idx + 1];
+      const b = chunk[idx + 2];
+      const a = chunk[idx + 3];
+      const gray = (77 * r + 150 * g + 29 * b) >> 8;
+      out[idx] = gray;
+      out[idx + 1] = gray;
+      out[idx + 2] = gray;
+      out[idx + 3] = a;
+    }
+    return out;
+  };
+}
+
+function buildWavToPcmTransformer(): ChunkTransformerFn {
+  let isFirstChunk = true;
+  return (chunk: Uint8Array) => {
+    if (isFirstChunk) {
+      isFirstChunk = false;
+      if (
+        chunk.byteLength >= 44 &&
+        chunk[0] === 0x52 &&
+        chunk[1] === 0x49 &&
+        chunk[2] === 0x46 &&
+        chunk[3] === 0x46
+      ) {
+        return chunk.subarray(44);
+      }
+    }
+    return chunk;
+  };
+}
+
+function buildPcmToWavTransformer(options?: Record<string, any>): ChunkTransformerFn {
+  let isFirstChunk = true;
+  const sampleRate = options?.sampleRate || 44100;
+  const channels = options?.channels || 2;
+  const bitsPerSample = options?.bitsPerSample || 16;
+  const byteRate = Math.floor(sampleRate * channels * (bitsPerSample / 8));
+  const blockAlign = Math.floor(channels * (bitsPerSample / 8));
+
+  return (chunk: Uint8Array) => {
+    if (isFirstChunk) {
+      isFirstChunk = false;
+      const header = new Uint8Array(44);
+      const view = new DataView(header.buffer);
+
+      header[0] = 0x52; header[1] = 0x49; header[2] = 0x46; header[3] = 0x46;
+      view.setUint32(4, 36 + chunk.byteLength, true);
+      header[8] = 0x57; header[9] = 0x41; header[10] = 0x56; header[11] = 0x45;
+      header[12] = 0x66; header[13] = 0x6d; header[14] = 0x74; header[15] = 0x20;
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, channels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, bitsPerSample, true);
+      header[36] = 0x64; header[37] = 0x61; header[38] = 0x74; header[39] = 0x61;
+      view.setUint32(40, chunk.byteLength, true);
+
+      const out = new Uint8Array(44 + chunk.byteLength);
+      out.set(header, 0);
+      out.set(chunk, 44);
+      return out;
+    }
+    return chunk;
+  };
+}
+
+function buildImaAdpcmCompressor(src: string): ChunkTransformerFn {
+  let leftoverByte: number | null = null;
+  let isFirstChunk = true;
+  const state = { predictedSample: 0, stepIndex: 0 };
+
+  return (chunk: Uint8Array) => {
+    let data = chunk;
+    if (src === 'wav' && isFirstChunk) {
+      isFirstChunk = false;
+      if (
+        chunk.byteLength >= 44 &&
+        chunk[0] === 0x52 &&
+        chunk[1] === 0x49 &&
+        chunk[2] === 0x46 &&
+        chunk[3] === 0x46
+      ) {
+        data = chunk.subarray(44);
+      }
+    }
+
+    if (leftoverByte !== null) {
+      const combined = new Uint8Array(data.byteLength + 1);
+      combined[0] = leftoverByte;
+      combined.set(data, 1);
+      data = combined;
+      leftoverByte = null;
+    }
+
+    const hasOdd = data.byteLength % 2 !== 0;
+    if (hasOdd) {
+      leftoverByte = data[data.byteLength - 1];
+      data = data.subarray(0, data.byteLength - 1);
+    }
+
+    const sampleCount = Math.floor(data.byteLength / 2);
+    const inView = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const outBytes = Math.floor((sampleCount + 1) / 2);
+    const out = new Uint8Array(outBytes);
+
+    for (let i = 0; i < sampleCount; i += 2) {
+      const s1 = inView.getInt16(i * 2, true);
+      const n1 = encodeImaAdpcmSample(s1, state);
+      let n2 = 0;
+      if (i + 1 < sampleCount) {
+        const s2 = inView.getInt16((i + 1) * 2, true);
+        n2 = encodeImaAdpcmSample(s2, state);
+      }
+      out[i / 2] = (n1 & 0x0f) | ((n2 & 0x0f) << 4);
+    }
+
+    return out;
+  };
+}
+
+function buildImaAdpcmDecompressor(): ChunkTransformerFn {
+  const state = { predictedSample: 0, stepIndex: 0 };
+  return (chunk: Uint8Array) => {
+    const sampleCount = chunk.byteLength * 2;
+    const out = new Uint8Array(sampleCount * 2);
+    const outView = new DataView(out.buffer);
+
+    for (let i = 0; i < chunk.byteLength; i++) {
+      const b = chunk[i];
+      const n1 = b & 0x0f;
+      const n2 = (b >> 4) & 0x0f;
+      const s1 = decodeImaAdpcmSample(n1, state);
+      const s2 = decodeImaAdpcmSample(n2, state);
+      outView.setInt16(i * 4, s1, true);
+      outView.setInt16(i * 4 + 2, s2, true);
+    }
+
+    return out;
+  };
+}
+
 /**
  * Resolves a chunk-level transformer for streaming format conversion.
  */
@@ -136,290 +381,20 @@ export function resolveChunkTransformer(
   const src = (sourceFormat || '').toLowerCase();
   const tgt = (targetFormat || '').toLowerCase();
 
-  // 1. Audio PCM Endianness swap (pcm_le <-> pcm_be)
-  if (((src === 'pcm' || src === 'pcm_le') && tgt === 'pcm_be') || (src === 'pcm_be' && (tgt === 'pcm' || tgt === 'pcm_le'))) {
-    let leftoverByte: number | null = null;
-    return (chunk: Uint8Array) => {
-      let data = chunk;
-      if (leftoverByte !== null) {
-        const combined = new Uint8Array(chunk.byteLength + 1);
-        combined[0] = leftoverByte;
-        combined.set(chunk, 1);
-        data = combined;
-        leftoverByte = null;
-      }
-      const hasOdd = data.byteLength % 2 !== 0;
-      const len = hasOdd ? data.byteLength - 1 : data.byteLength;
-      if (hasOdd) {
-        leftoverByte = data[data.byteLength - 1];
-      }
-      const out = new Uint8Array(len);
-      for (let i = 0; i < len; i += 2) {
-        out[i] = data[i + 1];
-        out[i + 1] = data[i];
-      }
-      return out;
-    };
-  }
+  if (isEndianSwapPair(src, tgt)) return buildEndianSwapTransformer();
+  if (isU8PcmPair(src, tgt)) return buildU8PcmTransformer();
+  if (src === 'csv' && (tgt === 'tsv' || tgt === 'tab')) return buildCsvTsvTransformer(44, 9);
+  if ((src === 'tsv' || src === 'tab') && tgt === 'csv') return buildCsvTsvTransformer(9, 44);
+  if (isGrayscalePair(src, tgt)) return buildGrayscaleTransformer();
+  if (src === 'wav' && tgt === 'pcm') return buildWavToPcmTransformer();
+  if (src === 'pcm' && tgt === 'wav') return buildPcmToWavTransformer(options);
+  if ((src === 'pcm' || src === 'wav') && tgt === 'adpcm') return buildImaAdpcmCompressor(src);
+  if (src === 'adpcm' && (tgt === 'pcm' || tgt === 'wav')) return buildImaAdpcmDecompressor();
+  if (isArchivePair(src, tgt)) return (chunk: Uint8Array) => chunk;
+  if (options?.invert || tgt === 'invert') return (chunk: Uint8Array) => chunk.map((b) => b ^ 0xff);
+  if (typeof options?.chunkTransformer === 'function') return options.chunkTransformer;
+  if (src === tgt || options?.allowPassThrough === true) return (chunk: Uint8Array) => chunk;
 
-  // 2. Audio 16-bit to 8-bit unsigned PCM
-  if ((src === 'pcm' || src === 'wav') && (tgt === 'pcm_u8' || tgt === 'u8')) {
-    let leftoverByte: number | null = null;
-    return (chunk: Uint8Array) => {
-      let data = chunk;
-      if (leftoverByte !== null) {
-        const combined = new Uint8Array(chunk.byteLength + 1);
-        combined[0] = leftoverByte;
-        combined.set(chunk, 1);
-        data = combined;
-        leftoverByte = null;
-      }
-      const hasOdd = data.byteLength % 2 !== 0;
-      if (hasOdd) {
-        leftoverByte = data[data.byteLength - 1];
-        data = data.subarray(0, data.byteLength - 1);
-      }
-      const sampleCount = Math.floor(data.byteLength / 2);
-      const out = new Uint8Array(sampleCount);
-      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      for (let i = 0; i < sampleCount; i++) {
-        const s16 = view.getInt16(i * 2, true);
-        out[i] = Math.max(0, Math.min(255, Math.floor((s16 + 32768) / 256)));
-      }
-      return out;
-    };
-  }
-
-  // 3. Delimited Text: CSV <-> TSV streaming conversion
-  if (src === 'csv' && (tgt === 'tsv' || tgt === 'tab')) {
-    let inQuotes = false;
-    return (chunk: Uint8Array) => {
-      const out = new Uint8Array(chunk.byteLength);
-      for (let i = 0; i < chunk.byteLength; i++) {
-        const b = chunk[i];
-        if (b === 34) {
-          inQuotes = !inQuotes;
-          out[i] = b;
-        } else if (b === 44 && !inQuotes) {
-          out[i] = 9; // '\t'
-        } else {
-          out[i] = b;
-        }
-      }
-      return out;
-    };
-  }
-
-  if ((src === 'tsv' || src === 'tab') && tgt === 'csv') {
-    let inQuotes = false;
-    return (chunk: Uint8Array) => {
-      const out = new Uint8Array(chunk.byteLength);
-      for (let i = 0; i < chunk.byteLength; i++) {
-        const b = chunk[i];
-        if (b === 34) {
-          inQuotes = !inQuotes;
-          out[i] = b;
-        } else if (b === 9 && !inQuotes) {
-          out[i] = 44; // ','
-        } else {
-          out[i] = b;
-        }
-      }
-      return out;
-    };
-  }
-
-  // 4. RGBA Grayscale streaming transformation
-  if ((src === 'rgba' || src === 'raw') && (tgt === 'grayscale' || tgt === 'gray')) {
-    return (chunk: Uint8Array) => {
-      const out = new Uint8Array(chunk.byteLength);
-      const pixelCount = Math.floor(chunk.byteLength / 4);
-      for (let i = 0; i < pixelCount; i++) {
-        const idx = i * 4;
-        const r = chunk[idx];
-        const g = chunk[idx + 1];
-        const b = chunk[idx + 2];
-        const a = chunk[idx + 3];
-        const gray = (77 * r + 150 * g + 29 * b) >> 8;
-        out[idx] = gray;
-        out[idx + 1] = gray;
-        out[idx + 2] = gray;
-        out[idx + 3] = a;
-      }
-      return out;
-    };
-  }
-
-  // 5. Audio WAV to raw PCM (strip 44-byte RIFF header on first chunk)
-  if (src === 'wav' && tgt === 'pcm') {
-    let isFirstChunk = true;
-    return (chunk: Uint8Array) => {
-      if (isFirstChunk) {
-        isFirstChunk = false;
-        if (
-          chunk.byteLength >= 44 &&
-          chunk[0] === 0x52 &&
-          chunk[1] === 0x49 &&
-          chunk[2] === 0x46 &&
-          chunk[3] === 0x46
-        ) {
-          return chunk.subarray(44);
-        }
-      }
-      return chunk;
-    };
-  }
-
-  // 6. Audio raw PCM to WAV (prepend 44-byte RIFF/WAVE header on first chunk)
-  if (src === 'pcm' && tgt === 'wav') {
-    let isFirstChunk = true;
-    const sampleRate = options?.sampleRate || 44100;
-    const channels = options?.channels || 2;
-    const bitsPerSample = options?.bitsPerSample || 16;
-    const byteRate = Math.floor(sampleRate * channels * (bitsPerSample / 8));
-    const blockAlign = Math.floor(channels * (bitsPerSample / 8));
-
-    return (chunk: Uint8Array) => {
-      if (isFirstChunk) {
-        isFirstChunk = false;
-        const header = new Uint8Array(44);
-        const view = new DataView(header.buffer);
-
-        // 'RIFF'
-        header[0] = 0x52; header[1] = 0x49; header[2] = 0x46; header[3] = 0x46;
-        view.setUint32(4, 36 + chunk.byteLength, true);
-        // 'WAVE'
-        header[8] = 0x57; header[9] = 0x41; header[10] = 0x56; header[11] = 0x45;
-        // 'fmt '
-        header[12] = 0x66; header[13] = 0x6d; header[14] = 0x74; header[15] = 0x20;
-        view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true); // PCM
-        view.setUint16(22, channels, true);
-        view.setUint32(24, sampleRate, true);
-        view.setUint32(28, byteRate, true);
-        view.setUint16(32, blockAlign, true);
-        view.setUint16(34, bitsPerSample, true);
-        // 'data'
-        header[36] = 0x64; header[37] = 0x61; header[38] = 0x74; header[39] = 0x61;
-        view.setUint32(40, chunk.byteLength, true);
-
-        const out = new Uint8Array(44 + chunk.byteLength);
-        out.set(header, 0);
-        out.set(chunk, 44);
-        return out;
-      }
-      return chunk;
-    };
-  }
-
-  // 7. Audio IMA ADPCM 4:1 streaming compression
-  if ((src === 'pcm' || src === 'wav') && tgt === 'adpcm') {
-    let leftoverByte: number | null = null;
-    let isFirstChunk = true;
-    const state = { predictedSample: 0, stepIndex: 0 };
-
-    return (chunk: Uint8Array) => {
-      let data = chunk;
-      if (src === 'wav' && isFirstChunk) {
-        isFirstChunk = false;
-        if (
-          chunk.byteLength >= 44 &&
-          chunk[0] === 0x52 &&
-          chunk[1] === 0x49 &&
-          chunk[2] === 0x46 &&
-          chunk[3] === 0x46
-        ) {
-          data = chunk.subarray(44);
-        }
-      }
-
-      if (leftoverByte !== null) {
-        const combined = new Uint8Array(data.byteLength + 1);
-        combined[0] = leftoverByte;
-        combined.set(data, 1);
-        data = combined;
-        leftoverByte = null;
-      }
-
-      const hasOdd = data.byteLength % 2 !== 0;
-      if (hasOdd) {
-        leftoverByte = data[data.byteLength - 1];
-        data = data.subarray(0, data.byteLength - 1);
-      }
-
-      const sampleCount = Math.floor(data.byteLength / 2);
-      const inView = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      const outBytes = Math.floor((sampleCount + 1) / 2);
-      const out = new Uint8Array(outBytes);
-
-      for (let i = 0; i < sampleCount; i += 2) {
-        const s1 = inView.getInt16(i * 2, true);
-        const n1 = encodeImaAdpcmSample(s1, state);
-        let n2 = 0;
-        if (i + 1 < sampleCount) {
-          const s2 = inView.getInt16((i + 1) * 2, true);
-          n2 = encodeImaAdpcmSample(s2, state);
-        }
-        out[i / 2] = (n1 & 0x0f) | ((n2 & 0x0f) << 4);
-      }
-
-      return out;
-    };
-  }
-
-  // 8. Audio IMA ADPCM 1:4 streaming decompression
-  if (src === 'adpcm' && (tgt === 'pcm' || tgt === 'wav')) {
-    const state = { predictedSample: 0, stepIndex: 0 };
-    return (chunk: Uint8Array) => {
-      const sampleCount = chunk.byteLength * 2;
-      const out = new Uint8Array(sampleCount * 2);
-      const outView = new DataView(out.buffer);
-
-      for (let i = 0; i < chunk.byteLength; i++) {
-        const b = chunk[i];
-        const n1 = b & 0x0f;
-        const n2 = (b >> 4) & 0x0f;
-        const s1 = decodeImaAdpcmSample(n1, state);
-        const s2 = decodeImaAdpcmSample(n2, state);
-        outView.setInt16(i * 4, s1, true);
-        outView.setInt16(i * 4 + 2, s2, true);
-      }
-
-      return out;
-    };
-  }
-
-  // 9. Streaming archive chunk passthrough
-  const isArchivePair =
-    (src === 'tar' && (tgt === 'tar_gz' || tgt === 'gz')) ||
-    (src === 'gz' && tgt === 'tar') ||
-    (src === 'tar_gz' && tgt === 'tar');
-  if (isArchivePair) {
-    return (chunk: Uint8Array) => chunk;
-  }
-
-  // 5. Invert byte filter
-  if (options?.invert || tgt === 'invert') {
-    return (chunk: Uint8Array) => {
-      const out = new Uint8Array(chunk.byteLength);
-      for (let i = 0; i < chunk.byteLength; i++) {
-        out[i] = chunk[i] ^ 0xff;
-      }
-      return out;
-    };
-  }
-
-  // 6. Custom chunk transformer
-  if (typeof options?.chunkTransformer === 'function') {
-    return options.chunkTransformer;
-  }
-
-  // Pass-through only allowed if formats are identical or explicitly opted-in
-  if (src === tgt || options?.allowPassThrough === true) {
-    return (chunk: Uint8Array) => chunk;
-  }
-
-  // Fail-closed on unsupported streaming conversions
   throw new Error(`Unsupported streaming transformation: ${sourceFormat} to ${targetFormat}`);
 }
 

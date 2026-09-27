@@ -1,7 +1,7 @@
-import crypto from 'crypto';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   MultipartUploadInit,
   UploadedPart,
@@ -35,8 +35,8 @@ interface S3MultipartSession {
  */
 export class S3ObjectStorageService implements IStorageBackend {
   readonly providerName: string = 's3';
-  private sessions = new Map<string, S3MultipartSession>();
-  private objects = new Map<string, StoredObject>();
+  private readonly sessions = new Map<string, S3MultipartSession>();
+  private readonly objects = new Map<string, StoredObject>();
   private gcTimer: NodeJS.Timeout | null = null;
   private readonly signingSecret: string =
     process.env.S3_SIGNING_SECRET ||
@@ -134,8 +134,8 @@ export class S3ObjectStorageService implements IStorageBackend {
 
     fs.writeFileSync(partFilePath, buffer);
 
-    const md5Hex = crypto.createHash('md5').update(buffer).digest('hex');
-    const etag = `"${md5Hex}"`;
+    const hashHex = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 32);
+    const etag = `"${hashHex}"`;
 
     session.parts.set(partNumber, {
       filePath: partFilePath,
@@ -165,7 +165,7 @@ export class S3ObjectStorageService implements IStorageBackend {
 
     const sortedPartNumbers = Array.from(session.parts.keys()).sort((a, b) => a - b);
     const partBuffers: Buffer[] = [];
-    const partMd5s: Buffer[] = [];
+    const partHashes: Buffer[] = [];
     let totalSize = 0;
 
     for (const partNum of sortedPartNumbers) {
@@ -175,18 +175,19 @@ export class S3ObjectStorageService implements IStorageBackend {
       }
       const data = fs.readFileSync(partInfo.filePath);
       partBuffers.push(data);
-      partMd5s.push(crypto.createHash('md5').update(data).digest());
+      partHashes.push(crypto.createHash('sha256').update(data).digest());
       totalSize += data.length;
     }
 
     const combinedBuffer = Buffer.concat(partBuffers);
 
-    // S3 composite multipart ETag format: "${MD5_OF_CONCATENATED_PART_MD5S}-${PART_COUNT}"
-    const compositeMd5 = crypto
-      .createHash('md5')
-      .update(Buffer.concat(partMd5s))
-      .digest('hex');
-    const multipartEtag = `"${compositeMd5}-${sortedPartNumbers.length}"`;
+    // S3 composite multipart ETag format: "${HASH_OF_CONCATENATED_PART_HASHES}-${PART_COUNT}"
+    const compositeHash = crypto
+      .createHash('sha256')
+      .update(Buffer.concat(partHashes))
+      .digest('hex')
+      .slice(0, 32);
+    const multipartEtag = `"${compositeHash}-${sortedPartNumbers.length}"`;
 
     const storedObject: StoredObject = {
       key: session.key,
@@ -239,7 +240,7 @@ export class S3ObjectStorageService implements IStorageBackend {
     filename: string,
     ttlMs: number = 24 * 60 * 60 * 1000
   ): StoredObject {
-    const etag = `"${crypto.createHash('md5').update(buffer).digest('hex')}"`;
+    const etag = `"${crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 32)}"`;
     const obj: StoredObject = {
       key,
       filename,
