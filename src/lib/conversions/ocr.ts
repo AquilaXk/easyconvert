@@ -237,13 +237,8 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
       imageWidth: width,
       imageHeight: height,
     };
-  } catch {
-    return {
-      text: 'Optical character recognition completed with default fallback.',
-      confidence: 0.8,
-      wordCount: 7,
-      lines: ['Optical character recognition completed with default fallback.'],
-    };
+  } catch (err: any) {
+    throw new Error(`Optical character recognition failed: ${err?.message || 'unknown error'}`);
   }
 }
 

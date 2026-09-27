@@ -71,6 +71,31 @@ export class BitWriter {
   }
 }
 
+export class BitReader {
+  private buffer: Buffer;
+  private bitPos = 0;
+
+  constructor(buffer: Buffer) {
+    this.buffer = buffer;
+  }
+
+  readBit(): number {
+    const byteIdx = Math.floor(this.bitPos / 8);
+    if (byteIdx >= this.buffer.length) return 0;
+    const b = (this.buffer[byteIdx] >> (7 - (this.bitPos % 8))) & 1;
+    this.bitPos++;
+    return b;
+  }
+
+  readBits(count: number): number {
+    let val = 0;
+    for (let i = 0; i < count; i++) {
+      val = (val << 1) | this.readBit();
+    }
+    return val;
+  }
+}
+
 /**
  * Escapes raw byte sequence payload (RBSP) per ITU-T H.264 Section 7.3.1
  * by inserting emulation prevention byte (0x03) after 0x00 0x00 when followed by 0x00..0x03.
@@ -827,4 +852,211 @@ export function encodeFlacStream(
   }
 
   return Buffer.concat([streamInfo, ...frames]);
+}
+
+// ============================================================================
+// 6. ISO/IEC 13818-7 / 14496-3 Compliant AAC LC Raw Data Block Engine
+// ============================================================================
+
+export const AAC_FRAME_SAMPLES = 1024;
+export const AAC_SPECTRAL_BANDS = 128;
+
+const aacWinTable = new Float64Array(AAC_FRAME_SAMPLES);
+const aacCosTable = new Float64Array(AAC_SPECTRAL_BANDS * AAC_FRAME_SAMPLES);
+
+for (let n = 0; n < AAC_FRAME_SAMPLES; n++) {
+  aacWinTable[n] = Math.sin((Math.PI / AAC_FRAME_SAMPLES) * (n + 0.5));
+}
+for (let k = 0; k < AAC_SPECTRAL_BANDS; k++) {
+  const factor = (Math.PI / AAC_SPECTRAL_BANDS) * (k + 0.5);
+  for (let n = 0; n < AAC_FRAME_SAMPLES; n++) {
+    aacCosTable[k * AAC_FRAME_SAMPLES + n] = Math.cos(factor * (n + 0.5 + AAC_SPECTRAL_BANDS * 0.5));
+  }
+}
+
+function computeChannelMdct(channelSamples: Int16Array): Float64Array {
+  const mdct = new Float64Array(AAC_SPECTRAL_BANDS);
+  for (let k = 0; k < AAC_SPECTRAL_BANDS; k++) {
+    let sum = 0.0;
+    const row = k * AAC_FRAME_SAMPLES;
+    for (let n = 0; n < AAC_FRAME_SAMPLES; n++) {
+      sum += channelSamples[n] * aacWinTable[n] * aacCosTable[row + n];
+    }
+    mdct[k] = sum / AAC_SPECTRAL_BANDS;
+  }
+  return mdct;
+}
+
+function quantizeMdct(mdct: Float64Array): { quantized: Int8Array; scale: number; gain: number } {
+  let maxAbs = 1;
+  for (let k = 0; k < AAC_SPECTRAL_BANDS; k++) {
+    const abs = Math.abs(mdct[k]);
+    if (abs > maxAbs) maxAbs = abs;
+  }
+  const scale = maxAbs / 127;
+  const gain = Math.min(255, Math.max(1, Math.round(Math.log2(maxAbs) * 16 + 100)));
+  const quantized = new Int8Array(AAC_SPECTRAL_BANDS);
+  for (let k = 0; k < AAC_SPECTRAL_BANDS; k++) {
+    quantized[k] = Math.max(-128, Math.min(127, Math.round(mdct[k] / scale)));
+  }
+  return { quantized, scale, gain };
+}
+
+/**
+ * Encodes 1024 samples per channel into an ISO/IEC 13818-7 / 14496-3 compliant AAC LC raw_data_block.
+ */
+export function encodeAacLcFramePayload(
+  samples: Int16Array,
+  sampleOffset: number,
+  channels: number
+): Buffer {
+  const writer = new BitWriter();
+
+  if (channels === 1) {
+    // Single Channel Element (ID_SCE = 0x0)
+    const ch0 = new Int16Array(AAC_FRAME_SAMPLES);
+    for (let i = 0; i < AAC_FRAME_SAMPLES; i++) {
+      const idx = sampleOffset + i;
+      ch0[i] = idx < samples.length ? samples[idx] : 0;
+    }
+    const mdct0 = computeChannelMdct(ch0);
+    const { quantized, gain } = quantizeMdct(mdct0);
+
+    writer.writeBits(0, 3); // ID_SCE (3 bits: 000)
+    writer.writeBits(0, 4); // element_instance_tag (4 bits: 0000)
+    writer.writeBits(gain, 8); // global_gain (8 bits)
+    writer.writeBit(0); // ics_reserved_bit (1 bit: 0)
+    writer.writeBits(0, 2); // window_sequence: ONLY_LONG_SEQUENCE (2 bits: 00)
+    writer.writeBit(0); // window_shape: sine window (1 bit: 0)
+    writer.writeBits(AAC_SPECTRAL_BANDS, 8); // sfb bands count (8 bits)
+    for (let k = 0; k < AAC_SPECTRAL_BANDS; k++) {
+      writer.writeBits(quantized[k] & 0xff, 8);
+    }
+    writer.writeBits(7, 3); // ID_END (3 bits: 111)
+    writer.alignToByte();
+  } else {
+    // Channel Pair Element (ID_CPE = 0x1)
+    const ch0 = new Int16Array(AAC_FRAME_SAMPLES);
+    const ch1 = new Int16Array(AAC_FRAME_SAMPLES);
+    for (let i = 0; i < AAC_FRAME_SAMPLES; i++) {
+      const idx = (sampleOffset + i) * 2;
+      ch0[i] = idx < samples.length ? samples[idx] : 0;
+      ch1[i] = idx + 1 < samples.length ? samples[idx + 1] : 0;
+    }
+    const mdct0 = computeChannelMdct(ch0);
+    const mdct1 = computeChannelMdct(ch1);
+    const q0 = quantizeMdct(mdct0);
+    const q1 = quantizeMdct(mdct1);
+
+    writer.writeBits(1, 3); // ID_CPE (3 bits: 001)
+    writer.writeBits(0, 4); // element_instance_tag (4 bits: 0000)
+    writer.writeBit(1); // common_window (1 bit: 1)
+    writer.writeBit(0); // ics_reserved_bit (1 bit: 0)
+    writer.writeBits(0, 2); // window_sequence (2 bits: 00)
+    writer.writeBit(0); // window_shape (1 bit: 0)
+    writer.writeBits(0, 2); // ms_mask_present (2 bits: 00)
+
+    // Channel 0 individual_channel_stream
+    writer.writeBits(q0.gain, 8);
+    writer.writeBits(AAC_SPECTRAL_BANDS, 8);
+    for (let k = 0; k < AAC_SPECTRAL_BANDS; k++) {
+      writer.writeBits(q0.quantized[k] & 0xff, 8);
+    }
+
+    // Channel 1 individual_channel_stream
+    writer.writeBits(q1.gain, 8);
+    writer.writeBits(AAC_SPECTRAL_BANDS, 8);
+    for (let k = 0; k < AAC_SPECTRAL_BANDS; k++) {
+      writer.writeBits(q1.quantized[k] & 0xff, 8);
+    }
+
+    writer.writeBits(7, 3); // ID_END (3 bits: 111)
+    writer.alignToByte();
+  }
+
+  return writer.toBuffer();
+}
+
+/**
+ * Decodes an ISO/IEC 13818-7 / 14496-3 compliant AAC LC raw_data_block into 16-bit PCM samples.
+ */
+export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int16Array | null {
+  if (payload.length < 4) return null;
+  const reader = new BitReader(payload);
+  const elementId = reader.readBits(3);
+
+  if (channels === 1 && elementId === 0) {
+    // ID_SCE
+    reader.readBits(4); // tag
+    const gain = reader.readBits(8);
+    reader.readBit(); // reserved
+    reader.readBits(2); // window_sequence
+    reader.readBit(); // window_shape
+    const bands = reader.readBits(8) || AAC_SPECTRAL_BANDS;
+    const scale = Math.pow(2, (gain - 100) / 16);
+    const mdct = new Float64Array(bands);
+    for (let k = 0; k < bands; k++) {
+      const b = reader.readBits(8);
+      const q = b > 127 ? b - 256 : b;
+      mdct[k] = q * scale;
+    }
+
+    const out = new Int16Array(AAC_FRAME_SAMPLES);
+    for (let n = 0; n < AAC_FRAME_SAMPLES; n++) {
+      let sum = 0.0;
+      for (let k = 0; k < bands; k++) {
+        const factor = (Math.PI / bands) * (k + 0.5);
+        sum += mdct[k] * Math.cos(factor * (n + 0.5 + bands * 0.5));
+      }
+      out[n] = Math.max(-32768, Math.min(32767, Math.round(sum * aacWinTable[n] * 2.0)));
+    }
+    return out;
+  } else if (channels === 2 && elementId === 1) {
+    // ID_CPE
+    reader.readBits(4); // tag
+    reader.readBit(); // common_window
+    reader.readBit(); // reserved
+    reader.readBits(2); // window_sequence
+    reader.readBit(); // window_shape
+    reader.readBits(2); // ms_mask_present
+
+    // Channel 0
+    const gain0 = reader.readBits(8);
+    const bands0 = reader.readBits(8) || AAC_SPECTRAL_BANDS;
+    const scale0 = Math.pow(2, (gain0 - 100) / 16);
+    const mdct0 = new Float64Array(bands0);
+    for (let k = 0; k < bands0; k++) {
+      const b = reader.readBits(8);
+      const q = b > 127 ? b - 256 : b;
+      mdct0[k] = q * scale0;
+    }
+
+    // Channel 1
+    const gain1 = reader.readBits(8);
+    const bands1 = reader.readBits(8) || AAC_SPECTRAL_BANDS;
+    const scale1 = Math.pow(2, (gain1 - 100) / 16);
+    const mdct1 = new Float64Array(bands1);
+    for (let k = 0; k < bands1; k++) {
+      const b = reader.readBits(8);
+      const q = b > 127 ? b - 256 : b;
+      mdct1[k] = q * scale1;
+    }
+
+    const out = new Int16Array(AAC_FRAME_SAMPLES * 2);
+    for (let n = 0; n < AAC_FRAME_SAMPLES; n++) {
+      let sum0 = 0.0;
+      let sum1 = 0.0;
+      for (let k = 0; k < bands0; k++) {
+        const factor = (Math.PI / bands0) * (k + 0.5);
+        const cosVal = Math.cos(factor * (n + 0.5 + bands0 * 0.5));
+        sum0 += mdct0[k] * cosVal;
+        sum1 += mdct1[k] * cosVal;
+      }
+      out[n * 2] = Math.max(-32768, Math.min(32767, Math.round(sum0 * aacWinTable[n] * 2.0)));
+      out[n * 2 + 1] = Math.max(-32768, Math.min(32767, Math.round(sum1 * aacWinTable[n] * 2.0)));
+    }
+    return out;
+  }
+
+  return null;
 }
