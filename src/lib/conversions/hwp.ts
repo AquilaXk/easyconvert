@@ -49,11 +49,18 @@ export const HWP_TAGS = {
   EQEDIT: 88,
 } as const;
 
+export interface HwpEquation {
+  script: string;
+  mathml: string;
+  latex: string;
+}
+
 export interface HwpParagraph {
   text: string;
   isHeading: boolean;
   isBold: boolean;
   isItalic: boolean;
+  equations?: HwpEquation[];
 }
 
 export interface HwpTable {
@@ -69,6 +76,7 @@ export interface HwpDocument {
   isDistributed: boolean;
   paragraphs: HwpParagraph[];
   tables: HwpTable[];
+  equations?: HwpEquation[];
   metadata: {
     title?: string;
     author?: string;
@@ -409,6 +417,193 @@ export function decodeHwpText(buffer: Buffer): string {
   return result;
 }
 
+// ============================================================================
+// HWP EqEdit Equation Parser & MathML / LaTeX Transpiler
+// ============================================================================
+
+export const HWP_EQ_GREEK: Record<string, { mathml: string; latex: string }> = {
+  alpha: { mathml: 'α', latex: '\\alpha' },
+  beta: { mathml: 'β', latex: '\\beta' },
+  gamma: { mathml: 'γ', latex: '\\gamma' },
+  delta: { mathml: 'δ', latex: '\\delta' },
+  epsilon: { mathml: 'ε', latex: '\\epsilon' },
+  zeta: { mathml: 'ζ', latex: '\\zeta' },
+  eta: { mathml: 'η', latex: '\\eta' },
+  theta: { mathml: 'θ', latex: '\\theta' },
+  iota: { mathml: 'ι', latex: '\\iota' },
+  kappa: { mathml: 'κ', latex: '\\kappa' },
+  lambda: { mathml: 'λ', latex: '\\lambda' },
+  mu: { mathml: 'μ', latex: '\\mu' },
+  nu: { mathml: 'ν', latex: '\\nu' },
+  xi: { mathml: 'ξ', latex: '\\xi' },
+  pi: { mathml: 'π', latex: '\\pi' },
+  rho: { mathml: 'ρ', latex: '\\rho' },
+  sigma: { mathml: 'σ', latex: '\\sigma' },
+  tau: { mathml: 'τ', latex: '\\tau' },
+  upsilon: { mathml: 'υ', latex: '\\upsilon' },
+  phi: { mathml: 'φ', latex: '\\phi' },
+  chi: { mathml: 'χ', latex: '\\chi' },
+  psi: { mathml: 'ψ', latex: '\\psi' },
+  omega: { mathml: 'ω', latex: '\\omega' },
+  Gamma: { mathml: 'Γ', latex: '\\Gamma' },
+  Delta: { mathml: 'Δ', latex: '\\Delta' },
+  Theta: { mathml: 'Θ', latex: '\\Theta' },
+  Lambda: { mathml: 'Λ', latex: '\\Lambda' },
+  Xi: { mathml: 'Ξ', latex: '\\Xi' },
+  Pi: { mathml: 'Π', latex: '\\Pi' },
+  Sigma: { mathml: 'Σ', latex: '\\Sigma' },
+  Phi: { mathml: 'Φ', latex: '\\Phi' },
+  Psi: { mathml: 'Ψ', latex: '\\Psi' },
+  Omega: { mathml: 'Ω', latex: '\\Omega' },
+};
+
+export const HWP_EQ_SYMBOLS: Record<string, { mathml: string; latex: string }> = {
+  pm: { mathml: '±', latex: '\\pm' },
+  times: { mathml: '×', latex: '\\times' },
+  div: { mathml: '÷', latex: '\\div' },
+  cdot: { mathml: '·', latex: '\\cdot' },
+  circ: { mathml: '∘', latex: '\\circ' },
+  le: { mathml: '≤', latex: '\\le' },
+  ge: { mathml: '≥', latex: '\\ge' },
+  ne: { mathml: '≠', latex: '\\ne' },
+  approx: { mathml: '≈', latex: '\\approx' },
+  to: { mathml: '→', latex: '\\to' },
+  rightarrow: { mathml: '→', latex: '\\to' },
+  leftarrow: { mathml: '←', latex: '\\leftarrow' },
+  infty: { mathml: '∞', latex: '\\infty' },
+  inf: { mathml: '∞', latex: '\\infty' },
+};
+
+/**
+ * Transpiles an HWP EqEdit equation script to W3C MathML
+ */
+export function hwpEquationToMathML(script: string): string {
+  const trimmed = script.trim();
+  if (!trimmed) return '<math></math>';
+
+  // Handle { A } over { B } fractions
+  const overMatch = /^(.*?)\{([^{}]+)\}\s*over\s*\{([^{}]+)\}(.*)$/i.exec(trimmed);
+  if (overMatch) {
+    const prefix = overMatch[1].trim() ? hwpEquationToMathML(overMatch[1]).replace(/^<math>|<\/math>$/g, '') : '';
+    const num = hwpEquationToMathML(overMatch[2]).replace(/^<math>|<\/math>$/g, '');
+    const den = hwpEquationToMathML(overMatch[3]).replace(/^<math>|<\/math>$/g, '');
+    const suffix = overMatch[4].trim() ? hwpEquationToMathML(overMatch[4]).replace(/^<math>|<\/math>$/g, '') : '';
+    return `<math>${prefix}<mfrac><mrow>${num}</mrow><mrow>${den}</mrow></mfrac>${suffix}</math>`;
+  }
+
+  // Handle sqrt { A }
+  const sqrtMatch = /^(.*?)sqrt\s*\{([^{}]+)\}(.*)$/i.exec(trimmed);
+  if (sqrtMatch) {
+    const prefix = sqrtMatch[1].trim() ? hwpEquationToMathML(sqrtMatch[1]).replace(/^<math>|<\/math>$/g, '') : '';
+    const inner = hwpEquationToMathML(sqrtMatch[2]).replace(/^<math>|<\/math>$/g, '');
+    const suffix = sqrtMatch[3].trim() ? hwpEquationToMathML(sqrtMatch[3]).replace(/^<math>|<\/math>$/g, '') : '';
+    return `<math>${prefix}<msqrt><mrow>${inner}</mrow></msqrt>${suffix}</math>`;
+  }
+
+  // Handle root { n } of { A }
+  const rootMatch = /^(.*?)root\s*\{([^{}]+)\}\s*of\s*\{([^{}]+)\}(.*)$/i.exec(trimmed);
+  if (rootMatch) {
+    const prefix = rootMatch[1].trim() ? hwpEquationToMathML(rootMatch[1]).replace(/^<math>|<\/math>$/g, '') : '';
+    const deg = hwpEquationToMathML(rootMatch[2]).replace(/^<math>|<\/math>$/g, '');
+    const base = hwpEquationToMathML(rootMatch[3]).replace(/^<math>|<\/math>$/g, '');
+    const suffix = rootMatch[4].trim() ? hwpEquationToMathML(rootMatch[4]).replace(/^<math>|<\/math>$/g, '') : '';
+    return `<math>${prefix}<mroot><mrow>${base}</mrow><mrow>${deg}</mrow></mroot>${suffix}</math>`;
+  }
+
+  // Handle sum_{A}^{B} or int_{A}^{B}
+  const bigopMatch = /^(.*?)(sum|int|prod|lim)(?:_\{([^{}]+)\})?(?:\^\{([^{}]+)\})?(.*)$/i.exec(trimmed);
+  if (bigopMatch) {
+    const prefix = bigopMatch[1].trim() ? hwpEquationToMathML(bigopMatch[1]).replace(/^<math>|<\/math>$/g, '') : '';
+    const opName = bigopMatch[2].toLowerCase();
+    const sub = bigopMatch[3] ? hwpEquationToMathML(bigopMatch[3]).replace(/^<math>|<\/math>$/g, '') : null;
+    const sup = bigopMatch[4] ? hwpEquationToMathML(bigopMatch[4]).replace(/^<math>|<\/math>$/g, '') : null;
+    const suffix = bigopMatch[5].trim() ? hwpEquationToMathML(bigopMatch[5]).replace(/^<math>|<\/math>$/g, '') : '';
+    const opGlyph = opName === 'sum' ? '∑' : opName === 'int' ? '∫' : opName === 'prod' ? '∏' : 'lim';
+
+    let opTag = '';
+    if (sub && sup) {
+      opTag = `<munderover><mo>${opGlyph}</mo><mrow>${sub}</mrow><mrow>${sup}</mrow></munderover>`;
+    } else if (sub) {
+      opTag = `<munder><mo>${opGlyph}</mo><mrow>${sub}</mrow></munder>`;
+    } else if (sup) {
+      opTag = `<mover><mo>${opGlyph}</mo><mrow>${sup}</mrow></mover>`;
+    } else {
+      opTag = `<mo>${opGlyph}</mo>`;
+    }
+
+    return `<math>${prefix}${opTag}${suffix}</math>`;
+  }
+
+  // Tokenize identifiers, numbers, operators, greek, spaces
+  const tokens = trimmed.match(/[a-zA-Z]+|[0-9.]+|<=|>=|!=|\+-|->|<-|[+\-*/=^_{}()~`,]|./g) || [];
+  let mathmlContent = '';
+
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (HWP_EQ_GREEK[tok]) {
+      mathmlContent += `<mi>${HWP_EQ_GREEK[tok].mathml}</mi>`;
+    } else if (HWP_EQ_SYMBOLS[tok]) {
+      mathmlContent += `<mo>${HWP_EQ_SYMBOLS[tok].mathml}</mo>`;
+    } else if (/^[0-9.]+$/.test(tok)) {
+      mathmlContent += `<mn>${tok}</mn>`;
+    } else if (/^[a-zA-Z]$/.test(tok)) {
+      mathmlContent += `<mi>${tok}</mi>`;
+    } else if (/^[+\-*/=<>]$/.test(tok)) {
+      mathmlContent += `<mo>${tok}</mo>`;
+    } else if (tok === '^' && i + 1 < tokens.length) {
+      const next = tokens[++i].replace(/[{}]/g, '');
+      mathmlContent += `<msup><mrow>${mathmlContent ? '' : '<mi></mi>'}</mrow><mn>${next}</mn></msup>`;
+    } else if (tok === '_' && i + 1 < tokens.length) {
+      const next = tokens[++i].replace(/[{}]/g, '');
+      mathmlContent += `<msub><mrow>${mathmlContent ? '' : '<mi></mi>'}</mrow><mn>${next}</mn></msub>`;
+    } else if (tok === '~') {
+      mathmlContent += `<mspace width="1em"/>`;
+    } else if (tok === '`') {
+      mathmlContent += `<mspace width="0.16em"/>`;
+    } else if (tok !== '{' && tok !== '}') {
+      mathmlContent += `<mo>${tok}</mo>`;
+    }
+  }
+
+  return `<math>${mathmlContent}</math>`;
+}
+
+/**
+ * Transpiles an HWP EqEdit equation script to LaTeX
+ */
+export function hwpEquationToLaTeX(script: string): string {
+  let tex = script.trim();
+  if (!tex) return '';
+
+  tex = tex.replace(/\{([^{}]+)\}\s*over\s*\{([^{}]+)\}/gi, '\\frac{$1}{$2}');
+  tex = tex.replace(/([a-zA-Z0-9]+)\s*over\s*([a-zA-Z0-9]+)/gi, '\\frac{$1}{$2}');
+  tex = tex.replace(/sqrt\s*\{([^{}]+)\}/gi, '\\sqrt{$1}');
+  tex = tex.replace(/root\s*\{([^{}]+)\}\s*of\s*\{([^{}]+)\}/gi, '\\sqrt[$1]{$2}');
+
+  for (const [key, val] of Object.entries(HWP_EQ_GREEK)) {
+    const re = new RegExp(`\\b${key}(?=[^a-zA-Z]|$)`, 'g');
+    tex = tex.replace(re, val.latex);
+  }
+
+  for (const [key, val] of Object.entries(HWP_EQ_SYMBOLS)) {
+    const re = new RegExp(`\\b${key}(?=[^a-zA-Z]|$)`, 'g');
+    tex = tex.replace(re, val.latex);
+  }
+
+  tex = tex.replace(/\+-/g, '\\pm ');
+  tex = tex.replace(/<=/g, '\\le ');
+  tex = tex.replace(/>=/g, '\\ge ');
+  tex = tex.replace(/!=/g, '\\ne ');
+  tex = tex.replace(/->/g, '\\to ');
+  tex = tex.replace(/<-/g, '\\leftarrow ');
+  tex = tex.replace(/~/g, '\\quad ');
+  tex = tex.replace(/`/g, '\\, ');
+
+  tex = tex.replace(/\b(sum|int|prod|lim)(?=[^a-zA-Z]|$)/gi, '\\$1');
+
+  return tex;
+}
+
 /**
  * Parses full HWP 5.0 document from binary buffer (CFBF container or raw fallback)
  */
@@ -481,6 +676,7 @@ export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
 
   const paragraphs: HwpParagraph[] = [];
   const tables: HwpTable[] = [];
+  const allEquations: HwpEquation[] = [];
 
   for (const secBuf of sectionBuffers) {
     const records = parseHwpRecords(secBuf);
@@ -504,6 +700,31 @@ export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
               isBold: paragraphs.length === 0,
               isItalic: false,
             });
+          }
+        }
+      }
+
+      // HWPTAG_EQEDIT (88)
+      if (rec.tagId === HWP_TAGS.EQEDIT && rec.payload.length > 4) {
+        let script = '';
+        if (rec.payload.length >= 8) {
+          const strLen = rec.payload.readUInt16LE(4);
+          if (strLen > 0 && 6 + strLen * 2 <= rec.payload.length) {
+            script = rec.payload.subarray(6, 6 + strLen * 2).toString('utf16le');
+          }
+        }
+        if (!script) {
+          script = decodeHwpText(rec.payload.subarray(4)).trim();
+        }
+        if (script) {
+          const mathml = hwpEquationToMathML(script);
+          const latex = hwpEquationToLaTeX(script);
+          const eqObj: HwpEquation = { script, mathml, latex };
+          allEquations.push(eqObj);
+          if (paragraphs.length > 0) {
+            const lastP = paragraphs[paragraphs.length - 1];
+            if (!lastP.equations) lastP.equations = [];
+            lastP.equations.push(eqObj);
           }
         }
       }
@@ -566,6 +787,7 @@ export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
     isDistributed,
     paragraphs,
     tables,
+    equations: allEquations.length > 0 ? allEquations : undefined,
     metadata: {
       title: paragraphs[0]?.text,
     },
@@ -579,6 +801,7 @@ export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
 export function buildHwpCompoundFile(params: {
   paragraphs: { text: string; isHeading?: boolean }[];
   tables?: { rows: string[][] }[];
+  equations?: string[];
   compressed?: boolean;
 }): Buffer {
   const isCompressed = params.compressed !== false;
@@ -598,6 +821,19 @@ export function buildHwpCompoundFile(params: {
     const textUtf16 = Buffer.from(p.text + '\r\n', 'utf16le');
     sectionChunks.push(buildHwpRecord(HWP_TAGS.PARA_TEXT, 0, textUtf16));
   });
+
+  // Write equations if any
+  if (params.equations && params.equations.length > 0) {
+    params.equations.forEach((eqScript) => {
+      // HWPTAG_EQEDIT (88)
+      const scriptUtf16 = Buffer.from(eqScript, 'utf16le');
+      const payload = Buffer.alloc(6 + scriptUtf16.length);
+      payload.writeUInt32LE(0x00000000, 0); // flags
+      payload.writeUInt16LE(eqScript.length, 4); // char count
+      scriptUtf16.copy(payload, 6);
+      sectionChunks.push(buildHwpRecord(HWP_TAGS.EQEDIT, 0, payload));
+    });
+  }
 
   // Write tables if any
   if (params.tables && params.tables.length > 0) {

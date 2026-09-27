@@ -14,7 +14,17 @@ import {
   TableBorder,
 } from './office';
 import { performOcr, generateSearchablePdf, OcrResult } from './ocr';
-import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
+import {
+  extractTextFromPdf,
+  extractEmbeddedImageFromPdf,
+  extractStructuredTextFromPdf,
+  parseToUnicodeCMap,
+  extractPdfFontCMaps,
+  recursiveXyCut,
+  type PdfTextBlock,
+  type PdfToUnicodeCMap,
+  type XyCutOptions,
+} from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { svgToDxf } from './vector-cad';
@@ -22,12 +32,16 @@ import { svgToDxf } from './vector-cad';
 export {
   extractTextFromPdf,
   extractEmbeddedImageFromPdf,
+  extractStructuredTextFromPdf,
+  parseToUnicodeCMap,
+  extractPdfFontCMaps,
+  recursiveXyCut,
   extractTextFromOdt,
   extractTextFromDoc,
   renderDrawingMlToSvg,
   parseDrawingMlShapes,
 };
-export type { DrawingMlShape, TableBorder };
+export type { DrawingMlShape, TableBorder, PdfTextBlock, PdfToUnicodeCMap, XyCutOptions };
 
 /**
  * Strips LaTeX macro commands

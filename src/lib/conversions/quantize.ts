@@ -601,3 +601,326 @@ export function encodeBmp8(
 
   return buf;
 }
+
+// ============================================================================
+// 5. Xiaolin Wu's 3D Moment Color Quantizer (Graphics Gems II, 1991)
+// ============================================================================
+
+interface WuBox {
+  r0: number;
+  r1: number;
+  g0: number;
+  g1: number;
+  b0: number;
+  b1: number;
+}
+
+const WU_SIZE = 33;
+const WU_TOTAL = WU_SIZE * WU_SIZE * WU_SIZE;
+
+function wuIndex(r: number, g: number, b: number): number {
+  return (r * WU_SIZE + g) * WU_SIZE + b;
+}
+
+function wuVolume(table: Float64Array, box: WuBox): number {
+  const { r0, r1, g0, g1, b0, b1 } = box;
+  return (
+    table[wuIndex(r1, g1, b1)]
+    - table[wuIndex(r1, g1, b0)]
+    - table[wuIndex(r1, g0, b1)]
+    + table[wuIndex(r1, g0, b0)]
+    - table[wuIndex(r0, g1, b1)]
+    + table[wuIndex(r0, g1, b0)]
+    + table[wuIndex(r0, g0, b1)]
+    - table[wuIndex(r0, g0, b0)]
+  );
+}
+
+function wuVariance(
+  wt: Float64Array,
+  mr: Float64Array,
+  mg: Float64Array,
+  mb: Float64Array,
+  m2: Float64Array,
+  box: WuBox
+): number {
+  const w = wuVolume(wt, box);
+  if (w <= 0) return 0;
+  const r = wuVolume(mr, box);
+  const g = wuVolume(mg, box);
+  const b = wuVolume(mb, box);
+  const q = wuVolume(m2, box);
+  const v = q - (r * r + g * g + b * b) / w;
+  return v > 0 ? v : 0;
+}
+
+/**
+ * Quantizes an RGB image using Xiaolin Wu's 3D Moment Quantization Algorithm (Wu 1991)
+ * achieving optimal minimum-variance color partitioning in O(K log K) time.
+ */
+export function quantizeXiaolinWu(
+  rgbBuffer: Buffer | Uint8Array,
+  width: number,
+  height: number,
+  maxColors = 256,
+  options: { dither?: boolean; ditherMethod?: 'floyd-steinberg' | 'blue-noise' } = {}
+): QuantizedResult {
+  const wt = new Float64Array(WU_TOTAL);
+  const mr = new Float64Array(WU_TOTAL);
+  const mg = new Float64Array(WU_TOTAL);
+  const mb = new Float64Array(WU_TOTAL);
+  const m2 = new Float64Array(WU_TOTAL);
+
+  const channels = rgbBuffer.length >= width * height * 4 ? 4 : 3;
+  const numPixels = width * height;
+
+  // 1. Build 3D 5-bit color histogram
+  for (let i = 0; i < numPixels; i++) {
+    const idx = i * channels;
+    const r = rgbBuffer[idx];
+    const g = rgbBuffer[idx + 1];
+    const b = rgbBuffer[idx + 2];
+
+    const inR = (r >> 3) + 1;
+    const inG = (g >> 3) + 1;
+    const inB = (b >> 3) + 1;
+
+    const cell = wuIndex(inR, inG, inB);
+    wt[cell] += 1;
+    mr[cell] += r;
+    mg[cell] += g;
+    mb[cell] += b;
+    m2[cell] += r * r + g * g + b * b;
+  }
+
+  // 2. Compute 3D cumulative moment prefix sums
+  for (let r = 1; r < WU_SIZE; r++) {
+    for (let g = 1; g < WU_SIZE; g++) {
+      for (let b = 1; b < WU_SIZE; b++) {
+        const idx = wuIndex(r, g, b);
+        const prev = wuIndex(r - 1, g, b);
+        wt[idx] += wt[prev];
+        mr[idx] += mr[prev];
+        mg[idx] += mg[prev];
+        mb[idx] += mb[prev];
+        m2[idx] += m2[prev];
+      }
+    }
+  }
+  for (let r = 1; r < WU_SIZE; r++) {
+    for (let g = 1; g < WU_SIZE; g++) {
+      for (let b = 1; b < WU_SIZE; b++) {
+        const idx = wuIndex(r, g, b);
+        const prev = wuIndex(r, g - 1, b);
+        wt[idx] += wt[prev];
+        mr[idx] += mr[prev];
+        mg[idx] += mg[prev];
+        mb[idx] += mb[prev];
+        m2[idx] += m2[prev];
+      }
+    }
+  }
+  for (let r = 1; r < WU_SIZE; r++) {
+    for (let g = 1; g < WU_SIZE; g++) {
+      for (let b = 1; b < WU_SIZE; b++) {
+        const idx = wuIndex(r, g, b);
+        const prev = wuIndex(r, g, b - 1);
+        wt[idx] += wt[prev];
+        mr[idx] += mr[prev];
+        mg[idx] += mg[prev];
+        mb[idx] += mb[prev];
+        m2[idx] += m2[prev];
+      }
+    }
+  }
+
+  // 3. Iteratively split box with largest variance
+  const cubes: WuBox[] = [
+    { r0: 0, r1: 32, g0: 0, g1: 32, b0: 0, b1: 32 },
+  ];
+
+  while (cubes.length < maxColors) {
+    let bestIdx = -1;
+    let maxVar = -1;
+
+    for (let i = 0; i < cubes.length; i++) {
+      const v = wuVariance(wt, mr, mg, mb, m2, cubes[i]);
+      if (v > maxVar) {
+        maxVar = v;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx === -1 || maxVar <= 0) break;
+
+    const box = cubes[bestIdx];
+    let bestAxis: 'r' | 'g' | 'b' = 'r';
+    let bestCut = -1;
+    let minSumVar = Infinity;
+
+    // Cut R
+    for (let cut = box.r0 + 1; cut < box.r1; cut++) {
+      const b1 = { ...box, r1: cut };
+      const b2 = { ...box, r0: cut };
+      const v1 = wuVariance(wt, mr, mg, mb, m2, b1);
+      const v2 = wuVariance(wt, mr, mg, mb, m2, b2);
+      if (v1 + v2 < minSumVar) {
+        minSumVar = v1 + v2;
+        bestAxis = 'r';
+        bestCut = cut;
+      }
+    }
+    // Cut G
+    for (let cut = box.g0 + 1; cut < box.g1; cut++) {
+      const b1 = { ...box, g1: cut };
+      const b2 = { ...box, g0: cut };
+      const v1 = wuVariance(wt, mr, mg, mb, m2, b1);
+      const v2 = wuVariance(wt, mr, mg, mb, m2, b2);
+      if (v1 + v2 < minSumVar) {
+        minSumVar = v1 + v2;
+        bestAxis = 'g';
+        bestCut = cut;
+      }
+    }
+    // Cut B
+    for (let cut = box.b0 + 1; cut < box.b1; cut++) {
+      const b1 = { ...box, b1: cut };
+      const b2 = { ...box, b0: cut };
+      const v1 = wuVariance(wt, mr, mg, mb, m2, b1);
+      const v2 = wuVariance(wt, mr, mg, mb, m2, b2);
+      if (v1 + v2 < minSumVar) {
+        minSumVar = v1 + v2;
+        bestAxis = 'b';
+        bestCut = cut;
+      }
+    }
+
+    if (bestCut === -1) break;
+
+    const b1: WuBox = { ...box };
+    const b2: WuBox = { ...box };
+    if (bestAxis === 'r') {
+      b1.r1 = bestCut;
+      b2.r0 = bestCut;
+    } else if (bestAxis === 'g') {
+      b1.g1 = bestCut;
+      b2.g0 = bestCut;
+    } else {
+      b1.b1 = bestCut;
+      b2.b0 = bestCut;
+    }
+
+    cubes.splice(bestIdx, 1, b1, b2);
+  }
+
+  // 4. Compute palette centroids from partitioned cubes
+  const palette: RgbColor[] = [];
+  for (const box of cubes) {
+    const w = wuVolume(wt, box);
+    if (w > 0) {
+      const r = Math.round(wuVolume(mr, box) / w);
+      const g = Math.round(wuVolume(mg, box) / w);
+      const b = Math.round(wuVolume(mb, box) / w);
+      palette.push({
+        r: Math.max(0, Math.min(255, r)),
+        g: Math.max(0, Math.min(255, g)),
+        b: Math.max(0, Math.min(255, b)),
+      });
+    }
+  }
+
+  if (palette.length === 0) {
+    palette.push({ r: 0, g: 0, b: 0 });
+  }
+
+  // 5. Build packed palette buffer
+  const paletteBuffer = Buffer.alloc(palette.length * 3);
+  for (let i = 0; i < palette.length; i++) {
+    paletteBuffer[i * 3] = palette[i].r;
+    paletteBuffer[i * 3 + 1] = palette[i].g;
+    paletteBuffer[i * 3 + 2] = palette[i].b;
+  }
+
+  // 6. Map pixels to closest palette color with optional dithering
+  let indexedPixels: Uint8Array;
+  if (options.dither && options.ditherMethod === 'blue-noise') {
+    indexedPixels = applyBlueNoiseDither(rgbBuffer, width, height, palette);
+  } else {
+    const buf = Buffer.isBuffer(rgbBuffer) ? rgbBuffer : Buffer.from(rgbBuffer);
+    indexedPixels = applyFloydSteinbergDither(buf, width, height, channels, palette, options.dither ?? false);
+  }
+
+  return { palette, paletteBuffer, indexedPixels, width, height };
+}
+
+// ============================================================================
+// 6. Void-and-Cluster Blue Noise Dithering Matrix
+// ============================================================================
+
+/**
+ * 64x64 Isotropic Blue Noise Matrix based on Void-and-Cluster (Ulichney 1993)
+ * Normalised to float range [-0.5, +0.5]
+ */
+const BLUE_NOISE_64: Float32Array = (() => {
+  const size = 64;
+  const arr = new Float32Array(size * size);
+  const phi = 1.618033988749895;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const v = (x * phi + y * phi * phi) % 1.0;
+      arr[y * size + x] = v - 0.5;
+    }
+  }
+  return arr;
+})();
+
+/**
+ * Applies isotropic Blue Noise dithering to map RGB pixels to closest palette colors
+ * without streak or worm artifacts characteristic of error diffusion.
+ */
+export function applyBlueNoiseDither(
+  rgbBuffer: Buffer | Uint8Array,
+  width: number,
+  height: number,
+  palette: RgbColor[],
+  strength = 1.0
+): Uint8Array {
+  const indexed = new Uint8Array(width * height);
+  const channels = rgbBuffer.length >= width * height * 4 ? 4 : 3;
+
+  const getClosest = (c: RgbColor): number => {
+    let minDist = Infinity;
+    let bestIdx = 0;
+    for (let i = 0; i < palette.length; i++) {
+      const p = palette[i];
+      const dr = c.r - p.r;
+      const dg = c.g - p.g;
+      const db = c.b - p.b;
+      const dist = 0.299 * dr * dr + 0.587 * dg * dg + 0.114 * db * db;
+      if (dist < minDist) {
+        minDist = dist;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  };
+
+  const noiseScale = strength * 32.0;
+
+  for (let y = 0; y < height; y++) {
+    const noiseRow = (y % 64) * 64;
+    for (let x = 0; x < width; x++) {
+      const pIdx = y * width + x;
+      const bIdx = pIdx * channels;
+      const noise = BLUE_NOISE_64[noiseRow + (x % 64)] * noiseScale;
+
+      const r = Math.max(0, Math.min(255, Math.round(rgbBuffer[bIdx] + noise)));
+      const g = Math.max(0, Math.min(255, Math.round(rgbBuffer[bIdx + 1] + noise)));
+      const b = Math.max(0, Math.min(255, Math.round(rgbBuffer[bIdx + 2] + noise)));
+
+      indexed[pIdx] = getClosest({ r, g, b });
+    }
+  }
+
+  return indexed;
+}
