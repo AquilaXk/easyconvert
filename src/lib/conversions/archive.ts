@@ -60,17 +60,47 @@ export async function createZipArchive(
   };
 }
 
+export const ARCHIVE_SECURITY_LIMITS = {
+  MAX_FILES: 1000,
+  MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB limit
+  MAX_RATIO: 10, // 10:1 compression ratio
+};
+
 export async function extractZipArchive(
   zipBuffer: Buffer
 ): Promise<{ filename: string; buffer: Buffer }[]> {
   const zip = await JSZip.loadAsync(zipBuffer);
-  const files: { filename: string; buffer: Buffer }[] = [];
+  const entries = Object.entries(zip.files).filter(([, f]) => !f.dir);
 
-  for (const [filename, file] of Object.entries(zip.files)) {
-    if (!file.dir) {
-      const buffer = await file.async('nodebuffer');
-      files.push({ filename, buffer });
+  if (entries.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+    throw new Error(
+      `Archive bomb detected: file count (${entries.length}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
+    );
+  }
+
+  const files: { filename: string; buffer: Buffer }[] = [];
+  let totalUncompressedSize = 0;
+
+  for (const [filename, file] of entries) {
+    const buffer = await file.async('nodebuffer');
+    totalUncompressedSize += buffer.length;
+
+    if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      throw new Error(
+        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+      );
     }
+
+    if (
+      zipBuffer.length > 0 &&
+      totalUncompressedSize / zipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
+    ) {
+      throw new Error(
+        `Archive bomb detected: compression ratio (${(totalUncompressedSize / zipBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+      );
+    }
+
+    files.push({ filename, buffer });
   }
 
   return files;
@@ -137,8 +167,15 @@ export function createTarArchive(
 export function extractTarArchive(tarBuffer: Buffer): { filename: string; buffer: Buffer }[] {
   const files: { filename: string; buffer: Buffer }[] = [];
   let offset = 0;
+  let totalUncompressedSize = 0;
 
   while (offset + 512 <= tarBuffer.length) {
+    if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+      throw new Error(
+        `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
+      );
+    }
+
     const header = tarBuffer.subarray(offset, offset + 512);
     offset += 512;
 
@@ -150,6 +187,13 @@ export function extractTarArchive(tarBuffer: Buffer): { filename: string; buffer
 
     const sizeStr = header.toString('ascii', 124, 135).replace(/\0.*$/, '').trim();
     const size = parseInt(sizeStr, 8) || 0;
+
+    totalUncompressedSize += size;
+    if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      throw new Error(
+        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+      );
+    }
 
     const fileBuf = tarBuffer.subarray(offset, offset + size);
     files.push({ filename: rawName, buffer: Buffer.from(fileBuf) });
@@ -456,47 +500,85 @@ export async function convertArchive(
   if (src === 'zip') {
     try {
       files = await extractZipArchive(inputBuffer);
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+        throw err;
+      }
       files = [];
     }
   } else if (src === 'tar') {
     try {
       files = extractTarArchive(inputBuffer);
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+        throw err;
+      }
       files = [];
     }
   } else if (src === 'gz' || src === 'tgz' || src === 'tar.gz') {
     try {
       const uncompressed = zlib.gunzipSync(inputBuffer);
+      if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        throw new Error(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        );
+      }
+      if (inputBuffer.length > 0 && uncompressed.length / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+        throw new Error(
+          `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+        );
+      }
       if (src === 'tgz' || src === 'tar.gz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
         files = extractTarArchive(uncompressed);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+        throw err;
+      }
       files = [];
     }
   } else if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || src === 'bz2' || src === 'bz') {
     try {
       const uncompressed = decompressBzip2(inputBuffer);
+      if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        throw new Error(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        );
+      }
+      if (inputBuffer.length > 0 && uncompressed.length / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+        throw new Error(
+          `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+        );
+      }
       if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
         files = extractTarArchive(uncompressed);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+        throw err;
+      }
       files = [];
     }
   } else if (src === 'rar') {
     try {
       files = extractRarArchive(inputBuffer);
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+        throw err;
+      }
       files = [];
     }
   } else if (src === '7z' || src === 'tar.7z') {
     try {
       files = extract7zArchive(inputBuffer);
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+        throw err;
+      }
       files = [];
     }
   }

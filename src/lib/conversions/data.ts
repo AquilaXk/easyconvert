@@ -441,29 +441,136 @@ function jsonToXml(obj: unknown, rootName = 'root'): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n${toXml(obj, rootName)}`;
 }
 
-function simpleXmlToJson(xml: string): Record<string, unknown> {
-  const cleanXml = xml.replace(/<\?xml.*?\?>/gi, '').trim();
-  const result: Record<string, unknown> = {};
-  const tagRegex = /<([a-zA-Z0-9_-]+)[^>]*>(.*?)<\/\1>/gs;
-  let match;
-  while ((match = tagRegex.exec(cleanXml)) !== null) {
-    const [, tag, content] = match;
-    const val =
-      content.includes('<') && /<[a-zA-Z0-9_-]+/.test(content)
-        ? simpleXmlToJson(content)
-        : content.trim();
+export function simpleXmlToJson(xml: string): Record<string, unknown> {
+  const cleanXml = xml
+    .replace(/<\?xml.*?\?>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .trim();
+  if (!cleanXml) return {};
 
-    if (result[tag] !== undefined) {
-      if (Array.isArray(result[tag])) {
-        (result[tag] as unknown[]).push(val);
-      } else {
-        result[tag] = [result[tag], val];
+  type ElementNode = {
+    tag: string;
+    attributes: Record<string, string>;
+    children: ElementNode[];
+    text: string;
+  };
+
+  const root: ElementNode = { tag: '__root__', attributes: {}, children: [], text: '' };
+  const stack: ElementNode[] = [root];
+
+  let i = 0;
+  const len = cleanXml.length;
+
+  while (i < len) {
+    if (cleanXml[i] === '<') {
+      if (cleanXml.slice(i, i + 9) === '<![CDATA[') {
+        const endCdata = cleanXml.indexOf(']]>', i + 9);
+        const cdataContent =
+          endCdata === -1 ? cleanXml.slice(i + 9) : cleanXml.slice(i + 9, endCdata);
+        if (stack.length > 0) {
+          stack[stack.length - 1].text += cdataContent;
+        }
+        i = endCdata === -1 ? len : endCdata + 3;
+        continue;
       }
+      if (cleanXml[i + 1] === '/') {
+        // Closing tag: </tagName>
+        const endClose = cleanXml.indexOf('>', i + 2);
+        if (endClose === -1) break;
+        const closeTagName = cleanXml.slice(i + 2, endClose).trim().split(/\s+/)[0];
+        // Pop matching tag from stack
+        for (let s = stack.length - 1; s > 0; s--) {
+          if (stack[s].tag === closeTagName) {
+            stack.length = s;
+            break;
+          }
+        }
+        i = endClose + 1;
+        continue;
+      }
+      // Opening or self-closing tag: <tagName ... /> or <tagName ...>
+      const endOpen = cleanXml.indexOf('>', i + 1);
+      if (endOpen === -1) break;
+      const tagContent = cleanXml.slice(i + 1, endOpen).trim();
+      const isSelfClosing = tagContent.endsWith('/');
+      const cleanTagContent = isSelfClosing ? tagContent.slice(0, -1).trim() : tagContent;
+
+      const spaceIdx = cleanTagContent.search(/\s/);
+      const tagName = spaceIdx === -1 ? cleanTagContent : cleanTagContent.slice(0, spaceIdx);
+
+      if (tagName && /^[a-zA-Z0-9_:-]+$/.test(tagName)) {
+        const node: ElementNode = { tag: tagName, attributes: {}, children: [], text: '' };
+        if (spaceIdx !== -1) {
+          const attrStr = cleanTagContent.slice(spaceIdx + 1);
+          const attrRegex = /([a-zA-Z0-9_:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+          let attrMatch;
+          while ((attrMatch = attrRegex.exec(attrStr)) !== null) {
+            node.attributes[attrMatch[1]] = attrMatch[2] ?? attrMatch[3] ?? '';
+          }
+        }
+        stack[stack.length - 1].children.push(node);
+        if (!isSelfClosing) {
+          stack.push(node);
+        }
+      }
+      i = endOpen + 1;
     } else {
-      result[tag] = val;
+      // Text node
+      const nextOpen = cleanXml.indexOf('<', i);
+      const textChunk = nextOpen === -1 ? cleanXml.slice(i) : cleanXml.slice(i, nextOpen);
+      stack[stack.length - 1].text += textChunk;
+      i = nextOpen === -1 ? len : nextOpen;
     }
   }
-  return Object.keys(result).length > 0 ? result : { text: cleanXml.replace(/<[^>]+>/g, '').trim() };
+
+  function nodeToValue(node: ElementNode): unknown {
+    if (node.children.length === 0) {
+      const trimmed = node.text.trim();
+      if (Object.keys(node.attributes).length > 0) {
+        return {
+          ...node.attributes,
+          ...(trimmed ? { _text: trimmed } : {}),
+        };
+      }
+      return trimmed;
+    }
+    const result: Record<string, unknown> = { ...node.attributes };
+    for (const child of node.children) {
+      const childVal = nodeToValue(child);
+      if (result[child.tag] !== undefined) {
+        if (Array.isArray(result[child.tag])) {
+          (result[child.tag] as unknown[]).push(childVal);
+        } else {
+          result[child.tag] = [result[child.tag], childVal];
+        }
+      } else {
+        result[child.tag] = childVal;
+      }
+    }
+    const trimmed = node.text.trim();
+    if (trimmed) {
+      result._text = trimmed;
+    }
+    return result;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const child of root.children) {
+    const val = nodeToValue(child);
+    if (output[child.tag] !== undefined) {
+      if (Array.isArray(output[child.tag])) {
+        (output[child.tag] as unknown[]).push(val);
+      } else {
+        output[child.tag] = [output[child.tag], val];
+      }
+    } else {
+      output[child.tag] = val;
+    }
+  }
+
+  return Object.keys(output).length > 0
+    ? output
+    : { text: cleanXml.replace(/<[^>]+>/g, '').trim() };
 }
 
 /**

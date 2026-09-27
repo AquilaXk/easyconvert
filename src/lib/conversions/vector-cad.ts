@@ -434,18 +434,14 @@ async function convertDwgSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  // Extract ASCII DXF streams if present, or synthesize standard CAD structure
+  // Extract ASCII DXF streams if present, fail closed if binary DWG decoder is missing
   const raw = inputBuffer.toString('utf-8');
-  let dxfContent = '';
 
-  if (raw.includes('SECTION') && raw.includes('ENTITIES')) {
-    dxfContent = raw;
-  } else {
-    // Generate valid DXF equivalent from binary DWG payload
-    dxfContent = generateFallbackDxf(baseName);
+  if (!raw.includes('SECTION') || !raw.includes('ENTITIES')) {
+    throw new Error('Unsupported CAD format: DWG binary decoder unavailable');
   }
 
-  const dxfBuf = Buffer.from(dxfContent, 'utf-8');
+  const dxfBuf = Buffer.from(raw, 'utf-8');
   if (tgt === 'dxf') {
     return {
       buffer: dxfBuf,
@@ -1376,14 +1372,8 @@ ${dSection}${pSection}S      1G      2D${String(dCount).padStart(7, ' ')}P${Stri
 `;
 }
 
-function dxfToDwg(dxfString: string): Buffer {
-  const header = Buffer.from('AC1015DWG_EASYCONVERT_HEADER', 'ascii');
-  const payload = Buffer.from(dxfString, 'utf-8');
-  return Buffer.concat([header, payload]);
-}
-
-function generateFallbackDxf(baseName: string): string {
-  return `  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1015\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n  0\nLINE\n  8\n0\n 10\n0.0\n 20\n0.0\n 11\n100.0\n 21\n100.0\n  0\nENDSEC\n  0\nEOF\n`;
+function dxfToDwg(_dxfString: string): Buffer {
+  throw new Error('Unsupported CAD format: DWG binary encoder unavailable');
 }
 
 function escapeXml(str: string): string {

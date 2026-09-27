@@ -237,16 +237,7 @@ export async function convertOffice(
 
   // 22. Target is Apple iWork (pages, numbers, key)
   if (['pages', 'numbers', 'key'].includes(tgt)) {
-    const zip = new JSZip();
-    zip.file('mimetype', `application/x-iwork-${tgt}-sff${tgt}`);
-    zip.file('Index/Document.iwa', inputBuffer);
-    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-    return {
-      buffer,
-      mimeType: `application/x-iwork-${tgt}-sff${tgt}`,
-      filename: `${baseName}.${tgt}`,
-      size: buffer.length,
-    };
+    throw new Error(`Unsupported office conversion: target iWork format '${tgt}' is not supported`);
   }
 
   // 23. Target is eBook (azw3, mobi, lrf, oeb, pdb)
@@ -556,6 +547,63 @@ export type DocxBlockElement =
   | { type: 'paragraph'; paragraph: DocxParagraph }
   | { type: 'table'; table: DocxTable };
 
+function safeExtractXmlTags(xml: string, tagName: string): string[] {
+  const results: string[] = [];
+  const openTag = `<${tagName}`;
+  const closeTag = `</${tagName}>`;
+  let pos = 0;
+  while (pos < xml.length) {
+    const startIdx = xml.indexOf(openTag, pos);
+    if (startIdx === -1) break;
+    const charAfter = xml[startIdx + openTag.length];
+    if (
+      charAfter !== '>' &&
+      charAfter !== ' ' &&
+      charAfter !== '/' &&
+      charAfter !== '\t' &&
+      charAfter !== '\n' &&
+      charAfter !== '\r'
+    ) {
+      pos = startIdx + openTag.length;
+      continue;
+    }
+    const endIdx = xml.indexOf(closeTag, startIdx);
+    if (endIdx === -1) break;
+    results.push(xml.slice(startIdx, endIdx + closeTag.length));
+    pos = endIdx + closeTag.length;
+  }
+  return results;
+}
+
+function safeExtractDocxBlocks(bodyXml: string): string[] {
+  const blocks: string[] = [];
+  let pos = 0;
+  while (pos < bodyXml.length) {
+    const nextTbl = bodyXml.indexOf('<w:tbl', pos);
+    const nextP = bodyXml.indexOf('<w:p', pos);
+
+    let startIdx = -1;
+    let tag = '';
+    if (nextTbl !== -1 && (nextP === -1 || nextTbl < nextP)) {
+      startIdx = nextTbl;
+      tag = 'w:tbl';
+    } else if (nextP !== -1) {
+      startIdx = nextP;
+      tag = 'w:p';
+    } else {
+      break;
+    }
+
+    const closeTag = `</${tag}>`;
+    const endIdx = bodyXml.indexOf(closeTag, startIdx);
+    if (endIdx === -1) break;
+
+    blocks.push(bodyXml.slice(startIdx, endIdx + closeTag.length));
+    pos = endIdx + closeTag.length;
+  }
+  return blocks;
+}
+
 function parseDocxXml(xml: string): {
   paragraphs: DocxParagraph[];
   tables: DocxTable[];
@@ -565,44 +613,39 @@ function parseDocxXml(xml: string): {
   const tables: DocxTable[] = [];
   const elements: DocxBlockElement[] = [];
 
-  const bodyMatch = xml.match(/<w:body[\s\S]*?<\/w:body>/);
-  const bodyXml = bodyMatch ? bodyMatch[0] : xml;
+  const bodyOpen = xml.indexOf('<w:body');
+  const bodyClose = xml.indexOf('</w:body>');
+  const bodyXml =
+    bodyOpen !== -1 && bodyClose !== -1 && bodyClose > bodyOpen
+      ? xml.slice(bodyOpen, bodyClose + 9)
+      : xml;
 
-  // Match top-level blocks: <w:tbl> is matched as a single unit, avoiding duplicate extraction of inner paragraphs
-  const blockRegex = /(<w:tbl[\s\S]*?<\/w:tbl>|<w:p[\s\S]*?<\/w:p>)/g;
-  let match: RegExpExecArray | null;
+  const blocks = safeExtractDocxBlocks(bodyXml);
 
-  while ((match = blockRegex.exec(bodyXml)) !== null) {
-    const chunk = match[0];
-
+  for (const chunk of blocks) {
     // If chunk is a Table (<w:tbl>)
     if (chunk.startsWith('<w:tbl')) {
       const rows: string[][] = [];
       const structuredRows: DocxTableCell[][] = [];
 
-      const trRegex = /<w:tr[\s\S]*?<\/w:tr>/g;
-      let trMatch: RegExpExecArray | null;
+      const trList = safeExtractXmlTags(chunk, 'w:tr');
 
-      while ((trMatch = trRegex.exec(chunk)) !== null) {
-        const trXml = trMatch[0];
+      for (const trXml of trList) {
         const rowCells: string[] = [];
         const sCells: DocxTableCell[] = [];
         const isHeader = /<w:tblHeader(\/|>)/.test(trXml) || rows.length === 0;
 
-        const tcRegex = /<w:tc[\s\S]*?<\/w:tc>/g;
-        let tcMatch: RegExpExecArray | null;
+        const tcList = safeExtractXmlTags(trXml, 'w:tc');
 
-        while ((tcMatch = tcRegex.exec(trXml)) !== null) {
-          const tcXml = tcMatch[0];
-
+        for (const tcXml of tcList) {
           const shdMatch = tcXml.match(/<w:shd[^>]*w:fill="([A-Fa-f0-9]{6})"/);
           const shading = shdMatch ? shdMatch[1] : undefined;
 
           const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
           const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
 
-          const tMatches = tcXml.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
-          const cellText = tMatches
+          const tTags = safeExtractXmlTags(tcXml, 'w:t');
+          const cellText = tTags
             .map((m) => m.replace(/<[^>]+>/g, ''))
             .join('')
             .trim();
@@ -1943,7 +1986,141 @@ async function convertFb2Source(
 }
 
 /**
- * MOBI / AZW3 Parser & Converter
+ * Generates genuine Palm Database format with optional MOBI/AZW3 header
+ */
+function generatePalmDoc(
+  text: string,
+  title: string,
+  type: 'pdb' | 'mobi' | 'azw3' = 'pdb'
+): Buffer {
+  const isMobi = type === 'mobi' || type === 'azw3';
+  const textBuffer = Buffer.from(text, 'utf-8');
+  const CHUNK_SIZE = 4096;
+  const numTextRecords = Math.max(1, Math.ceil(textBuffer.length / CHUNK_SIZE));
+  const numRecords = isMobi ? 1 + numTextRecords + 1 : 1 + numTextRecords;
+
+  // 1. Palm Database Header (78 bytes)
+  const header = Buffer.alloc(78);
+  const cleanTitle = title.replace(/[^\x20-\x7E]/g, '_').slice(0, 31);
+  header.write(cleanTitle, 0, 31, 'ascii');
+  header.writeUInt16BE(0, 32); // attributes
+  header.writeUInt16BE(0, 34); // version
+  const palmEpoch = Math.floor(Date.now() / 1000) + 2082844800;
+  header.writeUInt32BE(palmEpoch, 36); // creation time
+  header.writeUInt32BE(palmEpoch, 40); // modification time
+  header.write(isMobi ? 'BOOK' : 'TEXt', 60, 4, 'ascii');
+  header.write(isMobi ? 'MOBI' : 'REAd', 64, 4, 'ascii');
+  header.writeUInt16BE(numRecords, 76);
+
+  // 2. Prepare Records
+  const records: Buffer[] = [];
+
+  // Record 0: PalmDOC header (16 bytes)
+  const palmDocHeader = Buffer.alloc(16);
+  palmDocHeader.writeUInt16BE(1, 0); // 1 = uncompressed
+  palmDocHeader.writeUInt16BE(0, 2);
+  palmDocHeader.writeUInt32BE(textBuffer.length, 4);
+  palmDocHeader.writeUInt16BE(numTextRecords, 8);
+  palmDocHeader.writeUInt16BE(CHUNK_SIZE, 10);
+  palmDocHeader.writeUInt32BE(0, 12);
+
+  if (isMobi) {
+    const mobiHeader = Buffer.alloc(232);
+    mobiHeader.write('MOBI', 0, 4, 'ascii');
+    mobiHeader.writeUInt32BE(232, 4);
+    mobiHeader.writeUInt32BE(2, 8); // mobi book
+    mobiHeader.writeUInt32BE(65001, 12); // UTF-8
+    mobiHeader.writeUInt32BE(1234567, 16);
+    mobiHeader.writeUInt32BE(type === 'azw3' ? 8 : 6, 20);
+    mobiHeader.writeUInt32BE(0xffffffff, 24);
+    mobiHeader.writeUInt32BE(0xffffffff, 28);
+    mobiHeader.writeUInt32BE(0xffffffff, 32);
+    mobiHeader.writeUInt32BE(0xffffffff, 36);
+    mobiHeader.writeUInt32BE(0xffffffff, 40);
+    mobiHeader.writeUInt32BE(0, 80);
+    mobiHeader.writeUInt32BE(cleanTitle.length, 84);
+    mobiHeader.writeUInt32BE(16 + 232, 88);
+
+    const titleBuffer = Buffer.from(cleanTitle, 'utf-8');
+    records.push(Buffer.concat([palmDocHeader, mobiHeader, titleBuffer]));
+  } else {
+    records.push(palmDocHeader);
+  }
+
+  for (let i = 0; i < numTextRecords; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, textBuffer.length);
+    records.push(textBuffer.subarray(start, end));
+  }
+
+  if (isMobi) {
+    records.push(Buffer.from('FLIS\x00\x00\x00\x08\x00\x41\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff', 'binary'));
+  }
+
+  // 3. Record info list
+  const recordListSize = numRecords * 8 + 2;
+  const recordList = Buffer.alloc(recordListSize);
+
+  let currentOffset = 78 + recordListSize;
+  for (let i = 0; i < numRecords; i++) {
+    recordList.writeUInt32BE(currentOffset, i * 8);
+    recordList.writeUInt8(0, i * 8 + 4);
+    recordList.writeUInt8((i >> 16) & 0xff, i * 8 + 5);
+    recordList.writeUInt8((i >> 8) & 0xff, i * 8 + 6);
+    recordList.writeUInt8(i & 0xff, i * 8 + 7);
+    currentOffset += records[i].length;
+  }
+  recordList.writeUInt16BE(0, numRecords * 8);
+
+  return Buffer.concat([header, recordList, ...records]);
+}
+
+/**
+ * Generates Open eBook Publication (OEB 1.0) XML package
+ */
+function generateOebPackage(text: string, title: string): Buffer {
+  const oebXml = `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE package PUBLIC "+//ISBN 0-9673008-1-9//DTD OEB 1.0.1 Package//EN" "http://openebook.org/dtds/oeb-1.0.1/oebpkg101.dtd">
+<package unique-identifier="uid">
+  <metadata>
+    <dc-metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <dc:Title>${escapeXml(title)}</dc:Title>
+      <dc:Language>en</dc:Language>
+      <dc:Identifier id="uid">urn:uuid:easyconvert-${Date.now()}</dc:Identifier>
+    </dc-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="text/html"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+  <guide/>
+  <text>
+<![CDATA[
+${text}
+]]>
+  </text>
+</package>`;
+  return Buffer.from(oebXml, 'utf-8');
+}
+
+/**
+ * Generates Sony BBeB (LRF) document binary
+ */
+function generateLrf(text: string, _title: string): Buffer {
+  const header = Buffer.alloc(28);
+  header.set([0x00, 0x00, 0x4c, 0x30, 0x30, 0x31, 0x00, 0x00], 0);
+  header.writeUInt16LE(0x0200, 8); // version
+  header.writeUInt32LE(28, 10); // root object offset
+  header.writeUInt32LE(1, 14); // object count
+  const textBuf = Buffer.from(text, 'utf-8');
+  header.writeUInt32LE(textBuf.length, 18);
+  return Buffer.concat([header, textBuf]);
+}
+
+/**
+ * MOBI / AZW3 / E-Book Parser & Converter
  */
 async function convertMobiSource(
   inputBuffer: Buffer,
@@ -1991,6 +2168,31 @@ async function convertMobiSource(
 
     const buffer = await p;
     return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
+  }
+
+  if (tgt === 'pdb') {
+    const buffer = generatePalmDoc(fullText, baseName, 'pdb');
+    return { buffer, mimeType: 'application/vnd.palm', filename: `${baseName}.pdb`, size: buffer.length };
+  }
+
+  if (tgt === 'mobi') {
+    const buffer = generatePalmDoc(fullText, baseName, 'mobi');
+    return { buffer, mimeType: 'application/x-mobipocket-ebook', filename: `${baseName}.mobi`, size: buffer.length };
+  }
+
+  if (tgt === 'azw3') {
+    const buffer = generatePalmDoc(fullText, baseName, 'azw3');
+    return { buffer, mimeType: 'application/vnd.amazon.mobi8-ebook', filename: `${baseName}.azw3`, size: buffer.length };
+  }
+
+  if (tgt === 'oeb') {
+    const buffer = generateOebPackage(fullText, baseName);
+    return { buffer, mimeType: 'application/x-oeb1-package+xml', filename: `${baseName}.oeb`, size: buffer.length };
+  }
+
+  if (tgt === 'lrf') {
+    const buffer = generateLrf(fullText, baseName);
+    return { buffer, mimeType: 'application/x-sony-bbeb', filename: `${baseName}.lrf`, size: buffer.length };
   }
 
   throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
@@ -2402,6 +2604,20 @@ export async function generatePptxFromText(
 }
 
 /**
+ * Bijective Base-26 Excel column naming algorithm (0 -> 'A', 25 -> 'Z', 26 -> 'AA', etc.)
+ */
+export function getExcelColumnName(colIndex: number): string {
+  let colName = '';
+  let temp = colIndex + 1;
+  while (temp > 0) {
+    const mod = (temp - 1) % 26;
+    colName = String.fromCharCode(65 + mod) + colName;
+    temp = Math.floor((temp - 1) / 26);
+  }
+  return colName;
+}
+
+/**
  * Generates OpenXML XLSX Zip Archive from CSV / TSV / JSON
  */
 export async function generateXlsxFromData(
@@ -2428,12 +2644,19 @@ export async function generateXlsxFromData(
       rows = [['Data'], [rawText]];
     }
   } else {
-    // Delimited (CSV or TSV)
+    // Delimited (CSV or TSV) using Papa.parse for RFC 4180 compliance
     const delim = sourceType === 'tsv' ? '\t' : options.delimiter || ',';
-    rows = rawText
-      .split(/\r?\n/)
-      .filter((l) => l.trim().length > 0)
-      .map((line) => line.split(delim));
+    const parsedCsv = Papa.parse<string[]>(rawText, {
+      delimiter: delim,
+      skipEmptyLines: true,
+    });
+    rows =
+      parsedCsv.data && parsedCsv.data.length > 0
+        ? parsedCsv.data
+        : rawText
+            .split(/\r?\n/)
+            .filter((l) => l.trim().length > 0)
+            .map((line) => line.split(delim));
   }
 
   // Build sheet1.xml row data
@@ -2441,7 +2664,7 @@ export async function generateXlsxFromData(
   rows.forEach((row, rIdx) => {
     sheetRowsXml += `<row r="${rIdx + 1}">`;
     row.forEach((cell, cIdx) => {
-      const colLetter = String.fromCharCode(65 + (cIdx % 26));
+      const colLetter = getExcelColumnName(cIdx);
       sheetRowsXml += `<c r="${colLetter}${rIdx + 1}" t="inlineStr"><is><t>${escapeXml(
         cell
       )}</t></is></c>`;

@@ -116,14 +116,13 @@ describe('Media Conversion Engine (Audio & Video)', () => {
     expect(result.buffer[3]).toBe(0xa3);
   });
 
-  it('converts MP4 video container to MP3 audio', async () => {
+  it('fails closed when converting MP4 video container to MP3 without decoder', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
     const mp4Result = await convertFile(wav, 'wav', 'mp4', {}, 'movie.wav');
 
-    const mp3Result = await convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4');
-    expect(mp3Result.mimeType).toBe('audio/mpeg');
-    expect(mp3Result.filename).toBe('movie.mp3');
-    expect(mp3Result.buffer.toString('ascii', 0, 3)).toBe('ID3');
+    await expect(convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4')).rejects.toThrow(
+      'Unsupported audio format: decoder unavailable'
+    );
   });
 
   it('applies volume and sample rate parameters correctly', async () => {
