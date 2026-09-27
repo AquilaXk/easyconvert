@@ -170,7 +170,7 @@ export async function convertWithNativeFfmpeg(
       let channelCount = '2';
       if (options.audioChannels === 'mono') {
         channelCount = '1';
-      } else if (options.audioChannels === 'surround') {
+      } else if (options.audioChannels === '5.1') {
         channelCount = '6';
       }
       args.push('-ac', channelCount);
