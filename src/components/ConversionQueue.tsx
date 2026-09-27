@@ -28,6 +28,7 @@ import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
+import AdBanner from './AdBanner';
 
 interface ConversionQueueProps {
   items: ConversionQueueItem[];
@@ -274,6 +275,9 @@ export default function ConversionQueue({
           })}
         </div>
       </div>
+
+      {/* Post-Conversion Ad Unit */}
+      <AdBanner slot="post-conversion" className="mt-8 mb-4" />
 
       {/* Fixed Sticky Footer Bar matching live_cc_queue.png & live_cc_queue_with_format.png */}
       <div className="fixed bottom-0 inset-x-0 h-16 bg-[#1f2226] border-t border-neutral-800 z-40 px-6 flex items-center justify-between">

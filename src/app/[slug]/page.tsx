@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ConversionQueue from '@/components/ConversionQueue';
+import AdBanner from '@/components/AdBanner';
+import FaqSection from '@/components/FaqSection';
 import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
@@ -336,6 +338,9 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
     <div className="flex flex-col min-h-screen bg-[#141414] text-white">
       <Header />
 
+      {/* Top Leaderboard Ad Unit */}
+      <AdBanner slot="top-leaderboard" className="pt-2 pb-0" />
+
       <main className="flex-1">
         {/* Hero with Preselected Formats */}
         <Hero
@@ -374,21 +379,25 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
 
         {/* 1:1 Format Information Card below Hero */}
         {queue.length === 0 && (
-          <section className="max-w-5xl mx-auto px-4 sm:px-6 -mt-16 mb-16 relative z-20">
-            <div className="bg-[#1e1e1e] border border-neutral-800 rounded-2xl p-6 sm:p-8 flex items-start gap-5 shadow-2xl">
-              <div className="p-3 rounded-xl bg-[#5C6BC0]/20 text-[#5C6BC0] border border-[#5C6BC0]/30 shrink-0">
-                <FileText className="w-7 h-7" />
+          <>
+            <AdBanner slot="mid-content" />
+
+            <section className="max-w-5xl mx-auto px-4 sm:px-6 mb-16 relative z-20">
+              <div className="bg-[#1e1e1e] border border-neutral-800 rounded-2xl p-6 sm:p-8 flex items-start gap-5 shadow-2xl">
+                <div className="p-3 rounded-xl bg-[#5C6BC0]/20 text-[#5C6BC0] border border-[#5C6BC0]/30 shrink-0">
+                  <FileText className="w-7 h-7" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                    {formatMeta.title}
+                  </h3>
+                  <p className="text-xs sm:text-sm text-neutral-400 leading-relaxed">
+                    {formatMeta.desc}
+                  </p>
+                </div>
               </div>
-              <div className="space-y-2">
-                <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
-                  {formatMeta.title}
-                </h3>
-                <p className="text-xs sm:text-sm text-neutral-400 leading-relaxed">
-                  {formatMeta.desc}
-                </p>
-              </div>
-            </div>
-          </section>
+            </section>
+          </>
         )}
 
         {/* Conversion Type Grids */}
@@ -453,6 +462,12 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                 </div>
               </div>
             )}
+
+            {/* In-feed Ad Banner */}
+            <AdBanner slot="in-feed" />
+
+            {/* FAQ Section */}
+            <FaqSection />
           </section>
         )}
       </main>
