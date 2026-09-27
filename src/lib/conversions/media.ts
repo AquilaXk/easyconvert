@@ -526,38 +526,53 @@ function encodeOpusContainer(
   chunks.push(page2);
 
   // 3. OggS Page 3+: RFC 7845 Multi-page Opus Audio Data packets
-  // Standard Opus frame is 20ms (960 samples per channel at 48kHz).
-  // Package audio in discrete pages, each page <= 255 segments (e.g. 960 samples/ch)
-  const frameSamplesPerChannel = 960;
+  const audioPages = packageAudioPages(samples, channels, 960, 48000, 3, serial);
+  chunks.push(...audioPages);
+
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Common helper to packetize raw audio samples into discrete RFC 3533 Ogg audio pages.
+ */
+function packageAudioPages(
+  samples: Int16Array,
+  channels: number,
+  frameSamplesPerChannel: number,
+  sampleRate: number,
+  startSeq: number,
+  serial: number
+): Buffer[] {
+  const pages: Buffer[] = [];
   const frameSamplesTotal = frameSamplesPerChannel * channels;
-  const totalSamples = Math.min(samples.length, 48000 * channels * 60); // up to 60s
+  const totalSamples = Math.min(samples.length, sampleRate * channels * 60);
   let sampleOffset = 0;
-  let seq = 3;
+  let seq = startSeq;
   let cumulativeGranule = 0;
 
   if (totalSamples === 0) {
-    const emptyPayload = Buffer.alloc(0);
-    chunks.push(createOggPage(emptyPayload, 0x04, 0, seq, serial));
-  } else {
-    while (sampleOffset < totalSamples) {
-      const remaining = totalSamples - sampleOffset;
-      const curBlockSamples = Math.min(frameSamplesTotal, remaining);
-      const isLast = sampleOffset + curBlockSamples >= totalSamples;
-      const flag = isLast ? 0x04 : 0x00;
-
-      cumulativeGranule += Math.floor(curBlockSamples / channels);
-
-      const packetBuf = Buffer.alloc(curBlockSamples * 2);
-      for (let i = 0; i < curBlockSamples; i++) {
-        packetBuf.writeInt16LE(samples[(sampleOffset + i) % samples.length], i * 2);
-      }
-
-      chunks.push(createOggPage(packetBuf, flag, cumulativeGranule, seq++, serial));
-      sampleOffset += curBlockSamples;
-    }
+    pages.push(createOggPage(Buffer.alloc(0), 0x04, 0, seq, serial));
+    return pages;
   }
 
-  return Buffer.concat(chunks);
+  while (sampleOffset < totalSamples) {
+    const remaining = totalSamples - sampleOffset;
+    const curBlockSamples = Math.min(frameSamplesTotal, remaining);
+    const isLast = sampleOffset + curBlockSamples >= totalSamples;
+    const flag = isLast ? 0x04 : 0x00;
+
+    cumulativeGranule += Math.floor(curBlockSamples / channels);
+
+    const packetBuf = Buffer.alloc(curBlockSamples * 2);
+    for (let i = 0; i < curBlockSamples; i++) {
+      packetBuf.writeInt16LE(samples[(sampleOffset + i) % samples.length], i * 2);
+    }
+
+    pages.push(createOggPage(packetBuf, flag, cumulativeGranule, seq++, serial));
+    sampleOffset += curBlockSamples;
+  }
+
+  return pages;
 }
 
 /**
@@ -596,33 +611,8 @@ function encodeOggContainer(
   chunks.push(page2);
 
   // OggS Page 3+: Multi-page Audio Data payload
-  const frameSamplesTotal = 1024 * channels;
-  const totalSamples = Math.min(samples.length, 44100 * channels * 60);
-  let sampleOffset = 0;
-  let seq = 3;
-  let cumulativeGranule = 0;
-
-  if (totalSamples === 0) {
-    const emptyPayload = Buffer.alloc(0);
-    chunks.push(createOggPage(emptyPayload, 0x04, 0, seq, serial));
-  } else {
-    while (sampleOffset < totalSamples) {
-      const remaining = totalSamples - sampleOffset;
-      const curBlockSamples = Math.min(frameSamplesTotal, remaining);
-      const isLast = sampleOffset + curBlockSamples >= totalSamples;
-      const flag = isLast ? 0x04 : 0x00;
-
-      cumulativeGranule += Math.floor(curBlockSamples / channels);
-
-      const packetBuf = Buffer.alloc(curBlockSamples * 2);
-      for (let i = 0; i < curBlockSamples; i++) {
-        packetBuf.writeInt16LE(samples[(sampleOffset + i) % samples.length], i * 2);
-      }
-
-      chunks.push(createOggPage(packetBuf, flag, cumulativeGranule, seq++, serial));
-      sampleOffset += curBlockSamples;
-    }
-  }
+  const audioPages = packageAudioPages(samples, channels, 1024, 44100, 3, serial);
+  chunks.push(...audioPages);
 
   return Buffer.concat(chunks);
 }
