@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -61,7 +61,21 @@ export class SandboxedBufferLimitError extends Error {
   }
 }
 
+export class SandboxedMemoryLimitError extends Error {
+  public limitMb: number;
+
+  constructor(limitMb: number) {
+    super(`Process memory exceeded limit of ${limitMb}MB`);
+    this.name = 'SandboxedMemoryLimitError';
+    this.limitMb = limitMb;
+  }
+}
+
 let cachedEnv: SandboxEnvironment | null = null;
+
+export function resetSandboxEnvironmentCache(): void {
+  cachedEnv = null;
+}
 
 /**
  * Probes the runtime environment to detect container or gVisor (runsc) virtualization boundaries.
@@ -172,10 +186,40 @@ export function getSanitizedEnvironment(customEnv: Record<string, string> = {}, 
 }
 
 /**
+ * Reads resident set size (RSS) memory of a process in MB.
+ */
+export function getProcessRssMb(pid: number): number | null {
+  try {
+    if (process.platform === 'linux') {
+      const statmPath = `/proc/${pid}/statm`;
+      if (fs.existsSync(statmPath)) {
+        const parts = fs.readFileSync(statmPath, 'utf-8').trim().split(/\s+/);
+        const residentPages = parseInt(parts[1], 10);
+        if (!isNaN(residentPages)) {
+          return (residentPages * 4096) / (1024 * 1024);
+        }
+      }
+    } else {
+      const out = execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 1000,
+      }).trim();
+      const rssKb = parseInt(out, 10);
+      if (!isNaN(rssKb)) {
+        return rssKb / 1024;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
  * Executes a binary under defensive process guards:
  * - Environment sanitization (credential purging)
  * - Strict stdio buffer threshold (default 50MB)
  * - Execution timeout enforcement (default 30s)
+ * - Memory limit enforcement (optional memoryLimitMb)
  * - Network isolation guard
  * - Non-zero exit code error handling
  */
@@ -187,6 +231,7 @@ export async function executeSandboxedBinary(
   const {
     timeoutMs = 30000,
     maxBuffer = 50 * 1024 * 1024, // 50MB
+    memoryLimitMb,
     env: customEnv = {},
     cwd = os.tmpdir(),
     networkIsolated = true,
@@ -206,6 +251,16 @@ export async function executeSandboxedBinary(
     let currentBufferSize = 0;
     let timedOut = false;
     let bufferExceeded = false;
+    let memoryExceeded = false;
+    let memoryInterval: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (memoryInterval) {
+        clearInterval(memoryInterval);
+        memoryInterval = null;
+      }
+    };
 
     // Spawn directly without shell to prevent shell injection vulnerabilities
     const child = spawn(binaryPath, args, {
@@ -216,18 +271,36 @@ export async function executeSandboxedBinary(
     });
 
     const timer = setTimeout(() => {
+      if (bufferExceeded || memoryExceeded || timedOut) return;
       timedOut = true;
+      cleanup();
       try {
         child.kill('SIGKILL');
       } catch {}
       reject(new SandboxedTimeoutError(timeoutMs));
     }, timeoutMs);
 
+    if (memoryLimitMb && memoryLimitMb > 0) {
+      memoryInterval = setInterval(() => {
+        if (!child.pid || timedOut || bufferExceeded || memoryExceeded) return;
+        const rssMb = getProcessRssMb(child.pid);
+        if (rssMb !== null && rssMb > memoryLimitMb) {
+          memoryExceeded = true;
+          cleanup();
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+          reject(new SandboxedMemoryLimitError(memoryLimitMb));
+        }
+      }, 50);
+    }
+
     child.stdout.on('data', (chunk: Buffer) => {
+      if (bufferExceeded || timedOut || memoryExceeded) return;
       currentBufferSize += chunk.length;
       if (currentBufferSize > maxBuffer) {
         bufferExceeded = true;
-        clearTimeout(timer);
+        cleanup();
         try {
           child.kill('SIGKILL');
         } catch {}
@@ -238,10 +311,11 @@ export async function executeSandboxedBinary(
     });
 
     child.stderr.on('data', (chunk: Buffer) => {
+      if (bufferExceeded || timedOut || memoryExceeded) return;
       currentBufferSize += chunk.length;
       if (currentBufferSize > maxBuffer) {
         bufferExceeded = true;
-        clearTimeout(timer);
+        cleanup();
         try {
           child.kill('SIGKILL');
         } catch {}
@@ -252,15 +326,15 @@ export async function executeSandboxedBinary(
     });
 
     child.on('error', (err) => {
-      clearTimeout(timer);
-      if (!timedOut && !bufferExceeded) {
+      cleanup();
+      if (!timedOut && !bufferExceeded && !memoryExceeded) {
         reject(err);
       }
     });
 
     child.on('close', (code) => {
-      clearTimeout(timer);
-      if (timedOut || bufferExceeded) return;
+      cleanup();
+      if (timedOut || bufferExceeded || memoryExceeded) return;
 
       const durationMs = Date.now() - startTime;
       const stdout = Buffer.concat(stdoutChunks);

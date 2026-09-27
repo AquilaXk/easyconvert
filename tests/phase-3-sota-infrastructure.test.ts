@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
+import zlib from 'zlib';
 import {
   detectSandboxEnvironment,
   getSanitizedEnvironment,
@@ -7,6 +8,9 @@ import {
   SandboxedProcessError,
   SandboxedTimeoutError,
   SandboxedBufferLimitError,
+  SandboxedMemoryLimitError,
+  resetSandboxEnvironmentCache,
+  getProcessRssMb,
 } from '../src/lib/security/process-sandbox';
 import {
   compressZstd,
@@ -16,12 +20,14 @@ import {
   computeZstdChecksum,
   ZSTD_MAGIC_NUMBER,
   ZSTD_MAGIC_LE,
+  getZstdBinaryPath,
 } from '../src/lib/conversions/zstd';
 import {
   encodeParquet,
   decodeParquet,
   inferColumnSchemas,
   ParquetType,
+  CompressionCodec,
   PARQUET_MAGIC,
 } from '../src/lib/conversions/parquet';
 import {
@@ -31,6 +37,8 @@ import {
   createFvarTable,
   createStatTable,
   getStandardAxisName,
+  instantiateVariableFont,
+  subsetVariableFont,
   convertFont,
   VariableFontAxis,
   VariableFontInstance,
@@ -140,6 +148,31 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
 
     it('rejects invalid or missing binary path fail-closed', async () => {
       await expect(executeSandboxedBinary('', [])).rejects.toThrow();
+    });
+
+    it('enforces memory execution limits and terminates process exceeding memory limit', async () => {
+      const nodeBin = process.execPath;
+      // Script allocating 80MB of memory with a 30MB memory limit
+      const script = `
+        const chunks = [];
+        for (let i = 0; i < 80; i++) {
+          chunks.push(Buffer.alloc(1024 * 1024, 0x42));
+        }
+        setInterval(() => {}, 1000);
+      `;
+      const promise = executeSandboxedBinary(
+        nodeBin,
+        ['-e', script],
+        { memoryLimitMb: 30, timeoutMs: 5000 }
+      );
+
+      await expect(promise).rejects.toThrow(SandboxedMemoryLimitError);
+    });
+
+    it('resets sandbox environment cache cleanly', () => {
+      resetSandboxEnvironmentCache();
+      const env = detectSandboxEnvironment();
+      expect(env).toBeDefined();
     });
   });
 
@@ -272,6 +305,19 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       expect(tarZstResult.mimeType).toBe('application/x-zstd-compressed-tar');
       expect(tarZstResult.filename).toBe('sample.tar.zst');
     });
+
+    it('rejects corrupted zst archives fail-closed in convertArchive', async () => {
+      const corruptZst = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x01, 0x02]);
+      await expect(
+        convertArchive(corruptZst, 'zst', 'zip', {}, 'corrupted.zst')
+      ).rejects.toThrow();
+    });
+
+    it('detects system zstd binary availability', () => {
+      const binPath = getZstdBinaryPath();
+      // On systems with zstd installed, it resolves to a valid path string; otherwise null
+      expect(binPath === null || typeof binPath === 'string').toBe(true);
+    });
   });
 
   // =========================================================================
@@ -353,6 +399,54 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       expect(backCsvRes.mimeType).toBe('text/csv');
       expect(backCsvRes.buffer.toString('utf-8')).toContain('Seoul');
       expect(backCsvRes.buffer.toString('utf-8')).toContain('Busan');
+    });
+
+    it('encodes booleans as standard 1-bit packed LSB-first in PLAIN encoding', () => {
+      const records = Array.from({ length: 16 }, (_, i) => ({
+        id: i,
+        flag: i % 3 === 0,
+      }));
+      const encoded = encodeParquet(records);
+      const decoded = decodeParquet(encoded);
+      expect(decoded.length).toBe(16);
+      for (let i = 0; i < 16; i++) {
+        expect(decoded[i].flag).toBe(i % 3 === 0);
+      }
+    });
+
+    it('handles empty datasets in encodeParquet and decodeParquet', () => {
+      const encoded = encodeParquet([]);
+      expect(encoded.length).toBeGreaterThan(12);
+      const decoded = decodeParquet(encoded);
+      expect(decoded).toEqual([]);
+    });
+
+    it('rejects truncated Parquet data page fail-closed', () => {
+      const records = [{ a: 'first' }, { a: 'second' }, { a: 'third' }];
+      const valid = encodeParquet(records);
+      const truncated = valid.subarray(0, valid.length - 20);
+      expect(() => decodeParquet(truncated)).toThrow();
+    });
+
+    it('supports converting Parquet to xml, html, ndjson, and xls', async () => {
+      const records = [{ id: 1, name: 'Alpha' }, { id: 2, name: 'Beta' }];
+      const parquetBuf = encodeParquet(records);
+
+      const xmlRes = await convertData(parquetBuf, 'parquet', 'xml', {}, 'sample.parquet');
+      expect(xmlRes.mimeType).toBe('application/xml');
+      expect(xmlRes.buffer.toString('utf-8')).toContain('Alpha');
+
+      const htmlRes = await convertData(parquetBuf, 'parquet', 'html', {}, 'sample.parquet');
+      expect(htmlRes.mimeType).toBe('text/html');
+      expect(htmlRes.buffer.toString('utf-8')).toContain('Alpha');
+
+      const ndjsonRes = await convertData(parquetBuf, 'parquet', 'ndjson', {}, 'sample.parquet');
+      expect(ndjsonRes.mimeType).toBe('application/x-ndjson');
+      expect(ndjsonRes.buffer.toString('utf-8')).toContain('"name":"Alpha"');
+
+      const xlsRes = await convertData(parquetBuf, 'parquet', 'xls', {}, 'sample.parquet');
+      expect(xlsRes.mimeType).toBe('application/vnd.ms-excel');
+      expect(xlsRes.buffer.toString('utf-8')).toContain('Alpha');
     });
   });
 
@@ -526,6 +620,119 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       expect(getStandardAxisName('opsz')).toBe('Optical Size');
       expect(getStandardAxisName('grad')).toBe('Grade');
       expect(getStandardAxisName('custom')).toBe('custom');
+    });
+
+    it('preserves postScriptNameID in createFvarTable when instances specify it', () => {
+      const axes: VariableFontAxis[] = [
+        { tag: 'wght', name: 'Weight', minValue: 100, defaultValue: 400, maxValue: 900, flags: 0, axisNameID: 256 },
+      ];
+      const instances: VariableFontInstance[] = [
+        { name: 'Bold', subfamilyNameID: 260, flags: 0, coordinates: { wght: 700 }, postScriptNameID: 270 },
+      ];
+      const fvar = createFvarTable(axes, instances);
+      const parsed = parseFvarTable(fvar);
+      expect(parsed.instances[0].postScriptNameID).toBe(270);
+    });
+
+    it('subsets and instantiates variable font updating table attributes', () => {
+      const axes: VariableFontAxis[] = [
+        { tag: 'wght', name: 'Weight', minValue: 100, defaultValue: 400, maxValue: 900, flags: 0, axisNameID: 256 },
+        { tag: 'ital', name: 'Italic', minValue: 0, defaultValue: 0, maxValue: 1, flags: 0, axisNameID: 257 },
+      ];
+      const instances: VariableFontInstance[] = [
+        { name: 'Regular', subfamilyNameID: 260, flags: 0, coordinates: { wght: 400, ital: 0 } },
+        { name: 'Bold', subfamilyNameID: 261, flags: 0, coordinates: { wght: 700, ital: 0 } },
+      ];
+      const fvarTable = createFvarTable(axes, instances);
+
+      const headTable = Buffer.alloc(54);
+      headTable.writeUInt32BE(0x5f0f3cf5, 0);
+      const os2Table = Buffer.alloc(96);
+      os2Table.writeUInt16BE(400, 4); // usWeightClass = 400
+
+      const numTables = 3;
+      const fontBuf = Buffer.alloc(12 + numTables * 16 + 54 + 96 + fvarTable.length + 16);
+      fontBuf.writeUInt32BE(0x00010000, 0);
+      fontBuf.writeUInt16BE(numTables, 4);
+
+      let dirOff = 12;
+      let dataOff = 12 + numTables * 16;
+      const addTable = (tag: string, data: Buffer) => {
+        fontBuf.write(tag, dirOff, 4, 'ascii');
+        fontBuf.writeUInt32BE(0, dirOff + 4);
+        fontBuf.writeUInt32BE(dataOff, dirOff + 8);
+        fontBuf.writeUInt32BE(data.length, dirOff + 12);
+        data.copy(fontBuf, dataOff);
+        dirOff += 16;
+        dataOff += data.length + ((4 - (data.length % 4)) % 4);
+      };
+
+      addTable('head', headTable);
+      addTable('OS/2', os2Table);
+      addTable('fvar', fvarTable);
+
+      const trimmedFont = fontBuf.subarray(0, dataOff);
+
+      // Pin variation coordinates to wght=700, ital=1 (Bold Italic)
+      const subsetted = subsetVariableFont(trimmedFont, {
+        coordinates: { wght: 700, ital: 1 },
+      });
+
+      expect(subsetted.length).toBeGreaterThan(0);
+      const reInspected = inspectVariableFont(subsetted);
+      expect(reInspected.isVariableFont).toBe(true);
+      expect(reInspected.axes.find((a) => a.tag === 'wght')?.defaultValue).toBe(700);
+      expect(reInspected.axes.find((a) => a.tag === 'ital')?.defaultValue).toBe(1);
+    });
+
+    it('parses STAT table Format 4 compound axis values', () => {
+      // Build a minimal STAT table with format 4
+      const header = Buffer.alloc(20);
+      header.writeUInt16BE(1, 0); // majorVersion = 1
+      header.writeUInt16BE(2, 2); // minorVersion = 2
+      header.writeUInt16BE(8, 4); // designAxisSize = 8
+      header.writeUInt16BE(2, 6); // designAxisCount = 2
+      header.writeUInt32BE(20, 8); // designAxesOffset = 20
+      header.writeUInt16BE(1, 12); // axisValueCount = 1
+      header.writeUInt32BE(36, 14); // offsetToAxisValueOffsets = 36
+
+      const axesBuf = Buffer.alloc(16);
+      axesBuf.write('wght', 0, 4, 'ascii');
+      axesBuf.writeUInt16BE(256, 4);
+      axesBuf.writeUInt16BE(0, 6);
+      axesBuf.write('ital', 8, 4, 'ascii');
+      axesBuf.writeUInt16BE(257, 12);
+      axesBuf.writeUInt16BE(1, 14);
+
+      const offsetBuf = Buffer.alloc(2);
+      offsetBuf.writeUInt16BE(38, 0); // Value at 38
+
+      const val4 = Buffer.alloc(20);
+      val4.writeUInt16BE(4, 0); // format = 4
+      val4.writeUInt16BE(2, 2); // axisCount = 2
+      val4.writeUInt16BE(0, 4); // flags
+      val4.writeUInt16BE(280, 6); // valueNameID = 280
+      // AxisValueRecord 0: axisIndex 0, value 700
+      val4.writeUInt16BE(0, 8);
+      val4.writeInt32BE(700 * 65536, 10);
+      // AxisValueRecord 1: axisIndex 1, value 1
+      val4.writeUInt16BE(1, 14);
+      val4.writeInt32BE(1 * 65536, 16);
+
+      const statData = Buffer.concat([header, axesBuf, offsetBuf, val4]);
+      const parsed = parseStatTable(statData);
+
+      expect(parsed.axes.length).toBe(2);
+      expect(parsed.values.length).toBe(1);
+      expect(parsed.values[0].format).toBe(4);
+      expect(parsed.values[0].axisValues?.length).toBe(2);
+      expect(parsed.values[0].axisValues?.[0].value).toBe(700);
+      expect(parsed.values[0].axisValues?.[1].value).toBe(1);
+    });
+
+    it('rejects truncated fvar table fail-closed', () => {
+      const corrupt = Buffer.from([0x00, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x02, 0x00, 0x05]);
+      expect(() => parseFvarTable(corrupt)).toThrow(/truncated/i);
     });
   });
 });

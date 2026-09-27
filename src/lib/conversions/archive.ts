@@ -595,28 +595,21 @@ export async function convertArchive(
       files = [];
     }
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
-    try {
-      const uncompressed = decompressZstd(inputBuffer);
-      if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-        );
-      }
-      if (inputBuffer.length > 0 && uncompressed.length / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-        throw new Error(
-          `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-        );
-      }
-      if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed);
-      } else {
-        files = [{ filename: baseName, buffer: uncompressed }];
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
-        throw err;
-      }
-      files = [];
+    const uncompressed = decompressZstd(inputBuffer);
+    if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      throw new Error(
+        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+      );
+    }
+    if (inputBuffer.length > 0 && uncompressed.length / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+      throw new Error(
+        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+      );
+    }
+    if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
+      files = extractTarArchive(uncompressed);
+    } else {
+      files = [{ filename: baseName, buffer: uncompressed }];
     }
   }
 

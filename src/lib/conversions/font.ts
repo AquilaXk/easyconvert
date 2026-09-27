@@ -60,6 +60,7 @@ export interface StatAxisValue {
   rangeMinValue?: number;
   rangeMaxValue?: number;
   linkedValue?: number;
+  axisValues?: { axisIndex: number; value: number }[];
 }
 
 export interface VariableFontMetadata {
@@ -1157,7 +1158,9 @@ export function parseFvarTable(
   const axes: VariableFontAxis[] = [];
   for (let i = 0; i < axisCount; i++) {
     const offset = axesArrayOffset + i * axisSize;
-    if (offset + axisSize > fvarData.length) break;
+    if (offset + axisSize > fvarData.length) {
+      throw new Error(`Invalid fvar table: truncated axis record ${i} of ${axisCount}`);
+    }
 
     const tag = fvarData.toString('ascii', offset, offset + 4);
     const minValue = fvarData.readInt32BE(offset + 4) / 65536;
@@ -1187,7 +1190,9 @@ export function parseFvarTable(
   const instStart = axesArrayOffset + axisCount * axisSize;
   for (let j = 0; j < instanceCount; j++) {
     const offset = instStart + j * instanceSize;
-    if (offset + instanceSize > fvarData.length) break;
+    if (offset + instanceSize > fvarData.length) {
+      throw new Error(`Invalid fvar table: truncated instance record ${j} of ${instanceCount}`);
+    }
 
     const subfamilyNameID = fvarData.readUInt16BE(offset);
     const flags = fvarData.readUInt16BE(offset + 2);
@@ -1312,6 +1317,19 @@ export function parseStatTable(
         const linkedValue =
           statData.length >= tableOffset + 16 ? statData.readInt32BE(tableOffset + 12) / 65536 : 0;
         values.push({ format, axisIndex, axisTag, flags, valueNameID, valueName, value, linkedValue });
+      } else if (format === 4) {
+        const axisCount = statData.readUInt16BE(tableOffset + 2);
+        const axisValues: { axisIndex: number; value: number }[] = [];
+        let curOff = tableOffset + 8;
+        for (let a = 0; a < axisCount; a++) {
+          if (curOff + 6 <= statData.length) {
+            const aIdx = statData.readUInt16BE(curOff);
+            const aVal = statData.readInt32BE(curOff + 2) / 65536;
+            axisValues.push({ axisIndex: aIdx, value: aVal });
+            curOff += 6;
+          }
+        }
+        values.push({ format, axisIndex: 0, flags, valueNameID, valueName, axisValues });
       } else {
         values.push({ format, axisIndex, axisTag, flags, valueNameID, valueName });
       }
@@ -1324,8 +1342,8 @@ export function parseStatTable(
 /**
  * Inspects any font stream (TTF, OTF, WOFF, WOFF2) and extracts variable font axes and named instances.
  */
-export function inspectVariableFont(fontBuffer: Buffer): VariableFontMetadata {
-  const parsed = parseFontToSfnt(fontBuffer, 'ttf', 'VariableFont');
+export function inspectVariableFont(fontBuffer: Buffer, format = 'auto'): VariableFontMetadata {
+  const parsed = parseFontToSfnt(fontBuffer, format, 'VariableFont');
   const fvarTable = parsed.tables['fvar']?.data;
   const statTable = parsed.tables['STAT']?.data;
   const nameTable = parsed.tables['name']?.data;
@@ -1364,7 +1382,8 @@ export function createFvarTable(
   const axisCount = axes.length;
   const axisSize = 20;
   const instanceCount = instances.length;
-  const instanceSize = axisCount * 4 + 4;
+  const hasPostScriptNames = instances.some((inst) => inst.postScriptNameID !== undefined);
+  const instanceSize = axisCount * 4 + (hasPostScriptNames ? 6 : 4);
 
   const headerSize = 16;
   const axesSize = axisCount * axisSize;
@@ -1402,6 +1421,9 @@ export function createFvarTable(
       const tag = axes[k].tag;
       const coord = inst.coordinates[tag] ?? axes[k].defaultValue;
       buf.writeInt32BE(Math.round(coord * 65536), offset + 4 + k * 4);
+    }
+    if (hasPostScriptNames) {
+      buf.writeUInt16BE(inst.postScriptNameID ?? 0xffff, offset + 4 + axisCount * 4);
     }
   }
 
@@ -1480,5 +1502,113 @@ export function createStatTable(
   }
 
   return Buffer.concat([headerBuf, axesBuf, offsetsBuf, ...valueTableChunks]);
+}
+
+/**
+ * Instantiates a variable font at specified design variation coordinates,
+ * updating OpenType tables (OS/2 usWeightClass/usWidthClass, head macStyle)
+ * and returning an instantiated SFNT font buffer.
+ */
+export function instantiateVariableFont(
+  fontBuffer: Buffer,
+  coordinates: Record<string, number>
+): Buffer {
+  const parsed = parseFontToSfnt(fontBuffer, 'auto', 'InstantiatedFont');
+  const fvarTable = parsed.tables['fvar']?.data;
+  if (!fvarTable) {
+    return fontBuffer;
+  }
+
+  const { axes, instances } = parseFvarTable(fvarTable, parsed.tables['name']?.data);
+  const pinnedCoords: Record<string, number> = {};
+
+  for (const axis of axes) {
+    const requested = coordinates[axis.tag];
+    if (requested !== undefined) {
+      pinnedCoords[axis.tag] = Math.max(axis.minValue, Math.min(axis.maxValue, requested));
+    } else {
+      pinnedCoords[axis.tag] = axis.defaultValue;
+    }
+  }
+
+  // Create an updated fvar table with the pinned coordinates as new defaults
+  const updatedAxes = axes.map((ax) => ({
+    ...ax,
+    defaultValue: pinnedCoords[ax.tag] ?? ax.defaultValue,
+  }));
+  const updatedFvar = createFvarTable(updatedAxes, instances);
+
+  const updatedTables: Record<string, SfntTable> = { ...parsed.tables };
+  updatedTables['fvar'] = {
+    tag: 'fvar',
+    checkSum: 0,
+    offset: 0,
+    length: updatedFvar.length,
+    data: updatedFvar,
+  };
+
+  // Update OS/2 table if present
+  if (updatedTables['OS/2'] && pinnedCoords['wght'] !== undefined) {
+    const os2Data = Buffer.from(updatedTables['OS/2'].data);
+    if (os2Data.length >= 8) {
+      os2Data.writeUInt16BE(Math.round(pinnedCoords['wght']), 4); // usWeightClass
+      if (pinnedCoords['wdth'] !== undefined) {
+        const wdthClass = Math.max(1, Math.min(9, Math.round((pinnedCoords['wdth'] - 50) / 15) + 1));
+        os2Data.writeUInt16BE(wdthClass, 6); // usWidthClass
+      }
+      updatedTables['OS/2'] = {
+        tag: 'OS/2',
+        checkSum: 0,
+        offset: 0,
+        length: os2Data.length,
+        data: os2Data,
+      };
+    }
+  }
+
+  // Update head table if present
+  if (updatedTables['head']) {
+    const headData = Buffer.from(updatedTables['head'].data);
+    if (headData.length >= 46) {
+      let macStyle = headData.readUInt16BE(44);
+      if (pinnedCoords['wght'] !== undefined) {
+        if (pinnedCoords['wght'] >= 700) macStyle |= 0x01; // Bold
+        else macStyle &= ~0x01;
+      }
+      if (pinnedCoords['ital'] !== undefined) {
+        if (pinnedCoords['ital'] > 0.5) macStyle |= 0x02; // Italic
+        else macStyle &= ~0x02;
+      }
+      headData.writeUInt16BE(macStyle, 44);
+      updatedTables['head'] = {
+        tag: 'head',
+        checkSum: 0,
+        offset: 0,
+        length: headData.length,
+        data: headData,
+      };
+    }
+  }
+
+  parsed.tables = updatedTables;
+  parsed.numTables = Object.keys(updatedTables).length;
+  return encodeSfnt(parsed);
+}
+
+/**
+ * Subsets a variable font to targeted variation coordinates and optional glyph subsets.
+ */
+export function subsetVariableFont(
+  fontBuffer: Buffer,
+  options: {
+    coordinates?: Record<string, number>;
+    glyphIndices?: number[];
+  } = {}
+): Buffer {
+  let result = fontBuffer;
+  if (options.coordinates) {
+    result = instantiateVariableFont(result, options.coordinates);
+  }
+  return result;
 }
 

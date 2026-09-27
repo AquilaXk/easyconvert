@@ -1,10 +1,13 @@
+import zlib from 'zlib';
+import { decompressZstd } from './zstd';
+
 /**
  * Pure TypeScript Apache Parquet Columnar Storage Engine
  *
  * Implements:
  * - Parquet file structure: 4-byte 'PAR1' header & footer
  * - Columnar decomposition of tabular data (JSON / CSV / TSV / YAML records)
- * - PLAIN columnar encoding for BYTE_ARRAY (UTF-8 strings), DOUBLE, INT64, INT32, and BOOLEAN
+ * - PLAIN columnar encoding for BYTE_ARRAY (UTF-8 strings), DOUBLE, INT64, INT32, FLOAT, and BOOLEAN
  * - Thrift Compact Protocol FileMetaData serialization and deserialization
  * - Complete round-trip columnar serialization & deserialization with fail-closed validation
  */
@@ -152,6 +155,9 @@ export class CompactProtocolReader {
   }
 
   readByte(): number {
+    if (this.offset >= this.buf.length) {
+      throw new Error(`Truncated Thrift payload: unexpected EOF at offset ${this.offset}`);
+    }
     return this.buf[this.offset++];
   }
 
@@ -159,6 +165,9 @@ export class CompactProtocolReader {
     let result = 0n;
     let shift = 0n;
     while (true) {
+      if (this.offset >= this.buf.length) {
+        throw new Error(`Truncated Thrift payload: unexpected EOF reading varint at offset ${this.offset}`);
+      }
       const b = this.buf[this.offset++];
       result |= BigInt(b & 0x7f) << shift;
       if ((b & 0x80) === 0) break;
@@ -179,6 +188,9 @@ export class CompactProtocolReader {
 
   readString(): string {
     const len = Number(this.readVarint());
+    if (this.offset + len > this.buf.length) {
+      throw new Error(`Truncated Thrift payload: string length ${len} exceeds buffer boundary`);
+    }
     const str = this.buf.toString('utf-8', this.offset, this.offset + len);
     this.offset += len;
     return str;
@@ -186,12 +198,18 @@ export class CompactProtocolReader {
 
   readBinary(): Buffer {
     const len = Number(this.readVarint());
+    if (this.offset + len > this.buf.length) {
+      throw new Error(`Truncated Thrift payload: binary length ${len} exceeds buffer boundary`);
+    }
     const res = this.buf.subarray(this.offset, this.offset + len);
     this.offset += len;
     return res;
   }
 
   readFieldBegin(): { fieldId: number; type: number; isStop: boolean } {
+    if (this.offset >= this.buf.length) {
+      return { fieldId: 0, type: 0, isStop: true };
+    }
     const b = this.buf[this.offset++];
     if (b === 0) {
       return { fieldId: 0, type: 0, isStop: true };
@@ -218,6 +236,9 @@ export class CompactProtocolReader {
   }
 
   readListBegin(): { elemType: number; size: number } {
+    if (this.offset >= this.buf.length) {
+      throw new Error(`Truncated Thrift payload: unexpected EOF reading list header`);
+    }
     const b = this.buf[this.offset++];
     const sizeHigh = (b >> 4) & 0x0f;
     const elemType = b & 0x0f;
@@ -262,6 +283,8 @@ export class CompactProtocolReader {
         this.skip(f.type);
       }
       this.structEnd();
+    } else {
+      throw new Error(`Corrupted Thrift payload: unsupported type ${type} at offset ${this.offset}`);
     }
   }
 }
@@ -367,34 +390,49 @@ export function encodeParquet(records: Record<string, unknown>[]): Buffer {
     const colName = schema.name;
     const pageDataChunks: Buffer[] = [];
 
-    for (let r = 0; r < numRows; r++) {
-      const rawVal = records[r]?.[colName];
+    if (schema.type === ParquetType.BOOLEAN) {
+      // Standard Parquet PLAIN encoding for BOOLEAN: 1 bit per value, packed LSB-first
+      const byteCount = Math.ceil(numRows / 8);
+      const boolBuf = Buffer.alloc(byteCount);
+      for (let r = 0; r < numRows; r++) {
+        const rawVal = records[r]?.[colName];
+        if (Boolean(rawVal)) {
+          boolBuf[Math.floor(r / 8)] |= 1 << (r % 8);
+        }
+      }
+      pageDataChunks.push(boolBuf);
+    } else {
+      for (let r = 0; r < numRows; r++) {
+        const rawVal = records[r]?.[colName];
 
-      if (schema.type === ParquetType.BYTE_ARRAY) {
-        const strVal = rawVal === null || rawVal === undefined ? '' : String(rawVal);
-        const strBytes = Buffer.from(strVal, 'utf-8');
-        const lenBuf = Buffer.alloc(4);
-        lenBuf.writeUInt32LE(strBytes.length, 0);
-        pageDataChunks.push(lenBuf);
-        pageDataChunks.push(strBytes);
-      } else if (schema.type === ParquetType.DOUBLE) {
-        const numVal = typeof rawVal === 'number' ? rawVal : Number(rawVal) || 0.0;
-        const numBuf = Buffer.alloc(8);
-        numBuf.writeDoubleLE(numVal, 0);
-        pageDataChunks.push(numBuf);
-      } else if (schema.type === ParquetType.INT64) {
-        const intVal = typeof rawVal === 'bigint' ? rawVal : BigInt(Math.trunc(Number(rawVal) || 0));
-        const intBuf = Buffer.alloc(8);
-        intBuf.writeBigInt64LE(intVal, 0);
-        pageDataChunks.push(intBuf);
-      } else if (schema.type === ParquetType.INT32) {
-        const intVal = Math.trunc(Number(rawVal) || 0);
-        const intBuf = Buffer.alloc(4);
-        intBuf.writeInt32LE(intVal, 0);
-        pageDataChunks.push(intBuf);
-      } else if (schema.type === ParquetType.BOOLEAN) {
-        const boolVal = Boolean(rawVal);
-        pageDataChunks.push(Buffer.from([boolVal ? 1 : 0]));
+        if (schema.type === ParquetType.BYTE_ARRAY) {
+          const strVal = rawVal === null || rawVal === undefined ? '' : String(rawVal);
+          const strBytes = Buffer.from(strVal, 'utf-8');
+          const lenBuf = Buffer.alloc(4);
+          lenBuf.writeUInt32LE(strBytes.length, 0);
+          pageDataChunks.push(lenBuf);
+          pageDataChunks.push(strBytes);
+        } else if (schema.type === ParquetType.DOUBLE) {
+          const numVal = typeof rawVal === 'number' ? rawVal : Number(rawVal) || 0.0;
+          const numBuf = Buffer.alloc(8);
+          numBuf.writeDoubleLE(numVal, 0);
+          pageDataChunks.push(numBuf);
+        } else if (schema.type === ParquetType.FLOAT) {
+          const numVal = typeof rawVal === 'number' ? rawVal : Number(rawVal) || 0.0;
+          const numBuf = Buffer.alloc(4);
+          numBuf.writeFloatLE(numVal, 0);
+          pageDataChunks.push(numBuf);
+        } else if (schema.type === ParquetType.INT64) {
+          const intVal = typeof rawVal === 'bigint' ? rawVal : BigInt(Math.trunc(Number(rawVal) || 0));
+          const intBuf = Buffer.alloc(8);
+          intBuf.writeBigInt64LE(intVal, 0);
+          pageDataChunks.push(intBuf);
+        } else if (schema.type === ParquetType.INT32) {
+          const intVal = Math.trunc(Number(rawVal) || 0);
+          const intBuf = Buffer.alloc(4);
+          intBuf.writeInt32LE(intVal, 0);
+          pageDataChunks.push(intBuf);
+        }
       }
     }
 
@@ -612,6 +650,7 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
   let columnChunks: {
     name: string;
     type: ParquetType;
+    codec: CompressionCodec;
     offset: number;
     numValues: number;
     totalSize: number;
@@ -667,6 +706,7 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
               let colNumValues = 0;
               let colTotalSize = 0;
               let dataPageOffset = 0;
+              let colCodec = CompressionCodec.UNCOMPRESSED;
 
               while (true) {
                 const ccf = reader.readFieldBegin();
@@ -689,6 +729,8 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
                         const pathPart = reader.readString();
                         if (!colMetaPath) colMetaPath = pathPart;
                       }
+                    } else if (mf.fieldId === 4) {
+                      colCodec = reader.readZigzag32() as CompressionCodec;
                     } else if (mf.fieldId === 5) {
                       colNumValues = Number(reader.readZigzag64());
                     } else if (mf.fieldId === 6) {
@@ -709,6 +751,7 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
               columnChunks.push({
                 name: colMetaPath,
                 type: colMetaType,
+                codec: colCodec,
                 offset: dataPageOffset || fileOffset,
                 numValues: colNumValues || numRows,
                 totalSize: colTotalSize,
@@ -742,6 +785,7 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
     const pageReader = new CompactProtocolReader(buffer, pageOffset);
     pageReader.structBegin();
     let uncompressedPageSize = 0;
+    let compressedPageSize = 0;
     let pageNumValues = chunk.numValues;
 
     while (true) {
@@ -749,6 +793,8 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
       if (pf.isStop) break;
       if (pf.fieldId === 2) {
         uncompressedPageSize = pageReader.readZigzag32();
+      } else if (pf.fieldId === 3) {
+        compressedPageSize = pageReader.readZigzag32();
       } else if (pf.fieldId === 5) {
         // data_page_header
         pageReader.structBegin();
@@ -769,45 +815,97 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
     pageReader.structEnd();
 
     // Data starts at pageReader.offset
-    let dataOffset = pageReader.offset;
+    const pageSliceSize = compressedPageSize > 0 ? compressedPageSize : uncompressedPageSize;
+    const rawPageSlice = pageSliceSize > 0
+      ? buffer.subarray(pageReader.offset, pageReader.offset + pageSliceSize)
+      : buffer.subarray(pageReader.offset);
+
+    let pageBuffer: Buffer;
+    if (chunk.codec === CompressionCodec.UNCOMPRESSED) {
+      pageBuffer = rawPageSlice;
+    } else if (chunk.codec === CompressionCodec.GZIP) {
+      try {
+        pageBuffer = zlib.gunzipSync(rawPageSlice);
+      } catch {
+        pageBuffer = zlib.inflateRawSync(rawPageSlice);
+      }
+    } else if (chunk.codec === CompressionCodec.ZSTD) {
+      pageBuffer = decompressZstd(rawPageSlice);
+    } else {
+      const codecName = CompressionCodec[chunk.codec] ?? String(chunk.codec);
+      throw new Error(
+        `Unsupported Parquet compression codec: ${codecName}. Supported codecs: UNCOMPRESSED, GZIP, ZSTD.`
+      );
+    }
+
+    let dataOffset = 0;
     const values: unknown[] = [];
 
-    for (let i = 0; i < pageNumValues; i++) {
-      if (dataOffset >= buffer.length) break;
-
-      if (chunk.type === ParquetType.BYTE_ARRAY) {
-        if (dataOffset + 4 > buffer.length) break;
-        const strLen = buffer.readUInt32LE(dataOffset);
-        dataOffset += 4;
-        const str = buffer.toString('utf-8', dataOffset, dataOffset + strLen);
-        dataOffset += strLen;
-        values.push(str);
-      } else if (chunk.type === ParquetType.DOUBLE) {
-        if (dataOffset + 8 > buffer.length) break;
-        const val = buffer.readDoubleLE(dataOffset);
-        dataOffset += 8;
-        values.push(val);
-      } else if (chunk.type === ParquetType.FLOAT) {
-        if (dataOffset + 4 > buffer.length) break;
-        const val = buffer.readFloatLE(dataOffset);
-        dataOffset += 4;
-        values.push(val);
-      } else if (chunk.type === ParquetType.INT64) {
-        if (dataOffset + 8 > buffer.length) break;
-        const val = buffer.readBigInt64LE(dataOffset);
-        dataOffset += 8;
-        values.push(Number(val));
-      } else if (chunk.type === ParquetType.INT32) {
-        if (dataOffset + 4 > buffer.length) break;
-        const val = buffer.readInt32LE(dataOffset);
-        dataOffset += 4;
-        values.push(val);
-      } else if (chunk.type === ParquetType.BOOLEAN) {
-        if (dataOffset >= buffer.length) break;
-        const val = buffer[dataOffset++] !== 0;
-        values.push(val);
+    if (chunk.type === ParquetType.BOOLEAN) {
+      // Support both bit-packed (1 bit per value LSB-first) and loose 1-byte booleans
+      const remainingBytes = pageBuffer.length - dataOffset;
+      const isBitPacked = remainingBytes < pageNumValues || remainingBytes === Math.ceil(pageNumValues / 8);
+      if (isBitPacked) {
+        for (let i = 0; i < pageNumValues; i++) {
+          const byteIdx = dataOffset + Math.floor(i / 8);
+          if (byteIdx >= pageBuffer.length) {
+            throw new Error(`Corrupted Parquet file: truncated boolean data in column '${colName}'`);
+          }
+          const bit = (pageBuffer[byteIdx] >> (i % 8)) & 1;
+          values.push(bit === 1);
+        }
+        dataOffset += Math.ceil(pageNumValues / 8);
       } else {
-        values.push(null);
+        for (let i = 0; i < pageNumValues; i++) {
+          if (dataOffset >= pageBuffer.length) {
+            throw new Error(`Corrupted Parquet file: truncated boolean data in column '${colName}'`);
+          }
+          values.push(pageBuffer[dataOffset++] !== 0);
+        }
+      }
+    } else {
+      for (let i = 0; i < pageNumValues; i++) {
+        if (chunk.type === ParquetType.BYTE_ARRAY) {
+          if (dataOffset + 4 > pageBuffer.length) {
+            throw new Error(`Corrupted Parquet file: truncated string length in column '${colName}'`);
+          }
+          const strLen = pageBuffer.readUInt32LE(dataOffset);
+          dataOffset += 4;
+          if (dataOffset + strLen > pageBuffer.length) {
+            throw new Error(
+              `Corrupted Parquet file: string length ${strLen} exceeds page bounds in column '${colName}'`
+            );
+          }
+          const str = pageBuffer.toString('utf-8', dataOffset, dataOffset + strLen);
+          dataOffset += strLen;
+          values.push(str);
+        } else if (chunk.type === ParquetType.DOUBLE) {
+          if (dataOffset + 8 > pageBuffer.length) {
+            throw new Error(`Corrupted Parquet file: truncated double value in column '${colName}'`);
+          }
+          values.push(pageBuffer.readDoubleLE(dataOffset));
+          dataOffset += 8;
+        } else if (chunk.type === ParquetType.FLOAT) {
+          if (dataOffset + 4 > pageBuffer.length) {
+            throw new Error(`Corrupted Parquet file: truncated float value in column '${colName}'`);
+          }
+          values.push(pageBuffer.readFloatLE(dataOffset));
+          dataOffset += 4;
+        } else if (chunk.type === ParquetType.INT64) {
+          if (dataOffset + 8 > pageBuffer.length) {
+            throw new Error(`Corrupted Parquet file: truncated int64 value in column '${colName}'`);
+          }
+          values.push(Number(pageBuffer.readBigInt64LE(dataOffset)));
+          dataOffset += 8;
+        } else if (chunk.type === ParquetType.INT32) {
+          if (dataOffset + 4 > pageBuffer.length) {
+            throw new Error(`Corrupted Parquet file: truncated int32 value in column '${colName}'`);
+          }
+          values.push(pageBuffer.readInt32LE(dataOffset));
+          dataOffset += 4;
+        } else {
+          values.push(null);
+        }
       }
     }
 

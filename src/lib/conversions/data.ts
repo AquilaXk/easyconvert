@@ -75,9 +75,32 @@ export async function convertData(
       const buffer = Buffer.from(JSON.stringify(records, null, 2), 'utf-8');
       return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
     }
+    if (tgt === 'xml') {
+      const xmlStr = jsonToXml(records, 'root');
+      const buffer = Buffer.from(xmlStr, 'utf-8');
+      return { buffer, mimeType: 'application/xml', filename: `${baseName}.xml`, size: buffer.length };
+    }
+    if (tgt === 'html') {
+      const html = generateTableHtml(records, baseName);
+      const buffer = Buffer.from(html, 'utf-8');
+      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+    }
+    if (tgt === 'ndjson') {
+      const ndjsonStr = records.map((r) => JSON.stringify(r)).join('\n');
+      const buffer = Buffer.from(ndjsonStr, 'utf-8');
+      return { buffer, mimeType: 'application/x-ndjson', filename: `${baseName}.ndjson`, size: buffer.length };
+    }
+    if (tgt === 'xls') {
+      const headers = Object.keys((records[0] || {}) as Record<string, unknown>);
+      const rows = [headers, ...records.map((d) => headers.map((h) => String(d[h] ?? '')))];
+      const xlsXml = generateXlsXmlFromData(rows, baseName);
+      const buffer = Buffer.from(xlsXml, 'utf-8');
+      return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
+    }
     if (tgt === 'parquet') {
       return { buffer: inputBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: inputBuffer.length };
     }
+    throw new Error(`Unsupported data conversion from parquet to ${targetFormat}`);
   }
 
   const textContent = inputBuffer.toString('utf-8');

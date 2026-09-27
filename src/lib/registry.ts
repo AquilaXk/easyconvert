@@ -1257,7 +1257,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.apache.parquet',
     category: 'data',
     description: 'Open-source columnar storage format optimized for high-performance analytics and queries.',
-    targetFormats: ['json', 'csv', 'tsv', 'yaml', 'xlsx', 'ods', 'pdf', 'txt'],
+    targetFormats: ['json', 'csv', 'tsv', 'yaml', 'xlsx', 'ods', 'pdf', 'txt', 'xml', 'html', 'ndjson', 'xls'],
   },
 
   // ==========================================

@@ -1,3 +1,6 @@
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+
 /**
  * Pure TypeScript RFC 8878 Zstandard (zstd) Compression and Decompression Engine
  *
@@ -17,6 +20,51 @@ export const ZSTD_SECURITY_LIMITS = {
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB
   MAX_RATIO: 100, // 100:1
 };
+
+let resolvedZstdPath: string | null = null;
+export function getZstdBinaryPath(): string | null {
+  if (resolvedZstdPath !== null) return resolvedZstdPath || null;
+  const fixedLocations = [
+    '/usr/bin/zstd',
+    '/usr/local/bin/zstd',
+    '/opt/homebrew/bin/zstd',
+  ];
+  for (const loc of fixedLocations) {
+    if (fs.existsSync(loc)) {
+      resolvedZstdPath = loc;
+      return loc;
+    }
+  }
+  const whichBins = ['/usr/bin/which', '/bin/which'];
+  for (const whichBin of whichBins) {
+    if (fs.existsSync(whichBin)) {
+      try {
+        const out = execFileSync(whichBin, ['zstd'], { stdio: 'pipe' }).toString().trim();
+        if (out && fs.existsSync(out)) {
+          resolvedZstdPath = out;
+          return out;
+        }
+      } catch {}
+    }
+  }
+  resolvedZstdPath = '';
+  return null;
+}
+
+export function decompressWithNativeZstd(inputBuffer: Buffer): Buffer | null {
+  const zstdBin = getZstdBinaryPath();
+  if (!zstdBin) return null;
+  try {
+    return execFileSync(zstdBin, ['-d', '-c', '-q'], {
+      input: inputBuffer,
+      maxBuffer: ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+}
 
 export interface ZstdFrameHeader {
   singleSegment: boolean;
@@ -241,126 +289,153 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
     throw new Error('Decompress error: input buffer too small for Zstandard stream.');
   }
 
-  const outChunks: Buffer[] = [];
-  let totalUncompressedSize = 0;
-  let offset = 0;
+  try {
+    const outChunks: Buffer[] = [];
+    let totalUncompressedSize = 0;
+    let offset = 0;
 
-  while (offset < inputBuffer.length) {
-    if (offset + 4 > inputBuffer.length) break;
-    const magic = inputBuffer.readUInt32LE(offset);
+    while (offset < inputBuffer.length) {
+      if (offset + 4 > inputBuffer.length) break;
+      const magic = inputBuffer.readUInt32LE(offset);
 
-    // Skippable frames: 0x184D2A50 to 0x184D2A5F
-    if (magic >= 0x184d2a50 && magic <= 0x184d2a5f) {
-      if (offset + 8 > inputBuffer.length) {
-        throw new Error('Malformed skippable frame: header truncated.');
+      // Skippable frames: 0x184D2A50 to 0x184D2A5F
+      if (magic >= 0x184d2a50 && magic <= 0x184d2a5f) {
+        if (offset + 8 > inputBuffer.length) {
+          throw new Error('Malformed skippable frame: header truncated.');
+        }
+        const skipLength = inputBuffer.readUInt32LE(offset + 4);
+        offset += 8 + skipLength;
+        continue;
       }
-      const skipLength = inputBuffer.readUInt32LE(offset + 4);
-      offset += 8 + skipLength;
-      continue;
+
+      if (magic !== ZSTD_MAGIC_NUMBER) {
+        throw new Error(
+          `Invalid Zstandard magic signature: 0x${magic.toString(16).toUpperCase()} at offset ${offset}`
+        );
+      }
+
+      const frameHeader = parseZstdFrameHeader(inputBuffer, offset);
+      offset += frameHeader.headerSize;
+
+      const frameChunks: Buffer[] = [];
+      let frameUncompressedSize = 0;
+
+      let isLast = false;
+      while (!isLast) {
+        if (offset + 3 > inputBuffer.length) {
+          throw new Error('Malformed Zstandard frame: truncated block header.');
+        }
+
+        const b0 = inputBuffer[offset];
+        const b1 = inputBuffer[offset + 1];
+        const b2 = inputBuffer[offset + 2];
+        const headerVal = b0 | (b1 << 8) | (b2 << 16);
+        offset += 3;
+
+        isLast = (headerVal & 0x01) === 1;
+        const blockType = (headerVal >> 1) & 0x03;
+        const blockSize = headerVal >>> 3;
+
+        if (blockType === 3) {
+          throw new Error('Malformed Zstandard block: reserved block type 3 encountered.');
+        }
+
+        let blockData: Buffer;
+
+        if (blockType === 0) {
+          // Raw Block: uncompressed data of length blockSize
+          if (offset + blockSize > inputBuffer.length) {
+            throw new Error('Malformed Zstandard raw block: out of bounds data.');
+          }
+          blockData = Buffer.from(inputBuffer.subarray(offset, offset + blockSize));
+          offset += blockSize;
+        } else if (blockType === 1) {
+          // RLE Block: single byte repeated blockSize times
+          if (offset + 1 > inputBuffer.length) {
+            throw new Error('Malformed Zstandard RLE block: missing byte.');
+          }
+          const rleByte = inputBuffer[offset++];
+          blockData = Buffer.alloc(blockSize, rleByte);
+        } else {
+          // Compressed Block (FSE / Huffman sequence decoding)
+          if (offset + blockSize > inputBuffer.length) {
+            throw new Error('Malformed Zstandard compressed block: truncated data.');
+          }
+          const compSlice = inputBuffer.subarray(offset, offset + blockSize);
+          blockData = decodeZstdCompressedBlock(compSlice, frameChunks);
+          offset += blockSize;
+        }
+
+        frameChunks.push(blockData);
+        frameUncompressedSize += blockData.length;
+        totalUncompressedSize += blockData.length;
+
+        // Cumulative Security Limits Check
+        if (totalUncompressedSize > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+          throw new Error(
+            `Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+          );
+        }
+
+        if (
+          inputBuffer.length > 0 &&
+          totalUncompressedSize / inputBuffer.length > ZSTD_SECURITY_LIMITS.MAX_RATIO
+        ) {
+          throw new Error(
+            `Archive bomb detected: compression ratio (${(
+              totalUncompressedSize / inputBuffer.length
+            ).toFixed(1)}:1) exceeds ${ZSTD_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+          );
+        }
+      }
+
+      const frameDecompressed = Buffer.concat(frameChunks);
+
+      // Verify Checksum if present
+      if (frameHeader.contentChecksumFlag) {
+        if (offset + 4 > inputBuffer.length) {
+          throw new Error('Malformed Zstandard frame: missing content checksum.');
+        }
+        const expectedChecksum = inputBuffer.readUInt32LE(offset);
+        offset += 4;
+        const actualChecksum = computeZstdChecksum(frameDecompressed);
+        if (actualChecksum !== expectedChecksum) {
+          throw new Error(
+            `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(16)}, computed 0x${actualChecksum.toString(16)}`
+          );
+        }
+      }
+
+      outChunks.push(frameDecompressed);
     }
 
-    if (magic !== ZSTD_MAGIC_NUMBER) {
-      throw new Error(
-        `Invalid Zstandard magic signature: 0x${magic.toString(16).toUpperCase()} at offset ${offset}`
-      );
+    return Buffer.concat(outChunks);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+      throw err;
     }
-
-    const frameHeader = parseZstdFrameHeader(inputBuffer, offset);
-    offset += frameHeader.headerSize;
-
-    const frameChunks: Buffer[] = [];
-    let frameUncompressedSize = 0;
-
-    let isLast = false;
-    while (!isLast) {
-      if (offset + 3 > inputBuffer.length) {
-        throw new Error('Malformed Zstandard frame: truncated block header.');
-      }
-
-      const b0 = inputBuffer[offset];
-      const b1 = inputBuffer[offset + 1];
-      const b2 = inputBuffer[offset + 2];
-      const headerVal = b0 | (b1 << 8) | (b2 << 16);
-      offset += 3;
-
-      isLast = (headerVal & 0x01) === 1;
-      const blockType = (headerVal >> 1) & 0x03;
-      const blockSize = headerVal >>> 3;
-
-      if (blockType === 3) {
-        throw new Error('Malformed Zstandard block: reserved block type 3 encountered.');
-      }
-
-      let blockData: Buffer;
-
-      if (blockType === 0) {
-        // Raw Block: uncompressed data of length blockSize
-        if (offset + blockSize > inputBuffer.length) {
-          throw new Error('Malformed Zstandard raw block: out of bounds data.');
-        }
-        blockData = Buffer.from(inputBuffer.subarray(offset, offset + blockSize));
-        offset += blockSize;
-      } else if (blockType === 1) {
-        // RLE Block: single byte repeated blockSize times
-        if (offset + 1 > inputBuffer.length) {
-          throw new Error('Malformed Zstandard RLE block: missing byte.');
-        }
-        const rleByte = inputBuffer[offset++];
-        blockData = Buffer.alloc(blockSize, rleByte);
-      } else {
-        // Compressed Block (FSE / Huffman sequence decoding)
-        if (offset + blockSize > inputBuffer.length) {
-          throw new Error('Malformed Zstandard compressed block: truncated data.');
-        }
-        const compSlice = inputBuffer.subarray(offset, offset + blockSize);
-        blockData = decodeZstdCompressedBlock(compSlice, frameChunks);
-        offset += blockSize;
-      }
-
-      frameChunks.push(blockData);
-      frameUncompressedSize += blockData.length;
-      totalUncompressedSize += blockData.length;
-
-      // Cumulative Security Limits Check
-      if (totalUncompressedSize > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+    // Attempt fallback via native zstd if available
+    const nativeDec = decompressWithNativeZstd(inputBuffer);
+    if (nativeDec) {
+      if (nativeDec.length > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
         throw new Error(
           `Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
-
       if (
         inputBuffer.length > 0 &&
-        totalUncompressedSize / inputBuffer.length > ZSTD_SECURITY_LIMITS.MAX_RATIO
+        nativeDec.length / inputBuffer.length > ZSTD_SECURITY_LIMITS.MAX_RATIO
       ) {
         throw new Error(
           `Archive bomb detected: compression ratio (${(
-            totalUncompressedSize / inputBuffer.length
+            nativeDec.length / inputBuffer.length
           ).toFixed(1)}:1) exceeds ${ZSTD_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
       }
+      return nativeDec;
     }
-
-    const frameDecompressed = Buffer.concat(frameChunks);
-
-    // Verify Checksum if present
-    if (frameHeader.contentChecksumFlag) {
-      if (offset + 4 > inputBuffer.length) {
-        throw new Error('Malformed Zstandard frame: missing content checksum.');
-      }
-      const expectedChecksum = inputBuffer.readUInt32LE(offset);
-      offset += 4;
-      const actualChecksum = computeZstdChecksum(frameDecompressed);
-      if (actualChecksum !== expectedChecksum) {
-        throw new Error(
-          `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(16)}, computed 0x${actualChecksum.toString(16)}`
-        );
-      }
-    }
-
-    outChunks.push(frameDecompressed);
+    throw err;
   }
-
-  return Buffer.concat(outChunks);
 }
 
 /**
@@ -450,11 +525,9 @@ function decodeZstdCompressedBlock(compressedSlice: Buffer, previousBlocks: Buff
     return literals;
   }
 
-  // Parse Symbol compression modes
-  if (offset >= compressedSlice.length) return literals;
-  const modes = compressedSlice[offset++];
-  // In sequence execution, copy literals and resolve match offsets from previous blocks
-  return literals;
+  throw new Error(
+    `Unsupported Zstandard compressed block: ${numSequences} FSE sequences require full entropy decoder or system zstd utility.`
+  );
 }
 
 /**
