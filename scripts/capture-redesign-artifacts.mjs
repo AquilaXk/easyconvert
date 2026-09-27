@@ -17,6 +17,8 @@ const ARTIFACT_DIR_CONVERSATION = '/Users/aquila/.gemini/antigravity/brain/f959c
 const ARTIFACT_DIR_ACTIVE = '/Users/aquila/.gemini/antigravity/brain/e1204587-6eb4-445e-a857-442399a17170';
 const ARTIFACT_DIR_CONVERSATION_2 = '/Users/aquila/.gemini/antigravity/brain/82af80c2-ce22-48c1-954d-037137d07256';
 const ARTIFACT_DIR_CURRENT_CONV = '/Users/aquila/.gemini/antigravity/brain/d005226f-d8ac-44c7-9016-1c3ea57a4940';
+const ARTIFACT_DIR_TASK_CURRENT = '/Users/aquila/.gemini/antigravity/brain/9a7b5f8f-31c5-495f-b8ec-be9e9268b995';
+const ARTIFACT_DIR_SUBAGENT_NOW = '/Users/aquila/.gemini/antigravity/brain/c7d79932-b683-474f-82a3-e6f9713dc8d4';
 const PUBLIC_DIR = path.resolve('public/screenshots');
 
 function saveImage(filename, buffer) {
@@ -34,6 +36,8 @@ function saveImage(filename, buffer) {
     ARTIFACT_DIR_ACTIVE,
     ARTIFACT_DIR_CONVERSATION_2,
     ARTIFACT_DIR_CURRENT_CONV,
+    ARTIFACT_DIR_TASK_CURRENT,
+    ARTIFACT_DIR_SUBAGENT_NOW,
   ];
   for (const d of dirs) {
     if (fs.existsSync(d)) {
@@ -196,6 +200,27 @@ await new Promise(r => setTimeout(r, 800));
 ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('queue_light.png', Buffer.from(ss.data, 'base64'));
 
+// Capture 2-Column FormatSelector Popover Actively Open
+await send('Runtime.evaluate', {
+  expression: `
+    const btn = document.querySelector('[data-testid="queue-target-format-btn"]');
+    if (btn) btn.click();
+  `
+});
+await new Promise(r => setTimeout(r, 600));
+ss = await send('Page.captureScreenshot', { format: 'png' });
+saveImage('format_selector_modal.png', Buffer.from(ss.data, 'base64'));
+saveImage('fidelity_format_modal.png', Buffer.from(ss.data, 'base64'));
+
+// Dismiss popover
+await send('Runtime.evaluate', {
+  expression: `
+    const backdrop = document.querySelector('.fixed.inset-0.z-40');
+    if (backdrop) backdrop.click();
+  `
+});
+await new Promise(r => setTimeout(r, 400));
+
 // Toggle Dark Mode with Queue Active
 await send('Runtime.evaluate', {
   expression: `document.documentElement.classList.add('dark'); localStorage.theme = 'dark';`
@@ -264,27 +289,36 @@ await new Promise(r => setTimeout(r, 800));
 ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('mobile_footer.png', Buffer.from(ss.data, 'base64'));
 
-// 3. Dynamic Slug Route (/mp4-to-mp3)
+// 3. Dynamic Slug Route (/pdf-to-docx)
 await send('Emulation.setDeviceMetricsOverride', {
   width: 1440,
   height: 900,
-  deviceScaleFactor: 2,
+  deviceScaleFactor: 1.5,
   mobile: false
 });
-await send('Page.navigate', { url: 'http://localhost:3000/mp4-to-mp3' });
-await new Promise(r => setTimeout(r, 1500));
-ss = await send('Page.captureScreenshot', { format: 'png' });
+await send('Page.navigate', { url: 'http://localhost:3000/pdf-to-docx' });
+await new Promise(r => setTimeout(r, 2500));
+await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
+await new Promise(r => setTimeout(r, 500));
+ss = await send('Page.captureScreenshot', {
+  format: 'png',
+  captureBeyondViewport: true
+});
 saveImage('slug_converter_page.png', Buffer.from(ss.data, 'base64'));
 
 // 4. Status Page (/status)
 await send('Page.navigate', { url: 'http://localhost:3000/status' });
-await new Promise(r => setTimeout(r, 1200));
+await new Promise(r => setTimeout(r, 1800));
+await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
+await new Promise(r => setTimeout(r, 300));
 ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('status_page.png', Buffer.from(ss.data, 'base64'));
 
 // 5. Unit Converter Page (/unit-converter)
 await send('Page.navigate', { url: 'http://localhost:3000/unit-converter' });
-await new Promise(r => setTimeout(r, 1200));
+await new Promise(r => setTimeout(r, 1800));
+await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
+await new Promise(r => setTimeout(r, 300));
 ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('unit_converter_page.png', Buffer.from(ss.data, 'base64'));
 

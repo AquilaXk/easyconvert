@@ -305,7 +305,28 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(slugContent).toContain('14,200+ user ratings');
     expect(slugContent).toContain('100% Free & Unlimited');
     expect(slugContent).toContain('Zero Server Storage');
-    expect(slugContent).toContain('Client-Side Isolation');
+    expect(slugContent).toContain('Private & Secure');
+  });
+
+  it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {
+    // Video to Audio pair should NOT claim to preserve typography or document formatting
+    const mp4ToMp3 = parseConverterSlug('mp4-to-mp3');
+    expect(mp4ToMp3.pageDescription).not.toContain('layouts, fonts, and data formatting');
+    expect(mp4ToMp3.pageDescription).toContain('audio');
+
+    // Document pair should preserve layout and typography
+    const pdfToDocx = parseConverterSlug('pdf-to-docx');
+    expect(pdfToDocx.pageDescription).toContain('layouts, formatting');
+
+    // Format converters should not falsely claim to be document converters or mention MS Office
+    const mp4Converter = parseConverterSlug('mp4-converter');
+    expect(mp4Converter.pageDescription).not.toContain('online document converter');
+    expect(mp4Converter.pageDescription).not.toContain('Microsoft Office');
+    expect(mp4Converter.pageDescription).toContain('video');
+
+    const svgConverter = parseConverterSlug('svg-converter');
+    expect(svgConverter.pageDescription).not.toContain('online document converter');
+    expect(svgConverter.pageDescription).not.toContain('Microsoft Office');
   });
 
   it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {
@@ -357,6 +378,39 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(slugContent).toContain('FormatDossierCard');
     expect(slugContent).toContain('useClientQueue');
   });
+
+  it('verifies ConversionQueue eliminates duplicate fixed bottom bar and fake cloud storage options', () => {
+    const queuePath = path.join(rootDir, 'src', 'components', 'ConversionQueue.tsx');
+    const queueContent = fs.readFileSync(queuePath, 'utf-8');
+
+    // Must NOT have redundant fixed bottom bar causing duplicate CTA dock
+    expect(queueContent).not.toContain('fixed bottom-0');
+    expect(queueContent).not.toContain('files ready');
+
+    // Must NOT have fake/dummy cloud storage options
+    expect(queueContent).not.toContain('From Google Drive');
+    expect(queueContent).not.toContain('From Dropbox');
+    expect(queueContent).not.toContain('From OneDrive');
+
+    // Must have clean attached conversion dock with Add more files and Convert CTA
+    expect(queueContent).toContain('Add more files');
+    expect(queueContent).toContain('Convert');
+  });
+
+  it('verifies Hero and dynamic slug pages do not contain fake cloud storage options or claims', () => {
+    const heroPath = path.join(rootDir, 'src', 'components', 'Hero.tsx');
+    const heroContent = fs.readFileSync(heroPath, 'utf-8');
+    expect(heroContent).not.toContain('From Google Drive');
+    expect(heroContent).not.toContain('From Dropbox');
+    expect(heroContent).not.toContain('From OneDrive');
+
+    const slugPath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPath, 'utf-8');
+    expect(slugContent).not.toContain('import from URLs or cloud storage');
+    expect(slugContent).not.toContain('From Google Drive');
+    expect(slugContent).not.toContain('From Dropbox');
+  });
 });
+
 
 

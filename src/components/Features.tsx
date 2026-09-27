@@ -2,10 +2,6 @@
 
 import React, { useState } from 'react';
 import {
-  ShieldCheck,
-  FolderTree,
-  Terminal,
-  FileCheck2,
   FileText,
   FileImage,
   Video,
@@ -15,12 +11,8 @@ import {
   BookOpen,
   Archive,
   ArrowRight,
-  Cpu,
-  Sliders,
-  CheckCircle2,
   Type,
   Compass,
-  Sparkles,
 } from 'lucide-react';
 
 interface FeaturesProps {
@@ -199,140 +191,8 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
 
   return (
     <div className="space-y-16 py-12 md:py-16">
-      {/* 1. Universal Core Advantages Grid */}
-      <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-3xl mx-auto mb-12">
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-brand-500/10 text-brand-700 dark:text-brand-300 border border-brand-400/20 mb-3">
-            <Sparkles className="size-3.5" />
-            <span>Modern In-Browser Conversion</span>
-          </span>
-          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-brand-950 dark:text-white">
-            Why Choose EasyConvert?
-          </h2>
-          <p className="mt-3 text-sm sm:text-base text-ink-secondary dark:text-neutral-300 leading-relaxed">
-            The fast, client-side conversion engine designed for universal file transformation with zero server retention.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {/* Advantage 1: 300+ Formats */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
-            <div>
-              <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center mb-5 shadow-sm">
-                <FolderTree className="size-5" />
-              </div>
-              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
-                300+ Formats Supported
-              </h3>
-              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Universal conversion across audio, video, documents, images, ebooks, archives, presentations, CAD, and vector files.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
-              <CheckCircle2 className="size-3.5 text-emerald-500" />
-              <span>Full cross-format matrix</span>
-            </div>
-          </div>
-
-          {/* Advantage 2: 100% In-Browser Privacy */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
-            <div>
-              <div className="size-11 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-5 shadow-sm">
-                <ShieldCheck className="size-5" />
-              </div>
-              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
-                100% In-Browser Privacy
-              </h3>
-              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Zero server uploads. Conversions execute strictly inside your local browser sandbox via WebAssembly. Your files never leave your device.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
-              <CheckCircle2 className="size-3.5 text-emerald-500" />
-              <span>Zero server retention guaranteed</span>
-            </div>
-          </div>
-
-          {/* Advantage 3: Instant Local Processing */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
-            <div>
-              <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center mb-5 shadow-sm">
-                <Cpu className="size-5" />
-              </div>
-              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
-                Blazing Fast Local Engine
-              </h3>
-              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Zero network upload delays or server waiting queues. Multi-threaded processing takes direct advantage of your hardware.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
-              <CheckCircle2 className="size-3.5 text-emerald-500" />
-              <span>Hardware-accelerated speed</span>
-            </div>
-          </div>
-
-          {/* Advantage 4: Custom Settings & Quality Tuning */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
-            <div>
-              <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center mb-5 shadow-sm">
-                <Sliders className="size-5" />
-              </div>
-              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
-                Granular Custom Settings
-              </h3>
-              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Fine-tune output resolution, video codecs, audio bitrate, quality compression, delimiter formats, and OCR page ranges with ease.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
-              <CheckCircle2 className="size-3.5 text-emerald-500" />
-              <span>Advanced conversion controls</span>
-            </div>
-          </div>
-
-          {/* Advantage 5: Universal Device Compatibility */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
-            <div>
-              <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center mb-5 shadow-sm">
-                <Compass className="size-5" />
-              </div>
-              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
-                All Devices Supported
-              </h3>
-              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Seamless operation on Chrome, Safari, Firefox, and Edge across macOS, Windows, Linux, iOS, and Android.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
-              <CheckCircle2 className="size-3.5 text-emerald-500" />
-              <span>No plugins or installation required</span>
-            </div>
-          </div>
-
-          {/* Advantage 6: 100% Free & Unlimited */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm hover:border-brand-400 dark:hover:border-brand-500/60 transition-all flex flex-col justify-between">
-            <div>
-              <div className="size-11 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-5 shadow-sm">
-                <FileCheck2 className="size-5" />
-              </div>
-              <h3 className="text-lg font-bold text-brand-950 dark:text-white">
-                Always Free &amp; Unlimited
-              </h3>
-              <p className="mt-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Zero paywalls, daily conversion quotas, or credit limitations. Convert unlimited files with full privacy without creating an account.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#242C48] flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
-              <CheckCircle2 className="size-3.5 text-emerald-500" />
-              <span>No sign-up or credit card</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* 2. Categorized Converter Directory */}
-      <section id="format-catalog" className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-4">
+      {/* 1. Categorized Converter Directory */}
+      <section id="format-catalog" className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="text-center max-w-3xl mx-auto mb-10">
           <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">
             Comprehensive Directory
@@ -496,6 +356,49 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
               <h3 className="text-base font-bold text-brand-950 dark:text-white">3. Download Result</h3>
               <p className="mt-1.5 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
                 Click Convert and immediately download your converted file, or package all finished items into a single ZIP archive.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* 3. Trust & Core Capabilities */}
+      <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-4">
+        <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-10 shadow-sm">
+          <div className="max-w-3xl">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">
+              Why EasyConvert
+            </span>
+            <h2 className="text-xl sm:text-2xl font-black tracking-tight text-brand-950 dark:text-white mt-1">
+              Fast, Private, and Universal File Conversion
+            </h2>
+            <p className="mt-2 text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+              Convert documents, images, audio, and videos directly in your browser with zero file retention, no account requirement, and no software installation.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8 pt-6 border-t border-neutral-100 dark:border-[#242C48]">
+            <div>
+              <h3 className="text-sm font-bold text-brand-950 dark:text-white">
+                Strict Privacy Guarantee
+              </h3>
+              <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+                Files are processed securely and discarded immediately. No documents, media, or archives are stored on remote servers.
+              </p>
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-brand-950 dark:text-white">
+                High-Speed In-Browser Processing
+              </h3>
+              <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+                Enjoy instant conversions without waiting in slow upload queues. Supports batch processing for files up to 1 GB.
+              </p>
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-brand-950 dark:text-white">
+                Universal Format Coverage
+              </h3>
+              <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+                Easily convert between 292 formats across documents, vector graphics, audio, video, spreadsheets, and archives.
               </p>
             </div>
           </div>

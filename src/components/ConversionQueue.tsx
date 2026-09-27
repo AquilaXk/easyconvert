@@ -16,13 +16,9 @@ import {
   Download,
   Loader2,
   ChevronDown,
-  FilePlus,
-  RefreshCw,
   Info,
   Package,
-  HardDrive,
-  Globe,
-  FolderOpen,
+  ArrowRight,
 } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
@@ -57,7 +53,6 @@ export default function ConversionQueue({
 }: ConversionQueueProps) {
   const [activeFormatSelectorId, setActiveFormatSelectorId] = useState<string | null>(null);
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
-  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
 
   const formatFileSize = (bytes: number) => {
     if (bytes === 0) return '0 B';
@@ -82,24 +77,27 @@ export default function ConversionQueue({
 
     switch (cat) {
       case 'audio':
-        return <Music className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+        return <Music className="w-5 h-5 text-amber-600 dark:text-amber-400" />;
       case 'video':
-        return <Video className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+        return <Video className="w-5 h-5 text-purple-600 dark:text-purple-400" />;
       case 'image':
-        return <FileImage className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+        return <FileImage className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />;
       case 'ebook':
-        return <BookOpen className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+        return <BookOpen className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />;
       case 'presentation':
-        return <Presentation className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+        return <Presentation className="w-5 h-5 text-orange-600 dark:text-orange-400" />;
       case 'spreadsheet':
       case 'data':
-        return <Database className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+        return <Database className="w-5 h-5 text-teal-600 dark:text-teal-400" />;
       case 'archive':
-        return <Archive className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+        return <Archive className="w-5 h-5 text-sky-600 dark:text-sky-400" />;
       case 'font':
       case 'cad':
-        return <Type className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+        return <Type className="w-5 h-5 text-blue-600 dark:text-blue-400" />;
       default:
+        if (clean === 'pdf') {
+          return <FileText className="w-5 h-5 text-red-500 dark:text-red-400" />;
+        }
         return <FileText className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
     }
   };
@@ -115,6 +113,7 @@ export default function ConversionQueue({
       <div className="w-full bg-white dark:bg-[#181D30] rounded-2xl border border-neutral-border dark:border-[#2C375A] shadow-xl overflow-visible transition-colors">
         <div className="divide-y divide-neutral-border dark:divide-[#252E4B]">
           {items.map((item) => {
+            const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
             return (
               <div
                 key={item.id}
@@ -122,7 +121,13 @@ export default function ConversionQueue({
               >
                 {/* File Information */}
                 <div className="flex items-center gap-3.5 min-w-0 md:w-5/12">
-                  <div className="p-2.5 rounded-xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/30 shrink-0">
+                  <div
+                    className={`p-2.5 rounded-xl border shrink-0 ${
+                      isPdf
+                        ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/40'
+                        : 'bg-brand-50 dark:bg-brand-900/40 border-brand-200/80 dark:border-brand-700/30'
+                    }`}
+                  >
                     {getFileCategoryIcon(item.sourceFormat)}
                   </div>
                   <div className="min-w-0 flex-1">
@@ -130,7 +135,7 @@ export default function ConversionQueue({
                       {item.name}
                     </p>
                     <p className="text-xs text-ink-secondary dark:text-neutral-400 font-medium">
-                      {formatFileSize(item.size)} &bull; {getFormatLabel(item.sourceFormat)}
+                      {getFormatLabel(item.sourceFormat)}
                     </p>
                   </div>
                 </div>
@@ -138,35 +143,56 @@ export default function ConversionQueue({
                 {/* Conversion Target & Settings & Status */}
                 <div className="relative flex items-center justify-between md:justify-end gap-3 flex-wrap md:flex-nowrap flex-1">
                   {/* Convert indicator */}
-                  <div className="hidden sm:flex items-center gap-1.5 text-xs text-ink-muted dark:text-neutral-400 font-medium">
-                    <RefreshCw className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" />
-                    <span>to</span>
-                  </div>
+                  <span className="text-xs text-ink-muted dark:text-neutral-400 font-medium">to</span>
 
-                  {/* Target format selector button */}
-                  {item.targetFormat ? (
-                    <button
-                      type="button"
-                      data-testid="queue-target-format-btn"
-                      disabled={item.status === 'converting' || item.status === 'uploading'}
-                      onClick={() => setActiveFormatSelectorId(activeFormatSelectorId === item.id ? null : item.id)}
-                      className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-mono font-bold uppercase rounded-xl border border-brand-300 dark:border-neutral-700 bg-brand-50/80 dark:bg-[#14182B] text-brand-900 dark:text-white hover:border-brand-700 hover:bg-brand-100/60 dark:hover:border-neutral-500 shadow-sm transition-colors cursor-pointer"
-                    >
-                      <span>{item.targetFormat}</span>
-                      <ChevronDown className="w-3.5 h-3.5 text-brand-700 dark:text-neutral-400" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      data-testid="queue-target-format-btn"
-                      disabled={item.status === 'converting' || item.status === 'uploading'}
-                      onClick={() => setActiveFormatSelectorId(activeFormatSelectorId === item.id ? null : item.id)}
-                      className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-xl border-2 border-dashed border-brand-700 text-brand-700 dark:text-brand-300 bg-brand-50/50 dark:bg-brand-900/20 hover:bg-brand-100/60 shadow-sm transition-colors cursor-pointer"
-                    >
-                      <span>Select Format</span>
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                  {/* Target format selector button: compact tactile [ ... ▼ ] or [ DOCX ▼ ] with popover anchored directly beneath */}
+                  <div className="relative inline-block">
+                    {item.targetFormat ? (
+                      <button
+                        type="button"
+                        data-testid="queue-target-format-btn"
+                        disabled={item.status === 'converting' || item.status === 'uploading'}
+                        onClick={() => setActiveFormatSelectorId(activeFormatSelectorId === item.id ? null : item.id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold uppercase rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-[#14182B] text-brand-950 dark:text-white hover:border-brand-700 dark:hover:border-brand-400 shadow-xs transition-colors cursor-pointer"
+                      >
+                        <span>{item.targetFormat}</span>
+                        <ChevronDown className="w-3.5 h-3.5 text-ink-muted dark:text-neutral-400" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        data-testid="queue-target-format-btn"
+                        disabled={item.status === 'converting' || item.status === 'uploading'}
+                        onClick={() => setActiveFormatSelectorId(activeFormatSelectorId === item.id ? null : item.id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold rounded-lg border border-dashed border-brand-500 text-brand-700 dark:text-brand-300 bg-brand-50/50 dark:bg-brand-900/20 hover:bg-brand-100/60 shadow-xs transition-colors cursor-pointer"
+                      >
+                        <span>...</span>
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
+                    {/* 2-Column Searchable Target Format Selector Popover */}
+                    {activeFormatSelectorId === item.id && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-40"
+                          onClick={() => setActiveFormatSelectorId(null)}
+                        />
+                        <div className="absolute right-0 sm:right-auto sm:left-0 top-full mt-2 z-50">
+                          <FormatSelector
+                            availableFormats={getAvailableTargetFormats(item.sourceFormat)}
+                            selectedFormatId={item.targetFormat}
+                            onSelect={(fmt) => {
+                              onUpdateTargetFormat(item.id, fmt);
+                              setActiveFormatSelectorId(null);
+                            }}
+                            onClose={() => setActiveFormatSelectorId(null)}
+                            title={`Convert ${item.sourceFormat.toUpperCase()} to:`}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
 
                   {/* Options button (visible when target is chosen) */}
                   {item.targetFormat && (
@@ -176,11 +202,18 @@ export default function ConversionQueue({
                       title="Options"
                       disabled={item.status === 'converting' || item.status === 'uploading'}
                       onClick={() => setActiveOptionsModalId(item.id)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border border-neutral-border dark:border-neutral-700 bg-white dark:bg-[#14182B] text-ink-secondary dark:text-neutral-300 hover:border-brand-400 hover:text-brand-950 dark:hover:text-white shadow-sm transition-colors cursor-pointer"
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-neutral-border dark:border-neutral-700 bg-white dark:bg-[#14182B] text-ink-secondary dark:text-neutral-300 hover:border-brand-400 hover:text-brand-950 dark:hover:text-white shadow-xs transition-colors cursor-pointer"
                     >
                       <Sliders className="w-3.5 h-3.5 text-ink-muted dark:text-neutral-400" />
-                      <span>Options</span>
+                      <span className="hidden sm:inline">Options</span>
                     </button>
+                  )}
+
+                  {/* Ready Status Badge matching Reference 1 */}
+                  {item.status === 'ready' && (
+                    <span className="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded text-[11px] font-medium tracking-wide uppercase text-emerald-600 dark:text-emerald-400 border border-emerald-500/60 bg-emerald-50/40 dark:bg-emerald-950/20">
+                      Ready
+                    </span>
                   )}
 
                   {/* Progress / Status / Finished Actions */}
@@ -198,15 +231,13 @@ export default function ConversionQueue({
 
                   {item.status === 'completed' && item.edgeProcessed && (
                     <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg">
-                      <span>{item.edgeTier || 'Edge L0 (Instant)'}</span>
-                      <span className="text-emerald-500/40">&bull;</span>
-                      <span>0B Uploaded</span>
+                      <span>{item.edgeTier || 'Edge L0'}</span>
                     </span>
                   )}
 
                   {item.status === 'completed' && !item.edgeProcessed && (
                     <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-sky-700 dark:text-sky-400 bg-sky-500/10 border border-sky-500/25 px-2.5 py-1 rounded-lg">
-                      <span>{item.edgeTier || 'Cloud (Zero-Retention)'}</span>
+                      <span>{item.edgeTier || 'Cloud'}</span>
                     </span>
                   )}
 
@@ -214,7 +245,7 @@ export default function ConversionQueue({
                     <a
                       href={item.resultUrl}
                       download={`converted_${item.name.replace(/\.[^/.]+$/, '')}.${item.targetFormat}`}
-                      className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-sm transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition-colors"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Download</span>
@@ -231,170 +262,68 @@ export default function ConversionQueue({
                     </button>
                   )}
 
+                  {/* File Size */}
+                  <span className="text-xs font-mono text-ink-muted dark:text-neutral-400 min-w-[55px] text-right">
+                    {formatFileSize(item.size)}
+                  </span>
+
                   {/* Delete button */}
                   <button
                     type="button"
                     onClick={() => onRemoveItem(item.id)}
                     title="Delete"
-                    className="p-1.5 text-ink-muted hover:text-red-600 dark:hover:text-white rounded-lg hover:bg-red-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                    className="p-1 text-ink-muted hover:text-red-600 dark:hover:text-white rounded-lg hover:bg-red-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
-
-                  {/* Target Format Selector Popover anchored directly under row actions */}
-                  {activeFormatSelectorId === item.id && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-40"
-                        onClick={() => setActiveFormatSelectorId(null)}
-                      />
-                      <div className="absolute right-0 top-full mt-2 z-50">
-                        <FormatSelector
-                          availableFormats={getAvailableTargetFormats(item.sourceFormat)}
-                          selectedFormatId={item.targetFormat}
-                          onSelect={(fmt) => {
-                            onUpdateTargetFormat(item.id, fmt);
-                            setActiveFormatSelectorId(null);
-                          }}
-                          onClose={() => setActiveFormatSelectorId(null)}
-                          title={`Convert ${item.sourceFormat.toUpperCase()} to:`}
-                        />
-                      </div>
-                    </>
-                  )}
                 </div>
               </div>
             );
           })}
         </div>
-      </div>
 
-      {/* Post-Conversion Ad Unit */}
-      <AdBanner slot="post-conversion" className="mt-8 mb-4" />
+        {/* Attached Conversion Dock directly on the table card matching Reference 1 */}
+        <div className="bg-[#1F2340] dark:bg-[#111424] text-white px-5 sm:px-6 py-4 rounded-b-2xl border-t border-neutral-200 dark:border-[#2C375A] flex items-center justify-between gap-4 flex-wrap">
+          {/* Left: Add more files button matching Reference 1 */}
+          <button
+            type="button"
+            onClick={onAddMoreFiles}
+            className="bg-white hover:bg-neutral-100 active:bg-neutral-200 text-brand-950 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-2 px-4 py-2.5 transition-colors cursor-pointer shadow-sm"
+          >
+            <span className="text-brand-700 font-bold text-base leading-none">+</span>
+            <span>Add more files</span>
+          </button>
 
-      {/* Fixed Sticky Action Bar: Crisp Light Surface & Elevated Dark Surface */}
-      <div className="fixed bottom-0 inset-x-0 h-16 sm:h-18 bg-white/95 dark:bg-[#14182B]/95 backdrop-blur-md border-t border-neutral-border dark:border-[#283252] z-40 px-4 sm:px-8 flex items-center justify-between shadow-2xl transition-colors">
-        <div className="max-w-8xl mx-auto w-full flex items-center justify-between">
-          {/* Left Side Status */}
-          <div className="flex items-center gap-2 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 font-medium">
+          {/* Center helper hint matching Reference 1 & 2 */}
+          <div className="hidden lg:flex items-center gap-2 text-xs text-neutral-300 dark:text-neutral-400 font-normal">
             {!allReady ? (
-              <>
-                <Info className="w-4 h-4 text-brand-700 dark:text-brand-400" />
+              <span className="text-amber-300 font-medium flex items-center gap-1.5">
+                <Info className="w-3.5 h-3.5 shrink-0" />
                 <span>Please select output format</span>
-              </>
-            ) : (
-              <span>
-                {items.length} {items.length === 1 ? 'file ready' : 'files ready'}
               </span>
+            ) : (
+              <span>Ctrl or Shift to select multiple files</span>
             )}
           </div>
 
-          {/* Right Side Buttons */}
+          {/* Right: Download all zip and Convert button */}
           <div className="flex items-center gap-3">
-            {/* Download all zip if multiple completed */}
             {completedCount > 1 && (
               <button
                 type="button"
                 onClick={onDownloadAllZip}
-                className="flex items-center gap-1.5 px-4 py-2 sm:py-2.5 text-xs sm:text-sm font-bold text-brand-700 dark:text-brand-300 bg-brand-100 hover:bg-brand-200 dark:bg-brand-900/40 dark:hover:bg-brand-900/60 rounded-xl transition-colors border border-brand-300/60 dark:border-brand-700/40 cursor-pointer"
+                className="flex items-center gap-1.5 px-4 py-2.5 text-xs sm:text-sm font-bold text-white bg-brand-800 hover:bg-brand-900 rounded-xl transition-colors border border-white/10 cursor-pointer"
               >
                 <Package className="w-4 h-4" />
                 <span>Download All (ZIP)</span>
               </button>
             )}
 
-            {/* Add more files split button */}
-            <div className="relative inline-flex shadow-sm">
-              <button
-                type="button"
-                onClick={onAddMoreFiles}
-                className="bg-white hover:bg-neutral-50 dark:bg-[#1E2540] dark:hover:bg-[#252E4E] text-brand-950 dark:text-white border border-neutral-border dark:border-[#2C375A] rounded-l-xl text-xs sm:text-sm font-semibold flex items-center gap-2 px-3.5 py-2 sm:py-2.5 transition-colors cursor-pointer"
-              >
-                <FilePlus className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                <span>Add more files</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsAddMenuOpen(!isAddMenuOpen)}
-                aria-label="Select file source"
-                className="bg-white hover:bg-neutral-50 dark:bg-[#1E2540] dark:hover:bg-[#252E4E] text-brand-950 dark:text-white border-y border-r border-neutral-border dark:border-[#2C375A] rounded-r-xl text-xs sm:text-sm font-medium p-2 sm:p-2.5 transition-colors cursor-pointer"
-              >
-                <ChevronDown className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-              </button>
-
-              {isAddMenuOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setIsAddMenuOpen(false)}
-                  />
-                  <div className="absolute bottom-full right-0 mb-2 w-56 bg-white dark:bg-[#181D30] border border-neutral-border dark:border-[#2C375A] rounded-2xl shadow-2xl p-1.5 z-50 animate-in fade-in duration-150 text-left">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddMenuOpen(false);
-                        onAddMoreFiles();
-                      }}
-                      className="flex items-center gap-2.5 w-full px-3.5 py-2 text-sm text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                    >
-                      <HardDrive className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                      <span>From my computer</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddMenuOpen(false);
-                        onAddMoreFiles();
-                      }}
-                      className="flex items-center gap-2.5 w-full px-3.5 py-2 text-sm text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                    >
-                      <Globe className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                      <span>By URL</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddMenuOpen(false);
-                        onAddMoreFiles();
-                      }}
-                      className="flex items-center gap-2.5 w-full px-3.5 py-2 text-sm text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                    >
-                      <FolderOpen className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                      <span>From Google Drive</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddMenuOpen(false);
-                        onAddMoreFiles();
-                      }}
-                      className="flex items-center gap-2.5 w-full px-3.5 py-2 text-sm text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                    >
-                      <Archive className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                      <span>From Dropbox</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddMenuOpen(false);
-                        onAddMoreFiles();
-                      }}
-                      className="flex items-center gap-2.5 w-full px-3.5 py-2 text-sm text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                    >
-                      <FolderOpen className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                      <span>From OneDrive</span>
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Main Convert CTA button: [ 🔄 Convert ] in Signature brand.700 */}
             <button
               type="button"
               disabled={isConverting || !allReady}
               onClick={onConvertAll}
-              className="bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white px-6 sm:px-8 py-2.5 sm:py-3 rounded-xl font-bold text-sm sm:text-base flex items-center gap-2 shadow-lg shadow-brand-700/25 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
+              className="bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white px-8 sm:px-10 py-3 rounded-xl font-bold text-sm sm:text-base flex items-center gap-2.5 shadow-lg shadow-brand-700/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
             >
               {isConverting ? (
                 <>
@@ -403,14 +332,17 @@ export default function ConversionQueue({
                 </>
               ) : (
                 <>
-                  <RefreshCw className="w-4 h-4" />
                   <span>Convert</span>
+                  <ArrowRight className="w-4 h-4" />
                 </>
               )}
             </button>
           </div>
         </div>
       </div>
+
+      {/* Post-Conversion Ad Unit */}
+      <AdBanner slot="post-conversion" className="mt-8 mb-4" />
 
       {/* Options Modal */}
       {currentOptionsItem && (
