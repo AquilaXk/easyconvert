@@ -12,44 +12,34 @@ export interface ApiAuthResult {
   status?: number;
 }
 
-/**
- * Validates programmatic REST API requests using either API Key header or User session.
- */
-export async function validateApiAccess(
-  request: Request,
-  requiredUnits: number = 1
-): Promise<ApiAuthResult> {
-  let apiKeySecret: string | null = null;
-
-  // 1. Check X-API-Key header
+function extractApiKeySecret(request: Request): string | null {
   const customHeader = request.headers.get('x-api-key');
   if (customHeader) {
-    apiKeySecret = customHeader.trim();
+    return customHeader.trim();
   }
 
-  // 2. Check Authorization header
-  if (!apiKeySecret) {
-    const authHeader = request.headers.get('authorization');
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7).trim();
-      if (token.startsWith('ec_live_')) {
-        apiKeySecret = token;
-      }
+  const authHeader = request.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.substring(7).trim();
+    if (token.startsWith('ec_live_')) {
+      return token;
     }
   }
 
-  // If API Key provided, verify it
-  if (apiKeySecret) {
-    const verification = await keyStore.verifyApiKey(apiKeySecret);
-    if (!verification.valid || !verification.user || !verification.key) {
-      return {
-        authorized: false,
-        error: 'Invalid, revoked, or non-existent API key provided',
-        status: 401,
-      };
-    }
+  return null;
+}
 
-    // Check quota
+async function verifyKeyAccess(apiKeySecret: string, requiredUnits: number): Promise<ApiAuthResult> {
+  const verification = await keyStore.verifyApiKey(apiKeySecret);
+  if (!verification.valid || !verification.user || !verification.key) {
+    return {
+      authorized: false,
+      error: 'Invalid, revoked, or non-existent API key provided',
+      status: 401,
+    };
+  }
+
+  if (requiredUnits > 0) {
     const quotaCheck = await keyStore.recordUsage(verification.user.id, requiredUnits);
     if (!quotaCheck.allowed) {
       return {
@@ -60,18 +50,38 @@ export async function validateApiAccess(
         status: 429,
       };
     }
+  } else {
+    const quota = await keyStore.getQuotaUsage(verification.user.id);
+    if (quota.remaining <= 0) {
+      return {
+        authorized: false,
+        user: verification.user,
+        apiKey: verification.key,
+        error: `Daily conversion quota exceeded for tier '${verification.user.tier}'.`,
+        status: 429,
+      };
+    }
+  }
 
+  return {
+    authorized: true,
+    user: verification.user,
+    apiKey: verification.key,
+    authMethod: 'api_key',
+  };
+}
+
+async function verifySessionAccess(request: Request, requiredUnits: number): Promise<ApiAuthResult> {
+  const sessionUser = await getSessionFromRequest(request);
+  if (!sessionUser) {
     return {
-      authorized: true,
-      user: verification.user,
-      apiKey: verification.key,
-      authMethod: 'api_key',
+      authorized: false,
+      error: 'Authentication required. Please provide a valid Bearer API key or sign in.',
+      status: 401,
     };
   }
 
-  // Otherwise, fall back to active session
-  const sessionUser = await getSessionFromRequest(request);
-  if (sessionUser) {
+  if (requiredUnits > 0) {
     const quotaCheck = await keyStore.recordUsage(sessionUser.id, requiredUnits);
     if (!quotaCheck.allowed) {
       return {
@@ -81,17 +91,35 @@ export async function validateApiAccess(
         status: 429,
       };
     }
-
-    return {
-      authorized: true,
-      user: sessionUser,
-      authMethod: 'session',
-    };
+  } else {
+    const quota = await keyStore.getQuotaUsage(sessionUser.id);
+    if (quota.remaining <= 0) {
+      return {
+        authorized: false,
+        user: sessionUser,
+        error: `Daily conversion quota exceeded for tier '${sessionUser.tier}'.`,
+        status: 429,
+      };
+    }
   }
 
   return {
-    authorized: false,
-    error: 'Authentication required. Please provide a valid Bearer API key or sign in.',
-    status: 401,
+    authorized: true,
+    user: sessionUser,
+    authMethod: 'session',
   };
+}
+
+/**
+ * Validates programmatic REST API requests using either API Key header or User session.
+ */
+export async function validateApiAccess(
+  request: Request,
+  requiredUnits: number = 1
+): Promise<ApiAuthResult> {
+  const apiKeySecret = extractApiKeySecret(request);
+  if (apiKeySecret) {
+    return verifyKeyAccess(apiKeySecret, requiredUnits);
+  }
+  return verifySessionAccess(request, requiredUnits);
 }

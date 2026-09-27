@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import type { User as AuthUser } from '@/lib/auth/types';
 
 interface UserNavProps {
@@ -8,7 +9,7 @@ interface UserNavProps {
   onItemClick?: () => void;
 }
 
-export default function UserNav({ mobile = false, onItemClick }: UserNavProps) {
+export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNavProps>) {
   const [user, setUser] = useState<AuthUser | null>(null);
 
   useEffect(() => {
@@ -18,7 +19,7 @@ export default function UserNav({ mobile = false, onItemClick }: UserNavProps) {
         return null;
       })
       .then((data) => {
-        if (data && data.success && data.user) {
+        if (data?.success && data?.user) {
           setUser(data.user);
         }
       })
@@ -38,33 +39,33 @@ export default function UserNav({ mobile = false, onItemClick }: UserNavProps) {
               {user.tier}
             </span>
           </div>
-          <a
+          <Link
             href="/dashboard"
             onClick={onItemClick}
             className="text-xs text-brand-700 dark:text-brand-400 font-semibold"
           >
             Dashboard &rarr;
-          </a>
+          </Link>
         </div>
       );
     }
 
     return (
       <div className="grid grid-cols-2 gap-2 px-2 pt-1">
-        <a
+        <Link
           href="/auth"
           onClick={onItemClick}
           className="py-2 text-center text-xs font-semibold rounded-lg border border-neutral-border dark:border-dark-border text-ink-primary dark:text-white"
         >
           Log In
-        </a>
-        <a
+        </Link>
+        <Link
           href="/auth?tab=register"
           onClick={onItemClick}
           className="py-2 text-center text-xs font-semibold text-white bg-brand-700 rounded-lg shadow-sm"
         >
           Sign Up
-        </a>
+        </Link>
       </div>
     );
   }
@@ -72,7 +73,7 @@ export default function UserNav({ mobile = false, onItemClick }: UserNavProps) {
   // Desktop render
   if (user) {
     return (
-      <a
+      <Link
         href="/dashboard"
         className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-neutral-border dark:border-dark-border hover:bg-brand-100/60 dark:hover:bg-white/5 transition-all text-xs font-semibold"
       >
@@ -83,24 +84,24 @@ export default function UserNav({ mobile = false, onItemClick }: UserNavProps) {
         <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-brand-100 dark:bg-white/10 text-brand-700 dark:text-brand-300">
           {user.tier}
         </span>
-      </a>
+      </Link>
     );
   }
 
   return (
     <>
-      <a
+      <Link
         href="/auth"
         className="px-3 py-1.5 text-xs font-semibold text-ink-secondary hover:text-brand-950 dark:text-neutral-300 dark:hover:text-white rounded-lg transition-colors"
       >
         Log In
-      </a>
-      <a
+      </Link>
+      <Link
         href="/auth?tab=register"
         className="px-3.5 py-1.5 text-xs font-semibold text-white bg-brand-700 hover:bg-brand-800 rounded-lg shadow-sm shadow-brand-700/20 transition-all"
       >
         Sign Up
-      </a>
+      </Link>
     </>
   );
 }

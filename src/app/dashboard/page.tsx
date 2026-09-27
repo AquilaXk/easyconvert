@@ -16,18 +16,105 @@ import {
   Plus,
   Clock,
   Download,
-  AlertTriangle,
   RefreshCw,
   LogOut,
   Layers,
   Code2,
-  Terminal,
-  ExternalLink,
   Loader2,
 } from 'lucide-react';
 
 interface FileWithRemaining extends UserConversionFile {
   remainingSeconds: number;
+}
+
+interface IntegrationGuideProps {
+  sampleKeyDisplay: string;
+  copyToClipboard: (text: string) => void;
+}
+
+function IntegrationGuide({ sampleKeyDisplay, copyToClipboard }: Readonly<IntegrationGuideProps>) {
+  const [codeTab, setCodeTab] = useState<'curl' | 'node' | 'python'>('curl');
+
+  const codeSnippets = {
+    curl: String.raw`curl -X POST https://easyconvert.app/api/v1/convert \
+  -H "Authorization: Bearer ${sampleKeyDisplay}" \
+  -F "file=@document.docx" \
+  -F "targetFormat=pdf"`,
+    node: `import fs from 'node:fs';
+
+const formData = new FormData();
+formData.append('file', new Blob([fs.readFileSync('document.docx')]), 'document.docx');
+formData.append('targetFormat', 'pdf');
+
+const res = await fetch('https://easyconvert.app/api/v1/convert', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer ${sampleKeyDisplay}',
+  },
+  body: formData,
+});
+
+const result = await res.json();
+console.log('Converted File URL:', result.dataUri);`,
+    python: `import requests
+
+url = "https://easyconvert.app/api/v1/convert"
+headers = {"Authorization": "Bearer ${sampleKeyDisplay}"}
+files = {"file": open("document.docx", "rb")}
+data = {"targetFormat": "pdf"}
+
+response = requests.post(url, headers=headers, files=files, data=data)
+print(response.json())`,
+  };
+
+  return (
+    <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-2xl p-6 sm:p-8 shadow-sm">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-xl bg-brand-100 dark:bg-white/10 text-brand-700 dark:text-brand-300">
+            <Code2 className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold">Programmatic Integration Guide</h2>
+            <p className="text-xs text-ink-secondary dark:text-dark-muted">
+              Seamlessly convert documents, media, cad, and spreadsheets using standard HTTP multipart requests
+            </p>
+          </div>
+        </div>
+
+        <div className="flex rounded-lg bg-neutral-subtle dark:bg-dark-elevated p-1 border border-neutral-border dark:border-dark-border">
+          {(['curl', 'node', 'python'] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setCodeTab(tab)}
+              className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+                codeTab === tab
+                  ? 'bg-white dark:bg-dark-surface text-brand-700 dark:text-white shadow-sm'
+                  : 'text-ink-secondary dark:text-dark-muted'
+              }`}
+            >
+              {tab === 'curl' ? 'cURL' : tab === 'node' ? 'Node.js' : 'Python'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="relative mt-4">
+        <pre className="p-4 rounded-xl bg-ink-primary dark:bg-dark-scaffold text-neutral-subtle font-mono text-xs overflow-x-auto leading-relaxed border border-dark-border">
+          {codeSnippets[codeTab]}
+        </pre>
+        <button
+          type="button"
+          onClick={() => copyToClipboard(codeSnippets[codeTab])}
+          className="absolute top-3 right-3 p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+          title="Copy Code"
+        >
+          <Copy className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -45,7 +132,7 @@ export default function DashboardPage() {
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
-  const [codeTab, setCodeTab] = useState<'curl' | 'node' | 'python'>('curl');
+  const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
 
   // Files state
   const [userFiles, setUserFiles] = useState<FileWithRemaining[]>([]);
@@ -168,12 +255,10 @@ export default function DashboardPage() {
   };
 
   const handleRevokeKey = async (id: string) => {
-    if (!confirm('Are you sure you want to revoke this API key? Any applications using it will be denied access.')) {
-      return;
-    }
     try {
       const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
       if (res.ok) {
+        setRevokingKeyId(null);
         await fetchKeysAndQuota();
       }
     } catch {
@@ -209,7 +294,7 @@ export default function DashboardPage() {
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+    return `${Number.parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   };
 
   if (loading) {
@@ -225,38 +310,6 @@ export default function DashboardPage() {
   }
 
   const sampleKeyDisplay = apiKeys.length > 0 ? apiKeys[0].prefix : 'ec_live_your_api_key_here';
-
-  const codeSnippets = {
-    curl: `curl -X POST https://easyconvert.app/api/v1/convert \\
-  -H "Authorization: Bearer ${sampleKeyDisplay}" \\
-  -F "file=@document.docx" \\
-  -F "targetFormat=pdf"`,
-    node: `import fs from 'node:fs';
-
-const formData = new FormData();
-formData.append('file', new Blob([fs.readFileSync('document.docx')]), 'document.docx');
-formData.append('targetFormat', 'pdf');
-
-const res = await fetch('https://easyconvert.app/api/v1/convert', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer ${sampleKeyDisplay}',
-  },
-  body: formData,
-});
-
-const result = await res.json();
-console.log('Converted File URL:', result.dataUri);`,
-    python: `import requests
-
-url = "https://easyconvert.app/api/v1/convert"
-headers = {"Authorization": "Bearer ${sampleKeyDisplay}"}
-files = {"file": open("document.docx", "rb")}
-data = {"targetFormat": "pdf"}
-
-response = requests.post(url, headers=headers, files=files, data=data)
-print(response.json())`,
-  };
 
   return (
     <div className="min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold flex flex-col text-ink-primary dark:text-white">
@@ -559,13 +612,33 @@ print(response.json())`,
                             </td>
                             <td className="py-4 text-right">
                               {isActive ? (
-                                <button
-                                  type="button"
-                                  onClick={() => handleRevokeKey(key.id)}
-                                  className="text-xs text-status-danger hover:underline font-medium"
-                                >
-                                  Revoke
-                                </button>
+                                revokingKeyId === key.id ? (
+                                  <div className="inline-flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRevokeKey(key.id)}
+                                      className="text-xs text-rose-600 font-bold hover:underline"
+                                    >
+                                      Confirm
+                                    </button>
+                                    <span className="text-ink-muted text-xs">/</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setRevokingKeyId(null)}
+                                      className="text-xs text-ink-secondary hover:underline"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setRevokingKeyId(key.id)}
+                                    className="text-xs text-status-danger hover:underline font-medium"
+                                  >
+                                    Revoke
+                                  </button>
+                                )
                               ) : (
                                 <span className="text-xs text-ink-muted">Revoked</span>
                               )}
@@ -580,71 +653,7 @@ print(response.json())`,
             </div>
 
             {/* REST API Quickstart & Code Examples */}
-            <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-2xl p-6 sm:p-8 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-xl bg-brand-100 dark:bg-white/10 text-brand-700 dark:text-brand-300">
-                    <Code2 className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h2 className="text-base font-bold">Programmatic Integration Guide</h2>
-                    <p className="text-xs text-ink-secondary dark:text-dark-muted">
-                      Seamlessly convert documents, media, cad, and spreadsheets using standard HTTP multipart requests
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex rounded-lg bg-neutral-subtle dark:bg-dark-elevated p-1 border border-neutral-border dark:border-dark-border">
-                  <button
-                    type="button"
-                    onClick={() => setCodeTab('curl')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
-                      codeTab === 'curl'
-                        ? 'bg-white dark:bg-dark-surface text-brand-700 dark:text-white shadow-sm'
-                        : 'text-ink-secondary dark:text-dark-muted'
-                    }`}
-                  >
-                    cURL
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCodeTab('node')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
-                      codeTab === 'node'
-                        ? 'bg-white dark:bg-dark-surface text-brand-700 dark:text-white shadow-sm'
-                        : 'text-ink-secondary dark:text-dark-muted'
-                    }`}
-                  >
-                    Node.js
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCodeTab('python')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
-                      codeTab === 'python'
-                        ? 'bg-white dark:bg-dark-surface text-brand-700 dark:text-white shadow-sm'
-                        : 'text-ink-secondary dark:text-dark-muted'
-                    }`}
-                  >
-                    Python
-                  </button>
-                </div>
-              </div>
-
-              <div className="relative mt-4">
-                <pre className="p-4 rounded-xl bg-ink-primary dark:bg-dark-scaffold text-neutral-subtle font-mono text-xs overflow-x-auto leading-relaxed border border-dark-border">
-                  {codeSnippets[codeTab]}
-                </pre>
-                <button
-                  type="button"
-                  onClick={() => copyToClipboard(codeSnippets[codeTab])}
-                  className="absolute top-3 right-3 p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
-                  title="Copy Code"
-                >
-                  <Copy className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+            <IntegrationGuide sampleKeyDisplay={sampleKeyDisplay} copyToClipboard={copyToClipboard} />
           </div>
         )}
 

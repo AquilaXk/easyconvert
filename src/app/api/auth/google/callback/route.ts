@@ -19,8 +19,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL('/auth?error=oauth_code_missing', req.url));
   }
 
-  // State verification for CSRF mitigation (unless testing in explicit sandbox mock mode)
-  if (!isMock && state && !validateOAuthState(state)) {
+  // State verification for CSRF mitigation (RFC 6749)
+  if (!state || !validateOAuthState(state)) {
     return NextResponse.redirect(new URL('/auth?error=invalid_oauth_state', req.url));
   }
 
