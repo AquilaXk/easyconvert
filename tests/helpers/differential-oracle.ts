@@ -270,6 +270,49 @@ export interface ArchiveStructuralAst {
 // 3. Reference Structural AST Parsers
 // ============================================================================
 
+/**
+ * Inspects PDF content and compressed streams for ISO 32000-1 3 Tr invisible text operator.
+ * Uses linear index search to prevent regex backtracking (typescript:S8786).
+ */
+function containsInvisibleTextOperator(content: string): boolean {
+  if (content.includes('3 Tr') || content.includes('3 tr')) {
+    return true;
+  }
+
+  let searchPos = 0;
+  while (searchPos < content.length) {
+    const streamStart = content.indexOf('stream', searchPos);
+    if (streamStart === -1) break;
+
+    let dataStart = streamStart + 6;
+    if (content.charCodeAt(dataStart) === 0x0d) dataStart++;
+    if (content.charCodeAt(dataStart) === 0x0a) dataStart++;
+
+    const streamEnd = content.indexOf('endstream', dataStart);
+    if (streamEnd === -1) break;
+
+    const streamBuf = Buffer.from(content.slice(dataStart, streamEnd), 'latin1');
+
+    try {
+      const inflated = zlib.inflateSync(streamBuf).toString('latin1');
+      if (inflated.includes('3 Tr') || inflated.includes('3 tr')) {
+        return true;
+      }
+    } catch {}
+
+    try {
+      const inflated = zlib.inflateRawSync(streamBuf).toString('latin1');
+      if (inflated.includes('3 Tr') || inflated.includes('3 tr')) {
+        return true;
+      }
+    } catch {}
+
+    searchPos = streamEnd + 9;
+  }
+
+  return false;
+}
+
 export async function parsePdfToAst(buffer: Buffer): Promise<PdfStructuralAst> {
   const content = buffer.toString('latin1');
   const verMatch = /%PDF-(\d+\.\d+)/.exec(content);
@@ -298,31 +341,9 @@ export async function parsePdfToAst(buffer: Buffer): Promise<PdfStructuralAst> {
   }
 
   const extractedText = extractTextFromPdf(buffer) || textTokens.join(' ');
-
   const hasObjectStreams = content.includes('/Type /ObjStm') || content.includes('/ObjStm');
   const hasXrefStream = content.includes('/Type /XRef') || content.includes('/XRef');
-  let hasSandwichOcrText = content.includes('3 Tr') || content.includes('3 tr');
-  if (!hasSandwichOcrText) {
-    const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
-    let match: RegExpExecArray | null;
-    while ((match = streamRegex.exec(content)) !== null) {
-      const streamBuf = Buffer.from(match[1], 'latin1');
-      try {
-        const inflated = zlib.inflateSync(streamBuf).toString('latin1');
-        if (inflated.includes('3 Tr') || inflated.includes('3 tr')) {
-          hasSandwichOcrText = true;
-          break;
-        }
-      } catch {}
-      try {
-        const inflated = zlib.inflateRawSync(streamBuf).toString('latin1');
-        if (inflated.includes('3 Tr') || inflated.includes('3 tr')) {
-          hasSandwichOcrText = true;
-          break;
-        }
-      } catch {}
-    }
-  }
+  const hasSandwichOcrText = containsInvisibleTextOperator(content);
 
   if (!title) {
     const titleMatch = /\/Title\s*\(([^()]+)\)/.exec(content);
