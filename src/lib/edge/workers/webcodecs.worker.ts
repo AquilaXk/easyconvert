@@ -581,13 +581,250 @@ export function muxWebmVideo(
   return result;
 }
 
+function buildIsoBmffBox(type: string, payload: Uint8Array): Uint8Array {
+  const size = 8 + payload.byteLength;
+  const box = new Uint8Array(size);
+  const view = new DataView(box.buffer, box.byteOffset, size);
+  view.setUint32(0, size, false);
+  for (let i = 0; i < 4; i++) {
+    box[4 + i] = type.charCodeAt(i);
+  }
+  box.set(payload, 8);
+  return box;
+}
+
+function concatUint8Arrays(...arrays: Uint8Array[]): Uint8Array {
+  const total = arrays.reduce((acc, a) => acc + a.byteLength, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) {
+    out.set(a, off);
+    off += a.byteLength;
+  }
+  return out;
+}
+
+/**
+ * Builds valid ISO BMFF 'moov' box containing mvhd, trak, mdia, minf, and stbl boxes
+ * for WebCodecs encoded H.264 video chunks.
+ */
+export function buildMp4MoovBox(
+  chunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
+  width: number = 1280,
+  height: number = 720,
+  mdatDataOffset: number = 40,
+  timescale: number = 1000
+): Uint8Array {
+  const totalFrames = Math.max(1, chunks.length);
+  const defaultDurationMs = Math.round(1000 / 30);
+  let totalDurationMs = 0;
+
+  if (chunks.length > 1) {
+    const firstTs = chunks[0].timestampMicros;
+    const lastTs = chunks[chunks.length - 1].timestampMicros;
+    totalDurationMs = Math.max(
+      defaultDurationMs * totalFrames,
+      Math.round((lastTs - firstTs) / 1000) + defaultDurationMs
+    );
+  } else {
+    totalDurationMs = defaultDurationMs * totalFrames;
+  }
+
+  // 1. mvhd (Movie Header Box) - 100 bytes payload
+  const mvhdPayload = new Uint8Array(100);
+  const mvhdView = new DataView(mvhdPayload.buffer, mvhdPayload.byteOffset, 100);
+  mvhdView.setUint32(0, 0, false); // version + flags
+  mvhdView.setUint32(12, timescale, false); // timescale: 1000
+  mvhdView.setUint32(16, totalDurationMs, false); // duration
+  mvhdView.setUint32(20, 0x00010000, false); // rate 1.0
+  mvhdView.setUint16(24, 0x0100, false); // volume 1.0
+  // Identity matrix
+  mvhdView.setUint32(36, 0x00010000, false);
+  mvhdView.setUint32(52, 0x00010000, false);
+  mvhdView.setUint32(68, 0x40000000, false);
+  mvhdView.setUint32(96, 2, false); // next_track_ID
+  const mvhdBox = buildIsoBmffBox('mvhd', mvhdPayload);
+
+  // 2. tkhd (Track Header Box) - 84 bytes payload
+  const tkhdPayload = new Uint8Array(84);
+  const tkhdView = new DataView(tkhdPayload.buffer, tkhdPayload.byteOffset, 84);
+  tkhdView.setUint32(0, 0x00000007, false); // version + flags (enabled | in_movie | in_preview)
+  tkhdView.setUint32(12, 1, false); // track_ID = 1
+  tkhdView.setUint32(20, totalDurationMs, false); // duration
+  // Identity matrix
+  tkhdView.setUint32(36, 0x00010000, false);
+  tkhdView.setUint32(52, 0x00010000, false);
+  tkhdView.setUint32(68, 0x40000000, false);
+  tkhdView.setUint32(76, width << 16, false); // width (16.16 fixed point)
+  tkhdView.setUint32(80, height << 16, false); // height (16.16 fixed point)
+  const tkhdBox = buildIsoBmffBox('tkhd', tkhdPayload);
+
+  // 3. mdhd (Media Header Box) - 24 bytes payload
+  const mdhdPayload = new Uint8Array(24);
+  const mdhdView = new DataView(mdhdPayload.buffer, mdhdPayload.byteOffset, 24);
+  mdhdView.setUint32(0, 0, false); // version + flags
+  mdhdView.setUint32(12, timescale, false); // timescale: 1000
+  mdhdView.setUint32(16, totalDurationMs, false); // duration
+  mdhdView.setUint16(20, 0x55c4, false); // language: 'und'
+  const mdhdBox = buildIsoBmffBox('mdhd', mdhdPayload);
+
+  // 4. hdlr (Handler Box) - 33 bytes payload
+  const hdlrPayload = new Uint8Array(33);
+  const hdlrView = new DataView(hdlrPayload.buffer, hdlrPayload.byteOffset, 33);
+  hdlrView.setUint32(0, 0, false);
+  hdlrView.setUint32(8, 0x76696465, false); // 'vide'
+  const handlerName = 'VideoHandler';
+  for (let i = 0; i < handlerName.length; i++) {
+    hdlrPayload[20 + i] = handlerName.charCodeAt(i);
+  }
+  const hdlrBox = buildIsoBmffBox('hdlr', hdlrPayload);
+
+  // 5. vmhd (Video Media Header) - 12 bytes payload
+  const vmhdPayload = new Uint8Array(12);
+  const vmhdView = new DataView(vmhdPayload.buffer, vmhdPayload.byteOffset, 12);
+  vmhdView.setUint32(0, 0x00000001, false); // version + flags
+  const vmhdBox = buildIsoBmffBox('vmhd', vmhdPayload);
+
+  // 6. dinf -> dref
+  const drefPayload = new Uint8Array(20);
+  const drefView = new DataView(drefPayload.buffer, drefPayload.byteOffset, 20);
+  drefView.setUint32(0, 0, false); // version + flags
+  drefView.setUint32(4, 1, false); // entry count = 1
+  drefView.setUint32(8, 12, false); // url box size
+  drefView.setUint32(12, 0x75726c20, false); // 'url '
+  drefView.setUint32(16, 0x00000001, false); // self-contained flag
+  const dinfBox = buildIsoBmffBox('dinf', buildIsoBmffBox('dref', drefPayload));
+
+  // 7. stbl components:
+  // 7a. avcC & avc1 in stsd
+  const defaultSps = new Uint8Array([0x67, 0x42, 0x00, 0x1f, 0xe9, 0x02, 0x80, 0xf6, 0x01, 0x6e, 0x80]);
+  const defaultPps = new Uint8Array([0x68, 0xce, 0x3c, 0x80]);
+
+  const avcCSize = 11 + defaultSps.length + defaultPps.length;
+  const avcCPayload = new Uint8Array(avcCSize);
+  let off = 0;
+  avcCPayload[off++] = 1; // configurationVersion
+  avcCPayload[off++] = defaultSps[1]; // profile
+  avcCPayload[off++] = defaultSps[2]; // profile_compat
+  avcCPayload[off++] = defaultSps[3]; // level
+  avcCPayload[off++] = 0xff; // lengthSizeMinusOne = 3 (4-byte NALU length)
+  avcCPayload[off++] = 0xe1; // numOfSequenceParameterSets = 1
+  avcCPayload[off++] = (defaultSps.length >> 8) & 0xff;
+  avcCPayload[off++] = defaultSps.length & 0xff;
+  avcCPayload.set(defaultSps, off);
+  off += defaultSps.length;
+  avcCPayload[off++] = 1; // numOfPictureParameterSets = 1
+  avcCPayload[off++] = (defaultPps.length >> 8) & 0xff;
+  avcCPayload[off++] = defaultPps.length & 0xff;
+  avcCPayload.set(defaultPps, off);
+  const avcCBox = buildIsoBmffBox('avcC', avcCPayload);
+
+  // avc1 (VisualSampleEntry) - 78 bytes header + avcCBox
+  const avc1Header = new Uint8Array(78);
+  const avc1View = new DataView(avc1Header.buffer, avc1Header.byteOffset, 78);
+  avc1View.setUint16(6, 1, false); // data_reference_index
+  avc1View.setUint16(24, width, false);
+  avc1View.setUint16(26, height, false);
+  avc1View.setUint32(28, 0x00480000, false); // 72 dpi horiz
+  avc1View.setUint32(32, 0x00480000, false); // 72 dpi vert
+  avc1View.setUint16(40, 1, false); // frame_count = 1
+  const compName = 'EasyConvert H.264';
+  avc1Header[42] = compName.length;
+  for (let i = 0; i < compName.length; i++) {
+    avc1Header[43 + i] = compName.charCodeAt(i);
+  }
+  avc1View.setUint16(74, 0x0018, false); // depth 24-bit
+  avc1View.setInt16(76, -1, false);
+  const avc1Box = buildIsoBmffBox('avc1', concatUint8Arrays(avc1Header, avcCBox));
+
+  // stsd
+  const stsdHeader = new Uint8Array(8);
+  const stsdView = new DataView(stsdHeader.buffer, stsdHeader.byteOffset, 8);
+  stsdView.setUint32(0, 0, false);
+  stsdView.setUint32(4, 1, false); // entry_count = 1
+  const stsdBox = buildIsoBmffBox('stsd', concatUint8Arrays(stsdHeader, avc1Box));
+
+  // 7b. stts (Time-to-Sample Box)
+  const sttsPayload = new Uint8Array(16);
+  const sttsView = new DataView(sttsPayload.buffer, sttsPayload.byteOffset, 16);
+  sttsView.setUint32(0, 0, false);
+  sttsView.setUint32(4, 1, false); // 1 entry
+  sttsView.setUint32(8, totalFrames, false); // sample_count
+  sttsView.setUint32(12, Math.max(1, Math.round(totalDurationMs / totalFrames)), false); // sample_delta
+  const sttsBox = buildIsoBmffBox('stts', sttsPayload);
+
+  // 7c. stss (Sync Sample Box) - keyframes
+  const keyframeIndices: number[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    if (chunks[i].isKeyFrame || i === 0) {
+      keyframeIndices.push(i + 1); // 1-based index
+    }
+  }
+  const stssPayload = new Uint8Array(8 + keyframeIndices.length * 4);
+  const stssView = new DataView(stssPayload.buffer, stssPayload.byteOffset, stssPayload.length);
+  stssView.setUint32(0, 0, false);
+  stssView.setUint32(4, keyframeIndices.length, false);
+  for (let i = 0; i < keyframeIndices.length; i++) {
+    stssView.setUint32(8 + i * 4, keyframeIndices[i], false);
+  }
+  const stssBox = buildIsoBmffBox('stss', stssPayload);
+
+  // 7d. stsc (Sample-to-Chunk Box)
+  const stscPayload = new Uint8Array(20);
+  const stscView = new DataView(stscPayload.buffer, stscPayload.byteOffset, 20);
+  stscView.setUint32(0, 0, false);
+  stscView.setUint32(4, 1, false); // 1 entry
+  stscView.setUint32(8, 1, false); // first_chunk = 1
+  stscView.setUint32(12, 1, false); // samples_per_chunk = 1
+  stscView.setUint32(16, 1, false); // sample_description_index = 1
+  const stscBox = buildIsoBmffBox('stsc', stscPayload);
+
+  // 7e. stsz (Sample Size Box)
+  const stszPayload = new Uint8Array(12 + totalFrames * 4);
+  const stszView = new DataView(stszPayload.buffer, stszPayload.byteOffset, stszPayload.length);
+  stszView.setUint32(0, 0, false);
+  stszView.setUint32(4, 0, false); // variable size
+  stszView.setUint32(8, totalFrames, false);
+  for (let i = 0; i < chunks.length; i++) {
+    stszView.setUint32(12 + i * 4, chunks[i].data.byteLength, false);
+  }
+  if (chunks.length === 0) {
+    stszView.setUint32(12, 0, false);
+  }
+  const stszBox = buildIsoBmffBox('stsz', stszPayload);
+
+  // 7f. stco (Chunk Offset Box)
+  const stcoPayload = new Uint8Array(8 + totalFrames * 4);
+  const stcoView = new DataView(stcoPayload.buffer, stcoPayload.byteOffset, stcoPayload.length);
+  stcoView.setUint32(0, 0, false);
+  stcoView.setUint32(4, totalFrames, false);
+  let currentFileOffset = mdatDataOffset;
+  for (let i = 0; i < chunks.length; i++) {
+    stcoView.setUint32(8 + i * 4, currentFileOffset, false);
+    currentFileOffset += chunks[i].data.byteLength;
+  }
+  if (chunks.length === 0) {
+    stcoView.setUint32(8, mdatDataOffset, false);
+  }
+  const stcoBox = buildIsoBmffBox('stco', stcoPayload);
+
+  // Combine stbl -> minf -> mdia -> trak -> moov
+  const stblBox = buildIsoBmffBox('stbl', concatUint8Arrays(stsdBox, sttsBox, stssBox, stscBox, stszBox, stcoBox));
+  const minfBox = buildIsoBmffBox('minf', concatUint8Arrays(vmhdBox, dinfBox, stblBox));
+  const mdiaBox = buildIsoBmffBox('mdia', concatUint8Arrays(mdhdBox, hdlrBox, minfBox));
+  const trakBox = buildIsoBmffBox('trak', concatUint8Arrays(tkhdBox, mdiaBox));
+  return buildIsoBmffBox('moov', concatUint8Arrays(mvhdBox, trakBox));
+}
+
 /**
  * Builds standard MP4 container box for encoded H.264 chunks.
+ * When includeMoov is true, attaches complete ISO BMFF 'moov' atom with valid stbl metadata.
  */
 export function muxMp4Media(
   chunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
-  _width: number = 1280,
-  _height: number = 720
+  width: number = 1280,
+  height: number = 720,
+  options: { includeMoov?: boolean } = {}
 ): Uint8Array {
   const totalMediaBytes = chunks.reduce((acc, c) => acc + c.data.byteLength, 0);
 
@@ -611,19 +848,36 @@ export function muxMp4Media(
     0x6d, 0x64, 0x61, 0x74,
   ]);
 
-  const output = new Uint8Array(ftyp.byteLength + mdatHeader.byteLength + totalMediaBytes);
+  const mdatDataOffset = ftyp.byteLength + mdatHeader.byteLength;
+  const baseOutput = new Uint8Array(mdatDataOffset + totalMediaBytes);
   let offset = 0;
-  output.set(ftyp, offset);
+  baseOutput.set(ftyp, offset);
   offset += ftyp.byteLength;
-  output.set(mdatHeader, offset);
+  baseOutput.set(mdatHeader, offset);
   offset += mdatHeader.byteLength;
 
   for (const chunk of chunks) {
-    output.set(chunk.data, offset);
+    baseOutput.set(chunk.data, offset);
     offset += chunk.data.byteLength;
   }
 
-  return output;
+  if (options.includeMoov) {
+    const moovBox = buildMp4MoovBox(chunks, width, height, mdatDataOffset);
+    return concatUint8Arrays(baseOutput, moovBox);
+  }
+
+  return baseOutput;
+}
+
+/**
+ * Convenience helper to produce a complete ISO BMFF MP4 with moov box.
+ */
+export function muxIsoBmffMp4(
+  chunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
+  width: number = 1280,
+  height: number = 720
+): Uint8Array {
+  return muxMp4Media(chunks, width, height, { includeMoov: true });
 }
 
 /**
@@ -978,7 +1232,7 @@ function muxFinalMedia(
     }
     return finalBytes;
   }
-  return muxMp4Media(encodedChunks, width, height);
+  return muxMp4Media(encodedChunks, width, height, { includeMoov: true });
 }
 
 /**

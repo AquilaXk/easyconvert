@@ -1184,11 +1184,192 @@ export function parseIgesBSplineCurves(content: string): BSplineCurve[] {
 }
 
 // ============================================================================
-// 7. High-Level STEP & IGES 3D Model Tessellator
+// 7. STEP B-Rep Topology Extractor & High-Level 3D Model Tessellator
 // ============================================================================
 
+function resolveVertexPoint(vertexId: number | null, entityMap: Map<number, StepEntity>): Point3D | null {
+  if (vertexId === null) return null;
+  const vertEnt = entityMap.get(vertexId);
+  if (!vertEnt) return null;
+
+  if (vertEnt.type.includes('CARTESIAN_POINT')) {
+    return extractStepPoint(vertexId, entityMap);
+  }
+
+  const targetId = vertEnt.args.find((a) => typeof a === 'number');
+  if (typeof targetId === 'number') {
+    return extractStepPoint(targetId, entityMap);
+  }
+
+  return null;
+}
+
 /**
- * Tessellates any STEP or IGES CAD model string with B-spline curves/surfaces into
+ * Extracts B-Rep solid boundary topology from STEP entity map (ADVANCED_FACE, FACE_OUTER_BOUND,
+ * EDGE_LOOP, ORIENTED_EDGE, EDGE_CURVE, VERTEX_POINT, CARTESIAN_POINT) and tessellates
+ * into watertight 3D triangle mesh.
+ */
+export function extractStepBRepMesh(
+  entityMap: Map<number, StepEntity>,
+  modelName = 'step_brep'
+): TessellatedMesh | null {
+  const faces = Array.from(entityMap.values()).filter(
+    (e) => e.type === 'ADVANCED_FACE' || e.type === 'FACE_SURFACE' || e.type.endsWith('_FACE')
+  );
+
+  if (faces.length === 0) {
+    return null;
+  }
+
+  const vertices: [number, number, number][] = [];
+  const normals: [number, number, number][] = [];
+  const facesList: [number, number, number][] = [];
+
+  for (const face of faces) {
+    let boundIds: number[] = [];
+    if (Array.isArray(face.args[1])) {
+      boundIds = face.args[1].filter((x: any): x is number => typeof x === 'number');
+    } else if (typeof face.args[1] === 'number') {
+      boundIds = [face.args[1]];
+    } else if (Array.isArray(face.args[0])) {
+      boundIds = face.args[0].filter((x: any): x is number => typeof x === 'number');
+    }
+
+    for (const boundId of boundIds) {
+      const boundEnt = entityMap.get(boundId);
+      if (!boundEnt) continue;
+
+      let loopId: number | null = null;
+      if (typeof boundEnt.args[1] === 'number') {
+        loopId = boundEnt.args[1];
+      } else if (typeof boundEnt.args[0] === 'number') {
+        loopId = boundEnt.args[0];
+      }
+
+      if (!loopId) continue;
+      const loopEnt = entityMap.get(loopId);
+      if (!loopEnt) continue;
+
+      let edgeIds: number[] = [];
+      if (Array.isArray(loopEnt.args[1])) {
+        edgeIds = loopEnt.args[1].filter((x: any): x is number => typeof x === 'number');
+      } else if (Array.isArray(loopEnt.args[0])) {
+        edgeIds = loopEnt.args[0].filter((x: any): x is number => typeof x === 'number');
+      }
+
+      const loopPoints: Point3D[] = [];
+
+      for (const edgeId of edgeIds) {
+        const edgeEnt = entityMap.get(edgeId);
+        if (!edgeEnt) continue;
+
+        let curveId: number | null = null;
+        let sameSense = true;
+
+        if (edgeEnt.type.includes('ORIENTED_EDGE')) {
+          const numArgs = edgeEnt.args.filter((a) => typeof a === 'number');
+          if (numArgs.length > 0) {
+            curveId = numArgs[numArgs.length - 1];
+          }
+          if (edgeEnt.args.includes(false)) {
+            sameSense = false;
+          }
+        } else if (edgeEnt.type.includes('EDGE_CURVE')) {
+          curveId = edgeId;
+        }
+
+        if (!curveId) continue;
+        const curveEnt = entityMap.get(curveId);
+        if (!curveEnt) continue;
+
+        let startVertexId: number | null = null;
+        let endVertexId: number | null = null;
+        const vertexIds = curveEnt.args.filter((a) => typeof a === 'number');
+        if (vertexIds.length >= 2) {
+          startVertexId = vertexIds[0];
+          endVertexId = vertexIds[1];
+        }
+
+        if (curveEnt.args.includes(false)) {
+          sameSense = !sameSense;
+        }
+
+        const v1Id = sameSense ? startVertexId : endVertexId;
+        const v2Id = sameSense ? endVertexId : startVertexId;
+
+        const pt1 = resolveVertexPoint(v1Id, entityMap);
+        const pt2 = resolveVertexPoint(v2Id, entityMap);
+
+        if (pt1) loopPoints.push(pt1);
+        if (pt2) loopPoints.push(pt2);
+      }
+
+      // Deduplicate consecutive identical points
+      const uniquePoints: Point3D[] = [];
+      for (const pt of loopPoints) {
+        if (uniquePoints.length === 0) {
+          uniquePoints.push(pt);
+        } else {
+          const prev = uniquePoints[uniquePoints.length - 1];
+          const distSq = (pt.x - prev.x) ** 2 + (pt.y - prev.y) ** 2 + (pt.z - prev.z) ** 2;
+          if (distSq > 1e-10) {
+            uniquePoints.push(pt);
+          }
+        }
+      }
+
+      if (uniquePoints.length >= 3) {
+        const first = uniquePoints[0];
+        const last = uniquePoints[uniquePoints.length - 1];
+        const distSq = (first.x - last.x) ** 2 + (first.y - last.y) ** 2 + (first.z - last.z) ** 2;
+        if (distSq < 1e-10) {
+          uniquePoints.pop();
+        }
+      }
+
+      if (uniquePoints.length < 3) continue;
+
+      // Compute face normal using Newell's method
+      let nx = 0;
+      let ny = 0;
+      let nz = 0;
+      for (let i = 0; i < uniquePoints.length; i++) {
+        const cur = uniquePoints[i];
+        const next = uniquePoints[(i + 1) % uniquePoints.length];
+        nx += (cur.y - next.y) * (cur.z + next.z);
+        ny += (cur.z - next.z) * (cur.x + next.x);
+        nz += (cur.x - next.x) * (cur.y + next.y);
+      }
+      const len = Math.hypot(nx, ny, nz) || 1;
+      const normal: [number, number, number] = [nx / len, ny / len, nz / len];
+
+      const startIdx = vertices.length;
+      for (const p of uniquePoints) {
+        vertices.push([p.x, p.y, p.z]);
+        normals.push(normal);
+      }
+
+      // Fan triangulation from vertex 0 of this face
+      for (let i = 1; i < uniquePoints.length - 1; i++) {
+        facesList.push([startIdx, startIdx + i, startIdx + i + 1]);
+      }
+    }
+  }
+
+  if (facesList.length === 0) {
+    return null;
+  }
+
+  return {
+    name: modelName,
+    vertices,
+    normals,
+    faces: facesList,
+  };
+}
+
+/**
+ * Tessellates any STEP or IGES CAD model string with B-spline curves/surfaces or B-Rep topology into
  * a unified 3D mesh (TessellatedMesh) ready for STL, OBJ, or DXF export.
  */
 export function tessellateCadText(
@@ -1231,6 +1412,12 @@ export function tessellateCadText(
     const surfaces = extractStepBSplineSurfaces(entityMap);
     if (surfaces.length > 0) {
       return mergeTessellatedSurfaces(surfaces, modelName);
+    }
+
+    // Step B-Rep topology (ADVANCED_FACE / EDGE_LOOP / PLANE / etc.)
+    const brepMesh = extractStepBRepMesh(entityMap, modelName);
+    if (brepMesh && brepMesh.faces.length > 0) {
+      return brepMesh;
     }
 
     // Fallback 1: STEP B-Spline Curves

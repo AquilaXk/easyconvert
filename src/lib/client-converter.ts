@@ -167,16 +167,64 @@ export async function tryProcessClientEdge(
     } else {
       const isImage = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(src);
       if (isImage) {
-        const arrayBuf = await item.file.arrayBuffer();
-        const taskRes = await executeWasmTask('rgba-grayscale', arrayBuf, {}, onProgress);
-        const blob = new Blob([taskRes.buffer], { type: 'image/png' });
-        const resultUrl = URL.createObjectURL(blob);
-        return {
-          resultUrl,
-          resultSize: blob.size,
-          tier: 'L2',
-          tierName: 'Edge L2 (SIMD Wasm)',
-        };
+        try {
+          if (typeof createImageBitmap !== 'undefined' && (typeof OffscreenCanvas !== 'undefined' || typeof document !== 'undefined')) {
+            const bitmap = await createImageBitmap(item.file);
+            const width = bitmap.width;
+            const height = bitmap.height;
+
+            let canvas: any;
+            let ctx: any;
+            if (typeof OffscreenCanvas !== 'undefined') {
+              canvas = new OffscreenCanvas(width, height);
+              ctx = canvas.getContext('2d');
+            } else {
+              canvas = document.createElement('canvas');
+              canvas.width = width;
+              canvas.height = height;
+              ctx = canvas.getContext('2d');
+            }
+
+            if (!ctx) {
+              if (typeof bitmap.close === 'function') bitmap.close();
+              return null;
+            }
+
+            ctx.drawImage(bitmap, 0, 0);
+            if (typeof bitmap.close === 'function') bitmap.close();
+
+            const imgData = ctx.getImageData(0, 0, width, height);
+            const pixelBuffer = imgData.data.buffer;
+
+            const taskRes = await executeWasmTask('rgba-grayscale', pixelBuffer, { width, height }, onProgress);
+
+            const processedClamped = new Uint8ClampedArray(taskRes.buffer);
+            const newImgData = new ImageData(processedClamped, width, height);
+            ctx.putImageData(newImgData, 0, 0);
+
+            const mimeType = tgt === 'jpg' || tgt === 'jpeg' ? 'image/jpeg' : (tgt === 'webp' ? 'image/webp' : 'image/png');
+            let resultBlob: Blob;
+            if ('convertToBlob' in canvas) {
+              resultBlob = await canvas.convertToBlob({ type: mimeType, quality: (item.options.quality || 90) / 100 });
+            } else {
+              resultBlob = await new Promise<Blob>((resolve) => {
+                canvas.toBlob((b: Blob | null) => resolve(b || new Blob([])), mimeType, (item.options.quality || 90) / 100);
+              });
+            }
+
+            const resultUrl = URL.createObjectURL(resultBlob);
+            return {
+              resultUrl,
+              resultSize: resultBlob.size,
+              tier: 'L2',
+              tierName: 'Edge L2 (SIMD Wasm)',
+            };
+          }
+        } catch {
+          // If bitmap decoding or canvas operation fails, gracefully fall back to serverless bridge
+          return null;
+        }
+        return null;
       }
       return null;
     }
