@@ -416,6 +416,16 @@ describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
       expect(bmpOklab.mimeType).toBe('image/bmp');
       expect(bmpOklab.buffer.length).toBeGreaterThan(0);
 
+      // BMP 8-bit with blue-noise dithering
+      const bmpBlueNoise = await convertImage(inputPng, 'bmp', {
+        colorDepth: 8,
+        quantizer: 'oklab',
+        ditherMethod: 'blue-noise',
+        colors: 16,
+      });
+      expect(bmpBlueNoise.mimeType).toBe('image/bmp');
+      expect(bmpBlueNoise.buffer.length).toBeGreaterThan(0);
+
       // GIF with OKLab quantization
       const gifOklab = await convertImage(inputPng, 'gif', {
         quantizer: 'oklab',
@@ -423,6 +433,15 @@ describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
       });
       expect(gifOklab.mimeType).toBe('image/gif');
       expect(gifOklab.buffer.length).toBeGreaterThan(0);
+
+      // GIF with blue-noise dithering
+      const gifBlueNoise = await convertImage(inputPng, 'gif', {
+        quantizer: 'oklab',
+        ditherMethod: 'blue-noise',
+        colors: 16,
+      });
+      expect(gifBlueNoise.mimeType).toBe('image/gif');
+      expect(gifBlueNoise.buffer.length).toBeGreaterThan(0);
 
       // ICO with OKLab quantization
       const icoOklab = await convertImage(inputPng, 'ico', {
@@ -432,6 +451,14 @@ describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
       });
       expect(icoOklab.mimeType).toBe('image/x-icon');
       expect(icoOklab.buffer.length).toBeGreaterThan(0);
+
+      // ICO with blue-noise dithering
+      const icoBlueNoise = await convertImage(inputPng, 'ico', {
+        ditherMethod: 'blue-noise',
+        colors: 16,
+      });
+      expect(icoBlueNoise.mimeType).toBe('image/x-icon');
+      expect(icoBlueNoise.buffer.length).toBeGreaterThan(0);
     });
   });
 

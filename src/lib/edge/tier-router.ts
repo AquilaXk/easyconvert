@@ -196,8 +196,12 @@ export async function probeWebGpuCapabilities(): Promise<WebGpuCapabilities> {
 
     const features: string[] = [];
     if (adapter.features) {
-      for (const f of adapter.features) {
-        features.push(f);
+      if (typeof (adapter.features as any)[Symbol.iterator] === 'function') {
+        for (const f of adapter.features) {
+          features.push(f);
+        }
+      } else if (typeof (adapter.features as any).forEach === 'function') {
+        (adapter.features as any).forEach((f: string) => features.push(f));
       }
     }
 
@@ -323,6 +327,70 @@ export interface MicroVMOffloadEvaluation {
 }
 
 /**
+ * Parses and computes the total count of distinct requested pages from a range string.
+ * Handles single pages ("5"), ranges ("1-10"), comma-separated lists ("1,3,5"),
+ * and overlapping intervals ("1-10, 5-15" => 15 pages).
+ */
+export function parsePageRangeCount(pagesStr: string): number | undefined {
+  if (!pagesStr || typeof pagesStr !== 'string') return undefined;
+
+  const intervals: Array<{ start: number; end: number }> = [];
+  const tokens = pagesStr.split(',');
+
+  for (const token of tokens) {
+    const trimmed = token.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.includes('-')) {
+      const parts = trimmed.split('-');
+      if (parts.length === 2) {
+        const p1 = parseInt(parts[0].trim(), 10);
+        const p2 = parseInt(parts[1].trim(), 10);
+        if (!isNaN(p1) && !isNaN(p2) && p1 > 0 && p2 > 0) {
+          intervals.push({
+            start: Math.min(p1, p2),
+            end: Math.max(p1, p2),
+          });
+        }
+      }
+    } else {
+      const p = parseInt(trimmed, 10);
+      if (!isNaN(p) && p > 0) {
+        intervals.push({ start: p, end: p });
+      }
+    }
+  }
+
+  if (intervals.length === 0) return undefined;
+
+  // Sort intervals by start ascending
+  intervals.sort((a, b) => a.start - b.start);
+
+  // Merge overlapping or contiguous intervals
+  const merged: Array<{ start: number; end: number }> = [];
+  let current = { ...intervals[0] };
+
+  for (let i = 1; i < intervals.length; i++) {
+    const next = intervals[i];
+    if (next.start <= current.end + 1) {
+      current.end = Math.max(current.end, next.end);
+    } else {
+      merged.push(current);
+      current = { ...next };
+    }
+  }
+  merged.push(current);
+
+  // Calculate total distinct pages
+  let total = 0;
+  for (const range of merged) {
+    total += range.end - range.start + 1;
+  }
+
+  return total > 0 ? total : undefined;
+}
+
+/**
  * Evaluates whether a workload exceeds client-edge memory/compute budgets
  * and must be offloaded to an isolated serverless MicroVM.
  */
@@ -338,13 +406,7 @@ export function evaluateMicroVMOffload(
   const isOcr = Boolean(options.ocrEnabled || src === 'ocr');
   let pageCount = options.pageCount;
   if (pageCount === undefined && typeof options.pages === 'string') {
-    const parts = options.pages.split(/[,-]/);
-    let max = 0;
-    for (const p of parts) {
-      const n = parseInt(p.trim(), 10);
-      if (!isNaN(n) && n > max) max = n;
-    }
-    if (max > 0) pageCount = max;
+    pageCount = parsePageRangeCount(options.pages);
   }
   if (isOcr && pageCount !== undefined && pageCount > MICROVM_PAYLOAD_BUDGETS.OCR_MAX_PAGES) {
     return {
@@ -506,6 +568,31 @@ export function resolveConversionTier(
     };
   }
 
+  // Helper flags for image transformations & filters
+  const isImageSrc = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(src);
+  const isImageTgt = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(tgt);
+  const isWasmFilterRequested = isImageSrc && isImageTgt && (
+    options.colorDepth !== undefined ||
+    options.palette === true ||
+    options.dither === true ||
+    options.ditherMethod !== undefined ||
+    Boolean(options.quantizer) ||
+    (options as any).grayscale === true ||
+    (options as any).invert === true ||
+    (options as any).brightnessDelta !== undefined ||
+    options.colors !== undefined
+  );
+
+  const hasWebGpu =
+    capabilities?.hasWebGpu !== undefined
+      ? Boolean(capabilities.hasWebGpu || capabilities.webGpu?.hasWebGpu)
+      : (capabilities?.webGpu?.hasWebGpu ?? checkWebGpuSupport());
+
+  const isWebGpuRequested = Boolean(options.useWebGpu || options.gpuAcceleration);
+  const isWebGpuComputeEligible =
+    (isWebGpuRequested || (isWasmFilterRequested && options.quantizer === 'oklab')) &&
+    hasWebGpu;
+
   // 4. Level 0: Pure Isomorphic Fast-Path (0 MB Wasm, instant execution)
   if (isPureDataConvertible(src, tgt)) {
     return {
@@ -535,7 +622,12 @@ export function resolveConversionTier(
   }
 
   const canvasAvailable = capabilities?.hasCanvas ?? isCanvasSupported();
-  if (isPureCanvasConvertible(src, tgt) && canvasAvailable) {
+  if (
+    isPureCanvasConvertible(src, tgt) &&
+    canvasAvailable &&
+    !isWasmFilterRequested &&
+    !isWebGpuRequested
+  ) {
     return {
       tier: 'L0',
       tierName: 'Edge L0 (Instant)',
@@ -556,25 +648,6 @@ export function resolveConversionTier(
   }
 
   // 6. Level 1A: WebGPU Compute Pipeline (with graceful cascade to L2 Wasm)
-  const isImageSrc = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(src);
-  const isImageTgt = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'avif'].includes(tgt);
-  const isWasmFilterRequested = isImageSrc && isImageTgt && (
-    options.colorDepth !== undefined ||
-    options.palette === true ||
-    options.dither === true ||
-    Boolean(options.quantizer)
-  );
-
-  const hasWebGpu = Boolean(
-    capabilities?.hasWebGpu ||
-    capabilities?.webGpu?.hasWebGpu
-  );
-
-  const isWebGpuRequested = Boolean(options.useWebGpu || options.gpuAcceleration);
-  const isWebGpuComputeEligible =
-    (isWebGpuRequested || (isWasmFilterRequested && options.quantizer === 'oklab')) &&
-    hasWebGpu;
-
   if (isWebGpuComputeEligible) {
     return {
       tier: 'L1A',

@@ -7,6 +7,7 @@ import {
   probeEdgeCapabilities,
   resolveConversionTier,
   MICROVM_PAYLOAD_BUDGETS,
+  parsePageRangeCount,
 } from '../src/lib/edge/tier-router';
 import {
   validateExecutionPolicy,
@@ -48,6 +49,18 @@ describe('Phase 5: Tier Router Budgets & WebGPU Compute Probing', () => {
       expect(shouldOffloadToMicroVM('pdf', 50 * 1024 * 1024)).toBe(true);
     });
 
+    it('accurately parses page ranges and merged intervals with parsePageRangeCount', () => {
+      expect(parsePageRangeCount('5')).toBe(1);
+      expect(parsePageRangeCount('100')).toBe(1);
+      expect(parsePageRangeCount('55-60')).toBe(6);
+      expect(parsePageRangeCount('1, 3, 5')).toBe(3);
+      expect(parsePageRangeCount('1-10, 45, 52-60')).toBe(20);
+      expect(parsePageRangeCount('1-30, 20-55')).toBe(55);
+      expect(parsePageRangeCount('1-10, 11-20, 21-30, 31-40, 41-50, 51-55')).toBe(55);
+      expect(parsePageRangeCount('')).toBeUndefined();
+      expect(parsePageRangeCount('invalid')).toBeUndefined();
+    });
+
     it('enforces OCR document page count budget (> 50 pages offload)', () => {
       // Below budget (<= 50 pages)
       expect(
@@ -64,6 +77,28 @@ describe('Phase 5: Tier Router Budgets & WebGPU Compute Probing', () => {
         })
       ).toBe(false);
 
+      // Non-contiguous and offset page ranges within budget
+      expect(
+        shouldOffloadToMicroVM('pdf', 5 * 1024 * 1024, {
+          ocrEnabled: true,
+          pages: '55-60',
+        })
+      ).toBe(false);
+
+      expect(
+        shouldOffloadToMicroVM('pdf', 5 * 1024 * 1024, {
+          ocrEnabled: true,
+          pages: '100',
+        })
+      ).toBe(false);
+
+      expect(
+        shouldOffloadToMicroVM('pdf', 5 * 1024 * 1024, {
+          ocrEnabled: true,
+          pages: '1-10, 45, 52-60',
+        })
+      ).toBe(false);
+
       // Above budget (> 50 pages)
       const ocrExceeded = evaluateMicroVMOffload('pdf', 5 * 1024 * 1024, {
         ocrEnabled: true,
@@ -77,6 +112,14 @@ describe('Phase 5: Tier Router Budgets & WebGPU Compute Probing', () => {
         shouldOffloadToMicroVM('pdf', 5 * 1024 * 1024, {
           ocrEnabled: true,
           pages: '1-75',
+        })
+      ).toBe(true);
+
+      // Disjoint ranges totaling > 50 pages offload
+      expect(
+        shouldOffloadToMicroVM('pdf', 5 * 1024 * 1024, {
+          ocrEnabled: true,
+          pages: '1-20, 25-45, 50-70',
         })
       ).toBe(true);
     });
@@ -303,6 +346,68 @@ describe('Phase 5: Tier Router Budgets & WebGPU Compute Probing', () => {
 
       expect(res.tier).toBe('L2');
       expect(res.tierName).toBe('Edge L2 (SIMD Wasm)');
+    });
+
+    it('routes basic image transcoding to L0 Canvas when canvas is available and no filters requested', () => {
+      const res = resolveConversionTier('png', 'jpg', 500_000, {}, {
+        hasCanvas: true,
+      });
+      expect(res.tier).toBe('L0');
+      expect(res.tierName).toBe('Edge L0 (Instant)');
+    });
+
+    it('ensures L1A WebGPU takes precedence over L0 Canvas when WebGPU compute is requested', () => {
+      const res = resolveConversionTier('png', 'png', 500_000, {
+        useWebGpu: true,
+        quantizer: 'oklab',
+      }, {
+        hasCanvas: true,
+        hasWebGpu: true,
+      });
+      expect(res.tier).toBe('L1A');
+      expect(res.tierName).toBe('Edge L1A (WebGPU Compute)');
+    });
+
+    it('ensures L2 Wasm cascade takes precedence over L0 Canvas when WebGPU is unavailable but filters are requested', () => {
+      const res = resolveConversionTier('png', 'png', 500_000, {
+        useWebGpu: true,
+        quantizer: 'oklab',
+      }, {
+        hasCanvas: true,
+        hasWebGpu: false,
+      });
+      expect(res.tier).toBe('L2');
+      expect(res.tierName).toBe('Edge L2 (SIMD Wasm)');
+    });
+
+    it('ensures blue-noise dither method routes to L2 Wasm rather than being intercepted by L0 Canvas', () => {
+      const res = resolveConversionTier('png', 'png', 500_000, {
+        ditherMethod: 'blue-noise',
+      }, {
+        hasCanvas: true,
+      });
+      expect(res.tier).toBe('L2');
+      expect(res.tierName).toBe('Edge L2 (SIMD Wasm)');
+    });
+
+    it('resolves L1A by probing checkWebGpuSupport when capabilities argument is omitted', () => {
+      const originalGpu = (globalThis as any).navigator?.gpu;
+      try {
+        (globalThis as any).navigator = {
+          ...((globalThis as any).navigator || {}),
+          gpu: { requestAdapter: () => Promise.resolve(null) },
+        };
+        const res = resolveConversionTier('png', 'png', 500_000, {
+          useWebGpu: true,
+        });
+        expect(res.tier).toBe('L1A');
+      } finally {
+        if (originalGpu !== undefined) {
+          (globalThis as any).navigator.gpu = originalGpu;
+        } else if ((globalThis as any).navigator) {
+          delete (globalThis as any).navigator.gpu;
+        }
+      }
     });
   });
 
