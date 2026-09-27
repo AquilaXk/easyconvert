@@ -218,19 +218,19 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(footerContent).toContain('easyconvert-theme-change');
   });
 
-  it('verifies Hero implements bespoke Conversion Console without AI-slop concentric radar rings', () => {
+  it('verifies Hero implements spacious converter architecture with Choose Files CTA and eliminates 2-card console box', () => {
     const heroPath = path.join(rootDir, 'src', 'components', 'Hero.tsx');
     const heroContent = fs.readFileSync(heroPath, 'utf-8');
 
-    // Bespoke console structure
-    expect(heroContent).toContain('Conversion Console');
-    expect(heroContent).toContain('292 Standards Supported');
-    expect(heroContent).toContain('FROM');
-    expect(heroContent).toContain('INTO');
+    // Spacious hero structure with prominent Choose Files CTA
+    expect(heroContent).toContain('Choose Files');
+    expect(heroContent).toContain('292 Formats Supported');
+    expect(heroContent).toContain('bg-brand-700');
     expect(heroContent).toContain('POPULAR:');
-    expect(heroContent).toContain('animate-card-flip');
 
-    // Concentric orbit radar rings removed
+    // 2-card converter box and obsolete animations completely eliminated
+    expect(heroContent).not.toContain('animate-card-flip');
+    expect(heroContent).not.toContain('Conversion Console');
     expect(heroContent).not.toContain('animate-orbit-slow');
     expect(heroContent).not.toContain('animate-orbit-fast');
   });

@@ -57,52 +57,54 @@ export default function OptionsModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-150"
       onClick={onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ colorScheme: 'dark' }}
-        className="relative w-full max-w-4xl bg-[#18191d] border border-neutral-800 rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white [color-scheme:dark]"
+        className="relative w-full max-w-4xl bg-white dark:bg-[#18191d] border border-neutral-border dark:border-neutral-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-brand-950 dark:text-white transition-colors"
       >
-        {/* Header matching live_cc_options_modal.png */}
-        <div className="px-6 py-4 border-b border-neutral-800 flex items-center justify-between">
-          <h3 className="text-base font-semibold text-white tracking-wide">Options</h3>
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-neutral-border dark:border-neutral-800 flex items-center justify-between">
+          <h3 className="text-base font-bold text-brand-950 dark:text-white tracking-wide">
+            Options &bull; {filename}
+          </h3>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 rounded border border-neutral-700 hover:border-neutral-500 text-neutral-400 hover:text-white transition-colors"
+            className="p-1.5 rounded-lg border border-neutral-border dark:border-neutral-700 hover:border-brand-400 text-ink-muted hover:text-brand-950 dark:hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Scrollable Content */}
-        <div className="divide-y divide-neutral-800 overflow-y-auto">
+        <div className="divide-y divide-neutral-border dark:divide-neutral-800 overflow-y-auto">
           {/* 1. Pages Section */}
           <div className="p-6">
             <button
               type="button"
               onClick={() => toggleSection('pages')}
-              className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
+              className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
             >
               <div className="flex items-center gap-2.5">
-                <FileText className="w-4 h-4 text-neutral-400" />
+                <FileText className="w-4 h-4 text-brand-700 dark:text-brand-400" />
                 <span>Pages</span>
               </div>
-              {openSections.pages ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
+              {openSections.pages ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
             </button>
 
             {openSections.pages && (
               <div className="mt-4 space-y-2">
-                <label className="text-xs font-semibold text-neutral-200 block">Pages</label>
+                <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">Pages</label>
                 <input
                   type="text"
                   value={options.pages || ''}
                   onChange={(e) => setOptions({ ...options, pages: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white focus:outline-none focus:border-[#5C6BC0]"
+                  placeholder="e.g. 1-3"
+                  className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white focus:outline-none focus:border-brand-700"
                 />
-                <p className="text-xs text-neutral-400">Page range to convert (e.g. 1-3).</p>
+                <p className="text-xs text-ink-secondary dark:text-neutral-400">Page range to convert (e.g. 1-3).</p>
               </div>
             )}
           </div>
@@ -112,25 +114,26 @@ export default function OptionsModal({
             <button
               type="button"
               onClick={() => toggleSection('security')}
-              className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
+              className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
             >
               <div className="flex items-center gap-2.5">
-                <Lock className="w-4 h-4 text-neutral-400" />
+                <Lock className="w-4 h-4 text-brand-700 dark:text-brand-400" />
                 <span>Security</span>
               </div>
-              {openSections.security ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
+              {openSections.security ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
             </button>
 
             {openSections.security && (
               <div className="mt-4 space-y-2">
-                <label className="text-xs font-semibold text-neutral-200 block">Password</label>
+                <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">Password</label>
                 <input
                   type="password"
                   value={options.password || ''}
                   onChange={(e) => setOptions({ ...options, password: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white focus:outline-none focus:border-[#5C6BC0]"
+                  placeholder="Optional decryption password"
+                  className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white focus:outline-none focus:border-brand-700"
                 />
-                <p className="text-xs text-neutral-400">
+                <p className="text-xs text-ink-secondary dark:text-neutral-400">
                   Password to open the {isSourcePdf ? 'PDF' : sourceFormat.toUpperCase()} file.
                 </p>
               </div>
@@ -143,21 +146,21 @@ export default function OptionsModal({
               <button
                 type="button"
                 onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
+                className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
               >
                 <div className="flex items-center gap-2.5">
-                  <FileText className="w-4 h-4 text-neutral-400" />
-                  <span>Document</span>
+                  <FileText className="w-4 h-4 text-brand-700 dark:text-brand-400" />
+                  <span>Document Settings</span>
                 </div>
-                {openSections.domain ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
+                {openSections.domain ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
               </button>
 
               {openSections.domain && (
                 <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-6">
                   {/* Connect Hyphens */}
                   <div className="space-y-2">
-                    <label className="text-xs font-semibold text-neutral-200 block">Connect Hyphens</label>
-                    <div className="flex items-center gap-4 text-xs text-neutral-300">
+                    <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">Connect Hyphens</label>
+                    <div className="flex items-center gap-4 text-xs text-ink-secondary dark:text-neutral-300">
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
@@ -179,13 +182,13 @@ export default function OptionsModal({
                         <span>No</span>
                       </label>
                     </div>
-                    <p className="text-xs text-neutral-400">Specifies whether hyphens in the PDF should be connected.</p>
+                    <p className="text-xs text-ink-secondary dark:text-neutral-400">Specifies whether hyphens in the PDF should be connected.</p>
                   </div>
 
                   {/* Prioritize Visual Appearance */}
                   <div className="space-y-2">
-                    <label className="text-xs font-semibold text-neutral-200 block">Prioritize Visual Appearance</label>
-                    <div className="flex items-center gap-4 text-xs text-neutral-300">
+                    <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">Prioritize Visual Appearance</label>
+                    <div className="flex items-center gap-4 text-xs text-ink-secondary dark:text-neutral-300">
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
@@ -207,15 +210,15 @@ export default function OptionsModal({
                         <span>No</span>
                       </label>
                     </div>
-                    <p className="text-xs text-neutral-400">
+                    <p className="text-xs text-ink-secondary dark:text-neutral-400">
                       Specifies whether to prefer an exact visual replica of the PDF at the expense of preventing reflow of document paragraphs.
                     </p>
                   </div>
 
                   {/* OCR Images */}
                   <div className="space-y-2 sm:col-span-2">
-                    <label className="text-xs font-semibold text-neutral-200 block">OCR Images</label>
-                    <div className="flex items-center gap-4 text-xs text-neutral-300">
+                    <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">OCR Images</label>
+                    <div className="flex items-center gap-4 text-xs text-ink-secondary dark:text-neutral-300">
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
@@ -237,8 +240,8 @@ export default function OptionsModal({
                         <span>No</span>
                       </label>
                     </div>
-                    <p className="text-xs text-neutral-400">
-                      Specifies whenever OCR will be performed on images and the recognized text replaces the image pixels underneath (default).
+                    <p className="text-xs text-ink-secondary dark:text-neutral-400">
+                      Specifies whether OCR will be performed on images to extract readable text.
                     </p>
                   </div>
                 </div>
@@ -251,44 +254,44 @@ export default function OptionsModal({
               <button
                 type="button"
                 onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
+                className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
               >
                 <div className="flex items-center gap-2.5">
-                  <ImageIcon className="w-4 h-4 text-neutral-400" />
-                  <span>Image</span>
+                  <ImageIcon className="w-4 h-4 text-brand-700 dark:text-brand-400" />
+                  <span>Image Settings</span>
                 </div>
-                {openSections.domain ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
+                {openSections.domain ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
               </button>
 
               {openSections.domain && (
                 <div className="mt-5 space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="text-xs font-semibold text-neutral-200 block mb-1">Width (px)</label>
+                      <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block mb-1">Width (px)</label>
                       <input
                         type="number"
                         value={options.width || ''}
                         onChange={(e) => setOptions({ ...options, width: e.target.value ? Number(e.target.value) : undefined })}
                         placeholder="Auto"
-                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white"
+                        className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-semibold text-neutral-200 block mb-1">Height (px)</label>
+                      <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block mb-1">Height (px)</label>
                       <input
                         type="number"
                         value={options.height || ''}
                         onChange={(e) => setOptions({ ...options, height: e.target.value ? Number(e.target.value) : undefined })}
                         placeholder="Auto"
-                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white"
+                        className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white"
                       />
                     </div>
                   </div>
 
                   <div>
-                    <div className="flex items-center justify-between text-xs font-semibold text-neutral-200 mb-1">
+                    <div className="flex items-center justify-between text-xs font-semibold text-brand-950 dark:text-neutral-200 mb-1">
                       <span>Quality</span>
-                      <span className="font-mono text-[#5C6BC0]">{options.quality || 85}%</span>
+                      <span className="font-mono text-brand-700 dark:text-brand-400">{options.quality || 85}%</span>
                     </div>
                     <input
                       type="range"
@@ -309,24 +312,24 @@ export default function OptionsModal({
               <button
                 type="button"
                 onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
+                className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
               >
                 <div className="flex items-center gap-2.5">
-                  {isVideo ? <Video className="w-4 h-4 text-neutral-400" /> : <Music className="w-4 h-4 text-neutral-400" />}
-                  <span>{isVideo ? 'Video' : 'Audio'}</span>
+                  {isVideo ? <Video className="w-4 h-4 text-brand-700 dark:text-brand-400" /> : <Music className="w-4 h-4 text-brand-700 dark:text-brand-400" />}
+                  <span>{isVideo ? 'Video Settings' : 'Audio Settings'}</span>
                 </div>
-                {openSections.domain ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
+                {openSections.domain ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
               </button>
 
               {openSections.domain && (
                 <div className="mt-5 space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="text-xs font-semibold text-neutral-200 block mb-1">Audio Bitrate</label>
+                      <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block mb-1">Audio Bitrate</label>
                       <select
                         value={options.audioBitrate || '192k'}
                         onChange={(e) => setOptions({ ...options, audioBitrate: e.target.value as any })}
-                        className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white"
+                        className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white"
                       >
                         <option value="320k">320 kbps</option>
                         <option value="256k">256 kbps</option>
@@ -337,11 +340,11 @@ export default function OptionsModal({
 
                     {isVideo && (
                       <div>
-                        <label className="text-xs font-semibold text-neutral-200 block mb-1">Video Codec</label>
+                        <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block mb-1">Video Codec</label>
                         <select
                           value={options.videoCodec || 'h264'}
                           onChange={(e) => setOptions({ ...options, videoCodec: e.target.value as any })}
-                          className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded text-white"
+                          className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white"
                         >
                           <option value="h264">H.264 / AVC</option>
                           <option value="hevc">H.265 / HEVC</option>
@@ -360,26 +363,26 @@ export default function OptionsModal({
             <button
               type="button"
               onClick={() => toggleSection('privacy')}
-              className="flex items-center justify-between w-full text-left font-medium text-sm text-neutral-100 hover:text-white"
+              className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
             >
               <div className="flex items-center gap-2.5">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 <span>Execution & Privacy</span>
               </div>
-              {openSections.privacy ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
+              {openSections.privacy ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
             </button>
 
             {openSections.privacy && (
               <div className="mt-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-neutral-200 block">
+                  <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">
                     Client-Side Edge Mode (Zero-Data Retention)
                   </label>
-                  <span className="text-[10px] px-1.5 py-0.5 font-bold uppercase rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  <span className="text-[10px] px-2 py-0.5 font-bold uppercase rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
                     100% Local RAM
                   </span>
                 </div>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-xs text-neutral-300">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-xs text-ink-secondary dark:text-neutral-300">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
@@ -415,23 +418,23 @@ export default function OptionsModal({
                     <span>Server Only</span>
                   </label>
                 </div>
-                <p className="text-xs text-neutral-400">
-                  Adaptive Auto executes conversions directly inside browser memory when supported, and falls back to Zero-Retention Cloud for server-required formats.
+                <p className="text-xs text-ink-secondary dark:text-neutral-400">
+                  Adaptive Auto executes conversions directly inside browser memory when supported, and falls back to Zero-Retention Cloud for complex server-required formats.
                 </p>
               </div>
             )}
           </div>
         </div>
 
-        {/* Footer with ONLY the single Apply button on bottom right */}
-        <div className="px-6 py-4 bg-[#18191d] border-t border-neutral-800 flex items-center justify-end">
+        {/* Footer with Apply button */}
+        <div className="px-6 py-4 bg-neutral-50 dark:bg-[#18191d] border-t border-neutral-border dark:border-neutral-800 flex items-center justify-end">
           <button
             type="button"
             onClick={() => {
               onSave(options);
               onClose();
             }}
-            className="bg-[#5C6BC0] hover:bg-[#4D5CB5] text-white px-5 py-2 rounded text-sm font-medium transition-colors"
+            className="bg-brand-700 hover:bg-brand-800 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors shadow-md shadow-brand-700/25 cursor-pointer"
           >
             Apply
           </button>

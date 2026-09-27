@@ -15,6 +15,7 @@ const ARTIFACT_DIR_SUBAGENT = '/Users/aquila/.gemini/antigravity/brain/985da93f-
 const ARTIFACT_DIR_CALLER = '/Users/aquila/.gemini/antigravity/brain/540f9cdd-6f90-4bc5-976b-3a27dfa3cbcf';
 const ARTIFACT_DIR_CONVERSATION = '/Users/aquila/.gemini/antigravity/brain/f959c1c8-ae0d-401f-881f-8e51a8733aa6';
 const ARTIFACT_DIR_ACTIVE = '/Users/aquila/.gemini/antigravity/brain/e1204587-6eb4-445e-a857-442399a17170';
+const ARTIFACT_DIR_CONVERSATION_2 = '/Users/aquila/.gemini/antigravity/brain/82af80c2-ce22-48c1-954d-037137d07256';
 const PUBLIC_DIR = path.resolve('public/screenshots');
 
 function saveImage(filename, buffer) {
@@ -29,7 +30,8 @@ function saveImage(filename, buffer) {
     ARTIFACT_DIR_SUBAGENT,
     ARTIFACT_DIR_CALLER,
     ARTIFACT_DIR_CONVERSATION,
-    ARTIFACT_DIR_ACTIVE
+    ARTIFACT_DIR_ACTIVE,
+    ARTIFACT_DIR_CONVERSATION_2,
   ];
   for (const d of dirs) {
     if (fs.existsSync(d)) {
@@ -57,7 +59,7 @@ for (let i = 0; i < 30; i++) {
       if (Array.isArray(tabs) && tabs.length > 0) break;
     }
   } catch {
-    // Retry polling DevTools endpoint until browser process initializes
+    // Retry polling DevTools endpoint
   }
 }
 
@@ -109,7 +111,7 @@ await send('Page.enable');
 await send('DOM.enable');
 await send('Runtime.enable');
 
-// 1. Desktop Viewport (1440x900)
+// 1. Desktop Light Viewport (1440x900)
 await send('Emulation.setDeviceMetricsOverride', {
   width: 1440,
   height: 900,
@@ -120,8 +122,16 @@ await send('Emulation.setDeviceMetricsOverride', {
 await send('Page.navigate', { url: 'http://localhost:3000/' });
 await new Promise(r => setTimeout(r, 2000));
 
+// Ensure light mode is active
+await send('Runtime.evaluate', {
+  expression: `document.documentElement.classList.remove('dark'); localStorage.theme = 'light';`
+});
+await new Promise(r => setTimeout(r, 300));
+
 let ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('desktop_hero.png', Buffer.from(ss.data, 'base64'));
+saveImage('hero_light.png', Buffer.from(ss.data, 'base64'));
+saveImage('full_page_zero_slop_light.png', Buffer.from(ss.data, 'base64'));
 
 // Desktop Footer (scroll to bottom)
 await send('Runtime.evaluate', {
@@ -132,7 +142,7 @@ await new Promise(r => setTimeout(r, 800));
 ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('desktop_footer.png', Buffer.from(ss.data, 'base64'));
 
-// Desktop Full Page
+// Desktop Full Page Light
 const layout = await send('Page.getLayoutMetrics');
 const fullHeight = Math.ceil(layout.contentSize.height);
 await send('Emulation.setDeviceMetricsOverride', {
@@ -145,6 +155,74 @@ await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
 await new Promise(r => setTimeout(r, 500));
 ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('desktop_full_page.png', Buffer.from(ss.data, 'base64'));
+saveImage('full_page_light.png', Buffer.from(ss.data, 'base64'));
+
+// Reset height for normal interactions
+await send('Emulation.setDeviceMetricsOverride', {
+  width: 1440,
+  height: 900,
+  deviceScaleFactor: 2,
+  mobile: false
+});
+
+// Upload a test file to inspect Queue in Light Mode
+await send('Runtime.evaluate', {
+  expression: `
+    if (typeof window.__addTestFile === 'function') {
+      window.__addTestFile('sample_document.pdf', 'docx');
+    }
+  `
+});
+await new Promise(r => setTimeout(r, 800));
+
+ss = await send('Page.captureScreenshot', { format: 'png' });
+saveImage('queue_light.png', Buffer.from(ss.data, 'base64'));
+
+// Toggle Dark Mode with Queue Active
+await send('Runtime.evaluate', {
+  expression: `document.documentElement.classList.add('dark'); localStorage.theme = 'dark';`
+});
+await new Promise(r => setTimeout(r, 500));
+
+ss = await send('Page.captureScreenshot', { format: 'png' });
+saveImage('queue_dark.png', Buffer.from(ss.data, 'base64'));
+saveImage('fidelity_queue_dark.png', Buffer.from(ss.data, 'base64'));
+
+// Reload page in Dark Mode (Idle Hero)
+await send('Page.navigate', { url: 'http://localhost:3000/' });
+await new Promise(r => setTimeout(r, 1500));
+await send('Runtime.evaluate', {
+  expression: `document.documentElement.classList.add('dark'); localStorage.theme = 'dark';`
+});
+await new Promise(r => setTimeout(r, 500));
+
+ss = await send('Page.captureScreenshot', { format: 'png' });
+saveImage('hero_dark.png', Buffer.from(ss.data, 'base64'));
+saveImage('fidelity_home_dark.png', Buffer.from(ss.data, 'base64'));
+
+// Dark Full Page
+const darkLayout = await send('Page.getLayoutMetrics');
+await send('Emulation.setDeviceMetricsOverride', {
+  width: 1440,
+  height: Math.ceil(darkLayout.contentSize.height),
+  deviceScaleFactor: 2,
+  mobile: false
+});
+await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
+await new Promise(r => setTimeout(r, 500));
+ss = await send('Page.captureScreenshot', { format: 'png' });
+saveImage('full_page_dark.png', Buffer.from(ss.data, 'base64'));
+
+// Reset to light mode for remaining captures
+await send('Emulation.setDeviceMetricsOverride', {
+  width: 1440,
+  height: 900,
+  deviceScaleFactor: 2,
+  mobile: false
+});
+await send('Runtime.evaluate', {
+  expression: `document.documentElement.classList.remove('dark'); localStorage.theme = 'light';`
+});
 
 // 2. Mobile Viewport (390x844)
 await send('Emulation.setDeviceMetricsOverride', {
@@ -193,4 +271,3 @@ saveImage('unit_converter_page.png', Buffer.from(ss.data, 'base64'));
 ws.close();
 chromeProc.kill();
 console.log('Artifacts captured successfully');
-
