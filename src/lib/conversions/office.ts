@@ -93,6 +93,12 @@ export async function convertOffice(
     return convertHwp(inputBuffer, tgt, options, baseName);
   }
 
+  // 12.21 HWPX Source (KS X 6101 Hangul Word Processor XML)
+  if (src === 'hwpx') {
+    const { convertHwpx } = await import('./hwpx');
+    return convertHwpx(inputBuffer, tgt, options, baseName);
+  }
+
   // 12.3 LWP, PUB (Documents)
   if (['lwp', 'pub'].includes(src)) {
     return convertGenericDocumentSource(inputBuffer, src, tgt, options, baseName);
@@ -117,6 +123,19 @@ export async function convertOffice(
       mimeType: 'application/x-hwp',
       filename: `${baseName}.hwp`,
       size: hwpBuffer.length,
+    };
+  }
+
+  // 13.01 Target is HWPX (from Markdown, HTML, TXT, DOCX, ODT, RTF, etc.)
+  if (tgt === 'hwpx') {
+    const { markdownToHwpx } = await import('./hwpx');
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const hwpxBuffer = await markdownToHwpx(textContent, baseName);
+    return {
+      buffer: hwpxBuffer,
+      mimeType: 'application/hwp+zip',
+      filename: `${baseName}.hwpx`,
+      size: hwpxBuffer.length,
     };
   }
 
@@ -489,11 +508,13 @@ async function convertDocxSource(
   if (tgt === 'txt') {
     const text = elements && elements.length > 0
       ? elements
-          .map((el) =>
-            el.type === 'paragraph'
-              ? el.paragraph.text
-              : el.table.rows.map((r) => r.join('\t')).join('\n')
-          )
+          .map((el) => {
+            if (el.type === 'paragraph') return el.paragraph.text;
+            if (el.type === 'table') return el.table.rows.map((r) => r.join('\t')).join('\n');
+            if (el.type === 'drawing') return (el.shapes || []).map((s) => s.text).filter(Boolean).join(' ');
+            return '';
+          })
+          .filter(Boolean)
           .join('\n\n')
       : paragraphs.map((p) => p.text).join('\n\n');
     const buffer = Buffer.from(text, 'utf-8');
@@ -592,11 +613,24 @@ export interface DocxParagraph {
   isBullet?: boolean;
 }
 
+export interface TableBorder {
+  style?: string; // solid, dashed, dotted, double, none
+  size?: number; // in pt
+  color?: string; // hex color e.g. #CCD2FC
+}
+
 export interface DocxTableCell {
   text: string;
   shading?: string;
   isHeader?: boolean;
   colSpan?: number;
+  rowSpan?: number;
+  borders?: {
+    top?: TableBorder;
+    bottom?: TableBorder;
+    left?: TableBorder;
+    right?: TableBorder;
+  };
 }
 
 export interface DocxTable {
@@ -604,11 +638,336 @@ export interface DocxTable {
   colCount?: number;
   rows: string[][];
   structuredRows?: DocxTableCell[][];
+  tblBorders?: {
+    top?: TableBorder;
+    bottom?: TableBorder;
+    left?: TableBorder;
+    right?: TableBorder;
+    insideH?: TableBorder;
+    insideV?: TableBorder;
+  };
+}
+
+export interface DrawingMlShape {
+  id?: string;
+  name?: string;
+  type?: string;
+  geomType: 'preset' | 'custom';
+  presetGeom?: string;
+  customPath?: string;
+  svgPath?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation?: number;
+  fillColor?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
+  text?: string;
 }
 
 export type DocxBlockElement =
   | { type: 'paragraph'; paragraph: DocxParagraph }
-  | { type: 'table'; table: DocxTable };
+  | { type: 'table'; table: DocxTable }
+  | { type: 'drawing'; svg: string; shapes?: DrawingMlShape[] };
+
+export function parseBorder(borderXml: string): TableBorder | undefined {
+  if (!borderXml) return undefined;
+  const valMatch = borderXml.match(/w:val="([^"]+)"/);
+  const val = valMatch ? valMatch[1] : 'single';
+  if (val === 'none' || val === 'nil') return { style: 'none' };
+  const szMatch = borderXml.match(/w:sz="(\d+)"/);
+  const sz = szMatch ? parseInt(szMatch[1], 10) / 8 : 0.5; // in pt (w:sz is in eighths of a point)
+  const colMatch = borderXml.match(/w:color="([A-Fa-f0-9]{6})"/);
+  const color = colMatch ? `#${colMatch[1]}` : '#CCD2FC';
+  const style =
+    val === 'double' ? 'double' : val.includes('dash') ? 'dashed' : val.includes('dot') ? 'dotted' : 'solid';
+  return { style, size: sz, color };
+}
+
+/**
+ * OpenXML DrawingML Vector Shape Parser & SVG Renderer
+ * Parses <p:spTree>, <w:drawing>, <a:xfrm>, <a:prstGeom>, and <a:custGeom>
+ * into clean, standards-compliant SVG vector paths.
+ */
+export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
+  const shapes: DrawingMlShape[] = [];
+
+  // Match all shape tags: <p:sp>, <wps:wsp>, <a:graphicData>, <w:drawing>
+  const shapeRegex = /<(?:(?:p|wps):sp|a:graphicData|w:drawing)\b[\s\S]*?<\/(?:(?:p|wps):sp|a:graphicData|w:drawing)>/gi;
+  let spMatch: RegExpExecArray | null;
+  const matches: string[] = [];
+
+  while ((spMatch = shapeRegex.exec(xml)) !== null) {
+    matches.push(spMatch[0]);
+  }
+
+  if (matches.length === 0 && (xml.includes('<a:prstGeom') || xml.includes('<a:custGeom') || xml.includes('<a:spPr'))) {
+    matches.push(xml);
+  }
+
+  for (const spXml of matches) {
+
+    // 1. Transform: <a:xfrm rot="..."> <a:off x="..." y="..."/> <a:ext cx="..." cy="..."/>
+    const xfrmMatch = spXml.match(/<a:xfrm\b([^>]*?)>([\s\S]*?)<\/a:xfrm>/i);
+    let x = 0,
+      y = 0,
+      width = 100,
+      height = 60,
+      rotation = 0;
+    if (xfrmMatch) {
+      const xfrmAttrs = xfrmMatch[1];
+      const xfrmBody = xfrmMatch[2];
+      const rotMatch = xfrmAttrs.match(/rot="(\d+)"/i);
+      if (rotMatch) rotation = parseInt(rotMatch[1], 10) / 60000;
+
+      const offMatch = xfrmBody.match(/<a:off\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
+      if (offMatch) {
+        x = Math.round(parseInt(offMatch[1], 10) / 12700);
+        y = Math.round(parseInt(offMatch[2], 10) / 12700);
+      }
+      const extMatch = xfrmBody.match(/<a:ext\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
+      if (extMatch) {
+        width = Math.max(1, Math.round(parseInt(extMatch[1], 10) / 12700));
+        height = Math.max(1, Math.round(parseInt(extMatch[2], 10) / 12700));
+      }
+    }
+
+    // 2. Fills and Lines
+    let fillColor = '#5C6BC0';
+    let strokeColor = '#1F2340';
+    let strokeWidth = 1;
+
+    if (spXml.includes('<a:noFill/>') || spXml.includes('<a:noFill />')) {
+      fillColor = 'none';
+    } else {
+      const fillMatch = spXml.match(/<a:solidFill>[\s\S]*?<a:srgbClr\b[^>]*val="([A-Fa-f0-9]{6})"/i);
+      if (fillMatch) fillColor = `#${fillMatch[1]}`;
+    }
+
+    const lnMatch = spXml.match(/<a:ln\b([^>]*?)>([\s\S]*?)<\/a:ln>/i);
+    if (lnMatch) {
+      const wMatch = lnMatch[1].match(/w="(\d+)"/i);
+      if (wMatch) strokeWidth = Math.max(0.5, Math.round(parseInt(wMatch[1], 10) / 12700));
+      const lnClrMatch = lnMatch[2].match(/<a:srgbClr\b[^>]*val="([A-Fa-f0-9]{6})"/i);
+      if (lnClrMatch) strokeColor = `#${lnClrMatch[1]}`;
+    }
+
+    // 3. Geometry (Preset vs Custom)
+    let geomType: 'preset' | 'custom' = 'preset';
+    let presetGeom = 'rect';
+    let svgPath = '';
+
+    const prstMatch = spXml.match(/<a:prstGeom\b[^>]*prst="([^"]+)"/i);
+    const custMatch = spXml.match(/<a:custGeom\b[\s\S]*?<\/a:custGeom>/i);
+
+    if (custMatch) {
+      geomType = 'custom';
+      const custXml = custMatch[0];
+      const pathTagMatch = custXml.match(/<a:path\b([^>]*?)>([\s\S]*?)<\/a:path>/i);
+      if (pathTagMatch) {
+        const pathAttrs = pathTagMatch[1];
+        const pathBody = pathTagMatch[2];
+        const pwMatch = pathAttrs.match(/w="(\d+)"/i);
+        const phMatch = pathAttrs.match(/h="(\d+)"/i);
+        const pw = pwMatch ? parseInt(pwMatch[1], 10) : width;
+        const ph = phMatch ? parseInt(phMatch[1], 10) : height;
+        const sx = width / (pw || 1);
+        const sy = height / (ph || 1);
+
+        const dParts: string[] = [];
+        // Process path commands in sequential document order to preserve geometry
+        const cmdRegex = /<a:(moveTo|lnTo|cubicBezTo|quadBezTo|arcTo|close)\b([^>]*?)>([\s\S]*?)<\/a:\1>|<a:(close)\b[^>]*\/>/gi;
+        let cmdMatch: RegExpExecArray | null;
+        while ((cmdMatch = cmdRegex.exec(pathBody)) !== null) {
+          const cmdName = (cmdMatch[1] || cmdMatch[4]).toLowerCase();
+          const cmdContent = cmdMatch[3] || '';
+
+          if (cmdName === 'moveto') {
+            const ptMatch = cmdContent.match(/<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
+            if (ptMatch) {
+              const px = Math.round(parseInt(ptMatch[1], 10) * sx + x);
+              const py = Math.round(parseInt(ptMatch[2], 10) * sy + y);
+              dParts.push(`M ${px} ${py}`);
+            }
+          } else if (cmdName === 'lnto') {
+            const ptMatch = cmdContent.match(/<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
+            if (ptMatch) {
+              const px = Math.round(parseInt(ptMatch[1], 10) * sx + x);
+              const py = Math.round(parseInt(ptMatch[2], 10) * sy + y);
+              dParts.push(`L ${px} ${py}`);
+            }
+          } else if (cmdName === 'cubicbezto') {
+            const ptRegex = /<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+            const pts: string[] = [];
+            let ptM: RegExpExecArray | null;
+            while ((ptM = ptRegex.exec(cmdContent)) !== null) {
+              const px = Math.round(parseInt(ptM[1], 10) * sx + x);
+              const py = Math.round(parseInt(ptM[2], 10) * sy + y);
+              pts.push(`${px} ${py}`);
+            }
+            if (pts.length >= 3) {
+              dParts.push(`C ${pts[0]}, ${pts[1]}, ${pts[2]}`);
+            }
+          } else if (cmdName === 'quadbezto') {
+            const ptRegex = /<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+            const pts: string[] = [];
+            let ptM: RegExpExecArray | null;
+            while ((ptM = ptRegex.exec(cmdContent)) !== null) {
+              const px = Math.round(parseInt(ptM[1], 10) * sx + x);
+              const py = Math.round(parseInt(ptM[2], 10) * sy + y);
+              pts.push(`${px} ${py}`);
+            }
+            if (pts.length >= 2) {
+              dParts.push(`Q ${pts[0]}, ${pts[1]}`);
+            }
+          } else if (cmdName === 'close') {
+            dParts.push('Z');
+          }
+        }
+        svgPath = dParts.join(' ');
+      }
+    } else if (prstMatch) {
+      geomType = 'preset';
+      presetGeom = prstMatch[1].toLowerCase();
+    }
+
+    // 4. Text inside shape
+    const tTags = spXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi) || [];
+    const text = tTags
+      .map((t) => t.replace(/<[^>]+>/g, '').trim())
+      .filter(Boolean)
+      .join(' ');
+
+    shapes.push({
+      type: geomType === 'custom' ? 'custom' : presetGeom,
+      geomType,
+      presetGeom,
+      customPath: svgPath || undefined,
+      svgPath,
+      x,
+      y,
+      width,
+      height,
+      rotation,
+      fillColor,
+      strokeColor,
+      strokeWidth,
+      text: text || undefined,
+    });
+  }
+
+  return shapes;
+}
+
+/**
+ * Renders OpenXML DrawingML specifications into an SVG vector graphic string.
+ */
+export function renderDrawingMlToSvg(
+  xmlOrShapes: string | DrawingMlShape[],
+  options?: { width?: number; height?: number } | number,
+  heightOption?: number
+): { svg: string; shapes: DrawingMlShape[] } {
+  const shapes = Array.isArray(xmlOrShapes) ? xmlOrShapes : parseDrawingMlShapes(xmlOrShapes);
+  if (shapes.length === 0) {
+    return {
+      svg: '',
+      shapes: [],
+    };
+  }
+
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  shapes.forEach((s) => {
+    minX = Math.min(minX, s.x);
+    minY = Math.min(minY, s.y);
+    maxX = Math.max(maxX, s.x + s.width);
+    maxY = Math.max(maxY, s.y + s.height);
+  });
+
+  const optWidth = typeof options === 'number' ? options : options?.width;
+  const optHeight = typeof options === 'number' ? heightOption : options?.height;
+
+  const contentWidth = Math.max(10, maxX - minX + 20);
+  const contentHeight = Math.max(10, maxY - minY + 20);
+  const totalWidth = optWidth || contentWidth;
+  const totalHeight = optHeight || contentHeight;
+
+  let svgElements = '';
+  for (const s of shapes) {
+    const rotAttr = s.rotation ? ` transform="rotate(${s.rotation} ${s.x + s.width / 2} ${s.y + s.height / 2})"` : '';
+    let elementStr = '';
+
+    if (s.geomType === 'custom' && s.svgPath) {
+      elementStr = `<path d="${s.svgPath}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+    } else {
+      switch (s.presetGeom) {
+        case 'ellipse':
+          elementStr = `<ellipse cx="${s.x + s.width / 2}" cy="${s.y + s.height / 2}" rx="${s.width / 2}" ry="${
+            s.height / 2
+          }" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        case 'roundrect':
+          elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="8" ry="8" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        case 'triangle': {
+          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height} ${s.x},${s.y + s.height}`;
+          elementStr = `<polygon points="${pts}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        }
+        case 'diamond': {
+          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height / 2} ${s.x + s.width / 2},${
+            s.y + s.height
+          } ${s.x},${s.y + s.height / 2}`;
+          elementStr = `<polygon points="${pts}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        }
+        case 'line':
+          elementStr = `<line x1="${s.x}" y1="${s.y}" x2="${s.x + s.width}" y2="${s.y + s.height}" stroke="${
+            s.strokeColor
+          }" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        case 'star5': {
+          const cx = s.x + s.width / 2;
+          const cy = s.y + s.height / 2;
+          const rOuter = Math.min(s.width, s.height) / 2;
+          const rInner = rOuter * 0.4;
+          const pts: string[] = [];
+          for (let i = 0; i < 10; i++) {
+            const angle = (i * Math.PI) / 5 - Math.PI / 2;
+            const r = i % 2 === 0 ? rOuter : rInner;
+            pts.push(`${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`);
+          }
+          elementStr = `<polygon points="${pts.join(' ')}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${
+            s.strokeWidth
+          }"${rotAttr} />`;
+          break;
+        }
+        case 'rect':
+        default:
+          elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+      }
+    }
+
+    if (s.text) {
+      const textFill = s.fillColor === '#5C6BC0' || s.fillColor === '#1F2340' ? '#FFFFFF' : '#1F2340';
+      elementStr += `\n  <text x="${s.x + s.width / 2}" y="${
+        s.y + s.height / 2 + 4
+      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="12" font-weight="500" fill="${textFill}">${escapeHtml(
+        s.text
+      )}</text>`;
+    }
+
+    svgElements += `  ${elementStr}\n`;
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX - 10} ${minY - 10} ${contentWidth} ${contentHeight}" width="${totalWidth}" height="${totalHeight}">\n${svgElements}</svg>`;
+  return { svg, shapes };
+}
 
 function safeExtractXmlTags(xml: string, tagName: string): string[] {
   const results: string[] = [];
@@ -644,18 +1003,19 @@ function safeExtractDocxBlocks(bodyXml: string): string[] {
   while (pos < bodyXml.length) {
     const nextTbl = bodyXml.indexOf('<w:tbl', pos);
     const nextP = bodyXml.indexOf('<w:p', pos);
+    const nextDrawing = bodyXml.indexOf('<w:drawing', pos);
 
-    let startIdx = -1;
-    let tag = '';
-    if (nextTbl !== -1 && (nextP === -1 || nextTbl < nextP)) {
-      startIdx = nextTbl;
-      tag = 'w:tbl';
-    } else if (nextP !== -1) {
-      startIdx = nextP;
-      tag = 'w:p';
-    } else {
-      break;
-    }
+    const candidates = [
+      { tag: 'w:tbl', idx: nextTbl },
+      { tag: 'w:p', idx: nextP },
+      { tag: 'w:drawing', idx: nextDrawing },
+    ]
+      .filter((c) => c.idx !== -1)
+      .sort((a, b) => a.idx - b.idx);
+
+    if (candidates.length === 0) break;
+    const startIdx = candidates[0].idx;
+    const tag = candidates[0].tag;
 
     const closeTag = `</${tag}>`;
     const endIdx = bodyXml.indexOf(closeTag, startIdx);
@@ -686,10 +1046,39 @@ function parseDocxXml(xml: string): {
   const blocks = safeExtractDocxBlocks(bodyXml);
 
   for (const chunk of blocks) {
+    // If chunk is a standalone Drawing (<w:drawing>)
+    if (chunk.startsWith('<w:drawing')) {
+      const res = renderDrawingMlToSvg(chunk);
+      if (res.shapes.length > 0) {
+        elements.push({ type: 'drawing', svg: res.svg, shapes: res.shapes });
+      }
+      continue;
+    }
+
     // If chunk is a Table (<w:tbl>)
     if (chunk.startsWith('<w:tbl')) {
       const rows: string[][] = [];
       const structuredRows: DocxTableCell[][] = [];
+
+      const tblBordersMatch = chunk.match(/<w:tblBorders\b[^>]*>([\s\S]*?)<\/w:tblBorders>/i);
+      let tblBorders: DocxTable['tblBorders'];
+      if (tblBordersMatch) {
+        const bXml = tblBordersMatch[1];
+        const topM = bXml.match(/<w:top\b([^>]*?)\/?>/i);
+        const bottomM = bXml.match(/<w:bottom\b([^>]*?)\/?>/i);
+        const leftM = bXml.match(/<w:left\b([^>]*?)\/?>/i);
+        const rightM = bXml.match(/<w:right\b([^>]*?)\/?>/i);
+        const inHM = bXml.match(/<w:insideH\b([^>]*?)\/?>/i);
+        const inVM = bXml.match(/<w:insideV\b([^>]*?)\/?>/i);
+        tblBorders = {
+          top: parseBorder(topM ? topM[1] : ''),
+          bottom: parseBorder(bottomM ? bottomM[1] : ''),
+          left: parseBorder(leftM ? leftM[1] : ''),
+          right: parseBorder(rightM ? rightM[1] : ''),
+          insideH: parseBorder(inHM ? inHM[1] : ''),
+          insideV: parseBorder(inVM ? inVM[1] : ''),
+        };
+      }
 
       const trList = safeExtractXmlTags(chunk, 'w:tr');
 
@@ -707,6 +1096,22 @@ function parseDocxXml(xml: string): {
           const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
           const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
 
+          const tcBordersMatch = tcXml.match(/<w:tcBorders\b[^>]*>([\s\S]*?)<\/w:tcBorders>/i);
+          let borders: DocxTableCell['borders'];
+          if (tcBordersMatch) {
+            const bXml = tcBordersMatch[1];
+            const topM = bXml.match(/<w:top\b([^>]*?)\/?>/i);
+            const bottomM = bXml.match(/<w:bottom\b([^>]*?)\/?>/i);
+            const leftM = bXml.match(/<w:left\b([^>]*?)\/?>/i);
+            const rightM = bXml.match(/<w:right\b([^>]*?)\/?>/i);
+            borders = {
+              top: parseBorder(topM ? topM[1] : ''),
+              bottom: parseBorder(bottomM ? bottomM[1] : ''),
+              left: parseBorder(leftM ? leftM[1] : ''),
+              right: parseBorder(rightM ? rightM[1] : ''),
+            };
+          }
+
           const tTags = safeExtractXmlTags(tcXml, 'w:t');
           const cellText = tTags
             .map((m) => m.replace(/<[^>]+>/g, ''))
@@ -714,7 +1119,7 @@ function parseDocxXml(xml: string): {
             .trim();
 
           rowCells.push(cellText);
-          sCells.push({ text: cellText, shading, colSpan, isHeader });
+          sCells.push({ text: cellText, shading, colSpan, isHeader, borders });
         }
 
         if (rowCells.length > 0) {
@@ -730,6 +1135,7 @@ function parseDocxXml(xml: string): {
           colCount: maxCols,
           rows,
           structuredRows,
+          tblBorders,
         };
         tables.push(tbl);
         elements.push({ type: 'table', table: tbl });
@@ -803,6 +1209,17 @@ function parseDocxXml(xml: string): {
       paragraphs.push(p);
       elements.push({ type: 'paragraph', paragraph: p });
     }
+
+    // Extract inline DrawingML drawings from paragraph chunk
+    if (chunk.includes('<w:drawing')) {
+      const drawingMatches = chunk.match(/<w:drawing\b[\s\S]*?<\/w:drawing>/gi) || [];
+      for (const dXml of drawingMatches) {
+        const res = renderDrawingMlToSvg(dXml);
+        if (res.shapes.length > 0) {
+          elements.push({ type: 'drawing', svg: res.svg, shapes: res.shapes });
+        }
+      }
+    }
   }
 
   return { paragraphs, tables, elements };
@@ -841,18 +1258,62 @@ function generateHtmlFromDocx(
   };
 
   const renderTable = (tbl: DocxTable): string => {
-    let tblHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;margin:1.5rem 0;width:100%;border-color:#CCD2FC;">\n';
-    tbl.rows.forEach((row, rIdx) => {
-      tblHtml += '<tr>\n';
-      row.forEach((cell) => {
-        if (rIdx === 0) {
-          tblHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(cell)}</th>\n`;
-        } else {
-          tblHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(cell)}</td>\n`;
-        }
+    let tblStyle = 'border-collapse:collapse;margin:1.5rem 0;width:100%;';
+    if (tbl.tblBorders) {
+      if (tbl.tblBorders.top && tbl.tblBorders.top.style !== 'none') {
+        tblStyle += `border-top:${tbl.tblBorders.top.size || 1}pt ${tbl.tblBorders.top.style || 'solid'} ${tbl.tblBorders.top.color || '#CCD2FC'};`;
+      }
+      if (tbl.tblBorders.bottom && tbl.tblBorders.bottom.style !== 'none') {
+        tblStyle += `border-bottom:${tbl.tblBorders.bottom.size || 1}pt ${tbl.tblBorders.bottom.style || 'solid'} ${tbl.tblBorders.bottom.color || '#CCD2FC'};`;
+      }
+    }
+    let tblHtml = `<table border="1" cellpadding="8" cellspacing="0" style="${tblStyle}">\n`;
+
+    if (tbl.structuredRows && tbl.structuredRows.length > 0) {
+      tbl.structuredRows.forEach((sRow, rIdx) => {
+        tblHtml += '<tr>\n';
+        sRow.forEach((cell) => {
+          const tag = cell.isHeader || rIdx === 0 ? 'th' : 'td';
+          let cellStyle = 'padding:8px;text-align:left;';
+          if (cell.shading && cell.shading !== 'auto') {
+            cellStyle += `background-color:#${cell.shading};`;
+          } else if (tag === 'th') {
+            cellStyle += 'background:#F0F2FE;color:#1F2340;';
+          }
+          if (cell.borders) {
+            if (cell.borders.top && cell.borders.top.style !== 'none') {
+              cellStyle += `border-top:${cell.borders.top.size || 1}pt ${cell.borders.top.style || 'solid'} ${cell.borders.top.color || '#CCD2FC'};`;
+            }
+            if (cell.borders.bottom && cell.borders.bottom.style !== 'none') {
+              cellStyle += `border-bottom:${cell.borders.bottom.size || 1}pt ${cell.borders.bottom.style || 'solid'} ${cell.borders.bottom.color || '#CCD2FC'};`;
+            }
+            if (cell.borders.left && cell.borders.left.style !== 'none') {
+              cellStyle += `border-left:${cell.borders.left.size || 1}pt ${cell.borders.left.style || 'solid'} ${cell.borders.left.color || '#CCD2FC'};`;
+            }
+            if (cell.borders.right && cell.borders.right.style !== 'none') {
+              cellStyle += `border-right:${cell.borders.right.size || 1}pt ${cell.borders.right.style || 'solid'} ${cell.borders.right.color || '#CCD2FC'};`;
+            }
+          } else {
+            cellStyle += 'border:1px solid #E1E4EE;';
+          }
+          const colSpanAttr = cell.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
+          tblHtml += `  <${tag}${colSpanAttr} style="${cellStyle}">${escapeHtml(cell.text)}</${tag}>\n`;
+        });
+        tblHtml += '</tr>\n';
       });
-      tblHtml += '</tr>\n';
-    });
+    } else {
+      tbl.rows.forEach((row, rIdx) => {
+        tblHtml += '<tr>\n';
+        row.forEach((cell) => {
+          if (rIdx === 0) {
+            tblHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(cell)}</th>\n`;
+          } else {
+            tblHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(cell)}</td>\n`;
+          }
+        });
+        tblHtml += '</tr>\n';
+      });
+    }
     tblHtml += '</table>\n';
     return tblHtml;
   };
@@ -861,6 +1322,7 @@ function generateHtmlFromDocx(
     for (const el of elements) {
       if (el.type === 'paragraph') body += renderParagraph(el.paragraph);
       else if (el.type === 'table') body += renderTable(el.table);
+      else if (el.type === 'drawing') body += `<div class="vector-drawing" style="margin:1.5rem 0;">${el.svg}</div>\n`;
     }
   } else {
     for (const p of paragraphs) body += renderParagraph(p);
@@ -915,6 +1377,12 @@ function generateMarkdownFromDocx(
     for (const el of elements) {
       if (el.type === 'paragraph') parts.push(renderParagraph(el.paragraph));
       else if (el.type === 'table') parts.push(renderTable(el.table));
+      else if (el.type === 'drawing' && el.shapes) {
+        const shapeTexts = el.shapes.map((s) => s.text).filter(Boolean);
+        if (shapeTexts.length > 0) {
+          parts.push(shapeTexts.map((t) => `> **[Drawing]** ${t}`).join('\n'));
+        }
+      }
     }
   } else {
     for (const p of paragraphs) parts.push(renderParagraph(p));
@@ -959,25 +1427,49 @@ async function generatePdfFromDocx(
       const colCount = Math.max(1, tbl.colCount || tbl.rows[0].length);
       const colWidth = (doc.page.width - 100) / colCount;
 
-      tbl.rows.forEach((row, rIdx) => {
-        const y = doc.y;
-        if (y > doc.page.height - 80) {
-          doc.addPage();
-        }
-        const isHdr = rIdx === 0;
-        doc.rect(50, doc.y, doc.page.width - 100, 20).strokeColor('#CCD2FC').lineWidth(0.5);
-        if (isHdr) {
-          doc.rect(50, doc.y, doc.page.width - 100, 20).fill('#F0F2FE');
-          doc.fillColor('#1F2340').fontSize(9);
-        } else {
-          doc.fillColor('#4D536B').fontSize(8.5);
-        }
-
-        row.forEach((cell, cIdx) => {
-          doc.text(cell, 55 + cIdx * colWidth, y + 4, { width: colWidth - 10, lineBreak: false });
+      if (tbl.structuredRows && tbl.structuredRows.length > 0) {
+        tbl.structuredRows.forEach((sRow, rIdx) => {
+          const y = doc.y;
+          if (y > doc.page.height - 80) {
+            doc.addPage();
+          }
+          sRow.forEach((cell, cIdx) => {
+            const x = 50 + cIdx * colWidth;
+            if (cell.shading && cell.shading !== 'auto') {
+              doc.rect(x, y, colWidth, 20).fill('#' + cell.shading);
+            } else if (cell.isHeader || rIdx === 0) {
+              doc.rect(x, y, colWidth, 20).fill('#F0F2FE');
+            }
+            const borderCol = cell.borders?.bottom?.color || '#CCD2FC';
+            const borderW = cell.borders?.bottom?.size || 0.5;
+            doc.rect(x, y, colWidth, 20).strokeColor(borderCol).lineWidth(borderW).stroke();
+            const textCol = cell.isHeader || rIdx === 0 ? '#1F2340' : '#4D536B';
+            doc.fillColor(textCol).fontSize(cell.isHeader || rIdx === 0 ? 9 : 8.5);
+            doc.text(cell.text, x + 5, y + 4, { width: colWidth - 10, lineBreak: false });
+          });
+          doc.y = y + 20;
         });
-        doc.y = y + 20;
-      });
+      } else {
+        tbl.rows.forEach((row, rIdx) => {
+          const y = doc.y;
+          if (y > doc.page.height - 80) {
+            doc.addPage();
+          }
+          const isHdr = rIdx === 0;
+          doc.rect(50, doc.y, doc.page.width - 100, 20).strokeColor('#CCD2FC').lineWidth(0.5);
+          if (isHdr) {
+            doc.rect(50, doc.y, doc.page.width - 100, 20).fill('#F0F2FE');
+            doc.fillColor('#1F2340').fontSize(9);
+          } else {
+            doc.fillColor('#4D536B').fontSize(8.5);
+          }
+
+          row.forEach((cell, cIdx) => {
+            doc.text(cell, 55 + cIdx * colWidth, y + 4, { width: colWidth - 10, lineBreak: false });
+          });
+          doc.y = y + 20;
+        });
+      }
       doc.moveDown(0.4);
     };
 
@@ -998,6 +1490,16 @@ async function generatePdfFromDocx(
       for (const el of elements) {
         if (el.type === 'paragraph') renderParagraph(el.paragraph);
         else if (el.type === 'table') renderTable(el.table);
+        else if (el.type === 'drawing' && el.shapes) {
+          const shapeTexts = el.shapes.map((s) => s.text).filter(Boolean);
+          if (shapeTexts.length > 0) {
+            doc.moveDown(0.3);
+            for (const st of shapeTexts) {
+              doc.fillColor('#5C6BC0').fontSize(10).text(`[Drawing: ${st}]`, { align: 'center' });
+            }
+            doc.moveDown(0.3);
+          }
+        }
       }
     } else {
       for (const p of paragraphs) renderParagraph(p);
@@ -1050,11 +1552,15 @@ export class SpreadsheetFormulaEvaluator {
       return t;
     };
 
+    const isErrorCode = (v: any): boolean => typeof v === 'string' && v.startsWith('#');
+
     const parseComparison = (): any => {
       let left = parseConcat();
       while (peek() && peek()!.type === 'OP_COMP') {
         const op = consume().val;
         const right = parseConcat();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         if (op === '=') left = left == right;
         else if (op === '<>') left = left != right;
         else if (op === '<') left = left < right;
@@ -1070,6 +1576,8 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && peek()!.val === '&') {
         consume();
         const right = parseAdditive();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         left = String(left ?? '') + String(right ?? '');
       }
       return left;
@@ -1080,6 +1588,8 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && (peek()!.val === '+' || peek()!.val === '-')) {
         const op = consume().val;
         const right = parseMultiplicative();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         left = op === '+' ? Number(left) + Number(right) : Number(left) - Number(right);
       }
       return left;
@@ -1090,7 +1600,14 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && (peek()!.val === '*' || peek()!.val === '/')) {
         const op = consume().val;
         const right = parsePower();
-        left = op === '*' ? Number(left) * Number(right) : Number(left) / Number(right);
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
+        if (op === '/') {
+          if (Number(right) === 0) return '#DIV/0!';
+          left = Number(left) / Number(right);
+        } else {
+          left = Number(left) * Number(right);
+        }
       }
       return left;
     };
@@ -1100,6 +1617,8 @@ export class SpreadsheetFormulaEvaluator {
       while (peek() && peek()!.type === 'OP' && peek()!.val === '^') {
         consume();
         const right = parseUnary();
+        if (isErrorCode(left)) return left;
+        if (isErrorCode(right)) return right;
         left = Math.pow(Number(left), Number(right));
       }
       return left;
@@ -1109,11 +1628,13 @@ export class SpreadsheetFormulaEvaluator {
       if (peek() && peek()!.type === 'OP' && (peek()!.val === '+' || peek()!.val === '-')) {
         const op = consume().val;
         const operand = parseUnary();
+        if (isErrorCode(operand)) return operand;
         return op === '-' ? -Number(operand) : Number(operand);
       }
       let val = parsePrimary();
       if (peek() && peek()!.type === 'OP' && peek()!.val === '%') {
         consume();
+        if (isErrorCode(val)) return val;
         val = Number(val) / 100;
       }
       return val;
@@ -1137,7 +1658,11 @@ export class SpreadsheetFormulaEvaluator {
       }
       if (t.type === 'RANGE') {
         consume();
-        return this.resolveRange(t.val);
+        const r2d = this.resolveRange2D(t.val);
+        const flat = r2d.flat();
+        (flat as any)._range2D = r2d;
+        (flat as any)._isRange = true;
+        return flat;
       }
       if (t.type === 'CELL_REF') {
         consume();
@@ -1149,6 +1674,24 @@ export class SpreadsheetFormulaEvaluator {
     const parseFunctionCall = (): any => {
       const fnName = String(consume('FUNCTION').val).toUpperCase();
       consume('LPAREN');
+
+      if (fnName === 'IFERROR') {
+        let val: any;
+        let isErr = false;
+        try {
+          val = parseComparison();
+          if (typeof val === 'string' && val.startsWith('#')) {
+            isErr = true;
+          }
+        } catch {
+          isErr = true;
+        }
+        consume('COMMA');
+        const fallback = parseComparison();
+        consume('RPAREN');
+        return isErr ? fallback : val;
+      }
+
       const args: any[] = [];
       if (!peek() || peek()!.type !== 'RPAREN') {
         while (true) {
@@ -1167,7 +1710,7 @@ export class SpreadsheetFormulaEvaluator {
     return parseComparison();
   }
 
-  private resolveRange(rangeStr: string): any[] {
+  public resolveRange2D(rangeStr: string): any[][] {
     const [start, end] = rangeStr.split(':');
     const match1 = start.match(/^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/);
     const match2 = end.match(/^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/);
@@ -1186,8 +1729,9 @@ export class SpreadsheetFormulaEvaluator {
     const minC = Math.min(c1, c2), maxC = Math.max(c1, c2);
     const minR = Math.min(r1, r2), maxR = Math.max(r1, r2);
 
-    const values: any[] = [];
+    const rows: any[][] = [];
     for (let r = minR; r <= maxR; r++) {
+      const row: any[] = [];
       for (let c = minC; c <= maxC; c++) {
         let colName = '';
         let temp = c;
@@ -1195,16 +1739,27 @@ export class SpreadsheetFormulaEvaluator {
           colName = String.fromCharCode(65 + ((temp - 1) % 26)) + colName;
           temp = Math.floor((temp - 1) / 26);
         }
-        values.push(this.cellLookup(`${colName}${r}`));
+        row.push(this.cellLookup(`${colName}${r}`));
       }
+      rows.push(row);
     }
-    return values;
+    return rows;
+  }
+
+  private resolveRange(rangeStr: string): any[] {
+    return this.resolveRange2D(rangeStr).flat();
   }
 
   private executeFunction(name: string, args: any[]): any {
-    const flattenNumbers = (arr: any[]): number[] => {
+    const flattenNumbers = (arr: any[]): number[] | string => {
       const out: number[] = [];
+      let err: string | null = null;
       const walk = (item: any) => {
+        if (err) return;
+        if (typeof item === 'string' && item.startsWith('#')) {
+          err = item;
+          return;
+        }
         if (Array.isArray(item)) {
           item.forEach(walk);
         } else if (item !== null && item !== undefined && item !== '' && !Number.isNaN(Number(item))) {
@@ -1212,33 +1767,240 @@ export class SpreadsheetFormulaEvaluator {
         }
       };
       walk(arr);
-      return out;
+      return err || out;
+    };
+
+    const isCellMatch = (cellVal: any, lookupVal: any): boolean => {
+      if (cellVal === undefined || cellVal === null) return false;
+      if (cellVal === lookupVal) return true;
+      if (String(cellVal).toLowerCase() === String(lookupVal).toLowerCase()) return true;
+      const sCell = String(cellVal).trim();
+      const sLookup = String(lookupVal).trim();
+      if (sCell !== '' && sLookup !== '') {
+        const numCell = Number(sCell);
+        const numLookup = Number(sLookup);
+        if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
+          return numCell === numLookup;
+        }
+      }
+      return false;
     };
 
     switch (name) {
       case 'SUM': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.reduce((a, b) => a + b, 0);
       }
       case 'AVERAGE': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.length === 0 ? 0 : nums.reduce((a, b) => a + b, 0) / nums.length;
       }
       case 'COUNT': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.length;
       }
       case 'MIN': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.length === 0 ? 0 : Math.min(...nums);
       }
       case 'MAX': {
         const nums = flattenNumbers(args);
+        if (typeof nums === 'string') return nums;
         return nums.length === 0 ? 0 : Math.max(...nums);
       }
       case 'IF': {
         const cond = Boolean(args[0]);
         return cond ? args[1] : args.length > 2 ? args[2] : false;
+      }
+      case 'ROUND': {
+        const val = Number(args[0]);
+        const digits = args.length > 1 ? Number(args[1]) : 0;
+        if (Number.isNaN(val) || Number.isNaN(digits)) return '#VALUE!';
+        const factor = Math.pow(10, digits);
+        return Math.round(val * factor) / factor;
+      }
+      case 'IFERROR': {
+        const v = args[0];
+        if (typeof v === 'string' && v.startsWith('#')) return args[1];
+        return v;
+      }
+      case 'CONCAT': {
+        const parts: string[] = [];
+        const walk = (item: any) => {
+          if (Array.isArray(item)) item.forEach(walk);
+          else if (item !== null && item !== undefined) parts.push(String(item));
+        };
+        args.forEach(walk);
+        return parts.join('');
+      }
+      case 'LEFT': {
+        const str = String(args[0] ?? '');
+        const n = args.length > 1 ? Number(args[1]) : 1;
+        return str.slice(0, Math.max(0, n));
+      }
+      case 'RIGHT': {
+        const str = String(args[0] ?? '');
+        const n = args.length > 1 ? Number(args[1]) : 1;
+        return str.slice(Math.max(0, str.length - n));
+      }
+      case 'MID': {
+        const str = String(args[0] ?? '');
+        const start = Number(args[1]);
+        const n = Number(args[2]);
+        if (Number.isNaN(start) || Number.isNaN(n) || start < 1) return '#VALUE!';
+        return str.substring(start - 1, start - 1 + n);
+      }
+      case 'DATE': {
+        const y = Number(args[0]);
+        const m = Number(args[1]);
+        const d = Number(args[2]);
+        if (Number.isNaN(y) || Number.isNaN(m) || Number.isNaN(d)) return '#VALUE!';
+        const dt = new Date(Date.UTC(y, m - 1, d));
+        return dt.toISOString().slice(0, 10);
+      }
+      case 'VLOOKUP': {
+        const lookupVal = args[0];
+        const tableArg = args[1];
+        const colIdx = Number(args[2]);
+        const rangeLookup = args.length > 3 ? Boolean(args[3]) : true;
+
+        const grid: any[][] =
+          (tableArg as any)?._range2D ||
+          (Array.isArray(tableArg) && Array.isArray(tableArg[0])
+            ? tableArg
+            : Array.isArray(tableArg)
+            ? tableArg.map((x) => [x])
+            : [[tableArg]]);
+
+        if (grid.length === 0 || colIdx < 1) return '#REF!';
+        const maxCols = Math.max(...grid.map((r) => r.length));
+        if (colIdx > maxCols) return '#REF!';
+
+        if (!rangeLookup) {
+          // Exact match
+          for (let r = 0; r < grid.length; r++) {
+            const cellVal = grid[r][0];
+            if (isCellMatch(cellVal, lookupVal)) {
+              return colIdx - 1 < grid[r].length ? grid[r][colIdx - 1] : '';
+            }
+          }
+          return '#N/A';
+        } else {
+          // Approximate match
+          let bestRow = -1;
+          for (let r = 0; r < grid.length; r++) {
+            const cellVal = grid[r][0];
+            if (cellVal === undefined || cellVal === '') continue;
+            const numCell = Number(cellVal);
+            const numLookup = Number(lookupVal);
+            if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
+              if (numCell <= numLookup) bestRow = r;
+            } else {
+              if (String(cellVal).localeCompare(String(lookupVal)) <= 0) bestRow = r;
+            }
+          }
+          if (bestRow === -1) return '#N/A';
+          return colIdx - 1 < grid[bestRow].length ? grid[bestRow][colIdx - 1] : '';
+        }
+      }
+      case 'HLOOKUP': {
+        const lookupVal = args[0];
+        const tableArg = args[1];
+        const rowIdx = Number(args[2]);
+        const rangeLookup = args.length > 3 ? Boolean(args[3]) : true;
+
+        const grid: any[][] =
+          (tableArg as any)?._range2D ||
+          (Array.isArray(tableArg) && Array.isArray(tableArg[0]) ? tableArg : [tableArg]);
+
+        if (grid.length === 0 || rowIdx < 1 || rowIdx > grid.length) return '#REF!';
+        const firstRow = grid[0];
+
+        if (!rangeLookup) {
+          for (let c = 0; c < firstRow.length; c++) {
+            const cellVal = firstRow[c];
+            if (isCellMatch(cellVal, lookupVal)) {
+              return c < grid[rowIdx - 1].length ? grid[rowIdx - 1][c] : '';
+            }
+          }
+          return '#N/A';
+        } else {
+          let bestCol = -1;
+          for (let c = 0; c < firstRow.length; c++) {
+            const cellVal = firstRow[c];
+            if (cellVal === undefined || cellVal === '') continue;
+            const numCell = Number(cellVal);
+            const numLookup = Number(lookupVal);
+            if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
+              if (numCell <= numLookup) bestCol = c;
+            } else {
+              if (String(cellVal).localeCompare(String(lookupVal)) <= 0) bestCol = c;
+            }
+          }
+          if (bestCol === -1) return '#N/A';
+          return bestCol < grid[rowIdx - 1].length ? grid[rowIdx - 1][bestCol] : '';
+        }
+      }
+      case 'INDEX': {
+        const tableArg = args[0];
+        const rowNum = Number(args[1]);
+        const colNum = args.length > 2 ? Number(args[2]) : 1;
+
+        const grid: any[][] =
+          (tableArg as any)?._range2D ||
+          (Array.isArray(tableArg) && Array.isArray(tableArg[0])
+            ? tableArg
+            : Array.isArray(tableArg)
+            ? [tableArg]
+            : [[tableArg]]);
+
+        if (rowNum < 1 || rowNum > grid.length) return '#REF!';
+        const targetRow = grid[rowNum - 1];
+        if (colNum < 1 || colNum > targetRow.length) return '#REF!';
+        return targetRow[colNum - 1];
+      }
+      case 'MATCH': {
+        const lookupVal = args[0];
+        const arr = Array.isArray(args[1]) ? args[1] : [args[1]];
+        const matchType = args.length > 2 ? Number(args[2]) : 1;
+
+        if (matchType === 0) {
+          for (let i = 0; i < arr.length; i++) {
+            if (isCellMatch(arr[i], lookupVal)) {
+              return i + 1;
+            }
+          }
+          return '#N/A';
+        } else if (matchType === 1) {
+          let bestIdx = -1;
+          for (let i = 0; i < arr.length; i++) {
+            const numA = Number(arr[i]);
+            const numL = Number(lookupVal);
+            if (!Number.isNaN(numA) && !Number.isNaN(numL)) {
+              if (numA <= numL) bestIdx = i;
+            } else if (String(arr[i]).localeCompare(String(lookupVal)) <= 0) {
+              bestIdx = i;
+            }
+          }
+          return bestIdx === -1 ? '#N/A' : bestIdx + 1;
+        } else if (matchType === -1) {
+          let bestIdx = -1;
+          for (let i = 0; i < arr.length; i++) {
+            const numA = Number(arr[i]);
+            const numL = Number(lookupVal);
+            if (!Number.isNaN(numA) && !Number.isNaN(numL)) {
+              if (numA >= numL) bestIdx = i;
+            } else if (String(arr[i]).localeCompare(String(lookupVal)) >= 0) {
+              bestIdx = i;
+            }
+          }
+          return bestIdx === -1 ? '#N/A' : bestIdx + 1;
+        }
+        return '#N/A';
       }
       default:
         throw new Error(`Unsupported spreadsheet function: ${name}`);
@@ -1319,6 +2081,288 @@ export class SpreadsheetFormulaEvaluator {
       throw new Error(`Unexpected character: "${ch}" at index ${i}`);
     }
     return tokens;
+  }
+}
+
+export interface FormulaCellInfo {
+  ref: string;
+  formula: string;
+  rowIdx?: number;
+  colIdx?: number;
+}
+
+/**
+ * Directed Acyclic Graph (DAG) Dependency Topological Sorter & Circular Reference Engine
+ * Solves multi-layer cell dependencies, evaluates formulas in correct topological order,
+ * and detects cycles safely without recursion stack overflow, assigning #CYCLE! standard error codes.
+ */
+export class SpreadsheetDagEngine {
+  private formulaCells: FormulaCellInfo[] = [];
+
+  constructor(private cellMap: Record<string, any> = {}) {}
+
+  public setCell(ref: string, value: any): void {
+    const cleanRef = ref.replace(/\$/g, '').toUpperCase();
+    this.formulaCells = this.formulaCells.filter((fc) => fc.ref !== cleanRef);
+    if (typeof value === 'string' && value.startsWith('=')) {
+      this.formulaCells.push({ ref: cleanRef, formula: value });
+      delete this.cellMap[cleanRef];
+    } else {
+      this.cellMap[cleanRef] = value;
+    }
+  }
+
+  public getCellValue(ref: string): any {
+    const cleanRef = ref.replace(/\$/g, '').toUpperCase();
+    return this.cellMap[cleanRef];
+  }
+
+  public evaluate(rows?: string[][]): { evaluated: Record<string, any>; cycles: string[] } {
+    return this.evaluateWithDag(this.formulaCells, rows);
+  }
+
+  /**
+   * Extracts dependent cell references and ranges from formula expression.
+   */
+  public static extractDependencies(formula: string): string[] {
+    if (!formula) return [];
+    if (formula.startsWith('=')) formula = formula.slice(1);
+    // Remove string literals to avoid false positives
+    const stripped = formula.replace(/"(?:[^"\\]|\\.)*"/g, '');
+    const refs = new Set<string>();
+
+    const colToNum = (s: string): number => {
+      let c = 0;
+      for (let i = 0; i < s.length; i++) c = c * 26 + (s.charCodeAt(i) - 64);
+      return c;
+    };
+    const numToCol = (n: number): string => {
+      let s = '';
+      let temp = n;
+      while (temp > 0) {
+        s = String.fromCharCode(65 + ((temp - 1) % 26)) + s;
+        temp = Math.floor((temp - 1) / 26);
+      }
+      return s;
+    };
+
+    // 1. Ranges like A1:B5 or $A$1:$B$5 (supporting whitespace around colon)
+    const rangeRegex = /(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)\s*:\s*(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)/g;
+    let rMatch: RegExpExecArray | null;
+    while ((rMatch = rangeRegex.exec(stripped)) !== null) {
+      const c1 = rMatch[2].toUpperCase();
+      const row1 = parseInt(rMatch[4], 10);
+      const c2 = rMatch[6].toUpperCase();
+      const row2 = parseInt(rMatch[8], 10);
+
+      const startC = Math.min(colToNum(c1), colToNum(c2));
+      const endC = Math.max(colToNum(c1), colToNum(c2));
+      const startR = Math.min(row1, row2);
+      const endR = Math.max(row1, row2);
+
+      for (let r = startR; r <= endR; r++) {
+        for (let c = startC; c <= endC; c++) {
+          refs.add(`${numToCol(c)}${r}`);
+        }
+      }
+    }
+
+    // Replace all extracted ranges with spaces to avoid duplicate endpoint matches
+    const strippedWithoutRanges = stripped.replace(rangeRegex, ' ');
+
+    // 2. Individual cell references like A1, $B$2
+    const cellRegex = /\b(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)\b/g;
+    let cMatch: RegExpExecArray | null;
+    while ((cMatch = cellRegex.exec(strippedWithoutRanges)) !== null) {
+      const afterIdx = cMatch.index + cMatch[0].length;
+      const afterStr = strippedWithoutRanges.slice(afterIdx).trimStart();
+      if (afterStr.startsWith('(')) {
+        continue; // Function name
+      }
+      const ref = `${cMatch[2].toUpperCase()}${cMatch[4]}`;
+      refs.add(ref);
+    }
+
+    return Array.from(refs);
+  }
+
+  /**
+   * Evaluates all formula cells in topological dependency order.
+   * Detects cycles and safely sets #CYCLE! error codes without stack overflows.
+   */
+  public evaluateWithDag(
+    formulaCells: FormulaCellInfo[],
+    rows?: string[][]
+  ): { evaluated: Record<string, any>; cycles: string[] } {
+    const formulaMap = new Map<string, FormulaCellInfo>();
+    for (const fc of formulaCells) {
+      if (fc.ref) {
+        formulaMap.set(fc.ref.toUpperCase(), fc);
+      }
+    }
+
+    // Build dependency graph among formula cells
+    const deps = new Map<string, Set<string>>();
+    const reverseDeps = new Map<string, Set<string>>(); // who depends on me
+    for (const [ref, fc] of formulaMap.entries()) {
+      const referenced = SpreadsheetDagEngine.extractDependencies(fc.formula);
+      const formulaReferenced = new Set<string>();
+      for (const r of referenced) {
+        if (formulaMap.has(r)) {
+          formulaReferenced.add(r);
+        }
+      }
+      deps.set(ref, formulaReferenced);
+
+      for (const parent of formulaReferenced) {
+        if (!reverseDeps.has(parent)) reverseDeps.set(parent, new Set());
+        reverseDeps.get(parent)!.add(ref);
+      }
+    }
+
+    // Detect cycles using 3-color DFS
+    const UNVISITED = 0,
+      VISITING = 1,
+      VISITED = 2;
+    const state = new Map<string, number>();
+    const cyclicCells = new Set<string>();
+    const stack: string[] = [];
+
+    const dfs = (u: string) => {
+      state.set(u, VISITING);
+      stack.push(u);
+
+      const neighbors = deps.get(u) || new Set();
+      for (const v of neighbors) {
+        if (v === u) {
+          // Self-cycle
+          cyclicCells.add(u);
+          continue;
+        }
+        const vState = state.get(v) || UNVISITED;
+        if (vState === VISITING) {
+          // Cycle detected!
+          const cycleStart = stack.indexOf(v);
+          if (cycleStart !== -1) {
+            for (let i = cycleStart; i < stack.length; i++) {
+              cyclicCells.add(stack[i]);
+            }
+          } else {
+            cyclicCells.add(v);
+            cyclicCells.add(u);
+          }
+        } else if (vState === UNVISITED) {
+          dfs(v);
+        }
+      }
+
+      stack.pop();
+      state.set(u, VISITED);
+    };
+
+    for (const node of formulaMap.keys()) {
+      if ((state.get(node) || UNVISITED) === UNVISITED) {
+        dfs(node);
+      }
+    }
+
+    // Propagate cyclic status to all downstream dependent cells
+    const queue = Array.from(cyclicCells);
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      const dependents = reverseDeps.get(curr) || new Set();
+      for (const dep of dependents) {
+        if (!cyclicCells.has(dep)) {
+          cyclicCells.add(dep);
+          queue.push(dep);
+        }
+      }
+    }
+
+    // Assign #CYCLE! error code to all cyclic cells
+    for (const cRef of cyclicCells) {
+      this.cellMap[cRef] = '#CYCLE!';
+      const fc = formulaMap.get(cRef);
+      if (fc && rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
+        rows[fc.rowIdx][fc.colIdx] = '#CYCLE!';
+      }
+    }
+
+    // Topological Sort on non-cyclic cells (Kahn's algorithm)
+    const inDegree = new Map<string, number>();
+    const nonCyclicNodes: string[] = [];
+    for (const node of formulaMap.keys()) {
+      if (!cyclicCells.has(node)) {
+        nonCyclicNodes.push(node);
+        let deg = 0;
+        for (const dep of deps.get(node) || []) {
+          if (!cyclicCells.has(dep)) deg++;
+        }
+        inDegree.set(node, deg);
+      }
+    }
+
+    const topoQueue: string[] = [];
+    for (const node of nonCyclicNodes) {
+      if ((inDegree.get(node) || 0) === 0) {
+        topoQueue.push(node);
+      }
+    }
+
+    const topoOrder: string[] = [];
+    while (topoQueue.length > 0) {
+      const curr = topoQueue.shift()!;
+      topoOrder.push(curr);
+
+      const dependents = reverseDeps.get(curr) || new Set();
+      for (const dep of dependents) {
+        if (!cyclicCells.has(dep)) {
+          const newDeg = (inDegree.get(dep) || 1) - 1;
+          inDegree.set(dep, newDeg);
+          if (newDeg === 0) {
+            topoQueue.push(dep);
+          }
+        }
+      }
+    }
+
+    // Any remaining non-cyclic nodes without degree 0 (safeguard)
+    for (const node of nonCyclicNodes) {
+      if (!topoOrder.includes(node)) {
+        topoOrder.push(node);
+      }
+    }
+
+    // Evaluate in topological order
+    const evaluator = new SpreadsheetFormulaEvaluator((ref) => {
+      const cleanRef = ref.replace(/\$/g, '').toUpperCase();
+      const val = this.cellMap[cleanRef];
+      if (val === undefined || val === null) return '';
+      return val;
+    });
+
+    for (const node of topoOrder) {
+      const fc = formulaMap.get(node);
+      if (!fc) continue;
+      try {
+        const result = evaluator.evaluate(fc.formula);
+        this.cellMap[node] = result;
+        const strResult = result !== null && result !== undefined ? String(result) : '';
+        if (rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
+          rows[fc.rowIdx][fc.colIdx] = strResult;
+        }
+      } catch {
+        this.cellMap[node] = '#REF!';
+        if (rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
+          rows[fc.rowIdx][fc.colIdx] = '#REF!';
+        }
+      }
+    }
+
+    return {
+      evaluated: this.cellMap,
+      cycles: Array.from(cyclicCells),
+    };
   }
 }
 
@@ -1429,27 +2473,10 @@ async function convertXlsxSource(
     rows.push(cells);
   }
 
-  // Evaluate dynamic formulas if any values were missing
+  // Evaluate dynamic formulas with DAG dependency sorter & cycle detection
   if (formulaCells.length > 0) {
-    const evaluator = new SpreadsheetFormulaEvaluator((ref) => {
-      const cleanRef = ref.replace(/\$/g, '').toUpperCase();
-      return cellMap[cleanRef] ?? 0;
-    });
-
-    for (const fc of formulaCells) {
-      try {
-        const result = evaluator.evaluate(fc.formula);
-        const strResult = result !== null && result !== undefined ? String(result) : '';
-        if (rows[fc.rowIdx] && fc.colIdx < rows[fc.rowIdx].length) {
-          rows[fc.rowIdx][fc.colIdx] = strResult;
-        }
-        if (fc.ref) {
-          cellMap[fc.ref] = result;
-        }
-      } catch {
-        // Fallback to empty if formula syntax is complex
-      }
-    }
+    const dagEngine = new SpreadsheetDagEngine(cellMap);
+    dagEngine.evaluateWithDag(formulaCells, rows);
   }
 
   // XLSX -> CSV

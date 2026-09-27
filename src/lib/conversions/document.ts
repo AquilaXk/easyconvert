@@ -8,6 +8,10 @@ import {
   generateOdtFromText,
   extractTextFromOdt,
   extractTextFromDoc,
+  renderDrawingMlToSvg,
+  parseDrawingMlShapes,
+  DrawingMlShape,
+  TableBorder,
 } from './office';
 import { performOcr, generateSearchablePdf, OcrResult } from './ocr';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
@@ -20,7 +24,10 @@ export {
   extractEmbeddedImageFromPdf,
   extractTextFromOdt,
   extractTextFromDoc,
+  renderDrawingMlToSvg,
+  parseDrawingMlShapes,
 };
+export type { DrawingMlShape, TableBorder };
 
 /**
  * Strips LaTeX macro commands

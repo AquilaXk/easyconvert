@@ -18,7 +18,19 @@ import {
   decodeHwpText,
   decompressHwpStream,
   HWP_TAGS,
+  convertHwpDocument,
 } from './hwp';
+import {
+  convertHwpx,
+  parseHwpxDocument,
+  buildHwpxContainer,
+  isHwpxContainer,
+  hwpxToHwp,
+  hwpToHwpx,
+  hwpxToMarkdown,
+  markdownToHwpx,
+  hwpxToPlainText,
+} from './hwpx';
 import {
   tessellateCadBuffer,
   tessellateCurvesToMesh,
@@ -45,6 +57,7 @@ import {
 } from './cad-nurbs';
 import {
   encodePureMp3,
+  encodeFlacStream,
   encodePureH264Mp4,
   generateH264Sps,
   generateH264Pps,
@@ -53,6 +66,14 @@ import {
   escapeH264Rbsp,
   BitWriter,
 } from './media-encoder';
+import {
+  decodeAudioBuffer,
+  decodeWav,
+  decodeFlac,
+  decodeMp3,
+  type DecodedAudio,
+  BitReader,
+} from './media-decoder';
 import { decodePdfHexString, unescapePdfString } from './pdf-utils';
 import {
   convertArchive,
@@ -69,7 +90,14 @@ import {
 
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
 import { performOcr, generateSearchablePdf } from './ocr';
-import { generateFb2FromText, generateHwpFromText } from './office';
+import {
+  generateFb2FromText,
+  generateHwpFromText,
+  SpreadsheetFormulaEvaluator,
+  SpreadsheetDagEngine,
+  renderDrawingMlToSvg,
+  parseDrawingMlShapes,
+} from './office';
 
 export {
   createZipArchive,
@@ -91,6 +119,16 @@ export {
   convertVectorCad,
   svgToDxf,
   convertHwp,
+  convertHwpDocument,
+  convertHwpx,
+  parseHwpxDocument,
+  buildHwpxContainer,
+  isHwpxContainer,
+  hwpxToHwp,
+  hwpToHwpx,
+  hwpxToMarkdown,
+  markdownToHwpx,
+  hwpxToPlainText,
   parseHwpDocument,
   buildHwpCompoundFile,
   buildHwpRecord,
@@ -123,6 +161,7 @@ export {
   parseIgesBSplineSurfaces,
   parseIgesBSplineCurves,
   encodePureMp3,
+  encodeFlacStream,
   encodePureH264Mp4,
   generateH264Sps,
   generateH264Pps,
@@ -140,6 +179,16 @@ export {
   generateSearchablePdf,
   generateFb2FromText,
   generateHwpFromText,
+  SpreadsheetFormulaEvaluator,
+  SpreadsheetDagEngine,
+  renderDrawingMlToSvg,
+  parseDrawingMlShapes,
+  decodeAudioBuffer,
+  decodeWav,
+  decodeFlac,
+  decodeMp3,
+  type DecodedAudio,
+  BitReader,
 };
 
 export async function convertFile(
@@ -330,6 +379,7 @@ export async function convertFile(
       'cbz',
       'et',
       'hwp',
+      'hwpx',
       'lwp',
       'pub',
       'odg',
@@ -351,7 +401,7 @@ export async function convertFile(
       'numbers',
       'pages',
     ].includes(src) ||
-    ['docx', 'xlsx', 'epub', 'pptx', 'odp', 'ods', 'odt', 'xls', 'key', 'numbers', 'pages', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp'].includes(tgt)
+    ['docx', 'xlsx', 'epub', 'pptx', 'odp', 'ods', 'odt', 'xls', 'key', 'numbers', 'pages', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx'].includes(tgt)
   ) {
     return convertOffice(inputBuffer, src, tgt, options, originalFilename);
   }
