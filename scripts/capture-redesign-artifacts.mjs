@@ -10,24 +10,31 @@ const ARTIFACT_DIR_2 = '/Users/aquila/.gemini/antigravity/brain/86e17bd1-af3f-4a
 const ARTIFACT_DIR_CURRENT = '/Users/aquila/.gemini/antigravity/brain/c241f35c-d78b-4c1d-a16c-3c0a577756dd';
 const ARTIFACT_DIR_SESSION = '/Users/aquila/.gemini/antigravity/brain/0f3d257b-4440-460b-8716-bdf70c4b31f8';
 const ARTIFACT_DIR_TASK = '/Users/aquila/.gemini/antigravity/brain/3639b263-bfed-4bec-9e4e-dd185925448b';
+const ARTIFACT_DIR_PARENT = '/Users/aquila/.gemini/antigravity/brain/ec08c42b-66f9-4300-ba1b-01d435f91b8e';
+const ARTIFACT_DIR_SUBAGENT = '/Users/aquila/.gemini/antigravity/brain/985da93f-f969-49c1-92e0-7ac1d29eaf99';
+const ARTIFACT_DIR_CALLER = '/Users/aquila/.gemini/antigravity/brain/540f9cdd-6f90-4bc5-976b-3a27dfa3cbcf';
+const ARTIFACT_DIR_CONVERSATION = '/Users/aquila/.gemini/antigravity/brain/f959c1c8-ae0d-401f-881f-8e51a8733aa6';
+const ARTIFACT_DIR_ACTIVE = '/Users/aquila/.gemini/antigravity/brain/e1204587-6eb4-445e-a857-442399a17170';
 const PUBLIC_DIR = path.resolve('public/screenshots');
 
 function saveImage(filename, buffer) {
   fs.writeFileSync(path.join(PUBLIC_DIR, filename), buffer);
-  if (fs.existsSync(ARTIFACT_DIR_1)) {
-    fs.writeFileSync(path.join(ARTIFACT_DIR_1, filename), buffer);
-  }
-  if (fs.existsSync(ARTIFACT_DIR_2)) {
-    fs.writeFileSync(path.join(ARTIFACT_DIR_2, filename), buffer);
-  }
-  if (fs.existsSync(ARTIFACT_DIR_CURRENT)) {
-    fs.writeFileSync(path.join(ARTIFACT_DIR_CURRENT, filename), buffer);
-  }
-  if (fs.existsSync(ARTIFACT_DIR_SESSION)) {
-    fs.writeFileSync(path.join(ARTIFACT_DIR_SESSION, filename), buffer);
-  }
-  if (fs.existsSync(ARTIFACT_DIR_TASK)) {
-    fs.writeFileSync(path.join(ARTIFACT_DIR_TASK, filename), buffer);
+  const dirs = [
+    ARTIFACT_DIR_1,
+    ARTIFACT_DIR_2,
+    ARTIFACT_DIR_CURRENT,
+    ARTIFACT_DIR_SESSION,
+    ARTIFACT_DIR_TASK,
+    ARTIFACT_DIR_PARENT,
+    ARTIFACT_DIR_SUBAGENT,
+    ARTIFACT_DIR_CALLER,
+    ARTIFACT_DIR_CONVERSATION,
+    ARTIFACT_DIR_ACTIVE
+  ];
+  for (const d of dirs) {
+    if (fs.existsSync(d)) {
+      fs.writeFileSync(path.join(d, filename), buffer);
+    }
   }
 }
 
