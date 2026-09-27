@@ -1,9 +1,9 @@
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { ConversionOptions, ConversionResult } from '../lib/types';
 import { convertFile } from '../lib/conversions';
-import { executeSandboxedBinary } from '../lib/security/process-sandbox';
+import { executeSandboxedBinary } from './sandbox';
 
 export interface WorkerEngineOptions extends ConversionOptions {
   timeoutMs?: number;
@@ -198,6 +198,9 @@ export async function convertWithNativeFfmpeg(
  * Universal Worker Conversion Orchestrator.
  * Dispatches to native container engines first, with fail-closed security and pure TS fallback.
  */
+const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
+const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
+
 export async function executeWorkerConversion(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -209,17 +212,14 @@ export async function executeWorkerConversion(
   const tgt = validateFormat(targetFormat);
   const startTime = Date.now();
 
-  const officeFormats = ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf'];
-  const mediaFormats = ['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma'];
-
   // 1. Native Headless Office
-  if (officeFormats.includes(src) && (tgt === 'pdf' || officeFormats.includes(tgt))) {
+  if (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt))) {
     const officeRes = await convertWithHeadlessOffice(inputBuffer, src, tgt, options);
     if (officeRes) return officeRes;
   }
 
   // 2. Native FFmpeg
-  if (mediaFormats.includes(src) && mediaFormats.includes(tgt)) {
+  if (MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) {
     const ffmpegRes = await convertWithNativeFfmpeg(inputBuffer, src, tgt, options);
     if (ffmpegRes) return ffmpegRes;
   }

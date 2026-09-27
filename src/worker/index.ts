@@ -5,7 +5,7 @@ import { ociStorage } from '../lib/storage/oci-storage';
 import { executeWorkerConversion, WorkerConversionResult } from './engines';
 import { secureShredBuffer } from '../lib/security/memory-shredder';
 
-const CONCURRENCY = parseInt(process.env.WORKER_CONCURRENCY || '3', 10);
+const CONCURRENCY = Number.parseInt(process.env.WORKER_CONCURRENCY || '3', 10);
 
 console.log(`[EasyConvert OCI Worker] Initializing daemon (Concurrency: ${CONCURRENCY})...`);
 

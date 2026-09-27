@@ -34,8 +34,9 @@ COPY package*.json ./
 # 4. Install production & dev dependencies needed for tsx execution
 RUN npm ci --include=dev
 
-# 5. Copy application source
-COPY . .
+# 5. Copy application source explicitly
+COPY tsconfig.json ./
+COPY src/ ./src/
 
 # 6. Ensure non-root ownership for app & temp directory
 RUN chown -R easyconvert:easyconvert /app
