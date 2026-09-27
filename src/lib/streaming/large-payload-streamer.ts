@@ -103,7 +103,7 @@ export function createDeterministicSyntheticStream(
       chunkSequence++;
 
       // Clone from reusable template, marking header with sequence index for uniqueness
-      const chunk = Buffer.allocUnsafe(currentChunkSize);
+      const chunk = Buffer.alloc(currentChunkSize);
       templateBlock.copy(chunk, 0, 0, currentChunkSize);
 
       if (currentChunkSize >= 8) {
@@ -123,6 +123,7 @@ export class StreamingHashAndMetricsTransform extends Transform {
   private readonly hash: crypto.Hash;
   private bytesCount: number = 0;
   private chunkCount: number = 0;
+  private finalizedDigest: string = '';
 
   constructor(highWaterMark?: number) {
     super({ highWaterMark: highWaterMark ?? 64 * 1024 });
@@ -137,11 +138,16 @@ export class StreamingHashAndMetricsTransform extends Transform {
     callback(null, chunk);
   }
 
+  override _flush(callback: TransformCallback): void {
+    this.finalizedDigest = this.hash.digest('hex');
+    callback();
+  }
+
   getMetrics(): { totalBytes: number; totalChunks: number; digest: string } {
     return {
       totalBytes: this.bytesCount,
       totalChunks: this.chunkCount,
-      digest: this.hash.copy().digest('hex'),
+      digest: this.finalizedDigest,
     };
   }
 }
