@@ -25,6 +25,28 @@ import {
 } from '../../src/lib/conversions/office';
 import { buildHwpxContainer } from '../../src/lib/conversions/hwpx';
 import { encodePureMp3, encodeFlacStream } from '../../src/lib/conversions/media-encoder';
+import {
+  BSplineSurface,
+  evaluateBSplineSurface,
+  evaluateSurfaceCurvature,
+  tessellateBSplineSurfaceAdaptive,
+  tessellateTrimmedFaceCDT,
+  Parametric2DPoint,
+  TessellatedMesh,
+} from '../../src/lib/conversions/cad-nurbs';
+import {
+  parseToUnicodeCMap,
+  recursiveXyCut,
+  PdfTextBlock,
+  PdfToUnicodeCMap,
+} from '../../src/lib/conversions/pdf-utils';
+import {
+  buildHwpCompoundFile,
+  parseHwpDocument,
+  hwpEquationToMathML,
+  hwpEquationToLaTeX,
+  HwpDocument,
+} from '../../src/lib/conversions/hwp';
 
 // ============================================================================
 // 1. Enterprise Multi-Column Document Corpus Synthesizer
@@ -879,3 +901,309 @@ export function synthesizeAudioBitstreamCorpus(durationSeconds = 0.5): AudioBits
     durationSeconds,
   };
 }
+
+// ============================================================================
+// 6. CAD NURBS & CDT Trimmed Face Golden Corpus Synthesizer
+// ============================================================================
+
+export interface CadNurbsCorpus {
+  surface: BSplineSurface;
+  midPoint: { x: number; y: number; z: number };
+  curvatures: { K: number; H: number; k1: number; k2: number };
+  adaptiveMesh: TessellatedMesh;
+  trimmedMesh: TessellatedMesh;
+  outerLoop: Parametric2DPoint[];
+  innerHoles: Parametric2DPoint[][];
+}
+
+export function synthesizeCadNurbsCorpus(): CadNurbsCorpus {
+  // 4x4 Bicubic B-Spline surface with dome curvature
+  const controlPoints = [
+    [
+      { x: 0, y: 0, z: 0 },
+      { x: 0, y: 10, z: 2 },
+      { x: 0, y: 20, z: 2 },
+      { x: 0, y: 30, z: 0 },
+    ],
+    [
+      { x: 10, y: 0, z: 2 },
+      { x: 10, y: 10, z: 8 },
+      { x: 10, y: 20, z: 8 },
+      { x: 10, y: 30, z: 2 },
+    ],
+    [
+      { x: 20, y: 0, z: 2 },
+      { x: 20, y: 10, z: 8 },
+      { x: 20, y: 20, z: 8 },
+      { x: 20, y: 30, z: 2 },
+    ],
+    [
+      { x: 30, y: 0, z: 0 },
+      { x: 30, y: 10, z: 2 },
+      { x: 30, y: 20, z: 2 },
+      { x: 30, y: 30, z: 0 },
+    ],
+  ];
+
+  const surface: BSplineSurface = {
+    uDegree: 3,
+    vDegree: 3,
+    controlPoints,
+    uKnots: [0, 0, 0, 0, 1, 1, 1, 1],
+    vKnots: [0, 0, 0, 0, 1, 1, 1, 1],
+  };
+
+  const midPoint = evaluateBSplineSurface(surface, 0.5, 0.5).point;
+  const curv = evaluateSurfaceCurvature(surface, 0.5, 0.5);
+  const curvatures = {
+    K: curv.gaussianCurvature,
+    H: curv.meanCurvature,
+    k1: curv.principalCurvatures[0],
+    k2: curv.principalCurvatures[1],
+  };
+
+  const adaptiveMesh = tessellateBSplineSurfaceAdaptive(surface, {
+    chordalTolerance: 0.05,
+    uSamples: 8,
+    vSamples: 8,
+  });
+
+  const outerLoop: Parametric2DPoint[] = [
+    { u: 0.0, v: 0.0 },
+    { u: 1.0, v: 0.0 },
+    { u: 1.0, v: 1.0 },
+    { u: 0.0, v: 1.0 },
+  ];
+
+  const innerHoles: Parametric2DPoint[][] = [
+    [
+      { u: 0.3, v: 0.3 },
+      { u: 0.7, v: 0.3 },
+      { u: 0.7, v: 0.7 },
+      { u: 0.3, v: 0.7 },
+    ],
+  ];
+
+  const trimmedMesh = tessellateTrimmedFaceCDT({
+    surface,
+    outerLoop,
+    innerHoles,
+  });
+
+  return {
+    surface,
+    midPoint,
+    curvatures,
+    adaptiveMesh,
+    trimmedMesh,
+    outerLoop,
+    innerHoles,
+  };
+}
+
+// ============================================================================
+// 7. ISO 32000-1 CMap & Multi-Column PDF Golden Corpus Synthesizer
+// ============================================================================
+
+export interface CMapPdfCorpus {
+  pdfBuffer: Buffer;
+  cmapText: string;
+  parsedCMap: PdfToUnicodeCMap;
+  textBlocks: PdfTextBlock[];
+  orderedBlocks: PdfTextBlock[];
+}
+
+export function synthesizeCMapPdfCorpus(): CMapPdfCorpus {
+  const cmapText = `/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Custom-ToUnicode def
+/CMapType 2 def
+1 begincodespacerange
+<0001> <FFFF>
+endcodespacerange
+2 beginbfrange
+<0001> <0002> [<FB01> <FB02>]
+<0020> <007E> <0020>
+endbfrange
+1 beginbfchar
+<00A0> <0020>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end`;
+
+  const parsedCMap = parseToUnicodeCMap(cmapText);
+
+  // Synthesize realistic 2-column text layout for XY-Cut++ reading order test
+  const textBlocks: PdfTextBlock[] = [
+    {
+      text: 'Right Column: Technical Specifications',
+      x: 320,
+      y: 720,
+      width: 240,
+      height: 20,
+      fontSize: 14,
+    },
+    {
+      text: 'Left Column: Architecture Overview',
+      x: 40,
+      y: 720,
+      width: 240,
+      height: 20,
+      fontSize: 14,
+    },
+    {
+      text: 'First column paragraph detailing zero-retention memory guarantees and multi-pass buffer wipe.',
+      x: 40,
+      y: 680,
+      width: 240,
+      height: 48,
+      fontSize: 10,
+    },
+    {
+      text: 'Second column paragraph describing high-order NURBS B-Splines and 2D Constrained Delaunay Triangulation.',
+      x: 320,
+      y: 680,
+      width: 240,
+      height: 48,
+      fontSize: 10,
+    },
+    {
+      text: 'First column conclusion with footnote reference marker.',
+      x: 40,
+      y: 620,
+      width: 240,
+      height: 24,
+      fontSize: 10,
+    },
+    {
+      text: 'Second column conclusion with telemetry performance metrics.',
+      x: 320,
+      y: 620,
+      width: 240,
+      height: 24,
+      fontSize: 10,
+    },
+  ];
+
+  const orderedBlocks = recursiveXyCut(textBlocks, {
+    minGapX: 20,
+    minGapY: 8,
+  });
+
+  // Construct valid ISO 32000-1 PDF binary containing CMap stream and text blocks
+  const streamContent = `BT
+/F1 12 Tf
+1 0 0 1 40 720 Tm
+(Left Column: Architecture Overview) Tj
+1 0 0 1 320 720 Tm
+(Right Column: Technical Specifications) Tj
+ET`;
+
+  const pdfBody = `%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length ${Buffer.byteLength(streamContent)} >>
+stream
+${streamContent}
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /Custom-Font /ToUnicode 6 0 R >>
+endobj
+6 0 obj
+<< /Length ${Buffer.byteLength(cmapText)} >>
+stream
+${cmapText}
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000244 00000 n 
+0000000340 00000 n 
+0000000435 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+570
+%%EOF`;
+
+  const pdfBuffer = Buffer.from(pdfBody, 'utf-8');
+
+  return {
+    pdfBuffer,
+    cmapText,
+    parsedCMap,
+    textBlocks,
+    orderedBlocks,
+  };
+}
+
+// ============================================================================
+// 8. HWP 5.0 CFBF Compound File Binary Golden Corpus Synthesizer
+// ============================================================================
+
+export interface Hwp5CompoundCorpus {
+  buffer: Buffer;
+  doc: HwpDocument;
+  rawEquations: string[];
+  transpiledEquations: { script: string; mathml: string; latex: string }[];
+}
+
+export function synthesizeHwp5CompoundCorpus(): Hwp5CompoundCorpus {
+  const rawEquations = [
+    'sum_{i=1}^{n} i = {n(n+1)} over {2}',
+    'f(x) = {1} over {sqrt{2 pi}} e^{-{x^2} over {2}}',
+    'E = m c^2',
+  ];
+
+  const transpiledEquations = rawEquations.map((script) => ({
+    script,
+    mathml: hwpEquationToMathML(script),
+    latex: hwpEquationToLaTeX(script),
+  }));
+
+  const buffer = buildHwpCompoundFile({
+    paragraphs: [
+      { text: 'HWP 5.0 Enterprise Financial & Technical Architecture Specification', isHeading: true },
+      { text: 'This document validates KS C 5601 binary stream extraction and EqEdit math transpilation.' },
+      { text: 'Mathematical formulations are parsed from HWPTAG_EQEDIT records into clean MathML and LaTeX representations.' },
+    ],
+    tables: [
+      {
+        rows: [
+          ['Metric Name', 'Observed Value', 'Compliance Target'],
+          ['Tessellation Delta Ratio', '0.0002', '< 0.0005'],
+          ['Memory Shredding Cycles', '3 Passes', 'DoD 5220.22-M'],
+        ],
+      },
+    ],
+    equations: rawEquations,
+    compressed: true,
+  });
+
+  const doc = parseHwpDocument(buffer);
+
+  return {
+    buffer,
+    doc,
+    rawEquations,
+    transpiledEquations,
+  };
+}
+
