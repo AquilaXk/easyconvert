@@ -51,13 +51,18 @@ const targetTab = tabs.find(t => t.type === 'page' && typeof t.url === 'string' 
   || tabs.find(t => t.type === 'page')
   || tabs[0];
 
-const parsedWsUrl = new URL(String(targetTab.webSocketDebuggerUrl));
-if (parsedWsUrl.protocol !== 'ws:' || parsedWsUrl.hostname !== '127.0.0.1') {
+if (!targetTab || !targetTab.id || !/^[0-9A-Fa-f]+$/.test(String(targetTab.id))) {
   chromeProc.kill();
-  throw new Error('Security check failed: untrusted debugger URL');
+  throw new Error('Security check failed: invalid tab id format');
 }
 
-const ws = new WebSocket(parsedWsUrl.href);
+const safeTabId = String(targetTab.id).match(/^[0-9A-Fa-f]+$/)?.[0];
+if (!safeTabId) {
+  chromeProc.kill();
+  throw new Error('Security check failed: sanitized tab id missing');
+}
+
+const ws = new WebSocket(`ws://127.0.0.1:${DEBUG_PORT}/devtools/page/${safeTabId}`);
 
 let id = 1;
 const pending = new Map();
