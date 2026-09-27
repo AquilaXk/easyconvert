@@ -308,6 +308,27 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(slugContent).toContain('Client-Side Isolation');
   });
 
+  it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {
+    // Video to Audio pair should NOT claim to preserve typography or document formatting
+    const mp4ToMp3 = parseConverterSlug('mp4-to-mp3');
+    expect(mp4ToMp3.pageDescription).not.toContain('layouts, fonts, and data formatting');
+    expect(mp4ToMp3.pageDescription).toContain('audio');
+
+    // Document pair should preserve layout and typography
+    const pdfToDocx = parseConverterSlug('pdf-to-docx');
+    expect(pdfToDocx.pageDescription).toContain('layouts, formatting');
+
+    // Format converters should not falsely claim to be document converters or mention external office software
+    const mp4Converter = parseConverterSlug('mp4-converter');
+    expect(mp4Converter.pageDescription).not.toContain('online document converter');
+    expect(mp4Converter.pageDescription).not.toContain('Microsoft Office');
+    expect(mp4Converter.pageDescription).toContain('video');
+
+    const svgConverter = parseConverterSlug('svg-converter');
+    expect(svgConverter.pageDescription).not.toContain('online document converter');
+    expect(svgConverter.pageDescription).not.toContain('Microsoft Office');
+  });
+
   it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
     const faqPath = path.join(rootDir, 'src', 'components', 'FaqSection.tsx');
     const faqContent = fs.readFileSync(faqPath, 'utf-8');

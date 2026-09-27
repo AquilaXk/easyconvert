@@ -12,13 +12,7 @@ import {
   RefreshCw,
   Bell,
   Sparkles,
-  Layers,
-  ChevronDown,
-  ExternalLink,
-  Info,
   Check,
-  AlertTriangle,
-  FileCheck,
 } from 'lucide-react';
 
 interface ComponentStatus {

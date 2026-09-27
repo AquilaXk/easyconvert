@@ -21,11 +21,11 @@ const DEFAULT_FAQS: FaqItem[] = [
   },
   {
     q: 'Are my files safe and private?',
-    a: 'Absolutely. Because EasyConvert executes conversions client-side directly inside your browser via WebAssembly, WebCodecs, and OPFS whenever possible, your sensitive files never even leave your device. When edge fallback is used, processing is strictly ephemeral in volatile RAM with zero retention.',
+    a: 'Yes. Conversions are processed locally in your browser whenever supported, meaning your files never leave your device. Files are never stored, logged, or shared with third parties.',
   },
   {
     q: 'What is the maximum file size limit?',
-    a: 'Our optimized client-side engine allows conversions of files up to 1 GB without waiting for heavy network uploads. Performance depends directly on your device hardware.',
+    a: 'EasyConvert supports file sizes up to 1 GB free of charge. Larger files process quickly on modern devices without waiting on slow network uploads.',
   },
   {
     q: 'Can I convert multiple files simultaneously?',
