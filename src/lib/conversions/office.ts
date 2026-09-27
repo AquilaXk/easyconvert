@@ -611,11 +611,24 @@ export interface DocxParagraph {
   isBullet?: boolean;
 }
 
+export interface TableBorder {
+  style?: string; // solid, dashed, dotted, double, none
+  size?: number; // in pt
+  color?: string; // hex color e.g. #CCD2FC
+}
+
 export interface DocxTableCell {
   text: string;
   shading?: string;
   isHeader?: boolean;
   colSpan?: number;
+  rowSpan?: number;
+  borders?: {
+    top?: TableBorder;
+    bottom?: TableBorder;
+    left?: TableBorder;
+    right?: TableBorder;
+  };
 }
 
 export interface DocxTable {
@@ -623,11 +636,305 @@ export interface DocxTable {
   colCount?: number;
   rows: string[][];
   structuredRows?: DocxTableCell[][];
+  tblBorders?: {
+    top?: TableBorder;
+    bottom?: TableBorder;
+    left?: TableBorder;
+    right?: TableBorder;
+    insideH?: TableBorder;
+    insideV?: TableBorder;
+  };
+}
+
+export interface DrawingMlShape {
+  id?: string;
+  name?: string;
+  geomType: 'preset' | 'custom';
+  presetGeom?: string;
+  svgPath?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation?: number;
+  fillColor?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
+  text?: string;
 }
 
 export type DocxBlockElement =
   | { type: 'paragraph'; paragraph: DocxParagraph }
-  | { type: 'table'; table: DocxTable };
+  | { type: 'table'; table: DocxTable }
+  | { type: 'drawing'; svg: string; shapes?: DrawingMlShape[] };
+
+export function parseBorder(borderXml: string): TableBorder | undefined {
+  if (!borderXml) return undefined;
+  const valMatch = borderXml.match(/w:val="([^"]+)"/);
+  const val = valMatch ? valMatch[1] : 'single';
+  if (val === 'none' || val === 'nil') return { style: 'none' };
+  const szMatch = borderXml.match(/w:sz="(\d+)"/);
+  const sz = szMatch ? parseInt(szMatch[1], 10) / 8 : 0.5; // in pt (w:sz is in eighths of a point)
+  const colMatch = borderXml.match(/w:color="([A-Fa-f0-9]{6})"/);
+  const color = colMatch ? `#${colMatch[1]}` : '#CCD2FC';
+  const style =
+    val === 'double' ? 'double' : val.includes('dash') ? 'dashed' : val.includes('dot') ? 'dotted' : 'solid';
+  return { style, size: sz, color };
+}
+
+/**
+ * OpenXML DrawingML Vector Shape Parser & SVG Renderer
+ * Parses <p:spTree>, <w:drawing>, <a:xfrm>, <a:prstGeom>, and <a:custGeom>
+ * into clean, standards-compliant SVG vector paths.
+ */
+export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
+  const shapes: DrawingMlShape[] = [];
+
+  // Match all shape tags: <p:sp>, <wps:wsp>, or any block containing <a:spPr>
+  const shapeRegex = /<(?:(?:p|wps):sp|a:graphicData)\b[\s\S]*?<\/(?:(?:p|wps):sp|a:graphicData)>/gi;
+  let spMatch: RegExpExecArray | null;
+
+  while ((spMatch = shapeRegex.exec(xml)) !== null) {
+    const spXml = spMatch[0];
+
+    // 1. Transform: <a:xfrm rot="..."> <a:off x="..." y="..."/> <a:ext cx="..." cy="..."/>
+    const xfrmMatch = spXml.match(/<a:xfrm\b([^>]*?)>([\s\S]*?)<\/a:xfrm>/i);
+    let x = 0,
+      y = 0,
+      width = 100,
+      height = 60,
+      rotation = 0;
+    if (xfrmMatch) {
+      const xfrmAttrs = xfrmMatch[1];
+      const xfrmBody = xfrmMatch[2];
+      const rotMatch = xfrmAttrs.match(/rot="(\d+)"/i);
+      if (rotMatch) rotation = parseInt(rotMatch[1], 10) / 60000;
+
+      const offMatch = xfrmBody.match(/<a:off\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
+      if (offMatch) {
+        x = Math.round(parseInt(offMatch[1], 10) / 12700);
+        y = Math.round(parseInt(offMatch[2], 10) / 12700);
+      }
+      const extMatch = xfrmBody.match(/<a:ext\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
+      if (extMatch) {
+        width = Math.max(1, Math.round(parseInt(extMatch[1], 10) / 12700));
+        height = Math.max(1, Math.round(parseInt(extMatch[2], 10) / 12700));
+      }
+    }
+
+    // 2. Fills and Lines
+    let fillColor = '#5C6BC0';
+    let strokeColor = '#1F2340';
+    let strokeWidth = 1;
+
+    if (spXml.includes('<a:noFill/>') || spXml.includes('<a:noFill />')) {
+      fillColor = 'none';
+    } else {
+      const fillMatch = spXml.match(/<a:solidFill>[\s\S]*?<a:srgbClr\b[^>]*val="([A-Fa-f0-9]{6})"/i);
+      if (fillMatch) fillColor = `#${fillMatch[1]}`;
+    }
+
+    const lnMatch = spXml.match(/<a:ln\b([^>]*?)>([\s\S]*?)<\/a:ln>/i);
+    if (lnMatch) {
+      const wMatch = lnMatch[1].match(/w="(\d+)"/i);
+      if (wMatch) strokeWidth = Math.max(0.5, Math.round(parseInt(wMatch[1], 10) / 12700));
+      const lnClrMatch = lnMatch[2].match(/<a:srgbClr\b[^>]*val="([A-Fa-f0-9]{6})"/i);
+      if (lnClrMatch) strokeColor = `#${lnClrMatch[1]}`;
+    }
+
+    // 3. Geometry (Preset vs Custom)
+    let geomType: 'preset' | 'custom' = 'preset';
+    let presetGeom = 'rect';
+    let svgPath = '';
+
+    const prstMatch = spXml.match(/<a:prstGeom\b[^>]*prst="([^"]+)"/i);
+    const custMatch = spXml.match(/<a:custGeom\b[\s\S]*?<\/a:custGeom>/i);
+
+    if (custMatch) {
+      geomType = 'custom';
+      const custXml = custMatch[0];
+      const pathTagMatch = custXml.match(/<a:path\b([^>]*?)>([\s\S]*?)<\/a:path>/i);
+      if (pathTagMatch) {
+        const pathAttrs = pathTagMatch[1];
+        const pathBody = pathTagMatch[2];
+        const pwMatch = pathAttrs.match(/w="(\d+)"/i);
+        const phMatch = pathAttrs.match(/h="(\d+)"/i);
+        const pw = pwMatch ? parseInt(pwMatch[1], 10) : width;
+        const ph = phMatch ? parseInt(phMatch[1], 10) : height;
+        const sx = width / (pw || 1);
+        const sy = height / (ph || 1);
+
+        const dParts: string[] = [];
+        // moveTo
+        const moveRegex = /<a:moveTo>[\s\S]*?<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+        let mMatch: RegExpExecArray | null;
+        while ((mMatch = moveRegex.exec(pathBody)) !== null) {
+          const px = Math.round(parseInt(mMatch[1], 10) * sx + x);
+          const py = Math.round(parseInt(mMatch[2], 10) * sy + y);
+          dParts.push(`M ${px} ${py}`);
+        }
+        // lnTo
+        const lnRegex = /<a:lnTo>[\s\S]*?<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+        let lMatch: RegExpExecArray | null;
+        while ((lMatch = lnRegex.exec(pathBody)) !== null) {
+          const px = Math.round(parseInt(lMatch[1], 10) * sx + x);
+          const py = Math.round(parseInt(lMatch[2], 10) * sy + y);
+          dParts.push(`L ${px} ${py}`);
+        }
+        // cubicBezTo
+        const cBezRegex = /<a:cubicBezTo>([\s\S]*?)<\/a:cubicBezTo>/gi;
+        let cMatch: RegExpExecArray | null;
+        while ((cMatch = cBezRegex.exec(pathBody)) !== null) {
+          const ptRegex = /<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+          const pts: string[] = [];
+          let ptM: RegExpExecArray | null;
+          while ((ptM = ptRegex.exec(cMatch[1])) !== null) {
+            const px = Math.round(parseInt(ptM[1], 10) * sx + x);
+            const py = Math.round(parseInt(ptM[2], 10) * sy + y);
+            pts.push(`${px} ${py}`);
+          }
+          if (pts.length >= 3) {
+            dParts.push(`C ${pts[0]}, ${pts[1]}, ${pts[2]}`);
+          }
+        }
+        // close
+        if (/<a:close\b/i.test(pathBody)) {
+          dParts.push('Z');
+        }
+        svgPath = dParts.join(' ');
+      }
+    } else if (prstMatch) {
+      geomType = 'preset';
+      presetGeom = prstMatch[1].toLowerCase();
+    }
+
+    // 4. Text inside shape
+    const tTags = spXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi) || [];
+    const text = tTags
+      .map((t) => t.replace(/<[^>]+>/g, '').trim())
+      .filter(Boolean)
+      .join(' ');
+
+    shapes.push({
+      geomType,
+      presetGeom,
+      svgPath,
+      x,
+      y,
+      width,
+      height,
+      rotation,
+      fillColor,
+      strokeColor,
+      strokeWidth,
+      text: text || undefined,
+    });
+  }
+
+  return shapes;
+}
+
+/**
+ * Renders OpenXML DrawingML specifications into an SVG vector graphic string.
+ */
+export function renderDrawingMlToSvg(
+  xml: string,
+  options?: { width?: number; height?: number }
+): { svg: string; shapes: DrawingMlShape[] } {
+  const shapes = parseDrawingMlShapes(xml);
+  if (shapes.length === 0) {
+    return {
+      svg: '',
+      shapes: [],
+    };
+  }
+
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  shapes.forEach((s) => {
+    minX = Math.min(minX, s.x);
+    minY = Math.min(minY, s.y);
+    maxX = Math.max(maxX, s.x + s.width);
+    maxY = Math.max(maxY, s.y + s.height);
+  });
+
+  const totalWidth = options?.width || Math.max(100, maxX - minX + 20);
+  const totalHeight = options?.height || Math.max(60, maxY - minY + 20);
+
+  let svgElements = '';
+  for (const s of shapes) {
+    const rotAttr = s.rotation ? ` transform="rotate(${s.rotation} ${s.x + s.width / 2} ${s.y + s.height / 2})"` : '';
+    let elementStr = '';
+
+    if (s.geomType === 'custom' && s.svgPath) {
+      elementStr = `<path d="${s.svgPath}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+    } else {
+      switch (s.presetGeom) {
+        case 'ellipse':
+          elementStr = `<ellipse cx="${s.x + s.width / 2}" cy="${s.y + s.height / 2}" rx="${s.width / 2}" ry="${
+            s.height / 2
+          }" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        case 'roundrect':
+          elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="8" ry="8" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        case 'triangle': {
+          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height} ${s.x},${s.y + s.height}`;
+          elementStr = `<polygon points="${pts}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        }
+        case 'diamond': {
+          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height / 2} ${s.x + s.width / 2},${
+            s.y + s.height
+          } ${s.x},${s.y + s.height / 2}`;
+          elementStr = `<polygon points="${pts}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        }
+        case 'line':
+          elementStr = `<line x1="${s.x}" y1="${s.y}" x2="${s.x + s.width}" y2="${s.y + s.height}" stroke="${
+            s.strokeColor
+          }" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+        case 'star5': {
+          const cx = s.x + s.width / 2;
+          const cy = s.y + s.height / 2;
+          const rOuter = Math.min(s.width, s.height) / 2;
+          const rInner = rOuter * 0.4;
+          const pts: string[] = [];
+          for (let i = 0; i < 10; i++) {
+            const angle = (i * Math.PI) / 5 - Math.PI / 2;
+            const r = i % 2 === 0 ? rOuter : rInner;
+            pts.push(`${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`);
+          }
+          elementStr = `<polygon points="${pts.join(' ')}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${
+            s.strokeWidth
+          }"${rotAttr} />`;
+          break;
+        }
+        case 'rect':
+        default:
+          elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}"${rotAttr} />`;
+          break;
+      }
+    }
+
+    if (s.text) {
+      const textFill = s.fillColor === '#5C6BC0' || s.fillColor === '#1F2340' ? '#FFFFFF' : '#1F2340';
+      elementStr += `\n  <text x="${s.x + s.width / 2}" y="${
+        s.y + s.height / 2 + 4
+      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="12" font-weight="500" fill="${textFill}">${escapeHtml(
+        s.text
+      )}</text>`;
+    }
+
+    svgElements += `  ${elementStr}\n`;
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX - 10} ${minY - 10} ${totalWidth} ${totalHeight}" width="${totalWidth}" height="${totalHeight}">\n${svgElements}</svg>`;
+  return { svg, shapes };
+}
 
 function safeExtractXmlTags(xml: string, tagName: string): string[] {
   const results: string[] = [];
@@ -663,18 +970,19 @@ function safeExtractDocxBlocks(bodyXml: string): string[] {
   while (pos < bodyXml.length) {
     const nextTbl = bodyXml.indexOf('<w:tbl', pos);
     const nextP = bodyXml.indexOf('<w:p', pos);
+    const nextDrawing = bodyXml.indexOf('<w:drawing', pos);
 
-    let startIdx = -1;
-    let tag = '';
-    if (nextTbl !== -1 && (nextP === -1 || nextTbl < nextP)) {
-      startIdx = nextTbl;
-      tag = 'w:tbl';
-    } else if (nextP !== -1) {
-      startIdx = nextP;
-      tag = 'w:p';
-    } else {
-      break;
-    }
+    const candidates = [
+      { tag: 'w:tbl', idx: nextTbl },
+      { tag: 'w:p', idx: nextP },
+      { tag: 'w:drawing', idx: nextDrawing },
+    ]
+      .filter((c) => c.idx !== -1)
+      .sort((a, b) => a.idx - b.idx);
+
+    if (candidates.length === 0) break;
+    const startIdx = candidates[0].idx;
+    const tag = candidates[0].tag;
 
     const closeTag = `</${tag}>`;
     const endIdx = bodyXml.indexOf(closeTag, startIdx);
@@ -705,10 +1013,39 @@ function parseDocxXml(xml: string): {
   const blocks = safeExtractDocxBlocks(bodyXml);
 
   for (const chunk of blocks) {
+    // If chunk is a standalone Drawing (<w:drawing>)
+    if (chunk.startsWith('<w:drawing')) {
+      const res = renderDrawingMlToSvg(chunk);
+      if (res.shapes.length > 0) {
+        elements.push({ type: 'drawing', svg: res.svg, shapes: res.shapes });
+      }
+      continue;
+    }
+
     // If chunk is a Table (<w:tbl>)
     if (chunk.startsWith('<w:tbl')) {
       const rows: string[][] = [];
       const structuredRows: DocxTableCell[][] = [];
+
+      const tblBordersMatch = chunk.match(/<w:tblBorders\b[^>]*>([\s\S]*?)<\/w:tblBorders>/i);
+      let tblBorders: DocxTable['tblBorders'];
+      if (tblBordersMatch) {
+        const bXml = tblBordersMatch[1];
+        const topM = bXml.match(/<w:top\b([^>]*?)\/?>/i);
+        const bottomM = bXml.match(/<w:bottom\b([^>]*?)\/?>/i);
+        const leftM = bXml.match(/<w:left\b([^>]*?)\/?>/i);
+        const rightM = bXml.match(/<w:right\b([^>]*?)\/?>/i);
+        const inHM = bXml.match(/<w:insideH\b([^>]*?)\/?>/i);
+        const inVM = bXml.match(/<w:insideV\b([^>]*?)\/?>/i);
+        tblBorders = {
+          top: parseBorder(topM ? topM[1] : ''),
+          bottom: parseBorder(bottomM ? bottomM[1] : ''),
+          left: parseBorder(leftM ? leftM[1] : ''),
+          right: parseBorder(rightM ? rightM[1] : ''),
+          insideH: parseBorder(inHM ? inHM[1] : ''),
+          insideV: parseBorder(inVM ? inVM[1] : ''),
+        };
+      }
 
       const trList = safeExtractXmlTags(chunk, 'w:tr');
 
@@ -726,6 +1063,22 @@ function parseDocxXml(xml: string): {
           const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
           const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
 
+          const tcBordersMatch = tcXml.match(/<w:tcBorders\b[^>]*>([\s\S]*?)<\/w:tcBorders>/i);
+          let borders: DocxTableCell['borders'];
+          if (tcBordersMatch) {
+            const bXml = tcBordersMatch[1];
+            const topM = bXml.match(/<w:top\b([^>]*?)\/?>/i);
+            const bottomM = bXml.match(/<w:bottom\b([^>]*?)\/?>/i);
+            const leftM = bXml.match(/<w:left\b([^>]*?)\/?>/i);
+            const rightM = bXml.match(/<w:right\b([^>]*?)\/?>/i);
+            borders = {
+              top: parseBorder(topM ? topM[1] : ''),
+              bottom: parseBorder(bottomM ? bottomM[1] : ''),
+              left: parseBorder(leftM ? leftM[1] : ''),
+              right: parseBorder(rightM ? rightM[1] : ''),
+            };
+          }
+
           const tTags = safeExtractXmlTags(tcXml, 'w:t');
           const cellText = tTags
             .map((m) => m.replace(/<[^>]+>/g, ''))
@@ -733,7 +1086,7 @@ function parseDocxXml(xml: string): {
             .trim();
 
           rowCells.push(cellText);
-          sCells.push({ text: cellText, shading, colSpan, isHeader });
+          sCells.push({ text: cellText, shading, colSpan, isHeader, borders });
         }
 
         if (rowCells.length > 0) {
@@ -749,6 +1102,7 @@ function parseDocxXml(xml: string): {
           colCount: maxCols,
           rows,
           structuredRows,
+          tblBorders,
         };
         tables.push(tbl);
         elements.push({ type: 'table', table: tbl });
@@ -822,6 +1176,17 @@ function parseDocxXml(xml: string): {
       paragraphs.push(p);
       elements.push({ type: 'paragraph', paragraph: p });
     }
+
+    // Extract inline DrawingML drawings from paragraph chunk
+    if (chunk.includes('<w:drawing')) {
+      const drawingMatches = chunk.match(/<w:drawing\b[\s\S]*?<\/w:drawing>/gi) || [];
+      for (const dXml of drawingMatches) {
+        const res = renderDrawingMlToSvg(dXml);
+        if (res.shapes.length > 0) {
+          elements.push({ type: 'drawing', svg: res.svg, shapes: res.shapes });
+        }
+      }
+    }
   }
 
   return { paragraphs, tables, elements };
@@ -860,18 +1225,62 @@ function generateHtmlFromDocx(
   };
 
   const renderTable = (tbl: DocxTable): string => {
-    let tblHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;margin:1.5rem 0;width:100%;border-color:#CCD2FC;">\n';
-    tbl.rows.forEach((row, rIdx) => {
-      tblHtml += '<tr>\n';
-      row.forEach((cell) => {
-        if (rIdx === 0) {
-          tblHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(cell)}</th>\n`;
-        } else {
-          tblHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(cell)}</td>\n`;
-        }
+    let tblStyle = 'border-collapse:collapse;margin:1.5rem 0;width:100%;';
+    if (tbl.tblBorders) {
+      if (tbl.tblBorders.top && tbl.tblBorders.top.style !== 'none') {
+        tblStyle += `border-top:${tbl.tblBorders.top.size || 1}pt ${tbl.tblBorders.top.style || 'solid'} ${tbl.tblBorders.top.color || '#CCD2FC'};`;
+      }
+      if (tbl.tblBorders.bottom && tbl.tblBorders.bottom.style !== 'none') {
+        tblStyle += `border-bottom:${tbl.tblBorders.bottom.size || 1}pt ${tbl.tblBorders.bottom.style || 'solid'} ${tbl.tblBorders.bottom.color || '#CCD2FC'};`;
+      }
+    }
+    let tblHtml = `<table border="1" cellpadding="8" cellspacing="0" style="${tblStyle}">\n`;
+
+    if (tbl.structuredRows && tbl.structuredRows.length > 0) {
+      tbl.structuredRows.forEach((sRow, rIdx) => {
+        tblHtml += '<tr>\n';
+        sRow.forEach((cell) => {
+          const tag = cell.isHeader || rIdx === 0 ? 'th' : 'td';
+          let cellStyle = 'padding:8px;text-align:left;';
+          if (cell.shading && cell.shading !== 'auto') {
+            cellStyle += `background-color:#${cell.shading};`;
+          } else if (tag === 'th') {
+            cellStyle += 'background:#F0F2FE;color:#1F2340;';
+          }
+          if (cell.borders) {
+            if (cell.borders.top && cell.borders.top.style !== 'none') {
+              cellStyle += `border-top:${cell.borders.top.size || 1}pt ${cell.borders.top.style || 'solid'} ${cell.borders.top.color || '#CCD2FC'};`;
+            }
+            if (cell.borders.bottom && cell.borders.bottom.style !== 'none') {
+              cellStyle += `border-bottom:${cell.borders.bottom.size || 1}pt ${cell.borders.bottom.style || 'solid'} ${cell.borders.bottom.color || '#CCD2FC'};`;
+            }
+            if (cell.borders.left && cell.borders.left.style !== 'none') {
+              cellStyle += `border-left:${cell.borders.left.size || 1}pt ${cell.borders.left.style || 'solid'} ${cell.borders.left.color || '#CCD2FC'};`;
+            }
+            if (cell.borders.right && cell.borders.right.style !== 'none') {
+              cellStyle += `border-right:${cell.borders.right.size || 1}pt ${cell.borders.right.style || 'solid'} ${cell.borders.right.color || '#CCD2FC'};`;
+            }
+          } else {
+            cellStyle += 'border:1px solid #E1E4EE;';
+          }
+          const colSpanAttr = cell.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
+          tblHtml += `  <${tag}${colSpanAttr} style="${cellStyle}">${escapeHtml(cell.text)}</${tag}>\n`;
+        });
+        tblHtml += '</tr>\n';
       });
-      tblHtml += '</tr>\n';
-    });
+    } else {
+      tbl.rows.forEach((row, rIdx) => {
+        tblHtml += '<tr>\n';
+        row.forEach((cell) => {
+          if (rIdx === 0) {
+            tblHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(cell)}</th>\n`;
+          } else {
+            tblHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(cell)}</td>\n`;
+          }
+        });
+        tblHtml += '</tr>\n';
+      });
+    }
     tblHtml += '</table>\n';
     return tblHtml;
   };
@@ -880,6 +1289,7 @@ function generateHtmlFromDocx(
     for (const el of elements) {
       if (el.type === 'paragraph') body += renderParagraph(el.paragraph);
       else if (el.type === 'table') body += renderTable(el.table);
+      else if (el.type === 'drawing') body += `<div class="vector-drawing" style="margin:1.5rem 0;">${el.svg}</div>\n`;
     }
   } else {
     for (const p of paragraphs) body += renderParagraph(p);
@@ -978,25 +1388,49 @@ async function generatePdfFromDocx(
       const colCount = Math.max(1, tbl.colCount || tbl.rows[0].length);
       const colWidth = (doc.page.width - 100) / colCount;
 
-      tbl.rows.forEach((row, rIdx) => {
-        const y = doc.y;
-        if (y > doc.page.height - 80) {
-          doc.addPage();
-        }
-        const isHdr = rIdx === 0;
-        doc.rect(50, doc.y, doc.page.width - 100, 20).strokeColor('#CCD2FC').lineWidth(0.5);
-        if (isHdr) {
-          doc.rect(50, doc.y, doc.page.width - 100, 20).fill('#F0F2FE');
-          doc.fillColor('#1F2340').fontSize(9);
-        } else {
-          doc.fillColor('#4D536B').fontSize(8.5);
-        }
-
-        row.forEach((cell, cIdx) => {
-          doc.text(cell, 55 + cIdx * colWidth, y + 4, { width: colWidth - 10, lineBreak: false });
+      if (tbl.structuredRows && tbl.structuredRows.length > 0) {
+        tbl.structuredRows.forEach((sRow, rIdx) => {
+          const y = doc.y;
+          if (y > doc.page.height - 80) {
+            doc.addPage();
+          }
+          sRow.forEach((cell, cIdx) => {
+            const x = 50 + cIdx * colWidth;
+            if (cell.shading && cell.shading !== 'auto') {
+              doc.rect(x, y, colWidth, 20).fill('#' + cell.shading);
+            } else if (cell.isHeader || rIdx === 0) {
+              doc.rect(x, y, colWidth, 20).fill('#F0F2FE');
+            }
+            const borderCol = cell.borders?.bottom?.color || '#CCD2FC';
+            const borderW = cell.borders?.bottom?.size || 0.5;
+            doc.rect(x, y, colWidth, 20).strokeColor(borderCol).lineWidth(borderW).stroke();
+            const textCol = cell.isHeader || rIdx === 0 ? '#1F2340' : '#4D536B';
+            doc.fillColor(textCol).fontSize(cell.isHeader || rIdx === 0 ? 9 : 8.5);
+            doc.text(cell.text, x + 5, y + 4, { width: colWidth - 10, lineBreak: false });
+          });
+          doc.y = y + 20;
         });
-        doc.y = y + 20;
-      });
+      } else {
+        tbl.rows.forEach((row, rIdx) => {
+          const y = doc.y;
+          if (y > doc.page.height - 80) {
+            doc.addPage();
+          }
+          const isHdr = rIdx === 0;
+          doc.rect(50, doc.y, doc.page.width - 100, 20).strokeColor('#CCD2FC').lineWidth(0.5);
+          if (isHdr) {
+            doc.rect(50, doc.y, doc.page.width - 100, 20).fill('#F0F2FE');
+            doc.fillColor('#1F2340').fontSize(9);
+          } else {
+            doc.fillColor('#4D536B').fontSize(8.5);
+          }
+
+          row.forEach((cell, cIdx) => {
+            doc.text(cell, 55 + cIdx * colWidth, y + 4, { width: colWidth - 10, lineBreak: false });
+          });
+          doc.y = y + 20;
+        });
+      }
       doc.moveDown(0.4);
     };
 
