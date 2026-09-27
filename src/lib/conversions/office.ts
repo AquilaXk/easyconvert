@@ -3,7 +3,8 @@ import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
-import { extractTextFromPdf, extractEmbeddedImageFromPdf } from './pdf-utils';
+import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
+import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
 import { encodeBmp, encodePostscript } from './image';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
@@ -315,7 +316,8 @@ export async function extractTextContentForOffice(
   baseName: string
 ): Promise<string> {
   if (src === 'pdf') {
-    let extracted = extractTextFromPdf(inputBuffer);
+    const structuredPdf = extractStructuredTextFromPdf(inputBuffer);
+    let extracted = structuredPdf.text;
     if (extracted === 'No extractable text found in PDF document.' || options.ocrEnabled) {
       const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
       if (embeddedImg) {
@@ -324,6 +326,27 @@ export async function extractTextContentForOffice(
       } else {
         const ocr = await performOcr(inputBuffer, options.ocrLanguage);
         if (ocr.text) extracted = ocr.text;
+      }
+    } else if (structuredPdf.blocks && structuredPdf.blocks.length > 0) {
+      const dlaBoxes: DlaBoundingBox[] = structuredPdf.blocks.map((b) => ({
+        x: b.x,
+        y: b.y,
+        width: Math.max(1, b.width),
+        height: Math.max(1, b.height),
+        text: b.text,
+        fontSize: b.fontSize,
+      }));
+      const layout = analyzeDocumentLayout(dlaBoxes, 612, 792);
+      if (layout.blocks && layout.blocks.length > 0) {
+        extracted = layout.blocks
+          .map((b) => {
+            if (b.type === 'heading') return `## ${b.text}`;
+            if (b.type === 'list_item') return `- ${b.text.replace(/^[•\-\*]\s*/, '')}`;
+            if (b.type === 'header') return `*${b.text}*\n\n---`;
+            if (b.type === 'footer') return `---\n*${b.text}*`;
+            return b.text;
+          })
+          .join('\n\n');
       }
     }
     return extracted;
@@ -2495,17 +2518,16 @@ export function formatSpreadsheetCellValue(
   return rawVal;
 }
 
-/**
- * XLSX Source Parser & Converter supporting Multi-sheet workbooks and NumberFormat engine
- */
-async function convertXlsxSource(
-  inputBuffer: Buffer,
-  tgt: string,
-  options: ConversionOptions,
-  baseName: string
-): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+export interface OfficeWorksheet {
+  name: string;
+  rows: string[][];
+}
 
+/**
+ * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
+ * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
+ */
+export async function parseAllXlsxWorksheets(zip: JSZip): Promise<OfficeWorksheet[]> {
   // 1. Parse shared strings
   const sharedStrings: string[] = [];
   const sstFile = zip.file('xl/sharedStrings.xml');
@@ -2600,7 +2622,7 @@ async function convertXlsxSource(
   }
 
   // 4. Parse all discovered worksheets
-  const allSheets: Array<{ name: string; rows: string[][] }> = [];
+  const allSheets: OfficeWorksheet[] = [];
 
   for (const entry of sheetEntries) {
     const sFile = zip.file(entry.path);
@@ -2708,6 +2730,20 @@ async function convertXlsxSource(
     allSheets.push({ name: entry.name, rows });
   }
 
+  return allSheets;
+}
+
+/**
+ * XLSX Source Parser & Converter supporting Multi-sheet workbooks and NumberFormat engine
+ */
+async function convertXlsxSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  const zip = await JSZip.loadAsync(inputBuffer);
+  const allSheets = await parseAllXlsxWorksheets(zip);
   const primaryRows = allSheets.length > 0 ? allSheets[0].rows : [];
 
   // XLSX -> CSV
@@ -2867,7 +2903,7 @@ async function convertXlsxSource(
 
   // XLSX -> ODS
   if (tgt === 'ods') {
-    const odsBuffer = await generateOdsFromData(primaryRows, baseName);
+    const odsBuffer = await generateOdsFromData(allSheets.length > 0 ? allSheets : primaryRows, baseName);
     return {
       buffer: odsBuffer,
       mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
@@ -2909,6 +2945,8 @@ export interface VisualSlideShape {
   y: number;
   width: number;
   height: number;
+  shapeType?: 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'diamond' | 'star5' | 'line' | string;
+  geometryPath?: string;
   fillColor?: string;
   strokeColor?: string;
   strokeWidth?: number;
@@ -3053,11 +3091,29 @@ async function convertPptxSource(
           }
         }
 
+        // Extract preset or custom geometry
+        let shapeType = 'rect';
+        const prstMatch = spXml.match(/<a:prstGeom\s+[^>]*?prst="([^"]+)"/i);
+        if (prstMatch) {
+          shapeType = prstMatch[1];
+        }
+        let geometryPath: string | undefined;
+        const custGeomMatch = spXml.match(/<a:custGeom\b[\s\S]*?<\/a:custGeom>/i);
+        if (custGeomMatch) {
+          shapeType = 'custom';
+          const pathMatch = custGeomMatch[0].match(/<a:path\b[^>]*>([\s\S]*?)<\/a:path>/i);
+          if (pathMatch) {
+            geometryPath = pathMatch[1];
+          }
+        }
+
         shapes.push({
           x,
           y,
           width: w,
           height: h,
+          shapeType,
+          geometryPath,
           fillColor,
           strokeColor,
           strokeWidth,
@@ -3279,13 +3335,72 @@ async function convertGenericPresentationSource(
   throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
 }
 
-function generateHtmlFromSlides(slides: { number: number; texts: string[] }[], title: string): string {
+function generateHtmlFromSlides(
+  slides: Array<{
+    number: number;
+    texts: string[];
+    shapes?: VisualSlideShape[];
+    width?: number;
+    height?: number;
+    backgroundColor?: string;
+  }>,
+  title: string
+): string {
   let slidesHtml = '';
   slides.forEach((slide) => {
+    const sWidth = slide.width || 960;
+    const sHeight = slide.height || 540;
+    const bg = slide.backgroundColor || '#FFFFFF';
+
+    let visualSvg = '';
+    if (slide.shapes && slide.shapes.length > 0) {
+      let svgElements = '';
+      slide.shapes.forEach((s) => {
+        const type = s.shapeType || 'rect';
+        const fill = s.fillColor || 'none';
+        const stroke = s.strokeColor || 'none';
+        const strokeW = s.strokeWidth || 1;
+
+        if (type === 'ellipse' || type === 'circle') {
+          const cx = s.x + s.width / 2;
+          const cy = s.y + s.height / 2;
+          const rx = s.width / 2;
+          const ry = s.height / 2;
+          svgElements += `        <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
+        } else if (type === 'roundRect') {
+          const r = Math.min(s.width, s.height) * 0.15;
+          svgElements += `        <rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
+        } else if (type === 'triangle') {
+          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height} ${s.x},${s.y + s.height}`;
+          svgElements += `        <polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
+        } else if (type === 'diamond') {
+          const pts = `${s.x + s.width / 2},${s.y} ${s.x + s.width},${s.y + s.height / 2} ${s.x + s.width / 2},${s.y + s.height} ${s.x},${s.y + s.height / 2}`;
+          svgElements += `        <polygon points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
+        } else if (type === 'line') {
+          svgElements += `        <line x1="${s.x}" y1="${s.y}" x2="${s.x + s.width}" y2="${s.y + s.height}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
+        } else {
+          svgElements += `        <rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}"/>\n`;
+        }
+
+        if (s.text) {
+          const tx = s.x + 10;
+          const ty = s.y + (s.fontSize || 14) + 6;
+          svgElements += `        <text x="${tx}" y="${ty}" font-size="${s.fontSize || 14}" fill="${s.fontColor || '#1F2340'}" font-weight="${s.bold ? 'bold' : 'normal'}" font-family="sans-serif">${escapeHtml(s.text)}</text>\n`;
+        }
+      });
+
+      visualSvg = `
+      <div style="margin-bottom:16px;border:1px solid #E1E4EE;border-radius:8px;overflow:hidden;background:${bg};">
+        <svg viewBox="0 0 ${sWidth} ${sHeight}" style="width:100%;height:auto;display:block;">
+${svgElements}        </svg>
+      </div>`;
+    }
+
     slidesHtml += `
     <div style="border:1px solid #CCD2FC;border-radius:12px;padding:24px;margin-bottom:20px;background:#FAFAFE;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
       <div style="font-size:11px;font-weight:700;color:#5C6BC0;text-transform:uppercase;margin-bottom:8px;">Slide ${slide.number}</div>
       <h2 style="font-size:18px;color:#1F2340;margin-top:0;margin-bottom:16px;">${slide.texts[0] ? escapeHtml(slide.texts[0]) : `Slide ${slide.number}`}</h2>
+      ${visualSvg}
       <ul style="color:#4D536B;font-size:14px;line-height:1.6;margin:0;padding-left:20px;">
         ${slide.texts.slice(1).map((t) => `<li>${escapeHtml(t)}</li>`).join('\n')}
       </ul>
@@ -3338,15 +3453,46 @@ async function generatePdfFromSlides(
       if (slide.shapes && slide.shapes.length > 0) {
         slide.shapes.forEach((shape) => {
           if (shape.width > 0 && shape.height > 0) {
-            if (shape.fillColor) {
-              doc.rect(shape.x, shape.y, shape.width, shape.height).fill(shape.fillColor);
+            const type = shape.shapeType || 'rect';
+            const drawPath = () => {
+              if (type === 'ellipse' || type === 'circle') {
+                const rx = shape.width / 2;
+                const ry = shape.height / 2;
+                doc.ellipse(shape.x + rx, shape.y + ry, rx, ry);
+              } else if (type === 'roundRect') {
+                const r = Math.min(shape.width, shape.height) * 0.15;
+                doc.roundedRect(shape.x, shape.y, shape.width, shape.height, r);
+              } else if (type === 'triangle') {
+                doc.polygon(
+                  [shape.x + shape.width / 2, shape.y],
+                  [shape.x + shape.width, shape.y + shape.height],
+                  [shape.x, shape.y + shape.height]
+                );
+              } else if (type === 'diamond') {
+                doc.polygon(
+                  [shape.x + shape.width / 2, shape.y],
+                  [shape.x + shape.width, shape.y + shape.height / 2],
+                  [shape.x + shape.width / 2, shape.y + shape.height],
+                  [shape.x, shape.y + shape.height / 2]
+                );
+              } else if (type === 'line') {
+                doc.moveTo(shape.x, shape.y).lineTo(shape.x + shape.width, shape.y + shape.height);
+              } else {
+                doc.rect(shape.x, shape.y, shape.width, shape.height);
+              }
+            };
+
+            if (shape.fillColor && shape.strokeColor) {
+              drawPath();
+              doc.lineWidth(shape.strokeWidth || 1).fillAndStroke(shape.fillColor, shape.strokeColor);
+            } else if (shape.fillColor) {
+              drawPath();
+              doc.fill(shape.fillColor);
+            } else if (shape.strokeColor) {
+              drawPath();
+              doc.lineWidth(shape.strokeWidth || 1).stroke(shape.strokeColor);
             }
-            if (shape.strokeColor) {
-              doc
-                .rect(shape.x, shape.y, shape.width, shape.height)
-                .lineWidth(shape.strokeWidth || 1)
-                .stroke(shape.strokeColor);
-            }
+
             if (shape.text) {
               doc.fillColor(shape.fontColor || '#1F2340');
               doc.fontSize(shape.fontSize || 14);
@@ -4989,7 +5135,15 @@ export async function convertOdtSource(
 /**
  * Generates OpenDocument Spreadsheet (ODS) Archive
  */
-export async function generateOdsFromData(rows: string[][], baseName: string): Promise<Buffer> {
+export async function generateOdsFromData(
+  data: string[][] | OfficeWorksheet[],
+  baseName: string
+): Promise<Buffer> {
+  const sheets: OfficeWorksheet[] =
+    Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && 'rows' in data[0]
+      ? (data as OfficeWorksheet[])
+      : [{ name: baseName, rows: (data as string[][]) || [] }];
+
   const zip = new JSZip();
   zip.file('mimetype', 'application/vnd.oasis.opendocument.spreadsheet', { compression: 'STORE' });
   zip.file(
@@ -5001,13 +5155,20 @@ export async function generateOdsFromData(rows: string[][], baseName: string): P
 </manifest:manifest>`
   );
 
-  let rowsXml = '';
-  rows.forEach((row) => {
-    rowsXml += '<table:table-row>';
-    row.forEach((cell) => {
-      rowsXml += `<table:table-cell office:value-type="string"><text:p>${escapeXml(cell)}</text:p></table:table-cell>`;
+  let tablesXml = '';
+  sheets.forEach((sheet) => {
+    let rowsXml = '';
+    sheet.rows.forEach((row) => {
+      rowsXml += '<table:table-row>';
+      row.forEach((cell) => {
+        rowsXml += `<table:table-cell office:value-type="string"><text:p>${escapeXml(cell)}</text:p></table:table-cell>`;
+      });
+      rowsXml += '</table:table-row>';
     });
-    rowsXml += '</table:table-row>';
+    tablesXml += `
+      <table:table table:name="${escapeXml(sheet.name || baseName)}">
+        ${rowsXml}
+      </table:table>`;
   });
 
   zip.file(
@@ -5019,9 +5180,7 @@ export async function generateOdsFromData(rows: string[][], baseName: string): P
   office:version="1.2">
   <office:body>
     <office:spreadsheet>
-      <table:table table:name="${escapeXml(baseName)}">
-        ${rowsXml}
-      </table:table>
+      ${tablesXml}
     </office:spreadsheet>
   </office:body>
 </office:document-content>`
@@ -5156,95 +5315,17 @@ async function extractRowsForOffice(
   if (src === 'xlsx') {
     try {
       const zip = await JSZip.loadAsync(inputBuffer);
-      const sheetFile = zip.file('xl/worksheets/sheet1.xml');
-      if (sheetFile) {
-        const sstFile = zip.file('xl/sharedStrings.xml');
-        const sharedStrings: string[] = [];
-        if (sstFile) {
-          const sstXml = await sstFile.async('text');
-          const tRegex = /<t[^>]*>([\s\S]*?)<\/t>/g;
-          let m: RegExpExecArray | null;
-          while ((m = tRegex.exec(sstXml)) !== null) {
-            sharedStrings.push(m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+      const allSheets = await parseAllXlsxWorksheets(zip);
+      if (allSheets.length > 0) {
+        if (allSheets.length === 1) return allSheets[0].rows;
+        const merged: string[][] = [];
+        allSheets.forEach((s, idx) => {
+          if (idx > 0 && s.rows.length > 0) {
+            merged.push([`### Sheet: ${s.name}`]);
           }
-        }
-
-        const sheetXml = await sheetFile.async('text');
-        const rows: string[][] = [];
-        const rowRegex = /<row\b([^>]*?)(?:>([\s\S]*?)<\/row>|\/>)/g;
-        let rMatch: RegExpExecArray | null;
-
-        while ((rMatch = rowRegex.exec(sheetXml)) !== null) {
-          const rowAttrs = rMatch[1];
-          const rowXml = rMatch[2] || '';
-          const rRowAttr = /r="(\d+)"/i.exec(rowAttrs);
-          if (rRowAttr) {
-            const targetRowIdx = parseInt(rRowAttr[1], 10) - 1;
-            while (rows.length < targetRowIdx) {
-              rows.push([]);
-            }
-          }
-          const cells: string[] = [];
-          const cellRegex = /<c\s+([^>]*?)(?:>([\s\S]*?)<\/c>|\/>)/g;
-          let cMatch: RegExpExecArray | null;
-          let nextColIdx = 0;
-
-          while ((cMatch = cellRegex.exec(rowXml)) !== null) {
-            const attrs = cMatch[1];
-            const body = cMatch[2] || '';
-
-            // Extract column index from r="C1" coordinate
-            const rAttr = /r="([A-Za-z]+)(\d+)"/.exec(attrs);
-            let colIdx = nextColIdx;
-            if (rAttr && rAttr[1]) {
-              colIdx = getExcelColumnIndex(rAttr[1]);
-            }
-
-            // Fill sparse empty cells prior to colIdx to maintain table structure
-            while (cells.length < colIdx) {
-              cells.push('');
-            }
-
-            let cellValue = '';
-
-            // 1. Inline string: <c t="inlineStr"><is><t>Text</t></is></c>
-            if (/t="inlineStr"/i.test(attrs)) {
-              const isMatch = /<is>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/is>/i.exec(body) || /<t[^>]*>([\s\S]*?)<\/t>/i.exec(body);
-              if (isMatch) {
-                cellValue = isMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-              }
-            } else if (/t="s"/i.test(attrs)) {
-              // 2. Shared string
-              const vMatch = body.match(/<v>([\s\S]*?)<\/v>/i);
-              if (vMatch) {
-                const sIdx = parseInt(vMatch[1], 10);
-                cellValue = sharedStrings[sIdx] ?? '';
-              }
-            } else if (/t="b"/i.test(attrs)) {
-              // 3. Boolean
-              const vMatch = body.match(/<v>([\s\S]*?)<\/v>/i);
-              if (vMatch) {
-                cellValue = vMatch[1] === '1' ? 'TRUE' : 'FALSE';
-              }
-            } else {
-              // 4. Number or direct formula value
-              const vMatch = body.match(/<v>([\s\S]*?)<\/v>/i);
-              if (vMatch) {
-                cellValue = vMatch[1];
-              } else {
-                const tMatch = body.match(/<t[^>]*>([\s\S]*?)<\/t>/i);
-                if (tMatch) {
-                  cellValue = tMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-                }
-              }
-            }
-
-            cells[colIdx] = cellValue;
-            nextColIdx = colIdx + 1;
-          }
-          rows.push(cells);
-        }
-        if (rows.length > 0) return rows;
+          merged.push(...s.rows);
+        });
+        return merged;
       }
     } catch {
       // fallback
@@ -5277,6 +5358,22 @@ async function extractRowsForOffice(
     .split(/\r?\n/)
     .filter((l) => l.trim().length > 0)
     .map((l) => l.split(delim));
+}
+
+/**
+ * Discovers and extracts all worksheets from an office spreadsheet document
+ */
+export async function extractAllSheetsForOffice(
+  inputBuffer: Buffer,
+  src: string,
+  options: ConversionOptions = {}
+): Promise<OfficeWorksheet[]> {
+  if (src === 'xlsx') {
+    const zip = await JSZip.loadAsync(inputBuffer);
+    return parseAllXlsxWorksheets(zip);
+  }
+  const rows = await extractRowsForOffice(inputBuffer, src, options);
+  return [{ name: 'Sheet1', rows }];
 }
 
 async function convertEtSource(

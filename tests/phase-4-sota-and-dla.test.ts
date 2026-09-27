@@ -20,6 +20,15 @@ import {
   analyzeDocumentLayout,
   DlaBoundingBox,
 } from '../src/lib/conversions/dla-engine';
+import { convertImage } from '../src/lib/conversions/image';
+import { convertDocument } from '../src/lib/conversions/document';
+import {
+  convertOffice,
+  generateOdsFromData,
+  extractAllSheetsForOffice,
+} from '../src/lib/conversions/office';
+import JSZip from 'jszip';
+import sharp from 'sharp';
 
 describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
   // ==========================================================================
@@ -357,4 +366,355 @@ describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
       expect(listBlocks.length).toBe(2);
     });
   });
+
+  // ==========================================================================
+  // 5. OKLab Image Quantization & Dithering Pipeline in image.ts
+  // ==========================================================================
+  describe('OKLab Image Quantization & Dithering in image.ts (Component 4.5)', () => {
+    it('quantizes and dithers image to PNG-8, BMP-8, GIF, and ICO with OKLab and space-filling curves', async () => {
+      const width = 32;
+      const height = 32;
+      const rawRgba = Buffer.alloc(width * height * 4);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = (y * width + x) * 4;
+          rawRgba[idx] = Math.round((x / width) * 255);
+          rawRgba[idx + 1] = Math.round((y / height) * 255);
+          rawRgba[idx + 2] = 120;
+          rawRgba[idx + 3] = 255;
+        }
+      }
+      const inputPng = await sharp(rawRgba, { raw: { width, height, channels: 4 } })
+        .png()
+        .toBuffer();
+
+      // PNG with OKLab and Riemersma dithering
+      const pngOklab = await convertImage(inputPng, 'png', {
+        palette: true,
+        quantizer: 'oklab',
+        ditherMethod: 'riemersma',
+        colors: 16,
+      });
+      expect(pngOklab.mimeType).toBe('image/png');
+      expect(pngOklab.buffer.length).toBeGreaterThan(0);
+
+      // PNG with Void-and-Cluster Blue Noise dithering
+      const pngBlueNoise = await convertImage(inputPng, 'png', {
+        palette: true,
+        ditherMethod: 'blue-noise',
+        colors: 16,
+      });
+      expect(pngBlueNoise.mimeType).toBe('image/png');
+      expect(pngBlueNoise.buffer.length).toBeGreaterThan(0);
+
+      // BMP 8-bit paletted with OKLab quantization
+      const bmpOklab = await convertImage(inputPng, 'bmp', {
+        colorDepth: 8,
+        quantizer: 'oklab',
+        colors: 16,
+      });
+      expect(bmpOklab.mimeType).toBe('image/bmp');
+      expect(bmpOklab.buffer.length).toBeGreaterThan(0);
+
+      // GIF with OKLab quantization
+      const gifOklab = await convertImage(inputPng, 'gif', {
+        quantizer: 'oklab',
+        colors: 16,
+      });
+      expect(gifOklab.mimeType).toBe('image/gif');
+      expect(gifOklab.buffer.length).toBeGreaterThan(0);
+
+      // ICO with OKLab quantization
+      const icoOklab = await convertImage(inputPng, 'ico', {
+        colorDepth: 8,
+        quantizer: 'oklab',
+        colors: 16,
+      });
+      expect(icoOklab.mimeType).toBe('image/x-icon');
+      expect(icoOklab.buffer.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ==========================================================================
+  // 6. DLA-Structured Document Conversion in document.ts
+  // ==========================================================================
+  describe('DLA-Structured HTML & Markdown Output in document.ts (Component 4.6)', () => {
+    it('produces semantic HTML and Markdown with header, heading, list, paragraph, and footer blocks', async () => {
+      // Build a synthetic PDF containing structured text blocks
+      const pdfSource = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>
+endobj
+4 0 obj
+<< /Length 400 >>
+stream
+BT
+/F1 10 Tf
+50 30 Td
+(Document Confidential Header) Tj
+ET
+BT
+/F1 24 Tf
+50 120 Td
+(Architecture Specification) Tj
+ET
+BT
+/F1 12 Tf
+50 200 Td
+(- High throughput transformation engine) Tj
+ET
+BT
+/F1 12 Tf
+50 300 Td
+(The platform processes media entirely client-side without cloud hops.) Tj
+ET
+BT
+/F1 10 Tf
+50 750 Td
+(Page 1 of 12 - EasyConvert) Tj
+ET
+endstream
+endobj
+xref
+0 5
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000266 00000 n 
+trailer
+<< /Size 5 /Root 1 0 R >>
+startxref
+700
+%%EOF`;
+      const pdfBuffer = Buffer.from(pdfSource, 'utf-8');
+
+      // Convert to HTML
+      const htmlRes = await convertDocument(pdfBuffer, 'pdf', 'html', {}, 'test-doc.pdf');
+      const htmlText = htmlRes.buffer.toString('utf-8');
+
+      expect(htmlRes.mimeType).toBe('text/html');
+      expect(htmlText).toContain('<header');
+      expect(htmlText).toContain('Document Confidential Header');
+      expect(htmlText).toContain('<h2');
+      expect(htmlText).toContain('Architecture Specification');
+      expect(htmlText).toContain('<ul');
+      expect(htmlText).toContain('<li>High throughput transformation engine</li>');
+      expect(htmlText).toContain('<p');
+      expect(htmlText).toContain('client-side without cloud hops');
+      expect(htmlText).toContain('<footer');
+      expect(htmlText).toContain('Page 1 of 12');
+      expect(htmlText).not.toContain('<pre>');
+
+      // Convert to Markdown
+      const mdRes = await convertDocument(pdfBuffer, 'pdf', 'md', {}, 'test-doc.pdf');
+      const mdText = mdRes.buffer.toString('utf-8');
+
+      expect(mdRes.mimeType).toBe('text/markdown');
+      expect(mdText).toContain('*Document Confidential Header*');
+      expect(mdText).toContain('## Architecture Specification');
+      expect(mdText).toContain('- High throughput transformation engine');
+      expect(mdText).toContain('The platform processes media entirely client-side');
+      expect(mdText).toContain('*Page 1 of 12 - EasyConvert*');
+    });
+  });
+
+  // ==========================================================================
+  // 7. Multi-Sheet Office Parity & ODS Preservation in office.ts
+  // ==========================================================================
+  describe('Multi-Sheet Office Parity & ODS Preservation (Component 4.7)', () => {
+    async function createTestXlsx(): Promise<Buffer> {
+      const zip = new JSZip();
+      const sheet1Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Quarter</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Revenue</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Q1</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>$10,000</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>`;
+
+      const sheet2Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Department</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Expense</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>R&amp;D</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>$4,500</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>`;
+
+      zip.file('xl/worksheets/sheet1.xml', sheet1Xml);
+      zip.file('xl/worksheets/sheet2.xml', sheet2Xml);
+      zip.file(
+        'xl/workbook.xml',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Quarterly Revenue" sheetId="1" r:id="rId1"/>
+    <sheet name="Department Expenses" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`
+      );
+      zip.file(
+        'xl/_rels/workbook.xml.rels',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>`
+      );
+      return zip.generateAsync({ type: 'nodebuffer' });
+    }
+
+    it('extracts all worksheets from multi-sheet XLSX document', async () => {
+      const xlsxBuffer = await createTestXlsx();
+      const sheets = await extractAllSheetsForOffice(xlsxBuffer, 'xlsx');
+
+      expect(sheets.length).toBe(2);
+      expect(sheets[0].name).toBe('Quarterly Revenue');
+      expect(sheets[0].rows[0]).toEqual(['Quarter', 'Revenue']);
+      expect(sheets[0].rows[1]).toEqual(['Q1', '$10,000']);
+
+      expect(sheets[1].name).toBe('Department Expenses');
+      expect(sheets[1].rows[0]).toEqual(['Department', 'Expense']);
+      expect(sheets[1].rows[1]).toEqual(['R&D', '$4,500']);
+    });
+
+    it('generates multi-sheet ODS archive preserving distinct table structures', async () => {
+      const xlsxBuffer = await createTestXlsx();
+      const res = await convertOffice(xlsxBuffer, 'xlsx', 'ods', {}, 'financial_report.xlsx');
+
+      expect(res.mimeType).toBe('application/vnd.oasis.opendocument.spreadsheet');
+      const odsZip = await JSZip.loadAsync(res.buffer);
+      const contentXml = await odsZip.file('content.xml')?.async('text');
+
+      expect(contentXml).toBeDefined();
+      expect(contentXml).toContain('<table:table table:name="Quarterly Revenue">');
+      expect(contentXml).toContain('<table:table table:name="Department Expenses">');
+      expect(contentXml).toContain('Quarter');
+      expect(contentXml).toContain('$10,000');
+      expect(contentXml).toContain('Department');
+      expect(contentXml).toContain('R&amp;D');
+    });
+
+    it('creates multi-sheet ODS using generateOdsFromData', async () => {
+      const odsBuffer = await generateOdsFromData(
+        [
+          { name: 'Summary', rows: [['Total', '100']] },
+          { name: 'Details', rows: [['Item', '50'], ['Item2', '50']] },
+        ],
+        'report'
+      );
+      const odsZip = await JSZip.loadAsync(odsBuffer);
+      const contentXml = await odsZip.file('content.xml')?.async('text');
+
+      expect(contentXml).toContain('<table:table table:name="Summary">');
+      expect(contentXml).toContain('<table:table table:name="Details">');
+    });
+  });
+
+  // ==========================================================================
+  // 8. PPTX Vector Shape Extraction & PDF/HTML Rendering in office.ts
+  // ==========================================================================
+  describe('PPTX Vector Shape Extraction & Rendering (Component 4.8)', () => {
+    async function createTestPptxWithShapes(): Promise<Buffer> {
+      const zip = new JSZip();
+      zip.file(
+        'ppt/presentation.xml',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:sldSz cx="12192000" cy="6858000"/>
+</p:presentation>`
+      );
+      zip.file(
+        'ppt/slides/slide1.xml',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="1270000" y="1270000"/><a:ext cx="2540000" cy="1270000"/></a:xfrm>
+          <a:prstGeom prst="rect"/>
+          <a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>
+          <a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln>
+        </p:spPr>
+        <p:txBody><a:p><a:r><a:t>Rectangle Feature</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="4000000" y="1270000"/><a:ext cx="1270000" cy="1270000"/></a:xfrm>
+          <a:prstGeom prst="ellipse"/>
+          <a:solidFill><a:srgbClr val="00FF00"/></a:solidFill>
+        </p:spPr>
+        <p:txBody><a:p><a:r><a:t>Ellipse Feature</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="1270000" y="3000000"/><a:ext cx="2540000" cy="1270000"/></a:xfrm>
+          <a:prstGeom prst="roundRect"/>
+          <a:solidFill><a:srgbClr val="0000FF"/></a:solidFill>
+        </p:spPr>
+        <p:txBody><a:p><a:r><a:t>RoundRect Feature</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="4000000" y="3000000"/><a:ext cx="1270000" cy="1270000"/></a:xfrm>
+          <a:prstGeom prst="triangle"/>
+          <a:solidFill><a:srgbClr val="FFFF00"/></a:solidFill>
+        </p:spPr>
+        <p:txBody><a:p><a:r><a:t>Triangle Feature</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>`
+      );
+      return zip.generateAsync({ type: 'nodebuffer' });
+    }
+
+    it('renders vector shapes (rect, ellipse, roundRect, triangle) in HTML slide export', async () => {
+      const pptxBuffer = await createTestPptxWithShapes();
+      const htmlRes = await convertOffice(pptxBuffer, 'pptx', 'html', {}, 'presentation.pptx');
+
+      expect(htmlRes.mimeType).toBe('text/html');
+      const html = htmlRes.buffer.toString('utf-8');
+
+      expect(html).toContain('<svg');
+      expect(html).toContain('<rect');
+      expect(html).toContain('<ellipse');
+      expect(html).toContain('rx="');
+      expect(html).toContain('<polygon points=');
+      expect(html).toContain('Rectangle Feature');
+      expect(html).toContain('Ellipse Feature');
+      expect(html).toContain('RoundRect Feature');
+      expect(html).toContain('Triangle Feature');
+    });
+
+    it('renders vector shapes in PDF slide export', async () => {
+      const pptxBuffer = await createTestPptxWithShapes();
+      const pdfRes = await convertOffice(pptxBuffer, 'pptx', 'pdf', {}, 'presentation.pptx');
+
+      expect(pdfRes.mimeType).toBe('application/pdf');
+      expect(pdfRes.buffer.length).toBeGreaterThan(1000);
+      expect(pdfRes.buffer.toString('binary', 0, 5)).toBe('%PDF-');
+    });
+  });
 });
+

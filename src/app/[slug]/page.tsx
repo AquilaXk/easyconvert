@@ -868,39 +868,80 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
             )}
 
             {parsed.infoType === 'contact' && (
-              <form onSubmit={(e) => { e.preventDefault(); alert('Message received! Our team will respond shortly.'); }} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Your Name</label>
-                  <input required type="text" placeholder="Jane Doe" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <h3 className="text-lg font-bold text-brand-950 dark:text-white">Get in Touch</h3>
+                  <p>
+                    Have questions regarding format specifications, suggestions for new conversion codecs,
+                    or need to report a rendering discrepancy? We welcome your feedback and inquiries.
+                  </p>
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Email Address</label>
-                  <input required type="email" placeholder="jane@example.com" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                  <div className="p-5 rounded-2xl bg-neutral-50 dark:bg-white/5 border border-neutral-border dark:border-dark-border space-y-2">
+                    <h4 className="font-bold text-brand-950 dark:text-white text-sm">Direct Support Email</h4>
+                    <p className="text-xs text-ink-secondary dark:text-neutral-400">
+                      Reach our development and engineering team directly for technical inquiries and feedback.
+                    </p>
+                    <a
+                      href="mailto:support@easyconvert.com"
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-400 hover:underline pt-1"
+                    >
+                      support@easyconvert.com &rarr;
+                    </a>
+                  </div>
+
+                  <div className="p-5 rounded-2xl bg-neutral-50 dark:bg-white/5 border border-neutral-border dark:border-dark-border space-y-2">
+                    <h4 className="font-bold text-brand-950 dark:text-white text-sm">Bug Reports & Issues</h4>
+                    <p className="text-xs text-ink-secondary dark:text-neutral-400">
+                      Found an edge case or corrupted conversion output? Report issues with sample files.
+                    </p>
+                    <a
+                      href="mailto:support@easyconvert.com?subject=Bug%20Report"
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-400 hover:underline pt-1"
+                    >
+                      Report an Issue &rarr;
+                    </a>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Subject</label>
-                  <input required type="text" placeholder="Enterprise licensing inquiry" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Message</label>
-                  <textarea required rows={4} placeholder="Tell us how we can help..." className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
-                </div>
-                <button type="submit" className="px-6 py-2.5 bg-brand-700 hover:bg-brand-800 text-white font-semibold text-sm rounded-xl transition-colors shadow-md shadow-brand-700/25">
-                  Send Message
-                </button>
-              </form>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const form = e.currentTarget;
+                    const subject = (form.elements.namedItem('subject') as HTMLInputElement)?.value || 'Inquiry';
+                    const message = (form.elements.namedItem('message') as HTMLTextAreaElement)?.value || '';
+                    window.location.href = `mailto:support@easyconvert.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`;
+                  }}
+                  className="space-y-4 pt-4 border-t border-neutral-100 dark:border-dark-border"
+                >
+                  <h4 className="font-bold text-brand-950 dark:text-white text-sm">Send a Message</h4>
+                  <div>
+                    <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Subject</label>
+                    <input name="subject" required type="text" placeholder="Format inquiry or feedback" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Message</label>
+                    <textarea name="message" required rows={4} placeholder="Describe your question or feedback..." className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
+                  </div>
+                  <button type="submit" className="px-6 py-2.5 bg-brand-700 hover:bg-brand-800 text-white font-semibold text-sm rounded-xl transition-colors shadow-md shadow-brand-700/25 cursor-pointer">
+                    Open Email Client
+                  </button>
+                </form>
+              </div>
             )}
 
             {parsed.infoType === 'about' && (
               <>
                 <h3 className="text-lg font-bold text-brand-950 dark:text-white">High-Performance File Transformation</h3>
                 <p>
-                  EasyConvert was built to deliver enterprise-grade file conversions with modern aesthetic,
-                  exceptional rendering fidelity, and unmatched security.
+                  EasyConvert was built to deliver fast, private, in-browser file conversions with clean aesthetic,
+                  exceptional rendering fidelity, and strict zero-retention security.
                 </p>
                 <p>
-                  With support for 200+ formats across documents, spreadsheets, images, videos, audio,
-                  and ebooks, we eliminate the complexity of multi-tool fragmentation.
+                  With support for 292 formats across documents, spreadsheets, images, videos, audio,
+                  vector graphics, and archives, all processing executes directly in your browser using
+                  WebAssembly and WebCodecs.
                 </p>
               </>
             )}
@@ -917,18 +958,6 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                   are reclaimed immediately with zero residual files.
                 </p>
               </>
-            )}
-
-            {parsed.infoType === 'forgot-password' && (
-              <form onSubmit={(e) => { e.preventDefault(); alert('Reset link sent to your email.'); }} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-brand-950 dark:text-neutral-300 mb-1">Email Address</label>
-                  <input required type="email" placeholder="name@example.com" className="w-full px-3.5 py-2.5 bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border rounded-xl text-brand-950 dark:text-white text-sm outline-none focus:border-brand-700" />
-                </div>
-                <button type="submit" className="w-full py-2.5 bg-brand-700 hover:bg-brand-800 text-white font-semibold text-sm rounded-xl transition-colors shadow-md shadow-brand-700/25">
-                  Send Password Reset Link
-                </button>
-              </form>
             )}
           </div>
         </main>

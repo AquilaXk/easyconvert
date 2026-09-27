@@ -313,7 +313,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(slugContent).toContain('Client-Side WebAssembly Pipeline');
   });
 
-  it('verifies AdBanner implements industry-standard IAB units and eliminates fake SaaS marketing cards', () => {
+  it('verifies AdBanner implements industry-standard publisher units and eliminates wireframe slop', () => {
     const adBannerPath = path.join(rootDir, 'src', 'components', 'AdBanner.tsx');
     const adBannerContent = fs.readFileSync(adBannerPath, 'utf-8');
 
@@ -323,11 +323,47 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(adBannerContent).not.toContain('Enterprise Cloud Infrastructure');
     expect(adBannerContent).not.toContain('100% Free Service');
 
-    // Must contain standardized Advertisement header and IAB dimension labels
+    // Must NOT contain wireframe slop (dashed borders, fake Ad Choices, Reserved Display Unit)
+    expect(adBannerContent).not.toContain('border-dashed');
+    expect(adBannerContent).not.toContain('Ad Choices');
+    expect(adBannerContent).not.toContain('Reserved Display Unit');
+
+    // Must contain standardized Advertisement header, solid borders, adsbygoogle script integration, and IAB dimensions
     expect(adBannerContent).toContain('Advertisement');
-    expect(adBannerContent).toContain('Ad Choices');
+    expect(adBannerContent).toContain('adsbygoogle');
     expect(adBannerContent).toContain('728 × 90 Leaderboard');
     expect(adBannerContent).toContain('300 × 250 Medium Rectangle');
+  });
+
+  it('verifies StatusDashboard purges fake uptime stats, fake incident logs, and fake modals', () => {
+    const statusPath = path.join(rootDir, 'src', 'components', 'StatusDashboard.tsx');
+    const statusContent = fs.readFileSync(statusPath, 'utf-8');
+
+    // Must NOT contain fake 99.99% claims or fake incident log
+    expect(statusContent).not.toContain('99.99%');
+    expect(statusContent).not.toContain('PAST_INCIDENTS');
+    expect(statusContent).not.toContain('WebCodecs GPU Hardware Buffer Optimization');
+    expect(statusContent).not.toContain('Subscribe to Status Updates');
+    expect(statusContent).not.toContain('uptime90d');
+
+    // Must contain genuine client edge telemetry and diagnostics
+    expect(statusContent).toContain('Run Edge Diagnostics');
+    expect(statusContent).toContain('SIMD WebAssembly Core Engine');
+    expect(statusContent).toContain('WebCodecs GPU Hardware Pipeline');
+    expect(statusContent).toContain('Origin Private File System (OPFS)');
+    expect(statusContent).toContain('Ephemeral Memory Buffer Sandbox');
+    expect(statusContent).toContain('100% In-Browser Execution');
+  });
+
+  it('verifies informational pages eliminate forgot-password and fake alert forms', () => {
+    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
+    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+
+    // No forgot-password or dummy alert handlers
+    expect(slugContent).not.toContain("parsed.infoType === 'forgot-password'");
+    expect(slugContent).not.toContain("alert('Message received!");
+    expect(slugContent).not.toContain("alert('Reset link sent");
+    expect(slugContent).toContain('support@easyconvert.com');
   });
 
   it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {

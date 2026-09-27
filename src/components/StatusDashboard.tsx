@@ -7,12 +7,12 @@ import {
   Cpu,
   HardDrive,
   ShieldCheck,
-  Clock,
   Zap,
   RefreshCw,
-  Bell,
   Sparkles,
   Check,
+  Layers,
+  Terminal,
 } from 'lucide-react';
 
 interface ComponentStatus {
@@ -20,9 +20,7 @@ interface ComponentStatus {
   name: string;
   category: 'core' | 'pipeline' | 'privacy';
   description: string;
-  status: 'operational' | 'degraded' | 'maintenance';
-  uptime90d: number;
-  avgLatencyMs: number;
+  status: 'operational' | 'ready';
 }
 
 const ENGINE_COMPONENTS: ComponentStatus[] = [
@@ -33,8 +31,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'core',
     description: '128-bit vector-accelerated transformations for documents and binary streams',
     status: 'operational',
-    uptime90d: 99.99,
-    avgLatencyMs: 14,
   },
   {
     id: 'webcodecs-vpu',
@@ -42,8 +38,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'core',
     description: 'Direct GPU/VPU hardware acceleration for H.264, VP9, and audio codecs',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 19,
   },
   {
     id: 'opfs-storage',
@@ -51,8 +45,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'core',
     description: 'Zero-memory-spike virtual disk streaming for multi-gigabyte files',
     status: 'operational',
-    uptime90d: 99.99,
-    avgLatencyMs: 4,
   },
   {
     id: 'workers-pool',
@@ -60,8 +52,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'core',
     description: 'Non-blocking concurrent worker isolation matching CPU core topology',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 8,
   },
 
   // Conversion Pipelines
@@ -71,8 +61,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'pipeline',
     description: 'High-fidelity document rendering, vector text layout, and table reconstruction',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 22,
   },
   {
     id: 'pipeline-imaging',
@@ -80,8 +68,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'pipeline',
     description: 'Color-calibrated lossless resampling and vector geometry rasterization',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 11,
   },
   {
     id: 'pipeline-audio',
@@ -89,8 +75,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'pipeline',
     description: '32-bit floating-point audio processing, resampler, and lossless codecs',
     status: 'operational',
-    uptime90d: 99.98,
-    avgLatencyMs: 16,
   },
   {
     id: 'pipeline-video',
@@ -98,8 +82,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'pipeline',
     description: 'Zero-transcode lossless container repackaging and timestamp synchronization',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 26,
   },
   {
     id: 'pipeline-ocr',
@@ -107,8 +89,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'pipeline',
     description: 'Neural optical character recognition with sandwich PDF text layer synthesis',
     status: 'operational',
-    uptime90d: 99.97,
-    avgLatencyMs: 45,
   },
   {
     id: 'pipeline-archive',
@@ -116,8 +96,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'pipeline',
     description: 'Deflate, LZMA2, and BZip2 client-side streaming archive compressor',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 15,
   },
   {
     id: 'pipeline-cad',
@@ -125,8 +103,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'pipeline',
     description: 'Parametric spline tessellation, IEEE 754 precision, and AutoCAD R12/2018 compatibility',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 18,
   },
 
   // Privacy & Retention
@@ -136,8 +112,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'privacy',
     description: 'Volatile client memory allocation with guaranteed zero permanent disk retention',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 1,
   },
   {
     id: 'privacy-scrubbing',
@@ -145,8 +119,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'privacy',
     description: 'Immediate cryptographic buffer zeroing upon download completion',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 2,
   },
   {
     id: 'privacy-crypto',
@@ -154,8 +126,6 @@ const ENGINE_COMPONENTS: ComponentStatus[] = [
     category: 'privacy',
     description: 'Zero-knowledge bitstream validation without sending bytes across the network',
     status: 'operational',
-    uptime90d: 100.0,
-    avgLatencyMs: 6,
   },
 ];
 
@@ -167,79 +137,18 @@ interface DiagnosticResult {
   latencyMs: number;
 }
 
-interface IncidentItem {
-  id: string;
-  date: string;
-  title: string;
-  affected: string;
-  status: 'resolved' | 'completed' | 'scheduled';
-  description: string;
-  updates: { time: string; message: string }[];
-}
-
-const PAST_INCIDENTS: IncidentItem[] = [
-  {
-    id: 'inc-03',
-    date: 'Sep 24, 2026',
-    title: 'WebCodecs GPU Hardware Buffer Optimization',
-    affected: 'WebCodecs VPU Transcoding Accelerator',
-    status: 'resolved',
-    description: 'Proactive optimization of GPU texture recycling to prevent memory leak under high-concurrency 4K conversions.',
-    updates: [
-      { time: '14:20 UTC', message: 'Optimization verified across Chromium and Gecko browser engines. 0% frame loss observed.' },
-      { time: '13:45 UTC', message: 'Identified minor allocation spike when processing 10+ concurrent video clips.' },
-    ],
-  },
-  {
-    id: 'inc-02',
-    date: 'Aug 18, 2026',
-    title: 'SIMD Wasm Dynamic Feature Detection Enhancement',
-    affected: 'SIMD WebAssembly Core Engine',
-    status: 'resolved',
-    description: 'Enhanced fallback paths for older mobile browsers without SIMD relaxation opcodes.',
-    updates: [
-      { time: '09:15 UTC', message: 'Graceful scalar fallback verified on all target platforms with zero user impact.' },
-    ],
-  },
-  {
-    id: 'inc-01',
-    date: 'Jul 30, 2026',
-    title: 'OPFS Temporary Quota Reclamation Scheduled Maintenance',
-    affected: 'Origin Private File System (OPFS) Storage',
-    status: 'completed',
-    description: 'Scheduled edge storage housekeeping routine to verify automated zero-retention garbage cleanup.',
-    updates: [
-      { time: '02:00 UTC', message: 'All virtual temporary mountpoints verified 100% purged. Zero disk leakage confirmed.' },
-    ],
-  },
-];
-
 export default function StatusDashboard() {
   const [activeCategory, setActiveCategory] = useState<'all' | 'core' | 'pipeline' | 'privacy'>('all');
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [countdown, setCountdown] = useState(15);
   const [lastCheck, setLastCheck] = useState<Date>(new Date());
   const [isDiagnosticRunning, setIsDiagnosticRunning] = useState(false);
   const [diagnosticResults, setDiagnosticResults] = useState<DiagnosticResult[] | null>(null);
-  const [hoveredDay, setHoveredDay] = useState<{ component: string; dayIndex: number; date: string } | null>(null);
-  const [isSubscribeModalOpen, setIsSubscribeModalOpen] = useState(false);
-  const [subscribeEmail, setSubscribeEmail] = useState('');
-  const [subscribeSuccess, setSubscribeSuccess] = useState(false);
+  const [detectedCores, setDetectedCores] = useState<number>(4);
 
-  // Auto-refresh timer countdown
   useEffect(() => {
-    if (!autoRefresh) return;
-    const interval = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          setLastCheck(new Date());
-          return 15;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [autoRefresh]);
+    if (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) {
+      setDetectedCores(navigator.hardwareConcurrency);
+    }
+  }, []);
 
   const filteredComponents = useMemo(() => {
     if (activeCategory === 'all') return ENGINE_COMPONENTS;
@@ -335,21 +244,10 @@ export default function StatusDashboard() {
       latencyMs: memLatency,
     });
 
-    // Artificial tiny pause for visual feedback
-    await new Promise((r) => setTimeout(r, 450));
+    await new Promise((r) => setTimeout(r, 200));
     setDiagnosticResults(results);
     setIsDiagnosticRunning(false);
-  };
-
-  const handleSubscribe = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!subscribeEmail) return;
-    setSubscribeSuccess(true);
-    setTimeout(() => {
-      setSubscribeSuccess(false);
-      setIsSubscribeModalOpen(false);
-      setSubscribeEmail('');
-    }, 2000);
+    setLastCheck(new Date());
   };
 
   return (
@@ -366,10 +264,10 @@ export default function StatusDashboard() {
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-2xl sm:text-3xl font-extrabold text-brand-950 dark:text-white tracking-tight">
-                  All Systems & Edge Engines Operational
+                  All Client-Side Conversion Engines Operational
                 </h2>
                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-                  100% Online
+                  Ready
                 </span>
               </div>
               <p className="mt-1.5 text-sm text-ink-secondary dark:text-neutral-400 flex items-center gap-2">
@@ -378,7 +276,7 @@ export default function StatusDashboard() {
             </div>
           </div>
 
-          {/* Action buttons & Live Heartbeat */}
+          {/* Action buttons */}
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
@@ -389,15 +287,6 @@ export default function StatusDashboard() {
               <Zap className={`w-4 h-4 ${isDiagnosticRunning ? 'animate-spin' : ''}`} />
               <span>{isDiagnosticRunning ? 'Testing Edge Engines...' : 'Run Edge Diagnostics'}</span>
             </button>
-
-            <button
-              type="button"
-              onClick={() => setIsSubscribeModalOpen(true)}
-              className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm bg-brand-100 hover:bg-brand-200 border border-brand-600/40 text-brand-900 dark:bg-white/10 dark:hover:bg-white/15 dark:border-white/15 dark:text-white transition-all cursor-pointer"
-            >
-              <Bell className="w-4 h-4 text-brand-700 dark:text-brand-300" />
-              <span className="hidden sm:inline">Subscribe</span>
-            </button>
           </div>
         </div>
 
@@ -406,28 +295,20 @@ export default function StatusDashboard() {
           <div className="flex items-center gap-2">
             <Activity className="w-4 h-4 text-emerald-600 dark:text-emerald-400 animate-pulse" />
             <span>
-              Realtime Client Heartbeat: checked {lastCheck.toLocaleTimeString()}
+              Realtime Client Telemetry: checked {lastCheck.toLocaleTimeString()}
             </span>
           </div>
 
           <div className="flex items-center gap-4">
-            <button
-              type="button"
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className="inline-flex items-center gap-1.5 text-xs text-brand-700 dark:text-brand-300 hover:underline font-medium cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${autoRefresh ? 'animate-spin-pulse' : ''}`} />
-              <span>Auto-refresh: {autoRefresh ? `every 15s (${countdown}s)` : 'OFF'}</span>
-            </button>
-            <span className="hidden sm:inline text-neutral-300 dark:text-neutral-700">•</span>
-            <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
-              90-Day Cumulative Uptime: 99.99%
+            <span className="text-emerald-700 dark:text-emerald-300 font-semibold flex items-center gap-1.5">
+              <span className="size-2 rounded-full bg-emerald-500" />
+              100% In-Browser Execution
             </span>
           </div>
         </div>
       </div>
 
-      {/* 2. Interactive In-Browser Diagnostics Panel (shows when run or expandable) */}
+      {/* 2. Interactive In-Browser Diagnostics Panel */}
       {diagnosticResults && (
         <div className="rounded-2xl bg-white dark:bg-dark-surface border border-brand-300 dark:border-dark-border p-6 shadow-xl animate-in fade-in slide-in-from-top-3 duration-200">
           <div className="flex items-center justify-between mb-4">
@@ -438,7 +319,7 @@ export default function StatusDashboard() {
               </h3>
             </div>
             <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
-              5/5 Passes
+              5/5 Verified
             </span>
           </div>
 
@@ -470,62 +351,62 @@ export default function StatusDashboard() {
         </div>
       )}
 
-      {/* 3. System Metrics KPI Cards */}
+      {/* 3. System Environment Metrics */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm space-y-1">
           <div className="flex items-center justify-between text-xs text-ink-muted dark:text-neutral-400">
-            <span>Overall Availability</span>
-            <Activity className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <span>Execution Model</span>
+            <Cpu className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
           </div>
-          <div className="text-2xl sm:text-3xl font-extrabold text-brand-950 dark:text-white">
-            99.99%
+          <div className="text-xl sm:text-2xl font-extrabold text-brand-950 dark:text-white">
+            100% In-Browser
           </div>
           <div className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
-            Over the past 90 days
+            WebAssembly &amp; WebCodecs
           </div>
         </div>
 
         <div className="p-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm space-y-1">
           <div className="flex items-center justify-between text-xs text-ink-muted dark:text-neutral-400">
-            <span>Avg Edge Latency</span>
-            <Clock className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-          </div>
-          <div className="text-2xl sm:text-3xl font-extrabold text-brand-950 dark:text-white">
-            18 ms
-          </div>
-          <div className="text-[11px] text-ink-secondary dark:text-neutral-400 font-medium">
-            Zero network transit overhead
-          </div>
-        </div>
-
-        <div className="p-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm space-y-1">
-          <div className="flex items-center justify-between text-xs text-ink-muted dark:text-neutral-400">
-            <span>Permanent Disk Storage</span>
+            <span>Server Storage</span>
             <HardDrive className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
           </div>
-          <div className="text-2xl sm:text-3xl font-extrabold text-brand-950 dark:text-white">
+          <div className="text-xl sm:text-2xl font-extrabold text-brand-950 dark:text-white">
             0 Bytes
           </div>
           <div className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
-            100% ephemeral in-memory
+            Zero remote retention
           </div>
         </div>
 
         <div className="p-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm space-y-1">
           <div className="flex items-center justify-between text-xs text-ink-muted dark:text-neutral-400">
-            <span>Edge Execution Rate</span>
-            <ShieldCheck className="w-4 h-4 text-brand-700 dark:text-brand-400" />
+            <span>Hardware Concurrency</span>
+            <Terminal className="w-4 h-4 text-brand-700 dark:text-brand-400" />
           </div>
-          <div className="text-2xl sm:text-3xl font-extrabold text-brand-950 dark:text-white">
-            100%
+          <div className="text-xl sm:text-2xl font-extrabold text-brand-950 dark:text-white">
+            {detectedCores} Threads
           </div>
           <div className="text-[11px] text-brand-700 dark:text-brand-400 font-medium">
-            Client-side WebAssembly & GPU
+            Detected CPU execution units
+          </div>
+        </div>
+
+        <div className="p-5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm space-y-1">
+          <div className="flex items-center justify-between text-xs text-ink-muted dark:text-neutral-400">
+            <span>Privacy Sandbox</span>
+            <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+          </div>
+          <div className="text-xl sm:text-2xl font-extrabold text-brand-950 dark:text-white">
+            Active
+          </div>
+          <div className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
+            Ephemeral volatile buffer
           </div>
         </div>
       </div>
 
-      {/* 4. Filterable Component Status Cards with 90-Day Uptime Bars */}
+      {/* 4. Filterable Component Status Cards */}
       <div className="space-y-4">
         {/* Category Filter Tabs */}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-2">
@@ -572,214 +453,53 @@ export default function StatusDashboard() {
                   : 'text-ink-secondary dark:text-neutral-400 hover:text-brand-950 dark:hover:text-white'
               }`}
             >
-              Privacy & Retention (3)
+              Privacy &amp; Retention (3)
             </button>
           </div>
 
           <div className="text-xs text-ink-muted dark:text-neutral-400 flex items-center gap-2">
             <span className="size-2 rounded-full bg-emerald-500" />
-            <span>Operational</span>
-            <span className="size-2 rounded-full bg-amber-500 ml-2" />
-            <span>Degraded</span>
+            <span>Operational &amp; Ready</span>
           </div>
         </div>
 
         {/* Component List */}
-        <div className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {filteredComponents.map((component) => (
             <div
               key={component.id}
-              className="rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-5 shadow-sm hover:shadow-md transition-shadow"
+              className="rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-5 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between"
             >
-              {/* Header row: Name, Description, Operational Badge */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-                <div>
-                  <div className="flex items-center gap-2.5">
-                    <h4 className="text-sm sm:text-base font-bold text-brand-950 dark:text-white">
-                      {component.name}
-                    </h4>
-                    <span className="text-[11px] font-mono font-medium text-ink-muted dark:text-neutral-400 bg-neutral-subtle dark:bg-white/5 px-2 py-0.5 rounded border border-neutral-border dark:border-dark-border">
-                      ~{component.avgLatencyMs}ms
-                    </span>
-                  </div>
-                  <p className="text-xs text-ink-secondary dark:text-neutral-400 mt-0.5">
-                    {component.description}
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-3 shrink-0 self-start sm:self-center">
-                  <span className="text-xs font-mono font-bold text-brand-950 dark:text-white">
-                    {component.uptime90d}%
-                  </span>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <h4 className="text-sm font-bold text-brand-950 dark:text-white">
+                    {component.name}
+                  </h4>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
                     <span className="size-1.5 rounded-full bg-emerald-500" />
                     Operational
                   </span>
                 </div>
-              </div>
-
-              {/* 90-Day Uptime Bar Timeline */}
-              <div className="space-y-1.5 pt-2">
-                <div className="flex items-center justify-between text-[10px] text-ink-muted dark:text-neutral-400 font-medium">
-                  <span>90 days ago</span>
-                  <span>
-                    {hoveredDay?.component === component.id
-                      ? hoveredDay.date
-                      : 'Today'}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-[repeat(90,minmax(0,1fr))] gap-[2px] h-7 items-center bg-neutral-subtle/50 dark:bg-white/5 p-1 rounded-lg">
-                  {Array.from({ length: 90 }).map((_, i) => {
-                    const isToday = i === 89;
-                    const isIncident = (component.id === 'webcodecs-vpu' && i === 86) ||
-                                       (component.id === 'wasm-simd' && i === 49) ||
-                                       (component.id === 'opfs-storage' && i === 30);
-                    const label = isIncident
-                      ? `Day ${i + 1}: Maintenance & Optimization (Resolved)`
-                      : isToday
-                      ? `Today: 100% Operational • 0 Incidents`
-                      : `Day ${i + 1}: 100% Operational • 0 Incidents`;
-
-                    return (
-                      <div
-                        key={i}
-                        onMouseEnter={() =>
-                          setHoveredDay({
-                            component: component.id,
-                            dayIndex: i,
-                            date: label,
-                          })
-                        }
-                        onMouseLeave={() => setHoveredDay(null)}
-                        className={`h-5 rounded-[1.5px] transition-all duration-100 hover:scale-y-125 cursor-pointer ${
-                          isIncident
-                            ? 'bg-amber-400 hover:bg-amber-300'
-                            : isToday
-                            ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50'
-                            : 'bg-emerald-500/80 hover:bg-emerald-400'
-                        }`}
-                        title={label}
-                      />
-                    );
-                  })}
-                </div>
+                <p className="text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+                  {component.description}
+                </p>
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* 5. Past Incidents & Maintenance Timeline (Past 90 Days) */}
-      <div className="rounded-3xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-lg sm:text-xl font-bold text-brand-950 dark:text-white">
-              Incident History & Maintenance Log
-            </h3>
-            <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mt-1">
-              Transparent incident resolution log over the past 90 days.
-            </p>
-          </div>
-
-          <span className="text-xs font-semibold px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
-            No Active Incidents
-          </span>
-        </div>
-
-        <div className="space-y-4">
-          {/* Today Operational Card */}
-          <div className="p-4 sm:p-5 rounded-2xl bg-emerald-500/5 dark:bg-white/5 border border-emerald-500/20 dark:border-dark-border flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="size-8 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                <Check className="w-4 h-4" />
-              </div>
-              <div>
-                <div className="text-[11px] font-bold text-ink-muted dark:text-neutral-400 uppercase tracking-wider">
-                  Today
-                </div>
-                <div className="text-sm font-bold text-brand-950 dark:text-white">
-                  No incidents reported today. All edge engines healthy.
-                </div>
-              </div>
-            </div>
-            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-              100% Operational
-            </span>
-          </div>
-
-          {/* Yesterday Operational Card */}
-          <div className="p-4 sm:p-5 rounded-2xl bg-emerald-500/5 dark:bg-white/5 border border-emerald-500/20 dark:border-dark-border flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="size-8 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                <Check className="w-4 h-4" />
-              </div>
-              <div>
-                <div className="text-[11px] font-bold text-ink-muted dark:text-neutral-400 uppercase tracking-wider">
-                  Yesterday
-                </div>
-                <div className="text-sm font-bold text-brand-950 dark:text-white">
-                  No incidents reported. All conversion pipelines nominal.
-                </div>
-              </div>
-            </div>
-            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-              100% Operational
-            </span>
-          </div>
-
-          {PAST_INCIDENTS.map((inc) => (
-            <div
-              key={inc.id}
-              className="p-4 sm:p-5 rounded-2xl bg-neutral-scaffold dark:bg-white/5 border border-neutral-border dark:border-dark-border space-y-3"
-            >
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-xs font-bold font-mono text-ink-muted dark:text-neutral-400">
-                    {inc.date}
-                  </span>
-                  <span className="text-neutral-300 dark:text-neutral-600">•</span>
-                  <h4 className="text-sm font-bold text-brand-950 dark:text-white">
-                    {inc.title}
-                  </h4>
-                </div>
-
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30 self-start sm:self-auto">
-                  <Check className="w-3 h-3" />
-                  {inc.status}
-                </span>
-              </div>
-
-              <p className="text-xs text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                {inc.description}
-              </p>
-
-              <div className="space-y-1.5 pt-2 border-t border-neutral-border/80 dark:border-dark-border/80">
-                {inc.updates.map((u, i) => (
-                  <div key={i} className="text-xs text-ink-muted dark:text-neutral-400 flex items-start gap-2">
-                    <span className="font-mono font-semibold text-brand-700 dark:text-brand-300 shrink-0">
-                      {u.time}
-                    </span>
-                    <span>{u.message}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* 6. Edge Architecture Information Card */}
+      {/* 5. Edge Architecture Information Card */}
       <div className="rounded-3xl bg-brand-50/80 dark:bg-white/5 border border-brand-300/60 dark:border-dark-border p-6 sm:p-8 flex flex-col md:flex-row items-start gap-6">
         <div className="p-3.5 rounded-2xl bg-brand-700/15 text-brand-700 dark:text-brand-400 border border-brand-600/30 shrink-0">
           <Cpu className="w-7 h-7" />
         </div>
         <div className="space-y-2">
           <h3 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
-            Why EasyConvert Delivers 99.99%+ High-Availability
+            Why EasyConvert Executes Locally in Your Browser
           </h3>
           <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-            Unlike legacy cloud converters that route your confidential documents through overloaded central queue servers, EasyConvert compiles the transformation algorithms directly into WebAssembly and executes them securely inside your browser. This eliminates central server crashes, bandwidth throttling, and network timeouts.
+            Traditional online file converters upload your sensitive documents to remote servers, queue them in shared pools, and retain copies on cloud hard drives. EasyConvert takes the opposite approach: transformation algorithms are compiled directly into WebAssembly and execute inside your browser sandbox. Your files never touch external storage, eliminating wait times, bandwidth caps, and data breach risks.
           </p>
           <div className="flex flex-wrap gap-4 pt-2 text-xs font-semibold text-brand-700 dark:text-brand-400">
             <span className="flex items-center gap-1">
@@ -788,7 +508,7 @@ export default function StatusDashboard() {
             </span>
             <span className="flex items-center gap-1">
               <Check className="w-4 h-4 text-emerald-500" />
-              Hardware SIMD & GPU Acceleration
+              Hardware SIMD &amp; GPU Acceleration
             </span>
             <span className="flex items-center gap-1">
               <Check className="w-4 h-4 text-emerald-500" />
@@ -797,57 +517,6 @@ export default function StatusDashboard() {
           </div>
         </div>
       </div>
-
-      {/* Subscribe Modal */}
-      {isSubscribeModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="relative w-full max-w-md rounded-3xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-2xl space-y-5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Bell className="w-5 h-5 text-brand-700 dark:text-brand-400" />
-                <h3 className="text-lg font-bold text-brand-950 dark:text-white">
-                  Subscribe to Status Updates
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsSubscribeModalOpen(false)}
-                className="text-ink-muted hover:text-brand-950 dark:hover:text-white text-sm p-1"
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-ink-secondary dark:text-neutral-400">
-              Get notified immediately whenever an edge engine update or scheduled maintenance occurs.
-            </p>
-
-            {subscribeSuccess ? (
-              <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2">
-                <Check className="w-4 h-4" />
-                <span>Subscription confirmed! You will receive status updates.</span>
-              </div>
-            ) : (
-              <form onSubmit={handleSubscribe} className="space-y-3">
-                <input
-                  type="email"
-                  required
-                  value={subscribeEmail}
-                  onChange={(e) => setSubscribeEmail(e.target.value)}
-                  placeholder="name@example.com"
-                  className="w-full px-4 py-2.5 rounded-xl bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border text-sm text-brand-950 dark:text-white placeholder:text-ink-muted focus:border-brand-700 outline-none"
-                />
-                <button
-                  type="submit"
-                  className="w-full py-2.5 rounded-xl bg-brand-700 hover:bg-brand-800 text-white font-semibold text-sm transition-colors shadow-md shadow-brand-700/25 cursor-pointer"
-                >
-                  Subscribe to Updates
-                </button>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

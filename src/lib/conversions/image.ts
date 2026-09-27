@@ -5,18 +5,33 @@ import { ConversionOptions, ConversionResult } from '../types';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
+  quantizeWuOklab,
+  applyBlueNoiseDither,
   encodeBmp8,
   srgbToOklab,
   deltaEOklab,
   findClosestPaletteIndexOklab,
   applyFloydSteinbergDither,
 } from './quantize';
+import {
+  applyOklabQuantizationAndDither,
+  quantizePaletteOklab,
+  riemersmaDither,
+  deltaEOk,
+  rgbToOklab,
+  oklabToRgb,
+} from './color-quantizer';
 import { performOcr, generateSearchablePdf } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 
 export {
   quantizeMedianCut,
   quantizeNeuQuant,
+  quantizeWuOklab,
+  applyBlueNoiseDither,
+  applyOklabQuantizationAndDither,
+  quantizePaletteOklab,
+  riemersmaDither,
   encodeBmp8,
   srgbToOklab,
   deltaEOklab,
@@ -644,10 +659,10 @@ export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
   options: ConversionOptions = {},
-  originalFilename: string,
+  originalFilename: string = 'image.png',
   sourceFormat?: string
 ): Promise<ConversionResult> {
-  const baseName = originalFilename.replace(/\.[^/.]+$/, '');
+  const baseName = (originalFilename || 'image.png').replace(/\.[^/.]+$/, '');
   const fmt = targetFormat.toLowerCase();
   const src = (sourceFormat || '').toLowerCase();
 
@@ -780,9 +795,64 @@ export async function convertImage(
       break;
 
     case 'png': {
-      if (options.colorDepth === 8 || options.palette) {
+      if (options.colorDepth === 8 || options.palette || options.quantizer === 'oklab') {
         const colours = Math.min(256, Math.max(2, options.colors || 256));
-        outputBuffer = await pipeline.png({ palette: true, colours, dither: options.dither !== false ? 1.0 : 0.0, compressionLevel: 8 }).toBuffer();
+        if (
+          options.quantizer === 'oklab' ||
+          options.ditherMethod === 'riemersma' ||
+          options.ditherMethod === 'blue-noise'
+        ) {
+          const { data, info } = await pipeline
+            .ensureAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+
+          let rgbaBuffer: Buffer;
+          if (options.ditherMethod === 'blue-noise') {
+            const rawRgb = Buffer.alloc(info.width * info.height * 3);
+            for (let i = 0; i < info.width * info.height; i++) {
+              rawRgb[i * 3] = data[i * 4];
+              rawRgb[i * 3 + 1] = data[i * 4 + 1];
+              rawRgb[i * 3 + 2] = data[i * 4 + 2];
+            }
+            const wu = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
+              dither: options.dither !== false,
+              ditherMethod: 'blue-noise',
+            });
+            const reconstructed = Buffer.alloc(info.width * info.height * 4);
+            for (let i = 0; i < wu.indexedPixels.length; i++) {
+              const c = wu.palette[wu.indexedPixels[i]] || { r: 0, g: 0, b: 0 };
+              const off = i * 4;
+              reconstructed[off] = c.r;
+              reconstructed[off + 1] = c.g;
+              reconstructed[off + 2] = c.b;
+              reconstructed[off + 3] = data[off + 3] !== undefined ? data[off + 3] : 255;
+            }
+            rgbaBuffer = reconstructed;
+          } else {
+            const oklabRes = applyOklabQuantizationAndDither(
+              { data, width: info.width, height: info.height },
+              colours,
+              options.dither !== false
+            );
+            rgbaBuffer = Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength);
+          }
+
+          outputBuffer = await sharp(rgbaBuffer, {
+            raw: { width: info.width, height: info.height, channels: 4 },
+          })
+            .png({ palette: true, colours, compressionLevel: 8 })
+            .toBuffer();
+        } else {
+          outputBuffer = await pipeline
+            .png({
+              palette: true,
+              colours,
+              dither: options.dither !== false ? 1.0 : 0.0,
+              compressionLevel: 8,
+            })
+            .toBuffer();
+        }
       } else {
         outputBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
       }
@@ -807,7 +877,31 @@ export async function convertImage(
 
     case 'gif': {
       const colours = Math.min(256, Math.max(2, options.colors || 256));
-      outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
+      if (
+        options.quantizer === 'oklab' ||
+        options.ditherMethod === 'riemersma' ||
+        options.ditherMethod === 'blue-noise'
+      ) {
+        const { data, info } = await pipeline
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+
+        const oklabRes = applyOklabQuantizationAndDither(
+          { data, width: info.width, height: info.height },
+          colours,
+          options.dither !== false
+        );
+
+        outputBuffer = await sharp(
+          Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength),
+          { raw: { width: info.width, height: info.height, channels: 4 } }
+        )
+          .gif({ colours, dither: 0.0 })
+          .toBuffer();
+      } else {
+        outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
+      }
       mimeType = 'image/gif';
       break;
     }
@@ -819,16 +913,32 @@ export async function convertImage(
         .raw()
         .toBuffer({ resolveWithObject: true });
 
-      if (options.colorDepth === 8) {
-        // Advanced 8-bit paletted BMP with NeuQuant / Median Cut
+      if (options.colorDepth === 8 || options.palette) {
+        const colours = Math.min(256, Math.max(2, options.colors || 256));
         const rawRgb = Buffer.alloc(info.width * info.height * 3);
         for (let i = 0; i < info.width * info.height; i++) {
           rawRgb[i * 3] = data[i * 4];
           rawRgb[i * 3 + 1] = data[i * 4 + 1];
           rawRgb[i * 3 + 2] = data[i * 4 + 2];
         }
-        const quant = quantizeNeuQuant(rawRgb, info.width, info.height, 3, 10, options.dither !== false);
-        outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
+
+        if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma') {
+          const res = applyOklabQuantizationAndDither(
+            { data, width: info.width, height: info.height },
+            colours,
+            options.dither !== false
+          );
+          outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
+        } else if (options.ditherMethod === 'blue-noise') {
+          const quant = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
+            dither: options.dither !== false,
+            ditherMethod: 'blue-noise',
+          });
+          outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
+        } else {
+          const quant = quantizeNeuQuant(rawRgb, info.width, info.height, 3, 10, options.dither !== false);
+          outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
+        }
       } else {
         outputBuffer = encodeBmp(data, info.width, info.height, info.channels);
       }
@@ -844,8 +954,29 @@ export async function convertImage(
         fit: 'contain',
         background: { r: 0, g: 0, b: 0, alpha: 0 },
       });
-      const { data: pngBuf, info } = await icoPipeline.png().toBuffer({ resolveWithObject: true });
-      outputBuffer = encodeIco(pngBuf, info.width, info.height);
+
+      if (options.colorDepth === 8 || options.quantizer === 'oklab') {
+        const { data, info } = await icoPipeline
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        const colours = Math.min(256, Math.max(2, options.colors || 256));
+        const oklabRes = applyOklabQuantizationAndDither(
+          { data, width: info.width, height: info.height },
+          colours,
+          options.dither !== false
+        );
+        const pngBuf = await sharp(
+          Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength),
+          { raw: { width: info.width, height: info.height, channels: 4 } }
+        )
+          .png({ palette: true, colours, compressionLevel: 8 })
+          .toBuffer();
+        outputBuffer = encodeIco(pngBuf, info.width, info.height);
+      } else {
+        const { data: pngBuf, info } = await icoPipeline.png().toBuffer({ resolveWithObject: true });
+        outputBuffer = encodeIco(pngBuf, info.width, info.height);
+      }
       mimeType = 'image/x-icon';
       break;
     }

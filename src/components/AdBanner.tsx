@@ -65,43 +65,39 @@ export default function AdBanner({
   };
 
   const config = getSlotConfig();
+  const effectiveClient = adClient || process.env.NEXT_PUBLIC_ADSENSE_CLIENT;
+  const effectiveSlot = adSlotId || process.env.NEXT_PUBLIC_ADSENSE_SLOT;
 
   return (
     <aside
       aria-label="Advertisement"
       className={`relative z-10 flex flex-col items-center justify-center transition-all ${config.wrapper} ${className}`}
     >
-      {/* Standardized Advertisement Micro-Header */}
-      <div className={`flex items-center justify-between w-full mb-1 px-1 ${config.maxWidth}`}>
-        <span className="text-[10px] font-mono tracking-widest uppercase text-neutral-400 dark:text-neutral-500 font-semibold select-none">
+      {/* Standardized Minimal Advertisement Header */}
+      <div className={`flex items-center justify-center w-full mb-1 px-1 ${config.maxWidth}`}>
+        <span className="text-[10px] font-mono tracking-widest uppercase text-neutral-400 dark:text-neutral-500 font-medium select-none">
           Advertisement
-        </span>
-        <span className="text-[9px] font-mono text-neutral-400 dark:text-neutral-600 select-none">
-          Ad Choices
         </span>
       </div>
 
       {/* CLS-Stabilized Display Ad Container */}
       <div
-        className={`w-full rounded-xl border border-dashed border-neutral-300 dark:border-[#283252] bg-neutral-50/70 dark:bg-[#131726]/70 overflow-hidden flex items-center justify-center p-2 relative transition-all ${config.container} ${config.maxWidth}`}
+        className={`w-full rounded-lg border border-neutral-200/90 dark:border-neutral-800 bg-neutral-100/60 dark:bg-neutral-900/40 overflow-hidden flex items-center justify-center p-2 relative transition-all ${config.container} ${config.maxWidth}`}
       >
-        {adClient && adSlotId ? (
+        {effectiveClient && effectiveSlot ? (
           /* Production Script Placement (Google AdSense / Network Target) */
           <ins
             className="adsbygoogle block w-full text-center"
-            data-ad-client={adClient}
-            data-ad-slot={adSlotId}
+            data-ad-client={effectiveClient}
+            data-ad-slot={effectiveSlot}
             data-ad-format="auto"
             data-full-width-responsive="true"
           />
         ) : (
-          /* Realistic Industry-Standard Ad Space Placement */
-          <div className="flex flex-col items-center justify-center gap-1 text-center select-none py-1">
-            <span className="text-xs font-mono font-medium text-neutral-500 dark:text-neutral-400 tracking-wide">
+          /* Realistic Industry-Standard Publisher Ad Unit */
+          <div className="flex flex-col items-center justify-center gap-0.5 text-center select-none py-1 text-neutral-400 dark:text-neutral-500">
+            <span className="text-xs font-mono font-medium tracking-wide">
               {config.dimensionLabel}
-            </span>
-            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-              Reserved Display Unit
             </span>
           </div>
         )}

@@ -7,7 +7,7 @@ import StatusDashboard from '@/components/StatusDashboard';
 export const metadata: Metadata = {
   title: 'Browser Edge Engine Real-Time Status — EasyConvert',
   description:
-    'Live real-time operational status, latency metrics, and 90-day uptime monitoring for EasyConvert in-browser conversion engines and zero-retention sandbox.',
+    'Live real-time operational status, browser engine diagnostics, and telemetry for EasyConvert in-browser conversion engines and zero-retention sandbox.',
 };
 
 export default function StatusPage() {
