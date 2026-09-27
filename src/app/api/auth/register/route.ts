@@ -6,25 +6,36 @@ import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  let body: Record<string, unknown>;
   try {
-    const body = await req.json();
-    const { email, password, name } = body;
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { success: false, error: 'Invalid JSON request payload.' },
+      { status: 400 }
+    );
+  }
 
-    if (!email || typeof email !== 'string' || !email.includes('@')) {
+  try {
+    const email = typeof body.email === 'string' ? body.email.trim() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+
+    if (!email || !email.includes('@')) {
       return NextResponse.json(
         { success: false, error: 'A valid email address is required.' },
         { status: 400 }
       );
     }
 
-    if (!password || typeof password !== 'string' || password.length < 8) {
+    if (!password || password.length < 8 || password.length > 1024) {
       return NextResponse.json(
-        { success: false, error: 'Password must be at least 8 characters in length.' },
+        { success: false, error: 'Password must be between 8 and 1024 characters in length.' },
         { status: 400 }
       );
     }
 
-    const displayName = (name && typeof name === 'string' && name.trim()) || email.split('@')[0];
+    const displayName = name || email.split('@')[0];
 
     const existingUser = await userStore.findByEmail(email);
     if (existingUser) {

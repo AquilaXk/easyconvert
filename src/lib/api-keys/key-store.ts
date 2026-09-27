@@ -205,6 +205,14 @@ class KeyStore {
 
     const dateKey = `${userId}:${getUtcDateKey()}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
+
+    if (units <= 0) {
+      return {
+        allowed: dailyLimit - currentUsed > 0,
+        remaining: Math.max(0, dailyLimit - currentUsed),
+      };
+    }
+
     if (currentUsed + units > dailyLimit) {
       return {
         allowed: false,

@@ -17,6 +17,7 @@ import { GET as filesGetHandler } from '../src/app/api/account/files/route';
 import { DELETE as fileDeleteHandler } from '../src/app/api/account/files/[id]/route';
 import { POST as v1ConvertHandler } from '../src/app/api/v1/convert/route';
 import { GET as googleCallbackHandler } from '../src/app/api/auth/google/callback/route';
+import { GET as googleUrlHandler } from '../src/app/api/auth/google/url/route';
 import { NextRequest } from 'next/server';
 
 describe('Auth & API Key Infrastructure', () => {
@@ -717,6 +718,127 @@ describe('Auth & API Key Infrastructure', () => {
 
       const files = await keyStore.listUserFiles(user.id);
       expect(files).toHaveLength(0);
+    });
+
+    it('rejects non-string or malformed JSON payloads in login and register routes', async () => {
+      // 1. Malformed JSON to login
+      const reqMalformedLogin = new NextRequest('http://localhost:3000/api/auth/login', {
+        method: 'POST',
+        body: 'invalid-json{',
+      });
+      const resMalformedLogin = await loginHandler(reqMalformedLogin);
+      expect(resMalformedLogin.status).toBe(400);
+
+      // 2. Non-string types in login
+      const reqNonStringLogin = new NextRequest('http://localhost:3000/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 12345, password: true }),
+      });
+      const resNonStringLogin = await loginHandler(reqNonStringLogin);
+      expect(resNonStringLogin.status).toBe(400);
+
+      // 3. Malformed JSON to register
+      const reqMalformedRegister = new NextRequest('http://localhost:3000/api/auth/register', {
+        method: 'POST',
+        body: 'not-json',
+      });
+      const resMalformedRegister = await registerHandler(reqMalformedRegister);
+      expect(resMalformedRegister.status).toBe(400);
+    });
+
+    it('rejects non-Blob file parameters and non-object options in /api/v1/convert', async () => {
+      const user = userStore.sanitizeUser(
+        await userStore.createUser({
+          email: 'guard-edge@example.com',
+          name: 'Guard Edge',
+        })
+      );
+      const { secretKey } = await keyStore.generateApiKey(user.id, 'Guard Key');
+
+      // 1. File parameter passed as plain string instead of Blob/File
+      const formStringFile = new FormData();
+      formStringFile.append('file', 'plain-text-string-not-file');
+      formStringFile.append('targetFormat', 'pdf');
+      const reqStringFile = new NextRequest('http://localhost:3000/api/v1/convert', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${secretKey}` },
+        body: formStringFile,
+      });
+      const resStringFile = await v1ConvertHandler(reqStringFile);
+      expect(resStringFile.status).toBe(400);
+
+      // 2. Options passed as non-object JSON (e.g. array or primitive)
+      const formBadOptions = new FormData();
+      formBadOptions.append('file', new File(['test'], 'test.txt', { type: 'text/plain' }));
+      formBadOptions.append('targetFormat', 'pdf');
+      formBadOptions.append('options', '[1, 2, 3]');
+      const reqBadOptions = new NextRequest('http://localhost:3000/api/v1/convert', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${secretKey}` },
+        body: formBadOptions,
+      });
+      const resBadOptions = await v1ConvertHandler(reqBadOptions);
+      expect(resBadOptions.status).toBe(400);
+    });
+
+    it('prevents negative or zero unit quota deductions in recordUsage', async () => {
+      const user = userStore.sanitizeUser(
+        await userStore.createUser({
+          email: 'quota-safety@example.com',
+          name: 'Quota Safety',
+          tier: 'free',
+        })
+      );
+
+      // Initial usage check
+      const initialQuota = await keyStore.getQuotaUsage(user.id);
+      expect(initialQuota.usedToday).toBe(0);
+
+      // Attempt negative units
+      const negResult = await keyStore.recordUsage(user.id, -5);
+      expect(negResult.allowed).toBe(true);
+      expect(negResult.remaining).toBe(25);
+
+      // Confirm usage was NOT decremented below 0
+      const quotaAfterNeg = await keyStore.getQuotaUsage(user.id);
+      expect(quotaAfterNeg.usedToday).toBe(0);
+      expect(quotaAfterNeg.remaining).toBe(25);
+
+      // Zero units check
+      const zeroResult = await keyStore.recordUsage(user.id, 0);
+      expect(zeroResult.allowed).toBe(true);
+      expect(zeroResult.remaining).toBe(25);
+    });
+
+    it('enforces fail-closed behavior for OAuth URL generation in production without credentials', async () => {
+      const originalEnv = process.env.NODE_ENV;
+      const originalClientId = process.env.GOOGLE_CLIENT_ID;
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.GOOGLE_CLIENT_ID;
+
+        expect(() => getGoogleOAuthUrl('http://localhost:3000/api/auth/google/callback')).toThrow(
+          /GOOGLE_CLIENT_ID is not configured in production/i
+        );
+
+        const req = new NextRequest('http://localhost:3000/api/auth/google/url');
+        const res = await googleUrlHandler(req);
+        expect(res.status).toBe(500);
+        const data = await res.json();
+        expect(data.success).toBe(false);
+      } finally {
+        process.env.NODE_ENV = originalEnv;
+        if (originalClientId) {
+          process.env.GOOGLE_CLIENT_ID = originalClientId;
+        }
+      }
+    });
+
+    it('verifyJwt rejects array header structures', () => {
+      const arrayHeaderB64 = Buffer.from('[{"alg":"HS256"}]').toString('base64url');
+      const payloadB64 = Buffer.from('{"sub":"user1"}').toString('base64url');
+      expect(verifyJwt(`${arrayHeaderB64}.${payloadB64}.sig`)).toBeNull();
     });
   });
 });
