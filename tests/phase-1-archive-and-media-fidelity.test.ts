@@ -234,7 +234,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       const autoDecoded = decodeAudioBuffer(aacResult.buffer);
       expect(autoDecoded.sampleRate).toBe(44100);
       expect(autoDecoded.channels).toBe(2);
-      expect(autoDecoded.samples.length).toBe(decodedAac.samples.length);
+      expect(autoDecoded.samples).toHaveLength(decodedAac.samples.length);
     });
 
     it('decodes Ogg Vorbis containers and parses OggS pages with stream headers', async () => {
@@ -255,7 +255,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       const autoDecoded = decodeAudioBuffer(oggResult.buffer);
       expect(autoDecoded.sampleRate).toBe(44100);
       expect(autoDecoded.channels).toBe(2);
-      expect(autoDecoded.samples.length).toBe(decodedOgg.samples.length);
+      expect(autoDecoded.samples).toHaveLength(decodedOgg.samples.length);
     });
 
     it('performs roundtrip WAV -> AAC -> WAV with non-zero audio waveform RMS correlation', async () => {

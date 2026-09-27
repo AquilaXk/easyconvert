@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -451,8 +452,9 @@ export function extractRarArchive(rarBuffer: Buffer): { filename: string; buffer
   const unrarBin = getUnrarBinaryPath();
   if (unrarBin) {
     const tmpDir = os.tmpdir();
-    const tmpFile = path.join(tmpDir, `easyconvert_rar_${Date.now()}_${Math.random().toString(36).substring(2)}.rar`);
-    const extractDir = path.join(tmpDir, `easyconvert_rar_out_${Date.now()}_${Math.random().toString(36).substring(2)}`);
+    const token = crypto.randomBytes(8).toString('hex');
+    const tmpFile = path.join(tmpDir, `easyconvert_rar_${Date.now()}_${token}.rar`);
+    const extractDir = path.join(tmpDir, `easyconvert_rar_out_${Date.now()}_${token}`);
     fs.writeFileSync(tmpFile, rarBuffer);
     fs.mkdirSync(extractDir, { recursive: true });
 
