@@ -1155,6 +1155,10 @@ export function parseFvarTable(
   const instanceCount = fvarData.readUInt16BE(12);
   const instanceSize = fvarData.readUInt16BE(14);
 
+  if (axisCount > 0 && axisSize < 20) {
+    throw new Error(`Invalid fvar table: axisSize ${axisSize} is less than minimum 20 bytes`);
+  }
+
   const axes: VariableFontAxis[] = [];
   for (let i = 0; i < axisCount; i++) {
     const offset = axesArrayOffset + i * axisSize;
@@ -1187,6 +1191,12 @@ export function parseFvarTable(
   }
 
   const instances: VariableFontInstance[] = [];
+  const minInstanceSize = axes.length * 4 + 4;
+  if (instanceCount > 0 && instanceSize < minInstanceSize) {
+    throw new Error(
+      `Invalid fvar table: instanceSize ${instanceSize} is less than minimum required ${minInstanceSize} bytes`
+    );
+  }
   const instStart = axesArrayOffset + axisCount * axisSize;
   for (let j = 0; j < instanceCount; j++) {
     const offset = instStart + j * instanceSize;
@@ -1524,7 +1534,7 @@ export function instantiateVariableFont(
 
   for (const axis of axes) {
     const requested = coordinates[axis.tag];
-    if (requested !== undefined) {
+    if (requested !== undefined && Number.isFinite(requested)) {
       pinnedCoords[axis.tag] = Math.max(axis.minValue, Math.min(axis.maxValue, requested));
     } else {
       pinnedCoords[axis.tag] = axis.defaultValue;

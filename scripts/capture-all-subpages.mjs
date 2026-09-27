@@ -43,11 +43,9 @@ async function captureAllSubpages() {
   });
 
   const subpages = [
-    { name: 'pricing', path: '/pricing', out: 'public/screenshots/fidelity_pricing.png' },
-    { name: 'login', path: '/login', out: 'public/screenshots/fidelity_login.png' },
-    { name: 'register', path: '/register', out: 'public/screenshots/fidelity_register.png' },
     { name: 'pdf-converter', path: '/pdf-converter', out: 'public/screenshots/fidelity_pdf_converter.png' },
-    { name: 'api-v2', path: '/api/v2', out: 'public/screenshots/fidelity_api_v2.png' },
+    { name: 'unit-converter', path: '/unit-converter', out: 'public/screenshots/unit_converter_page.png' },
+    { name: 'status', path: '/status', out: 'public/screenshots/status_page.png' },
   ];
 
   for (const page of subpages) {

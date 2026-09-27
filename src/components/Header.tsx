@@ -8,8 +8,6 @@ import {
   ChevronDown,
   Menu,
   X,
-  User,
-  LogOut,
   RefreshCw,
   Sparkles,
   Layers,
@@ -18,21 +16,15 @@ import {
   Calculator,
   Activity,
 } from 'lucide-react';
-import AuthModal from './AuthModal';
 
 export default function Header() {
   const [isDark, setIsDark] = useState(false);
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
-  const [userEmail, setUserEmail] = useState<string | null>(null);
 
   useEffect(() => {
     const isDarkMode = document.documentElement.classList.contains('dark');
     setIsDark(isDarkMode);
-    const saved = localStorage.getItem('easyconvert_user');
-    if (saved) setUserEmail(saved);
 
     const handleThemeChange = (e: CustomEvent) => {
       if (e.detail?.theme) {
@@ -57,16 +49,6 @@ export default function Header() {
     window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: nextTheme } }));
   };
 
-  const handleAuthSuccess = (email: string) => {
-    setUserEmail(email);
-    localStorage.setItem('easyconvert_user', email);
-  };
-
-  const handleSignOut = () => {
-    setUserEmail(null);
-    localStorage.removeItem('easyconvert_user');
-  };
-
   return (
     <header className="sticky top-0 z-50 backdrop-blur-md bg-brand-50/95 dark:bg-dark-surface/95 border-b border-neutral-border dark:border-dark-border text-brand-950 dark:text-white transition-colors duration-150">
       {/* Invisible backdrop to dismiss menus */}
@@ -85,7 +67,7 @@ export default function Header() {
             <BrandLogo size="md" />
           </a>
 
-          {/* Desktop Navigation: Tools, Formats, How It Works, Status */}
+          {/* Desktop Navigation: Tools dropdown, Formats, How It Works, 100% Free badge */}
           <nav className="hidden lg:flex items-center gap-1.5">
             {/* Tools Mega-Menu */}
             <div className="relative">
@@ -94,6 +76,8 @@ export default function Header() {
                 onClick={() => {
                   setIsToolsOpen(!isToolsOpen);
                 }}
+                aria-expanded={isToolsOpen}
+                aria-haspopup="true"
                 className={`group relative flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
                   isToolsOpen
                     ? 'text-brand-900 bg-brand-100 dark:text-white dark:bg-white/10'
@@ -196,15 +180,6 @@ export default function Header() {
               )}
             </div>
 
-            {/* Direct Unit Converter Link */}
-            <a
-              href="/unit-converter"
-              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors flex items-center gap-1.5"
-            >
-              <Calculator className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" />
-              <span>Unit Converter</span>
-            </a>
-
             {/* Supported Formats */}
             <a
               href="/#format-catalog"
@@ -221,15 +196,6 @@ export default function Header() {
               How It Works
             </a>
 
-            {/* Live Edge Status */}
-            <a
-              href="/status"
-              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors flex items-center gap-1.5"
-            >
-              <Activity className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>Status</span>
-            </a>
-
             {/* 100% Free Static Edge Badge */}
             <span className="ml-2 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-wide uppercase bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
               <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -238,41 +204,8 @@ export default function Header() {
           </nav>
         </div>
 
-        {/* Right Section: Sign In, Sign Up, Theme Toggle */}
-        <div className="flex items-center gap-2.5">
-          {userEmail ? (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-brand-950 dark:text-white bg-brand-100 dark:bg-white/10 px-3 py-1.5 rounded-lg border border-brand-300 dark:border-white/10 flex items-center gap-1.5">
-                <User className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" />
-                <span className="truncate max-w-[120px]">{userEmail}</span>
-              </span>
-              <button
-                type="button"
-                onClick={handleSignOut}
-                title="Sign out"
-                className="p-1.5 text-ink-muted hover:text-red-500 rounded-lg transition-colors"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <a
-                href="/login"
-                className="hidden lg:inline-flex text-sm font-medium text-ink-secondary hover:text-brand-950 dark:text-neutral-300 dark:hover:text-white px-3 py-1.5 rounded-lg hover:bg-brand-100/70 dark:hover:bg-white/5 transition-colors"
-              >
-                Sign in
-              </a>
-
-              <a
-                href="/register"
-                className="hidden lg:inline-flex items-center justify-center px-3.5 py-1.5 text-sm font-semibold text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 rounded-lg shadow-sm shadow-brand-700/25 transition-all"
-              >
-                Sign up
-              </a>
-            </div>
-          )}
-
+        {/* Right Section: Theme Toggle & Mobile Menu */}
+        <div className="flex items-center gap-2">
           {/* Theme switch button */}
           <button
             type="button"
@@ -291,7 +224,8 @@ export default function Header() {
           <button
             type="button"
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            aria-label="Open menu"
+            aria-label={isMobileMenuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={isMobileMenuOpen}
             className="lg:hidden p-2 text-ink-secondary hover:text-brand-950 dark:text-neutral-300 dark:hover:text-white rounded-lg hover:bg-brand-100/70 dark:hover:bg-white/5 transition-colors"
           >
             {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -332,38 +266,14 @@ export default function Header() {
             >
               How It Works
             </a>
-            <a
-              href="/status"
-              onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1.5 text-sm text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white"
-            >
-              System Status
-            </a>
-            <a
-              href="/login"
-              onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1.5 text-sm text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white"
-            >
-              Sign in
-            </a>
-            <a
-              href="/register"
-              onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1.5 text-sm text-brand-700 dark:text-brand-400 hover:underline font-bold"
-            >
-              Sign up
-            </a>
+            <div className="pt-2 flex items-center justify-between px-2">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold tracking-wide uppercase bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
+                <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                100% Free • Zero-Server
+              </span>
+            </div>
           </div>
         </div>
-      )}
-
-      {/* Auth Modal */}
-      {isAuthOpen && (
-        <AuthModal
-          onClose={() => setIsAuthOpen(false)}
-          initialMode={authMode}
-          onSuccess={handleAuthSuccess}
-        />
       )}
     </header>
   );

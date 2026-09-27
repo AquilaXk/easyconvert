@@ -172,6 +172,9 @@ export class CompactProtocolReader {
       result |= BigInt(b & 0x7f) << shift;
       if ((b & 0x80) === 0) break;
       shift += 7n;
+      if (shift > 70n) {
+        throw new Error(`Corrupted Thrift payload: varint exceeds 10 bytes / 64-bit limit at offset ${this.offset}`);
+      }
     }
     return result;
   }
@@ -188,7 +191,7 @@ export class CompactProtocolReader {
 
   readString(): string {
     const len = Number(this.readVarint());
-    if (this.offset + len > this.buf.length) {
+    if (len < 0 || this.offset + len > this.buf.length) {
       throw new Error(`Truncated Thrift payload: string length ${len} exceeds buffer boundary`);
     }
     const str = this.buf.toString('utf-8', this.offset, this.offset + len);
@@ -198,7 +201,7 @@ export class CompactProtocolReader {
 
   readBinary(): Buffer {
     const len = Number(this.readVarint());
-    if (this.offset + len > this.buf.length) {
+    if (len < 0 || this.offset + len > this.buf.length) {
       throw new Error(`Truncated Thrift payload: binary length ${len} exceeds buffer boundary`);
     }
     const res = this.buf.subarray(this.offset, this.offset + len);
@@ -245,6 +248,12 @@ export class CompactProtocolReader {
     let size = sizeHigh;
     if (sizeHigh === 0x0f) {
       size = Number(this.readVarint());
+    }
+    const remainingBytes = this.buf.length - this.offset;
+    if (size < 0 || size > remainingBytes + 1) {
+      throw new Error(
+        `Corrupted Thrift payload: list size ${size} exceeds remaining buffer bytes (${remainingBytes})`
+      );
     }
     return { elemType, size };
   }
@@ -635,11 +644,17 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
 
   // 1. Read footer metadata length
   const metaLength = buffer.readUInt32LE(buffer.length - 8);
-  if (metaLength <= 0 || metaLength > buffer.length - 8) {
-    throw new Error(`Corrupted Parquet metadata: invalid footer length ${metaLength}.`);
+  if (metaLength <= 0) {
+    throw new Error(
+      `Corrupted Parquet metadata: invalid footer length ${metaLength} for buffer of ${buffer.length} bytes.`
+    );
   }
 
   const metaOffset = buffer.length - 8 - metaLength;
+  if (metaOffset < 4) {
+    throw new Error(`Corrupted Parquet metadata: metadata offset ${metaOffset} overlaps magic header.`);
+  }
+
   const reader = new CompactProtocolReader(buffer, metaOffset);
 
   // 2. Parse FileMetaData

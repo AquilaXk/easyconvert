@@ -66,14 +66,10 @@ easyconvert/
 │   │   │   │   ├── file/[...key]/   # 임시 아티팩트 다운로드
 │   │   │   │   └── multipart/       # 멀티파트 업로드 제어
 │   │   │   └── v2/                  # 인터랙티브 API v2 문서 대시보드
-│   │   ├── login/                   # 사용자 로그인 페이지
-│   │   ├── register/                # 사용자 회원가입 페이지
-│   │   ├── pricing/                 # 요금제 플랜 및 크레딧 계산 테이블
 │   │   ├── globals.css              # 라벤더 디자인 시스템 변수 및 Tailwind 유틸리티
 │   │   ├── layout.tsx               # 루트 레이아웃 및 테마 프로바이더
 │   │   └── page.tsx                 # 변환기 메인 대시보드
 │   ├── components/                  # 재사용 가능한 UI 컴포넌트
-│   │   ├── AuthModal.tsx            # 로그인/회원가입 모달
 │   │   ├── ConversionQueue.tsx      # 실시간 변환 대기열, 진행률 및 ZIP 다운로드
 │   │   ├── FaqSection.tsx           # 아코디언 자주 묻는 질문(FAQ)
 │   │   ├── Features.tsx             # 무보관 보안 및 기술 하이라이트

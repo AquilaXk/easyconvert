@@ -18,6 +18,7 @@ import {
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import FormatSelector from './FormatSelector';
 import UrlImportModal from './UrlImportModal';
+import { BrandIcon } from './BrandLogo';
 
 interface HeroProps {
   onFilesSelected: (files: File[], defaultTarget?: string) => void;
@@ -436,16 +437,14 @@ export default function Hero({
             />
 
             <div className="relative flex flex-col items-center gap-6">
-              {/* Cloud Upload Icon */}
+              {/* Official Brand Vector Mark on Soft Squircle Plate */}
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                aria-label="Select file"
-                className="inline-flex items-center justify-center rounded-2xl p-3 bg-[#5C6BC0]/10 text-[#5C6BC0] transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5C6BC0]/50 cursor-pointer"
+                aria-label="Select files to convert"
+                className="group/icon relative inline-flex items-center justify-center p-3.5 rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-md shadow-brand-700/10 hover:shadow-lg hover:shadow-brand-700/20 transition-all duration-300 group-hover/dropzone:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-700/50 cursor-pointer"
               >
-                <svg className="size-10 fill-current" viewBox="0 0 576 512">
-                  <path d="M144 480c-79.5 0-144-64.5-144-144 0-63.4 41-117.2 97.9-136.5-1.3-7.7-1.9-15.5-1.9-23.5 0-79.5 64.5-144 144-144 55.4 0 103.5 31.3 127.6 77.1 14.2-8.3 30.8-13.1 48.4-13.1 53 0 96 43 96 96 0 15.7-3.8 30.6-10.5 43.7 44 20.3 74.5 64.7 74.5 116.3 0 70.7-57.3 128-128 128l-304 0zM305 191c-9.4-9.4-24.6-9.4-33.9 0l-72 72c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0l31-31 0 102.1c0 13.3 10.7 24 24 24s24-10.7 24-24l0-102.1 31 31c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-72-72z" />
-                </svg>
+                <BrandIcon size={44} />
               </button>
 
               {/* Text */}

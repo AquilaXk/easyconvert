@@ -66,14 +66,10 @@ easyconvert/
 │   │   │   │   ├── file/[...key]/   # Ephemeral artifact download
 │   │   │   │   └── multipart/       # Multipart chunk upload orchestration
 │   │   │   └── v2/                  # Interactive API v2 documentation dashboard
-│   │   ├── login/                   # Authentication login view
-│   │   ├── register/                # User registration view
-│   │   ├── pricing/                 # Pricing plans & tier comparison table
 │   │   ├── globals.css              # Lavender design system variables & utility classes
 │   │   ├── layout.tsx               # Root layout & theme provider
 │   │   └── page.tsx                 # Converter main dashboard
 │   ├── components/                  # Reusable UI components
-│   │   ├── AuthModal.tsx            # Login & register modal
 │   │   ├── ConversionQueue.tsx      # Real-time conversion queue with progress & ZIP bundle
 │   │   ├── FaqSection.tsx           # Accordion FAQ component
 │   │   ├── Features.tsx             # Privacy, performance, and architecture highlights

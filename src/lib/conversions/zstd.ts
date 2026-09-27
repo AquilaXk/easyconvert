@@ -232,7 +232,7 @@ export function parseZstdFrameHeader(buf: Buffer, offset: number): ZstdFrameHead
     const wd = buf[offset++];
     const exponent = (wd >> 3) & 0x1f;
     const mantissa = wd & 0x07;
-    const windowBase = 1 << (10 + exponent);
+    const windowBase = 2 ** (10 + exponent);
     const windowAdd = (windowBase / 8) * mantissa;
     windowSize = windowBase + windowAdd;
   }

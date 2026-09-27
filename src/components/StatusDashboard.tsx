@@ -630,7 +630,7 @@ export default function StatusDashboard() {
                   <span>90 days ago</span>
                   <span>
                     {hoveredDay?.component === component.id
-                      ? `Day ${hoveredDay.dayIndex + 1}: 100% Operational • 0 Incidents`
+                      ? hoveredDay.date
                       : 'Today'}
                   </span>
                 </div>
@@ -638,6 +638,15 @@ export default function StatusDashboard() {
                 <div className="grid grid-cols-[repeat(90,minmax(0,1fr))] gap-[2px] h-7 items-center bg-neutral-subtle/50 dark:bg-white/5 p-1 rounded-lg">
                   {Array.from({ length: 90 }).map((_, i) => {
                     const isToday = i === 89;
+                    const isIncident = (component.id === 'webcodecs-vpu' && i === 86) ||
+                                       (component.id === 'wasm-simd' && i === 49) ||
+                                       (component.id === 'opfs-storage' && i === 30);
+                    const label = isIncident
+                      ? `Day ${i + 1}: Maintenance & Optimization (Resolved)`
+                      : isToday
+                      ? `Today: 100% Operational • 0 Incidents`
+                      : `Day ${i + 1}: 100% Operational • 0 Incidents`;
+
                     return (
                       <div
                         key={i}
@@ -645,16 +654,18 @@ export default function StatusDashboard() {
                           setHoveredDay({
                             component: component.id,
                             dayIndex: i,
-                            date: `${90 - i} days ago`,
+                            date: label,
                           })
                         }
                         onMouseLeave={() => setHoveredDay(null)}
                         className={`h-5 rounded-[1.5px] transition-all duration-100 hover:scale-y-125 cursor-pointer ${
-                          isToday
+                          isIncident
+                            ? 'bg-amber-400 hover:bg-amber-300'
+                            : isToday
                             ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50'
                             : 'bg-emerald-500/80 hover:bg-emerald-400'
                         }`}
-                        title={`Day ${i + 1}: 100% operational`}
+                        title={label}
                       />
                     );
                   })}
@@ -683,6 +694,46 @@ export default function StatusDashboard() {
         </div>
 
         <div className="space-y-4">
+          {/* Today Operational Card */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-emerald-500/5 dark:bg-white/5 border border-emerald-500/20 dark:border-dark-border flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="size-8 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                <Check className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-[11px] font-bold text-ink-muted dark:text-neutral-400 uppercase tracking-wider">
+                  Today
+                </div>
+                <div className="text-sm font-bold text-brand-950 dark:text-white">
+                  No incidents reported today. All edge engines healthy.
+                </div>
+              </div>
+            </div>
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+              100% Operational
+            </span>
+          </div>
+
+          {/* Yesterday Operational Card */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-emerald-500/5 dark:bg-white/5 border border-emerald-500/20 dark:border-dark-border flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="size-8 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                <Check className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-[11px] font-bold text-ink-muted dark:text-neutral-400 uppercase tracking-wider">
+                  Yesterday
+                </div>
+                <div className="text-sm font-bold text-brand-950 dark:text-white">
+                  No incidents reported. All conversion pipelines nominal.
+                </div>
+              </div>
+            </div>
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+              100% Operational
+            </span>
+          </div>
+
           {PAST_INCIDENTS.map((inc) => (
             <div
               key={inc.id}
