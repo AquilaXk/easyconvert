@@ -7,6 +7,7 @@ const DEBUG_PORT = 9222;
 
 const ARTIFACT_DIR_1 = '/Users/aquila/.gemini/antigravity/brain/1c7356b0-bbb5-4a88-b29a-6ee2ac6441cc';
 const ARTIFACT_DIR_2 = '/Users/aquila/.gemini/antigravity/brain/86e17bd1-af3f-4a06-8090-3ff8a2e991e9';
+const ARTIFACT_DIR_CURRENT = '/Users/aquila/.gemini/antigravity/brain/c241f35c-d78b-4c1d-a16c-3c0a577756dd';
 const PUBLIC_DIR = path.resolve('public/screenshots');
 
 function saveImage(filename, buffer) {
@@ -16,6 +17,9 @@ function saveImage(filename, buffer) {
   }
   if (fs.existsSync(ARTIFACT_DIR_2)) {
     fs.writeFileSync(path.join(ARTIFACT_DIR_2, filename), buffer);
+  }
+  if (fs.existsSync(ARTIFACT_DIR_CURRENT)) {
+    fs.writeFileSync(path.join(ARTIFACT_DIR_CURRENT, filename), buffer);
   }
 }
 
@@ -158,6 +162,18 @@ await send('Page.navigate', { url: 'http://localhost:3000/mp4-to-mp3' });
 await new Promise(r => setTimeout(r, 1500));
 ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('slug_converter_page.png', Buffer.from(ss.data, 'base64'));
+
+// 4. Status Page (/status)
+await send('Page.navigate', { url: 'http://localhost:3000/status' });
+await new Promise(r => setTimeout(r, 1200));
+ss = await send('Page.captureScreenshot', { format: 'png' });
+saveImage('status_page.png', Buffer.from(ss.data, 'base64'));
+
+// 5. Unit Converter Page (/unit-converter)
+await send('Page.navigate', { url: 'http://localhost:3000/unit-converter' });
+await new Promise(r => setTimeout(r, 1200));
+ss = await send('Page.captureScreenshot', { format: 'png' });
+saveImage('unit_converter_page.png', Buffer.from(ss.data, 'base64'));
 
 ws.close();
 chromeProc.kill();
