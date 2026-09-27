@@ -203,27 +203,9 @@ function processMediaPure(
     }
   }
 
-  // Resample if requested sample rate differs from decoded source
+  // Resample if requested sample rate differs from decoded source (Sinc bandlimited filter)
   if (options.audioSampleRate && options.audioSampleRate !== decoded.sampleRate) {
-    const ratio = options.audioSampleRate / decoded.sampleRate;
-    const srcFrames = Math.floor(pcmData.length / channels);
-    const tgtFrames = Math.floor(srcFrames * ratio);
-    const resampled = new Int16Array(tgtFrames * channels);
-
-    for (let f = 0; f < tgtFrames; f++) {
-      const srcPos = f / ratio;
-      const idx0 = Math.floor(srcPos);
-      const idx1 = Math.min(srcFrames - 1, idx0 + 1);
-      const frac = srcPos - idx0;
-
-      for (let c = 0; c < channels; c++) {
-        const s0 = pcmData[idx0 * channels + c];
-        const s1 = pcmData[idx1 * channels + c];
-        const interpolated = Math.round(s0 + frac * (s1 - s0));
-        resampled[f * channels + c] = Math.max(-32768, Math.min(32767, interpolated));
-      }
-    }
-    pcmData = resampled;
+    pcmData = resampleAudioSinc(pcmData, decoded.sampleRate, options.audioSampleRate, channels);
   }
 
   // Apply volume adjustment if requested
@@ -523,45 +505,250 @@ function encodeMp4Container(
 }
 
 /**
- * Encodes WebM / Matroska EBML container
+ * Bandlimited windowed Sinc audio resampler with Blackman window.
+ * Eliminates high-frequency aliasing and quantization distortion.
  */
-function encodeWebmContainer(
+export function resampleAudioSinc(
+  pcmData: Int16Array,
+  srcRate: number,
+  tgtRate: number,
+  channels: number
+): Int16Array;
+export function resampleAudioSinc(
+  channels: Float32Array[],
+  srcRate: number,
+  tgtRate: number,
+  filterRadius?: number
+): Float32Array[];
+export function resampleAudioSinc(
+  data: Int16Array | Float32Array[],
+  srcRate: number,
+  tgtRate: number,
+  param4: number = 8
+): any {
+  if (Array.isArray(data)) {
+    const filterRadius = param4 > 0 ? param4 : 8;
+    const ratio = tgtRate / srcRate;
+    return data.map((ch) => {
+      if (srcRate === tgtRate || ch.length === 0) return ch;
+      const srcFrames = ch.length;
+      const tgtFrames = Math.floor(srcFrames * ratio);
+      const output = new Float32Array(tgtFrames);
+      const cutoff = Math.min(1.0, ratio);
+
+      for (let f = 0; f < tgtFrames; f++) {
+        const srcPos = f / ratio;
+        const center = Math.floor(srcPos);
+        let sum = 0;
+        let weightSum = 0;
+
+        const kMin = Math.max(0, center - filterRadius);
+        const kMax = Math.min(srcFrames - 1, center + filterRadius);
+
+        for (let k = kMin; k <= kMax; k++) {
+          const x = (srcPos - k) * cutoff;
+          let sincVal = 1.0;
+          if (Math.abs(x) > 1e-7) {
+            const pix = Math.PI * x;
+            sincVal = Math.sin(pix) / pix;
+          }
+
+          const t = (srcPos - k) / filterRadius;
+          if (Math.abs(t) <= 1.0) {
+            const w = 0.42 + 0.5 * Math.cos(Math.PI * t) + 0.08 * Math.cos(2 * Math.PI * t);
+            const weight = sincVal * w * cutoff;
+            sum += ch[k] * weight;
+            weightSum += weight;
+          }
+        }
+
+        output[f] = weightSum > 0 ? sum / weightSum : ch[center];
+      }
+
+      return output;
+    });
+  }
+
+  const channels = param4;
+  if (srcRate === tgtRate || data.length === 0) return data;
+
+  const ratio = tgtRate / srcRate;
+  const srcFrames = Math.floor(data.length / channels);
+  const tgtFrames = Math.floor(srcFrames * ratio);
+  const output = new Int16Array(tgtFrames * channels);
+
+  const filterRadius = 8;
+  const cutoff = Math.min(1.0, ratio);
+
+  for (let f = 0; f < tgtFrames; f++) {
+    const srcPos = f / ratio;
+    const center = Math.floor(srcPos);
+
+    for (let c = 0; c < channels; c++) {
+      let sum = 0;
+      let weightSum = 0;
+
+      const kMin = Math.max(0, center - filterRadius);
+      const kMax = Math.min(srcFrames - 1, center + filterRadius);
+
+      for (let k = kMin; k <= kMax; k++) {
+        const x = (srcPos - k) * cutoff;
+        let sincVal = 1.0;
+        if (Math.abs(x) > 1e-7) {
+          const pix = Math.PI * x;
+          sincVal = Math.sin(pix) / pix;
+        }
+
+        const t = (srcPos - k) / filterRadius;
+        if (Math.abs(t) <= 1.0) {
+          const w = 0.42 + 0.5 * Math.cos(Math.PI * t) + 0.08 * Math.cos(2 * Math.PI * t);
+          const weight = sincVal * w * cutoff;
+          sum += data[k * channels + c] * weight;
+          weightSum += weight;
+        }
+      }
+
+      const sample = weightSum > 0 ? sum / weightSum : data[center * channels + c];
+      output[f * channels + c] = Math.max(-32768, Math.min(32767, Math.round(sample)));
+    }
+  }
+
+  return output;
+}
+
+/**
+ * Encodes variable-length integer (VINT) for EBML elements
+ */
+function encodeEbmlVint(value: number): Buffer {
+  if (value < 0x7f) {
+    return Buffer.from([0x80 | value]);
+  } else if (value < 0x3fff) {
+    return Buffer.from([0x40 | (value >> 8), value & 0xff]);
+  } else if (value < 0x1fffff) {
+    return Buffer.from([0x20 | (value >> 16), (value >> 8) & 0xff, value & 0xff]);
+  } else {
+    return Buffer.from([
+      0x10 | (value >> 24),
+      (value >> 16) & 0xff,
+      (value >> 8) & 0xff,
+      value & 0xff,
+    ]);
+  }
+}
+
+function createEbmlElement(idBytes: number[], payload: Buffer): Buffer {
+  const idBuf = Buffer.from(idBytes);
+  const sizeBuf = encodeEbmlVint(payload.length);
+  return Buffer.concat([idBuf, sizeBuf, payload]);
+}
+
+function createEbmlString(idBytes: number[], str: string): Buffer {
+  return createEbmlElement(idBytes, Buffer.from(str, 'utf-8'));
+}
+
+function createEbmlUint(idBytes: number[], val: number): Buffer {
+  if (val <= 0xff) {
+    return createEbmlElement(idBytes, Buffer.from([val]));
+  } else if (val <= 0xffff) {
+    const b = Buffer.alloc(2);
+    b.writeUInt16BE(val, 0);
+    return createEbmlElement(idBytes, b);
+  } else {
+    const b = Buffer.alloc(4);
+    b.writeUInt32BE(val, 0);
+    return createEbmlElement(idBytes, b);
+  }
+}
+
+function createEbmlFloat(idBytes: number[], val: number): Buffer {
+  const b = Buffer.alloc(4);
+  b.writeFloatBE(val, 0);
+  return createEbmlElement(idBytes, b);
+}
+
+/**
+ * Encodes compliant WebM EBML container containing Info, Tracks (Audio PCM), and Cluster SimpleBlocks
+ */
+export function encodeWebmContainer(
   samples: Int16Array,
   sampleRate: number,
   channels: number,
   options: ConversionOptions
 ): Buffer {
-  const parts: Buffer[] = [];
+  // 1. EBML Header
+  const ebmlHeader = createEbmlElement(
+    [0x1a, 0x45, 0xdf, 0xa3],
+    Buffer.concat([
+      createEbmlUint([0x42, 0x86], 1), // EBMLVersion
+      createEbmlUint([0x42, 0xf7], 1), // EBMLReadVersion
+      createEbmlUint([0x42, 0xf2], 4), // EBMLMaxIDLength
+      createEbmlUint([0x42, 0xf3], 8), // EBMLMaxSizeLength
+      createEbmlString([0x42, 0x82], 'webm'), // DocType
+      createEbmlUint([0x42, 0x87], 2), // DocTypeVersion
+      createEbmlUint([0x42, 0x85], 2), // DocTypeReadVersion
+    ])
+  );
 
-  // EBML Header (0x1A 0x45 0xDF 0xA3)
-  const ebml = Buffer.from([
-    0x1a, 0x45, 0xdf, 0xa3, // EBML
-    0x01, 0x00, 0x00, 0x1f, // Size 31
-    0x42, 0x86, 0x81, 0x01, // EBMLVersion 1
-    0x42, 0xf7, 0x81, 0x01, // EBMLReadVersion 1
-    0x42, 0xf2, 0x81, 0x04, // EBMLMaxIDLength 4
-    0x42, 0xf3, 0x81, 0x08, // EBMLMaxSizeLength 8
-    0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d, // DocType "webm"
-    0x42, 0x87, 0x81, 0x02, // DocTypeVersion 2
-    0x42, 0x85, 0x81, 0x02, // DocTypeReadVersion 2
-  ]);
-  parts.push(ebml);
+  // 2. Segment -> Info
+  const durationMs = Math.round((samples.length / (channels * sampleRate)) * 1000);
+  const infoElement = createEbmlElement(
+    [0x15, 0x49, 0xa9, 0x66],
+    Buffer.concat([
+      createEbmlUint([0x2a, 0xd7, 0xb1], 1000000), // TimecodeScale = 1ms
+      createEbmlString([0x4d, 0x80], 'EasyConvert'),
+      createEbmlString([0x57, 0x41], 'EasyConvert'),
+      createEbmlFloat([0x44, 0x89], durationMs),
+    ])
+  );
 
-  // Segment element (0x18 0x53 0x80 0x67)
-  const segmentHeader = Buffer.from([0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff]);
-  parts.push(segmentHeader);
+  // 3. Segment -> Tracks -> TrackEntry (Audio PCM)
+  const audioSettings = createEbmlElement(
+    [0xe1],
+    Buffer.concat([
+      createEbmlFloat([0xb5], sampleRate), // SamplingFrequency
+      createEbmlUint([0x9f], channels), // Channels
+      createEbmlUint([0x62, 0x64], 16), // BitDepth
+    ])
+  );
 
-  // Cluster & Audio payload
-  const cluster = Buffer.alloc(16 + samples.length * 2);
-  cluster.set([0x1f, 0x43, 0xb6, 0x75], 0); // Cluster ID
-  cluster.writeUInt32BE(samples.length * 2 + 8, 4);
-  cluster.set([0xe7, 0x81, 0x00], 8); // Timecode 0
+  const trackEntry = createEbmlElement(
+    [0xae],
+    Buffer.concat([
+      createEbmlUint([0xd7], 1), // TrackNumber 1
+      createEbmlUint([0x73, 0xc5], 1), // TrackUID 1
+      createEbmlUint([0x83], 2), // TrackType 2 (Audio)
+      createEbmlString([0x86], 'A_PCM/INT/LIT'), // CodecID
+      audioSettings,
+    ])
+  );
+
+  const tracksElement = createEbmlElement([0x16, 0x54, 0xae, 0x6b], trackEntry);
+
+  // 4. Segment -> Cluster -> SimpleBlock
+  const sampleBytes = Buffer.alloc(samples.length * 2);
   for (let i = 0; i < samples.length; i++) {
-    cluster.writeInt16LE(samples[i], 16 + i * 2);
+    sampleBytes.writeInt16LE(samples[i], i * 2);
   }
-  parts.push(cluster);
 
-  return Buffer.concat(parts);
+  // SimpleBlock header: TrackNumber VINT (0x81), Timecode int16 (0), Flags (0x80 keyframe)
+  const blockHeader = Buffer.from([0x81, 0x00, 0x00, 0x80]);
+  const simpleBlock = createEbmlElement([0xa3], Buffer.concat([blockHeader, sampleBytes]));
+
+  const clusterElement = createEbmlElement(
+    [0x1f, 0x43, 0xb6, 0x75],
+    Buffer.concat([createEbmlUint([0xe7], 0), simpleBlock])
+  );
+
+  // 5. Assemble Segment
+  const segmentPayload = Buffer.concat([infoElement, tracksElement, clusterElement]);
+  const segmentSize = encodeEbmlVint(segmentPayload.length);
+  const segmentElement = Buffer.concat([
+    Buffer.from([0x18, 0x53, 0x80, 0x67]),
+    segmentSize,
+    segmentPayload,
+  ]);
+
+  return Buffer.concat([ebmlHeader, segmentElement]);
 }
 
 /**
