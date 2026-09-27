@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import BrandLogo from './BrandLogo';
+import UserNav from './UserNav';
 import {
   Sun,
   Moon,
@@ -15,6 +16,7 @@ import {
   Archive,
   Calculator,
   Activity,
+  Key,
 } from 'lucide-react';
 
 export default function Header() {
@@ -196,6 +198,14 @@ export default function Header() {
               How It Works
             </a>
 
+            {/* Developer API & Dashboard */}
+            <a
+              href="/dashboard"
+              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors"
+            >
+              API
+            </a>
+
             {/* 100% Free Static Edge Badge */}
             <span className="ml-2 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-wide uppercase bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
               <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -204,8 +214,13 @@ export default function Header() {
           </nav>
         </div>
 
-        {/* Right Section: Theme Toggle & Mobile Menu */}
+        {/* Right Section: Auth State, Theme Toggle & Mobile Menu */}
         <div className="flex items-center gap-2">
+          {/* User Auth Buttons (Desktop) */}
+          <div className="hidden sm:flex items-center gap-2 mr-1">
+            <UserNav />
+          </div>
+
           {/* Theme switch button */}
           <button
             type="button"
@@ -266,6 +281,20 @@ export default function Header() {
             >
               How It Works
             </a>
+            <a
+              href="/dashboard"
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="px-2 py-1.5 text-sm text-brand-700 dark:text-brand-300 font-semibold flex items-center gap-1.5"
+            >
+              <Key className="w-3.5 h-3.5" />
+              <span>Developer API & Dashboard</span>
+            </a>
+
+            {/* Mobile Auth actions */}
+            <div className="pt-2 border-t border-brand-300/60 dark:border-dark-border">
+              <UserNav mobile onItemClick={() => setIsMobileMenuOpen(false)} />
+            </div>
+
             <div className="pt-2 flex items-center justify-between px-2">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold tracking-wide uppercase bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
                 <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />

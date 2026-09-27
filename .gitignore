@@ -7,6 +7,7 @@ Thumbs.db
 *.swo
 
 # Dependencies
+node_modules
 node_modules/
 .pnp
 .pnp.js
@@ -37,6 +38,7 @@ dist/
 /tmp/
 /uploads/
 /.conversions/
+.easyconvert/
 
 # Local agent docs
 AGENTS.md
