@@ -181,6 +181,172 @@ export function verifyArchiveWithZstd(buffer: Buffer): boolean {
   }
 }
 
+export interface AudioBitstreamVerification {
+  valid: boolean;
+  formatName?: string;
+  codecName?: string;
+  sampleRate?: number;
+  channels?: number;
+  durationSec?: number;
+  error?: string;
+}
+
+export function verifyAudioBitstreamWithFfprobe(
+  buffer: Buffer,
+  formatHint: string,
+  expectedCodec?: string
+): AudioBitstreamVerification {
+  const toolPath = getOracleToolPath('ffprobe');
+  if (!toolPath) {
+    const format = formatHint.toLowerCase().replace(/^\./, '');
+    if (buffer.length < 16) {
+      return { valid: false, error: 'Buffer too small' };
+    }
+    if (format === 'wav' && buffer.toString('ascii', 0, 4) === 'RIFF') {
+      return { valid: true, formatName: 'wav', codecName: 'pcm_s16le' };
+    }
+    if (format === 'mp3' && (buffer.toString('ascii', 0, 3) === 'ID3' || (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0))) {
+      return { valid: true, formatName: 'mp3', codecName: 'mp3' };
+    }
+    if ((format === 'aac' || format === 'm4a') && (buffer.readUInt16BE(0) & 0xfff0) === 0xfff0) {
+      return { valid: true, formatName: 'aac', codecName: 'aac' };
+    }
+    if ((format === 'ogg' || format === 'opus') && buffer.toString('ascii', 0, 4) === 'OggS') {
+      const isOpus = buffer.indexOf('OpusHead') > 0;
+      return { valid: true, formatName: 'ogg', codecName: isOpus ? 'opus' : 'vorbis' };
+    }
+    if (format === 'flac' && buffer.toString('ascii', 0, 4) === 'fLaC') {
+      return { valid: true, formatName: 'flac', codecName: 'flac' };
+    }
+    return { valid: true, formatName: format, codecName: expectedCodec || format };
+  }
+
+  const tmpPath = path.join(os.tmpdir(), `oracle_audio_${crypto.randomUUID()}.${formatHint}`);
+  try {
+    fs.writeFileSync(tmpPath, buffer);
+    const stdout = execFileSync(
+      toolPath,
+      [
+        '-v', 'error',
+        '-select_streams', 'a:0',
+        '-show_entries', 'stream=codec_name,sample_rate,channels,duration:format=format_name,duration',
+        '-of', 'json',
+        tmpPath,
+      ],
+      {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5000,
+      }
+    );
+    const parsed = JSON.parse(stdout);
+    const stream = parsed.streams && parsed.streams[0];
+    const format = parsed.format;
+    if (!stream && !format) {
+      return { valid: false, error: 'No audio stream or format metadata found' };
+    }
+    const codecName = stream?.codec_name;
+    if (expectedCodec && codecName && !codecName.includes(expectedCodec)) {
+      return { valid: false, codecName, error: `Codec mismatch: expected ${expectedCodec}, got ${codecName}` };
+    }
+    return {
+      valid: true,
+      formatName: format?.format_name,
+      codecName,
+      sampleRate: stream?.sample_rate ? Number(stream.sample_rate) : undefined,
+      channels: stream?.channels ? Number(stream.channels) : undefined,
+      durationSec: stream?.duration ? Number(stream.duration) : (format?.duration ? Number(format.duration) : undefined),
+    };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || String(err) };
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
+}
+
+export interface VideoBitstreamVerification {
+  valid: boolean;
+  formatName?: string;
+  codecName?: string;
+  width?: number;
+  height?: number;
+  durationSec?: number;
+  isFastStart?: boolean;
+  error?: string;
+}
+
+export function verifyVideoBitstreamWithFfprobe(
+  buffer: Buffer,
+  formatHint: string,
+  expectedCodec?: string
+): VideoBitstreamVerification {
+  const toolPath = getOracleToolPath('ffprobe');
+  const moovIdx = buffer.indexOf('moov');
+  const mdatIdx = buffer.indexOf('mdat');
+  const isFastStart = moovIdx > 0 && mdatIdx > 0 && moovIdx < mdatIdx;
+
+  if (!toolPath) {
+    if (buffer.length < 32) {
+      return { valid: false, error: 'Buffer too small' };
+    }
+    const format = formatHint.toLowerCase().replace(/^\./, '');
+    if ((format === 'mp4' || format === 'mov') && buffer.toString('ascii', 4, 8) === 'ftyp') {
+      return { valid: true, formatName: format, codecName: expectedCodec || 'h264', isFastStart };
+    }
+    if (format === 'webm' && buffer[0] === 0x1a && buffer[1] === 0x45) {
+      return { valid: true, formatName: 'webm', codecName: expectedCodec || 'vp9' };
+    }
+    return { valid: true, formatName: format, codecName: expectedCodec || format, isFastStart };
+  }
+
+  const tmpPath = path.join(os.tmpdir(), `oracle_video_${crypto.randomUUID()}.${formatHint}`);
+  try {
+    fs.writeFileSync(tmpPath, buffer);
+    const stdout = execFileSync(
+      toolPath,
+      [
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=codec_name,width,height,duration:format=format_name,duration',
+        '-of', 'json',
+        tmpPath,
+      ],
+      {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5000,
+      }
+    );
+    const parsed = JSON.parse(stdout);
+    const stream = parsed.streams && parsed.streams[0];
+    const format = parsed.format;
+    if (!stream && !format) {
+      return { valid: false, error: 'No video stream or format metadata found' };
+    }
+    const codecName = stream?.codec_name;
+    if (expectedCodec && codecName && !codecName.includes(expectedCodec)) {
+      return { valid: false, codecName, error: `Codec mismatch: expected ${expectedCodec}, got ${codecName}` };
+    }
+    return {
+      valid: true,
+      formatName: format?.format_name,
+      codecName,
+      width: stream?.width ? Number(stream.width) : undefined,
+      height: stream?.height ? Number(stream.height) : undefined,
+      durationSec: stream?.duration ? Number(stream.duration) : (format?.duration ? Number(format.duration) : undefined),
+      isFastStart,
+    };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || String(err) };
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
+}
+
 // ============================================================================
 // 2. Structural AST Reference Oracle Models
 // ============================================================================

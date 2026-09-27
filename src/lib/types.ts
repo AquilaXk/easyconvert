@@ -113,6 +113,8 @@ export interface ConversionOptions {
   duration?: number;
   aspectRatio?: 'original' | '16:9' | '4:3' | '1:1' | '9:16';
   useFfmpeg?: boolean;
+  fastStart?: boolean;
+  disableHwaccel?: boolean;
 }
 
 export type QueueItemStatus =

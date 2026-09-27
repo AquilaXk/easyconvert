@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ConversionOptions, ConversionResult } from '../types';
 import { executeSandboxedBinary } from '../security/process-sandbox';
+import { buildFfmpegArguments } from './media-ffmpeg-args';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream, encodeAacLcFramePayload } from './media-encoder';
 import {
   decodeAudioBuffer,
@@ -144,55 +145,8 @@ async function executeFfmpegTranscode(
   fs.writeFileSync(inputPath, inputBuffer);
 
   try {
-    const args: string[] = ['-y', '-i', inputPath];
-
-    // Audio options with strict regex/range validation
-    if (options.audioBitrate && /^\d{1,4}[kKmM]?$/.test(options.audioBitrate)) {
-      args.push('-b:a', options.audioBitrate);
-    }
-    if (options.audioChannels && ['mono', 'stereo', '5.1'].includes(options.audioChannels)) {
-      args.push('-ac', options.audioChannels === 'mono' ? '1' : options.audioChannels === '5.1' ? '6' : '2');
-    }
-    if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
-      args.push('-ar', options.audioSampleRate.toString());
-    }
-    if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= 200 && options.audioVolume !== 100) {
-      const vol = options.audioVolume / 100;
-      args.push('-filter:a', `volume=${vol}`);
-    }
-
-    // Video options with strict whitelist validation
-    if (options.videoResolution && options.videoResolution !== 'original') {
-      const resMap: Record<string, string> = {
-        '4k': '3840:2160',
-        '1080p': '1920:1080',
-        '720p': '1280:720',
-        '480p': '854:480',
-        '360p': '640:360',
-      };
-      if (resMap[options.videoResolution]) {
-        args.push('-vf', `scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`);
-      }
-    }
-    if (typeof options.videoFps === 'number' && Number.isFinite(options.videoFps) && options.videoFps > 0 && options.videoFps <= 240) {
-      args.push('-r', options.videoFps.toString());
-    }
-    if (options.videoCodec) {
-      const codecMap: Record<string, string> = {
-        h264: 'libx264',
-        hevc: 'libx265',
-        vp9: 'libvpx-vp9',
-        av1: 'libaom-av1',
-      };
-      if (codecMap[options.videoCodec]) {
-        args.push('-c:v', codecMap[options.videoCodec]);
-      }
-    }
-
-    args.push(outputPath);
-
-    // Invoke binary under defensive sandboxed execution guards
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
+    const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin);
     await executeSandboxedBinary(ffmpegBin, args, {
       timeoutMs: 30000,
       maxBuffer: 50 * 1024 * 1024,
@@ -691,7 +645,7 @@ function encodeMp4Container(
   options: ConversionOptions,
   title: string
 ): Buffer {
-  return encodePureH264Mp4(samples, sampleRate, channels, options, title);
+  return encodePureH264Mp4(samples, sampleRate, channels, { ...options, fastStart: options.fastStart ?? true }, title);
 }
 
 /**

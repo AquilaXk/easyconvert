@@ -476,20 +476,8 @@ export function encodePureH264Mp4(
   const stszBox = makeBox('stsz', stszPayload);
 
   // Chunk offsets calculation:
-  // Offset in file = ftyp.length + 8 (mdat header) + sum of preceding frames
   const ftypLen = ftypBox.length;
-  const mdatHeaderOffset = ftypLen + 8; // where mdat data starts
-
-  // 'stco' (Chunk Offset Box)
-  const stcoPayload = Buffer.alloc(8 + totalFrames * 4);
-  stcoPayload.writeUInt32BE(0, 0);
-  stcoPayload.writeUInt32BE(totalFrames, 4);
-  let currOffset = mdatHeaderOffset;
-  for (let i = 0; i < totalFrames; i++) {
-    stcoPayload.writeUInt32BE(currOffset, 8 + i * 4);
-    currOffset += videoFrames[i].length;
-  }
-  const stcoBox = makeBox('stco', stcoPayload);
+  const isFastStart = Boolean(options.fastStart);
 
   // 'stss' (Sync Sample Box)
   const keyframeIndices: number[] = [];
@@ -506,9 +494,6 @@ export function encodePureH264Mp4(
   }
   const stssBox = makeBox('stss', stssPayload);
 
-  // 'stbl'
-  const stblBox = makeBox('stbl', Buffer.concat([stsdBox, sttsBox, stscBox, stszBox, stcoBox, stssBox]));
-
   // 'vmhd' (Video Media Header)
   const vmhdPayload = Buffer.alloc(12);
   vmhdPayload.writeUInt32BE(0x00000001, 0); // version + flags
@@ -522,9 +507,6 @@ export function encodePureH264Mp4(
   drefPayload.write('url ', 12, 'ascii');
   drefPayload.writeUInt32BE(0x00000001, 16); // self-contained flag
   const dinfBox = makeBox('dinf', makeBox('dref', drefPayload));
-
-  // 'minf'
-  const minfBox = makeBox('minf', Buffer.concat([vmhdBox, dinfBox, stblBox]));
 
   // 'hdlr' (Handler Box)
   const hdlrPayload = Buffer.alloc(32);
@@ -541,9 +523,6 @@ export function encodePureH264Mp4(
   mdhdPayload.writeUInt16BE(0x55c4, 20); // language 'und'
   const mdhdBox = makeBox('mdhd', mdhdPayload);
 
-  // 'mdia'
-  const mdiaBox = makeBox('mdia', Buffer.concat([mdhdBox, hdlrBox, minfBox]));
-
   // 'tkhd' (Track Header Box)
   const tkhdPayload = Buffer.alloc(84);
   tkhdPayload.writeUInt32BE(0x00000007, 0); // version + flags (enabled | in_movie | in_preview)
@@ -557,9 +536,6 @@ export function encodePureH264Mp4(
   tkhdPayload.writeUInt32BE(height << 16, 80);
   const tkhdBox = makeBox('tkhd', tkhdPayload);
 
-  // 'trak'
-  const trakBox = makeBox('trak', Buffer.concat([tkhdBox, mdiaBox]));
-
   // 'mvhd' (Movie Header Box)
   const mvhdPayload = Buffer.alloc(100);
   mvhdPayload.writeUInt32BE(0, 0);
@@ -567,19 +543,52 @@ export function encodePureH264Mp4(
   mvhdPayload.writeUInt32BE(totalDurationMs, 16); // duration
   mvhdPayload.writeUInt32BE(0x00010000, 20); // rate 1.0
   mvhdPayload.writeUInt16BE(0x0100, 24); // volume 1.0
-  // Matrix
   mvhdPayload.writeUInt32BE(0x00010000, 36);
   mvhdPayload.writeUInt32BE(0x00010000, 52);
   mvhdPayload.writeUInt32BE(0x40000000, 68);
   mvhdPayload.writeUInt32BE(2, 96); // next_track_ID
   const mvhdBox = makeBox('mvhd', mvhdPayload);
 
-  // 'moov'
-  const moovBox = makeBox('moov', Buffer.concat([mvhdBox, trakBox]));
+  // Helper to build moov atom from a given stco box
+  const buildMoovWithStco = (stco: Buffer): Buffer => {
+    const stbl = makeBox('stbl', Buffer.concat([stsdBox, sttsBox, stscBox, stszBox, stco, stssBox]));
+    const minf = makeBox('minf', Buffer.concat([vmhdBox, dinfBox, stbl]));
+    const mdia = makeBox('mdia', Buffer.concat([mdhdBox, hdlrBox, minf]));
+    const trak = makeBox('trak', Buffer.concat([tkhdBox, mdia]));
+    return makeBox('moov', Buffer.concat([mvhdBox, trak]));
+  };
 
-  // In ISO BMFF, standard order is: ftyp -> mdat -> moov OR ftyp -> moov -> mdat
-  // Because our chunk offsets in stco were computed relative to mdat immediately after ftyp:
-  return Buffer.concat([ftypBox, mdatBox, moovBox]);
+  // 'stco' (Chunk Offset Box)
+  const stcoPayload = Buffer.alloc(8 + totalFrames * 4);
+  stcoPayload.writeUInt32BE(0, 0);
+  stcoPayload.writeUInt32BE(totalFrames, 4);
+
+  if (isFastStart) {
+    // Determine exact size of moov atom using a placeholder stco box
+    const placeholderStco = makeBox('stco', stcoPayload);
+    const placeholderMoov = buildMoovWithStco(placeholderStco);
+    const moovLen = placeholderMoov.length;
+
+    // Faststart: mdat data starts after ftyp + moov + 8 (mdat header)
+    let currOffset = ftypLen + moovLen + 8;
+    for (let i = 0; i < totalFrames; i++) {
+      stcoPayload.writeUInt32BE(currOffset, 8 + i * 4);
+      currOffset += videoFrames[i].length;
+    }
+    const finalStco = makeBox('stco', stcoPayload);
+    const finalMoov = buildMoovWithStco(finalStco);
+    return Buffer.concat([ftypBox, finalMoov, mdatBox]);
+  }
+
+  // Standard layout: ftyp -> mdat -> moov
+  let currOffset = ftypLen + 8;
+  for (let i = 0; i < totalFrames; i++) {
+    stcoPayload.writeUInt32BE(currOffset, 8 + i * 4);
+    currOffset += videoFrames[i].length;
+  }
+  const standardStco = makeBox('stco', stcoPayload);
+  const standardMoov = buildMoovWithStco(standardStco);
+  return Buffer.concat([ftypBox, mdatBox, standardMoov]);
 }
 
 // ============================================================================
