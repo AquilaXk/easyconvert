@@ -47,18 +47,34 @@ export default function Hero({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const targetFormatRef = useRef(targetFormat);
+
+  useEffect(() => {
+    targetFormatRef.current = targetFormat;
+  }, [targetFormat]);
+
   useEffect(() => {
     if (activeSourceFormat) setSourceFormat(activeSourceFormat);
   }, [activeSourceFormat]);
 
   useEffect(() => {
-    if (activeTargetFormat) setTargetFormat(activeTargetFormat);
+    if (activeTargetFormat) {
+      setTargetFormat(activeTargetFormat);
+      targetFormatRef.current = activeTargetFormat;
+    }
   }, [activeTargetFormat]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const files = Array.from(e.target.files);
-      onFilesSelected(files, activeTargetFormat);
+      const chosen = targetFormatRef.current;
+      const effectiveTarget =
+        chosen && chosen.toLowerCase() !== 'any'
+          ? chosen.toLowerCase()
+          : activeTargetFormat && activeTargetFormat.toLowerCase() !== 'any'
+          ? activeTargetFormat.toLowerCase()
+          : undefined;
+      onFilesSelected(files, effectiveTarget);
       e.target.value = '';
     }
   };
@@ -78,7 +94,14 @@ export default function Hero({
     setIsDragOver(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const files = Array.from(e.dataTransfer.files);
-      onFilesSelected(files, activeTargetFormat);
+      const chosen = targetFormatRef.current;
+      const effectiveTarget =
+        chosen && chosen.toLowerCase() !== 'any'
+          ? chosen.toLowerCase()
+          : activeTargetFormat && activeTargetFormat.toLowerCase() !== 'any'
+          ? activeTargetFormat.toLowerCase()
+          : undefined;
+      onFilesSelected(files, effectiveTarget);
     }
   };
 
@@ -284,6 +307,7 @@ export default function Hero({
                           const tmp = sourceFormat;
                           setSourceFormat(targetFormat);
                           setTargetFormat(tmp);
+                          targetFormatRef.current = tmp;
                         }}
                         disabled={targetFormat.toLowerCase() === 'any'}
                         title={targetFormat.toLowerCase() === 'any' ? 'Select specific output format to swap' : 'Swap formats'}
@@ -341,7 +365,10 @@ export default function Hero({
                           <FormatSelector
                             availableFormats={getAvailableTargetFormats(sourceFormat)}
                             selectedFormatId={targetFormat}
-                            onSelect={(fmt) => setTargetFormat(fmt)}
+                            onSelect={(fmt) => {
+                              setTargetFormat(fmt);
+                              targetFormatRef.current = fmt;
+                            }}
                             onClose={() => setIsTargetSelectorOpen(false)}
                             title={`Convert ${sourceFormat.toUpperCase()} to:`}
                           />
@@ -378,6 +405,7 @@ export default function Hero({
                 onClick={() => {
                   setSourceFormat(preset.src);
                   setTargetFormat(preset.tgt);
+                  targetFormatRef.current = preset.tgt;
                   fileInputRef.current?.click();
                 }}
                 className="px-3 py-1 text-xs font-medium rounded-full bg-neutral-900/80 hover:bg-neutral-800 text-neutral-200 border border-neutral-700 hover:border-[#5C6BC0] hover:text-white transition-all cursor-pointer shadow-sm"

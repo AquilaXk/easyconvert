@@ -109,10 +109,10 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
                   You agree not to upload copyrighted content that you do not own or possess explicit license
                   to convert, nor upload malicious binaries, malware, or illicit material.
                 </p>
-                <h3 className="text-lg font-bold text-white">3. Service Availability & Limits</h3>
+                <h3 className="text-lg font-bold text-white">3. Service Availability & Free Use</h3>
                 <p>
-                  Free accounts receive 10 daily conversions. Paid packages and subscriptions provide
-                  credits with prioritized throughput.
+                  EasyConvert is 100% free with unlimited conversions. All file conversions are processed
+                  directly in your browser on the edge with zero subscriptions, paywalls, or credit restrictions.
                 </p>
               </>
             )}

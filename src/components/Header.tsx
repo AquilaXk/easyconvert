@@ -191,7 +191,7 @@ export default function Header() {
 
               {/* Supported Formats */}
             <a
-              href="#format-catalog"
+              href="/#format-catalog"
               className="px-2.5 py-1.5 text-sm font-medium text-neutral-300 hover:text-white rounded-md hover:bg-white/5 transition-colors"
             >
               Formats
@@ -199,7 +199,7 @@ export default function Header() {
 
             {/* How It Works */}
             <a
-              href="#how-it-works"
+              href="/#how-it-works"
               className="px-2.5 py-1.5 text-sm font-medium text-neutral-300 hover:text-white rounded-md hover:bg-white/5 transition-colors"
             >
               How It Works
@@ -289,14 +289,14 @@ export default function Header() {
           </div>
           <div className="border-t border-white/10 pt-2 flex flex-col gap-1">
             <a
-              href="#format-catalog"
+              href="/#format-catalog"
               onClick={() => setIsMobileMenuOpen(false)}
               className="px-2 py-1 text-sm text-neutral-300 hover:text-white"
             >
               Formats
             </a>
             <a
-              href="#how-it-works"
+              href="/#how-it-works"
               onClick={() => setIsMobileMenuOpen(false)}
               className="px-2 py-1 text-sm text-neutral-300 hover:text-white"
             >

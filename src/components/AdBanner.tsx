@@ -77,7 +77,7 @@ export default function AdBanner({
       className={`relative z-10 flex flex-col items-center justify-center transition-all ${config.wrapper} ${className}`}
     >
       {/* Subtle Advertisement Micro-Label */}
-      <div className="flex items-center justify-between w-full max-w-[728px] mb-1 px-1">
+      <div className="flex items-center justify-between w-full mb-1 px-1">
         <span className="text-[10px] font-mono tracking-widest uppercase text-neutral-400 dark:text-neutral-500 font-semibold select-none">
           {config.label}
         </span>
@@ -88,7 +88,7 @@ export default function AdBanner({
 
       {/* Main Banner Unit Container */}
       <div
-        className={`w-full max-w-[728px] rounded-xl border border-neutral-200/90 dark:border-white/[0.08] bg-gradient-to-r from-neutral-50 via-white to-neutral-50 dark:from-neutral-900/90 dark:via-[#1e2024] dark:to-neutral-900/90 shadow-sm overflow-hidden flex items-center justify-center p-3 relative group transition-all duration-200 ${config.container}`}
+        className={`w-full rounded-xl border border-neutral-200/90 dark:border-white/[0.08] bg-gradient-to-r from-neutral-50 via-white to-neutral-50 dark:from-neutral-900/90 dark:via-[#1e2024] dark:to-neutral-900/90 shadow-sm overflow-hidden flex items-center justify-center p-3 relative group transition-all duration-200 ${config.container}`}
       >
         {adClient && adSlotId ? (
           /* Google AdSense / Network Script Target */

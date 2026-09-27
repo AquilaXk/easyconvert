@@ -27,6 +27,9 @@ export default function Home() {
 
       let targetFormat = '';
       const preferred = defaultTarget || presetTarget;
+      if (presetTarget) {
+        setPresetTarget('');
+      }
       if (preferred && preferred.toLowerCase() !== 'any') {
         if (detected && detected.targetFormats.length > 0) {
           if (detected.targetFormats.includes(preferred.toLowerCase())) {

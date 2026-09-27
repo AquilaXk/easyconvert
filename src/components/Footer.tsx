@@ -69,12 +69,12 @@ export default function Footer() {
                 <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Resources</h3>
                 <ul className="space-y-4 mt-4">
                   <li>
-                    <a href="#format-catalog" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                    <a href="/#format-catalog" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       Supported Formats
                     </a>
                   </li>
                   <li>
-                    <a href="#how-it-works" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
+                    <a href="/#how-it-works" className="group text-sm font-normal text-[#5C6BC0] dark:text-[#7480D2] hover:underline transition-colors">
                       How It Works
                     </a>
                   </li>
