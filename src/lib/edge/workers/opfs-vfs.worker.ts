@@ -45,6 +45,86 @@ export type ChunkTransformerFn = (
   totalSize: number
 ) => Uint8Array | Promise<Uint8Array>;
 
+const IMA_INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
+const IMA_STEP_TABLE = [
+  7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
+  19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+  50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+  130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+  337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+  876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+  2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
+  5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+  15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
+];
+
+function encodeImaAdpcmSample(
+  sample: number,
+  state: { predictedSample: number; stepIndex: number }
+): number {
+  let step = IMA_STEP_TABLE[state.stepIndex];
+  let diff = sample - state.predictedSample;
+  let nibble = 0;
+
+  if (diff < 0) {
+    nibble = 8;
+    diff = -diff;
+  }
+
+  let delta = step >> 3;
+  if (diff >= step) {
+    nibble |= 4;
+    diff -= step;
+    delta += step;
+  }
+  step >>= 1;
+  if (diff >= step) {
+    nibble |= 2;
+    diff -= step;
+    delta += step;
+  }
+  step >>= 1;
+  if (diff >= step) {
+    nibble |= 1;
+    delta += step;
+  }
+
+  if (nibble & 8) {
+    state.predictedSample -= delta;
+  } else {
+    state.predictedSample += delta;
+  }
+
+  state.predictedSample = Math.max(-32768, Math.min(32767, state.predictedSample));
+  state.stepIndex += IMA_INDEX_TABLE[nibble];
+  state.stepIndex = Math.max(0, Math.min(88, state.stepIndex));
+
+  return nibble;
+}
+
+function decodeImaAdpcmSample(
+  nibble: number,
+  state: { predictedSample: number; stepIndex: number }
+): number {
+  let step = IMA_STEP_TABLE[state.stepIndex];
+  let delta = step >> 3;
+  if (nibble & 4) delta += step;
+  if (nibble & 2) delta += step >> 1;
+  if (nibble & 1) delta += step >> 2;
+
+  if (nibble & 8) {
+    state.predictedSample -= delta;
+  } else {
+    state.predictedSample += delta;
+  }
+
+  state.predictedSample = Math.max(-32768, Math.min(32767, state.predictedSample));
+  state.stepIndex += IMA_INDEX_TABLE[nibble];
+  state.stepIndex = Math.max(0, Math.min(88, state.stepIndex));
+
+  return state.predictedSample;
+}
+
 /**
  * Resolves a chunk-level transformer for streaming format conversion.
  */
@@ -168,6 +248,154 @@ export function resolveChunkTransformer(
       }
       return out;
     };
+  }
+
+  // 5. Audio WAV to raw PCM (strip 44-byte RIFF header on first chunk)
+  if (src === 'wav' && tgt === 'pcm') {
+    let isFirstChunk = true;
+    return (chunk: Uint8Array) => {
+      if (isFirstChunk) {
+        isFirstChunk = false;
+        if (
+          chunk.byteLength >= 44 &&
+          chunk[0] === 0x52 &&
+          chunk[1] === 0x49 &&
+          chunk[2] === 0x46 &&
+          chunk[3] === 0x46
+        ) {
+          return chunk.subarray(44);
+        }
+      }
+      return chunk;
+    };
+  }
+
+  // 6. Audio raw PCM to WAV (prepend 44-byte RIFF/WAVE header on first chunk)
+  if (src === 'pcm' && tgt === 'wav') {
+    let isFirstChunk = true;
+    const sampleRate = options?.sampleRate || 44100;
+    const channels = options?.channels || 2;
+    const bitsPerSample = options?.bitsPerSample || 16;
+    const byteRate = Math.floor(sampleRate * channels * (bitsPerSample / 8));
+    const blockAlign = Math.floor(channels * (bitsPerSample / 8));
+
+    return (chunk: Uint8Array) => {
+      if (isFirstChunk) {
+        isFirstChunk = false;
+        const header = new Uint8Array(44);
+        const view = new DataView(header.buffer);
+
+        // 'RIFF'
+        header[0] = 0x52; header[1] = 0x49; header[2] = 0x46; header[3] = 0x46;
+        view.setUint32(4, 36 + chunk.byteLength, true);
+        // 'WAVE'
+        header[8] = 0x57; header[9] = 0x41; header[10] = 0x56; header[11] = 0x45;
+        // 'fmt '
+        header[12] = 0x66; header[13] = 0x6d; header[14] = 0x74; header[15] = 0x20;
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true); // PCM
+        view.setUint16(22, channels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, byteRate, true);
+        view.setUint16(32, blockAlign, true);
+        view.setUint16(34, bitsPerSample, true);
+        // 'data'
+        header[36] = 0x64; header[37] = 0x61; header[38] = 0x74; header[39] = 0x61;
+        view.setUint32(40, chunk.byteLength, true);
+
+        const out = new Uint8Array(44 + chunk.byteLength);
+        out.set(header, 0);
+        out.set(chunk, 44);
+        return out;
+      }
+      return chunk;
+    };
+  }
+
+  // 7. Audio IMA ADPCM 4:1 streaming compression
+  if ((src === 'pcm' || src === 'wav') && tgt === 'adpcm') {
+    let leftoverByte: number | null = null;
+    let isFirstChunk = true;
+    const state = { predictedSample: 0, stepIndex: 0 };
+
+    return (chunk: Uint8Array) => {
+      let data = chunk;
+      if (src === 'wav' && isFirstChunk) {
+        isFirstChunk = false;
+        if (
+          chunk.byteLength >= 44 &&
+          chunk[0] === 0x52 &&
+          chunk[1] === 0x49 &&
+          chunk[2] === 0x46 &&
+          chunk[3] === 0x46
+        ) {
+          data = chunk.subarray(44);
+        }
+      }
+
+      if (leftoverByte !== null) {
+        const combined = new Uint8Array(data.byteLength + 1);
+        combined[0] = leftoverByte;
+        combined.set(data, 1);
+        data = combined;
+        leftoverByte = null;
+      }
+
+      const hasOdd = data.byteLength % 2 !== 0;
+      if (hasOdd) {
+        leftoverByte = data[data.byteLength - 1];
+        data = data.subarray(0, data.byteLength - 1);
+      }
+
+      const sampleCount = Math.floor(data.byteLength / 2);
+      const inView = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      const outBytes = Math.floor((sampleCount + 1) / 2);
+      const out = new Uint8Array(outBytes);
+
+      for (let i = 0; i < sampleCount; i += 2) {
+        const s1 = inView.getInt16(i * 2, true);
+        const n1 = encodeImaAdpcmSample(s1, state);
+        let n2 = 0;
+        if (i + 1 < sampleCount) {
+          const s2 = inView.getInt16((i + 1) * 2, true);
+          n2 = encodeImaAdpcmSample(s2, state);
+        }
+        out[i / 2] = (n1 & 0x0f) | ((n2 & 0x0f) << 4);
+      }
+
+      return out;
+    };
+  }
+
+  // 8. Audio IMA ADPCM 1:4 streaming decompression
+  if (src === 'adpcm' && (tgt === 'pcm' || tgt === 'wav')) {
+    const state = { predictedSample: 0, stepIndex: 0 };
+    return (chunk: Uint8Array) => {
+      const sampleCount = chunk.byteLength * 2;
+      const out = new Uint8Array(sampleCount * 2);
+      const outView = new DataView(out.buffer);
+
+      for (let i = 0; i < chunk.byteLength; i++) {
+        const b = chunk[i];
+        const n1 = b & 0x0f;
+        const n2 = (b >> 4) & 0x0f;
+        const s1 = decodeImaAdpcmSample(n1, state);
+        const s2 = decodeImaAdpcmSample(n2, state);
+        outView.setInt16(i * 4, s1, true);
+        outView.setInt16(i * 4 + 2, s2, true);
+      }
+
+      return out;
+    };
+  }
+
+  // 9. Streaming archive chunk passthrough
+  const isArchivePair =
+    (src === 'tar' && (tgt === 'tar_gz' || tgt === 'gz')) ||
+    (src === 'gz' && tgt === 'tar') ||
+    (src === 'tar_gz' && tgt === 'tar');
+  if (isArchivePair) {
+    return (chunk: Uint8Array) => chunk;
   }
 
   // 5. Invert byte filter

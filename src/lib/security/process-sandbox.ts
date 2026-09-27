@@ -224,6 +224,7 @@ export interface UnshareCapability {
   available: boolean;
   path: string;
   args: string[];
+  supportsNetNamespace: boolean;
 }
 
 let unshareCapability: UnshareCapability | null = null;
@@ -238,7 +239,7 @@ export function resetUnshareCapabilityCache(): void {
 export function getUnshareCapability(): UnshareCapability {
   if (unshareCapability !== null) return unshareCapability;
   if (process.platform !== 'linux') {
-    unshareCapability = { available: false, path: '', args: [] };
+    unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false };
     return unshareCapability;
   }
 
@@ -248,38 +249,131 @@ export function getUnshareCapability(): UnshareCapability {
       // First probe -r -n (unprivileged user + net namespace)
       try {
         execFileSync(p, ['-r', '-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
-        unshareCapability = { available: true, path: p, args: ['-r', '-n'] };
+        unshareCapability = { available: true, path: p, args: ['-r', '-n'], supportsNetNamespace: true };
         return unshareCapability;
       } catch {}
 
       // Second probe -n (net namespace, requires CAP_SYS_ADMIN)
       try {
         execFileSync(p, ['-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
-        unshareCapability = { available: true, path: p, args: ['-n'] };
+        unshareCapability = { available: true, path: p, args: ['-n'], supportsNetNamespace: true };
         return unshareCapability;
       } catch {}
     }
   }
 
-  unshareCapability = { available: false, path: '', args: [] };
+  unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false };
   return unshareCapability;
 }
 
+export interface UnshareIsolationOptions {
+  userNamespace?: boolean;
+  netNamespace?: boolean;
+  mountNamespace?: boolean;
+  ipcNamespace?: boolean;
+  pidNamespace?: boolean;
+}
+
 /**
- * Resolves the final execution command, wrapping with unshare network namespace isolation
+ * Assembles Linux unshare isolation CLI flags according to desired namespaces.
+ */
+export function buildUnshareIsolationArgs(
+  cap: { available: boolean; path: string; args: string[] },
+  options: UnshareIsolationOptions = {}
+): string[] {
+  const args = [...(cap.args || [])];
+  if (options.userNamespace && !args.includes('-r')) {
+    args.push('-r');
+  }
+  if (options.netNamespace && !args.includes('-n')) {
+    args.push('-n');
+  }
+  if (options.mountNamespace && !args.includes('-m')) {
+    args.push('-m');
+  }
+  if (options.ipcNamespace && !args.includes('-i')) {
+    args.push('-i');
+  }
+  if (options.pidNamespace) {
+    if (!args.includes('-p')) {
+      args.push('-p');
+    }
+    if (!args.includes('--fork')) {
+      args.push('--fork');
+    }
+  }
+  return args;
+}
+
+export const DANGEROUS_SYSCALL_FILTER_LIST: string[] = [
+  'ptrace',
+  'bpf',
+  'mount',
+  'umount2',
+  'reboot',
+  'kexec_load',
+  'kexec_file_load',
+  'init_module',
+  'finit_module',
+  'delete_module',
+  'iopl',
+  'ioperm',
+  'swapon',
+  'swapoff',
+  'sysfs',
+  'settimeofday',
+  'clock_settime',
+  'adjtimex',
+];
+
+export interface SeccompBpfProfile {
+  defaultAction: string;
+  killAction: string;
+  blockedSyscalls: string[];
+}
+
+/**
+ * Generates a defensive Seccomp BPF syscall filter profile blocking privileged operations.
+ */
+export function generateSeccompBpfProfile(): SeccompBpfProfile {
+  return {
+    defaultAction: 'SCMP_ACT_ALLOW',
+    killAction: 'SCMP_ACT_ERRNO',
+    blockedSyscalls: [...DANGEROUS_SYSCALL_FILTER_LIST],
+  };
+}
+
+/**
+ * Resolves the final execution command, wrapping with unshare namespace isolation
  * when networkIsolated is requested and running on a supported Linux host with unshare capabilities.
  */
 export function resolveSandboxedCommand(
   binaryPath: string,
   args: string[],
-  networkIsolated: boolean
+  networkIsolatedOrOptions?:
+    | boolean
+    | {
+        networkIsolated?: boolean;
+        sandboxOptions?: UnshareIsolationOptions;
+      }
 ): { binary: string; args: string[]; wrapped: boolean } {
+  let networkIsolated = true;
+  let sandboxOptions: UnshareIsolationOptions = {};
+
+  if (typeof networkIsolatedOrOptions === 'boolean') {
+    networkIsolated = networkIsolatedOrOptions;
+  } else if (networkIsolatedOrOptions && typeof networkIsolatedOrOptions === 'object') {
+    networkIsolated = networkIsolatedOrOptions.networkIsolated ?? true;
+    sandboxOptions = networkIsolatedOrOptions.sandboxOptions ?? {};
+  }
+
   if (process.platform === 'linux' && networkIsolated) {
     const cap = getUnshareCapability();
     if (cap.available) {
+      const isolationArgs = buildUnshareIsolationArgs(cap, sandboxOptions);
       return {
         binary: cap.path,
-        args: [...cap.args, '--', binaryPath, ...args],
+        args: [...isolationArgs, '--', binaryPath, ...args],
         wrapped: true,
       };
     }
