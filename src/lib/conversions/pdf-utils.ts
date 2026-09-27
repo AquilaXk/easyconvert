@@ -52,6 +52,9 @@ export function decodePdfHexString(hex: string): string {
  */
 export function extractTextFromPdf(pdfBuffer: Buffer): string {
   const binary = pdfBuffer.toString('binary');
+  if (!binary.includes('%PDF-')) {
+    throw new Error('Invalid PDF document: missing %PDF- header');
+  }
   const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
   let match: RegExpExecArray | null;
   const textPieces: string[] = [];
