@@ -95,6 +95,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   private jobs = new Map<string, Job<T, R>>();
   private waitingIds: string[] = [];
   private delayedIds: string[] = [];
+  private delayTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(name: string) {
     super();
@@ -108,7 +109,8 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
     if (opts.delay && opts.delay > 0) {
       this.delayedIds.push(id);
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this.delayTimers.delete(id);
         const idx = this.delayedIds.indexOf(id);
         if (idx !== -1) {
           this.delayedIds.splice(idx, 1);
@@ -117,6 +119,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
           this.emit('waiting', job);
         }
       }, opts.delay);
+      this.delayTimers.set(id, timer);
     } else {
       this.waitingIds.push(id);
       this.emit('waiting', job);
@@ -158,7 +161,8 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     if (delayMs > 0) {
       job.state = 'delayed';
       this.delayedIds.push(job.id);
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this.delayTimers.delete(job.id);
         const idx = this.delayedIds.indexOf(job.id);
         if (idx !== -1) {
           this.delayedIds.splice(idx, 1);
@@ -167,6 +171,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
           this.emit('waiting', job);
         }
       }, delayMs);
+      this.delayTimers.set(job.id, timer);
     } else {
       job.state = 'waiting';
       this.waitingIds.push(job.id);
@@ -189,6 +194,10 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   async close(): Promise<void> {
+    for (const timer of this.delayTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.delayTimers.clear();
     this.removeAllListeners();
   }
 }

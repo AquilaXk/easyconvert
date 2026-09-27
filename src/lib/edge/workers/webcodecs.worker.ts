@@ -655,8 +655,8 @@ export function buildMp4MoovBox(
   tkhdView.setUint32(36, 0x00010000, false);
   tkhdView.setUint32(52, 0x00010000, false);
   tkhdView.setUint32(68, 0x40000000, false);
-  tkhdView.setUint32(76, width << 16, false); // width (16.16 fixed point)
-  tkhdView.setUint32(80, height << 16, false); // height (16.16 fixed point)
+  tkhdView.setUint32(76, Math.round(width * 65536) >>> 0, false); // width (16.16 fixed point)
+  tkhdView.setUint32(80, Math.round(height * 65536) >>> 0, false); // height (16.16 fixed point)
   const tkhdBox = buildIsoBmffBox('tkhd', tkhdPayload);
 
   // 3. mdhd (Media Header Box) - 24 bytes payload
@@ -824,7 +824,7 @@ export function muxMp4Media(
   chunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
   width: number = 1280,
   height: number = 720,
-  options: { includeMoov?: boolean } = {}
+  options: { includeMoov?: boolean; fastStart?: boolean } = {}
 ): Uint8Array {
   const totalMediaBytes = chunks.reduce((acc, c) => acc + c.data.byteLength, 0);
 
@@ -848,6 +848,41 @@ export function muxMp4Media(
     0x6d, 0x64, 0x61, 0x74,
   ]);
 
+  if (options.includeMoov) {
+    if (options.fastStart) {
+      // Fast-Start layout: [ftyp][moov][mdat]
+      const testMoov = buildMp4MoovBox(chunks, width, height, 0);
+      const moovByteLength = testMoov.byteLength;
+      const mdatDataOffset = ftyp.byteLength + moovByteLength + mdatHeader.byteLength;
+      const moovBox = buildMp4MoovBox(chunks, width, height, mdatDataOffset);
+
+      const mdatPayload = new Uint8Array(mdatHeader.byteLength + totalMediaBytes);
+      mdatPayload.set(mdatHeader, 0);
+      let mdatOff = mdatHeader.byteLength;
+      for (const chunk of chunks) {
+        mdatPayload.set(chunk.data, mdatOff);
+        mdatOff += chunk.data.byteLength;
+      }
+      return concatUint8Arrays(ftyp, moovBox, mdatPayload);
+    }
+
+    const mdatDataOffset = ftyp.byteLength + mdatHeader.byteLength;
+    const baseOutput = new Uint8Array(mdatDataOffset + totalMediaBytes);
+    let offset = 0;
+    baseOutput.set(ftyp, offset);
+    offset += ftyp.byteLength;
+    baseOutput.set(mdatHeader, offset);
+    offset += mdatHeader.byteLength;
+
+    for (const chunk of chunks) {
+      baseOutput.set(chunk.data, offset);
+      offset += chunk.data.byteLength;
+    }
+
+    const moovBox = buildMp4MoovBox(chunks, width, height, mdatDataOffset);
+    return concatUint8Arrays(baseOutput, moovBox);
+  }
+
   const mdatDataOffset = ftyp.byteLength + mdatHeader.byteLength;
   const baseOutput = new Uint8Array(mdatDataOffset + totalMediaBytes);
   let offset = 0;
@@ -861,11 +896,6 @@ export function muxMp4Media(
     offset += chunk.data.byteLength;
   }
 
-  if (options.includeMoov) {
-    const moovBox = buildMp4MoovBox(chunks, width, height, mdatDataOffset);
-    return concatUint8Arrays(baseOutput, moovBox);
-  }
-
   return baseOutput;
 }
 
@@ -875,9 +905,10 @@ export function muxMp4Media(
 export function muxIsoBmffMp4(
   chunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
   width: number = 1280,
-  height: number = 720
+  height: number = 720,
+  options: { fastStart?: boolean } = {}
 ): Uint8Array {
-  return muxMp4Media(chunks, width, height, { includeMoov: true });
+  return muxMp4Media(chunks, width, height, { includeMoov: true, fastStart: options.fastStart });
 }
 
 /**

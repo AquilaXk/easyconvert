@@ -190,7 +190,10 @@ export async function sweepOrphanedSessions(
  * Fulfills Zero-Retention guarantee by eradicating all files and the directory handle.
  */
 export async function destroySessionImmediately(sessionId: string, rootDir?: any): Promise<boolean> {
-  if (!sessionId) return false;
+  if (!sessionId || typeof sessionId !== 'string') return false;
+  if (sessionId.includes('..') || sessionId.includes('/') || sessionId.includes('\\')) {
+    return false;
+  }
   const sessionsDir = await openSessionsDirectory(rootDir);
   if (!sessionsDir) return false;
 

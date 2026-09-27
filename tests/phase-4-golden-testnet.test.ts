@@ -4,9 +4,10 @@ import { beforeAll, describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions';
-import { buildMp4MoovBox } from '../src/lib/edge/workers/webcodecs.worker';
+import { buildMp4MoovBox, muxIsoBmffMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { encodeWoff2, decodeWoff2, createCanonicalFont } from '../src/lib/conversions/font';
-import { extractStepBRepMesh, parseStepEntities } from '../src/lib/conversions/cad-nurbs';
+import { extractStepBRepMesh, parseStepEntities, extractStepPoint } from '../src/lib/conversions/cad-nurbs';
+import { extractEmbeddedImageFromPdf } from '../src/lib/conversions/pdf-utils';
 
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 
@@ -437,6 +438,97 @@ ENDSEC;`;
       await expect(
         convertFile(corruptPdf, 'pdf', 'txt', {}, 'corrupt.pdf')
       ).rejects.toThrow();
+    });
+
+    it('fails closed and prevents infinite recursion when given STEP entities with mutual circular reference', () => {
+      const loopStep = `ISO-10303-21;
+HEADER;
+FILE_NAME('loop.step', '2026-09-27', ('Auth'), ('EasyConvert'), '', '', '');
+ENDSEC;
+DATA;
+#10=VERTEX_POINT('V1', #20);
+#20=VERTEX_POINT('V2', #10);
+#70=EDGE_CURVE('E1', #10, #20, #40, .T.);
+#80=ORIENTED_EDGE('OE1', *, *, #70, .T.);
+#90=EDGE_LOOP('LOOP', (#80));
+#100=FACE_OUTER_BOUND('BOUND', #90, .T.);
+#150=ADVANCED_FACE('FACE', (#100), #110, .F.);
+ENDSEC;
+END-ISO-10303-21;`;
+
+      const entityMap = parseStepEntities(loopStep);
+      // Directly check point resolution and B-Rep extraction on cyclic graph
+      const pt = extractStepPoint(10, entityMap);
+      expect(pt).toBeNull();
+
+      const mesh = extractStepBRepMesh(entityMap);
+      expect(mesh).toBeNull();
+    });
+
+    it('fails closed and prevents infinite recursion when given self-referential STEP entities', () => {
+      const selfLoopStep = `ISO-10303-21;
+HEADER;
+FILE_NAME('self_loop.step', '2026-09-27', ('Auth'), ('EasyConvert'), '', '', '');
+ENDSEC;
+DATA;
+#10=VERTEX_POINT('V1', #10);
+ENDSEC;
+END-ISO-10303-21;`;
+
+      const entityMap = parseStepEntities(selfLoopStep);
+      const pt = extractStepPoint(10, entityMap);
+      expect(pt).toBeNull();
+    });
+
+    it('fails closed when WOFF2 has valid header but corrupted Brotli compressed stream instead of returning synthetic font', () => {
+      // 48-byte header with 'wOF2' signature + valid table entry flag + corrupted compressed stream
+      const header = Buffer.alloc(48);
+      header.write('wOF2', 0, 4, 'ascii');
+      header.writeUInt32BE(0x00010000, 4); // flavor
+      header.writeUInt32BE(120, 8); // total length
+      header.writeUInt16BE(1, 12); // numTables = 1
+      const tableDir = Buffer.from([0x00, 0x10]); // tag 0, length 16
+      const corruptPayload = Buffer.from('TOTALLY_CORRUPTED_NON_BROTLI_BITSTREAM_BYTES_XYZ');
+      const corruptWoff2 = Buffer.concat([header, tableDir, corruptPayload]);
+
+      expect(() => decodeWoff2(corruptWoff2, 'corrupt.woff2')).toThrow(
+        /compressed table stream is corrupted or invalid/
+      );
+    });
+
+    it('extracts embedded image from PDF when /Filter /DCTDecode has whitespace formatting', () => {
+      const pdfWithSpaces = Buffer.from(
+        '%PDF-1.4\n1 0 obj\n<< /Type /XObject /Subtype /Image /Width 10 /Height 10 /Filter /DCTDecode /Length 12 >>\nstream\n' +
+        'FAKE_JPG_DATA\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF'
+      );
+      const extracted = extractEmbeddedImageFromPdf(pdfWithSpaces);
+      expect(extracted).not.toBeNull();
+      expect(extracted!.toString('ascii')).toBe('FAKE_JPG_DATA');
+    });
+
+    it('generates compliant Fast-Start ISO BMFF MP4 with moov atom placed before mdat container', () => {
+      const sampleData = Buffer.from([0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00]);
+      const chunks = [{ data: sampleData, timestampMicros: 0, isKeyFrame: true }];
+
+      // Default (fastStart false) -> moov after mdat
+      const standardMp4 = muxIsoBmffMp4(chunks, 1920, 1080, { fastStart: false });
+      const stdBuf = Buffer.from(standardMp4);
+      expect(stdBuf.indexOf('moov')).toBeGreaterThan(stdBuf.indexOf('mdat'));
+
+      // Fast-Start enabled -> moov BEFORE mdat for immediate browser streaming
+      const fastStartMp4 = muxIsoBmffMp4(chunks, 1920, 1080, { fastStart: true });
+      const fastBuf = Buffer.from(fastStartMp4);
+      const moovIdx = fastBuf.indexOf('moov');
+      const mdatIdx = fastBuf.indexOf('mdat');
+      expect(moovIdx).toBeGreaterThan(0);
+      expect(mdatIdx).toBeGreaterThan(0);
+      expect(moovIdx).toBeLessThan(mdatIdx);
+
+      // Verify stco offset points accurately to sample bytes in mdat
+      const stcoIdx = fastBuf.indexOf('stco');
+      expect(stcoIdx).toBeGreaterThan(0);
+      const sampleOffset = fastBuf.readUInt32BE(stcoIdx + 12);
+      expect(sampleOffset).toBe(mdatIdx + 4); // mdatIdx + 4 points past 'mdat' header (8 bytes total from box start)
     });
   });
 });

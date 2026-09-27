@@ -795,7 +795,14 @@ function parseStepToken(tok: string): any {
 /**
  * Extracts Cartesian Point from STEP entity
  */
-export function extractStepPoint(id: number, entityMap: Map<number, StepEntity>): Point3D | null {
+export function extractStepPoint(
+  id: number,
+  entityMap: Map<number, StepEntity>,
+  visited: Set<number> = new Set<number>()
+): Point3D | null {
+  if (visited.has(id)) return null;
+  visited.add(id);
+
   const ent = entityMap.get(id);
   if (!ent) return null;
 
@@ -826,7 +833,7 @@ export function extractStepPoint(id: number, entityMap: Map<number, StepEntity>)
   if (ent.type.includes('VERTEX_POINT')) {
     const ptId = ent.args[1] !== undefined ? ent.args[1] : ent.args[0];
     if (typeof ptId === 'number') {
-      return extractStepPoint(ptId, entityMap);
+      return extractStepPoint(ptId, entityMap, visited);
     }
   }
 
@@ -1187,18 +1194,24 @@ export function parseIgesBSplineCurves(content: string): BSplineCurve[] {
 // 7. STEP B-Rep Topology Extractor & High-Level 3D Model Tessellator
 // ============================================================================
 
-function resolveVertexPoint(vertexId: number | null, entityMap: Map<number, StepEntity>): Point3D | null {
-  if (vertexId === null) return null;
+function resolveVertexPoint(
+  vertexId: number | null,
+  entityMap: Map<number, StepEntity>,
+  visited: Set<number> = new Set<number>()
+): Point3D | null {
+  if (vertexId === null || visited.has(vertexId)) return null;
+  visited.add(vertexId);
+
   const vertEnt = entityMap.get(vertexId);
   if (!vertEnt) return null;
 
   if (vertEnt.type.includes('CARTESIAN_POINT')) {
-    return extractStepPoint(vertexId, entityMap);
+    return extractStepPoint(vertexId, entityMap, visited);
   }
 
   const targetId = vertEnt.args.find((a) => typeof a === 'number');
   if (typeof targetId === 'number') {
-    return extractStepPoint(targetId, entityMap);
+    return extractStepPoint(targetId, entityMap, visited);
   }
 
   return null;
