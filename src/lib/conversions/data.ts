@@ -3,6 +3,7 @@ import yaml from 'js-yaml';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
+import { sanitizeSvgString } from '../security/svg-sanitizer';
 
 export async function convertData(
   inputBuffer: Buffer,
@@ -234,7 +235,8 @@ export async function convertData(
 
   // XML -> Target
   if (src === 'xml') {
-    const parsed = simpleXmlToJson(textContent);
+    const sanitizedXml = sanitizeSvgString(textContent);
+    const parsed = simpleXmlToJson(sanitizedXml);
     const output =
       parsed.root && typeof parsed.root === 'object' && Object.keys(parsed).length === 1
         ? parsed.root
@@ -442,7 +444,7 @@ function jsonToXml(obj: unknown, rootName = 'root'): string {
 }
 
 export function simpleXmlToJson(xml: string): Record<string, unknown> {
-  const cleanXml = xml
+  const cleanXml = sanitizeSvgString(xml)
     .replace(/<\?xml.*?\?>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .trim();

@@ -32,6 +32,7 @@ export interface StoredObject {
   namespace?: string;
   bucket?: string;
   uploadedAt: number;
+  expiresAt: number;
 }
 
 export type OciStoredObject = StoredObject;
@@ -42,11 +43,13 @@ export interface IStorageBackend {
   uploadPart(uploadId: string, partNumber: number, buffer: Buffer): UploadedPart;
   completeMultipartUpload(uploadId: string, expectedParts?: { partNumber: number; etag?: string }[]): MultipartUploadComplete;
   abortMultipartUpload(uploadId: string): boolean;
-  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string): StoredObject;
+  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): StoredObject;
   getObject(key: string): StoredObject | undefined;
   deleteObject(key: string): boolean;
   getActiveSessionsCount(): number;
   getObjectsCount(): number;
+  sweepExpiredObjects?(now?: number): number;
+  stopGc?(): void;
 }
 
 /**
@@ -67,6 +70,36 @@ export class OciObjectStorageService implements IStorageBackend {
 
   // OCI Object Storage recommended minimum part size: 5MB
   readonly DEFAULT_PART_SIZE = 5 * 1024 * 1024; // 5 MB
+
+  private gcTimer: NodeJS.Timeout | null = null;
+
+  constructor() {
+    this.gcTimer = setInterval(() => {
+      this.sweepExpiredObjects();
+    }, 60000);
+    if (this.gcTimer && typeof this.gcTimer.unref === 'function') {
+      this.gcTimer.unref();
+    }
+  }
+
+  stopGc(): void {
+    if (this.gcTimer) {
+      clearInterval(this.gcTimer);
+      this.gcTimer = null;
+    }
+  }
+
+  /**
+   * Cryptographically wipes in-memory buffer before releasing references.
+   */
+  private shredBuffer(buf?: Buffer): void {
+    if (!buf) return;
+    try {
+      buf.fill(0);
+    } catch {
+      // Ignore if buffer is frozen or detached
+    }
+  }
 
   /**
    * Initiate OCI Multipart Upload (OCI API: CreateMultipartUpload)
@@ -176,6 +209,7 @@ export class OciObjectStorageService implements IStorageBackend {
     const compositeHash = crypto.createHash('md5').update(Buffer.concat(etagHashes)).digest('hex');
     const compositeEtag = `"${compositeHash}-${partNumbers.length}"`;
 
+    const now = Date.now();
     const stored: OciStoredObject = {
       key: session.key,
       filename: session.filename,
@@ -185,8 +219,15 @@ export class OciObjectStorageService implements IStorageBackend {
       etag: compositeEtag,
       namespace: session.namespace,
       bucket: session.bucket,
-      uploadedAt: Date.now(),
+      uploadedAt: now,
+      expiresAt: now + 60 * 60 * 1000, // 1-hour TTL
     };
+
+    // Shred chunk buffers from parts map
+    for (const part of session.parts.values()) {
+      this.shredBuffer(part.buffer);
+    }
+    session.parts.clear();
 
     this.objects.set(session.key, stored);
     this.sessions.delete(uploadId);
@@ -205,16 +246,26 @@ export class OciObjectStorageService implements IStorageBackend {
   abortMultipartUpload(uploadId: string): boolean {
     const session = this.sessions.get(uploadId);
     if (!session) return false;
+    for (const part of session.parts.values()) {
+      this.shredBuffer(part.buffer);
+    }
     session.parts.clear();
     return this.sessions.delete(uploadId);
   }
 
   /**
-   * Save complete object directly into OCI Object Storage
+   * Save complete object directly into OCI Object Storage with 1-hour default TTL
    */
-  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string): OciStoredObject {
+  saveObject(
+    key: string,
+    buffer: Buffer,
+    mimeType: string,
+    filename: string,
+    ttlMs: number = 60 * 60 * 1000
+  ): OciStoredObject {
     const md5 = crypto.createHash('md5').update(buffer).digest('hex');
     const ociKey = key.startsWith('n/') ? key : `n/${this.config.namespace}/b/${this.config.bucketName}/o/${key}`;
+    const now = Date.now();
     const stored: OciStoredObject = {
       key: ociKey,
       filename,
@@ -224,7 +275,8 @@ export class OciObjectStorageService implements IStorageBackend {
       etag: `"${md5}"`,
       namespace: this.config.namespace,
       bucket: this.config.bucketName,
-      uploadedAt: Date.now(),
+      uploadedAt: now,
+      expiresAt: now + ttlMs,
     };
     this.objects.set(ociKey, stored);
     // Also index by raw key for convenient lookup
@@ -235,17 +287,64 @@ export class OciObjectStorageService implements IStorageBackend {
   }
 
   /**
-   * Retrieve stored object by key
+   * Retrieve stored object by key with lazy expiration check
    */
   getObject(key: string): OciStoredObject | undefined {
-    return this.objects.get(key);
+    const obj = this.objects.get(key);
+    if (!obj) return undefined;
+
+    // Lazy expiration eviction
+    if (Date.now() > obj.expiresAt) {
+      this.deleteObject(key);
+      return undefined;
+    }
+
+    return obj;
   }
 
   /**
-   * Delete object from OCI Object Storage
+   * Delete object from OCI Object Storage and cryptographically shred buffer
    */
   deleteObject(key: string): boolean {
-    return this.objects.delete(key);
+    const obj = this.objects.get(key);
+    if (!obj) return false;
+
+    this.shredBuffer(obj.buffer);
+    this.objects.delete(key);
+    if (obj.key && obj.key !== key) {
+      this.objects.delete(obj.key);
+    }
+    return true;
+  }
+
+  /**
+   * Sweeps expired objects from memory and shreds their buffers in bulk
+   */
+  sweepExpiredObjects(now: number = Date.now()): number {
+    let count = 0;
+    const expiredKeys = new Set<string>();
+
+    for (const [key, obj] of this.objects.entries()) {
+      if (now > obj.expiresAt) {
+        expiredKeys.add(key);
+        if (obj.key) expiredKeys.add(obj.key);
+      }
+    }
+
+    const shreddedObjects = new Set<OciStoredObject>();
+    for (const key of expiredKeys) {
+      const obj = this.objects.get(key);
+      if (obj) {
+        if (!shreddedObjects.has(obj)) {
+          this.shredBuffer(obj.buffer);
+          shreddedObjects.add(obj);
+          count++;
+        }
+        this.objects.delete(key);
+      }
+    }
+
+    return count;
   }
 
   getActiveSessionsCount(): number {
@@ -253,7 +352,7 @@ export class OciObjectStorageService implements IStorageBackend {
   }
 
   getObjectsCount(): number {
-    return this.objects.size;
+    return new Set(this.objects.values()).size;
   }
 }
 
@@ -287,8 +386,8 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
     return this.backend.abortMultipartUpload(uploadId);
   }
 
-  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string): StoredObject {
-    return this.backend.saveObject(key, buffer, mimeType, filename);
+  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): StoredObject {
+    return this.backend.saveObject(key, buffer, mimeType, filename, ttlMs);
   }
 
   getObject(key: string): StoredObject | undefined {
@@ -297,6 +396,14 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
 
   deleteObject(key: string): boolean {
     return this.backend.deleteObject(key);
+  }
+
+  sweepExpiredObjects(now?: number): number {
+    return this.backend.sweepExpiredObjects(now);
+  }
+
+  stopGc(): void {
+    this.backend.stopGc();
   }
 
   getActiveSessionsCount(): number {

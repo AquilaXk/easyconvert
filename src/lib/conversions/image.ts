@@ -12,6 +12,7 @@ import {
   applyFloydSteinbergDither,
 } from './quantize';
 import { performOcr, generateSearchablePdf } from './ocr';
+import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 
 export {
   quantizeMedianCut,
@@ -273,8 +274,13 @@ export async function convertImage(
     return convertImageToPdf(inputBuffer, options, baseName, src);
   }
 
-  // Handle RAW camera inputs by checking for embedded high-resolution JPEG preview
+  // Sanitize SVG inputs against Stored XSS
   let activeBuffer = inputBuffer;
+  if (src === 'svg' || isSvg(activeBuffer)) {
+    activeBuffer = sanitizeSvgBuffer(activeBuffer);
+  }
+
+  // Handle RAW camera inputs by checking for embedded high-resolution JPEG preview
   const rawExtensions = [
     'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'pef', 'orf', 'srw', 'kdc',
     '3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f', 'raw'
@@ -527,25 +533,30 @@ async function convertImageToPdf(
   baseName: string,
   sourceFormat?: string
 ): Promise<ConversionResult> {
+  let activeBuffer = inputBuffer;
+  if (sourceFormat === 'svg' || isSvg(activeBuffer)) {
+    activeBuffer = sanitizeSvgBuffer(activeBuffer);
+  }
+
   let pipeline: sharp.Sharp;
 
-  if (sourceFormat === 'bmp' || inputBuffer.subarray(0, 2).toString('ascii') === 'BM') {
-    const decoded = decodeBmp(inputBuffer);
+  if (sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
+    const decoded = decodeBmp(activeBuffer);
     pipeline = sharp(decoded.raw, {
       raw: { width: decoded.width, height: decoded.height, channels: 4 },
     });
   } else if (
     sourceFormat === 'ico' ||
-    (inputBuffer.length >= 4 &&
-      inputBuffer[0] === 0 &&
-      inputBuffer[1] === 0 &&
-      inputBuffer[2] === 1 &&
-      inputBuffer[3] === 0)
+    (activeBuffer.length >= 4 &&
+      activeBuffer[0] === 0 &&
+      activeBuffer[1] === 0 &&
+      activeBuffer[2] === 1 &&
+      activeBuffer[3] === 0)
   ) {
-    const payload = decodeIco(inputBuffer);
+    const payload = decodeIco(activeBuffer);
     pipeline = sharp(payload);
   } else {
-    pipeline = sharp(inputBuffer);
+    pipeline = sharp(activeBuffer);
   }
 
   const metadata = await pipeline.metadata();

@@ -100,25 +100,34 @@ export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines:
 }
 
 /**
- * Encodes text safely for WinAnsi standard font embedding.
- * Strips unsupported code points without throwing and avoids emitting empty space operators.
+ * Encodes text safely for PDF invisible text layer embedding.
+ * Preserves CJK (Korean, Chinese, Japanese) and extended Unicode code points
+ * by serializing into UTF-16BE hex string format (BOM FEFF...) conforming to PDF 1.7 spec.
  */
-function safeEncodeText(font: PDFFont, text: string): PDFHexString | null {
-  let safeStr = '';
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if ((code >= 32 && code <= 126) || (code >= 160 && code <= 255)) {
-      safeStr += text[i];
-    } else {
-      safeStr += ' ';
+export function safeEncodeText(font: PDFFont, text: string): PDFHexString | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  // Check if text contains non-WinAnsi code points (CJK, symbols, Cyrillic, etc.)
+  let hasNonWinAnsi = false;
+  for (let i = 0; i < trimmed.length; i++) {
+    const code = trimmed.charCodeAt(i);
+    if (!((code >= 32 && code <= 126) || (code >= 160 && code <= 255))) {
+      hasNonWinAnsi = true;
+      break;
     }
   }
-  const trimmed = safeStr.trim();
-  if (!trimmed) return null;
+
+  if (hasNonWinAnsi) {
+    // PDF standard supports UTF-16BE hex strings with BOM (FEFF...) for Unicode CID text layers
+    return PDFHexString.fromText(trimmed);
+  }
+
   try {
     return font.encodeText(trimmed);
   } catch {
-    return null;
+    // If standard font encoding throws, fallback to UTF-16BE hex string
+    return PDFHexString.fromText(trimmed);
   }
 }
 
@@ -147,7 +156,23 @@ function renderTextItem(
       tz = Math.max(50, Math.min(250, (scaledWidth / rawWidth) * 100));
     }
   } catch {
-    tz = 100;
+    // For CJK and non-WinAnsi text where StandardFont width measurement throws,
+    // approximate character width: CJK glyphs = fontSize (1em), Latin/narrow glyphs = 0.55 * fontSize
+    let estimatedWidth = 0;
+    const trimmed = text.trim();
+    for (let i = 0; i < trimmed.length; i++) {
+      const code = trimmed.charCodeAt(i);
+      if (code > 255) {
+        estimatedWidth += fontSize;
+      } else {
+        estimatedWidth += fontSize * 0.55;
+      }
+    }
+    if (estimatedWidth > 0 && scaledWidth > 0) {
+      tz = Math.max(50, Math.min(250, (scaledWidth / estimatedWidth) * 100));
+    } else {
+      tz = 100;
+    }
   }
 
   page.pushOperators(

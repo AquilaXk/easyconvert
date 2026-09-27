@@ -623,14 +623,14 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
 
     it('routes files > 100MB to L3 OPFS when available, or L4 when unavailable', () => {
       const largeSize = 250 * 1024 * 1024; // 250 MB
-      const opfsAvailable = resolveConversionTier('mp4', 'mp3', largeSize, {}, {
+      const opfsAvailable = resolveConversionTier('csv', 'tsv', largeSize, {}, {
         hasOpfsSyncAccess: true,
       });
       expect(opfsAvailable.tier).toBe('L3');
       expect(opfsAvailable.tierName).toBe('Edge L3 (OPFS Stream)');
       expect(opfsAvailable.isClientEdge).toBe(true);
 
-      const opfsUnavailable = resolveConversionTier('mp4', 'mp3', largeSize, {}, {
+      const opfsUnavailable = resolveConversionTier('csv', 'tsv', largeSize, {}, {
         hasOpfsSyncAccess: false,
       });
       expect(opfsUnavailable.tier).toBe('L4');

@@ -14,6 +14,7 @@ import {
   Point3D,
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
+import { sanitizeSvgString } from '../security/svg-sanitizer';
 
 export {
   evaluateCubicBezier,
@@ -156,12 +157,14 @@ export async function convertVectorCad(
     } catch {
       uncompressed = inputBuffer;
     }
-    return convertSvgSource(uncompressed, tgt, options, baseName);
+    const cleanSvg = sanitizeSvgString(uncompressed.toString('utf-8'));
+    return convertSvgSource(Buffer.from(cleanSvg, 'utf-8'), tgt, options, baseName);
   }
 
   // 3. SVG Source
   if (src === 'svg') {
-    return convertSvgSource(inputBuffer, tgt, options, baseName);
+    const cleanSvg = sanitizeSvgString(inputBuffer.toString('utf-8'));
+    return convertSvgSource(Buffer.from(cleanSvg, 'utf-8'), tgt, options, baseName);
   }
 
   // 4. DXF Source
@@ -197,7 +200,7 @@ export async function convertVectorCad(
   <circle cx="520" cy="300" r="90" fill="none" stroke="#0ea5e9" stroke-width="4" stroke-dasharray="6 4" />
 </svg>`;
     }
-    return convertSvgSource(Buffer.from(svgStr, 'utf-8'), tgt, options, baseName);
+    return convertSvgSource(Buffer.from(sanitizeSvgString(svgStr), 'utf-8'), tgt, options, baseName);
   }
 
   throw new Error(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
@@ -311,7 +314,7 @@ async function convertSvgSource(
       break;
 
     case 'svg':
-      outputBuffer = inputBuffer;
+      outputBuffer = Buffer.from(sanitizeSvgString(inputBuffer.toString('utf-8')), 'utf-8');
       mimeType = 'image/svg+xml';
       break;
 
@@ -384,7 +387,8 @@ async function convertDxfSource(
   // DXF -> SVG
   if (tgt === 'svg') {
     const svg = dxfToSvg(entities, baseName);
-    const buffer = Buffer.from(svg, 'utf-8');
+    const cleanSvg = sanitizeSvgString(svg);
+    const buffer = Buffer.from(cleanSvg, 'utf-8');
     return {
       buffer,
       mimeType: 'image/svg+xml',
@@ -466,7 +470,8 @@ async function convertPostScriptSource(
 ): Promise<ConversionResult> {
   const text = inputBuffer.toString('utf-8');
   const svg = postScriptToSvg(text, baseName);
-  const svgBuf = Buffer.from(svg, 'utf-8');
+  const cleanSvg = sanitizeSvgString(svg);
+  const svgBuf = Buffer.from(cleanSvg, 'utf-8');
 
   if (tgt === 'svg') {
     return {

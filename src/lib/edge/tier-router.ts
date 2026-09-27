@@ -150,6 +150,44 @@ export async function probeEdgeCapabilities(): Promise<EdgeCapabilities> {
 }
 
 /**
+ * Whitelist of supported streaming transformations in OPFS worker.
+ */
+export const SUPPORTED_OPFS_STREAMING_CONVERSIONS = new Set<string>([
+  'pcm:pcm_be',
+  'pcm_be:pcm',
+  'pcm_le:pcm_be',
+  'pcm_be:pcm_le',
+  'pcm:pcm_u8',
+  'pcm:u8',
+  'wav:pcm_u8',
+  'wav:u8',
+  'csv:tsv',
+  'csv:tab',
+  'tsv:csv',
+  'tab:csv',
+  'rgba:grayscale',
+  'rgba:gray',
+  'raw:grayscale',
+  'raw:gray',
+]);
+
+/**
+ * Validates whether the given conversion pair is supported by L3 OPFS streaming pipeline.
+ */
+export function isOpfsStreamingSupported(
+  sourceFormat: string,
+  targetFormat: string,
+  options?: ConversionOptions & { allowPassThrough?: boolean }
+): boolean {
+  const src = sourceFormat.toLowerCase();
+  const tgt = targetFormat.toLowerCase();
+  if (options?.allowPassThrough && src === tgt) {
+    return true;
+  }
+  return SUPPORTED_OPFS_STREAMING_CONVERSIONS.has(`${src}:${tgt}`);
+}
+
+/**
  * Resolves the optimal conversion tier given format pair, file size, options, and capabilities.
  */
 export function resolveConversionTier(
@@ -177,7 +215,7 @@ export function resolveConversionTier(
   if (isLargeFile) {
     const opfsAvailable =
       capabilities?.hasOpfsSyncAccess ?? checkOpfsSupport();
-    if (opfsAvailable) {
+    if (opfsAvailable && isOpfsStreamingSupported(src, tgt, options)) {
       return {
         tier: 'L3',
         tierName: 'Edge L3 (OPFS Stream)',
@@ -189,7 +227,9 @@ export function resolveConversionTier(
       tier: 'L4',
       tierName: 'Cloud (Zero-Retention)',
       isClientEdge: false,
-      reason: 'Large file exceeds client RAM and OPFS is unavailable in this browser',
+      reason: opfsAvailable
+        ? 'Format conversion requires cloud serverless streaming engine'
+        : 'Large file exceeds client RAM and OPFS is unavailable in this browser',
     };
   }
 
