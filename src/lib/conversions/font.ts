@@ -23,6 +23,54 @@ export interface ParsedFont {
   fontFamily: string;
 }
 
+export interface VariableFontAxis {
+  tag: string;
+  name: string;
+  minValue: number;
+  defaultValue: number;
+  maxValue: number;
+  flags: number;
+  axisNameID: number;
+}
+
+export interface VariableFontInstance {
+  name: string;
+  subfamilyNameID: number;
+  flags: number;
+  coordinates: Record<string, number>;
+  postScriptNameID?: number;
+}
+
+export interface StatDesignAxis {
+  tag: string;
+  name: string;
+  ordering: number;
+  axisNameID: number;
+}
+
+export interface StatAxisValue {
+  format: number;
+  axisIndex: number;
+  axisTag?: string;
+  flags: number;
+  valueNameID: number;
+  valueName: string;
+  value?: number;
+  nominalValue?: number;
+  rangeMinValue?: number;
+  rangeMaxValue?: number;
+  linkedValue?: number;
+}
+
+export interface VariableFontMetadata {
+  isVariableFont: boolean;
+  fontFamily: string;
+  axes: VariableFontAxis[];
+  instances: VariableFontInstance[];
+  statAxes: StatDesignAxis[];
+  statValues: StatAxisValue[];
+}
+
 export async function convertFont(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -1037,3 +1085,400 @@ export function calculateTableChecksum(data: Buffer): number {
 function escapeXml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+
+/**
+ * Extracts arbitrary string from 'name' table by nameID
+ */
+export function extractNameStringFromTable(data: Buffer, targetNameID: number): string | null {
+  try {
+    if (data.length < 6) return null;
+    const count = data.readUInt16BE(2);
+    const stringOffset = data.readUInt16BE(4);
+
+    for (let i = 0; i < count; i++) {
+      const rec = 6 + i * 12;
+      if (rec + 12 > data.length) break;
+      const platformID = data.readUInt16BE(rec);
+      const nameID = data.readUInt16BE(rec + 6);
+      const length = data.readUInt16BE(rec + 8);
+      const offset = data.readUInt16BE(rec + 10);
+
+      if (nameID === targetNameID && stringOffset + offset + length <= data.length) {
+        const strBuf = data.subarray(stringOffset + offset, stringOffset + offset + length);
+        if (platformID === 3) {
+          return decodeUtf16BE(strBuf);
+        }
+        return strBuf.toString('ascii');
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Maps standard OpenType 4-character axis tags to human-readable names
+ */
+export function getStandardAxisName(tag: string): string {
+  switch (tag.trim()) {
+    case 'wght':
+      return 'Weight';
+    case 'wdth':
+      return 'Width';
+    case 'slnt':
+      return 'Slant';
+    case 'ital':
+      return 'Italic';
+    case 'opsz':
+      return 'Optical Size';
+    case 'grad':
+      return 'Grade';
+    default:
+      return tag;
+  }
+}
+
+/**
+ * Parses OpenType/SFNT 'fvar' (Font Variations) table
+ */
+export function parseFvarTable(
+  fvarData: Buffer,
+  nameTableData?: Buffer
+): { axes: VariableFontAxis[]; instances: VariableFontInstance[] } {
+  if (fvarData.length < 16) {
+    throw new Error('Invalid fvar table: truncated header (less than 16 bytes).');
+  }
+
+  const axesArrayOffset = fvarData.readUInt16BE(4);
+  const axisCount = fvarData.readUInt16BE(8);
+  const axisSize = fvarData.readUInt16BE(10);
+  const instanceCount = fvarData.readUInt16BE(12);
+  const instanceSize = fvarData.readUInt16BE(14);
+
+  const axes: VariableFontAxis[] = [];
+  for (let i = 0; i < axisCount; i++) {
+    const offset = axesArrayOffset + i * axisSize;
+    if (offset + axisSize > fvarData.length) break;
+
+    const tag = fvarData.toString('ascii', offset, offset + 4);
+    const minValue = fvarData.readInt32BE(offset + 4) / 65536;
+    const defaultValue = fvarData.readInt32BE(offset + 8) / 65536;
+    const maxValue = fvarData.readInt32BE(offset + 12) / 65536;
+    const flags = fvarData.readUInt16BE(offset + 16);
+    const axisNameID = fvarData.readUInt16BE(offset + 18);
+
+    let name = getStandardAxisName(tag);
+    if (nameTableData) {
+      const nameFromTable = extractNameStringFromTable(nameTableData, axisNameID);
+      if (nameFromTable) name = nameFromTable;
+    }
+
+    axes.push({
+      tag,
+      name,
+      minValue,
+      defaultValue,
+      maxValue,
+      flags,
+      axisNameID,
+    });
+  }
+
+  const instances: VariableFontInstance[] = [];
+  const instStart = axesArrayOffset + axisCount * axisSize;
+  for (let j = 0; j < instanceCount; j++) {
+    const offset = instStart + j * instanceSize;
+    if (offset + instanceSize > fvarData.length) break;
+
+    const subfamilyNameID = fvarData.readUInt16BE(offset);
+    const flags = fvarData.readUInt16BE(offset + 2);
+
+    const coordinates: Record<string, number> = {};
+    for (let k = 0; k < axes.length; k++) {
+      const coordVal = fvarData.readInt32BE(offset + 4 + k * 4) / 65536;
+      coordinates[axes[k].tag] = coordVal;
+    }
+
+    let postScriptNameID: number | undefined;
+    if (instanceSize >= axes.length * 4 + 6) {
+      postScriptNameID = fvarData.readUInt16BE(offset + 4 + axes.length * 4);
+    }
+
+    let name = `Instance ${j + 1}`;
+    if (nameTableData) {
+      const nameFromTable = extractNameStringFromTable(nameTableData, subfamilyNameID);
+      if (nameFromTable) name = nameFromTable;
+    }
+
+    instances.push({
+      name,
+      subfamilyNameID,
+      flags,
+      coordinates,
+      postScriptNameID,
+    });
+  }
+
+  return { axes, instances };
+}
+
+/**
+ * Parses OpenType/SFNT 'STAT' (Style Attributes) table
+ */
+export function parseStatTable(
+  statData: Buffer,
+  nameTableData?: Buffer
+): { axes: StatDesignAxis[]; values: StatAxisValue[] } {
+  if (statData.length < 8) {
+    throw new Error('Invalid STAT table: truncated header.');
+  }
+
+  const designAxisSize = statData.readUInt16BE(4);
+  const designAxisCount = statData.readUInt16BE(6);
+
+  let designAxesOffset = 8;
+  let axisValueCount = 0;
+  let offsetToAxisValueOffsets = 0;
+
+  if (statData.length >= 20) {
+    designAxesOffset = statData.readUInt32BE(8);
+    axisValueCount = statData.readUInt16BE(12);
+    offsetToAxisValueOffsets = statData.readUInt32BE(14);
+  }
+
+  const axes: StatDesignAxis[] = [];
+  for (let i = 0; i < designAxisCount; i++) {
+    const offset = designAxesOffset + i * designAxisSize;
+    if (offset + designAxisSize > statData.length) break;
+
+    const tag = statData.toString('ascii', offset, offset + 4);
+    const axisNameID = statData.readUInt16BE(offset + 4);
+    const ordering = statData.readUInt16BE(offset + 6);
+
+    let name = getStandardAxisName(tag);
+    if (nameTableData) {
+      const fromTable = extractNameStringFromTable(nameTableData, axisNameID);
+      if (fromTable) name = fromTable;
+    }
+
+    axes.push({ tag, name, ordering, axisNameID });
+  }
+
+  const values: StatAxisValue[] = [];
+  if (offsetToAxisValueOffsets > 0 && axisValueCount > 0) {
+    for (let i = 0; i < axisValueCount; i++) {
+      const offPos = offsetToAxisValueOffsets + i * 2;
+      if (offPos + 2 > statData.length) break;
+      const tableOffset = statData.readUInt16BE(offPos);
+      if (tableOffset + 8 > statData.length) continue;
+
+      const format = statData.readUInt16BE(tableOffset);
+      const axisIndex = statData.readUInt16BE(tableOffset + 2);
+      const flags = statData.readUInt16BE(tableOffset + 4);
+      const valueNameID = statData.readUInt16BE(tableOffset + 6);
+
+      let valueName = `Value ${i + 1}`;
+      if (nameTableData) {
+        const fromTable = extractNameStringFromTable(nameTableData, valueNameID);
+        if (fromTable) valueName = fromTable;
+      }
+
+      const axisTag = axes[axisIndex]?.tag;
+
+      if (format === 1) {
+        const value =
+          statData.length >= tableOffset + 12 ? statData.readInt32BE(tableOffset + 8) / 65536 : 0;
+        values.push({ format, axisIndex, axisTag, flags, valueNameID, valueName, value });
+      } else if (format === 2) {
+        const nominalValue =
+          statData.length >= tableOffset + 12 ? statData.readInt32BE(tableOffset + 8) / 65536 : 0;
+        const rangeMinValue =
+          statData.length >= tableOffset + 16 ? statData.readInt32BE(tableOffset + 12) / 65536 : 0;
+        const rangeMaxValue =
+          statData.length >= tableOffset + 20 ? statData.readInt32BE(tableOffset + 16) / 65536 : 0;
+        values.push({
+          format,
+          axisIndex,
+          axisTag,
+          flags,
+          valueNameID,
+          valueName,
+          nominalValue,
+          rangeMinValue,
+          rangeMaxValue,
+        });
+      } else if (format === 3) {
+        const value =
+          statData.length >= tableOffset + 12 ? statData.readInt32BE(tableOffset + 8) / 65536 : 0;
+        const linkedValue =
+          statData.length >= tableOffset + 16 ? statData.readInt32BE(tableOffset + 12) / 65536 : 0;
+        values.push({ format, axisIndex, axisTag, flags, valueNameID, valueName, value, linkedValue });
+      } else {
+        values.push({ format, axisIndex, axisTag, flags, valueNameID, valueName });
+      }
+    }
+  }
+
+  return { axes, values };
+}
+
+/**
+ * Inspects any font stream (TTF, OTF, WOFF, WOFF2) and extracts variable font axes and named instances.
+ */
+export function inspectVariableFont(fontBuffer: Buffer): VariableFontMetadata {
+  const parsed = parseFontToSfnt(fontBuffer, 'ttf', 'VariableFont');
+  const fvarTable = parsed.tables['fvar']?.data;
+  const statTable = parsed.tables['STAT']?.data;
+  const nameTable = parsed.tables['name']?.data;
+
+  if (!fvarTable) {
+    return {
+      isVariableFont: false,
+      fontFamily: parsed.fontFamily,
+      axes: [],
+      instances: [],
+      statAxes: [],
+      statValues: [],
+    };
+  }
+
+  const { axes, instances } = parseFvarTable(fvarTable, nameTable);
+  const statInfo = statTable ? parseStatTable(statTable, nameTable) : { axes: [], values: [] };
+
+  return {
+    isVariableFont: axes.length > 0,
+    fontFamily: parsed.fontFamily,
+    axes,
+    instances,
+    statAxes: statInfo.axes,
+    statValues: statInfo.values,
+  };
+}
+
+/**
+ * Encodes an OpenType 'fvar' table from structured axes and instances
+ */
+export function createFvarTable(
+  axes: VariableFontAxis[],
+  instances: VariableFontInstance[] = []
+): Buffer {
+  const axisCount = axes.length;
+  const axisSize = 20;
+  const instanceCount = instances.length;
+  const instanceSize = axisCount * 4 + 4;
+
+  const headerSize = 16;
+  const axesSize = axisCount * axisSize;
+  const instancesSize = instanceCount * instanceSize;
+  const totalSize = headerSize + axesSize + instancesSize;
+
+  const buf = Buffer.alloc(totalSize);
+  buf.writeUInt16BE(1, 0); // majorVersion = 1
+  buf.writeUInt16BE(0, 2); // minorVersion = 0
+  buf.writeUInt16BE(16, 4); // axesArrayOffset = 16
+  buf.writeUInt16BE(2, 6); // reserved = 2
+  buf.writeUInt16BE(axisCount, 8); // axisCount
+  buf.writeUInt16BE(axisSize, 10); // axisSize
+  buf.writeUInt16BE(instanceCount, 12); // instanceCount
+  buf.writeUInt16BE(instanceSize, 14); // instanceSize
+
+  for (let i = 0; i < axisCount; i++) {
+    const ax = axes[i];
+    const offset = headerSize + i * axisSize;
+    buf.write(ax.tag.padEnd(4, ' ').slice(0, 4), offset, 4, 'ascii');
+    buf.writeInt32BE(Math.round(ax.minValue * 65536), offset + 4);
+    buf.writeInt32BE(Math.round(ax.defaultValue * 65536), offset + 8);
+    buf.writeInt32BE(Math.round(ax.maxValue * 65536), offset + 12);
+    buf.writeUInt16BE(ax.flags || 0, offset + 16);
+    buf.writeUInt16BE(ax.axisNameID || 256 + i, offset + 18);
+  }
+
+  const instStart = headerSize + axesSize;
+  for (let j = 0; j < instanceCount; j++) {
+    const inst = instances[j];
+    const offset = instStart + j * instanceSize;
+    buf.writeUInt16BE(inst.subfamilyNameID || 260 + j, offset);
+    buf.writeUInt16BE(inst.flags || 0, offset + 2);
+    for (let k = 0; k < axisCount; k++) {
+      const tag = axes[k].tag;
+      const coord = inst.coordinates[tag] ?? axes[k].defaultValue;
+      buf.writeInt32BE(Math.round(coord * 65536), offset + 4 + k * 4);
+    }
+  }
+
+  return buf;
+}
+
+/**
+ * Encodes an OpenType 'STAT' table from structured design axes and axis values
+ */
+export function createStatTable(
+  axes: StatDesignAxis[],
+  values: StatAxisValue[] = []
+): Buffer {
+  const majorVersion = 1;
+  const minorVersion = 1;
+  const designAxisSize = 8;
+  const designAxisCount = axes.length;
+  const designAxesOffset = 20;
+
+  const axesBufSize = designAxisCount * designAxisSize;
+  const offsetToAxisValueOffsets = designAxesOffset + axesBufSize;
+  const axisValueCount = values.length;
+  const valueOffsetsSize = axisValueCount * 2;
+
+  const valueTableChunks: Buffer[] = [];
+  const valueOffsets: number[] = [];
+  let curValOffset = offsetToAxisValueOffsets + valueOffsetsSize;
+
+  for (const v of values) {
+    valueOffsets.push(curValOffset);
+    const fmt = v.format || 1;
+    if (fmt === 2) {
+      const chunk = Buffer.alloc(20);
+      chunk.writeUInt16BE(2, 0);
+      chunk.writeUInt16BE(v.axisIndex, 2);
+      chunk.writeUInt16BE(v.flags || 0, 4);
+      chunk.writeUInt16BE(v.valueNameID || 270, 6);
+      chunk.writeInt32BE(Math.round((v.nominalValue ?? v.value ?? 0) * 65536), 8);
+      chunk.writeInt32BE(Math.round((v.rangeMinValue ?? 0) * 65536), 12);
+      chunk.writeInt32BE(Math.round((v.rangeMaxValue ?? 0) * 65536), 16);
+      valueTableChunks.push(chunk);
+      curValOffset += 20;
+    } else {
+      const chunk = Buffer.alloc(12);
+      chunk.writeUInt16BE(1, 0);
+      chunk.writeUInt16BE(v.axisIndex, 2);
+      chunk.writeUInt16BE(v.flags || 0, 4);
+      chunk.writeUInt16BE(v.valueNameID || 270, 6);
+      chunk.writeInt32BE(Math.round((v.value ?? 0) * 65536), 8);
+      valueTableChunks.push(chunk);
+      curValOffset += 12;
+    }
+  }
+
+  const headerBuf = Buffer.alloc(20);
+  headerBuf.writeUInt16BE(majorVersion, 0);
+  headerBuf.writeUInt16BE(minorVersion, 2);
+  headerBuf.writeUInt16BE(designAxisSize, 4);
+  headerBuf.writeUInt16BE(designAxisCount, 6);
+  headerBuf.writeUInt32BE(designAxesOffset, 8);
+  headerBuf.writeUInt16BE(axisValueCount, 12);
+  headerBuf.writeUInt32BE(offsetToAxisValueOffsets, 14);
+  headerBuf.writeUInt16BE(0, 18); // elidedFallbackNameID
+
+  const axesBuf = Buffer.alloc(axesBufSize);
+  for (let i = 0; i < designAxisCount; i++) {
+    const ax = axes[i];
+    axesBuf.write(ax.tag.padEnd(4, ' ').slice(0, 4), i * 8, 4, 'ascii');
+    axesBuf.writeUInt16BE(ax.axisNameID || 256 + i, i * 8 + 4);
+    axesBuf.writeUInt16BE(ax.ordering || i, i * 8 + 6);
+  }
+
+  const offsetsBuf = Buffer.alloc(valueOffsetsSize);
+  for (let i = 0; i < axisValueCount; i++) {
+    offsetsBuf.writeUInt16BE(valueOffsets[i], i * 2);
+  }
+
+  return Buffer.concat([headerBuf, axesBuf, offsetsBuf, ...valueTableChunks]);
+}
+
