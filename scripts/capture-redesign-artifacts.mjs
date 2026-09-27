@@ -110,6 +110,10 @@ await new Promise(r => { ws.onopen = r; });
 await send('Page.enable');
 await send('DOM.enable');
 await send('Runtime.enable');
+await send('Emulation.setEmulatedMedia', {
+  media: 'screen',
+  features: [{ name: 'prefers-color-scheme', value: 'light' }]
+});
 
 // 1. Desktop Light Viewport (1440x900)
 await send('Emulation.setDeviceMetricsOverride', {
@@ -124,9 +128,13 @@ await new Promise(r => setTimeout(r, 2000));
 
 // Ensure light mode is active
 await send('Runtime.evaluate', {
-  expression: `document.documentElement.classList.remove('dark'); localStorage.theme = 'light';`
+  expression: `
+    document.documentElement.classList.remove('dark');
+    localStorage.theme = 'light';
+    window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: 'light' } }));
+  `
 });
-await new Promise(r => setTimeout(r, 300));
+await new Promise(r => setTimeout(r, 500));
 
 let ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('desktop_hero.png', Buffer.from(ss.data, 'base64'));
@@ -143,17 +151,18 @@ ss = await send('Page.captureScreenshot', { format: 'png' });
 saveImage('desktop_footer.png', Buffer.from(ss.data, 'base64'));
 
 // Desktop Full Page Light
-const layout = await send('Page.getLayoutMetrics');
-const fullHeight = Math.ceil(layout.contentSize.height);
 await send('Emulation.setDeviceMetricsOverride', {
   width: 1440,
-  height: fullHeight,
-  deviceScaleFactor: 2,
+  height: 900,
+  deviceScaleFactor: 1.5,
   mobile: false
 });
 await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
 await new Promise(r => setTimeout(r, 500));
-ss = await send('Page.captureScreenshot', { format: 'png' });
+ss = await send('Page.captureScreenshot', {
+  format: 'png',
+  captureBeyondViewport: true
+});
 saveImage('desktop_full_page.png', Buffer.from(ss.data, 'base64'));
 saveImage('full_page_light.png', Buffer.from(ss.data, 'base64'));
 
@@ -201,16 +210,18 @@ saveImage('hero_dark.png', Buffer.from(ss.data, 'base64'));
 saveImage('fidelity_home_dark.png', Buffer.from(ss.data, 'base64'));
 
 // Dark Full Page
-const darkLayout = await send('Page.getLayoutMetrics');
 await send('Emulation.setDeviceMetricsOverride', {
   width: 1440,
-  height: Math.ceil(darkLayout.contentSize.height),
-  deviceScaleFactor: 2,
+  height: 900,
+  deviceScaleFactor: 1.5,
   mobile: false
 });
 await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
 await new Promise(r => setTimeout(r, 500));
-ss = await send('Page.captureScreenshot', { format: 'png' });
+ss = await send('Page.captureScreenshot', {
+  format: 'png',
+  captureBeyondViewport: true
+});
 saveImage('full_page_dark.png', Buffer.from(ss.data, 'base64'));
 
 // Reset to light mode for remaining captures
