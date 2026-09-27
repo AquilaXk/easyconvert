@@ -51,6 +51,7 @@ export const UNIT_CATEGORIES: Record<string, UnitCategory> = {
       kg: { id: 'kg', name: 'Kilograms', symbol: 'kg', toBase: 1000, fromBase: 0.001 },
       g: { id: 'g', name: 'Grams', symbol: 'g', toBase: 1, fromBase: 1 },
       mg: { id: 'mg', name: 'Milligrams', symbol: 'mg', toBase: 0.001, fromBase: 1000 },
+      mcg: { id: 'mcg', name: 'Micrograms', symbol: 'µg', toBase: 0.000001, fromBase: 1000000 },
       lbs: { id: 'lbs', name: 'Pounds', symbol: 'lbs', toBase: 453.59237, fromBase: 1 / 453.59237 },
       oz: { id: 'oz', name: 'Ounces', symbol: 'oz', toBase: 28.349523125, fromBase: 1 / 28.349523125 },
       stone: { id: 'stone', name: 'Stones', symbol: 'st', toBase: 6350.29318, fromBase: 1 / 6350.29318 },
@@ -70,6 +71,7 @@ export const UNIT_CATEGORIES: Record<string, UnitCategory> = {
       km: { id: 'km', name: 'Kilometers', symbol: 'km', toBase: 1000, fromBase: 0.001 },
       cm: { id: 'cm', name: 'Centimeters', symbol: 'cm', toBase: 0.01, fromBase: 100 },
       mm: { id: 'mm', name: 'Millimeters', symbol: 'mm', toBase: 0.001, fromBase: 1000 },
+      um: { id: 'um', name: 'Micrometers', symbol: 'µm', toBase: 0.000001, fromBase: 1000000 },
       feet: { id: 'feet', name: 'Feet', symbol: 'ft', toBase: 0.3048, fromBase: 1 / 0.3048 },
       inches: { id: 'inches', name: 'Inches', symbol: 'in', toBase: 0.0254, fromBase: 1 / 0.0254 },
       yards: { id: 'yards', name: 'Yards', symbol: 'yd', toBase: 0.9144, fromBase: 1 / 0.9144 },
@@ -105,6 +107,13 @@ export const UNIT_CATEGORIES: Record<string, UnitCategory> = {
         symbol: 'K',
         toBase: (v) => v - 273.15,
         fromBase: (v) => v + 273.15,
+      },
+      rankine: {
+        id: 'rankine',
+        name: 'Rankine',
+        symbol: '°R',
+        toBase: (v) => ((v - 491.67) * 5) / 9,
+        fromBase: (v) => (v * 9) / 5 + 491.67,
       },
     },
     formulaDescription: (from, to, val, res) => {
@@ -146,10 +155,13 @@ export const UNIT_CATEGORIES: Record<string, UnitCategory> = {
       ml: { id: 'ml', name: 'Milliliters', symbol: 'mL', toBase: 0.001, fromBase: 1000 },
       cubm: { id: 'cubm', name: 'Cubic Meters', symbol: 'm³', toBase: 1000, fromBase: 0.001 },
       gallons: { id: 'gallons', name: 'US Gallons', symbol: 'gal', toBase: 3.785411784, fromBase: 1 / 3.785411784 },
+      impgal: { id: 'impgal', name: 'Imperial Gallons', symbol: 'imp gal', toBase: 4.54609, fromBase: 1 / 4.54609 },
       quarts: { id: 'quarts', name: 'US Quarts', symbol: 'qt', toBase: 0.946352946, fromBase: 1 / 0.946352946 },
       pints: { id: 'pints', name: 'US Pints', symbol: 'pt', toBase: 0.473176473, fromBase: 1 / 0.473176473 },
       floz: { id: 'floz', name: 'US Fluid Ounces', symbol: 'fl oz', toBase: 0.0295735295625, fromBase: 1 / 0.0295735295625 },
       cups: { id: 'cups', name: 'US Cups', symbol: 'cup', toBase: 0.24, fromBase: 1 / 0.24 },
+      tbsp: { id: 'tbsp', name: 'Tablespoons', symbol: 'tbsp', toBase: 0.0147868, fromBase: 1 / 0.0147868 },
+      tsp: { id: 'tsp', name: 'Teaspoons', symbol: 'tsp', toBase: 0.00492892, fromBase: 1 / 0.00492892 },
     },
   },
   speed: {
@@ -165,6 +177,7 @@ export const UNIT_CATEGORIES: Record<string, UnitCategory> = {
       ms: { id: 'ms', name: 'Meters per second', symbol: 'm/s', toBase: 1, fromBase: 1 },
       knots: { id: 'knots', name: 'Knots', symbol: 'kn', toBase: 1852 / 3600, fromBase: 3600 / 1852 },
       fts: { id: 'fts', name: 'Feet per second', symbol: 'ft/s', toBase: 0.3048, fromBase: 1 / 0.3048 },
+      mach: { id: 'mach', name: 'Mach (Speed of Sound)', symbol: 'Ma', toBase: 343, fromBase: 1 / 343 },
     },
   },
   digital: {
@@ -180,9 +193,11 @@ export const UNIT_CATEGORIES: Record<string, UnitCategory> = {
       mb: { id: 'mb', name: 'Megabytes (Decimal)', symbol: 'MB', toBase: 1000000, fromBase: 0.000001 },
       gb: { id: 'gb', name: 'Gigabytes (Decimal)', symbol: 'GB', toBase: 1000000000, fromBase: 0.000000001 },
       tb: { id: 'tb', name: 'Terabytes (Decimal)', symbol: 'TB', toBase: 1000000000000, fromBase: 0.000000000001 },
+      pb: { id: 'pb', name: 'Petabytes (Decimal)', symbol: 'PB', toBase: 1e15, fromBase: 1e-15 },
       kib: { id: 'kib', name: 'Kibibytes (Binary)', symbol: 'KiB', toBase: 1024, fromBase: 1 / 1024 },
       mib: { id: 'mib', name: 'Mebibytes (Binary)', symbol: 'MiB', toBase: 1048576, fromBase: 1 / 1048576 },
       gib: { id: 'gib', name: 'Gibibytes (Binary)', symbol: 'GiB', toBase: 1073741824, fromBase: 1 / 1073741824 },
+      tib: { id: 'tib', name: 'Tebibytes (Binary)', symbol: 'TiB', toBase: 1099511627776, fromBase: 1 / 1099511627776 },
     },
   },
   time: {
@@ -297,7 +312,14 @@ export default function UnitConverter({
   const [activeCategoryKey, setActiveCategoryKey] = useState<string>(resolvedCategory);
   const currentCategory = UNIT_CATEGORIES[activeCategoryKey] || UNIT_CATEGORIES.weight;
 
-  const [inputVal, setInputVal] = useState<number>(1);
+  const [inputStr, setInputStr] = useState<string>('1');
+
+  const inputVal = useMemo(() => {
+    if (inputStr === '' || inputStr === '-' || inputStr === '.') return 0;
+    const num = parseFloat(inputStr);
+    return isNaN(num) ? 0 : num;
+  }, [inputStr]);
+
   const [fromUnitKey, setFromUnitKey] = useState<string>(
     initialSrc && currentCategory.units[initialSrc.toLowerCase()]
       ? initialSrc.toLowerCase()
@@ -329,10 +351,19 @@ export default function UnitConverter({
     return convertValue(inputVal, fromDef, toDef);
   }, [inputVal, fromDef, toDef]);
 
+  const rawCopyValue = useMemo(() => {
+    if (!Number.isFinite(calculatedResult)) return '0';
+    return parseFloat(calculatedResult.toFixed(precision)).toString();
+  }, [calculatedResult, precision]);
+
   const handleSwap = () => {
     const tmp = fromUnitKey;
     setFromUnitKey(toUnitKey);
     setToUnitKey(tmp);
+    if (Number.isFinite(calculatedResult) && calculatedResult !== 0) {
+      const fixed = parseFloat(calculatedResult.toFixed(precision));
+      setInputStr(String(fixed));
+    }
   };
 
   const handleCopy = (textToCopy: string, key?: string) => {
@@ -434,10 +465,16 @@ export default function UnitConverter({
               From
             </label>
             <input
-              type="number"
-              step="any"
-              value={inputVal}
-              onChange={(e) => setInputVal(parseFloat(e.target.value) || 0)}
+              type="text"
+              inputMode="decimal"
+              value={inputStr}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === '' || val === '-' || /^-?\d*\.?\d*$/.test(val)) {
+                  setInputStr(val);
+                }
+              }}
+              placeholder="0"
               className="w-full px-4 py-3 rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-brand-950 dark:text-white font-mono text-xl sm:text-2xl font-bold focus:border-brand-700 outline-none transition-colors"
             />
             <select
@@ -473,7 +510,7 @@ export default function UnitConverter({
               </label>
               <button
                 type="button"
-                onClick={() => handleCopy(calculatedResult.toString())}
+                onClick={() => handleCopy(rawCopyValue)}
                 className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand-700 dark:text-brand-300 hover:underline cursor-pointer"
               >
                 {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
@@ -483,7 +520,7 @@ export default function UnitConverter({
             <div className="w-full px-4 py-3 rounded-xl bg-white dark:bg-dark-surface border border-brand-300 dark:border-dark-border text-brand-700 dark:text-brand-300 font-mono text-xl sm:text-2xl font-bold truncate flex items-center justify-between">
               <span>
                 {Number.isFinite(calculatedResult)
-                  ? calculatedResult.toLocaleString(undefined, {
+                  ? parseFloat(calculatedResult.toFixed(precision)).toLocaleString(undefined, {
                       maximumFractionDigits: precision,
                     })
                   : '0'}
@@ -560,7 +597,12 @@ export default function UnitConverter({
 
                 <button
                   type="button"
-                  onClick={() => handleCopy(conv.value.toString(), conv.key)}
+                  onClick={() =>
+                    handleCopy(
+                      Number.isFinite(conv.value) ? parseFloat(conv.value.toFixed(precision)).toString() : '0',
+                      conv.key
+                    )
+                  }
                   title="Copy value"
                   className="p-1.5 rounded-lg text-ink-muted hover:text-brand-700 dark:hover:text-white hover:bg-brand-100 dark:hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
                 >

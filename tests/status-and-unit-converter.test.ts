@@ -39,7 +39,7 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(BRAND_PALETTE.ink.primary.toUpperCase()).toBe('#1F2340');
   });
 
-  it('verifies official logo.svg and icon.svg contain the interlocking EC bidirectional arrow elements', () => {
+  it('verifies official logo.svg and icon.svg contain the interlocking EC bidirectional arrow elements and valid XML', () => {
     const logoSvg = fs.readFileSync(path.join(process.cwd(), 'public/logo.svg'), 'utf-8');
     const iconSvg = fs.readFileSync(path.join(process.cwd(), 'public/icon.svg'), 'utf-8');
 
@@ -48,6 +48,12 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(logoSvg).toContain('#5C6BC0');
     expect(logoSvg).toContain('Easy');
     expect(logoSvg).toContain('Convert');
+
+    // Must not contain invalid JSX comments
+    expect(logoSvg).not.toContain('{/*');
+    expect(logoSvg).not.toContain('*/}');
+    expect(iconSvg).not.toContain('{/*');
+    expect(iconSvg).not.toContain('*/}');
 
     // Both should contain the bidirectional arrows
     expect(logoSvg).toContain('M 44 28.5 L 51 33.5 L 44 38.5 Z'); // Right arrow
@@ -153,6 +159,29 @@ describe('Unit Converter Multi-Category Mathematical Accuracy', () => {
 
     // Energy: 1 kWh = 3,600,000 Joules
     expect(convertValue(1, UNIT_CATEGORIES.energy.units.kwh, UNIT_CATEGORIES.energy.units.joules)).toBe(3600000);
+  });
+
+  it('converts extended units accurately (micrograms, rankine, mach, petabytes, imperial gallons)', () => {
+    // Micrograms to Grams
+    expect(convertValue(1000000, UNIT_CATEGORIES.weight.units.mcg, UNIT_CATEGORIES.weight.units.g)).toBe(1);
+
+    // Rankine to Fahrenheit: 0°F = 459.67°R
+    expect(convertValue(459.67, UNIT_CATEGORIES.temperature.units.rankine, UNIT_CATEGORIES.temperature.units.fahrenheit)).toBeCloseTo(0, 2);
+
+    // Micrometers to Millimeters
+    expect(convertValue(1000, UNIT_CATEGORIES.length.units.um, UNIT_CATEGORIES.length.units.mm)).toBe(1);
+
+    // Imperial Gallons to Liters: 1 imp gal = 4.54609 L
+    expect(convertValue(1, UNIT_CATEGORIES.volume.units.impgal, UNIT_CATEGORIES.volume.units.liters)).toBeCloseTo(4.54609, 4);
+
+    // Mach to km/h: Mach 1 = 343 m/s = 1234.8 km/h
+    expect(convertValue(1, UNIT_CATEGORIES.speed.units.mach, UNIT_CATEGORIES.speed.units.kmh)).toBeCloseTo(1234.8, 1);
+
+    // Petabytes to Terabytes
+    expect(convertValue(1, UNIT_CATEGORIES.digital.units.pb, UNIT_CATEGORIES.digital.units.tb)).toBe(1000);
+
+    // Tebibytes to Gibibytes
+    expect(convertValue(1, UNIT_CATEGORIES.digital.units.tib, UNIT_CATEGORIES.digital.units.gib)).toBe(1024);
   });
 
   it('handles edge cases safely (NaN, 0, large quantities)', () => {

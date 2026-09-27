@@ -213,7 +213,7 @@ export default function BrandLogo({
         <span
           className={`font-sans tracking-tight font-extrabold text-brand-950 dark:text-white transition-colors flex items-center leading-none ${textClass} ${textClassName}`}
         >
-          <span>Easy</span>
+          <span className="text-brand-800 dark:text-white">Easy</span>
           <span className="text-brand-700 dark:text-brand-400">Convert</span>
         </span>
       )}
