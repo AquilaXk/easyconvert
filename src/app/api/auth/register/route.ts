@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     const password = typeof body.password === 'string' ? body.password : '';
     const name = typeof body.name === 'string' ? body.name.trim() : '';
 
-    if (!email || !email.includes('@')) {
+    if (!email?.includes('@')) {
       return NextResponse.json(
         { success: false, error: 'A valid email address is required.' },
         { status: 400 }
