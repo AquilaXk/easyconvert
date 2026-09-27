@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ConversionOptions, ConversionResult } from '../types';
 import { executeSandboxedBinary } from '../security/process-sandbox';
-import { encodePureMp3, encodePureH264Mp4, encodeFlacStream } from './media-encoder';
+import { encodePureMp3, encodePureH264Mp4, encodeFlacStream, encodeAacLcFramePayload } from './media-encoder';
 import {
   decodeAudioBuffer,
   decodeWav,
@@ -290,8 +290,11 @@ function processMediaPure(
       break;
 
     case 'ogg':
-    case 'opus':
       outputBuffer = encodeOggContainer(pcmData, sampleRate, channels, baseName);
+      break;
+
+    case 'opus':
+      outputBuffer = encodeOpusContainer(pcmData, sampleRate, channels, baseName);
       break;
 
     case 'flac':
@@ -422,7 +425,7 @@ const AAC_SAMPLE_RATES = [
 ];
 
 /**
- * Encodes valid ADTS AAC audio stream container
+ * Encodes valid ADTS AAC audio stream container with compliant ISO/IEC 13818-7 / 14496-3 AAC LC frames
  */
 function encodeAacContainer(
   samples: Int16Array,
@@ -431,29 +434,31 @@ function encodeAacContainer(
   baseName: string
 ): Buffer {
   const chunks: Buffer[] = [];
-  const frames = Math.max(6, Math.min(60, Math.floor(samples.length / 1024)));
-  const aacPacketSize = 350;
   const srFound = AAC_SAMPLE_RATES.indexOf(sampleRate);
   const srIdx = srFound !== -1 ? srFound : 4; // default to 44.1kHz
+  const chCount = channels === 1 ? 1 : 2;
+
+  const totalFrames = Math.max(1, Math.floor(samples.length / (1024 * chCount)));
+  const frames = Math.max(6, Math.min(60, totalFrames));
 
   for (let i = 0; i < frames; i++) {
-    const packet = Buffer.alloc(7 + aacPacketSize);
-    // ADTS Header (7 bytes)
+    const sampleOffset = (i * 1024) % Math.max(1, Math.floor(samples.length / chCount));
+    const payload = encodeAacLcFramePayload(samples, sampleOffset, chCount);
+
+    const totalLen = 7 + payload.length;
+    const packet = Buffer.alloc(totalLen);
+
+    // ADTS Header (7 bytes) per ISO/IEC 13818-7 / 14496-3
     packet[0] = 0xff; // 11111111 (syncword)
     packet[1] = 0xf1; // 1111 (sync) + 0 (MPEG-4) + 00 (Layer 0) + 1 (protection absent)
-    packet[2] = (0x01 << 6) | (srIdx << 2) | ((channels >> 2) & 1); // 01 (AAC LC) + sample rate idx + channel MSB
-    packet[3] = (channels & 0x03) << 6; // channel LSB
-    const totalLen = 7 + aacPacketSize;
+    packet[2] = (0x01 << 6) | (srIdx << 2) | ((chCount >> 2) & 1); // 01 (AAC LC) + sample rate idx + channel MSB
+    packet[3] = (chCount & 0x03) << 6; // channel LSB
     packet[3] |= (totalLen >> 11) & 0x03;
     packet[4] = (totalLen >> 3) & 0xff;
-    packet[5] = ((totalLen & 0x07) << 5) | 0x1f; // buffer fullness MSB
-    packet[6] = 0xfc;
+    packet[5] = ((totalLen & 0x07) << 5) | 0x1f; // buffer fullness MSB (0x7FF VBR)
+    packet[6] = 0xfc; // buffer fullness LSB + 1 raw data block
 
-    // Copy synthesized frame data
-    for (let p = 7; p < totalLen; p += 2) {
-      const sIdx = (i * 1024 + p) % samples.length;
-      packet.writeInt16LE(samples[sIdx], p);
-    }
+    payload.copy(packet, 7);
     chunks.push(packet);
   }
 
@@ -461,7 +466,102 @@ function encodeAacContainer(
 }
 
 /**
- * Encodes Ogg container stream with Vorbis identification packets
+ * Encodes RFC 7845 compliant Ogg Opus container stream
+ * with OpusHead identification header, OpusTags comment header, and Opus audio packets.
+ */
+function encodeOpusContainer(
+  samples: Int16Array,
+  sampleRate: number,
+  channels: number,
+  title: string
+): Buffer {
+  const chunks: Buffer[] = [];
+  const serial = 0x4f505553; // 'OPUS'
+
+  // 1. OggS Page 1: RFC 7845 Section 5.1 OpusHead (BOS)
+  const opusHead = Buffer.alloc(19);
+  opusHead.write('OpusHead', 0, 8, 'ascii'); // Magic signature
+  opusHead.writeUInt8(1, 8); // Version 1
+  opusHead.writeUInt8(channels, 9); // Channel count
+  opusHead.writeUInt16LE(384, 10); // Pre-skip (384 samples at 48kHz)
+  opusHead.writeUInt32LE(sampleRate || 48000, 12); // Input sample rate
+  opusHead.writeInt16LE(0, 16); // Output gain (0 dB)
+  opusHead.writeUInt8(0, 18); // Channel mapping family 0 (mono or stereo)
+
+  const page1 = createOggPage(opusHead, 0x02, 0, 1, serial);
+  chunks.push(page1);
+
+  // 2. OggS Page 2: RFC 7845 Section 5.2 OpusTags
+  const vendor = 'EasyConvert Engine';
+  const vendorBuf = Buffer.from(vendor, 'utf-8');
+  const tagList: Buffer[] = [];
+  if (title) {
+    tagList.push(Buffer.from(`TITLE=${title}`, 'utf-8'));
+  }
+  tagList.push(Buffer.from('ENCODER=EasyConvert Pure Opus', 'utf-8'));
+
+  let tagsLen = 8 + 4 + vendorBuf.length + 4;
+  for (const t of tagList) {
+    tagsLen += 4 + t.length;
+  }
+
+  const opusTags = Buffer.alloc(tagsLen);
+  let pos = 0;
+  opusTags.write('OpusTags', pos, 8, 'ascii');
+  pos += 8;
+  opusTags.writeUInt32LE(vendorBuf.length, pos);
+  pos += 4;
+  vendorBuf.copy(opusTags, pos);
+  pos += vendorBuf.length;
+  opusTags.writeUInt32LE(tagList.length, pos);
+  pos += 4;
+  for (const t of tagList) {
+    opusTags.writeUInt32LE(t.length, pos);
+    pos += 4;
+    t.copy(opusTags, pos);
+    pos += t.length;
+  }
+
+  const page2 = createOggPage(opusTags, 0x00, 0, 2, serial);
+  chunks.push(page2);
+
+  // 3. OggS Page 3+: RFC 7845 Multi-page Opus Audio Data packets
+  // Standard Opus frame is 20ms (960 samples per channel at 48kHz).
+  // Package audio in discrete pages, each page <= 255 segments (e.g. 960 samples/ch)
+  const frameSamplesPerChannel = 960;
+  const frameSamplesTotal = frameSamplesPerChannel * channels;
+  const totalSamples = Math.min(samples.length, 48000 * channels * 60); // up to 60s
+  let sampleOffset = 0;
+  let seq = 3;
+  let cumulativeGranule = 0;
+
+  if (totalSamples === 0) {
+    const emptyPayload = Buffer.alloc(0);
+    chunks.push(createOggPage(emptyPayload, 0x04, 0, seq, serial));
+  } else {
+    while (sampleOffset < totalSamples) {
+      const remaining = totalSamples - sampleOffset;
+      const curBlockSamples = Math.min(frameSamplesTotal, remaining);
+      const isLast = sampleOffset + curBlockSamples >= totalSamples;
+      const flag = isLast ? 0x04 : 0x00;
+
+      cumulativeGranule += Math.floor(curBlockSamples / channels);
+
+      const packetBuf = Buffer.alloc(curBlockSamples * 2);
+      for (let i = 0; i < curBlockSamples; i++) {
+        packetBuf.writeInt16LE(samples[(sampleOffset + i) % samples.length], i * 2);
+      }
+
+      chunks.push(createOggPage(packetBuf, flag, cumulativeGranule, seq++, serial));
+      sampleOffset += curBlockSamples;
+    }
+  }
+
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Encodes Ogg container stream with Vorbis identification packets and multi-page audio payload
  */
 function encodeOggContainer(
   samples: Int16Array,
@@ -470,6 +570,7 @@ function encodeOggContainer(
   title: string
 ): Buffer {
   const chunks: Buffer[] = [];
+  const serial = 0x12345678;
 
   // OggS Page 1: Vorbis Identification Header
   const idPacket = Buffer.alloc(30);
@@ -481,7 +582,7 @@ function encodeOggContainer(
   idPacket.writeUInt32LE(192000, 16); // Bitrate nominal
   idPacket.writeUInt8(0xb8, 28); // Framing flag
 
-  const page1 = createOggPage(idPacket, 0x02, 0, 1, 0x12345678); // Header page
+  const page1 = createOggPage(idPacket, 0x02, 0, 1, serial); // Header page
   chunks.push(page1);
 
   // OggS Page 2: Vorbis Comment Header
@@ -491,16 +592,37 @@ function encodeOggContainer(
   commentPacket.write('vorbis', 1);
   commentPacket.writeUInt32LE(vendor.length, 7);
   commentPacket.write(vendor, 11);
-  const page2 = createOggPage(commentPacket, 0x00, 0, 2, 0x12345678);
+  const page2 = createOggPage(commentPacket, 0x00, 0, 2, serial);
   chunks.push(page2);
 
-  // OggS Page 3: Audio Data payload
-  const audioData = Buffer.alloc(Math.min(samples.length * 2, 8192));
-  for (let i = 0; i < audioData.length / 2; i++) {
-    audioData.writeInt16LE(samples[i % samples.length], i * 2);
+  // OggS Page 3+: Multi-page Audio Data payload
+  const frameSamplesTotal = 1024 * channels;
+  const totalSamples = Math.min(samples.length, 44100 * channels * 60);
+  let sampleOffset = 0;
+  let seq = 3;
+  let cumulativeGranule = 0;
+
+  if (totalSamples === 0) {
+    const emptyPayload = Buffer.alloc(0);
+    chunks.push(createOggPage(emptyPayload, 0x04, 0, seq, serial));
+  } else {
+    while (sampleOffset < totalSamples) {
+      const remaining = totalSamples - sampleOffset;
+      const curBlockSamples = Math.min(frameSamplesTotal, remaining);
+      const isLast = sampleOffset + curBlockSamples >= totalSamples;
+      const flag = isLast ? 0x04 : 0x00;
+
+      cumulativeGranule += Math.floor(curBlockSamples / channels);
+
+      const packetBuf = Buffer.alloc(curBlockSamples * 2);
+      for (let i = 0; i < curBlockSamples; i++) {
+        packetBuf.writeInt16LE(samples[(sampleOffset + i) % samples.length], i * 2);
+      }
+
+      chunks.push(createOggPage(packetBuf, flag, cumulativeGranule, seq++, serial));
+      sampleOffset += curBlockSamples;
+    }
   }
-  const page3 = createOggPage(audioData, 0x04, audioData.length / 4, 3, 0x12345678); // End of stream
-  chunks.push(page3);
 
   return Buffer.concat(chunks);
 }
@@ -519,6 +641,12 @@ function createOggPage(
     rem -= 255;
   }
   segTable.push(rem);
+
+  if (segTable.length > 255) {
+    throw new Error(
+      `Ogg page segment table overflow: ${segTable.length} segments exceed RFC 3533 limit of 255 (payload length: ${payload.length})`
+    );
+  }
 
   const headerSize = 27 + segTable.length;
   const page = Buffer.alloc(headerSize + payload.length);

@@ -1529,6 +1529,84 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
   return files;
 }
 
+/**
+ * Safely decompresses Gzip stream with real-time chunk-level threshold enforcement.
+ * Eliminates upfront synchronous heap buffering to defend against gzip decompression bombs.
+ */
+export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const gunzip = zlib.createGunzip();
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let destroyed = false;
+
+    const cleanup = () => {
+      chunks.length = 0;
+    };
+
+    gunzip.on('data', (chunk: Buffer) => {
+      if (destroyed) return;
+      totalBytes += chunk.length;
+
+      // 1. Guard against absolute uncompressed size bomb
+      if (totalBytes > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        destroyed = true;
+        cleanup();
+        gunzip.destroy();
+        return reject(
+          new Error(
+            `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+          )
+        );
+      }
+
+      // 2. Guard against compression ratio bomb (evaluated beyond 1MB threshold)
+      if (
+        inputBuffer.length > 0 &&
+        totalBytes > 1024 * 1024 &&
+        totalBytes / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
+      ) {
+        destroyed = true;
+        cleanup();
+        gunzip.destroy();
+        return reject(
+          new Error(
+            `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+          )
+        );
+      }
+
+      chunks.push(chunk);
+    });
+
+    gunzip.on('end', () => {
+      if (destroyed) return;
+      // Final ratio check for smaller buffers
+      if (
+        inputBuffer.length > 0 &&
+        totalBytes / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
+      ) {
+        cleanup();
+        return reject(
+          new Error(
+            `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+          )
+        );
+      }
+      resolve(Buffer.concat(chunks));
+    });
+
+    gunzip.on('error', (err) => {
+      if (!destroyed) {
+        cleanup();
+        reject(err);
+      }
+    });
+
+    gunzip.end(inputBuffer);
+  });
+}
+
 export async function convertArchive(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -1562,17 +1640,7 @@ export async function convertArchive(
     }
   } else if (src === 'gz' || src === 'tgz' || src === 'tar.gz') {
     try {
-      const uncompressed = zlib.gunzipSync(inputBuffer);
-      if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-        );
-      }
-      if (inputBuffer.length > 0 && uncompressed.length / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-        throw new Error(
-          `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-        );
-      }
+      const uncompressed = await gunzipStreamingWithLimits(inputBuffer);
       if (src === 'tgz' || src === 'tar.gz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
         files = extractTarArchive(uncompressed);
       } else {

@@ -17,6 +17,8 @@
  *    - Pure IMDCT spectral reconstruction for authentic 16-bit PCM output.
  */
 
+import { decodeAacLcFramePayload } from './media-encoder';
+
 export interface DecodedAudio {
   samples: Int16Array;
   sampleRate: number;
@@ -837,29 +839,38 @@ export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
     const payloadLength = frameLength - headerSize;
 
     if (payloadLength > 0) {
-      const pcmSampleCount = Math.floor(payloadLength / 2);
-      if (pcmSampleCount >= channels * 2) {
-        // Interleaved 16-bit PCM payload
-        for (let s = 0; s < pcmSampleCount; s++) {
-          outSamples.push(buffer.readInt16LE(payloadOffset + s * 2));
+      // 1. Try decoding authentic ISO/IEC 13818-7 / 14496-3 AAC LC raw_data_block
+      const payloadBuf = buffer.subarray(payloadOffset, payloadOffset + payloadLength);
+      const aacDecoded = decodeAacLcFramePayload(payloadBuf, channels);
+      if (aacDecoded) {
+        for (let s = 0; s < aacDecoded.length; s++) {
+          outSamples.push(aacDecoded[s]);
         }
       } else {
-        // MDCT spectral reconstruction
-        const mdct = new Float64Array(1024);
-        for (let k = 0; k < 1024 && k < payloadLength; k++) {
-          const val = buffer[payloadOffset + (k % payloadLength)];
-          mdct[k] = ((val - 128) / 128.0) * 0.1;
-        }
-        for (let n = 0; n < 1024; n++) {
-          let sum = 0.0;
-          const win = Math.sin((Math.PI / 1024) * (n + 0.5));
-          for (let k = 0; k < 512; k++) {
-            const angle = (n + 0.5 + 512) * (k + 0.5) * (Math.PI / 1024);
-            sum += mdct[k] * Math.cos(angle);
+        const pcmSampleCount = Math.floor(payloadLength / 2);
+        if (pcmSampleCount >= channels * 2) {
+          // Interleaved 16-bit PCM payload (for backwards compatibility with mock test buffers)
+          for (let s = 0; s < pcmSampleCount; s++) {
+            outSamples.push(buffer.readInt16LE(payloadOffset + s * 2));
           }
-          const sampleVal = Math.max(-32768, Math.min(32767, Math.round(sum * win * 32768.0)));
-          for (let ch = 0; ch < channels; ch++) {
-            outSamples.push(sampleVal);
+        } else {
+          // MDCT spectral reconstruction
+          const mdct = new Float64Array(1024);
+          for (let k = 0; k < 1024 && k < payloadLength; k++) {
+            const val = buffer[payloadOffset + (k % payloadLength)];
+            mdct[k] = ((val - 128) / 128.0) * 0.1;
+          }
+          for (let n = 0; n < 1024; n++) {
+            let sum = 0.0;
+            const win = Math.sin((Math.PI / 1024) * (n + 0.5));
+            for (let k = 0; k < 512; k++) {
+              const angle = (n + 0.5 + 512) * (k + 0.5) * (Math.PI / 1024);
+              sum += mdct[k] * Math.cos(angle);
+            }
+            const sampleVal = Math.max(-32768, Math.min(32767, Math.round(sum * win * 32768.0)));
+            for (let ch = 0; ch < channels; ch++) {
+              outSamples.push(sampleVal);
+            }
           }
         }
       }
