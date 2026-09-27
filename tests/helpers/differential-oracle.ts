@@ -1,5 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
@@ -87,6 +90,86 @@ export function getOracleToolDiagnostics(): OracleToolDiagnostic[] {
     available: isOracleToolAvailable(tool),
     path: getOracleToolPath(tool),
   }));
+}
+
+/**
+ * Extracts plain text using external Poppler pdftotext binary when available.
+ */
+export function extractTextWithExternalPdftotext(buffer: Buffer): string | null {
+  const toolPath = getOracleToolPath('pdftotext');
+  if (!toolPath) return null;
+  const tmpPath = path.join(os.tmpdir(), `oracle_pdf_${crypto.randomUUID()}.pdf`);
+  try {
+    fs.writeFileSync(tmpPath, buffer);
+    const stdout = execFileSync(toolPath, ['-q', tmpPath, '-'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    return stdout;
+  } catch {
+    return null;
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
+}
+
+/**
+ * Validates 7z archive structure using real 7-Zip CLI engine.
+ */
+export function verifyArchiveWith7z(buffer: Buffer): boolean {
+  const toolPath = getOracleToolPath('7z');
+  if (!toolPath) return true;
+  const tmpPath = path.join(os.tmpdir(), `oracle_7z_${crypto.randomUUID()}.7z`);
+  try {
+    fs.writeFileSync(tmpPath, buffer);
+    execFileSync(toolPath, ['t', '-y', tmpPath], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
+}
+
+/**
+ * Validates TAR archive stream using standard system tar CLI.
+ */
+export function verifyArchiveWithTar(buffer: Buffer): boolean {
+  const toolPath = getOracleToolPath('tar');
+  if (!toolPath) return true;
+  try {
+    execFileSync(toolPath, ['-tf', '-'], {
+      input: buffer,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates Zstandard compressed stream using standard zstd CLI.
+ */
+export function verifyArchiveWithZstd(buffer: Buffer): boolean {
+  const toolPath = getOracleToolPath('zstd');
+  if (!toolPath) return true;
+  try {
+    execFileSync(toolPath, ['-t', '-q'], {
+      input: buffer,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ============================================================================
@@ -187,6 +270,49 @@ export interface ArchiveStructuralAst {
 // 3. Reference Structural AST Parsers
 // ============================================================================
 
+/**
+ * Inspects PDF content and compressed streams for ISO 32000-1 3 Tr invisible text operator.
+ * Uses linear index search to prevent regex backtracking (typescript:S8786).
+ */
+function containsInvisibleTextOperator(content: string): boolean {
+  if (content.includes('3 Tr') || content.includes('3 tr')) {
+    return true;
+  }
+
+  let searchPos = 0;
+  while (searchPos < content.length) {
+    const streamStart = content.indexOf('stream', searchPos);
+    if (streamStart === -1) break;
+
+    let dataStart = streamStart + 6;
+    if (content.charCodeAt(dataStart) === 0x0d) dataStart++;
+    if (content.charCodeAt(dataStart) === 0x0a) dataStart++;
+
+    const streamEnd = content.indexOf('endstream', dataStart);
+    if (streamEnd === -1) break;
+
+    const streamBuf = Buffer.from(content.slice(dataStart, streamEnd), 'latin1');
+
+    try {
+      const inflated = zlib.inflateSync(streamBuf).toString('latin1');
+      if (inflated.includes('3 Tr') || inflated.includes('3 tr')) {
+        return true;
+      }
+    } catch {}
+
+    try {
+      const inflated = zlib.inflateRawSync(streamBuf).toString('latin1');
+      if (inflated.includes('3 Tr') || inflated.includes('3 tr')) {
+        return true;
+      }
+    } catch {}
+
+    searchPos = streamEnd + 9;
+  }
+
+  return false;
+}
+
 export async function parsePdfToAst(buffer: Buffer): Promise<PdfStructuralAst> {
   const content = buffer.toString('latin1');
   const verMatch = /%PDF-(\d+\.\d+)/.exec(content);
@@ -215,14 +341,9 @@ export async function parsePdfToAst(buffer: Buffer): Promise<PdfStructuralAst> {
   }
 
   const extractedText = extractTextFromPdf(buffer) || textTokens.join(' ');
-
   const hasObjectStreams = content.includes('/Type /ObjStm') || content.includes('/ObjStm');
   const hasXrefStream = content.includes('/Type /XRef') || content.includes('/XRef');
-  const hasSandwichOcrText =
-    content.includes('3 Tr') ||
-    content.includes('3 tr') ||
-    extractedText.includes('OCR_SANDWICH') ||
-    extractedText.includes('KOREAN_SAMPLE_TEXT');
+  const hasSandwichOcrText = containsInvisibleTextOperator(content);
 
   if (!title) {
     const titleMatch = /\/Title\s*\(([^()]+)\)/.exec(content);
@@ -833,7 +954,18 @@ async function comparePdfDifferential(
     discrepancies.push('ObjectStreams missing in actual output');
     structuralScore -= 0.1;
   }
-  const textSimilarity = calculateNormalizedTextSimilarity(actualAst.extractedText, refAst.extractedText);
+  let textSimilarity = 1.0;
+  if (isOracleToolAvailable('pdftotext')) {
+    const actualText = extractTextWithExternalPdftotext(actualBuffer);
+    const refText = extractTextWithExternalPdftotext(referenceBuffer);
+    if (actualText !== null && refText !== null) {
+      textSimilarity = calculateNormalizedTextSimilarity(actualText, refText);
+    } else {
+      textSimilarity = calculateNormalizedTextSimilarity(actualAst.extractedText, refAst.extractedText);
+    }
+  } else {
+    textSimilarity = calculateNormalizedTextSimilarity(actualAst.extractedText, refAst.extractedText);
+  }
   return { structuralScore, textSimilarity };
 }
 
@@ -954,10 +1086,25 @@ export async function runDifferentialComparison(
     oracleType = 'external_cli';
   } else if (fmt === 'tar' && isOracleToolAvailable('tar')) {
     oracleType = 'external_cli';
+    const isValid = verifyArchiveWithTar(actualBuffer);
+    if (!isValid) {
+      discrepancies.push('External tar CLI archive verification failed');
+      structuralScore = 0;
+    }
   } else if ((fmt === 'zstd' || fmt === 'zst') && isOracleToolAvailable('zstd')) {
     oracleType = 'external_cli';
+    const isValid = verifyArchiveWithZstd(actualBuffer);
+    if (!isValid) {
+      discrepancies.push('External zstd CLI decompression verification failed');
+      structuralScore = 0;
+    }
   } else if (fmt === '7z' && isOracleToolAvailable('7z')) {
     oracleType = 'external_cli';
+    const isValid = verifyArchiveWith7z(actualBuffer);
+    if (!isValid) {
+      discrepancies.push('External 7z CLI archive test failed');
+      structuralScore = 0;
+    }
   }
 
   return {

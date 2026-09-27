@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import sharp from 'sharp';
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { PDFDocument, rgb, StandardFonts, setTextRenderingMode, TextRenderingMode } from 'pdf-lib';
 import { demosaicBayerCfa, BayerPattern, BayerSensorData } from '../../src/lib/conversions/image';
 import { crc32, compressZstd, create7zArchive } from '../../src/lib/conversions/archive';
 
@@ -847,7 +847,7 @@ export async function synthesizeEnterprisePdf(): Promise<GoldenPdfResult> {
     color: rgb(0.2, 0.2, 0.2),
   });
 
-  // Page 2: Synthetic Sandwich OCR Layer (Simulating 3 Tr text layer)
+  // Page 2: Synthetic Sandwich OCR Layer (Authentic 3 Tr invisible text mode)
   const page2 = pdfDoc.addPage([595.28, 841.89]);
   page2.drawText('Page 2: OCR Scanned Document Sandwich Simulation', {
     x: 50,
@@ -856,12 +856,14 @@ export async function synthesizeEnterprisePdf(): Promise<GoldenPdfResult> {
     font,
     color: rgb(0.1, 0.1, 0.1),
   });
-  page2.drawText('Recognized Text: KOREAN_SAMPLE_TEXT_OCR_SANDWICH_LAYER_2026', {
+  page2.pushOperators(
+    setTextRenderingMode(TextRenderingMode.Invisible)
+  );
+  page2.drawText('Recognized Text: Enterprise Scanned Document Searchable Text Layer', {
     x: 50,
     y: 750,
     size: 11,
     font: regularFont,
-    color: rgb(0.3, 0.3, 0.3),
   });
 
   const pdfBytes = await pdfDoc.save({ useObjectStreams: true });

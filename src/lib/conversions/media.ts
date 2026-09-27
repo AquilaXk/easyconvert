@@ -113,12 +113,12 @@ export async function convertMedia(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
-  // If system ffmpeg is available, execute transcoding
-  if (checkFfmpeg()) {
+  // When explicitly requested via options.useFfmpeg and system FFmpeg is available, execute transcoding
+  if (options.useFfmpeg && checkFfmpeg()) {
     try {
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch {
-      // Fallback to pure TS media synthesis
+      // Fallback to pure TS media processing
     }
   }
 
@@ -200,6 +200,9 @@ async function executeFfmpegTranscode(
     });
 
     const outputBuffer = fs.readFileSync(outputPath);
+    if (outputBuffer.length === 0) {
+      throw new Error(`FFmpeg output is empty (0 bytes) for ${src} -> ${tgt}`);
+    }
     return {
       buffer: outputBuffer,
       mimeType: getMimeTypeForMedia(tgt),
