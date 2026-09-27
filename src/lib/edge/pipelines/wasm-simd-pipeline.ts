@@ -249,8 +249,10 @@ export class WasmWorkerManager {
         this.processedBytes += result.bytesProcessed;
         this.taskCount += 1;
         return result;
-      } catch {
-        // Fallback to in-process execution on worker fault
+      } catch (workerErr) {
+        // Enforce fail-closed: recycle faulted worker and propagate error instead of operating on detached buffer
+        this.recycleWorker();
+        throw workerErr;
       }
     }
 

@@ -5,6 +5,8 @@ import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ConversionQueue from '@/components/ConversionQueue';
 import Features from '@/components/Features';
+import FaqSection from '@/components/FaqSection';
+import AdBanner from '@/components/AdBanner';
 import Footer from '@/components/Footer';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
@@ -180,8 +182,11 @@ export default function Home() {
     <div className={`flex flex-col min-h-screen ${queue.length > 0 ? 'bg-[#18191d]' : 'bg-[#f4f4f5] dark:bg-[#18191d]'} text-neutral-900 dark:text-neutral-100 transition-colors`}>
       <Header />
 
+      {/* Top Leaderboard Ad Unit */}
+      <AdBanner slot="top-leaderboard" className="pt-2 pb-0" />
+
       <main className="flex-1">
-        {/* Dark Hero Section */}
+        {/* Modern Dropzone & Format Hero Section */}
         <Hero
           onFilesSelected={handleFilesSelected}
           hasActiveQueue={queue.length > 0}
@@ -214,11 +219,25 @@ export default function Home() {
           </div>
         )}
 
-        {/* 2-Column Format Catalog & Data Security */}
-        {queue.length === 0 && <Features onSelectPreset={handleSelectPreset} />}
+        {/* Informational & conversion content when queue is idle */}
+        {queue.length === 0 && (
+          <>
+            {/* Mid-Content Ad Banner */}
+            <AdBanner slot="mid-content" />
+
+            {/* 3-Step Guide, Format Catalog & High-Fidelity Highlights */}
+            <Features onSelectPreset={handleSelectPreset} />
+
+            {/* In-Feed Ad Banner */}
+            <AdBanner slot="in-feed" />
+
+            {/* Comprehensive Free & Secure FAQ Section */}
+            <FaqSection />
+          </>
+        )}
       </main>
 
-      {queue.length === 0 && <Footer />}
+      <Footer />
     </div>
   );
 }

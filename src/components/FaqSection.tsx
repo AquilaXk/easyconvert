@@ -8,24 +8,24 @@ export default function FaqSection() {
 
   const faqs = [
     {
-      q: 'Is EasyConvert free to use?',
-      a: 'Yes, EasyConvert provides free in-browser and server-assisted conversion for standard files. No hidden watermarks, forced signups, or subscription locks.',
+      q: 'Is EasyConvert 100% free to use?',
+      a: 'Yes, EasyConvert is completely free. There are no paywalls, credit systems, hidden subscriptions, or watermarks. You can convert files without even creating an account.',
     },
     {
-      q: 'Are my files secure and kept private?',
-      a: 'Absolutely. We practice strict ephemeral processing with a fail-closed architecture. Uploaded files are immediately processed in temporary worker instances and permanently deleted right after conversion. No files are ever saved, indexed, or shared.',
+      q: 'Are my files safe and private?',
+      a: 'Absolutely. Because EasyConvert executes conversions client-side directly inside your browser via WebAssembly, WebCodecs, and OPFS whenever possible, your sensitive files never even leave your device. When edge fallback is used, processing is strictly ephemeral in volatile RAM with zero retention.',
     },
     {
       q: 'What is the maximum file size limit?',
-      a: 'The public web interface supports files up to 100 MB per conversion job. For higher capacities or high-volume enterprise pipelines, our REST API provides scalable endpoints.',
+      a: 'Our optimized client-side engine allows conversions of files up to 1 GB without waiting for heavy network uploads. Performance depends directly on your device hardware.',
     },
     {
       q: 'Can I convert multiple files simultaneously?',
-      a: 'Yes! Simply select or drop multiple files into the conversion queue. You can configure individual target formats and options for each file, convert them all in parallel, and download them individually or as a single consolidated ZIP archive.',
+      a: 'Yes! Select or drop multiple files into the conversion queue. You can configure individual target formats and options for each file, convert them all in parallel, and download them individually or as a single consolidated ZIP archive.',
     },
     {
-      q: 'Does EasyConvert provide a developer API?',
-      a: 'Yes, full RESTful endpoints are exposed for querying format capabilities (/api/formats) and executing multipart file conversions (/api/convert and /api/convert/batch).',
+      q: 'Do I need to install any software or plugins?',
+      a: 'No installation required! EasyConvert runs entirely inside modern web browsers on macOS, Windows, Linux, iOS, and Android.',
     },
   ];
 

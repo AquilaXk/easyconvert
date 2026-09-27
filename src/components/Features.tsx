@@ -359,105 +359,115 @@ export default function Features({ onSelectPreset }: FeaturesProps) {
           <div className="h-px bg-gradient-to-r from-transparent via-neutral-300 dark:via-neutral-700/60 to-transparent" />
         </div>
 
-        {/* ROW 2: API & Integrations (Left) + High-Quality Conversions (Right) */}
-        <div id="api-section" className="grid gap-12 lg:grid-cols-3 lg:gap-16 items-start">
-          {/* Left Column: API & Integrations */}
-          <div className="space-y-4 lg:col-span-2">
-            <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-xl">
-              <svg className="size-3.5 text-[#5C6BC0]" viewBox="0 0 512 512" fill="currentColor">
-                <path d="M9.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L146.7 256 9.4 118.6zM224 384l256 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-256 0c-17.7 0-32-14.3-32-32s14.3-32 32-32z" />
-              </svg>
-              <span>API &amp; Integrations</span>
-            </div>
-
-            <p className="mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
-              Build jobs from import, convert and export tasks, then connect them to your own storage and application logic. Usage-based pricing and volume discounts are available for production workloads.{' '}
-              <a
-                href="/api/v2"
-                className="inline-flex items-center gap-1.5 text-sm font-medium text-[#5C6BC0] hover:underline"
-              >
-                <span>Explore the API</span>
-                <ArrowRight className="size-3" />
-              </a>
+        {/* ROW 2: How It Works (3 Steps) */}
+        <div id="how-it-works" className="space-y-8 pt-4">
+          <div className="text-center max-w-2xl mx-auto">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-[#5C6BC0] dark:text-[#949FE8]">
+              Simple &amp; Fast Process
+            </span>
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-neutral-900 dark:text-white mt-1">
+              How to Convert Files in 3 Steps
+            </h2>
+            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+              Convert your documents, media, and archives in seconds with zero complicated settings.
             </p>
-
-            {/* Code Box for API integration */}
-            <div className="relative my-5 group">
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText(`{\n  "tasks": {\n    "import-1": {\n      "operation": "import/url",\n      "url": "https://example.com/file.pdf"\n    },\n    "convert-1": {\n      "operation": "convert",\n      "input": "import-1",\n      "output_format": "docx"\n    },\n    "export-1": {\n      "operation": "export/url",\n      "input": "convert-1"\n    }\n  }\n}`);
-                }}
-                title="Copy to clipboard"
-                aria-label="Copy to clipboard"
-                className="absolute top-2.5 right-2.5 inline-flex items-center rounded-md border border-neutral-200 dark:border-neutral-700 bg-white/90 dark:bg-neutral-800/90 px-2 py-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white opacity-80 hover:opacity-100 transition shadow-xs cursor-pointer z-10"
-              >
-                <svg className="size-3.5 fill-current mr-1" viewBox="0 0 448 512">
-                  <path d="M192 0c-35.3 0-64 28.7-64 64l0 256c0 35.3 28.7 64 64 64l192 0c35.3 0 64-28.7 64-64l0-200.6c0-17.4-7.1-34.1-19.7-46.2L370.6 17.8C358.7 6.4 342.8 0 326.3 0L192 0zM64 128c-35.3 0-64 28.7-64 64L0 448c0 35.3 28.7 64 64 64l192 0c35.3 0 64-28.7 64-64l0-16-64 0 0 16-192 0 0-256 16 0 0-64-16 0z" />
-                </svg>
-                Copy
-              </button>
-              <pre className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-800 bg-[#f8f9fa] dark:bg-[#18191d] p-4 text-xs font-mono leading-relaxed text-neutral-800 dark:text-neutral-200">
-                <code>{`{
-  "tasks": {
-    "import-1": {
-      "operation": "import/url",
-      "url": "https://example.com/file.pdf"
-    },
-    "convert-1": {
-      "operation": "convert",
-      "input": "import-1",
-      "output_format": "docx"
-    },
-    "export-1": {
-      "operation": "export/url",
-      "input": "convert-1"
-    }
-  }
-}`}</code>
-              </pre>
-            </div>
           </div>
 
-          {/* Right Column: High-Quality Conversions */}
-          <div className="space-y-4 lg:col-span-1">
-            <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white sm:text-xl">
-              <svg className="size-3.5 text-[#5C6BC0]" viewBox="0 0 576 512" fill="currentColor">
-                <path d="M96 0C60.7 0 32 28.7 32 64l0 384c0 35.3 28.7 64 64 64l180 0c-22.7-31.5-36-70.2-36-112 0-100.6 77.4-183.2 176-191.3l0-38.1c0-17.7-6.7-33.3-18.7-45.3L290.7 18.7C278.7 6.7 262.5 0 245.5 0L96 0zM357.5 176L264 176c-13.3 0-24-10.7-24-24L240 58.5 357.5 176zM576 400a144 144 0 1 0 -288 0 144 144 0 1 0 288 0zm-86.6-60.9c7.1 5.2 8.7 15.2 3.5 22.3l-64 88c-2.8 3.8-7 6.2-11.7 6.5s-9.3-1.3-12.6-4.6l-40-40c-6.2-6.2-6.2-16.4 0-22.6s16.4-6.2 22.6 0l26.8 26.8 53-72.9c5.2-7.1 15.2-8.7 22.4-3.5z" />
-              </svg>
-              <span>High-Quality Conversions</span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Step 1 */}
+            <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#212529] p-6 shadow-sm flex flex-col items-start gap-4">
+              <div className="size-10 rounded-xl bg-[#5C6BC0]/10 text-[#5C6BC0] flex items-center justify-center font-bold text-base">
+                1
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-neutral-900 dark:text-white">Choose Files</h3>
+                <p className="mt-1.5 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                  Select files from your device, drag and drop into the dropzone, or import directly from URL and cloud drives.
+                </p>
+              </div>
             </div>
 
-            <p className="mt-3 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
-              The available options change with the selected operation, so image, document, video and audio jobs expose the controls that matter for that output.
+            {/* Step 2 */}
+            <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#212529] p-6 shadow-sm flex flex-col items-start gap-4">
+              <div className="size-10 rounded-xl bg-[#5C6BC0]/10 text-[#5C6BC0] flex items-center justify-center font-bold text-base">
+                2
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-neutral-900 dark:text-white">Select Format</h3>
+                <p className="mt-1.5 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                  Pick your desired output format from 290+ supported standards. Customize optional quality or resolution settings.
+                </p>
+              </div>
+            </div>
+
+            {/* Step 3 */}
+            <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#212529] p-6 shadow-sm flex flex-col items-start gap-4">
+              <div className="size-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-base">
+                3
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-neutral-900 dark:text-white">Download Result</h3>
+                <p className="mt-1.5 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                  Click Convert and download your converted files immediately or save all items together as a clean ZIP package.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Separator between rows */}
+        <div className="mx-auto my-12 max-w-3xl px-2">
+          <div className="h-px bg-gradient-to-r from-transparent via-neutral-300 dark:via-neutral-700/60 to-transparent" />
+        </div>
+
+        {/* ROW 3: High-Quality Conversions & Zero-Retention Security Highlights */}
+        <div id="features" className="grid gap-8 md:grid-cols-2 lg:gap-12 items-start">
+          <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#212529] p-6 sm:p-8 shadow-sm space-y-4">
+            <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">
+              <svg className="size-4 text-[#5C6BC0]" viewBox="0 0 576 512" fill="currentColor">
+                <path d="M96 0C60.7 0 32 28.7 32 64l0 384c0 35.3 28.7 64 64 64l180 0c-22.7-31.5-36-70.2-36-112 0-100.6 77.4-183.2 176-191.3l0-38.1c0-17.7-6.7-33.3-18.7-45.3L290.7 18.7C278.7 6.7 262.5 0 245.5 0L96 0zM357.5 176L264 176c-13.3 0-24-10.7-24-24L240 58.5 357.5 176zM576 400a144 144 0 1 0 -288 0 144 144 0 1 0 288 0zm-86.6-60.9c7.1 5.2 8.7 15.2 3.5 22.3l-64 88c-2.8 3.8-7 6.2-11.7 6.5s-9.3-1.3-12.6-4.6l-40-40c-6.2-6.2-6.2-16.4 0-22.6s16.4-6.2 22.6 0l26.8 26.8 53-72.9c5.2-7.1 15.2-8.7 22.4-3.5z" />
+              </svg>
+              <span>High-Fidelity Engine</span>
+            </div>
+            <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
+              Every conversion is processed using high-precision encoders to guarantee font accuracy, correct color matrices, vector clarity, and exact table formatting.
             </p>
-
-            <ul className="mt-5 space-y-3">
-              <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
-                  <Cpu className="size-3.5" />
-                </span>
-                <span className="leading-snug">
-                  Vendor engines and open-source converters selected per file type
-                </span>
+            <ul className="space-y-2 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400">
+              <li className="flex items-center gap-2">
+                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                <span>Lossless and high-bitrate media transcoding</span>
               </li>
-
-              <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
-                  <Sliders className="size-3.5" />
-                </span>
-                <span className="leading-snug">
-                  Per-conversion controls for codec, bitrate, resolution and quality
-                </span>
+              <li className="flex items-center gap-2">
+                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                <span>Preserves complex OpenXML layouts and formulas</span>
               </li>
+              <li className="flex items-center gap-2">
+                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                <span>Multi-lingual OCR recognition and sandwich PDFs</span>
+              </li>
+            </ul>
+          </div>
 
-              <li className="flex items-start gap-3 text-sm text-neutral-600 dark:text-neutral-400">
-                <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[#5C6BC0]/10 text-[#5C6BC0]">
-                  <CheckCircle2 className="size-3.5" />
-                </span>
-                <span className="leading-snug">
-                  Color-accurate, font-faithful output for documents and images
-                </span>
+          <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#212529] p-6 sm:p-8 shadow-sm space-y-4">
+            <div className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">
+              <ShieldCheck className="size-4 text-emerald-500" />
+              <span>100% Free &amp; Private</span>
+            </div>
+            <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
+              No credit cards, subscription fees, or hidden payment walls. EasyConvert runs directly in your browser with complete privacy.
+            </p>
+            <ul className="space-y-2 text-xs sm:text-sm text-neutral-600 dark:text-neutral-400">
+              <li className="flex items-center gap-2">
+                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                <span>Zero server file retention &amp; memory-only processing</span>
+              </li>
+              <li className="flex items-center gap-2">
+                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                <span>Unlimited free conversions for all users</span>
+              </li>
+              <li className="flex items-center gap-2">
+                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                <span>No registration or personal information required</span>
               </li>
             </ul>
           </div>

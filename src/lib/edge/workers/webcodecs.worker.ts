@@ -526,15 +526,20 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
           while (trakCur + 8 <= trakEnd) {
             const tSize = view.getUint32(trakCur);
             const tType = readFourCC(view, trakCur + 4);
-            if (tType === 'tkhd' && trakCur + 84 <= trakEnd) {
-              const w = view.getUint32(trakCur + tSize - 8) >> 16;
-              const h = view.getUint32(trakCur + tSize - 4) >> 16;
-              if (w > 0 && h > 0) {
-                width = w;
-                height = h;
+            if (tType === 'tkhd' && tSize >= 84 && trakCur + tSize <= trakEnd) {
+              const tkhdVersion = view.getUint8(trakCur + 8);
+              const wOffset = tkhdVersion === 0 ? trakCur + 76 : trakCur + 88;
+              const hOffset = tkhdVersion === 0 ? trakCur + 80 : trakCur + 92;
+              if (hOffset + 4 <= trakCur + tSize && hOffset + 4 <= trakEnd) {
+                const w = view.getUint32(wOffset) >> 16;
+                const h = view.getUint32(hOffset) >> 16;
+                if (w > 0 && h > 0) {
+                  width = w;
+                  height = h;
+                }
               }
             } else if (tType === 'mdia') {
-              const mdiaEnd = trakCur + tSize;
+              const mdiaEnd = Math.min(trakEnd, trakCur + Math.max(8, tSize));
               let mdiaCur = trakCur + 8;
               while (mdiaCur + 8 <= mdiaEnd) {
                 const mSize = view.getUint32(mdiaCur);
@@ -550,7 +555,7 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
                     codec = 'mp4a.40.2';
                   }
                 } else if (mType === 'minf') {
-                  const minfEnd = mdiaCur + mSize;
+                  const minfEnd = Math.min(mdiaEnd, mdiaCur + Math.max(8, mSize));
                   let minfCur = mdiaCur + 8;
                   while (minfCur + 8 <= minfEnd) {
                     const miSize = view.getUint32(minfCur);
@@ -569,13 +574,13 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
                         samples.push(...extracted);
                       }
                     }
-                    minfCur += miSize > 0 ? miSize : 8;
+                    minfCur += miSize >= 8 ? miSize : 8;
                   }
                 }
-                mdiaCur += mSize > 0 ? mSize : 8;
+                mdiaCur += mSize >= 8 ? mSize : 8;
               }
             }
-            trakCur += tSize > 0 ? tSize : 8;
+            trakCur += tSize >= 8 ? tSize : 8;
           }
         }
         moovOffset += subActual > 0 ? subActual : 8;
