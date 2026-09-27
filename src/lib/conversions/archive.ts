@@ -69,6 +69,25 @@ export const ARCHIVE_SECURITY_LIMITS = {
   MAX_RATIO: 100, // 100:1 compression ratio
 };
 
+/**
+ * Normalizes and validates archive entry paths against Zip-Slip traversal.
+ * Strips Windows drive letters, converts backslashes, collapses /./ and /../ segments.
+ * Returns null if the resulting path escapes the extraction root or is invalid.
+ */
+export function sanitizeArchivePath(filename: string): string | null {
+  const normalized = filename
+    .replace(/^[a-zA-Z]:[\\/]+/, '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((part) => part !== '..' && part !== '.' && part.length > 0)
+    .join('/');
+
+  if (!normalized || normalized.startsWith('/') || normalized.includes('../')) {
+    return null;
+  }
+  return normalized;
+}
+
 export async function extractZipArchive(
   zipBuffer: Buffer
 ): Promise<{ filename: string; buffer: Buffer }[]> {
@@ -175,13 +194,7 @@ export async function extractZipArchive(
     const buffer = Buffer.concat(chunks);
 
     // Zip-slip defense: sanitize path and strip leading / or drive letters or ..
-    const sanitizedName = filename
-      .replace(/^[a-zA-Z]:[\\/]+/, '')
-      .replace(/\\/g, '/')
-      .split('/')
-      .filter((part) => part !== '..' && part !== '.' && part.length > 0)
-      .join('/');
-
+    const sanitizedName = sanitizeArchivePath(filename);
     if (!sanitizedName) continue;
 
     files.push({ filename: sanitizedName, buffer });
@@ -279,10 +292,12 @@ export function extractTarArchive(tarBuffer: Buffer): { filename: string; buffer
       );
     }
 
-    const fileBuf = tarBuffer.subarray(offset, offset + size);
-    files.push({ filename: rawName, buffer: Buffer.from(fileBuf) });
-
     const pad = (512 - (size % 512)) % 512;
+    const sanitizedName = sanitizeArchivePath(rawName);
+    if (sanitizedName) {
+      const fileBuf = tarBuffer.subarray(offset, offset + size);
+      files.push({ filename: sanitizedName, buffer: Buffer.from(fileBuf) });
+    }
     offset += size + pad;
   }
 
@@ -392,10 +407,11 @@ export function extractRarArchive(rarBuffer: Buffer): { filename: string; buffer
       const nameSize = rarBuffer.readUInt16LE(offset + 26);
       if (offset + 32 + nameSize <= rarBuffer.length) {
         const filename = rarBuffer.toString('utf-8', offset + 32, offset + 32 + nameSize);
+        const sanitizedName = sanitizeArchivePath(filename);
         const dataOffset = offset + headSize;
-        if (dataOffset + packSize <= rarBuffer.length) {
+        if (sanitizedName && dataOffset + packSize <= rarBuffer.length) {
           const fileBuf = Buffer.from(rarBuffer.subarray(dataOffset, dataOffset + packSize));
-          files.push({ filename, buffer: fileBuf });
+          files.push({ filename: sanitizedName, buffer: fileBuf });
         }
       }
       offset += headSize + packSize;
@@ -728,10 +744,13 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
     }
 
     const endOffset = Math.min(32 + totalPackSize, curOffset + size);
-    files.push({
-      filename: fn,
-      buffer: Buffer.from(sevenZipBuffer.subarray(curOffset, endOffset)),
-    });
+    const sanitizedName = sanitizeArchivePath(fn);
+    if (sanitizedName) {
+      files.push({
+        filename: sanitizedName,
+        buffer: Buffer.from(sevenZipBuffer.subarray(curOffset, endOffset)),
+      });
+    }
     curOffset += size;
   }
 

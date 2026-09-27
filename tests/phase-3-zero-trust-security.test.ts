@@ -179,6 +179,54 @@ endobj
       expect(sanitizedText).toContain('%PDF-');
     });
 
+    it('reconstructs exact xref table byte offsets after active content disarming', () => {
+      const docWithXref = Buffer.from(`%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OpenAction 3 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Action /S /JavaScript /JS (app.alert('pwned')) >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R >>
+endobj
+xref
+0 5
+0000000000 65535 f 
+0000000009 00000 n 
+0000000078 00000 n 
+0000000135 00000 n 
+0000000220 00000 n 
+trailer
+<< /Size 5 /Root 1 0 R >>
+startxref
+267
+%%EOF`);
+
+      const { buffer, report } = sanitizePdf(docWithXref);
+      expect(report.isSanitized).toBe(true);
+      expect(report.threatsRemoved.javaScriptCount).toBeGreaterThanOrEqual(1);
+      expect(report.threatsRemoved.openActionCount).toBeGreaterThanOrEqual(1);
+
+      const sanitizedText = buffer.toString('latin1');
+      expect(sanitizedText).not.toContain('/S /JavaScript');
+      expect(sanitizedText).not.toContain('/OpenAction');
+      expect(sanitizedText).toContain('/S /None');
+
+      // Verify that every object offset in the reconstructed xref matches exact byte offset
+      const xrefMatch = sanitizedText.match(/xref\s+0\s+(\d+)\s+([\s\S]*?)trailer/);
+      expect(xrefMatch).not.toBeNull();
+      const entries = xrefMatch![2].trim().split('\n');
+      for (let i = 1; i < entries.length; i++) {
+        const offset = parseInt(entries[i].substring(0, 10), 10);
+        const objHeader = `${i} 0 obj`;
+        expect(sanitizedText.substring(offset, offset + objHeader.length)).toBe(objHeader);
+      }
+    });
+
     it('throws error when attempting to sanitize non-PDF buffers', () => {
       const invalid = Buffer.from('Plain text content');
       expect(() => sanitizePdf(invalid)).toThrow(/missing %PDF- header/);

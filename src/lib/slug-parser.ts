@@ -78,7 +78,7 @@ export function parseConverterSlug(slug: string): ParsedSlug {
       sourceFormat: 'pdf',
       targetFormat: 'docx',
       pageTitle: 'About Us',
-      pageDescription: 'EasyConvert empowers millions of users worldwide with instant, secure file conversions.',
+      pageDescription: 'EasyConvert provides free, private, client-side file and data conversions directly in your browser.',
     };
   }
   if (cleanSlug === 'security') {

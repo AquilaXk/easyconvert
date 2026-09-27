@@ -59,6 +59,158 @@ export enum Encoding {
 }
 
 // ==========================================
+// Pure TypeScript Snappy Decompressor & Compressor
+// ==========================================
+
+/**
+ * Decompresses Snappy raw block or framed format payload.
+ */
+export function decompressSnappy(buf: Buffer): Buffer {
+  if (
+    buf.length >= 10 &&
+    buf[0] === 0xff &&
+    buf[1] === 0x06 &&
+    buf[2] === 0x00 &&
+    buf[3] === 0x00 &&
+    buf.subarray(4, 10).toString('ascii') === 'sNaPpY'
+  ) {
+    let offset = 10;
+    const chunks: Buffer[] = [];
+    while (offset + 4 <= buf.length) {
+      const chunkType = buf[offset++];
+      const chunkLen = buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16);
+      offset += 3;
+      if (offset + chunkLen > buf.length) break;
+      if (chunkType === 0x00) {
+        // Compressed chunk: skip 4-byte CRC
+        const chunkData = buf.subarray(offset + 4, offset + chunkLen);
+        chunks.push(decompressRawSnappyBlock(chunkData));
+      } else if (chunkType === 0x01) {
+        // Uncompressed chunk: skip 4-byte CRC
+        chunks.push(buf.subarray(offset + 4, offset + chunkLen));
+      }
+      offset += chunkLen;
+    }
+    return Buffer.concat(chunks);
+  }
+  return decompressRawSnappyBlock(buf);
+}
+
+/**
+ * Decompresses a raw Snappy block with varint length prefix and element tags.
+ */
+export function decompressRawSnappyBlock(buf: Buffer): Buffer {
+  let offset = 0;
+  let uncompressedLen = 0;
+  let shift = 0;
+
+  while (offset < buf.length) {
+    const b = buf[offset++];
+    uncompressedLen |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) break;
+    shift += 7;
+    if (shift > 35) throw new Error('Corrupted Snappy varint uncompressed length');
+  }
+
+  const out = Buffer.alloc(uncompressedLen);
+  let outPos = 0;
+
+  while (offset < buf.length && outPos < uncompressedLen) {
+    const tag = buf[offset++];
+    const elemType = tag & 0x03;
+
+    if (elemType === 0) {
+      // Literal
+      let len = tag >> 2;
+      if (len < 60) {
+        len += 1;
+      } else if (len === 60) {
+        len = buf[offset++] + 1;
+      } else if (len === 61) {
+        len = buf.readUInt16LE(offset) + 1;
+        offset += 2;
+      } else if (len === 62) {
+        len = (buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16)) + 1;
+        offset += 3;
+      } else if (len === 63) {
+        len = buf.readUInt32LE(offset) + 1;
+        offset += 4;
+      }
+
+      if (offset + len > buf.length || outPos + len > uncompressedLen) {
+        throw new Error('Snappy decompression error: literal bounds exceeded');
+      }
+      buf.copy(out, outPos, offset, offset + len);
+      offset += len;
+      outPos += len;
+    } else {
+      // Copy element
+      let copyLen = 0;
+      let copyOffset = 0;
+
+      if (elemType === 1) {
+        copyLen = ((tag >> 2) & 0x07) + 4;
+        copyOffset = ((tag & 0xe0) << 3) | buf[offset++];
+      } else if (elemType === 2) {
+        copyLen = (tag >> 2) + 1;
+        copyOffset = buf.readUInt16LE(offset);
+        offset += 2;
+      } else if (elemType === 3) {
+        copyLen = (tag >> 2) + 1;
+        copyOffset = buf.readUInt32LE(offset);
+        offset += 4;
+      }
+
+      if (copyOffset <= 0 || copyOffset > outPos) {
+        throw new Error(`Snappy decompression error: invalid copy offset ${copyOffset} (outPos=${outPos})`);
+      }
+      if (outPos + copyLen > uncompressedLen) {
+        throw new Error('Snappy decompression error: copy length exceeds uncompressed size');
+      }
+
+      for (let i = 0; i < copyLen; i++) {
+        out[outPos] = out[outPos - copyOffset];
+        outPos++;
+      }
+    }
+  }
+
+  return out.subarray(0, outPos);
+}
+
+/**
+ * Encodes a buffer into a valid raw Snappy block.
+ */
+export function compressSnappy(buf: Buffer): Buffer {
+  const parts: number[] = [];
+  let val = buf.length;
+  while (val >= 0x80) {
+    parts.push((val & 0x7f) | 0x80);
+    val >>>= 7;
+  }
+  parts.push(val & 0x7f);
+
+  let offset = 0;
+  while (offset < buf.length) {
+    const chunkLen = Math.min(65536, buf.length - offset);
+    if (chunkLen < 60) {
+      parts.push((chunkLen - 1) << 2);
+    } else if (chunkLen <= 256) {
+      parts.push(60 << 2, chunkLen - 1);
+    } else {
+      parts.push(61 << 2, (chunkLen - 1) & 0xff, (chunkLen - 1) >> 8);
+    }
+    const chunk = buf.subarray(offset, offset + chunkLen);
+    for (let i = 0; i < chunk.length; i++) {
+      parts.push(chunk[i]);
+    }
+    offset += chunkLen;
+  }
+
+  return Buffer.from(parts);
+}
+
+// ==========================================
 // Thrift Compact Protocol Engine
 // ==========================================
 
@@ -846,10 +998,12 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
       }
     } else if (chunk.codec === CompressionCodec.ZSTD) {
       pageBuffer = decompressZstd(rawPageSlice);
+    } else if (chunk.codec === CompressionCodec.SNAPPY) {
+      pageBuffer = decompressSnappy(rawPageSlice);
     } else {
       const codecName = CompressionCodec[chunk.codec] ?? String(chunk.codec);
       throw new Error(
-        `Unsupported Parquet compression codec: ${codecName}. Supported codecs: UNCOMPRESSED, GZIP, ZSTD.`
+        `Unsupported Parquet compression codec: ${codecName}. Supported codecs: UNCOMPRESSED, SNAPPY, GZIP, ZSTD.`
       );
     }
 
