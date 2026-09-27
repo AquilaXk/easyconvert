@@ -231,7 +231,7 @@ export function computeSsim(
   const numerator = (2 * meanA * meanB + c1) * (2 * covAB + c2);
   const denominator = (meanA * meanA + meanB * meanB + c1) * (varA + varB + c2);
 
-  return denominator === 0 ? 1.0 : Math.max(0, Math.min(1.0, numerator / denominator));
+  return Math.abs(denominator) < 1e-12 ? 1.0 : Math.max(0, Math.min(1.0, numerator / denominator));
 }
 
 /**
@@ -281,7 +281,7 @@ export async function compareImages(
   const deltaRatio = totalPixels > 0 ? mismatchedPixels / totalPixels : 0;
   const percentage = deltaRatio * 100;
   const mse = totalPixels > 0 ? sumSquaredError / totalPixels : 0;
-  const psnr = mse === 0 ? Infinity : 10 * Math.log10((255 * 255) / mse);
+  const psnr = mse <= 1e-12 ? Infinity : 10 * Math.log10((255 * 255) / mse);
   const ssim = computeSsim(bufA, bufB, width, height, 4);
 
   let diffImage: Buffer | undefined;

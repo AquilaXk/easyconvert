@@ -85,7 +85,7 @@ export function calculateSsim(
   const numerator = (2 * mean1 * mean2 + c1) * (2 * cov + c2);
   const denominator = (mean1 ** 2 + mean2 ** 2 + c1) * (var1 + var2 + c2);
 
-  return denominator === 0 ? 1.0 : numerator / denominator;
+  return Math.abs(denominator) < 1e-12 ? 1.0 : numerator / denominator;
 }
 
 /**
