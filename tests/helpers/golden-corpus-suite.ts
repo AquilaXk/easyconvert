@@ -1,4 +1,3 @@
-import fs from 'fs';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
@@ -940,12 +939,14 @@ export function synthesizeEnterpriseBayerRaw(
         else if (isEvenRow && !isEvenCol) channelVal = r;
         else if (!isEvenRow && isEvenCol) channelVal = b;
         else channelVal = g;
+      } else if (isEvenRow && isEvenCol) {
+        channelVal = g;
+      } else if (isEvenRow && !isEvenCol) {
+        channelVal = b;
+      } else if (!isEvenRow && isEvenCol) {
+        channelVal = r;
       } else {
-        // GBRG
-        if (isEvenRow && isEvenCol) channelVal = g;
-        else if (isEvenRow && !isEvenCol) channelVal = b;
-        else if (!isEvenRow && isEvenCol) channelVal = r;
-        else channelVal = g;
+        channelVal = g;
       }
 
       data[idx] = Math.round(blackLevel + channelVal * maxRange);

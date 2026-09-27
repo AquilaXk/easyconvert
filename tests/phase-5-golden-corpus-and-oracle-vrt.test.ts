@@ -177,7 +177,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
         expect(sensor.pattern).toBe(pat);
         expect(sensor.bitsPerSample).toBe(14);
         expect(sensor.blackLevel).toBe(512);
-        expect(sensor.data.length).toBe(32 * 32);
+        expect(sensor.data).toHaveLength(32 * 32);
 
         // Verify minimum and maximum values within 14-bit range
         let minVal = 65535;
@@ -193,7 +193,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
         const demosaiced = demosaicBayerCfa(sensor);
         expect(demosaiced.width).toBe(32);
         expect(demosaiced.height).toBe(32);
-        expect(demosaiced.data.length).toBe(32 * 32 * 3);
+        expect(demosaiced.data).toHaveLength(32 * 32 * 3);
       }
     });
 
@@ -201,7 +201,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       // 7z
       const golden7z = synthesizeEnterprise7z();
       assertFormatIntegrity(golden7z.buffer, '7z');
-      expect(golden7z.files.length).toBe(2);
+      expect(golden7z.files).toHaveLength(2);
       expect(golden7z.files[0].name).toBe('config.json');
 
       // Zstd
@@ -215,7 +215,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       const corpus = synthesizeVariableFontCorpus();
 
       expect(corpus.fontBuffer.length).toBeGreaterThan(500);
-      expect(corpus.axes.length).toBe(3); // wght, wdth, slnt
+      expect(corpus.axes).toHaveLength(3); // wght, wdth, slnt
       expect(corpus.instances.length).toBeGreaterThanOrEqual(4);
 
       const inspection = inspectVariableFont(corpus.fontBuffer);
@@ -228,11 +228,11 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       const corpus = synthesizeParquetColumnarCorpus(50);
 
       expect(corpus.buffer.length).toBeGreaterThan(100);
-      expect(corpus.records.length).toBe(50);
+      expect(corpus.records).toHaveLength(50);
       expect(corpus.schemas.length).toBeGreaterThanOrEqual(4);
 
       const decoded = decodeParquet(corpus.buffer);
-      expect(decoded.length).toBe(50);
+      expect(decoded).toHaveLength(50);
     });
 
     it('1.11 synthesizes HWP 5.0 CFBF compound binary and converts EqEdit math expressions to MathML', () => {
@@ -387,7 +387,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       const corpus = synthesizeParquetColumnarCorpus(30);
       const decoded = decodeParquet(corpus.buffer);
 
-      expect(decoded.length).toBe(30);
+      expect(decoded).toHaveLength(30);
       for (const record of decoded) {
         expect(record).toBeDefined();
         expect(typeof record).toBe('object');
@@ -527,11 +527,11 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       ).rejects.toThrow();
     });
 
-    it('4.5 fails closed on truncated 7z archive headers', () => {
+    it('4.5 fails closed on truncated 7z archive headers', async () => {
       expect(() => assertFormatIntegrity(corrupt.archiveTruncated7z, '7z')).not.toThrow(); // Magic bytes exist
       const ast = parseArchiveToAst(corrupt.archiveTruncated7z, '7z');
       // Must not crash
-      expect(ast).resolves.toBeDefined();
+      await expect(ast).resolves.toBeDefined();
     });
 
     it('4.6 fails closed on unsupported binary formats without emitting mojibake', async () => {
