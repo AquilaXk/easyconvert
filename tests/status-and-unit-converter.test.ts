@@ -39,15 +39,9 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(BRAND_PALETTE.ink.primary.toUpperCase()).toBe('#1F2340');
   });
 
-  it('verifies official logo.svg and icon.svg contain the interlocking EC bidirectional arrow elements and valid XML', () => {
+  it('verifies official logo.svg and icon.svg contain the signature conversion loop elements, badges, and valid XML', () => {
     const logoSvg = fs.readFileSync(path.join(process.cwd(), 'public/logo.svg'), 'utf-8');
     const iconSvg = fs.readFileSync(path.join(process.cwd(), 'public/icon.svg'), 'utf-8');
-
-    // Check SVG structure and colors
-    expect(logoSvg).toContain('ecBrandGradMain');
-    expect(logoSvg).toContain('#5C6BC0');
-    expect(logoSvg).toContain('Easy');
-    expect(logoSvg).toContain('Convert');
 
     // Must not contain invalid JSX comments
     expect(logoSvg).not.toContain('{/*');
@@ -55,12 +49,17 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(iconSvg).not.toContain('{/*');
     expect(iconSvg).not.toContain('*/}');
 
-    // Both should contain the bidirectional arrows
-    expect(logoSvg).toContain('M 44 28.5 L 51 33.5 L 44 38.5 Z'); // Right arrow
-    expect(logoSvg).toContain('M 33 80.5 L 26 86.5 L 33 92.5 Z'); // Left arrow
+    // Check signature palette color and elements
+    expect(logoSvg).toContain('#5C6BC0');
+    expect(iconSvg).toContain('#5C6BC0');
+    expect(logoSvg).toContain('PDF');
+    expect(iconSvg).toContain('PDF');
+    expect(logoSvg).toContain('DOC');
+    expect(iconSvg).toContain('DOC');
+    expect(logoSvg).toContain('EasyConvert');
 
-    expect(iconSvg).toContain('ecBrandGradMain');
-    expect(iconSvg).toContain('#F8F9FF'); // Background plate
+    // Background plate for icon.svg
+    expect(iconSvg).toContain('#F8F9FF');
   });
 });
 
