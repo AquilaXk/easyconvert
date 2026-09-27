@@ -113,27 +113,17 @@ export async function convertMedia(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
-  const isVideoTarget = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'flv', '3gp', '3gpp', 'm4v', 'ts', 'vob'].includes(tgt);
-  const isVideoSource = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'flv', '3gp', '3gpp', 'm4v', 'ts', 'vob'].includes(src);
-
-  // Prioritize system FFmpeg for video containers or when explicitly requested
-  if (checkFfmpeg() && (isVideoTarget || isVideoSource || options.useFfmpeg)) {
+  // When explicitly requested via options.useFfmpeg and system FFmpeg is available, execute transcoding
+  if (options.useFfmpeg && checkFfmpeg()) {
     try {
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch {
-      // Fallback to pure TS media synthesis
+      // Fallback to pure TS media processing
     }
   }
 
-  // Pure TypeScript zero-dependency audio processing pipeline
-  try {
-    return processMediaPure(inputBuffer, src, tgt, options, baseName);
-  } catch (err) {
-    if (checkFfmpeg()) {
-      return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
-    }
-    throw err;
-  }
+  // Pure TypeScript zero-dependency audio & video processing pipeline
+  return processMediaPure(inputBuffer, src, tgt, options, baseName);
 }
 
 /**
