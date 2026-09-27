@@ -1,12 +1,9 @@
-import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { promisify } from 'util';
 import { ConversionOptions, ConversionResult } from '../lib/types';
 import { convertFile } from '../lib/conversions';
-
-const execFileAsync = promisify(execFile);
+import { executeSandboxedBinary } from '../lib/security/process-sandbox';
 
 export interface WorkerEngineOptions extends ConversionOptions {
   timeoutMs?: number;
@@ -106,14 +103,15 @@ export async function convertWithHeadlessOffice(
     const timeout = Math.min(options.timeoutMs || 45000, 120000);
     const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
-    await execFileAsync(
+    await executeSandboxedBinary(
       sofficeBin,
       ['--headless', '--convert-to', tgt, '--outdir', tempDir, inputPath],
       {
-        shell: false,
-        timeout,
+        cwd: tempDir,
+        timeoutMs: timeout,
         maxBuffer,
-        env: { ...process.env, HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+        env: { HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+        networkIsolated: true,
       }
     );
 
@@ -175,10 +173,11 @@ export async function convertWithNativeFfmpeg(
 
     args.push(outputPath);
 
-    await execFileAsync(ffmpegBin, args, {
-      shell: false,
-      timeout,
+    await executeSandboxedBinary(ffmpegBin, args, {
+      cwd: tempDir,
+      timeoutMs: timeout,
       maxBuffer,
+      networkIsolated: true,
     });
 
     if (!fs.existsSync(outputPath)) return null;
