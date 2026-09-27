@@ -7,8 +7,8 @@ const STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
 const USERS_FILE = path.join(STORAGE_DIR, 'users.json');
 
 class UserStore {
-  private users: Map<string, UserRecord> = new Map();
-  private emailIndex: Map<string, string> = new Map();
+  private readonly users: Map<string, UserRecord> = new Map();
+  private readonly emailIndex: Map<string, string> = new Map();
   private initialized = false;
 
   private ensureInitialized() {

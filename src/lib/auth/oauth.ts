@@ -74,7 +74,23 @@ export async function exchangeGoogleCode(code: string, redirectUri: string): Pro
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
   // Local mock sandbox handling
-  if (!clientId || !clientSecret || code.startsWith('mock_code_')) {
+  const isProduction = process.env.NODE_ENV === 'production';
+  if (code.startsWith('mock_code_')) {
+    if (isProduction) {
+      throw new Error('Security violation: Mock codes are not permitted in production');
+    }
+    return {
+      id: 'google_mock_sub_10001',
+      email: 'dev.sandbox@example.com',
+      name: 'Sandbox Developer',
+      picture: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&h=120&q=80',
+    };
+  }
+
+  if (!clientId || !clientSecret) {
+    if (isProduction) {
+      throw new Error('OAuth configuration error: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required in production');
+    }
     return {
       id: 'google_mock_sub_10001',
       email: 'dev.sandbox@example.com',

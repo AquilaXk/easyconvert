@@ -33,10 +33,10 @@ function getNextMidnightUtc(): number {
 }
 
 class KeyStore {
-  private keys: Map<string, ApiKey> = new Map();
-  private keyHashIndex: Map<string, string> = new Map(); // hash -> keyId
-  private dailyUsage: Map<string, number> = new Map(); // userId:YYYY-MM-DD -> count
-  private userFiles: Map<string, UserConversionFile> = new Map(); // fileId -> file
+  private readonly keys: Map<string, ApiKey> = new Map();
+  private readonly keyHashIndex: Map<string, string> = new Map(); // hash -> keyId
+  private readonly dailyUsage: Map<string, number> = new Map(); // userId:YYYY-MM-DD -> count
+  private readonly userFiles: Map<string, UserConversionFile> = new Map(); // fileId -> file
   private initialized = false;
 
   private ensureInitialized() {
@@ -132,7 +132,7 @@ class KeyStore {
     }
 
     const key = this.keys.get(keyId);
-    if (!key || key.status !== 'active') {
+    if (key?.status !== 'active') {
       return { valid: false };
     }
 
@@ -166,7 +166,7 @@ class KeyStore {
   public async revokeApiKey(userId: string, keyId: string): Promise<boolean> {
     this.ensureInitialized();
     const key = this.keys.get(keyId);
-    if (!key || key.userId !== userId) {
+    if (key?.userId !== userId) {
       return false;
     }
 
@@ -199,22 +199,26 @@ class KeyStore {
   public async recordUsage(userId: string, units: number = 1): Promise<{ allowed: boolean; remaining: number }> {
     this.ensureInitialized();
 
-    const quota = await this.getQuotaUsage(userId);
-    if (quota.usedToday + units > quota.dailyLimit) {
+    const user = await userStore.findById(userId);
+    const tier: UserTier = user?.tier ?? 'free';
+    const dailyLimit = TIER_LIMITS[tier];
+
+    const dateKey = `${userId}:${getUtcDateKey()}`;
+    const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
+    if (currentUsed + units > dailyLimit) {
       return {
         allowed: false,
-        remaining: quota.remaining,
+        remaining: Math.max(0, dailyLimit - currentUsed),
       };
     }
 
-    const dateKey = `${userId}:${getUtcDateKey()}`;
-    const newUsed = quota.usedToday + units;
+    const newUsed = currentUsed + units;
     this.dailyUsage.set(dateKey, newUsed);
     this.persist();
 
     return {
       allowed: true,
-      remaining: Math.max(0, quota.dailyLimit - newUsed),
+      remaining: Math.max(0, dailyLimit - newUsed),
     };
   }
 
@@ -250,16 +254,22 @@ class KeyStore {
     this.ensureInitialized();
     const now = Date.now();
     const result: UserConversionFile[] = [];
+    let pruned = false;
 
     for (const [id, file] of this.userFiles.entries()) {
       if (file.userId === userId) {
         if (file.expiresAt < now) {
           // File has expired; prune it
           this.userFiles.delete(id);
+          pruned = true;
         } else {
           result.push(file);
         }
       }
+    }
+
+    if (pruned) {
+      this.persist();
     }
 
     return result.sort((a, b) => b.createdAt - a.createdAt);
@@ -268,7 +278,7 @@ class KeyStore {
   public async deleteUserFile(userId: string, fileId: string): Promise<boolean> {
     this.ensureInitialized();
     const file = this.userFiles.get(fileId);
-    if (!file || file.userId !== userId) {
+    if (file?.userId !== userId) {
       return false;
     }
     this.userFiles.delete(fileId);

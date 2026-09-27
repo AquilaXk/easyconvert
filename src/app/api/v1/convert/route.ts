@@ -3,114 +3,103 @@ import { validateApiAccess } from '@/lib/api-keys/guard';
 import { keyStore } from '@/lib/api-keys/key-store';
 import { convertFile } from '@/lib/conversions';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
-import type { ConversionOptions } from '@/lib/types';
+import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
 const MAX_PROGRAMMATIC_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
+interface ValidatedConvertInput {
+  file: File;
+  sourceDef: FormatDefinition;
+  targetDef: FormatDefinition;
+  options: ConversionOptions;
+}
+
+function parseConvertFormData(formData: FormData): { error?: string; status?: number; data?: ValidatedConvertInput } {
+  const file = formData.get('file') as File | null;
+  const targetFormat = formData.get('targetFormat') as string | null;
+  const optionsRaw = formData.get('options') as string | null;
+
+  if (!file) {
+    return { error: 'Missing required "file" in multipart request.', status: 400 };
+  }
+
+  if (file.size === 0) {
+    return { error: 'File payload is empty (0 bytes).', status: 400 };
+  }
+
+  if (file.size > MAX_PROGRAMMATIC_FILE_SIZE) {
+    return { error: 'File size exceeds the 100 MB memory conversion boundary.', status: 400 };
+  }
+
+  if (!targetFormat) {
+    return { error: 'Missing required "targetFormat" parameter.', status: 400 };
+  }
+
+  const sourceFormatParam = formData.get('sourceFormat') as string | null;
+  let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
+  sourceDef ??= detectFormatFromFilename(file.name);
+
+  if (!sourceDef) {
+    return { error: `Could not identify source format for file "${file.name}".`, status: 400 };
+  }
+
+  const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  const targetDef = getFormatByExtension(tgt);
+  if (!targetDef) {
+    return { error: `Unsupported target format "${targetFormat}".`, status: 400 };
+  }
+
+  if (!sourceDef.targetFormats.includes(tgt) && !sourceDef.targetFormats.includes(targetDef.id)) {
+    return {
+      error: `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`,
+      status: 400,
+    };
+  }
+
+  let options: ConversionOptions = {};
+  if (optionsRaw) {
+    try {
+      options = JSON.parse(optionsRaw);
+    } catch {
+      return { error: 'Invalid JSON string provided in "options" field.', status: 400 };
+    }
+  }
+
+  return { data: { file, sourceDef, targetDef, options } };
+}
+
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
 
-  // 1. Guard check (API key verification + daily quota decrement)
-  const auth = await validateApiAccess(req, 1);
+  // 1. Guard check: Authenticate and check quota remaining (do not consume yet)
+  const auth = await validateApiAccess(req, 0);
   if (!auth.authorized || !auth.user) {
     return NextResponse.json(
       {
         success: false,
-        error: auth.error || 'Unauthorized',
+        error: auth.error ?? 'Unauthorized',
       },
-      { status: auth.status || 401 }
+      { status: auth.status ?? 401 }
     );
   }
 
   try {
     const formData = await req.formData();
-    const file = formData.get('file') as File | null;
-    const targetFormat = formData.get('targetFormat') as string | null;
-    const optionsRaw = formData.get('options') as string | null;
-
-    if (!file) {
+    const validation = parseConvertFormData(formData);
+    if (validation.error || !validation.data) {
       return NextResponse.json(
-        { success: false, error: 'Missing required "file" in multipart request.' },
-        { status: 400 }
+        { success: false, error: validation.error },
+        { status: validation.status ?? 400 }
       );
     }
 
-    if (file.size === 0) {
-      return NextResponse.json(
-        { success: false, error: 'File payload is empty (0 bytes).' },
-        { status: 400 }
-      );
-    }
-
-    if (file.size > MAX_PROGRAMMATIC_FILE_SIZE) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `File size exceeds the 100 MB memory conversion boundary.`,
-        },
-        { status: 400 }
-      );
-    }
-
-    if (!targetFormat) {
-      return NextResponse.json(
-        { success: false, error: 'Missing required "targetFormat" parameter.' },
-        { status: 400 }
-      );
-    }
-
-    // Determine input format
-    const sourceFormatParam = formData.get('sourceFormat') as string | null;
-    let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
-    if (!sourceDef) {
-      sourceDef = detectFormatFromFilename(file.name);
-    }
-
-    if (!sourceDef) {
-      return NextResponse.json(
-        { success: false, error: `Could not identify source format for file "${file.name}".` },
-        { status: 400 }
-      );
-    }
-
-    const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
-    const targetDef = getFormatByExtension(tgt);
-    if (!targetDef) {
-      return NextResponse.json(
-        { success: false, error: `Unsupported target format "${targetFormat}".` },
-        { status: 400 }
-      );
-    }
-
-    if (!sourceDef.targetFormats.includes(tgt) && !sourceDef.targetFormats.includes(targetDef.id)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`,
-        },
-        { status: 400 }
-      );
-    }
-
-    // Parse options
-    let options: ConversionOptions = {};
-    if (optionsRaw) {
-      try {
-        options = JSON.parse(optionsRaw);
-      } catch {
-        return NextResponse.json(
-          { success: false, error: 'Invalid JSON string provided in "options" field.' },
-          { status: 400 }
-        );
-      }
-    }
-
-    // Convert
+    const { file, sourceDef, targetDef, options } = validation.data;
     const arrayBuffer = await file.arrayBuffer();
     const inputBuffer = Buffer.from(arrayBuffer);
 
+    // Convert
     const conversionResult = await convertFile(
       inputBuffer,
       sourceDef.id,
@@ -118,6 +107,18 @@ export async function POST(req: NextRequest) {
       options,
       file.name
     );
+
+    // 2. Consume quota unit upon SUCCESSFUL conversion
+    const quotaResult = await keyStore.recordUsage(auth.user.id, 1);
+    if (!quotaResult.allowed) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+        },
+        { status: 429 }
+      );
+    }
 
     const durationMs = Date.now() - startTime;
     const outputBuffer = conversionResult.buffer;

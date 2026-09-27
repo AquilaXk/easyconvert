@@ -16,6 +16,7 @@ import { GET as usageGetHandler } from '../src/app/api/keys/usage/route';
 import { GET as filesGetHandler } from '../src/app/api/account/files/route';
 import { DELETE as fileDeleteHandler } from '../src/app/api/account/files/[id]/route';
 import { POST as v1ConvertHandler } from '../src/app/api/v1/convert/route';
+import { GET as googleCallbackHandler } from '../src/app/api/auth/google/callback/route';
 import { NextRequest } from 'next/server';
 
 describe('Auth & API Key Infrastructure', () => {
@@ -54,7 +55,7 @@ describe('Auth & API Key Infrastructure', () => {
       const token = signJwt(payload, 'test-secret', 3600);
 
       expect(typeof token).toBe('string');
-      expect(token.split('.').length).toBe(3);
+      expect(token.split('.')).toHaveLength(3);
 
       const decoded = verifyJwt<typeof payload>(token, 'test-secret');
       expect(decoded).not.toBeNull();
@@ -291,14 +292,14 @@ describe('Auth & API Key Infrastructure', () => {
       expect(file.expiresAt).toBeGreaterThan(Date.now() + 3500 * 1000);
 
       const files = await keyStore.listUserFiles(userRecord.id);
-      expect(files.length).toBe(1);
+      expect(files).toHaveLength(1);
       expect(files[0].fileName).toBe('report.pdf');
 
       const deleted = await keyStore.deleteUserFile(userRecord.id, file.id);
       expect(deleted).toBe(true);
 
       const filesAfterDelete = await keyStore.listUserFiles(userRecord.id);
-      expect(filesAfterDelete.length).toBe(0);
+      expect(filesAfterDelete).toHaveLength(0);
     });
   });
 
@@ -407,7 +408,7 @@ describe('Auth & API Key Infrastructure', () => {
       });
       const getKeysRes = await keysGetHandler(getKeysReq);
       const listData = await getKeysRes.json();
-      expect(listData.keys.length).toBe(1);
+      expect(listData.keys).toHaveLength(1);
       expect(listData.keys[0].name).toBe('CI/CD Pipeline Key');
 
       // 3. Check Usage endpoint
@@ -475,7 +476,7 @@ describe('Auth & API Key Infrastructure', () => {
 
       // Verify file was recorded in user conversion files
       const userFiles = await keyStore.listUserFiles(user.id);
-      expect(userFiles.length).toBe(1);
+      expect(userFiles).toHaveLength(1);
       expect(userFiles[0].fileName).toBe('team.json');
 
       // Test user files endpoint
@@ -485,7 +486,7 @@ describe('Auth & API Key Infrastructure', () => {
       });
       const filesRes = await filesGetHandler(filesReq);
       const filesData = await filesRes.json();
-      expect(filesData.files.length).toBe(1);
+      expect(filesData.files).toHaveLength(1);
       expect(filesData.files[0].remainingSeconds).toBeGreaterThan(3500);
 
       // Test delete user file endpoint
@@ -499,7 +500,7 @@ describe('Auth & API Key Infrastructure', () => {
 
       const filesResAfter = await filesGetHandler(filesReq);
       const filesDataAfter = await filesResAfter.json();
-      expect(filesDataAfter.files.length).toBe(0);
+      expect(filesDataAfter.files).toHaveLength(0);
     });
 
     it('enforces 429 quota exhaustion on /api/v1/convert when daily limit is reached', async () => {
@@ -607,9 +608,94 @@ describe('Auth & API Key Infrastructure', () => {
       });
       const res3 = await v1ConvertHandler(req3);
       expect(res3.status).toBe(400);
+
+      // CRITICAL: Ensure quota was NOT consumed by the 3 failed requests
+      const usage = await keyStore.getQuotaUsage(user.id);
+      expect(usage.usedToday).toBe(0);
+      expect(usage.remaining).toBe(25);
     });
 
-    it('prunes expired user files automatically', async () => {
+    it('OAuth callback strictly rejects missing or invalid state parameter to prevent CSRF', async () => {
+      // Missing state entirely
+      const reqMissingState = new NextRequest('http://localhost:3000/api/auth/google/callback?code=some_auth_code');
+      const resMissing = await googleCallbackHandler(reqMissingState);
+      expect(resMissing.status).toBe(307); // redirect
+      const location = resMissing.headers.get('location') || '';
+      expect(location).toContain('error=invalid_oauth_state');
+
+      // Bogus/expired state
+      const reqInvalidState = new NextRequest('http://localhost:3000/api/auth/google/callback?code=some_code&state=nonexistent_state');
+      const resInvalid = await googleCallbackHandler(reqInvalidState);
+      const loc2 = resInvalid.headers.get('location') || '';
+      expect(loc2).toContain('error=invalid_oauth_state');
+    });
+
+    it('OAuth exchange rejects mock codes when NODE_ENV is production', async () => {
+      const originalEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        await expect(exchangeGoogleCode('mock_code_attacker', 'http://localhost/callback')).rejects.toThrow(
+          /mock codes are not permitted in production/i
+        );
+      } finally {
+        process.env.NODE_ENV = originalEnv;
+      }
+    });
+
+    it('clearSessionCookie includes Secure flag in production environment', () => {
+      const originalEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        const cleared = clearSessionCookie();
+        expect(cleared).toContain('Secure');
+      } finally {
+        process.env.NODE_ENV = originalEnv;
+      }
+    });
+
+    it('verifyJwt rejects non-object JSON payloads and unsupported algorithms', () => {
+      // 1. Primitive payload
+      const headerB64 = Buffer.from('{"alg":"HS256","typ":"JWT"}').toString('base64url');
+      const primPayloadB64 = Buffer.from('"just-a-string"').toString('base64url');
+      const sig1 = Buffer.from('sig').toString('base64url');
+      expect(verifyJwt(`${headerB64}.${primPayloadB64}.${sig1}`)).toBeNull();
+
+      // 2. Algorithm confusion (e.g., none)
+      const noneHeaderB64 = Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url');
+      const payloadB64 = Buffer.from('{"sub":"user1"}').toString('base64url');
+      expect(verifyJwt(`${noneHeaderB64}.${payloadB64}.`)).toBeNull();
+    });
+
+    it('recordUsage handles concurrent requests safely without exceeding tier limit', async () => {
+      const user = userStore.sanitizeUser(
+        await userStore.createUser({
+          email: 'concurrent@example.com',
+          name: 'Concurrent User',
+          tier: 'free',
+        })
+      );
+
+      // Leave exactly 1 unit left
+      await keyStore.recordUsage(user.id, 24);
+
+      // Simulate 5 simultaneous requests trying to claim the last 1 unit
+      const results = await Promise.all([
+        keyStore.recordUsage(user.id, 1),
+        keyStore.recordUsage(user.id, 1),
+        keyStore.recordUsage(user.id, 1),
+        keyStore.recordUsage(user.id, 1),
+        keyStore.recordUsage(user.id, 1),
+      ]);
+
+      const allowedCount = results.filter((r) => r.allowed).length;
+      expect(allowedCount).toBe(1);
+
+      const finalQuota = await keyStore.getQuotaUsage(user.id);
+      expect(finalQuota.usedToday).toBe(25);
+      expect(finalQuota.remaining).toBe(0);
+    });
+
+    it('prunes expired user files and persists changes to disk', async () => {
       const user = userStore.sanitizeUser(
         await userStore.createUser({
           email: 'purge-dev@example.com',
@@ -630,7 +716,7 @@ describe('Auth & API Key Infrastructure', () => {
       file.expiresAt = Date.now() - 1000;
 
       const files = await keyStore.listUserFiles(user.id);
-      expect(files.length).toBe(0);
+      expect(files).toHaveLength(0);
     });
   });
 });

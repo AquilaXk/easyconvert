@@ -1,7 +1,17 @@
 import crypto from 'node:crypto';
 import type { SessionPayload } from './types';
 
-const DEFAULT_JWT_SECRET = process.env.JWT_SECRET || 'easyconvert-secure-session-secret-key-default-development-2026';
+function getJwtSecret(): string {
+  if (process.env.JWT_SECRET) {
+    return process.env.JWT_SECRET;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return instanceRandomSecret;
+  }
+  return 'easyconvert-secure-session-secret-key-default-development-2026';
+}
+
+const instanceRandomSecret = crypto.randomBytes(32).toString('hex');
 const DEFAULT_EXPIRATION_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 function base64UrlEncode(str: string): string {
@@ -17,9 +27,10 @@ function base64UrlDecode(str: string): string {
  */
 export function signJwt(
   payload: Record<string, unknown>,
-  secret: string = DEFAULT_JWT_SECRET,
+  secret?: string,
   expiresInSeconds: number = DEFAULT_EXPIRATION_SECONDS
 ): string {
+  const activeSecret = secret ?? getJwtSecret();
   const header = {
     alg: 'HS256',
     typ: 'JWT',
@@ -37,7 +48,7 @@ export function signJwt(
   const dataToSign = `${encodedHeader}.${encodedPayload}`;
 
   const signature = crypto
-    .createHmac('sha256', secret)
+    .createHmac('sha256', activeSecret)
     .update(dataToSign)
     .digest('base64url');
 
@@ -49,7 +60,7 @@ export function signJwt(
  */
 export function verifyJwt<T = SessionPayload>(
   token: string,
-  secret: string = DEFAULT_JWT_SECRET
+  secret?: string
 ): T | null {
   if (!token || typeof token !== 'string') {
     return null;
@@ -61,10 +72,21 @@ export function verifyJwt<T = SessionPayload>(
   }
 
   const [encodedHeader, encodedPayload, signature] = parts;
+
+  try {
+    const header = JSON.parse(base64UrlDecode(encodedHeader));
+    if (!header || typeof header !== 'object' || header.alg !== 'HS256') {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  const activeSecret = secret ?? getJwtSecret();
   const dataToSign = `${encodedHeader}.${encodedPayload}`;
 
   const expectedSignature = crypto
-    .createHmac('sha256', secret)
+    .createHmac('sha256', activeSecret)
     .update(dataToSign)
     .digest('base64url');
 
@@ -76,9 +98,12 @@ export function verifyJwt<T = SessionPayload>(
   }
 
   try {
-    const payload = JSON.parse(base64UrlDecode(encodedPayload)) as Record<string, unknown>;
-    const now = Math.floor(Date.now() / 1000);
+    const payload = JSON.parse(base64UrlDecode(encodedPayload));
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return null;
+    }
 
+    const now = Math.floor(Date.now() / 1000);
     if (typeof payload.exp === 'number' && payload.exp < now) {
       return null;
     }

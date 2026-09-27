@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import BrandLogo from '@/components/BrandLogo';
 import { Mail, Lock, User, Eye, EyeOff, ArrowRight, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 
@@ -118,9 +119,9 @@ function LoginFormContent() {
   return (
     <div className="min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold flex flex-col justify-center py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
-        <a href="/" className="inline-block outline-none">
+        <Link href="/" className="inline-block outline-none">
           <BrandLogo size="lg" />
-        </a>
+        </Link>
         <h2 className="mt-6 text-2xl font-bold tracking-tight text-ink-primary dark:text-dark-text">
           {activeTab === 'login' ? 'Sign in to your account' : 'Create your free account'}
         </h2>
@@ -221,7 +222,7 @@ function LoginFormContent() {
           <form onSubmit={handleSubmit} className="space-y-4">
             {activeTab === 'register' && (
               <div>
-                <label className="block text-xs font-semibold text-ink-primary dark:text-dark-text mb-1.5">
+                <label htmlFor="auth-full-name" className="block text-xs font-semibold text-ink-primary dark:text-dark-text mb-1.5">
                   Full Name
                 </label>
                 <div className="relative">
@@ -229,6 +230,7 @@ function LoginFormContent() {
                     <User className="w-4 h-4" />
                   </div>
                   <input
+                    id="auth-full-name"
                     type="text"
                     required
                     value={name}
@@ -241,7 +243,7 @@ function LoginFormContent() {
             )}
 
             <div>
-              <label className="block text-xs font-semibold text-ink-primary dark:text-dark-text mb-1.5">
+              <label htmlFor="auth-email" className="block text-xs font-semibold text-ink-primary dark:text-dark-text mb-1.5">
                 Email Address
               </label>
               <div className="relative">
@@ -249,6 +251,7 @@ function LoginFormContent() {
                   <Mail className="w-4 h-4" />
                 </div>
                 <input
+                  id="auth-email"
                   type="email"
                   required
                   value={email}
@@ -260,7 +263,7 @@ function LoginFormContent() {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-ink-primary dark:text-dark-text mb-1.5">
+              <label htmlFor="auth-password" className="block text-xs font-semibold text-ink-primary dark:text-dark-text mb-1.5">
                 Password
               </label>
               <div className="relative">
@@ -268,6 +271,7 @@ function LoginFormContent() {
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
+                  id="auth-password"
                   type={showPassword ? 'text' : 'password'}
                   required
                   value={password}
@@ -288,7 +292,7 @@ function LoginFormContent() {
 
             {activeTab === 'register' && (
               <div>
-                <label className="block text-xs font-semibold text-ink-primary dark:text-dark-text mb-1.5">
+                <label htmlFor="auth-confirm-password" className="block text-xs font-semibold text-ink-primary dark:text-dark-text mb-1.5">
                   Confirm Password
                 </label>
                 <div className="relative">
@@ -296,6 +300,7 @@ function LoginFormContent() {
                     <Lock className="w-4 h-4" />
                   </div>
                   <input
+                    id="auth-confirm-password"
                     type={showPassword ? 'text' : 'password'}
                     required
                     value={confirmPassword}

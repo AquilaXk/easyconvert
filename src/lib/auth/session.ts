@@ -42,7 +42,20 @@ export function createSessionCookie(token: string): string {
  * Formats a Set-Cookie header string to invalidate/clear the session cookie.
  */
 export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`;
+  const isProd = process.env.NODE_ENV === 'production';
+  const cookieParts = [
+    `${SESSION_COOKIE_NAME}=`,
+    'Path=/',
+    'Max-Age=0',
+    'HttpOnly',
+    'SameSite=Lax',
+  ];
+
+  if (isProd) {
+    cookieParts.push('Secure');
+  }
+
+  return cookieParts.join('; ');
 }
 
 /**
@@ -67,7 +80,7 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
   // 2. Check Authorization header
   if (!token) {
     const authHeader = request.headers.get('authorization');
-    if (authHeader && authHeader.startsWith('Bearer ')) {
+    if (authHeader?.startsWith('Bearer ')) {
       token = authHeader.substring(7).trim();
     }
   }
@@ -77,7 +90,7 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
   }
 
   const payload = verifyJwt<SessionPayload>(token);
-  if (!payload || !payload.sub) {
+  if (!payload?.sub) {
     return null;
   }
 

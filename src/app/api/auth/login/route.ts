@@ -5,6 +5,10 @@ import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 
+// Static dummy hash/salt to prevent email enumeration timing attacks
+const DUMMY_HASH = '0'.repeat(128);
+const DUMMY_SALT = '0'.repeat(32);
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -18,15 +22,11 @@ export async function POST(req: NextRequest) {
     }
 
     const userRecord = await userStore.findByEmail(email);
-    if (!userRecord || !userRecord.passwordHash || !userRecord.salt) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid email address or password.' },
-        { status: 401 }
-      );
-    }
+    const hashToVerify = userRecord?.passwordHash ?? DUMMY_HASH;
+    const saltToVerify = userRecord?.salt ?? DUMMY_SALT;
 
-    const isValid = await verifyPassword(password, userRecord.passwordHash, userRecord.salt);
-    if (!isValid) {
+    const isValid = await verifyPassword(password, hashToVerify, saltToVerify);
+    if (!userRecord?.passwordHash || !userRecord?.salt || !isValid) {
       return NextResponse.json(
         { success: false, error: 'Invalid email address or password.' },
         { status: 401 }
