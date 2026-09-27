@@ -200,10 +200,12 @@ export function getProcessRssMb(pid: number): number | null {
         }
       }
     } else {
-      const out = execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], {
+      const psBin = fs.existsSync('/bin/ps') ? '/bin/ps' : fs.existsSync('/usr/bin/ps') ? '/usr/bin/ps' : 'ps';
+      const out = execFileSync(psBin, ['-o', 'rss=', '-p', String(pid)], {
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 1000,
+        env: { PATH: '/bin:/usr/bin', NODE_ENV: process.env.NODE_ENV ?? 'production' } as NodeJS.ProcessEnv,
       }).trim();
       const rssKb = parseInt(out, 10);
       if (!isNaN(rssKb)) {
