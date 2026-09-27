@@ -2,6 +2,9 @@ import JSZip from 'jszip';
 import zlib from 'zlib';
 import { ConversionOptions, ConversionResult } from '../types';
 import { compressBzip2, decompressBzip2 } from './bzip2';
+import { compressZstd, decompressZstd } from './zstd';
+
+export { compressZstd, decompressZstd };
 
 // Standard CRC32 table
 const CRC32_TABLE = new Uint32Array(256);
@@ -591,6 +594,30 @@ export async function convertArchive(
       }
       files = [];
     }
+  } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
+    try {
+      const uncompressed = decompressZstd(inputBuffer);
+      if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        throw new Error(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        );
+      }
+      if (inputBuffer.length > 0 && uncompressed.length / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+        throw new Error(
+          `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+        );
+      }
+      if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
+        files = extractTarArchive(uncompressed);
+      } else {
+        files = [{ filename: baseName, buffer: uncompressed }];
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
+        throw err;
+      }
+      files = [];
+    }
   }
 
   if (files.length === 0) {
@@ -661,6 +688,30 @@ export async function convertArchive(
       mimeType: 'application/gzip',
       filename: `${originalFilename}.gz`,
       size: gzipped.length,
+    };
+  }
+
+  // 7.1 Target TAR.ZST
+  if (tgt === 'tar.zst') {
+    const tarResult = createTarArchive(files, options, `${baseName}.tar`);
+    const zstdBuffer = compressZstd(tarResult.buffer);
+    return {
+      buffer: zstdBuffer,
+      mimeType: 'application/x-zstd-compressed-tar',
+      filename: `${baseName}.${tgt}`,
+      size: zstdBuffer.length,
+    };
+  }
+
+  // 7.2 Target ZST / ZSTD
+  if (tgt === 'zst' || tgt === 'zstd') {
+    const rawToCompress = files.length === 1 ? files[0].buffer : inputBuffer;
+    const zstdBuffer = compressZstd(rawToCompress);
+    return {
+      buffer: zstdBuffer,
+      mimeType: 'application/zstd',
+      filename: `${originalFilename}.${tgt}`,
+      size: zstdBuffer.length,
     };
   }
 
