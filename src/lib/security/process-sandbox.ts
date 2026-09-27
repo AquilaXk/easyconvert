@@ -166,11 +166,15 @@ export function getSanitizedEnvironment(customEnv: Record<string, string> = {}, 
   };
 
   if (networkIsolated) {
-    // Poison proxy variables to prevent network egress from standard tools
+    // Poison proxy variables to prevent network egress from standard tools (both uppercase and lowercase)
     sanitized.HTTP_PROXY = 'http://127.0.0.1:0';
     sanitized.HTTPS_PROXY = 'http://127.0.0.1:0';
-    sanitized.ALL_PROXY = 'http://127.0.0.1:0';
+    sanitized.ALL_PROXY = 'socks5://127.0.0.1:0';
+    sanitized.http_proxy = 'http://127.0.0.1:0';
+    sanitized.https_proxy = 'http://127.0.0.1:0';
+    sanitized.all_proxy = 'socks5://127.0.0.1:0';
     sanitized.NO_PROXY = '';
+    sanitized.no_proxy = '';
   }
 
   // Strip sensitive environment patterns
@@ -217,12 +221,36 @@ export function getProcessRssMb(pid: number): number | null {
 }
 
 /**
+ * Resolves the final execution command, wrapping with unshare network namespace isolation
+ * when networkIsolated is requested and running on a supported Linux host.
+ */
+export function resolveSandboxedCommand(
+  binaryPath: string,
+  args: string[],
+  networkIsolated: boolean
+): { binary: string; args: string[]; wrapped: boolean } {
+  if (process.platform === 'linux' && networkIsolated) {
+    const unsharePaths = ['/usr/bin/unshare', '/bin/unshare'];
+    for (const p of unsharePaths) {
+      if (fs.existsSync(p)) {
+        return {
+          binary: p,
+          args: ['-n', '--', binaryPath, ...args],
+          wrapped: true,
+        };
+      }
+    }
+  }
+  return { binary: binaryPath, args, wrapped: false };
+}
+
+/**
  * Executes a binary under defensive process guards:
  * - Environment sanitization (credential purging)
  * - Strict stdio buffer threshold (default 50MB)
  * - Execution timeout enforcement (default 30s)
  * - Memory limit enforcement (optional memoryLimitMb)
- * - Network isolation guard
+ * - Network isolation guard (via unshare -n or proxy stripping)
  * - Non-zero exit code error handling
  */
 export async function executeSandboxedBinary(
@@ -264,8 +292,11 @@ export async function executeSandboxedBinary(
       }
     };
 
+    // Resolve unshare network namespace wrapper if available
+    const resolvedCmd = resolveSandboxedCommand(binaryPath, args, networkIsolated);
+
     // Spawn directly without shell to prevent shell injection vulnerabilities
-    const child = spawn(binaryPath, args, {
+    const child = spawn(resolvedCmd.binary, resolvedCmd.args, {
       cwd,
       env: sanitizedEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
