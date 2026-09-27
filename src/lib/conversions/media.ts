@@ -1,20 +1,42 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ConversionOptions, ConversionResult } from '../types';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream } from './media-encoder';
 
-let ffmpegAvailable: boolean | null = null;
-function checkFfmpeg(): boolean {
-  if (ffmpegAvailable !== null) return ffmpegAvailable;
-  try {
-    execSync('which ffmpeg', { stdio: 'ignore' });
-    ffmpegAvailable = true;
-  } catch {
-    ffmpegAvailable = false;
+let resolvedFfmpegPath: string | null = null;
+function getFfmpegPath(): string | null {
+  if (resolvedFfmpegPath !== null) return resolvedFfmpegPath || null;
+  const fixedLocations = [
+    '/usr/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    '/opt/homebrew/bin/ffmpeg',
+  ];
+  for (const loc of fixedLocations) {
+    if (fs.existsSync(loc)) {
+      resolvedFfmpegPath = loc;
+      return loc;
+    }
   }
-  return ffmpegAvailable;
+  const whichBins = ['/usr/bin/which', '/bin/which'];
+  for (const whichBin of whichBins) {
+    if (fs.existsSync(whichBin)) {
+      try {
+        const out = execFileSync(whichBin, ['ffmpeg'], { stdio: 'pipe' }).toString().trim();
+        if (out && fs.existsSync(out)) {
+          resolvedFfmpegPath = out;
+          return out;
+        }
+      } catch {}
+    }
+  }
+  resolvedFfmpegPath = '';
+  return null;
+}
+
+function checkFfmpeg(): boolean {
+  return getFfmpegPath() !== null;
 }
 
 /**
@@ -64,22 +86,22 @@ async function executeFfmpegTranscode(
   try {
     const args: string[] = ['-y', '-i', inputPath];
 
-    // Audio options
-    if (options.audioBitrate) {
+    // Audio options with strict regex/range validation
+    if (options.audioBitrate && /^\d{1,4}[kKmM]?$/.test(options.audioBitrate)) {
       args.push('-b:a', options.audioBitrate);
     }
-    if (options.audioChannels) {
+    if (options.audioChannels && ['mono', 'stereo', '5.1'].includes(options.audioChannels)) {
       args.push('-ac', options.audioChannels === 'mono' ? '1' : options.audioChannels === '5.1' ? '6' : '2');
     }
-    if (options.audioSampleRate) {
+    if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
       args.push('-ar', options.audioSampleRate.toString());
     }
-    if (options.audioVolume !== undefined && options.audioVolume !== 100) {
+    if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= 200 && options.audioVolume !== 100) {
       const vol = options.audioVolume / 100;
       args.push('-filter:a', `volume=${vol}`);
     }
 
-    // Video options
+    // Video options with strict whitelist validation
     if (options.videoResolution && options.videoResolution !== 'original') {
       const resMap: Record<string, string> = {
         '4k': '3840:2160',
@@ -92,7 +114,7 @@ async function executeFfmpegTranscode(
         args.push('-vf', `scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`);
       }
     }
-    if (options.videoFps) {
+    if (typeof options.videoFps === 'number' && Number.isFinite(options.videoFps) && options.videoFps > 0 && options.videoFps <= 240) {
       args.push('-r', options.videoFps.toString());
     }
     if (options.videoCodec) {
@@ -109,7 +131,9 @@ async function executeFfmpegTranscode(
 
     args.push(outputPath);
 
-    execSync(`ffmpeg ${args.map((a) => `"${a}"`).join(' ')}`, { stdio: 'pipe' });
+    // Invoke binary directly via kernel execve with resolved absolute path
+    const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
+    execFileSync(ffmpegBin, args, { stdio: 'pipe' });
 
     const outputBuffer = fs.readFileSync(outputPath);
     return {

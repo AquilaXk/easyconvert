@@ -280,6 +280,16 @@ export class WasmWorkerManager {
   ): Promise<WasmPipelineResult> {
     return new Promise((resolve, reject) => {
       let isSettled = false;
+      let timer: any = null;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        worker.removeEventListener('message', messageHandler);
+        worker.removeEventListener('error', errorHandler);
+      };
 
       const messageHandler = (e: MessageEvent) => {
         const data = e.data;
@@ -290,7 +300,7 @@ export class WasmWorkerManager {
         } else if (data.type === 'COMPLETED') {
           if (isSettled) return;
           isSettled = true;
-          worker.removeEventListener('message', messageHandler);
+          cleanup();
           resolve({
             buffer: data.buffer,
             bytesProcessed: data.bytesProcessed,
@@ -300,12 +310,27 @@ export class WasmWorkerManager {
         } else if (data.type === 'ERROR') {
           if (isSettled) return;
           isSettled = true;
-          worker.removeEventListener('message', messageHandler);
+          cleanup();
           reject(new Error(data.message || 'Wasm Worker execution error'));
         }
       };
 
+      const errorHandler = (errEvent: ErrorEvent) => {
+        if (isSettled) return;
+        isSettled = true;
+        cleanup();
+        reject(new Error(errEvent.message || 'Wasm Worker uncaught runtime error'));
+      };
+
+      timer = setTimeout(() => {
+        if (isSettled) return;
+        isSettled = true;
+        cleanup();
+        reject(new Error(`Wasm Worker execution timed out after 30000ms for job ${jobId}`));
+      }, 30000);
+
       worker.addEventListener('message', messageHandler);
+      worker.addEventListener('error', errorHandler);
 
       // Transfer buffer to worker
       worker.postMessage(

@@ -167,8 +167,13 @@ export function resolveChunkTransformer(
     return options.chunkTransformer;
   }
 
-  // Default: identity pass-through
-  return (chunk: Uint8Array) => chunk;
+  // Pass-through only allowed if formats are identical or explicitly opted-in
+  if (src === tgt || options?.allowPassThrough === true) {
+    return (chunk: Uint8Array) => chunk;
+  }
+
+  // Fail-closed on unsupported streaming conversions
+  throw new Error(`Unsupported streaming transformation: ${sourceFormat} to ${targetFormat}`);
 }
 
 /**

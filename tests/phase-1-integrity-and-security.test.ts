@@ -149,16 +149,16 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       }
     });
 
-    it('enforces maximum compression ratio limit (10:1)', async () => {
+    it('enforces maximum compression ratio limit (100:1)', async () => {
       // 50KB of zeros compresses to ~100 bytes in DEFLATE, ratio > 100:1
       const repetitiveData = Buffer.alloc(50000, 0);
       const zip = new JSZip();
       zip.file('repetitive.bin', repetitiveData, { compression: 'DEFLATE', compressionOptions: { level: 9 } });
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
 
-      expect(repetitiveData.length / zipBuffer.length).toBeGreaterThan(10);
+      expect(repetitiveData.length / zipBuffer.length).toBeGreaterThan(100);
       await expect(extractZipArchive(zipBuffer)).rejects.toThrow(
-        /Archive bomb detected: compression ratio .* exceeds 10:1 limit/
+        /Archive bomb detected: compression ratio .* exceeds 100:1 limit/
       );
     });
   });
