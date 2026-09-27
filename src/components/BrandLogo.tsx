@@ -1,5 +1,8 @@
 import React from 'react';
 
+const SIGNATURE_ARROWS_PATH =
+  'M5385 4691 c-498 -105 -904 -466 -1068 -951 -75 -222 -95 -516 -48 -730 53 -240 148 -439 302 -632 54 -68 54 -68 114 -68 90 0 238 38 302 78 21 13 20 16 -66 102 -173 172 -282 379 -326 615 -26 137 -17 359 19 480 160 534 672 872 1181 781 120 -22 179 -42 303 -103 116 -57 134 -73 82 -73 -148 0 -199 -209 -70 -284 35 -21 293 -44 493 -45 197 -2 219 50 200 466 -8 161 -11 186 -29 210 -47 63 -135 84 -203 49 -41 -22 -63 -57 -76 -122 l-11 -54 -78 55 c-148 103 -323 180 -502 220 -113 26 -408 29 -519 6z M4385 4684 c-350 -61 -669 -267 -871 -560 -84 -122 -39 -260 92 -280 72 -10 119 17 192 113 174 228 414 373 672 403 86 11 98 15 130 45 66 62 203 166 273 207 82 48 80 49 -52 72 -115 20 -325 20 -436 0z M5490 4253 c-83 -14 -231 -65 -258 -88 -2 -2 33 -38 78 -81 109 -105 170 -187 235 -319 193 -393 154 -818 -106 -1155 -320 -413 -841 -534 -1307 -304 -93 47 -93 47 -43 64 28 9 61 26 72 36 52 46 64 139 27 194 -47 68 -57 71 -275 86 -301 20 -363 19 -403 -8 -66 -46 -70 -64 -70 -343 0 -240 1 -253 23 -295 39 -79 133 -110 206 -69 53 29 81 75 81 132 0 26 2 47 5 47 3 0 38 -22 78 -49 296 -200 663 -281 1004 -222 530 90 972 501 1113 1035 121 457 17 916 -290 1285 -50 60 -52 61 -98 60 -26 -1 -58 -4 -72 -6z M6539 2711 c-19 -11 -60 -52 -91 -93 -178 -231 -450 -391 -707 -415 -62 -6 -66 -8 -140 -76 -42 -38 -127 -103 -190 -145 -114 -77 -114 -77 -72 -89 243 -70 588 -29 856 101 294 144 603 458 582 592 -18 109 -145 175 -238 125z';
+
 interface BrandLogoProps {
   /** Size variant: 'sm' | 'md' | 'lg' | 'xl' or custom number */
   size?: 'sm' | 'md' | 'lg' | 'xl' | number;
@@ -24,150 +27,75 @@ export function BrandIcon({ size = 32, className = '' }: { size?: number | strin
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={`shrink-0 transition-transform duration-200 ${className}`}
-      aria-label="EasyConvert Logo Mark"
+      aria-label="EasyConvert Signature Logo Mark"
     >
-      <defs>
-        {/* Primary Signature Indigo/Blue-Violet Gradient */}
-        <linearGradient id="ecBrandGradMain" x1="16" y1="16" x2="104" y2="104" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#7480D2" />
-          <stop offset="45%" stopColor="#5C6BC0" />
-          <stop offset="100%" stopColor="#4A58A9" />
-        </linearGradient>
+      <g id="brand-signature-icon" transform="translate(60, 60) scale(0.245) translate(-511.5, -229)">
+        {/* Dual Curved Loop Arrows in #5C6BC0 (brand.700) */}
+        <g transform="translate(0, 558) scale(0.1, -0.1)" fill="#5C6BC0">
+          <path d={SIGNATURE_ARROWS_PATH} />
+        </g>
 
-        {/* Ambient Highlight for 3D depth */}
-        <linearGradient id="ecBrandHighlight" x1="30" y1="18" x2="70" y2="90" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#B4BCFB" stopOpacity="0.8" />
-          <stop offset="50%" stopColor="#7480D2" stopOpacity="0.2" />
-          <stop offset="100%" stopColor="#3B4890" stopOpacity="0.6" />
-        </linearGradient>
+        {/* Left Loop Document Badge (PDF) */}
+        <g id="badge-pdf" aria-label="PDF">
+          <title>PDF</title>
+          <path
+            d="M 318 186 L 354 186 L 380 212 L 380 262 A 12 12 0 0 1 368 274 L 318 274 A 12 12 0 0 1 306 262 L 306 198 A 12 12 0 0 1 318 186 Z"
+            fill="#B4BCFB"
+            stroke="#5C6BC0"
+            strokeWidth="5"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M 354 186 L 354 206 A 6 6 0 0 0 360 212 L 380 212 Z"
+            fill="#FFFFFF"
+            stroke="#5C6BC0"
+            strokeWidth="5"
+            strokeLinejoin="round"
+          />
+          <text
+            x="343"
+            y="252"
+            fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+            fontSize="20"
+            fontWeight="900"
+            fill="#5C6BC0"
+            textAnchor="middle"
+            letterSpacing="-0.5"
+          >
+            PDF
+          </text>
+        </g>
 
-        {/* Soft Drop Shadow Filter */}
-        <filter id="ecSoftShadow" x="-10%" y="-10%" width="125%" height="125%" filterUnits="userSpaceOnUse">
-          <feDropShadow dx="0" dy="4" stdDeviation="5" floodColor="#3B4890" floodOpacity="0.32" />
-        </filter>
-
-        <linearGradient id="ecArrowGrad" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1F2340" />
-          <stop offset="100%" stopColor="#3B4890" />
-        </linearGradient>
-      </defs>
-
-      {/* Main Interlocking E-C Symbol */}
-      <g filter="url(#ecSoftShadow)">
-        {/* Left E Body with rounded corners */}
-        <path
-          d="M 28 20 
-             C 21.37 20, 16 25.37, 16 32 
-             L 16 88 
-             C 16 94.63, 21.37 100, 28 100 
-             L 60 100 
-             C 65 100, 68 97, 68 92 
-             L 68 85 
-             C 68 81, 65 78, 60 78 
-             L 34 78 
-             C 31 78, 30 76, 30 73 
-             L 30 65 
-             C 30 62, 32 60, 35 60 
-             L 58 60 
-             C 63 60, 66 57, 66 52 
-             L 66 48 
-             C 66 43, 63 40, 58 40 
-             L 35 40 
-             C 32 40, 30 38, 30 35 
-             L 30 32 
-             C 30 29, 32 27, 35 27 
-             L 60 27 
-             C 65 27, 68 24, 68 19 
-             L 68 22 
-             C 68 20.89, 67.11 20, 66 20 
-             Z"
-          fill="url(#ecBrandGradMain)"
-        />
-
-        {/* Interlocking Ribbon connecting E to C */}
-        <path
-          d="M 52 46 
-             C 52 32, 63 20, 80 20 
-             C 96.57 20, 108 31.43, 108 48 
-             C 108 53, 104 57, 98 57 
-             C 93 57, 89 53, 89 48 
-             C 89 39.5, 84.5 35, 78 35 
-             C 71.5 35, 66 40.5, 66 50 
-             C 66 58, 69 64, 76 68 
-             L 76 68 
-             C 84 72, 89 77, 89 86 
-             C 89 91, 85 95, 80 95 
-             L 60 95 
-             C 54 95, 52 90, 52 84 
-             L 52 46 Z"
-          fill="url(#ecBrandHighlight)"
-          fillOpacity="0.4"
-        />
-
-        {/* Right C Arch */}
-        <path
-          d="M 76 20
-             C 95.88 20, 110 34.12, 110 54
-             C 110 58.5, 106.5 62, 102 62
-             C 97.5 62, 94 58.5, 94 54
-             C 94 42.95, 85.05 34, 74 34
-             C 62.95 34, 54 42.95, 54 54
-             L 54 66
-             C 54 77.05, 62.95 86, 74 86
-             C 85.05 86, 94 77.05, 94 66
-             C 94 61.5, 97.5 58, 102 58
-             C 106.5 58, 110 61.5, 110 66
-             C 110 85.88, 95.88 100, 76 100
-             C 56.12 100, 40 83.88, 40 64
-             L 40 56
-             C 40 36.12, 56.12 20, 76 20 Z"
-          fill="url(#ecBrandGradMain)"
-        />
-
-        {/* Smooth Inner Bridge Flow */}
-        <path
-          d="M 42 42 
-             C 42 34, 48 28, 56 28 
-             L 72 28 
-             C 86 28, 96 38, 96 52 
-             C 96 56, 93 59, 89 59 
-             C 85 59, 82 56, 82 52 
-             C 82 44, 76 39, 70 39 
-             L 56 39 
-             C 52 39, 49 42, 49 46 
-             L 49 74 
-             C 49 78, 52 81, 56 81 
-             L 70 81 
-             C 76 81, 82 76, 82 68 
-             C 82 64, 85 61, 89 61 
-             C 93 61, 96 64, 96 68 
-             C 96 82, 86 92, 72 92 
-             L 56 92 
-             C 48 92, 42 86, 42 78 Z"
-          fill="url(#ecBrandGradMain)"
-        />
-      </g>
-
-      {/* Top Conversion Arrow: Points Right (→) */}
-      <g className="ec-arrow-top">
-        {/* Shaft */}
-        <rect x="28" y="32" width="20" height="3" rx="1.5" fill="#1F2340" />
-        {/* Arrowhead */}
-        <path
-          d="M 44 28.5 L 51 33.5 L 44 38.5 Z"
-          fill="#1F2340"
-        />
-      </g>
-
-      {/* Bottom Conversion Arrow: Points Left (←) */}
-      <g className="ec-arrow-bottom">
-        {/* Shaft */}
-        <rect x="30" y="85" width="20" height="3" rx="1.5" fill="#1F2340" />
-        {/* Arrowhead */}
-        <path
-          d="M 33 80.5 L 26 86.5 L 33 92.5 Z"
-          fill="#1F2340"
-        />
+        {/* Right Loop Document Badge (DOC) */}
+        <g id="badge-doc" aria-label="DOC">
+          <title>DOC</title>
+          <path
+            d="M 656 186 L 692 186 L 718 212 L 718 262 A 12 12 0 0 1 706 274 L 656 274 A 12 12 0 0 1 644 262 L 644 198 A 12 12 0 0 1 656 186 Z"
+            fill="#B4BCFB"
+            stroke="#5C6BC0"
+            strokeWidth="5"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M 692 186 L 692 206 A 6 6 0 0 0 698 212 L 718 212 Z"
+            fill="#FFFFFF"
+            stroke="#5C6BC0"
+            strokeWidth="5"
+            strokeLinejoin="round"
+          />
+          <text
+            x="681"
+            y="252"
+            fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+            fontSize="20"
+            fontWeight="900"
+            fill="#5C6BC0"
+            textAnchor="middle"
+            letterSpacing="-0.5"
+          >
+            DOC
+          </text>
+        </g>
       </g>
     </svg>
   );
@@ -185,18 +113,19 @@ export default function BrandLogo({
 
   if (typeof size === 'number') {
     pixelSize = size;
+    textClass = size >= 40 ? 'text-2xl md:text-3xl' : size >= 32 ? 'text-xl md:text-2xl' : 'text-lg';
   } else {
     switch (size) {
       case 'sm':
-        pixelSize = 24;
+        pixelSize = 26;
         textClass = 'text-lg';
         break;
       case 'md':
-        pixelSize = 32;
+        pixelSize = 34;
         textClass = 'text-xl md:text-2xl';
         break;
       case 'lg':
-        pixelSize = 40;
+        pixelSize = 44;
         textClass = 'text-2xl md:text-3xl';
         break;
       case 'xl':
@@ -206,15 +135,16 @@ export default function BrandLogo({
     }
   }
 
+  const effectiveTextClass = textClassName || 'text-[#1F2340] dark:text-white';
+
   return (
     <div className={`inline-flex items-center gap-2.5 select-none ${className}`}>
       <BrandIcon size={pixelSize} className={iconClassName} />
       {showText && (
         <span
-          className={`font-sans tracking-tight font-extrabold text-brand-950 dark:text-white transition-colors flex items-center leading-none ${textClass} ${textClassName}`}
+          className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${textClass} ${effectiveTextClass}`}
         >
-          <span className="text-brand-800 dark:text-white">Easy</span>
-          <span className="text-brand-700 dark:text-brand-400">Convert</span>
+          EasyConvert
         </span>
       )}
     </div>
