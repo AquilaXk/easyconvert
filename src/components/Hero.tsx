@@ -64,16 +64,21 @@ export default function Hero({
     }
   }, [activeTargetFormat]);
 
+  const getEffectiveTargetFormat = (chosen?: string, fallback?: string): string | undefined => {
+    if (chosen && chosen.toLowerCase() !== 'any') {
+      return chosen.toLowerCase();
+    }
+    if (fallback && fallback.toLowerCase() !== 'any') {
+      return fallback.toLowerCase();
+    }
+    return undefined;
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const files = Array.from(e.target.files);
       const chosen = targetFormatRef.current;
-      const effectiveTarget =
-        chosen && chosen.toLowerCase() !== 'any'
-          ? chosen.toLowerCase()
-          : activeTargetFormat && activeTargetFormat.toLowerCase() !== 'any'
-          ? activeTargetFormat.toLowerCase()
-          : undefined;
+      const effectiveTarget = getEffectiveTargetFormat(chosen, activeTargetFormat);
       onFilesSelected(files, effectiveTarget);
       e.target.value = '';
     }
@@ -95,12 +100,7 @@ export default function Hero({
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const files = Array.from(e.dataTransfer.files);
       const chosen = targetFormatRef.current;
-      const effectiveTarget =
-        chosen && chosen.toLowerCase() !== 'any'
-          ? chosen.toLowerCase()
-          : activeTargetFormat && activeTargetFormat.toLowerCase() !== 'any'
-          ? activeTargetFormat.toLowerCase()
-          : undefined;
+      const effectiveTarget = getEffectiveTargetFormat(chosen, activeTargetFormat);
       onFilesSelected(files, effectiveTarget);
     }
   };
