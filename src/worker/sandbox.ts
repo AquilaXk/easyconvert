@@ -7,6 +7,7 @@ export {
   executeSandboxedBinary,
   detectSandboxEnvironment,
   getSanitizedEnvironment,
+  killProcessGroup,
   SandboxedProcessError,
   SandboxedTimeoutError,
   SandboxedBufferLimitError,

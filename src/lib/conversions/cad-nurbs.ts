@@ -742,13 +742,40 @@ export function evaluateSurfaceCurvature(
 }
 
 export interface AdaptiveTessellationOptions extends TessellationOptions {
-  chordalTolerance?: number; // Model unit max chordal deflection
-  angularTolerance?: number; // Radians normal deviation threshold
+  chordalTolerance?: number; // Model unit max chordal deflection (default 0.005)
+  angularTolerance?: number; // Radians normal deviation threshold (default 0.15)
+  curvatureThreshold?: number; // Gaussian & principal curvature threshold (default 1e-4)
+  minDepth?: number; // Minimum quadtree depth (default 1, i.e. 2x2 base grid)
+  maxDepth?: number; // Maximum quadtree depth (default 5, up to 32x32)
+}
+
+interface QuadCell {
+  id: number;
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+  depth: number;
+  isLeaf: boolean;
+  children: [QuadCell, QuadCell, QuadCell, QuadCell] | null; // SW, SE, NW, NE
+  parent: QuadCell | null;
 }
 
 /**
- * Tessellates a B-spline surface with curvature-driven adaptive subdivision
- * balancing triangle budget between flat and high-curvature zones.
+ * Tessellates a B-spline surface using a Curvature-Adaptive Quadtree algorithm.
+ *
+ * Mathematical Principles:
+ * 1. Evaluates differential geometry curvature: Gaussian curvature K = kappa_1 * kappa_2
+ *    and maximum principal curvature kappa_max.
+ * 2. Flat / developable zones (|K| < epsilon and kappa_max < epsilon): preserves coarse
+ *    2x2 base quads with minimal triangles.
+ * 3. High-curvature zones (|K| >= threshold or chordal deflection > tolerance):
+ *    recursively subdivides quads into 4 quadrants up to maxDepth.
+ * 4. 2:1 Balance Rule (Restricted Quadtree): guarantees adjacent cells never differ
+ *    in subdivision depth by more than 1 level.
+ * 5. T-Junction & Crack Prevention: eliminates hanging nodes along subdivision boundaries
+ *    by inserting Steiner center vertices and performing adaptive fan-out triangulation,
+ *    producing a perfectly watertight 2-manifold triangle mesh.
  */
 export function tessellateBSplineSurfaceAdaptive(
   surface: BSplineSurface,
@@ -757,6 +784,9 @@ export function tessellateBSplineSurfaceAdaptive(
 ): TessellatedMesh {
   const chordalTol = options.chordalTolerance ?? 0.005;
   const angularTol = options.angularTolerance ?? 0.15; // ~8.6 degrees
+  const curvThresh = options.curvatureThreshold ?? 1e-4;
+  const minDepth = Math.max(1, options.minDepth ?? 1);
+  const maxDepth = Math.max(minDepth, Math.min(7, options.maxDepth ?? 5));
 
   const uMin = surface.uKnots && surface.uKnots.length > surface.uDegree ? surface.uKnots[surface.uDegree] : 0;
   const uMaxRaw = surface.uKnots && surface.uKnots.length > surface.uDegree ? surface.uKnots[surface.uKnots.length - 1 - surface.uDegree] : 1;
@@ -766,43 +796,273 @@ export function tessellateBSplineSurfaceAdaptive(
   const vMaxRaw = surface.vKnots && surface.vKnots.length > surface.vDegree ? surface.vKnots[surface.vKnots.length - 1 - surface.vDegree] : 1;
   const vMax = vMaxRaw > vMin ? vMaxRaw : vMin + 1;
 
-  // Initial base coarse grid
-  const baseU = Math.max(4, options.uSamples || 8);
-  const baseV = Math.max(4, options.vSamples || 8);
+  let nextCellId = 1;
 
-  // We can measure max principal curvature across sample points to determine refinement
-  let globalMaxCurvature = 0;
-  for (let i = 0; i <= baseU; i++) {
-    const u = uMin + (i / baseU) * (uMax - uMin);
-    for (let j = 0; j <= baseV; j++) {
-      const v = vMin + (j / baseV) * (vMax - vMin);
-      const curv = evaluateSurfaceCurvature(surface, u, v);
-      if (curv.maxPrincipalCurvature > globalMaxCurvature) {
-        globalMaxCurvature = curv.maxPrincipalCurvature;
+  function createCell(
+    u0: number,
+    u1: number,
+    v0: number,
+    v1: number,
+    depth: number,
+    parent: QuadCell | null
+  ): QuadCell {
+    return {
+      id: nextCellId++,
+      u0,
+      u1,
+      v0,
+      v1,
+      depth,
+      isLeaf: true,
+      children: null,
+      parent,
+    };
+  }
+
+  // 1. Initialize Base 2x2 Root Cells
+  const roots: QuadCell[] = [];
+  const baseU = 2;
+  const baseV = 2;
+  for (let i = 0; i < baseU; i++) {
+    const u0 = uMin + (i / baseU) * (uMax - uMin);
+    const u1 = uMin + ((i + 1) / baseU) * (uMax - uMin);
+    for (let j = 0; j < baseV; j++) {
+      const v0 = vMin + (j / baseV) * (vMax - vMin);
+      const v1 = vMin + ((j + 1) / baseV) * (vMax - vMin);
+      roots.push(createCell(u0, u1, v0, v1, 1, null));
+    }
+  }
+
+  function shouldSubdivideCell(cell: QuadCell): boolean {
+    if (cell.depth >= maxDepth) return false;
+    if (cell.depth < minDepth) return true;
+
+    const uMid = (cell.u0 + cell.u1) / 2;
+    const vMid = (cell.v0 + cell.v1) / 2;
+
+    const c00 = evaluateSurfaceCurvature(surface, cell.u0, cell.v0);
+    const c10 = evaluateSurfaceCurvature(surface, cell.u1, cell.v0);
+    const c01 = evaluateSurfaceCurvature(surface, cell.u0, cell.v1);
+    const c11 = evaluateSurfaceCurvature(surface, cell.u1, cell.v1);
+    const center = evaluateSurfaceCurvature(surface, uMid, vMid);
+
+    const maxK = Math.max(
+      Math.abs(c00.gaussianCurvature),
+      Math.abs(c10.gaussianCurvature),
+      Math.abs(c01.gaussianCurvature),
+      Math.abs(c11.gaussianCurvature),
+      Math.abs(center.gaussianCurvature)
+    );
+
+    const maxKappa = Math.max(
+      c00.maxPrincipalCurvature,
+      c10.maxPrincipalCurvature,
+      c01.maxPrincipalCurvature,
+      c11.maxPrincipalCurvature,
+      center.maxPrincipalCurvature
+    );
+
+    // Flat plane or zero-curvature developable surface
+    if (maxK < curvThresh && maxKappa < curvThresh) {
+      return false;
+    }
+
+    // Chordal deflection between actual evaluated center and bilinear corner average
+    const linCenterX = (c00.point.x + c10.point.x + c01.point.x + c11.point.x) / 4;
+    const linCenterY = (c00.point.y + c10.point.y + c01.point.y + c11.point.y) / 4;
+    const linCenterZ = (c00.point.z + c10.point.z + c01.point.z + c11.point.z) / 4;
+    const chordalDeflection = Math.hypot(
+      center.point.x - linCenterX,
+      center.point.y - linCenterY,
+      center.point.z - linCenterZ
+    );
+
+    if (chordalDeflection > chordalTol) {
+      return true;
+    }
+
+    // Angular deviation of unit normals
+    const dot = (a: Point3D, b: Point3D) => a.x * b.x + a.y * b.y + a.z * b.z;
+    const minDot = Math.min(
+      dot(c00.normal, center.normal),
+      dot(c10.normal, center.normal),
+      dot(c01.normal, center.normal),
+      dot(c11.normal, center.normal)
+    );
+    const clampedDot = Math.max(-1, Math.min(1, minDot));
+    const angularDev = Math.acos(clampedDot);
+
+    if (angularDev > angularTol) {
+      return true;
+    }
+
+    // For non-flat surfaces, guarantee at least depth 2 for resolution
+    if (maxK >= curvThresh && cell.depth < 2) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function splitCell(cell: QuadCell): void {
+    const uMid = (cell.u0 + cell.u1) / 2;
+    const vMid = (cell.v0 + cell.v1) / 2;
+    const childDepth = cell.depth + 1;
+
+    // [SW, SE, NW, NE]
+    cell.children = [
+      createCell(cell.u0, uMid, cell.v0, vMid, childDepth, cell),
+      createCell(uMid, cell.u1, cell.v0, vMid, childDepth, cell),
+      createCell(cell.u0, uMid, vMid, cell.v1, childDepth, cell),
+      createCell(uMid, cell.u1, vMid, cell.v1, childDepth, cell),
+    ];
+    cell.isLeaf = false;
+  }
+
+  function subdivideRecursive(cell: QuadCell): void {
+    if (shouldSubdivideCell(cell)) {
+      splitCell(cell);
+      if (cell.children) {
+        for (const child of cell.children) {
+          subdivideRecursive(child);
+        }
       }
     }
   }
 
-  // Refine grid density based on curvature deflection h <= sqrt(8 * delta / kappa)
-  let effectiveUSamples = 4;
-  let effectiveVSamples = 4;
-
-  if (globalMaxCurvature > 1e-4) {
-    const optimalStep = Math.sqrt((8 * chordalTol) / globalMaxCurvature);
-    const neededU = Math.ceil((uMax - uMin) / Math.max(0.01, optimalStep));
-    const neededV = Math.ceil((vMax - vMin) / Math.max(0.01, optimalStep));
-    effectiveUSamples = Math.max(8, Math.min(48, neededU));
-    effectiveVSamples = Math.max(8, Math.min(48, neededV));
-  } else {
-    effectiveUSamples = options.uSamples ? Math.max(2, options.uSamples) : 4;
-    effectiveVSamples = options.vSamples ? Math.max(2, options.vSamples) : 4;
+  for (const root of roots) {
+    subdivideRecursive(root);
   }
 
-  return tessellateBSplineSurface(
-    surface,
-    { uSamples: effectiveUSamples, vSamples: effectiveVSamples },
-    meshName
-  );
+  // 2. 2:1 Balancing Rule (Restricted Quadtree)
+  function getAllLeaves(cellList: QuadCell[]): QuadCell[] {
+    const leaves: QuadCell[] = [];
+    function collect(c: QuadCell) {
+      if (c.isLeaf) {
+        leaves.push(c);
+      } else if (c.children) {
+        for (const child of c.children) collect(child);
+      }
+    }
+    for (const r of cellList) collect(r);
+    return leaves;
+  }
+
+  const eps = 1e-9;
+  function areCellsAdjacent(a: QuadCell, b: QuadCell): boolean {
+    const uOverlap = Math.max(0, Math.min(a.u1, b.u1) - Math.max(a.u0, b.u0));
+    const vOverlap = Math.max(0, Math.min(a.v1, b.v1) - Math.max(a.v0, b.v0));
+
+    // Vertical edge contact
+    const touchesU = Math.abs(a.u1 - b.u0) < eps || Math.abs(a.u0 - b.u1) < eps;
+    if (touchesU && vOverlap > eps) return true;
+
+    // Horizontal edge contact
+    const touchesV = Math.abs(a.v1 - b.v0) < eps || Math.abs(a.v0 - b.v1) < eps;
+    if (touchesV && uOverlap > eps) return true;
+
+    return false;
+  }
+
+  let balanced = false;
+  let balancePass = 0;
+  while (!balanced && balancePass < 10) {
+    balanced = true;
+    balancePass++;
+    const currentLeaves = getAllLeaves(roots);
+    for (const leaf of currentLeaves) {
+      if (!leaf.isLeaf) continue;
+      for (const other of currentLeaves) {
+        if (!other.isLeaf || leaf === other) continue;
+        if (leaf.depth > other.depth + 1 && areCellsAdjacent(leaf, other)) {
+          splitCell(other);
+          balanced = false;
+        }
+      }
+    }
+  }
+
+  // 3. Collect Final Leaves and Build Corner Vertex Set
+  const finalLeaves = getAllLeaves(roots);
+  const cornerKey = (u: number, v: number) => `${Math.round(u * 1e7)}:${Math.round(v * 1e7)}`;
+  const cornerSet = new Set<string>();
+
+  for (const leaf of finalLeaves) {
+    cornerSet.add(cornerKey(leaf.u0, leaf.v0));
+    cornerSet.add(cornerKey(leaf.u1, leaf.v0));
+    cornerSet.add(cornerKey(leaf.u0, leaf.v1));
+    cornerSet.add(cornerKey(leaf.u1, leaf.v1));
+  }
+
+  // 4. Mesh Generation with Watertight T-Junction Elimination
+  const vertices: [number, number, number][] = [];
+  const normals: [number, number, number][] = [];
+  const faces: [number, number, number][] = [];
+  const vertexCache = new Map<string, number>();
+
+  function getOrAddVertex(u: number, v: number): number {
+    const key = cornerKey(u, v);
+    const existing = vertexCache.get(key);
+    if (existing !== undefined) return existing;
+
+    const ev = evaluateBSplineSurface(surface, u, v);
+    const idx = vertices.length;
+    vertices.push([ev.point.x, ev.point.y, ev.point.z]);
+    normals.push([ev.normal.x, ev.normal.y, ev.normal.z]);
+    vertexCache.set(key, idx);
+    return idx;
+  }
+
+  for (const leaf of finalLeaves) {
+    const u0 = leaf.u0;
+    const u1 = leaf.u1;
+    const v0 = leaf.v0;
+    const v1 = leaf.v1;
+    const uMid = (u0 + u1) / 2;
+    const vMid = (v0 + v1) / 2;
+
+    const hasSouthMid = cornerSet.has(cornerKey(uMid, v0));
+    const hasEastMid = cornerSet.has(cornerKey(u1, vMid));
+    const hasNorthMid = cornerSet.has(cornerKey(uMid, v1));
+    const hasWestMid = cornerSet.has(cornerKey(u0, vMid));
+
+    if (!hasSouthMid && !hasEastMid && !hasNorthMid && !hasWestMid) {
+      // Standard quad with 0 hanging nodes -> 2 triangles
+      const i00 = getOrAddVertex(u0, v0);
+      const i10 = getOrAddVertex(u1, v0);
+      const i11 = getOrAddVertex(u1, v1);
+      const i01 = getOrAddVertex(u0, v1);
+
+      faces.push([i00, i10, i11]);
+      faces.push([i00, i11, i01]);
+    } else {
+      // Quad with hanging midpoints along boundary: insert center Steiner point and fan out
+      const centerIdx = getOrAddVertex(uMid, vMid);
+
+      // Boundary polygon vertices in counter-clockwise order
+      const boundaryIndices: number[] = [];
+      boundaryIndices.push(getOrAddVertex(u0, v0));
+      if (hasSouthMid) boundaryIndices.push(getOrAddVertex(uMid, v0));
+
+      boundaryIndices.push(getOrAddVertex(u1, v0));
+      if (hasEastMid) boundaryIndices.push(getOrAddVertex(u1, vMid));
+
+      boundaryIndices.push(getOrAddVertex(u1, v1));
+      if (hasNorthMid) boundaryIndices.push(getOrAddVertex(uMid, v1));
+
+      boundaryIndices.push(getOrAddVertex(u0, v1));
+      if (hasWestMid) boundaryIndices.push(getOrAddVertex(u0, vMid));
+
+      const count = boundaryIndices.length;
+      for (let k = 0; k < count; k++) {
+        const pCurrent = boundaryIndices[k];
+        const pNext = boundaryIndices[(k + 1) % count];
+        faces.push([centerIdx, pCurrent, pNext]);
+      }
+    }
+  }
+
+  return { name: meshName, vertices, normals, faces };
 }
 
 // ============================================================================
@@ -3786,7 +4046,7 @@ function mergeTessellatedSurfaces(surfaces: BSplineSurface[], modelName: string)
   const mergedFaces: [number, number, number][] = [];
 
   surfaces.forEach((s, idx) => {
-    const mesh = tessellateBSplineSurface(s, { uSamples: 16, vSamples: 16 }, `${modelName}_s${idx}`);
+    const mesh = tessellateBSplineSurfaceAdaptive(s, {}, `${modelName}_s${idx}`);
     const vOffset = mergedVertices.length;
 
     mesh.vertices.forEach((v) => mergedVertices.push(v));
