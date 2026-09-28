@@ -1389,6 +1389,13 @@ export async function extractWithSpannedStream7z(
   const timeoutMs = options.timeoutMs ?? 60000;
   const maxBuffer = options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
   const passwordArgs = options.password ? [`-p${options.password}`] : [];
+  const formatMap: Record<string, string> = {
+    tar: 'tar',
+    zip: 'zip',
+    '7z': '7z',
+    rar: 'rar',
+  };
+  const typeFlag = formatMap[metadata.format] ? [`-t${formatMap[metadata.format]}`] : [];
 
   // Strategy 1: Stdin streaming extraction via 7z x -si{baseFilename}
   let extractionSuccess = false;
@@ -1396,7 +1403,7 @@ export async function extractWithSpannedStream7z(
     const { stream } = createVirtualSpannedStream(sortedParts);
     await executeSandboxedBinary(
       p7zBin,
-      ['x', '-y', `-si${metadata.baseFilename}`, `-o${resolvedExtractDir}`, ...passwordArgs],
+      ['x', '-y', `-si${metadata.baseFilename}`, ...typeFlag, `-o${resolvedExtractDir}`, ...passwordArgs],
       {
         cwd: resolvedExtractDir,
         stdin: stream,
@@ -1422,7 +1429,7 @@ export async function extractWithSpannedStream7z(
       await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
       await executeSandboxedBinary(
         p7zBin,
-        ['x', '-y', `-o${resolvedExtractDir}`, tempDiskFile, ...passwordArgs],
+        ['x', '-y', ...typeFlag, `-o${resolvedExtractDir}`, tempDiskFile, ...passwordArgs],
         {
           cwd: resolvedExtractDir,
           timeoutMs,

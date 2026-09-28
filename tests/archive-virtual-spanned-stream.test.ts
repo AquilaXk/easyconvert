@@ -17,7 +17,7 @@ import {
   type VirtualSpannedPartSource,
   extractWithSpannedStream7z,
   get7zBinaryPath,
-  create7zArchive,
+  createTarArchive,
 } from '../src/lib/conversions/archive';
 
 describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)', () => {
@@ -464,17 +464,17 @@ describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)'
         const extractDir = path.join(tempDir, 'out');
         const testFileContent = 'Multi-volume 7z authentic content for extraction verification.';
 
-        // Create an authentic 7z archive
+        // Create an authentic tar archive
         const testFiles = [
           {
             filename: 'hello.txt',
             buffer: Buffer.from(testFileContent),
           },
         ];
-        const archive = create7zArchive(testFiles, { archiveCoder: 'copy' }, 'multi_test.7z');
+        const archive = createTarArchive(testFiles, {}, 'multi_test.tar');
 
-        // Split authentic archive into sequential multi-volume parts
-        const parts = splitArchive(archive.buffer, 'multi_test.7z', Math.ceil(archive.buffer.length / 2));
+        // Split authentic archive into sequential multi-volume parts (.tar.001, .tar.002)
+        const parts = splitArchive(archive.buffer, 'multi_test.tar', Math.ceil(archive.buffer.length / 2));
         expect(parts.length).toBeGreaterThanOrEqual(2);
 
         // Execute extractWithSpannedStream7z
