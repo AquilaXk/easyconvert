@@ -44,6 +44,8 @@ services:
     security_opt:
       - seccomp:./docker/seccomp-airgap.json
       - no-new-privileges:true
+    devices:
+      - /dev/dri:/dev/dri
     deploy:
       resources:
         limits:

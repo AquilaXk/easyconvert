@@ -1981,6 +1981,154 @@ async function encodeFramesHardware(
 }
 
 /**
+ * RFC 3533 Ogg CRC-32 Lookup Table (polynomial 0x04C11DB7)
+ */
+const OGG_CRC32_TABLE = new Uint32Array(256);
+(() => {
+  for (let i = 0; i < 256; i++) {
+    let r = (i << 24) >>> 0;
+    for (let j = 0; j < 8; j++) {
+      if (r & 0x80000000) {
+        r = ((r << 1) ^ 0x04c11db7) >>> 0;
+      } else {
+        r = (r << 1) >>> 0;
+      }
+    }
+    OGG_CRC32_TABLE[i] = r;
+  }
+})();
+
+function computeOggCrcUint8(buffer: Uint8Array): number {
+  let crc = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    const idx = ((crc >>> 24) ^ buffer[i]) & 0xff;
+    crc = ((crc << 8) ^ OGG_CRC32_TABLE[idx]) >>> 0;
+  }
+  return crc >>> 0;
+}
+
+export function createOggPageTyped(
+  payload: Uint8Array,
+  headerType: number,
+  granulePos: bigint,
+  sequenceNum: number,
+  serial: number
+): Uint8Array {
+  const segTable: number[] = [];
+  let rem = payload.length;
+  while (rem >= 255) {
+    segTable.push(255);
+    rem -= 255;
+  }
+  segTable.push(rem);
+
+  const headerSize = 27 + segTable.length;
+  const page = new Uint8Array(headerSize + payload.length);
+  const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
+
+  page[0] = 0x4f; page[1] = 0x67; page[2] = 0x67; page[3] = 0x53; // 'OggS'
+  page[4] = 0; // version 0
+  page[5] = headerType; // flags (0x02 = BOS, 0x04 = EOS)
+  view.setBigInt64(6, granulePos, true);
+  view.setUint32(14, serial, true);
+  view.setUint32(18, sequenceNum, true);
+  view.setUint32(22, 0, true);
+  page[26] = segTable.length;
+  for (let i = 0; i < segTable.length; i++) {
+    page[27 + i] = segTable[i];
+  }
+  page.set(payload, headerSize);
+
+  const crc = computeOggCrcUint8(page);
+  view.setUint32(22, crc, true);
+
+  return page;
+}
+
+/**
+ * Muxes discrete authentic Opus packets from WebCodecs AudioEncoder into an RFC 7845 Ogg Opus container.
+ */
+export function muxOggOpus(
+  encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
+  sampleRate: number = 48000,
+  channels: number = 2
+): Uint8Array {
+  const pages: Uint8Array[] = [];
+  const serial = 0x4f505553; // 'OPUS'
+
+  // Page 1: RFC 7845 Section 5.1 OpusHead (BOS)
+  const opusHead = new Uint8Array(19);
+  const headView = new DataView(opusHead.buffer, opusHead.byteOffset, opusHead.byteLength);
+  const headMagic = [0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64]; // 'OpusHead'
+  opusHead.set(headMagic, 0);
+  opusHead[8] = 1; // version 1
+  opusHead[9] = channels;
+  headView.setUint16(10, 384, true); // pre-skip 384
+  headView.setUint32(12, sampleRate || 48000, true);
+  headView.setInt16(16, 0, true);
+  opusHead[18] = 0; // mapping family 0 (mono or stereo)
+
+  pages.push(createOggPageTyped(opusHead, 0x02, 0n, 1, serial));
+
+  // Page 2: RFC 7845 Section 5.2 OpusTags
+  const vendorStr = 'EasyConvert WebCodecs Engine';
+  const vendorBytes = new TextEncoder().encode(vendorStr);
+  const tagList = [new TextEncoder().encode('ENCODER=EasyConvert WebCodecs Native Opus')];
+
+  let tagsLen = 8 + 4 + vendorBytes.length + 4;
+  for (const t of tagList) {
+    tagsLen += 4 + t.length;
+  }
+  const opusTags = new Uint8Array(tagsLen);
+  const tagsView = new DataView(opusTags.buffer, opusTags.byteOffset, opusTags.byteLength);
+  const tagsMagic = [0x4f, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73]; // 'OpusTags'
+  opusTags.set(tagsMagic, 0);
+  let pos = 8;
+  tagsView.setUint32(pos, vendorBytes.length, true);
+  pos += 4;
+  opusTags.set(vendorBytes, pos);
+  pos += vendorBytes.length;
+  tagsView.setUint32(pos, tagList.length, true);
+  pos += 4;
+  for (const t of tagList) {
+    tagsView.setUint32(pos, t.length, true);
+    pos += 4;
+    opusTags.set(t, pos);
+    pos += t.length;
+  }
+
+  pages.push(createOggPageTyped(opusTags, 0x00, 0n, 2, serial));
+
+  // Page 3+: Audio Pages with authentic Opus packet payloads
+  let seq = 3;
+  let cumulativeGranule = 0n;
+
+  if (encodedChunks.length === 0) {
+    const emptyPayload = new Uint8Array([0xc0 | (channels === 2 ? 0x04 : 0x00), 0]);
+    pages.push(createOggPageTyped(emptyPayload, 0x04, 0n, seq, serial));
+  } else {
+    for (let i = 0; i < encodedChunks.length; i++) {
+      const chunk = encodedChunks[i];
+      const isLast = i === encodedChunks.length - 1;
+      const flag = isLast ? 0x04 : 0x00;
+
+      cumulativeGranule += 960n; // 20ms frame at 48kHz = 960 samples
+
+      pages.push(createOggPageTyped(chunk.data, flag, cumulativeGranule, seq++, serial));
+    }
+  }
+
+  const totalLength = pages.reduce((sum, p) => sum + p.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const p of pages) {
+    result.set(p, offset);
+    offset += p.byteLength;
+  }
+  return result;
+}
+
+/**
  * Decodes and encodes audio frames with WebCodecs AudioEncoder/AudioDecoder.
  * Guarantees AudioData.close() in try ... finally on every frame.
  */
@@ -1991,7 +2139,7 @@ async function encodeAudioHardware(
   audioBitrate: number,
   flowController: WatermarkFlowController,
   encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
-  _demuxedTrack?: DemuxedTrackInfo | null,
+  demuxedTrack?: DemuxedTrackInfo | null,
   onProgress?: (progress: number) => void
 ): Promise<void> {
   let encoderError: Error | null = null;
@@ -2032,35 +2180,76 @@ async function encodeAudioHardware(
   });
 
   try {
-    const numFrames = 20;
-    const samplesPerFrame = 1024;
-    const frameDurationMicros = Math.round((samplesPerFrame * 1_000_000) / sampleRate);
+    if (demuxedTrack && demuxedTrack.samples && demuxedTrack.samples.length > 0) {
+      const totalSamples = demuxedTrack.samples.length;
+      for (let i = 0; i < totalSamples; i++) {
+        if (encoderError) throw encoderError;
+        await flowController.checkBackpressure(audioEncoder.encodeQueueSize);
 
-    for (let i = 0; i < numFrames; i++) {
-      if (encoderError) throw encoderError;
-      await flowController.checkBackpressure(audioEncoder.encodeQueueSize);
+        const sample = demuxedTrack.samples[i];
+        const rawBytes = sample.data;
+        const int16Count = Math.floor(rawBytes.byteLength / 2);
+        const frameCount = Math.floor(int16Count / channels);
 
-      const timestamp = i * frameDurationMicros;
-      const pcmData = new Float32Array(samplesPerFrame * channels);
+        if (frameCount > 0) {
+          const int16Samples = new Int16Array(
+            rawBytes.buffer,
+            rawBytes.byteOffset,
+            int16Count
+          );
 
-      let audioData: any = null;
-      try {
-        audioData = new AudioDataClass({
-          format: 'f32',
-          sampleRate,
-          numberOfFrames: samplesPerFrame,
-          numberOfChannels: channels,
-          timestamp,
-          data: pcmData,
-        });
-        audioEncoder.encode(audioData);
-      } finally {
-        if (audioData) {
-          audioData.close(); // Deterministic audio memory cleanup
+          let audioData: any = null;
+          try {
+            audioData = new AudioDataClass({
+              format: 's16',
+              sampleRate,
+              numberOfFrames: frameCount,
+              numberOfChannels: channels,
+              timestamp: sample.timestampMicros,
+              data: int16Samples,
+            });
+            audioEncoder.encode(audioData);
+          } finally {
+            if (audioData) {
+              audioData.close();
+            }
+          }
         }
-      }
 
-      onProgress?.(10 + Math.round((i / numFrames) * 75));
+        onProgress?.(10 + Math.round(((i + 1) / totalSamples) * 75));
+      }
+    } else {
+      // Fallback for synthetic / stream generation tests
+      const numFrames = 20;
+      const samplesPerFrame = 1024;
+      const frameDurationMicros = Math.round((samplesPerFrame * 1_000_000) / sampleRate);
+
+      for (let i = 0; i < numFrames; i++) {
+        if (encoderError) throw encoderError;
+        await flowController.checkBackpressure(audioEncoder.encodeQueueSize);
+
+        const timestamp = i * frameDurationMicros;
+        const pcmData = new Float32Array(samplesPerFrame * channels);
+
+        let audioData: any = null;
+        try {
+          audioData = new AudioDataClass({
+            format: 'f32',
+            sampleRate,
+            numberOfFrames: samplesPerFrame,
+            numberOfChannels: channels,
+            timestamp,
+            data: pcmData,
+          });
+          audioEncoder.encode(audioData);
+        } finally {
+          if (audioData) {
+            audioData.close();
+          }
+        }
+
+        onProgress?.(10 + Math.round((i / numFrames) * 75));
+      }
     }
 
     await audioEncoder.flush();
@@ -2097,6 +2286,9 @@ function muxFinalMedia(
       off += p.byteLength;
     }
     return finalBytes;
+  }
+  if (targetFormat === 'opus' || targetFormat === 'ogg') {
+    return muxOggOpus(encodedChunks, sampleRate, channels);
   }
   return muxMp4Media(encodedChunks, width, height, {
     includeMoov: true,

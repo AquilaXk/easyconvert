@@ -19,7 +19,7 @@ export interface SandboxedExecutionOptions {
   cwd?: string;
   networkIsolated?: boolean;
   memoryLimitMb?: number;
-  stdin?: NodeJS.ReadableStream | Buffer;
+  stdin?: NodeJS.ReadableStream | Buffer | null;
 }
 
 export interface SandboxedExecutionResult {
@@ -461,7 +461,7 @@ export async function executeSandboxedBinary(
     let memoryExceeded = false;
     let memoryInterval: NodeJS.Timeout | null = null;
 
-    let child: ReturnType<typeof spawn> | null = null;
+    let activeChild: ReturnType<typeof spawn> | null = null;
 
     const cleanup = () => {
       clearTimeout(timer);
@@ -474,9 +474,9 @@ export async function executeSandboxedBinary(
           (stdin as any).destroy();
         } catch {}
       }
-      if (child && child.stdin && !child.stdin.destroyed) {
+      if (activeChild && activeChild.stdin && !activeChild.stdin.destroyed) {
         try {
-          child.stdin.destroy();
+          activeChild.stdin.destroy();
         } catch {}
       }
     };
@@ -493,10 +493,11 @@ export async function executeSandboxedBinary(
       shell: false,
       detached: true,
     });
-    child = proc;
+    activeChild = proc;
 
     if (stdin && proc.stdin) {
       proc.stdin.on('error', (err: any) => {
+        // EPIPE or ECONNRESET can occur if child closes stdin before stream is exhausted.
         if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
           return;
         }
