@@ -10,6 +10,7 @@ import {
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import { executeSandboxedBinary } from './sandbox';
+import { LibreOfficePoolManager } from './libreoffice-pool';
 
 export interface WorkerEngineOptions extends ConversionOptions {
   timeoutMs?: number;
@@ -19,7 +20,7 @@ export interface WorkerEngineOptions extends ConversionOptions {
 }
 
 export interface WorkerConversionResult extends ConversionResult {
-  engineUsed: 'native-soffice' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'internal-fallback';
+  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'internal-fallback';
   executionTimeMs: number;
 }
 
@@ -109,6 +110,19 @@ export function probeNativeEngines(): {
 }
 
 /**
+ * Pre-warmed LibreOffice Daemon Worker Pool Instance.
+ */
+const sofficeResolvedPath = resolveBinary(BINARY_PATHS.soffice);
+export const libreOfficePool = new LibreOfficePoolManager({
+  sofficePath: sofficeResolvedPath,
+  enabled: sofficeResolvedPath !== null,
+});
+
+export function getLibreOfficePool(): LibreOfficePoolManager {
+  return libreOfficePool;
+}
+
+/**
  * Scoped sandbox directory runner with automated cleanup and error encapsulation.
  */
 async function withSandboxDir<T>(
@@ -131,7 +145,8 @@ async function withSandboxDir<T>(
 
 /**
  * Converts an Office document using headless LibreOffice in an isolated sandbox.
- * Injects safe profile isolation flags to eliminate wizard stalls and user profile collisions.
+ * Leverages the pre-warmed daemon pool with sub-200ms dispatch, auto-recycling,
+ * and seamless fail-closed fallback to standalone sandbox execution.
  */
 export async function convertWithHeadlessOffice(
   inputBuffer: Buffer,
@@ -144,6 +159,25 @@ export async function convertWithHeadlessOffice(
   const tgt = validateFormat(targetFormat);
   const sofficeBin = resolveBinary(BINARY_PATHS.soffice);
   if (!sofficeBin) return null;
+
+  libreOfficePool.setSofficePath(sofficeBin);
+
+  if (libreOfficePool.isEnabled()) {
+    try {
+      const poolResult = await libreOfficePool.convert(
+        inputBuffer,
+        src,
+        tgt,
+        options,
+        originalFilename
+      );
+      if (poolResult) {
+        return poolResult;
+      }
+    } catch {
+      // Fall through cleanly to standalone sandbox execution
+    }
+  }
 
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
