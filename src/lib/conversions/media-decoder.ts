@@ -966,43 +966,28 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
     throw new Error('Unsupported audio format: decoder unavailable');
   }
 
+  if (isOpus || isVorbis) {
+    const audioPackets = packets.slice(isVorbis ? 3 : 2);
+    if (audioPackets.length === 0 || (audioPackets.length === 1 && audioPackets[0].length <= 2)) {
+      return {
+        samples: new Int16Array(0),
+        sampleRate,
+        channels,
+        bitsPerSample: 16,
+        duration: 0,
+      };
+    }
+    throw new Error(
+      `Decoding compressed ${isOpus ? 'Opus' : 'Vorbis'} bitstreams requires native FFmpeg or WebCodecs AudioDecoder engine (Fail-Closed).`
+    );
+  }
+
   const outSamples: number[] = [];
 
   for (let pIdx = 1; pIdx < packets.length; pIdx++) {
     const pkt = packets[pIdx];
-    if (isVorbis && pkt.length >= 7 && pkt.toString('ascii', 1, 7) === 'vorbis') {
-      continue;
-    }
-    if (isOpus && pkt.length >= 8 && pkt.toString('ascii', 0, 8) === 'OpusTags') {
-      continue;
-    }
 
-    // Audio payload:
-    // 1. Opus RFC 6716 TOC byte framing (TOC = 0xC0 or 0xC4, config 24 Fullband CELT)
-    if (isOpus) {
-      if (pkt.length >= 2 && (pkt[0] & 0xf8) === 0xc0) {
-        const scale = pkt[1] || 1;
-        const payload = pkt.subarray(2);
-        for (let i = 0; i < payload.length; i++) {
-          outSamples.push(payload.readInt8(i) * scale);
-        }
-        continue;
-      }
-    }
-
-    // 2. Vorbis discrete mode 0 audio packet with scale exponent
-    if (isVorbis) {
-      if (pkt.length >= 2 && (pkt[0] & 1) === 0) {
-        const scale = pkt[1] || 1;
-        const payload = pkt.subarray(2);
-        for (let i = 0; i < payload.length; i++) {
-          outSamples.push(payload.readInt8(i) * scale);
-        }
-        continue;
-      }
-    }
-
-    // 3. Fallback for legacy 16-bit PCM packet streams
+    // Fallback for uncompressed 16-bit PCM packet streams (OggPCM)
     if (pkt.length >= 2) {
       const sampleCount = Math.floor(pkt.length / 2);
       for (let s = 0; s < sampleCount; s++) {
@@ -1012,15 +997,6 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
   }
 
   if (outSamples.length === 0) {
-    if (isOpus || isVorbis) {
-      return {
-        samples: new Int16Array(0),
-        sampleRate,
-        channels,
-        bitsPerSample: 16,
-        duration: 0,
-      };
-    }
     throw new Error('Unsupported audio format: decoder unavailable');
   }
 

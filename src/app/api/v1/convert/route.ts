@@ -7,6 +7,7 @@ import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } 
 import { storageProvider } from '@/lib/storage';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
+import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -139,41 +140,39 @@ export async function POST(req: NextRequest) {
 
     const { file, sourceDef, targetDef, options } = validation.data;
 
-    const arrayBuffer = await file.arrayBuffer();
-    const inputBuffer = Buffer.from(arrayBuffer);
-
-    // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
-    try {
-      assertNotSpoofedFile(inputBuffer, sourceDef.extension, file.name);
-    } catch (err: any) {
-      if (reservation.reservationId) {
-        await redisKeyStore.rollbackQuota(reservation.reservationId);
-      }
-      return createProblemDetailsResponse(
-        400,
-        err.message || 'File spoofing detected.',
-        instanceUri,
-        'Bad Request',
-        undefined,
-        rateLimitHeaders
-      );
-    }
-
-    // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff
+    // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff BEFORE calling file.arrayBuffer()
     const preferHeader = req.headers.get('prefer') || '';
     const isPreferAsync = preferHeader.toLowerCase().includes('respond-async');
     const isOverSizeThreshold = file.size > ASYNC_THRESHOLD_BYTES;
 
     if (isPreferAsync || isOverSizeThreshold) {
-      // Asynchronous handoff: persist input payload and enqueue to distributed job queue
-      const init = storageProvider.initiateMultipartUpload(
-        file.name,
-        file.type || 'application/octet-stream',
-        file.size
-      );
-      storageProvider.uploadPart(init.uploadId, 1, inputBuffer);
-      const completed = storageProvider.completeMultipartUpload(init.uploadId);
-      const storageKey = completed.key;
+      // Asynchronous zero-heap streaming handoff: pipe stream directly to storage multipart upload
+      let uploadedStorageKey: string;
+      try {
+        const stream = typeof (file as any).stream === 'function'
+          ? (file as any).stream()
+          : file;
+        const streamResult = await pipeStreamToStorageMultipart(stream, {
+          filename: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          expectedTotalSize: file.size,
+          sourceExtension: sourceDef.extension,
+          storage: storageProvider,
+        });
+        uploadedStorageKey = streamResult.storageKey;
+      } catch (err: any) {
+        if (reservation.reservationId) {
+          await redisKeyStore.rollbackQuota(reservation.reservationId);
+        }
+        return createProblemDetailsResponse(
+          400,
+          err.message || 'File upload or validation failed.',
+          instanceUri,
+          'Bad Request',
+          undefined,
+          rateLimitHeaders
+        );
+      }
 
       const effectiveWebhookUrl = auth.apiKey?.webhookUrl;
       const effectiveWebhookSecret = auth.apiKey?.webhookSecret;
@@ -186,7 +185,7 @@ export async function POST(req: NextRequest) {
           sourceFormat: sourceDef.id,
           targetFormat: targetDef.id,
           fileSize: file.size,
-          storageKey,
+          storageKey: uploadedStorageKey,
           options,
           webhookUrl: effectiveWebhookUrl,
           webhookSecret: effectiveWebhookSecret,
@@ -225,6 +224,26 @@ export async function POST(req: NextRequest) {
     }
 
     // Synchronous execution path for payloads <= 10MB without respond-async preference
+    const arrayBuffer = await file.arrayBuffer();
+    const inputBuffer = Buffer.from(arrayBuffer);
+
+    // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
+    try {
+      assertNotSpoofedFile(inputBuffer, sourceDef.extension, file.name);
+    } catch (err: any) {
+      if (reservation.reservationId) {
+        await redisKeyStore.rollbackQuota(reservation.reservationId);
+      }
+      return createProblemDetailsResponse(
+        400,
+        err.message || 'File spoofing detected.',
+        instanceUri,
+        'Bad Request',
+        undefined,
+        rateLimitHeaders
+      );
+    }
+
     // Convert
     const conversionResult = await convertFile(
       inputBuffer,
