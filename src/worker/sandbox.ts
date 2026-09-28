@@ -49,7 +49,12 @@ export interface WorkerSandboxOptions {
 export function createWorkerSandboxDir(prefix: string = 'easyconvert_worker_sandbox_'): string {
   const dirName = `${prefix}${crypto.randomUUID()}`;
   const sandboxDir = path.join(os.tmpdir(), dirName);
-  fs.mkdirSync(sandboxDir, { recursive: true, mode: 0o700 });
+  try {
+    fs.mkdirSync(sandboxDir, { recursive: true, mode: 0o700 });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to create worker sandbox directory '${sandboxDir}': ${msg}`);
+  }
   try {
     fs.chmodSync(sandboxDir, 0o700);
   } catch {
@@ -109,7 +114,14 @@ export async function withWorkerSandbox<T>(
       return executeSandboxedBinary(binaryPath, args, {
         ...execOpts,
         cwd: sandboxDir,
-        env: { ...options.env, ...execOpts.env },
+        env: {
+          TMPDIR: sandboxDir,
+          TEMP: sandboxDir,
+          TMP: sandboxDir,
+          HOME: sandboxDir,
+          ...options.env,
+          ...execOpts.env,
+        },
         networkIsolated: options.networkIsolated ?? true,
         timeoutMs: execOpts.timeoutMs ?? options.timeoutMs,
         maxBuffer: execOpts.maxBuffer ?? options.maxBuffer,

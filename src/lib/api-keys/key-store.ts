@@ -35,15 +35,40 @@ export function getNextMidnightUtc(): number {
 }
 
 export class KeyStore {
-  protected readonly keys: Map<string, ApiKey> = new Map();
-  protected readonly keyHashIndex: Map<string, string> = new Map(); // hash -> keyId
-  protected readonly dailyUsage: Map<string, number> = new Map(); // userId:YYYY-MM-DD -> count
-  protected readonly userFiles: Map<string, UserConversionFile> = new Map(); // fileId -> file
-  protected initialized = false;
+  protected static sharedKeys = new Map<string, ApiKey>();
+  protected static sharedKeyHashIndex = new Map<string, string>();
+  protected static sharedDailyUsage = new Map<string, number>();
+  protected static sharedUserFiles = new Map<string, UserConversionFile>();
+  protected static sharedInitialized = false;
+
+  protected readonly keys: Map<string, ApiKey>;
+  protected readonly keyHashIndex: Map<string, string>; // hash -> keyId
+  protected readonly dailyUsage: Map<string, number>; // userId:YYYY-MM-DD -> count
+  protected readonly userFiles: Map<string, UserConversionFile>; // fileId -> file
+  protected initialized: boolean;
+
+  constructor(isolated = false) {
+    if (isolated) {
+      this.keys = new Map();
+      this.keyHashIndex = new Map();
+      this.dailyUsage = new Map();
+      this.userFiles = new Map();
+      this.initialized = false;
+    } else {
+      this.keys = KeyStore.sharedKeys;
+      this.keyHashIndex = KeyStore.sharedKeyHashIndex;
+      this.dailyUsage = KeyStore.sharedDailyUsage;
+      this.userFiles = KeyStore.sharedUserFiles;
+      this.initialized = KeyStore.sharedInitialized;
+    }
+  }
 
   protected ensureInitialized() {
     if (this.initialized) return;
     this.initialized = true;
+    if (this.keys === KeyStore.sharedKeys) {
+      KeyStore.sharedInitialized = true;
+    }
 
     try {
       if (fs.existsSync(KEYS_FILE)) {
@@ -370,6 +395,9 @@ export class KeyStore {
     this.dailyUsage.clear();
     this.userFiles.clear();
     this.initialized = true;
+    if (this.keys === KeyStore.sharedKeys) {
+      KeyStore.sharedInitialized = true;
+    }
 
     try {
       if (fs.existsSync(KEYS_FILE)) fs.unlinkSync(KEYS_FILE);

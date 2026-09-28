@@ -211,9 +211,9 @@ function checkHollowAssertions() {
   const testFiles = scanDirectory(TESTS_DIR, SUPPORTED_EXTENSIONS);
   const hollowPatterns = [
     {
-      // Boolean and numeric tautologies: expect(true).toBe(true), expect(1).toBe(1), multiline tolerant
-      regex: /expect\s*\(\s*(true|false|1|0)\s*\)[\s\S]{0,40}?\.toBe\s*\(\s*\1\s*\)/gis,
-      desc: 'Hollow assertion tautology detected (e.g., expect(true).toBe(true)).',
+      // Boolean, numeric, and identifier tautologies: expect(true).toBe(true), expect(123).toBe(123), expect(x).toBe(x)
+      regex: /expect\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*|\d+)\s*\)[\s\S]{0,40}?\.(?:toBe|toEqual)\s*\(\s*\1\s*\)/gis,
+      desc: 'Hollow assertion tautology detected (e.g., expect(x).toBe(x) or expect(1).toBe(1)).',
     },
     {
       // Literal string tautologies: expect("a").toBe("a")
@@ -228,6 +228,11 @@ function checkHollowAssertions() {
     {
       regex: /expect\s*\(\s*false\s*\)[\s\S]{0,40}?\.toBeFalsy\s*\(\s*\)/gis,
       desc: 'Hollow assertion expect(false).toBeFalsy() detected.',
+    },
+    {
+      // Literal null/undefined/NaN tautologies
+      regex: /expect\s*\(\s*(undefined\s*\)[\s\S]{0,40}?\.toBeUndefined|null\s*\)[\s\S]{0,40}?\.toBeNull|NaN\s*\)[\s\S]{0,40}?\.toBeNaN)/gis,
+      desc: 'Hollow assertion on constant literal value detected (e.g., expect(null).toBeNull()).',
     },
   ];
 

@@ -11,6 +11,7 @@ export interface QuotaReservation {
   reservationId: string;
   userId: string;
   units: number;
+  dateKey: string;
   createdAt: number;
   expiresAt: number;
   status: 'reserved' | 'committed' | 'rolled_back';
@@ -85,12 +86,14 @@ end
  * (Reserve-Commit/Rollback) preventing TOCTOU races in distributed environments.
  */
 export class RedisKeyStore extends KeyStore {
-  private readonly reservations: Map<string, QuotaReservation> = new Map();
+  protected static sharedReservations = new Map<string, QuotaReservation>();
+  private readonly reservations: Map<string, QuotaReservation>;
   private readonly keyPrefix: string;
 
-  constructor(keyPrefix: string = 'easyconvert:') {
-    super();
+  constructor(keyPrefix: string = 'easyconvert:', isolated = false) {
+    super(isolated);
     this.keyPrefix = keyPrefix;
+    this.reservations = isolated ? new Map() : RedisKeyStore.sharedReservations;
   }
 
   public getPrefix(): string {
@@ -111,14 +114,22 @@ export class RedisKeyStore extends KeyStore {
     let cleaned = 0;
     for (const [id, res] of this.reservations.entries()) {
       if (res.expiresAt <= now && res.status === 'reserved') {
-        const dateKey = `${res.userId}:${getUtcDateKey()}`;
+        const dateKey = res.dateKey || `${res.userId}:${getUtcDateKey()}`;
         const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
         this.dailyUsage.set(dateKey, Math.max(0, currentUsed - res.units));
         this.reservations.delete(id);
         cleaned++;
       }
     }
+    if (cleaned > 0) {
+      this.persist();
+    }
     return cleaned;
+  }
+
+  public override async getQuotaUsage(userId: string) {
+    this.cleanExpiredReservations();
+    return super.getQuotaUsage(userId);
   }
 
   /**
@@ -128,9 +139,10 @@ export class RedisKeyStore extends KeyStore {
     userId: string,
     units: number = 1
   ): Promise<{ allowed: boolean; remaining: number }> {
-    if (!userId || typeof userId !== 'string' || !Number.isFinite(units) || units < 0) {
+    if (!userId || typeof userId !== 'string' || userId.trim().length === 0 || !Number.isFinite(units) || units < 0) {
       return { allowed: false, remaining: 0 };
     }
+    this.cleanExpiredReservations();
     this.ensureInitialized();
     const user = await userStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
@@ -161,9 +173,10 @@ export class RedisKeyStore extends KeyStore {
     userId: string,
     units: number = 1
   ): Promise<{ allowed: boolean; reservationId?: string; remaining: number }> {
-    if (!userId || typeof userId !== 'string' || !Number.isFinite(units) || units < 0) {
+    if (!userId || typeof userId !== 'string' || userId.trim().length === 0 || !Number.isFinite(units) || units < 0) {
       return { allowed: false, remaining: 0 };
     }
+    this.cleanExpiredReservations();
     this.ensureInitialized();
 
     const user = await userStore.findById(userId);
@@ -194,6 +207,7 @@ export class RedisKeyStore extends KeyStore {
       reservationId,
       userId,
       units,
+      dateKey,
       createdAt: Date.now(),
       expiresAt: Date.now() + 5 * 60 * 1000, // 5-minute reservation timeout
       status: 'reserved',
@@ -231,7 +245,7 @@ export class RedisKeyStore extends KeyStore {
     const res = this.reservations.get(reservationId);
     if (!res || res.status !== 'reserved') return false;
 
-    const dateKey = `${res.userId}:${getUtcDateKey()}`;
+    const dateKey = res.dateKey || `${res.userId}:${getUtcDateKey()}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
     this.dailyUsage.set(dateKey, Math.max(0, currentUsed - res.units));
 
@@ -253,6 +267,11 @@ export class RedisKeyStore extends KeyStore {
       await this.commitQuota(res.reservationId);
     }
     return { allowed: true, remaining: res.remaining };
+  }
+
+  public override resetStore() {
+    this.reservations.clear();
+    super.resetStore();
   }
 
   public override async recordUserFile(data: {

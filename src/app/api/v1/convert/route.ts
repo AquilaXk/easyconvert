@@ -134,7 +134,6 @@ export async function POST(req: NextRequest) {
     if (reservation.reservationId) {
       await redisKeyStore.commitQuota(reservation.reservationId);
     }
-    await keyStore.recordUsage(auth.user.id, 1);
 
     const durationMs = Date.now() - startTime;
     const outputBuffer = conversionResult.buffer;

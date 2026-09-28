@@ -79,5 +79,16 @@ describe('Phase 5: Differential Oracle Integrity & Fail-Closed Validation', () =
       expect(report.structuralScore).toBe(0);
       expect(report.discrepancies.length).toBeGreaterThan(0);
     });
+
+    it('returns matched=false and records integrity discrepancy on corrupt reference buffer without crashing', async () => {
+      const validActualPdf = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF');
+      const corruptRefPdf = Buffer.from('NOT_A_VALID_REF_PDF_PAYLOAD');
+
+      const report = await runDifferentialComparison(validActualPdf, corruptRefPdf, 'pdf');
+      expect(report.matched).toBe(false);
+      expect(report.structuralScore).toBe(0);
+      expect(report.discrepancies.length).toBeGreaterThan(0);
+      expect(report.discrepancies[0]).toContain('Reference buffer integrity violation');
+    });
   });
 });
