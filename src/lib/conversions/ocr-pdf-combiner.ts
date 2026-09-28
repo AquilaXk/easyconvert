@@ -63,8 +63,140 @@ export interface ColumnGutter {
 }
 
 /**
+ * Extracts dominant skew/rotation angle in radians from OCR line blocks
+ * using explicit rotation/angle properties or estimated line baselines.
+ */
+export function extractDominantRotationRadians(blocks: OcrLineBlock[]): number {
+  if (!blocks || blocks.length === 0) return 0;
+  const angles: number[] = [];
+
+  for (const b of blocks) {
+    if (!b || !b.bbox) continue;
+    if (b.bbox.rotationRadians !== undefined && Number.isFinite(b.bbox.rotationRadians)) {
+      angles.push(b.bbox.rotationRadians);
+    } else if (b.bbox.rotationDegrees !== undefined && Number.isFinite(b.bbox.rotationDegrees)) {
+      angles.push((b.bbox.rotationDegrees * Math.PI) / 180);
+    } else if (b.bbox.rotation !== undefined && Number.isFinite(b.bbox.rotation)) {
+      angles.push((b.bbox.rotation * Math.PI) / 180);
+    } else if (b.bbox.angle !== undefined && Number.isFinite(b.bbox.angle)) {
+      angles.push((b.bbox.angle * Math.PI) / 180);
+    }
+  }
+
+  // If no explicit rotation angles found, estimate from line baselines (if words exist)
+  if (angles.length === 0) {
+    for (const b of blocks) {
+      if (b && b.words && b.words.length >= 2) {
+        const first = b.words[0];
+        const last = b.words[b.words.length - 1];
+        if (first && last && first.bbox && last.bbox) {
+          const dx = (last.bbox.x + last.bbox.width / 2) - (first.bbox.x + first.bbox.width / 2);
+          const dy = (last.bbox.y + last.bbox.height / 2) - (first.bbox.y + first.bbox.height / 2);
+          if (Math.abs(dx) >= 30) {
+            const angle = Math.atan2(dy, dx);
+            if (Math.abs(angle) <= Math.PI / 4) {
+              angles.push(angle);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (angles.length === 0) return 0;
+  angles.sort((a, b) => a - b);
+  return angles[Math.floor(angles.length / 2)];
+}
+
+/**
+ * Transforms an OCR line block into de-skewed / upright coordinate space
+ * by rotating coordinates around a given center point by -angleRad.
+ */
+export function deskewBlock(b: OcrLineBlock, angleRad: number, cx: number, cy: number): OcrLineBlock {
+  if (Math.abs(angleRad) <= 0.003) return b;
+  const cos = Math.cos(-angleRad);
+  const sin = Math.sin(-angleRad);
+
+  const bx = b.bbox.x + b.bbox.width / 2;
+  const by = b.bbox.y + b.bbox.height / 2;
+  const dcx = cx + (bx - cx) * cos - (by - cy) * sin;
+  const dcy = cy + (bx - cx) * sin + (by - cy) * cos;
+
+  const deskewedWords: OcrWord[] = (b.words || []).map((w) => {
+    if (!w || !w.bbox) return w;
+    const wx = w.bbox.x + w.bbox.width / 2;
+    const wy = w.bbox.y + w.bbox.height / 2;
+    const wdcx = cx + (wx - cx) * cos - (wy - cy) * sin;
+    const wdcy = cy + (wx - cx) * sin + (wy - cy) * cos;
+    return {
+      ...w,
+      bbox: {
+        ...w.bbox,
+        x: wdcx - w.bbox.width / 2,
+        y: wdcy - w.bbox.height / 2,
+        rotation: 0,
+        angle: 0,
+        rotationDegrees: 0,
+        rotationRadians: 0,
+      },
+    };
+  });
+
+  return {
+    ...b,
+    bbox: {
+      ...b.bbox,
+      x: dcx - b.bbox.width / 2,
+      y: dcy - b.bbox.height / 2,
+      width: b.bbox.width,
+      height: b.bbox.height,
+      rotation: 0,
+      angle: 0,
+      rotationDegrees: 0,
+      rotationRadians: 0,
+    },
+    words: deskewedWords,
+  };
+}
+
+/**
+ * Computes bounding coordinate envelope for an array of valid OCR line blocks.
+ */
+function computeBlocksEnvelope(blocks: OcrLineBlock[]): {
+  envMinX: number;
+  envMaxX: number;
+  envMinY: number;
+  envMaxY: number;
+  cx: number;
+  cy: number;
+} {
+  let envMinX = Infinity;
+  let envMaxX = -Infinity;
+  let envMinY = Infinity;
+  let envMaxY = -Infinity;
+
+  for (const b of blocks) {
+    if (b.bbox.x < envMinX) envMinX = b.bbox.x;
+    const right = b.bbox.x + b.bbox.width;
+    if (right > envMaxX) envMaxX = right;
+    if (b.bbox.y < envMinY) envMinY = b.bbox.y;
+    const bottom = b.bbox.y + b.bbox.height;
+    if (bottom > envMaxY) envMaxY = bottom;
+  }
+
+  return {
+    envMinX,
+    envMaxX,
+    envMinY,
+    envMaxY,
+    cx: (envMinX + envMaxX) / 2,
+    cy: (envMinY + envMaxY) / 2,
+  };
+}
+
+/**
  * Detects column gutters (vertical whitespace channels) across the horizontal axis
- * using 1D spatial projection profiles of bounding boxes.
+ * using 1D spatial projection profiles of bounding boxes with skew tolerance.
  */
 export function detectColumnGutters(
   blocks: OcrLineBlock[],
@@ -89,6 +221,15 @@ export function detectColumnGutters(
 
   if (validBlocks.length < 2) return [];
 
+  // De-skew blocks if a dominant tilt/rotation is detected
+  const dominantAngle = extractDominantRotationRadians(validBlocks);
+  let workingBlocks = validBlocks;
+  const { cx, cy } = computeBlocksEnvelope(validBlocks);
+
+  if (Math.abs(dominantAngle) > 0.003 && Math.abs(dominantAngle) <= Math.PI / 4) {
+    workingBlocks = validBlocks.map((b) => deskewBlock(b, dominantAngle, cx, cy));
+  }
+
   let minX = Infinity;
   let maxX = -Infinity;
 
@@ -96,39 +237,52 @@ export function detectColumnGutters(
     minX = enclosingBounds.minX;
     maxX = enclosingBounds.maxX;
   } else {
-    for (const b of validBlocks) {
+    for (const b of workingBlocks) {
       if (b.bbox.x < minX) minX = b.bbox.x;
       const right = b.bbox.x + b.bbox.width;
       if (right > maxX) maxX = right;
     }
   }
 
-  const docWidth = maxX - minX;
+  const docWidth =
+    enclosingBounds && Number.isFinite(enclosingBounds.docWidth) && enclosingBounds.docWidth > 0
+      ? enclosingBounds.docWidth
+      : maxX - minX;
   if (!Number.isFinite(docWidth) || docWidth <= minColGap * 2) return [];
 
-  // Exclude wide spanning blocks (e.g. width >= 80% of total width) from gutter calculation
-  // to prevent spanning titles, headers, or rules from bridging across gutters
-  const candidateBlocks = validBlocks.filter((b) => b.bbox.width < docWidth * 0.80);
+  // Exclude wide spanning blocks (width >= 72% of total width) from gutter calculation
+  // to prevent spanning titles or headers from bridging across gutters, while preserving
+  // wide columns in asymmetric layouts (e.g. 66% main body alongside 25% sidebar).
+  const candidateBlocks = workingBlocks.filter((b) => b.bbox.width < docWidth * 0.72);
   if (candidateBlocks.length < 2) return [];
 
   const startX = Math.floor(minX);
   const endX = Math.ceil(maxX);
-  const projWidth = Math.max(1, Math.min(10000, endX - startX + 1));
+  const rawSpan = Math.max(1, endX - startX + 1);
+  const scale = rawSpan > 10000 ? 10000 / rawSpan : 1.0;
+  const projWidth = Math.max(1, Math.min(10000, Math.round(rawSpan * scale)));
   const xProj = new Int32Array(projWidth);
 
   for (const b of candidateBlocks) {
-    const left = Math.max(0, Math.min(projWidth - 1, Math.floor(b.bbox.x - startX)));
-    const right = Math.max(0, Math.min(projWidth - 1, Math.ceil(b.bbox.x + b.bbox.width - startX)));
+    const left = Math.max(0, Math.min(projWidth - 1, Math.floor((b.bbox.x - startX) * scale)));
+    const right = Math.max(0, Math.min(projWidth - 1, Math.ceil((b.bbox.x + b.bbox.width - startX) * scale)));
     for (let x = left; x <= right; x++) {
       xProj[x]++;
     }
   }
 
-  // Find valleys (runs where projection is 0 or below noise threshold)
-  const densityThreshold =
-    candidateBlocks.length >= 10
-      ? Math.min(1, Math.floor(candidateBlocks.length * 0.03))
-      : 0;
+  let maxProj = 0;
+  for (let x = 0; x < projWidth; x++) {
+    if (xProj[x] > maxProj) maxProj = xProj[x];
+  }
+
+  // Adaptive valley threshold based on column peak density:
+  // A genuine gutter is a vertical whitespace valley significantly lower than the column density peaks.
+  // We allow up to 25% of peak density (tolerating bridging equations, horizontal rules, or author affiliations).
+  const densityThreshold = Math.max(
+    0,
+    Math.floor(maxProj * 0.25)
+  );
 
   const rawGutters: ColumnGutter[] = [];
   let inValley = false;
@@ -144,9 +298,9 @@ export function detectColumnGutters(
       valleyStart = x;
     } else if (!isValley && inValley) {
       inValley = false;
-      const valleyWidth = x - valleyStart;
-      const absStart = startX + valleyStart;
-      const absEnd = startX + x;
+      const valleyWidth = (x - valleyStart) / scale;
+      const absStart = startX + valleyStart / scale;
+      const absEnd = startX + x / scale;
 
       // Verify that this valley is a genuine gutter dividing text:
       // Must have candidate text to the left AND to the right, and not be an outer margin
@@ -161,10 +315,10 @@ export function detectColumnGutters(
         hasTextRight
       ) {
         rawGutters.push({
-          start: absStart,
-          end: absEnd,
+          start: Math.round(absStart),
+          end: Math.round(absEnd),
           mid: Math.round((absStart + absEnd) / 2),
-          width: valleyWidth,
+          width: Math.round(valleyWidth),
         });
       }
     }
@@ -214,7 +368,9 @@ export function sortLineBlocksTopological(
       Number.isFinite(b.bbox.x) &&
       Number.isFinite(b.bbox.y) &&
       Number.isFinite(b.bbox.width) &&
-      Number.isFinite(b.bbox.height)
+      b.bbox.width >= 0 &&
+      Number.isFinite(b.bbox.height) &&
+      b.bbox.height >= 0
     );
 
   const validBlocks = blocks.filter(isFiniteBbox);
@@ -224,48 +380,82 @@ export function sortLineBlocksTopological(
     return [...validBlocks, ...invalidBlocks];
   }
 
+  // Detect dominant skew angle and prepare de-skewed geometric representations
+  const dominantAngle = extractDominantRotationRadians(validBlocks);
+  const hasSkew = Math.abs(dominantAngle) > 0.003 && Math.abs(dominantAngle) <= Math.PI / 4;
+  const { cx, cy } = computeBlocksEnvelope(validBlocks);
+
+  interface BlockPair {
+    original: OcrLineBlock;
+    geo: OcrLineBlock;
+  }
+
+  const pairs: BlockPair[] = validBlocks.map((b) => ({
+    original: b,
+    geo: hasSkew ? deskewBlock(b, dominantAngle, cx, cy) : b,
+  }));
+
+  // Detect vertical CJK writing mode (majority of lines have height > width * 1.3)
+  const verticalCount = validBlocks.filter((b) => b.bbox.height > b.bbox.width * 1.3).length;
+  const isVerticalMode = verticalCount > validBlocks.length * 0.5;
+
   // Helper to sort lines within a single column / cluster deterministically
-  const sortIntraColumn = (lines: OcrLineBlock[]): OcrLineBlock[] => {
-    if (lines.length <= 1) return [...lines];
+  const sortIntraColumn = (colPairs: BlockPair[]): OcrLineBlock[] => {
+    if (colPairs.length <= 1) return colPairs.map((p) => p.original);
+
+    if (isVerticalMode) {
+      // In vertical CJK writing mode:
+      // Primary reading order is right-to-left across columns (X descending),
+      // and top-to-bottom within columns (Y ascending).
+      return [...colPairs]
+        .sort((a, b) => {
+          const dx = b.geo.bbox.x - a.geo.bbox.x;
+          if (Math.abs(dx) > 15) return dx;
+          return a.geo.bbox.y - b.geo.bbox.y;
+        })
+        .map((p) => p.original);
+    }
+
+    // Standard horizontal lines
     // Sort primarily by Y ascending
-    const sorted = [...lines].sort((a, b) => a.bbox.y - b.bbox.y);
+    const sorted = [...colPairs].sort((a, b) => a.geo.bbox.y - b.geo.bbox.y);
     // Cluster lines that belong to the same visual baseline
-    const clusters: OcrLineBlock[][] = [];
-    for (const line of sorted) {
+    const clusters: BlockPair[][] = [];
+    for (const pair of sorted) {
       let placed = false;
       for (const cluster of clusters) {
         const rep = cluster[0];
-        const lineTol = Math.max(3, Math.min(line.bbox.height, rep.bbox.height) * 0.45);
-        if (Math.abs(line.bbox.y - rep.bbox.y) <= lineTol) {
-          cluster.push(line);
+        const lineTol = Math.max(3, Math.min(pair.geo.bbox.height, rep.geo.bbox.height) * 0.45);
+        if (Math.abs(pair.geo.bbox.y - rep.geo.bbox.y) <= lineTol) {
+          cluster.push(pair);
           placed = true;
           break;
         }
       }
       if (!placed) {
-        clusters.push([line]);
+        clusters.push([pair]);
       }
     }
     // Within each baseline cluster, sort left-to-right (X ascending)
     const result: OcrLineBlock[] = [];
     for (const cluster of clusters) {
-      cluster.sort((a, b) => a.bbox.x - b.bbox.x);
-      result.push(...cluster);
+      cluster.sort((a, b) => a.geo.bbox.x - b.geo.bbox.x);
+      result.push(...cluster.map((p) => p.original));
     }
     return result;
   };
 
-  // 1. Compute overall bounding envelope
+  // 1. Compute overall bounding envelope from de-skewed coordinates
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
 
-  for (const b of validBlocks) {
-    const x = b.bbox.x;
-    const y = b.bbox.y;
-    const width = Math.max(0, b.bbox.width);
-    const height = Math.max(0, b.bbox.height);
+  for (const p of pairs) {
+    const x = p.geo.bbox.x;
+    const y = p.geo.bbox.y;
+    const width = Math.max(0, p.geo.bbox.width);
+    const height = Math.max(0, p.geo.bbox.height);
 
     if (x < minX) minX = x;
     if (y < minY) minY = y;
@@ -273,33 +463,36 @@ export function sortLineBlocksTopological(
     if (y + height > maxY) maxY = y + height;
   }
 
-  const docWidth = Math.max(0, maxX - minX);
+  let docWidth = Math.max(0, maxX - minX);
   const docHeight = Math.max(0, maxY - minY);
 
+  if (Number.isFinite(pageWidth) && (pageWidth ?? 0) > 0) {
+    docWidth = Math.max(docWidth, (pageWidth ?? 0) - minX);
+    maxX = Math.max(maxX, minX + docWidth);
+  }
+
   if (docWidth <= 0 || docHeight <= 0) {
-    return [...sortIntraColumn(validBlocks), ...invalidBlocks];
+    return [...sortIntraColumn(pairs), ...invalidBlocks];
   }
 
   // 2. Detect column gutters
-  // Adaptive minColGap based on document width: typically 15pt, or at least 2.5% of docWidth
   const minColGap = Math.max(12, Math.min(36, docWidth * 0.025));
-  const gutters = detectColumnGutters(validBlocks, minColGap, { minX, maxX, docWidth });
+  const geoBlocks = pairs.map((p) => p.geo);
+  const gutters = detectColumnGutters(geoBlocks, minColGap, { minX, maxX, docWidth });
 
   // If no column gutters were found, this is a single-column layout
   if (gutters.length === 0) {
-    return [...sortIntraColumn(validBlocks), ...invalidBlocks];
+    return [...sortIntraColumn(pairs), ...invalidBlocks];
   }
 
   // 3. Multi-column document handling
-  // Sort gutters from left to right
   gutters.sort((a, b) => a.start - b.start);
-
   const columnCount = gutters.length + 1;
 
   // Identify spanning blocks (headers, titles, footers, full-width section dividers)
-  const isSpanning = (b: OcrLineBlock): boolean => {
-    const left = b.bbox.x;
-    const right = b.bbox.x + b.bbox.width;
+  const isSpanning = (p: BlockPair): boolean => {
+    const left = p.geo.bbox.x;
+    const right = p.geo.bbox.x + p.geo.bbox.width;
     // Spans across any gutter
     for (const g of gutters) {
       if (left < g.start + 4 && right > g.end - 4) {
@@ -307,20 +500,20 @@ export function sortLineBlocksTopological(
       }
     }
     // Or covers more than 80% of entire text envelope
-    if (b.bbox.width >= docWidth * 0.80) {
+    if (p.geo.bbox.width >= docWidth * 0.80) {
       return true;
     }
     return false;
   };
 
-  const spanningBlocks: OcrLineBlock[] = [];
-  const columnBlocks: OcrLineBlock[][] = Array.from({ length: columnCount }, () => []);
+  const spanningPairs: BlockPair[] = [];
+  const columnPairs: BlockPair[][] = Array.from({ length: columnCount }, () => []);
 
-  for (const b of validBlocks) {
-    if (isSpanning(b)) {
-      spanningBlocks.push(b);
+  for (const p of pairs) {
+    if (isSpanning(p)) {
+      spanningPairs.push(p);
     } else {
-      const midX = b.bbox.x + b.bbox.width / 2;
+      const midX = p.geo.bbox.x + p.geo.bbox.width / 2;
       let colIdx = 0;
       for (let i = 0; i < gutters.length; i++) {
         if (midX >= gutters[i].mid) {
@@ -329,87 +522,94 @@ export function sortLineBlocksTopological(
           break;
         }
       }
-      columnBlocks[colIdx].push(b);
+      columnPairs[colIdx].push(p);
     }
   }
 
   // Collect all column lines
-  const allColLines = columnBlocks.flat();
-  if (allColLines.length === 0) {
+  const allColPairs = columnPairs.flat();
+  if (allColPairs.length === 0) {
     // Only spanning blocks
-    return [...sortIntraColumn(validBlocks), ...invalidBlocks];
+    return [...sortIntraColumn(pairs), ...invalidBlocks];
   }
 
   // Sort spanning blocks top-to-bottom
-  spanningBlocks.sort((a, b) => a.bbox.y - b.bbox.y);
+  spanningPairs.sort((a, b) => a.geo.bbox.y - b.geo.bbox.y);
 
-  const headers: OcrLineBlock[] = [];
-  const footers: OcrLineBlock[] = [];
-  const middleSpanning: OcrLineBlock[] = [];
+  const headerPairs: BlockPair[] = [];
+  const footerPairs: BlockPair[] = [];
+  const middleSpanningPairs: BlockPair[] = [];
 
-  for (const sb of spanningBlocks) {
-    const linesAbove = allColLines.filter(
-      (c) => c.bbox.y + c.bbox.height < sb.bbox.y + 4
+  for (const sp of spanningPairs) {
+    const linesAbove = allColPairs.filter(
+      (c) => c.geo.bbox.y + c.geo.bbox.height < sp.geo.bbox.y + 4
     ).length;
-    const linesBelow = allColLines.filter(
-      (c) => c.bbox.y > sb.bbox.y + sb.bbox.height - 4
+    const linesBelow = allColPairs.filter(
+      (c) => c.geo.bbox.y > sp.geo.bbox.y + sp.geo.bbox.height - 4
     ).length;
 
     if (linesAbove === 0) {
-      headers.push(sb);
+      headerPairs.push(sp);
     } else if (linesBelow === 0) {
-      footers.push(sb);
+      footerPairs.push(sp);
     } else {
-      middleSpanning.push(sb);
+      middleSpanningPairs.push(sp);
     }
   }
 
   const result: OcrLineBlock[] = [];
 
+  // Column iteration order: left-to-right (0..K) for horizontal, right-to-left (K..0) for vertical CJK
+  const colIndices: number[] = [];
+  if (isVerticalMode) {
+    for (let c = columnCount - 1; c >= 0; c--) colIndices.push(c);
+  } else {
+    for (let c = 0; c < columnCount; c++) colIndices.push(c);
+  }
+
   // 1. Spanning Headers first
-  result.push(...sortIntraColumn(headers));
+  result.push(...sortIntraColumn(headerPairs));
 
   // 2. Body columns partitioned by any middle spanning blocks
-  if (middleSpanning.length === 0) {
-    // Standard 2-column or N-column body without mid-page spanning banners
-    for (let c = 0; c < columnCount; c++) {
-      result.push(...sortIntraColumn(columnBlocks[c]));
+  if (middleSpanningPairs.length === 0) {
+    for (const c of colIndices) {
+      result.push(...sortIntraColumn(columnPairs[c]));
     }
   } else {
     // Cluster consecutive or overlapping middle spanning blocks into SpanningBands
-    interface SpanningBand {
+    interface SpanningBandPair {
       top: number;
       bottom: number;
-      blocks: OcrLineBlock[];
+      pairs: BlockPair[];
     }
-    const bands: SpanningBand[] = [];
-    for (const sb of middleSpanning) {
-      const top = sb.bbox.y;
-      const bottom = sb.bbox.y + sb.bbox.height;
+    const bands: SpanningBandPair[] = [];
+    for (const sp of middleSpanningPairs) {
+      const top = sp.geo.bbox.y;
+      const bottom = sp.geo.bbox.y + sp.geo.bbox.height;
       if (bands.length === 0) {
-        bands.push({ top, bottom, blocks: [sb] });
+        bands.push({ top, bottom, pairs: [sp] });
       } else {
         const lastBand = bands[bands.length - 1];
-        const lineTol = Math.max(4, sb.bbox.height * 0.5);
+        const lineTol = Math.max(4, sp.geo.bbox.height * 0.5);
         if (top <= lastBand.bottom + lineTol) {
           lastBand.bottom = Math.max(lastBand.bottom, bottom);
-          lastBand.blocks.push(sb);
+          lastBand.pairs.push(sp);
         } else {
-          bands.push({ top, bottom, blocks: [sb] });
+          bands.push({ top, bottom, pairs: [sp] });
         }
       }
     }
 
-    // Assign each block in columnBlocks to exactly one slice:
+    // Assign each block in columnPairs to exactly one slice:
     // A block is placed in slice i before the first band whose bottom is below its center,
     // or in the trailing slice (index bands.length) if none qualifies.
     const sliceCount = bands.length + 1;
-    const slices: OcrLineBlock[][][] = Array.from({ length: sliceCount }, () =>
+    const slices: BlockPair[][][] = Array.from({ length: sliceCount }, () =>
       Array.from({ length: columnCount }, () => [])
     );
 
-    const getSliceIndex = (b: OcrLineBlock): number => {
-      const midY = b.bbox.y + b.bbox.height / 2;
+    const getSliceIndex = (p: BlockPair): number => {
+      const midY = p.geo.bbox.y + p.geo.bbox.height / 2;
       for (let i = 0; i < bands.length; i++) {
         if (midY < bands[i].bottom) {
           return i;
@@ -419,29 +619,29 @@ export function sortLineBlocksTopological(
     };
 
     for (let c = 0; c < columnCount; c++) {
-      for (const b of columnBlocks[c]) {
-        const sIdx = getSliceIndex(b);
-        slices[sIdx][c].push(b);
+      for (const p of columnPairs[c]) {
+        const sIdx = getSliceIndex(p);
+        slices[sIdx][c].push(p);
       }
     }
 
     // Assemble result:
     // Slice 0 (above/before band 0)
-    for (let c = 0; c < columnCount; c++) {
+    for (const c of colIndices) {
       result.push(...sortIntraColumn(slices[0][c]));
     }
 
     // For each band: band blocks, then the slice below it
     for (let i = 0; i < bands.length; i++) {
-      result.push(...sortIntraColumn(bands[i].blocks));
-      for (let c = 0; c < columnCount; c++) {
+      result.push(...sortIntraColumn(bands[i].pairs));
+      for (const c of colIndices) {
         result.push(...sortIntraColumn(slices[i + 1][c]));
       }
     }
   }
 
   // 3. Spanning Footers last
-  result.push(...sortIntraColumn(footers));
+  result.push(...sortIntraColumn(footerPairs));
 
   // 4. Append separated invalid-coordinate blocks at the end
   if (invalidBlocks.length > 0) {
@@ -456,7 +656,11 @@ export function sortLineBlocksTopological(
  * ordered with topological reading order (preserving multi-column structure).
  * Shared between server and client edge pipelines.
  */
-export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines: string[]; lineBlocks: OcrLineBlock[] } {
+export function parseTesseractBlocks(
+  blocks: any[] | null | undefined,
+  pageWidth?: number,
+  pageHeight?: number
+): { lines: string[]; lineBlocks: OcrLineBlock[] } {
   const lineBlocks: OcrLineBlock[] = [];
   if (!blocks || blocks.length === 0) return { lines: [], lineBlocks: [] };
 
@@ -505,7 +709,7 @@ export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines:
     }
   }
 
-  const sortedLineBlocks = sortLineBlocksTopological(lineBlocks);
+  const sortedLineBlocks = sortLineBlocksTopological(lineBlocks, pageWidth, pageHeight);
   const lines = sortedLineBlocks.map((b) => b.text);
 
   return { lines, lineBlocks: sortedLineBlocks };
@@ -1225,6 +1429,38 @@ export function buildTJArrayWithKerning(
   return { tjArray, wordSpacing, activeFontName };
 }
 
+function emitInvisibleTextOperators(
+  page: PDFPage,
+  matrix: [number, number, number, number, number, number],
+  activeFontName: string,
+  fontSize: number,
+  wordSpacing: number,
+  tz: number,
+  showTextOp: any
+): void {
+  const [a, b, c, d, e, f] = matrix;
+  page.pushOperators(
+    pushGraphicsState(),
+    PDFOperator.of(PDFOperatorNames.ConcatTransformationMatrix, [
+      PDFNumber.of(Number(a.toFixed(6))),
+      PDFNumber.of(Number(b.toFixed(6))),
+      PDFNumber.of(Number(c.toFixed(6))),
+      PDFNumber.of(Number(d.toFixed(6))),
+      PDFNumber.of(Number(e.toFixed(4))),
+      PDFNumber.of(Number(f.toFixed(4))),
+    ]),
+    setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
+    beginText(),
+    setFontAndSize(activeFontName, fontSize),
+    PDFOperator.of(PDFOperatorNames.SetWordSpacing, [PDFNumber.of(Number(wordSpacing.toFixed(3)))]), // Tw
+    PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]), // Tz
+    setTextMatrix(1, 0, 0, 1, 0, 0), // 1 0 0 1 0 0 Tm
+    showTextOp,
+    endText(),
+    popGraphicsState()
+  );
+}
+
 /**
  * Renders an OCR line block with ISO 32000-1 compliant word spacing (Tw)
  * and TJ array operator with character kerning offsets, positioned using
@@ -1238,9 +1474,11 @@ export function renderLineBlockWithSpacing(
   scaleX: number = 1.0,
   scaleY: number = 1.0
 ): void {
-  const scaledWidth = block.bbox.width * scaleX;
-  const scaledHeight = block.bbox.height * scaleY;
-  const maxAvailableWidth = Math.max(10, page.getSize().width - block.bbox.x * scaleX - 5);
+  const safeScaleX = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1.0;
+  const safeScaleY = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1.0;
+  const scaledWidth = Math.max(1, block.bbox.width * safeScaleX);
+  const scaledHeight = Math.max(1, block.bbox.height * safeScaleY);
+  const maxAvailableWidth = Math.max(10, page.getSize().width - block.bbox.x * safeScaleX - 5);
   const targetWidth = Math.min(scaledWidth, maxAvailableWidth);
 
   const words =
@@ -1265,7 +1503,9 @@ export function renderLineBlockWithSpacing(
 
   const maxFontForWidth = estUnits > 0 ? (targetWidth / estUnits) * 1000 : 72;
   const maxFontForHeight = scaledHeight * 0.85;
-  const fontSize = Math.max(6, Math.min(72, maxFontForHeight, maxFontForWidth));
+  const validFontH = Number.isFinite(maxFontForHeight) && maxFontForHeight > 0 ? maxFontForHeight : 12;
+  const validFontW = Number.isFinite(maxFontForWidth) && maxFontForWidth > 0 ? maxFontForWidth : 72;
+  const fontSize = Math.max(6, Math.min(72, validFontH, validFontW));
 
   const estimatedWidth = (estUnits / 1000) * fontSize;
   let tz = 100;
@@ -1273,14 +1513,14 @@ export function renderLineBlockWithSpacing(
     tz = Math.max(70, Math.min(130, (targetWidth / estimatedWidth) * 100));
   }
 
-  const originX = block.bbox.x * scaleX;
+  const originX = block.bbox.x * safeScaleX;
   const { tjArray, wordSpacing, activeFontName } = buildTJArrayWithKerning(
     page.doc,
     font,
     words,
     fontSize,
     tz,
-    scaleX,
+    safeScaleX,
     originX
   );
 
@@ -1289,32 +1529,21 @@ export function renderLineBlockWithSpacing(
     registerFontOnPage(page, unicodeFont);
   }
 
-  const [a, b, c, d, e, f] = computeAffineTransformationMatrix(
+  const matrix = computeAffineTransformationMatrix(
     block.bbox,
     pageHeight,
-    scaleX,
-    scaleY
+    safeScaleX,
+    safeScaleY
   );
 
-  page.pushOperators(
-    pushGraphicsState(),
-    PDFOperator.of(PDFOperatorNames.ConcatTransformationMatrix, [
-      PDFNumber.of(Number(a.toFixed(6))),
-      PDFNumber.of(Number(b.toFixed(6))),
-      PDFNumber.of(Number(c.toFixed(6))),
-      PDFNumber.of(Number(d.toFixed(6))),
-      PDFNumber.of(Number(e.toFixed(4))),
-      PDFNumber.of(Number(f.toFixed(4))),
-    ]),
-    setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
-    beginText(),
-    setFontAndSize(activeFontName, fontSize),
-    PDFOperator.of(PDFOperatorNames.SetWordSpacing, [PDFNumber.of(Number(wordSpacing.toFixed(3)))]), // Tw
-    PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]), // Tz
-    setTextMatrix(1, 0, 0, 1, 0, 0), // 1 0 0 1 0 0 Tm
-    PDFOperator.of(PDFOperatorNames.ShowTextAdjusted, [tjArray]), // TJ
-    endText(),
-    popGraphicsState()
+  emitInvisibleTextOperators(
+    page,
+    matrix,
+    activeFontName,
+    fontSize,
+    wordSpacing,
+    tz,
+    PDFOperator.of(PDFOperatorNames.ShowTextAdjusted, [tjArray])
   );
 }
 
@@ -1408,27 +1637,16 @@ export function renderTextItem(
 
   if (!encodedText) return;
 
-  const [a, b, c, d, e, f] = computeAffineTransformationMatrix(bbox, pageHeight, scaleX, scaleY);
+  const matrix = computeAffineTransformationMatrix(bbox, pageHeight, scaleX, scaleY);
 
-  page.pushOperators(
-    pushGraphicsState(),
-    PDFOperator.of(PDFOperatorNames.ConcatTransformationMatrix, [
-      PDFNumber.of(Number(a.toFixed(6))),
-      PDFNumber.of(Number(b.toFixed(6))),
-      PDFNumber.of(Number(c.toFixed(6))),
-      PDFNumber.of(Number(d.toFixed(6))),
-      PDFNumber.of(Number(e.toFixed(4))),
-      PDFNumber.of(Number(f.toFixed(4))),
-    ]),
-    setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
-    beginText(),
-    setFontAndSize(activeFontName, fontSize),
-    PDFOperator.of(PDFOperatorNames.SetWordSpacing, [PDFNumber.of(0)]),
-    PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]),
-    setTextMatrix(1, 0, 0, 1, 0, 0),
-    showText(encodedText),
-    endText(),
-    popGraphicsState()
+  emitInvisibleTextOperators(
+    page,
+    matrix,
+    activeFontName,
+    fontSize,
+    0,
+    tz,
+    showText(encodedText)
   );
 }
 
@@ -1445,6 +1663,8 @@ export function injectInvisibleTextLayer(
   scaleX: number = 1.0,
   scaleY: number = 1.0
 ): void {
+  const safeScaleX = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1.0;
+  const safeScaleY = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1.0;
   const { height: pageHeight, width: pageWidth } = page.getSize();
   const rawBlocks = ocrResult.lineBlocks || [];
   const blocks = sortLineBlocksTopological(rawBlocks, pageWidth, pageHeight);
@@ -1452,7 +1672,7 @@ export function injectInvisibleTextLayer(
   if (blocks.length > 0) {
     for (const block of blocks) {
       if (!block.text) continue;
-      renderLineBlockWithSpacing(page, font, block, pageHeight, scaleX, scaleY);
+      renderLineBlockWithSpacing(page, font, block, pageHeight, safeScaleX, safeScaleY);
     }
   } else if (ocrResult.lines && ocrResult.lines.length > 0) {
     // Fallback: estimate equidistant text lines
@@ -1473,8 +1693,8 @@ export function injectInvisibleTextLayer(
           words: [],
         },
         pageHeight,
-        scaleX,
-        scaleY
+        safeScaleX,
+        safeScaleY
       );
     }
   }
