@@ -131,7 +131,12 @@ export function verifyImageWithImageMagick(buffer: Buffer): boolean {
  */
 export function verifyAudioWithFfmpeg(buffer: Buffer, formatHint: string = 'mp3'): boolean {
   const ffmpegPath = getOracleToolPath('ffmpeg');
-  if (!ffmpegPath) return false;
+  if (!ffmpegPath) {
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('ffmpeg', 'Strict oracle mode requires ffmpeg for audio verification');
+    }
+    return false;
+  }
   const tmpPath = path.join(os.tmpdir(), `oracle_audio_${crypto.randomUUID()}.${formatHint}`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -276,8 +281,11 @@ export class OracleToolMissingError extends Error {
  * Rejects hollow containers, missing moov/mdat/trak/stsd boxes, and empty/invalid NAL units.
  */
 export function checkIsoBmffIntegrity(buffer: Buffer): {
-  format: 'mp4' | 'mov';
+  format: 'mp4' | 'mov' | 'm4a';
   codec: string;
+  videoCodec?: string;
+  audioCodec?: string;
+  codecs?: string[];
   hasMoov: boolean;
   hasMdat: boolean;
   hasTrak: boolean;
@@ -305,6 +313,9 @@ export function checkIsoBmffIntegrity(buffer: Buffer): {
   let foundStbl = false;
   let foundStsd = false;
   let detectedCodec = '';
+  let videoCodec = '';
+  let audioCodec = '';
+  const detectedCodecs: string[] = [];
 
   while (offset + 8 <= buffer.length) {
     let size = buffer.readUInt32BE(offset);
@@ -354,6 +365,7 @@ export function checkIsoBmffIntegrity(buffer: Buffer): {
           }
         } else if (subType === 'trak') {
           foundTrak = true;
+          let trackHandler = '';
           let trakOff = 0;
           while (trakOff + 8 <= subPayload.length) {
             let tSize = subPayload.readUInt32BE(trakOff);
@@ -371,7 +383,13 @@ export function checkIsoBmffIntegrity(buffer: Buffer): {
                 if (mSize === 0) mSize = mdiaPayload.length - mdiaOff;
                 if (mSize < 8 || mdiaOff + mSize > mdiaPayload.length) break;
 
-                if (mType === 'minf') {
+                if (mType === 'hdlr') {
+                  const hdlrPayload = mdiaPayload.subarray(mdiaOff + 8, mdiaOff + mSize);
+                  // FullBox: 4 bytes version+flags, 4 bytes pre_defined, 4 bytes handler_type
+                  if (hdlrPayload.length >= 12) {
+                    trackHandler = hdlrPayload.toString('ascii', 8, 12);
+                  }
+                } else if (mType === 'minf') {
                   foundMinf = true;
                   const minfPayload = mdiaPayload.subarray(mdiaOff + 8, mdiaOff + mSize);
                   let minfOff = 0;
@@ -398,7 +416,27 @@ export function checkIsoBmffIntegrity(buffer: Buffer): {
                             const entryCount = stsdPayload.readUInt32BE(4);
                             if (entryCount > 0 && stsdPayload.length >= 16) {
                               const entryFormat = stsdPayload.toString('ascii', 12, 16);
-                              detectedCodec = entryFormat;
+                              detectedCodecs.push(entryFormat);
+                              const isVideoFormat =
+                                entryFormat.startsWith('avc') ||
+                                entryFormat.startsWith('hvc') ||
+                                entryFormat === 'vp09' ||
+                                entryFormat === 'av01' ||
+                                entryFormat === 'mp4v';
+                              const isAudioFormat =
+                                entryFormat === 'mp4a' ||
+                                entryFormat === 'opus' ||
+                                entryFormat === 'ac-3' ||
+                                entryFormat === 'alac' ||
+                                entryFormat === 'samr';
+
+                              if (trackHandler === 'vide' || (!trackHandler && !videoCodec && isVideoFormat)) {
+                                videoCodec = entryFormat;
+                              } else if (trackHandler === 'soun' || (!trackHandler && !audioCodec && isAudioFormat)) {
+                                audioCodec = entryFormat;
+                              } else if (!detectedCodec) {
+                                detectedCodec = entryFormat;
+                              }
                             }
                           }
                         }
@@ -448,17 +486,39 @@ export function checkIsoBmffIntegrity(buffer: Buffer): {
     throw new Error('Integrity Violation: Empty mdat payload (0 bytes) in ISO BMFF container');
   }
 
-  // Deep NAL unit header inspection for AVC / H.264
+  const primaryCodec = videoCodec || detectedCodec || audioCodec || 'h264';
+  const isVideoExpected = Boolean(videoCodec) || (!audioCodec && !videoCodec);
+
+  // Deep NAL unit header inspection for AVC / H.264 video streams
   let nalUnitsCount = 0;
-  if (!detectedCodec || detectedCodec === 'avc1' || detectedCodec.startsWith('avc')) {
+  if (isVideoExpected && (!primaryCodec || primaryCodec === 'avc1' || primaryCodec.startsWith('avc'))) {
     const mdatBuf = buffer.subarray(mdatDataOffset, mdatDataOffset + mdatDataLength);
     const validNalTypes = new Set([1, 5, 6, 7, 8, 9]);
     let hasSlice = false;
 
-    // Check Annex B start codes
-    const hasAnnexB = mdatBuf.indexOf(Buffer.from([0x00, 0x00, 0x01])) !== -1;
+    // 1. Primary path: parse length-prefixed AVCC NALUs (standard MP4 container)
+    let naluOffset = 0;
+    while (naluOffset + 4 < mdatBuf.length) {
+      const naluLen = mdatBuf.readUInt32BE(naluOffset);
+      if (naluLen === 0 || naluOffset + 4 + naluLen > mdatBuf.length) {
+        break;
+      }
+      const header = mdatBuf[naluOffset + 4];
+      const forbiddenZero = (header >> 7) & 1;
+      const nalType = header & 0x1f;
+      if (forbiddenZero === 0 && validNalTypes.has(nalType)) {
+        nalUnitsCount++;
+        if (nalType === 1 || nalType === 5 || nalType === 7 || nalType === 8) {
+          hasSlice = true;
+        }
+      }
+      naluOffset += 4 + naluLen;
+    }
 
-    if (hasAnnexB) {
+    // 2. Fallback path: Annex B byte-stream scanning only if AVCC parsing yielded no valid slices
+    if (nalUnitsCount === 0 || !hasSlice) {
+      nalUnitsCount = 0;
+      hasSlice = false;
       for (let i = 0; i < mdatBuf.length - 4; i++) {
         if (
           (mdatBuf[i] === 0 && mdatBuf[i + 1] === 0 && mdatBuf[i + 2] === 1) ||
@@ -478,25 +538,6 @@ export function checkIsoBmffIntegrity(buffer: Buffer): {
           }
         }
       }
-    } else {
-      // Length-prefixed AVCC NALUs (4-byte big endian length prefix)
-      let naluOffset = 0;
-      while (naluOffset + 4 < mdatBuf.length) {
-        const naluLen = mdatBuf.readUInt32BE(naluOffset);
-        if (naluLen === 0 || naluOffset + 4 + naluLen > mdatBuf.length) {
-          break;
-        }
-        const header = mdatBuf[naluOffset + 4];
-        const forbiddenZero = (header >> 7) & 1;
-        const nalType = header & 0x1f;
-        if (forbiddenZero === 0 && validNalTypes.has(nalType)) {
-          nalUnitsCount++;
-          if (nalType === 1 || nalType === 5 || nalType === 7 || nalType === 8) {
-            hasSlice = true;
-          }
-        }
-        naluOffset += 4 + naluLen;
-      }
     }
 
     if (nalUnitsCount === 0 || !hasSlice) {
@@ -505,10 +546,23 @@ export function checkIsoBmffIntegrity(buffer: Buffer): {
   }
 
   const isFastStart = moovOffset > 0 && mdatOffset > 0 && moovOffset < mdatOffset;
+  const cleanBrand = majorBrand.trim().toLowerCase();
+  const isMov = majorBrand.startsWith('qt');
+  const isM4a = cleanBrand.startsWith('m4a') || cleanBrand.startsWith('m4b') || (Boolean(audioCodec) && !videoCodec);
+
+  let detectedFormat: 'm4a' | 'mov' | 'mp4' = 'mp4';
+  if (isM4a) {
+    detectedFormat = 'm4a';
+  } else if (isMov) {
+    detectedFormat = 'mov';
+  }
 
   return {
-    format: majorBrand.startsWith('qt') ? 'mov' : 'mp4',
-    codec: detectedCodec || 'h264',
+    format: detectedFormat,
+    codec: primaryCodec,
+    videoCodec,
+    audioCodec,
+    codecs: detectedCodecs,
     hasMoov,
     hasMdat,
     hasTrak: foundTrak,
@@ -617,10 +671,16 @@ export function checkOggIntegrity(buffer: Buffer): {
         }
         sampleRate = payload.readUInt32LE(12);
         hasIdHeader = true;
-      } else if (payload.length >= 15 && payload.toString('ascii', 1, 7) === 'vorbis' && payload[0] === 0x01) {
+      } else if (payload.length >= 16 && payload.toString('ascii', 1, 7) === 'vorbis' && payload[0] === 0x01) {
         codec = 'vorbis';
         channels = payload[11];
+        if (channels < 1) {
+          throw new Error(`Integrity Violation: Invalid Vorbis channel count (${channels})`);
+        }
         sampleRate = payload.readUInt32LE(12);
+        if (sampleRate === 0) {
+          throw new Error('Integrity Violation: Invalid Vorbis sample rate (0)');
+        }
         hasIdHeader = true;
       } else {
         throw new Error('Integrity Violation: First Ogg page must contain valid OpusHead or Vorbis identification header');
@@ -718,7 +778,7 @@ export function checkAdtsAacIntegrity(buffer: Buffer): {
     if (frameLength < 7) {
       throw new Error(`Integrity Violation: Invalid ADTS frame length (${frameLength} < 7)`);
     }
-    if (offset + frameLength > buffer.length && frameCount === 0) {
+    if (offset + frameLength > buffer.length) {
       throw new Error(`Integrity Violation: Truncated ADTS frame (${offset + frameLength} > ${buffer.length})`);
     }
 
@@ -811,6 +871,14 @@ export function verifyAudioBitstreamWithFfprobe(
           codecName: info.codec,
           channels: info.channels,
           sampleRate: info.sampleRate,
+        };
+      }
+      if (format === 'm4a') {
+        const info = checkIsoBmffIntegrity(buffer);
+        return {
+          valid: true,
+          formatName: 'm4a',
+          codecName: expectedCodec || info.audioCodec || info.codec || 'aac',
         };
       }
       return { valid: false, error: `Unsupported audio format verification: ${format}` };
@@ -1055,7 +1123,7 @@ export interface CadStepStructuralAst {
 }
 
 export interface AudioMediaAst {
-  format: 'mp4' | 'webm' | 'mp3' | 'flac' | 'wav';
+  format: 'mp4' | 'webm' | 'mp3' | 'flac' | 'wav' | 'aac' | 'ogg' | 'opus' | 'vorbis' | 'm4a';
   containerBoxTypes: string[];
   hasAudioTrack: boolean;
   hasMoovHeader: boolean;
@@ -1681,6 +1749,52 @@ export function parseAudioMediaToAst(buffer: Buffer, format: string): AudioMedia
       return parseMp3AudioAst(buffer);
     case 'flac':
       return parseFlacAudioAst(buffer);
+    case 'aac': {
+      try {
+        const info = checkAdtsAacIntegrity(buffer);
+        return {
+          format: 'aac',
+          containerBoxTypes: ['ADTS_FRAME'],
+          hasAudioTrack: true,
+          hasMoovHeader: false,
+          hasEbmlHeader: false,
+          estimatedSampleRate: info.sampleRate,
+          estimatedChannels: info.channels,
+        };
+      } catch {
+        return {
+          format: 'aac',
+          containerBoxTypes: [],
+          hasAudioTrack: false,
+          hasMoovHeader: false,
+          hasEbmlHeader: false,
+        };
+      }
+    }
+    case 'ogg':
+    case 'opus':
+    case 'vorbis': {
+      try {
+        const info = checkOggIntegrity(buffer);
+        return {
+          format: info.format,
+          containerBoxTypes: ['OggS'],
+          hasAudioTrack: true,
+          hasMoovHeader: false,
+          hasEbmlHeader: false,
+          estimatedSampleRate: info.sampleRate,
+          estimatedChannels: info.channels,
+        };
+      } catch {
+        return {
+          format: fmt,
+          containerBoxTypes: [],
+          hasAudioTrack: false,
+          hasMoovHeader: false,
+          hasEbmlHeader: false,
+        };
+      }
+    }
     default:
       return parseWavAudioAst(buffer);
   }
@@ -2483,7 +2597,7 @@ export function checkWavIntegrity(buffer: Buffer): void {
   if (riffLen < 36) {
     throw new Error(`Integrity Violation: Invalid RIFF length (${riffLen}) in WAV`);
   }
-  if (buffer.length > 44) {
+  if (buffer.length >= 44) {
     const fmtIdx = buffer.indexOf('fmt ');
     if (fmtIdx === -1) {
       throw new Error('Integrity Violation: Missing fmt chunk in WAV container');
@@ -2712,6 +2826,7 @@ export function assertFormatIntegrity(buffer: Buffer, format: string): void {
     case 'vorbis':
       checkOggIntegrity(buffer);
       break;
+    case 'm4a':
     case 'mp4':
     case 'mov':
       checkIsoBmffIntegrity(buffer);

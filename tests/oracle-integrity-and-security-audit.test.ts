@@ -308,6 +308,125 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
         }
       }
     });
+
+    it('successfully validates authentic AVCC MP4 even when slice payload contains [0x00, 0x00, 0x01]', () => {
+      const ftyp = createBox('ftyp', Buffer.concat([Buffer.from('isom'), Buffer.from([0, 0, 2, 0]), Buffer.from('isommp41')]));
+      const avc1 = createBox('avc1', Buffer.alloc(78));
+      const stsd = createBox('stsd', Buffer.concat([Buffer.from([0, 0, 0, 0, 0, 0, 0, 1]), avc1]));
+      const stbl = createBox('stbl', stsd);
+      const minf = createBox('minf', stbl);
+      const mdia = createBox('mdia', minf);
+      const trak = createBox('trak', mdia);
+      const mvhd = createBox('mvhd', Buffer.alloc(24));
+      const moov = createBox('moov', Buffer.concat([mvhd, trak]));
+
+      // Authentic IDR slice (type 5) with compressed payload containing [0x00, 0x00, 0x01, 0xff]
+      const idrNalu = Buffer.from([0x65, 0x88, 0x00, 0x00, 0x01, 0xff, 0x00, 0x12]);
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32BE(idrNalu.length, 0);
+      const mdat = createBox('mdat', Buffer.concat([lenBuf, idrNalu]));
+      const mp4 = Buffer.concat([ftyp, moov, mdat]);
+
+      const res = checkIsoBmffIntegrity(mp4);
+      expect(res.format).toBe('mp4');
+      expect(res.codec).toBe('avc1');
+      expect(res.nalUnitsCount).toBeGreaterThan(0);
+      expect(() => assertFormatIntegrity(mp4, 'mp4')).not.toThrow();
+    });
+
+    it('preserves video codec and validates authentic multi-track MP4 containing both avc1 video and mp4a audio', () => {
+      const ftyp = createBox('ftyp', Buffer.concat([Buffer.from('isom'), Buffer.from([0, 0, 2, 0]), Buffer.from('isommp41')]));
+
+      // 1. Video track with hdlr 'vide'
+      const hdlrVideo = Buffer.alloc(20);
+      hdlrVideo.write('vide', 8, 4, 'ascii');
+      const hdlrBoxVideo = createBox('hdlr', hdlrVideo);
+      const avc1 = createBox('avc1', Buffer.alloc(78));
+      const stsdVideo = createBox('stsd', Buffer.concat([Buffer.from([0, 0, 0, 0, 0, 0, 0, 1]), avc1]));
+      const trakVideo = createBox('trak', createBox('mdia', Buffer.concat([hdlrBoxVideo, createBox('minf', createBox('stbl', stsdVideo))])));
+
+      // 2. Audio track with hdlr 'soun'
+      const hdlrAudio = Buffer.alloc(20);
+      hdlrAudio.write('soun', 8, 4, 'ascii');
+      const hdlrBoxAudio = createBox('hdlr', hdlrAudio);
+      const mp4a = createBox('mp4a', Buffer.alloc(36));
+      const stsdAudio = createBox('stsd', Buffer.concat([Buffer.from([0, 0, 0, 0, 0, 0, 0, 1]), mp4a]));
+      const trakAudio = createBox('trak', createBox('mdia', Buffer.concat([hdlrBoxAudio, createBox('minf', createBox('stbl', stsdAudio))])));
+
+      const mvhd = createBox('mvhd', Buffer.alloc(24));
+      const moov = createBox('moov', Buffer.concat([mvhd, trakVideo, trakAudio]));
+
+      const spsNalu = Buffer.from([0x67, 0x42, 0x00, 0x1e]);
+      const idrNalu = Buffer.from([0x65, 0x88, 0x84, 0x00]);
+      function makeNalu(nalu: Buffer): Buffer {
+        const l = Buffer.alloc(4);
+        l.writeUInt32BE(nalu.length, 0);
+        return Buffer.concat([l, nalu]);
+      }
+      const mdat = createBox('mdat', Buffer.concat([makeNalu(spsNalu), makeNalu(idrNalu)]));
+      const multiTrackMp4 = Buffer.concat([ftyp, moov, mdat]);
+
+      const info = checkIsoBmffIntegrity(multiTrackMp4);
+      expect(info.format).toBe('mp4');
+      expect(info.codec).toBe('avc1');
+      expect(info.videoCodec).toBe('avc1');
+      expect(info.audioCodec).toBe('mp4a');
+
+      const verification = verifyVideoBitstreamWithFfprobe(multiTrackMp4, 'mp4', 'h264');
+      expect(verification.valid).toBe(true);
+      expect(verification.codecName).toBe('h264');
+    });
+
+    it('detects and rejects truncated ADTS AAC stream occurring after the first valid frame', () => {
+      // Frame 0: valid 7-byte header with frameLength = 10
+      const truncatedStream = Buffer.alloc(20);
+      truncatedStream[0] = 0xff;
+      truncatedStream[1] = 0xf1;
+      truncatedStream[2] = 0x50; // profile 1, sr 4 (44100), chan 2
+      truncatedStream[3] = 0x80;
+      truncatedStream[4] = 0x01;
+      truncatedStream[5] = 0x5f; // frameLength = 10
+      truncatedStream[6] = 0xfc;
+
+      // Frame 1 starts at byte 10, specifies frameLength = 100, but only 10 bytes remain in buffer
+      truncatedStream[10] = 0xff;
+      truncatedStream[11] = 0xf1;
+      truncatedStream[12] = 0x50;
+      truncatedStream[13] = 0x80;
+      truncatedStream[14] = 0x0c;
+      truncatedStream[15] = 0x9f; // frameLength = 100!
+      truncatedStream[16] = 0xfc;
+
+      expect(() => checkAdtsAacIntegrity(truncatedStream)).toThrow(/Truncated ADTS frame/);
+      expect(() => assertFormatIntegrity(truncatedStream, 'aac')).toThrow(/Truncated ADTS frame/);
+    });
+
+    it('fails closed with clean Integrity Violation on truncated Vorbis header without throwing RangeError', () => {
+      // 15-byte Vorbis payload (type 0x01 + 'vorbis' + 8 bytes): too short for 16-byte uint32LE read
+      const oggPage = Buffer.concat([
+        Buffer.from('OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x0f'), // 1 segment, len 15
+        Buffer.from([0x01]),
+        Buffer.from('vorbis', 'ascii'),
+        Buffer.alloc(8),
+      ]);
+      expect(() => checkOggIntegrity(oggPage)).toThrow(/First Ogg page must contain valid OpusHead or Vorbis/);
+    });
+
+    it('validates authentic M4A audio container in assertFormatIntegrity and verifyAudioBitstreamWithFfprobe', () => {
+      const ftyp = createBox('ftyp', Buffer.concat([Buffer.from('M4A '), Buffer.from([0, 0, 0, 0]), Buffer.from('M4A mp42isom')]));
+      const mp4a = createBox('mp4a', Buffer.alloc(36));
+      const stsdAudio = createBox('stsd', Buffer.concat([Buffer.from([0, 0, 0, 0, 0, 0, 0, 1]), mp4a]));
+      const trakAudio = createBox('trak', createBox('mdia', createBox('minf', createBox('stbl', stsdAudio))));
+      const mvhd = createBox('mvhd', Buffer.alloc(24));
+      const moov = createBox('moov', Buffer.concat([mvhd, trakAudio]));
+      const mdat = createBox('mdat', Buffer.from([0x01, 0x02, 0x03, 0x04]));
+      const m4a = Buffer.concat([ftyp, moov, mdat]);
+
+      expect(() => assertFormatIntegrity(m4a, 'm4a')).not.toThrow();
+      const res = verifyAudioBitstreamWithFfprobe(m4a, 'm4a');
+      expect(res.valid).toBe(true);
+      expect(res.formatName).toContain('m4a');
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -412,6 +531,58 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
         })
       ).rejects.toThrow(/File payload is empty/);
 
+      storage.stopGc();
+    });
+
+    it('accumulates small initial chunks up to 64KB for early MIME magic sniffing in pipeStreamToStorageMultipart', async () => {
+      const storage = new S3ObjectStorageService();
+      // PNG header sent across multiple tiny 4-byte chunks
+      const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const chunks = [
+        pngHeader.subarray(0, 4),
+        pngHeader.subarray(4, 8),
+        Buffer.alloc(2000, 0x41),
+      ];
+      let chunkIdx = 0;
+      const smallChunkStream = new (await import('node:stream')).Readable({
+        read() {
+          if (chunkIdx < chunks.length) {
+            this.push(chunks[chunkIdx++]);
+          } else {
+            this.push(null);
+          }
+        },
+      });
+
+      const res = await pipeStreamToStorageMultipart(smallChunkStream, {
+        filename: 'accumulated.png',
+        mimeType: 'image/png',
+        expectedTotalSize: 2008,
+        sourceExtension: 'png',
+        storage,
+      });
+
+      expect(res.totalBytes).toBe(2008);
+      expect(res.sha256Digest).toHaveLength(64);
+      storage.stopGc();
+    });
+
+    it('accepts raw Buffer directly into pipeStreamToStorageMultipart', async () => {
+      const storage = new S3ObjectStorageService();
+      const pngPayload = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        Buffer.alloc(100, 0x55),
+      ]);
+
+      const res = await pipeStreamToStorageMultipart(pngPayload, {
+        filename: 'buffer-direct.png',
+        mimeType: 'image/png',
+        expectedTotalSize: pngPayload.length,
+        sourceExtension: 'png',
+        storage,
+      });
+
+      expect(res.totalBytes).toBe(pngPayload.length);
       storage.stopGc();
     });
   });
