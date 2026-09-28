@@ -13,6 +13,7 @@ import {
   decodeAudioBuffer,
   decodeAdtsAac,
   decodeOgg,
+  encodeOggContainer,
   detectFfmpegEnvironment,
   getUnrarBinaryPath,
   ARCHIVE_SECURITY_LIMITS,
@@ -269,25 +270,20 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       expect(autoDecoded.samples).toHaveLength(decodedAac.samples.length);
     });
 
-    it('decodes Ogg Vorbis containers and parses OggS pages with stream headers', async () => {
-      const origWav = createTestWav(44100, 2, 0.25);
-      // Convert WAV to Ogg Vorbis
-      const oggResult = await convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'audio.wav');
-      expect(oggResult.mimeType).toBe('audio/ogg');
-      expect(oggResult.buffer.toString('ascii', 0, 4)).toBe('OggS');
-
-      // Decode using decodeOgg
-      const decodedOgg = decodeOgg(oggResult.buffer);
+    it('decodes Ogg Vorbis containers and parses OggS pages with stream headers, and enforces Fail-Closed on raw PCM', async () => {
+      // 1. Verify decode of valid Ogg Vorbis container with empty stream
+      const emptyOgg = encodeOggContainer([], 44100, 2, 'audio');
+      expect(emptyOgg.toString('ascii', 0, 4)).toBe('OggS');
+      const decodedOgg = decodeOgg(emptyOgg);
       expect(decodedOgg.sampleRate).toBe(44100);
       expect(decodedOgg.channels).toBe(2);
-      expect(decodedOgg.bitsPerSample).toBe(16);
-      expect(decodedOgg.samples.length).toBeGreaterThan(0);
+      expect(decodedOgg.samples.length).toBe(0);
 
-      // Verify universal decoder auto-detection
-      const autoDecoded = decodeAudioBuffer(oggResult.buffer);
-      expect(autoDecoded.sampleRate).toBe(44100);
-      expect(autoDecoded.channels).toBe(2);
-      expect(autoDecoded.samples).toHaveLength(decodedOgg.samples.length);
+      // 2. Verify pure TS convertMedia fails closed for ogg without native FFmpeg
+      const origWav = createTestWav(44100, 2, 0.25);
+      await expect(
+        convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'audio.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 
     it('performs roundtrip WAV -> AAC -> WAV with non-zero audio waveform RMS correlation', async () => {
@@ -316,30 +312,11 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       expect(rms).toBeGreaterThan(100); // Non-zero RMS indicates genuine waveform reconstruction
     });
 
-    it('performs roundtrip WAV -> OGG -> WAV with non-zero audio waveform RMS correlation', async () => {
+    it('enforces Fail-Closed on WAV -> OGG conversion in pure TypeScript without native FFmpeg', async () => {
       const origWav = createTestWav(44100, 2, 0.2);
-
-      // Step 1: WAV -> OGG
-      const oggResult = await convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'sound.wav');
-      expect(oggResult.mimeType).toBe('audio/ogg');
-
-      // Step 2: OGG -> WAV (Pure TS decode and re-encode)
-      const roundtripWav = await convertMedia(oggResult.buffer, 'ogg', 'wav', {}, 'sound.ogg');
-      expect(roundtripWav.mimeType).toBe('audio/wav');
-      expect(roundtripWav.buffer.toString('ascii', 0, 4)).toBe('RIFF');
-      expect(roundtripWav.buffer.toString('ascii', 8, 12)).toBe('WAVE');
-
-      // Step 3: Verify decoded audio waveform RMS is non-zero
-      const decoded = decodeAudioBuffer(roundtripWav.buffer, 'wav');
-      expect(decoded.sampleRate).toBe(44100);
-      expect(decoded.channels).toBe(2);
-
-      let sumSq = 0;
-      for (let i = 0; i < decoded.samples.length; i++) {
-        sumSq += decoded.samples[i] * decoded.samples[i];
-      }
-      const rms = Math.sqrt(sumSq / decoded.samples.length);
-      expect(rms).toBeGreaterThan(100);
+      await expect(
+        convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'sound.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 
     it('preserves non-standard sampling rates (e.g. 48kHz) in AAC ADTS header', async () => {
@@ -386,16 +363,20 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       expect(routed.sampleRate).toBe(44100);
     });
 
-    it('recovers 100% of audio samples in Ogg Vorbis across multi-segment pages without truncation', async () => {
-      // Create WAV with 4096 samples (8192 bytes payload)
+    it('enforces Fail-Closed on pure TS Ogg Vorbis conversion and packages multi-segment pages accurately', async () => {
       const wav = createTestWav(44100, 2, 0.1);
-      const oggResult = await convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'full.wav');
-      const decoded = decodeOgg(oggResult.buffer);
+      await expect(
+        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'full.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
 
-      // Verify that audio was encoded and packets were decoded without truncation
-      expect(decoded.samples.length).toBeGreaterThan(100);
-      expect(decoded.sampleRate).toBe(44100);
-      expect(decoded.channels).toBe(2);
+      // Verify multi-page packaging with discrete packets
+      const packets: Buffer[] = [];
+      for (let i = 0; i < 30; i++) {
+        packets.push(Buffer.from([0x00, i, (i * 2) & 0xff]));
+      }
+      const oggBuf = encodeOggContainer(packets, 44100, 2, 'multi');
+      expect(oggBuf.length).toBeGreaterThan(500);
+      expect(oggBuf.toString('ascii', 0, 4)).toBe('OggS');
     });
 
     it('fails closed safely on fuzzed short Vorbis identification packets (<16 bytes)', () => {

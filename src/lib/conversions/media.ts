@@ -137,8 +137,14 @@ export async function convertMedia(
   }
 
   // Pure TypeScript mode without native FFmpeg:
-  // For formats requiring lossy psychoacoustic compression (Opus, Vorbis, AAC, H.264 MP4),
-  // fail-closed unless explicitly allowed for low-level bitstream tests.
+  // For Opus and Vorbis/OGG: strictly fail-closed (no pure TS pseudo-quantization permitted).
+  if (tgt === 'opus' || tgt === 'ogg' || tgt === 'vorbis') {
+    throw new ConversionFailedError(
+      `Native FFmpeg engine is required for authentic lossy ${tgt.toUpperCase()} compression. Pure TypeScript mode cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).`
+    );
+  }
+
+  // For other lossy formats (AAC, H.264 MP4), fail-closed unless explicitly allowed for low-level bitstream tests.
   if (LOSSY_PSYCHOACOUSTIC_FORMATS.has(tgt) && !options.allowPureLossyBitstream) {
     throw new ConversionFailedError(
       `Native FFmpeg engine is required for authentic lossy ${tgt.toUpperCase()} compression. Pure TypeScript mode cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).`
@@ -279,12 +285,14 @@ function processMediaPure(
       break;
 
     case 'ogg':
-      outputBuffer = encodeOggContainer(pcmData, sampleRate, channels, baseName);
-      break;
+      throw new ConversionFailedError(
+        'Authentic Vorbis bitstream encoder is required. Pure TypeScript cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).'
+      );
 
     case 'opus':
-      outputBuffer = encodeOpusContainer(pcmData, sampleRate, channels, baseName);
-      break;
+      throw new ConversionFailedError(
+        'Authentic Opus bitstream encoder is required. Pure TypeScript cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).'
+      );
 
     case 'flac':
       outputBuffer = encodeFlacContainer(pcmData, sampleRate, channels);
@@ -459,16 +467,24 @@ export function encodeAacContainer(
 
 /**
  * Encodes RFC 7845 compliant Ogg Opus container stream
- * with OpusHead identification header, OpusTags comment header, and Opus audio packets.
+ * with OpusHead identification header, OpusTags comment header, and authentic Opus audio packets.
+ * If raw PCM is provided without an authentic encoder, fails closed.
  */
 export function encodeOpusContainer(
-  samples: Int16Array,
-  sampleRate: number,
-  channels: number,
-  title: string
+  packetsOrSamples: Array<Uint8Array | Buffer> | Int16Array,
+  sampleRate: number = 48000,
+  channels: number = 2,
+  title?: string
 ): Buffer {
+  if (packetsOrSamples instanceof Int16Array || !Array.isArray(packetsOrSamples)) {
+    throw new ConversionFailedError(
+      'Authentic Opus bitstream encoder is required. Pure TypeScript cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).'
+    );
+  }
   if (channels < 1 || channels > 2) {
-    throw new Error(`Unsupported channel configuration for Ogg Opus: ${channels} channels (mapping family 0 only supports mono and stereo)`);
+    throw new Error(
+      `Unsupported channel configuration for Ogg Opus: ${channels} channels (mapping family 0 only supports mono and stereo)`
+    );
   }
   const chunks: Buffer[] = [];
   const serial = 0x4f505553; // 'OPUS'
@@ -520,8 +536,8 @@ export function encodeOpusContainer(
   const page2 = createOggPage(opusTags, 0x00, 0, 2, serial);
   chunks.push(page2);
 
-  // 3. OggS Page 3+: RFC 7845 Multi-page Opus Audio Data packets (RFC 6716 TOC framing)
-  const audioPages = packageAudioPages(samples, channels, 960, 48000, 3, serial, 'opus');
+  // 3. OggS Page 3+: RFC 7845 Multi-page Opus Audio Data packets (authentic Opus packets)
+  const audioPages = packageAuthenticOpusPages(packetsOrSamples, channels, 3, serial);
   chunks.push(...audioPages);
 
   return Buffer.concat(chunks);
@@ -559,82 +575,59 @@ export function computeOggCrc(buffer: Uint8Array | Buffer): number {
 }
 
 /**
- * Common helper to packetize audio samples into discrete RFC 3533 / RFC 7845 Ogg audio pages
- * with RFC 6716 TOC byte framing (Opus) or Vorbis mode 0 packet framing, eliminating raw PCM injections.
+ * Packages discrete authentic Opus audio packets into RFC 3533 / RFC 7845 compliant
+ * Ogg audio pages with monotonic granule positions and RFC 3533 CRC-32 checksums.
+ * Eliminates fake linear-quantized PCM injections.
  */
-function packageAudioPages(
-  samples: Int16Array,
-  channels: number,
-  frameSamplesPerChannel: number,
-  sampleRate: number,
-  startSeq: number,
-  serial: number,
-  codec: 'opus' | 'vorbis'
+export function packageAuthenticOpusPages(
+  packets: Array<Uint8Array | Buffer>,
+  channels: number = 2,
+  startSeq: number = 3,
+  serial: number = 0x4f505553
 ): Buffer[] {
   const pages: Buffer[] = [];
-  const frameSamplesTotal = frameSamplesPerChannel * channels;
-  const totalSamples = samples.length;
-  let sampleOffset = 0;
   let seq = startSeq;
-  let cumulativeGranule = 0;
+  let cumulativeGranule = 0n;
 
-  if (totalSamples === 0) {
-    const emptyPayload = Buffer.from([codec === 'opus' ? (0xc0 | (channels === 2 ? 0x04 : 0x00)) : 0x00, 1]);
-    pages.push(createOggPage(emptyPayload, 0x04, 0, seq, serial));
+  if (packets.length === 0) {
+    const emptyPayload = Buffer.from([0xc0 | (channels === 2 ? 0x04 : 0x00), 0]);
+    pages.push(createOggPage(emptyPayload, 0x04, 0n, seq, serial));
     return pages;
   }
 
-  while (sampleOffset < totalSamples) {
-    const remaining = totalSamples - sampleOffset;
-    const curBlockSamples = Math.min(frameSamplesTotal, remaining);
-    const isLast = sampleOffset + curBlockSamples >= totalSamples;
+  for (let i = 0; i < packets.length; i++) {
+    const pkt = packets[i];
+    const buf = Buffer.isBuffer(pkt) ? pkt : Buffer.from(pkt);
+    const isLast = i === packets.length - 1;
     const flag = isLast ? 0x04 : 0x00;
 
-    cumulativeGranule += Math.floor(curBlockSamples / channels);
+    cumulativeGranule += 960n; // 20ms frame at 48kHz = 960 samples
 
-    // Compute block scale factor for quantization
-    let maxAbs = 0;
-    for (let i = 0; i < curBlockSamples; i++) {
-      const a = Math.abs(samples[sampleOffset + i]);
-      if (a > maxAbs) maxAbs = a;
-    }
-    const scale = Math.max(1, Math.ceil(maxAbs / 127));
-
-    // Discrete audio packet payload:
-    // Opus: RFC 6716 TOC byte (0xC0 for mono, 0xC4 for stereo) + scale factor + quantized samples
-    // Vorbis: 0x00 (mode 0 audio packet) + scale factor + quantized samples
-    const packetBuf = Buffer.alloc(2 + curBlockSamples);
-    if (codec === 'opus') {
-      const toc = 0xc0 | (channels === 2 ? 0x04 : 0x00);
-      packetBuf[0] = toc;
-    } else {
-      packetBuf[0] = 0x00;
-    }
-    packetBuf[1] = scale;
-
-    for (let i = 0; i < curBlockSamples; i++) {
-      const s = samples[sampleOffset + i];
-      packetBuf.writeInt8(Math.max(-128, Math.min(127, Math.round(s / scale))), 2 + i);
-    }
-
-    pages.push(createOggPage(packetBuf, flag, cumulativeGranule, seq++, serial));
-    sampleOffset += curBlockSamples;
+    pages.push(createOggPage(buf, flag, cumulativeGranule, seq++, serial));
   }
 
   return pages;
 }
 
 /**
- * Encodes Ogg container stream with Vorbis identification packets, setup header, and multi-page audio payload
+ * Encodes Ogg container stream with Vorbis identification packets, setup header, and multi-page audio payload.
+ * If raw PCM is provided without an authentic encoder, fails closed.
  */
 export function encodeOggContainer(
-  samples: Int16Array,
-  sampleRate: number,
-  channels: number,
+  packetsOrSamples: Array<Uint8Array | Buffer> | Int16Array,
+  sampleRate: number = 44100,
+  channels: number = 2,
   title?: string
 ): Buffer {
+  if (packetsOrSamples instanceof Int16Array || !Array.isArray(packetsOrSamples)) {
+    throw new ConversionFailedError(
+      'Authentic Vorbis bitstream encoder is required. Pure TypeScript cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).'
+    );
+  }
   if (channels < 1 || channels > 2) {
-    throw new Error(`Unsupported channel configuration for Ogg Vorbis: ${channels} channels (only mono and stereo supported)`);
+    throw new Error(
+      `Unsupported channel configuration for Ogg Vorbis: ${channels} channels (only mono and stereo supported)`
+    );
   }
   const chunks: Buffer[] = [];
   const serial = 0x12345678;
@@ -679,9 +672,22 @@ export function encodeOggContainer(
   const page3 = createOggPage(setupPacket, 0x00, 0, 3, serial);
   chunks.push(page3);
 
-  // OggS Page 4+: Multi-page Audio Data payload (discrete Vorbis audio packets)
-  const audioPages = packageAudioPages(samples, channels, 1024, sampleRate, 4, serial, 'vorbis');
-  chunks.push(...audioPages);
+  // OggS Page 4+: Discrete Vorbis packet pages
+  let seq = 4;
+  let cumulativeGranule = 0n;
+  if (packetsOrSamples.length === 0) {
+    const emptyPayload = Buffer.from([0x00, 1]);
+    chunks.push(createOggPage(emptyPayload, 0x04, 0n, seq, serial));
+  } else {
+    for (let i = 0; i < packetsOrSamples.length; i++) {
+      const pkt = packetsOrSamples[i];
+      const buf = Buffer.isBuffer(pkt) ? pkt : Buffer.from(pkt);
+      const isLast = i === packetsOrSamples.length - 1;
+      const flag = isLast ? 0x04 : 0x00;
+      cumulativeGranule += 1024n;
+      chunks.push(createOggPage(buf, flag, cumulativeGranule, seq++, serial));
+    }
+  }
 
   return Buffer.concat(chunks);
 }

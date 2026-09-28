@@ -11,6 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     ffmpeg \
+    libva-drm2 \
+    mesa-va-drivers \
+    intel-media-va-driver \
+    vainfo \
     fonts-dejavu-core \
     fonts-freefont-ttf \
     fonts-noto-cjk \
@@ -26,7 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-kor \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r easyconvert && useradd -r -g easyconvert -m -s /bin/bash easyconvert
+    && groupadd -r -f video && groupadd -r -f render && groupadd -r easyconvert \
+    && useradd -r -g easyconvert -G video,render -m -s /bin/bash easyconvert
 
 WORKDIR /app
 

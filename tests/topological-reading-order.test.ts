@@ -13,48 +13,35 @@ import {
 } from '../src/lib/conversions/ocr-pdf-combiner';
 
 /**
- * Extracts and decompresses all stream contents from a PDF buffer to inspect raw text operators.
+ * Unpacks deflate-compressed PDF stream payloads to inspect raw text operators.
  */
 function extractDecompressedPdfStreams(pdfBuffer: Buffer): string {
-  const binary = pdfBuffer.toString('binary');
-  let combined = '';
-  const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
-  let match: RegExpExecArray | null;
-  while ((match = streamRegex.exec(binary)) !== null) {
-    const raw = Buffer.from(match[1], 'binary');
-    try {
-      combined += '\n' + zlib.inflateSync(raw).toString('latin1');
-    } catch {
+  const rawStr = pdfBuffer.toString('binary');
+  const streamMarkers = rawStr.split('endstream');
+  const payloads: string[] = [];
+
+  for (const chunk of streamMarkers) {
+    const sIdx = chunk.indexOf('stream\r\n');
+    const start = sIdx >= 0 ? sIdx + 8 : chunk.indexOf('stream\n') + 7;
+    if (start >= 7 && start < chunk.length) {
+      const slice = Buffer.from(chunk.substring(start), 'binary');
       try {
-        combined += '\n' + zlib.inflateRawSync(raw).toString('latin1');
+        payloads.push(zlib.inflateSync(slice).toString('latin1'));
       } catch {
-        combined += '\n' + raw.toString('latin1');
+        payloads.push(slice.toString('latin1'));
       }
     }
   }
 
-  // Also decode hex string literals like <48656C6C6F> into human-readable characters
-  const decodedHex = combined.replace(/<([0-9A-Fa-f]{2,})>/g, (_, hex) => {
+  const combined = payloads.join('\n');
+  return combined.replace(/<([0-9A-Fa-f]+)>/g, (_match, hex) => {
     try {
-      if (hex.length % 2 !== 0) hex = '0' + hex;
-      // Handle potential UTF-16BE / CID hex encoding (4 hex chars per glyph)
-      const buf = Buffer.from(hex, 'hex');
-      if (buf.length >= 2 && buf[0] === 0) {
-        // UTF-16BE
-        let s = '';
-        for (let i = 0; i < buf.length; i += 2) {
-          const code = (buf[i] << 8) | buf[i + 1];
-          if (code > 0) s += String.fromCharCode(code);
-        }
-        return s;
-      }
-      return buf.toString('latin1');
+      const bytes = Buffer.from(hex.length % 2 !== 0 ? '0' + hex : hex, 'hex');
+      return bytes.toString('utf-8');
     } catch {
       return hex;
     }
   });
-
-  return combined + '\n' + decodedHex;
 }
 
 describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich PDFs', () => {
@@ -672,6 +659,284 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
 
       expect(posLeft).toBeGreaterThanOrEqual(0);
       expect(posRight).toBeGreaterThan(posLeft);
+    });
+  });
+
+  // =========================================================================
+  // 8. Skew / Rotation Tolerance (Real-World Scanner Tilts)
+  // =========================================================================
+  describe('8. Skew / Rotation Tolerance', () => {
+    it('tolerates 2-degree scanner skew across narrow 30px gutters without interleaving', () => {
+      const rad = (2 * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+
+      const rotate = (x: number, y: number): { x: number; y: number } => {
+        const dx = x - 300;
+        const dy = y - 400;
+        return {
+          x: 300 + dx * cos - dy * sin,
+          y: 400 + dx * sin + dy * cos,
+        };
+      };
+
+      // Col 1: width 210, center at x=155 (x in [50, 260])
+      // Gutter: x in [260, 290] (width 30)
+      // Col 2: width 210, center at x=395 (x in [290, 500])
+      const col1: OcrLineBlock[] = [100, 200, 300, 400, 500, 600, 700].map((y, i) => {
+        const c = rotate(155, y);
+        return {
+          text: `Col1 Line ${i + 1}`,
+          bbox: { x: c.x - 105, y: c.y - 7, width: 210, height: 14, rotation: 2 },
+          words: [],
+        };
+      });
+
+      const col2: OcrLineBlock[] = [100, 200, 300, 400, 500, 600, 700].map((y, i) => {
+        const c = rotate(395, y);
+        return {
+          text: `Col2 Line ${i + 1}`,
+          bbox: { x: c.x - 105, y: c.y - 7, width: 210, height: 14, rotation: 2 },
+          words: [],
+        };
+      });
+
+      // Interleaved input: C1L1, C2L1, C1L2, C2L2...
+      const interleaved: OcrLineBlock[] = [];
+      for (let i = 0; i < 7; i++) {
+        interleaved.push(col1[i], col2[i]);
+      }
+
+      const gutters = detectColumnGutters(interleaved);
+      expect(gutters.length).toBe(1);
+      expect(gutters[0].width).toBeGreaterThanOrEqual(25);
+
+      const sorted = sortLineBlocksTopological(interleaved);
+      const expectedTexts = [
+        ...col1.map((b) => b.text),
+        ...col2.map((b) => b.text),
+      ];
+      expect(sorted.map((b) => b.text)).toEqual(expectedTexts);
+    });
+
+    it('estimates skew from word baselines alone and avoids double de-skewing artifacts', () => {
+      const rad = (3 * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+
+      const rotate = (x: number, y: number): { x: number; y: number } => {
+        const dx = x - 300;
+        const dy = y - 400;
+        return {
+          x: 300 + dx * cos - dy * sin,
+          y: 400 + dx * sin + dy * cos,
+        };
+      };
+
+      // Col 1: center x=155, Col 2: center x=395
+      // No explicit bbox.rotation property; skew must be derived from word baselines
+      const col1: OcrLineBlock[] = [100, 220, 340, 460, 580, 700].map((y, i) => {
+        const c1 = rotate(80, y);
+        const c2 = rotate(230, y);
+        const cMid = rotate(155, y);
+        return {
+          text: `BaselineCol1 WordA WordB ${i + 1}`,
+          bbox: { x: cMid.x - 100, y: cMid.y - 7, width: 200, height: 14 },
+          words: [
+            { text: 'BaselineCol1', bbox: { x: c1.x - 25, y: c1.y - 7, width: 50, height: 14 } },
+            { text: 'WordB', bbox: { x: c2.x - 25, y: c2.y - 7, width: 50, height: 14 } },
+          ],
+        };
+      });
+
+      const col2: OcrLineBlock[] = [100, 220, 340, 460, 580, 700].map((y, i) => {
+        const c1 = rotate(320, y);
+        const c2 = rotate(470, y);
+        const cMid = rotate(395, y);
+        return {
+          text: `BaselineCol2 WordA WordB ${i + 1}`,
+          bbox: { x: cMid.x - 100, y: cMid.y - 7, width: 200, height: 14 },
+          words: [
+            { text: 'BaselineCol2', bbox: { x: c1.x - 25, y: c1.y - 7, width: 50, height: 14 } },
+            { text: 'WordB', bbox: { x: c2.x - 25, y: c2.y - 7, width: 50, height: 14 } },
+          ],
+        };
+      });
+
+      const interleaved: OcrLineBlock[] = [];
+      for (let i = 0; i < 6; i++) {
+        interleaved.push(col1[i], col2[i]);
+      }
+
+      const sorted = sortLineBlocksTopological(interleaved);
+      const expectedTexts = [
+        ...col1.map((b) => b.text),
+        ...col2.map((b) => b.text),
+      ];
+      expect(sorted.map((b) => b.text)).toEqual(expectedTexts);
+    });
+  });
+
+  // =========================================================================
+  // 9. Multi-Line Gutter Bridging (Equations, Authors, Horizontal Rules)
+  // =========================================================================
+  describe('9. Multi-Line Gutter Bridging Resilience', () => {
+    it('detects gutters and maintains topological order despite bridging authors and equations', () => {
+      const col1 = Array.from({ length: 4 }, (_, i) => ({
+        text: `Col1 Paragraph Line ${i + 1}`,
+        bbox: { x: 50, y: 100 + i * 30, width: 200, height: 14 },
+        words: [],
+      }));
+      const col2 = Array.from({ length: 4 }, (_, i) => ({
+        text: `Col2 Paragraph Line ${i + 1}`,
+        bbox: { x: 300, y: 100 + i * 30, width: 200, height: 14 },
+        words: [],
+      }));
+
+      // Spanning author header at top (width 340 out of 450 = 75.5% of text width)
+      const authors: OcrLineBlock = {
+        text: 'Authors: Alice, Bob, and Charlie',
+        bbox: { x: 50, y: 30, width: 340, height: 14 },
+        words: [],
+      };
+
+      // Spanning equation in the middle (width 300, bridging across gutter [250, 300])
+      const equation: OcrLineBlock = {
+        text: 'Equation 1: E = mc^2 + (p * c)^2',
+        bbox: { x: 80, y: 145, width: 300, height: 14 },
+        words: [],
+      };
+
+      // Interleaved input
+      const blocks: OcrLineBlock[] = [
+        authors,
+        col1[0],
+        col2[0],
+        col1[1],
+        col2[1],
+        equation,
+        col1[2],
+        col2[2],
+        col1[3],
+        col2[3],
+      ];
+
+      const gutters = detectColumnGutters(blocks);
+      expect(gutters.length).toBe(1);
+
+      const sorted = sortLineBlocksTopological(blocks);
+      const sortedTexts = sorted.map((b) => b.text);
+
+      expect(sortedTexts).toEqual([
+        'Authors: Alice, Bob, and Charlie',
+        'Col1 Paragraph Line 1',
+        'Col1 Paragraph Line 2',
+        'Col2 Paragraph Line 1',
+        'Col2 Paragraph Line 2',
+        'Equation 1: E = mc^2 + (p * c)^2',
+        'Col1 Paragraph Line 3',
+        'Col1 Paragraph Line 4',
+        'Col2 Paragraph Line 3',
+        'Col2 Paragraph Line 4',
+      ]);
+    });
+  });
+
+  // =========================================================================
+  // 10. Vertical CJK Writing Mode
+  // =========================================================================
+  describe('10. Vertical CJK Writing Mode', () => {
+    it('orders columns right-to-left for authentic vertical CJK document layouts', () => {
+      // 3 vertical columns:
+      // In vertical writing mode: height >> width (e.g. width=20, height=180)
+      // Col 1 (leftmost): x=100
+      // Col 2 (middle): x=250
+      // Col 3 (rightmost): x=400
+      // Authentic CJK reading order proceeds RIGHT-TO-LEFT: Col 3 -> Col 2 -> Col 1!
+      const col1Left: OcrLineBlock[] = [
+        { text: '左段第一行 (Left Col Line 1)', bbox: { x: 100, y: 100, width: 20, height: 180 }, words: [] },
+      ];
+      const col2Mid: OcrLineBlock[] = [
+        { text: '中段第一行 (Mid Col Line 1)', bbox: { x: 250, y: 100, width: 20, height: 180 }, words: [] },
+      ];
+      const col3Right: OcrLineBlock[] = [
+        { text: '右段第一行 (Right Col Line 1)', bbox: { x: 400, y: 100, width: 20, height: 180 }, words: [] },
+      ];
+
+      // Input given in left-to-right order
+      const input = [col1Left[0], col2Mid[0], col3Right[0]];
+
+      const sorted = sortLineBlocksTopological(input);
+      const sortedTexts = sorted.map((b) => b.text);
+
+      // Must be ordered right-to-left: Right -> Mid -> Left
+      expect(sortedTexts).toEqual([
+        '右段第一行 (Right Col Line 1)',
+        '中段第一行 (Mid Col Line 1)',
+        '左段第一行 (Left Col Line 1)',
+      ]);
+    });
+  });
+
+  // =========================================================================
+  // 11. High-DPI Scanned Target (> 10,000 px coordinate space)
+  // =========================================================================
+  describe('11. Ultra-High Resolution Coordinate Space', () => {
+    it('handles high-DPI document scans (> 10000 px) without coordinate compression or loss', () => {
+      // Document coordinates scaled to 12,000 px width
+      const col1: OcrLineBlock[] = [
+        { text: 'HighDPI Col 1 Line 1', bbox: { x: 1000, y: 2000, width: 4000, height: 300 }, words: [] },
+        { text: 'HighDPI Col 1 Line 2', bbox: { x: 1000, y: 2600, width: 4000, height: 300 }, words: [] },
+      ];
+      const col2: OcrLineBlock[] = [
+        { text: 'HighDPI Col 2 Line 1', bbox: { x: 6000, y: 2000, width: 4000, height: 300 }, words: [] },
+        { text: 'HighDPI Col 2 Line 2', bbox: { x: 6000, y: 2600, width: 4000, height: 300 }, words: [] },
+      ];
+
+      const interleaved = [col1[0], col2[0], col1[1], col2[1]];
+      const gutters = detectColumnGutters(interleaved);
+      expect(gutters.length).toBe(1);
+      expect(gutters[0].width).toBeGreaterThanOrEqual(800);
+
+      const sorted = sortLineBlocksTopological(interleaved);
+      expect(sorted.map((b) => b.text)).toEqual([
+        'HighDPI Col 1 Line 1',
+        'HighDPI Col 1 Line 2',
+        'HighDPI Col 2 Line 1',
+        'HighDPI Col 2 Line 2',
+      ]);
+    });
+  });
+
+  // =========================================================================
+  // 12. Scale Factor Robustness & Negative Value Guarding
+  // =========================================================================
+  describe('12. Scale Factor and Boundary Robustness', () => {
+    it('gracefully handles non-positive or non-finite scale factors in injectInvisibleTextLayer', async () => {
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([600, 400]);
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+      const ocrResult: OcrResult = {
+        text: 'Robustness Test Text',
+        confidence: 0.95,
+        wordCount: 3,
+        lines: ['Robustness Test Text'],
+        lineBlocks: [
+          {
+            text: 'Robustness Test Text',
+            bbox: { x: 50, y: 50, width: 200, height: 14 },
+            words: [{ text: 'Robustness Test Text', bbox: { x: 50, y: 50, width: 200, height: 14 } }],
+          },
+        ],
+      };
+
+      // Non-positive and non-finite scale values
+      expect(() => injectInvisibleTextLayer(page, font, ocrResult, 0, 0)).not.toThrow();
+      expect(() => injectInvisibleTextLayer(page, font, ocrResult, -1.5, NaN)).not.toThrow();
+
+      const pdfBytes = await pdfDoc.save();
+      expect(pdfBytes.length).toBeGreaterThan(0);
     });
   });
 });

@@ -724,16 +724,415 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
 }
 
 /**
- * Adaptive Homogeneity-Directed (AHD) Bayer CFA demosaicing.
- * Evaluates directional local homogeneity in color difference space (R - G, B - G) across
- * horizontal and vertical filter banks, selecting the edge direction that maximizes homogeneity.
+ * Adaptive Homogeneity-Directed (AHD) Bayer CFA demosaicing (Hirakawa & Parks, 2005).
+ * Builds two complete directional color field estimates (Horizontal and Vertical),
+ * projects them into perceptual CIELAB (L*, a*, b*) color space, and computes directional
+ * homogeneity maps to choose the optimal orientation per pixel, followed by artifact suppression.
  */
 export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
   data: Buffer;
   width: number;
   height: number;
 } {
-  return demosaicAmazeBayerCfa(sensor);
+  const { width, height, pattern } = sensor;
+  const rawInput = sensor.data ?? (sensor as any).rawData;
+  if (!rawInput || rawInput.length === 0) {
+    throw new Error('Bayer sensor buffer empty or undefined.');
+  }
+
+  const bitDepth = sensor.bitsPerSample ?? (sensor as any).bitDepth ?? (rawInput instanceof Uint16Array ? 16 : 8);
+  const maxVal = (1 << bitDepth) - 1;
+
+  const mirrorCoord = (c: number, max: number): number => {
+    if (c < 0) return -c;
+    if (c >= max) return 2 * max - c - 2;
+    return c;
+  };
+
+  const isUint16Array = rawInput instanceof Uint16Array;
+  const is16BitBuffer = !isUint16Array && bitDepth > 8;
+
+  const getPixel = (x: number, y: number): number => {
+    const mx = mirrorCoord(x, width);
+    const my = mirrorCoord(y, height);
+    const offset = my * width + mx;
+
+    if (isUint16Array) {
+      return (rawInput[offset] / maxVal) * 255.0;
+    } else if (is16BitBuffer) {
+      const val = (rawInput as Buffer).readUInt16LE(offset * 2);
+      return (val / maxVal) * 255.0;
+    } else {
+      return (rawInput[offset] / maxVal) * 255.0;
+    }
+  };
+
+  // Determine CFA channel layout
+  const pUpper = pattern.toUpperCase();
+  const getCfaChannel = (x: number, y: number): 'R' | 'G1' | 'G2' | 'B' => {
+    const row = y % 2;
+    const col = x % 2;
+    if (pUpper === 'RGGB') {
+      if (row === 0) return col === 0 ? 'R' : 'G1';
+      return col === 0 ? 'G2' : 'B';
+    } else if (pUpper === 'BGGR') {
+      if (row === 0) return col === 0 ? 'B' : 'G1';
+      return col === 0 ? 'G2' : 'R';
+    } else if (pUpper === 'GRBG') {
+      if (row === 0) return col === 0 ? 'G1' : 'R';
+      return col === 0 ? 'B' : 'G2';
+    } else if (pUpper === 'GBRG') {
+      if (row === 0) return col === 0 ? 'G1' : 'B';
+      return col === 0 ? 'R' : 'G2';
+    }
+    return 'G1';
+  };
+
+  const totalPixels = width * height;
+
+  // Step 1: Directional Green Interpolation with Laplacian second-derivative correction
+  const gH = new Float32Array(totalPixels);
+  const gV = new Float32Array(totalPixels);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const ch = getCfaChannel(x, y);
+      const p = getPixel(x, y);
+
+      if (ch === 'G1' || ch === 'G2') {
+        gH[idx] = p;
+        gV[idx] = p;
+      } else {
+        // Pixel is R or B
+        // Horizontal interpolation: G_H = (G(x-1) + G(x+1))/2 + (2*p(x) - p(x-2) - p(x+2))/4
+        const gL = getPixel(x - 1, y);
+        const gR = getPixel(x + 1, y);
+        const pLL = getPixel(x - 2, y);
+        const pRR = getPixel(x + 2, y);
+        const interpGH = (gL + gR) * 0.5 + (2.0 * p - pLL - pRR) * 0.25;
+        gH[idx] = Math.max(0, Math.min(255, interpGH));
+
+        // Vertical interpolation: G_V = (G(y-1) + G(y+1))/2 + (2*p(y) - p(y-2) - p(y+2))/4
+        const gT = getPixel(x, y - 1);
+        const gB = getPixel(x, y + 1);
+        const pTT = getPixel(x, y - 2);
+        const pBB = getPixel(x, y + 2);
+        const interpGV = (gT + gB) * 0.5 + (2.0 * p - pTT - pBB) * 0.25;
+        gV[idx] = Math.max(0, Math.min(255, interpGV));
+      }
+    }
+  }
+
+  // Step 2: Complete Red and Blue interpolation for both H and V fields via color difference
+  const rH = new Float32Array(totalPixels);
+  const bH = new Float32Array(totalPixels);
+  const rV = new Float32Array(totalPixels);
+  const bV = new Float32Array(totalPixels);
+
+  const krH = new Float32Array(totalPixels);
+  const kbH = new Float32Array(totalPixels);
+  const krV = new Float32Array(totalPixels);
+  const kbV = new Float32Array(totalPixels);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const ch = getCfaChannel(x, y);
+      const p = getPixel(x, y);
+      if (ch === 'R') {
+        krH[idx] = p - gH[idx];
+        krV[idx] = p - gV[idx];
+      } else if (ch === 'B') {
+        kbH[idx] = p - gH[idx];
+        kbV[idx] = p - gV[idx];
+      }
+    }
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const ch = getCfaChannel(x, y);
+      const p = getPixel(x, y);
+
+      // Interpolate R
+      if (ch === 'R') {
+        rH[idx] = p;
+        rV[idx] = p;
+      } else {
+        let diffRH = 0;
+        let diffRV = 0;
+        const nL = krH[y * width + mirrorCoord(x - 1, width)];
+        const nR = krH[y * width + mirrorCoord(x + 1, width)];
+        const nT = krH[mirrorCoord(y - 1, height) * width + x];
+        const nB = krH[mirrorCoord(y + 1, height) * width + x];
+
+        const nTL = krH[mirrorCoord(y - 1, height) * width + mirrorCoord(x - 1, width)];
+        const nTR = krH[mirrorCoord(y - 1, height) * width + mirrorCoord(x + 1, width)];
+        const nBL = krH[mirrorCoord(y + 1, height) * width + mirrorCoord(x - 1, width)];
+        const nBR = krH[mirrorCoord(y + 1, height) * width + mirrorCoord(x + 1, width)];
+
+        const vTL = krV[mirrorCoord(y - 1, height) * width + mirrorCoord(x - 1, width)];
+        const vTR = krV[mirrorCoord(y - 1, height) * width + mirrorCoord(x + 1, width)];
+        const vBL = krV[mirrorCoord(y + 1, height) * width + mirrorCoord(x - 1, width)];
+        const vBR = krV[mirrorCoord(y + 1, height) * width + mirrorCoord(x + 1, width)];
+
+        const vL = krV[y * width + mirrorCoord(x - 1, width)];
+        const vR = krV[y * width + mirrorCoord(x + 1, width)];
+        const vT = krV[mirrorCoord(y - 1, height) * width + x];
+        const vB = krV[mirrorCoord(y + 1, height) * width + x];
+
+        if (ch === 'B') {
+          diffRH = (nTL + nTR + nBL + nBR) * 0.25;
+          diffRV = (vTL + vTR + vBL + vBR) * 0.25;
+        } else {
+          const isRHoriz = getCfaChannel(mirrorCoord(x - 1, width), y) === 'R';
+          if (isRHoriz) {
+            diffRH = (nL + nR) * 0.5;
+            diffRV = (vL + vR) * 0.5;
+          } else {
+            diffRH = (nT + nB) * 0.5;
+            diffRV = (vT + vB) * 0.5;
+          }
+        }
+        rH[idx] = Math.max(0, Math.min(255, gH[idx] + diffRH));
+        rV[idx] = Math.max(0, Math.min(255, gV[idx] + diffRV));
+      }
+
+      // Interpolate B
+      if (ch === 'B') {
+        bH[idx] = p;
+        bV[idx] = p;
+      } else {
+        let diffBH = 0;
+        let diffBV = 0;
+        const nL = kbH[y * width + mirrorCoord(x - 1, width)];
+        const nR = kbH[y * width + mirrorCoord(x + 1, width)];
+        const nT = kbH[mirrorCoord(y - 1, height) * width + x];
+        const nB = kbH[mirrorCoord(y + 1, height) * width + x];
+
+        const nTL = kbH[mirrorCoord(y - 1, height) * width + mirrorCoord(x - 1, width)];
+        const nTR = kbH[mirrorCoord(y - 1, height) * width + mirrorCoord(x + 1, width)];
+        const nBL = kbH[mirrorCoord(y + 1, height) * width + mirrorCoord(x - 1, width)];
+        const nBR = kbH[mirrorCoord(y + 1, height) * width + mirrorCoord(x + 1, width)];
+
+        const vTL = kbV[mirrorCoord(y - 1, height) * width + mirrorCoord(x - 1, width)];
+        const vTR = kbV[mirrorCoord(y - 1, height) * width + mirrorCoord(x + 1, width)];
+        const vBL = kbV[mirrorCoord(y + 1, height) * width + mirrorCoord(x - 1, width)];
+        const vBR = kbV[mirrorCoord(y + 1, height) * width + mirrorCoord(x + 1, width)];
+
+        const vL = kbV[y * width + mirrorCoord(x - 1, width)];
+        const vR = kbV[y * width + mirrorCoord(x + 1, width)];
+        const vT = kbV[mirrorCoord(y - 1, height) * width + x];
+        const vB = kbV[mirrorCoord(y + 1, height) * width + x];
+
+        if (ch === 'R') {
+          diffBH = (nTL + nTR + nBL + nBR) * 0.25;
+          diffBV = (vTL + vTR + vBL + vBR) * 0.25;
+        } else {
+          const isBHoriz = getCfaChannel(mirrorCoord(x - 1, width), y) === 'B';
+          if (isBHoriz) {
+            diffBH = (nL + nR) * 0.5;
+            diffBV = (vL + vR) * 0.5;
+          } else {
+            diffBH = (nT + nB) * 0.5;
+            diffBV = (vT + vB) * 0.5;
+          }
+        }
+        bH[idx] = Math.max(0, Math.min(255, gH[idx] + diffBH));
+        bV[idx] = Math.max(0, Math.min(255, gV[idx] + diffBV));
+      }
+    }
+  }
+
+  // Step 3: CIELAB (L*, a*, b*) Conversion for H and V field estimates
+  const labH_L = new Float32Array(totalPixels);
+  const labH_A = new Float32Array(totalPixels);
+  const labH_B = new Float32Array(totalPixels);
+
+  const labV_L = new Float32Array(totalPixels);
+  const labV_A = new Float32Array(totalPixels);
+  const labV_B = new Float32Array(totalPixels);
+
+  const rgb2lab = (rByte: number, gByte: number, bByte: number) => {
+    const toLinear = (c: number) => {
+      const v = c / 255.0;
+      return v > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92;
+    };
+    const rL = toLinear(rByte);
+    const gL = toLinear(gByte);
+    const bL = toLinear(bByte);
+
+    const X = (0.4124564 * rL + 0.3575761 * gL + 0.1804375 * bL) / 0.95047;
+    const Y = (0.2126729 * rL + 0.7151522 * gL + 0.0721750 * bL) / 1.0;
+    const Z = (0.0193339 * rL + 0.1191920 * gL + 0.9503041 * bL) / 1.08883;
+
+    const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16.0 / 116.0);
+    const fx = f(X);
+    const fy = f(Y);
+    const fz = f(Z);
+
+    const L = 116.0 * fy - 16.0;
+    const a = 500.0 * (fx - fy);
+    const b = 200.0 * (fy - fz);
+    return [L, a, b];
+  };
+
+  for (let i = 0; i < totalPixels; i++) {
+    const [lH, aH, bHVal] = rgb2lab(rH[i], gH[i], bH[i]);
+    labH_L[i] = lH;
+    labH_A[i] = aH;
+    labH_B[i] = bHVal;
+
+    const [lV, aV, bVVal] = rgb2lab(rV[i], gV[i], bV[i]);
+    labV_L[i] = lV;
+    labV_A[i] = aV;
+    labV_B[i] = bVVal;
+  }
+
+  // Step 4: Directional Homogeneity Metric in CIELAB Color Space
+  const finalR = new Float32Array(totalPixels);
+  const finalG = new Float32Array(totalPixels);
+  const finalB = new Float32Array(totalPixels);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+
+      let homH = 0;
+      let homV = 0;
+
+      const cHL = labH_L[idx];
+      const cHA = labH_A[idx];
+      const cHB = labH_B[idx];
+
+      const cVL = labV_L[idx];
+      const cVA = labV_A[idx];
+      const cVB = labV_B[idx];
+
+      for (let dy = -2; dy <= 2; dy++) {
+        const ny = mirrorCoord(y + dy, height);
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = mirrorCoord(x + dx, width);
+          const nIdx = ny * width + nx;
+
+          const distSq = dx * dx + dy * dy;
+          const spatialWeight = 1.0 / (1.0 + distSq * 0.25);
+
+          const dEL_H = labH_L[nIdx] - cHL;
+          const dEA_H = labH_A[nIdx] - cHA;
+          const dEB_H = labH_B[nIdx] - cHB;
+          const deltaE_H = Math.hypot(dEL_H, dEA_H, dEB_H);
+
+          const dEL_V = labV_L[nIdx] - cVL;
+          const dEA_V = labV_A[nIdx] - cVA;
+          const dEB_V = labV_B[nIdx] - cVB;
+          const deltaE_V = Math.hypot(dEL_V, dEA_V, dEB_V);
+
+          homH += spatialWeight / (1.0 + deltaE_H);
+          homV += spatialWeight / (1.0 + deltaE_V);
+        }
+      }
+
+      if (homH >= homV) {
+        finalR[idx] = rH[idx];
+        finalG[idx] = gH[idx];
+        finalB[idx] = bH[idx];
+      } else {
+        finalR[idx] = rV[idx];
+        finalG[idx] = gV[idx];
+        finalB[idx] = bV[idx];
+      }
+    }
+  }
+
+  // Step 5: Artifact Removal Filter via 3x3 Median Filter on Color Differences (R - G, B - G)
+  const diffR = new Float32Array(totalPixels);
+  const diffB = new Float32Array(totalPixels);
+  for (let i = 0; i < totalPixels; i++) {
+    diffR[i] = finalR[i] - finalG[i];
+    diffB[i] = finalB[i] - finalG[i];
+  }
+
+  const filteredR = new Float32Array(totalPixels);
+  const filteredB = new Float32Array(totalPixels);
+
+  const window9R = new Float32Array(9);
+  const window9B = new Float32Array(9);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      let wIdx = 0;
+
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = mirrorCoord(y + dy, height);
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = mirrorCoord(x + dx, width);
+          const nIdx = ny * width + nx;
+          window9R[wIdx] = diffR[nIdx];
+          window9B[wIdx] = diffB[nIdx];
+          wIdx++;
+        }
+      }
+
+      window9R.sort();
+      window9B.sort();
+      const medR = window9R[4];
+      const medB = window9B[4];
+
+      filteredR[idx] = Math.max(0, Math.min(255, finalG[idx] + medR));
+      filteredB[idx] = Math.max(0, Math.min(255, finalG[idx] + medB));
+    }
+  }
+
+  // Step 6: White Balance, Color Matrix, and sRGB Gamma Transfer Function
+  const {
+    whiteBalance = [1.0, 1.0, 1.0],
+    colorMatrix,
+    applySrgbGamma = true,
+  } = sensor;
+  const [rWb, gWb, bWb] = whiteBalance;
+  const mat = colorMatrix;
+
+  const rgbBuffer = Buffer.alloc(width * height * 3);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const bufIdx = idx * 3;
+
+      let rLin = (filteredR[idx] * rWb) / 255.0;
+      let gLin = (finalG[idx] * gWb) / 255.0;
+      let bLin = (filteredB[idx] * bWb) / 255.0;
+
+      if (mat) {
+        const rT = mat[0] * rLin + mat[1] * gLin + mat[2] * bLin;
+        const gT = mat[3] * rLin + mat[4] * gLin + mat[5] * bLin;
+        const bT = mat[6] * rLin + mat[7] * gLin + mat[8] * bLin;
+        rLin = Math.max(0, rT);
+        gLin = Math.max(0, gT);
+        bLin = Math.max(0, bT);
+      }
+
+      if (applySrgbGamma) {
+        rgbBuffer[bufIdx] = Math.max(0, Math.min(255, Math.round(applyIec61966SrgbGamma(rLin) * 255)));
+        rgbBuffer[bufIdx + 1] = Math.max(0, Math.min(255, Math.round(applyIec61966SrgbGamma(gLin) * 255)));
+        rgbBuffer[bufIdx + 2] = Math.max(0, Math.min(255, Math.round(applyIec61966SrgbGamma(bLin) * 255)));
+      } else {
+        rgbBuffer[bufIdx] = Math.max(0, Math.min(255, Math.round(rLin * 255)));
+        rgbBuffer[bufIdx + 1] = Math.max(0, Math.min(255, Math.round(gLin * 255)));
+        rgbBuffer[bufIdx + 2] = Math.max(0, Math.min(255, Math.round(bLin * 255)));
+      }
+    }
+  }
+
+  return {
+    data: rgbBuffer,
+    width,
+    height,
+  };
 }
 
 /**
