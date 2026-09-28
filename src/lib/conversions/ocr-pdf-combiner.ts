@@ -206,6 +206,24 @@ export function sortLineBlocksTopological(
     return blocks ? [...blocks] : [];
   }
 
+  // Separate blocks with non-finite coordinates to prevent coordinate corruption
+  const isFiniteBbox = (b: OcrLineBlock): boolean =>
+    Boolean(
+      b &&
+      b.bbox &&
+      Number.isFinite(b.bbox.x) &&
+      Number.isFinite(b.bbox.y) &&
+      Number.isFinite(b.bbox.width) &&
+      Number.isFinite(b.bbox.height)
+    );
+
+  const validBlocks = blocks.filter(isFiniteBbox);
+  const invalidBlocks = blocks.filter((b) => !isFiniteBbox(b));
+
+  if (validBlocks.length <= 1) {
+    return [...validBlocks, ...invalidBlocks];
+  }
+
   // Helper to sort lines within a single column / cluster deterministically
   const sortIntraColumn = (lines: OcrLineBlock[]): OcrLineBlock[] => {
     if (lines.length <= 1) return [...lines];
@@ -243,12 +261,11 @@ export function sortLineBlocksTopological(
   let maxX = -Infinity;
   let maxY = -Infinity;
 
-  for (const b of blocks) {
-    if (!b || !b.bbox) continue;
-    const x = Number.isFinite(b.bbox.x) ? b.bbox.x : 0;
-    const y = Number.isFinite(b.bbox.y) ? b.bbox.y : 0;
-    const width = Number.isFinite(b.bbox.width) && b.bbox.width > 0 ? b.bbox.width : 0;
-    const height = Number.isFinite(b.bbox.height) && b.bbox.height > 0 ? b.bbox.height : 0;
+  for (const b of validBlocks) {
+    const x = b.bbox.x;
+    const y = b.bbox.y;
+    const width = Math.max(0, b.bbox.width);
+    const height = Math.max(0, b.bbox.height);
 
     if (x < minX) minX = x;
     if (y < minY) minY = y;
@@ -260,17 +277,17 @@ export function sortLineBlocksTopological(
   const docHeight = Math.max(0, maxY - minY);
 
   if (docWidth <= 0 || docHeight <= 0) {
-    return sortIntraColumn(blocks);
+    return [...sortIntraColumn(validBlocks), ...invalidBlocks];
   }
 
   // 2. Detect column gutters
   // Adaptive minColGap based on document width: typically 15pt, or at least 2.5% of docWidth
   const minColGap = Math.max(12, Math.min(36, docWidth * 0.025));
-  const gutters = detectColumnGutters(blocks, minColGap, { minX, maxX, docWidth });
+  const gutters = detectColumnGutters(validBlocks, minColGap, { minX, maxX, docWidth });
 
   // If no column gutters were found, this is a single-column layout
   if (gutters.length === 0) {
-    return sortIntraColumn(blocks);
+    return [...sortIntraColumn(validBlocks), ...invalidBlocks];
   }
 
   // 3. Multi-column document handling
@@ -299,7 +316,7 @@ export function sortLineBlocksTopological(
   const spanningBlocks: OcrLineBlock[] = [];
   const columnBlocks: OcrLineBlock[][] = Array.from({ length: columnCount }, () => []);
 
-  for (const b of blocks) {
+  for (const b of validBlocks) {
     if (isSpanning(b)) {
       spanningBlocks.push(b);
     } else {
@@ -320,7 +337,7 @@ export function sortLineBlocksTopological(
   const allColLines = columnBlocks.flat();
   if (allColLines.length === 0) {
     // Only spanning blocks
-    return sortIntraColumn(blocks);
+    return [...sortIntraColumn(validBlocks), ...invalidBlocks];
   }
 
   // Sort spanning blocks top-to-bottom
@@ -383,33 +400,53 @@ export function sortLineBlocksTopological(
       }
     }
 
-    // Slice 0: above the first band
+    // Assign each block in columnBlocks to exactly one slice:
+    // A block is placed in slice i before the first band whose bottom is below its center,
+    // or in the trailing slice (index bands.length) if none qualifies.
+    const sliceCount = bands.length + 1;
+    const slices: OcrLineBlock[][][] = Array.from({ length: sliceCount }, () =>
+      Array.from({ length: columnCount }, () => [])
+    );
+
+    const getSliceIndex = (b: OcrLineBlock): number => {
+      const midY = b.bbox.y + b.bbox.height / 2;
+      for (let i = 0; i < bands.length; i++) {
+        if (midY < bands[i].bottom) {
+          return i;
+        }
+      }
+      return bands.length;
+    };
+
     for (let c = 0; c < columnCount; c++) {
-      const sliceLines = columnBlocks[c].filter(
-        (b) => b.bbox.y + b.bbox.height / 2 < bands[0].top
-      );
-      result.push(...sortIntraColumn(sliceLines));
+      for (const b of columnBlocks[c]) {
+        const sIdx = getSliceIndex(b);
+        slices[sIdx][c].push(b);
+      }
     }
 
-    // Iterate through bands and intermediate slices
+    // Assemble result:
+    // Slice 0 (above/before band 0)
+    for (let c = 0; c < columnCount; c++) {
+      result.push(...sortIntraColumn(slices[0][c]));
+    }
+
+    // For each band: band blocks, then the slice below it
     for (let i = 0; i < bands.length; i++) {
       result.push(...sortIntraColumn(bands[i].blocks));
-
-      const nextTop = i + 1 < bands.length ? bands[i + 1].top : Infinity;
-      const currentBottom = bands[i].bottom;
-
       for (let c = 0; c < columnCount; c++) {
-        const sliceLines = columnBlocks[c].filter((b) => {
-          const midY = b.bbox.y + b.bbox.height / 2;
-          return midY >= currentBottom && midY < nextTop;
-        });
-        result.push(...sortIntraColumn(sliceLines));
+        result.push(...sortIntraColumn(slices[i + 1][c]));
       }
     }
   }
 
   // 3. Spanning Footers last
   result.push(...sortIntraColumn(footers));
+
+  // 4. Append separated invalid-coordinate blocks at the end
+  if (invalidBlocks.length > 0) {
+    result.push(...invalidBlocks);
+  }
 
   return result;
 }

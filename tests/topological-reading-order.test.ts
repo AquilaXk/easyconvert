@@ -314,6 +314,104 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
         'Confidential Report Footer',
       ]);
     });
+
+    it('handles multiple spanning bands with intermediate column blocks and vertically overlapping blocks', () => {
+      const title: OcrLineBlock = {
+        text: 'Two-Banner Multi-Column Paper',
+        bbox: { x: 50, y: 40, width: 480, height: 20 },
+        words: [],
+      };
+
+      const slice0Col1: OcrLineBlock = {
+        text: 'Slice 0 Col 1 Line',
+        bbox: { x: 50, y: 100, width: 190, height: 12 },
+        words: [],
+      };
+      const slice0Col2: OcrLineBlock = {
+        text: 'Slice 0 Col 2 Line',
+        bbox: { x: 300, y: 100, width: 190, height: 12 },
+        words: [],
+      };
+
+      const banner1: OcrLineBlock = {
+        text: 'SECTION A: FIRST SPANNING BANNER',
+        bbox: { x: 50, y: 200, width: 450, height: 20 },
+        words: [],
+      };
+
+      // Col 1 block overlapping banner1's Y interval (y=205..217, midY=211 < 220, assigned to slice 0)
+      const overlapCol1: OcrLineBlock = {
+        text: 'Overlapping Col 1 Line alongside Banner 1',
+        bbox: { x: 50, y: 205, width: 190, height: 12 },
+        words: [],
+      };
+
+      const slice1Col1: OcrLineBlock = {
+        text: 'Intermediate Slice 1 Col 1 Line',
+        bbox: { x: 50, y: 260, width: 190, height: 12 },
+        words: [],
+      };
+      const slice1Col2: OcrLineBlock = {
+        text: 'Intermediate Slice 1 Col 2 Line',
+        bbox: { x: 300, y: 260, width: 190, height: 12 },
+        words: [],
+      };
+
+      const banner2: OcrLineBlock = {
+        text: 'SECTION B: SECOND SPANNING BANNER',
+        bbox: { x: 50, y: 340, width: 450, height: 20 },
+        words: [],
+      };
+
+      const slice2Col1: OcrLineBlock = {
+        text: 'Trailing Slice 2 Col 1 Line',
+        bbox: { x: 50, y: 420, width: 190, height: 12 },
+        words: [],
+      };
+      const slice2Col2: OcrLineBlock = {
+        text: 'Trailing Slice 2 Col 2 Line',
+        bbox: { x: 300, y: 420, width: 190, height: 12 },
+        words: [],
+      };
+
+      const footer: OcrLineBlock = {
+        text: 'End of Document Footer',
+        bbox: { x: 50, y: 600, width: 480, height: 14 },
+        words: [],
+      };
+
+      // Pass completely shuffled
+      const shuffled: OcrLineBlock[] = [
+        slice2Col2,
+        banner2,
+        slice0Col2,
+        slice1Col1,
+        title,
+        overlapCol1,
+        slice2Col1,
+        footer,
+        banner1,
+        slice0Col1,
+        slice1Col2,
+      ];
+
+      const sorted = sortLineBlocksTopological(shuffled);
+      const sortedTexts = sorted.map((b) => b.text);
+
+      expect(sortedTexts).toEqual([
+        'Two-Banner Multi-Column Paper',
+        'Slice 0 Col 1 Line',
+        'Overlapping Col 1 Line alongside Banner 1',
+        'Slice 0 Col 2 Line',
+        'SECTION A: FIRST SPANNING BANNER',
+        'Intermediate Slice 1 Col 1 Line',
+        'Intermediate Slice 1 Col 2 Line',
+        'SECTION B: SECOND SPANNING BANNER',
+        'Trailing Slice 2 Col 1 Line',
+        'Trailing Slice 2 Col 2 Line',
+        'End of Document Footer',
+      ]);
+    });
   });
 
   // =========================================================================
@@ -359,6 +457,15 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
         { text: 'Bad line 2', bbox: { x: 10, y: NaN, width: 10, height: 0 }, words: [] },
       ];
       expect(() => sortLineBlocksTopological(degenerate)).not.toThrow();
+
+      // Mixed valid and invalid blocks: valid blocks are sorted first, invalid blocks appended at end
+      const mixed: OcrLineBlock[] = [
+        { text: 'Valid Line 2', bbox: { x: 50, y: 120, width: 200, height: 12 }, words: [] },
+        { text: 'Invalid NaN Line', bbox: { x: NaN, y: 50, width: 100, height: 12 }, words: [] },
+        { text: 'Valid Line 1', bbox: { x: 50, y: 80, width: 200, height: 12 }, words: [] },
+      ];
+      const sortedMixed = sortLineBlocksTopological(mixed);
+      expect(sortedMixed.map((b) => b.text)).toEqual(['Valid Line 1', 'Valid Line 2', 'Invalid NaN Line']);
     });
 
     it('tolerates asymmetric column widths (e.g. sidebar + main body)', () => {
