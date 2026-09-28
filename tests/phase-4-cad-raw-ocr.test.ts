@@ -12,6 +12,9 @@ import {
   ensureUnicodeFont,
 } from '../src/lib/conversions/ocr-pdf-combiner';
 import { convertImage } from '../src/lib/conversions/image';
+import { convertVectorCad } from '../src/lib/conversions/vector-cad';
+
+
 
 function createLinearCurve(x0: number, y0: number, x1: number, y1: number, z = 0): BSplineCurve {
   return {
@@ -146,7 +149,25 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       expect(mesh.normals).toHaveLength(mesh.vertices.length);
       verifyNormals(mesh.normals, 'z');
     });
+
+    it('renders DXF with > 100 entities to PDF with complete entity preservation and affine bounding box scaling', async () => {
+      // Build DXF with 150 LINE entities exceeding the old 100 entity cutoff
+      const lines: string[] = ['0', 'SECTION', '2', 'ENTITIES'];
+      for (let i = 0; i < 150; i++) {
+        lines.push('0', 'LINE', '10', `${i * 10}`, '20', `${i * 5}`, '11', `${i * 10 + 5}`, '21', `${i * 5 + 5}`);
+      }
+      lines.push('0', 'ENDSEC', '0', 'EOF');
+      const dxfBuffer = Buffer.from(lines.join('\n'), 'utf-8');
+
+      const result = await convertVectorCad(dxfBuffer, 'dxf', 'pdf', {}, 'large-schematic');
+
+      expect(result.mimeType).toBe('application/pdf');
+      expect(result.filename).toBe('large-schematic.pdf');
+      expect(result.buffer.length).toBeGreaterThan(1000);
+      expect(result.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    });
   });
+
 
   describe('2. Multi-strip and Tiled Camera RAW Assembly', () => {
     it('decodes multi-strip DNG/TIFF sensor buffer without truncating trailing strips', async () => {

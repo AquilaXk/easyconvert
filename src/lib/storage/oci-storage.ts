@@ -39,6 +39,7 @@ export interface StoredObject {
   uploadedAt: number;
   expiresAt: number;
   filePath?: string;
+  metadata?: Record<string, string>;
 }
 
 export type OciStoredObject = StoredObject;

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import Redis from 'ioredis';
 import { userStore } from '../auth/user-store';
 import type { UserTier } from '../auth/types';
 import { KeyStore, TIER_LIMITS, getUtcDateKey } from './key-store';
@@ -15,6 +16,15 @@ export interface QuotaReservation {
   createdAt: number;
   expiresAt: number;
   status: 'reserved' | 'committed' | 'rolled_back';
+}
+
+export interface RedisKeyStoreOptions {
+  keyPrefix?: string;
+  isolated?: boolean;
+  redisHost?: string;
+  redisPort?: number;
+  redisUrl?: string;
+  redisClient?: Redis;
 }
 
 /**
@@ -89,11 +99,84 @@ export class RedisKeyStore extends KeyStore {
   protected static sharedReservations = new Map<string, QuotaReservation>();
   private readonly reservations: Map<string, QuotaReservation>;
   private readonly keyPrefix: string;
+  private redisClient: Redis | null = null;
 
-  constructor(keyPrefix: string = 'easyconvert:', isolated = false) {
-    super(isolated);
-    this.keyPrefix = keyPrefix;
-    this.reservations = isolated ? new Map() : RedisKeyStore.sharedReservations;
+  constructor(
+    keyPrefixOrOptions: string | RedisKeyStoreOptions = 'easyconvert:',
+    isolated = false
+  ) {
+    let prefix = 'easyconvert:';
+    let isIsolated = isolated;
+    let client: Redis | undefined = undefined;
+
+    if (typeof keyPrefixOrOptions === 'object') {
+      prefix = keyPrefixOrOptions.keyPrefix || 'easyconvert:';
+      isIsolated = keyPrefixOrOptions.isolated ?? isolated;
+      client = keyPrefixOrOptions.redisClient;
+      if (!client) {
+        const host = keyPrefixOrOptions.redisHost || process.env.REDIS_HOST;
+        const url = keyPrefixOrOptions.redisUrl || process.env.REDIS_URL;
+        const port =
+          keyPrefixOrOptions.redisPort ||
+          (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
+        if (url) {
+          try {
+            client = new Redis(url, {
+              lazyConnect: true,
+              enableOfflineQueue: false,
+              maxRetriesPerRequest: 1,
+            });
+          } catch {}
+        } else if (host) {
+          try {
+            client = new Redis({
+              host,
+              port,
+              lazyConnect: true,
+              enableOfflineQueue: false,
+              maxRetriesPerRequest: 1,
+            });
+          } catch {}
+        }
+      }
+    } else {
+      prefix = keyPrefixOrOptions;
+      const host = process.env.REDIS_HOST;
+      const url = process.env.REDIS_URL;
+      const port = process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379;
+      if (url) {
+        try {
+          client = new Redis(url, {
+            lazyConnect: true,
+            enableOfflineQueue: false,
+            maxRetriesPerRequest: 1,
+          });
+        } catch {}
+      } else if (host) {
+        try {
+          client = new Redis({
+            host,
+            port,
+            lazyConnect: true,
+            enableOfflineQueue: false,
+            maxRetriesPerRequest: 1,
+          });
+        } catch {}
+      }
+    }
+
+    super(isIsolated);
+    this.keyPrefix = prefix;
+    this.reservations = isIsolated ? new Map() : RedisKeyStore.sharedReservations;
+    this.redisClient = client ?? null;
+  }
+
+  public getRedisClient(): Redis | null {
+    return this.redisClient;
+  }
+
+  public setRedisClient(client: Redis | null): void {
+    this.redisClient = client;
   }
 
   public getPrefix(): string {
@@ -139,7 +222,13 @@ export class RedisKeyStore extends KeyStore {
     userId: string,
     units: number = 1
   ): Promise<{ allowed: boolean; remaining: number }> {
-    if (!userId || typeof userId !== 'string' || userId.trim().length === 0 || !Number.isFinite(units) || units < 0) {
+    if (
+      !userId ||
+      typeof userId !== 'string' ||
+      userId.trim().length === 0 ||
+      !Number.isFinite(units) ||
+      units < 0
+    ) {
       return { allowed: false, remaining: 0 };
     }
     this.cleanExpiredReservations();
@@ -147,6 +236,32 @@ export class RedisKeyStore extends KeyStore {
     const user = await userStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = TIER_LIMITS[tier];
+
+    if (this.redisClient) {
+      try {
+        const usageKey = `${this.keyPrefix}usage:${userId}:${getUtcDateKey()}`;
+        const midnight = new Date();
+        midnight.setUTCHours(24, 0, 0, 0);
+        const expireAtMidnightSec = Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
+
+        const result = (await this.redisClient.eval(
+          DEDUCT_QUOTA_LUA_SCRIPT,
+          1,
+          usageKey,
+          units,
+          dailyLimit,
+          expireAtMidnightSec
+        )) as [number, number];
+
+        return {
+          allowed: Number(result[0]) === 1,
+          remaining: Number(result[1]),
+        };
+      } catch {
+        // Fallback to in-memory on redis connection failure
+      }
+    }
+
     const dateKey = `${userId}:${getUtcDateKey()}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
 
@@ -173,7 +288,13 @@ export class RedisKeyStore extends KeyStore {
     userId: string,
     units: number = 1
   ): Promise<{ allowed: boolean; reservationId?: string; remaining: number }> {
-    if (!userId || typeof userId !== 'string' || userId.trim().length === 0 || !Number.isFinite(units) || units < 0) {
+    if (
+      !userId ||
+      typeof userId !== 'string' ||
+      userId.trim().length === 0 ||
+      !Number.isFinite(units) ||
+      units < 0
+    ) {
       return { allowed: false, remaining: 0 };
     }
     this.cleanExpiredReservations();
@@ -182,6 +303,49 @@ export class RedisKeyStore extends KeyStore {
     const user = await userStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = TIER_LIMITS[tier];
+
+    if (this.redisClient) {
+      try {
+        const usageKey = `${this.keyPrefix}usage:${userId}:${getUtcDateKey()}`;
+        const reservationId = `res_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+        const resKey = `${this.keyPrefix}res:${reservationId}`;
+        const ttlSec = 300;
+        const midnight = new Date();
+        midnight.setUTCHours(24, 0, 0, 0);
+        const expireAtMidnightSec = Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
+
+        const result = (await this.redisClient.eval(
+          RESERVE_QUOTA_LUA_SCRIPT,
+          2,
+          usageKey,
+          resKey,
+          units,
+          dailyLimit,
+          ttlSec,
+          expireAtMidnightSec
+        )) as [number, number];
+
+        const allowed = Number(result[0]) === 1;
+        const remaining = Number(result[1]);
+
+        if (allowed) {
+          const reservation: QuotaReservation = {
+            reservationId,
+            userId,
+            units,
+            dateKey: `${userId}:${getUtcDateKey()}`,
+            createdAt: Date.now(),
+            expiresAt: Date.now() + ttlSec * 1000,
+            status: 'reserved',
+          };
+          this.reservations.set(reservationId, reservation);
+          return { allowed: true, reservationId, remaining };
+        }
+        return { allowed: false, remaining };
+      } catch {
+        // Fallback to in-memory on redis connection failure
+      }
+    }
 
     const dateKey = `${userId}:${getUtcDateKey()}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
@@ -228,6 +392,18 @@ export class RedisKeyStore extends KeyStore {
    */
   public async commitQuota(reservationId: string): Promise<boolean> {
     if (!reservationId || typeof reservationId !== 'string') return false;
+
+    if (this.redisClient) {
+      try {
+        const resKey = `${this.keyPrefix}res:${reservationId}`;
+        const deleted = await this.redisClient.eval(COMMIT_QUOTA_LUA_SCRIPT, 1, resKey);
+        this.reservations.delete(reservationId);
+        return Number(deleted) > 0;
+      } catch {
+        // Fallback
+      }
+    }
+
     const res = this.reservations.get(reservationId);
     if (!res || res.status !== 'reserved') return false;
 
@@ -242,6 +418,21 @@ export class RedisKeyStore extends KeyStore {
    */
   public async rollbackQuota(reservationId: string): Promise<boolean> {
     if (!reservationId || typeof reservationId !== 'string') return false;
+
+    if (this.redisClient) {
+      try {
+        const res = this.reservations.get(reservationId);
+        const userId = res?.userId || 'unknown';
+        const usageKey = `${this.keyPrefix}usage:${userId}:${getUtcDateKey()}`;
+        const resKey = `${this.keyPrefix}res:${reservationId}`;
+        const rolled = await this.redisClient.eval(ROLLBACK_QUOTA_LUA_SCRIPT, 2, usageKey, resKey);
+        this.reservations.delete(reservationId);
+        return Number(rolled) > 0;
+      } catch {
+        // Fallback
+      }
+    }
+
     const res = this.reservations.get(reservationId);
     if (!res || res.status !== 'reserved') return false;
 
@@ -254,6 +445,18 @@ export class RedisKeyStore extends KeyStore {
     this.persist();
     return true;
   }
+
+  public async close(): Promise<void> {
+    if (this.redisClient) {
+      try {
+        await this.redisClient.quit();
+      } catch {
+        this.redisClient.disconnect();
+      }
+      this.redisClient = null;
+    }
+  }
+
 
   public override async recordUsage(
     userId: string,

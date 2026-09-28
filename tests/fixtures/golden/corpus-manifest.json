@@ -1,8 +1,8 @@
 {
   "version": "1.0.0",
-  "generatedAt": "2026-09-27T12:55:57.856Z",
+  "generatedAt": "2026-09-28T04:25:57.887Z",
   "totalFiles": 15,
-  "totalSizeBytes": 67053,
+  "totalSizeBytes": 67042,
   "files": [
     {
       "name": "multi-sheet-enterprise.xlsx",
@@ -10,7 +10,7 @@
       "format": "xlsx",
       "relativePath": "tests/fixtures/golden/office/multi-sheet-enterprise.xlsx",
       "sizeBytes": 3890,
-      "sha256": "140678375bae0172aaa85e3df01332a5da229cf8f404289c301c705648cb8a98",
+      "sha256": "af3458645c6ea5a3d3510e0f0d637c528ec02f30512ce1558831b1be0b0b5b89",
       "verified": true,
       "description": "3-sheet workbook with custom number formats ($#,##0.00, 0.0%) and SUM/AVERAGE formula trees"
     },
@@ -20,7 +20,7 @@
       "format": "ods",
       "relativePath": "tests/fixtures/golden/office/multi-sheet-enterprise.ods",
       "sizeBytes": 1156,
-      "sha256": "bfd9f168d154e0ba87d2d1e95d37d3de3876d070b54455f4423d147564ceba95",
+      "sha256": "2c490aaa84cfa1264cef7b09950c50594dbd66a0ce6da68a9a113d53f40cb263",
       "verified": true,
       "description": "OpenDocument Spreadsheet with multi-table manifest and OASIS XML table definitions"
     },
@@ -30,7 +30,7 @@
       "format": "pptx",
       "relativePath": "tests/fixtures/golden/office/drawingml-shapes-presentation.pptx",
       "sizeBytes": 3744,
-      "sha256": "8feba751aff0683f4f22e34ed14b577306e41b2bfd855289eae20835d844764b",
+      "sha256": "c725c370ed3bc186febc061fe655a4bc1acb341aa19b4af227fdb0961d9c4d77",
       "verified": true,
       "description": "3-slide 16:9 presentation with DrawingML vector preset shapes (rect, ellipse, triangle) and tables"
     },
@@ -40,7 +40,7 @@
       "format": "docx",
       "relativePath": "tests/fixtures/golden/office/multi-column-annotated.docx",
       "sizeBytes": 2185,
-      "sha256": "45038bf68bce76e524311f2ffe4c63fa2cd261c95ff780c1887f44e9d099c4ec",
+      "sha256": "aa75e68f5a07fe330b70304092d7a68ebb7a220d83677ed7579be08376d156c8",
       "verified": true,
       "description": "WordprocessingML document with multi-column layout, footnotes, and nested 2x2 data table"
     },
@@ -49,8 +49,8 @@
       "category": "document",
       "format": "pdf",
       "relativePath": "tests/fixtures/golden/document/differential-layout.pdf",
-      "sizeBytes": 1734,
-      "sha256": "3c6027d8b55e8a399335ed13b93fcc6032b80314bdd31616679de3292c62c403",
+      "sizeBytes": 1723,
+      "sha256": "fdced84ea260ce02debbe5d60c3d6fb6cfcaef606725ab328b2e0d1b769f9358",
       "verified": true,
       "description": "A4 multi-column PDF with Helvetica font embedding, compressed object streams, and sandwich OCR"
     },
@@ -150,7 +150,7 @@
       "format": "tar",
       "relativePath": "tests/fixtures/golden/archive/conformance-bundle.tar",
       "sizeBytes": 3072,
-      "sha256": "b17a2f85c3505c90587add0554f3559f111635f3bb23132b8bf4df89af3c07ae",
+      "sha256": "6646a5f49092cbbbc4a8dd68f391a2906db1584c2e1a31d6dc92e738494c3ac9",
       "verified": true,
       "description": "Standard POSIX ustar TAR archive with structured directory hierarchy and exact byte offsets"
     }

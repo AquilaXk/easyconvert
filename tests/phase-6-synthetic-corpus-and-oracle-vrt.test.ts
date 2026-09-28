@@ -18,6 +18,7 @@ import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
 import { synthesizeGradientStressCard } from './helpers/golden-corpus-suite';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
+import sharp from 'sharp';
 
 describe('Phase 6: Automated Synthetic Corpus Generator & Differential Oracle VRT Testnet (#103)', () => {
   const testOutputDir = path.resolve('tests/fixtures/golden-testnet-temp');
@@ -215,6 +216,53 @@ describe('Phase 6: Automated Synthetic Corpus Generator & Differential Oracle VR
           expect(diag.path).toBeNull();
         }
       }
+    });
+
+    it('3.4 enforces quantitative SSIM differential oracle assertions with configurable thresholds', async () => {
+      const g1 = await synthesizeGradientStressCard(64, 64);
+      const g2 = await synthesizeGradientStressCard(64, 64);
+
+      // Same images pass minSsim = 0.99
+      const passReport = await runDifferentialComparison(g1, g2, 'png', { minSsim: 0.99 });
+      expect(passReport.matched).toBe(true);
+      expect(passReport.ssim).toBe(1.0);
+
+      // Create a slightly perturbed image by adjusting brightness/contrast
+      const perturbedPng = await sharp(g1)
+        .linear(0.85, 10)
+        .png()
+        .toBuffer();
+
+      // Passing with a lenient threshold
+      const lenientReport = await runDifferentialComparison(perturbedPng, g1, 'png', { minSsim: 0.5 });
+      expect(lenientReport.ssim).toBeDefined();
+      expect(lenientReport.ssim!).toBeGreaterThan(0.5);
+
+      // Fails when minSsim threshold is set higher than actual SSIM
+      const strictReport = await runDifferentialComparison(perturbedPng, g1, 'png', { minSsim: 0.999 });
+      expect(strictReport.matched).toBe(false);
+      expect(strictReport.discrepancies.some((d) => d.includes('Quantitative SSIM assertion failed'))).toBe(true);
+    });
+
+    it('3.5 enforces quantitative PSNR differential oracle assertions with configurable thresholds', async () => {
+      const g1 = await synthesizeGradientStressCard(64, 64);
+      const g2 = await synthesizeGradientStressCard(64, 64);
+
+      // Same images pass minPsnr = 50 dB
+      const passReport = await runDifferentialComparison(g1, g2, 'png', { minPsnr: 50 });
+      expect(passReport.matched).toBe(true);
+      expect(passReport.psnr).toBe(Infinity);
+
+      // Create a slightly perturbed image
+      const perturbedPng = await sharp(g1)
+        .linear(0.9, 5)
+        .png()
+        .toBuffer();
+
+      // Fails when minPsnr threshold is set higher than actual PSNR
+      const strictReport = await runDifferentialComparison(perturbedPng, g1, 'png', { minPsnr: 80 });
+      expect(strictReport.matched).toBe(false);
+      expect(strictReport.discrepancies.some((d) => d.includes('Quantitative PSNR assertion failed'))).toBe(true);
     });
   });
 });

@@ -22,6 +22,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {
   synthesizeEnterpriseMultiSheetXlsx,
+  synthesizeEnterpriseMultiSheetOds,
   synthesizeEnterpriseMultiSlidePptx,
   synthesizeEnterpriseMultiColumnDocx,
   synthesizeEnterpriseStepBRep,
@@ -37,8 +38,6 @@ import {
   synthesizeParquetColumnarCorpus,
   synthesizeHwp5CompoundCorpus,
 } from '../tests/helpers/corpus-synthesizer';
-import { generateOdsFromData } from '../src/lib/conversions/office';
-import { createTarArchive } from '../src/lib/conversions/archive';
 import { assertFormatIntegrity } from '../tests/helpers/differential-oracle';
 
 export interface GenerateCorpusOptions {
@@ -91,34 +90,12 @@ async function buildRawCorpus(): Promise<RawCorpusItem[]> {
   });
 
   // 2. Office: Multi-Sheet ODS Archive
-  const odsBuffer = await generateOdsFromData(
-    [
-      {
-        name: 'Executive_Summary',
-        rows: [
-          ['Metric', 'Baseline', 'Phase 5 SOTA', 'Variance'],
-          ['Conversion Throughput (MB/s)', '12.4', '185.0', '+1391%'],
-          ['Perceptual SSIM Index', '0.82', '0.99', '+20.7%'],
-          ['Peak SNR (dB)', '29.4', '44.8', '+52.3%'],
-        ],
-      },
-      {
-        name: 'Regional_Breakdown',
-        rows: [
-          ['Region', 'Volume_GB', 'Success_Rate'],
-          ['APAC', '1420.5', '99.98%'],
-          ['EMEA', '980.2', '99.95%'],
-          ['Americas', '2150.8', '99.99%'],
-        ],
-      },
-    ],
-    'multi-sheet-enterprise'
-  );
+  const ods = synthesizeEnterpriseMultiSheetOds();
   items.push({
     name: 'multi-sheet-enterprise.ods',
     category: 'office',
     format: 'ods',
-    buffer: odsBuffer,
+    buffer: ods.buffer,
     description: 'OpenDocument Spreadsheet with multi-table manifest and OASIS XML table definitions',
   });
 
@@ -207,13 +184,13 @@ async function buildRawCorpus(): Promise<RawCorpusItem[]> {
     description: '96x96 RGB perceptual gradient and high-frequency edge stress card for SSIM and PSNR verification',
   });
 
-  // 11. Structured Data: Apache Parquet with Snappy Compression
-  const parquet = synthesizeParquetColumnarCorpus(60);
+  // 11. Structured Data: Apache Parquet Columnar Formats
+  const parquetSnappy = synthesizeParquetColumnarCorpus(60);
   items.push({
     name: 'columnar-snappy-records.parquet',
     category: 'data',
     format: 'parquet',
-    buffer: parquet.buffer,
+    buffer: parquetSnappy.buffer,
     description: 'Apache Parquet columnar dataset containing 60 records across 10 typed columns with Snappy block compression',
   });
 
@@ -248,21 +225,18 @@ async function buildRawCorpus(): Promise<RawCorpusItem[]> {
   });
 
   // 15. Archive: POSIX ustar TAR Archive
-  const tar = createTarArchive([
-    {
-      filename: 'manifest.json',
-      buffer: Buffer.from(JSON.stringify({ project: 'EasyConvert', version: '5.0.0', stage: 'golden-corpus' }, null, 2)),
-    },
-    {
-      filename: 'data/audit.log',
-      buffer: Buffer.from('[2026-09-27T00:00:00Z] INF: Golden corpus differential testnet initialized.\n', 'utf-8'),
-    },
-  ]);
+  const tarFixturePath = path.join(__dirname, '../tests/fixtures/golden/archive/conformance-bundle.tar');
+  const tarBuffer = fs.existsSync(tarFixturePath)
+    ? fs.readFileSync(tarFixturePath)
+    : Buffer.from([]);
+  if (tarBuffer.length === 0) {
+    throw new Error(`Golden TAR fixture missing at ${tarFixturePath}`);
+  }
   items.push({
     name: 'conformance-bundle.tar',
     category: 'archive',
     format: 'tar',
-    buffer: tar.buffer,
+    buffer: tarBuffer,
     description: 'Standard POSIX ustar TAR archive with structured directory hierarchy and exact byte offsets',
   });
 

@@ -76,15 +76,19 @@ function getLineAndSnippet(
 // Gate 1: Circular Mocking in Test Helpers / Independent Oracles
 // ============================================================================
 function checkCircularMocking() {
-  const oracleFiles = scanDirectory(path.join(TESTS_DIR, 'helpers'), SUPPORTED_EXTENSIONS).filter(
-    (f) => !f.endsWith('corpus-synthesizer.ts') && !f.endsWith('golden-corpus-suite.ts')
-  );
+  const scanDirs = [
+    path.join(TESTS_DIR, 'helpers'),
+    path.join(ROOT_DIR, 'scripts'),
+  ];
+  const oracleFiles = scanDirs
+    .flatMap((dir) => scanDirectory(dir, SUPPORTED_EXTENSIONS))
+    .filter((f) => !f.endsWith('guard-anti-cheat.ts'));
 
   // Catch path aliases, relative paths, require, and dynamic import
   const circularPatterns = [
     {
       regex: /(?:import\s+[\s\S]*?\s+from|require\s*\(|import\s*\()\s*['"](@\/lib\/conversions|@\/worker\/engines|\.\.?\/[^'"]*(?:\/conversions|\/engines))(?:\/[^'"]*)?['"]/gs,
-      desc: 'Oracle or test helper directly imports production conversion/engine modules. Oracles must be independent.',
+      desc: 'Oracle, test helper, or corpus script directly imports production conversion/engine modules. Oracles and corpus generation must be independent.',
     },
   ];
 

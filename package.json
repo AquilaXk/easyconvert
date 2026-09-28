@@ -14,8 +14,10 @@
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts"
   },
   "dependencies": {
+    "@types/ioredis": "^4.28.10",
     "clsx": "^2.1.1",
     "iconv-lite": "^0.7.3",
+    "ioredis": "^6.0.0",
     "js-yaml": "^4.1.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.454.0",

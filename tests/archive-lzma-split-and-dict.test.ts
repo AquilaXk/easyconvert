@@ -482,7 +482,13 @@ describe('Archive Domain: Pure TS LZMA/LZMA2, Multi-Volume Splitting/Stitching &
       expect(() => decompressWithZstdDict(tamperedChecksum, DATA_DICTIONARY_JSON_CSV)).toThrow(
         /checksum mismatch/i
       );
+
+      // Dictionary ID mismatch
+      expect(() => decompressWithZstdDict(compressed, OFFICE_XML_DICTIONARY)).toThrow(
+        /Dictionary mismatch/i
+      );
     });
+
 
     it('integrates zstdDict in convertArchive for both compression and decompression', async () => {
       const apiData = Buffer.from(

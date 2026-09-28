@@ -58,6 +58,7 @@ describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
         ).rejects.toThrow(ConversionFailedError);
       }
     });
+
   });
 
   // ==========================================================================
