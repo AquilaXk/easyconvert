@@ -19,7 +19,7 @@ export interface SandboxedExecutionOptions {
   cwd?: string;
   networkIsolated?: boolean;
   memoryLimitMb?: number;
-  stdin?: NodeJS.ReadableStream | Buffer;
+  stdin?: Buffer | NodeJS.ReadableStream | null;
 }
 
 export interface SandboxedExecutionResult {
@@ -481,7 +481,6 @@ export async function executeSandboxedBinary(
       detached: true,
     });
     activeChild = child;
-
     if (stdin && child.stdin) {
       child.stdin.on('error', (err: any) => {
         // EPIPE or ECONNRESET can occur if child closes stdin before stream is exhausted.
