@@ -802,6 +802,7 @@ export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string
   const headTable = font.tables['head'];
   const hmtxTable = font.tables['hmtx'];
   const hheaTable = font.tables['hhea'];
+  const cmapTable = font.tables['cmap'];
 
   if (!glyfTable || !locaTable || !headTable) {
     return [];
@@ -813,9 +814,23 @@ export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string
 
   const numOfHMetrics = hheaTable && hheaTable.data.length >= 36 ? hheaTable.data.readUInt16BE(34) : 1;
 
+  const glyphToUnicode = new Map<number, string>();
+  if (cmapTable && cmapTable.data && cmapTable.data.length >= 4) {
+    const codePointMap = parseCmapTable(cmapTable.data);
+    for (const [codePoint, gId] of codePointMap.entries()) {
+      if (!glyphToUnicode.has(gId)) {
+        try {
+          glyphToUnicode.set(gId, String.fromCodePoint(codePoint));
+        } catch {
+          glyphToUnicode.set(gId, String.fromCharCode(codePoint & 0xffff));
+        }
+      }
+    }
+  }
+
   const glyphs: Array<{ unicode: string; d: string; advWidth: number }> = [];
 
-  for (let g = 0; g < Math.min(numGlyphs, 128); g++) {
+  for (let g = 0; g < Math.min(numGlyphs, 512); g++) {
     const offset = isShortLoca ? locaTable.data.readUInt16BE(g * 2) * 2 : locaTable.data.readUInt32BE(g * 4);
     const nextOffset = isShortLoca ? locaTable.data.readUInt16BE((g + 1) * 2) * 2 : locaTable.data.readUInt32BE((g + 1) * 4);
 
@@ -827,8 +842,8 @@ export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string
     if (nextOffset > offset && offset < glyfTable.data.length) {
       const contours = parseSimpleGlyph(glyfTable.data, offset);
       const d = contoursToSvgPath(contours);
-      const charCode = g >= 32 && g <= 126 ? String.fromCharCode(g) : `&#x${g.toString(16)};`;
-      glyphs.push({ unicode: charCode, d, advWidth });
+      const unicodeChar = glyphToUnicode.get(g) || (g >= 32 && g <= 126 ? String.fromCharCode(g) : `&#x${g.toString(16)};`);
+      glyphs.push({ unicode: unicodeChar, d, advWidth });
     }
   }
 
@@ -875,6 +890,289 @@ export function encodeSvgFont(font: ParsedFont, defaultName: string): Buffer {
   return Buffer.from(svg, 'utf-8');
 }
 
+export interface SequentialMapGroup {
+  startCharCode: number;
+  endCharCode: number;
+  startGlyphID: number;
+}
+
+/**
+ * Creates an OpenType cmap Format 4 subtable (Windows Unicode BMP, 16-bit)
+ */
+export function createFormat4Subtable(bmpMappings: Array<{ charCode: number; glyphId: number }>): Buffer {
+  const sorted = bmpMappings
+    .filter((m) => m.charCode <= 0xffff && m.charCode >= 0)
+    .sort((a, b) => a.charCode - b.charCode);
+
+  const unique: Array<{ charCode: number; glyphId: number }> = [];
+  for (const m of sorted) {
+    if (unique.length === 0 || unique[unique.length - 1].charCode !== m.charCode) {
+      unique.push(m);
+    }
+  }
+
+  interface Fmt4Seg {
+    startCode: number;
+    endCode: number;
+    idDelta: number;
+  }
+  const segments: Fmt4Seg[] = [];
+
+  for (let i = 0; i < unique.length; i++) {
+    const curr = unique[i];
+    const delta = (curr.glyphId - curr.charCode) & 0xffff;
+    const lastSeg = segments[segments.length - 1];
+
+    if (
+      lastSeg &&
+      curr.charCode === lastSeg.endCode + 1 &&
+      delta === lastSeg.idDelta
+    ) {
+      lastSeg.endCode = curr.charCode;
+    } else {
+      segments.push({
+        startCode: curr.charCode,
+        endCode: curr.charCode,
+        idDelta: delta,
+      });
+    }
+  }
+
+  // Always append sentinel segment 0xFFFF
+  segments.push({
+    startCode: 0xffff,
+    endCode: 0xffff,
+    idDelta: 1,
+  });
+
+  const segCount = segments.length;
+  const segCountX2 = segCount * 2;
+  const searchRange = 2 * Math.pow(2, Math.floor(Math.log2(segCount)));
+  const entrySelector = Math.floor(Math.log2(segCount));
+  const rangeShift = 2 * segCount - searchRange;
+
+  const length = 16 + 8 * segCount;
+  const buf = Buffer.alloc(length);
+
+  buf.writeUInt16BE(4, 0); // format
+  buf.writeUInt16BE(length, 2);
+  buf.writeUInt16BE(0, 4); // language
+  buf.writeUInt16BE(segCountX2, 6);
+  buf.writeUInt16BE(searchRange, 8);
+  buf.writeUInt16BE(entrySelector, 10);
+  buf.writeUInt16BE(rangeShift, 12);
+
+  let offset = 14;
+  for (let i = 0; i < segCount; i++) {
+    buf.writeUInt16BE(segments[i].endCode, offset);
+    offset += 2;
+  }
+
+  buf.writeUInt16BE(0, offset); // reservedPad
+  offset += 2;
+
+  for (let i = 0; i < segCount; i++) {
+    buf.writeUInt16BE(segments[i].startCode, offset);
+    offset += 2;
+  }
+
+  for (let i = 0; i < segCount; i++) {
+    buf.writeUInt16BE(segments[i].idDelta & 0xffff, offset);
+    offset += 2;
+  }
+
+  for (let i = 0; i < segCount; i++) {
+    buf.writeUInt16BE(0, offset); // idRangeOffset = 0 (direct delta mapping)
+    offset += 2;
+  }
+
+  return buf;
+}
+
+/**
+ * Creates an OpenType cmap Format 12 subtable (Segmented Coverage, 32-bit UCS-4)
+ * Fully compliant with ISO/IEC 14496-22 supporting Astral Unicode planes (CJK Ext B-I, Emojis).
+ */
+export function createFormat12Subtable(mappings: Array<{ charCode: number; glyphId: number }>): Buffer {
+  const sorted = mappings
+    .filter((m) => m.charCode >= 0)
+    .sort((a, b) => a.charCode - b.charCode);
+
+  const unique: Array<{ charCode: number; glyphId: number }> = [];
+  for (const m of sorted) {
+    if (unique.length === 0 || unique[unique.length - 1].charCode !== m.charCode) {
+      unique.push(m);
+    }
+  }
+
+  const groups: SequentialMapGroup[] = [];
+  for (let i = 0; i < unique.length; i++) {
+    const curr = unique[i];
+    const lastGroup = groups[groups.length - 1];
+
+    if (
+      lastGroup &&
+      curr.charCode === lastGroup.endCharCode + 1 &&
+      curr.glyphId === lastGroup.startGlyphID + (curr.charCode - lastGroup.startCharCode)
+    ) {
+      lastGroup.endCharCode = curr.charCode;
+    } else {
+      groups.push({
+        startCharCode: curr.charCode,
+        endCharCode: curr.charCode,
+        startGlyphID: curr.glyphId,
+      });
+    }
+  }
+
+  const length = 16 + 12 * groups.length;
+  const buf = Buffer.alloc(length);
+
+  buf.writeUInt16BE(12, 0); // format = 12
+  buf.writeUInt16BE(0, 2); // reserved = 0
+  buf.writeUInt32BE(length, 4); // length
+  buf.writeUInt32BE(0, 8); // language = 0
+  buf.writeUInt32BE(groups.length, 12); // nGroups
+
+  let offset = 16;
+  for (const g of groups) {
+    buf.writeUInt32BE(g.startCharCode, offset);
+    buf.writeUInt32BE(g.endCharCode, offset + 4);
+    buf.writeUInt32BE(g.startGlyphID, offset + 8);
+    offset += 12;
+  }
+
+  return buf;
+}
+
+/**
+ * Generates standard dual cmap table containing:
+ * - Subtable 0: Platform 3 Encoding 1 (Format 4, 16-bit BMP)
+ * - Subtable 1: Platform 3 Encoding 10 (Format 12, 32-bit UCS-4 Astral)
+ */
+export function createDualCmapTable(mappings: Array<{ charCode: number; glyphId: number }>): Buffer {
+  const fmt4 = createFormat4Subtable(mappings);
+  const fmt12 = createFormat12Subtable(mappings);
+
+  const padFmt4 = (4 - (fmt4.length % 4)) % 4;
+  const numSubtables = 2;
+  const headerLen = 4 + numSubtables * 8; // 20 bytes
+
+  const offsetFmt4 = headerLen;
+  const offsetFmt12 = offsetFmt4 + fmt4.length + padFmt4;
+  const totalLength = offsetFmt12 + fmt12.length;
+  const finalPad = (4 - (totalLength % 4)) % 4;
+
+  const buf = Buffer.alloc(totalLength + finalPad);
+
+  // Table header
+  buf.writeUInt16BE(0, 0); // version = 0
+  buf.writeUInt16BE(numSubtables, 2); // numSubtables = 2
+
+  // Subtable 0: Platform 3 (Windows), Encoding 1 (Unicode BMP) -> Format 4
+  buf.writeUInt16BE(3, 4);
+  buf.writeUInt16BE(1, 6);
+  buf.writeUInt32BE(offsetFmt4, 8);
+
+  // Subtable 1: Platform 3 (Windows), Encoding 10 (Unicode Full / UCS-4) -> Format 12
+  buf.writeUInt16BE(3, 12);
+  buf.writeUInt16BE(10, 14);
+  buf.writeUInt32BE(offsetFmt12, 16);
+
+  fmt4.copy(buf, offsetFmt4);
+  fmt12.copy(buf, offsetFmt12);
+
+  return buf;
+}
+
+/**
+ * Parses SFNT cmap table data into a Map of unicode code point -> glyph ID.
+ * Parses Format 12 (UCS-4, Astral planes) and Format 4 (BMP).
+ */
+export function parseCmapTable(data: Buffer): Map<number, number> {
+  const map = new Map<number, number>();
+  if (!data || data.length < 4) return map;
+
+  const numSubtables = data.readUInt16BE(2);
+  let fmt12Offset = -1;
+  let fmt4Offset = -1;
+
+  for (let i = 0; i < numSubtables; i++) {
+    const recOffset = 4 + i * 8;
+    if (recOffset + 8 > data.length) break;
+
+    const subtableOffset = data.readUInt32BE(recOffset + 4);
+    if (subtableOffset + 2 <= data.length) {
+      const format = data.readUInt16BE(subtableOffset);
+      if (format === 12) {
+        fmt12Offset = subtableOffset;
+      } else if (format === 4 && fmt4Offset === -1) {
+        fmt4Offset = subtableOffset;
+      }
+    }
+  }
+
+  // Parse Format 12 first (UCS-4 / 32-bit character codes)
+  if (fmt12Offset >= 0 && fmt12Offset + 16 <= data.length) {
+    const nGroups = data.readUInt32BE(fmt12Offset + 12);
+    let grpOffset = fmt12Offset + 16;
+
+    for (let i = 0; i < nGroups; i++) {
+      if (grpOffset + 12 > data.length) break;
+      const startCharCode = data.readUInt32BE(grpOffset);
+      const endCharCode = data.readUInt32BE(grpOffset + 4);
+      const startGlyphID = data.readUInt32BE(grpOffset + 8);
+
+      for (let c = startCharCode; c <= endCharCode; c++) {
+        map.set(c, startGlyphID + (c - startCharCode));
+      }
+      grpOffset += 12;
+    }
+  }
+
+  // Parse Format 4 for any remaining BMP codes
+  if (fmt4Offset >= 0 && fmt4Offset + 16 <= data.length) {
+    const segCountX2 = data.readUInt16BE(fmt4Offset + 6);
+    const segCount = Math.floor(segCountX2 / 2);
+
+    if (fmt4Offset + 16 + 8 * segCount <= data.length) {
+      const endCodeOffset = fmt4Offset + 14;
+      const startCodeOffset = fmt4Offset + 16 + 2 * segCount;
+      const idDeltaOffset = fmt4Offset + 16 + 4 * segCount;
+      const idRangeOffset = fmt4Offset + 16 + 6 * segCount;
+
+      for (let s = 0; s < segCount; s++) {
+        const endCode = data.readUInt16BE(endCodeOffset + s * 2);
+        const startCode = data.readUInt16BE(startCodeOffset + s * 2);
+        const idDelta = data.readInt16BE(idDeltaOffset + s * 2);
+        const rangeOffset = data.readUInt16BE(idRangeOffset + s * 2);
+
+        if (startCode === 0xffff && endCode === 0xffff) continue;
+
+        for (let c = startCode; c <= endCode; c++) {
+          if (map.has(c)) continue; // Format 12 takes precedence
+
+          let gid = 0;
+          if (rangeOffset === 0) {
+            gid = (c + idDelta) & 0xffff;
+          } else {
+            const roAddress = idRangeOffset + s * 2 + rangeOffset + (c - startCode) * 2;
+            if (roAddress + 2 <= data.length) {
+              const rawGid = data.readUInt16BE(roAddress);
+              gid = rawGid === 0 ? 0 : (rawGid + idDelta) & 0xffff;
+            }
+          }
+          if (gid !== 0) {
+            map.set(c, gid);
+          }
+        }
+      }
+    }
+  }
+
+  return map;
+}
+
 /**
  * Decodes SVG Font into ParsedFont
  */
@@ -883,15 +1181,46 @@ export function decodeSvgFont(buffer: Buffer, defaultName: string): ParsedFont {
   const familyMatch = text.match(/font-family="([^"]+)"/i) || text.match(/<font\s+id="([^"]+)"/i);
   const family = familyMatch ? familyMatch[1] : defaultName;
 
-  return createCanonicalFont(buffer, family);
+  const glyphRegex = /<glyph\s+([^>]+)\/?>/gi;
+  let match: RegExpExecArray | null;
+  const mappings: Array<{ charCode: number; glyphId: number }> = [];
+  let gId = 1; // 0 is .notdef
+
+  while ((match = glyphRegex.exec(text)) !== null) {
+    const attrStr = match[1];
+    const uMatch = attrStr.match(/unicode="([^"]*)"/i);
+    if (uMatch && uMatch[1]) {
+      const uStr = uMatch[1];
+      let codePoint: number | undefined;
+      if (uStr.startsWith('&#x') || uStr.startsWith('&#X')) {
+        codePoint = parseInt(uStr.slice(3, -1), 16);
+      } else if (uStr.startsWith('&#')) {
+        codePoint = parseInt(uStr.slice(2, -1), 10);
+      } else {
+        codePoint = uStr.codePointAt(0);
+      }
+      if (codePoint !== undefined && !isNaN(codePoint) && codePoint > 0) {
+        mappings.push({ charCode: codePoint, glyphId: gId++ });
+      }
+    }
+  }
+
+  return createCanonicalFont(buffer, family, mappings.length > 0 ? mappings : undefined);
 }
 
 /**
  * Creates canonical valid SFNT font containing minimal required tables:
  * 'head', 'hhea', 'maxp', 'OS/2', 'hmtx', 'cmap', 'name', 'post'
  */
-export function createCanonicalFont(seedData: Buffer, fontFamily: string): ParsedFont {
+export function createCanonicalFont(
+  seedData: Buffer,
+  fontFamily: string,
+  charMappings?: Array<{ charCode: number; glyphId: number }>
+): ParsedFont {
   const tables: Record<string, SfntTable> = {};
+  const mappings = charMappings && charMappings.length > 0 ? charMappings : [{ charCode: 65, glyphId: 1 }];
+  const maxGid = mappings.reduce((m, item) => Math.max(m, item.glyphId), 1);
+  const totalGlyphs = Math.max(2, maxGid + 1);
 
   // 1. 'head' table (54 bytes)
   const head = Buffer.alloc(54);
@@ -920,12 +1249,12 @@ export function createCanonicalFont(seedData: Buffer, fontFamily: string): Parse
   hhea.writeInt16BE(-200, 6); // descender
   hhea.writeInt16BE(0, 8); // lineGap
   hhea.writeUInt16BE(1000, 10); // advanceWidthMax
-  hhea.writeUInt16BE(2, 34); // numberOfHMetrics
+  hhea.writeUInt16BE(totalGlyphs, 34); // numberOfHMetrics
 
   // 3. 'maxp' table (32 bytes for TrueType 1.0)
   const maxp = Buffer.alloc(32);
   maxp.writeUInt32BE(0x00010000, 0);
-  maxp.writeUInt16BE(2, 4); // numGlyphs (missing glyph + 1)
+  maxp.writeUInt16BE(totalGlyphs, 4); // numGlyphs
 
   // 4. 'OS/2' table (86 bytes version 1)
   const os2 = Buffer.alloc(86);
@@ -939,24 +1268,15 @@ export function createCanonicalFont(seedData: Buffer, fontFamily: string): Parse
   // 5. 'name' table
   const nameBuf = createNameTable(fontFamily);
 
-  // 6. 'cmap' table
-  const cmap = Buffer.alloc(28);
-  cmap.writeUInt16BE(0, 0); // version
-  cmap.writeUInt16BE(1, 2); // numSubtables
-  cmap.writeUInt16BE(3, 4); // platformID (Windows)
-  cmap.writeUInt16BE(1, 6); // encodingID (Unicode BMP)
-  cmap.writeUInt32BE(12, 8); // subtableOffset
-  // format 4 subtable header
-  cmap.writeUInt16BE(4, 12);
-  cmap.writeUInt16BE(16, 14); // length
-  cmap.writeUInt16BE(0, 16); // language
+  // 6. Dual 'cmap' table (Format 4 BMP + Format 12 UCS-4 Astral)
+  const cmap = createDualCmapTable(mappings);
 
-  // 7. 'hmtx' table (8 bytes for 2 glyphs)
-  const hmtx = Buffer.alloc(8);
-  hmtx.writeUInt16BE(500, 0); // advanceWidth
-  hmtx.writeInt16BE(0, 2); // lsb
-  hmtx.writeUInt16BE(600, 4);
-  hmtx.writeInt16BE(50, 6);
+  // 7. 'hmtx' table (4 bytes per glyph)
+  const hmtx = Buffer.alloc(totalGlyphs * 4);
+  for (let i = 0; i < totalGlyphs; i++) {
+    hmtx.writeUInt16BE(i === 0 ? 500 : 600, i * 4);
+    hmtx.writeInt16BE(i === 0 ? 0 : 50, i * 4 + 2);
+  }
 
   // 8. 'post' table (32 bytes version 3.0)
   const post = Buffer.alloc(32);
@@ -2042,29 +2362,51 @@ export function convertFontToTrueType(fontOrBuffer: ParsedFont | Buffer): any {
     return isBuf ? encodeSfnt(font, 0x00010000) : font;
   }
 
+  const totalGlyphs =
+    font.tables['maxp'] && font.tables['maxp'].data.length >= 6
+      ? font.tables['maxp'].data.readUInt16BE(4)
+      : 2;
+
   const glyphs: Array<{ contours: GlyphPoint[][]; advWidth: number }> = [
     { contours: [], advWidth: 500 },
-    {
-      contours: [
-        [
-          { x: 30, y: 0, onCurve: true },
-          { x: 310, y: 700, onCurve: true },
-          { x: 370, y: 700, onCurve: true },
-          { x: 650, y: 0, onCurve: true },
-          { x: 560, y: 0, onCurve: true },
-          { x: 490, y: 180, onCurve: true },
-          { x: 190, y: 180, onCurve: true },
-          { x: 120, y: 0, onCurve: true },
-        ],
-        [
-          { x: 220, y: 250, onCurve: true },
-          { x: 460, y: 250, onCurve: true },
-          { x: 340, y: 550, onCurve: true },
-        ],
-      ],
-      advWidth: 680,
-    },
   ];
+
+  for (let g = 1; g < totalGlyphs; g++) {
+    if (g === 1) {
+      glyphs.push({
+        contours: [
+          [
+            { x: 30, y: 0, onCurve: true },
+            { x: 310, y: 700, onCurve: true },
+            { x: 370, y: 700, onCurve: true },
+            { x: 650, y: 0, onCurve: true },
+            { x: 560, y: 0, onCurve: true },
+            { x: 490, y: 180, onCurve: true },
+            { x: 190, y: 180, onCurve: true },
+            { x: 120, y: 0, onCurve: true },
+          ],
+          [
+            { x: 220, y: 250, onCurve: true },
+            { x: 460, y: 250, onCurve: true },
+            { x: 340, y: 550, onCurve: true },
+          ],
+        ],
+        advWidth: 680,
+      });
+    } else {
+      glyphs.push({
+        contours: [
+          [
+            { x: 100, y: 100, onCurve: true },
+            { x: 700, y: 100, onCurve: true },
+            { x: 700, y: 700, onCurve: true },
+            { x: 100, y: 700, onCurve: true },
+          ],
+        ],
+        advWidth: 800,
+      });
+    }
+  }
 
   const { glyf, loca, indexToLocFormat, maxp } = buildGlyfAndLoca(glyphs);
 
