@@ -29,6 +29,7 @@ import {
   DATA_DICTIONARY_JSON_CSV,
   OFFICE_XML_DICTIONARY,
   ZSTD_DICT_MAGIC,
+  ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
 } from './zstd-dict';
 
@@ -51,6 +52,7 @@ export {
   DATA_DICTIONARY_JSON_CSV,
   OFFICE_XML_DICTIONARY,
   ZSTD_DICT_MAGIC,
+  ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
 };
 
@@ -947,6 +949,317 @@ export function decompressLzma2(
   return outBuf.subarray(0, outPos);
 }
 
+// ==========================================
+// Native XZ & 7-Zip Toolchain Resolvers
+// ==========================================
+let resolvedXzPath: string | null = null;
+export function getXzBinaryPath(): string | null {
+  if (resolvedXzPath !== null) return resolvedXzPath || null;
+  const fixedLocations = [
+    '/usr/bin/xz',
+    '/usr/local/bin/xz',
+    '/opt/homebrew/bin/xz',
+  ];
+  for (const loc of fixedLocations) {
+    if (fs.existsSync(loc)) {
+      resolvedXzPath = loc;
+      return loc;
+    }
+  }
+  const whichBins = ['/usr/bin/which', '/bin/which'];
+  for (const whichBin of whichBins) {
+    if (fs.existsSync(whichBin)) {
+      try {
+        const out = execFileSync(whichBin, ['xz'], { stdio: 'pipe' }).toString().trim();
+        if (out && fs.existsSync(out)) {
+          resolvedXzPath = out;
+          return out;
+        }
+      } catch {}
+    }
+  }
+  resolvedXzPath = '';
+  return null;
+}
+
+let resolved7zPath: string | null = null;
+export function get7zBinaryPath(): string | null {
+  if (resolved7zPath !== null) return resolved7zPath || null;
+  const fixedLocations = [
+    '/usr/bin/7z',
+    '/usr/local/bin/7z',
+    '/opt/homebrew/bin/7z',
+    '/usr/bin/7za',
+    '/usr/local/bin/7za',
+    '/opt/homebrew/bin/7za',
+    '/usr/bin/7zr',
+    '/usr/local/bin/7zr',
+    '/opt/homebrew/bin/7zr',
+  ];
+  for (const loc of fixedLocations) {
+    if (fs.existsSync(loc)) {
+      resolved7zPath = loc;
+      return loc;
+    }
+  }
+  const whichBins = ['/usr/bin/which', '/bin/which'];
+  for (const whichBin of whichBins) {
+    if (fs.existsSync(whichBin)) {
+      for (const cmd of ['7z', '7za', '7zr']) {
+        try {
+          const out = execFileSync(whichBin, [cmd], { stdio: 'pipe' }).toString().trim();
+          if (out && fs.existsSync(out)) {
+            resolved7zPath = out;
+            return out;
+          }
+        } catch {}
+      }
+    }
+  }
+  resolved7zPath = '';
+  return null;
+}
+
+function encodeXzVarint(val: number): Buffer {
+  const bytes: number[] = [];
+  let v = val;
+  while (v >= 0x80) {
+    bytes.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  bytes.push(v & 0x7f);
+  return Buffer.from(bytes);
+}
+
+/**
+ * Pure TypeScript Authentic XZ Container Packager (The .xz File Format 1.1.0)
+ */
+function packXz(uncompressed: Buffer): Buffer {
+  const chunks: Buffer[] = [];
+  const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
+  const streamFlags = Buffer.from([0x00, 0x01]); // CRC32 check
+  const flagsCrc = Buffer.alloc(4);
+  flagsCrc.writeUInt32LE(crc32(streamFlags), 0);
+  chunks.push(magic, streamFlags, flagsCrc);
+
+  const bhNoCrc = Buffer.from([0x02, 0x00, 0x21, 0x01, 0x14, 0x00, 0x00, 0x00]);
+  const bhCrc = Buffer.alloc(4);
+  bhCrc.writeUInt32LE(crc32(bhNoCrc), 0);
+  const blockHeader = Buffer.concat([bhNoCrc, bhCrc]);
+  chunks.push(blockHeader);
+
+  const lzma2 = compressLzma2(uncompressed);
+  chunks.push(lzma2.buffer);
+
+  const padLen = (4 - (lzma2.buffer.length % 4)) % 4;
+  if (padLen > 0) chunks.push(Buffer.alloc(padLen, 0));
+
+  const checkBuf = Buffer.alloc(4);
+  checkBuf.writeUInt32LE(crc32(uncompressed), 0);
+  chunks.push(checkBuf);
+
+  const unpaddedSize = blockHeader.length + lzma2.buffer.length + 4;
+  const idxIndicator = Buffer.from([0x00]);
+  const numRecords = encodeXzVarint(1);
+  const unpaddedVarint = encodeXzVarint(unpaddedSize);
+  const uncompressedVarint = encodeXzVarint(uncompressed.length);
+  const idxBody = Buffer.concat([idxIndicator, numRecords, unpaddedVarint, uncompressedVarint]);
+  const idxPadLen = (4 - (idxBody.length % 4)) % 4;
+  const idxPad = Buffer.alloc(idxPadLen, 0);
+  const idxNoCrc = Buffer.concat([idxBody, idxPad]);
+  const idxCrc = Buffer.alloc(4);
+  idxCrc.writeUInt32LE(crc32(idxNoCrc), 0);
+  const indexTotal = Buffer.concat([idxNoCrc, idxCrc]);
+  chunks.push(indexTotal);
+
+  const backwardSize = (indexTotal.length / 4) - 1;
+  const footerBeforeCrc = Buffer.alloc(6);
+  footerBeforeCrc.writeUInt32LE(backwardSize, 0);
+  footerBeforeCrc[4] = streamFlags[0];
+  footerBeforeCrc[5] = streamFlags[1];
+  const footerCrc = Buffer.alloc(4);
+  footerCrc.writeUInt32LE(crc32(footerBeforeCrc), 0);
+  const footerMagic = Buffer.from([0x59, 0x5a]);
+  chunks.push(footerCrc, footerBeforeCrc, footerMagic);
+
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Pure TypeScript Authentic XZ Container Unpacker
+ */
+function unpackXz(buf: Buffer): Buffer {
+  if (buf.length < 32) throw new Error('Invalid XZ archive: buffer too small');
+  const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
+  if (!buf.subarray(0, 6).equals(magic)) throw new Error('Invalid XZ archive: magic number mismatch');
+
+  const streamFlags = buf.subarray(6, 8);
+  const expectedFlagsCrc = buf.readUInt32LE(8);
+  if (crc32(streamFlags) !== expectedFlagsCrc) throw new Error('Invalid XZ archive: header CRC mismatch');
+
+  const offset = 12;
+  if (offset >= buf.length) throw new Error('Invalid XZ archive: truncated block header');
+  const bhSizeEncoded = buf[offset];
+  const bhSize = (bhSizeEncoded + 1) * 4;
+  if (offset + bhSize > buf.length) throw new Error('Invalid XZ archive: truncated block header');
+  const bhNoCrc = buf.subarray(offset, offset + bhSize - 4);
+  const expectedBhCrc = buf.readUInt32LE(offset + bhSize - 4);
+  if (crc32(bhNoCrc) !== expectedBhCrc) throw new Error('Invalid XZ archive: block header CRC mismatch');
+
+  const lzma2Payload = buf.subarray(offset + bhSize);
+
+  const footerMagic = buf.subarray(buf.length - 2);
+  if (!footerMagic.equals(Buffer.from([0x59, 0x5a]))) throw new Error('Invalid XZ archive: footer magic mismatch');
+
+  const backwardSize = buf.readUInt32LE(buf.length - 10);
+  const indexSize = (backwardSize + 1) * 4;
+  if (buf.length < 12 + indexSize + 12) throw new Error('Invalid XZ archive: invalid index size');
+  const indexOffset = buf.length - 12 - indexSize;
+  const indexBuf = buf.subarray(indexOffset, indexOffset + indexSize);
+
+  let idxCur = 1;
+  while (idxCur < indexBuf.length) {
+    const b = indexBuf[idxCur++];
+    if ((b & 0x80) === 0) break;
+  }
+  while (idxCur < indexBuf.length) {
+    const b = indexBuf[idxCur++];
+    if ((b & 0x80) === 0) break;
+  }
+  let uncompressedSize = 0;
+  let shift = 0;
+  while (idxCur < indexBuf.length) {
+    const b = indexBuf[idxCur++];
+    uncompressedSize |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) break;
+    shift += 7;
+  }
+
+  const props = Buffer.from([0x14]);
+  return decompressLzma2(lzma2Payload, props, uncompressedSize || ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+}
+
+export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Buffer {
+  const xzBin = getXzBinaryPath();
+  if (xzBin) {
+    try {
+      const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
+      return execFileSync(xzBin, [`-${level}`, '-c', '-q'], {
+        input: inputBuffer,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      });
+    } catch {}
+  }
+  return packXz(inputBuffer);
+}
+
+export function decompressXz(inputBuffer: Buffer): Buffer {
+  if (inputBuffer.length < 32) {
+    throw new Error('Invalid XZ archive: buffer too small');
+  }
+  const xzBin = getXzBinaryPath();
+  if (xzBin) {
+    try {
+      return execFileSync(xzBin, ['-d', '-c', '-q'], {
+        input: inputBuffer,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      });
+    } catch {}
+  }
+  return unpackXz(inputBuffer);
+}
+
+export function convertWithNative7z(
+  inputBuffer: Buffer,
+  sourceFormat: string,
+  targetFormat: string,
+  options: ConversionOptions = {},
+  originalFilename = 'file'
+): ConversionResult | null {
+  const p7zBin = get7zBinaryPath();
+  if (!p7zBin) return null;
+
+  const src = sourceFormat.toLowerCase().trim();
+  const tgt = targetFormat.toLowerCase().trim();
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+
+  const tmpDir = os.tmpdir();
+  const token = crypto.randomBytes(8).toString('hex');
+  const workDir = path.join(tmpDir, `easyconvert_7z_${Date.now()}_${token}`);
+  fs.mkdirSync(workDir, { recursive: true });
+
+  try {
+    const inputExt = src.includes('.') ? src.split('.').pop()! : src;
+    const inputPath = path.join(workDir, `input.${inputExt}`);
+    fs.writeFileSync(inputPath, inputBuffer);
+
+    const extractDir = path.join(workDir, 'extracted');
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const supportedExtract = new Set([
+      'zip', '7z', 'rar', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
+      'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
+    ]);
+
+    if (supportedExtract.has(src)) {
+      execFileSync(p7zBin, ['x', '-y', `-o${extractDir}`, inputPath], {
+        cwd: workDir,
+        timeout: 60000,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      });
+    } else {
+      const destPath = path.join(extractDir, originalFilename || `file.${src}`);
+      fs.writeFileSync(destPath, inputBuffer);
+    }
+
+    const extractedFiles = fs.readdirSync(extractDir);
+    if (extractedFiles.length === 0) return null;
+
+    const outputPath = path.join(workDir, `output.${tgt}`);
+    if (tgt === 'tar.gz' || tgt === 'tgz') {
+      const tarPath = path.join(workDir, 'archive.tar');
+      execFileSync(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { cwd: extractDir, timeout: 60000 });
+      execFileSync(p7zBin, ['a', '-y', '-tgzip', outputPath, tarPath], { cwd: workDir, timeout: 60000 });
+    } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
+      const tarPath = path.join(workDir, 'archive.tar');
+      execFileSync(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { cwd: extractDir, timeout: 60000 });
+      execFileSync(p7zBin, ['a', '-y', '-tbzip2', outputPath, tarPath], { cwd: workDir, timeout: 60000 });
+    } else if (tgt === 'tar.xz' || tgt === 'txz') {
+      const tarPath = path.join(workDir, 'archive.tar');
+      execFileSync(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { cwd: extractDir, timeout: 60000 });
+      execFileSync(p7zBin, ['a', '-y', '-txz', outputPath, tarPath], { cwd: workDir, timeout: 60000 });
+    } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
+      execFileSync(p7zBin, ['a', '-y', `-t${tgt}`, outputPath, '.'], { cwd: extractDir, timeout: 60000 });
+    } else {
+      return null;
+    }
+
+    if (!fs.existsSync(outputPath)) return null;
+    const outputBuffer = fs.readFileSync(outputPath);
+
+    let mime = 'application/octet-stream';
+    if (tgt === 'zip') mime = 'application/zip';
+    else if (tgt === '7z') mime = 'application/x-7z-compressed';
+    else if (tgt === 'tar') mime = 'application/x-tar';
+    else if (tgt === 'tar.gz' || tgt === 'tgz') mime = 'application/gzip';
+    else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') mime = 'application/x-bzip-compressed-tar';
+    else if (tgt === 'tar.xz' || tgt === 'txz') mime = 'application/x-xz-compressed-tar';
+
+    return {
+      buffer: outputBuffer,
+      mimeType: mime,
+      filename: `${baseName}.${tgt}`,
+      size: outputBuffer.length,
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
 export function write7zVarint(arr: number[], value: number): void {
   if (value < 0x80) {
     arr.push(value);
@@ -1708,6 +2021,19 @@ export async function convertArchive(
   const src = effectiveSourceFormat;
   const tgt = targetFormat.toLowerCase();
 
+  // Attempt native 7-Zip acceleration hook if available
+  const native7zRes = convertWithNative7z(effectiveBuffer, src, tgt, options, effectiveFilename);
+  if (native7zRes) {
+    if (options.splitVolumeBytes && options.splitVolumeBytes > 0) {
+      const parts = splitArchive(native7zRes.buffer, native7zRes.filename, options.splitVolumeBytes);
+      return {
+        ...native7zRes,
+        parts,
+      };
+    }
+    return native7zRes;
+  }
+
   // 1. Extract files from source if it is an archive
   let files: { filename: string; buffer: Buffer }[] = [];
   if (src === 'zip') {
@@ -1816,6 +2142,29 @@ export async function convertArchive(
     } else {
       files = [{ filename: baseName, buffer: uncompressed }];
     }
+  } else if (src === 'tar.xz' || src === 'txz' || src === 'xz') {
+    try {
+      const uncompressed = decompressXz(effectiveBuffer);
+      if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        throw new Error(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        );
+      }
+      if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+        throw new Error(
+          `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+        );
+      }
+      if (src === 'tar.xz' || src === 'txz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
+        files = extractTarArchive(uncompressed);
+      } else {
+        files = [{ filename: baseName, buffer: uncompressed }];
+      }
+    } catch (err) {
+      throw new ConversionFailedError(
+        `Failed to decompress XZ archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   const ARCHIVE_CONTAINER_FORMATS = new Set([
@@ -1834,6 +2183,9 @@ export async function convertArchive(
     'zst',
     'zstd',
     'tar.zst',
+    'xz',
+    'txz',
+    'tar.xz',
   ]);
   if (files.length === 0) {
     const hasZipMagic =
@@ -1948,9 +2300,33 @@ export async function convertArchive(
       filename: `${effectiveFilename}.${tgt}`,
       size: zstdBuffer.length,
     };
-  } else {
-    // 8. Target ZIP (default)
+  } else if (tgt === 'tar.xz' || tgt === 'txz') {
+    // 7.3 Target TAR.XZ / TXZ
+    const tarResult = createTarArchive(files, options, `${baseName}.tar`);
+    const xzBuffer = compressXz(tarResult.buffer, options);
+    result = {
+      buffer: xzBuffer,
+      mimeType: 'application/x-xz-compressed-tar',
+      filename: `${baseName}.${tgt}`,
+      size: xzBuffer.length,
+    };
+  } else if (tgt === 'xz') {
+    // 7.4 Target XZ
+    const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
+    const xzBuffer = compressXz(rawToCompress, options);
+    result = {
+      buffer: xzBuffer,
+      mimeType: 'application/x-xz',
+      filename: `${effectiveFilename}.${tgt}`,
+      size: xzBuffer.length,
+    };
+  } else if (tgt === 'zip') {
+    // 8. Target ZIP
     result = await createZipArchive(files, options, `${baseName}.zip`);
+  } else {
+    throw new ConversionFailedError(
+      `Unsupported archive target format '${targetFormat}': foreign formats must not silently fall back to ZIP.`
+    );
   }
 
   // 9. Split Archive Volume Generation (Multi-Volume)
