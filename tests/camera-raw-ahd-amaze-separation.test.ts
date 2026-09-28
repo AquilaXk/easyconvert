@@ -257,4 +257,46 @@ describe('Camera RAW Demosaicing Algorithm Separation (AHD vs AMaZE)', () => {
     const actual = resMid.data[0];
     expect(Math.abs(actual - expected)).toBeLessThanOrEqual(2);
   });
+
+  it('fails closed when whiteLevel <= blackLevel or invalid blackLevel array is supplied', () => {
+    const width = 4;
+    const height = 4;
+    const raw = new Uint16Array(width * height).fill(300);
+
+    // Inverted levels
+    expect(() =>
+      demosaicAhdBayerCfa({
+        width,
+        height,
+        data: raw,
+        pattern: 'RGGB',
+        whiteLevel: 200,
+        blackLevel: 500,
+      })
+    ).toThrow(/Invalid Bayer calibration: whiteLevel \(200\) must be strictly greater than blackLevel \(500\)/);
+
+    // Invalid blackLevel array length (3 items for 2x2 CFA)
+    expect(() =>
+      demosaicAhdBayerCfa({
+        width,
+        height,
+        data: raw,
+        pattern: 'RGGB',
+        whiteLevel: 4095,
+        blackLevel: [100, 200, 300],
+      })
+    ).toThrow(/blackLevel array length \(3\) must be 1 or 4/);
+
+    // Negative black level
+    expect(() =>
+      demosaicAhdBayerCfa({
+        width,
+        height,
+        data: raw,
+        pattern: 'RGGB',
+        whiteLevel: 4095,
+        blackLevel: -50,
+      })
+    ).toThrow(/blackLevel \(-50\) must be a non-negative finite number/);
+  });
 });

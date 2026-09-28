@@ -8,7 +8,9 @@ import {
   convertWithNativePoppler,
   convertWithHeadlessOffice,
   executeWorkerConversion,
+  assertNotSpoofedFileVfs,
 } from '../src/worker/engines';
+import { assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
 import { convertArchive } from '../src/lib/conversions/archive';
 import { POST as convertRouteHandler } from '../src/app/api/v1/convert/route';
 import { keyStore } from '../src/lib/api-keys/key-store';
@@ -388,6 +390,20 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(body.detail).toContain('Daily conversion quota exceeded');
       expect(body.success).toBe(false);
       expect(body.error).toBe(body.detail);
+    });
+  });
+
+  describe('4. Zero-Heap File Guard & VFS Spoofing Fail-Closed Verification', () => {
+    it('fails closed when assertNotSpoofedFileVfs receives an empty VFS payload', () => {
+      expect(() => assertNotSpoofedFileVfs({} as any, 'png', 'test.png')).toThrow(
+        /VFS payload contains no valid inputBuffer or inputPath/
+      );
+    });
+
+    it('fails closed when assertNotSpoofedFilePath is called with a directory path', () => {
+      expect(() => assertNotSpoofedFilePath('/tmp', 'png', 'test.png')).toThrow(
+        /Target path is not a regular file/
+      );
     });
   });
 });

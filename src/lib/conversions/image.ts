@@ -754,9 +754,43 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
   const bitDepth = sensor.bitsPerSample ?? (sensor as any).bitDepth ?? (rawInput instanceof Uint16Array ? 16 : 8);
   const maxVal = (1 << bitDepth) - 1;
 
-  const hasArrayBlackLevel = Array.isArray(sensor.blackLevel) && sensor.blackLevel.length > 0;
-  const defaultBLevel = typeof sensor.blackLevel === 'number' ? sensor.blackLevel : 0;
-  const wLevel = sensor.whiteLevel || maxVal;
+  if (sensor.whiteLevel !== undefined) {
+    if (!Number.isFinite(sensor.whiteLevel) || sensor.whiteLevel <= 0) {
+      throw new Error(`Invalid Bayer calibration: whiteLevel (${sensor.whiteLevel}) must be a positive finite number.`);
+    }
+  }
+
+  if (typeof sensor.blackLevel === 'number') {
+    if (!Number.isFinite(sensor.blackLevel) || sensor.blackLevel < 0) {
+      throw new Error(`Invalid Bayer calibration: blackLevel (${sensor.blackLevel}) must be a non-negative finite number.`);
+    }
+  } else if (Array.isArray(sensor.blackLevel)) {
+    if (sensor.blackLevel.length !== 1 && sensor.blackLevel.length !== 4) {
+      throw new Error(`Invalid Bayer calibration: blackLevel array length (${sensor.blackLevel.length}) must be 1 or 4 matching 2x2 CFA pattern.`);
+    }
+    for (const b of sensor.blackLevel) {
+      if (!Number.isFinite(b) || b < 0) {
+        throw new Error(`Invalid Bayer calibration: blackLevel elements must be non-negative finite numbers, got ${b}.`);
+      }
+    }
+  }
+
+  const blackLevelArr = Array.isArray(sensor.blackLevel) ? sensor.blackLevel : undefined;
+  const hasArrayBlackLevel = blackLevelArr !== undefined && blackLevelArr.length > 0;
+  const defaultBLevel =
+    typeof sensor.blackLevel === 'number'
+      ? sensor.blackLevel
+      : blackLevelArr && blackLevelArr.length === 1
+      ? blackLevelArr[0]
+      : 0;
+  const maxBLevel = blackLevelArr && blackLevelArr.length > 0 ? Math.max(...blackLevelArr) : defaultBLevel;
+  const wLevel = sensor.whiteLevel !== undefined ? sensor.whiteLevel : maxVal;
+
+  if (wLevel <= maxBLevel) {
+    throw new Error(
+      `Invalid Bayer calibration: whiteLevel (${wLevel}) must be strictly greater than blackLevel (${maxBLevel}).`
+    );
+  }
 
   const mirrorCoord = (c: number, max: number): number => {
     if (c < 0) return -c;
@@ -782,12 +816,12 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
     }
 
     let bLevel = defaultBLevel;
-    if (hasArrayBlackLevel) {
+    if (hasArrayBlackLevel && (sensor.blackLevel as number[]).length === 4) {
       const blkArr = sensor.blackLevel as number[];
       const blkIdx = ((my & 1) << 1) | (mx & 1);
-      bLevel = blkArr[blkIdx % blkArr.length] ?? 0;
+      bLevel = blkArr[blkIdx];
     }
-    const range = Math.max(1, wLevel - bLevel);
+    const range = wLevel - bLevel;
     const clamped = Math.max(bLevel, Math.min(wLevel, rawVal));
     return ((clamped - bLevel) / range) * 255.0;
   };

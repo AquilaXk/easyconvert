@@ -144,10 +144,15 @@ export async function POST(req: NextRequest) {
         if (!stored) {
           return await failWithRollback(400, `Storage object not found for key: "${storageKey}".`, 'Storage Object Not Found');
         }
-        if (stored.filePath && fs.existsSync(stored.filePath)) {
+        if (stored.filePath) {
+          if (!fs.existsSync(stored.filePath)) {
+            return await failWithRollback(400, `Storage file missing on disk: "${stored.filePath}".`, 'Storage File Missing');
+          }
           assertNotSpoofedFilePath(stored.filePath, sourceDef.extension, originalFilename);
         } else if (stored.buffer && stored.buffer.length > 0) {
           assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
+        } else {
+          return await failWithRollback(400, `Storage object for key "${storageKey}" contains empty or unreadable file data.`, 'Empty Storage Object');
         }
       }
     } catch (err: any) {

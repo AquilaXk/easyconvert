@@ -193,14 +193,16 @@ export function assertNotSpoofedFileVfs(
     return;
   }
   if (typeof input === 'object' && input !== null) {
-    if (input.inputBuffer) {
+    if (input.inputBuffer && input.inputBuffer.length > 0) {
       assertNotSpoofedFile(input.inputBuffer, declaredExt, filename);
       return;
     }
     if (input.inputPath) {
       assertNotSpoofedFilePath(input.inputPath, declaredExt, filename);
+      return;
     }
   }
+  throw new Error('VFS payload contains no valid inputBuffer or inputPath to verify. Operation failed closed.');
 }
 
 /**
