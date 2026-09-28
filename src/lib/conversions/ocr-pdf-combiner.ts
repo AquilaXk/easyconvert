@@ -55,14 +55,373 @@ export interface OcrResult {
   imageHeight?: number;
 }
 
+export interface ColumnGutter {
+  start: number;
+  end: number;
+  mid: number;
+  width: number;
+}
+
 /**
- * Parses raw Tesseract recognition block hierarchy into clean lines and blocks.
+ * Detects column gutters (vertical whitespace channels) across the horizontal axis
+ * using 1D spatial projection profiles of bounding boxes.
+ */
+export function detectColumnGutters(
+  blocks: OcrLineBlock[],
+  minColGap: number = 15,
+  enclosingBounds?: { minX: number; maxX: number; docWidth: number }
+): ColumnGutter[] {
+  if (!blocks || blocks.length < 2) return [];
+
+  // Filter out empty text and tiny noise blocks (e.g. dust specks < 3px)
+  const validBlocks = blocks.filter(
+    (b) =>
+      b &&
+      b.bbox &&
+      Number.isFinite(b.bbox.x) &&
+      Number.isFinite(b.bbox.y) &&
+      Number.isFinite(b.bbox.width) &&
+      b.bbox.width >= 3 &&
+      Number.isFinite(b.bbox.height) &&
+      b.bbox.height >= 3 &&
+      (b.text || '').trim().length > 0
+  );
+
+  if (validBlocks.length < 2) return [];
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+
+  if (enclosingBounds && Number.isFinite(enclosingBounds.docWidth) && enclosingBounds.docWidth > 0) {
+    minX = enclosingBounds.minX;
+    maxX = enclosingBounds.maxX;
+  } else {
+    for (const b of validBlocks) {
+      if (b.bbox.x < minX) minX = b.bbox.x;
+      const right = b.bbox.x + b.bbox.width;
+      if (right > maxX) maxX = right;
+    }
+  }
+
+  const docWidth = maxX - minX;
+  if (!Number.isFinite(docWidth) || docWidth <= minColGap * 2) return [];
+
+  // Exclude wide spanning blocks (e.g. width >= 80% of total width) from gutter calculation
+  // to prevent spanning titles, headers, or rules from bridging across gutters
+  const candidateBlocks = validBlocks.filter((b) => b.bbox.width < docWidth * 0.80);
+  if (candidateBlocks.length < 2) return [];
+
+  const startX = Math.floor(minX);
+  const endX = Math.ceil(maxX);
+  const projWidth = Math.max(1, Math.min(10000, endX - startX + 1));
+  const xProj = new Int32Array(projWidth);
+
+  for (const b of candidateBlocks) {
+    const left = Math.max(0, Math.min(projWidth - 1, Math.floor(b.bbox.x - startX)));
+    const right = Math.max(0, Math.min(projWidth - 1, Math.ceil(b.bbox.x + b.bbox.width - startX)));
+    for (let x = left; x <= right; x++) {
+      xProj[x]++;
+    }
+  }
+
+  // Find valleys (runs where projection is 0 or below noise threshold)
+  const densityThreshold =
+    candidateBlocks.length >= 10
+      ? Math.min(1, Math.floor(candidateBlocks.length * 0.03))
+      : 0;
+
+  const rawGutters: ColumnGutter[] = [];
+  let inValley = false;
+  let valleyStart = 0;
+
+  // Margin boundary check: gutters shouldn't be at the very edge of the document
+  const marginOffset = Math.max(5, docWidth * 0.03);
+
+  for (let x = 0; x < projWidth; x++) {
+    const isValley = xProj[x] <= densityThreshold;
+    if (isValley && !inValley) {
+      inValley = true;
+      valleyStart = x;
+    } else if (!isValley && inValley) {
+      inValley = false;
+      const valleyWidth = x - valleyStart;
+      const absStart = startX + valleyStart;
+      const absEnd = startX + x;
+
+      // Verify that this valley is a genuine gutter dividing text:
+      // Must have candidate text to the left AND to the right, and not be an outer margin
+      const hasTextLeft = candidateBlocks.some((b) => b.bbox.x + b.bbox.width <= absStart + 4);
+      const hasTextRight = candidateBlocks.some((b) => b.bbox.x >= absEnd - 4);
+
+      if (
+        valleyWidth >= minColGap &&
+        absStart >= minX + marginOffset &&
+        absEnd <= maxX - marginOffset &&
+        hasTextLeft &&
+        hasTextRight
+      ) {
+        rawGutters.push({
+          start: absStart,
+          end: absEnd,
+          mid: Math.round((absStart + absEnd) / 2),
+          width: valleyWidth,
+        });
+      }
+    }
+  }
+
+  // Merge adjacent / fragmented gutters separated by narrow noise (<= 6px)
+  if (rawGutters.length <= 1) {
+    return rawGutters;
+  }
+
+  const mergedGutters: ColumnGutter[] = [rawGutters[0]];
+  for (let i = 1; i < rawGutters.length; i++) {
+    const prev = mergedGutters[mergedGutters.length - 1];
+    const curr = rawGutters[i];
+    if (curr.start - prev.end <= 6) {
+      // Merge with previous
+      prev.end = curr.end;
+      prev.mid = Math.round((prev.start + prev.end) / 2);
+      prev.width = prev.end - prev.start;
+    } else {
+      mergedGutters.push(curr);
+    }
+  }
+
+  return mergedGutters;
+}
+
+/**
+ * Sorts OCR line blocks into topologically correct reading order
+ * by detecting multi-column layouts, column gutters, and spanning elements.
+ * Prevents horizontal interleaving of lines in 2-column or multi-column documents.
+ */
+export function sortLineBlocksTopological(
+  blocks: OcrLineBlock[],
+  pageWidth?: number,
+  pageHeight?: number
+): OcrLineBlock[] {
+  if (!blocks || blocks.length <= 1) {
+    return blocks ? [...blocks] : [];
+  }
+
+  // Helper to sort lines within a single column / cluster deterministically
+  const sortIntraColumn = (lines: OcrLineBlock[]): OcrLineBlock[] => {
+    if (lines.length <= 1) return [...lines];
+    // Sort primarily by Y ascending
+    const sorted = [...lines].sort((a, b) => a.bbox.y - b.bbox.y);
+    // Cluster lines that belong to the same visual baseline
+    const clusters: OcrLineBlock[][] = [];
+    for (const line of sorted) {
+      let placed = false;
+      for (const cluster of clusters) {
+        const rep = cluster[0];
+        const lineTol = Math.max(3, Math.min(line.bbox.height, rep.bbox.height) * 0.45);
+        if (Math.abs(line.bbox.y - rep.bbox.y) <= lineTol) {
+          cluster.push(line);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        clusters.push([line]);
+      }
+    }
+    // Within each baseline cluster, sort left-to-right (X ascending)
+    const result: OcrLineBlock[] = [];
+    for (const cluster of clusters) {
+      cluster.sort((a, b) => a.bbox.x - b.bbox.x);
+      result.push(...cluster);
+    }
+    return result;
+  };
+
+  // 1. Compute overall bounding envelope
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const b of blocks) {
+    if (!b || !b.bbox) continue;
+    const x = Number.isFinite(b.bbox.x) ? b.bbox.x : 0;
+    const y = Number.isFinite(b.bbox.y) ? b.bbox.y : 0;
+    const width = Number.isFinite(b.bbox.width) && b.bbox.width > 0 ? b.bbox.width : 0;
+    const height = Number.isFinite(b.bbox.height) && b.bbox.height > 0 ? b.bbox.height : 0;
+
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x + width > maxX) maxX = x + width;
+    if (y + height > maxY) maxY = y + height;
+  }
+
+  const docWidth = Math.max(0, maxX - minX);
+  const docHeight = Math.max(0, maxY - minY);
+
+  if (docWidth <= 0 || docHeight <= 0) {
+    return sortIntraColumn(blocks);
+  }
+
+  // 2. Detect column gutters
+  // Adaptive minColGap based on document width: typically 15pt, or at least 2.5% of docWidth
+  const minColGap = Math.max(12, Math.min(36, docWidth * 0.025));
+  const gutters = detectColumnGutters(blocks, minColGap, { minX, maxX, docWidth });
+
+  // If no column gutters were found, this is a single-column layout
+  if (gutters.length === 0) {
+    return sortIntraColumn(blocks);
+  }
+
+  // 3. Multi-column document handling
+  // Sort gutters from left to right
+  gutters.sort((a, b) => a.start - b.start);
+
+  const columnCount = gutters.length + 1;
+
+  // Identify spanning blocks (headers, titles, footers, full-width section dividers)
+  const isSpanning = (b: OcrLineBlock): boolean => {
+    const left = b.bbox.x;
+    const right = b.bbox.x + b.bbox.width;
+    // Spans across any gutter
+    for (const g of gutters) {
+      if (left < g.start + 4 && right > g.end - 4) {
+        return true;
+      }
+    }
+    // Or covers more than 80% of entire text envelope
+    if (b.bbox.width >= docWidth * 0.80) {
+      return true;
+    }
+    return false;
+  };
+
+  const spanningBlocks: OcrLineBlock[] = [];
+  const columnBlocks: OcrLineBlock[][] = Array.from({ length: columnCount }, () => []);
+
+  for (const b of blocks) {
+    if (isSpanning(b)) {
+      spanningBlocks.push(b);
+    } else {
+      const midX = b.bbox.x + b.bbox.width / 2;
+      let colIdx = 0;
+      for (let i = 0; i < gutters.length; i++) {
+        if (midX >= gutters[i].mid) {
+          colIdx = i + 1;
+        } else {
+          break;
+        }
+      }
+      columnBlocks[colIdx].push(b);
+    }
+  }
+
+  // Collect all column lines
+  const allColLines = columnBlocks.flat();
+  if (allColLines.length === 0) {
+    // Only spanning blocks
+    return sortIntraColumn(blocks);
+  }
+
+  // Sort spanning blocks top-to-bottom
+  spanningBlocks.sort((a, b) => a.bbox.y - b.bbox.y);
+
+  const headers: OcrLineBlock[] = [];
+  const footers: OcrLineBlock[] = [];
+  const middleSpanning: OcrLineBlock[] = [];
+
+  for (const sb of spanningBlocks) {
+    const linesAbove = allColLines.filter(
+      (c) => c.bbox.y + c.bbox.height < sb.bbox.y + 4
+    ).length;
+    const linesBelow = allColLines.filter(
+      (c) => c.bbox.y > sb.bbox.y + sb.bbox.height - 4
+    ).length;
+
+    if (linesAbove === 0) {
+      headers.push(sb);
+    } else if (linesBelow === 0) {
+      footers.push(sb);
+    } else {
+      middleSpanning.push(sb);
+    }
+  }
+
+  const result: OcrLineBlock[] = [];
+
+  // 1. Spanning Headers first
+  result.push(...sortIntraColumn(headers));
+
+  // 2. Body columns partitioned by any middle spanning blocks
+  if (middleSpanning.length === 0) {
+    // Standard 2-column or N-column body without mid-page spanning banners
+    for (let c = 0; c < columnCount; c++) {
+      result.push(...sortIntraColumn(columnBlocks[c]));
+    }
+  } else {
+    // Cluster consecutive or overlapping middle spanning blocks into SpanningBands
+    interface SpanningBand {
+      top: number;
+      bottom: number;
+      blocks: OcrLineBlock[];
+    }
+    const bands: SpanningBand[] = [];
+    for (const sb of middleSpanning) {
+      const top = sb.bbox.y;
+      const bottom = sb.bbox.y + sb.bbox.height;
+      if (bands.length === 0) {
+        bands.push({ top, bottom, blocks: [sb] });
+      } else {
+        const lastBand = bands[bands.length - 1];
+        const lineTol = Math.max(4, sb.bbox.height * 0.5);
+        if (top <= lastBand.bottom + lineTol) {
+          lastBand.bottom = Math.max(lastBand.bottom, bottom);
+          lastBand.blocks.push(sb);
+        } else {
+          bands.push({ top, bottom, blocks: [sb] });
+        }
+      }
+    }
+
+    // Slice 0: above the first band
+    for (let c = 0; c < columnCount; c++) {
+      const sliceLines = columnBlocks[c].filter(
+        (b) => b.bbox.y + b.bbox.height / 2 < bands[0].top
+      );
+      result.push(...sortIntraColumn(sliceLines));
+    }
+
+    // Iterate through bands and intermediate slices
+    for (let i = 0; i < bands.length; i++) {
+      result.push(...sortIntraColumn(bands[i].blocks));
+
+      const nextTop = i + 1 < bands.length ? bands[i + 1].top : Infinity;
+      const currentBottom = bands[i].bottom;
+
+      for (let c = 0; c < columnCount; c++) {
+        const sliceLines = columnBlocks[c].filter((b) => {
+          const midY = b.bbox.y + b.bbox.height / 2;
+          return midY >= currentBottom && midY < nextTop;
+        });
+        result.push(...sortIntraColumn(sliceLines));
+      }
+    }
+  }
+
+  // 3. Spanning Footers last
+  result.push(...sortIntraColumn(footers));
+
+  return result;
+}
+
+/**
+ * Parses raw Tesseract recognition block hierarchy into clean lines and blocks
+ * ordered with topological reading order (preserving multi-column structure).
  * Shared between server and client edge pipelines.
  */
 export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines: string[]; lineBlocks: OcrLineBlock[] } {
-  const lines: string[] = [];
   const lineBlocks: OcrLineBlock[] = [];
-  if (!blocks || blocks.length === 0) return { lines, lineBlocks };
+  if (!blocks || blocks.length === 0) return { lines: [], lineBlocks: [] };
 
   for (const block of blocks) {
     if (!block.paragraphs) continue;
@@ -71,7 +430,6 @@ export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines:
       for (const line of para.lines) {
         const text = (line.text || '').trim();
         if (!text) continue;
-        lines.push(text);
 
         const words: OcrWord[] = [];
         if (line.words) {
@@ -110,7 +468,10 @@ export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines:
     }
   }
 
-  return { lines, lineBlocks };
+  const sortedLineBlocks = sortLineBlocksTopological(lineBlocks);
+  const lines = sortedLineBlocks.map((b) => b.text);
+
+  return { lines, lineBlocks: sortedLineBlocks };
 }
 
 /**
@@ -1048,7 +1409,8 @@ export function injectInvisibleTextLayer(
   scaleY: number = 1.0
 ): void {
   const { height: pageHeight, width: pageWidth } = page.getSize();
-  const blocks = ocrResult.lineBlocks || [];
+  const rawBlocks = ocrResult.lineBlocks || [];
+  const blocks = sortLineBlocksTopological(rawBlocks, pageWidth, pageHeight);
 
   if (blocks.length > 0) {
     for (const block of blocks) {
