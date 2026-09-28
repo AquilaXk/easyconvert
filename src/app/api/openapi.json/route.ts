@@ -85,23 +85,38 @@ export async function GET() {
             },
             '400': {
               description: 'Invalid input format, missing parameter, or unsupported conversion pair.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
             '401': {
               description: 'Missing or invalid API key.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
             '403': {
-              description: 'Access denied due to IP address or CIDR whitelist restriction.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              description: 'Access denied due to IP address, CIDR whitelist, or missing scope restriction.',
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
             '429': {
               description: 'Rate limit or daily conversion quota exhausted.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
             '500': {
               description: 'Internal engine processing failure (quota reservation rolled back).',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
           },
         },
@@ -172,16 +187,25 @@ export async function GET() {
               },
             },
             '400': {
-              description: 'Bad request.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              description: 'Bad request or parameter validation failure.',
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
             '401': {
-              description: 'Unauthorized.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              description: 'Unauthorized or missing scope.',
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
             '429': {
               description: 'Quota exceeded.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
           },
         },
@@ -223,6 +247,13 @@ export async function GET() {
                 },
               },
             },
+            '401': {
+              description: 'Unauthorized.',
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+            },
           },
         },
       },
@@ -249,9 +280,26 @@ export async function GET() {
                 },
               },
             },
+            '401': {
+              description: 'Unauthorized.',
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+            },
+            '403': {
+              description: 'Access denied.',
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+            },
             '404': {
               description: 'Job not found.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+              content: {
+                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
             },
           },
         },
@@ -329,6 +377,29 @@ export async function GET() {
           properties: {
             success: { type: 'boolean', example: false },
             error: { type: 'string', example: 'Detailed error description' },
+          },
+        },
+        ProblemDetails: {
+          type: 'object',
+          required: ['type', 'title', 'status', 'detail', 'instance'],
+          properties: {
+            type: { type: 'string', format: 'uri', example: 'https://api.easyconvert.io/problems/bad-request' },
+            title: { type: 'string', example: 'Bad Request' },
+            status: { type: 'integer', example: 400 },
+            detail: { type: 'string', example: 'Invalid parameter provided.' },
+            instance: { type: 'string', example: '/api/v1/jobs' },
+            invalidParams: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  reason: { type: 'string' },
+                },
+              },
+            },
+            success: { type: 'boolean', example: false },
+            error: { type: 'string', example: 'Invalid parameter provided.' },
           },
         },
         ConversionResponse: {

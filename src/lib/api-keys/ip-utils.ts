@@ -1,19 +1,57 @@
 import net from 'node:net';
 
 /**
- * Checks whether an IPv4 or IPv6 address belongs to a CIDR block (e.g. 192.168.1.0/24 or 2001:db8::/32).
+ * Normalizes an IP address by stripping brackets, ports, and IPv4-mapped IPv6 prefixes (::ffff:x.x.x.x).
  */
-export function isIpInCidr(ip: string, cidr: string): boolean {
-  const cleanIp = ip.trim();
-  const cleanCidr = cidr.trim();
+export function normalizeIp(ip: string): string {
+  if (!ip || typeof ip !== 'string') return '';
+  let clean = ip.trim();
 
-  if (!cleanCidr.includes('/')) {
-    return cleanIp === cleanCidr;
+  // Strip brackets and optional port from IPv6, e.g. [2001:db8::1]:8080 or [::ffff:192.168.1.1]
+  const bracketMatch = clean.match(/^\[([a-fA-F0-9:.]+)\](?::\d+)?$/);
+  if (bracketMatch) {
+    clean = bracketMatch[1];
+  } else {
+    // Strip trailing port from IPv4, e.g. 192.168.1.1:8080
+    const portMatch = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/);
+    if (portMatch) {
+      clean = portMatch[1];
+    }
   }
 
-  const [range, bitsStr] = cleanCidr.split('/');
-  const prefixLength = parseInt(bitsStr, 10);
+  // Handle IPv4-mapped IPv6 addresses: ::ffff:192.168.1.1 or 0:0:0:0:0:ffff:192.168.1.1
+  const lower = clean.toLowerCase();
+  if (lower.startsWith('::ffff:') || lower.startsWith('0:0:0:0:0:ffff:')) {
+    const candidate = lower.replace(/^.*ffff:/, '');
+    if (net.isIPv4(candidate)) {
+      return candidate;
+    }
+  }
+
+  return clean;
+}
+
+/**
+ * Checks whether an IPv4 or IPv6 address belongs to a CIDR block (e.g. 192.168.1.0/24 or 2001:db8::/32).
+ * Automatically normalizes IPv4-mapped IPv6 addresses.
+ */
+export function isIpInCidr(ip: string, cidr: string): boolean {
+  const cleanIp = normalizeIp(ip);
+  let cleanCidr = cidr.trim();
+
+  if (!cleanCidr.includes('/')) {
+    return cleanIp === normalizeIp(cleanCidr);
+  }
+
+  const [rawRange, bitsStr] = cleanCidr.split('/');
+  let prefixLength = parseInt(bitsStr, 10);
   if (isNaN(prefixLength)) return false;
+
+  let range = normalizeIp(rawRange);
+  // If the CIDR range was an IPv4-mapped IPv6 with /120..128 prefix, normalize prefix length to /24..32
+  if (net.isIPv4(range) && rawRange.toLowerCase().includes('ffff:') && prefixLength >= 96) {
+    prefixLength = prefixLength - 96;
+  }
 
   const ipFamily = net.isIP(cleanIp);
   const rangeFamily = net.isIP(range);
@@ -77,19 +115,52 @@ export function isIpInCidr(ip: string, cidr: string): boolean {
 
 /**
  * Validates whether a client IP matches an allowed whitelist of IP addresses and CIDR subnets.
+ * Normalizes IPv4-mapped IPv6 addresses for consistent comparison.
  */
 export function isIpAllowed(clientIp: string, allowedIps?: string[]): boolean {
   if (!allowedIps || allowedIps.length === 0) return true;
-  const cleanIp = clientIp.trim();
+  const cleanIp = normalizeIp(clientIp);
   if (!cleanIp) return false;
 
   for (const entry of allowedIps) {
     const trimmed = entry.trim();
     if (!trimmed || trimmed === '*') return true;
-    if (trimmed === cleanIp) return true;
+    const normalizedEntry = normalizeIp(trimmed);
+    if (normalizedEntry === cleanIp) return true;
     if (trimmed.includes('/') && isIpInCidr(cleanIp, trimmed)) {
       return true;
     }
   }
   return false;
+}
+
+/**
+ * Securely extracts and normalizes the client IP from trusted reverse proxy headers.
+ * Protects against spoofing by prioritizing authentic CDN edge headers (cf-connecting-ip)
+ * and verifying extracted addresses.
+ */
+export function extractClientIp(request: Request): string {
+  // 1. Authenticated CDN edge header (Cloudflare)
+  const cfIp = request.headers.get('cf-connecting-ip');
+  if (cfIp) {
+    const normalized = normalizeIp(cfIp);
+    if (net.isIP(normalized) !== 0) return normalized;
+  }
+
+  // 2. Direct upstream reverse proxy header (Nginx / HAProxy / Envoy)
+  const realIp = request.headers.get('x-real-ip');
+  if (realIp) {
+    const normalized = normalizeIp(realIp);
+    if (net.isIP(normalized) !== 0) return normalized;
+  }
+
+  // 3. Forwarded proxy chain (take leftmost client IP)
+  const forwarded = request.headers.get('x-forwarded-for');
+  if (forwarded) {
+    const leftmost = forwarded.split(',')[0].trim();
+    const normalized = normalizeIp(leftmost);
+    if (net.isIP(normalized) !== 0) return normalized;
+  }
+
+  return '127.0.0.1';
 }

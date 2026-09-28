@@ -5,33 +5,33 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { ConversionOptions, JobStatus } from '@/lib/types';
+import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
 
 const MAX_JOB_PAYLOAD_SIZE = 500 * 1024 * 1024; // 500 MB for asynchronous processing
 
 export async function POST(req: NextRequest) {
-  // 1. Guard check: Authenticate API key or user session
-  const auth = await validateApiAccess(req, 0);
+  const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
+
+  // 1. Guard check: Authenticate API key or user session with 'jobs:write' scope
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'jobs:write' });
   if (!auth.authorized || !auth.user) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: auth.error ?? 'Unauthorized',
-      },
-      { status: auth.status ?? 401 }
+    return createProblemDetailsResponse(
+      auth.status ?? 401,
+      auth.error ?? 'Unauthorized',
+      instanceUri
     );
   }
 
   // 2. Phase 1: Atomically reserve quota unit BEFORE enqueueing
   const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
   if (!reservation.allowed) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
-      },
-      { status: 429 }
+    return createProblemDetailsResponse(
+      429,
+      `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+      instanceUri,
+      'Too Many Requests'
     );
   }
 
@@ -67,9 +67,11 @@ export async function POST(req: NextRequest) {
           if (reservation.reservationId) {
             await redisKeyStore.rollbackQuota(reservation.reservationId);
           }
-          return NextResponse.json(
-            { success: false, error: 'Invalid JSON string provided in "options" parameter.' },
-            { status: 400 }
+          return createProblemDetailsResponse(
+            400,
+            'Invalid JSON string provided in "options" parameter.',
+            instanceUri,
+            'Bad Request'
           );
         }
       }
@@ -79,9 +81,11 @@ export async function POST(req: NextRequest) {
           if (reservation.reservationId) {
             await redisKeyStore.rollbackQuota(reservation.reservationId);
           }
-          return NextResponse.json(
-            { success: false, error: `File size exceeds the 500 MB asynchronous payload boundary.` },
-            { status: 400 }
+          return createProblemDetailsResponse(
+            400,
+            'File size exceeds the 500 MB asynchronous payload boundary.',
+            instanceUri,
+            'Payload Too Large'
           );
         }
 
@@ -117,9 +121,11 @@ export async function POST(req: NextRequest) {
       if (reservation.reservationId) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
-      return NextResponse.json(
-        { success: false, error: 'Missing required parameter: "targetFormat".' },
-        { status: 400 }
+      return createProblemDetailsResponse(
+        400,
+        'Missing required parameter: "targetFormat".',
+        instanceUri,
+        'Bad Request'
       );
     }
 
@@ -127,9 +133,11 @@ export async function POST(req: NextRequest) {
       if (reservation.reservationId) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
-      return NextResponse.json(
-        { success: false, error: 'Missing input file data. Please upload a "file" or provide "storageKey" / "inputBufferBase64".' },
-        { status: 400 }
+      return createProblemDetailsResponse(
+        400,
+        'Missing input file data. Please upload a "file" or provide "storageKey" / "inputBufferBase64".',
+        instanceUri,
+        'Bad Request'
       );
     }
 
@@ -141,9 +149,11 @@ export async function POST(req: NextRequest) {
       if (reservation.reservationId) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
-      return NextResponse.json(
-        { success: false, error: `Could not identify source format for file "${originalFilename}".` },
-        { status: 400 }
+      return createProblemDetailsResponse(
+        400,
+        `Could not identify source format for file "${originalFilename}".`,
+        instanceUri,
+        'Bad Request'
       );
     }
 
@@ -154,9 +164,11 @@ export async function POST(req: NextRequest) {
       if (reservation.reservationId) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
-      return NextResponse.json(
-        { success: false, error: `Unsupported target format "${targetFormat}".` },
-        { status: 400 }
+      return createProblemDetailsResponse(
+        400,
+        `Unsupported target format "${targetFormat}".`,
+        instanceUri,
+        'Bad Request'
       );
     }
 
@@ -165,12 +177,11 @@ export async function POST(req: NextRequest) {
       if (reservation.reservationId) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`,
-        },
-        { status: 400 }
+      return createProblemDetailsResponse(
+        400,
+        `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`,
+        instanceUri,
+        'Bad Request'
       );
     }
 
@@ -220,19 +231,20 @@ export async function POST(req: NextRequest) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    return createProblemDetailsResponse(500, message, instanceUri, 'Internal Server Error');
   }
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await validateApiAccess(req, 0);
+  const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
+
+  // Guard check: Authenticate API key or user session with 'jobs:read' scope
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'jobs:read' });
   if (!auth.authorized || !auth.user) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: auth.error ?? 'Unauthorized',
-      },
-      { status: auth.status ?? 401 }
+    return createProblemDetailsResponse(
+      auth.status ?? 401,
+      auth.error ?? 'Unauthorized',
+      instanceUri
     );
   }
 
@@ -272,3 +284,4 @@ export async function GET(req: NextRequest) {
     })),
   });
 }
+
