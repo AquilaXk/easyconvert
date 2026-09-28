@@ -19,7 +19,7 @@ export interface SandboxedExecutionOptions {
   cwd?: string;
   networkIsolated?: boolean;
   memoryLimitMb?: number;
-  stdin?: Buffer | NodeJS.ReadableStream | null;
+  stdin?: NodeJS.ReadableStream | Buffer | null;
 }
 
 export interface SandboxedExecutionResult {
@@ -328,6 +328,23 @@ export const DANGEROUS_SYSCALL_FILTER_LIST: string[] = [
   'adjtimex',
 ];
 
+export const NETWORK_SYSCALL_FILTER_LIST: string[] = [
+  'socket',
+  'socketpair',
+  'connect',
+  'bind',
+  'listen',
+  'accept',
+  'accept4',
+  'sendto',
+  'recvfrom',
+  'sendmsg',
+  'recvmsg',
+  'sendmmsg',
+  'recvmmsg',
+  'shutdown',
+];
+
 export interface SeccompBpfProfile {
   defaultAction: string;
   killAction: string;
@@ -335,13 +352,17 @@ export interface SeccompBpfProfile {
 }
 
 /**
- * Generates a defensive Seccomp BPF syscall filter profile blocking privileged operations.
+ * Generates a defensive Seccomp BPF syscall filter profile blocking privileged operations and optional network syscalls.
  */
-export function generateSeccompBpfProfile(): SeccompBpfProfile {
+export function generateSeccompBpfProfile(options?: { blockNetwork?: boolean }): SeccompBpfProfile {
+  const blocked = [...DANGEROUS_SYSCALL_FILTER_LIST];
+  if (options?.blockNetwork) {
+    blocked.push(...NETWORK_SYSCALL_FILTER_LIST);
+  }
   return {
     defaultAction: 'SCMP_ACT_ALLOW',
     killAction: 'SCMP_ACT_ERRNO',
-    blockedSyscalls: [...DANGEROUS_SYSCALL_FILTER_LIST],
+    blockedSyscalls: blocked,
   };
 }
 
@@ -473,16 +494,17 @@ export async function executeSandboxedBinary(
 
     // Spawn directly without shell to prevent shell injection vulnerabilities.
     // Use detached: true so child becomes process group leader, preventing orphan leaks.
-    const child = spawn(resolvedCmd.binary, resolvedCmd.args, {
+    const proc = spawn(resolvedCmd.binary, resolvedCmd.args, {
       cwd,
       env: sanitizedEnv,
       stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       shell: false,
       detached: true,
     });
-    activeChild = child;
-    if (stdin && child.stdin) {
-      child.stdin.on('error', (err: any) => {
+    activeChild = proc;
+
+    if (stdin && proc.stdin) {
+      proc.stdin.on('error', (err: any) => {
         // EPIPE or ECONNRESET can occur if child closes stdin before stream is exhausted.
         if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
           return;
@@ -490,14 +512,17 @@ export async function executeSandboxedBinary(
       });
 
       if (Buffer.isBuffer(stdin)) {
-        child.stdin.end(stdin);
+        proc.stdin.end(stdin);
       } else {
-        pipeline(stdin, child.stdin, (err) => {
+        pipeline(stdin, proc.stdin, (err) => {
           if (err) {
             const code = (err as any).code;
             if (code !== 'EPIPE' && code !== 'ERR_STREAM_PREMATURE_CLOSE' && code !== 'ECONNRESET') {
               settle(() => {
-                killProcessGroup(child.pid, 'SIGKILL');
+                killProcessGroup(proc.pid, 'SIGKILL');
+                try {
+                  proc.kill('SIGKILL');
+                } catch {}
                 reject(err);
               });
             }
@@ -508,31 +533,40 @@ export async function executeSandboxedBinary(
 
     timer = setTimeout(() => {
       settle(() => {
-        killProcessGroup(child.pid, 'SIGKILL');
+        killProcessGroup(proc.pid, 'SIGKILL');
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
         reject(new SandboxedTimeoutError(timeoutMs));
       });
     }, timeoutMs);
 
     if (memoryLimitMb && memoryLimitMb > 0) {
       memoryInterval = setInterval(() => {
-        if (!child.pid || isSettled) return;
-        const rssMb = getProcessRssMb(child.pid);
+        if (!proc.pid || isSettled) return;
+        const rssMb = getProcessRssMb(proc.pid);
         if (rssMb !== null && rssMb > memoryLimitMb) {
           settle(() => {
-            killProcessGroup(child.pid, 'SIGKILL');
+            killProcessGroup(proc.pid, 'SIGKILL');
+            try {
+              proc.kill('SIGKILL');
+            } catch {}
             reject(new SandboxedMemoryLimitError(memoryLimitMb));
           });
         }
       }, 50);
     }
 
-    if (child.stdout) {
-      child.stdout.on('data', (chunk: Buffer) => {
+    if (proc.stdout) {
+      proc.stdout.on('data', (chunk: Buffer) => {
         if (isSettled) return;
         currentBufferSize += chunk.length;
         if (currentBufferSize > maxBuffer) {
           settle(() => {
-            killProcessGroup(child.pid, 'SIGKILL');
+            killProcessGroup(proc.pid, 'SIGKILL');
+            try {
+              proc.kill('SIGKILL');
+            } catch {}
             reject(new SandboxedBufferLimitError(maxBuffer));
           });
           return;
@@ -541,13 +575,16 @@ export async function executeSandboxedBinary(
       });
     }
 
-    if (child.stderr) {
-      child.stderr.on('data', (chunk: Buffer) => {
+    if (proc.stderr) {
+      proc.stderr.on('data', (chunk: Buffer) => {
         if (isSettled) return;
         currentBufferSize += chunk.length;
         if (currentBufferSize > maxBuffer) {
           settle(() => {
-            killProcessGroup(child.pid, 'SIGKILL');
+            killProcessGroup(proc.pid, 'SIGKILL');
+            try {
+              proc.kill('SIGKILL');
+            } catch {}
             reject(new SandboxedBufferLimitError(maxBuffer));
           });
           return;
@@ -556,13 +593,13 @@ export async function executeSandboxedBinary(
       });
     }
 
-    child.on('error', (err) => {
+    proc.on('error', (err) => {
       settle(() => {
         reject(err);
       });
     });
 
-    child.on('close', (code) => {
+    proc.on('close', (code) => {
       settle(() => {
         const durationMs = Date.now() - startTime;
         const stdout = Buffer.concat(stdoutChunks);
