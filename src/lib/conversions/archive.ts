@@ -1034,7 +1034,7 @@ function encodeXzVarint(val: number): Buffer {
 /**
  * Pure TypeScript Authentic XZ Container Packager (The .xz File Format 1.1.0)
  */
-function packXz(uncompressed: Buffer): Buffer {
+export function packXz(uncompressed: Buffer): Buffer {
   const chunks: Buffer[] = [];
   const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
   const streamFlags = Buffer.from([0x00, 0x01]); // CRC32 check
@@ -1088,7 +1088,7 @@ function packXz(uncompressed: Buffer): Buffer {
 /**
  * Pure TypeScript Authentic XZ Container Unpacker
  */
-function unpackXz(buf: Buffer): Buffer {
+export function unpackXz(buf: Buffer): Buffer {
   if (buf.length < 32) throw new Error('Invalid XZ archive: buffer too small');
   const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
   if (!buf.subarray(0, 6).equals(magic)) throw new Error('Invalid XZ archive: magic number mismatch');
@@ -1111,11 +1111,26 @@ function unpackXz(buf: Buffer): Buffer {
   const footerMagic = buf.subarray(buf.length - 2);
   if (!footerMagic.equals(Buffer.from([0x59, 0x5a]))) throw new Error('Invalid XZ archive: footer magic mismatch');
 
-  const backwardSize = buf.readUInt32LE(buf.length - 10);
+  const footerBeforeCrc = buf.subarray(buf.length - 8, buf.length - 2);
+  const expectedFooterCrc = buf.readUInt32LE(buf.length - 12);
+  if (crc32(footerBeforeCrc) !== expectedFooterCrc) {
+    throw new Error('Invalid XZ archive: footer CRC mismatch');
+  }
+  if (footerBeforeCrc[4] !== streamFlags[0] || footerBeforeCrc[5] !== streamFlags[1]) {
+    throw new Error('Invalid XZ archive: stream flags mismatch between header and footer');
+  }
+
+  const backwardSize = buf.readUInt32LE(buf.length - 8);
   const indexSize = (backwardSize + 1) * 4;
   if (buf.length < 12 + indexSize + 12) throw new Error('Invalid XZ archive: invalid index size');
   const indexOffset = buf.length - 12 - indexSize;
   const indexBuf = buf.subarray(indexOffset, indexOffset + indexSize);
+
+  const expectedIndexCrc = indexBuf.readUInt32LE(indexBuf.length - 4);
+  const indexBodyNoCrc = indexBuf.subarray(0, indexBuf.length - 4);
+  if (crc32(indexBodyNoCrc) !== expectedIndexCrc) {
+    throw new Error('Invalid XZ archive: index CRC mismatch');
+  }
 
   let idxCur = 1;
   while (idxCur < indexBuf.length) {
@@ -1135,8 +1150,13 @@ function unpackXz(buf: Buffer): Buffer {
     shift += 7;
   }
 
+  const checkCrc = buf.readUInt32LE(indexOffset - 4);
   const props = Buffer.from([0x14]);
-  return decompressLzma2(lzma2Payload, props, uncompressedSize || ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  const uncompressed = decompressLzma2(lzma2Payload, props, uncompressedSize || ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  if (crc32(uncompressed) !== checkCrc) {
+    throw new Error('Invalid XZ archive: payload CRC32 mismatch');
+  }
+  return uncompressed;
 }
 
 export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Buffer {
@@ -1213,7 +1233,7 @@ export function convertWithNative7z(
   fs.mkdirSync(workDir, { recursive: true });
 
   try {
-    const inputExt = src.includes('.') ? src.split('.').pop()! : src;
+    const inputExt = src.startsWith('tar.') ? src : (src.includes('.') ? src.split('.').pop()! : src);
     const inputPath = path.join(workDir, `input.${inputExt}`);
     fs.writeFileSync(inputPath, inputBuffer);
 
@@ -1226,6 +1246,21 @@ export function convertWithNative7z(
         timeout: 60000,
         maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
       });
+
+      // If extracting a compressed tarball (tar.gz, tar.bz2, tar.xz, tgz, etc.), 7-Zip produces an intermediate .tar archive
+      if (src.startsWith('tar.') || src === 'tgz' || src === 'tbz2' || src === 'tbz' || src === 'txz') {
+        const intermediateTar = path.join(extractDir, 'input.tar');
+        const intermediateNoExt = path.join(extractDir, 'input');
+        const tarToExtract = fs.existsSync(intermediateTar) ? intermediateTar : (fs.existsSync(intermediateNoExt) ? intermediateNoExt : null);
+        if (tarToExtract) {
+          execFileSync(p7zBin, ['x', '-y', `-o${extractDir}`, tarToExtract], {
+            cwd: workDir,
+            timeout: 60000,
+            maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+          });
+          try { fs.unlinkSync(tarToExtract); } catch {}
+        }
+      }
     } else {
       const destPath = path.join(extractDir, originalFilename || `file.${src}`);
       fs.writeFileSync(destPath, inputBuffer);

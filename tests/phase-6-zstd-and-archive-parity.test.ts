@@ -13,6 +13,8 @@ import {
   ZSTD_OFFICE_DICT_MAGIC,
   compressXz,
   decompressXz,
+  packXz,
+  unpackXz,
   convertArchive,
   createTarArchive,
   extractTarArchive,
@@ -24,6 +26,7 @@ import {
   getXzBinaryPath,
   get7zBinaryPath,
 } from '../src/lib/conversions';
+import { decodeZstdCompressedBlockWithDict } from '../src/lib/conversions/zstd-dict';
 import { getZstdBinaryPath } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
 
@@ -117,11 +120,53 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       expect(decompressed.toString('utf-8')).toBe(originalXml.toString('utf-8'));
     });
 
-    it('decompresses losslessly via official zstd CLI binary when available', () => {
-      const zstdBin = getZstdBinaryPath();
-      if (!zstdBin) {
-        return;
+    it('authentically encodes and decodes high sequence counts (>255 sequences) conforming to RFC 8878 Section 3.1.1.3.2', () => {
+      const dictPattern = 'AlphaBetaGammaDelta0123456789!@#$%^&*()_+{}[]:;<>,.?/~`';
+      const dict = Buffer.from(dictPattern, 'utf-8');
+
+      // Generate input with 300 distinct sequence matches against dict
+      const parts: string[] = [];
+      for (let i = 0; i < 300; i++) {
+        parts.push(dictPattern.slice(0, 16) + String(i).padStart(4, '0'));
       }
+      const highSeqInput = Buffer.from(parts.join(''), 'utf-8');
+
+      const compressed = compressWithZstdDict(highSeqInput, dict, { dictId: 0 });
+      expect(compressed.length).toBeLessThan(highSeqInput.length);
+
+      // Pure TypeScript round-trip
+      const tsDecompressed = decompressWithZstdDict(compressed, dict);
+      expect(tsDecompressed.length).toBe(highSeqInput.length);
+      expect(sha256(tsDecompressed)).toBe(sha256(highSeqInput));
+
+      // Official zstd CLI round-trip if available
+      const zstdBin = getZstdBinaryPath();
+      if (zstdBin) {
+        const tmpDir = os.tmpdir();
+        const token = crypto.randomBytes(8).toString('hex');
+        const compFile = path.join(tmpDir, `zstd_high_seq_${token}.zst`);
+        const dictFile = path.join(tmpDir, `zstd_high_dict_${token}.dict`);
+
+        try {
+          fs.writeFileSync(compFile, compressed);
+          fs.writeFileSync(dictFile, dict);
+
+          const cliOutput = execFileSync(zstdBin, ['-d', '-D', dictFile, compFile, '-c', '-q'], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: 10000,
+          });
+
+          expect(cliOutput.length).toBe(highSeqInput.length);
+          expect(sha256(cliOutput)).toBe(sha256(highSeqInput));
+        } finally {
+          try { fs.unlinkSync(compFile); } catch {}
+          try { fs.unlinkSync(dictFile); } catch {}
+        }
+      }
+    });
+
+    it.skipIf(!getZstdBinaryPath())('decompresses losslessly via official zstd CLI binary when available', () => {
+      const zstdBin = getZstdBinaryPath()!;
 
       // Generate a repetitive input that exercises sequences
       const pattern = 'AlphaBetaGammaDelta1234567890!@#$%^&*()_+';
@@ -181,6 +226,20 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
         /too small/i
       );
     });
+
+    it('enforces Fail-Closed rejection on invalid sequence offset values (offset <= 0)', () => {
+      // Craft a block payload with a sequence having offset <= 0 (litLen=0 and rawOffset=3 with initial r1=1, yielding offset = r1 - 1 = 0)
+      const fakeBlock = Buffer.from([
+        0x00, // Raw literals length = 0
+        0x01, // numSeq = 1
+        0x00, // Predefined FSE mode
+        0x81, 0x0b, 0x04, // Backward FSE bitstream encoding rawOffset=3, matchLen=3, litLen=0
+      ]);
+
+      expect(() =>
+        decodeZstdCompressedBlockWithDict(fakeBlock, Buffer.alloc(16))
+      ).toThrow(/invalid offset|Corrupt sequence/i);
+    });
   });
 
   // ==========================================================================
@@ -202,9 +261,9 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       },
     ];
 
-    it('authentically packages and unpacks XZ container with compliant stream header, index, and footer', () => {
+    it('authentically packages and unpacks XZ container with pure TS packXz and unpackXz', () => {
       const content = Buffer.from('Authentic XZ container specification packaging test.\n'.repeat(25), 'utf-8');
-      const xzBuffer = compressXz(content);
+      const xzBuffer = packXz(content);
 
       // 1. Verify 6-byte XZ Magic: 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00
       expect(xzBuffer.subarray(0, 6)).toEqual(
@@ -216,21 +275,44 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
         Buffer.from([0x59, 0x5a])
       );
 
-      // 3. Lossless round-trip via pure TS decompressXz
-      const decompressed = decompressXz(xzBuffer);
+      // 3. Lossless round-trip via pure TS unpackXz
+      const decompressed = unpackXz(xzBuffer);
       expect(decompressed.length).toBe(content.length);
       expect(sha256(decompressed)).toBe(sha256(content));
       expect(decompressed.toString('utf-8')).toBe(content.toString('utf-8'));
     });
 
-    it('decompresses pure TS XZ packaging losslessly with official xz CLI binary when available', () => {
-      const xzBin = getXzBinaryPath();
-      if (!xzBin) {
-        return;
-      }
+    it('enforces Fail-Closed integrity checks in unpackXz on corrupt CRC, invalid index, and tampered stream flags', () => {
+      const content = Buffer.from('Fail-Closed XZ container integrity test payload.\n'.repeat(10), 'utf-8');
+      const validXz = packXz(content);
+
+      // 1. Tampered payload check CRC
+      const backwardSize = validXz.readUInt32LE(validXz.length - 8);
+      const indexSize = (backwardSize + 1) * 4;
+      const indexOffset = validXz.length - 12 - indexSize;
+      const tamperedCheckCrc = Buffer.from(validXz);
+      tamperedCheckCrc[indexOffset - 4] ^= 0xff;
+      expect(() => unpackXz(tamperedCheckCrc)).toThrow(/payload CRC32 mismatch/i);
+
+      // 2. Tampered footer CRC
+      const tamperedFooterCrc = Buffer.from(validXz);
+      tamperedFooterCrc[tamperedFooterCrc.length - 12] ^= 0xff;
+      expect(() => unpackXz(tamperedFooterCrc)).toThrow(/footer CRC mismatch/i);
+
+      // 3. Tampered stream flags between header and footer
+      const tamperedFlags = Buffer.from(validXz);
+      tamperedFlags[tamperedFlags.length - 4] ^= 0x01;
+      expect(() => unpackXz(tamperedFlags)).toThrow(/footer CRC mismatch|stream flags mismatch/i);
+
+      // 4. Truncated buffer
+      expect(() => unpackXz(validXz.subarray(0, 20))).toThrow(/buffer too small/i);
+    });
+
+    it.skipIf(!getXzBinaryPath())('decompresses pure TS XZ packaging losslessly with official xz CLI binary when available', () => {
+      const xzBin = getXzBinaryPath()!;
 
       const content = Buffer.from('Official XZ CLI Interoperability Verification Payload.\n'.repeat(30), 'utf-8');
-      const xzBuffer = compressXz(content);
+      const xzBuffer = packXz(content);
 
       const cliDecompressed = execFileSync(xzBin, ['-d', '-c', '-q'], {
         input: xzBuffer,
@@ -316,11 +398,8 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       ).rejects.toThrow(/Unsupported archive target format/i);
     });
 
-    it('correctly executes convertWithNative7z when native 7z binary is present', () => {
-      const p7zBin = get7zBinaryPath();
-      if (!p7zBin) {
-        return;
-      }
+    it.skipIf(!get7zBinaryPath())('correctly executes convertWithNative7z when native 7z binary is present', () => {
+      const p7zBin = get7zBinaryPath()!;
 
       const input = Buffer.from('7z native CLI acceleration test.\n'.repeat(10), 'utf-8');
       const res = convertWithNative7z(input, 'txt', '7z', {}, 'sample.txt');

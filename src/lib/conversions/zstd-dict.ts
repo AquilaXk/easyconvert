@@ -556,10 +556,11 @@ export function compressWithZstdDict(
       const numSeq = seqs.length;
       if (numSeq < 128) {
         numSeqBuf = Buffer.from([numSeq]);
-      } else if (numSeq < 255) {
+      } else if (numSeq < 0x7f00) {
         numSeqBuf = Buffer.from([128 + (numSeq >> 8), numSeq & 0xff]);
       } else {
-        numSeqBuf = Buffer.from([255, (numSeq - 0x7f00) & 0xff, (numSeq - 0x7f00) >> 8]);
+        const offsetVal = numSeq - 0x7f00;
+        numSeqBuf = Buffer.from([255, offsetVal & 0xff, (offsetVal >> 8) & 0xff]);
       }
       const modes = Buffer.from([0x00]); // Predefined FSE mode for LL, OF, ML
       const fseBitstream = encodeSequencesFSE(seqs);
@@ -607,6 +608,9 @@ class FseReverseBitReader {
   private bitPos: number;
 
   constructor(buffer: Buffer) {
+    if (buffer.length === 0) {
+      throw new Error('Malformed Zstandard FSE bitstream: empty buffer');
+    }
     this.buffer = buffer;
     const lastByte = buffer[buffer.length - 1];
     let stopBit = 7;
@@ -618,6 +622,9 @@ class FseReverseBitReader {
   readBits(numBits: number): number {
     if (numBits === 0) return 0;
     this.bitPos -= numBits;
+    if (this.bitPos < -1) {
+      throw new Error('Malformed Zstandard FSE bitstream: unexpected end of stream');
+    }
     let val = 0;
     for (let i = 0; i < numBits; i++) {
       const bitIndex = this.bitPos + 1 + i;
@@ -780,6 +787,10 @@ export function decodeZstdCompressedBlockWithDict(
       r3 = r2;
       r2 = r1;
       r1 = offsetVal;
+    }
+
+    if (offsetVal <= 0) {
+      throw new Error(`Corrupt sequence execution: invalid offset ${offsetVal}`);
     }
 
     // 4. Update states if not last
