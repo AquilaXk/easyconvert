@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
+import { buildOpenXpsPackage } from './openxps';
 import {
   convertOffice,
   extractTextFromRtf,
@@ -492,6 +493,18 @@ export async function convertDocument(
       mimeType: 'application/vnd.oasis.opendocument.text',
       filename: `${baseName}.odt`,
       size: odtBuffer.length,
+    };
+  }
+
+  // Convert to OpenXPS / XPS
+  if (tgt === 'xps' || tgt === 'oxps') {
+    const lines = textContent.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    const buffer = await buildOpenXpsPackage([{ title: baseName, lines }], baseName);
+    return {
+      buffer,
+      mimeType: 'application/oxps',
+      filename: `${baseName}.${tgt}`,
+      size: buffer.length,
     };
   }
 

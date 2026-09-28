@@ -580,7 +580,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/rtf',
     category: 'document',
     description: 'Cross-platform document format with text formatting and font tables.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
     optionsSchema: { preserveLayout: true },
   },
   odt: {
@@ -590,7 +590,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.text',
     category: 'document',
     description: 'OASIS OpenDocument Text standard used in LibreOffice and OpenOffice.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
     optionsSchema: { preserveLayout: true, preserveTables: true },
   },
   ott: {
@@ -618,7 +618,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'document',
     description: 'Standard unformatted plain text document.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true },
   },
   text: {
@@ -1438,7 +1438,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/png',
     category: 'image',
     description: 'Portable Network Graphics - Lossless raster format with alpha transparency support.',
-    targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'svg'],
+    targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'svg', 'xps'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true },
   },
   jpg: {
@@ -1448,7 +1448,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Joint Photographic Experts Group - Standard lossy image compression for photography.',
-    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg'],
+    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg', 'xps'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true },
   },
   jpeg: {
@@ -1458,7 +1458,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Joint Photographic Experts Group standard image format.',
-    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg'],
+    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg', 'xps'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true },
   },
   webp: {
