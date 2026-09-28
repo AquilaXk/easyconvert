@@ -667,7 +667,7 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       expect(flacResult.mimeType).toBe('audio/flac');
 
       // 2. FLAC -> MP3 (Pure TS decoding of FLAC, then encoding to MP3)
-      const mp3Result = await convertFile(flacResult.buffer, 'flac', 'mp3', {}, 'song.flac');
+      const mp3Result = await convertFile(flacResult.buffer, 'flac', 'mp3', { allowPureLossyBitstream: true }, 'song.flac');
       expect(mp3Result.mimeType).toBe('audio/mpeg');
 
       // 3. MP3 -> WAV (Pure TS decoding of MP3, then encoding to WAV)

@@ -371,16 +371,19 @@ endobj
       await expect(
         convertMedia(wav, 'wav', 'mp4', { disableNativeEngine: true }, 'test.wav')
       ).rejects.toThrow(ConversionFailedError);
+      await expect(
+        convertMedia(wav, 'wav', 'mp3', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
     });
 
-    it('allows lossless FLAC and pure TS MP3 conversion without throwing ConversionFailedError', async () => {
+    it('allows lossless FLAC and pure TS MP3 conversion with allowPureLossyBitstream without throwing ConversionFailedError', async () => {
       const wav = createTestWav();
 
       const flacRes = await convertMedia(wav, 'wav', 'flac', { disableNativeEngine: true }, 'test.wav');
       expect(flacRes.mimeType).toBe('audio/flac');
       expect(flacRes.buffer.indexOf('fLaC')).toBe(0);
 
-      const mp3Res = await convertMedia(wav, 'wav', 'mp3', { disableNativeEngine: true }, 'test.wav');
+      const mp3Res = await convertMedia(wav, 'wav', 'mp3', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'test.wav');
       expect(mp3Res.mimeType).toBe('audio/mpeg');
       expect(mp3Res.buffer.length).toBeGreaterThan(0);
     });

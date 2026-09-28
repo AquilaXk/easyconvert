@@ -44,7 +44,7 @@ describe('Media Conversion Engine (Audio & Video)', () => {
 
   it('converts WAV to MP3 with valid ID3v2 and MPEG frames', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'mp3', { audioBitrate: '192k' }, 'song.wav');
+    const result = await convertFile(wav, 'wav', 'mp3', { audioBitrate: '192k', allowPureLossyBitstream: true }, 'song.wav');
 
     expect(result.mimeType).toBe('audio/mpeg');
     expect(result.filename).toBe('song.mp3');
@@ -127,7 +127,7 @@ describe('Media Conversion Engine (Audio & Video)', () => {
       expect(mp3Result.buffer.length).toBeGreaterThan(0);
     } else {
       await expect(convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4')).rejects.toThrow(
-        'Unsupported audio format: decoder unavailable'
+        /decoder unavailable|Native FFmpeg engine is required/
       );
     }
   });

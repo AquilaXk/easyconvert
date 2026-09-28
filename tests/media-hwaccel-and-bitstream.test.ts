@@ -263,7 +263,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
         convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'test.wav'),
         convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'test.wav'),
         convertMedia(wav, 'wav', 'flac', {}, 'test.wav'),
-        convertMedia(wav, 'wav', 'mp3', {}, 'test.wav'),
+        convertMedia(wav, 'wav', 'mp3', { allowPureLossyBitstream: true }, 'test.wav'),
       ]);
 
       expect(mp4Res.buffer.indexOf('ftyp')).toBe(4);
@@ -285,7 +285,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
 
     it('executes worker media conversion dispatching to native ffmpeg or internal fallback', async () => {
       const wav = createSyntheticWav(44100, 1, 0.15);
-      const workerRes = await executeWorkerConversion(wav, 'wav', 'mp3', { audioBitrate: '192k' }, 'test.wav');
+      const workerRes = await executeWorkerConversion(wav, 'wav', 'mp3', { audioBitrate: '192k', allowPureLossyBitstream: true }, 'test.wav');
 
 
       expect(workerRes).toBeDefined();

@@ -157,6 +157,7 @@ export const LOSSY_PSYCHOACOUSTIC_FORMATS = new Set([
   'm4a',
   'mp4',
   'mov',
+  'mp3',
 ]);
 
 

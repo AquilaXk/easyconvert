@@ -36,11 +36,20 @@ return 1
 export const UPDATE_USER_LUA_SCRIPT = `
 -- KEYS[1]: user record key
 -- ARGV[1]: serialized partial updates JSON
-local existing = redis.call('GET', KEYS[1])
-if not existing then
+-- ARGV[2]: current timestamp
+local raw = redis.call('GET', KEYS[1])
+if not raw then
   return nil
 end
-return existing
+local user = cjson.decode(raw)
+local updates = cjson.decode(ARGV[1])
+for k, v in pairs(updates) do
+  user[k] = v
+end
+user["updatedAt"] = tonumber(ARGV[2])
+local updatedRaw = cjson.encode(user)
+redis.call('SET', KEYS[1], updatedRaw)
+return updatedRaw
 `;
 
 export const RECORD_CONVERSION_LUA_SCRIPT = `
@@ -50,7 +59,13 @@ local raw = redis.call('GET', KEYS[1])
 if not raw then
   return nil
 end
-return raw
+local user = cjson.decode(raw)
+local currentCount = tonumber(user["conversionsCount"]) or 0
+user["conversionsCount"] = currentCount + 1
+user["updatedAt"] = tonumber(ARGV[1])
+local updatedRaw = cjson.encode(user)
+redis.call('SET', KEYS[1], updatedRaw)
+return updatedRaw
 `;
 
 /**
@@ -272,21 +287,15 @@ export class RedisUserStore extends UserStore {
     if (this.redisClient) {
       try {
         const userKey = `${this.keyPrefix}${id}`;
-        const existingRaw = await this.redisClient.eval(
+        const updatedRaw = await this.redisClient.eval(
           UPDATE_USER_LUA_SCRIPT,
           1,
           userKey,
-          JSON.stringify(updates)
+          JSON.stringify(updates),
+          String(Date.now())
         );
-        if (!existingRaw) return null;
-        const existing: UserRecord = JSON.parse(existingRaw as string);
-        const updated: UserRecord = {
-          ...existing,
-          ...updates,
-          updatedAt: Date.now(),
-        };
-        await this.redisClient.set(userKey, JSON.stringify(updated));
-        return updated;
+        if (!updatedRaw) return null;
+        return JSON.parse(updatedRaw as string);
       } catch {
         // Fallback
       }
@@ -312,18 +321,12 @@ export class RedisUserStore extends UserStore {
     if (this.redisClient) {
       try {
         const userKey = `${this.keyPrefix}${id}`;
-        const raw = await this.redisClient.eval(
+        await this.redisClient.eval(
           RECORD_CONVERSION_LUA_SCRIPT,
           1,
           userKey,
           String(Date.now())
         );
-        if (raw) {
-          const user: UserRecord = JSON.parse(raw as string);
-          user.conversionsCount = (user.conversionsCount || 0) + 1;
-          user.updatedAt = Date.now();
-          await this.redisClient.set(userKey, JSON.stringify(user));
-        }
         return;
       } catch {
         // Fallback
