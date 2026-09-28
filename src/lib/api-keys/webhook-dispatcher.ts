@@ -116,10 +116,10 @@ export class WebhookDispatcher {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       const attemptStart = Date.now();
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+      try {
         const response = await fetch(targetUrl, {
           method: 'POST',
           headers: {
@@ -134,7 +134,6 @@ export class WebhookDispatcher {
           signal: controller.signal,
         });
 
-        clearTimeout(timer);
         finalStatusCode = response.status;
         const attemptDuration = Date.now() - attemptStart;
 
@@ -163,6 +162,8 @@ export class WebhookDispatcher {
           error: errMsg,
           durationMs: attemptDuration,
         });
+      } finally {
+        clearTimeout(timer);
       }
 
       if (attempt < maxRetries) {

@@ -3,6 +3,9 @@ import {
   inCircle2D,
   lawsonEdgeFlipHealing2D,
   verifyWatertightManifoldMesh,
+  tessellateTrimmedFaceCDT,
+  HalfEdgeMesh,
+  BSplineSurface,
 } from '../src/lib/conversions/cad-nurbs';
 import {
   applyIec61966SrgbGamma,
@@ -15,7 +18,7 @@ import { ociStorage } from '../src/lib/storage/oci-storage';
 import { redisKeyStore, isIpInCidr, isIpAllowed } from '../src/lib/api-keys/redis-key-store';
 import { WebhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { userStore } from '../src/lib/auth/user-store';
-import { validateApiAccess } from '../src/lib/api-keys/guard';
+import { validateApiAccess, extractClientIp } from '../src/lib/api-keys/guard';
 import { POST as jobsPostHandler, GET as jobsGetHandler } from '../src/app/api/v1/jobs/route';
 import { GET as jobDetailHandler } from '../src/app/api/v1/jobs/[id]/route';
 import { GET as openApiHandler } from '../src/app/api/openapi.json/route';
@@ -63,7 +66,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       ];
 
       const healed = lawsonEdgeFlipHealing2D(points, initialFaces);
-      expect(healed.length).toBe(2);
+      expect(healed).toHaveLength(2);
 
       // Verify boundary constraints preservation:
       // If edge (0, 2) is flagged as constrained, it must NOT be flipped
@@ -130,6 +133,82 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       expect(report.boundaryEdges).toBeGreaterThan(0);
       expect(report.isWatertight).toBe(false);
     });
+
+    it('tessellateTrimmedFaceCDT safely handles degenerate zero-area inner holes', () => {
+      const dummySurface: BSplineSurface = {
+        uDegree: 1,
+        vDegree: 1,
+        controlPoints: [
+          [{ x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }],
+          [{ x: 1, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }],
+        ],
+        uKnots: [0, 0, 1, 1],
+        vKnots: [0, 0, 1, 1],
+      };
+
+      const outer = [
+        { u: 0, v: 0 },
+        { u: 1, v: 0 },
+        { u: 1, v: 1 },
+        { u: 0, v: 1 },
+      ];
+
+      // Inner hole with zero area (all identical points or collinear points)
+      const zeroAreaHole = [
+        { u: 0.5, v: 0.5 },
+        { u: 0.5, v: 0.5 },
+        { u: 0.5, v: 0.5 },
+      ];
+
+      const mesh = tessellateTrimmedFaceCDT({
+        surface: dummySurface,
+        outerLoop: outer,
+        innerHoles: [zeroAreaHole],
+      });
+
+      expect(mesh.faces.length).toBe(2);
+      expect(mesh.vertices.length).toBe(4);
+    });
+
+    it('verifyWatertightManifoldMesh rejects meshes with floating isolated vertices', () => {
+      // 8 cube vertices + 1 floating isolated vertex
+      const verticesWithOrphan: [number, number, number][] = [
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+        [99, 99, 99], // 8: Floating isolated vertex
+      ];
+
+      const cubeFaces: [number, number, number][] = [
+        [0, 2, 1], [0, 3, 2],
+        [4, 5, 6], [4, 6, 7],
+        [0, 1, 5], [0, 5, 4],
+        [3, 7, 6], [3, 6, 2],
+        [0, 4, 7], [0, 7, 3],
+        [1, 2, 6], [1, 6, 5],
+      ];
+
+      const report = verifyWatertightManifoldMesh(verticesWithOrphan, cubeFaces);
+      expect(report.isWatertight).toBe(false);
+      expect(report.verticesCount).toBe(9);
+    });
+
+    it('HalfEdgeMesh initializes twin, next, prev cycles and edge indices', () => {
+      const vertices: [number, number, number][] = [
+        [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
+      ];
+      const faces: [number, number, number][] = [
+        [0, 1, 2],
+        [1, 3, 2],
+      ];
+
+      const heMesh = new HalfEdgeMesh(vertices, faces);
+      expect(heMesh.halfEdges.length).toBe(6);
+      expect(heMesh.edgeCount).toBe(5);
+
+      // Edge between v1 and v2 is shared (faces 0 and 1)
+      const sharedEdgeTwins = heMesh.halfEdges.filter((he) => he.twin !== -1);
+      expect(sharedEdgeTwins.length).toBe(2);
+    });
   });
 
   // ==========================================================================
@@ -182,7 +261,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       });
 
       expect(result.data).toBeInstanceOf(Buffer);
-      expect(result.data.length).toBe(width * height * 3);
+      expect(result.data).toHaveLength(width * height * 3);
 
       // Verify that values are non-zero and within 0..255 byte range
       for (let i = 0; i < result.data.length; i++) {
@@ -261,24 +340,53 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
   // Phase 6: Auth, 2-Phase Quota, IP/CIDR Whitelist & Webhooks
   // ==========================================================================
   describe('Phase 6: Auth, 2-Phase Quota & Webhook Dispatcher', () => {
-    it('correctly calculates IPv4 CIDR matching for IP whitelisting', () => {
-      // Exact match
+    it('correctly calculates dual IPv4 and IPv6 CIDR matching with cross-family isolation', () => {
+      // IPv4 exact match
       expect(isIpInCidr('192.168.1.10', '192.168.1.10')).toBe(true);
       expect(isIpInCidr('192.168.1.11', '192.168.1.10')).toBe(false);
 
-      // /24 subnet match (192.168.1.0 - 192.168.1.255)
+      // IPv4 /24 subnet match (192.168.1.0 - 192.168.1.255)
       expect(isIpInCidr('192.168.1.42', '192.168.1.0/24')).toBe(true);
       expect(isIpInCidr('192.168.2.42', '192.168.1.0/24')).toBe(false);
 
-      // /16 subnet match (10.0.0.0 - 10.0.255.255)
+      // IPv4 /16 subnet match (10.0.0.0 - 10.0.255.255)
       expect(isIpInCidr('10.0.50.1', '10.0.0.0/16')).toBe(true);
       expect(isIpInCidr('10.1.50.1', '10.0.0.0/16')).toBe(false);
 
+      // IPv4 /0 universal match for IPv4 only
+      expect(isIpInCidr('192.168.1.1', '0.0.0.0/0')).toBe(true);
+      // Cross-family rejection: IPv6 MUST NEVER match IPv4 0.0.0.0/0
+      expect(isIpInCidr('2001:db8::1', '0.0.0.0/0')).toBe(false);
+      expect(isIpInCidr('::1', '0.0.0.0/0')).toBe(false);
+
+      // IPv6 CIDR match
+      expect(isIpInCidr('2001:db8::1', '2001:db8::/32')).toBe(true);
+      expect(isIpInCidr('2001:db8:85a3::1', '2001:db8::/32')).toBe(true);
+      expect(isIpInCidr('2001:db9::1', '2001:db8::/32')).toBe(false);
+
+      // IPv6 link-local and localhost matching
+      expect(isIpInCidr('fe80::1', 'fe80::/10')).toBe(true);
+      expect(isIpInCidr('2001:db8::1', 'fe80::/10')).toBe(false);
+      expect(isIpInCidr('::1', '::1/128')).toBe(true);
+      expect(isIpInCidr('::2', '::1/128')).toBe(false);
+
+      // Cross-family rejection: IPv4 MUST NEVER match IPv6 CIDR
+      expect(isIpInCidr('192.168.1.1', '2001:db8::/32')).toBe(false);
+      expect(isIpInCidr('127.0.0.1', '::1/128')).toBe(false);
+
+      // Invalid inputs fail-closed
+      expect(isIpInCidr('invalid-ip', '192.168.1.0/24')).toBe(false);
+      expect(isIpInCidr('192.168.1.1', 'invalid-cidr/24')).toBe(false);
+      expect(isIpInCidr('192.168.1.1', '192.168.1.0/33')).toBe(false);
+      expect(isIpInCidr('2001:db8::1', '2001:db8::/129')).toBe(false);
+
       // isIpAllowed with empty list allows all
       expect(isIpAllowed('203.0.113.195', [])).toBe(true);
-      // isIpAllowed with whitelist
-      expect(isIpAllowed('192.168.1.5', ['192.168.1.0/24', '10.0.0.1'])).toBe(true);
-      expect(isIpAllowed('192.168.2.5', ['192.168.1.0/24', '10.0.0.1'])).toBe(false);
+      // isIpAllowed with IPv4 and IPv6 whitelist
+      expect(isIpAllowed('192.168.1.5', ['192.168.1.0/24', '2001:db8::/32'])).toBe(true);
+      expect(isIpAllowed('2001:db8::42', ['192.168.1.0/24', '2001:db8::/32'])).toBe(true);
+      expect(isIpAllowed('192.168.2.5', ['192.168.1.0/24', '2001:db8::/32'])).toBe(false);
+      expect(isIpAllowed('2001:db9::42', ['192.168.1.0/24', '2001:db8::/32'])).toBe(false);
     });
 
     it('enforces 2-phase quota transactions (reserve -> rollback & reserve -> commit)', async () => {
@@ -441,6 +549,99 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       const listData = await listRes.json();
       expect(listData.success).toBe(true);
       expect(listData.jobs.some((j: any) => j.jobId === postData.jobId)).toBe(true);
+    });
+
+    it('enforces strict tenant boundary isolation between users on async job endpoints', async () => {
+      const userA = await userStore.createUser({
+        email: 'user-a@example.com',
+        name: 'User A',
+        tier: 'free',
+      });
+      const userB = await userStore.createUser({
+        email: 'user-b@example.com',
+        name: 'User B',
+        tier: 'enterprise', // Even enterprise tier cannot inspect other users' jobs
+      });
+
+      const { secretKey: keyA } = await redisKeyStore.generateApiKey(userA.id, 'Key A');
+      const { secretKey: keyB } = await redisKeyStore.generateApiKey(userB.id, 'Key B');
+
+      // User A creates a job
+      const postReq = new NextRequest('http://localhost/api/v1/jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': keyA,
+        },
+        body: JSON.stringify({
+          filename: 'confidential_a.csv',
+          targetFormat: 'json',
+          inputBufferBase64: Buffer.from('secret,data\n1,2').toString('base64'),
+        }),
+      });
+      const postRes = await jobsPostHandler(postReq);
+      expect(postRes.status).toBe(202);
+      const { jobId: jobAId } = await postRes.json();
+
+      // User B attempts to access User A's job details -> must receive 403 Forbidden
+      const unauthorizedGetReq = new NextRequest(`http://localhost/api/v1/jobs/${jobAId}`, {
+        headers: { 'x-api-key': keyB },
+      });
+      const unauthorizedRes = await jobDetailHandler(unauthorizedGetReq, {
+        params: Promise.resolve({ id: jobAId }),
+      });
+      expect(unauthorizedRes.status).toBe(403);
+      const unauthorizedData = await unauthorizedRes.json();
+      expect(unauthorizedData.success).toBe(false);
+      expect(unauthorizedData.error).toContain('Access denied');
+
+      // User B lists jobs -> User A's job must NOT appear in User B's list
+      const listReqB = new NextRequest('http://localhost/api/v1/jobs', {
+        headers: { 'x-api-key': keyB },
+      });
+      const listResB = await jobsGetHandler(listReqB);
+      expect(listResB.status).toBe(200);
+      const listDataB = await listResB.json();
+      expect(listDataB.jobs.some((j: any) => j.jobId === jobAId)).toBe(false);
+    });
+
+    it('extractClientIp normalizes IPv6 bracket notations and trailing port numbers', () => {
+      // IPv6 with brackets and port
+      const reqIpv6Port = new NextRequest('http://localhost/api/v1/convert', {
+        headers: { 'x-forwarded-for': '[2001:db8::1]:8080' },
+      });
+      expect(extractClientIp(reqIpv6Port)).toBe('2001:db8::1');
+
+      // IPv6 with brackets only
+      const reqIpv6Brackets = new NextRequest('http://localhost/api/v1/convert', {
+        headers: { 'x-forwarded-for': '[::1]' },
+      });
+      expect(extractClientIp(reqIpv6Brackets)).toBe('::1');
+
+      // IPv4 with trailing port
+      const reqIpv4Port = new NextRequest('http://localhost/api/v1/convert', {
+        headers: { 'x-forwarded-for': '192.168.1.100:3000' },
+      });
+      expect(extractClientIp(reqIpv4Port)).toBe('192.168.1.100');
+
+      // Fallback to 127.0.0.1 when no header is present
+      const reqEmpty = new NextRequest('http://localhost/api/v1/convert');
+      expect(extractClientIp(reqEmpty)).toBe('127.0.0.1');
+    });
+
+    it('WebhookDispatcher cleans up AbortController timer even when fetch throws an error', async () => {
+      const dispatcher = new WebhookDispatcher();
+      // Dispatch to an invalid port that immediately refuses connection
+      const result = await dispatcher.dispatch(
+        'http://127.0.0.1:59999/nonexistent-webhook',
+        'job.failed',
+        { reason: 'timeout' },
+        'secret',
+        { maxRetries: 1, timeoutMs: 500 }
+      );
+      expect(result.success).toBe(false);
+      expect(result.totalAttempts).toBe(1);
+      expect(result.attempts[0].error).toBeDefined();
     });
 
     it('GET /api/openapi.json serves valid OpenAPI 3.1.0 document with all key endpoints', async () => {

@@ -106,8 +106,15 @@ export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines:
  * ensuring that text copied or searched in PDF viewers (Adobe Acrobat, Chrome, Preview, pdftotext)
  * matches the original CJK and Unicode glyphs without garbling.
  */
-export function createToUnicodeCMap(): string {
-  return `/CIDInit /ProcSet findresource begin
+export function createToUnicodeCMap(
+  mappings?: Array<number | [number, number]> | Map<number, number>
+): string {
+  if (
+    !mappings ||
+    (Array.isArray(mappings) && mappings.length === 0) ||
+    (mappings instanceof Map && mappings.size === 0)
+  ) {
+    return `/CIDInit /ProcSet findresource begin
 12 dict begin
 begincmap
 /CIDSystemInfo <<
@@ -123,6 +130,65 @@ endcodespacerange
 1 beginbfrange
 <0000> <FFFF> <0000>
 endbfrange
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end`;
+  }
+
+  const toHex = (cp: number): string => {
+    if (cp <= 0xffff) {
+      return cp.toString(16).padStart(4, '0').toUpperCase();
+    }
+    const high = Math.floor((cp - 0x10000) / 0x400) + 0xd800;
+    const low = ((cp - 0x10000) % 0x400) + 0xdc00;
+    return (
+      high.toString(16).padStart(4, '0').toUpperCase() +
+      low.toString(16).padStart(4, '0').toUpperCase()
+    );
+  };
+
+  const entries: string[] = [];
+  if (Array.isArray(mappings)) {
+    for (const m of mappings) {
+      if (typeof m === 'number') {
+        const hex = toHex(m);
+        entries.push(`<${hex}> <${hex}>`);
+      } else {
+        const srcHex = toHex(m[0]);
+        const dstHex = toHex(m[1]);
+        entries.push(`<${srcHex}> <${dstHex}>`);
+      }
+    }
+  } else if (mappings instanceof Map) {
+    for (const [src, dst] of mappings.entries()) {
+      const srcHex = toHex(src);
+      const dstHex = toHex(dst);
+      entries.push(`<${srcHex}> <${dstHex}>`);
+    }
+  }
+
+  const bfcharBlocks: string[] = [];
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+    const chunk = entries.slice(i, i + CHUNK_SIZE);
+    bfcharBlocks.push(`${chunk.length} beginbfchar\n${chunk.join('\n')}\nendbfchar`);
+  }
+
+  return `/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo <<
+  /Registry (Adobe)
+  /Ordering (UCS)
+  /Supplement 0
+>> def
+/CMapName /Custom-ToUnicode def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+${bfcharBlocks.join('\n')}
 endcmap
 CMapName currentdict /CMap defineresource pop
 end
@@ -276,6 +342,27 @@ export function ensureStandardFontToUnicode(doc: PDFDocument, font: PDFFont): vo
 }
 
 /**
+ * Serializes text code points to exact 4-character hex strings (<XXXX>) without UTF-16BE BOM.
+ * Encodes BMP characters as <XXXX> and astral plane characters (> 0xFFFF) as high/low surrogate pairs <XXXXYYYY>.
+ */
+export function encodeUnicodeTo4CharHex(text: string): string {
+  let hex = '';
+  for (const char of text) {
+    const cp = char.codePointAt(0) ?? 0;
+    if (cp <= 0xffff) {
+      hex += cp.toString(16).padStart(4, '0').toUpperCase();
+    } else {
+      const high = Math.floor((cp - 0x10000) / 0x400) + 0xd800;
+      const low = ((cp - 0x10000) % 0x400) + 0xdc00;
+      hex +=
+        high.toString(16).padStart(4, '0').toUpperCase() +
+        low.toString(16).padStart(4, '0').toUpperCase();
+    }
+  }
+  return hex;
+}
+
+/**
  * Encodes text safely for PDF invisible text layer embedding.
  * Preserves CJK (Korean, Chinese, Japanese) and extended Unicode code points
  * by serializing into exact 4-character hex strings without BOM (<XXXX>) conforming to ISO 32000-1.
@@ -295,21 +382,13 @@ export function safeEncodeText(font: PDFFont, text: string): PDFHexString | null
   }
 
   if (hasNonWinAnsi) {
-    let hex = '';
-    for (let i = 0; i < trimmed.length; i++) {
-      hex += trimmed.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
-    }
-    return PDFHexString.of(hex);
+    return PDFHexString.of(encodeUnicodeTo4CharHex(trimmed));
   }
 
   try {
     return font.encodeText(trimmed);
   } catch {
-    let hex = '';
-    for (let i = 0; i < trimmed.length; i++) {
-      hex += trimmed.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
-    }
-    return PDFHexString.of(hex);
+    return PDFHexString.of(encodeUnicodeTo4CharHex(trimmed));
   }
 }
 
@@ -372,11 +451,7 @@ function renderTextItem(
 
     // Serialize 16-bit CID/Unicode code points as exact 4-character hex strings without BOM (<XXXX>)
     // Eliminates PDFHexString.fromText to prevent BOM (0xFE, 0xFF) injection, eliminating 1 em shift and Tz distortion
-    let hex = '';
-    for (let i = 0; i < trimmed.length; i++) {
-      hex += trimmed.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
-    }
-    encodedText = PDFHexString.of(hex);
+    encodedText = PDFHexString.of(encodeUnicodeTo4CharHex(trimmed));
 
     // Approximate character width: CJK glyphs = fontSize (1em = 1000 width), Latin glyphs = 0.5 * fontSize (500 width)
     let estimatedWidth = 0;

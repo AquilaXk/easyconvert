@@ -16,8 +16,10 @@ import {
   encodeOpusContainer,
   encodeOggContainer,
   encodeAacContainer,
+  LOSSY_PSYCHOACOUSTIC_FORMATS,
   detectFfmpegEnvironment,
   type FfmpegEnvironmentInfo,
+  checkFfmpeg,
 } from './media';
 import { convertOffice, formatSpreadsheetCellValue } from './office';
 import {
@@ -279,7 +281,9 @@ export {
   encodeOpusContainer,
   encodeOggContainer,
   encodeAacContainer,
+  LOSSY_PSYCHOACOUSTIC_FORMATS,
   ConversionFailedError,
+  checkFfmpeg,
   formatSpreadsheetCellValue,
 };
 
@@ -288,7 +292,21 @@ export * from './dla-engine';
 export {
   adaptiveIncrementalBRepMesh,
   type AdaptiveDeflectionOptions,
+  tessellateTrimmedFaceCDT,
+  lawsonEdgeFlipHealing2D,
+  inCircle2D,
+  verifyWatertightManifoldMesh,
+  HalfEdgeMesh,
+  type HalfEdge,
+  type MeshTopologyReport,
 } from './cad-nurbs';
+
+export {
+  demosaicAmazeBayerCfa,
+  applyIec61966SrgbGamma,
+  inverseIec61966SrgbGamma,
+  DEFAULT_D65_COLOR_MATRIX,
+} from './image';
 
 export async function convertFile(
   inputBuffer: Buffer,

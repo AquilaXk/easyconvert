@@ -97,6 +97,6 @@ describe('Skeptical Audit & Robustness Verification', () => {
 
     const result = await performOcr(testImage, 'ko');
     expect(result).toBeDefined();
-    expect(result.confidence).toBeGreaterThanOrEqual(0.7);
+    expect(result.confidence).toBeGreaterThanOrEqual(0.9);
   });
 });

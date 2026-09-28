@@ -15,14 +15,29 @@ export interface ApiAuthResult {
 
 export function extractClientIp(request: Request): string {
   const forwarded = request.headers.get('x-forwarded-for');
+  let candidate = '';
   if (forwarded) {
-    const first = forwarded.split(',')[0].trim();
-    if (first) return first;
+    candidate = forwarded.split(',')[0].trim();
+  } else {
+    const realIp = request.headers.get('x-real-ip');
+    if (realIp) {
+      candidate = realIp.trim();
+    } else {
+      const cfIp = request.headers.get('cf-connecting-ip');
+      if (cfIp) candidate = cfIp.trim();
+    }
   }
-  const realIp = request.headers.get('x-real-ip');
-  if (realIp) return realIp.trim();
-  const cfIp = request.headers.get('cf-connecting-ip');
-  if (cfIp) return cfIp.trim();
+
+  if (candidate) {
+    // Strip brackets and optional port from IPv6, e.g. [2001:db8::1]:8080 or [::1]
+    const bracketMatch = candidate.match(/^\[([a-fA-F0-9:]+)\](?::\d+)?$/);
+    if (bracketMatch) return bracketMatch[1];
+    // Strip trailing port from IPv4, e.g. 192.168.1.1:8080
+    const portMatch = candidate.match(/^(\d+\.\d+\.\d+\.\d+):\d+$/);
+    if (portMatch) return portMatch[1];
+    return candidate;
+  }
+
   return '127.0.0.1';
 }
 

@@ -96,7 +96,7 @@ export function detectFfmpegEnvironment(): FfmpegEnvironmentInfo {
   };
 }
 
-function checkFfmpeg(): boolean {
+export function checkFfmpeg(): boolean {
   return getFfmpegPath() !== null;
 }
 
@@ -136,9 +136,28 @@ export async function convertMedia(
     }
   }
 
+  // Pure TypeScript mode without native FFmpeg:
+  // For formats requiring lossy psychoacoustic compression (Opus, Vorbis, AAC, H.264 MP4),
+  // fail-closed unless explicitly allowed for low-level bitstream tests.
+  if (LOSSY_PSYCHOACOUSTIC_FORMATS.has(tgt) && !options.allowPureLossyBitstream) {
+    throw new ConversionFailedError(
+      `Native FFmpeg engine is required for authentic lossy ${tgt.toUpperCase()} compression. Pure TypeScript mode cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).`
+    );
+  }
+
   // Pure TypeScript zero-dependency audio & video processing pipeline for supported formats
   return processMediaPure(inputBuffer, src, tgt, options, baseName);
 }
+
+export const LOSSY_PSYCHOACOUSTIC_FORMATS = new Set([
+  'opus',
+  'ogg',
+  'vorbis',
+  'aac',
+  'm4a',
+  'mp4',
+  'mov',
+]);
 
 /**
  * Executes system FFmpeg with configured audio and video options
@@ -291,9 +310,9 @@ function processMediaPure(
       break;
 
     default:
-      // Default to standard PCM WAV container
-      outputBuffer = encodeWav(pcmData, sampleRate, channels);
-      break;
+      throw new ConversionFailedError(
+        `Unsupported media target format: .${tgt}. Pure TypeScript engine cannot convert to .${tgt}.`
+      );
   }
 
   return {

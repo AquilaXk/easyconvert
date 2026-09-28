@@ -977,6 +977,19 @@ export function lawsonEdgeFlipHealing2D(
     }
   }
 
+  // Final pass: ensure all triangles maintain counter-clockwise (positive signed area) orientation
+  for (const tri of currentTriangles) {
+    const p0 = points[tri[0]];
+    const p1 = points[tri[1]];
+    const p2 = points[tri[2]];
+    const signedArea = (p1.u - p0.u) * (p2.v - p0.v) - (p2.u - p0.u) * (p1.v - p0.v);
+    if (signedArea < 0) {
+      const tmp = tri[1];
+      tri[1] = tri[2];
+      tri[2] = tmp;
+    }
+  }
+
   return currentTriangles;
 }
 
@@ -1000,15 +1013,18 @@ export function tessellateTrimmedFaceCDT(
     outer.reverse();
   }
 
-  // 2. Filter and orient inner hole boundaries clockwise (CW)
+  // 2. Filter and orient inner hole boundaries clockwise (CW) (reject degenerate zero-area loops)
   const validHoles: Parametric2DPoint[][] = [];
   for (const hole of innerHoles) {
     if (hole && hole.length >= 3) {
       const h = hole.map((p) => ({ u: p.u, v: p.v }));
-      if (calculateParametricSignedArea(h) > 0) {
-        h.reverse();
+      const area = calculateParametricSignedArea(h);
+      if (Math.abs(area) > 1e-9) {
+        if (area > 0) {
+          h.reverse();
+        }
+        validHoles.push(h);
       }
-      validHoles.push(h);
     }
   }
 
@@ -1438,21 +1454,26 @@ export function verifyWatertightManifoldMesh(
     if (ri !== rj) parent[ri] = rj;
   };
 
+  const activeVertices = new Set<number>();
   for (const [v0, v1, v2] of faces) {
+    activeVertices.add(v0);
+    activeVertices.add(v1);
+    activeVertices.add(v2);
     union(v0, v1);
     union(v1, v2);
   }
 
   const componentRoots = new Set<number>();
-  for (let i = 0; i < V; i++) {
-    componentRoots.add(find(i));
+  for (const v of activeVertices) {
+    componentRoots.add(find(v));
   }
   const componentsCount = componentRoots.size;
+  const hasIsolatedVertices = activeVertices.size < V;
 
   const genus = Math.max(0, Math.round((2 * componentsCount - chi) / 2));
   const isManifold = nonManifoldEdges === 0;
-  // Watertight: manifold, 0 boundary edges, and Euler characteristic chi === 2
-  const isWatertight = isManifold && boundaryEdges === 0 && chi === 2;
+  // Watertight: manifold, 0 boundary edges, Euler characteristic chi === 2, and no floating isolated vertices
+  const isWatertight = isManifold && boundaryEdges === 0 && chi === 2 && !hasIsolatedVertices;
 
   return {
     isManifold,

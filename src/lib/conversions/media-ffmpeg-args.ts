@@ -215,7 +215,13 @@ export function buildFfmpegArguments(
       '360p': '640:360',
     };
     if (resMap[options.videoResolution]) {
-      outputArgs.push('-vf', `scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`);
+      const scaleFilter = `scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`;
+      const existingVfIdx = outputArgs.indexOf('-vf');
+      if (existingVfIdx !== -1 && existingVfIdx + 1 < outputArgs.length) {
+        outputArgs[existingVfIdx + 1] = `${scaleFilter},${outputArgs[existingVfIdx + 1]}`;
+      } else {
+        outputArgs.push('-vf', scaleFilter);
+      }
     }
   }
 

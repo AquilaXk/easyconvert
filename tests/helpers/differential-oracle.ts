@@ -1101,114 +1101,11 @@ export async function parseArchiveToAst(buffer: Buffer, format: string): Promise
   }
 
   if (fmt === 'tar') {
-    const toolPath = getOracleToolPath('tar');
-    if (toolPath) {
-      try {
-        const out = execFileSync(toolPath, ['-tf', '-'], {
-          input: buffer,
-          stdio: ['pipe', 'pipe', 'ignore'],
-          encoding: 'utf-8',
-        });
-        const lines = out.split('\n').filter(Boolean);
-        return {
-          format: 'tar',
-          fileCount: lines.length,
-          files: lines.map((name) => ({
-            name,
-            size: 0,
-            isDir: name.endsWith('/'),
-          })),
-        };
-      } catch {}
-    }
-    if (buffer.length >= 512 && buffer.toString('ascii', 257, 262) === 'ustar') {
-      const rawName = buffer.toString('ascii', 0, 100).replace(/\0.*$/, '');
-      return {
-        format: 'tar',
-        fileCount: rawName ? 1 : 0,
-        files: rawName ? [{ name: rawName, size: 0, isDir: false }] : [],
-      };
-    }
-    return { format: 'tar', fileCount: 0, files: [] };
+    return parseTarArchiveStructure(buffer);
   }
 
   if (fmt === '7z') {
-    const toolPath = getOracleToolPath('7z');
-    if (toolPath) {
-      const tmpPath = path.join(os.tmpdir(), `oracle_list_${crypto.randomUUID()}.7z`);
-      try {
-        fs.writeFileSync(tmpPath, buffer);
-        const out = execFileSync(toolPath, ['l', '-ba', tmpPath], {
-          stdio: ['ignore', 'pipe', 'ignore'],
-          encoding: 'utf-8',
-        });
-        const lines = out.split('\n').filter(Boolean);
-        return {
-          format: '7z',
-          fileCount: lines.length,
-          files: lines.map((l) => ({
-            name: l.trim().split(/\s+/).pop() || '',
-            size: 0,
-            isDir: false,
-          })),
-        };
-      } catch {} finally {
-        try {
-          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-        } catch {}
-      }
-    }
-
-    // Independent 7z header parser without CLI
-    const sevenZMagic = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
-    if (buffer.length < 32 || !buffer.subarray(0, 6).equals(sevenZMagic)) {
-      return { format: '7z', fileCount: 0, files: [] };
-    }
-    const nextHeaderOffset = Number(buffer.readBigUInt64LE(12));
-    const nextHeaderSize = Number(buffer.readBigUInt64LE(20));
-    const nhStart = 32 + nextHeaderOffset;
-    if (nhStart + nextHeaderSize > buffer.length || nextHeaderSize === 0) {
-      return { format: '7z', fileCount: 0, files: [] };
-    }
-    const nh = buffer.subarray(nhStart, nhStart + nextHeaderSize);
-
-    const sizes: number[] = [];
-    const unpackSizeIdx = nh.indexOf(0x0c);
-    if (unpackSizeIdx !== -1) {
-      let p = unpackSizeIdx + 1;
-      while (p < nh.length && nh[p] !== 0x0a && nh[p] !== 0x00 && nh[p] !== 0x05) {
-        const b = nh[p++];
-        sizes.push(b < 0x80 ? b : b & 0x7f);
-      }
-    }
-
-    const files: { name: string; size: number; isDir: boolean }[] = [];
-    const filesInfoIdx = nh.indexOf(0x05);
-    if (filesInfoIdx !== -1) {
-      const nameIdx = nh.indexOf(0x11, filesInfoIdx);
-      if (nameIdx !== -1) {
-        let p = nameIdx + 1;
-        while (p < nh.length && (nh[p] & 0x80) !== 0) p++;
-        p++;
-        if (p < nh.length && nh[p] === 0x00) p++;
-        const nameBuf = nh.subarray(p);
-        const str = nameBuf.toString('utf16le');
-        const names = str.split('\0').filter(Boolean);
-        for (let i = 0; i < names.length; i++) {
-          files.push({
-            name: names[i],
-            size: sizes[i] ?? 0,
-            isDir: names[i].endsWith('/'),
-          });
-        }
-      }
-    }
-
-    return {
-      format: '7z',
-      fileCount: files.length,
-      files,
-    };
+    return parse7zArchiveStructure(buffer);
   }
 
   if (fmt === 'zstd' || fmt === 'zst') {
@@ -1223,6 +1120,133 @@ export async function parseArchiveToAst(buffer: Buffer, format: string): Promise
     format: 'zstd',
     fileCount: 0,
     files: [],
+  };
+}
+
+function parseTarArchiveStructure(buffer: Buffer): ArchiveStructuralAst {
+  const toolPath = getOracleToolPath('tar');
+  if (toolPath) {
+    try {
+      const out = execFileSync(toolPath, ['-tf', '-'], {
+        input: buffer,
+        stdio: ['pipe', 'pipe', 'ignore'],
+        encoding: 'utf-8',
+      });
+      const lines = out.split('\n').filter(Boolean);
+      return {
+        format: 'tar',
+        fileCount: lines.length,
+        files: lines.map((name) => ({
+          name,
+          size: 0,
+          isDir: name.endsWith('/'),
+        })),
+      };
+    } catch {}
+  }
+  if (buffer.length >= 512 && buffer.toString('ascii', 257, 262) === 'ustar') {
+    const rawName = buffer.toString('ascii', 0, 100);
+    const nullIdx = rawName.indexOf('\0');
+    const name = nullIdx !== -1 ? rawName.slice(0, nullIdx) : rawName;
+    return {
+      format: 'tar',
+      fileCount: name ? 1 : 0,
+      files: name ? [{ name, size: 0, isDir: false }] : [],
+    };
+  }
+  return { format: 'tar', fileCount: 0, files: [] };
+}
+
+function parse7zCliListing(toolPath: string, buffer: Buffer): ArchiveStructuralAst | null {
+  const tmpPath = path.join(os.tmpdir(), `oracle_list_${crypto.randomUUID()}.7z`);
+  try {
+    fs.writeFileSync(tmpPath, buffer);
+    const out = execFileSync(toolPath, ['l', '-ba', tmpPath], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+    });
+    const lines = out.split('\n').filter(Boolean);
+    return {
+      format: '7z',
+      fileCount: lines.length,
+      files: lines.map((l) => ({
+        name: l.trim().split(/\s+/).pop() || '',
+        size: 0,
+        isDir: false,
+      })),
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
+}
+
+function extract7zHeaderUnpackSizes(nh: Buffer): number[] {
+  const sizes: number[] = [];
+  const unpackSizeIdx = nh.indexOf(0x0c);
+  if (unpackSizeIdx === -1) return sizes;
+
+  let p = unpackSizeIdx + 1;
+  while (p < nh.length && nh[p] !== 0x0a && nh[p] !== 0x00 && nh[p] !== 0x05) {
+    const b = nh[p++];
+    sizes.push(b < 0x80 ? b : b & 0x7f);
+  }
+  return sizes;
+}
+
+function extract7zHeaderFiles(nh: Buffer, sizes: number[]): { name: string; size: number; isDir: boolean }[] {
+  const files: { name: string; size: number; isDir: boolean }[] = [];
+  const filesInfoIdx = nh.indexOf(0x05);
+  if (filesInfoIdx === -1) return files;
+
+  const nameIdx = nh.indexOf(0x11, filesInfoIdx);
+  if (nameIdx === -1) return files;
+
+  let p = nameIdx + 1;
+  while (p < nh.length && (nh[p] & 0x80) !== 0) p++;
+  p++;
+  if (p < nh.length && nh[p] === 0x00) p++;
+
+  const names = nh.subarray(p).toString('utf16le').split('\0').filter(Boolean);
+  for (let i = 0; i < names.length; i++) {
+    files.push({
+      name: names[i],
+      size: sizes[i] ?? 0,
+      isDir: names[i].endsWith('/'),
+    });
+  }
+  return files;
+}
+
+function parse7zArchiveStructure(buffer: Buffer): ArchiveStructuralAst {
+  const toolPath = getOracleToolPath('7z');
+  if (toolPath) {
+    const cliAst = parse7zCliListing(toolPath, buffer);
+    if (cliAst) return cliAst;
+  }
+
+  const sevenZMagic = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
+  if (buffer.length < 32 || !buffer.subarray(0, 6).equals(sevenZMagic)) {
+    return { format: '7z', fileCount: 0, files: [] };
+  }
+  const nextHeaderOffset = Number(buffer.readBigUInt64LE(12));
+  const nextHeaderSize = Number(buffer.readBigUInt64LE(20));
+  const nhStart = 32 + nextHeaderOffset;
+  if (nhStart + nextHeaderSize > buffer.length || nextHeaderSize === 0) {
+    return { format: '7z', fileCount: 0, files: [] };
+  }
+
+  const nh = buffer.subarray(nhStart, nhStart + nextHeaderSize);
+  const sizes = extract7zHeaderUnpackSizes(nh);
+  const files = extract7zHeaderFiles(nh, sizes);
+
+  return {
+    format: '7z',
+    fileCount: files.length,
+    files,
   };
 }
 

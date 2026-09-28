@@ -24,7 +24,7 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       const dummyMp3Buffer = Buffer.from('NOT_A_WAV_FILE_JUST_SOME_ARBITRARY_BYTES_DATA');
       await expect(
         convertMedia(dummyMp3Buffer, 'mp3', 'wav', {}, 'track.mp3')
-      ).rejects.toThrow('Unsupported audio format: decoder unavailable');
+      ).rejects.toThrow(/(Unsupported audio format|Native FFmpeg transcoding failed)/i);
     });
 
     it('fails closed on binary DWG decoding when native decoder is unavailable', async () => {

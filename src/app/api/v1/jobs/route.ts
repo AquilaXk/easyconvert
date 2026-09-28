@@ -247,9 +247,9 @@ export async function GET(req: NextRequest) {
 
   const allJobs = await conversionQueue.getJobs(requestedStates.length > 0 ? requestedStates : validStates);
 
-  // Filter jobs belonging to the authenticated user
+  // Filter jobs strictly belonging to the authenticated user (Tenant Boundary Isolation)
   const userJobs = allJobs
-    .filter((j) => !j.data?.userId || j.data.userId === auth.user?.id)
+    .filter((j) => j.data?.userId === auth.user?.id)
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, limit);
 

@@ -67,7 +67,10 @@ export async function performOcr(
     try {
       const mappedLang = (langLower.startsWith('ko') ? 'ko' : langLower.startsWith('ja') ? 'ja' : 'zh') as "ko" | "ja" | "zh";
       return await runOnnxCjkOcrPipeline(imageBuffer, { ocrLanguage: mappedLang });
-    } catch {
+    } catch (err: any) {
+      if (err?.message?.includes('No optical text recognized')) {
+        throw err;
+      }
       // Fallback
     }
   }

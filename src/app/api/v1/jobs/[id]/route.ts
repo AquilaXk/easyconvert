@@ -38,8 +38,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
     );
   }
 
-  // Enforce tenant boundary: user can only inspect their own jobs unless enterprise admin
-  if (job.data?.userId && job.data.userId !== auth.user.id && auth.user.tier !== 'enterprise') {
+  // Enforce tenant boundary: user can only inspect their own jobs
+  if (!job.data?.userId || job.data.userId !== auth.user.id) {
     return NextResponse.json(
       { success: false, error: 'Access denied to this conversion job.' },
       { status: 403 }
