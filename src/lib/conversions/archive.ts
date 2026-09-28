@@ -1568,35 +1568,71 @@ export function create7zArchive(
     coderType = 'lzma2';
   }
 
+  const isSolid = Boolean(options.solid && files.length > 1);
+
   const packBuffers: Buffer[] = [];
   const packSizes: number[] = [];
   const unpackSizes: number[] = [];
   const crcs: number[] = [];
   const fileProps: Buffer[] = [];
 
-  for (const f of files) {
-    unpackSizes.push(f.buffer.length);
-    crcs.push(crc32(f.buffer));
+  let solidCrc = 0;
+  let totalUnpackSize = 0;
+
+  if (isSolid) {
+    for (const f of files) {
+      unpackSizes.push(f.buffer.length);
+      crcs.push(crc32(f.buffer));
+    }
+    const solidBuffer = Buffer.concat(files.map(f => f.buffer));
+    totalUnpackSize = solidBuffer.length;
+    solidCrc = crc32(solidBuffer);
 
     if (coderType === 'lzma2') {
-      const res = compressLzma2(f.buffer, { level: compressionLevel });
+      const res = compressLzma2(solidBuffer, { level: compressionLevel });
       packBuffers.push(res.buffer);
       packSizes.push(res.buffer.length);
       fileProps.push(res.props);
     } else if (coderType === 'lzma') {
-      const res = compressLzma(f.buffer, { level: compressionLevel });
+      const res = compressLzma(solidBuffer, { level: compressionLevel });
       packBuffers.push(res.buffer);
       packSizes.push(res.buffer.length);
       fileProps.push(res.props);
     } else if (coderType === 'deflate') {
-      const deflated = zlib.deflateRawSync(f.buffer, { level: compressionLevel });
+      const deflated = zlib.deflateRawSync(solidBuffer, { level: compressionLevel });
       packBuffers.push(deflated);
       packSizes.push(deflated.length);
       fileProps.push(Buffer.alloc(0));
     } else {
-      packBuffers.push(f.buffer);
-      packSizes.push(f.buffer.length);
+      packBuffers.push(solidBuffer);
+      packSizes.push(solidBuffer.length);
       fileProps.push(Buffer.alloc(0));
+    }
+  } else {
+    for (const f of files) {
+      unpackSizes.push(f.buffer.length);
+      crcs.push(crc32(f.buffer));
+
+      if (coderType === 'lzma2') {
+        const res = compressLzma2(f.buffer, { level: compressionLevel });
+        packBuffers.push(res.buffer);
+        packSizes.push(res.buffer.length);
+        fileProps.push(res.props);
+      } else if (coderType === 'lzma') {
+        const res = compressLzma(f.buffer, { level: compressionLevel });
+        packBuffers.push(res.buffer);
+        packSizes.push(res.buffer.length);
+        fileProps.push(res.props);
+      } else if (coderType === 'deflate') {
+        const deflated = zlib.deflateRawSync(f.buffer, { level: compressionLevel });
+        packBuffers.push(deflated);
+        packSizes.push(deflated.length);
+        fileProps.push(Buffer.alloc(0));
+      } else {
+        packBuffers.push(f.buffer);
+        packSizes.push(f.buffer.length);
+        fileProps.push(Buffer.alloc(0));
+      }
     }
   }
 
@@ -1607,47 +1643,100 @@ export function create7zArchive(
   nh.push(0x01); // kHeader
   nh.push(0x04); // kMainStreamsInfo
 
-  // kPackInfo
-  nh.push(0x06); // kPackInfo
-  nh.push(0x00); // packPos = 0
-  write7zVarint(nh, files.length); // numPackStreams
-  nh.push(0x09); // kSize
-  for (const sz of packSizes) {
-    write7zVarint(nh, sz);
-  }
-  nh.push(0x00); // kEnd (PackInfo)
+  if (isSolid) {
+    // kPackInfo
+    nh.push(0x06); // kPackInfo
+    nh.push(0x00); // packPos = 0
+    write7zVarint(nh, 1); // numPackStreams = 1
+    nh.push(0x09); // kSize
+    write7zVarint(nh, packSizes[0]);
+    nh.push(0x00); // kEnd (PackInfo)
 
-  // kUnpackInfo
-  nh.push(0x07); // kUnpackInfo
-  nh.push(0x0b); // kFolder
-  write7zVarint(nh, files.length); // numFolders
-  nh.push(0x00); // external = 0
-  for (let i = 0; i < files.length; i++) {
+    // kUnpackInfo
+    nh.push(0x07); // kUnpackInfo
+    nh.push(0x0b); // kFolder
+    write7zVarint(nh, 1); // numFolders = 1
+    nh.push(0x00); // external = 0
     nh.push(0x01); // numCoders = 1
     if (coderType === 'lzma2') {
       nh.push(0x21, 0x21, 0x01, 0x14);
     } else if (coderType === 'lzma') {
-      const p = fileProps[i] && fileProps[i].length === 5 ? fileProps[i] : Buffer.from([0x5d, 0x00, 0x00, 0x01, 0x00]);
+      const p = fileProps[0] && fileProps[0].length === 5 ? fileProps[0] : Buffer.from([0x5d, 0x00, 0x00, 0x01, 0x00]);
       nh.push(0x23, 0x03, 0x01, 0x01, 0x05, ...p);
     } else if (coderType === 'deflate') {
       nh.push(0x03, 0x04, 0x01, 0x08);
     } else {
       nh.push(0x01, 0x00);
     }
-  }
 
-  nh.push(0x0c); // kCodersUnpackSize
-  for (const us of unpackSizes) {
-    write7zVarint(nh, us);
-  }
+    nh.push(0x0c); // kCodersUnpackSize
+    write7zVarint(nh, totalUnpackSize);
 
-  nh.push(0x0a); // kCRC
-  nh.push(0x01); // allAreDefined = 1
-  for (const c of crcs) {
-    nh.push(c & 0xff, (c >>> 8) & 0xff, (c >>> 16) & 0xff, (c >>> 24) & 0xff);
+    nh.push(0x0a); // kCRC
+    nh.push(0x01); // allAreDefined = 1
+    nh.push(solidCrc & 0xff, (solidCrc >>> 8) & 0xff, (solidCrc >>> 16) & 0xff, (solidCrc >>> 24) & 0xff);
+    nh.push(0x00); // kEnd (UnpackInfo)
+
+    // kSubStreamsInfo
+    nh.push(0x08); // kSubStreamsInfo
+    nh.push(0x0d); // kNumUnpackStream
+    write7zVarint(nh, files.length);
+
+    nh.push(0x09); // kSize
+    for (let i = 0; i < files.length - 1; i++) {
+      write7zVarint(nh, unpackSizes[i]);
+    }
+
+    nh.push(0x0a); // kCRC
+    nh.push(0x01); // allAreDefined = 1
+    for (const c of crcs) {
+      nh.push(c & 0xff, (c >>> 8) & 0xff, (c >>> 16) & 0xff, (c >>> 24) & 0xff);
+    }
+    nh.push(0x00); // kEnd (SubStreamsInfo)
+    nh.push(0x00); // kEnd (MainStreamsInfo)
+  } else {
+    // kPackInfo
+    nh.push(0x06); // kPackInfo
+    nh.push(0x00); // packPos = 0
+    write7zVarint(nh, files.length); // numPackStreams
+    nh.push(0x09); // kSize
+    for (const sz of packSizes) {
+      write7zVarint(nh, sz);
+    }
+    nh.push(0x00); // kEnd (PackInfo)
+
+    // kUnpackInfo
+    nh.push(0x07); // kUnpackInfo
+    nh.push(0x0b); // kFolder
+    write7zVarint(nh, files.length); // numFolders
+    nh.push(0x00); // external = 0
+    for (let i = 0; i < files.length; i++) {
+      nh.push(0x01); // numCoders = 1
+      if (coderType === 'lzma2') {
+        nh.push(0x21, 0x21, 0x01, 0x14);
+      } else if (coderType === 'lzma') {
+        const p = fileProps[i] && fileProps[i].length === 5 ? fileProps[i] : Buffer.from([0x5d, 0x00, 0x00, 0x01, 0x00]);
+        nh.push(0x23, 0x03, 0x01, 0x01, 0x05, ...p);
+      } else if (coderType === 'deflate') {
+        nh.push(0x03, 0x04, 0x01, 0x08);
+      } else {
+        nh.push(0x01, 0x00);
+      }
+    }
+
+    nh.push(0x0c); // kCodersUnpackSize
+    for (const us of unpackSizes) {
+      write7zVarint(nh, us);
+    }
+
+    nh.push(0x0a); // kCRC
+    nh.push(0x01); // allAreDefined = 1
+    for (const c of crcs) {
+      nh.push(c & 0xff, (c >>> 8) & 0xff, (c >>> 16) & 0xff, (c >>> 24) & 0xff);
+    }
+    nh.push(0x00); // kEnd (UnpackInfo)
+    nh.push(0x00); // kEnd (MainStreamsInfo)
   }
-  nh.push(0x00); // kEnd (UnpackInfo)
-  nh.push(0x00); // kEnd (MainStreamsInfo)
 
   // kFilesInfo
   nh.push(0x05); // kFilesInfo

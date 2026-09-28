@@ -51,7 +51,8 @@ export interface BayerSensorData {
   data: Uint8Array | Uint16Array;
   bitsPerSample?: number;
   whiteBalance?: [number, number, number]; // [rScale, gScale, bScale]
-  blackLevel?: number;
+  asShotNeutral?: [number, number, number];
+  blackLevel?: number | number[];
   whiteLevel?: number;
   colorMatrix?: [number, number, number, number, number, number, number, number, number];
   colorMatrix1?: [number, number, number, number, number, number, number, number, number]; // Standard Illuminant A (Tungsten, 2856K)
@@ -449,16 +450,26 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     else maxPossible = 255;
   }
 
-  const bLevel = sensor.blackLevel || 0;
+  const hasArrayBlackLevel = Array.isArray(sensor.blackLevel) && sensor.blackLevel.length > 0;
+  const defaultBLevel = typeof sensor.blackLevel === 'number' ? sensor.blackLevel : 0;
   const wLevel = sensor.whiteLevel || maxPossible;
-  const range = Math.max(1, wLevel - bLevel);
 
   // Normalize raw sensor data to Float32Array in [0, 255]
   const norm = new Float32Array(width * height);
-  for (let i = 0; i < width * height; i++) {
-    const rawVal = data[i] !== undefined ? data[i] : 0;
-    const clamped = Math.max(bLevel, Math.min(wLevel, rawVal));
-    norm[i] = ((clamped - bLevel) / range) * 255;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const rawVal = data[i] !== undefined ? data[i] : 0;
+      let bLevel = defaultBLevel;
+      if (hasArrayBlackLevel) {
+        const blkArr = sensor.blackLevel as number[];
+        const blkIdx = ((y & 1) << 1) | (x & 1);
+        bLevel = blkArr[blkIdx % blkArr.length] ?? 0;
+      }
+      const range = Math.max(1, wLevel - bLevel);
+      const clamped = Math.max(bLevel, Math.min(wLevel, rawVal));
+      norm[i] = ((clamped - bLevel) / range) * 255;
+    }
   }
 
   // Parity-preserving symmetric reflection: for even dimensions, (mirrorCoord(c, max) & 1) === (c & 1)
@@ -1397,6 +1408,13 @@ export function decodeRawBayerSensor(
         tileByteCounts?: number[];
         cfaPattern?: BayerPattern;
         subIfds?: number[];
+        blackLevel?: number | number[];
+        whiteLevel?: number;
+        asShotNeutral?: [number, number, number];
+        colorMatrix1?: [number, number, number, number, number, number, number, number, number];
+        colorMatrix2?: [number, number, number, number, number, number, number, number, number];
+        calibrationIlluminant1?: number;
+        calibrationIlluminant2?: number;
       }
 
       const parseIfd = (offset: number): TagData => {
@@ -1439,6 +1457,28 @@ export function decodeRawBayerSensor(
             return arr;
           };
 
+          const getRationalArray = (tagType: number, tagCount: number, offsetVal: number): number[] => {
+            const arr: number[] = [];
+            if (tagCount <= 0) return arr;
+            const itemSize = 8;
+            const dataOffset = tagCount * itemSize > 4 ? read32(offsetVal) : offsetVal;
+            for (let idx = 0; idx < tagCount; idx++) {
+              const itemPos = dataOffset + idx * itemSize;
+              if (itemPos + itemSize > buffer.length) break;
+              let num: number;
+              let den: number;
+              if (tagType === 10) {
+                num = isLE ? buffer.readInt32LE(itemPos) : buffer.readInt32BE(itemPos);
+                den = isLE ? buffer.readInt32LE(itemPos + 4) : buffer.readInt32BE(itemPos + 4);
+              } else {
+                num = isLE ? buffer.readUInt32LE(itemPos) : buffer.readUInt32BE(itemPos);
+                den = isLE ? buffer.readUInt32LE(itemPos + 4) : buffer.readUInt32BE(itemPos + 4);
+              }
+              arr.push(den !== 0 ? num / den : num);
+            }
+            return arr;
+          };
+
           switch (tag) {
             case 256: data.width = getScalar(); break;
             case 257: data.height = getScalar(); break;
@@ -1460,6 +1500,47 @@ export function decodeRawBayerSensor(
               else if (p[0] === 1 && p[1] === 2 && p[2] === 0 && p[3] === 1) data.cfaPattern = 'GBRG';
               break;
             }
+            case 50714: // DNG BlackLevel
+            case 50738: {
+              if (type === 5 || type === 10) {
+                const rationals = getRationalArray(type, count, valOff);
+                if (rationals.length === 1) data.blackLevel = rationals[0];
+                else if (rationals.length > 1) data.blackLevel = rationals;
+              } else {
+                const nums = getNumberArray(type, count, valOff);
+                if (nums.length === 1) data.blackLevel = nums[0];
+                else if (nums.length > 1) data.blackLevel = nums;
+              }
+              break;
+            }
+            case 50717: // DNG WhiteLevel
+            case 50739: {
+              data.whiteLevel = getScalar();
+              break;
+            }
+            case 50721: { // DNG ColorMatrix1
+              const rationals = getRationalArray(type, count, valOff);
+              if (rationals.length >= 9) {
+                data.colorMatrix1 = rationals.slice(0, 9) as [number, number, number, number, number, number, number, number, number];
+              }
+              break;
+            }
+            case 50722: { // DNG ColorMatrix2
+              const rationals = getRationalArray(type, count, valOff);
+              if (rationals.length >= 9) {
+                data.colorMatrix2 = rationals.slice(0, 9) as [number, number, number, number, number, number, number, number, number];
+              }
+              break;
+            }
+            case 50728: { // DNG AsShotNeutral
+              const rationals = getRationalArray(type, count, valOff);
+              if (rationals.length >= 3) {
+                data.asShotNeutral = [rationals[0], rationals[1], rationals[2]];
+              }
+              break;
+            }
+            case 50778: data.calibrationIlluminant1 = getScalar(); break;
+            case 50779: data.calibrationIlluminant2 = getScalar(); break;
           }
           curr += 12;
         }
@@ -1474,8 +1555,10 @@ export function decodeRawBayerSensor(
         );
 
       let chosen: TagData | null = null;
+      let rootParsed: TagData | null = null;
       for (const off of ifdOffsets) {
         const parsed = parseIfd(off);
+        if (!rootParsed) rootParsed = parsed;
         if (parsed.subIfds && parsed.subIfds.length > 0) {
           for (const subOff of parsed.subIfds) {
             const subParsed = parseIfd(subOff);
@@ -1489,6 +1572,17 @@ export function decodeRawBayerSensor(
           chosen = parsed;
         }
         if (chosen) break;
+      }
+
+      if (chosen && rootParsed && chosen !== rootParsed) {
+        chosen.blackLevel = chosen.blackLevel ?? rootParsed.blackLevel;
+        chosen.whiteLevel = chosen.whiteLevel ?? rootParsed.whiteLevel;
+        chosen.asShotNeutral = chosen.asShotNeutral ?? rootParsed.asShotNeutral;
+        chosen.colorMatrix1 = chosen.colorMatrix1 ?? rootParsed.colorMatrix1;
+        chosen.colorMatrix2 = chosen.colorMatrix2 ?? rootParsed.colorMatrix2;
+        chosen.calibrationIlluminant1 = chosen.calibrationIlluminant1 ?? rootParsed.calibrationIlluminant1;
+        chosen.calibrationIlluminant2 = chosen.calibrationIlluminant2 ?? rootParsed.calibrationIlluminant2;
+        chosen.cfaPattern = chosen.cfaPattern ?? rootParsed.cfaPattern;
       }
 
       if (chosen && chosen.width && chosen.height) {
@@ -1599,12 +1693,27 @@ export function decodeRawBayerSensor(
           return null;
         }
 
+        let whiteBalance: [number, number, number] | undefined;
+        if (chosen.asShotNeutral && chosen.asShotNeutral.length >= 3) {
+          const [nR, nG, nB] = chosen.asShotNeutral;
+          if (nR > 0 && nG > 0 && nB > 0) {
+            whiteBalance = [1 / nR, 1 / nG, 1 / nB];
+          }
+        }
+
         const result = demosaicBayerCfa({
           width: sensorWidth,
           height: sensorHeight,
           pattern,
           data: sensorData,
           bitsPerSample: sensorBpp,
+          blackLevel: chosen.blackLevel,
+          whiteLevel: chosen.whiteLevel,
+          asShotNeutral: chosen.asShotNeutral,
+          whiteBalance,
+          colorMatrix1: chosen.colorMatrix1,
+          colorMatrix2: chosen.colorMatrix2,
+          applySrgbGamma: true,
         });
 
         return { rgb: result.data, width: sensorWidth, height: sensorHeight };
