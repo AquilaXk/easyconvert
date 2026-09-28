@@ -122,22 +122,16 @@ export function compressWithZstdDict(
   dictIdBuf.writeUInt32LE(dictId, 0);
   chunks.push(dictIdBuf);
 
-  // 3. Dictionary-Assisted Substitution & Tokenization
-  // Identify common phrases from the dictionary in the input
-  // and encode efficient reference tokens
-  const tokenized = encodeWithDictTokens(inputBuffer, dictionary);
-
-  // 4. Encode as Zstandard block
+  // 3. RFC 8878 Compliant Raw Block (Block_Type = 0, Last_Block = 1)
   const blockHeader = Buffer.alloc(3);
-  // Block_Type = 0 (Raw block), lastBlock = 1
-  const headerVal = 1 | (0 << 1) | (tokenized.length << 3);
+  const headerVal = 1 | (0 << 1) | (inputBuffer.length << 3);
   blockHeader[0] = headerVal & 0xff;
   blockHeader[1] = (headerVal >> 8) & 0xff;
   blockHeader[2] = (headerVal >> 16) & 0xff;
   chunks.push(blockHeader);
-  chunks.push(tokenized);
+  chunks.push(inputBuffer);
 
-  // 5. Content Checksum of original uncompressed input
+  // 4. Content Checksum of uncompressed input per RFC 8878 (xxHash-64)
   const checksum = computeZstdChecksum(inputBuffer);
   const checksumBuf = Buffer.alloc(4);
   checksumBuf.writeUInt32LE(checksum, 0);
@@ -199,8 +193,8 @@ export function decompressWithZstdDict(
   // Checksum (4 bytes)
   const expectedChecksum = compressedBuffer.readUInt32LE(offset);
 
-  // Reconstruct original content using dictionary token detokenizer
-  const uncompressed = decodeWithDictTokens(payload, dictionary);
+  // Per RFC 8878, raw block payload is authentic uncompressed byte sequence
+  const uncompressed = Buffer.from(payload);
 
   const actualChecksum = computeZstdChecksum(uncompressed);
   if (actualChecksum !== expectedChecksum) {
@@ -208,88 +202,4 @@ export function decompressWithZstdDict(
   }
 
   return uncompressed;
-}
-
-// Byte token marker for dictionary phrases (0x1B ESC + index)
-const DICT_ESC = 0x1b;
-
-function extractPhrases(dict: Buffer): Buffer[] {
-  const str = dict.toString('utf-8');
-  let raw: string[] = [];
-  if (str.includes('\n')) {
-    raw = str.split('\n');
-  } else if (str.includes('\0')) {
-    raw = str.split('\0');
-  } else {
-    raw = str.split(/(?=[<{\"',])|\s+/);
-  }
-  const clean = raw.map((s) => s.trim()).filter((s) => s.length >= 4);
-  return Array.from(new Set(clean)).slice(0, 240).map((s) => Buffer.from(s, 'utf-8'));
-}
-
-function encodeWithDictTokens(input: Buffer, dict: Buffer): Buffer {
-  const phrases = extractPhrases(dict);
-  if (phrases.length === 0) return input;
-
-  const out: number[] = [];
-  let i = 0;
-
-  while (i < input.length) {
-    let matchedIdx = -1;
-    let matchedLen = 0;
-
-    for (let p = 0; p < phrases.length; p++) {
-      const phrase = phrases[p];
-      if (phrase.length > matchedLen && i + phrase.length <= input.length) {
-        if (input.subarray(i, i + phrase.length).equals(phrase)) {
-          matchedIdx = p;
-          matchedLen = phrase.length;
-        }
-      }
-    }
-
-    if (matchedIdx !== -1 && matchedLen >= 4) {
-      out.push(DICT_ESC, matchedIdx);
-      i += matchedLen;
-    } else {
-      const byte = input[i++];
-      if (byte === DICT_ESC) {
-        out.push(DICT_ESC, 0xff); // Escaped literal ESC
-      } else {
-        out.push(byte);
-      }
-    }
-  }
-
-  return Buffer.from(out);
-}
-
-function decodeWithDictTokens(payload: Buffer, dict: Buffer): Buffer {
-  const phrases = extractPhrases(dict);
-  const out: number[] = [];
-  let i = 0;
-
-  while (i < payload.length) {
-    const byte = payload[i++];
-    if (byte === DICT_ESC) {
-      if (i >= payload.length) {
-        throw new Error('Corrupted dictionary-compressed stream: truncated escape sequence');
-      }
-      const code = payload[i++];
-      if (code === 0xff) {
-        out.push(DICT_ESC);
-      } else if (code < phrases.length) {
-        const phrase = phrases[code];
-        for (let j = 0; j < phrase.length; j++) {
-          out.push(phrase[j]);
-        }
-      } else {
-        throw new Error(`Corrupted dictionary-compressed stream: invalid token code ${code}`);
-      }
-    } else {
-      out.push(byte);
-    }
-  }
-
-  return Buffer.from(out);
 }
