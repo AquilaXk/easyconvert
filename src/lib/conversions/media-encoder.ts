@@ -86,14 +86,22 @@ export class BitWriter {
 export class BitReader {
   private buffer: Buffer;
   private bitPos = 0;
+  private _overrun = false;
 
   constructor(buffer: Buffer) {
     this.buffer = buffer;
   }
 
+  get isOverrun(): boolean {
+    return this._overrun;
+  }
+
   readBit(): number {
     const byteIdx = Math.floor(this.bitPos / 8);
-    if (byteIdx >= this.buffer.length) return 0;
+    if (byteIdx >= this.buffer.length) {
+      this._overrun = true;
+      return 0;
+    }
     const b = (this.buffer[byteIdx] >> (7 - (this.bitPos % 8))) & 1;
     this.bitPos++;
     return b;
@@ -1016,6 +1024,9 @@ export function encodeAacLcFramePayload(
   sampleOffset: number,
   channels: number
 ): Buffer {
+  if (channels < 1 || channels > 2) {
+    throw new Error(`Unsupported channel count for AAC LC encoding: ${channels} (only mono and stereo supported)`);
+  }
   const writer = new BitWriter();
   const max_sfb = 40; // 40 bands covers up to 16kHz
   const numLines = AAC_SWB_OFFSET_1024_48[max_sfb];
@@ -1123,6 +1134,7 @@ export function encodeAacLcFramePayload(
  * Decodes an ISO/IEC 13818-7 / 14496-3 compliant AAC LC raw_data_block into 16-bit PCM samples.
  */
 export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int16Array | null {
+  if (channels < 1 || channels > 2) return null;
   if (payload.length < 4) return null;
   const reader = new BitReader(payload);
   const elementId = reader.readBits(3);
@@ -1143,6 +1155,7 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
     let db = 0;
     while (db < max_sfb) {
       const cb = reader.readBits(4);
+      if (cb > 11) return null; // Invalid spectral codebook for AAC LC
       let run = 0;
       let incr = 0;
       do {
@@ -1186,6 +1199,10 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
       }
     }
 
+    // Validate ID_END terminator (0b111 = 7) and buffer overrun
+    const endTag = reader.readBits(3);
+    if (endTag !== 7 || reader.isOverrun) return null;
+
     const numLines = AAC_SWB_OFFSET_1024_48[max_sfb];
     const out = new Int16Array(AAC_FRAME_SAMPLES);
     for (let n = 0; n < AAC_FRAME_SAMPLES; n++) {
@@ -1207,7 +1224,12 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
     const max_sfb = reader.readBits(6);
     if (max_sfb === 0 || max_sfb > 49) return null;
     reader.readBit(); // pred
-    reader.readBits(2); // ms_mask_present
+    const ms_mask_present = reader.readBits(2); // ms_mask_present
+    if (ms_mask_present === 1) {
+      for (let s = 0; s < max_sfb; s++) {
+        reader.readBit();
+      }
+    }
 
     function readChannelStream(): Float64Array | null {
       const gain = reader.readBits(8);
@@ -1215,6 +1237,7 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
       let db = 0;
       while (db < max_sfb) {
         const cb = reader.readBits(4);
+        if (cb > 11) return null; // Invalid spectral codebook for AAC LC
         let run = 0;
         let incr = 0;
         do {
@@ -1260,6 +1283,11 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
     const mdct0 = readChannelStream();
     const mdct1 = readChannelStream();
     if (!mdct0 || !mdct1) return null;
+
+    // Validate ID_END terminator (0b111 = 7) and buffer overrun
+    const endTag = reader.readBits(3);
+    if (endTag !== 7 || reader.isOverrun) return null;
+
     const numLines = AAC_SWB_OFFSET_1024_48[max_sfb];
 
     const out = new Int16Array(AAC_FRAME_SAMPLES * 2);
