@@ -1,8 +1,23 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { PDFDocument, rgb, StandardFonts, setTextRenderingMode, TextRenderingMode } from 'pdf-lib';
-import { demosaicBayerCfa, BayerPattern, BayerSensorData } from '../../src/lib/conversions/image';
-import { crc32, compressZstd, create7zArchive } from '../../src/lib/conversions/archive';
+
+export type BayerPattern = 'RGGB' | 'BGGR' | 'GRBG' | 'GBRG';
+
+export interface BayerSensorData {
+  pattern: BayerPattern;
+  width: number;
+  height: number;
+  bitsPerSample: number;
+  data: Uint16Array;
+  whiteBalance?: [number, number, number];
+  blackLevel?: number;
+  whiteLevel?: number;
+  colorMatrix?: [number, number, number, number, number, number, number, number, number];
+  applySrgbGamma?: boolean;
+}
 
 // ============================================================================
 // 1. Enterprise Multi-Sheet XLSX with NumberFormat & Formula Engine
@@ -1006,31 +1021,40 @@ export function synthesizeEnterprise7z(): Golden7zResult {
     { name: 'manifest.txt', content: 'Golden multi-stream archive payload for differential QA', size: 55 },
   ];
 
-  const archive = create7zArchive(
-    files.map((f) => ({
-      filename: f.name,
-      buffer: Buffer.from(f.content, 'utf-8'),
-    })),
-    {},
-    'enterprise_golden.7z'
-  );
+  const fixturePath = path.join(__dirname, '../fixtures/golden/archive/enterprise-bundle.7z');
+  if (!fs.existsSync(fixturePath)) {
+    throw new Error(`Golden 7z fixture not found at ${fixturePath}. Static binary fixtures must be present.`);
+  }
+  const buffer = fs.readFileSync(fixturePath);
 
   return {
-    buffer: archive.buffer,
-    signature: archive.buffer.subarray(0, 6),
+    buffer,
+    signature: buffer.subarray(0, 6),
     files,
   };
 }
 
 export function synthesizeEnterpriseZstd(): { buffer: Buffer; uncompressedText: string } {
   const uncompressedText = 'EasyConvert RFC 8878 Zstandard Golden Corpus High-Throughput Verification Stream';
-  const rawBuf = Buffer.from(uncompressedText, 'utf-8');
-  const buffer = compressZstd(rawBuf);
+  const fixturePath = path.join(__dirname, '../fixtures/golden/archive/compressed-stream.zst');
+  if (!fs.existsSync(fixturePath)) {
+    throw new Error(`Golden Zstandard fixture not found at ${fixturePath}. Static binary fixtures must be present.`);
+  }
+  const buffer = fs.readFileSync(fixturePath);
 
   return {
     buffer,
     uncompressedText,
   };
+}
+
+export function synthesizeEnterpriseMultiSheetOds(): { buffer: Buffer } {
+  const fixturePath = path.join(__dirname, '../fixtures/golden/office/multi-sheet-enterprise.ods');
+  if (!fs.existsSync(fixturePath)) {
+    throw new Error(`Golden ODS fixture not found at ${fixturePath}. Static binary fixtures must be present.`);
+  }
+  const buffer = fs.readFileSync(fixturePath);
+  return { buffer };
 }
 
 // ============================================================================

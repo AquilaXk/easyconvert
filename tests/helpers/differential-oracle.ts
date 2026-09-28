@@ -12,7 +12,19 @@ import { compareImages, VrtOptions, VrtResult } from './vrt-engine';
 // 1. External CLI Tool Probing & Availability
 // ============================================================================
 
-export type ExternalOracleTool = 'pdftotext' | 'pdfinfo' | 'ffmpeg' | 'ffprobe' | 'soffice' | 'tesseract' | '7z' | 'tar' | 'zstd';
+export type ExternalOracleTool =
+  | 'pdftotext'
+  | 'pdfinfo'
+  | 'pdftoppm'
+  | 'ffmpeg'
+  | 'ffprobe'
+  | 'soffice'
+  | 'tesseract'
+  | '7z'
+  | 'tar'
+  | 'zstd'
+  | 'magick'
+  | 'identify';
 
 const toolCache = new Map<string, string | null>();
 
@@ -75,6 +87,7 @@ export function getOracleToolDiagnostics(): OracleToolDiagnostic[] {
   const tools: ExternalOracleTool[] = [
     'pdftotext',
     'pdfinfo',
+    'pdftoppm',
     'ffmpeg',
     'ffprobe',
     'soffice',
@@ -82,12 +95,74 @@ export function getOracleToolDiagnostics(): OracleToolDiagnostic[] {
     '7z',
     'tar',
     'zstd',
+    'magick',
+    'identify',
   ];
   return tools.map((tool) => ({
     tool,
     available: isOracleToolAvailable(tool),
     path: getOracleToolPath(tool),
   }));
+}
+
+/**
+ * Validates image bitstream decoding using ImageMagick CLI (identify or magick identify) when available.
+ */
+export function verifyImageWithImageMagick(buffer: Buffer): boolean {
+  const identifyPath = getOracleToolPath('identify') || getOracleToolPath('magick');
+  if (!identifyPath) return false;
+  try {
+    const args = identifyPath.endsWith('identify')
+      ? ['-format', '%m %w %h', '-']
+      : ['identify', '-format', '%m %w %h', '-'];
+    const out = execFileSync(identifyPath, args, {
+      input: buffer,
+      stdio: ['pipe', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+    });
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates audio container/bitstream using FFmpeg CLI when available.
+ */
+export function verifyAudioWithFfmpeg(buffer: Buffer): boolean {
+  const ffmpegPath = getOracleToolPath('ffmpeg');
+  if (!ffmpegPath) return false;
+  try {
+    execFileSync(ffmpegPath, ['-v', 'error', '-i', 'pipe:0', '-f', 'null', '-'], {
+      input: buffer,
+      stdio: ['pipe', 'ignore', 'pipe'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates PDF document structure using Poppler pdfinfo CLI when available.
+ */
+export function verifyPdfWithPoppler(buffer: Buffer): boolean {
+  const pdfinfoPath = getOracleToolPath('pdfinfo');
+  if (!pdfinfoPath) return false;
+  const tmpPath = path.join(os.tmpdir(), `oracle_pdfinfo_${crypto.randomUUID()}.pdf`);
+  try {
+    fs.writeFileSync(tmpPath, buffer);
+    execFileSync(pdfinfoPath, [tmpPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
 }
 
 /**
@@ -1046,15 +1121,54 @@ function parseMp3AudioAst(buffer: Buffer): AudioMediaAst {
   };
 }
 
-function parseWavAudioAst(buffer: Buffer): AudioMediaAst {
+function parseFlacAudioAst(buffer: Buffer): AudioMediaAst {
+  const isFlac = buffer.length >= 42 && buffer.subarray(0, 4).toString('ascii') === 'fLaC';
+  let sampleRate = 44100;
+  let channels = 2;
+
+  if (isFlac) {
+    const b18 = buffer[18];
+    const b19 = buffer[19];
+    const b20 = buffer[20];
+    sampleRate = (b18 << 12) | (b19 << 4) | (b20 >> 4);
+    channels = ((b20 >> 1) & 0x07) + 1;
+  }
+
   return {
-    format: 'wav',
-    containerBoxTypes: [buffer.toString('ascii', 0, 4)],
-    hasAudioTrack: buffer.toString('ascii', 8, 12) === 'WAVE',
+    format: 'flac',
+    containerBoxTypes: isFlac ? ['fLaC', 'STREAMINFO'] : [],
+    hasAudioTrack: isFlac,
     hasMoovHeader: false,
     hasEbmlHeader: false,
-    estimatedSampleRate: 44100,
-    estimatedChannels: 2,
+    estimatedSampleRate: sampleRate,
+    estimatedChannels: channels,
+  };
+}
+
+function parseWavAudioAst(buffer: Buffer): AudioMediaAst {
+  let sampleRate = 44100;
+  let channels = 2;
+  const isWav =
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WAVE';
+
+  if (isWav) {
+    const fmtIdx = buffer.indexOf('fmt ');
+    if (fmtIdx !== -1 && fmtIdx + 16 <= buffer.length) {
+      channels = buffer.readUInt16LE(fmtIdx + 8 + 2);
+      sampleRate = buffer.readUInt32LE(fmtIdx + 8 + 4);
+    }
+  }
+
+  return {
+    format: 'wav',
+    containerBoxTypes: [buffer.subarray(0, 4).toString('ascii')],
+    hasAudioTrack: isWav,
+    hasMoovHeader: false,
+    hasEbmlHeader: false,
+    estimatedSampleRate: sampleRate,
+    estimatedChannels: channels,
   };
 }
 
@@ -1068,6 +1182,8 @@ export function parseAudioMediaToAst(buffer: Buffer, format: string): AudioMedia
       return parseWebmAudioAst(buffer);
     case 'mp3':
       return parseMp3AudioAst(buffer);
+    case 'flac':
+      return parseFlacAudioAst(buffer);
     default:
       return parseWavAudioAst(buffer);
   }
@@ -1169,11 +1285,17 @@ function parse7zCliListing(toolPath: string, buffer: Buffer): ArchiveStructuralA
     return {
       format: '7z',
       fileCount: lines.length,
-      files: lines.map((l) => ({
-        name: l.trim().split(/\s+/).pop() || '',
-        size: 0,
-        isDir: false,
-      })),
+      files: lines.map((l) => {
+        const tokens = l.trim().split(/\s+/);
+        const size = tokens.length >= 4 ? parseInt(tokens[3], 10) || 0 : 0;
+        const isDir = tokens.length >= 3 && tokens[2].includes('D');
+        const name = l.length > 53 ? l.slice(53).trim() : (tokens[tokens.length - 1] || '');
+        return {
+          name,
+          size,
+          isDir,
+        };
+      }),
     };
   } catch {
     return null;
@@ -1202,22 +1324,49 @@ function extract7zHeaderFiles(nh: Buffer, sizes: number[]): { name: string; size
   const filesInfoIdx = nh.indexOf(0x05);
   if (filesInfoIdx === -1) return files;
 
-  const nameIdx = nh.indexOf(0x11, filesInfoIdx);
-  if (nameIdx === -1) return files;
-
-  let p = nameIdx + 1;
-  while (p < nh.length && (nh[p] & 0x80) !== 0) p++;
-  p++;
-  if (p < nh.length && nh[p] === 0x00) p++;
-
-  const names = nh.subarray(p).toString('utf16le').split('\0').filter(Boolean);
-  for (let i = 0; i < names.length; i++) {
-    files.push({
-      name: names[i],
-      size: sizes[i] ?? 0,
-      isDir: names[i].endsWith('/'),
-    });
+  // 1. Look for kName property (0x11) inside kFilesInfo
+  const namePropIdx = nh.indexOf(0x11, filesInfoIdx);
+  if (namePropIdx !== -1) {
+    let p = namePropIdx + 1;
+    while (p < nh.length && (nh[p] & 0x80) !== 0) p++;
+    p++;
+    if (p < nh.length && nh[p] === 0x00) {
+      p++;
+      const namesChunk = nh.subarray(p);
+      const names = namesChunk.toString('utf16le').split('\0');
+      for (let i = 0; i < sizes.length && i < names.length; i++) {
+        if (names[i] && /^[\x20-\x7e]+$/.test(names[i])) {
+          files.push({
+            name: names[i],
+            size: sizes[i] ?? 0,
+            isDir: names[i].endsWith('/'),
+          });
+        }
+      }
+      if (files.length > 0) return files;
+    }
   }
+
+  // 2. Fallback heuristic: find sequence of UTF-16LE null-terminated ASCII characters
+  for (let i = filesInfoIdx; i < nh.length - 8; i++) {
+    if (
+      nh[i] >= 0x20 && nh[i] <= 0x7e && nh[i + 1] === 0x00 &&
+      nh[i + 2] >= 0x20 && nh[i + 2] <= 0x7e && nh[i + 3] === 0x00
+    ) {
+      const names = nh.subarray(i).toString('utf16le').split('\0');
+      for (let s = 0; s < sizes.length && s < names.length; s++) {
+        if (/^[\x20-\x7e]+$/.test(names[s])) {
+          files.push({
+            name: names[s],
+            size: sizes[s] ?? 0,
+            isDir: names[s].endsWith('/'),
+          });
+        }
+      }
+      if (files.length > 0) break;
+    }
+  }
+
   return files;
 }
 
@@ -1251,14 +1400,21 @@ function parse7zArchiveStructure(buffer: Buffer): ArchiveStructuralAst {
 }
 
 // ============================================================================
-// 4. Differential Comparison & Scoring Engine
-// ============================================================================
+export interface DifferentialComparisonOptions {
+  vrtOptions?: VrtOptions;
+  minStructuralScore?: number;
+  minTextScore?: number;
+  minSsim?: number;
+  minPsnr?: number;
+}
 
 export interface DifferentialReport {
   matched: boolean;
   oracleType: 'external_cli' | 'structural_ast_reference';
   structuralScore: number; // 0.0 to 1.0
   textSimilarity: number;  // 0.0 to 1.0
+  ssim?: number;
+  psnr?: number;
   vrtResult?: VrtResult;
   discrepancies: string[];
 }
@@ -1389,11 +1545,7 @@ export async function runDifferentialComparison(
   actualBuffer: Buffer,
   referenceBuffer: Buffer,
   format: string,
-  options: {
-    vrtOptions?: VrtOptions;
-    minStructuralScore?: number;
-    minTextScore?: number;
-  } = {}
+  options: DifferentialComparisonOptions = {}
 ): Promise<DifferentialReport> {
   const fmt = format.toLowerCase();
   const discrepancies: string[] = [];
@@ -1431,6 +1583,12 @@ export async function runDifferentialComparison(
   }
 
   if (fmt === 'pdf') {
+    if (isOracleToolAvailable('pdfinfo') || isOracleToolAvailable('pdftotext')) {
+      oracleType = 'external_cli';
+      if (isOracleToolAvailable('pdfinfo') && !verifyPdfWithPoppler(actualBuffer)) {
+        discrepancies.push('Poppler external oracle CLI failed to verify PDF structure');
+      }
+    }
     const res = await comparePdfDifferential(actualBuffer, referenceBuffer, discrepancies);
     structuralScore = res.structuralScore;
     textSimilarity = res.textSimilarity;
@@ -1445,10 +1603,55 @@ export async function runDifferentialComparison(
     const res = compareCadStepDifferential(actualBuffer, referenceBuffer, discrepancies);
     structuralScore = res.structuralScore;
   } else if (['png', 'webp', 'bmp', 'jpg', 'jpeg'].includes(fmt)) {
+    if (isOracleToolAvailable('identify') || isOracleToolAvailable('magick')) {
+      oracleType = 'external_cli';
+      if (!verifyImageWithImageMagick(actualBuffer)) {
+        discrepancies.push('ImageMagick external oracle CLI failed to decode actual image bitstream');
+      }
+    }
     vrtResult = await compareImages(actualBuffer, referenceBuffer, options.vrtOptions);
+    const ssim = vrtResult.ssim;
+    const psnr = vrtResult.psnr;
+
     if (!vrtResult.passed) {
-      discrepancies.push(`VRT failure: deltaRatio=${(vrtResult.deltaRatio * 100).toFixed(3)}%, SSIM=${vrtResult.ssim.toFixed(3)}`);
-      structuralScore = vrtResult.ssim;
+      discrepancies.push(
+        `VRT failure: deltaRatio=${(vrtResult.deltaRatio * 100).toFixed(3)}%, SSIM=${ssim.toFixed(3)}, PSNR=${psnr === Infinity ? 'Infinity' : psnr.toFixed(2)}dB`
+      );
+      structuralScore = ssim;
+    }
+
+    if (options.minSsim !== undefined && ssim < options.minSsim) {
+      discrepancies.push(
+        `Quantitative SSIM assertion failed: observed ${ssim.toFixed(4)} < required minimum ${options.minSsim}`
+      );
+    }
+
+    if (options.minPsnr !== undefined && psnr < options.minPsnr) {
+      discrepancies.push(
+        `Quantitative PSNR assertion failed: observed ${psnr === Infinity ? 'Infinity' : psnr.toFixed(2)}dB < required minimum ${options.minPsnr}dB`
+      );
+    }
+  } else if (['wav', 'mp3', 'flac'].includes(fmt)) {
+    if (isOracleToolAvailable('ffmpeg')) {
+      oracleType = 'external_cli';
+      if (!verifyAudioWithFfmpeg(actualBuffer)) {
+        discrepancies.push(`FFmpeg external oracle CLI failed to decode ${fmt} audio bitstream`);
+        structuralScore = 0;
+      }
+    }
+    const actualAst = parseAudioMediaToAst(actualBuffer, fmt);
+    const refAst = parseAudioMediaToAst(referenceBuffer, fmt);
+    if (actualAst.estimatedSampleRate !== refAst.estimatedSampleRate) {
+      discrepancies.push(`Audio sample rate mismatch: actual=${actualAst.estimatedSampleRate}, ref=${refAst.estimatedSampleRate}`);
+      structuralScore -= 0.3;
+    }
+    if (actualAst.estimatedChannels !== refAst.estimatedChannels) {
+      discrepancies.push(`Audio channels mismatch: actual=${actualAst.estimatedChannels}, ref=${refAst.estimatedChannels}`);
+      structuralScore -= 0.3;
+    }
+    if (!actualAst.hasAudioTrack) {
+      discrepancies.push('Missing audio track in decoded bitstream');
+      structuralScore = 0;
     }
   }
 
@@ -1456,9 +1659,7 @@ export async function runDifferentialComparison(
   const minScore = options.minStructuralScore ?? 0.8;
   const minText = options.minTextScore ?? 0.7;
 
-  if (fmt === 'pdf' && isOracleToolAvailable('pdftotext')) {
-    oracleType = 'external_cli';
-  } else if (fmt === 'tar') {
+  if (fmt === 'tar') {
     if (isOracleToolAvailable('tar')) {
       oracleType = 'external_cli';
       const isValid = verifyArchiveWithTar(actualBuffer);
@@ -1518,6 +1719,8 @@ export async function runDifferentialComparison(
     oracleType,
     structuralScore,
     textSimilarity,
+    ssim: vrtResult?.ssim,
+    psnr: vrtResult?.psnr,
     vrtResult,
     discrepancies,
   };
@@ -1528,38 +1731,135 @@ export async function runDifferentialComparison(
 // ============================================================================
 
 function checkPdfIntegrity(buffer: Buffer): void {
-  if (!buffer.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
+  if (buffer.length < 8 || !buffer.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
     throw new Error('Integrity Violation: Missing PDF magic header %PDF-');
   }
-  if (!buffer.toString('latin1').includes('%%EOF')) {
+  const latin1 = buffer.toString('latin1');
+  if (!latin1.includes('%%EOF')) {
     throw new Error('Integrity Violation: Missing PDF EOF marker %%EOF');
+  }
+  if (!latin1.includes('obj') || !latin1.includes('endobj')) {
+    throw new Error('Integrity Violation: Missing PDF object definitions (obj / endobj)');
+  }
+  if (isOracleToolAvailable('pdfinfo') && buffer.length > 200 && latin1.includes('/Root')) {
+    if (!verifyPdfWithPoppler(buffer)) {
+      throw new Error('Integrity Violation: Poppler pdfinfo CLI verification failed on PDF document');
+    }
   }
 }
 
 function checkPngIntegrity(buffer: Buffer): void {
   const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (!buffer.subarray(0, 8).equals(pngMagic)) {
+  if (buffer.length < 33 || !buffer.subarray(0, 8).equals(pngMagic)) {
     throw new Error('Integrity Violation: Missing PNG 8-byte magic signature');
+  }
+  const ihdrLen = buffer.readUInt32BE(8);
+  const ihdrType = buffer.subarray(12, 16).toString('ascii');
+  if (ihdrType !== 'IHDR' || ihdrLen < 13) {
+    throw new Error('Integrity Violation: Missing or invalid PNG IHDR chunk');
+  }
+  const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
+  if (width === 0 || height === 0) {
+    throw new Error(`Integrity Violation: Invalid PNG dimensions (width=${width}, height=${height})`);
+  }
+  if (!buffer.includes(Buffer.from('IEND', 'ascii'))) {
+    throw new Error('Integrity Violation: Missing PNG IEND chunk');
+  }
+  if (isOracleToolAvailable('identify') || isOracleToolAvailable('magick')) {
+    if (!verifyImageWithImageMagick(buffer)) {
+      throw new Error('Integrity Violation: ImageMagick CLI failed to decode PNG bitstream');
+    }
   }
 }
 
 function check7zIntegrity(buffer: Buffer): void {
   const sevenZMagic = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
-  if (!buffer.subarray(0, 6).equals(sevenZMagic)) {
+  if (buffer.length < 6 || !buffer.subarray(0, 6).equals(sevenZMagic)) {
     throw new Error('Integrity Violation: Missing 7z 6-byte magic signature');
+  }
+  if (buffer.length < 32) {
+    throw new Error('Integrity Violation: Truncated 7z archive header (minimum 32 bytes required)');
+  }
+  const major = buffer[6];
+  if (major > 10) {
+    throw new Error(`Integrity Violation: Invalid 7z major version ${major}`);
+  }
+  if (isOracleToolAvailable('7z') && buffer.length > 100) {
+    if (!verifyArchiveWith7z(buffer)) {
+      throw new Error('Integrity Violation: External 7z CLI verification failed');
+    }
   }
 }
 
 function checkZipIntegrity(buffer: Buffer): void {
   const zipMagic = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
-  if (!buffer.subarray(0, 4).equals(zipMagic)) {
+  if (buffer.length < 22 || !buffer.subarray(0, 4).equals(zipMagic)) {
     throw new Error(String.raw`Integrity Violation: Missing OpenXML / ZIP PK\x03\x04 magic header`);
+  }
+  const eocdMagic = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  if (buffer.lastIndexOf(eocdMagic) === -1) {
+    throw new Error(String.raw`Integrity Violation: Missing ZIP End of Central Directory (EOCD) record PK\x05\x06`);
   }
 }
 
+function checkDocxIntegrity(buffer: Buffer): void {
+  checkZipIntegrity(buffer);
+  const latin1 = buffer.toString('latin1');
+  if (!latin1.includes('word/') && !latin1.includes('[Content_Types].xml')) {
+    throw new Error('Integrity Violation: Missing WordprocessingML structures (word/ or [Content_Types].xml)');
+  }
+}
+
+function checkXlsxIntegrity(buffer: Buffer): void {
+  checkZipIntegrity(buffer);
+  const latin1 = buffer.toString('latin1');
+  if (!latin1.includes('xl/') && !latin1.includes('[Content_Types].xml')) {
+    throw new Error('Integrity Violation: Missing SpreadsheetML structures (xl/ or [Content_Types].xml)');
+  }
+}
+
+function checkPptxIntegrity(buffer: Buffer): void {
+  checkZipIntegrity(buffer);
+  const latin1 = buffer.toString('latin1');
+  if (!latin1.includes('ppt/') && !latin1.includes('[Content_Types].xml')) {
+    throw new Error('Integrity Violation: Missing PresentationML structures (ppt/ or [Content_Types].xml)');
+  }
+}
+
+function checkOdsIntegrity(buffer: Buffer): void {
+  checkZipIntegrity(buffer);
+  const latin1 = buffer.toString('latin1');
+  if (!latin1.includes('opendocument.spreadsheet') && !latin1.includes('table:table') && !latin1.includes('table:name')) {
+    throw new Error('Integrity Violation: Missing ODS OpenDocument spreadsheet structures (mimetype or table elements)');
+  }
+}
+
+function checkOdtIntegrity(buffer: Buffer): void {
+  checkZipIntegrity(buffer);
+  const latin1 = buffer.toString('latin1');
+  if (!latin1.includes('opendocument.text') && !latin1.includes('text:p')) {
+    throw new Error('Integrity Violation: Missing ODT OpenDocument text structures (mimetype or text elements)');
+  }
+}
+
+function checkOdpIntegrity(buffer: Buffer): void {
+  checkZipIntegrity(buffer);
+  const latin1 = buffer.toString('latin1');
+  if (!latin1.includes('opendocument.presentation') && !latin1.includes('draw:page')) {
+    throw new Error('Integrity Violation: Missing ODP OpenDocument presentation structures (mimetype or draw elements)');
+  }
+}
+
+
+
 function checkStepIntegrity(buffer: Buffer): void {
-  if (!buffer.toString('utf-8', 0, 12).includes('ISO-10303-21')) {
+  const str = buffer.toString('utf-8', 0, Math.min(buffer.length, 4096));
+  if (!str.includes('ISO-10303-21')) {
     throw new Error('Integrity Violation: Missing ISO-10303-21 STEP header');
+  }
+  if (!str.includes('HEADER;') || (!str.includes('DATA;') && !str.includes('ENDSEC;'))) {
+    throw new Error('Integrity Violation: Incomplete STEP AP214 structure (missing HEADER/DATA sections)');
   }
 }
 
@@ -1567,82 +1867,297 @@ function checkTarIntegrity(buffer: Buffer): void {
   if (buffer.length < 512) {
     throw new Error('Integrity Violation: TAR archive must be at least 512 bytes');
   }
+  if (buffer.length % 512 !== 0) {
+    throw new Error(`Integrity Violation: TAR archive length (${buffer.length}) must be a multiple of 512 bytes`);
+  }
   const magic = buffer.subarray(257, 263).toString('ascii');
   if (!magic.startsWith('ustar')) {
     throw new Error('Integrity Violation: Missing ustar magic header in TAR block');
+  }
+  const chksumStr = buffer.subarray(148, 156).toString('ascii').replace(/\0/g, ' ').trim();
+  const storedChksum = parseInt(chksumStr, 8);
+  if (Number.isNaN(storedChksum)) {
+    throw new Error('Integrity Violation: Invalid TAR header checksum field');
+  }
+  let expectedChksum = 0;
+  for (let i = 0; i < 512; i++) {
+    if (i >= 148 && i < 156) {
+      expectedChksum += 0x20;
+    } else {
+      expectedChksum += buffer[i];
+    }
+  }
+  if (storedChksum !== expectedChksum) {
+    throw new Error(`Integrity Violation: TAR checksum mismatch (stored ${storedChksum} !== computed ${expectedChksum})`);
   }
 }
 
 function checkZstdIntegrity(buffer: Buffer): void {
   const zstdMagic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
-  if (!buffer.subarray(0, 4).equals(zstdMagic)) {
+  if (buffer.length < 4 || !buffer.subarray(0, 4).equals(zstdMagic)) {
     throw new Error('Integrity Violation: Missing RFC 8878 Zstandard magic 0x28B52FFD');
+  }
+  if (buffer.length >= 5) {
+    const fhd = buffer[4];
+    if ((fhd & 0x10) !== 0) {
+      throw new Error('Integrity Violation: Invalid Zstandard Frame_Header_Descriptor (reserved bit 4 is set)');
+    }
+    const singleSegment = (fhd >> 5) & 1;
+    const fcsFlag = (fhd >> 6) & 3;
+    const didFlag = fhd & 3;
+
+    const windowDescBytes = singleSegment === 1 ? 0 : 1;
+    let didBytes = 0;
+    if (didFlag === 1) didBytes = 1;
+    else if (didFlag === 2) didBytes = 2;
+    else if (didFlag === 3) didBytes = 4;
+
+    let fcsBytes = 0;
+    if (fcsFlag === 0) fcsBytes = singleSegment === 1 ? 1 : 0;
+    else if (fcsFlag === 1) fcsBytes = 2;
+    else if (fcsFlag === 2) fcsBytes = 4;
+    else if (fcsFlag === 3) fcsBytes = 8;
+
+    const headerLength = 5 + windowDescBytes + didBytes + fcsBytes;
+    if (buffer.length >= headerLength + 3) {
+      const blockHdr = buffer.readUIntLE(headerLength, 3);
+      const blockType = (blockHdr >> 1) & 0x03;
+      if (blockType === 3) {
+        throw new Error('Integrity Violation: Invalid Zstandard block type (reserved type 3)');
+      }
+      const blockSize = blockHdr >> 3;
+      if (blockSize > 128 * 1024 * 1024) {
+        throw new Error(`Integrity Violation: Zstandard block size exceeds maximum (${blockSize})`);
+      }
+    }
   }
 }
 
 function checkWoff2Integrity(buffer: Buffer): void {
   const woff2Magic = Buffer.from([0x77, 0x4f, 0x46, 0x32]); // 'wOF2'
-  if (!buffer.subarray(0, 4).equals(woff2Magic)) {
-    throw new Error('Integrity Violation: Missing WOFF2 magic signature wOF2');
+  if (buffer.length < 48 || !buffer.subarray(0, 4).equals(woff2Magic)) {
+    throw new Error('Integrity Violation: Missing or truncated WOFF2 header (minimum 48 bytes)');
+  }
+  const numTables = buffer.readUInt16BE(12);
+  const reserved = buffer.readUInt16BE(14);
+  const totalSfntSize = buffer.readUInt32BE(16);
+  if (reserved !== 0 || numTables === 0 || totalSfntSize === 0) {
+    throw new Error(`Integrity Violation: Invalid WOFF2 header structure (numTables=${numTables}, reserved=${reserved}, sfntSize=${totalSfntSize})`);
   }
 }
 
 function checkHwpIntegrity(buffer: Buffer): void {
   const hwpOleMagic = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-  if (!buffer.subarray(0, 8).equals(hwpOleMagic)) {
+  if (buffer.length < 512 || !buffer.subarray(0, 8).equals(hwpOleMagic)) {
     throw new Error('Integrity Violation: Missing HWP5 OLE compound document magic header');
+  }
+  const sectorShift = buffer.readUInt16LE(30);
+  if (sectorShift !== 9 && sectorShift !== 12) {
+    throw new Error(`Integrity Violation: Invalid OLE sector size shift (${sectorShift})`);
+  }
+  const latin1 = buffer.toString('latin1');
+  if (!latin1.includes('FileHeader') && !latin1.includes('DocInfo') && !latin1.includes('HWP Document File')) {
+    throw new Error('Integrity Violation: Missing HWP 5.0 CFBF stream signatures');
   }
 }
 
 function checkParquetIntegrity(buffer: Buffer): void {
+  if (buffer.length < 12) {
+    throw new Error('Integrity Violation: Apache Parquet buffer too short (< 12 bytes)');
+  }
   const par1 = Buffer.from('PAR1', 'ascii');
   if (!buffer.subarray(0, 4).equals(par1) || !buffer.subarray(buffer.length - 4).equals(par1)) {
     throw new Error('Integrity Violation: Missing Apache Parquet PAR1 4-byte bounding magic');
   }
+  const footerLen = buffer.readUInt32LE(buffer.length - 8);
+  if (footerLen <= 0 || buffer.length - 8 - footerLen < 4) {
+    throw new Error(`Integrity Violation: Invalid Parquet footer length (${footerLen})`);
+  }
 }
 
 function checkWavIntegrity(buffer: Buffer): void {
+  if (buffer.length < 44) {
+    throw new Error('Integrity Violation: WAV buffer too small (minimum 44 bytes for standard header)');
+  }
   if (buffer.subarray(0, 4).toString('ascii') !== 'RIFF' || buffer.subarray(8, 12).toString('ascii') !== 'WAVE') {
     throw new Error('Integrity Violation: Missing RIFF/WAVE header in audio buffer');
+  }
+  const riffLen = buffer.readUInt32LE(4);
+  if (riffLen < 36) {
+    throw new Error(`Integrity Violation: Invalid RIFF length (${riffLen}) in WAV`);
+  }
+  if (buffer.length > 44) {
+    const fmtIdx = buffer.indexOf('fmt ');
+    if (fmtIdx === -1) {
+      throw new Error('Integrity Violation: Missing fmt chunk in WAV container');
+    }
+    if (fmtIdx + 16 > buffer.length) {
+      throw new Error('Integrity Violation: Truncated fmt chunk in WAV container');
+    }
+    const channels = buffer.readUInt16LE(fmtIdx + 8 + 2);
+    const sampleRate = buffer.readUInt32LE(fmtIdx + 8 + 4);
+    const bitsPerSample = buffer.readUInt16LE(fmtIdx + 8 + 14);
+
+    if (channels === 0 || sampleRate === 0 || bitsPerSample === 0) {
+      throw new Error(`Integrity Violation: Invalid WAV fmt parameters (channels=${channels}, sampleRate=${sampleRate}, bits=${bitsPerSample})`);
+    }
+
+    const dataIdx = buffer.indexOf('data');
+    if (dataIdx === -1) {
+      throw new Error('Integrity Violation: Missing data chunk in WAV container');
+    }
+    const dataLen = buffer.readUInt32LE(dataIdx + 4);
+    if (dataLen === 0 && buffer.length > 44) {
+      throw new Error('Integrity Violation: Empty PCM payload in WAV data chunk');
+    }
+
+    if (isOracleToolAvailable('ffmpeg')) {
+      if (!verifyAudioWithFfmpeg(buffer)) {
+        throw new Error('Integrity Violation: FFmpeg CLI failed to decode WAV bitstream');
+      }
+    }
   }
 }
 
 function checkWebpIntegrity(buffer: Buffer): void {
+  if (buffer.length < 16) {
+    throw new Error('Integrity Violation: WebP buffer too short (< 16 bytes)');
+  }
   if (buffer.subarray(0, 4).toString('ascii') !== 'RIFF' || buffer.subarray(8, 12).toString('ascii') !== 'WEBP') {
     throw new Error('Integrity Violation: Missing RIFF/WEBP header in image buffer');
+  }
+  const chunkType = buffer.subarray(12, 16).toString('ascii');
+  if (!['VP8 ', 'VP8L', 'VP8X'].includes(chunkType)) {
+    throw new Error(`Integrity Violation: Invalid WebP chunk type '${chunkType}' (expected VP8, VP8L, or VP8X)`);
+  }
+  if ((isOracleToolAvailable('identify') || isOracleToolAvailable('magick')) && buffer.length > 64) {
+    if (!verifyImageWithImageMagick(buffer)) {
+      throw new Error('Integrity Violation: ImageMagick CLI failed to decode WebP bitstream');
+    }
   }
 }
 
 function checkFlacIntegrity(buffer: Buffer): void {
+  if (buffer.length < 42) {
+    throw new Error('Integrity Violation: FLAC buffer too small (< 42 bytes)');
+  }
   if (buffer.subarray(0, 4).toString('ascii') !== 'fLaC') {
     throw new Error('Integrity Violation: Missing fLaC magic header');
+  }
+  const blockType = buffer[4] & 0x7f;
+  if (blockType !== 0) {
+    throw new Error(`Integrity Violation: First FLAC metadata block must be STREAMINFO (type 0, found ${blockType})`);
+  }
+  const blockLen = (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
+  if (blockLen < 34) {
+    throw new Error(`Integrity Violation: Invalid FLAC STREAMINFO length (${blockLen} < 34)`);
+  }
+  const b18 = buffer[18];
+  const b19 = buffer[19];
+  const b20 = buffer[20];
+  const sampleRate = (b18 << 12) | (b19 << 4) | (b20 >> 4);
+  const channels = ((b20 >> 1) & 0x07) + 1;
+  if (sampleRate === 0 || channels === 0) {
+    throw new Error(`Integrity Violation: Invalid FLAC parameters (sampleRate=${sampleRate}, channels=${channels})`);
+  }
+  if (isOracleToolAvailable('ffmpeg') && buffer.length > 100) {
+    if (!verifyAudioWithFfmpeg(buffer)) {
+      throw new Error('Integrity Violation: FFmpeg CLI failed to decode FLAC bitstream');
+    }
   }
 }
 
 function checkMp3Integrity(buffer: Buffer): void {
-  const hasId3 = buffer.subarray(0, 3).toString('ascii') === 'ID3';
+  let searchOffset = 0;
+  if (buffer.length >= 10 && buffer.subarray(0, 3).toString('ascii') === 'ID3') {
+    const b6 = buffer[6];
+    const b7 = buffer[7];
+    const b8 = buffer[8];
+    const b9 = buffer[9];
+    if ((b6 & 0x80) !== 0 || (b7 & 0x80) !== 0 || (b8 & 0x80) !== 0 || (b9 & 0x80) !== 0) {
+      throw new Error('Integrity Violation: Invalid ID3v2 synchsafe integer size in MP3 header');
+    }
+    const tagSize = ((b6 & 0x7f) << 21) | ((b7 & 0x7f) << 14) | ((b8 & 0x7f) << 7) | (b9 & 0x7f);
+    searchOffset = 10 + tagSize;
+  }
+
   let hasSync = false;
-  for (let i = 0; i < Math.min(buffer.length - 1, 1024); i++) {
+  const startPos = (searchOffset < buffer.length - 3) ? searchOffset : 0;
+  for (let i = startPos; i < buffer.length - 3; i++) {
     if (buffer[i] === 0xff && (buffer[i + 1] & 0xe0) === 0xe0) {
-      hasSync = true;
-      break;
+      const layer = (buffer[i + 1] >> 1) & 0x03;
+      const bitrateIdx = (buffer[i + 2] >> 4) & 0x0f;
+      const srIdx = (buffer[i + 2] >> 2) & 0x03;
+      if (layer !== 0 && bitrateIdx !== 15 && srIdx !== 3) {
+        hasSync = true;
+        break;
+      }
     }
   }
-  if (!hasId3 && !hasSync) {
-    throw new Error('Integrity Violation: Missing MPEG audio frame sync or ID3 header');
+
+  if (!hasSync && searchOffset > 0) {
+    for (let i = 0; i < Math.min(buffer.length - 3, 4096); i++) {
+      if (buffer[i] === 0xff && (buffer[i + 1] & 0xe0) === 0xe0) {
+        const layer = (buffer[i + 1] >> 1) & 0x03;
+        const bitrateIdx = (buffer[i + 2] >> 4) & 0x0f;
+        const srIdx = (buffer[i + 2] >> 2) & 0x03;
+        if (layer !== 0 && bitrateIdx !== 15 && srIdx !== 3) {
+          hasSync = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!hasSync) {
+    throw new Error('Integrity Violation: Missing valid MPEG audio frame sync or ID3 header');
+  }
+
+  if (isOracleToolAvailable('ffmpeg') && buffer.length > 200) {
+    if (!verifyAudioWithFfmpeg(buffer)) {
+      throw new Error('Integrity Violation: FFmpeg CLI failed to decode MP3 bitstream');
+    }
   }
 }
 
 function checkJpegIntegrity(buffer: Buffer): void {
-  if (buffer[0] !== 0xff || buffer[1] !== 0xd8 || buffer[2] !== 0xff) {
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8 || buffer[2] !== 0xff) {
     throw new Error('Integrity Violation: Missing JPEG SOI marker 0xFFD8FF');
+  }
+  const initialMarker = buffer[3];
+  if (initialMarker < 0xc0) {
+    throw new Error(`Integrity Violation: Invalid JPEG initial marker 0xFF${initialMarker.toString(16).padStart(2, '0')}`);
+  }
+  if (buffer.length >= 32) {
+    const hasEoi = buffer.lastIndexOf(Buffer.from([0xff, 0xd9])) !== -1;
+    let hasStructuralMarker = false;
+    for (let i = 2; i < buffer.length - 1; i++) {
+      if (buffer[i] === 0xff) {
+        const m = buffer[i + 1];
+        if (m === 0xdb || (m >= 0xc0 && m <= 0xc3) || (m >= 0xe0 && m <= 0xef)) {
+          hasStructuralMarker = true;
+          break;
+        }
+      }
+    }
+    if (!hasStructuralMarker && !hasEoi) {
+      throw new Error('Integrity Violation: Missing JPEG structural markers (SOF/DQT/APPn) or EOI');
+    }
+  }
+  if ((isOracleToolAvailable('identify') || isOracleToolAvailable('magick')) && buffer.length > 64) {
+    if (!verifyImageWithImageMagick(buffer)) {
+      throw new Error('Integrity Violation: ImageMagick CLI failed to decode JPEG bitstream');
+    }
   }
 }
 
 function checkDxfIntegrity(buffer: Buffer): void {
-  const str = buffer.toString('utf-8', 0, Math.min(buffer.length, 512));
-  if (!str.includes('SECTION') && !str.includes('HEADER') && !str.includes('ENTITIES')) {
-    throw new Error('Integrity Violation: Missing AutoCAD DXF SECTION header');
+  const str = buffer.toString('utf-8');
+  if (!/\b0\s*\r?\n\s*SECTION\b/i.test(str)) {
+    throw new Error('Integrity Violation: Missing AutoCAD DXF 0 SECTION header');
+  }
+  if (!/\b0\s*\r?\n\s*EOF\b/i.test(str) && !/\b0\s*\r?\n\s*ENDSEC\b/i.test(str)) {
+    throw new Error('Integrity Violation: Missing AutoCAD DXF 0 EOF or ENDSEC termination marker');
   }
 }
 
@@ -1696,13 +2211,25 @@ export function assertFormatIntegrity(buffer: Buffer, format: string): void {
       checkJpegIntegrity(buffer);
       break;
     case 'zip':
-    case 'docx':
-    case 'xlsx':
-    case 'pptx':
-    case 'ods':
-    case 'odt':
-    case 'odp':
       checkZipIntegrity(buffer);
+      break;
+    case 'docx':
+      checkDocxIntegrity(buffer);
+      break;
+    case 'xlsx':
+      checkXlsxIntegrity(buffer);
+      break;
+    case 'pptx':
+      checkPptxIntegrity(buffer);
+      break;
+    case 'ods':
+      checkOdsIntegrity(buffer);
+      break;
+    case 'odt':
+      checkOdtIntegrity(buffer);
+      break;
+    case 'odp':
+      checkOdpIntegrity(buffer);
       break;
     case 'dxf':
       checkDxfIntegrity(buffer);

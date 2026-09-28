@@ -287,6 +287,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       const wav = createSyntheticWav(44100, 1, 0.15);
       const workerRes = await executeWorkerConversion(wav, 'wav', 'mp3', { audioBitrate: '192k' }, 'test.wav');
 
+
       expect(workerRes).toBeDefined();
       expect(workerRes.buffer.length).toBeGreaterThan(50);
       expect(['native-ffmpeg', 'internal-fallback']).toContain(workerRes.engineUsed);

@@ -3,6 +3,8 @@ import PDFDocument from 'pdfkit';
 import zlib from 'zlib';
 import { ConversionOptions, ConversionResult } from '../types';
 import { encodeBmp, encodePostscript } from './image';
+import { configurePdfKitFontFallback, renderSafePdfText } from './office';
+
 import {
   tessellateCadBuffer,
   evaluateCubicBezier,
@@ -1085,38 +1087,125 @@ async function renderDxfToPdf(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', (err) => reject(err));
 
-    // Title header
-    doc.fillColor('#5C6BC0').fontSize(16).text(`AutoCAD Vector Plot: ${title}`, 40, 40);
-    doc.moveDown(1);
+    const fontFallback = configurePdfKitFontFallback(doc);
+
+    // Title header rendered safely with Unicode fallback
+    doc.fillColor('#5C6BC0').fontSize(14);
+    renderSafePdfText(
+      doc,
+      `AutoCAD Vector Plot: ${title}`,
+      fontFallback.hasUnicodeFont,
+      { align: 'left' },
+      40,
+      40
+    );
 
     const plotX = 40;
-    const plotY = 80;
+    const plotY = 75;
     const plotW = doc.page.width - 80;
-    const plotH = doc.page.height - 120;
+    const plotH = doc.page.height - 115;
 
     // Draw frame
     doc.rect(plotX, plotY, plotW, plotH).strokeColor('#CCD2FC').lineWidth(1).stroke();
 
-    // Map entities inside plot frame
-    entities.slice(0, 100).forEach((e) => {
+    // 1. Calculate authentic bounding box across all entities
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    const updateBounds = (x: number, y: number) => {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    };
+
+    entities.forEach((e) => {
+      if (e.type === 'LINE') {
+        if (e.x1 !== undefined && e.y1 !== undefined) updateBounds(e.x1, e.y1);
+        if (e.x2 !== undefined && e.y2 !== undefined) updateBounds(e.x2, e.y2);
+      } else if (e.type === 'CIRCLE' || e.type === 'ARC') {
+        if (e.cx !== undefined && e.cy !== undefined && e.r !== undefined) {
+          updateBounds(e.cx - e.r, e.cy - e.r);
+          updateBounds(e.cx + e.r, e.cy + e.r);
+        }
+      } else if (e.type === 'LWPOLYLINE' && e.points) {
+        e.points.forEach((p) => updateBounds(p.x, p.y));
+      } else if (e.type === 'TEXT' && e.x1 !== undefined && e.y1 !== undefined) {
+        updateBounds(e.x1, e.y1);
+      }
+    });
+
+    if (
+      !isFinite(minX) ||
+      !isFinite(maxX) ||
+      !isFinite(minY) ||
+      !isFinite(maxY) ||
+      (minX === maxX && minY === maxY)
+    ) {
+      minX = 0;
+      minY = 0;
+      maxX = 500;
+      maxY = 500;
+    }
+
+    // 2. Compute aspect-ratio-preserving affine transformation
+    const pad = 15;
+    const availableW = Math.max(10, plotW - 2 * pad);
+    const availableH = Math.max(10, plotH - 2 * pad);
+    const dx = Math.max(0.0001, maxX - minX);
+    const dy = Math.max(0.0001, maxY - minY);
+    const scale = Math.min(availableW / dx, availableH / dy);
+
+    const offsetX = plotX + pad + (availableW - dx * scale) / 2;
+    const offsetY = plotY + pad + (availableH - dy * scale) / 2;
+
+    const tx = (x: number) => offsetX + (x - minX) * scale;
+    // Map CAD upwards Y to PDF downwards Y
+    const ty = (y: number) => offsetY + (maxY - y) * scale;
+
+    // 3. Render all entities without truncation
+    entities.forEach((e) => {
       doc.strokeColor('#5C6BC0').lineWidth(1);
-      if (e.type === 'LINE' && e.x1 !== undefined && e.y1 !== undefined && e.x2 !== undefined && e.y2 !== undefined) {
-        const x1 = plotX + (Math.abs(e.x1) % plotW);
-        const y1 = plotY + (Math.abs(e.y1) % plotH);
-        const x2 = plotX + (Math.abs(e.x2) % plotW);
-        const y2 = plotY + (Math.abs(e.y2) % plotH);
-        doc.moveTo(x1, y1).lineTo(x2, y2).stroke();
+      if (
+        e.type === 'LINE' &&
+        e.x1 !== undefined &&
+        e.y1 !== undefined &&
+        e.x2 !== undefined &&
+        e.y2 !== undefined
+      ) {
+        doc.moveTo(tx(e.x1), ty(e.y1)).lineTo(tx(e.x2), ty(e.y2)).stroke();
       } else if (e.type === 'CIRCLE' && e.cx !== undefined && e.cy !== undefined && e.r !== undefined) {
-        const cx = plotX + (Math.abs(e.cx) % plotW);
-        const cy = plotY + (Math.abs(e.cy) % plotH);
-        const r = Math.min(plotW / 4, e.r);
-        doc.circle(cx, cy, r).stroke();
+        doc.circle(tx(e.cx), ty(e.cy), Math.max(0.5, e.r * scale)).stroke();
+      } else if (e.type === 'ARC' && e.cx !== undefined && e.cy !== undefined && e.r !== undefined) {
+        doc.circle(tx(e.cx), ty(e.cy), Math.max(0.5, e.r * scale)).stroke();
+      } else if (e.type === 'LWPOLYLINE' && e.points && e.points.length > 0) {
+        doc.moveTo(tx(e.points[0].x), ty(e.points[0].y));
+        for (let i = 1; i < e.points.length; i++) {
+          doc.lineTo(tx(e.points[i].x), ty(e.points[i].y));
+        }
+        if (e.isClosed) {
+          doc.closePath();
+        }
+        doc.stroke();
+      } else if (e.type === 'TEXT' && e.text && e.x1 !== undefined && e.y1 !== undefined) {
+        doc.fillColor('#1F2340').fontSize(Math.max(6, Math.min(12, 10 * scale)));
+        renderSafePdfText(
+          doc,
+          e.text,
+          fontFallback.hasUnicodeFont,
+          undefined,
+          tx(e.x1),
+          ty(e.y1)
+        );
       }
     });
 
     doc.end();
   });
 }
+
 
 /**
  * Converts PostScript commands into SVG

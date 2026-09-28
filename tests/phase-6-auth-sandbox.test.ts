@@ -261,7 +261,34 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
         store.createUser({ email: 'DUPE@example.com', name: 'Second User' })
       ).rejects.toThrow(/already exists/);
     });
+
+    it('executes atomic CREATE_USER_LUA_SCRIPT via redis.eval when redisClient is configured', async () => {
+      const evalCalls: any[] = [];
+      const mockRedis = {
+        eval: async (script: string, numKeys: number, ...args: any[]) => {
+          evalCalls.push({ script, numKeys, args });
+          return 1;
+        },
+        get: async () => null,
+        set: async () => 'OK',
+        ping: async () => 'PONG',
+      } as any;
+
+      const redisStore = new RedisUserStore({ redisClient: mockRedis, keyPrefix: 'cluster:user:' });
+      const user = await redisStore.createUser({
+        email: 'cluster-user@example.com',
+        name: 'Cluster User',
+      });
+
+      expect(evalCalls.length).toBe(1);
+      expect(evalCalls[0].script).toBe(CREATE_USER_LUA_SCRIPT);
+      expect(evalCalls[0].numKeys).toBe(2);
+      expect(evalCalls[0].args[0]).toBe('cluster:user:emailIndex:cluster-user@example.com');
+      expect(evalCalls[0].args[1]).toBe(`cluster:user:${user.id}`);
+      expect(evalCalls[0].args[2]).toBe(user.id);
+    });
   });
+
 
   // ==========================================================================
   // 3. Distributed Redis Key Store & Quota Management
@@ -450,5 +477,39 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       expect(afterExpiry.allowed).toBe(true);
       expect(afterExpiry.remaining).toBe(20);
     });
+
+    it('executes atomic RESERVE_QUOTA_LUA_SCRIPT, COMMIT_QUOTA_LUA_SCRIPT and DEDUCT_QUOTA_LUA_SCRIPT via redis.eval', async () => {
+      const evalCalls: any[] = [];
+      const mockRedis = {
+        eval: async (script: string, numKeys: number, ...args: any[]) => {
+          evalCalls.push({ script, numKeys, args });
+          if (script === RESERVE_QUOTA_LUA_SCRIPT) return [1, 20];
+          if (script === COMMIT_QUOTA_LUA_SCRIPT) return 1;
+          if (script === ROLLBACK_QUOTA_LUA_SCRIPT) return 1;
+          if (script === DEDUCT_QUOTA_LUA_SCRIPT) return [1, 15];
+          return 1;
+        },
+      } as any;
+
+      const redisStore = new RedisKeyStore({ redisClient: mockRedis, keyPrefix: 'cluster:quota:' });
+
+      // Deduct
+      const deducted = await redisStore.deductQuota(testUserId, 10);
+      expect(deducted.allowed).toBe(true);
+      expect(deducted.remaining).toBe(15);
+      expect(evalCalls.some((c) => c.script === DEDUCT_QUOTA_LUA_SCRIPT)).toBe(true);
+
+      // Reserve
+      const reserved = await redisStore.reserveQuota(testUserId, 5);
+      expect(reserved.allowed).toBe(true);
+      expect(reserved.remaining).toBe(20);
+      expect(evalCalls.some((c) => c.script === RESERVE_QUOTA_LUA_SCRIPT)).toBe(true);
+
+      // Commit
+      const committed = await redisStore.commitQuota(reserved.reservationId!);
+      expect(committed).toBe(true);
+      expect(evalCalls.some((c) => c.script === COMMIT_QUOTA_LUA_SCRIPT)).toBe(true);
+    });
   });
+
 });

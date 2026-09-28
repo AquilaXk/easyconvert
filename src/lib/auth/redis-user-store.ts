@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import Redis from 'ioredis';
 import type { User, UserRecord } from './types';
 import { UserStore } from './user-store';
 
@@ -7,6 +8,7 @@ export interface RedisUserStoreOptions {
   redisPort?: number;
   redisUrl?: string;
   keyPrefix?: string;
+  redisClient?: Redis;
 }
 
 /**
@@ -59,16 +61,47 @@ return raw
 export class RedisUserStore extends UserStore {
   private readonly keyPrefix: string;
   private isConnectedToRedis = false;
+  private redisClient: Redis | null = null;
   private readonly distributedUsers: Map<string, UserRecord> = new Map();
   private readonly distributedEmails: Map<string, string> = new Map();
 
   constructor(options: RedisUserStoreOptions = {}) {
     super();
     this.keyPrefix = options.keyPrefix || 'easyconvert:user:';
-    const host = options.redisHost || process.env.REDIS_HOST;
-    const url = options.redisUrl || process.env.REDIS_URL;
-    if (host || url) {
+    if (options.redisClient) {
+      this.redisClient = options.redisClient;
       this.isConnectedToRedis = true;
+    } else {
+      const host = options.redisHost || process.env.REDIS_HOST;
+      const url = options.redisUrl || process.env.REDIS_URL;
+      const port =
+        options.redisPort || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
+
+      if (url) {
+        try {
+          this.redisClient = new Redis(url, {
+            lazyConnect: true,
+            enableOfflineQueue: false,
+            maxRetriesPerRequest: 1,
+          });
+          this.isConnectedToRedis = true;
+        } catch {
+          this.isConnectedToRedis = false;
+        }
+      } else if (host) {
+        try {
+          this.redisClient = new Redis({
+            host,
+            port,
+            lazyConnect: true,
+            enableOfflineQueue: false,
+            maxRetriesPerRequest: 1,
+          });
+          this.isConnectedToRedis = true;
+        } catch {
+          this.isConnectedToRedis = false;
+        }
+      }
     }
   }
 
@@ -84,8 +117,25 @@ export class RedisUserStore extends UserStore {
     this.isConnectedToRedis = enabled;
   }
 
+  public getRedisClient(): Redis | null {
+    return this.redisClient;
+  }
+
+  public setRedisClient(client: Redis | null): void {
+    this.redisClient = client;
+    this.isConnectedToRedis = !!client;
+  }
+
   public async ping(): Promise<{ ok: boolean; latencyMs: number }> {
     const start = Date.now();
+    if (this.redisClient) {
+      try {
+        await this.redisClient.ping();
+        return { ok: true, latencyMs: Date.now() - start };
+      } catch {
+        return { ok: false, latencyMs: Date.now() - start };
+      }
+    }
     return { ok: true, latencyMs: Date.now() - start };
   }
 
@@ -98,6 +148,18 @@ export class RedisUserStore extends UserStore {
 
   public override async findById(id: string): Promise<UserRecord | null> {
     if (!id || typeof id !== 'string') return null;
+
+    if (this.redisClient) {
+      try {
+        const userKey = `${this.keyPrefix}${id}`;
+        const raw = await this.redisClient.get(userKey);
+        if (raw) return JSON.parse(raw);
+        return null;
+      } catch {
+        // Fallback to in-memory on redis error
+      }
+    }
+
     if (this.isConnectedToRedis) {
       const user = this.distributedUsers.get(id);
       if (user) return user;
@@ -109,6 +171,20 @@ export class RedisUserStore extends UserStore {
     if (!email || typeof email !== 'string') return null;
     try {
       const normalized = this.normalizeEmail(email);
+
+      if (this.redisClient) {
+        try {
+          const emailKey = `${this.keyPrefix}emailIndex:${normalized}`;
+          const id = await this.redisClient.get(emailKey);
+          if (id) {
+            return await this.findById(id);
+          }
+          return null;
+        } catch {
+          // Fallback to in-memory on redis error
+        }
+      }
+
       if (this.isConnectedToRedis) {
         const id = this.distributedEmails.get(normalized);
         if (id) {
@@ -136,23 +212,49 @@ export class RedisUserStore extends UserStore {
       throw new Error('Invalid name: name must be a non-empty string');
     }
 
+    const now = Date.now();
+    const userRecord: UserRecord = {
+      id: crypto.randomUUID(),
+      email: normalizedEmail,
+      name: data.name.trim(),
+      avatarUrl: data.avatarUrl,
+      tier: data.tier || 'free',
+      provider: data.provider || 'email',
+      passwordHash: data.passwordHash,
+      salt: data.salt,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    if (this.redisClient) {
+      const emailKey = `${this.keyPrefix}emailIndex:${normalizedEmail}`;
+      const userKey = `${this.keyPrefix}${userRecord.id}`;
+      try {
+        const result = await this.redisClient.eval(
+          CREATE_USER_LUA_SCRIPT,
+          2,
+          emailKey,
+          userKey,
+          userRecord.id,
+          JSON.stringify(userRecord),
+          0
+        );
+        if (Number(result) === 0) {
+          throw new Error('A user with this email address already exists');
+        }
+        return userRecord;
+      } catch (err: any) {
+        if (err.message?.includes('already exists')) {
+          throw err;
+        }
+        // Fallback to in-memory if Redis eval failed
+      }
+    }
+
     if (this.isConnectedToRedis) {
       if (this.distributedEmails.has(normalizedEmail)) {
         throw new Error('A user with this email address already exists');
       }
-      const now = Date.now();
-      const userRecord: UserRecord = {
-        id: crypto.randomUUID(),
-        email: normalizedEmail,
-        name: data.name.trim(),
-        avatarUrl: data.avatarUrl,
-        tier: data.tier || 'free',
-        provider: data.provider || 'email',
-        passwordHash: data.passwordHash,
-        salt: data.salt,
-        createdAt: now,
-        updatedAt: now,
-      };
       this.distributedUsers.set(userRecord.id, userRecord);
       this.distributedEmails.set(normalizedEmail, userRecord.id);
       return userRecord;
@@ -166,6 +268,30 @@ export class RedisUserStore extends UserStore {
     updates: Partial<Omit<UserRecord, 'id' | 'email' | 'createdAt'>>
   ): Promise<UserRecord | null> {
     if (!id || typeof id !== 'string') return null;
+
+    if (this.redisClient) {
+      try {
+        const userKey = `${this.keyPrefix}${id}`;
+        const existingRaw = await this.redisClient.eval(
+          UPDATE_USER_LUA_SCRIPT,
+          1,
+          userKey,
+          JSON.stringify(updates)
+        );
+        if (!existingRaw) return null;
+        const existing: UserRecord = JSON.parse(existingRaw as string);
+        const updated: UserRecord = {
+          ...existing,
+          ...updates,
+          updatedAt: Date.now(),
+        };
+        await this.redisClient.set(userKey, JSON.stringify(updated));
+        return updated;
+      } catch {
+        // Fallback
+      }
+    }
+
     if (this.isConnectedToRedis) {
       const existing = this.distributedUsers.get(id);
       if (!existing) return null;
@@ -182,6 +308,28 @@ export class RedisUserStore extends UserStore {
 
   public override async recordConversion(id: string): Promise<void> {
     if (!id || typeof id !== 'string') return;
+
+    if (this.redisClient) {
+      try {
+        const userKey = `${this.keyPrefix}${id}`;
+        const raw = await this.redisClient.eval(
+          RECORD_CONVERSION_LUA_SCRIPT,
+          1,
+          userKey,
+          String(Date.now())
+        );
+        if (raw) {
+          const user: UserRecord = JSON.parse(raw as string);
+          user.conversionsCount = (user.conversionsCount || 0) + 1;
+          user.updatedAt = Date.now();
+          await this.redisClient.set(userKey, JSON.stringify(user));
+        }
+        return;
+      } catch {
+        // Fallback
+      }
+    }
+
     if (this.isConnectedToRedis) {
       const user = await this.findById(id);
       if (user) {
@@ -192,6 +340,18 @@ export class RedisUserStore extends UserStore {
     return super.recordConversion(id);
   }
 
+  public async close(): Promise<void> {
+    if (this.redisClient) {
+      try {
+        await this.redisClient.quit();
+      } catch {
+        this.redisClient.disconnect();
+      }
+      this.redisClient = null;
+      this.isConnectedToRedis = false;
+    }
+  }
+
   public override resetStore() {
     this.distributedUsers.clear();
     this.distributedEmails.clear();
@@ -200,4 +360,5 @@ export class RedisUserStore extends UserStore {
 }
 
 export const redisUserStore = new RedisUserStore();
+
 

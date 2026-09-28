@@ -554,6 +554,21 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       }).not.toThrow();
     });
 
+    it('fails closed on non-WinAnsi text without silent dropping if no Unicode font is available', () => {
+      const mockDoc = {
+        text: () => {
+          throw new Error('WinAnsi cannot encode character');
+        },
+        registerFont: () => {},
+        font: () => {},
+      } as any;
+
+      expect(() => {
+        renderSafePdfText(mockDoc, '주문번호: 100', false);
+      }).toThrow(/Cannot render text with standard WinAnsi font/);
+    });
+
+
     it('converts DOCX containing CJK characters to PDF without crashing and produces valid PDF buffer', async () => {
       const zip = new JSZip();
 

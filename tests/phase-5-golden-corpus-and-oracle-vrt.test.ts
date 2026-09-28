@@ -15,6 +15,7 @@ import {
   synthesizeGradientStressCard,
   synthesizeEnterprise7z,
   synthesizeEnterpriseZstd,
+  synthesizeEnterpriseMultiSheetOds,
   synthesizeCorruptedFixtures,
 } from './helpers/golden-corpus-suite';
 import {
@@ -478,20 +479,23 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       const parquet = synthesizeParquetColumnarCorpus(5);
       expect(() => assertFormatIntegrity(parquet.buffer, 'parquet')).not.toThrow();
 
-      const wavBuffer = Buffer.alloc(44);
-      wavBuffer.write('RIFF', 0, 'ascii');
-      wavBuffer.writeUInt32LE(36, 4);
-      wavBuffer.write('WAVE', 8, 'ascii');
-      expect(() => assertFormatIntegrity(wavBuffer, 'wav')).not.toThrow();
+      const audio = synthesizeAudioBitstreamCorpus();
+      expect(() => assertFormatIntegrity(audio.wav, 'wav')).not.toThrow();
 
-      const jpegBuffer = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+      const jpegBuffer = await sharp({
+        create: { width: 32, height: 32, channels: 3, background: { r: 255, g: 0, b: 0 } },
+      }).jpeg().toBuffer();
       expect(() => assertFormatIntegrity(jpegBuffer, 'jpeg')).not.toThrow();
 
       const dxf = synthesizeEnterpriseDxf();
       expect(() => assertFormatIntegrity(dxf.buffer, 'dxf')).not.toThrow();
 
+      const ods = synthesizeEnterpriseMultiSheetOds();
+      expect(() => assertFormatIntegrity(ods.buffer, 'ods')).not.toThrow();
+
       const xlsx = await synthesizeEnterpriseMultiSheetXlsx();
-      expect(() => assertFormatIntegrity(xlsx.buffer, 'ods')).not.toThrow();
+      expect(() => assertFormatIntegrity(xlsx.buffer, 'xlsx')).not.toThrow();
+      expect(() => assertFormatIntegrity(xlsx.buffer, 'ods')).toThrow(/Integrity Violation/);
     });
 
     it('2.13 getOracleToolDiagnostics provides comprehensive diagnostic status across external tool matrix', () => {
@@ -651,7 +655,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
     });
 
     it('4.5 fails closed on truncated 7z archive headers', async () => {
-      expect(() => assertFormatIntegrity(corrupt.archiveTruncated7z, '7z')).not.toThrow(); // Magic bytes exist
+      expect(() => assertFormatIntegrity(corrupt.archiveTruncated7z, '7z')).toThrow(/Integrity Violation/);
       const ast = await parseArchiveToAst(corrupt.archiveTruncated7z, '7z');
       expect(ast.fileCount).toBe(0);
       expect(ast.files).toHaveLength(0);

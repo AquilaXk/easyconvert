@@ -2424,23 +2424,37 @@ export function renderSafePdfText(
       }
       return doc.text(stringText, options);
     } catch {
-      // fallback to WinAnsi sanitizer if font threw on edge code point
+      // fallback to dynamic configuration or verification
+    }
+  }
+
+  // Attempt dynamic Unicode font fallback configuration
+  const fontConfig = configurePdfKitFontFallback(doc);
+  if (fontConfig.hasUnicodeFont) {
+    try {
+      if (x !== undefined && y !== undefined) {
+        return doc.text(stringText, x, y, options);
+      }
+      return doc.text(stringText, options);
+    } catch {
+      // Font failed on edge glyph
     }
   }
 
   const safe = sanitizeWinAnsi(stringText);
-  if (!safe.trim() && stringText.trim()) {
+  // Fail-Closed: Never silently drop CJK / non-WinAnsi characters in mixed strings
+  if (safe !== stringText) {
     throw new Error(
       `Cannot render text with standard WinAnsi font and no suitable Unicode fallback font is available. Text contains non-WinAnsi characters: "${stringText.length > 40 ? stringText.slice(0, 40) + '...' : stringText}"`
     );
   }
-  const toWrite = safe;
 
   if (x !== undefined && y !== undefined) {
-    return doc.text(toWrite, x, y, options);
+    return doc.text(safe, x, y, options);
   }
-  return doc.text(toWrite, options);
+  return doc.text(safe, options);
 }
+
 
 export function renderPdfChart(
   doc: PDFKit.PDFDocument,
