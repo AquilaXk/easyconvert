@@ -31,6 +31,12 @@ import {
   ZSTD_DICT_MAGIC,
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
+  ZstdDictionaryStreamCompressor,
+  ZstdDictionaryStreamDecompressor,
+  createZstdDictionaryTransformStream,
+  createZstdDictionaryDecompressTransformStream,
+  type ZstdDictionaryStreamOptions,
+  type ZstdDictionaryDecompressOptions,
 } from './zstd-dict';
 
 export {
@@ -54,6 +60,12 @@ export {
   ZSTD_DICT_MAGIC,
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
+  ZstdDictionaryStreamCompressor,
+  ZstdDictionaryStreamDecompressor,
+  createZstdDictionaryTransformStream,
+  createZstdDictionaryDecompressTransformStream,
+  type ZstdDictionaryStreamOptions,
+  type ZstdDictionaryDecompressOptions,
 };
 
 // Standard CRC32 table
