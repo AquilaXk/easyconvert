@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { fetch as undiciFetch, Agent } from 'undici';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
+import type { WebhookDlqEntry } from './types';
+import { redisKeyStore } from './redis-key-store';
 
 export type WebhookEvent =
   | 'conversion.completed'
@@ -9,7 +11,8 @@ export type WebhookEvent =
   | 'job.active'
   | 'job.completed'
   | 'job.failed'
-  | 'quota.warning';
+  | 'quota.warning'
+  | 'key.expiring_soon';
 
 export interface WebhookPayload<T = Record<string, unknown>> {
   id: string;
@@ -22,6 +25,7 @@ export interface WebhookDispatchOptions {
   maxRetries?: number;
   timeoutMs?: number;
   initialDelayMs?: number;
+  skipDlq?: boolean;
   deliveryId?: string;
   async?: boolean;
 }
@@ -46,12 +50,15 @@ export interface WebhookDispatchResult {
 }
 
 /**
- * Enterprise Asynchronous Webhook Dispatcher with HMAC-SHA256 Signature Verification
- * and Zero-Trust SSRF Protection against cloud metadata (169.254.169.254) and private networks.
+ * Enterprise Asynchronous Webhook Dispatcher with HMAC-SHA256 Signature Verification,
+ * Zero-Trust SSRF Protection against cloud metadata/private ranges, Exponential Retries,
+ * and Redis/In-Memory Dead Letter Queue (DLQ) with Manual Replay.
  */
 export class WebhookDispatcher {
   private readonly deliveryHistory: WebhookDispatchResult[] = [];
   private readonly maxHistorySize = 100;
+  private readonly inMemoryDlq = new Map<string, WebhookDlqEntry>();
+  private readonly dlqKey = 'easyconvert:webhook:dlq';
   private readonly ssrfAgent: Agent;
 
   constructor(customAgent?: Agent) {
@@ -106,7 +113,8 @@ export class WebhookDispatcher {
   }
 
   /**
-   * Dispatches a signed webhook payload to the destination URL with SSRF protection.
+   * Asynchronously dispatches a signed webhook payload to the destination URL.
+   * If delivery fails after retries are exhausted, saves to Dead Letter Queue (DLQ).
    */
   public async dispatch<T = Record<string, unknown>>(
     targetUrl: string,
@@ -194,7 +202,8 @@ export class WebhookDispatcher {
       let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
-        const response = (await undiciFetch(targetUrl, {
+        const fetchFn = (globalThis.fetch || undiciFetch) as unknown as typeof undiciFetch;
+        const response = (await fetchFn(targetUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -207,7 +216,7 @@ export class WebhookDispatcher {
           body: bodyString,
           dispatcher: this.ssrfAgent,
           signal: controller.signal as any,
-        })) as unknown as Response;
+        } as any)) as unknown as Response;
 
         finalStatusCode = response.status;
         const attemptDuration = Date.now() - attemptStart;
@@ -268,6 +277,135 @@ export class WebhookDispatcher {
     };
 
     this.recordHistory(result);
+
+    // Preserve failed webhooks in Dead Letter Queue (DLQ)
+    if (!success && !options.skipDlq) {
+      const lastError = attempts.at(-1)?.error;
+      const dlqEntry: WebhookDlqEntry = {
+        id: `dlq_${deliveryId}`,
+        originalDeliveryId: deliveryId,
+        targetUrl,
+        event,
+        payload: payload as unknown as Record<string, unknown>,
+        secret,
+        failedAt: Date.now(),
+        finalStatusCode,
+        errorMessage: lastError,
+        retryCount: attempts.length,
+        status: 'failed',
+      };
+      await this.saveToDlq(dlqEntry).catch(() => {});
+    }
+
+    return result;
+  }
+
+  public async saveToDlq(entry: WebhookDlqEntry): Promise<void> {
+    const client = redisKeyStore.getRedisClient();
+    if (client) {
+      try {
+        await client.hset(this.dlqKey, entry.id, JSON.stringify(entry));
+        return;
+      } catch {
+        // Fallback to in-memory
+      }
+    }
+    this.inMemoryDlq.set(entry.id, entry);
+  }
+
+  public async getDlqEntries(): Promise<WebhookDlqEntry[]> {
+    const client = redisKeyStore.getRedisClient();
+    if (client) {
+      try {
+        const rawMap = await client.hgetall(this.dlqKey);
+        const entries: WebhookDlqEntry[] = [];
+        for (const str of Object.values(rawMap)) {
+          try {
+            entries.push(JSON.parse(str));
+          } catch {}
+        }
+        return entries.sort((a, b) => b.failedAt - a.failedAt);
+      } catch {
+        // Fallback to in-memory
+      }
+    }
+    return Array.from(this.inMemoryDlq.values()).sort((a, b) => b.failedAt - a.failedAt);
+  }
+
+  public async getDlqEntry(id: string): Promise<WebhookDlqEntry | null> {
+    const client = redisKeyStore.getRedisClient();
+    if (client) {
+      try {
+        const raw = await client.hget(this.dlqKey, id);
+        if (raw) return JSON.parse(raw);
+      } catch {
+        // Fallback to in-memory
+      }
+    }
+    return this.inMemoryDlq.get(id) || null;
+  }
+
+  public async deleteDlqEntry(id: string): Promise<boolean> {
+    let deleted = false;
+    const client = redisKeyStore.getRedisClient();
+    if (client) {
+      try {
+        const count = await client.hdel(this.dlqKey, id);
+        deleted = count > 0;
+      } catch {
+        // Fallback
+      }
+    }
+    if (this.inMemoryDlq.delete(id)) {
+      deleted = true;
+    }
+    return deleted;
+  }
+
+  public async clearDlq(): Promise<void> {
+    const client = redisKeyStore.getRedisClient();
+    if (client) {
+      try {
+        await client.del(this.dlqKey);
+      } catch {}
+    }
+    this.inMemoryDlq.clear();
+  }
+
+  public async replayDlq(id: string): Promise<WebhookDispatchResult | null> {
+    const entry = await this.getDlqEntry(id);
+    if (!entry) return null;
+
+    const isWrappedEnvelope =
+      entry.payload &&
+      typeof entry.payload === 'object' &&
+      'id' in entry.payload &&
+      'event' in entry.payload &&
+      'timestamp' in entry.payload &&
+      'data' in entry.payload;
+
+    const payloadData = isWrappedEnvelope
+      ? (entry.payload as Record<string, unknown>).data
+      : entry.payload;
+    const result = await this.dispatch(
+      entry.targetUrl,
+      entry.event as WebhookEvent,
+      payloadData,
+      entry.secret,
+      { maxRetries: 3, skipDlq: true }
+    );
+
+    entry.retryCount += result.totalAttempts;
+    entry.finalStatusCode = result.finalStatusCode;
+    entry.errorMessage = result.attempts.at(-1)?.error;
+    if (result.success) {
+      entry.status = 'replayed';
+      entry.replayedAt = Date.now();
+    } else {
+      entry.status = 'failed';
+    }
+    await this.saveToDlq(entry);
+
     return result;
   }
 
@@ -297,4 +435,3 @@ export class WebhookDispatcher {
 }
 
 export const webhookDispatcher = new WebhookDispatcher();
-

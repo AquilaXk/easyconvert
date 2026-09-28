@@ -14,8 +14,8 @@ const MAX_JOB_PAYLOAD_SIZE = 500 * 1024 * 1024; // 500 MB for asynchronous proce
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
-  // 1. Guard check: Authenticate API key or user session with 'jobs:write' scope
-  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'jobs:write' });
+  // 1. Guard check: Authenticate API key or user session with 'convert:write' scope
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
     return createProblemDetailsResponse(
       auth.status ?? 401,
@@ -192,8 +192,8 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
-  // Guard check: Authenticate API key or user session with 'jobs:read' scope
-  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'jobs:read' });
+  // Guard check: Authenticate API key or user session with 'convert:read' scope
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
     return createProblemDetailsResponse(
       auth.status ?? 401,

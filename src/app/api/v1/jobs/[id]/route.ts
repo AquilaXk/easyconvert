@@ -14,7 +14,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
   const jobId = resolvedParams.id;
   const instanceUri = req.nextUrl?.pathname || `/api/v1/jobs/${jobId || ''}`;
 
-  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'jobs:read' });
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
     return createProblemDetailsResponse(
       auth.status ?? 401,
