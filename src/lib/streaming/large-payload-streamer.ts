@@ -395,11 +395,18 @@ export interface StreamToStorageResult {
   peakHeapDeltaBytes: number;
 }
 
+export type StreamPayloadInput =
+  | Readable
+  | ReadableStream<Uint8Array>
+  | AsyncIterable<Uint8Array | Buffer | string>
+  | Buffer
+  | Uint8Array;
+
 /**
  * Universal async chunk generator supporting both Node.js Readable streams and W3C ReadableStream.
  */
 async function* getStreamChunkGenerator(
-  stream: Readable | ReadableStream<Uint8Array> | Buffer | Uint8Array | any
+  stream: StreamPayloadInput
 ): AsyncGenerator<Buffer> {
   if (Buffer.isBuffer(stream)) {
     yield stream;
@@ -409,12 +416,16 @@ async function* getStreamChunkGenerator(
     yield Buffer.from(stream);
     return;
   }
-  if (typeof stream[Symbol.asyncIterator] === 'function') {
-    for await (const chunk of stream) {
+  const candidate = stream as {
+    [Symbol.asyncIterator]?: () => AsyncIterator<Uint8Array | Buffer | string>;
+    getReader?: () => { read: () => Promise<{ done: boolean; value?: Uint8Array | Buffer }>; releaseLock: () => void };
+  };
+  if (typeof candidate[Symbol.asyncIterator] === 'function') {
+    for await (const chunk of candidate as AsyncIterable<Uint8Array | Buffer | string>) {
       yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     }
-  } else if (typeof stream.getReader === 'function') {
-    const reader = stream.getReader();
+  } else if (typeof candidate.getReader === 'function') {
+    const reader = candidate.getReader();
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -436,7 +447,7 @@ async function* getStreamChunkGenerator(
  * with bounded O(1) heap memory consumption (<= 50MB) and early MIME magic sniffing.
  */
 export async function pipeStreamToStorageMultipart(
-  stream: Readable | ReadableStream<Uint8Array> | Buffer | Uint8Array | any,
+  stream: StreamPayloadInput,
   options: StreamToStorageOptions
 ): Promise<StreamToStorageResult> {
   const {

@@ -550,8 +550,15 @@ export function checkIsoBmffIntegrity(buffer: Buffer): {
   const isMov = majorBrand.startsWith('qt');
   const isM4a = cleanBrand.startsWith('m4a') || cleanBrand.startsWith('m4b') || (Boolean(audioCodec) && !videoCodec);
 
+  let detectedFormat: 'm4a' | 'mov' | 'mp4' = 'mp4';
+  if (isM4a) {
+    detectedFormat = 'm4a';
+  } else if (isMov) {
+    detectedFormat = 'mov';
+  }
+
   return {
-    format: isM4a ? 'm4a' : (isMov ? 'mov' : 'mp4'),
+    format: detectedFormat,
     codec: primaryCodec,
     videoCodec,
     audioCodec,

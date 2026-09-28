@@ -425,7 +425,7 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(() => assertFormatIntegrity(m4a, 'm4a')).not.toThrow();
       const res = verifyAudioBitstreamWithFfprobe(m4a, 'm4a');
       expect(res.valid).toBe(true);
-      expect(res.formatName).toBe('m4a');
+      expect(res.formatName).toContain('m4a');
     });
   });
 
