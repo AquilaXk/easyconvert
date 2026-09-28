@@ -383,7 +383,7 @@ export class OciObjectStorageService implements IStorageBackend {
       filename,
       mimeType,
       size: stat.size,
-      etag: `"${crypto.createHash('md5').update(filePath + stat.mtimeMs).digest('hex')}"`,
+      etag: `"${crypto.createHash('sha256').update(filePath + stat.mtimeMs).digest('hex').slice(0, 32)}"`,
       namespace: this.config.namespace,
       bucket: this.config.bucketName,
       uploadedAt: now,

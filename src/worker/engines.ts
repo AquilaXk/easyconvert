@@ -447,6 +447,49 @@ function get7zArchiveType(format: string): string | null {
   }
 }
 
+async function package7zArchive(
+  p7zBin: string,
+  tgt: string,
+  extractDir: string,
+  tempDir: string,
+  tempOutputPath: string,
+  timeout: number,
+  maxBuffer: number
+): Promise<boolean> {
+  const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
+  const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
+  const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
+
+  if (isTarGz || isTarBz2 || isTarXz) {
+    const tarPath = path.join(tempDir, 'archive.tar');
+    await executeSandboxedBinary(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], {
+      cwd: extractDir,
+      timeoutMs: timeout,
+      maxBuffer,
+      networkIsolated: true,
+    });
+    const subType = isTarGz ? '-tgzip' : isTarBz2 ? '-tbzip2' : '-txz';
+    await executeSandboxedBinary(p7zBin, ['a', '-y', subType, tempOutputPath, tarPath], {
+      cwd: tempDir,
+      timeoutMs: timeout,
+      maxBuffer,
+      networkIsolated: true,
+    });
+    return true;
+  }
+
+  const archiveType = get7zArchiveType(tgt);
+  if (!archiveType) return false;
+
+  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, tempOutputPath, '.'], {
+    cwd: extractDir,
+    timeoutMs: timeout,
+    maxBuffer,
+    networkIsolated: true,
+  });
+  return true;
+}
+
 /**
  * Converts or extracts archives using the native 7-Zip CLI engine.
  */
@@ -506,91 +549,8 @@ export async function convertWithNative7z(
     }
 
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
-
-    // Step 2: Re-archive contents into requested target format
-    if (tgt === 'tar.gz' || tgt === 'tgz') {
-      const tarPath = path.join(tempDir, 'archive.tar');
-      await executeSandboxedBinary(
-        p7zBin,
-        ['a', '-y', '-ttar', tarPath, '.'],
-        {
-          cwd: extractDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-      await executeSandboxedBinary(
-        p7zBin,
-        ['a', '-y', '-tgzip', tempOutputPath, tarPath],
-        {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-    } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
-      const tarPath = path.join(tempDir, 'archive.tar');
-      await executeSandboxedBinary(
-        p7zBin,
-        ['a', '-y', '-ttar', tarPath, '.'],
-        {
-          cwd: extractDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-      await executeSandboxedBinary(
-        p7zBin,
-        ['a', '-y', '-tbzip2', tempOutputPath, tarPath],
-        {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-    } else if (tgt === 'tar.xz' || tgt === 'txz') {
-      const tarPath = path.join(tempDir, 'archive.tar');
-      await executeSandboxedBinary(
-        p7zBin,
-        ['a', '-y', '-ttar', tarPath, '.'],
-        {
-          cwd: extractDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-      await executeSandboxedBinary(
-        p7zBin,
-        ['a', '-y', '-txz', tempOutputPath, tarPath],
-        {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-    } else {
-      const archiveType = get7zArchiveType(tgt);
-      if (!archiveType) return null;
-
-      await executeSandboxedBinary(
-        p7zBin,
-        ['a', '-y', `-t${archiveType}`, tempOutputPath, '.'],
-        {
-          cwd: extractDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-    }
-
-    if (!fs.existsSync(tempOutputPath)) return null;
+    const packaged = await package7zArchive(p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer);
+    if (!packaged || !fs.existsSync(tempOutputPath)) return null;
 
     const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
@@ -767,13 +727,16 @@ export async function executeWorkerConversion(
   }
 
   // 5. In-Repo Pure TS Fallback
-  const inputBuffer = Buffer.isBuffer(input)
-    ? input
-    : input.inputBuffer
-      ? input.inputBuffer
-      : input.inputPath
-        ? fs.readFileSync(input.inputPath)
-        : Buffer.alloc(0);
+  let inputBuffer: Buffer;
+  if (Buffer.isBuffer(input)) {
+    inputBuffer = input;
+  } else if (input.inputBuffer) {
+    inputBuffer = input.inputBuffer;
+  } else if (input.inputPath && fs.existsSync(input.inputPath)) {
+    inputBuffer = fs.readFileSync(input.inputPath);
+  } else {
+    inputBuffer = Buffer.alloc(0);
+  }
   const internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
   const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
   const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
