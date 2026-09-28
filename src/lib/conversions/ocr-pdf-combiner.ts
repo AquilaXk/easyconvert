@@ -353,8 +353,7 @@ export function buildMinimalTrueTypeFont(): Buffer {
     return b;
   });
   const stringHeaderSize = 6 + nameIds.length * 12;
-  let stringDataTotal = 0;
-  for (const b of stringBuffers) stringDataTotal += b.length;
+  const stringDataTotal = stringBuffers.reduce((acc, b) => acc + b.length, 0);
 
   const name = Buffer.alloc(stringHeaderSize + stringDataTotal);
   name.writeUInt16BE(0, 0); // format 0

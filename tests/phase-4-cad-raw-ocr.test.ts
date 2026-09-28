@@ -87,6 +87,18 @@ function assembleTestTiff(config: {
   return buf;
 }
 
+function verifyNormals(normals: [number, number, number][], expectedPlane?: 'z') {
+  for (const n of normals) {
+    const len = Math.hypot(n[0], n[1], n[2]);
+    expect(Math.abs(len - 1.0)).toBeLessThan(1e-4);
+    if (expectedPlane === 'z') {
+      expect(Math.abs(n[0])).toBeLessThan(1e-3);
+      expect(Math.abs(n[1])).toBeLessThan(1e-3);
+      expect(Math.abs(Math.abs(n[2]) - 1.0)).toBeLessThan(1e-3);
+    }
+  }
+}
+
 describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
   describe('1. 3D CAD Triangulation & Normal Computation', () => {
     it('triangulates coplanar 3D points via Delaunay and computes exact plane normals', () => {
@@ -113,13 +125,7 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       }
 
       expect(mesh.normals.length).toBe(5);
-      for (const normal of mesh.normals) {
-        const len = Math.hypot(normal[0], normal[1], normal[2]);
-        expect(Math.abs(len - 1.0)).toBeLessThan(1e-4);
-        expect(Math.abs(normal[0])).toBeLessThan(1e-4);
-        expect(Math.abs(normal[1])).toBeLessThan(1e-4);
-        expect(Math.abs(Math.abs(normal[2]) - 1.0)).toBeLessThan(1e-4);
-      }
+      verifyNormals(mesh.normals, 'z');
     });
 
     it('tessellates a single 3D curve with adaptive tangent-orthogonal ribbon extrusion', () => {
@@ -128,11 +134,7 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       expect(mesh.vertices.length).toBeGreaterThan(0);
       expect(mesh.faces.length).toBeGreaterThan(0);
       expect(mesh.normals.length).toBe(mesh.vertices.length);
-
-      for (const normal of mesh.normals) {
-        const len = Math.hypot(normal[0], normal[1], normal[2]);
-        expect(Math.abs(len - 1.0)).toBeLessThan(1e-4);
-      }
+      verifyNormals(mesh.normals);
     });
 
     it('tessellates adjacent curves into ruled quad strips with non-zero face normals', () => {
@@ -142,14 +144,7 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       const mesh = tessellateCurvesToMesh([curve1, curve2], 'ruled-surface');
       expect(mesh.faces.length).toBeGreaterThanOrEqual(60);
       expect(mesh.normals.length).toBe(mesh.vertices.length);
-
-      for (const normal of mesh.normals) {
-        const len = Math.hypot(normal[0], normal[1], normal[2]);
-        expect(Math.abs(len - 1.0)).toBeLessThan(1e-4);
-        expect(Math.abs(normal[0])).toBeLessThan(1e-3);
-        expect(Math.abs(normal[1])).toBeLessThan(1e-3);
-        expect(Math.abs(Math.abs(normal[2]) - 1.0)).toBeLessThan(1e-3);
-      }
+      verifyNormals(mesh.normals, 'z');
     });
   });
 

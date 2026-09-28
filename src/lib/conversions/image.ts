@@ -869,27 +869,27 @@ export function decodeRawBayerSensor(
             return arr;
           };
 
-          if (tag === 256) data.width = getScalar();
-          else if (tag === 257) data.height = getScalar();
-          else if (tag === 258) data.bitsPerSample = getScalar();
-          else if (tag === 259) data.compression = getScalar();
-          else if (tag === 273) data.stripOffsets = getNumberArray(type, count, valOff);
-          else if (tag === 278) data.rowsPerStrip = getScalar();
-          else if (tag === 279) data.stripByteCounts = getNumberArray(type, count, valOff);
-          else if (tag === 322) data.tileWidth = getScalar();
-          else if (tag === 323) data.tileLength = getScalar();
-          else if (tag === 324) data.tileOffsets = getNumberArray(type, count, valOff);
-          else if (tag === 325) data.tileByteCounts = getNumberArray(type, count, valOff);
-          else if (tag === 330) data.subIfds = getNumberArray(type, count, valOff);
-          else if (tag === 33422) {
-            const p0 = buffer.readUInt8(valOff);
-            const p1 = buffer.readUInt8(valOff + 1);
-            const p2 = buffer.readUInt8(valOff + 2);
-            const p3 = buffer.readUInt8(valOff + 3);
-            if (p0 === 0 && p1 === 1 && p2 === 1 && p3 === 2) data.cfaPattern = 'RGGB';
-            else if (p0 === 2 && p1 === 1 && p2 === 1 && p3 === 0) data.cfaPattern = 'BGGR';
-            else if (p0 === 1 && p1 === 0 && p2 === 2 && p3 === 1) data.cfaPattern = 'GRBG';
-            else if (p0 === 1 && p1 === 2 && p2 === 0 && p3 === 1) data.cfaPattern = 'GBRG';
+          switch (tag) {
+            case 256: data.width = getScalar(); break;
+            case 257: data.height = getScalar(); break;
+            case 258: data.bitsPerSample = getScalar(); break;
+            case 259: data.compression = getScalar(); break;
+            case 273: data.stripOffsets = getNumberArray(type, count, valOff); break;
+            case 278: data.rowsPerStrip = getScalar(); break;
+            case 279: data.stripByteCounts = getNumberArray(type, count, valOff); break;
+            case 322: data.tileWidth = getScalar(); break;
+            case 323: data.tileLength = getScalar(); break;
+            case 324: data.tileOffsets = getNumberArray(type, count, valOff); break;
+            case 325: data.tileByteCounts = getNumberArray(type, count, valOff); break;
+            case 330: data.subIfds = getNumberArray(type, count, valOff); break;
+            case 33422: {
+              const p = buffer.subarray(valOff, valOff + 4);
+              if (p[0] === 0 && p[1] === 1 && p[2] === 1 && p[3] === 2) data.cfaPattern = 'RGGB';
+              else if (p[0] === 2 && p[1] === 1 && p[2] === 1 && p[3] === 0) data.cfaPattern = 'BGGR';
+              else if (p[0] === 1 && p[1] === 0 && p[2] === 2 && p[3] === 1) data.cfaPattern = 'GRBG';
+              else if (p[0] === 1 && p[1] === 2 && p[2] === 0 && p[3] === 1) data.cfaPattern = 'GBRG';
+              break;
+            }
           }
           curr += 12;
         }
