@@ -3129,11 +3129,16 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
     return 'audio/ogg';
   }
 
-  // 17. Audio: MP3 (ID3 header or sync word FF FB/F3/F2)
+  // 17. Audio: AAC & MP3
+  // AAC ADTS: sync word 0xFFF (12 bits) or 0xFF followed by (buf[1] & 0xF6 === 0xF0)
+  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xf6) === 0xf0) {
+    return 'audio/aac';
+  }
+  // MP3: ID3 header or sync word FF FB/F3/F2 (with valid layer != 00)
   if (buf.length >= 3 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) {
     return 'audio/mpeg';
   }
-  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) {
+  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0 && (buf[1] & 0x06) !== 0x00) {
     return 'audio/mpeg';
   }
 
@@ -3187,6 +3192,21 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
     return 'model/step';
   }
 
+  // 23. Matroska / WebM (EBML: 1A 45 DF A3)
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x1a &&
+    buf[1] === 0x45 &&
+    buf[2] === 0xdf &&
+    buf[3] === 0xa3
+  ) {
+    const scanLimit = Math.min(buf.length, 4096);
+    const headerSnippet = buf.toString('latin1', 0, scanLimit);
+    if (headerSnippet.includes('webm')) return 'video/webm';
+    if (headerSnippet.includes('mka')) return 'audio/x-matroska';
+    return 'video/x-matroska';
+  }
+
   return undefined;
 }
 
@@ -3237,10 +3257,14 @@ export function isFormatCompatibleWithMagicBytes(
   const webpFormats = new Set(['webp']);
   const bmpFormats = new Set(['bmp', 'dib']);
   const mp3Formats = new Set(['mp3']);
+  const aacFormats = new Set(['aac', 'adts', 'm4a']);
   const wavFormats = new Set(['wav']);
   const flacFormats = new Set(['flac']);
   const oggFormats = new Set(['ogg', 'oga', 'ogv', 'opus']);
   const mp4Formats = new Set(['mp4', 'm4a', 'mov']);
+  const mkvFormats = new Set(['mkv', 'mk3d', 'mka', 'mks']);
+  const webmFormats = new Set(['webm']);
+  const aviFormats = new Set(['avi']);
   const sevenZipFormats = new Set(['7z']);
   const gzipFormats = new Set(['gz', 'tgz', 'gzip']);
   const bzipFormats = new Set(['bz2', 'tbz', 'tbz2']);
@@ -3266,19 +3290,19 @@ export function isFormatCompatibleWithMagicBytes(
     sniffed === 'application/vnd.oasis.opendocument.presentation' ||
     sniffed === 'application/hwp+zip'
   ) {
-    if (cleanExt === 'docx') {
+    if (cleanExt === 'docx' || cleanExt === 'dotx') {
       return (
         sniffed === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
         sniffed === 'application/zip'
       );
     }
-    if (cleanExt === 'xlsx') {
+    if (cleanExt === 'xlsx' || cleanExt === 'xltx') {
       return (
         sniffed === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
         sniffed === 'application/zip'
       );
     }
-    if (cleanExt === 'pptx') {
+    if (cleanExt === 'pptx' || cleanExt === 'potx') {
       return (
         sniffed === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
         sniffed === 'application/zip'
@@ -3313,10 +3337,15 @@ export function isFormatCompatibleWithMagicBytes(
   }
 
   if (sniffed === 'audio/mpeg') return mp3Formats.has(cleanExt);
+  if (sniffed === 'audio/aac') return aacFormats.has(cleanExt);
   if (sniffed === 'audio/wav') return wavFormats.has(cleanExt);
   if (sniffed === 'audio/flac') return flacFormats.has(cleanExt);
   if (sniffed === 'audio/ogg') return oggFormats.has(cleanExt);
   if (sniffed === 'video/mp4' || sniffed === 'audio/mp4') return mp4Formats.has(cleanExt);
+  if (sniffed === 'video/webm') return webmFormats.has(cleanExt) || cleanExt === 'mkv';
+  if (sniffed === 'video/x-matroska') return mkvFormats.has(cleanExt) || cleanExt === 'webm';
+  if (sniffed === 'audio/x-matroska') return cleanExt === 'mka' || mkvFormats.has(cleanExt);
+  if (sniffed === 'video/x-msvideo') return aviFormats.has(cleanExt);
   if (sniffed === 'application/x-7z-compressed') return sevenZipFormats.has(cleanExt);
   if (sniffed === 'application/gzip') return gzipFormats.has(cleanExt);
   if (sniffed === 'application/x-bzip2') return bzipFormats.has(cleanExt);
@@ -3341,8 +3370,18 @@ export function isFormatCompatibleWithMagicBytes(
 }
 
 /**
+ * Custom error thrown when input file extension or declared format mismatches initial magic bytes.
+ */
+export class FileExtensionSpoofError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FileExtensionSpoofError';
+  }
+}
+
+/**
  * Asserts fail-closed that the buffer's initial magic bytes match the declared format.
- * Throws ConversionFailedError if the file extension is spoofed.
+ * Throws FileExtensionSpoofError if the file extension is spoofed.
  */
 export function assertNotSpoofedFile(
   buffer: Buffer | Uint8Array,
@@ -3355,7 +3394,7 @@ export function assertNotSpoofedFile(
     const sniffed = sniffMimeTypeFromMagicBytes(buffer) ?? 'unknown/corrupted';
     const cleanExt = declaredExtensionOrFormatId.toLowerCase().replace(/^\./, '').trim();
     const nameStr = filename ? ` for file "${filename}"` : '';
-    throw new ConversionFailedError(
+    throw new FileExtensionSpoofError(
       `File spoofing rejected${nameStr}: initial magic bytes indicate MIME type "${sniffed}", which is incompatible with declared format ".${cleanExt}". Operation failed closed.`
     );
   }

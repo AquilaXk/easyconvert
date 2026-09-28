@@ -161,6 +161,70 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       expect(streamText).toContain('BT');
       expect(streamText).toContain('ET');
     });
+
+    it('prevents word collision and negative collapsing when words share identical line bounding box', async () => {
+      const pdfDoc = await PDFDocument.create();
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const fontSize = 12;
+
+      // Words that don't have separate sub-word bboxes (all share the same line bbox)
+      const sharedBbox: OcrBBox = { x: 50, y: 100, width: 150, height: 14 };
+      const words: OcrWord[] = [
+        { text: 'Autonomous', bbox: sharedBbox },
+        { text: 'Security', bbox: sharedBbox },
+        { text: 'Guard', bbox: sharedBbox },
+      ];
+
+      const { tjArray, wordSpacing } = buildTJArrayWithKerning(
+        pdfDoc,
+        font,
+        words,
+        fontSize
+      );
+
+      // Fallback word spacing must be non-negative and preserve space glyphs
+      expect(wordSpacing).toBe(0);
+      const items = tjArray.asArray();
+      // Kerning offsets must not collapse the space glyph to zero
+      const numbers = items.filter((it: any) => it instanceof PDFNumber).map((n: any) => n.asNumber());
+      // No large positive kerning (> 200) that would negate the space advance
+      for (const num of numbers) {
+        expect(num).toBeLessThanOrEqual(0); // non-positive kerning means cursor moves right or stays
+      }
+    });
+
+    it('enforces ISO 32000-1 §9.3.3 Type 0 composite font word spacing parity for CJK text', async () => {
+      const pdfDoc = await PDFDocument.create();
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const fontSize = 14;
+
+      const words: OcrWord[] = [
+        { text: '전자문서', bbox: { x: 50, y: 100, width: 60, height: 14 } },
+        { text: '보안', bbox: { x: 120, y: 100, width: 30, height: 14 } },
+        { text: '프레임워크', bbox: { x: 160, y: 100, width: 70, height: 14 } },
+      ];
+
+      const { tjArray, wordSpacing, activeFontName } = buildTJArrayWithKerning(
+        pdfDoc,
+        font,
+        words,
+        fontSize
+      );
+
+      // In ISO 32000-1, Tw has no effect on CIDFonts / Type 0 fonts, so wordSpacing must be 0
+      expect(wordSpacing).toBe(0);
+      expect(activeFontName).toBe('ECToUnicodeFont');
+
+      // TJ array must contain explicit 0020 space glyphs and exact kerning offsets
+      const items = tjArray.asArray();
+      expect(items.length).toBeGreaterThanOrEqual(5);
+
+      const hexTexts = items
+        .filter((it: any) => it instanceof PDFHexString)
+        .map((h: any) => (h as PDFHexString).asString());
+      // Space glyph in 4-character hex (<0020>)
+      expect(hexTexts).toContain('0020');
+    });
   });
 
   // =========================================================================
@@ -211,7 +275,7 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       expect(matrix[5]).toBe(745);
     });
 
-    it('computes affine skew matrix when horizontal and vertical skew are present', () => {
+    it('computes affine skew matrix with correct shear axes when horizontal and vertical skew are present', () => {
       const skewXRad = (10 * Math.PI) / 180;
       const skewYRad = (5 * Math.PI) / 180;
       const bbox: OcrBBox = {
@@ -225,11 +289,55 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       };
       const matrix = computeAffineTransformationMatrix(bbox, 800);
       expect(matrix[0]).toBeCloseTo(1, 4);
-      expect(matrix[1]).toBeCloseTo(Math.tan(skewXRad), 4);
-      expect(matrix[2]).toBeCloseTo(Math.tan(skewYRad), 4);
+      // matrix[1] is b: vertical shear factor tan(skewY)
+      expect(matrix[1]).toBeCloseTo(Math.tan(skewYRad), 4);
+      // matrix[2] is c: horizontal shear factor tan(skewX)
+      expect(matrix[2]).toBeCloseTo(Math.tan(skewXRad), 4);
       expect(matrix[3]).toBeCloseTo(1, 4);
       expect(matrix[4]).toBe(300);
       expect(matrix[5]).toBe(680);
+    });
+
+    it('correctly handles small document deskew angles (e.g. 2 degrees) as degrees, not radians', () => {
+      const bbox: OcrBBox = {
+        x: 100,
+        y: 50,
+        width: 60,
+        height: 20,
+        rotation: 2, // 2 degrees tilt from scan deskewing
+      };
+      const matrix = computeAffineTransformationMatrix(bbox, 800);
+      const rad2 = (2 * Math.PI) / 180;
+      expect(matrix[0]).toBeCloseTo(Math.cos(rad2), 4);
+      expect(matrix[1]).toBeCloseTo(Math.sin(rad2), 4);
+      expect(matrix[2]).toBeCloseTo(-Math.sin(rad2), 4);
+      expect(matrix[3]).toBeCloseTo(Math.cos(rad2), 4);
+    });
+
+    it('computes exact affine matrix product R * S for combined rotation and shear', () => {
+      const thetaDeg = 30;
+      const thetaRad = (thetaDeg * Math.PI) / 180;
+      const skewXRad = (10 * Math.PI) / 180;
+      const skewYRad = (5 * Math.PI) / 180;
+      const bbox: OcrBBox = {
+        x: 50,
+        y: 50,
+        width: 100,
+        height: 20,
+        rotationDegrees: thetaDeg,
+        skewX: skewXRad,
+        skewY: skewYRad,
+      };
+      const matrix = computeAffineTransformationMatrix(bbox, 800);
+      const cosT = Math.cos(thetaRad);
+      const sinT = Math.sin(thetaRad);
+      const tanX = Math.tan(skewXRad);
+      const tanY = Math.tan(skewYRad);
+
+      expect(matrix[0]).toBeCloseTo(cosT + tanX * sinT, 4);
+      expect(matrix[1]).toBeCloseTo(sinT + tanY * cosT, 4);
+      expect(matrix[2]).toBeCloseTo(-sinT + tanX * cosT, 4);
+      expect(matrix[3]).toBeCloseTo(cosT - tanY * sinT, 4);
     });
 
     it('injects invisible text layer with affine transformation matrix onto rotated OCR bounding boxes', async () => {
@@ -336,25 +444,44 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       const mp3Magic = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00]);
       expect(sniffMimeTypeFromMagicBytes(mp3Magic)).toBe('audio/mpeg');
 
+      // AAC (ADTS 0xFFF sync word)
+      const aacAdtsMagic = Buffer.from([0xff, 0xf1, 0x50, 0x80]);
+      expect(sniffMimeTypeFromMagicBytes(aacAdtsMagic)).toBe('audio/aac');
+      expect(isFormatCompatibleWithMagicBytes(aacAdtsMagic, 'aac')).toBe(true);
+
+      // WebM / MKV (EBML: 1A 45 DF A3)
+      const webmMagic = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01, 0x42, 0xf2, 0x81, 0x04, 0x42, 0xf3, 0x81, 0x08, 0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d]);
+      expect(sniffMimeTypeFromMagicBytes(webmMagic)).toBe('video/webm');
+      expect(isFormatCompatibleWithMagicBytes(webmMagic, 'webm')).toBe(true);
+
       // Parquet (PAR1)
       const parquetMagic = Buffer.from([0x50, 0x41, 0x52, 0x31]);
       expect(sniffMimeTypeFromMagicBytes(parquetMagic)).toBe('application/vnd.apache.parquet');
     });
 
-    it('rejects spoofed file extensions fail-closed', () => {
+    it('rejects spoofed file extensions fail-closed with authentic FileExtensionSpoofError instances', () => {
       // 1. PDF file disguised as a PNG
       const pdfBytes = Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
       expect(isFormatCompatibleWithMagicBytes(pdfBytes, 'png')).toBe(false);
-      expect(() => assertNotSpoofedFile(pdfBytes, 'png', 'spoofed.png')).toThrowError(
-        FileExtensionSpoofError
-      );
+      let thrown1: unknown;
+      try {
+        assertNotSpoofedFile(pdfBytes, 'png', 'spoofed.png');
+      } catch (err) {
+        thrown1 = err;
+      }
+      expect(thrown1).toBeInstanceOf(FileExtensionSpoofError);
+      expect((thrown1 as Error).message).toContain('File spoofing rejected');
 
       // 2. PNG image disguised as DOCX
       const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
       expect(isFormatCompatibleWithMagicBytes(pngBytes, 'docx')).toBe(false);
-      expect(() => assertNotSpoofedFile(pngBytes, 'docx', 'invoice.docx')).toThrowError(
-        FileExtensionSpoofError
-      );
+      let thrown2: unknown;
+      try {
+        assertNotSpoofedFile(pngBytes, 'docx', 'invoice.docx');
+      } catch (err) {
+        thrown2 = err;
+      }
+      expect(thrown2).toBeInstanceOf(FileExtensionSpoofError);
 
       // 3. Executable ELF disguised as PDF
       const elfBytes = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]);
@@ -492,6 +619,28 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       expect(cols[1].attrs.width).toBe('18.0');
       expect(cols[2].attrs.min).toBe('3');
       expect(cols[2].attrs.width).toBe('12.0');
+    });
+
+    it('safely decodes Unicode supplementary plane characters and entities without surrogate truncation', () => {
+      // Astral plane code point: U+1F600 (GRINNING FACE)
+      const hexEmoji = safeDecodeXmlEntities('Status: &#x1F600; Complete');
+      expect(hexEmoji).toBe('Status: 😀 Complete');
+
+      // Decimal code point: 128512 (U+1F600)
+      const decEmoji = safeDecodeXmlEntities('Rating: &#128512; High');
+      expect(decEmoji).toBe('Rating: 😀 High');
+
+      // Standard XML entities
+      const standard = safeDecodeXmlEntities('&lt;tag name=&quot;test&amp;prod&quot;&gt;');
+      expect(standard).toBe('<tag name="test&prod">');
+    });
+
+    it('decodes XML entities in attribute values and tolerates trailing whitespace in closing tags', () => {
+      const xml = '<w:p attr="Value &amp; More &quot;quoted&quot;"><w:t>Body</w:t></w:p  >';
+      const elements = safeExtractXmlElements(xml, 'w:p');
+      expect(elements.length).toBe(1);
+      expect(elements[0].attrs.attr).toBe('Value & More "quoted"');
+      expect(elements[0].content).toContain('<w:t>Body</w:t>');
     });
   });
 

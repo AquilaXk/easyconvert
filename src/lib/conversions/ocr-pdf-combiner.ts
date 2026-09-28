@@ -681,19 +681,19 @@ export function computeAffineTransformationMatrix(
   const scaledX = bbox.x * scaleX;
   const scaledY = pageHeight - (bbox.y + bbox.height) * scaleY;
 
-  // Resolve rotation angle in radians
+  // Resolve rotation angle in radians (all OCR angle/rotation properties default to degrees)
   let theta = 0;
   if (bbox.rotationRadians !== undefined) {
     theta = bbox.rotationRadians;
   } else if (bbox.rotationDegrees !== undefined) {
     theta = (bbox.rotationDegrees * Math.PI) / 180;
-  } else if (bbox.angle !== undefined) {
-    theta = Math.abs(bbox.angle) > 2 * Math.PI ? (bbox.angle * Math.PI) / 180 : bbox.angle;
   } else if (bbox.rotation !== undefined) {
-    theta = Math.abs(bbox.rotation) > 2 * Math.PI ? (bbox.rotation * Math.PI) / 180 : bbox.rotation;
+    theta = (bbox.rotation * Math.PI) / 180;
+  } else if (bbox.angle !== undefined) {
+    theta = (bbox.angle * Math.PI) / 180;
   }
 
-  // Resolve skew angles in radians
+  // Resolve skew angles in radians (skewX = horizontal shear, skewY = vertical shear)
   const skewX = bbox.skewX ?? 0;
   const skewY = bbox.skewY ?? 0;
 
@@ -702,10 +702,12 @@ export function computeAffineTransformationMatrix(
   const tanSkewX = Math.tan(skewX);
   const tanSkewY = Math.tan(skewY);
 
-  const a = cosT;
-  const b = sinT + tanSkewX;
-  const c = -sinT + tanSkewY;
-  const d = cosT;
+  // 2D Affine concatenation: R(θ) * S(skewX, skewY)
+  // R = [cosθ, sinθ; -sinθ, cosθ], S = [1, tan(skewY); tan(skewX), 1]
+  const a = cosT + tanSkewX * sinT;
+  const b = sinT + tanSkewY * cosT;
+  const c = -sinT + tanSkewX * cosT;
+  const d = cosT - tanSkewY * sinT;
   const e = scaledX;
   const f = scaledY;
 
@@ -758,19 +760,22 @@ export function buildTJArrayWithKerning(
   for (let i = 0; i < words.length - 1; i++) {
     const w0 = words[i];
     const w1 = words[i + 1];
-    if (w0.bbox && w1.bbox) {
+    if (w0.bbox && w1.bbox && w1.bbox.x > w0.bbox.x) {
       const gap = Math.max(0, (w1.bbox.x - (w0.bbox.x + w0.bbox.width)) * scaleX);
-      gaps.push(gap);
+      gaps.push(gap > 0 ? gap : spaceWidthPt);
     } else {
       gaps.push(spaceWidthPt);
     }
   }
 
-  // Calculate average word spacing (Tw)
+  // Calculate word spacing (Tw).
+  // Note: ISO 32000-1 §9.3.3 specifies that Tw is ignored for composite fonts (Type 0 / CIDFonts).
+  // For Type 0 fonts, all spacing adjustments are expressed directly in the TJ kerning array.
   let wordSpacing = 0;
-  if (gaps.length > 0) {
+  if (!hasNonWinAnsi && gaps.length > 0) {
     const avgGap = gaps.reduce((acc, g) => acc + g, 0) / gaps.length;
-    wordSpacing = Math.max(0, avgGap - spaceWidthPt);
+    // Tw is in unscaled text-space units (scaled by tz / 100 when rendered in user space)
+    wordSpacing = Math.max(0, (avgGap - spaceWidthPt) / (tz / 100));
   }
 
   for (let i = 0; i < words.length; i++) {
@@ -779,7 +784,7 @@ export function buildTJArrayWithKerning(
     if (!trimmed) continue;
 
     // Relative X offset for the first word if originX is specified
-    if (i === 0 && w.bbox && originX > 0) {
+    if (i === 0 && w.bbox && originX > 0 && w.bbox.x * scaleX > originX) {
       const leadingGap = Math.max(0, w.bbox.x * scaleX - originX);
       if (leadingGap > 1) {
         const leadingKerning = -Math.round((leadingGap * 1000) / (fontSize * (tz / 100)));
@@ -809,7 +814,7 @@ export function buildTJArrayWithKerning(
 
       // Compute kerning offset for this specific gap
       const gap = gaps[i];
-      const residual = gap - spaceWidthPt - wordSpacing;
+      const residual = gap - spaceWidthPt - wordSpacing * (tz / 100);
       if (Math.abs(residual) >= 0.1) {
         const kerning = -Math.round((residual * 1000) / (fontSize * (tz / 100)));
         if (kerning !== 0) {
