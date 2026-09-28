@@ -70,7 +70,7 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
       expect(result).toBeDefined();
       expect(result.buffer).toBeInstanceOf(Buffer);
       expect(result.size).toBeGreaterThan(0);
-      expect(['native-soffice', 'internal-fallback']).toContain(result.engineUsed);
+      expect(['native-soffice', 'native-soffice-pool', 'internal-fallback']).toContain(result.engineUsed);
       expect(result.executionTimeMs).toBeGreaterThanOrEqual(0);
     });
 
