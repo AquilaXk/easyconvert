@@ -1,8 +1,9 @@
+import fs from 'node:fs';
 import { conversionQueue } from '../lib/queue/conversion-queue';
 import { Worker, Job } from '../lib/queue/bullmq-engine';
 import { ConversionJobData, ConversionJobResult } from '../lib/types';
 import { storageProvider as ociStorage } from '../lib/storage';
-import { executeWorkerConversion, WorkerConversionResult } from './engines';
+import { executeWorkerConversion, WorkerConversionResult, WorkerVfsPayload } from './engines';
 import { secureShredBuffer } from '../lib/security/memory-shredder';
 
 const CONCURRENCY = Number.parseInt(process.env.WORKER_CONCURRENCY || '3', 10);
@@ -16,7 +17,7 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
     await job.log(`[OCI Worker] Picked up job ${job.id} for "${job.data.originalFilename}" (${job.data.sourceFormat} -> ${job.data.targetFormat})`);
     await job.updateProgress(10);
 
-    let inputBuffer: Buffer | undefined;
+    let inputPayload: Buffer | WorkerVfsPayload | undefined;
     let shouldShred = false;
 
     try {
@@ -26,20 +27,25 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
         if (!stored) {
           throw new Error(`OCI Object not found for key: "${job.data.storageKey}"`);
         }
-        inputBuffer = stored.buffer;
+        // Zero-Heap optimization: If stored object has a disk filePath, pass it directly without buffering into memory!
+        if (stored.filePath && fs.existsSync(stored.filePath)) {
+          inputPayload = { inputPath: stored.filePath };
+        } else {
+          inputPayload = stored.buffer;
+        }
       } else if (job.data.inputBufferBase64) {
-        inputBuffer = Buffer.from(job.data.inputBufferBase64, 'base64');
+        inputPayload = Buffer.from(job.data.inputBufferBase64, 'base64');
         shouldShred = true;
       } else {
         throw new Error('Invalid job payload: neither storageKey nor inputBufferBase64 provided.');
       }
 
-      await job.log(`[OCI Worker] Loaded ${inputBuffer.length} bytes. Dispatching to conversion engine...`);
+      await job.log(`[OCI Worker] Loaded input context. Dispatching to conversion engine...`);
       await job.updateProgress(30);
 
       // 2. Execute conversion (Native LibreOffice / FFmpeg or pure TS fallback)
       const result: WorkerConversionResult = await executeWorkerConversion(
-        inputBuffer,
+        inputPayload,
         job.data.sourceFormat,
         job.data.targetFormat,
         job.data.options,
@@ -49,10 +55,14 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
       await job.updateProgress(75);
       await job.log(`[OCI Worker] Conversion completed via [${result.engineUsed}] in ${result.executionTimeMs}ms. Size: ${result.size} bytes`);
 
-      // 3. Store result in OCI Object Storage with 1-hour TTL
+      // 3. Store result in OCI Object Storage with 1-hour TTL (Zero-Heap from file if available)
       const resultKey = `results/${job.id}/${result.filename}`;
       const oneHourTtlMs = 60 * 60 * 1000;
-      ociStorage.saveObject(resultKey, result.buffer, result.mimeType, result.filename, oneHourTtlMs);
+      if (result.filePath && fs.existsSync(result.filePath) && typeof ociStorage.saveObjectFromFile === 'function') {
+        ociStorage.saveObjectFromFile(resultKey, result.filePath, result.mimeType, result.filename, oneHourTtlMs);
+      } else {
+        ociStorage.saveObject(resultKey, result.buffer, result.mimeType, result.filename, oneHourTtlMs);
+      }
 
       // 4. Generate Presigned Download URL
       let downloadUrl = `/api/storage/file/${resultKey}`;
@@ -75,8 +85,8 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
         durationMs: Date.now() - startTime,
       };
     } finally {
-      if (shouldShred && inputBuffer) {
-        secureShredBuffer(inputBuffer, 2);
+      if (shouldShred && inputPayload && Buffer.isBuffer(inputPayload)) {
+        secureShredBuffer(inputPayload, 2);
       }
     }
   },

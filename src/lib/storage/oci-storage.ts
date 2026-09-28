@@ -57,6 +57,7 @@ export interface IStorageBackend {
   completeMultipartUpload(uploadId: string, expectedParts?: { partNumber: number; etag?: string }[]): MultipartUploadComplete;
   abortMultipartUpload(uploadId: string): boolean;
   saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): StoredObject;
+  saveObjectFromFile?(key: string, filePath: string, mimeType: string, filename: string, ttlMs?: number): StoredObject;
   getObject(key: string): StoredObject | undefined;
   deleteObject(key: string): boolean;
   getActiveSessionsCount(): number;
@@ -356,6 +357,52 @@ export class OciObjectStorageService implements IStorageBackend {
     this.objects.set(ociKey, stored);
     globalSharedObjects.set(ociKey, stored);
     // Also index by raw key for convenient lookup
+    if (key !== ociKey) {
+      this.objects.set(key, stored);
+      globalSharedObjects.set(key, stored);
+    }
+    return stored;
+  }
+
+  /**
+   * Save complete object from local disk file path into OCI Object Storage with 1-hour default TTL (Zero-Heap)
+   */
+  saveObjectFromFile(
+    key: string,
+    filePath: string,
+    mimeType: string,
+    filename: string,
+    ttlMs: number = 60 * 60 * 1000
+  ): OciStoredObject {
+    const stat = fs.statSync(filePath);
+    const ociKey = key.startsWith('n/') ? key : `n/${this.config.namespace}/b/${this.config.bucketName}/o/${key}`;
+    const now = Date.now();
+    let cachedBuffer: Buffer | null = null;
+    const stored: OciStoredObject = {
+      key: ociKey,
+      filename,
+      mimeType,
+      size: stat.size,
+      etag: `"${crypto.createHash('sha256').update(filePath + stat.mtimeMs).digest('hex').slice(0, 32)}"`,
+      namespace: this.config.namespace,
+      bucket: this.config.bucketName,
+      uploadedAt: now,
+      expiresAt: now + ttlMs,
+      filePath,
+      get buffer(): Buffer {
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(filePath)) {
+          cachedBuffer = fs.readFileSync(filePath);
+          return cachedBuffer;
+        }
+        return Buffer.alloc(0);
+      },
+      set buffer(b: Buffer) {
+        cachedBuffer = b;
+      },
+    };
+    this.objects.set(ociKey, stored);
+    globalSharedObjects.set(ociKey, stored);
     if (key !== ociKey) {
       this.objects.set(key, stored);
       globalSharedObjects.set(key, stored);
