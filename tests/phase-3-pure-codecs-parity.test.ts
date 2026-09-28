@@ -323,7 +323,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
 
     it('performs end-to-end WAV -> AAC -> WAV conversion and verifies ADTS bitstream header structure', async () => {
       const wav = createSineWavBuffer(44100, 2, 0.25);
-      const aacRes = await convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'audio.wav');
+      const aacRes = await convertMedia(wav, 'wav', 'aac', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'audio.wav');
       expect(aacRes.mimeType).toBe('audio/aac');
       expect(aacRes.buffer.length).toBeGreaterThan(100);
 
@@ -344,7 +344,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       expect(decodedAac.samples.length).toBeGreaterThan(1024);
 
       // Roundtrip back to WAV
-      const wavRes = await convertMedia(aacRes.buffer, 'aac', 'wav', {}, 'audio.aac');
+      const wavRes = await convertMedia(aacRes.buffer, 'aac', 'wav', { disableNativeEngine: true }, 'audio.aac');
       expect(wavRes.mimeType).toBe('audio/wav');
       expect(wavRes.buffer.toString('ascii', 0, 4)).toBe('RIFF');
       expect(wavRes.buffer.toString('ascii', 8, 12)).toBe('WAVE');
@@ -512,7 +512,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
 
     it('performs roundtrip WAV -> OPUS -> WAV with non-zero RMS waveform reconstruction', async () => {
       const wav = createSineWavBuffer(48000, 2, 0.2);
-      const opusRes = await convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'test.wav');
+      const opusRes = await convertMedia(wav, 'wav', 'opus', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'test.wav');
       expect(opusRes.mimeType).toBe('audio/opus');
       expect(opusRes.buffer.toString('ascii', 0, 4)).toBe('OggS');
 
@@ -523,7 +523,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       expect(decodedOgg.samples.length).toBeGreaterThan(0);
 
       // Re-encode to WAV and check RMS
-      const roundtripWav = await convertMedia(opusRes.buffer, 'opus', 'wav', {}, 'test.opus');
+      const roundtripWav = await convertMedia(opusRes.buffer, 'opus', 'wav', { disableNativeEngine: true }, 'test.opus');
       expect(roundtripWav.mimeType).toBe('audio/wav');
       const wavDec = decodeAudioBuffer(roundtripWav.buffer, 'wav');
 
@@ -561,7 +561,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
 
     it('performs roundtrip WAV -> OGG (Vorbis) -> WAV with authentic discrete audio framing', async () => {
       const wav = createSineWavBuffer(44100, 2, 0.2);
-      const oggRes = await convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'vorbis.wav');
+      const oggRes = await convertMedia(wav, 'wav', 'ogg', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'vorbis.wav');
       expect(oggRes.mimeType).toBe('audio/ogg');
 
       const decodedOgg = decodeOgg(oggRes.buffer);
@@ -569,7 +569,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       expect(decodedOgg.channels).toBe(2);
       expect(decodedOgg.samples.length).toBeGreaterThan(0);
 
-      const roundtripWav = await convertMedia(oggRes.buffer, 'ogg', 'wav', {}, 'vorbis.ogg');
+      const roundtripWav = await convertMedia(oggRes.buffer, 'ogg', 'wav', { disableNativeEngine: true }, 'vorbis.ogg');
       expect(roundtripWav.mimeType).toBe('audio/wav');
       const wavDec = decodeAudioBuffer(roundtripWav.buffer, 'wav');
 

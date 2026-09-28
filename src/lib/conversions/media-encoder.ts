@@ -1149,6 +1149,7 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
         incr = reader.readBits(5);
         run += incr;
       } while (incr === 31);
+      if (run <= 0) return null;
       const end = Math.min(max_sfb, db + run);
       for (let k = db; k < end; k++) bandCodebook[k] = cb;
       db = end;
@@ -1208,7 +1209,7 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
     reader.readBit(); // pred
     reader.readBits(2); // ms_mask_present
 
-    function readChannelStream(): Float64Array {
+    function readChannelStream(): Float64Array | null {
       const gain = reader.readBits(8);
       const codebooks = new Uint8Array(max_sfb);
       let db = 0;
@@ -1220,6 +1221,7 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
           incr = reader.readBits(5);
           run += incr;
         } while (incr === 31);
+        if (run <= 0) return null;
         const end = Math.min(max_sfb, db + run);
         for (let k = db; k < end; k++) codebooks[k] = cb;
         db = end;
@@ -1257,6 +1259,7 @@ export function decodeAacLcFramePayload(payload: Buffer, channels: number): Int1
 
     const mdct0 = readChannelStream();
     const mdct1 = readChannelStream();
+    if (!mdct0 || !mdct1) return null;
     const numLines = AAC_SWB_OFFSET_1024_48[max_sfb];
 
     const out = new Int16Array(AAC_FRAME_SAMPLES * 2);
