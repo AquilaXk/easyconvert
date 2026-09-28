@@ -3,13 +3,17 @@ import { ConversionOptions } from '../types';
 import {
   createLosslessSandwichPdfFromImage,
   parseTesseractBlocks,
+  sortLineBlocksTopological,
+  detectColumnGutters,
+  ColumnGutter,
   OcrBBox,
   OcrWord,
   OcrLineBlock,
   OcrResult,
 } from './ocr-pdf-combiner';
 
-export type { OcrBBox, OcrWord, OcrLineBlock, OcrResult };
+export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult };
+export { sortLineBlocksTopological, detectColumnGutters };
 
 /**
  * Optical Character Recognition (OCR) Engine
@@ -227,15 +231,17 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
       }
     }
 
-    const fullText = recognizedLines.join('\n');
+    const sortedBlocks = sortLineBlocksTopological(lineBlocks, width, height);
+    const sortedLines = sortedBlocks.map((b) => b.text);
+    const fullText = sortedLines.join('\n');
     const words = fullText.split(/\s+/).filter(Boolean);
 
-    if (recognizedLines.length === 0 || !fullText.trim()) {
+    if (sortedLines.length === 0 || !fullText.trim()) {
       throw new Error('No optical text recognized in scanned target.');
     }
 
     let glyphCount = 0;
-    for (const b of lineBlocks) {
+    for (const b of sortedBlocks) {
       for (const w of b.words) {
         glyphCount += w.text.length;
       }
@@ -247,8 +253,8 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
       text: fullText,
       confidence,
       wordCount: words.length,
-      lines: recognizedLines,
-      lineBlocks,
+      lines: sortedLines,
+      lineBlocks: sortedBlocks,
       imageWidth: width,
       imageHeight: height,
     };
