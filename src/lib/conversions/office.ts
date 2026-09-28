@@ -1835,7 +1835,7 @@ export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap
         const quote = tagHeader[i++];
         const valStart = i;
         while (i < tagHeader.length && tagHeader[i] !== quote) i++;
-        attrs[key] = tagHeader.slice(valStart, i);
+        attrs[key] = safeDecodeXmlEntities(tagHeader.slice(valStart, i));
         if (i < tagHeader.length) i++; // skip closing quote
       } else {
         const valStart = i;
@@ -1847,7 +1847,7 @@ export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap
         ) {
           i++;
         }
-        attrs[key] = tagHeader.slice(valStart, i);
+        attrs[key] = safeDecodeXmlEntities(tagHeader.slice(valStart, i));
       }
     } else if (key) {
       attrs[key] = 'true';
@@ -1980,7 +1980,7 @@ export function safeExtractXmlElements(
     // If document has no closing tags for this element, skip to avoid search
     let hasClosing = closingTagPresentMap.get(currentTag);
     if (hasClosing === undefined) {
-      hasClosing = xml.indexOf('</' + currLocal + '>') !== -1 || xml.indexOf('</' + currentTag + '>') !== -1;
+      hasClosing = xml.indexOf('</' + currLocal) !== -1 || xml.indexOf('</' + currentTag) !== -1;
       closingTagPresentMap.set(currentTag, hasClosing);
     }
     if (!hasClosing) {
@@ -1988,8 +1988,24 @@ export function safeExtractXmlElements(
       continue;
     }
 
+    // Helper to find the next matching closing tag allowing optional whitespace before '>' (W3C XML 1.0 §3.1)
+    const findNextClosingTag = (fromIndex: number): { index: number; end: number } | null => {
+      let p = fromIndex;
+      const targetClose = '</' + currentTag;
+      while (p < xml.length) {
+        const idx = xml.indexOf(targetClose, p);
+        if (idx === -1) return null;
+        let c = idx + targetClose.length;
+        while (c < xml.length && xml.charCodeAt(c) <= 32) c++;
+        if (c < xml.length && xml[c] === '>') {
+          return { index: idx, end: c + 1 };
+        }
+        p = idx + targetClose.length;
+      }
+      return null;
+    };
+
     // Scan for matching closing tag with depth tracking
-    const endTag = '</' + currentTag + '>';
     const startTag = '<' + currentTag;
     let depth = 0;
     let searchPos = headerClose + 1;
@@ -2010,11 +2026,11 @@ export function safeExtractXmlElements(
       }
 
       const nextOpen = xml.indexOf(startTag, searchPos);
-      const nextClose = xml.indexOf(endTag, searchPos);
+      const closeInfo = findNextClosingTag(searchPos);
 
-      if (nextClose === -1) break; // Unclosed tag, abort gracefully
+      if (!closeInfo) break; // Unclosed tag, abort gracefully
 
-      if (nextOpen !== -1 && nextOpen < nextClose) {
+      if (nextOpen !== -1 && nextOpen < closeInfo.index) {
         const charAfter = xml[nextOpen + startTag.length];
         if (charAfter === '>' || charAfter === '/' || charAfter <= ' ') {
           // Check if self-closing
@@ -2035,12 +2051,12 @@ export function safeExtractXmlElements(
         searchPos = nextOpen + startTag.length;
       } else {
         if (depth === 0) {
-          contentEnd = nextClose;
-          matchedEnd = nextClose + endTag.length;
+          contentEnd = closeInfo.index;
+          matchedEnd = closeInfo.end;
           break;
         } else {
           depth--;
-          searchPos = nextClose + endTag.length;
+          searchPos = closeInfo.end;
         }
       }
     }
@@ -2096,8 +2112,14 @@ export function safeDecodeXmlEntities(str: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const code = parseInt(dec, 10);
+      return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : _;
+    })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : _;
+    });
 }
 
 /**
