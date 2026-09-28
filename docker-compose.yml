@@ -37,6 +37,8 @@ services:
       - WORKER_CONCURRENCY=3
     volumes:
       - worker-tmp:/tmp
+    cap_add:
+      - SYS_ADMIN
     deploy:
       resources:
         limits:

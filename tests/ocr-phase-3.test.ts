@@ -79,8 +79,17 @@ describe('Phase 3: Lossless Sandwich PDF Injection & Metadata Preservation', () 
 
   it('creates lossless searchable PDF directly from bitmap image using pdf-lib', async () => {
     const testImage = await sharp({
-      create: { width: 180, height: 70, channels: 3, background: '#10b981' },
-    }).png().toBuffer();
+      create: { width: 180, height: 70, channels: 3, background: '#ffffff' },
+    })
+      .composite([
+        {
+          input: Buffer.from('<svg width="180" height="70"><text x="10" y="45" font-family="monospace" font-size="22" fill="black">RECEIPT</text></svg>'),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
 
     const ocrResult = await performOcr(testImage);
     const searchablePdfBuffer = await createLosslessSandwichPdfFromImage(testImage, ocrResult, {}, 'Receipt');
@@ -93,8 +102,26 @@ describe('Phase 3: Lossless Sandwich PDF Injection & Metadata Preservation', () 
 
   it('merges multiple raster images on the same page into unified searchable text', async () => {
     const [imgTop, imgBottom] = await Promise.all([
-      sharp({ create: { width: 120, height: 40, channels: 3, background: '#ef4444' } }).png().toBuffer(),
-      sharp({ create: { width: 120, height: 40, channels: 3, background: '#f59e0b' } }).png().toBuffer(),
+      sharp({ create: { width: 120, height: 40, channels: 3, background: '#ffffff' } })
+        .composite([
+          {
+            input: Buffer.from('<svg width="120" height="40"><text x="10" y="25" font-family="monospace" font-size="16" fill="black">HEADER</text></svg>'),
+            top: 0,
+            left: 0,
+          },
+        ])
+        .png()
+        .toBuffer(),
+      sharp({ create: { width: 120, height: 40, channels: 3, background: '#ffffff' } })
+        .composite([
+          {
+            input: Buffer.from('<svg width="120" height="40"><text x="10" y="25" font-family="monospace" font-size="16" fill="black">FOOTER</text></svg>'),
+            top: 0,
+            left: 0,
+          },
+        ])
+        .png()
+        .toBuffer(),
     ]);
 
     const doc = await PDFDocument.create();

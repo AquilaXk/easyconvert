@@ -223,7 +223,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(wavVerif.valid).toBe(true);
       expect(wavVerif.codecName).toBe('pcm_s16le');
 
-      const aacConv = convertMedia(wav, 'wav', 'aac', {}, 'test-audio');
+      const aacConv = convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'test-audio');
       return aacConv.then((res) => {
         const aacVerif = verifyAudioBitstreamWithFfprobe(res.buffer, 'aac', 'aac');
         expect(aacVerif.valid).toBe(true);
@@ -259,9 +259,9 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       const wav = createSyntheticWav(44100, 2, 0.25);
 
       const [mp4Res, opusRes, oggRes, flacRes, mp3Res] = await Promise.all([
-        convertMedia(wav, 'wav', 'mp4', {}, 'test.wav'),
-        convertMedia(wav, 'wav', 'opus', {}, 'test.wav'),
-        convertMedia(wav, 'wav', 'ogg', {}, 'test.wav'),
+        convertMedia(wav, 'wav', 'mp4', { allowPureLossyBitstream: true }, 'test.wav'),
+        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'test.wav'),
+        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'test.wav'),
         convertMedia(wav, 'wav', 'flac', {}, 'test.wav'),
         convertMedia(wav, 'wav', 'mp3', {}, 'test.wav'),
       ]);

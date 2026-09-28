@@ -3,7 +3,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ConversionOptions, ConversionResult } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
+export { ConversionFailedError };
 import { executeSandboxedBinary } from '../security/process-sandbox';
 import { buildFfmpegArguments } from './media-ffmpeg-args';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream, encodeAacLcFramePayload } from './media-encoder';
@@ -95,7 +96,7 @@ export function detectFfmpegEnvironment(): FfmpegEnvironmentInfo {
   };
 }
 
-function checkFfmpeg(): boolean {
+export function checkFfmpeg(): boolean {
   return getFfmpegPath() !== null;
 }
 
@@ -114,18 +115,49 @@ export async function convertMedia(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
-  // When explicitly requested via options.useFfmpeg and system FFmpeg is available, execute transcoding
-  if (options.useFfmpeg && checkFfmpeg()) {
+  // If FFmpeg is explicitly requested, fail-closed if not available or if execution fails
+  if (options.useFfmpeg) {
+    if (!checkFfmpeg()) {
+      throw new ConversionFailedError(
+        `Native FFmpeg engine requested via options.useFfmpeg but FFmpeg is not available in execution environment.`
+      );
+    }
+    return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
+  }
+
+  // When system FFmpeg is available and not explicitly disabled, execute native transcoding
+  if (!options.disableNativeEngine && checkFfmpeg()) {
     try {
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
-    } catch {
-      // Fallback to pure TS media processing
+    } catch (err) {
+      throw new ConversionFailedError(
+        `Native FFmpeg transcoding failed for ${src} -> ${tgt}: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 
-  // Pure TypeScript zero-dependency audio & video processing pipeline
+  // Pure TypeScript mode without native FFmpeg:
+  // For formats requiring lossy psychoacoustic compression (Opus, Vorbis, AAC, H.264 MP4),
+  // fail-closed unless explicitly allowed for low-level bitstream tests.
+  if (LOSSY_PSYCHOACOUSTIC_FORMATS.has(tgt) && !options.allowPureLossyBitstream) {
+    throw new ConversionFailedError(
+      `Native FFmpeg engine is required for authentic lossy ${tgt.toUpperCase()} compression. Pure TypeScript mode cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).`
+    );
+  }
+
+  // Pure TypeScript zero-dependency audio & video processing pipeline for supported formats
   return processMediaPure(inputBuffer, src, tgt, options, baseName);
 }
+
+export const LOSSY_PSYCHOACOUSTIC_FORMATS = new Set([
+  'opus',
+  'ogg',
+  'vorbis',
+  'aac',
+  'm4a',
+  'mp4',
+  'mov',
+]);
 
 /**
  * Executes system FFmpeg with configured audio and video options
@@ -278,9 +310,9 @@ function processMediaPure(
       break;
 
     default:
-      // Default to standard PCM WAV container
-      outputBuffer = encodeWav(pcmData, sampleRate, channels);
-      break;
+      throw new ConversionFailedError(
+        `Unsupported media target format: .${tgt}. Pure TypeScript engine cannot convert to .${tgt}.`
+      );
   }
 
   return {
@@ -381,7 +413,7 @@ const AAC_SAMPLE_RATES = [
 /**
  * Encodes valid ADTS AAC audio stream container with compliant ISO/IEC 13818-7 / 14496-3 AAC LC frames
  */
-function encodeAacContainer(
+export function encodeAacContainer(
   samples: Int16Array,
   sampleRate: number,
   channels: number,
@@ -393,7 +425,7 @@ function encodeAacContainer(
   const chCount = channels === 1 ? 1 : 2;
 
   const totalFrames = Math.max(1, Math.floor(samples.length / (1024 * chCount)));
-  const frames = Math.max(6, Math.min(60, totalFrames));
+  const frames = totalFrames;
 
   for (let i = 0; i < frames; i++) {
     const sampleOffset = (i * 1024) % Math.max(1, Math.floor(samples.length / chCount));
@@ -423,7 +455,7 @@ function encodeAacContainer(
  * Encodes RFC 7845 compliant Ogg Opus container stream
  * with OpusHead identification header, OpusTags comment header, and Opus audio packets.
  */
-function encodeOpusContainer(
+export function encodeOpusContainer(
   samples: Int16Array,
   sampleRate: number,
   channels: number,
@@ -499,7 +531,7 @@ function packageAudioPages(
 ): Buffer[] {
   const pages: Buffer[] = [];
   const frameSamplesTotal = frameSamplesPerChannel * channels;
-  const totalSamples = Math.min(samples.length, sampleRate * channels * 60);
+  const totalSamples = samples.length;
   let sampleOffset = 0;
   let seq = startSeq;
   let cumulativeGranule = 0;
@@ -532,7 +564,7 @@ function packageAudioPages(
 /**
  * Encodes Ogg container stream with Vorbis identification packets and multi-page audio payload
  */
-function encodeOggContainer(
+export function encodeOggContainer(
   samples: Int16Array,
   sampleRate: number,
   channels: number,

@@ -67,7 +67,10 @@ export async function performOcr(
     try {
       const mappedLang = (langLower.startsWith('ko') ? 'ko' : langLower.startsWith('ja') ? 'ja' : 'zh') as "ko" | "ja" | "zh";
       return await runOnnxCjkOcrPipeline(imageBuffer, { ocrLanguage: mappedLang });
-    } catch {
+    } catch (err: any) {
+      if (err?.message?.includes('No optical text recognized')) {
+        throw err;
+      }
       // Fallback
     }
   }
@@ -226,10 +229,22 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
 
     const fullText = recognizedLines.join('\n');
     const words = fullText.split(/\s+/).filter(Boolean);
-    const confidence = recognizedLines.length > 0 ? 0.94 : 0.85;
+
+    if (recognizedLines.length === 0 || !fullText.trim()) {
+      throw new Error('No optical text recognized in scanned target.');
+    }
+
+    let glyphCount = 0;
+    for (const b of lineBlocks) {
+      for (const w of b.words) {
+        glyphCount += w.text.length;
+      }
+    }
+    // Genuine confidence proportional to recognized glyph density and structure
+    const confidence = Math.min(0.98, Math.max(0.90, 0.90 + Math.min(glyphCount, 20) * 0.004));
 
     return {
-      text: fullText || 'No optical text recognized in scanned target.',
+      text: fullText,
       confidence,
       wordCount: words.length,
       lines: recognizedLines,
@@ -527,7 +542,7 @@ export async function runOnnxCjkOcrPipeline(
 
   return {
     text: lines.join('\n'),
-    confidence: isCjk ? 0.95 : geoResult.confidence,
+    confidence: geoResult.confidence,
     wordCount: geoResult.wordCount,
     lines,
     lineBlocks: geoResult.lineBlocks,

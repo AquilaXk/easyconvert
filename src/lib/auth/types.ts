@@ -9,6 +9,7 @@ export interface User {
   provider: 'email' | 'google';
   createdAt: number;
   updatedAt: number;
+  conversionsCount?: number;
 }
 
 export interface UserRecord extends User {

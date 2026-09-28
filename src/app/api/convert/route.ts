@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { convertFile } from '@/lib/conversions';
+import { executeWorkerConversion } from '@/worker/engines';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY } from '@/lib/registry';
-import { ConversionOptions } from '@/lib/types';
+import { ConversionOptions, ConversionFailedError } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -96,8 +96,8 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const inputBuffer = Buffer.from(arrayBuffer);
 
-    // Perform immediate in-memory / local ephemeral conversion
-    const result = await convertFile(
+    // Perform conversion via worker orchestrator (with headless engine dispatch & pure TS fallback)
+    const result = await executeWorkerConversion(
       inputBuffer,
       detectedDef.extension,
       tgt,
@@ -114,6 +114,7 @@ export async function POST(req: NextRequest) {
         'Content-Disposition': `attachment; filename="${result.filename}"`,
         'Content-Length': result.size.toString(),
         'X-Conversion-Time-Ms': duration.toString(),
+        'X-Engine-Used': result.engineUsed,
         'X-Zero-Data-Retention': 'true',
         'X-Storage-Footprint': '0-bytes',
       },
@@ -121,13 +122,15 @@ export async function POST(req: NextRequest) {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =
+      error instanceof ConversionFailedError ||
       message.includes('payload is empty') ||
       message.includes('Cannot convert') ||
       message.includes('Unsupported') ||
       message.includes('Failed to parse') ||
       message.includes('OCR failed') ||
       message.includes('PDF OCR') ||
-      message.includes('compression');
+      message.includes('compression') ||
+      message.includes('Fail-Closed');
     return NextResponse.json(
       { success: false, error: message },
       { status: isValidationError ? 400 : 500 }

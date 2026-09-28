@@ -5,6 +5,7 @@ import { sha256 } from '../auth/crypto';
 import { userStore } from '../auth/user-store';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
+import { isIpAllowed } from './ip-utils';
 
 const STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
 const KEYS_FILE = path.join(STORAGE_DIR, 'api-keys.json');
@@ -17,7 +18,7 @@ export const TIER_LIMITS: Record<UserTier, number> = {
   enterprise: 10000,
 };
 
-function getUtcDateKey(): string {
+export function getUtcDateKey(): string {
   const now = new Date();
   const yyyy = now.getUTCFullYear();
   const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
@@ -25,21 +26,21 @@ function getUtcDateKey(): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function getNextMidnightUtc(): number {
+export function getNextMidnightUtc(): number {
   const tomorrow = new Date();
   tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
   tomorrow.setUTCHours(0, 0, 0, 0);
   return tomorrow.getTime();
 }
 
-class KeyStore {
-  private readonly keys: Map<string, ApiKey> = new Map();
-  private readonly keyHashIndex: Map<string, string> = new Map(); // hash -> keyId
-  private readonly dailyUsage: Map<string, number> = new Map(); // userId:YYYY-MM-DD -> count
-  private readonly userFiles: Map<string, UserConversionFile> = new Map(); // fileId -> file
-  private initialized = false;
+export class KeyStore {
+  protected readonly keys: Map<string, ApiKey> = new Map();
+  protected readonly keyHashIndex: Map<string, string> = new Map(); // hash -> keyId
+  protected readonly dailyUsage: Map<string, number> = new Map(); // userId:YYYY-MM-DD -> count
+  protected readonly userFiles: Map<string, UserConversionFile> = new Map(); // fileId -> file
+  protected initialized = false;
 
-  private ensureInitialized() {
+  protected ensureInitialized() {
     if (this.initialized) return;
     this.initialized = true;
 
@@ -70,7 +71,7 @@ class KeyStore {
     }
   }
 
-  private persist() {
+  protected persist() {
     try {
       if (!fs.existsSync(STORAGE_DIR)) {
         fs.mkdirSync(STORAGE_DIR, { recursive: true });
@@ -90,7 +91,16 @@ class KeyStore {
     }
   }
 
-  public async generateApiKey(userId: string, name: string): Promise<ApiKeyCreateResult> {
+  public async generateApiKey(
+    userId: string,
+    name: string,
+    options: {
+      allowedIps?: string[];
+      webhookUrl?: string;
+      webhookSecret?: string;
+      scopes?: string[];
+    } = {}
+  ): Promise<ApiKeyCreateResult> {
     this.ensureInitialized();
 
     const rawRandom = crypto.randomBytes(24).toString('hex');
@@ -106,6 +116,10 @@ class KeyStore {
       keyHash,
       createdAt: Date.now(),
       status: 'active',
+      allowedIps: options.allowedIps,
+      webhookUrl: options.webhookUrl,
+      webhookSecret: options.webhookSecret,
+      scopes: options.scopes,
     };
 
     this.keys.set(key.id, key);
@@ -118,30 +132,48 @@ class KeyStore {
     };
   }
 
-  public async verifyApiKey(secretKey: string): Promise<{ valid: boolean; key?: ApiKey; user?: User }> {
+  public async verifyApiKey(
+    secretKey: string,
+    clientIp?: string
+  ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string }> {
     this.ensureInitialized();
 
     if (!secretKey || typeof secretKey !== 'string') {
-      return { valid: false };
+      return { valid: false, error: 'Missing or invalid API key' };
     }
 
     const keyHash = sha256(secretKey.trim());
-    const keyId = this.keyHashIndex.get(keyHash);
+    let keyId = this.keyHashIndex.get(keyHash);
+    if (!keyId && fs.existsSync(KEYS_FILE)) {
+      try {
+        const list: ApiKey[] = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf-8'));
+        for (const k of list) {
+          this.keys.set(k.id, k);
+          this.keyHashIndex.set(k.keyHash, k.id);
+        }
+        keyId = this.keyHashIndex.get(keyHash);
+      } catch {}
+    }
     if (!keyId) {
-      return { valid: false };
+      return { valid: false, error: 'Invalid or non-existent API key' };
     }
 
     const key = this.keys.get(keyId);
     if (key?.status !== 'active') {
-      return { valid: false };
+      return { valid: false, error: 'API key has been revoked' };
+    }
+
+    if (key.allowedIps && key.allowedIps.length > 0 && clientIp) {
+      if (!isIpAllowed(clientIp, key.allowedIps)) {
+        return { valid: false, error: 'Client IP address is not permitted by API key IP whitelist' };
+      }
     }
 
     const userRecord = await userStore.findById(key.userId);
     if (!userRecord) {
-      return { valid: false };
+      return { valid: false, error: 'User associated with API key not found' };
     }
 
-    // Update last used timestamp
     key.lastUsedAt = Date.now();
     this.persist();
 
@@ -171,6 +203,18 @@ class KeyStore {
     }
 
     key.status = 'revoked';
+    this.persist();
+    return true;
+  }
+
+  public async deleteApiKey(userId: string, keyId: string): Promise<boolean> {
+    this.ensureInitialized();
+    const key = this.keys.get(keyId);
+    if (!key || key.userId !== userId) {
+      return false;
+    }
+    this.keys.delete(keyId);
+    this.keyHashIndex.delete(key.keyHash);
     this.persist();
     return true;
   }

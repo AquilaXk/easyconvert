@@ -1,4 +1,7 @@
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { MultipartUploadInit, UploadedPart, MultipartUploadComplete } from '../types';
 import { secureShredBuffer } from '../security/memory-shredder';
 
@@ -20,7 +23,8 @@ interface OciMultipartSession {
   createdAt: number;
   namespace: string;
   bucket: string;
-  parts: Map<number, { buffer: Buffer; etag: string; size: number }>;
+  diskDir: string;
+  parts: Map<number, { filePath: string; etag: string; size: number; readonly buffer: Buffer }>;
 }
 
 export interface StoredObject {
@@ -34,6 +38,7 @@ export interface StoredObject {
   bucket?: string;
   uploadedAt: number;
   expiresAt: number;
+  filePath?: string;
 }
 
 export type OciStoredObject = StoredObject;
@@ -128,6 +133,13 @@ export class OciObjectStorageService implements IStorageBackend {
         : Math.max(1024 * 1024, Math.ceil(totalSize / 10));
     const totalParts = Math.max(1, Math.ceil(totalSize / partSize));
 
+    const diskDir = path.join(os.tmpdir(), 'easyconvert_oci_chunks', uploadId);
+    try {
+      if (!fs.existsSync(diskDir)) {
+        fs.mkdirSync(diskDir, { recursive: true });
+      }
+    } catch {}
+
     const session: OciMultipartSession = {
       uploadId,
       key,
@@ -139,6 +151,7 @@ export class OciObjectStorageService implements IStorageBackend {
       createdAt: Date.now(),
       namespace: this.config.namespace,
       bucket: this.config.bucketName,
+      diskDir,
       parts: new Map(),
     };
 
@@ -166,14 +179,22 @@ export class OciObjectStorageService implements IStorageBackend {
       throw new Error(`Invalid OCI partNumber: ${partNumber}. Must be between 1 and 10000.`);
     }
 
+    // Disk-backed chunk streaming (Zero-Heap Ingestion)
+    const partFileName = `part-${partNumber}.bin`;
+    const partFilePath = path.join(session.diskDir, partFileName);
+    fs.writeFileSync(partFilePath, buffer);
+
     // Compute standard MD5 ETag
     const md5 = crypto.createHash('md5').update(buffer).digest('hex');
     const etag = `"${md5}"`;
 
     session.parts.set(partNumber, {
-      buffer,
+      filePath: partFilePath,
       etag,
       size: buffer.length,
+      get buffer(): Buffer {
+        return fs.existsSync(partFilePath) ? fs.readFileSync(partFilePath) : Buffer.alloc(0);
+      },
     });
 
     return {
@@ -203,43 +224,78 @@ export class OciObjectStorageService implements IStorageBackend {
       throw new Error('Cannot commit OCI multipart upload with zero uploaded parts.');
     }
 
-    const buffers: Buffer[] = [];
-    const etagHashes: Buffer[] = [];
-
-    for (const num of partNumbers) {
-      const part = session.parts.get(num);
-      if (!part) {
-        throw new Error(`Missing part number ${num} in OCI upload session.`);
+    const ociDir = path.join(os.tmpdir(), 'easyconvert_oci_objects');
+    try {
+      if (!fs.existsSync(ociDir)) {
+        fs.mkdirSync(ociDir, { recursive: true });
       }
-      buffers.push(part.buffer);
-      const rawMd5 = part.etag.replace(/"/g, '');
-      etagHashes.push(Buffer.from(rawMd5, 'hex'));
-    }
+    } catch {}
 
-    const assembledBuffer = Buffer.concat(buffers);
+    const finalFilePath = path.join(ociDir, `${session.uploadId}.bin`);
+    const outFd = fs.openSync(finalFilePath, 'w');
+    const etagHashes: Buffer[] = [];
+    const chunkBuf = Buffer.alloc(64 * 1024);
+    let totalSize = 0;
+
+    try {
+      for (const num of partNumbers) {
+        const part = session.parts.get(num);
+        if (!part) {
+          throw new Error(`Missing part number ${num} in OCI upload session.`);
+        }
+        if (!fs.existsSync(part.filePath)) {
+          throw new Error(`Part file missing on disk: ${part.filePath}`);
+        }
+        const inFd = fs.openSync(part.filePath, 'r');
+        let bytesRead = 0;
+        try {
+          while ((bytesRead = fs.readSync(inFd, chunkBuf, 0, chunkBuf.length, null)) > 0) {
+            fs.writeSync(outFd, chunkBuf, 0, bytesRead);
+          }
+        } finally {
+          fs.closeSync(inFd);
+        }
+        totalSize += part.size;
+        const rawMd5 = part.etag.replace(/"/g, '');
+        etagHashes.push(Buffer.from(rawMd5, 'hex'));
+      }
+    } finally {
+      fs.closeSync(outFd);
+    }
 
     // OCI composite hash
     const compositeHash = crypto.createHash('md5').update(Buffer.concat(etagHashes)).digest('hex');
     const compositeEtag = `"${compositeHash}-${partNumbers.length}"`;
 
     const now = Date.now();
+    let cachedBuffer: Buffer | null = null;
     const stored: OciStoredObject = {
       key: session.key,
       filename: session.filename,
       mimeType: session.mimeType,
-      buffer: assembledBuffer,
-      size: assembledBuffer.length,
+      size: totalSize,
       etag: compositeEtag,
       namespace: session.namespace,
       bucket: session.bucket,
       uploadedAt: now,
       expiresAt: now + 60 * 60 * 1000, // 1-hour TTL
+      filePath: finalFilePath,
+      get buffer(): Buffer {
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(finalFilePath)) {
+          cachedBuffer = fs.readFileSync(finalFilePath);
+          return cachedBuffer;
+        }
+        return Buffer.alloc(0);
+      },
     };
 
-    // Shred chunk buffers from parts map
-    for (const part of session.parts.values()) {
-      this.shredBuffer(part.buffer);
-    }
+    // Clean up temporary disk chunk directory
+    try {
+      if (fs.existsSync(session.diskDir)) {
+        fs.rmSync(session.diskDir, { recursive: true, force: true });
+      }
+    } catch {}
     session.parts.clear();
 
     this.objects.set(session.key, stored);
@@ -248,7 +304,7 @@ export class OciObjectStorageService implements IStorageBackend {
     return {
       location: `/api/storage/file/${encodeURIComponent(session.key)}`,
       key: session.key,
-      size: assembledBuffer.length,
+      size: totalSize,
       etag: compositeEtag,
     };
   }
@@ -259,9 +315,11 @@ export class OciObjectStorageService implements IStorageBackend {
   abortMultipartUpload(uploadId: string): boolean {
     const session = this.sessions.get(uploadId);
     if (!session) return false;
-    for (const part of session.parts.values()) {
-      this.shredBuffer(part.buffer);
-    }
+    try {
+      if (fs.existsSync(session.diskDir)) {
+        fs.rmSync(session.diskDir, { recursive: true, force: true });
+      }
+    } catch {}
     session.parts.clear();
     return this.sessions.delete(uploadId);
   }
@@ -322,6 +380,12 @@ export class OciObjectStorageService implements IStorageBackend {
     const obj = this.objects.get(key);
     if (!obj) return false;
 
+    if (obj.filePath && fs.existsSync(obj.filePath)) {
+      try {
+        fs.rmSync(obj.filePath, { force: true });
+      } catch {}
+    }
+
     this.shredBuffer(obj.buffer);
     this.objects.delete(key);
     if (obj.key && obj.key !== key) {
@@ -349,6 +413,11 @@ export class OciObjectStorageService implements IStorageBackend {
       const obj = this.objects.get(key);
       if (obj) {
         if (!shreddedObjects.has(obj)) {
+          if (obj.filePath && fs.existsSync(obj.filePath)) {
+            try {
+              fs.rmSync(obj.filePath, { force: true });
+            } catch {}
+          }
           this.shredBuffer(obj.buffer);
           shreddedObjects.add(obj);
           count++;
@@ -358,6 +427,18 @@ export class OciObjectStorageService implements IStorageBackend {
     }
 
     return count;
+  }
+
+  /**
+   * Retrieves streaming reader for stored object with optional byte range support
+   */
+  getObjectStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
+    const obj = this.getObject(key);
+    if (!obj) return null;
+    if (obj.filePath && fs.existsSync(obj.filePath)) {
+      return fs.createReadStream(obj.filePath, range ? { start: range.start, end: range.end } : undefined);
+    }
+    return null;
   }
 
   getActiveSessionsCount(): number {
@@ -460,6 +541,10 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
 
   getObject(key: string): StoredObject | undefined {
     return this.backend.getObject(key);
+  }
+
+  getObjectStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
+    return this.backend.getObjectStream(key, range);
   }
 
   deleteObject(key: string): boolean {

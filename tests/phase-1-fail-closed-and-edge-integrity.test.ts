@@ -4,6 +4,7 @@ import JSZip from 'jszip';
 import { convertVectorCad, encodeCgm, parseCgmToSvg } from '../src/lib/conversions/vector-cad';
 import { convertOffice, extractTextContentForOffice } from '../src/lib/conversions/office';
 import { create7zArchive, extract7zArchive } from '../src/lib/conversions/archive';
+import { convertMedia, ConversionFailedError, checkFfmpeg } from '../src/lib/conversions/media';
 import {
   applyRgbaQuantize,
   WasmEngine,
@@ -328,5 +329,62 @@ endobj
       expect(sanitized).toContain('/S /None');
     });
   });
+
+  // ==========================================================================
+  // Gate 6: Media Fail-Closed Enforcement for Lossy Psychoacoustic Codecs
+  // ==========================================================================
+  describe('Gate 6: Media Fail-Closed Enforcement Without Native FFmpeg', () => {
+    function createTestWav(): Buffer {
+      const sampleRate = 44100;
+      const channels = 2;
+      const samples = 4410;
+      const dataSize = samples * 2 * channels;
+      const buf = Buffer.alloc(44 + dataSize);
+      buf.write('RIFF', 0);
+      buf.writeUInt32LE(36 + dataSize, 4);
+      buf.write('WAVE', 8);
+      buf.write('fmt ', 12);
+      buf.writeUInt32LE(16, 16);
+      buf.writeUInt16LE(1, 20);
+      buf.writeUInt16LE(channels, 22);
+      buf.writeUInt32LE(sampleRate, 24);
+      buf.writeUInt32LE(sampleRate * channels * 2, 28);
+      buf.writeUInt16LE(channels * 2, 32);
+      buf.writeUInt16LE(16, 34);
+      buf.write('data', 36);
+      buf.writeUInt32LE(dataSize, 40);
+      return buf;
+    }
+
+    it('strictly throws ConversionFailedError for lossy psychoacoustic formats when FFmpeg is absent or disabled and allowPureLossyBitstream is omitted', async () => {
+      const wav = createTestWav();
+
+      await expect(
+        convertMedia(wav, 'wav', 'opus', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
+      await expect(
+        convertMedia(wav, 'wav', 'ogg', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
+      await expect(
+        convertMedia(wav, 'wav', 'aac', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
+      await expect(
+        convertMedia(wav, 'wav', 'mp4', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
+    });
+
+    it('allows lossless FLAC and pure TS MP3 conversion without throwing ConversionFailedError', async () => {
+      const wav = createTestWav();
+
+      const flacRes = await convertMedia(wav, 'wav', 'flac', { disableNativeEngine: true }, 'test.wav');
+      expect(flacRes.mimeType).toBe('audio/flac');
+      expect(flacRes.buffer.indexOf('fLaC')).toBe(0);
+
+      const mp3Res = await convertMedia(wav, 'wav', 'mp3', { disableNativeEngine: true }, 'test.wav');
+      expect(mp3Res.mimeType).toBe('audio/mpeg');
+      expect(mp3Res.buffer.length).toBeGreaterThan(0);
+    });
+  });
 });
+
 

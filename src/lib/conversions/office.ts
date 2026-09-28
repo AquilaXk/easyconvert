@@ -1521,6 +1521,34 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
 }
 
 /**
+ * Extracts normalized adjust ratio (0..1) from DrawingML adjustValues or guides.
+ */
+export function getShapeAdjustRatio(s: DrawingMlShape, name: string, defaultRatio: number): number {
+  if (s.adjustValues && typeof s.adjustValues[name] === 'number') {
+    const v = s.adjustValues[name];
+    return v > 1 ? v / 100000 : v;
+  }
+  if (s.guides && typeof s.guides[name] === 'number') {
+    const v = s.guides[name];
+    return v > 1 ? v / 100000 : v;
+  }
+  return defaultRatio;
+}
+
+/**
+ * Extracts computed guide value or returns default.
+ */
+export function getGuideValue(s: DrawingMlShape, name: string, defaultValue: number): number {
+  if (s.guides && typeof s.guides[name] === 'number') {
+    return s.guides[name];
+  }
+  if (s.adjustValues && typeof s.adjustValues[name] === 'number') {
+    return s.adjustValues[name];
+  }
+  return defaultValue;
+}
+
+/**
  * Renders a single DrawingML shape into an SVG element string.
  */
 export function renderSingleShapeSvg(s: DrawingMlShape): string {
@@ -1554,9 +1582,14 @@ export function renderSingleShapeSvg(s: DrawingMlShape): string {
           s.height / 2
         }" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
         break;
-      case 'roundrect':
-        elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="8" ry="8" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
+      case 'roundrect': {
+        const hasGuides = s.guides?.rx !== undefined || s.guides?.r !== undefined || s.adjustValues?.adj !== undefined;
+        const defaultRadius = hasGuides ? Math.min(s.width, s.height) * getShapeAdjustRatio(s, 'adj', 0.15) : 8;
+        const rx = getGuideValue(s, 'rx', getGuideValue(s, 'r', defaultRadius));
+        const ry = getGuideValue(s, 'ry', rx);
+        elementStr = `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" rx="${rx}" ry="${ry}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
         break;
+      }
       case 'triangle': {
         const pts = `${cx},${s.y} ${s.x + s.width},${s.y + s.height} ${s.x},${s.y + s.height}`;
         elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
@@ -1569,43 +1602,50 @@ export function renderSingleShapeSvg(s: DrawingMlShape): string {
         break;
       }
       case 'rightarrow': {
-        const pts = `${s.x},${s.y + s.height * 0.25} ${s.x + s.width * 0.6},${
-          s.y + s.height * 0.25
-        } ${s.x + s.width * 0.6},${s.y} ${s.x + s.width},${cy} ${s.x + s.width * 0.6},${
-          s.y + s.height
-        } ${s.x + s.width * 0.6},${s.y + s.height * 0.75} ${s.x},${s.y + s.height * 0.75}`;
+        const headRatio = getShapeAdjustRatio(s, 'adj1', 0.4);
+        const shaftThick = getShapeAdjustRatio(s, 'adj2', 0.5);
+        const shaftX = s.x + s.width * (1 - headRatio);
+        const yTop = s.y + (s.height * (1 - shaftThick)) / 2;
+        const yBottom = s.y + s.height - (s.height * (1 - shaftThick)) / 2;
+        const pts = `${s.x},${yTop} ${shaftX},${yTop} ${shaftX},${s.y} ${s.x + s.width},${cy} ${shaftX},${s.y + s.height} ${shaftX},${yBottom} ${s.x},${yBottom}`;
         elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
         break;
       }
       case 'leftrightarrow': {
-        const pts = `${s.x},${cy} ${s.x + s.width * 0.25},${s.y} ${s.x + s.width * 0.25},${
-          s.y + s.height * 0.25
-        } ${s.x + s.width * 0.75},${s.y + s.height * 0.25} ${s.x + s.width * 0.75},${s.y} ${
+        const headRatio = getShapeAdjustRatio(s, 'adj1', 0.25);
+        const shaftThick = getShapeAdjustRatio(s, 'adj2', 0.5);
+        const leftHead = s.x + s.width * headRatio;
+        const rightHead = s.x + s.width * (1 - headRatio);
+        const yTop = s.y + (s.height * (1 - shaftThick)) / 2;
+        const yBottom = s.y + s.height - (s.height * (1 - shaftThick)) / 2;
+        const pts = `${s.x},${cy} ${leftHead},${s.y} ${leftHead},${yTop} ${rightHead},${yTop} ${rightHead},${s.y} ${
           s.x + s.width
-        },${cy} ${s.x + s.width * 0.75},${s.y + s.height} ${s.x + s.width * 0.75},${
-          s.y + s.height * 0.75
-        } ${s.x + s.width * 0.25},${s.y + s.height * 0.75} ${s.x + s.width * 0.25},${s.y + s.height}`;
+        },${cy} ${rightHead},${s.y + s.height} ${rightHead},${yBottom} ${leftHead},${yBottom} ${leftHead},${s.y + s.height}`;
         elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
         break;
       }
       case 'wedgerectcallout': {
+        const tailX = s.x + s.width * getShapeAdjustRatio(s, 'adj1', 0.3);
+        const tailY = s.y + s.height * getShapeAdjustRatio(s, 'adj2', 1.0);
         const d = `M ${s.x} ${s.y} L ${s.x + s.width} ${s.y} L ${s.x + s.width} ${
           s.y + s.height * 0.75
-        } L ${s.x + s.width * 0.55} ${s.y + s.height * 0.75} L ${s.x + s.width * 0.3} ${
-          s.y + s.height
+        } L ${s.x + s.width * 0.55} ${s.y + s.height * 0.75} L ${tailX} ${
+          tailY
         } L ${s.x + s.width * 0.38} ${s.y + s.height * 0.75} L ${s.x} ${s.y + s.height * 0.75} Z`;
         elementStr = `<path d="${d}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
         break;
       }
       case 'chevron': {
-        const pts = `${s.x},${s.y} ${s.x + s.width * 0.75},${s.y} ${s.x + s.width},${cy} ${
-          s.x + s.width * 0.75
-        },${s.y + s.height} ${s.x},${s.y + s.height} ${s.x + s.width * 0.25},${cy}`;
+        const depthRatio = getShapeAdjustRatio(s, 'adj', 0.25);
+        const dX = s.width * depthRatio;
+        const pts = `${s.x},${s.y} ${s.x + s.width - dX},${s.y} ${s.x + s.width},${cy} ${
+          s.x + s.width - dX
+        },${s.y + s.height} ${s.x},${s.y + s.height} ${s.x + dX},${cy}`;
         elementStr = `<polygon points="${pts}" fill="${s.fillColor || '#5C6BC0'}" stroke="${s.strokeColor || '#1F2340'}" stroke-width="${s.strokeWidth ?? 1}"${rotAttr} />`;
         break;
       }
       case 'cube': {
-        const cd = Math.min(s.width, s.height) * 0.2;
+        const cd = Math.min(s.width, s.height) * getShapeAdjustRatio(s, 'adj', 0.2);
         const fill = s.fillColor || '#5C6BC0';
         elementStr = `<g${rotAttr}><polygon points="${s.x},${s.y + cd} ${s.x + cd},${s.y} ${
           s.x + s.width
@@ -2373,11 +2413,12 @@ export function renderSafePdfText(
   }
 
   const safe = sanitizeWinAnsi(stringText);
-  const toWrite = safe.trim()
-    ? safe
-    : stringText.trim()
-    ? `[Text: ${stringText.length} chars]`
-    : '';
+  if (!safe.trim() && stringText.trim()) {
+    throw new Error(
+      `Cannot render text with standard WinAnsi font and no suitable Unicode fallback font is available. Text contains non-WinAnsi characters: "${stringText.length > 40 ? stringText.slice(0, 40) + '...' : stringText}"`
+    );
+  }
+  const toWrite = safe;
 
   if (x !== undefined && y !== undefined) {
     return doc.text(toWrite, x, y, options);
@@ -2650,9 +2691,13 @@ export function renderSinglePdfShape(
       case 'circle':
         doc.ellipse(posX + sw / 2, posY + sh / 2, sw / 2, sh / 2);
         break;
-      case 'roundrect':
-        doc.roundedRect(posX, posY, sw, sh, Math.min(8, sw * 0.15));
+      case 'roundrect': {
+        const hasGuides = s.guides?.rx !== undefined || s.guides?.r !== undefined || s.adjustValues?.adj !== undefined;
+        const defaultRadius = hasGuides ? Math.min(sw, sh) * getShapeAdjustRatio(s, 'adj', 0.15) : Math.min(8, sw * 0.15);
+        const rx = getGuideValue(s, 'rx', getGuideValue(s, 'r', defaultRadius));
+        doc.roundedRect(posX, posY, sw, sh, rx);
         break;
+      }
       case 'triangle':
         doc.polygon([posX + sw / 2, posY], [posX + sw, posY + sh], [posX, posY + sh]);
         break;
@@ -2668,43 +2713,59 @@ export function renderSinglePdfShape(
       case 'line':
         doc.moveTo(posX, posY).lineTo(posX + sw, posY + sh);
         break;
-      case 'rightarrow':
+      case 'rightarrow': {
+        const headRatio = getShapeAdjustRatio(s, 'adj1', 0.4);
+        const shaftThick = getShapeAdjustRatio(s, 'adj2', 0.5);
+        const shaftX = posX + sw * (1 - headRatio);
+        const yTop = posY + (sh * (1 - shaftThick)) / 2;
+        const yBottom = posY + sh - (sh * (1 - shaftThick)) / 2;
         doc.polygon(
-          [posX, posY + sh * 0.25],
-          [posX + sw * 0.6, posY + sh * 0.25],
-          [posX + sw * 0.6, posY],
+          [posX, yTop],
+          [shaftX, yTop],
+          [shaftX, posY],
           [posX + sw, posY + sh * 0.5],
-          [posX + sw * 0.6, posY + sh],
-          [posX + sw * 0.6, posY + sh * 0.75],
-          [posX, posY + sh * 0.75]
+          [shaftX, posY + sh],
+          [shaftX, yBottom],
+          [posX, yBottom]
         );
         break;
-      case 'leftrightarrow':
+      }
+      case 'leftrightarrow': {
+        const headRatio = getShapeAdjustRatio(s, 'adj1', 0.25);
+        const shaftThick = getShapeAdjustRatio(s, 'adj2', 0.5);
+        const leftHead = posX + sw * headRatio;
+        const rightHead = posX + sw * (1 - headRatio);
+        const yTop = posY + (sh * (1 - shaftThick)) / 2;
+        const yBottom = posY + sh - (sh * (1 - shaftThick)) / 2;
         doc.polygon(
           [posX, posY + sh * 0.5],
-          [posX + sw * 0.25, posY],
-          [posX + sw * 0.25, posY + sh * 0.25],
-          [posX + sw * 0.75, posY + sh * 0.25],
-          [posX + sw * 0.75, posY],
+          [leftHead, posY],
+          [leftHead, yTop],
+          [rightHead, yTop],
+          [rightHead, posY],
           [posX + sw, posY + sh * 0.5],
-          [posX + sw * 0.75, posY + sh],
-          [posX + sw * 0.75, posY + sh * 0.75],
-          [posX + sw * 0.25, posY + sh * 0.75],
-          [posX + sw * 0.25, posY + sh]
+          [rightHead, posY + sh],
+          [rightHead, yBottom],
+          [leftHead, yBottom],
+          [leftHead, posY + sh]
         );
         break;
-      case 'chevron':
+      }
+      case 'chevron': {
+        const depthRatio = getShapeAdjustRatio(s, 'adj', 0.25);
+        const dX = sw * depthRatio;
         doc.polygon(
           [posX, posY],
-          [posX + sw * 0.75, posY],
+          [posX + sw - dX, posY],
           [posX + sw, posY + sh * 0.5],
-          [posX + sw * 0.75, posY + sh],
+          [posX + sw - dX, posY + sh],
           [posX, posY + sh],
-          [posX + sw * 0.25, posY + sh * 0.5]
+          [posX + dX, posY + sh * 0.5]
         );
         break;
+      }
       case 'cube': {
-        const cd = Math.min(sw, sh) * 0.2;
+        const cd = Math.min(sw, sh) * getShapeAdjustRatio(s, 'adj', 0.2);
         const fill = s.fillColor || '#5C6BC0';
         const topFill = adjustHexBrightness(fill, 1.2);
         const rightFill = adjustHexBrightness(fill, 0.8);
@@ -2735,17 +2796,20 @@ export function renderSinglePdfShape(
         if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
         break;
       }
-      case 'wedgerectcallout':
+      case 'wedgerectcallout': {
+        const tailX = posX + sw * getShapeAdjustRatio(s, 'adj1', 0.3);
+        const tailY = posY + sh * getShapeAdjustRatio(s, 'adj2', 1.0);
         doc.polygon(
           [posX, posY],
           [posX + sw, posY],
           [posX + sw, posY + sh * 0.75],
           [posX + sw * 0.55, posY + sh * 0.75],
-          [posX + sw * 0.3, posY + sh],
+          [tailX, tailY],
           [posX + sw * 0.38, posY + sh * 0.75],
           [posX, posY + sh * 0.75]
         );
         break;
+      }
       case 'star5': {
         const rOuter = Math.min(sw, sh) / 2;
         const rInner = rOuter * 0.4;

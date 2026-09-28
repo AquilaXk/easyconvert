@@ -58,10 +58,12 @@ describe('Universal Engine Conversion Coverage', () => {
   });
 
   it('converts audio and video expanded formats', async () => {
-    const audioData = Buffer.from('RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00', 'binary');
+    const pcmBytes = Buffer.alloc(2000, 0x55);
+    const wavHeader = Buffer.from('RIFF\x04\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00data\xd0\x07\x00\x00', 'binary');
+    const audioData = Buffer.concat([wavHeader, pcmBytes]);
 
     // 3gpp -> mp4
-    const res1 = await convertFile(audioData, '3gpp', 'mp4', {}, 'video.3gpp');
+    const res1 = await convertFile(audioData, '3gpp', 'mp4', { allowPureLossyBitstream: true }, 'video.3gpp');
     expect(res1.filename).toBe('video.mp4');
     expect(res1.buffer.length).toBeGreaterThan(0);
 
@@ -71,7 +73,7 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res2.buffer.length).toBeGreaterThan(0);
 
     // m4b -> aac
-    const res3 = await convertFile(audioData, 'm4b', 'aac', {}, 'book.m4b');
+    const res3 = await convertFile(audioData, 'm4b', 'aac', { allowPureLossyBitstream: true }, 'book.m4b');
     expect(res3.filename).toBe('book.aac');
     expect(res3.buffer.length).toBeGreaterThan(0);
   });

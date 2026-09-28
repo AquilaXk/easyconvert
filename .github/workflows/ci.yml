@@ -36,6 +36,9 @@ jobs:
             libreoffice-writer \
             libreoffice-impress
 
+      - name: Verify test integrity and anti-cheating guards
+        run: npm run guard:anti-cheat
+
       - name: Run linter
         run: npm run lint
 

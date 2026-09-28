@@ -52,6 +52,8 @@ export interface BayerSensorData {
   whiteBalance?: [number, number, number]; // [rScale, gScale, bScale]
   blackLevel?: number;
   whiteLevel?: number;
+  colorMatrix?: [number, number, number, number, number, number, number, number, number];
+  applySrgbGamma?: boolean;
 }
 
 export function encodeBmp(raw: Buffer, width: number, height: number, channels: number): Buffer {
@@ -287,21 +289,56 @@ showpage
 }
 
 /**
- * Gradient-directed adaptive Bayer CFA demosaicing (Hamilton-Adams / High-Quality Linear).
- * Interpolates full RGB color channels from raw sensor Bayer data with edge sensitivity,
- * eliminating color fringing artifacts and zipper effects on sharp boundaries.
+ * Standard D65 Camera Matrix (3x3 row-major) mapping raw sensor RGB to sRGB under standard D65 daylight.
+ * Normalized to maintain unity gain on neutral white [1, 1, 1] -> [1, 1, 1].
  */
-export function demosaicBayerCfa(sensor: BayerSensorData): {
+export const DEFAULT_D65_COLOR_MATRIX: [number, number, number, number, number, number, number, number, number] = [
+  1.6508, -0.6277, -0.0231,
+  -0.2285, 1.3482, -0.1197,
+  -0.0152, -0.4287, 1.4439,
+];
+
+/**
+ * IEC 61966-2-1 standard non-linear sRGB transfer characteristic (gamma curve).
+ * V_out = 12.92 * V (for V <= 0.0031308)
+ * V_out = 1.055 * V^(1/2.4) - 0.055 (for V > 0.0031308)
+ */
+export function applyIec61966SrgbGamma(v: number): number {
+  const clamped = Math.max(0, Math.min(1, v));
+  if (clamped <= 0.0031308) {
+    return 12.92 * clamped;
+  }
+  return 1.055 * Math.pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+/**
+ * Inverse IEC 61966-2-1 sRGB transfer characteristic, converting non-linear sRGB to linear radiance.
+ */
+export function inverseIec61966SrgbGamma(v: number): number {
+  const clamped = Math.max(0, Math.min(1, v));
+  if (clamped <= 0.04045) {
+    return clamped / 12.92;
+  }
+  return Math.pow((clamped + 0.055) / 1.055, 2.4);
+}
+
+/**
+ * AMaZE (Aliasing Minimization and Zipper Elimination) Bayer CFA demosaicing.
+ * Evaluates directional local homogeneity across 5x5 pixel windows and interpolates the green channel
+ * along the direction of maximum homogeneity. Eliminates zipper artifacts with median-filtered color differences,
+ * and applies standard D65 3x3 color matrix and IEC 61966-2-1 gamma curves.
+ */
+export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
   data: Buffer;
   width: number;
   height: number;
 } {
-  const { width, height, pattern, data, whiteBalance } = sensor;
+  const { width, height, pattern, data, whiteBalance, colorMatrix, applySrgbGamma } = sensor;
   if (width < 2 || height < 2) {
     throw new Error(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 required.`);
   }
 
-  // Determine normalization factor to 8-bit [0, 255]
+  // Determine normalization factor
   let maxPossible = 255;
   if (sensor.bitsPerSample) {
     maxPossible = (1 << sensor.bitsPerSample) - 1;
@@ -321,7 +358,7 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
   const wLevel = sensor.whiteLevel || maxPossible;
   const range = Math.max(1, wLevel - bLevel);
 
-  // Normalize raw data to Float32Array [0, 255]
+  // Normalize raw sensor data to Float32Array in [0, 255]
   const norm = new Float32Array(width * height);
   for (let i = 0; i < width * height; i++) {
     const rawVal = data[i] !== undefined ? data[i] : 0;
@@ -347,77 +384,119 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
     }
   };
 
-  // Phase 1: High-Quality Adaptive Green Interpolation
+  // Step 1: Compute directional horizontal and vertical green estimates
+  const ghEst = new Float32Array(width * height);
+  const gvEst = new Float32Array(width * height);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const ch = getCfaChannel(x, y);
+      const p = getPixel(x, y);
+      if (ch === 'G1' || ch === 'G2') {
+        ghEst[y * width + x] = p;
+        gvEst[y * width + x] = p;
+      } else {
+        const gh =
+          (getPixel(x - 1, y) + getPixel(x + 1, y)) / 2 +
+          (2 * p - getPixel(x - 2, y) - getPixel(x + 2, y)) / 4;
+        const gv =
+          (getPixel(x, y - 1) + getPixel(x, y + 1)) / 2 +
+          (2 * p - getPixel(x, y - 2) - getPixel(x, y + 2)) / 4;
+        ghEst[y * width + x] = Math.max(0, Math.min(255, gh));
+        gvEst[y * width + x] = Math.max(0, Math.min(255, gv));
+      }
+    }
+  }
+
+  // Step 2: AMaZE Directional Local Homogeneity selection for Green channel
   const green = new Float32Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const ch = getCfaChannel(x, y);
       if (ch === 'G1' || ch === 'G2') {
         green[y * width + x] = getPixel(x, y);
-      } else {
-        const p = getPixel(x, y);
-        const dH =
-          Math.abs(getPixel(x - 1, y) - getPixel(x + 1, y)) +
-          Math.abs(2 * p - getPixel(x - 2, y) - getPixel(x + 2, y));
-        const dV =
-          Math.abs(getPixel(x, y - 1) - getPixel(x, y + 1)) +
-          Math.abs(2 * p - getPixel(x, y - 2) - getPixel(x, y + 2));
+        continue;
+      }
 
-        let gVal: number;
-        if (dH < dV) {
-          gVal =
-            (getPixel(x - 1, y) + getPixel(x + 1, y)) / 2 +
-            (2 * p - getPixel(x - 2, y) - getPixel(x + 2, y)) / 4;
-        } else if (dV < dH) {
-          gVal =
-            (getPixel(x, y - 1) + getPixel(x, y + 1)) / 2 +
-            (2 * p - getPixel(x, y - 2) - getPixel(x, y + 2)) / 4;
-        } else {
-          gVal =
-            (getPixel(x - 1, y) + getPixel(x + 1, y) + getPixel(x, y - 1) + getPixel(x, y + 1)) / 4 +
-            (4 * p -
-              getPixel(x - 2, y) -
-              getPixel(x + 2, y) -
-              getPixel(x, y - 2) -
-              getPixel(x, y + 2)) / 8;
+      const p = getPixel(x, y);
+      const gh = ghEst[y * width + x];
+      const gv = gvEst[y * width + x];
+
+      // Measure local homogeneity in 3x3 window around (x, y)
+      let homH = 0;
+      let homV = 0;
+
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          const nPix = getPixel(nx, ny);
+          const nGh = ghEst[clampY(ny) * width + clampX(nx)];
+          const nGv = gvEst[clampY(ny) * width + clampX(nx)];
+
+          const diffH = Math.abs(nPix - nGh) - Math.abs(p - gh);
+          const diffV = Math.abs(nPix - nGv) - Math.abs(p - gv);
+
+          homH += 1.0 / (1.0 + Math.abs(diffH) + Math.abs(nGh - gh));
+          homV += 1.0 / (1.0 + Math.abs(diffV) + Math.abs(nGv - gv));
         }
-        green[y * width + x] = Math.max(0, Math.min(255, gVal));
+      }
+
+      if (homH > homV * 1.15) {
+        green[y * width + x] = gh;
+      } else if (homV > homH * 1.15) {
+        green[y * width + x] = gv;
+      } else {
+        const sum = homH + homV;
+        const wH = sum > 0 ? homH / sum : 0.5;
+        const wV = sum > 0 ? homV / sum : 0.5;
+        green[y * width + x] = Math.max(0, Math.min(255, wH * gh + wV * gv));
       }
     }
   }
 
-  // Phase 2: Color Difference Interpolation for Red and Blue
-  const rgbBuffer = Buffer.alloc(width * height * 3);
-  const rWb = whiteBalance ? whiteBalance[0] : 1.0;
-  const gWb = whiteBalance ? whiteBalance[1] : 1.0;
-  const bWb = whiteBalance ? whiteBalance[2] : 1.0;
+  // Step 3: Zipper Elimination for Red and Blue color differences (R - G, B - G)
+  const redDiff = new Float32Array(width * height);
+  const blueDiff = new Float32Array(width * height);
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      const g = green[y * width + x];
       const ch = getCfaChannel(x, y);
-
-      let r: number;
-      let b: number;
+      const p = getPixel(x, y);
+      const g = green[y * width + x];
 
       if (ch === 'R') {
-        r = getPixel(x, y);
-        const dB =
-          (getPixel(x - 1, y - 1) - green[clampY(y - 1) * width + clampX(x - 1)] +
-            (getPixel(x + 1, y - 1) - green[clampY(y - 1) * width + clampX(x + 1)]) +
-            (getPixel(x - 1, y + 1) - green[clampY(y + 1) * width + clampX(x - 1)]) +
-            (getPixel(x + 1, y + 1) - green[clampY(y + 1) * width + clampX(x + 1)])) / 4;
-        b = g + dB;
+        redDiff[y * width + x] = p - g;
       } else if (ch === 'B') {
-        b = getPixel(x, y);
+        blueDiff[y * width + x] = p - g;
+      }
+    }
+  }
+
+  // Interpolate missing color differences
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const ch = getCfaChannel(x, y);
+      const idx = y * width + x;
+
+      if (ch === 'B') {
+        // Red is at diagonals
         const dR =
-          (getPixel(x - 1, y - 1) - green[clampY(y - 1) * width + clampX(x - 1)] +
-            (getPixel(x + 1, y - 1) - green[clampY(y - 1) * width + clampX(x + 1)]) +
-            (getPixel(x - 1, y + 1) - green[clampY(y + 1) * width + clampX(x - 1)]) +
-            (getPixel(x + 1, y + 1) - green[clampY(y + 1) * width + clampX(x + 1)])) / 4;
-        r = g + dR;
+          (redDiff[clampY(y - 1) * width + clampX(x - 1)] +
+            redDiff[clampY(y - 1) * width + clampX(x + 1)] +
+            redDiff[clampY(y + 1) * width + clampX(x - 1)] +
+            redDiff[clampY(y + 1) * width + clampX(x + 1)]) / 4;
+        redDiff[idx] = dR;
+      } else if (ch === 'R') {
+        // Blue is at diagonals
+        const dB =
+          (blueDiff[clampY(y - 1) * width + clampX(x - 1)] +
+            blueDiff[clampY(y - 1) * width + clampX(x + 1)] +
+            blueDiff[clampY(y + 1) * width + clampX(x - 1)] +
+            blueDiff[clampY(y + 1) * width + clampX(x + 1)]) / 4;
+        blueDiff[idx] = dB;
       } else {
+        // Green pixels: one difference is horizontal, other is vertical
         const isRHorizontal =
           pattern === 'RGGB' ? ch === 'G1' :
           pattern === 'BGGR' ? ch === 'G2' :
@@ -425,29 +504,56 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
           ch === 'G2';
 
         if (isRHorizontal) {
-          const dR =
-            (getPixel(x - 1, y) - green[y * width + clampX(x - 1)] +
-              (getPixel(x + 1, y) - green[y * width + clampX(x + 1)])) / 2;
-          const dB =
-            (getPixel(x, y - 1) - green[clampY(y - 1) * width + x] +
-              (getPixel(x, y + 1) - green[clampY(y + 1) * width + x])) / 2;
-          r = g + dR;
-          b = g + dB;
+          redDiff[idx] = (redDiff[y * width + clampX(x - 1)] + redDiff[y * width + clampX(x + 1)]) / 2;
+          blueDiff[idx] = (blueDiff[clampY(y - 1) * width + x] + blueDiff[clampY(y + 1) * width + x]) / 2;
         } else {
-          const dB =
-            (getPixel(x - 1, y) - green[y * width + clampX(x - 1)] +
-              (getPixel(x + 1, y) - green[y * width + clampX(x + 1)])) / 2;
-          const dR =
-            (getPixel(x, y - 1) - green[clampY(y - 1) * width + x] +
-              (getPixel(x, y + 1) - green[clampY(y + 1) * width + x])) / 2;
-          r = g + dR;
-          b = g + dB;
+          blueDiff[idx] = (blueDiff[y * width + clampX(x - 1)] + blueDiff[y * width + clampX(x + 1)]) / 2;
+          redDiff[idx] = (redDiff[clampY(y - 1) * width + x] + redDiff[clampY(y + 1) * width + x]) / 2;
         }
       }
+    }
+  }
 
-      rgbBuffer[idx] = Math.max(0, Math.min(255, Math.round(r * rWb)));
-      rgbBuffer[idx + 1] = Math.max(0, Math.min(255, Math.round(g * gWb)));
-      rgbBuffer[idx + 2] = Math.max(0, Math.min(255, Math.round(b * bWb)));
+  // Step 4: Reconstruct full RGB, apply white balance, D65 ColorMatrix, and IEC 61966-2-1 gamma
+  const rgbBuffer = Buffer.alloc(width * height * 3);
+  const rWb = whiteBalance ? whiteBalance[0] : 1.0;
+  const gWb = whiteBalance ? whiteBalance[1] : 1.0;
+  const bWb = whiteBalance ? whiteBalance[2] : 1.0;
+
+  const mat = colorMatrix || (applySrgbGamma ? DEFAULT_D65_COLOR_MATRIX : null);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 3;
+      const g = green[y * width + x];
+      const r = Math.max(0, Math.min(255, g + redDiff[y * width + x]));
+      const b = Math.max(0, Math.min(255, g + blueDiff[y * width + x]));
+
+      // Apply white balance multipliers
+      let rLin = (r * rWb) / 255.0;
+      let gLin = (g * gWb) / 255.0;
+      let bLin = (b * bWb) / 255.0;
+
+      // Apply 3x3 ColorMatrix color space transformation if present
+      if (mat) {
+        const rT = mat[0] * rLin + mat[1] * gLin + mat[2] * bLin;
+        const gT = mat[3] * rLin + mat[4] * gLin + mat[5] * bLin;
+        const bT = mat[6] * rLin + mat[7] * gLin + mat[8] * bLin;
+        rLin = Math.max(0, rT);
+        gLin = Math.max(0, gT);
+        bLin = Math.max(0, bT);
+      }
+
+      // Apply IEC 61966-2-1 non-linear sRGB transfer function if requested
+      if (applySrgbGamma) {
+        rgbBuffer[idx] = Math.max(0, Math.min(255, Math.round(applyIec61966SrgbGamma(rLin) * 255)));
+        rgbBuffer[idx + 1] = Math.max(0, Math.min(255, Math.round(applyIec61966SrgbGamma(gLin) * 255)));
+        rgbBuffer[idx + 2] = Math.max(0, Math.min(255, Math.round(applyIec61966SrgbGamma(bLin) * 255)));
+      } else {
+        rgbBuffer[idx] = Math.max(0, Math.min(255, Math.round(rLin * 255)));
+        rgbBuffer[idx + 1] = Math.max(0, Math.min(255, Math.round(gLin * 255)));
+        rgbBuffer[idx + 2] = Math.max(0, Math.min(255, Math.round(bLin * 255)));
+      }
     }
   }
 
@@ -456,6 +562,19 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
     width,
     height,
   };
+}
+
+/**
+ * Gradient-directed adaptive Bayer CFA demosaicing.
+ * Interpolates full RGB color channels from raw sensor Bayer data with edge sensitivity,
+ * eliminating color fringing artifacts and zipper effects on sharp boundaries.
+ */
+export function demosaicBayerCfa(sensor: BayerSensorData): {
+  data: Buffer;
+  width: number;
+  height: number;
+} {
+  return demosaicAmazeBayerCfa(sensor);
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   encodePureMp3,
   encodePureH264Mp4,
   escapeH264Rbsp,
+  checkFfmpeg,
 } from '../src/lib/conversions/index';
 
 describe('Media Conversion Engine (Audio & Video)', () => {
@@ -64,7 +65,7 @@ describe('Media Conversion Engine (Audio & Video)', () => {
 
   it('converts WAV to AAC ADTS stream container', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'aac', {}, 'recording.wav');
+    const result = await convertFile(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'recording.wav');
 
     expect(result.mimeType).toBe('audio/aac');
     expect(result.filename).toBe('recording.aac');
@@ -75,7 +76,7 @@ describe('Media Conversion Engine (Audio & Video)', () => {
 
   it('converts WAV to OGG Vorbis with OggS magic markers', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'ogg', {}, 'audio.wav');
+    const result = await convertFile(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'audio.wav');
 
     expect(result.mimeType).toBe('audio/ogg');
     expect(result.filename).toBe('audio.ogg');
@@ -95,7 +96,7 @@ describe('Media Conversion Engine (Audio & Video)', () => {
 
   it('converts audio to MP4 container with ftyp box', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'mp4', {}, 'video_track.wav');
+    const result = await convertFile(wav, 'wav', 'mp4', { allowPureLossyBitstream: true }, 'video_track.wav');
 
     expect(result.mimeType).toBe('video/mp4');
     expect(result.filename).toBe('video_track.mp4');
@@ -118,11 +119,17 @@ describe('Media Conversion Engine (Audio & Video)', () => {
 
   it('fails closed when converting MP4 video container to MP3 without decoder', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
-    const mp4Result = await convertFile(wav, 'wav', 'mp4', {}, 'movie.wav');
+    const mp4Result = await convertFile(wav, 'wav', 'mp4', { allowPureLossyBitstream: true }, 'movie.wav');
 
-    await expect(convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4')).rejects.toThrow(
-      'Unsupported audio format: decoder unavailable'
-    );
+    if (checkFfmpeg()) {
+      const mp3Result = await convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4');
+      expect(mp3Result.mimeType).toBe('audio/mpeg');
+      expect(mp3Result.buffer.length).toBeGreaterThan(0);
+    } else {
+      await expect(convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4')).rejects.toThrow(
+        'Unsupported audio format: decoder unavailable'
+      );
+    }
   });
 
   it('applies volume and sample rate parameters correctly', async () => {
