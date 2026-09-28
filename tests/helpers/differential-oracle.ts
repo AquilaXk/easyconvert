@@ -2131,7 +2131,7 @@ export async function runDifferentialComparison(
   } else if (['wav', 'mp3', 'flac'].includes(fmt)) {
     if (isOracleToolAvailable('ffmpeg')) {
       oracleType = 'external_cli';
-      if (!verifyAudioWithFfmpeg(actualBuffer)) {
+      if (!verifyAudioWithFfmpeg(actualBuffer, fmt)) {
         discrepancies.push(`FFmpeg external oracle CLI failed to decode ${fmt} audio bitstream`);
         structuralScore = 0;
       }
@@ -2611,7 +2611,7 @@ export function checkMp3Integrity(buffer: Buffer): void {
   }
 
   if (isOracleToolAvailable('ffmpeg') && buffer.length > 200) {
-    if (!verifyAudioWithFfmpeg(buffer)) {
+    if (!verifyAudioWithFfmpeg(buffer, 'mp3')) {
       throw new Error('Integrity Violation: FFmpeg CLI failed to decode MP3 bitstream');
     }
   }
