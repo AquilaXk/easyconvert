@@ -21,7 +21,17 @@ import {
   splitArchive,
   type SplitArchivePartInfo,
   type StitchedArchiveResult,
+  createVirtualSpannedStream,
+  stitchMultiVolumeToDisk,
+  VirtualSpannedStream,
+  MultiVolumeBufferOverflowError,
+  MAX_STITCH_BUFFER_SIZE,
+  validateAndSortSplitParts,
+  type VirtualSpannedPartSource,
+  type VirtualSpannedStreamOptions,
+  type SpannedArchiveMetadata,
 } from './archive-split';
+import { executeSandboxedBinary } from '../security/process-sandbox';
 import {
   compressWithZstdDict,
   decompressWithZstdDict,
@@ -46,6 +56,15 @@ export {
   splitArchive,
   type SplitArchivePartInfo,
   type StitchedArchiveResult,
+  createVirtualSpannedStream,
+  stitchMultiVolumeToDisk,
+  VirtualSpannedStream,
+  MultiVolumeBufferOverflowError,
+  MAX_STITCH_BUFFER_SIZE,
+  validateAndSortSplitParts,
+  type VirtualSpannedPartSource,
+  type VirtualSpannedStreamOptions,
+  type SpannedArchiveMetadata,
   compressWithZstdDict,
   decompressWithZstdDict,
   getPretrainedDictionary,
@@ -1340,6 +1359,133 @@ export function convertWithNative7z(
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch {}
   }
+}
+
+/**
+ * Extracts a multi-volume split archive directly using Virtual Spanned Stream and 7-Zip CLI.
+ * Attempts zero-disk stdin streaming extraction via `7z x -si{name}`, falling back to
+ * zero-memory disk streaming spooling (`stitchMultiVolumeToDisk`) if seek-heavy container random access is required.
+ */
+export async function extractWithSpannedStream7z(
+  parts: Array<string | VirtualSpannedPartSource | { filename: string; buffer: Buffer }>,
+  extractDir: string,
+  options: {
+    timeoutMs?: number;
+    maxBuffer?: number;
+    password?: string;
+  } = {}
+): Promise<{ extractedFiles: string[]; totalBytes: number; baseFilename: string }> {
+  const p7zBin = get7zBinaryPath();
+  if (!p7zBin) {
+    throw new Error('7-Zip binary (7z/7za/7zr) not found on system.');
+  }
+
+  const { sortedParts, metadata } = validateAndSortSplitParts(parts);
+  const resolvedExtractDir = path.resolve(extractDir);
+  if (!fs.existsSync(resolvedExtractDir)) {
+    fs.mkdirSync(resolvedExtractDir, { recursive: true });
+  }
+
+  const timeoutMs = options.timeoutMs ?? 60000;
+  const maxBuffer = options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
+  const passwordArgs = options.password ? [`-p${options.password}`] : [];
+  const formatMap: Record<string, string> = {
+    tar: 'tar',
+    zip: 'zip',
+    '7z': '7z',
+    rar: 'rar',
+  };
+  const typeFlag = formatMap[metadata.format] ? [`-t${formatMap[metadata.format]}`] : [];
+
+  const isStreamableFormat = metadata.format === 'tar' || metadata.format === 'numeric';
+  let extractionSuccess = false;
+
+  // Strategy 1: Stdin streaming extraction via 7z x -si{baseFilename} for streamable archive formats
+  if (isStreamableFormat) {
+    try {
+      const { stream } = createVirtualSpannedStream(sortedParts);
+      await executeSandboxedBinary(
+        p7zBin,
+        ['x', '-y', `-si${metadata.baseFilename}`, ...typeFlag, `-o${resolvedExtractDir}`, ...passwordArgs],
+        {
+          cwd: resolvedExtractDir,
+          stdin: stream,
+          timeoutMs,
+          maxBuffer,
+          networkIsolated: true,
+        }
+      );
+      extractionSuccess = true;
+    } catch {
+      extractionSuccess = false;
+      // Clean partially extracted entries before fallback
+      try {
+        const existing = fs.readdirSync(resolvedExtractDir);
+        for (const item of existing) {
+          fs.rmSync(path.join(resolvedExtractDir, item), { recursive: true, force: true });
+        }
+      } catch {}
+    }
+  }
+
+  // Strategy 2: If stdin streaming is not supported or rejected by container format (e.g. 7z/zip/rar central directories),
+  // spool to temporary disk file in O(1) memory via stitchMultiVolumeToDisk
+  if (!extractionSuccess) {
+    const tmpDir = os.tmpdir();
+    const uniqueSuffix = crypto.randomBytes(6).toString('hex');
+    const tempDiskFile = path.join(tmpDir, `spanned_stitch_${Date.now()}_${uniqueSuffix}_${metadata.baseFilename}`);
+    try {
+      await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
+      await executeSandboxedBinary(
+        p7zBin,
+        ['x', '-y', ...typeFlag, `-o${resolvedExtractDir}`, tempDiskFile, ...passwordArgs],
+        {
+          cwd: resolvedExtractDir,
+          timeoutMs,
+          maxBuffer,
+          networkIsolated: true,
+        }
+      );
+    } finally {
+      try {
+        if (fs.existsSync(tempDiskFile)) {
+          fs.unlinkSync(tempDiskFile);
+        }
+      } catch {}
+    }
+  }
+
+  // Scan extracted files and enforce archive bomb limits
+  const extractedFiles: string[] = [];
+  let totalBytes = 0;
+
+  const scanDir = (dir: string, prefix = '') => {
+    for (const item of fs.readdirSync(dir)) {
+      const fullPath = path.join(dir, item);
+      const relPath = prefix ? `${prefix}/${item}` : item;
+      const stat = fs.statSync(fullPath);
+      if (stat.isDirectory()) {
+        scanDir(fullPath, relPath);
+      } else {
+        extractedFiles.push(relPath);
+        totalBytes += stat.size;
+      }
+    }
+  };
+
+  scanDir(resolvedExtractDir);
+
+  if (totalBytes > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+    throw new ConversionFailedError(
+      `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+    );
+  }
+
+  return {
+    extractedFiles,
+    totalBytes,
+    baseFilename: metadata.baseFilename,
+  };
 }
 
 export function write7zVarint(arr: number[], value: number): void {

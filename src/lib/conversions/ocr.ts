@@ -45,9 +45,11 @@ export async function performOcr(
 
     if (ret && ret.data && ret.data.text && ret.data.text.trim()) {
       const fullText = ret.data.text.trim();
-      const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks);
-
       const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
+      const imgWidth = meta.width || 800;
+      const imgHeight = meta.height || 600;
+      const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight);
+
       const words = fullText.split(/\s+/).filter(Boolean);
 
       return {
@@ -56,8 +58,8 @@ export async function performOcr(
         wordCount: words.length,
         lines: recognizedLines.length > 0 ? recognizedLines : fullText.split('\n'),
         lineBlocks,
-        imageWidth: meta.width || 800,
-        imageHeight: meta.height || 600,
+        imageWidth: imgWidth,
+        imageHeight: imgHeight,
       };
     }
   } catch {

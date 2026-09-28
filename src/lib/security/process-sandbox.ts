@@ -1,8 +1,8 @@
-import { spawn, execFileSync } from 'child_process';
-import { pipeline } from 'stream';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import { spawn, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pipeline } from 'node:stream';
 
 export interface SandboxEnvironment {
   isContainer: boolean;
@@ -456,15 +456,16 @@ export async function executeSandboxedBinary(
     let stdoutChunks: Buffer[] = [];
     let stderrChunks: Buffer[] = [];
     let currentBufferSize = 0;
-    let timedOut = false;
-    let bufferExceeded = false;
-    let memoryExceeded = false;
+    let timer: NodeJS.Timeout | null = null;
     let memoryInterval: NodeJS.Timeout | null = null;
-
+    let isSettled = false;
     let activeChild: ReturnType<typeof spawn> | null = null;
 
     const cleanup = () => {
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
       if (memoryInterval) {
         clearInterval(memoryInterval);
         memoryInterval = null;
@@ -479,6 +480,13 @@ export async function executeSandboxedBinary(
           activeChild.stdin.destroy();
         } catch {}
       }
+    };
+
+    const settle = (action: () => void) => {
+      if (isSettled) return;
+      isSettled = true;
+      cleanup();
+      action();
     };
 
     // Resolve unshare network namespace wrapper if available
@@ -510,59 +518,57 @@ export async function executeSandboxedBinary(
           if (err) {
             const code = (err as any).code;
             if (code !== 'EPIPE' && code !== 'ERR_STREAM_PREMATURE_CLOSE' && code !== 'ECONNRESET') {
-              if (!timedOut && !bufferExceeded && !memoryExceeded) {
-                cleanup();
+              settle(() => {
                 killProcessGroup(proc.pid, 'SIGKILL');
                 try {
                   proc.kill('SIGKILL');
                 } catch {}
                 reject(err);
-              }
+              });
             }
           }
         });
       }
     }
 
-    const timer = setTimeout(() => {
-      if (bufferExceeded || memoryExceeded || timedOut) return;
-      timedOut = true;
-      cleanup();
-      killProcessGroup(proc.pid, 'SIGKILL');
-      try {
-        proc.kill('SIGKILL');
-      } catch {}
-      reject(new SandboxedTimeoutError(timeoutMs));
+    timer = setTimeout(() => {
+      settle(() => {
+        killProcessGroup(proc.pid, 'SIGKILL');
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
+        reject(new SandboxedTimeoutError(timeoutMs));
+      });
     }, timeoutMs);
 
     if (memoryLimitMb && memoryLimitMb > 0) {
       memoryInterval = setInterval(() => {
-        if (!proc.pid || timedOut || bufferExceeded || memoryExceeded) return;
+        if (!proc.pid || isSettled) return;
         const rssMb = getProcessRssMb(proc.pid);
         if (rssMb !== null && rssMb > memoryLimitMb) {
-          memoryExceeded = true;
-          cleanup();
-          killProcessGroup(proc.pid, 'SIGKILL');
-          try {
-            proc.kill('SIGKILL');
-          } catch {}
-          reject(new SandboxedMemoryLimitError(memoryLimitMb));
+          settle(() => {
+            killProcessGroup(proc.pid, 'SIGKILL');
+            try {
+              proc.kill('SIGKILL');
+            } catch {}
+            reject(new SandboxedMemoryLimitError(memoryLimitMb));
+          });
         }
       }, 50);
     }
 
     if (proc.stdout) {
       proc.stdout.on('data', (chunk: Buffer) => {
-        if (bufferExceeded || timedOut || memoryExceeded) return;
+        if (isSettled) return;
         currentBufferSize += chunk.length;
         if (currentBufferSize > maxBuffer) {
-          bufferExceeded = true;
-          cleanup();
-          killProcessGroup(proc.pid, 'SIGKILL');
-          try {
-            proc.kill('SIGKILL');
-          } catch {}
-          reject(new SandboxedBufferLimitError(maxBuffer));
+          settle(() => {
+            killProcessGroup(proc.pid, 'SIGKILL');
+            try {
+              proc.kill('SIGKILL');
+            } catch {}
+            reject(new SandboxedBufferLimitError(maxBuffer));
+          });
           return;
         }
         stdoutChunks.push(chunk);
@@ -571,16 +577,16 @@ export async function executeSandboxedBinary(
 
     if (proc.stderr) {
       proc.stderr.on('data', (chunk: Buffer) => {
-        if (bufferExceeded || timedOut || memoryExceeded) return;
+        if (isSettled) return;
         currentBufferSize += chunk.length;
         if (currentBufferSize > maxBuffer) {
-          bufferExceeded = true;
-          cleanup();
-          killProcessGroup(proc.pid, 'SIGKILL');
-          try {
-            proc.kill('SIGKILL');
-          } catch {}
-          reject(new SandboxedBufferLimitError(maxBuffer));
+          settle(() => {
+            killProcessGroup(proc.pid, 'SIGKILL');
+            try {
+              proc.kill('SIGKILL');
+            } catch {}
+            reject(new SandboxedBufferLimitError(maxBuffer));
+          });
           return;
         }
         stderrChunks.push(chunk);
@@ -588,33 +594,31 @@ export async function executeSandboxedBinary(
     }
 
     proc.on('error', (err) => {
-      cleanup();
-      if (!timedOut && !bufferExceeded && !memoryExceeded) {
+      settle(() => {
         reject(err);
-      }
+      });
     });
 
     proc.on('close', (code) => {
-      cleanup();
-      if (timedOut || bufferExceeded || memoryExceeded) return;
+      settle(() => {
+        const durationMs = Date.now() - startTime;
+        const stdout = Buffer.concat(stdoutChunks);
+        const stderr = Buffer.concat(stderrChunks);
 
-      const durationMs = Date.now() - startTime;
-      const stdout = Buffer.concat(stdoutChunks);
-      const stderr = Buffer.concat(stderrChunks);
+        if (code !== 0 && code !== null) {
+          const errorSummary = stderr.toString('utf-8').trim() || `Process exited with code ${code}`;
+          reject(new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8')));
+          return;
+        }
 
-      if (code !== 0 && code !== null) {
-        const errorSummary = stderr.toString('utf-8').trim() || `Process exited with code ${code}`;
-        reject(new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8')));
-        return;
-      }
-
-      resolve({
-        stdout,
-        stderr,
-        exitCode: code ?? 0,
-        durationMs,
-        sandboxed: sandboxEnv.sandboxType !== 'host',
-        sandboxType: sandboxEnv.sandboxType,
+        resolve({
+          stdout,
+          stderr,
+          exitCode: code ?? 0,
+          durationMs,
+          sandboxed: sandboxEnv.sandboxType !== 'host',
+          sandboxType: sandboxEnv.sandboxType,
+        });
       });
     });
   });
