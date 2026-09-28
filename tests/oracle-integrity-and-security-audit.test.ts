@@ -163,12 +163,11 @@ function createAuthenticAdtsAacBuffer(): Buffer {
 }
 
 function createAuthenticMp3Buffer(): Buffer {
-  // MPEG-1 Layer III, 128kbps, 44100Hz, no padding
-  // Byte 0: 0xFF
-  // Byte 1: 0xFB (sync 111 + MPEG-1 11 + Layer III 01 + no protection 1)
-  // Byte 2: 0x90 (bitrate 1001 = 128k, sample rate 00 = 44100Hz, padding 0)
-  // Byte 3: 0x64 (channel mode 01 = joint stereo)
-  // Frame length for 128k at 44.1k = Math.floor(144 * 128000 / 44100) = 417 bytes
+  const fixturePath = path.resolve(__dirname, 'fixtures/golden/media/golden-audio.mp3');
+  if (fs.existsSync(fixturePath)) {
+    return fs.readFileSync(fixturePath);
+  }
+  // MPEG-1 Layer III, 128kbps, 44100Hz, no padding fallback
   const frame = Buffer.alloc(417);
   frame[0] = 0xff;
   frame[1] = 0xfb;
