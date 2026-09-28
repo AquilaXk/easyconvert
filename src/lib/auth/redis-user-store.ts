@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import type { User, UserRecord } from './types';
-import { UserStore } from './user-store';
 
 export interface RedisUserStoreOptions {
   redisHost?: string;
@@ -73,7 +72,7 @@ return updatedRaw
  * Supports Redis distributed cluster storage with atomic Lua operations
  * and seamless, zero-config in-memory fallback for local development and testnets.
  */
-export class RedisUserStore extends UserStore {
+export class RedisUserStore {
   private readonly keyPrefix: string;
   private isConnectedToRedis = false;
   private redisClient: Redis | null = null;
@@ -81,7 +80,6 @@ export class RedisUserStore extends UserStore {
   private readonly distributedEmails: Map<string, string> = new Map();
 
   constructor(options: RedisUserStoreOptions = {}) {
-    super();
     this.keyPrefix = options.keyPrefix || 'easyconvert:user:';
     if (options.redisClient) {
       this.redisClient = options.redisClient;
@@ -161,7 +159,12 @@ export class RedisUserStore extends UserStore {
     return email.toLowerCase().trim();
   }
 
-  public override async findById(id: string): Promise<UserRecord | null> {
+  public sanitizeUser(record: UserRecord): User {
+    const { passwordHash, salt, ...safeUser } = record;
+    return safeUser;
+  }
+
+  public async findById(id: string): Promise<UserRecord | null> {
     if (!id || typeof id !== 'string') return null;
 
     if (this.redisClient) {
@@ -175,14 +178,10 @@ export class RedisUserStore extends UserStore {
       }
     }
 
-    if (this.isConnectedToRedis) {
-      const user = this.distributedUsers.get(id);
-      if (user) return user;
-    }
-    return super.findById(id);
+    return this.distributedUsers.get(id) || null;
   }
 
-  public override async findByEmail(email: string): Promise<UserRecord | null> {
+  public async findByEmail(email: string): Promise<UserRecord | null> {
     if (!email || typeof email !== 'string') return null;
     try {
       const normalized = this.normalizeEmail(email);
@@ -200,20 +199,17 @@ export class RedisUserStore extends UserStore {
         }
       }
 
-      if (this.isConnectedToRedis) {
-        const id = this.distributedEmails.get(normalized);
-        if (id) {
-          const user = this.distributedUsers.get(id);
-          if (user) return user;
-        }
+      const id = this.distributedEmails.get(normalized);
+      if (id) {
+        return this.distributedUsers.get(id) || null;
       }
-      return super.findByEmail(normalized);
+      return null;
     } catch {
       return null;
     }
   }
 
-  public override async createUser(data: {
+  public async createUser(data: {
     email: string;
     name: string;
     avatarUrl?: string;
@@ -266,19 +262,15 @@ export class RedisUserStore extends UserStore {
       }
     }
 
-    if (this.isConnectedToRedis) {
-      if (this.distributedEmails.has(normalizedEmail)) {
-        throw new Error('A user with this email address already exists');
-      }
-      this.distributedUsers.set(userRecord.id, userRecord);
-      this.distributedEmails.set(normalizedEmail, userRecord.id);
-      return userRecord;
+    if (this.distributedEmails.has(normalizedEmail)) {
+      throw new Error('A user with this email address already exists');
     }
-
-    return super.createUser(data);
+    this.distributedUsers.set(userRecord.id, userRecord);
+    this.distributedEmails.set(normalizedEmail, userRecord.id);
+    return userRecord;
   }
 
-  public override async updateUser(
+  public async updateUser(
     id: string,
     updates: Partial<Omit<UserRecord, 'id' | 'email' | 'createdAt'>>
   ): Promise<UserRecord | null> {
@@ -301,21 +293,22 @@ export class RedisUserStore extends UserStore {
       }
     }
 
-    if (this.isConnectedToRedis) {
-      const existing = this.distributedUsers.get(id);
-      if (!existing) return null;
-      const updated: UserRecord = {
-        ...existing,
-        ...updates,
-        updatedAt: Date.now(),
-      };
-      this.distributedUsers.set(id, updated);
-      return updated;
-    }
-    return super.updateUser(id, updates);
+    const existing = this.distributedUsers.get(id);
+    if (!existing) return null;
+    const updated: UserRecord = {
+      ...existing,
+      ...updates,
+      updatedAt: Date.now(),
+    };
+    this.distributedUsers.set(id, updated);
+    return updated;
   }
 
-  public override async recordConversion(id: string): Promise<void> {
+  public async updateTier(id: string, tier: 'free' | 'pro' | 'enterprise'): Promise<UserRecord | null> {
+    return this.updateUser(id, { tier });
+  }
+
+  public async recordConversion(id: string): Promise<void> {
     if (!id || typeof id !== 'string') return;
 
     if (this.redisClient) {
@@ -333,14 +326,10 @@ export class RedisUserStore extends UserStore {
       }
     }
 
-    if (this.isConnectedToRedis) {
-      const user = await this.findById(id);
-      if (user) {
-        await this.updateUser(id, { conversionsCount: (user.conversionsCount || 0) + 1 });
-      }
-      return;
+    const user = await this.findById(id);
+    if (user) {
+      await this.updateUser(id, { conversionsCount: (user.conversionsCount || 0) + 1 });
     }
-    return super.recordConversion(id);
   }
 
   public async close(): Promise<void> {
@@ -355,10 +344,9 @@ export class RedisUserStore extends UserStore {
     }
   }
 
-  public override resetStore() {
+  public resetStore(): void {
     this.distributedUsers.clear();
     this.distributedEmails.clear();
-    super.resetStore();
   }
 }
 

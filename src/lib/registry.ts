@@ -3207,6 +3207,22 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
     return 'video/x-matroska';
   }
 
+  // 24. Executable Binaries (Security Gate)
+  // ELF (\x7FELF)
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x7f &&
+    buf[1] === 0x45 &&
+    buf[2] === 0x4c &&
+    buf[3] === 0x46
+  ) {
+    return 'application/x-elf';
+  }
+  // DOS / Windows PE (MZ)
+  if (buf.length >= 2 && buf[0] === 0x4d && buf[1] === 0x5a) {
+    return 'application/x-dosexec';
+  }
+
   return undefined;
 }
 
@@ -3221,27 +3237,6 @@ export function isFormatCompatibleWithMagicBytes(
   if (!buffer || buffer.length === 0) return true;
   const cleanExt = declaredExtensionOrFormatId.toLowerCase().replace(/^\./, '').trim();
   const sniffed = sniffMimeTypeFromMagicBytes(buffer);
-
-  // If no definitive magic bytes were identified, allow unless declared format has strict signature
-  if (!sniffed) {
-    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-    // Strict binary formats that MUST have valid magic if buffer >= 8 bytes
-    if (buf.length >= 8) {
-      if (cleanExt === 'pdf' || cleanExt === 'png' || cleanExt === 'gif' || cleanExt === 'webp') {
-        return false;
-      }
-      if ((cleanExt === 'jpg' || cleanExt === 'jpeg') && (buf[0] !== 0xff || buf[1] !== 0xd8)) {
-        return false;
-      }
-      if ((cleanExt === 'tif' || cleanExt === 'tiff') && buf[0] !== 0x49 && buf[0] !== 0x4d) {
-        return false;
-      }
-      if (cleanExt === 'parquet' && buf.toString('ascii', 0, 4) !== 'PAR1') {
-        return false;
-      }
-    }
-    return true;
-  }
 
   // Format mapping groups
   const zipFormats = new Set([
@@ -3270,6 +3265,38 @@ export function isFormatCompatibleWithMagicBytes(
   const bzipFormats = new Set(['bz2', 'tbz', 'tbz2']);
   const zstdFormats = new Set(['zst', 'zstd']);
   const rarFormats = new Set(['rar']);
+
+  // Reject executable binaries immediately (Security Gate)
+  if (sniffed === 'application/x-elf' || sniffed === 'application/x-dosexec') {
+    return false;
+  }
+
+  // If no definitive magic bytes were identified, allow unless declared format has strict signature
+  if (!sniffed) {
+    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    // Strict binary formats that MUST have valid magic if buffer >= 8 bytes
+    if (buf.length >= 8) {
+      if (cleanExt === 'pdf' || cleanExt === 'png' || cleanExt === 'gif' || cleanExt === 'webp') {
+        return false;
+      }
+      if ((cleanExt === 'jpg' || cleanExt === 'jpeg') && (buf[0] !== 0xff || buf[1] !== 0xd8)) {
+        return false;
+      }
+      if ((cleanExt === 'tif' || cleanExt === 'tiff') && buf[0] !== 0x49 && buf[0] !== 0x4d) {
+        return false;
+      }
+      if (cleanExt === 'parquet' && buf.toString('ascii', 0, 4) !== 'PAR1') {
+        return false;
+      }
+      if (zipFormats.has(cleanExt) && (buf[0] !== 0x50 || buf[1] !== 0x4b)) {
+        return false;
+      }
+      if (sevenZipFormats.has(cleanExt) && (buf[0] !== 0x37 || buf[1] !== 0x7a)) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   if (sniffed === 'application/pdf') return pdfFormats.has(cleanExt);
   if (sniffed === 'image/png') return pngFormats.has(cleanExt);

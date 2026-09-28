@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ConversionOptions, ConversionResult } from '../lib/types';
 import { convertFile } from '../lib/conversions';
-import { getFormatByExtension } from '../lib/registry';
+import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import {
   buildFfmpegArguments,
   probeHardwareAcceleration,
@@ -610,6 +610,9 @@ export async function executeWorkerConversion(
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
   const startTime = Date.now();
+
+  // Fail-closed verification against spoofed file extensions before any native engine execution
+  assertNotSpoofedFile(inputBuffer, src, originalFilename);
 
   // 1. Native Headless Office
   if (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt))) {

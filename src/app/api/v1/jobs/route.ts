@@ -3,7 +3,7 @@ import { validateApiAccess } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider as s3Storage } from '@/lib/storage';
-import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { ConversionOptions, JobStatus } from '@/lib/types';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
@@ -53,6 +53,8 @@ export async function POST(req: NextRequest) {
     let fileSize = 0;
     let webhookUrl: string | undefined;
     let webhookSecret: string | undefined;
+    let uploadedBuffer: Buffer | null = null;
+    let fileMeta: { name: string; type: string; size: number } | null = null;
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
@@ -83,12 +85,13 @@ export async function POST(req: NextRequest) {
         originalFilename = file.name;
         fileSize = file.size;
 
-        // Persist upload into S3 staging storage
         const arrayBuffer = await file.arrayBuffer();
-        const init = s3Storage.initiateMultipartUpload(file.name, file.type || 'application/octet-stream', file.size);
-        s3Storage.uploadPart(init.uploadId, 1, Buffer.from(arrayBuffer));
-        const completed = s3Storage.completeMultipartUpload(init.uploadId);
-        storageKey = completed.key;
+        uploadedBuffer = Buffer.from(arrayBuffer);
+        fileMeta = {
+          name: file.name,
+          type: file.type || 'application/octet-stream',
+          size: file.size,
+        };
       }
     } else {
       // JSON body
@@ -112,7 +115,7 @@ export async function POST(req: NextRequest) {
       return failWithRollback(400, 'Missing required parameter: "targetFormat".');
     }
 
-    if (!storageKey && !inputBufferBase64) {
+    if (!storageKey && !inputBufferBase64 && !uploadedBuffer) {
       return failWithRollback(
         400,
         'Missing input file data. Please upload a "file" or provide "storageKey" / "inputBufferBase64".'
@@ -125,6 +128,31 @@ export async function POST(req: NextRequest) {
 
     if (!sourceDef) {
       return failWithRollback(400, `Could not identify source format for file "${originalFilename}".`);
+    }
+
+    // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
+    try {
+      if (uploadedBuffer) {
+        assertNotSpoofedFile(uploadedBuffer, sourceDef.extension, originalFilename);
+      } else if (inputBufferBase64) {
+        const decodedBuf = Buffer.from(inputBufferBase64, 'base64');
+        assertNotSpoofedFile(decodedBuf, sourceDef.extension, originalFilename);
+      } else if (storageKey) {
+        const stored = s3Storage.getObject(storageKey);
+        if (stored?.buffer && stored.buffer.length > 0) {
+          assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
+        }
+      }
+    } catch (err: any) {
+      return failWithRollback(400, err.message || 'File spoofing detected.', 'File Spoofing Detected');
+    }
+
+    // Persist multipart upload into S3 staging storage only after magic byte validation passes
+    if (uploadedBuffer && fileMeta && !storageKey) {
+      const init = s3Storage.initiateMultipartUpload(fileMeta.name, fileMeta.type, fileMeta.size);
+      s3Storage.uploadPart(init.uploadId, 1, uploadedBuffer);
+      const completed = s3Storage.completeMultipartUpload(init.uploadId);
+      storageKey = completed.key;
     }
 
     // Resolve target format definition

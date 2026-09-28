@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
-import { userStore } from '../auth/user-store';
+import { redisUserStore } from '../auth/redis-user-store';
 import type { UserTier } from '../auth/types';
 import { KeyStore, TIER_LIMITS, getUtcDateKey } from './key-store';
 import type { UserConversionFile } from './types';
@@ -233,7 +233,7 @@ export class RedisKeyStore extends KeyStore {
     }
     this.cleanExpiredReservations();
     this.ensureInitialized();
-    const user = await userStore.findById(userId);
+    const user = await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = TIER_LIMITS[tier];
 
@@ -300,7 +300,7 @@ export class RedisKeyStore extends KeyStore {
     this.cleanExpiredReservations();
     this.ensureInitialized();
 
-    const user = await userStore.findById(userId);
+    const user = await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = TIER_LIMITS[tier];
 

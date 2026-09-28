@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyPassword } from '@/lib/auth/crypto';
-import { userStore } from '@/lib/auth/user-store';
+import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const userRecord = await userStore.findByEmail(email);
+    const userRecord = await redisUserStore.findByEmail(email);
     const hashToVerify = userRecord?.passwordHash ?? DUMMY_HASH;
     const saltToVerify = userRecord?.salt ?? DUMMY_SALT;
 
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const user = userStore.sanitizeUser(userRecord);
+    const user = redisUserStore.sanitizeUser(userRecord);
     const token = createSessionToken(user);
     const cookieHeader = createSessionCookie(token);
 
