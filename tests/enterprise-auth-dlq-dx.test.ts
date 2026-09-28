@@ -271,7 +271,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(replayResult?.success).toBe(false);
 
       const dlqAfter = await webhookDispatcher.getDlqEntries();
-      expect(dlqAfter.length).toBe(countBefore); // Must NOT duplicate!
+      expect(dlqAfter).toHaveLength(countBefore); // Must NOT duplicate!
 
       const updatedEntry = await webhookDispatcher.getDlqEntry(initialEntry!.id);
       expect(updatedEntry?.status).toBe('failed');

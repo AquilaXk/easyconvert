@@ -167,6 +167,21 @@ class EasyConvertClient:
         res = self._request("GET", "/api/webhooks/dlq")
         return res.get("entries", [])
 
+    def get_dlq_entry(self, dlq_id: str) -> Dict[str, Any]:
+        """Get dead-lettered webhook entry by ID."""
+        res = self._request("GET", f"/api/webhooks/dlq/{dlq_id}")
+        return res.get("entry", {})
+
+    def delete_dlq_entry(self, dlq_id: str) -> bool:
+        """Delete a dead-lettered webhook entry."""
+        res = self._request("DELETE", f"/api/webhooks/dlq/{dlq_id}")
+        return res.get("success", False)
+
+    def clear_dlq(self) -> bool:
+        """Clear all dead-lettered webhook entries."""
+        res = self._request("DELETE", "/api/webhooks/dlq")
+        return res.get("success", False)
+
     def replay_dlq(self, dlq_id: str) -> Dict[str, Any]:
         """Replay a dead-lettered webhook."""
         return self._request("POST", f"/api/webhooks/dlq/{dlq_id}/replay")

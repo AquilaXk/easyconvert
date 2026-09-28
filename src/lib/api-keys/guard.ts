@@ -30,10 +30,10 @@ export function extractClientIp(request: Request): string {
 
   if (candidate) {
     // Strip brackets and optional port from IPv6, e.g. [2001:db8::1]:8080 or [::1]
-    const bracketMatch = candidate.match(/^\[([a-fA-F0-9:]+)\](?::\d+)?$/);
+    const bracketMatch = /^\[([a-fA-F0-9:]+)\](?::\d+)?$/.exec(candidate);
     if (bracketMatch) return bracketMatch[1];
     // Strip trailing port from IPv4, e.g. 192.168.1.1:8080
-    const portMatch = candidate.match(/^(\d+\.\d+\.\d+\.\d+):\d+$/);
+    const portMatch = /^(\d+\.\d+\.\d+\.\d+):\d+$/.exec(candidate);
     if (portMatch) return portMatch[1];
     return candidate;
   }

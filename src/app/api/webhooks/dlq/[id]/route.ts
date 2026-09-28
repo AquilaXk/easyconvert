@@ -12,11 +12,11 @@ interface RouteContext {
 export async function GET(req: NextRequest, context: RouteContext) {
   const sessionUser = await getSessionFromRequest(req);
   if (!sessionUser) {
-    const auth = await validateApiAccess(req, 0);
+    const auth = await validateApiAccess(req, 0, 'convert:read');
     if (!auth.authorized) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized: Authentication required.' },
-        { status: 401 }
+        { success: false, error: auth.error ?? 'Unauthorized: Authentication required.' },
+        { status: auth.status ?? 401 }
       );
     }
   }
@@ -50,8 +50,14 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     const auth = await validateApiAccess(req, 0);
     if (!auth.authorized) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized: Authentication required.' },
-        { status: 401 }
+        { success: false, error: auth.error ?? 'Unauthorized: Authentication required.' },
+        { status: auth.status ?? 401 }
+      );
+    }
+    if (auth.apiKey && !auth.apiKey.scopes?.includes('*')) {
+      return NextResponse.json(
+        { success: false, error: 'Forbidden: API key lacks admin wildcard (*) scope to delete DLQ entry.' },
+        { status: 403 }
       );
     }
   }

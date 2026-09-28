@@ -293,14 +293,22 @@ export async function GET() {
           summary: 'List API Keys',
           description: 'Retrieves developer API keys, granular scopes, expiration dates, and IP whitelist restrictions.',
           operationId: 'listApiKeys',
+          security: [
+            { ApiKeyAuth: [] },
+            { BearerAuth: [] },
+          ],
           responses: {
             '200': { description: 'User API keys list.' },
           },
         },
         post: {
           summary: 'Create API Key',
-          description: 'Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and webhook URL.',
+          description: 'Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and webhook URL. Requires admin wildcard (*) scope.',
           operationId: 'createApiKey',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
           requestBody: {
             required: true,
             content: {
@@ -335,8 +343,12 @@ export async function GET() {
       '/api/keys/{id}': {
         delete: {
           summary: 'Revoke API Key',
-          description: 'Revokes an active API key by ID.',
+          description: 'Revokes an active API key by ID. Requires admin wildcard (*) scope.',
           operationId: 'revokeApiKey',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
           parameters: [
             {
               name: 'id',
@@ -357,6 +369,10 @@ export async function GET() {
           summary: 'Get Quota Usage',
           description: 'Retrieves current daily quota usage and limits.',
           operationId: 'getQuotaUsage',
+          security: [
+            { ApiKeyAuth: [] },
+            { BearerAuth: [] },
+          ],
           responses: {
             '200': {
               description: 'Daily conversion quota usage details.',
@@ -378,8 +394,12 @@ export async function GET() {
       '/api/webhooks/dlq': {
         get: {
           summary: 'List Webhook DLQ Entries',
-          description: 'Retrieves failed webhook dispatches stored in the Dead Letter Queue.',
+          description: 'Retrieves failed webhook dispatches stored in the Dead Letter Queue. Requires "convert:read" scope.',
           operationId: 'listWebhookDlq',
+          security: [
+            { ApiKeyAuth: ['convert:read'] },
+            { BearerAuth: ['convert:read'] },
+          ],
           responses: {
             '200': {
               description: 'List of dead-lettered webhook entries.',
@@ -403,8 +423,12 @@ export async function GET() {
         },
         delete: {
           summary: 'Clear Webhook DLQ',
-          description: 'Purges all entries from the Webhook Dead Letter Queue.',
+          description: 'Purges all entries from the Webhook Dead Letter Queue. Requires admin wildcard (*) scope.',
           operationId: 'clearWebhookDlq',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
           responses: {
             '200': {
               description: 'DLQ purged successfully.',
@@ -426,8 +450,12 @@ export async function GET() {
       '/api/webhooks/dlq/{id}': {
         get: {
           summary: 'Get Webhook DLQ Entry',
-          description: 'Inspects a specific failed webhook payload and delivery attempt details.',
+          description: 'Inspects a specific failed webhook payload and delivery attempt details. Requires "convert:read" scope.',
           operationId: 'getWebhookDlqEntry',
+          security: [
+            { ApiKeyAuth: ['convert:read'] },
+            { BearerAuth: ['convert:read'] },
+          ],
           parameters: [
             {
               name: 'id',
@@ -457,8 +485,12 @@ export async function GET() {
         },
         delete: {
           summary: 'Delete Webhook DLQ Entry',
-          description: 'Removes a single failed webhook entry from the DLQ.',
+          description: 'Removes a single failed webhook entry from the DLQ. Requires admin wildcard (*) scope.',
           operationId: 'deleteWebhookDlqEntry',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
           parameters: [
             {
               name: 'id',
@@ -476,8 +508,12 @@ export async function GET() {
       '/api/webhooks/dlq/{id}/replay': {
         post: {
           summary: 'Replay Dead-Lettered Webhook',
-          description: 'Triggers a 1-click manual re-dispatch of a dead-lettered webhook with fresh HMAC signature.',
+          description: 'Triggers a 1-click manual re-dispatch of a dead-lettered webhook with fresh HMAC signature. Requires admin wildcard (*) scope.',
           operationId: 'replayWebhookDlq',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
           parameters: [
             {
               name: 'id',

@@ -15,8 +15,14 @@ export async function POST(req: NextRequest, context: RouteContext) {
     const auth = await validateApiAccess(req, 0);
     if (!auth.authorized) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized: Authentication required.' },
-        { status: 401 }
+        { success: false, error: auth.error ?? 'Unauthorized: Authentication required.' },
+        { status: auth.status ?? 401 }
+      );
+    }
+    if (auth.apiKey && !auth.apiKey.scopes?.includes('*')) {
+      return NextResponse.json(
+        { success: false, error: 'Forbidden: API key lacks admin wildcard (*) scope to replay DLQ entry.' },
+        { status: 403 }
       );
     }
   }

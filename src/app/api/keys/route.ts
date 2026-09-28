@@ -55,6 +55,40 @@ export async function GET(req: NextRequest) {
   });
 }
 
+interface ParsedKeyPayload {
+  keyName: string;
+  allowedIps?: string[];
+  webhookUrl?: string;
+  webhookSecret?: string;
+  expiresAt?: number;
+  scopes?: ApiKeyScope[];
+  error?: string;
+}
+
+function parseKeyCreationPayload(body: Record<string, unknown> | null | undefined): ParsedKeyPayload {
+  const keyName = (typeof body?.name === 'string' && body.name.trim()) || 'Production API Key';
+  const allowedIps = Array.isArray(body?.allowedIps) ? body.allowedIps : undefined;
+  const webhookUrl = typeof body?.webhookUrl === 'string' && body.webhookUrl.trim() ? body.webhookUrl.trim() : undefined;
+  const webhookSecret = typeof body?.webhookSecret === 'string' && body.webhookSecret.trim() ? body.webhookSecret.trim() : undefined;
+
+  let expiresAt: number | undefined;
+  if (typeof body?.expiresAt === 'number' && Number.isFinite(body.expiresAt)) {
+    if (body.expiresAt <= Date.now()) {
+      return { keyName, error: 'expiresAt must be a timestamp in the future.' };
+    }
+    expiresAt = body.expiresAt;
+  }
+
+  let scopes: ApiKeyScope[] | undefined;
+  if (Array.isArray(body?.scopes)) {
+    const valid = new Set<ApiKeyScope>([...ALL_API_KEY_SCOPES, '*']);
+    const filtered = body.scopes.filter((s: unknown): s is ApiKeyScope => typeof s === 'string' && valid.has(s as ApiKeyScope));
+    scopes = filtered.length > 0 ? filtered : undefined;
+  }
+
+  return { keyName, allowedIps, webhookUrl, webhookSecret, expiresAt, scopes };
+}
+
 export async function POST(req: NextRequest) {
   const auth = await resolveAuthenticatedUser(req, true);
   if (!auth.user) {
@@ -66,35 +100,20 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const keyName = (body && typeof body.name === 'string' && body.name.trim()) || 'Production API Key';
-    const allowedIps = Array.isArray(body?.allowedIps) ? body.allowedIps : undefined;
-    const webhookUrl = typeof body?.webhookUrl === 'string' && body.webhookUrl.trim() ? body.webhookUrl.trim() : undefined;
-    const webhookSecret = typeof body?.webhookSecret === 'string' && body.webhookSecret.trim() ? body.webhookSecret.trim() : undefined;
-
-    let expiresAt: number | undefined;
-    if (typeof body?.expiresAt === 'number' && Number.isFinite(body.expiresAt)) {
-      if (body.expiresAt <= Date.now()) {
-        return NextResponse.json(
-          { success: false, error: 'expiresAt must be a timestamp in the future.' },
-          { status: 400 }
-        );
-      }
-      expiresAt = body.expiresAt;
+    const parsed = parseKeyCreationPayload(body);
+    if (parsed.error) {
+      return NextResponse.json(
+        { success: false, error: parsed.error },
+        { status: 400 }
+      );
     }
 
-    let scopes: ApiKeyScope[] | undefined;
-    if (Array.isArray(body?.scopes)) {
-      const valid = new Set<ApiKeyScope>([...ALL_API_KEY_SCOPES, '*']);
-      const filtered = body.scopes.filter((s: unknown): s is ApiKeyScope => typeof s === 'string' && valid.has(s as ApiKeyScope));
-      scopes = filtered.length > 0 ? filtered : undefined;
-    }
-
-    const result = await redisKeyStore.generateApiKey(auth.user.id, keyName, {
-      allowedIps,
-      webhookUrl,
-      webhookSecret,
-      scopes,
-      expiresAt,
+    const result = await redisKeyStore.generateApiKey(auth.user.id, parsed.keyName, {
+      allowedIps: parsed.allowedIps,
+      webhookUrl: parsed.webhookUrl,
+      webhookSecret: parsed.webhookSecret,
+      scopes: parsed.scopes,
+      expiresAt: parsed.expiresAt,
     });
 
     return NextResponse.json({
@@ -111,3 +130,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

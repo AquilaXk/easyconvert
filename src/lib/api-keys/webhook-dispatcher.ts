@@ -293,8 +293,16 @@ export class WebhookDispatcher {
     const entry = await this.getDlqEntry(id);
     if (!entry) return null;
 
-    const payloadData = (entry.payload as any)?.data !== undefined
-      ? (entry.payload as any).data
+    const isWrappedEnvelope =
+      entry.payload &&
+      typeof entry.payload === 'object' &&
+      'id' in entry.payload &&
+      'event' in entry.payload &&
+      'timestamp' in entry.payload &&
+      'data' in entry.payload;
+
+    const payloadData = isWrappedEnvelope
+      ? (entry.payload as Record<string, unknown>).data
       : entry.payload;
     const result = await this.dispatch(
       entry.targetUrl,
