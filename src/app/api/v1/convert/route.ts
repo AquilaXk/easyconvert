@@ -260,8 +260,6 @@ export async function POST(req: NextRequest) {
 
     const durationMs = Date.now() - startTime;
     const outputBuffer = conversionResult.buffer;
-    const base64Data = outputBuffer.toString('base64');
-    const dataUri = `data:${conversionResult.mimeType};base64,${base64Data}`;
 
     // Record in user's file conversion history
     const baseName = file.name.replace(/\.[^/.]+$/, '');
@@ -279,7 +277,7 @@ export async function POST(req: NextRequest) {
       downloadUrl,
     });
 
-    // Check if raw binary is requested
+    // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)
     const wantsRaw = req.headers.get('accept') === 'application/octet-stream' || req.nextUrl.searchParams.get('raw') === 'true';
     if (wantsRaw) {
       return new NextResponse(new Uint8Array(outputBuffer), {
@@ -292,6 +290,14 @@ export async function POST(req: NextRequest) {
           ...rateLimitHeaders,
         },
       });
+    }
+
+    // Zero-Heap optimization: only generate Base64 data URI if output payload <= 5MB
+    const MAX_DATA_URI_PAYLOAD_BYTES = 5 * 1024 * 1024;
+    let dataUri: string | undefined;
+    if (outputBuffer.length <= MAX_DATA_URI_PAYLOAD_BYTES) {
+      const base64Data = outputBuffer.toString('base64');
+      dataUri = `data:${conversionResult.mimeType};base64,${base64Data}`;
     }
 
     return NextResponse.json(

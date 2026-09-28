@@ -1,5 +1,5 @@
 import { signJwt, verifyJwt } from './jwt';
-import { userStore } from './user-store';
+import { redisUserStore } from './redis-user-store';
 import type { SessionPayload, User } from './types';
 
 export const SESSION_COOKIE_NAME = 'easyconvert_session';
@@ -94,10 +94,10 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
     return null;
   }
 
-  const userRecord = await userStore.findById(payload.sub);
+  const userRecord = await redisUserStore.findById(payload.sub);
   if (!userRecord) {
     return null;
   }
 
-  return userStore.sanitizeUser(userRecord);
+  return redisUserStore.sanitizeUser(userRecord);
 }

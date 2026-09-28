@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hashPassword } from '@/lib/auth/crypto';
-import { userStore } from '@/lib/auth/user-store';
+import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
 
     const displayName = name || email.split('@')[0];
 
-    const existingUser = await userStore.findByEmail(email);
+    const existingUser = await redisUserStore.findByEmail(email);
     if (existingUser) {
       return NextResponse.json(
         { success: false, error: 'An account with this email address already exists.' },
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { hash, salt } = await hashPassword(password);
-    const userRecord = await userStore.createUser({
+    const userRecord = await redisUserStore.createUser({
       email,
       name: displayName,
       tier: 'free',
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
       salt,
     });
 
-    const user = userStore.sanitizeUser(userRecord);
+    const user = redisUserStore.sanitizeUser(userRecord);
     const token = createSessionToken(user);
     const cookieHeader = createSessionCookie(token);
 

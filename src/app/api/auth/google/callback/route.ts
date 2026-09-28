@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { exchangeGoogleCode, validateOAuthState } from '@/lib/auth/oauth';
-import { userStore } from '@/lib/auth/user-store';
+import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
@@ -25,10 +25,10 @@ export async function GET(req: NextRequest) {
 
   try {
     const googleProfile = await exchangeGoogleCode(code, redirectUri);
-    let userRecord = await userStore.findByEmail(googleProfile.email);
+    let userRecord = await redisUserStore.findByEmail(googleProfile.email);
 
     if (!userRecord) {
-      userRecord = await userStore.createUser({
+      userRecord = await redisUserStore.createUser({
         email: googleProfile.email,
         name: googleProfile.name,
         avatarUrl: googleProfile.picture,
@@ -36,12 +36,12 @@ export async function GET(req: NextRequest) {
         provider: 'google',
       });
     } else if (googleProfile.picture && !userRecord.avatarUrl) {
-      userRecord = (await userStore.updateUser(userRecord.id, {
+      userRecord = (await redisUserStore.updateUser(userRecord.id, {
         avatarUrl: googleProfile.picture,
       })) || userRecord;
     }
 
-    const user = userStore.sanitizeUser(userRecord);
+    const user = redisUserStore.sanitizeUser(userRecord);
     const token = createSessionToken(user);
     const cookieHeader = createSessionCookie(token);
 
