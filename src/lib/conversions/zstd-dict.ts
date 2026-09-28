@@ -9,7 +9,13 @@
  * - Lossless round-trip parity with official zstd CLI binary
  */
 
-import { ZSTD_MAGIC_LE, computeZstdChecksum, ZSTD_SECURITY_LIMITS } from './zstd';
+import {
+  ZSTD_MAGIC_LE,
+  computeZstdChecksum,
+  ZSTD_SECURITY_LIMITS,
+  FastStreamingXxHash64,
+  encodeZstdSingleSegmentHeader,
+} from './zstd';
 
 export const RFC8878_DICT_HEADER_MAGIC = 0xec30a437; // Canonical RFC 8878 Section 5 magic
 export const RFC8878_DICT_HEADER_MAGIC_ALT = 0xec30a428; // Alternative / legacy
@@ -492,39 +498,11 @@ export function compressWithZstdDict(
     dictId = 0;
   }
 
-  const chunks: Buffer[] = [];
-
-  // 1. Zstandard Magic Number
-  chunks.push(ZSTD_MAGIC_LE);
+  const chunks: Buffer[] = [ZSTD_MAGIC_LE];
 
   // 2. Frame Header with Dictionary ID and FCS
   const inputLen = inputBuffer.length;
-  let fcsFlag = 0;
-  let fcsBuf: Buffer;
-
-  if (inputLen < 256) {
-    fcsFlag = 0;
-    fcsBuf = Buffer.from([inputLen]);
-  } else if (inputLen < 65536 + 256) {
-    fcsFlag = 1;
-    fcsBuf = Buffer.alloc(2);
-    fcsBuf.writeUInt16LE(inputLen - 256, 0);
-  } else {
-    fcsFlag = 2;
-    fcsBuf = Buffer.alloc(4);
-    fcsBuf.writeUInt32LE(inputLen, 0);
-  }
-
-  let dictIdFlag = 0;
-  let dictIdBuf: Buffer | null = null;
-  if (dictId && dictId > 0) {
-    dictIdFlag = 3;
-    dictIdBuf = Buffer.alloc(4);
-    dictIdBuf.writeUInt32LE(dictId, 0);
-  }
-
-  // Single_Segment = 1 (bit 5), Content_Checksum_Flag = 1 (bit 2)
-  const fhd = (fcsFlag << 6) | (1 << 5) | (1 << 2) | dictIdFlag;
+  const { fhd, fcsBuf, dictIdBuf } = encodeZstdSingleSegmentHeader(inputLen, dictId);
   chunks.push(Buffer.from([fhd]));
 
   if (dictIdBuf) {
@@ -1097,237 +1075,6 @@ export function getDictionarySearchIndex(rawDict: Buffer): Int16Array {
   return table;
 }
 
-const C1_HI = 0x9E3779B1 | 0, C1_LO = 0x85EBCA87 | 0;
-const c1_0 = C1_LO & 0xffff, c1_1 = C1_LO >>> 16;
-const C2_HI = 0xC2B2AE3D | 0, C2_LO = 0x27D4EB4F | 0;
-const c2_0 = C2_LO & 0xffff, c2_1 = C2_LO >>> 16;
-
-export class FastStreamingXxHash64 {
-  private v1_hi: number; private v1_lo: number;
-  private v2_hi: number; private v2_lo: number;
-  private v3_hi = 0; private v3_lo = 0;
-  private v4_hi: number; private v4_lo: number;
-  private totalLen = 0;
-  private rem = Buffer.alloc(32);
-  private remLen = 0;
-  private seeded = false;
-
-  constructor() {
-    this.v1_hi = (C1_HI + C2_HI) | 0;
-    this.v1_lo = (C1_LO + C2_LO) | 0;
-    if ((this.v1_lo >>> 0) < (C1_LO >>> 0)) this.v1_hi = (this.v1_hi + 1) | 0;
-    this.v2_hi = C2_HI; this.v2_lo = C2_LO;
-    this.v4_lo = (-C1_LO) | 0;
-    this.v4_hi = (~C1_HI) | 0;
-    if (this.v4_lo === 0) this.v4_hi = (this.v4_hi + 1) | 0;
-  }
-
-  public update(chunk: Buffer): void {
-    if (chunk.length === 0) return;
-    this.totalLen += chunk.length;
-    let offset = 0;
-
-    if (this.remLen > 0) {
-      const take = Math.min(32 - this.remLen, chunk.length);
-      chunk.copy(this.rem, this.remLen, 0, take);
-      this.remLen += take;
-      offset += take;
-      if (this.remLen === 32) {
-        this.process32(this.rem, 0);
-        this.remLen = 0;
-      }
-    }
-
-    const limit = chunk.length - 32;
-    while (offset <= limit) {
-      this.process32(chunk, offset);
-      offset += 32;
-    }
-
-    if (offset < chunk.length) {
-      chunk.copy(this.rem, 0, offset);
-      this.remLen = chunk.length - offset;
-    }
-  }
-
-  private process32(buf: Buffer, offset: number): void {
-    this.seeded = true;
-    {
-      const n_lo = buf.readInt32LE(offset);
-      const n_hi = buf.readInt32LE(offset + 4);
-      const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
-      const p0 = Math.imul(n0, c2_0);
-      const p1 = Math.imul(n1, c2_0);
-      const p2 = Math.imul(n0, c2_1);
-      const p3 = Math.imul(n1, c2_1);
-      const mid = (p0 >>> 16) + (p1 & 0xffff) + (p2 & 0xffff);
-      const prod2_hi = (p3 + (p1 >>> 16) + (p2 >>> 16) + (mid >>> 16) + Math.imul(n_hi, C2_LO) + Math.imul(n_lo, C2_HI)) | 0;
-      const prod2_lo = Math.imul(n_lo, C2_LO);
-      const add_lo = (this.v1_lo + prod2_lo) | 0;
-      const carry = ((add_lo >>> 0) < (this.v1_lo >>> 0)) ? 1 : 0;
-      const add_hi = (this.v1_hi + prod2_hi + carry) | 0;
-      const rot_hi = (add_hi << 31) | (add_lo >>> 1);
-      const rot_lo = (add_lo << 31) | (add_hi >>> 1);
-      const r0 = rot_lo & 0xffff, r1 = rot_lo >>> 16;
-      const q0 = Math.imul(r0, c1_0);
-      const q1 = Math.imul(r1, c1_0);
-      const q2 = Math.imul(r0, c1_1);
-      const q3 = Math.imul(r1, c1_1);
-      const qmid = (q0 >>> 16) + (q1 & 0xffff) + (q2 & 0xffff);
-      this.v1_hi = (q3 + (q1 >>> 16) + (q2 >>> 16) + (qmid >>> 16) + Math.imul(rot_hi, C1_LO) + Math.imul(rot_lo, C1_HI)) | 0;
-      this.v1_lo = Math.imul(rot_lo, C1_LO);
-    }
-    {
-      const n_lo = buf.readInt32LE(offset + 8);
-      const n_hi = buf.readInt32LE(offset + 12);
-      const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
-      const p0 = Math.imul(n0, c2_0);
-      const p1 = Math.imul(n1, c2_0);
-      const p2 = Math.imul(n0, c2_1);
-      const p3 = Math.imul(n1, c2_1);
-      const mid = (p0 >>> 16) + (p1 & 0xffff) + (p2 & 0xffff);
-      const prod2_hi = (p3 + (p1 >>> 16) + (p2 >>> 16) + (mid >>> 16) + Math.imul(n_hi, C2_LO) + Math.imul(n_lo, C2_HI)) | 0;
-      const prod2_lo = Math.imul(n_lo, C2_LO);
-      const add_lo = (this.v2_lo + prod2_lo) | 0;
-      const carry = ((add_lo >>> 0) < (this.v2_lo >>> 0)) ? 1 : 0;
-      const add_hi = (this.v2_hi + prod2_hi + carry) | 0;
-      const rot_hi = (add_hi << 31) | (add_lo >>> 1);
-      const rot_lo = (add_lo << 31) | (add_hi >>> 1);
-      const r0 = rot_lo & 0xffff, r1 = rot_lo >>> 16;
-      const q0 = Math.imul(r0, c1_0);
-      const q1 = Math.imul(r1, c1_0);
-      const q2 = Math.imul(r0, c1_1);
-      const q3 = Math.imul(r1, c1_1);
-      const qmid = (q0 >>> 16) + (q1 & 0xffff) + (q2 & 0xffff);
-      this.v2_hi = (q3 + (q1 >>> 16) + (q2 >>> 16) + (qmid >>> 16) + Math.imul(rot_hi, C1_LO) + Math.imul(rot_lo, C1_HI)) | 0;
-      this.v2_lo = Math.imul(rot_lo, C1_LO);
-    }
-    {
-      const n_lo = buf.readInt32LE(offset + 16);
-      const n_hi = buf.readInt32LE(offset + 20);
-      const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
-      const p0 = Math.imul(n0, c2_0);
-      const p1 = Math.imul(n1, c2_0);
-      const p2 = Math.imul(n0, c2_1);
-      const p3 = Math.imul(n1, c2_1);
-      const mid = (p0 >>> 16) + (p1 & 0xffff) + (p2 & 0xffff);
-      const prod2_hi = (p3 + (p1 >>> 16) + (p2 >>> 16) + (mid >>> 16) + Math.imul(n_hi, C2_LO) + Math.imul(n_lo, C2_HI)) | 0;
-      const prod2_lo = Math.imul(n_lo, C2_LO);
-      const add_lo = (this.v3_lo + prod2_lo) | 0;
-      const carry = ((add_lo >>> 0) < (this.v3_lo >>> 0)) ? 1 : 0;
-      const add_hi = (this.v3_hi + prod2_hi + carry) | 0;
-      const rot_hi = (add_hi << 31) | (add_lo >>> 1);
-      const rot_lo = (add_lo << 31) | (add_hi >>> 1);
-      const r0 = rot_lo & 0xffff, r1 = rot_lo >>> 16;
-      const q0 = Math.imul(r0, c1_0);
-      const q1 = Math.imul(r1, c1_0);
-      const q2 = Math.imul(r0, c1_1);
-      const q3 = Math.imul(r1, c1_1);
-      const qmid = (q0 >>> 16) + (q1 & 0xffff) + (q2 & 0xffff);
-      this.v3_hi = (q3 + (q1 >>> 16) + (q2 >>> 16) + (qmid >>> 16) + Math.imul(rot_hi, C1_LO) + Math.imul(rot_lo, C1_HI)) | 0;
-      this.v3_lo = Math.imul(rot_lo, C1_LO);
-    }
-    {
-      const n_lo = buf.readInt32LE(offset + 24);
-      const n_hi = buf.readInt32LE(offset + 28);
-      const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
-      const p0 = Math.imul(n0, c2_0);
-      const p1 = Math.imul(n1, c2_0);
-      const p2 = Math.imul(n0, c2_1);
-      const p3 = Math.imul(n1, c2_1);
-      const mid = (p0 >>> 16) + (p1 & 0xffff) + (p2 & 0xffff);
-      const prod2_hi = (p3 + (p1 >>> 16) + (p2 >>> 16) + (mid >>> 16) + Math.imul(n_hi, C2_LO) + Math.imul(n_lo, C2_HI)) | 0;
-      const prod2_lo = Math.imul(n_lo, C2_LO);
-      const add_lo = (this.v4_lo + prod2_lo) | 0;
-      const carry = ((add_lo >>> 0) < (this.v4_lo >>> 0)) ? 1 : 0;
-      const add_hi = (this.v4_hi + prod2_hi + carry) | 0;
-      const rot_hi = (add_hi << 31) | (add_lo >>> 1);
-      const rot_lo = (add_lo << 31) | (add_hi >>> 1);
-      const r0 = rot_lo & 0xffff, r1 = rot_lo >>> 16;
-      const q0 = Math.imul(r0, c1_0);
-      const q1 = Math.imul(r1, c1_0);
-      const q2 = Math.imul(r0, c1_1);
-      const q3 = Math.imul(r1, c1_1);
-      const qmid = (q0 >>> 16) + (q1 & 0xffff) + (q2 & 0xffff);
-      this.v4_hi = (q3 + (q1 >>> 16) + (q2 >>> 16) + (qmid >>> 16) + Math.imul(rot_hi, C1_LO) + Math.imul(rot_lo, C1_HI)) | 0;
-      this.v4_lo = Math.imul(rot_lo, C1_LO);
-    }
-  }
-
-  public digest(): number {
-    const mask = 0xffffffffffffffffn;
-    const PRIME64_1 = 11400714785074694791n;
-    const PRIME64_2 = 14029467366897019727n;
-    const PRIME64_3 = 1609587929392839161n;
-    const PRIME64_4 = 9650029242287828579n;
-    const PRIME64_5 = 2870177450012600261n;
-
-    function rotl64(x: bigint, r: bigint): bigint {
-      return (((x << r) & mask) | ((x & mask) >> (64n - r))) & mask;
-    }
-
-    let h64: bigint;
-    if (this.seeded) {
-      const v1 = (BigInt(this.v1_hi >>> 0) << 32n) | BigInt(this.v1_lo >>> 0);
-      const v2 = (BigInt(this.v2_hi >>> 0) << 32n) | BigInt(this.v2_lo >>> 0);
-      const v3 = (BigInt(this.v3_hi >>> 0) << 32n) | BigInt(this.v3_lo >>> 0);
-      const v4 = (BigInt(this.v4_hi >>> 0) << 32n) | BigInt(this.v4_lo >>> 0);
-
-      h64 = (rotl64(v1, 1n) + rotl64(v2, 7n) + rotl64(v3, 12n) + rotl64(v4, 18n)) & mask;
-      const round = (h: bigint, v: bigint) => {
-        let x = (v * PRIME64_2) & mask;
-        x = rotl64(x, 31n);
-        x = (x * PRIME64_1) & mask;
-        h = (h ^ x) & mask;
-        return (h * PRIME64_1 + PRIME64_4) & mask;
-      };
-      h64 = round(h64, v1);
-      h64 = round(h64, v2);
-      h64 = round(h64, v3);
-      h64 = round(h64, v4);
-    } else {
-      h64 = PRIME64_5 & mask;
-    }
-
-    h64 = (h64 + BigInt(this.totalLen)) & mask;
-
-    let offset = 0;
-    while (offset + 8 <= this.remLen) {
-      let k1 = this.rem.readBigUInt64LE(offset);
-      k1 = (k1 * PRIME64_2) & mask;
-      k1 = rotl64(k1, 31n);
-      k1 = (k1 * PRIME64_1) & mask;
-      h64 = (h64 ^ k1) & mask;
-      h64 = (rotl64(h64, 27n) * PRIME64_1 + PRIME64_4) & mask;
-      offset += 8;
-    }
-
-    if (offset + 4 <= this.remLen) {
-      let k1 = BigInt(this.rem.readUInt32LE(offset));
-      k1 = (k1 * PRIME64_1) & mask;
-      h64 = (h64 ^ k1) & mask;
-      h64 = (rotl64(h64, 23n) * PRIME64_2 + PRIME64_3) & mask;
-      offset += 4;
-    }
-
-    while (offset < this.remLen) {
-      let k1 = BigInt(this.rem[offset]);
-      k1 = (k1 * PRIME64_5) & mask;
-      h64 = (h64 ^ k1) & mask;
-      h64 = (rotl64(h64, 11n) * PRIME64_1) & mask;
-      offset++;
-    }
-
-    h64 = (h64 ^ (h64 >> 33n)) & mask;
-    h64 = (h64 * PRIME64_2) & mask;
-    h64 = (h64 ^ (h64 >> 29n)) & mask;
-    h64 = (h64 * PRIME64_3) & mask;
-    h64 = (h64 ^ (h64 >> 32n)) & mask;
-
-    return Number(h64 & 0xffffffffn);
-  }
-}
-
 /**
  * High-performance RFC 8878 Zstandard dictionary streaming compressor.
  * Emits the 4-byte Dictionary ID (e.g. 0xEC012026) in the initial frame header
@@ -1364,6 +1111,20 @@ export class ZstdDictionaryStreamCompressor {
     return this.dictId;
   }
 
+  private emitHeader(): Buffer[] {
+    this.headerEmitted = true;
+    const fhd = (0 << 6) | (0 << 5) | (1 << 2) | 3;
+    const windowByte = Math.min(255, Math.max(0, ((this.windowLog - 10) << 3) & 0xff));
+    const dictIdBuf = Buffer.alloc(4);
+    dictIdBuf.writeUInt32LE(this.dictId, 0);
+    return [
+      ZSTD_MAGIC_LE,
+      Buffer.from([fhd]),
+      Buffer.from([windowByte]),
+      dictIdBuf,
+    ];
+  }
+
   /**
    * Compresses an incoming stream chunk and returns RFC 8878 streaming frames/blocks.
    */
@@ -1376,29 +1137,7 @@ export class ZstdDictionaryStreamCompressor {
 
     // 1. Emit RFC 8878 Frame Header with 4-byte Dictionary ID on first chunk
     if (!this.headerEmitted) {
-      this.headerEmitted = true;
-
-      // Magic Number: 0xFD2FB527 (Little Endian: [0x28, 0xb5, 0x2f, 0xfd])
-      outChunks.push(ZSTD_MAGIC_LE);
-
-      // Frame_Header_Descriptor (FHD):
-      // FCS_Flag = 0 (0 bytes FCS, size not known in stream)
-      // Single_Segment = 0 (multi-block stream)
-      // Content_Checksum_Flag = 1 (xxHash footer)
-      // DictID_Flag = 3 (4 bytes DictID)
-      // FHD = (0 << 6) | (0 << 5) | (1 << 2) | 3 = 0x07
-      const fhd = (0 << 6) | (0 << 5) | (1 << 2) | 3;
-      outChunks.push(Buffer.from([fhd]));
-
-      // Window_Descriptor (Exponent=10, Mantissa=0 -> 1MB window)
-      // windowByte = (exponent << 3) | mantissa
-      const windowByte = Math.min(255, Math.max(0, ((this.windowLog - 10) << 3) & 0xff));
-      outChunks.push(Buffer.from([windowByte]));
-
-      // 4-byte Dictionary ID (Little Endian)
-      const dictIdBuf = Buffer.alloc(4);
-      dictIdBuf.writeUInt32LE(this.dictId, 0);
-      outChunks.push(dictIdBuf);
+      outChunks.push(...this.emitHeader());
     }
 
     // 2. Feed chunk into streaming xxHash-64 hasher
@@ -1414,6 +1153,7 @@ export class ZstdDictionaryStreamCompressor {
     let inPos = 0;
     let litStart = 0;
     let step = 1;
+    let stepShift = 0;
 
     while (inPos <= inputLen - 4) {
       const v = chunk.readInt32LE(inPos);
@@ -1426,6 +1166,13 @@ export class ZstdDictionaryStreamCompressor {
       const dPos = this.dictIndex[h];
       if (dPos >= 0 && this.rawDict.readInt32LE(dPos) === v) {
         let l = 4;
+        while (
+          inPos + l + 4 <= inputLen &&
+          dPos + l + 4 <= this.rawDict.length &&
+          chunk.readInt32LE(inPos + l) === this.rawDict.readInt32LE(dPos + l)
+        ) {
+          l += 4;
+        }
         while (inPos + l < inputLen && dPos + l < this.rawDict.length && chunk[inPos + l] === this.rawDict[dPos + l]) {
           l++;
         }
@@ -1440,6 +1187,13 @@ export class ZstdDictionaryStreamCompressor {
       if (prevPos >= 0 && chunk.readInt32LE(prevPos) === v) {
         if (bestMatchLen === 0 || (inPos + bestMatchLen < inputLen && chunk[inPos + bestMatchLen] === chunk[prevPos + bestMatchLen])) {
           let l = 4;
+          while (
+            inPos + l + 4 <= inputLen &&
+            prevPos + l + 4 <= inputLen &&
+            chunk.readInt32LE(inPos + l) === chunk.readInt32LE(prevPos + l)
+          ) {
+            l += 4;
+          }
           while (inPos + l < inputLen && chunk[inPos + l] === chunk[prevPos + l]) {
             l++;
           }
@@ -1460,9 +1214,11 @@ export class ZstdDictionaryStreamCompressor {
         inPos += bestMatchLen;
         litStart = inPos;
         step = 1;
+        stepShift = 0;
       } else {
         inPos += step;
-        step = 1 + (step >> 2);
+        stepShift++;
+        step = 1 + (stepShift >> 5);
       }
     }
 
@@ -1558,15 +1314,7 @@ export class ZstdDictionaryStreamCompressor {
 
     // If no chunk was ever written, emit the frame header first
     if (!this.headerEmitted) {
-      this.headerEmitted = true;
-      outChunks.push(ZSTD_MAGIC_LE);
-      const fhd = (0 << 6) | (0 << 5) | (1 << 2) | 3;
-      outChunks.push(Buffer.from([fhd]));
-      const windowByte = Math.min(255, Math.max(0, ((this.windowLog - 10) << 3) & 0xff));
-      outChunks.push(Buffer.from([windowByte]));
-      const dictIdBuf = Buffer.alloc(4);
-      dictIdBuf.writeUInt32LE(this.dictId, 0);
-      outChunks.push(dictIdBuf);
+      outChunks.push(...this.emitHeader());
     }
 
     // Terminal block: Last_Block = 1, Block_Type = 0 (Raw), Block_Size = 0

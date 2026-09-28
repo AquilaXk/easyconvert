@@ -189,12 +189,20 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
     it('achieves >= 70% bandwidth reduction and sustains >= 180 MB/s streaming throughput', () => {
       const payload = generateSyntheticDataPayload(5000); // ~1.5MB realistic JSON
       const originalSize = payload.length;
+      const chunkSize = 64 * 1024;
+
+      // JIT compiler warmup to allow V8 TurboFan native optimization
+      const warmupCompressor = new ZstdDictionaryStreamCompressor({
+        dictionary: DATA_DICTIONARY_JSON_CSV,
+      });
+      for (let offset = 0; offset < payload.length; offset += chunkSize) {
+        warmupCompressor.write(payload.subarray(offset, offset + chunkSize));
+      }
+      warmupCompressor.end();
 
       const compressor = new ZstdDictionaryStreamCompressor({
         dictionary: DATA_DICTIONARY_JSON_CSV,
       });
-
-      const chunkSize = 64 * 1024;
       const compressedChunks: Buffer[] = [];
 
       const startTime = performance.now();
