@@ -307,7 +307,7 @@ export class RedisKeyStore extends KeyStore {
     if (this.redisClient) {
       try {
         const usageKey = `${this.keyPrefix}usage:${userId}:${getUtcDateKey()}`;
-        const reservationId = `res_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+        const reservationId = `res_${encodeURIComponent(userId)}_${getUtcDateKey()}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
         const resKey = `${this.keyPrefix}res:${reservationId}`;
         const ttlSec = 300;
         const midnight = new Date();
@@ -366,7 +366,7 @@ export class RedisKeyStore extends KeyStore {
 
     // Atomic increment in reservation phase
     this.dailyUsage.set(dateKey, currentUsed + units);
-    const reservationId = `res_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+    const reservationId = `res_${encodeURIComponent(userId)}_${getUtcDateKey()}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
     const reservation: QuotaReservation = {
       reservationId,
       userId,
@@ -422,8 +422,18 @@ export class RedisKeyStore extends KeyStore {
     if (this.redisClient) {
       try {
         const res = this.reservations.get(reservationId);
-        const userId = res?.userId || 'unknown';
-        const usageKey = `${this.keyPrefix}usage:${userId}:${getUtcDateKey()}`;
+        let userId = res?.userId;
+        let dateKey = res?.dateKey ? res.dateKey.split(':')[1] : undefined;
+        if (!userId || !dateKey) {
+          const parts = reservationId.split('_');
+          if (parts.length >= 5 && parts[0] === 'res') {
+            userId = decodeURIComponent(parts[1]);
+            dateKey = parts[2];
+          }
+        }
+        const finalUserId = userId || 'unknown';
+        const finalDateKey = dateKey || getUtcDateKey();
+        const usageKey = `${this.keyPrefix}usage:${finalUserId}:${finalDateKey}`;
         const resKey = `${this.keyPrefix}res:${reservationId}`;
         const rolled = await this.redisClient.eval(ROLLBACK_QUOTA_LUA_SCRIPT, 2, usageKey, resKey);
         this.reservations.delete(reservationId);

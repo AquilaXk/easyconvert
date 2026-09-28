@@ -287,6 +287,49 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       expect(evalCalls[0].args[1]).toBe(`cluster:user:${user.id}`);
       expect(evalCalls[0].args[2]).toBe(user.id);
     });
+
+    it('executes atomic UPDATE_USER_LUA_SCRIPT and RECORD_CONVERSION_LUA_SCRIPT via redis.eval', async () => {
+      const evalCalls: any[] = [];
+      const mockUser = {
+        id: 'usr_test_123',
+        email: 'atomic@example.com',
+        name: 'Initial Name',
+        conversionsCount: 3,
+        tier: 'free',
+        provider: 'email',
+        createdAt: 1000,
+        updatedAt: 1000,
+      };
+
+      const mockRedis = {
+        eval: async (script: string, numKeys: number, ...args: any[]) => {
+          evalCalls.push({ script, numKeys, args });
+          if (script === UPDATE_USER_LUA_SCRIPT) {
+            const updates = JSON.parse(args[1]);
+            const updated = { ...mockUser, ...updates, updatedAt: Number(args[2]) };
+            return JSON.stringify(updated);
+          }
+          if (script === RECORD_CONVERSION_LUA_SCRIPT) {
+            const updated = { ...mockUser, conversionsCount: mockUser.conversionsCount + 1, updatedAt: Number(args[0]) };
+            return JSON.stringify(updated);
+          }
+          return null;
+        },
+        get: async () => JSON.stringify(mockUser),
+        set: async () => 'OK',
+        ping: async () => 'PONG',
+      } as any;
+
+      const redisStore = new RedisUserStore({ redisClient: mockRedis, keyPrefix: 'cluster:user:' });
+
+      const updated = await redisStore.updateUser('usr_test_123', { name: 'Updated Name' });
+      expect(updated).not.toBeNull();
+      expect(updated?.name).toBe('Updated Name');
+      expect(evalCalls.some((c) => c.script === UPDATE_USER_LUA_SCRIPT)).toBe(true);
+
+      await redisStore.recordConversion('usr_test_123');
+      expect(evalCalls.some((c) => c.script === RECORD_CONVERSION_LUA_SCRIPT)).toBe(true);
+    });
   });
 
 
@@ -509,6 +552,37 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       const committed = await redisStore.commitQuota(reserved.reservationId!);
       expect(committed).toBe(true);
       expect(evalCalls.some((c) => c.script === COMMIT_QUOTA_LUA_SCRIPT)).toBe(true);
+    });
+
+    it('recovers userId and dateKey from reservationId on cross-server replica rollback without local memory', async () => {
+      const evalCalls: any[] = [];
+      const mockRedis = {
+        eval: async (script: string, numKeys: number, ...args: any[]) => {
+          evalCalls.push({ script, numKeys, args });
+          if (script === RESERVE_QUOTA_LUA_SCRIPT) return [1, 20];
+          if (script === ROLLBACK_QUOTA_LUA_SCRIPT) return 1;
+          return 1;
+        },
+      } as any;
+
+      // Server A reserves
+      const serverA = new RedisKeyStore({ redisClient: mockRedis, keyPrefix: 'cluster:quota:' });
+      const reserved = await serverA.reserveQuota(testUserId, 5);
+      expect(reserved.allowed).toBe(true);
+      const resId = reserved.reservationId!;
+
+      // Server B (isolated replica instance, no shared local memory) rolls back
+      const serverB = new RedisKeyStore({ redisClient: mockRedis, keyPrefix: 'cluster:quota:', isolated: true });
+      expect(serverB.getReservation(resId)).toBeUndefined(); // Zero shared local memory
+
+      const rolledBack = await serverB.rollbackQuota(resId);
+      expect(rolledBack).toBe(true);
+
+      // Verify that ROLLBACK_QUOTA_LUA_SCRIPT was called with testUserId, NOT 'unknown'
+      const rollbackCall = evalCalls.find((c) => c.script === ROLLBACK_QUOTA_LUA_SCRIPT);
+      expect(rollbackCall).toBeDefined();
+      expect(rollbackCall.args[0]).toContain(`cluster:quota:usage:${testUserId}:`);
+      expect(rollbackCall.args[0]).not.toContain('unknown');
     });
   });
 

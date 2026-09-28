@@ -59,7 +59,7 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       };
       fs.writeFileSync(metaPath, JSON.stringify(meta), 'utf-8');
 
-      if (value.buffer && Buffer.isBuffer(value.buffer) && value.buffer.length > 0) {
+      if (value.buffer && Buffer.isBuffer(value.buffer)) {
         fs.writeFileSync(binPath, value.buffer);
       } else if (value.filePath && fs.existsSync(value.filePath) && value.filePath !== binPath) {
         fs.copyFileSync(value.filePath, binPath);
@@ -72,6 +72,8 @@ export class SharedObjectStore extends Map<string, StoredObject> {
   }
 
   public override get(key: string): StoredObject | undefined {
+    const { metaPath, binPath } = this.getPathsForKey(key);
+
     // 1. Check in-memory map
     const inMem = super.get(key);
     if (inMem) {
@@ -79,11 +81,15 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         this.delete(key);
         return undefined;
       }
+      // Invalidate in-memory cache if file was deleted on disk by another container/worker
+      if (!fs.existsSync(metaPath)) {
+        super.delete(key);
+        return undefined;
+      }
       return inMem;
     }
 
     // 2. Check shared disk storage (cross-process / multi-container sync)
-    const { metaPath, binPath } = this.getPathsForKey(key);
     if (!fs.existsSync(metaPath)) {
       return undefined;
     }
@@ -129,9 +135,10 @@ export class SharedObjectStore extends Map<string, StoredObject> {
   }
 
   public override has(key: string): boolean {
-    if (super.has(key)) return true;
     const { metaPath } = this.getPathsForKey(key);
-    return fs.existsSync(metaPath);
+    if (fs.existsSync(metaPath)) return true;
+    super.delete(key);
+    return false;
   }
 
   public override delete(key: string): boolean {

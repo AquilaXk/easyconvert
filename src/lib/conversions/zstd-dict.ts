@@ -10,10 +10,17 @@
 
 import { ZSTD_MAGIC_LE, computeZstdChecksum, xxh64 } from './zstd';
 
-export const RFC8878_DICT_HEADER_MAGIC = 0xec30a428;
-export const RFC8878_DICT_HEADER_MAGIC_LE = Buffer.from([0x28, 0xa4, 0x30, 0xec]);
+export const RFC8878_DICT_HEADER_MAGIC = 0xec30a437; // Canonical RFC 8878 Section 5 magic
+export const RFC8878_DICT_HEADER_MAGIC_ALT = 0xec30a428; // Alternative / legacy
+export const RFC8878_DICT_HEADER_MAGIC_LE = Buffer.from([0x37, 0xa4, 0x30, 0xec]);
 export const ZSTD_DICT_MAGIC = 0xec012026; // EasyConvert 2026 Data Dictionary ID
 export const ZSTD_OFFICE_DICT_MAGIC = 0xec012027; // EasyConvert 2026 Office Dictionary ID
+
+export function isFormattedDictionary(dictionary: Buffer): boolean {
+  if (dictionary.length < 8) return false;
+  const magic = dictionary.readUInt32LE(0);
+  return magic === RFC8878_DICT_HEADER_MAGIC || magic === RFC8878_DICT_HEADER_MAGIC_ALT;
+}
 
 /**
  * Creates an RFC 8878 Section 5 compliant formatted dictionary buffer.
@@ -106,16 +113,12 @@ export function compressWithZstdDict(
   let dictId = options.dictId;
 
   // Extract dictId from RFC 8878 Section 5 dictionary header if present
-  if (
-    dictionary.length >= 8 &&
-    (dictionary.readUInt32LE(0) === RFC8878_DICT_HEADER_MAGIC ||
-      dictionary.readUInt32LE(0) === 0xec30a437)
-  ) {
+  if (isFormattedDictionary(dictionary)) {
     if (dictId === undefined) {
       dictId = dictionary.readUInt32LE(4);
     }
   } else if (dictId === undefined) {
-    dictId = ZSTD_DICT_MAGIC;
+    dictId = 0; // Raw content dictionary without header has DictID 0
   }
 
   const chunks: Buffer[] = [];
@@ -123,7 +126,7 @@ export function compressWithZstdDict(
   // 1. Zstandard Magic Number
   chunks.push(ZSTD_MAGIC_LE);
 
-  // 2. Frame Header with 4-byte Dictionary ID
+  // 2. Frame Header with Dictionary ID and FCS
   const inputLen = inputBuffer.length;
   let fcsFlag = 0;
   let fcsBuf: Buffer;
@@ -141,14 +144,23 @@ export function compressWithZstdDict(
     fcsBuf.writeUInt32LE(inputLen, 0);
   }
 
-  const fhd = (fcsFlag << 6) | (1 << 5) | (1 << 2) | 3;
-  chunks.push(Buffer.from([fhd]));
-  chunks.push(fcsBuf);
+  let dictIdFlag = 0;
+  let dictIdBuf: Buffer | null = null;
+  if (dictId && dictId > 0) {
+    dictIdFlag = 3;
+    dictIdBuf = Buffer.alloc(4);
+    dictIdBuf.writeUInt32LE(dictId, 0);
+  }
 
-  // 4-byte Dictionary ID (Little Endian)
-  const dictIdBuf = Buffer.alloc(4);
-  dictIdBuf.writeUInt32LE(dictId, 0);
-  chunks.push(dictIdBuf);
+  // Single_Segment = 1 (bit 5), Content_Checksum_Flag = 1 (bit 2)
+  const fhd = (fcsFlag << 6) | (1 << 5) | (1 << 2) | dictIdFlag;
+  chunks.push(Buffer.from([fhd]));
+
+  // RFC 8878 Section 3.1.1: Dictionary_ID comes BEFORE Frame_Content_Size
+  if (dictIdBuf) {
+    chunks.push(dictIdBuf);
+  }
+  chunks.push(fcsBuf);
 
   // 3. Block Encoding: evaluate RLE vs Raw
   let isRle = inputLen > 8;
@@ -208,75 +220,124 @@ export function decompressWithZstdDict(
 
   const fhd = compressedBuffer[4];
   const dictIdFlag = fhd & 0x03;
-  if (dictIdFlag !== 3) {
-    throw new Error(`Expected 4-byte dictionary ID in frame header, got flag: ${dictIdFlag}`);
-  }
-
+  const contentChecksumFlag = (fhd >> 2) & 0x01;
+  const singleSegment = (fhd >> 5) & 0x01;
   const fcsFlag = (fhd >> 6) & 0x03;
-  let fcsBytes = 1;
-  if (fcsFlag === 1) fcsBytes = 2;
-  else if (fcsFlag === 2) fcsBytes = 4;
-  else if (fcsFlag === 3) fcsBytes = 8;
 
-  if (compressedBuffer.length < 5 + fcsBytes + 4 + 3 + 4) {
-    throw new Error('Invalid Zstandard dictionary frame: buffer too small');
+  let offset = 5;
+
+  // Window Descriptor (1 byte if singleSegment === 0)
+  if (singleSegment === 0) {
+    if (offset >= compressedBuffer.length) {
+      throw new Error('Invalid Zstandard dictionary frame: buffer too small');
+    }
+    offset += 1;
   }
 
-  let offset = 5 + fcsBytes;
-  const embeddedDictId = compressedBuffer.readUInt32LE(offset);
-  offset += 4;
+  // Dictionary ID (0, 1, 2, or 4 bytes)
+  let embeddedDictId = 0;
+  if (dictIdFlag === 1) {
+    if (offset + 1 > compressedBuffer.length) {
+      throw new Error('Invalid Zstandard dictionary frame: buffer too small');
+    }
+    embeddedDictId = compressedBuffer.readUInt8(offset);
+    offset += 1;
+  } else if (dictIdFlag === 2) {
+    if (offset + 2 > compressedBuffer.length) {
+      throw new Error('Invalid Zstandard dictionary frame: buffer too small');
+    }
+    embeddedDictId = compressedBuffer.readUInt16LE(offset);
+    offset += 2;
+  } else if (dictIdFlag === 3) {
+    if (offset + 4 > compressedBuffer.length) {
+      throw new Error('Invalid Zstandard dictionary frame: buffer too small');
+    }
+    embeddedDictId = compressedBuffer.readUInt32LE(offset);
+    offset += 4;
+  }
 
   // Validate dictionary ID match against provided dictionary
   let expectedDictId: number | null = null;
-  if (
-    dictionary.length >= 8 &&
-    (dictionary.readUInt32LE(0) === RFC8878_DICT_HEADER_MAGIC ||
-      dictionary.readUInt32LE(0) === 0xec30a437)
-  ) {
+  if (isFormattedDictionary(dictionary)) {
     expectedDictId = dictionary.readUInt32LE(4);
   }
 
-  if (expectedDictId !== null && embeddedDictId !== expectedDictId) {
+  if (expectedDictId !== null && dictIdFlag > 0 && embeddedDictId !== expectedDictId) {
     throw new Error(
       `Decoding error (36): Dictionary mismatch: frame requires dictionary ID 0x${embeddedDictId.toString(16)}, but provided dictionary has ID 0x${expectedDictId.toString(16)}`
     );
   }
 
-  // Block header (3 bytes)
-  const b0 = compressedBuffer[offset++];
-  const b1 = compressedBuffer[offset++];
-  const b2 = compressedBuffer[offset++];
-  const blockHeaderVal = b0 | (b1 << 8) | (b2 << 16);
-  const blockType = (blockHeaderVal >> 1) & 0x03;
-  const blockSize = blockHeaderVal >> 3;
-
-  let uncompressed: Buffer;
-
-  if (blockType === 0) {
-    // Raw block
-    if (offset + blockSize + 4 > compressedBuffer.length) {
-      throw new Error('Invalid Zstandard dictionary frame: payload truncated');
-    }
-    uncompressed = Buffer.from(compressedBuffer.subarray(offset, offset + blockSize));
-    offset += blockSize;
-  } else if (blockType === 1) {
-    // RLE block
-    if (offset + 1 + 4 > compressedBuffer.length) {
-      throw new Error('Invalid Zstandard dictionary frame: payload truncated');
-    }
-    const rleByte = compressedBuffer[offset++];
-    uncompressed = Buffer.alloc(blockSize, rleByte);
+  // Frame Content Size (FCS)
+  let fcsBytes = 0;
+  if (singleSegment === 1) {
+    if (fcsFlag === 0) fcsBytes = 1;
+    else if (fcsFlag === 1) fcsBytes = 2;
+    else if (fcsFlag === 2) fcsBytes = 4;
+    else if (fcsFlag === 3) fcsBytes = 8;
   } else {
-    throw new Error(`Unsupported Zstandard block type ${blockType} in dictionary frame`);
+    if (fcsFlag === 0) fcsBytes = 0;
+    else if (fcsFlag === 1) fcsBytes = 2;
+    else if (fcsFlag === 2) fcsBytes = 4;
+    else if (fcsFlag === 3) fcsBytes = 8;
   }
 
+  if (offset + fcsBytes > compressedBuffer.length) {
+    throw new Error('Invalid Zstandard dictionary frame: buffer too small');
+  }
+  offset += fcsBytes;
+
+  // Blocks
+  const uncompressedChunks: Buffer[] = [];
+  let isLastBlock = false;
+
+  while (!isLastBlock) {
+    if (offset + 3 > compressedBuffer.length) {
+      throw new Error('Invalid Zstandard dictionary frame: payload truncated');
+    }
+    const b0 = compressedBuffer[offset++];
+    const b1 = compressedBuffer[offset++];
+    const b2 = compressedBuffer[offset++];
+    const blockHeaderVal = b0 | (b1 << 8) | (b2 << 16);
+    isLastBlock = (blockHeaderVal & 0x01) === 1;
+    const blockType = (blockHeaderVal >> 1) & 0x03;
+    const blockSize = blockHeaderVal >> 3;
+
+    if (blockType === 0) {
+      // Raw block
+      const checksumLength = contentChecksumFlag ? 4 : 0;
+      if (offset + blockSize + (isLastBlock ? checksumLength : 0) > compressedBuffer.length) {
+        throw new Error('Invalid Zstandard dictionary frame: payload truncated');
+      }
+      uncompressedChunks.push(Buffer.from(compressedBuffer.subarray(offset, offset + blockSize)));
+      offset += blockSize;
+    } else if (blockType === 1) {
+      // RLE block
+      const checksumLength = contentChecksumFlag ? 4 : 0;
+      if (offset + 1 + (isLastBlock ? checksumLength : 0) > compressedBuffer.length) {
+        throw new Error('Invalid Zstandard dictionary frame: payload truncated');
+      }
+      const rleByte = compressedBuffer[offset++];
+      uncompressedChunks.push(Buffer.alloc(blockSize, rleByte));
+    } else {
+      throw new Error(`Unsupported Zstandard block type ${blockType} in dictionary frame`);
+    }
+  }
+
+  const uncompressed = Buffer.concat(uncompressedChunks);
+
   // Checksum (4 bytes)
-  const expectedChecksum = compressedBuffer.readUInt32LE(offset);
-  const actualChecksum = computeZstdChecksum(uncompressed);
-  if (actualChecksum !== expectedChecksum) {
-    throw new Error(
-      `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(16)}, got 0x${actualChecksum.toString(16)}`
-    );
+  if (contentChecksumFlag === 1) {
+    if (offset + 4 > compressedBuffer.length) {
+      throw new Error('Invalid Zstandard dictionary frame: payload truncated');
+    }
+    const expectedChecksum = compressedBuffer.readUInt32LE(offset);
+    const actualChecksum = computeZstdChecksum(uncompressed);
+    if (actualChecksum !== expectedChecksum) {
+      throw new Error(
+        `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(16)}, got 0x${actualChecksum.toString(16)}`
+      );
+    }
   }
 
   return uncompressed;

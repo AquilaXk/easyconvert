@@ -99,7 +99,7 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
         wav,
         'wav',
         'mp3',
-        {},
+        { allowPureLossyBitstream: true },
         'audio.wav'
       );
 

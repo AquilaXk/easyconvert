@@ -383,20 +383,23 @@ export class OciObjectStorageService implements IStorageBackend {
    * Delete object from OCI Object Storage and cryptographically shred buffer
    */
   deleteObject(key: string): boolean {
-    globalSharedObjects.delete(key);
-    const obj = this.objects.get(key);
-    if (!obj) return false;
+    const obj = this.objects.get(key) || (globalSharedObjects.get(key) as OciStoredObject | undefined);
+    const sharedDeleted = globalSharedObjects.delete(key);
+    if (!obj && !sharedDeleted) return false;
 
-    if (obj.filePath && fs.existsSync(obj.filePath)) {
-      try {
-        fs.rmSync(obj.filePath, { force: true });
-      } catch {}
-    }
+    if (obj) {
+      if (obj.filePath && fs.existsSync(obj.filePath)) {
+        try {
+          fs.rmSync(obj.filePath, { force: true });
+        } catch {}
+      }
 
-    this.shredBuffer(obj.buffer);
-    this.objects.delete(key);
-    if (obj.key && obj.key !== key) {
-      this.objects.delete(obj.key);
+      this.shredBuffer(obj.buffer);
+      this.objects.delete(key);
+      if (obj.key && obj.key !== key) {
+        this.objects.delete(obj.key);
+        globalSharedObjects.delete(obj.key);
+      }
     }
     return true;
   }

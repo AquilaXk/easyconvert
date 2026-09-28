@@ -1374,7 +1374,7 @@ function parse7zArchiveStructure(buffer: Buffer): ArchiveStructuralAst {
   const toolPath = getOracleToolPath('7z');
   if (toolPath) {
     const cliAst = parse7zCliListing(toolPath, buffer);
-    if (cliAst) return cliAst;
+    if (cliAst && cliAst.fileCount > 0) return cliAst;
   }
 
   const sevenZMagic = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);

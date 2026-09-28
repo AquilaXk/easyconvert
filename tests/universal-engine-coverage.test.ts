@@ -68,7 +68,7 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res1.buffer.length).toBeGreaterThan(0);
 
     // weba -> mp3
-    const res2 = await convertFile(audioData, 'weba', 'mp3', {}, 'audio.weba');
+    const res2 = await convertFile(audioData, 'weba', 'mp3', { allowPureLossyBitstream: true }, 'audio.weba');
     expect(res2.filename).toBe('audio.mp3');
     expect(res2.buffer.length).toBeGreaterThan(0);
 

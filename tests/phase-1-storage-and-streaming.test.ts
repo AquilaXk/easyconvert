@@ -58,6 +58,28 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
       expect(s3Found).toBeDefined();
       expect(s3Found?.buffer.toString()).toContain('%PDF-1.4');
     });
+
+    it('persists 0-byte buffer to disk volume and allows cross-instance retrieval and deletion', async () => {
+      const zeroByteKey = `zero-byte-${Date.now()}.txt`;
+      const zeroBuffer = Buffer.alloc(0);
+
+      // Save 0-byte file
+      s3Storage.saveObject(zeroByteKey, zeroBuffer, 'text/plain', 'empty.txt');
+
+      const { SharedObjectStore } = await import('../src/lib/storage/shared-store');
+      const replicaStore = new SharedObjectStore();
+      const loaded = replicaStore.get(zeroByteKey);
+
+      expect(loaded).toBeDefined();
+      expect(loaded?.size).toBe(0);
+      expect(loaded?.buffer.length).toBe(0);
+      expect(loaded?.filePath).toBeDefined();
+
+      // Deletion removes from disk and memory
+      const deleted = ociStorage.deleteObject(zeroByteKey);
+      expect(deleted).toBe(true);
+      expect(replicaStore.get(zeroByteKey)).toBeUndefined();
+    });
   });
 
   describe('2. Elimination of Base64 Data URI in user-files.json', () => {
