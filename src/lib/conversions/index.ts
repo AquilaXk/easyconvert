@@ -1,4 +1,4 @@
-import { ConversionOptions, ConversionResult } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
 import { FORMAT_REGISTRY } from '../registry';
 import {
   convertImage,
@@ -9,7 +9,16 @@ import {
 } from './image';
 import { convertDocument, extractTextFromPdf } from './document';
 import { convertData } from './data';
-import { convertMedia, resampleAudioSinc, encodeWebmContainer, detectFfmpegEnvironment, type FfmpegEnvironmentInfo } from './media';
+import {
+  convertMedia,
+  resampleAudioSinc,
+  encodeWebmContainer,
+  encodeOpusContainer,
+  encodeOggContainer,
+  encodeAacContainer,
+  detectFfmpegEnvironment,
+  type FfmpegEnvironmentInfo,
+} from './media';
 import { convertOffice, formatSpreadsheetCellValue } from './office';
 import {
   convertFont,
@@ -267,6 +276,10 @@ export {
   quadraticToCubicBezier,
   resampleAudioSinc,
   encodeWebmContainer,
+  encodeOpusContainer,
+  encodeOggContainer,
+  encodeAacContainer,
+  ConversionFailedError,
   formatSpreadsheetCellValue,
 };
 

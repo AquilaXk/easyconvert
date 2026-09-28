@@ -1,4 +1,7 @@
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { MultipartUploadInit, UploadedPart, MultipartUploadComplete } from '../types';
 import { secureShredBuffer } from '../security/memory-shredder';
 
@@ -34,6 +37,7 @@ export interface StoredObject {
   bucket?: string;
   uploadedAt: number;
   expiresAt: number;
+  filePath?: string;
 }
 
 export type OciStoredObject = StoredObject;
@@ -171,7 +175,7 @@ export class OciObjectStorageService implements IStorageBackend {
     const etag = `"${md5}"`;
 
     session.parts.set(partNumber, {
-      buffer,
+      buffer: Buffer.from(buffer),
       etag,
       size: buffer.length,
     });
@@ -203,37 +207,58 @@ export class OciObjectStorageService implements IStorageBackend {
       throw new Error('Cannot commit OCI multipart upload with zero uploaded parts.');
     }
 
-    const buffers: Buffer[] = [];
-    const etagHashes: Buffer[] = [];
-
-    for (const num of partNumbers) {
-      const part = session.parts.get(num);
-      if (!part) {
-        throw new Error(`Missing part number ${num} in OCI upload session.`);
+    const ociDir = path.join(os.tmpdir(), 'easyconvert_oci_objects');
+    try {
+      if (!fs.existsSync(ociDir)) {
+        fs.mkdirSync(ociDir, { recursive: true });
       }
-      buffers.push(part.buffer);
-      const rawMd5 = part.etag.replace(/"/g, '');
-      etagHashes.push(Buffer.from(rawMd5, 'hex'));
-    }
+    } catch {}
 
-    const assembledBuffer = Buffer.concat(buffers);
+    const finalFilePath = path.join(ociDir, `${session.uploadId}.bin`);
+    const outFd = fs.openSync(finalFilePath, 'w');
+    const etagHashes: Buffer[] = [];
+    let totalSize = 0;
+
+    try {
+      for (const num of partNumbers) {
+        const part = session.parts.get(num);
+        if (!part) {
+          throw new Error(`Missing part number ${num} in OCI upload session.`);
+        }
+        fs.writeSync(outFd, part.buffer);
+        totalSize += part.size;
+        const rawMd5 = part.etag.replace(/"/g, '');
+        etagHashes.push(Buffer.from(rawMd5, 'hex'));
+      }
+    } finally {
+      fs.closeSync(outFd);
+    }
 
     // OCI composite hash
     const compositeHash = crypto.createHash('md5').update(Buffer.concat(etagHashes)).digest('hex');
     const compositeEtag = `"${compositeHash}-${partNumbers.length}"`;
 
     const now = Date.now();
+    let cachedBuffer: Buffer | null = null;
     const stored: OciStoredObject = {
       key: session.key,
       filename: session.filename,
       mimeType: session.mimeType,
-      buffer: assembledBuffer,
-      size: assembledBuffer.length,
+      size: totalSize,
       etag: compositeEtag,
       namespace: session.namespace,
       bucket: session.bucket,
       uploadedAt: now,
       expiresAt: now + 60 * 60 * 1000, // 1-hour TTL
+      filePath: finalFilePath,
+      get buffer(): Buffer {
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(finalFilePath)) {
+          cachedBuffer = fs.readFileSync(finalFilePath);
+          return cachedBuffer;
+        }
+        return Buffer.alloc(0);
+      },
     };
 
     // Shred chunk buffers from parts map
@@ -248,7 +273,7 @@ export class OciObjectStorageService implements IStorageBackend {
     return {
       location: `/api/storage/file/${encodeURIComponent(session.key)}`,
       key: session.key,
-      size: assembledBuffer.length,
+      size: totalSize,
       etag: compositeEtag,
     };
   }

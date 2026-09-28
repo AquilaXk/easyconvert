@@ -200,9 +200,10 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(encodedKorean).not.toBeNull();
       expect(encodedKorean).toBeInstanceOf(PDFHexString);
 
-      // Hex representation must start with UTF-16BE BOM (FEFF)
+      // Hex representation must NOT contain BOM (0xFEFF) and must encode 4-digit hex
       const hexStr = (encodedKorean as PDFHexString).asString();
-      expect(hexStr.toUpperCase()).toMatch(/^FEFF/);
+      expect(hexStr.toUpperCase()).not.toMatch(/^FEFF/);
+      expect(hexStr.toUpperCase()).toMatch(/^[0-9A-F]{4}/);
 
       // Latin WinAnsi text encoding
       const latinText = 'Hello World 123';
@@ -263,8 +264,9 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       // Verify that the PDF stream contains invisible text rendering mode (3 Tr)
       expect(decompressedStreamContent).toContain('3 Tr');
 
-      // Verify that UTF-16BE hex string encoding for CJK is present in the stream (<FEFF...>)
-      expect(decompressedStreamContent).toMatch(/<FEFF[0-9A-Fa-f]+>/);
+      // Verify that 4-character hex string encoding for CJK is present without BOM (<XXXX>)
+      expect(decompressedStreamContent).toMatch(/<[0-9A-Fa-f]{4,}>/);
+      expect(decompressedStreamContent).not.toMatch(/<FEFF/);
     });
   });
 

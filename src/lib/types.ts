@@ -188,6 +188,8 @@ export type JobStatus =
   | 'failed'
   | 'delayed';
 
+export type JobState = JobStatus;
+
 export interface ConversionJobData {
   jobId: string;
   originalFilename: string;
@@ -198,6 +200,9 @@ export interface ConversionJobData {
   inputBufferBase64?: string;
   options: ConversionOptions;
   webhookUrl?: string;
+  webhookSecret?: string;
+  userId?: string;
+  reservationId?: string;
 }
 
 export interface ConversionJobResult {
@@ -211,3 +216,11 @@ export interface ConversionJobResult {
   durationMs: number;
   ocrExtracted?: boolean;
 }
+
+export class ConversionFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConversionFailedError';
+  }
+}
+

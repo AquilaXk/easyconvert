@@ -7,8 +7,6 @@ import { execFileSync } from 'node:child_process';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import { compareImages, VrtOptions, VrtResult } from './vrt-engine';
-import { extractTextFromPdf } from '../../src/lib/conversions/pdf-utils';
-import { extractTarArchive, extract7zArchive } from '../../src/lib/conversions/archive';
 
 // ============================================================================
 // 1. External CLI Tool Probing & Availability
@@ -125,7 +123,7 @@ export function verifyArchiveWith7z(buffer: Buffer): boolean {
     return false;
   }
   const toolPath = getOracleToolPath('7z');
-  if (!toolPath) return true;
+  if (!toolPath) return false;
   const tmpPath = path.join(os.tmpdir(), `oracle_7z_${crypto.randomUUID()}.7z`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -148,7 +146,7 @@ export function verifyArchiveWith7z(buffer: Buffer): boolean {
 export function verifyArchiveWithTar(buffer: Buffer): boolean {
   if (buffer.length < 512) return false;
   const toolPath = getOracleToolPath('tar');
-  if (!toolPath) return true;
+  if (!toolPath) return false;
   try {
     execFileSync(toolPath, ['-tf', '-'], {
       input: buffer,
@@ -169,7 +167,7 @@ export function verifyArchiveWithZstd(buffer: Buffer): boolean {
     return false;
   }
   const toolPath = getOracleToolPath('zstd');
-  if (!toolPath) return true;
+  if (!toolPath) return false;
   try {
     execFileSync(toolPath, ['-t', '-q'], {
       input: buffer,
@@ -199,26 +197,66 @@ export function verifyAudioBitstreamWithFfprobe(
   const toolPath = getOracleToolPath('ffprobe');
   if (!toolPath) {
     const format = formatHint.toLowerCase().replace(/^\./, '');
-    if (buffer.length < 16) {
-      return { valid: false, error: 'Buffer too small' };
+    if (buffer.length < 12) {
+      return { valid: false, error: 'Buffer too small for audio header' };
     }
-    if (format === 'wav' && buffer.toString('ascii', 0, 4) === 'RIFF') {
-      return { valid: true, formatName: 'wav', codecName: 'pcm_s16le' };
+    if (format === 'wav') {
+      if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WAVE') {
+        const channels = buffer.readUInt16LE(22);
+        const sampleRate = buffer.readUInt32LE(24);
+        return {
+          valid: true,
+          formatName: 'wav',
+          codecName: expectedCodec || 'pcm_s16le',
+          sampleRate,
+          channels,
+        };
+      }
+      return { valid: false, error: 'Invalid WAV RIFF/WAVE header' };
     }
-    if (format === 'mp3' && (buffer.toString('ascii', 0, 3) === 'ID3' || (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0))) {
-      return { valid: true, formatName: 'mp3', codecName: 'mp3' };
+    if (format === 'aac') {
+      if (buffer.length >= 7 && buffer[0] === 0xff && (buffer[1] & 0xf0) === 0xf0) {
+        const chan = ((buffer[2] & 0x01) << 2) | ((buffer[3] >> 6) & 0x03);
+        return {
+          valid: true,
+          formatName: 'aac',
+          codecName: expectedCodec || 'aac',
+          channels: chan,
+        };
+      }
+      return { valid: false, error: 'Invalid ADTS AAC header syncword' };
     }
-    if ((format === 'aac' || format === 'm4a') && (buffer.readUInt16BE(0) & 0xfff0) === 0xfff0) {
-      return { valid: true, formatName: 'aac', codecName: 'aac' };
+    if (format === 'mp3') {
+      if (buffer.toString('ascii', 0, 3) === 'ID3' || (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0)) {
+        return {
+          valid: true,
+          formatName: 'mp3',
+          codecName: expectedCodec || 'mp3',
+        };
+      }
+      return { valid: false, error: 'Invalid MP3 sync frame' };
     }
-    if ((format === 'ogg' || format === 'opus') && buffer.toString('ascii', 0, 4) === 'OggS') {
-      const isOpus = buffer.indexOf('OpusHead') > 0;
-      return { valid: true, formatName: 'ogg', codecName: isOpus ? 'opus' : 'vorbis' };
+    if (format === 'flac') {
+      if (buffer.toString('ascii', 0, 4) === 'fLaC') {
+        return {
+          valid: true,
+          formatName: 'flac',
+          codecName: expectedCodec || 'flac',
+        };
+      }
+      return { valid: false, error: 'Invalid FLAC magic marker' };
     }
-    if (format === 'flac' && buffer.toString('ascii', 0, 4) === 'fLaC') {
-      return { valid: true, formatName: 'flac', codecName: 'flac' };
+    if (format === 'ogg' || format === 'opus' || format === 'vorbis') {
+      if (buffer.toString('ascii', 0, 4) === 'OggS') {
+        return {
+          valid: true,
+          formatName: 'ogg',
+          codecName: expectedCodec || format,
+        };
+      }
+      return { valid: false, error: 'Invalid OggS page header' };
     }
-    return { valid: true, formatName: format, codecName: expectedCodec || format };
+    return { valid: false, error: `Unsupported audio format verification: ${format}` };
   }
 
   const tmpPath = path.join(os.tmpdir(), `oracle_audio_${crypto.randomUUID()}.${formatHint}`);
@@ -292,13 +330,37 @@ export function verifyVideoBitstreamWithFfprobe(
       return { valid: false, error: 'Buffer too small' };
     }
     const format = formatHint.toLowerCase().replace(/^\./, '');
-    if ((format === 'mp4' || format === 'mov') && buffer.toString('ascii', 4, 8) === 'ftyp') {
-      return { valid: true, formatName: format, codecName: expectedCodec || 'h264', isFastStart };
+    if (format === 'mp4' || format === 'mov') {
+      if (buffer.toString('ascii', 4, 8) !== 'ftyp') {
+        return { valid: false, error: 'Missing ftyp box in MP4 container' };
+      }
+      if (moovIdx <= 0) {
+        return { valid: false, error: 'Missing moov box in MP4 container' };
+      }
+      if (mdatIdx <= 0) {
+        return { valid: false, error: 'Missing mdat box in MP4 container' };
+      }
+      return {
+        valid: true,
+        formatName: format,
+        codecName: expectedCodec || 'h264',
+        isFastStart,
+      };
     }
-    if (format === 'webm' && buffer[0] === 0x1a && buffer[1] === 0x45) {
-      return { valid: true, formatName: 'webm', codecName: expectedCodec || 'vp9' };
+    if (format === 'webm' || format === 'mkv') {
+      if (buffer.length < 4 || buffer[0] !== 0x1a || buffer[1] !== 0x45 || buffer[2] !== 0xdf || buffer[3] !== 0xa3) {
+        return { valid: false, error: 'Invalid EBML header signature for WebM/MKV' };
+      }
+      return {
+        valid: true,
+        formatName: format,
+        codecName: expectedCodec || 'vp9',
+      };
     }
-    return { valid: true, formatName: format, codecName: expectedCodec || format, isFastStart };
+    return {
+      valid: false,
+      error: `CLI tool "ffprobe" is absent and pure frame verification is unavailable for video format ${format}`,
+    };
   }
 
   const tmpPath = path.join(os.tmpdir(), `oracle_video_${crypto.randomUUID()}.${formatHint}`);
@@ -515,7 +577,7 @@ export async function parsePdfToAst(buffer: Buffer): Promise<PdfStructuralAst> {
     textTokens.push(m[1]);
   }
 
-  const extractedText = extractTextFromPdf(buffer) || textTokens.join(' ');
+  const extractedText = textTokens.join(' ');
   const hasObjectStreams = content.includes('/Type /ObjStm') || content.includes('/ObjStm');
   const hasXrefStream = content.includes('/Type /XRef') || content.includes('/XRef');
   const hasSandwichOcrText = containsInvisibleTextOperator(content);
@@ -1039,28 +1101,113 @@ export async function parseArchiveToAst(buffer: Buffer, format: string): Promise
   }
 
   if (fmt === 'tar') {
-    const extracted = extractTarArchive(buffer);
-    return {
-      format: 'tar',
-      fileCount: extracted.length,
-      files: extracted.map((f) => ({
-        name: f.filename,
-        size: f.buffer.length,
-        isDir: false,
-      })),
-    };
+    const toolPath = getOracleToolPath('tar');
+    if (toolPath) {
+      try {
+        const out = execFileSync(toolPath, ['-tf', '-'], {
+          input: buffer,
+          stdio: ['pipe', 'pipe', 'ignore'],
+          encoding: 'utf-8',
+        });
+        const lines = out.split('\n').filter(Boolean);
+        return {
+          format: 'tar',
+          fileCount: lines.length,
+          files: lines.map((name) => ({
+            name,
+            size: 0,
+            isDir: name.endsWith('/'),
+          })),
+        };
+      } catch {}
+    }
+    if (buffer.length >= 512 && buffer.toString('ascii', 257, 262) === 'ustar') {
+      const rawName = buffer.toString('ascii', 0, 100).replace(/\0.*$/, '');
+      return {
+        format: 'tar',
+        fileCount: rawName ? 1 : 0,
+        files: rawName ? [{ name: rawName, size: 0, isDir: false }] : [],
+      };
+    }
+    return { format: 'tar', fileCount: 0, files: [] };
   }
 
   if (fmt === '7z') {
-    const extracted = extract7zArchive(buffer);
+    const toolPath = getOracleToolPath('7z');
+    if (toolPath) {
+      const tmpPath = path.join(os.tmpdir(), `oracle_list_${crypto.randomUUID()}.7z`);
+      try {
+        fs.writeFileSync(tmpPath, buffer);
+        const out = execFileSync(toolPath, ['l', '-ba', tmpPath], {
+          stdio: ['ignore', 'pipe', 'ignore'],
+          encoding: 'utf-8',
+        });
+        const lines = out.split('\n').filter(Boolean);
+        return {
+          format: '7z',
+          fileCount: lines.length,
+          files: lines.map((l) => ({
+            name: l.trim().split(/\s+/).pop() || '',
+            size: 0,
+            isDir: false,
+          })),
+        };
+      } catch {} finally {
+        try {
+          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+        } catch {}
+      }
+    }
+
+    // Independent 7z header parser without CLI
+    const sevenZMagic = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
+    if (buffer.length < 32 || !buffer.subarray(0, 6).equals(sevenZMagic)) {
+      return { format: '7z', fileCount: 0, files: [] };
+    }
+    const nextHeaderOffset = Number(buffer.readBigUInt64LE(12));
+    const nextHeaderSize = Number(buffer.readBigUInt64LE(20));
+    const nhStart = 32 + nextHeaderOffset;
+    if (nhStart + nextHeaderSize > buffer.length || nextHeaderSize === 0) {
+      return { format: '7z', fileCount: 0, files: [] };
+    }
+    const nh = buffer.subarray(nhStart, nhStart + nextHeaderSize);
+
+    const sizes: number[] = [];
+    const unpackSizeIdx = nh.indexOf(0x0c);
+    if (unpackSizeIdx !== -1) {
+      let p = unpackSizeIdx + 1;
+      while (p < nh.length && nh[p] !== 0x0a && nh[p] !== 0x00 && nh[p] !== 0x05) {
+        const b = nh[p++];
+        sizes.push(b < 0x80 ? b : b & 0x7f);
+      }
+    }
+
+    const files: { name: string; size: number; isDir: boolean }[] = [];
+    const filesInfoIdx = nh.indexOf(0x05);
+    if (filesInfoIdx !== -1) {
+      const nameIdx = nh.indexOf(0x11, filesInfoIdx);
+      if (nameIdx !== -1) {
+        let p = nameIdx + 1;
+        while (p < nh.length && (nh[p] & 0x80) !== 0) p++;
+        p++;
+        if (p < nh.length && nh[p] === 0x00) p++;
+        const nameBuf = nh.subarray(p);
+        const str = nameBuf.toString('utf16le');
+        const names = str.split('\0').filter(Boolean);
+        for (let i = 0; i < names.length; i++) {
+          files.push({
+            name: names[i],
+            size: sizes[i] ?? 0,
+            isDir: names[i].endsWith('/'),
+          });
+        }
+      }
+    }
+
     return {
       format: '7z',
-      fileCount: extracted.length,
-      files: extracted.map((f) => ({
-        name: f.filename,
-        size: f.buffer.length,
-        isDir: false,
-      })),
+      fileCount: files.length,
+      files,
     };
   }
 

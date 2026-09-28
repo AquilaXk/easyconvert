@@ -117,13 +117,15 @@ export async function convertWithHeadlessOffice(
   inputBuffer: Buffer,
   sourceFormat: string,
   targetFormat: string,
-  options: WorkerEngineOptions = {}
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
 ): Promise<WorkerConversionResult | null> {
   const sofficeBin = resolveBinary(BINARY_PATHS.soffice);
   if (!sofficeBin) return null;
 
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
 
   return withSandboxDir('easyconvert-office-', async (tempDir) => {
@@ -154,7 +156,7 @@ export async function convertWithHeadlessOffice(
     return {
       buffer: outputBuffer,
       mimeType: getMimeType(tgt),
-      filename: `converted.${tgt}`,
+      filename: `${baseName}.${tgt}`,
       size: outputBuffer.length,
       engineUsed: 'native-soffice',
       executionTimeMs: Date.now() - startTime,
@@ -169,13 +171,15 @@ export async function convertWithNativeFfmpeg(
   inputBuffer: Buffer,
   sourceFormat: string,
   targetFormat: string,
-  options: WorkerEngineOptions = {}
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
 ): Promise<WorkerConversionResult | null> {
   const ffmpegBin = resolveBinary(BINARY_PATHS.ffmpeg);
   if (!ffmpegBin) return null;
 
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
 
   return withSandboxDir('easyconvert-ffmpeg-', async (tempDir) => {
@@ -200,7 +204,7 @@ export async function convertWithNativeFfmpeg(
     return {
       buffer: outputBuffer,
       mimeType: getMimeType(tgt),
-      filename: `converted.${tgt}`,
+      filename: `${baseName}.${tgt}`,
       size: outputBuffer.length,
       engineUsed: 'native-ffmpeg',
       executionTimeMs: Date.now() - startTime,
@@ -228,13 +232,13 @@ export async function executeWorkerConversion(
 
   // 1. Native Headless Office
   if (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt))) {
-    const officeRes = await convertWithHeadlessOffice(inputBuffer, src, tgt, options);
+    const officeRes = await convertWithHeadlessOffice(inputBuffer, src, tgt, options, originalFilename);
     if (officeRes) return officeRes;
   }
 
   // 2. Native FFmpeg
   if (MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) {
-    const ffmpegRes = await convertWithNativeFfmpeg(inputBuffer, src, tgt, options);
+    const ffmpegRes = await convertWithNativeFfmpeg(inputBuffer, src, tgt, options, originalFilename);
     if (ffmpegRes) return ffmpegRes;
   }
 

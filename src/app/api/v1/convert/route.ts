@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess } from '@/lib/api-keys/guard';
 import { keyStore } from '@/lib/api-keys/key-store';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { convertFile } from '@/lib/conversions';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
@@ -78,7 +79,7 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
 
-  // 1. Guard check: Authenticate and check quota remaining (do not consume yet)
+  // 1. Guard check: Authenticate
   const auth = await validateApiAccess(req, 0);
   if (!auth.authorized || !auth.user) {
     return NextResponse.json(
@@ -90,10 +91,25 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // 2. Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion (prevents TOCTOU races)
+  const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
+  if (!reservation.allowed) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+      },
+      { status: 429 }
+    );
+  }
+
   try {
     const formData = await req.formData();
     const validation = parseConvertFormData(formData);
     if (validation.error || !validation.data) {
+      if (reservation.reservationId) {
+        await redisKeyStore.rollbackQuota(reservation.reservationId);
+      }
       return NextResponse.json(
         { success: false, error: validation.error },
         { status: validation.status ?? 400 }
@@ -113,17 +129,11 @@ export async function POST(req: NextRequest) {
       file.name
     );
 
-    // 2. Consume quota unit upon SUCCESSFUL conversion
-    const quotaResult = await keyStore.recordUsage(auth.user.id, 1);
-    if (!quotaResult.allowed) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
-        },
-        { status: 429 }
-      );
+    // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion
+    if (reservation.reservationId) {
+      await redisKeyStore.commitQuota(reservation.reservationId);
     }
+    await keyStore.recordUsage(auth.user.id, 1);
 
     const durationMs = Date.now() - startTime;
     const outputBuffer = conversionResult.buffer;
@@ -170,6 +180,9 @@ export async function POST(req: NextRequest) {
       expiresAt: userFile.expiresAt,
     });
   } catch (err: unknown) {
+    if (reservation.reservationId) {
+      await redisKeyStore.rollbackQuota(reservation.reservationId);
+    }
     const message = err instanceof Error ? err.message : 'Internal programmatic conversion error';
     return NextResponse.json(
       { success: false, error: message },

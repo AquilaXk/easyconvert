@@ -96,7 +96,9 @@ export function buildFfmpegArguments(
   options: ConversionOptions = {},
   ffmpegBin?: string | null
 ): string[] {
-  const args: string[] = ['-y', '-i', inputPath];
+  const globalArgs: string[] = ['-y'];
+  const inputArgs: string[] = ['-i', inputPath];
+  const outputArgs: string[] = [];
 
   const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(tgt);
   const isAudioOnly = ['mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma'].includes(tgt);
@@ -104,98 +106,103 @@ export function buildFfmpegArguments(
   if (isVideo) {
     const hw = probeHardwareAcceleration(ffmpegBin);
     const disableHw = Boolean(options.disableHwaccel);
+    const driDev = fs.existsSync('/dev/dri/renderD128')
+      ? '/dev/dri/renderD128'
+      : fs.existsSync('/dev/dri/card0')
+      ? '/dev/dri/card0'
+      : null;
 
     if (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv') {
       const codec = options.videoCodec || 'h264';
       if (codec === 'h264') {
         if (!disableHw && hw.nvenc && hw.supportedEncoders.has('h264_nvenc')) {
-          args.push('-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23');
-        } else if (!disableHw && hw.vaapi && hw.supportedEncoders.has('h264_vaapi')) {
-          const driDev = fs.existsSync('/dev/dri/renderD128') ? '/dev/dri/renderD128' : '/dev/dri/card0';
-          args.push('-vaapi_device', driDev, '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-qp', '24');
+          outputArgs.push('-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23');
+        } else if (!disableHw && hw.vaapi && driDev && hw.supportedEncoders.has('h264_vaapi')) {
+          globalArgs.push('-vaapi_device', driDev);
+          outputArgs.push('-filter_hw_device', driDev, '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-qp', '24');
         } else if (!disableHw && hw.videotoolbox && hw.supportedEncoders.has('h264_videotoolbox')) {
-          args.push('-c:v', 'h264_videotoolbox', '-q:v', '65');
+          outputArgs.push('-c:v', 'h264_videotoolbox', '-q:v', '65');
         } else if (!disableHw && hw.qsv && hw.supportedEncoders.has('h264_qsv')) {
-          args.push('-c:v', 'h264_qsv', '-global_quality', '23');
+          outputArgs.push('-c:v', 'h264_qsv', '-global_quality', '23');
         } else {
-          args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
+          outputArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
         }
       } else if (codec === 'hevc') {
         if (!disableHw && hw.nvenc && hw.supportedEncoders.has('hevc_nvenc')) {
-          args.push('-c:v', 'hevc_nvenc', '-preset', 'p4', '-cq', '26');
-        } else if (!disableHw && hw.vaapi && hw.supportedEncoders.has('hevc_vaapi')) {
-          const driDev = fs.existsSync('/dev/dri/renderD128') ? '/dev/dri/renderD128' : '/dev/dri/card0';
-          args.push('-vaapi_device', driDev, '-vf', 'format=nv12,hwupload', '-c:v', 'hevc_vaapi', '-qp', '26');
+          outputArgs.push('-c:v', 'hevc_nvenc', '-preset', 'p4', '-cq', '26');
+        } else if (!disableHw && hw.vaapi && driDev && hw.supportedEncoders.has('hevc_vaapi')) {
+          globalArgs.push('-vaapi_device', driDev);
+          outputArgs.push('-filter_hw_device', driDev, '-vf', 'format=nv12,hwupload', '-c:v', 'hevc_vaapi', '-qp', '26');
         } else if (!disableHw && hw.videotoolbox && hw.supportedEncoders.has('hevc_videotoolbox')) {
-          args.push('-c:v', 'hevc_videotoolbox', '-q:v', '65');
+          outputArgs.push('-c:v', 'hevc_videotoolbox', '-q:v', '65');
         } else {
-          args.push('-c:v', 'libx265', '-preset', 'fast', '-crf', '26');
+          outputArgs.push('-c:v', 'libx265', '-preset', 'fast', '-crf', '26');
         }
       } else if (codec === 'vp9') {
-        args.push('-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0');
+        outputArgs.push('-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0');
       } else if (codec === 'av1') {
-        args.push('-c:v', 'libaom-av1', '-crf', '32', '-b:v', '0');
+        outputArgs.push('-c:v', 'libaom-av1', '-crf', '32', '-b:v', '0');
       }
 
       if (tgt === 'mp4' || tgt === 'mov') {
-        args.push('-movflags', '+faststart');
+        outputArgs.push('-movflags', '+faststart');
       }
 
-      args.push('-c:a', 'aac');
+      outputArgs.push('-c:a', 'aac');
       if (options.audioBitrate && /^\d+[kK]?$/.test(options.audioBitrate)) {
-        args.push('-b:a', options.audioBitrate);
+        outputArgs.push('-b:a', options.audioBitrate);
       } else {
-        args.push('-b:a', '192k');
+        outputArgs.push('-b:a', '192k');
       }
     } else if (tgt === 'webm') {
-      args.push('-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0');
-      args.push('-c:a', 'libopus', '-b:a', '128k');
+      outputArgs.push('-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0');
+      outputArgs.push('-c:a', 'libopus', '-b:a', '128k');
     } else if (tgt === 'avi') {
-      args.push('-c:v', 'mpeg4', '-vtag', 'XVID');
-      args.push('-c:a', 'libmp3lame', '-b:a', '192k');
+      outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID');
+      outputArgs.push('-c:a', 'libmp3lame', '-b:a', '192k');
     }
   } else if (isAudioOnly) {
     switch (tgt) {
       case 'mp3':
-        args.push('-c:a', 'libmp3lame');
+        outputArgs.push('-c:a', 'libmp3lame');
         break;
       case 'aac':
       case 'm4a':
-        args.push('-c:a', 'aac');
-        if (tgt === 'm4a') args.push('-movflags', '+faststart');
+        outputArgs.push('-c:a', 'aac');
+        if (tgt === 'm4a') outputArgs.push('-movflags', '+faststart');
         break;
       case 'ogg':
-        args.push('-c:a', 'libvorbis');
+        outputArgs.push('-c:a', 'libvorbis');
         break;
       case 'opus':
-        args.push('-c:a', 'libopus');
+        outputArgs.push('-c:a', 'libopus');
         break;
       case 'flac':
-        args.push('-c:a', 'flac');
+        outputArgs.push('-c:a', 'flac');
         break;
       case 'wav':
-        args.push('-c:a', 'pcm_s16le');
+        outputArgs.push('-c:a', 'pcm_s16le');
         break;
     }
     if (options.audioBitrate && /^\d+[kK]?$/.test(options.audioBitrate)) {
-      args.push('-b:a', options.audioBitrate);
+      outputArgs.push('-b:a', options.audioBitrate);
     }
   }
 
   // Audio channels
   if (options.audioChannels && ['mono', 'stereo', '5.1'].includes(options.audioChannels)) {
-    args.push('-ac', options.audioChannels === 'mono' ? '1' : options.audioChannels === '5.1' ? '6' : '2');
+    outputArgs.push('-ac', options.audioChannels === 'mono' ? '1' : options.audioChannels === '5.1' ? '6' : '2');
   }
 
   // Audio sample rate
   if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
-    args.push('-ar', String(options.audioSampleRate));
+    outputArgs.push('-ar', String(options.audioSampleRate));
   }
 
   // Audio volume
   if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= 200 && options.audioVolume !== 100) {
     const vol = options.audioVolume / 100;
-    args.push('-filter:a', `volume=${vol}`);
+    outputArgs.push('-filter:a', `volume=${vol}`);
   }
 
   // Video resolution
@@ -208,20 +215,19 @@ export function buildFfmpegArguments(
       '360p': '640:360',
     };
     if (resMap[options.videoResolution]) {
-      args.push('-vf', `scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`);
+      outputArgs.push('-vf', `scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`);
     }
   }
 
   // Video frame rate
   if (typeof options.videoFps === 'number' && Number.isFinite(options.videoFps) && options.videoFps > 0 && options.videoFps <= 240) {
-    args.push('-r', options.videoFps.toString());
+    outputArgs.push('-r', options.videoFps.toString());
   }
 
   // Video bitrate override
   if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0) {
-    args.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
+    outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
   }
 
-  args.push(outputPath);
-  return args;
+  return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }

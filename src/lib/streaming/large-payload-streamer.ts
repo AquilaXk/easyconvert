@@ -10,7 +10,7 @@
  * - ISO/IEC 10118-3 SHA-256 streaming verification
  */
 
-import { Readable, Transform, TransformCallback } from 'node:stream';
+import { Readable, Transform, TransformCallback, Writable, pipeline } from 'node:stream';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
@@ -188,43 +188,11 @@ export async function streamProcessLargePayload(
 
     const cleanup = () => {
       isSettled = true;
-      if (config.signal) {
-        config.signal.removeEventListener('abort', onAbort);
-      }
-      inputStream.removeListener('error', onError);
-      metricsTransform.removeListener('error', onError);
     };
 
-    const onAbort = () => {
-      if (isSettled) return;
-      cleanup();
-      inputStream.destroy();
-      metricsTransform.destroy();
-      resolve();
-    };
-
-    const onError = (err: unknown) => {
-      if (isSettled) return;
-      cleanup();
-      inputStream.destroy();
-      metricsTransform.destroy();
-      reject(err instanceof Error ? err : new Error(String(err)));
-    };
-
-    if (config.signal) {
-      if (config.signal.aborted) {
-        onAbort();
-        return;
-      }
-      config.signal.addEventListener('abort', onAbort, { once: true });
-    }
-
-    inputStream.on('error', onError);
-    metricsTransform.on('error', onError);
-
-    inputStream
-      .pipe(metricsTransform)
-      .on('data', (chunk: Buffer) => {
+    const sink = new Writable({
+      highWaterMark: config.highWaterMark ?? 64 * 1024,
+      write(chunk: Buffer, _encoding, callback) {
         totalBytes += chunk.length;
         totalChunks++;
 
@@ -232,13 +200,26 @@ export async function streamProcessLargePayload(
         if (currentHeap > peakHeap) {
           peakHeap = currentHeap;
         }
-      })
-      .on('end', () => {
-        if (!isSettled) {
-          cleanup();
+        callback();
+      },
+    });
+
+    pipeline(inputStream, metricsTransform, sink, (err) => {
+      if (isSettled) return;
+      cleanup();
+
+      if (err) {
+        if (config.signal?.aborted && (err.name === 'AbortError' || err.message?.includes('abort'))) {
           resolve();
+          return;
         }
-      });
+        // Strict Fail-Closed error propagation
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+
+      resolve();
+    });
   });
 
   const elapsedMs = Math.max(1, Date.now() - startTime);

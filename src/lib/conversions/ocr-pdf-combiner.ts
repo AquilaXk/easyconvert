@@ -278,7 +278,7 @@ export function ensureStandardFontToUnicode(doc: PDFDocument, font: PDFFont): vo
 /**
  * Encodes text safely for PDF invisible text layer embedding.
  * Preserves CJK (Korean, Chinese, Japanese) and extended Unicode code points
- * by serializing into UTF-16BE hex string format (BOM FEFF...) conforming to PDF 1.7 spec.
+ * by serializing into exact 4-character hex strings without BOM (<XXXX>) conforming to ISO 32000-1.
  */
 export function safeEncodeText(font: PDFFont, text: string): PDFHexString | null {
   const trimmed = text.trim();
@@ -295,16 +295,37 @@ export function safeEncodeText(font: PDFFont, text: string): PDFHexString | null
   }
 
   if (hasNonWinAnsi) {
-    // PDF standard supports UTF-16BE hex strings with BOM (FEFF...) for Unicode CID text layers
-    return PDFHexString.fromText(trimmed);
+    let hex = '';
+    for (let i = 0; i < trimmed.length; i++) {
+      hex += trimmed.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
+    }
+    return PDFHexString.of(hex);
   }
 
   try {
     return font.encodeText(trimmed);
   } catch {
-    // If standard font encoding throws, fallback to UTF-16BE hex string
-    return PDFHexString.fromText(trimmed);
+    let hex = '';
+    for (let i = 0; i < trimmed.length; i++) {
+      hex += trimmed.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
+    }
+    return PDFHexString.of(hex);
   }
+}
+
+/**
+ * Embeds an invisible text element on a PDF page with accurate positioning and metrics.
+ */
+export function embedInvisibleText(
+  page: PDFPage,
+  font: PDFFont,
+  text: string,
+  bbox: { x: number; y: number; width: number; height: number },
+  pageHeight: number,
+  scaleX: number = 1.0,
+  scaleY: number = 1.0
+): void {
+  renderTextItem(page, font, text, bbox, pageHeight, scaleX, scaleY);
 }
 
 function renderTextItem(
@@ -349,8 +370,13 @@ function renderTextItem(
     registerFontOnPage(page, unicodeFont);
     activeFontName = unicodeFont.fontName;
 
-    // Encode text with UTF-16BE hex string (BOM FEFF...)
-    encodedText = PDFHexString.fromText(trimmed);
+    // Serialize 16-bit CID/Unicode code points as exact 4-character hex strings without BOM (<XXXX>)
+    // Eliminates PDFHexString.fromText to prevent BOM (0xFE, 0xFF) injection, eliminating 1 em shift and Tz distortion
+    let hex = '';
+    for (let i = 0; i < trimmed.length; i++) {
+      hex += trimmed.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
+    }
+    encodedText = PDFHexString.of(hex);
 
     // Approximate character width: CJK glyphs = fontSize (1em = 1000 width), Latin glyphs = 0.5 * fontSize (500 width)
     let estimatedWidth = 0;

@@ -164,22 +164,43 @@ export class S3ObjectStorageService implements IStorageBackend {
     }
 
     const sortedPartNumbers = Array.from(session.parts.keys()).sort((a, b) => a - b);
-    const partBuffers: Buffer[] = [];
+    const objectsDir = path.join(this.baseUploadDir, 'objects');
+    try {
+      if (!fs.existsSync(objectsDir)) {
+        fs.mkdirSync(objectsDir, { recursive: true });
+      }
+    } catch {}
+
+    const finalFilePath = path.join(objectsDir, `${session.uploadId}.bin`);
+    const outFd = fs.openSync(finalFilePath, 'w');
+
     const partHashes: Buffer[] = [];
     let totalSize = 0;
+    const chunkBuf = Buffer.alloc(64 * 1024);
 
-    for (const partNum of sortedPartNumbers) {
-      const partInfo = session.parts.get(partNum)!;
-      if (!fs.existsSync(partInfo.filePath)) {
-        throw new Error(`Part file missing on disk: ${partInfo.filePath}`);
+    try {
+      for (const partNum of sortedPartNumbers) {
+        const partInfo = session.parts.get(partNum)!;
+        if (!fs.existsSync(partInfo.filePath)) {
+          throw new Error(`Part file missing on disk: ${partInfo.filePath}`);
+        }
+        const inFd = fs.openSync(partInfo.filePath, 'r');
+        const partHasher = crypto.createHash('sha256');
+        let bytesRead = 0;
+        try {
+          while ((bytesRead = fs.readSync(inFd, chunkBuf, 0, chunkBuf.length, null)) > 0) {
+            fs.writeSync(outFd, chunkBuf, 0, bytesRead);
+            partHasher.update(chunkBuf.subarray(0, bytesRead));
+          }
+        } finally {
+          fs.closeSync(inFd);
+        }
+        partHashes.push(partHasher.digest());
+        totalSize += partInfo.size;
       }
-      const data = fs.readFileSync(partInfo.filePath);
-      partBuffers.push(data);
-      partHashes.push(crypto.createHash('sha256').update(data).digest());
-      totalSize += data.length;
+    } finally {
+      fs.closeSync(outFd);
     }
-
-    const combinedBuffer = Buffer.concat(partBuffers);
 
     // S3 composite multipart ETag format: "${HASH_OF_CONCATENATED_PART_HASHES}-${PART_COUNT}"
     const compositeHash = crypto
@@ -189,15 +210,24 @@ export class S3ObjectStorageService implements IStorageBackend {
       .slice(0, 32);
     const multipartEtag = `"${compositeHash}-${sortedPartNumbers.length}"`;
 
+    let cachedBuffer: Buffer | null = null;
     const storedObject: StoredObject = {
       key: session.key,
       filename: session.filename,
       mimeType: session.mimeType,
-      buffer: combinedBuffer,
       size: totalSize,
       etag: multipartEtag,
       uploadedAt: Date.now(),
       expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      filePath: finalFilePath,
+      get buffer(): Buffer {
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(finalFilePath)) {
+          cachedBuffer = fs.readFileSync(finalFilePath);
+          return cachedBuffer;
+        }
+        return Buffer.alloc(0);
+      },
     };
 
     this.objects.set(session.key, storedObject);
@@ -260,7 +290,22 @@ export class S3ObjectStorageService implements IStorageBackend {
   }
 
   deleteObject(key: string): boolean {
+    const obj = this.objects.get(key);
+    if (obj?.filePath && fs.existsSync(obj.filePath)) {
+      try {
+        fs.rmSync(obj.filePath, { force: true });
+      } catch {}
+    }
     return this.objects.delete(key);
+  }
+
+  getObjectStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
+    const obj = this.getObject(key);
+    if (!obj) return null;
+    if (obj.filePath && fs.existsSync(obj.filePath)) {
+      return fs.createReadStream(obj.filePath, range ? { start: range.start, end: range.end } : undefined);
+    }
+    return null;
   }
 
   getActiveSessionsCount(): number {
@@ -377,6 +422,11 @@ export class S3ObjectStorageService implements IStorageBackend {
     let swept = 0;
     for (const [key, obj] of this.objects.entries()) {
       if (obj.expiresAt <= now) {
+        if (obj.filePath && fs.existsSync(obj.filePath)) {
+          try {
+            fs.rmSync(obj.filePath, { force: true });
+          } catch {}
+        }
         this.objects.delete(key);
         swept++;
       }

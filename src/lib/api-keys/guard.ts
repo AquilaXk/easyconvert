@@ -1,4 +1,5 @@
 import { keyStore } from './key-store';
+import { redisKeyStore } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
 import type { User } from '../auth/types';
 import type { ApiKey } from './types';
@@ -10,6 +11,19 @@ export interface ApiAuthResult {
   authMethod?: 'api_key' | 'session';
   error?: string;
   status?: number;
+}
+
+export function extractClientIp(request: Request): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  if (forwarded) {
+    const first = forwarded.split(',')[0].trim();
+    if (first) return first;
+  }
+  const realIp = request.headers.get('x-real-ip');
+  if (realIp) return realIp.trim();
+  const cfIp = request.headers.get('cf-connecting-ip');
+  if (cfIp) return cfIp.trim();
+  return '127.0.0.1';
 }
 
 function extractApiKeySecret(request: Request): string | null {
@@ -29,13 +43,18 @@ function extractApiKeySecret(request: Request): string | null {
   return null;
 }
 
-async function verifyKeyAccess(apiKeySecret: string, requiredUnits: number): Promise<ApiAuthResult> {
-  const verification = await keyStore.verifyApiKey(apiKeySecret);
+async function verifyKeyAccess(
+  apiKeySecret: string,
+  requiredUnits: number,
+  clientIp?: string
+): Promise<ApiAuthResult> {
+  const verification = await redisKeyStore.verifyApiKey(apiKeySecret, clientIp);
   if (!verification.valid || !verification.user || !verification.key) {
+    const isIpDenied = verification.error?.includes('IP');
     return {
       authorized: false,
-      error: 'Invalid, revoked, or non-existent API key provided',
-      status: 401,
+      error: verification.error || 'Invalid, revoked, or non-existent API key provided',
+      status: isIpDenied ? 403 : 401,
     };
   }
 
@@ -117,9 +136,10 @@ export async function validateApiAccess(
   request: Request,
   requiredUnits: number = 1
 ): Promise<ApiAuthResult> {
+  const clientIp = extractClientIp(request);
   const apiKeySecret = extractApiKeySecret(request);
   if (apiKeySecret) {
-    return verifyKeyAccess(apiKeySecret, requiredUnits);
+    return verifyKeyAccess(apiKeySecret, requiredUnits, clientIp);
   }
   return verifySessionAccess(request, requiredUnits);
 }

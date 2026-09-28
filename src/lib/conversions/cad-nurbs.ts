@@ -845,6 +845,142 @@ function isPointInParametricPolygon(pt: Parametric2DPoint, loop: Parametric2DPoi
 }
 
 /**
+ * In-circle determinant test in 2D parameter space.
+ * Returns > 0 if point D lies strictly inside the circumcircle of counter-clockwise triangle (A, B, C).
+ */
+export function inCircle2D(
+  a: Parametric2DPoint,
+  b: Parametric2DPoint,
+  c: Parametric2DPoint,
+  d: Parametric2DPoint
+): number {
+  const adx = a.u - d.u;
+  const ady = a.v - d.v;
+  const bdx = b.u - d.u;
+  const bdy = b.v - d.v;
+  const cdx = c.u - d.u;
+  const cdy = c.v - d.v;
+
+  const abdet = adx * bdy - bdx * ady;
+  const bcdet = bdx * cdy - cdx * bdy;
+  const cadet = cdx * ady - adx * cdy;
+
+  const alift = adx * adx + ady * ady;
+  const blift = bdx * bdx + bdy * bdy;
+  const clift = cdx * cdx + cdy * cdy;
+
+  return alift * bcdet + blift * cadet + clift * abdet;
+}
+
+/**
+ * Lawson edge-flip topology healing for 2D Constrained Delaunay Triangulation.
+ * Iteratively flips non-constrained internal edges violating the empty circumcircle property,
+ * healing triangle slivers and maximizing the minimum interior angle.
+ */
+export function lawsonEdgeFlipHealing2D(
+  points: Parametric2DPoint[],
+  triangles: Array<[number, number, number]>,
+  constrainedEdges: Set<string> = new Set(),
+  validHoles: Parametric2DPoint[][] = [],
+  outerLoop?: Parametric2DPoint[]
+): Array<[number, number, number]> {
+  const currentTriangles = triangles.map((t) => [...t] as [number, number, number]);
+  let flipped = true;
+  let iterations = 0;
+  const maxIterations = Math.max(50, currentTriangles.length * 3);
+
+  while (flipped && iterations < maxIterations) {
+    flipped = false;
+    iterations++;
+
+    const edgeMap = new Map<string, Array<{ triIdx: number; edgeIdx: number; oppVertex: number }>>();
+
+    for (let tIdx = 0; tIdx < currentTriangles.length; tIdx++) {
+      const tri = currentTriangles[tIdx];
+      const p0 = points[tri[0]];
+      const p1 = points[tri[1]];
+      const p2 = points[tri[2]];
+      const signedArea = (p1.u - p0.u) * (p2.v - p0.v) - (p2.u - p0.u) * (p1.v - p0.v);
+      if (signedArea < 0) {
+        const tmp = tri[1];
+        tri[1] = tri[2];
+        tri[2] = tmp;
+      }
+
+      for (let e = 0; e < 3; e++) {
+        const v1 = tri[e];
+        const v2 = tri[(e + 1) % 3];
+        const opp = tri[(e + 2) % 3];
+        const edgeKey = v1 < v2 ? `${v1}-${v2}` : `${v2}-${v1}`;
+        let list = edgeMap.get(edgeKey);
+        if (!list) {
+          list = [];
+          edgeMap.set(edgeKey, list);
+        }
+        list.push({ triIdx: tIdx, edgeIdx: e, oppVertex: opp });
+      }
+    }
+
+    for (const [edgeKey, adj] of edgeMap.entries()) {
+      if (adj.length !== 2) continue;
+      if (constrainedEdges.has(edgeKey)) continue;
+
+      const [adj1, adj2] = adj;
+      if (adj1.triIdx === adj2.triIdx) continue;
+
+      const [vA, vB] = edgeKey.split('-').map(Number);
+      const vC = adj1.oppVertex;
+      const vD = adj2.oppVertex;
+
+      const pA = points[vA];
+      const pB = points[vB];
+      const pC = points[vC];
+      const pD = points[vD];
+
+      // Strict convexity check: diagonal CD intersects segment AB
+      const crossAB_C = (pB.u - pA.u) * (pC.v - pA.v) - (pB.v - pA.v) * (pC.u - pA.u);
+      const crossAB_D = (pB.u - pA.u) * (pD.v - pA.v) - (pB.v - pA.v) * (pD.u - pA.u);
+      if (crossAB_C * crossAB_D >= -1e-12) continue;
+
+      const crossCD_A = (pD.u - pC.u) * (pA.v - pC.v) - (pD.v - pC.v) * (pA.u - pC.u);
+      const crossCD_B = (pD.u - pC.u) * (pB.v - pC.v) - (pD.v - pC.v) * (pB.u - pC.u);
+      if (crossCD_A * crossCD_B >= -1e-12) continue;
+
+      // Delaunay in-circle condition
+      const orient = crossAB_C > 0 ? [pA, pB, pC] : [pB, pA, pC];
+      if (inCircle2D(orient[0], orient[1], orient[2], pD) > 1e-9) {
+        // Verify centroids remain within valid face domain
+        const c1: Parametric2DPoint = { u: (pC.u + pD.u + pA.u) / 3, v: (pC.v + pD.v + pA.v) / 3 };
+        const c2: Parametric2DPoint = { u: (pC.u + pB.u + pD.u) / 3, v: (pC.v + pB.v + pD.v) / 3 };
+
+        let insideHole = false;
+        for (const h of validHoles) {
+          if (isPointInParametricPolygon(c1, h) || isPointInParametricPolygon(c2, h)) {
+            insideHole = true;
+            break;
+          }
+        }
+        if (insideHole) continue;
+
+        if (outerLoop) {
+          if (!isPointInParametricPolygon(c1, outerLoop) || !isPointInParametricPolygon(c2, outerLoop)) {
+            continue;
+          }
+        }
+
+        // Execute Lawson flip
+        currentTriangles[adj1.triIdx] = [vC, vD, vA];
+        currentTriangles[adj2.triIdx] = [vC, vB, vD];
+        flipped = true;
+        break;
+      }
+    }
+  }
+
+  return currentTriangles;
+}
+
+/**
  * Triangulates a trimmed B-Rep face with boundary loops in the (u, v) parameter plane
  * preserving all inner cutouts (innerHoles) via Ruppert Constrained Delaunay Triangulation (CDT)
  * and projects triangles onto the 3D NURBS surface with analytical surface normals.
@@ -1047,15 +1183,38 @@ function parametricSegmentsIntersect(
     }
   }
 
+  // 4.3 Lawson edge-flip topology healing respecting constrained outer/inner boundary loops
+  const constrainedEdges = new Set<string>();
+  for (let i = 0; i < outer.length; i++) {
+    const i0 = getOrAddPointIndex(outer[i]);
+    const i1 = getOrAddPointIndex(outer[(i + 1) % outer.length]);
+    constrainedEdges.add(i0 < i1 ? `${i0}-${i1}` : `${i1}-${i0}`);
+  }
+  for (const h of validHoles) {
+    for (let i = 0; i < h.length; i++) {
+      const i0 = getOrAddPointIndex(h[i]);
+      const i1 = getOrAddPointIndex(h[(i + 1) % h.length]);
+      constrainedEdges.add(i0 < i1 ? `${i0}-${i1}` : `${i1}-${i0}`);
+    }
+  }
+
+  const healedTriangles = lawsonEdgeFlipHealing2D(
+    uniqueParametricPoints,
+    mappedTriangles,
+    constrainedEdges,
+    validHoles,
+    outer
+  );
+
   // 5. Ruppert CDT adaptive curvature refinement on curved NURBS surfaces
   const isCurvedSurface = (surface.uDegree && surface.uDegree > 1) || (surface.vDegree && surface.vDegree > 1);
-  let finalTriangles: Array<[number, number, number]> = mappedTriangles;
+  let finalTriangles: Array<[number, number, number]> = healedTriangles;
 
   if (isCurvedSurface) {
     const refinedTriangles: Array<[number, number, number]> = [];
     const maxEdgeParametricSq = 0.45 * 0.45;
 
-    for (const [i0, i1, i2] of mappedTriangles) {
+    for (const [i0, i1, i2] of healedTriangles) {
       const p0 = uniqueParametricPoints[i0];
       const p1 = uniqueParametricPoints[i1];
       const p2 = uniqueParametricPoints[i2];
@@ -1096,6 +1255,216 @@ function parametricSegmentsIntersect(
     vertices,
     normals,
     faces: finalTriangles,
+  };
+}
+
+// ============================================================================
+// 4.3 Half-Edge Manifold Data Structure & Watertight Verification
+// ============================================================================
+
+export interface HalfEdge {
+  index: number;
+  origin: number; // vertex index
+  twin: number;   // -1 if boundary
+  next: number;   // index of next half-edge in face cycle
+  prev: number;   // index of prev half-edge in face cycle
+  face: number;   // index of face
+  edge: number;   // undirected edge index
+}
+
+export interface MeshTopologyReport {
+  isManifold: boolean;
+  isWatertight: boolean;
+  eulerCharacteristic: number; // chi = V - E + F
+  boundaryEdges: number;
+  nonManifoldEdges: number;
+  verticesCount: number;
+  edgesCount: number;
+  facesCount: number;
+  genus: number;
+  componentsCount: number;
+}
+
+export class HalfEdgeMesh {
+  public vertices: [number, number, number][];
+  public faces: [number, number, number][];
+  public halfEdges: HalfEdge[] = [];
+  public edgeCount: number = 0;
+
+  constructor(vertices: [number, number, number][], faces: [number, number, number][]) {
+    this.vertices = vertices;
+    this.faces = faces;
+    this.buildTopology();
+  }
+
+  private buildTopology(): void {
+    const directedEdgeMap = new Map<string, number>();
+    const undirectedEdgeMap = new Map<string, number>();
+    let nextEdgeIndex = 0;
+
+    for (let fIdx = 0; fIdx < this.faces.length; fIdx++) {
+      const f = this.faces[fIdx];
+      const baseHeIdx = this.halfEdges.length;
+
+      for (let i = 0; i < 3; i++) {
+        const vFrom = f[i];
+        const vTo = f[(i + 1) % 3];
+        const heIdx = baseHeIdx + i;
+        const nextIdx = baseHeIdx + ((i + 1) % 3);
+        const prevIdx = baseHeIdx + ((i + 2) % 3);
+
+        const uKey = vFrom < vTo ? `${vFrom}-${vTo}` : `${vTo}-${vFrom}`;
+        let edgeId = undirectedEdgeMap.get(uKey);
+        if (edgeId === undefined) {
+          edgeId = nextEdgeIndex++;
+          undirectedEdgeMap.set(uKey, edgeId);
+        }
+
+        const he: HalfEdge = {
+          index: heIdx,
+          origin: vFrom,
+          twin: -1,
+          next: nextIdx,
+          prev: prevIdx,
+          face: fIdx,
+          edge: edgeId,
+        };
+
+        this.halfEdges.push(he);
+        directedEdgeMap.set(`${vFrom}->${vTo}`, heIdx);
+      }
+    }
+
+    this.edgeCount = nextEdgeIndex;
+
+    // Connect twins
+    for (const he of this.halfEdges) {
+      if (he.twin !== -1) continue;
+      const vFrom = he.origin;
+      const vTo = this.halfEdges[he.next].origin;
+      const twinKey = `${vTo}->${vFrom}`;
+      const twinIdx = directedEdgeMap.get(twinKey);
+      if (twinIdx !== undefined && twinIdx !== he.index) {
+        he.twin = twinIdx;
+        this.halfEdges[twinIdx].twin = he.index;
+      }
+    }
+  }
+
+  public verifyTopology(): MeshTopologyReport {
+    return verifyWatertightManifoldMesh(this.vertices, this.faces);
+  }
+}
+
+/**
+ * Computes the Euler-Poincaré characteristic and validates watertight 2-manifold topology.
+ * For a closed watertight manifold homeomorphic to a sphere (genus 0):
+ * Euler characteristic chi = V - E + F = 2, and boundaryEdges = 0.
+ */
+export function verifyWatertightManifoldMesh(
+  vertices: [number, number, number][],
+  faces: [number, number, number][]
+): MeshTopologyReport {
+  const V = vertices.length;
+  const F = faces.length;
+  if (V === 0 || F === 0) {
+    return {
+      isManifold: false,
+      isWatertight: false,
+      eulerCharacteristic: 0,
+      boundaryEdges: 0,
+      nonManifoldEdges: 0,
+      verticesCount: V,
+      edgesCount: 0,
+      facesCount: F,
+      genus: 0,
+      componentsCount: 0,
+    };
+  }
+
+  const directedEdges = new Map<string, number>();
+  const undirectedEdges = new Map<string, number>();
+  let nonManifoldEdges = 0;
+
+  for (const [v0, v1, v2] of faces) {
+    const pairs: [number, number][] = [
+      [v0, v1],
+      [v1, v2],
+      [v2, v0],
+    ];
+    for (const [a, b] of pairs) {
+      const dirKey = `${a}->${b}`;
+      const uKey = a < b ? `${a}-${b}` : `${b}-${a}`;
+
+      directedEdges.set(dirKey, (directedEdges.get(dirKey) || 0) + 1);
+      undirectedEdges.set(uKey, (undirectedEdges.get(uKey) || 0) + 1);
+    }
+  }
+
+  let boundaryEdges = 0;
+  for (const [, count] of undirectedEdges.entries()) {
+    if (count === 1) {
+      boundaryEdges++;
+    } else if (count > 2) {
+      nonManifoldEdges++;
+    }
+  }
+
+  for (const [, count] of directedEdges.entries()) {
+    if (count > 1) {
+      nonManifoldEdges++;
+    }
+  }
+
+  const E = undirectedEdges.size;
+  const chi = V - E + F;
+
+  // Connected components via disjoint-set
+  const parent = Array.from({ length: V }, (_, i) => i);
+  const find = (i: number): number => {
+    let root = i;
+    while (root !== parent[root]) root = parent[root];
+    let curr = i;
+    while (curr !== root) {
+      const nxt = parent[curr];
+      parent[curr] = root;
+      curr = nxt;
+    }
+    return root;
+  };
+  const union = (i: number, j: number) => {
+    const ri = find(i);
+    const rj = find(j);
+    if (ri !== rj) parent[ri] = rj;
+  };
+
+  for (const [v0, v1, v2] of faces) {
+    union(v0, v1);
+    union(v1, v2);
+  }
+
+  const componentRoots = new Set<number>();
+  for (let i = 0; i < V; i++) {
+    componentRoots.add(find(i));
+  }
+  const componentsCount = componentRoots.size;
+
+  const genus = Math.max(0, Math.round((2 * componentsCount - chi) / 2));
+  const isManifold = nonManifoldEdges === 0;
+  // Watertight: manifold, 0 boundary edges, and Euler characteristic chi === 2
+  const isWatertight = isManifold && boundaryEdges === 0 && chi === 2;
+
+  return {
+    isManifold,
+    isWatertight,
+    eulerCharacteristic: chi,
+    boundaryEdges,
+    nonManifoldEdges,
+    verticesCount: V,
+    edgesCount: E,
+    facesCount: F,
+    genus,
+    componentsCount,
   };
 }
 
