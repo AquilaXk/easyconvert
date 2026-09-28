@@ -10,6 +10,10 @@ import {
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import { executeSandboxedBinary } from './sandbox';
+import {
+  createVirtualSpannedStream,
+  stitchMultiVolumeToDisk,
+} from '../lib/conversions/archive-split';
 
 export interface WorkerEngineOptions extends ConversionOptions {
   timeoutMs?: number;
@@ -314,16 +318,63 @@ export async function convertWithNative7z(
 
     // Step 1: Extract if source is an archive container, otherwise place single file into extract directory
     if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
-      await executeSandboxedBinary(
-        p7zBin,
-        ['x', '-y', `-o${extractDir}`, inputPath],
-        {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
+      if (options.archiveParts && options.archiveParts.length > 0) {
+        // Multi-volume split archive extraction via streaming or spooling
+        const { stream, metadata } = createVirtualSpannedStream(options.archiveParts as any);
+        let extractedViaStream = false;
+        try {
+          await executeSandboxedBinary(
+            p7zBin,
+            ['x', '-y', `-si${metadata.baseFilename}`, `-o${extractDir}`],
+            {
+              stdin: stream,
+              cwd: tempDir,
+              timeoutMs: timeout,
+              maxBuffer,
+              networkIsolated: true,
+            }
+          );
+          if (fs.readdirSync(extractDir).length > 0) {
+            extractedViaStream = true;
+          }
+        } catch {
+          extractedViaStream = false;
         }
-      );
+
+        if (!extractedViaStream) {
+          const stitchedDiskPath = path.join(tempDir, `stitched_${metadata.baseFilename}`);
+          try {
+            await stitchMultiVolumeToDisk(options.archiveParts as any, stitchedDiskPath);
+            await executeSandboxedBinary(
+              p7zBin,
+              ['x', '-y', `-o${extractDir}`, stitchedDiskPath],
+              {
+                cwd: tempDir,
+                timeoutMs: timeout,
+                maxBuffer,
+                networkIsolated: true,
+              }
+            );
+          } finally {
+            try {
+              if (fs.existsSync(stitchedDiskPath)) {
+                fs.unlinkSync(stitchedDiskPath);
+              }
+            } catch {}
+          }
+        }
+      } else {
+        await executeSandboxedBinary(
+          p7zBin,
+          ['x', '-y', `-o${extractDir}`, inputPath],
+          {
+            cwd: tempDir,
+            timeoutMs: timeout,
+            maxBuffer,
+            networkIsolated: true,
+          }
+        );
+      }
     } else {
       const destPath = path.join(extractDir, originalFilename || `file.${src}`);
       fs.writeFileSync(destPath, inputBuffer);

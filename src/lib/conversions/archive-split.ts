@@ -1,5 +1,5 @@
 /**
- * Multi-Volume (Split Archive) Stitching & Splitting Pipeline
+ * Multi-Volume (Split Archive) Stitching, Streaming & Splitting Pipeline
  *
  * Supports:
  * - 7z split volumes (.7z.001, .7z.002, ...)
@@ -8,9 +8,18 @@
  * - Tar split volumes (.tar.001, .tar.gz.001, ...)
  * - Generic numeric split volumes (.ext.001, .ext.002, ...)
  *
- * Enforces Fail-Closed validation against missing parts, out-of-order volumes,
- * and corrupted multi-part archives.
+ * Features:
+ * - Virtual Spanned Readable Stream (VFS Pipeline) with O(1) memory consumption
+ * - Backpressure-aware chunk delivery with single-active-FD lifecycle management
+ * - Zero-leak resource cleanup on consumer cancel / destroy
+ * - Fail-Closed validation against missing parts, sequence gaps, duplicates, and corrupt names
+ * - Direct streaming to disk and standard input (stdin)
  */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 export interface SplitArchivePartInfo {
   baseName: string;
@@ -79,6 +88,33 @@ const SPLIT_PATTERNS = [
 ];
 
 /**
+ * In-memory buffer stitching limit (500MB).
+ * Beyond this threshold, callers MUST use createVirtualSpannedStream or stitchMultiVolumeToDisk
+ * to prevent V8 heap exhaustion and Buffer.constants.MAX_LENGTH overflow.
+ */
+export const MAX_STITCH_BUFFER_SIZE = 500 * 1024 * 1024; // 500MB
+
+/**
+ * Fail-Closed error thrown when multi-volume stitching exceeds safe in-memory buffer limit.
+ */
+export class MultiVolumeBufferOverflowError extends Error {
+  public readonly code = 'ERR_MULTI_VOLUME_BUFFER_OVERFLOW';
+  public readonly totalBytes: number;
+  public readonly limitBytes: number;
+
+  constructor(totalBytes: number, limitBytes: number = MAX_STITCH_BUFFER_SIZE) {
+    super(
+      `Multi-volume archive total size (${(totalBytes / (1024 * 1024)).toFixed(1)}MB) ` +
+        `exceeds in-memory stitching limit (${(limitBytes / (1024 * 1024)).toFixed(0)}MB). ` +
+        `Use createVirtualSpannedStream() or stitchMultiVolumeToDisk() to stream without memory limits.`
+    );
+    this.name = 'MultiVolumeBufferOverflowError';
+    this.totalBytes = totalBytes;
+    this.limitBytes = limitBytes;
+  }
+}
+
+/**
  * Checks whether a filename indicates a multi-volume split archive part.
  */
 export function isSplitArchive(filename: string): boolean {
@@ -105,32 +141,84 @@ export interface StitchedArchiveResult {
   totalParts: number;
 }
 
+export interface VirtualSpannedPartSource {
+  filename: string;
+  filePath?: string;
+  buffer?: Buffer;
+  createStream?: () => NodeJS.ReadableStream;
+  sizeBytes?: number;
+}
+
+export interface VirtualSpannedStreamOptions {
+  highWaterMark?: number;
+  signal?: AbortSignal;
+  onProgress?: (bytesRead: number, totalBytes: number | null) => void;
+}
+
+export interface SpannedArchiveMetadata {
+  baseFilename: string;
+  format: 'rar' | '7z' | 'zip' | 'tar' | 'numeric';
+  totalParts: number;
+  totalSizeBytes: number | null;
+  parts: SplitArchivePartInfo[];
+}
+
 /**
- * Validates sequence completeness and stitches multi-volume archive parts into a single buffer.
- * Throws a Fail-Closed error if any volume in the sequence is missing.
+ * Normalizes, validates, and sorts split archive parts into strict ascending sequence.
+ * Enforces Fail-Closed validation against missing part 1, sequence gaps, duplicates,
+ * mismatched base archive names, and missing disk files.
  */
-export function stitchMultiVolumeArchive(
-  parts: { filename: string; buffer: Buffer }[]
-): StitchedArchiveResult {
-  if (!parts || parts.length === 0) {
-    throw new Error('Cannot stitch empty archive part list');
+export function validateAndSortSplitParts(
+  parts: Array<string | VirtualSpannedPartSource | { filename: string; buffer: Buffer }>
+): {
+  sortedParts: Array<VirtualSpannedPartSource & { info: SplitArchivePartInfo }>;
+  metadata: SpannedArchiveMetadata;
+} {
+  if (!parts || !Array.isArray(parts) || parts.length === 0) {
+    throw new Error('Cannot process empty archive part list');
   }
 
-  // Parse all parts
-  const parsedParts: Array<{
-    filename: string;
-    buffer: Buffer;
-    info: SplitArchivePartInfo;
-  }> = [];
-
+  const normalizedParts: Array<VirtualSpannedPartSource & { info: SplitArchivePartInfo }> = [];
   let commonBase: string | null = null;
-  let detectedFormat = 'bin';
+  let detectedFormat: 'rar' | '7z' | 'zip' | 'tar' | 'numeric' = 'numeric';
 
-  for (const part of parts) {
-    const info = parseSplitArchivePart(part.filename);
-    if (!info) {
-      throw new Error(`Invalid multi-volume archive filename: "${part.filename}"`);
+  for (const rawPart of parts) {
+    let source: VirtualSpannedPartSource;
+
+    if (typeof rawPart === 'string') {
+      const resolved = path.resolve(rawPart);
+      if (!fs.existsSync(resolved)) {
+        throw new Error(`Split archive part file not found on disk: "${rawPart}"`);
+      }
+      const stat = fs.statSync(resolved);
+      source = {
+        filename: path.basename(resolved),
+        filePath: resolved,
+        sizeBytes: stat.size,
+      };
+    } else {
+      source = { ...rawPart };
+      if (source.filePath) {
+        const resolved = path.resolve(source.filePath);
+        if (!fs.existsSync(resolved)) {
+          throw new Error(`Split archive part file not found on disk: "${source.filePath}"`);
+        }
+        if (source.sizeBytes === undefined) {
+          source.sizeBytes = fs.statSync(resolved).size;
+        }
+        source.filePath = resolved;
+      } else if (source.buffer) {
+        if (source.sizeBytes === undefined) {
+          source.sizeBytes = source.buffer.length;
+        }
+      }
     }
+
+    const info = parseSplitArchivePart(source.filename);
+    if (!info) {
+      throw new Error(`Invalid multi-volume archive filename: "${source.filename}"`);
+    }
+
     if (commonBase === null) {
       commonBase = info.baseName;
       detectedFormat = info.format;
@@ -139,24 +227,25 @@ export function stitchMultiVolumeArchive(
         `Mismatched multi-volume archives in batch: "${commonBase}" vs "${info.baseName}"`
       );
     }
-    parsedParts.push({ ...part, info });
+
+    normalizedParts.push({ ...source, info });
   }
 
   // Sort parts by partNumber ascending
-  parsedParts.sort((a, b) => a.info.partNumber - b.info.partNumber);
+  normalizedParts.sort((a, b) => a.info.partNumber - b.info.partNumber);
 
-  // Validate sequence starts at part 1
-  if (parsedParts[0].info.partNumber !== 1) {
+  // Validate sequence starts strictly at part 1
+  if (normalizedParts[0].info.partNumber !== 1) {
     throw new Error(
-      `Incomplete multi-volume archive for "${commonBase}": missing volume 1 (starts at volume ${parsedParts[0].info.partNumber})`
+      `Incomplete multi-volume archive for "${commonBase}": missing volume 1 (starts at volume ${normalizedParts[0].info.partNumber})`
     );
   }
 
   // Validate no duplicate volumes or gaps in sequence (1, 2, 3, ...)
-  for (let i = 0; i < parsedParts.length; i++) {
+  for (let i = 0; i < normalizedParts.length; i++) {
     const expected = i + 1;
-    const actual = parsedParts[i].info.partNumber;
-    if (i > 0 && actual === parsedParts[i - 1].info.partNumber) {
+    const actual = normalizedParts[i].info.partNumber;
+    if (i > 0 && actual === normalizedParts[i - 1].info.partNumber) {
       throw new Error(
         `Duplicate multi-volume archive part in "${commonBase}": volume ${actual} provided multiple times`
       );
@@ -168,14 +257,322 @@ export function stitchMultiVolumeArchive(
     }
   }
 
-  // Concatenate parts sequentially into unified archive buffer
-  const stitchedBuffer = Buffer.concat(parsedParts.map((p) => p.buffer));
+  let totalSizeBytes: number | null = 0;
+  for (const p of normalizedParts) {
+    if (typeof p.sizeBytes === 'number') {
+      totalSizeBytes! += p.sizeBytes;
+    } else {
+      totalSizeBytes = null;
+      break;
+    }
+  }
+
+  const metadata: SpannedArchiveMetadata = {
+    baseFilename: commonBase || 'stitched_archive.bin',
+    format: detectedFormat,
+    totalParts: normalizedParts.length,
+    totalSizeBytes,
+    parts: normalizedParts.map((p) => p.info),
+  };
+
+  return { sortedParts: normalizedParts, metadata };
+}
+
+/**
+ * Virtual Spanned Readable Stream (VFS Pipeline).
+ *
+ * Streams multi-volume archive parts sequentially as a continuous byte stream.
+ * Opens only one file descriptor / stream at a time, enforcing O(1) bounded memory
+ * and zero file descriptor leaks under backpressure and early consumer cancellation.
+ */
+export class VirtualSpannedStream extends Readable {
+  private readonly parts: VirtualSpannedPartSource[];
+  public readonly metadata: SpannedArchiveMetadata;
+  private readonly streamOptions?: VirtualSpannedStreamOptions;
+  private currentPartIndex = 0;
+  private currentChildStream: NodeJS.ReadableStream | null = null;
+  private currentBufferOffset = 0;
+  private totalBytesStreamed = 0;
+  private isDestroying = false;
+  private reading = false;
+  private abortHandler: (() => void) | null = null;
+
+  constructor(
+    parts: VirtualSpannedPartSource[],
+    metadata: SpannedArchiveMetadata,
+    options?: VirtualSpannedStreamOptions
+  ) {
+    super({
+      highWaterMark: options?.highWaterMark ?? 64 * 1024,
+    });
+    this.parts = parts;
+    this.metadata = metadata;
+    this.streamOptions = options;
+
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        queueMicrotask(() => {
+          this.destroy(options.signal!.reason || new Error('Aborted'));
+        });
+      } else {
+        this.abortHandler = () => {
+          this.destroy(options.signal!.reason || new Error('Aborted'));
+        };
+        options.signal.addEventListener('abort', this.abortHandler, { once: true });
+      }
+    }
+  }
+
+  override _read(size: number): void {
+    if (this.reading || this.isDestroying) return;
+    this.reading = true;
+    this.pump();
+  }
+
+  private pump(): void {
+    if (this.isDestroying) {
+      this.reading = false;
+      return;
+    }
+
+    // 1. If currently streaming from an active child stream, resume it if paused
+    if (this.currentChildStream) {
+      if (typeof (this.currentChildStream as any).resume === 'function') {
+        (this.currentChildStream as any).resume();
+      }
+      this.reading = false;
+      return;
+    }
+
+    // 2. Check if all parts have been consumed
+    if (this.currentPartIndex >= this.parts.length) {
+      this.reading = false;
+      this.push(null); // Signal EOF
+      return;
+    }
+
+    const currentPart = this.parts[this.currentPartIndex];
+
+    // 3. Part is an in-memory Buffer
+    if (currentPart.buffer) {
+      const buf = currentPart.buffer;
+      const hwm = this.readableHighWaterMark || 64 * 1024;
+
+      while (this.currentBufferOffset < buf.length) {
+        const end = Math.min(this.currentBufferOffset + hwm, buf.length);
+        const chunk = buf.subarray(this.currentBufferOffset, end);
+        this.currentBufferOffset = end;
+        this.totalBytesStreamed += chunk.length;
+
+        if (this.streamOptions?.onProgress) {
+          try {
+            this.streamOptions.onProgress(this.totalBytesStreamed, this.metadata.totalSizeBytes);
+          } catch {}
+        }
+
+        const canContinue = this.push(chunk);
+        if (!canContinue) {
+          // Consumer backpressure: pause until next _read
+          this.reading = false;
+          return;
+        }
+      }
+
+      // Buffer fully consumed for this part
+      this.currentBufferOffset = 0;
+      this.currentPartIndex++;
+      this.pump();
+      return;
+    }
+
+    // 4. Part is a file path or custom stream factory
+    let childStream: NodeJS.ReadableStream;
+    try {
+      if (currentPart.createStream) {
+        childStream = currentPart.createStream();
+      } else if (currentPart.filePath) {
+        childStream = fs.createReadStream(currentPart.filePath, {
+          highWaterMark: this.readableHighWaterMark || 64 * 1024,
+        });
+      } else {
+        throw new Error(
+          `Split archive part "${currentPart.filename}" has neither buffer, filePath, nor createStream.`
+        );
+      }
+    } catch (err) {
+      this.destroy(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+
+    this.currentChildStream = childStream;
+
+    const onData = (chunk: Buffer | Uint8Array | string) => {
+      if (this.isDestroying) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      this.totalBytesStreamed += buf.length;
+
+      if (this.streamOptions?.onProgress) {
+        try {
+          this.streamOptions.onProgress(this.totalBytesStreamed, this.metadata.totalSizeBytes);
+        } catch {}
+      }
+
+      const canContinue = this.push(buf);
+      if (!canContinue) {
+        // Apply backpressure by pausing child stream
+        if (typeof (childStream as any).pause === 'function') {
+          (childStream as any).pause();
+        }
+      }
+    };
+
+    const onEnd = () => {
+      const prev = childStream;
+      this.cleanupCurrentChild();
+      this.currentPartIndex++;
+
+      if (prev && typeof (prev as any).once === 'function' && (prev as any).closed === false) {
+        let proceeded = false;
+        const proceed = () => {
+          if (!proceeded) {
+            proceeded = true;
+            this.pump();
+          }
+        };
+        (prev as any).once('close', proceed);
+        setTimeout(proceed, 5);
+      } else {
+        this.pump();
+      }
+    };
+
+    const onError = (err: Error) => {
+      this.cleanupCurrentChild();
+      this.destroy(err);
+    };
+
+    childStream.on('data', onData);
+    childStream.once('end', onEnd);
+    childStream.once('error', onError);
+
+    this.reading = false;
+  }
+
+  private cleanupCurrentChild(): void {
+    if (this.currentChildStream) {
+      const s = this.currentChildStream as any;
+      if (typeof s.destroy === 'function' && !s.destroyed) {
+        try {
+          s.destroy();
+        } catch {}
+      }
+      s.removeAllListeners?.('data');
+      s.removeAllListeners?.('end');
+      s.removeAllListeners?.('error');
+      this.currentChildStream = null;
+    }
+  }
+
+  override _destroy(err: Error | null, callback: (error?: Error | null) => void): void {
+    this.isDestroying = true;
+    if (this.streamOptions?.signal && this.abortHandler) {
+      this.streamOptions.signal.removeEventListener('abort', this.abortHandler);
+      this.abortHandler = null;
+    }
+    this.cleanupCurrentChild();
+    callback(err);
+  }
+}
+
+/**
+ * Creates a Virtual Spanned Readable Stream from an array of split archive parts.
+ */
+export function createVirtualSpannedStream(
+  parts: Array<string | VirtualSpannedPartSource | { filename: string; buffer: Buffer }>,
+  options?: VirtualSpannedStreamOptions
+): { stream: VirtualSpannedStream; metadata: SpannedArchiveMetadata } {
+  const { sortedParts, metadata } = validateAndSortSplitParts(parts);
+  const stream = new VirtualSpannedStream(sortedParts, metadata, options);
+  return { stream, metadata };
+}
+
+/**
+ * Streams multi-volume archive parts directly into a unified destination disk file.
+ * Operates with O(1) memory overhead and guaranteed cleanup on failure.
+ */
+export async function stitchMultiVolumeToDisk(
+  parts: Array<string | VirtualSpannedPartSource | { filename: string; buffer: Buffer }>,
+  destinationPath: string,
+  options?: VirtualSpannedStreamOptions
+): Promise<{ destinationPath: string; bytesWritten: number; metadata: SpannedArchiveMetadata }> {
+  const { stream, metadata } = createVirtualSpannedStream(parts, options);
+  const resolvedDest = path.resolve(destinationPath);
+  const destDir = path.dirname(resolvedDest);
+  if (!fs.existsSync(destDir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+  }
+
+  const writeStream = fs.createWriteStream(resolvedDest);
+  let bytesWritten = 0;
+
+  try {
+    await pipeline(
+      stream,
+      new Transform({
+        transform(chunk, encoding, callback) {
+          const len = Buffer.isBuffer(chunk) ? chunk.length : Buffer.from(chunk).length;
+          bytesWritten += len;
+          callback(null, chunk);
+        },
+      }),
+      writeStream
+    );
+
+    return {
+      destinationPath: resolvedDest,
+      bytesWritten,
+      metadata,
+    };
+  } catch (err) {
+    try {
+      if (fs.existsSync(resolvedDest)) {
+        fs.unlinkSync(resolvedDest);
+      }
+    } catch {}
+    throw err;
+  }
+}
+
+/**
+ * Validates sequence completeness and stitches multi-volume archive parts into a single buffer.
+ * Enforces Fail-Closed validation against missing parts and memory limits.
+ *
+ * @throws {MultiVolumeBufferOverflowError} If total stitched size exceeds MAX_STITCH_BUFFER_SIZE (500MB)
+ */
+export function stitchMultiVolumeArchive(
+  parts: { filename: string; buffer: Buffer }[]
+): StitchedArchiveResult {
+  const { sortedParts, metadata } = validateAndSortSplitParts(parts);
+
+  const totalSize = sortedParts.reduce((acc, p) => acc + (p.buffer?.length ?? 0), 0);
+  if (totalSize > MAX_STITCH_BUFFER_SIZE) {
+    throw new MultiVolumeBufferOverflowError(totalSize, MAX_STITCH_BUFFER_SIZE);
+  }
+
+  const stitchedBuffer = Buffer.concat(
+    sortedParts.map((p) => {
+      if (!p.buffer) {
+        throw new Error(`Part ${p.filename} does not contain an in-memory buffer`);
+      }
+      return p.buffer;
+    })
+  );
 
   return {
     buffer: stitchedBuffer,
-    baseFilename: commonBase || 'stitched_archive.bin',
-    format: detectedFormat,
-    totalParts: parsedParts.length,
+    baseFilename: metadata.baseFilename,
+    format: metadata.format,
+    totalParts: sortedParts.length,
   };
 }
 
