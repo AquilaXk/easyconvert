@@ -468,7 +468,12 @@ async function package7zArchive(
       maxBuffer,
       networkIsolated: true,
     });
-    const subType = isTarGz ? '-tgzip' : isTarBz2 ? '-tbzip2' : '-txz';
+    let subType = '-txz';
+    if (isTarGz) {
+      subType = '-tgzip';
+    } else if (isTarBz2) {
+      subType = '-tbzip2';
+    }
     await executeSandboxedBinary(p7zBin, ['a', '-y', subType, tempOutputPath, tarPath], {
       cwd: tempDir,
       timeoutMs: timeout,
