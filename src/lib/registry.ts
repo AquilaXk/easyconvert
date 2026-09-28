@@ -1837,7 +1837,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'archive',
     description: 'Universal lossless compression archive container.',
     targetFormats: ['tar', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
-    optionsSchema: { compressionLevel: true },
+    optionsSchema: { compressionLevel: true, splitVolumeBytes: true },
   },
   tar: {
     id: 'tar',
@@ -1874,7 +1874,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'archive',
     description: 'Open-architecture high compression ratio LZMA/LZMA2 archive.',
     targetFormats: ['zip', 'tar', 'gz', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
-    optionsSchema: { compressionLevel: true },
+    optionsSchema: { compressionLevel: true, archiveCoder: true, splitVolumeBytes: true },
   },
   zst: {
     id: 'zst',
@@ -1884,7 +1884,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'archive',
     description: 'Real-time compression algorithm developed by Yann Collet with high compression ratios and ultra-fast decompression.',
     targetFormats: ['tar', 'zip', 'gz', 'bz2', 'tar.zst', 'zstd'],
-    optionsSchema: { compressionLevel: true },
+    optionsSchema: { compressionLevel: true, zstdDict: true },
   },
   zstd: {
     id: 'zstd',
@@ -1894,7 +1894,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'archive',
     description: 'High-speed lossless compression format RFC 8878.',
     targetFormats: ['tar', 'zip', 'gz', 'bz2', 'tar.zst', 'zst'],
-    optionsSchema: { compressionLevel: true },
+    optionsSchema: { compressionLevel: true, zstdDict: true },
   },
   'tar.zst': {
     id: 'tar.zst',
@@ -1941,6 +1941,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'archive',
     description: 'Proprietary multi-volume error-recovery archive format by Eugene Roshal.',
     targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz'],
+    optionsSchema: { splitVolumeBytes: true },
   },
   cab: {
     id: 'cab',

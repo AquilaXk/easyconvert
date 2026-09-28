@@ -23,6 +23,9 @@ export interface FormatOptionsSchema {
   hasHeaders?: boolean;
   sheetIndex?: boolean;
   compressionLevel?: boolean;
+  archiveCoder?: boolean;
+  splitVolumeBytes?: boolean;
+  zstdDict?: boolean;
   // Media options
   audioBitrate?: boolean;
   audioChannels?: boolean;
@@ -100,6 +103,10 @@ export interface ConversionOptions {
   sheetIndex?: number;
   // Archive options
   compressionLevel?: number;
+  archiveCoder?: 'lzma' | 'lzma2' | 'deflate' | 'copy';
+  splitVolumeBytes?: number;
+  zstdDict?: boolean | 'data' | 'office';
+  archiveParts?: { filename: string; buffer: Buffer }[];
   // Audio options
   audioBitrate?: '64k' | '96k' | '128k' | '192k' | '256k' | '320k';
   audioChannels?: 'mono' | 'stereo' | '5.1';
@@ -148,6 +155,7 @@ export interface ConversionResult {
   size: number;
   ocrExtractedText?: string;
   ocrConfidence?: number;
+  parts?: { filename: string; buffer: Buffer }[];
 }
 
 // S3 Chunked Upload Types

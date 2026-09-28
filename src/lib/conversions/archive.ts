@@ -7,9 +7,52 @@ import JSZip from 'jszip';
 import zlib from 'zlib';
 import { ConversionOptions, ConversionResult } from '../types';
 import { compressBzip2, decompressBzip2 } from './bzip2';
-import { compressZstd, decompressZstd } from './zstd';
+import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
+import {
+  compressLzma,
+  compressLzma2,
+  type LzmaCompressOptions,
+  type LzmaCompressResult,
+} from './lzma-encoder';
+import {
+  isSplitArchive,
+  parseSplitArchivePart,
+  stitchMultiVolumeArchive,
+  splitArchive,
+  type SplitArchivePartInfo,
+  type StitchedArchiveResult,
+} from './archive-split';
+import {
+  compressWithZstdDict,
+  decompressWithZstdDict,
+  getPretrainedDictionary,
+  DATA_DICTIONARY_JSON_CSV,
+  OFFICE_XML_DICTIONARY,
+  ZSTD_DICT_MAGIC,
+  type ZstdDictOptions,
+} from './zstd-dict';
 
-export { compressZstd, decompressZstd };
+export {
+  compressZstd,
+  decompressZstd,
+  compressLzma,
+  compressLzma2,
+  type LzmaCompressOptions,
+  type LzmaCompressResult,
+  isSplitArchive,
+  parseSplitArchivePart,
+  stitchMultiVolumeArchive,
+  splitArchive,
+  type SplitArchivePartInfo,
+  type StitchedArchiveResult,
+  compressWithZstdDict,
+  decompressWithZstdDict,
+  getPretrainedDictionary,
+  DATA_DICTIONARY_JSON_CSV,
+  OFFICE_XML_DICTIONARY,
+  ZSTD_DICT_MAGIC,
+  type ZstdDictOptions,
+};
 
 // Standard CRC32 table
 const CRC32_TABLE = new Uint32Array(256);
@@ -755,20 +798,18 @@ export function decompressLzma(
 
       let symbol = 1;
       if (state >= 7) {
-        // Matched literal
-        const matchByte = outPos > rep0 ? outBuf[outPos - rep0 - 1] : 0;
-        let matchBit = 0x100;
+        let matchByte = outPos > rep0 ? outBuf[outPos - rep0 - 1] : 0;
+        let matchMode = true;
         while (symbol < 0x100) {
-          matchBit <<= 1;
-          const bit = (matchByte & (matchBit >> 1)) !== 0 ? 1 : 0;
-          const probIdx = baseIdx + matchBit + (bit << 8) + symbol;
-          const subBit = decodeBit(litProbs, probIdx);
-          symbol = (symbol << 1) | subBit;
-          if (subBit !== bit) {
-            while (symbol < 0x100) {
-              symbol = (symbol << 1) | decodeBit(litProbs, baseIdx + symbol);
-            }
-            break;
+          matchByte <<= 1;
+          const matchBit = (matchByte >> 8) & 1;
+          const probIdx = matchMode
+            ? baseIdx + 0x100 + (matchBit << 8) + symbol
+            : baseIdx + symbol;
+          const bit = decodeBit(litProbs, probIdx);
+          symbol = (symbol << 1) | bit;
+          if (matchMode && bit !== matchBit) {
+            matchMode = false;
           }
         }
       } else {
@@ -842,8 +883,8 @@ export function decompressLzma(
         }
       }
 
-      if (rep0 >= outPos && rep0 >= dictSize) {
-        throw new Error(`Corrupted LZMA stream: rep distance ${rep0} exceeds dictionary size`);
+      if (rep0 >= outPos) {
+        throw new Error(`Corrupted LZMA stream: rep distance ${rep0} exceeds available decoded data (${outPos})`);
       }
 
       const copyLen = Math.min(len, unpackSize - outPos);
@@ -871,7 +912,7 @@ export function decompressLzma2(
     const control = input[inPos++];
     if (control === 0) break; // EOS
 
-    if (control >= 0xe0 || control === 1) {
+    if (control === 1 || control === 2) {
       // Uncompressed chunk
       const chunkSize = ((input[inPos++] << 8) | input[inPos++]) + 1;
       for (let i = 0; i < chunkSize && inPos < input.length && outPos < unpackSize; i++) {
@@ -961,22 +1002,44 @@ export function create7zArchive(
   const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;
   const compressionLevel = options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6;
 
+  let coderType: 'lzma' | 'lzma2' | 'deflate' | 'copy';
+  if (options.archiveCoder) {
+    coderType = options.archiveCoder;
+  } else if (!isCompressed) {
+    coderType = 'copy';
+  } else {
+    coderType = 'lzma2';
+  }
+
   const packBuffers: Buffer[] = [];
   const packSizes: number[] = [];
   const unpackSizes: number[] = [];
   const crcs: number[] = [];
+  const fileProps: Buffer[] = [];
 
   for (const f of files) {
     unpackSizes.push(f.buffer.length);
     crcs.push(crc32(f.buffer));
 
-    if (isCompressed) {
+    if (coderType === 'lzma2') {
+      const res = compressLzma2(f.buffer, { level: compressionLevel });
+      packBuffers.push(res.buffer);
+      packSizes.push(res.buffer.length);
+      fileProps.push(res.props);
+    } else if (coderType === 'lzma') {
+      const res = compressLzma(f.buffer, { level: compressionLevel });
+      packBuffers.push(res.buffer);
+      packSizes.push(res.buffer.length);
+      fileProps.push(res.props);
+    } else if (coderType === 'deflate') {
       const deflated = zlib.deflateRawSync(f.buffer, { level: compressionLevel });
       packBuffers.push(deflated);
       packSizes.push(deflated.length);
+      fileProps.push(Buffer.alloc(0));
     } else {
       packBuffers.push(f.buffer);
       packSizes.push(f.buffer.length);
+      fileProps.push(Buffer.alloc(0));
     }
   }
 
@@ -1004,10 +1067,15 @@ export function create7zArchive(
   nh.push(0x00); // external = 0
   for (let i = 0; i < files.length; i++) {
     nh.push(0x01); // numCoders = 1
-    if (isCompressed) {
-      nh.push(0x03, 0x04, 0x01, 0x08); // Deflate: 0x04 0x01 0x08
+    if (coderType === 'lzma2') {
+      nh.push(0x21, 0x21, 0x01, 0x14);
+    } else if (coderType === 'lzma') {
+      const p = fileProps[i] && fileProps[i].length === 5 ? fileProps[i] : Buffer.from([0x5d, 0x00, 0x00, 0x01, 0x00]);
+      nh.push(0x23, 0x03, 0x01, 0x01, 0x05, ...p);
+    } else if (coderType === 'deflate') {
+      nh.push(0x03, 0x04, 0x01, 0x08);
     } else {
-      nh.push(0x01, 0x00); // Copy: 0x00
+      nh.push(0x01, 0x00);
     }
   }
 
@@ -1614,15 +1682,33 @@ export async function convertArchive(
   options: ConversionOptions = {},
   originalFilename: string
 ): Promise<ConversionResult> {
-  const baseName = originalFilename.replace(/\.[^/.]+$/, '');
-  const src = sourceFormat.toLowerCase();
+  let effectiveBuffer = inputBuffer;
+  let effectiveSourceFormat = sourceFormat.toLowerCase();
+  let effectiveFilename = originalFilename;
+
+  // Stitch multi-volume archive parts if provided in options or if part sequence detected
+  const multiParts = options.archiveParts;
+  if (multiParts && Array.isArray(multiParts) && multiParts.length > 0) {
+    const stitched = stitchMultiVolumeArchive(multiParts);
+    effectiveBuffer = stitched.buffer;
+    effectiveFilename = stitched.baseFilename;
+    effectiveSourceFormat = stitched.format || effectiveSourceFormat;
+  } else if (isSplitArchive(originalFilename)) {
+    const stitched = stitchMultiVolumeArchive([{ filename: originalFilename, buffer: inputBuffer }]);
+    effectiveBuffer = stitched.buffer;
+    effectiveFilename = stitched.baseFilename;
+    effectiveSourceFormat = stitched.format || effectiveSourceFormat;
+  }
+
+  const baseName = effectiveFilename.replace(/\.[^/.]+$/, '');
+  const src = effectiveSourceFormat;
   const tgt = targetFormat.toLowerCase();
 
   // 1. Extract files from source if it is an archive
   let files: { filename: string; buffer: Buffer }[] = [];
   if (src === 'zip') {
     try {
-      files = await extractZipArchive(inputBuffer);
+      files = await extractZipArchive(effectiveBuffer);
     } catch (err) {
       if (err instanceof Error && err.message.includes('Archive bomb detected')) {
         throw err;
@@ -1631,7 +1717,7 @@ export async function convertArchive(
     }
   } else if (src === 'tar') {
     try {
-      files = extractTarArchive(inputBuffer);
+      files = extractTarArchive(effectiveBuffer);
     } catch (err) {
       if (err instanceof Error && err.message.includes('Archive bomb detected')) {
         throw err;
@@ -1640,7 +1726,7 @@ export async function convertArchive(
     }
   } else if (src === 'gz' || src === 'tgz' || src === 'tar.gz') {
     try {
-      const uncompressed = await gunzipStreamingWithLimits(inputBuffer);
+      const uncompressed = await gunzipStreamingWithLimits(effectiveBuffer);
       if (src === 'tgz' || src === 'tar.gz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
         files = extractTarArchive(uncompressed);
       } else {
@@ -1654,13 +1740,13 @@ export async function convertArchive(
     }
   } else if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || src === 'bz2' || src === 'bz') {
     try {
-      const uncompressed = decompressBzip2(inputBuffer);
+      const uncompressed = decompressBzip2(effectiveBuffer);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
         throw new Error(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
-      if (inputBuffer.length > 0 && uncompressed.length / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+      if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
         throw new Error(
           `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
@@ -1677,17 +1763,43 @@ export async function convertArchive(
       files = [];
     }
   } else if (src === 'rar') {
-    files = extractRarArchive(inputBuffer);
+    files = extractRarArchive(effectiveBuffer);
   } else if (src === '7z' || src === 'tar.7z') {
-    files = extract7zArchive(inputBuffer);
+    files = extract7zArchive(effectiveBuffer);
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
-    const uncompressed = decompressZstd(inputBuffer);
+    let uncompressed: Buffer;
+    if (options.zstdDict) {
+      const dict =
+        typeof options.zstdDict === 'string' && (options.zstdDict === 'office' || options.zstdDict === 'data')
+          ? getPretrainedDictionary(options.zstdDict)
+          : DATA_DICTIONARY_JSON_CSV;
+      uncompressed = decompressWithZstdDict(effectiveBuffer, dict);
+    } else if (
+      effectiveBuffer.length >= 13 &&
+      effectiveBuffer.subarray(0, 4).equals(ZSTD_MAGIC_LE) &&
+      (effectiveBuffer[4] & 0x03) === 3
+    ) {
+      const fcsFlag = (effectiveBuffer[4] >> 6) & 0x03;
+      const fcsBytes = fcsFlag === 0 ? 1 : fcsFlag === 1 ? 2 : fcsFlag === 2 ? 4 : 8;
+      if (effectiveBuffer.length >= 5 + fcsBytes + 4) {
+        const dictId = effectiveBuffer.readUInt32LE(5 + fcsBytes);
+        if (dictId === ZSTD_DICT_MAGIC) {
+          uncompressed = decompressWithZstdDict(effectiveBuffer, DATA_DICTIONARY_JSON_CSV);
+        } else {
+          uncompressed = decompressZstd(effectiveBuffer);
+        }
+      } else {
+        uncompressed = decompressZstd(effectiveBuffer);
+      }
+    } else {
+      uncompressed = decompressZstd(effectiveBuffer);
+    }
     if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
       throw new Error(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
-    if (inputBuffer.length > 0 && uncompressed.length / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+    if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
       throw new Error(
         `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
@@ -1700,8 +1812,10 @@ export async function convertArchive(
   }
 
   if (files.length === 0) {
-    files = [{ filename: originalFilename, buffer: inputBuffer }];
+    files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
   }
+
+  let result: ConversionResult;
 
   // 2. Target TAR.GZ or TGZ
   if (tgt === 'tar.gz' || tgt === 'tgz') {
@@ -1709,93 +1823,106 @@ export async function convertArchive(
     const gzipped = zlib.gzipSync(tarResult.buffer, {
       level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
     });
-    return {
+    result = {
       buffer: gzipped,
       mimeType: 'application/gzip',
       filename: `${baseName}.${tgt}`,
       size: gzipped.length,
     };
-  }
-
-  // 3. Target TAR.BZ2 or TBZ2 or TBZ
-  if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
+  } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
+    // 3. Target TAR.BZ2 or TBZ2 or TBZ
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
     const bz2Buffer = compressBzip2(tarResult.buffer);
-    return {
+    result = {
       buffer: bz2Buffer,
       mimeType: 'application/x-bzip-compressed-tar',
       filename: `${baseName}.${tgt}`,
       size: bz2Buffer.length,
     };
-  }
-
-  // 3.1 Target BZ2
-  if (tgt === 'bz2' || tgt === 'bz') {
-    const rawToCompress = files.length === 1 ? files[0].buffer : inputBuffer;
+  } else if (tgt === 'bz2' || tgt === 'bz') {
+    // 3.1 Target BZ2
+    const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
     const bz2Buffer = compressBzip2(rawToCompress);
-    return {
+    result = {
       buffer: bz2Buffer,
       mimeType: 'application/x-bzip2',
-      filename: `${originalFilename}.${tgt}`,
+      filename: `${effectiveFilename}.${tgt}`,
       size: bz2Buffer.length,
     };
-  }
-
-  // 4. Target 7Z
-  if (tgt === '7z' || tgt === 'tar.7z') {
-    return create7zArchive(files, options, `${baseName}.${tgt}`);
-  }
-
-  // 5. Target RAR
-  if (tgt === 'rar') {
-    return createRarArchive(files, options, `${baseName}.rar`);
-  }
-
-  // 6. Target TAR
-  if (tgt === 'tar') {
-    return createTarArchive(files, options, `${baseName}.tar`);
-  }
-
-  // 7. Target GZ
-  if (tgt === 'gz') {
-    const rawToCompress = files.length === 1 ? files[0].buffer : inputBuffer;
+  } else if (tgt === '7z' || tgt === 'tar.7z') {
+    // 4. Target 7Z
+    result = create7zArchive(files, options, `${baseName}.${tgt}`);
+  } else if (tgt === 'rar') {
+    // 5. Target RAR
+    result = createRarArchive(files, options, `${baseName}.rar`);
+  } else if (tgt === 'tar') {
+    // 6. Target TAR
+    result = createTarArchive(files, options, `${baseName}.tar`);
+  } else if (tgt === 'gz') {
+    // 7. Target GZ
+    const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
     const gzipped = zlib.gzipSync(rawToCompress, {
       level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
     });
-    return {
+    result = {
       buffer: gzipped,
       mimeType: 'application/gzip',
-      filename: `${originalFilename}.gz`,
+      filename: `${effectiveFilename}.gz`,
       size: gzipped.length,
     };
-  }
-
-  // 7.1 Target TAR.ZST
-  if (tgt === 'tar.zst') {
+  } else if (tgt === 'tar.zst') {
+    // 7.1 Target TAR.ZST
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
-    const zstdBuffer = compressZstd(tarResult.buffer);
-    return {
+    let zstdBuffer: Buffer;
+    if (options.zstdDict) {
+      const dict =
+        typeof options.zstdDict === 'string' && (options.zstdDict === 'office' || options.zstdDict === 'data')
+          ? getPretrainedDictionary(options.zstdDict)
+          : DATA_DICTIONARY_JSON_CSV;
+      zstdBuffer = compressWithZstdDict(tarResult.buffer, dict);
+    } else {
+      zstdBuffer = compressZstd(tarResult.buffer);
+    }
+    result = {
       buffer: zstdBuffer,
       mimeType: 'application/x-zstd-compressed-tar',
       filename: `${baseName}.${tgt}`,
       size: zstdBuffer.length,
     };
-  }
-
-  // 7.2 Target ZST / ZSTD
-  if (tgt === 'zst' || tgt === 'zstd') {
-    const rawToCompress = files.length === 1 ? files[0].buffer : inputBuffer;
-    const zstdBuffer = compressZstd(rawToCompress);
-    return {
+  } else if (tgt === 'zst' || tgt === 'zstd') {
+    // 7.2 Target ZST / ZSTD
+    const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
+    let zstdBuffer: Buffer;
+    if (options.zstdDict) {
+      const dict =
+        typeof options.zstdDict === 'string' && (options.zstdDict === 'office' || options.zstdDict === 'data')
+          ? getPretrainedDictionary(options.zstdDict)
+          : DATA_DICTIONARY_JSON_CSV;
+      zstdBuffer = compressWithZstdDict(rawToCompress, dict);
+    } else {
+      zstdBuffer = compressZstd(rawToCompress);
+    }
+    result = {
       buffer: zstdBuffer,
       mimeType: 'application/zstd',
-      filename: `${originalFilename}.${tgt}`,
+      filename: `${effectiveFilename}.${tgt}`,
       size: zstdBuffer.length,
+    };
+  } else {
+    // 8. Target ZIP (default)
+    result = await createZipArchive(files, options, `${baseName}.zip`);
+  }
+
+  // 9. Split Archive Volume Generation (Multi-Volume)
+  if (options.splitVolumeBytes && options.splitVolumeBytes > 0) {
+    const parts = splitArchive(result.buffer, result.filename, options.splitVolumeBytes);
+    return {
+      ...result,
+      parts,
     };
   }
 
-  // 8. Target ZIP (default)
-  return createZipArchive(files, options, `${baseName}.zip`);
+  return result;
 }
 
 export async function convertToArchive(
