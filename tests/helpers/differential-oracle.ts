@@ -1285,11 +1285,17 @@ function parse7zCliListing(toolPath: string, buffer: Buffer): ArchiveStructuralA
     return {
       format: '7z',
       fileCount: lines.length,
-      files: lines.map((l) => ({
-        name: l.trim().split(/\s+/).pop() || '',
-        size: 0,
-        isDir: false,
-      })),
+      files: lines.map((l) => {
+        const tokens = l.trim().split(/\s+/);
+        const size = tokens.length >= 4 ? parseInt(tokens[3], 10) || 0 : 0;
+        const isDir = tokens.length >= 3 && tokens[2].includes('D');
+        const name = l.length > 53 ? l.slice(53).trim() : (tokens[tokens.length - 1] || '');
+        return {
+          name,
+          size,
+          isDir,
+        };
+      }),
     };
   } catch {
     return null;
@@ -1318,41 +1324,37 @@ function extract7zHeaderFiles(nh: Buffer, sizes: number[]): { name: string; size
   const filesInfoIdx = nh.indexOf(0x05);
   if (filesInfoIdx === -1) return files;
 
-  // Search for UTF-16LE file names inside or after kFilesInfo
-  let p = filesInfoIdx + 2;
-  while (p < nh.length && nh[p] !== 0x00) {
+  // 1. Look for kName property (0x11) inside kFilesInfo
+  const namePropIdx = nh.indexOf(0x11, filesInfoIdx);
+  if (namePropIdx !== -1) {
+    let p = namePropIdx + 1;
+    while (p < nh.length && (nh[p] & 0x80) !== 0) p++;
     p++;
-    let propLen = 0;
-    if (p < nh.length) {
-      const b = nh[p++];
-      propLen = b < 0x80 ? b : b & 0x7f;
-    }
-    const external = p < nh.length ? nh[p++] : 1;
-    if (external === 0 && p < nh.length) {
-      const chunk = nh.subarray(p, Math.min(nh.length, p + propLen));
-      const names = chunk.toString('utf16le').split('\0').filter(Boolean);
-      if (names.length > 0 && names.every((n) => /^[\x20-\x7e]+$/.test(n))) {
-        for (let i = 0; i < names.length; i++) {
+    if (p < nh.length && nh[p] === 0x00) {
+      p++;
+      const namesChunk = nh.subarray(p);
+      const names = namesChunk.toString('utf16le').split('\0');
+      for (let i = 0; i < sizes.length && i < names.length; i++) {
+        if (names[i] && /^[\x20-\x7e]+$/.test(names[i])) {
           files.push({
             name: names[i],
             size: sizes[i] ?? 0,
             isDir: names[i].endsWith('/'),
           });
         }
-        return files;
       }
+      if (files.length > 0) return files;
     }
-    p += propLen;
   }
 
-  // Fallback heuristic: find sequence of UTF-16LE null-terminated ASCII characters
+  // 2. Fallback heuristic: find sequence of UTF-16LE null-terminated ASCII characters
   for (let i = filesInfoIdx; i < nh.length - 8; i++) {
     if (
       nh[i] >= 0x20 && nh[i] <= 0x7e && nh[i + 1] === 0x00 &&
       nh[i + 2] >= 0x20 && nh[i + 2] <= 0x7e && nh[i + 3] === 0x00
     ) {
-      const names = nh.subarray(i).toString('utf16le').split('\0').filter(Boolean);
-      for (let s = 0; s < names.length; s++) {
+      const names = nh.subarray(i).toString('utf16le').split('\0');
+      for (let s = 0; s < sizes.length && s < names.length; s++) {
         if (/^[\x20-\x7e]+$/.test(names[s])) {
           files.push({
             name: names[s],

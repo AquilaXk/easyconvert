@@ -129,8 +129,8 @@
       "category": "archive",
       "format": "7z",
       "relativePath": "tests/fixtures/golden/archive/enterprise-bundle.7z",
-      "sizeBytes": 220,
-      "sha256": "8d15d9ba09e622e08c8bdb88e5b3651a7b1d9874abf98843c55b44680caa5f74",
+      "sizeBytes": 271,
+      "sha256": "499bdfc71db39b905f931675eb0911006fd9055340a8009e8bab5a72d396c77a",
       "verified": true,
       "description": "7-Zip archive with multi-stream LZMA2 compression, folder structures, and valid header CRC"
     },
