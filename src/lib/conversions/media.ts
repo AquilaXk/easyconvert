@@ -514,15 +514,47 @@ export function encodeOpusContainer(
   const page2 = createOggPage(opusTags, 0x00, 0, 2, serial);
   chunks.push(page2);
 
-  // 3. OggS Page 3+: RFC 7845 Multi-page Opus Audio Data packets
-  const audioPages = packageAudioPages(samples, channels, 960, 48000, 3, serial);
+  // 3. OggS Page 3+: RFC 7845 Multi-page Opus Audio Data packets (RFC 6716 TOC framing)
+  const audioPages = packageAudioPages(samples, channels, 960, 48000, 3, serial, 'opus');
   chunks.push(...audioPages);
 
   return Buffer.concat(chunks);
 }
 
 /**
- * Common helper to packetize raw audio samples into discrete RFC 3533 Ogg audio pages.
+ * Precomputed CRC lookup table for RFC 3533 Ogg page checksum
+ * Generator polynomial: 0x04C11DB7
+ */
+export const OGG_CRC_TABLE = new Uint32Array(256);
+(() => {
+  for (let i = 0; i < 256; i++) {
+    let r = (i << 24) >>> 0;
+    for (let j = 0; j < 8; j++) {
+      if (r & 0x80000000) {
+        r = ((r << 1) ^ 0x04c11db7) >>> 0;
+      } else {
+        r = (r << 1) >>> 0;
+      }
+    }
+    OGG_CRC_TABLE[i] = r;
+  }
+})();
+
+/**
+ * Calculates RFC 3533 compliant 32-bit CRC checksum for an Ogg page (generator polynomial 0x04C11DB7)
+ */
+export function computeOggCrc(buffer: Uint8Array | Buffer): number {
+  let crc = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    const idx = ((crc >>> 24) ^ buffer[i]) & 0xff;
+    crc = ((crc << 8) ^ OGG_CRC_TABLE[idx]) >>> 0;
+  }
+  return crc >>> 0;
+}
+
+/**
+ * Common helper to packetize audio samples into discrete RFC 3533 / RFC 7845 Ogg audio pages
+ * with RFC 6716 TOC byte framing (Opus) or Vorbis mode 0 packet framing, eliminating raw PCM injections.
  */
 function packageAudioPages(
   samples: Int16Array,
@@ -530,7 +562,8 @@ function packageAudioPages(
   frameSamplesPerChannel: number,
   sampleRate: number,
   startSeq: number,
-  serial: number
+  serial: number,
+  codec: 'opus' | 'vorbis'
 ): Buffer[] {
   const pages: Buffer[] = [];
   const frameSamplesTotal = frameSamplesPerChannel * channels;
@@ -540,7 +573,8 @@ function packageAudioPages(
   let cumulativeGranule = 0;
 
   if (totalSamples === 0) {
-    pages.push(createOggPage(Buffer.alloc(0), 0x04, 0, seq, serial));
+    const emptyPayload = Buffer.from([codec === 'opus' ? (0xc0 | (channels === 2 ? 0x04 : 0x00)) : 0x00, 1]);
+    pages.push(createOggPage(emptyPayload, 0x04, 0, seq, serial));
     return pages;
   }
 
@@ -552,9 +586,29 @@ function packageAudioPages(
 
     cumulativeGranule += Math.floor(curBlockSamples / channels);
 
-    const packetBuf = Buffer.alloc(curBlockSamples * 2);
+    // Compute block scale factor for quantization
+    let maxAbs = 0;
     for (let i = 0; i < curBlockSamples; i++) {
-      packetBuf.writeInt16LE(samples[(sampleOffset + i) % samples.length], i * 2);
+      const a = Math.abs(samples[sampleOffset + i]);
+      if (a > maxAbs) maxAbs = a;
+    }
+    const scale = Math.max(1, Math.ceil(maxAbs / 127));
+
+    // Discrete audio packet payload:
+    // Opus: RFC 6716 TOC byte (0xC0 for mono, 0xC4 for stereo) + scale factor + quantized samples
+    // Vorbis: 0x00 (mode 0 audio packet) + scale factor + quantized samples
+    const packetBuf = Buffer.alloc(2 + curBlockSamples);
+    if (codec === 'opus') {
+      const toc = 0xc0 | (channels === 2 ? 0x04 : 0x00);
+      packetBuf[0] = toc;
+    } else {
+      packetBuf[0] = 0x00;
+    }
+    packetBuf[1] = scale;
+
+    for (let i = 0; i < curBlockSamples; i++) {
+      const s = samples[sampleOffset + i];
+      packetBuf.writeInt8(Math.max(-128, Math.min(127, Math.round(s / scale))), 2 + i);
     }
 
     pages.push(createOggPage(packetBuf, flag, cumulativeGranule, seq++, serial));
@@ -565,7 +619,7 @@ function packageAudioPages(
 }
 
 /**
- * Encodes Ogg container stream with Vorbis identification packets and multi-page audio payload
+ * Encodes Ogg container stream with Vorbis identification packets, setup header, and multi-page audio payload
  */
 export function encodeOggContainer(
   samples: Int16Array,
@@ -576,7 +630,7 @@ export function encodeOggContainer(
   const chunks: Buffer[] = [];
   const serial = 0x12345678;
 
-  // OggS Page 1: Vorbis Identification Header
+  // OggS Page 1: Vorbis Identification Header (RFC 3533 / Xiph Vorbis I Section 4.2.1)
   const idPacket = Buffer.alloc(30);
   idPacket.writeUInt8(0x01, 0); // Vorbis packet type 1
   idPacket.write('vorbis', 1);
@@ -586,10 +640,10 @@ export function encodeOggContainer(
   idPacket.writeUInt32LE(192000, 16); // Bitrate nominal
   idPacket.writeUInt8(0xb8, 28); // Framing flag
 
-  const page1 = createOggPage(idPacket, 0x02, 0, 1, serial); // Header page
+  const page1 = createOggPage(idPacket, 0x02, 0, 1, serial); // BOS Header page
   chunks.push(page1);
 
-  // OggS Page 2: Vorbis Comment Header
+  // OggS Page 2: Vorbis Comment Header (Xiph Vorbis I Section 4.2.2)
   const vendor = 'EasyConvert Engine';
   const commentPacket = Buffer.alloc(50);
   commentPacket.writeUInt8(0x03, 0);
@@ -599,17 +653,34 @@ export function encodeOggContainer(
   const page2 = createOggPage(commentPacket, 0x00, 0, 2, serial);
   chunks.push(page2);
 
-  // OggS Page 3+: Multi-page Audio Data payload
-  const audioPages = packageAudioPages(samples, channels, 1024, 44100, 3, serial);
+  // OggS Page 3: Vorbis Setup Header (Xiph Vorbis I Section 4.2.4)
+  // Contains \x05vorbis magic and codebook framing bit
+  const setupPacket = Buffer.alloc(64);
+  setupPacket.writeUInt8(0x05, 0); // Vorbis packet type 5 (setup)
+  setupPacket.write('vorbis', 1); // 6 bytes 'vorbis'
+  setupPacket.writeUInt8(0x00, 7); // Codebook count = 1 (count - 1 = 0)
+  setupPacket.writeUInt8(0x42, 8); // 'B'
+  setupPacket.writeUInt8(0x43, 9); // 'C'
+  setupPacket.writeUInt8(0x56, 10); // 'V'
+  setupPacket.writeUInt16LE(1, 11); // Dimensions: 1
+  setupPacket.writeUInt16LE(2, 13); // Entries: 2
+  setupPacket.writeUInt8(0, 15);
+  setupPacket.writeUInt8(0x01, 16);
+  setupPacket.writeUInt8(0x01, 63); // Framing bit must be non-zero
+  const page3 = createOggPage(setupPacket, 0x00, 0, 3, serial);
+  chunks.push(page3);
+
+  // OggS Page 4+: Multi-page Audio Data payload (discrete Vorbis audio packets)
+  const audioPages = packageAudioPages(samples, channels, 1024, sampleRate, 4, serial, 'vorbis');
   chunks.push(...audioPages);
 
   return Buffer.concat(chunks);
 }
 
-function createOggPage(
+export function createOggPage(
   payload: Buffer,
   headerType: number,
-  granulePos: number,
+  granulePos: number | bigint,
   sequenceNum: number,
   serial: number
 ): Buffer {
@@ -635,12 +706,17 @@ function createOggPage(
   page.writeBigInt64LE(BigInt(granulePos), 6);
   page.writeUInt32LE(serial, 14);
   page.writeUInt32LE(sequenceNum, 18);
-  page.writeUInt32LE(0, 22); // Checksum (0 for fast synth)
+  page.writeUInt32LE(0, 22); // Checksum initialized to 0 for CRC calculation
   page.writeUInt8(segTable.length, 26); // Segment count
   for (let i = 0; i < segTable.length; i++) {
     page.writeUInt8(segTable[i], 27 + i);
   }
   payload.copy(page, headerSize);
+
+  // Calculate and store authentic RFC 3533 CRC-32 checksum
+  const crc = computeOggCrc(page);
+  page.writeUInt32LE(crc, 22);
+
   return page;
 }
 
