@@ -1397,34 +1397,43 @@ export async function extractWithSpannedStream7z(
   };
   const typeFlag = formatMap[metadata.format] ? [`-t${formatMap[metadata.format]}`] : [];
 
-  // Strategy 1: Stdin streaming extraction via 7z x -si{baseFilename}
+  const isStreamableFormat = metadata.format === 'tar' || metadata.format === 'numeric';
   let extractionSuccess = false;
-  try {
-    const { stream } = createVirtualSpannedStream(sortedParts);
-    await executeSandboxedBinary(
-      p7zBin,
-      ['x', '-y', `-si${metadata.baseFilename}`, ...typeFlag, `-o${resolvedExtractDir}`, ...passwordArgs],
-      {
-        cwd: resolvedExtractDir,
-        stdin: stream,
-        timeoutMs,
-        maxBuffer,
-        networkIsolated: true,
-      }
-    );
-    const files = fs.readdirSync(resolvedExtractDir);
-    if (files.length > 0) {
+
+  // Strategy 1: Stdin streaming extraction via 7z x -si{baseFilename} for streamable archive formats
+  if (isStreamableFormat) {
+    try {
+      const { stream } = createVirtualSpannedStream(sortedParts);
+      await executeSandboxedBinary(
+        p7zBin,
+        ['x', '-y', `-si${metadata.baseFilename}`, ...typeFlag, `-o${resolvedExtractDir}`, ...passwordArgs],
+        {
+          cwd: resolvedExtractDir,
+          stdin: stream,
+          timeoutMs,
+          maxBuffer,
+          networkIsolated: true,
+        }
+      );
       extractionSuccess = true;
+    } catch {
+      extractionSuccess = false;
+      // Clean partially extracted entries before fallback
+      try {
+        const existing = fs.readdirSync(resolvedExtractDir);
+        for (const item of existing) {
+          fs.rmSync(path.join(resolvedExtractDir, item), { recursive: true, force: true });
+        }
+      } catch {}
     }
-  } catch {
-    extractionSuccess = false;
   }
 
-  // Strategy 2: If stdin streaming is not supported by container format,
+  // Strategy 2: If stdin streaming is not supported or rejected by container format (e.g. 7z/zip/rar central directories),
   // spool to temporary disk file in O(1) memory via stitchMultiVolumeToDisk
   if (!extractionSuccess) {
     const tmpDir = os.tmpdir();
-    const tempDiskFile = path.join(tmpDir, `spanned_stitch_${Date.now()}_${metadata.baseFilename}`);
+    const uniqueSuffix = crypto.randomBytes(6).toString('hex');
+    const tempDiskFile = path.join(tmpDir, `spanned_stitch_${Date.now()}_${uniqueSuffix}_${metadata.baseFilename}`);
     try {
       await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
       await executeSandboxedBinary(

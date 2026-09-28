@@ -10,10 +10,7 @@ import {
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import { executeSandboxedBinary } from './sandbox';
-import {
-  createVirtualSpannedStream,
-  stitchMultiVolumeToDisk,
-} from '../lib/conversions/archive-split';
+import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 
 export interface WorkerEngineOptions extends ConversionOptions {
   timeoutMs?: number;
@@ -319,50 +316,12 @@ export async function convertWithNative7z(
     // Step 1: Extract if source is an archive container, otherwise place single file into extract directory
     if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
       if (options.archiveParts && options.archiveParts.length > 0) {
-        // Multi-volume split archive extraction via streaming or spooling
-        const { stream, metadata } = createVirtualSpannedStream(options.archiveParts as any);
-        let extractedViaStream = false;
-        try {
-          await executeSandboxedBinary(
-            p7zBin,
-            ['x', '-y', `-si${metadata.baseFilename}`, `-o${extractDir}`],
-            {
-              stdin: stream,
-              cwd: tempDir,
-              timeoutMs: timeout,
-              maxBuffer,
-              networkIsolated: true,
-            }
-          );
-          if (fs.readdirSync(extractDir).length > 0) {
-            extractedViaStream = true;
-          }
-        } catch {
-          extractedViaStream = false;
-        }
-
-        if (!extractedViaStream) {
-          const stitchedDiskPath = path.join(tempDir, `stitched_${metadata.baseFilename}`);
-          try {
-            await stitchMultiVolumeToDisk(options.archiveParts as any, stitchedDiskPath);
-            await executeSandboxedBinary(
-              p7zBin,
-              ['x', '-y', `-o${extractDir}`, stitchedDiskPath],
-              {
-                cwd: tempDir,
-                timeoutMs: timeout,
-                maxBuffer,
-                networkIsolated: true,
-              }
-            );
-          } finally {
-            try {
-              if (fs.existsSync(stitchedDiskPath)) {
-                fs.unlinkSync(stitchedDiskPath);
-              }
-            } catch {}
-          }
-        }
+        // Multi-volume split archive extraction via Virtual Spanned Stream pipeline
+        await extractWithSpannedStream7z(options.archiveParts as any, extractDir, {
+          timeoutMs: timeout,
+          maxBuffer,
+          password: options.password,
+        });
       } else {
         await executeSandboxedBinary(
           p7zBin,

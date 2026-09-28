@@ -18,7 +18,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable, Transform } from 'node:stream';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 export interface SplitArchivePartInfo {
@@ -178,6 +178,16 @@ export function validateAndSortSplitParts(
     throw new Error('Cannot process empty archive part list');
   }
 
+  // Pre-scan for zip split bases (e.g. data.z01 -> baseName is data.zip)
+  const zipSplitBases = new Set<string>();
+  for (const rawPart of parts) {
+    const fn = typeof rawPart === 'string' ? path.basename(rawPart) : rawPart.filename;
+    const parsed = parseSplitArchivePart(fn);
+    if (parsed && parsed.format === 'zip') {
+      zipSplitBases.add(parsed.baseName.toLowerCase());
+    }
+  }
+
   const normalizedParts: Array<VirtualSpannedPartSource & { info: SplitArchivePartInfo }> = [];
   let commonBase: string | null = null;
   let detectedFormat: 'rar' | '7z' | 'zip' | 'tar' | 'numeric' = 'numeric';
@@ -214,7 +224,17 @@ export function validateAndSortSplitParts(
       }
     }
 
-    const info = parseSplitArchivePart(source.filename);
+    let info = parseSplitArchivePart(source.filename);
+    if (!info && zipSplitBases.has(source.filename.toLowerCase())) {
+      // Terminal .zip volume in a PKZIP multi-volume split set (e.g. name.zip along with name.z01)
+      info = {
+        baseName: source.filename,
+        partNumber: -1, // Sentinel indicating terminal volume, resolved after collecting all parts
+        totalDigits: 0,
+        extension: 'zip',
+        format: 'zip',
+      };
+    }
     if (!info) {
       throw new Error(`Invalid multi-volume archive filename: "${source.filename}"`);
     }
@@ -229,6 +249,23 @@ export function validateAndSortSplitParts(
     }
 
     normalizedParts.push({ ...source, info });
+  }
+
+  // Resolve terminal .zip volume part number (if any)
+  const terminalZipParts = normalizedParts.filter(
+    (p) => p.info.format === 'zip' && p.info.partNumber === -1
+  );
+  if (terminalZipParts.length > 1) {
+    throw new Error(
+      `Duplicate multi-volume archive part in "${commonBase}": terminal volume provided multiple times`
+    );
+  }
+  if (terminalZipParts.length === 1) {
+    const numericParts = normalizedParts.filter(
+      (p) => p.info.format === 'zip' && p.info.partNumber > 0
+    );
+    const maxPart = numericParts.reduce((max, p) => Math.max(max, p.info.partNumber), 0);
+    terminalZipParts[0].info.partNumber = maxPart + 1;
   }
 
   // Sort parts by partNumber ascending
@@ -295,6 +332,8 @@ export class VirtualSpannedStream extends Readable {
   private totalBytesStreamed = 0;
   private isDestroying = false;
   private reading = false;
+  private canPush = true;
+  private pendingTransitionTimer: NodeJS.Timeout | null = null;
   private abortHandler: (() => void) | null = null;
 
   constructor(
@@ -324,13 +363,24 @@ export class VirtualSpannedStream extends Readable {
   }
 
   override _read(size: number): void {
-    if (this.reading || this.isDestroying) return;
+    if (this.isDestroying) return;
+    this.canPush = true;
+
+    // If currently streaming from an active child stream that was paused by backpressure, resume it
+    if (this.currentChildStream) {
+      if (typeof (this.currentChildStream as any).resume === 'function') {
+        (this.currentChildStream as any).resume();
+      }
+      return;
+    }
+
+    if (this.reading) return;
     this.reading = true;
     this.pump();
   }
 
   private pump(): void {
-    if (this.isDestroying) {
+    if (this.isDestroying || !this.canPush) {
       this.reading = false;
       return;
     }
@@ -358,7 +408,7 @@ export class VirtualSpannedStream extends Readable {
       const buf = currentPart.buffer;
       const hwm = this.readableHighWaterMark || 64 * 1024;
 
-      while (this.currentBufferOffset < buf.length) {
+      while (this.canPush && this.currentBufferOffset < buf.length) {
         const end = Math.min(this.currentBufferOffset + hwm, buf.length);
         const chunk = buf.subarray(this.currentBufferOffset, end);
         this.currentBufferOffset = end;
@@ -370,18 +420,19 @@ export class VirtualSpannedStream extends Readable {
           } catch {}
         }
 
-        const canContinue = this.push(chunk);
-        if (!canContinue) {
-          // Consumer backpressure: pause until next _read
-          this.reading = false;
+        this.canPush = this.push(chunk);
+      }
+
+      if (this.currentBufferOffset >= buf.length) {
+        this.currentBufferOffset = 0;
+        this.currentPartIndex++;
+        if (this.canPush) {
+          this.pump();
           return;
         }
       }
 
-      // Buffer fully consumed for this part
-      this.currentBufferOffset = 0;
-      this.currentPartIndex++;
-      this.pump();
+      this.reading = false;
       return;
     }
 
@@ -417,8 +468,8 @@ export class VirtualSpannedStream extends Readable {
         } catch {}
       }
 
-      const canContinue = this.push(buf);
-      if (!canContinue) {
+      this.canPush = this.push(buf);
+      if (!this.canPush) {
         // Apply backpressure by pausing child stream
         if (typeof (childStream as any).pause === 'function') {
           (childStream as any).pause();
@@ -431,18 +482,25 @@ export class VirtualSpannedStream extends Readable {
       this.cleanupCurrentChild();
       this.currentPartIndex++;
 
-      if (prev && typeof (prev as any).once === 'function' && (prev as any).closed === false) {
-        let proceeded = false;
-        const proceed = () => {
-          if (!proceeded) {
-            proceeded = true;
+      let proceeded = false;
+      const proceed = () => {
+        if (!proceeded) {
+          proceeded = true;
+          if (this.pendingTransitionTimer) {
+            clearTimeout(this.pendingTransitionTimer);
+            this.pendingTransitionTimer = null;
+          }
+          if (this.canPush && !this.isDestroying) {
             this.pump();
           }
-        };
+        }
+      };
+
+      if (prev && typeof (prev as any).once === 'function' && (prev as any).closed === false) {
         (prev as any).once('close', proceed);
-        setTimeout(proceed, 5);
+        this.pendingTransitionTimer = setTimeout(proceed, 20);
       } else {
-        this.pump();
+        proceed();
       }
     };
 
@@ -459,6 +517,10 @@ export class VirtualSpannedStream extends Readable {
   }
 
   private cleanupCurrentChild(): void {
+    if (this.pendingTransitionTimer) {
+      clearTimeout(this.pendingTransitionTimer);
+      this.pendingTransitionTimer = null;
+    }
     if (this.currentChildStream) {
       const s = this.currentChildStream as any;
       if (typeof s.destroy === 'function' && !s.destroyed) {
@@ -475,6 +537,10 @@ export class VirtualSpannedStream extends Readable {
 
   override _destroy(err: Error | null, callback: (error?: Error | null) => void): void {
     this.isDestroying = true;
+    if (this.pendingTransitionTimer) {
+      clearTimeout(this.pendingTransitionTimer);
+      this.pendingTransitionTimer = null;
+    }
     if (this.streamOptions?.signal && this.abortHandler) {
       this.streamOptions.signal.removeEventListener('abort', this.abortHandler);
       this.abortHandler = null;
@@ -513,24 +579,13 @@ export async function stitchMultiVolumeToDisk(
   }
 
   const writeStream = fs.createWriteStream(resolvedDest);
-  let bytesWritten = 0;
 
   try {
-    await pipeline(
-      stream,
-      new Transform({
-        transform(chunk, encoding, callback) {
-          const len = Buffer.isBuffer(chunk) ? chunk.length : Buffer.from(chunk).length;
-          bytesWritten += len;
-          callback(null, chunk);
-        },
-      }),
-      writeStream
-    );
+    await pipeline(stream, writeStream);
 
     return {
       destinationPath: resolvedDest,
-      bytesWritten,
+      bytesWritten: writeStream.bytesWritten,
       metadata,
     };
   } catch (err) {
@@ -583,7 +638,7 @@ export function splitArchive(
   archiveBuffer: Buffer,
   baseFilename: string,
   partSizeBytes: number,
-  namingScheme?: '7z' | 'rar' | 'numeric'
+  namingScheme?: '7z' | 'rar' | 'zip' | 'numeric'
 ): { filename: string; buffer: Buffer }[] {
   if (partSizeBytes <= 0 || partSizeBytes >= archiveBuffer.length) {
     return [{ filename: baseFilename, buffer: archiveBuffer }];
@@ -597,6 +652,8 @@ export function splitArchive(
       ? '7z'
       : baseFilename.endsWith('.rar')
       ? 'rar'
+      : baseFilename.endsWith('.zip')
+      ? 'zip'
       : 'numeric');
 
   let offset = 0;
@@ -612,6 +669,14 @@ export function splitArchive(
     } else if (scheme === 'rar') {
       const baseNoExt = baseFilename.replace(/\.rar$/i, '');
       partFilename = `${baseNoExt}.part${partIndex}.rar`;
+    } else if (scheme === 'zip') {
+      const baseNoExt = baseFilename.replace(/\.zip$/i, '');
+      if (partIndex === totalParts) {
+        partFilename = `${baseNoExt}.zip`;
+      } else {
+        const padDigits = Math.max(2, String(totalParts).length);
+        partFilename = `${baseNoExt}.z${String(partIndex).padStart(padDigits, '0')}`;
+      }
     } else {
       const padDigits = Math.max(3, String(totalParts).length);
       partFilename = `${baseFilename}.${String(partIndex).padStart(padDigits, '0')}`;

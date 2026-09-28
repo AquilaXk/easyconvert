@@ -19,6 +19,7 @@ import {
   get7zBinaryPath,
   createTarArchive,
 } from '../src/lib/conversions/archive';
+import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 
 describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)', () => {
   // Helper to create temporary directory for file-based tests
@@ -536,6 +537,133 @@ describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)'
 
       const fullText = Buffer.concat(chunks).toString('utf-8');
       expect(fullText).toBe('Part 1Part 3');
+    });
+  });
+
+  // 9. Downstream Backpressure Flow Control with Small Parts
+  describe('9. Backpressure Flow Control with Small Parts & Active Child Pausing', () => {
+    it('bounds buffering and pauses part opening when downstream consumer is paused', async () => {
+      const PART_COUNT = 20;
+      const PART_SIZE = 2 * 1024; // 2KB each, total 40KB
+      const parts: VirtualSpannedPartSource[] = [];
+
+      for (let i = 1; i <= PART_COUNT; i++) {
+        parts.push({
+          filename: `backpressure.7z.${String(i).padStart(3, '0')}`,
+          buffer: crypto.randomBytes(PART_SIZE),
+        });
+      }
+
+      // High water mark 8KB
+      const { stream } = createVirtualSpannedStream(parts, { highWaterMark: 8 * 1024 });
+
+      // Read only 1KB then pause reading completely for 100ms
+      const initialChunk = await new Promise<Buffer>((resolve) => {
+        stream.once('readable', () => {
+          const chunk = stream.read(1024);
+          resolve(chunk);
+        });
+      });
+      expect(initialChunk.length).toBe(1024);
+
+      // Wait 100ms without reading any more data from stream
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Stream readableLength must remain bounded under 16KB (never buffering all 40KB)
+      expect(stream.readableLength).toBeLessThanOrEqual(16 * 1024);
+
+      // Drain remaining stream
+      let drainedBytes = initialChunk.length;
+      for await (const chunk of stream) {
+        drainedBytes += chunk.length;
+      }
+      expect(drainedBytes).toBe(PART_COUNT * PART_SIZE);
+    });
+  });
+
+  // 10. PKZIP Multi-Volume Split Archive (.z01, .z02, .zip) Parity & Splitting
+  describe('10. PKZIP Multi-Volume Split Archive (.z01, .z02, .zip)', () => {
+    it('correctly resolves terminal .zip volume, enforces ordering, and preserves SHA-256', async () => {
+      const originalPayload = crypto.randomBytes(120 * 1024); // 120KB
+      const originalHash = crypto.createHash('sha256').update(originalPayload).digest('hex');
+
+      // Split into 3 parts using splitArchive with 'zip' scheme
+      const parts = splitArchive(originalPayload, 'archive.zip', 40 * 1024, 'zip');
+      expect(parts.length).toBe(3);
+      expect(parts[0].filename).toBe('archive.z01');
+      expect(parts[1].filename).toBe('archive.z02');
+      expect(parts[2].filename).toBe('archive.zip'); // Terminal part
+
+      // Validate parts sequence
+      const { sortedParts, metadata } = validateAndSortSplitParts(parts);
+      expect(metadata.format).toBe('zip');
+      expect(metadata.totalParts).toBe(3);
+      expect(sortedParts[0].info.partNumber).toBe(1);
+      expect(sortedParts[1].info.partNumber).toBe(2);
+      expect(sortedParts[2].info.partNumber).toBe(3);
+
+      // Verify SHA-256 byte parity across stream
+      const { stream } = createVirtualSpannedStream(parts);
+      const hasher = crypto.createHash('sha256');
+      for await (const chunk of stream) {
+        hasher.update(chunk);
+      }
+      expect(hasher.digest('hex')).toBe(originalHash);
+
+      // Verify in-memory stitch
+      const stitched = stitchMultiVolumeArchive(parts);
+      expect(crypto.createHash('sha256').update(stitched.buffer).digest('hex')).toBe(originalHash);
+      expect(stitched.baseFilename).toBe('archive.zip');
+      expect(stitched.format).toBe('zip');
+    });
+
+    it('rejects incomplete PKZIP split sets with missing volumes or duplicates', () => {
+      // Missing volume 1: starts at z02
+      expect(() =>
+        validateAndSortSplitParts([
+          { filename: 'pkg.z02', buffer: Buffer.from('part2') },
+          { filename: 'pkg.zip', buffer: Buffer.from('part3') },
+        ])
+      ).toThrow(/missing volume 1/);
+
+      // Missing intermediate volume: z01 and zip without z02
+      expect(() =>
+        validateAndSortSplitParts([
+          { filename: 'pkg.z01', buffer: Buffer.from('part1') },
+          { filename: 'pkg.z03', buffer: Buffer.from('part3') },
+          { filename: 'pkg.zip', buffer: Buffer.from('part4') },
+        ])
+      ).toThrow(/missing volume 2/);
+
+      // Duplicate terminal volume
+      expect(() =>
+        validateAndSortSplitParts([
+          { filename: 'pkg.z01', buffer: Buffer.from('part1') },
+          { filename: 'pkg.zip', buffer: Buffer.from('term1') },
+          { filename: 'pkg.zip', buffer: Buffer.from('term2') },
+        ])
+      ).toThrow(/terminal volume provided multiple times/);
+    });
+  });
+
+  // 11. Process Sandbox Stdin Error Handling & TDZ Guard
+  describe('11. Process Sandbox Stdin Error Handling & Settlement Guard', () => {
+    it('safely cleans up and rejects when stdin stream encounters an early error without TDZ crash', async () => {
+      const failingStream = new Readable({
+        read() {
+          // Immediately emit error
+          this.destroy(new Error('Simulated upstream stream network failure'));
+        },
+      });
+
+      const catBin = fs.existsSync('/bin/cat') ? '/bin/cat' : '/usr/bin/cat';
+
+      await expect(
+        executeSandboxedBinary(catBin, [], {
+          stdin: failingStream,
+          timeoutMs: 2000,
+        })
+      ).rejects.toThrow('Simulated upstream stream network failure');
     });
   });
 });
