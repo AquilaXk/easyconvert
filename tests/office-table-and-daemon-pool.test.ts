@@ -220,6 +220,43 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
       const htmlString = htmlResult.buffer.toString('utf-8');
       expect(htmlString).toContain('colspan="2"');
     });
+
+    it('recursively parses nested tables inside cells and renders multi-paragraph line breaks', async () => {
+      const tableXml = `
+      <w:tbl>
+        <w:tr>
+          <w:tc>
+            <w:p><w:r><w:t>Parent Row 1 Header</w:t></w:r></w:p>
+            <w:p><w:r><w:t>Parent Subtitle Line</w:t></w:r></w:p>
+            <w:tbl>
+              <w:tr>
+                <w:tc><w:p><w:r><w:t>Nested Cell 1</w:t></w:r></w:p></w:tc>
+                <w:tc><w:p><w:r><w:t>Nested Cell 2</w:t></w:r></w:p></w:tc>
+              </w:tr>
+            </w:tbl>
+          </w:tc>
+          <w:tc>
+            <w:p><w:r><w:t>Parent Col 2</w:t></w:r></w:p>
+          </w:tc>
+        </w:tr>
+      </w:tbl>`;
+
+      const parsed = parseDocxXml(tableXml);
+      expect(parsed.tables).toHaveLength(1);
+      const parentCell = parsed.tables[0].structuredRows?.[0]?.[0];
+      expect(parentCell).toBeDefined();
+      expect(parentCell?.text).toBe('Parent Row 1 Header\nParent Subtitle Line');
+      expect(parentCell?.nestedTable).toBeDefined();
+      expect(parentCell?.nestedTable?.rows).toEqual([['Nested Cell 1', 'Nested Cell 2']]);
+
+      const docxBuffer = await buildMockDocxWithTable(tableXml);
+      const htmlResult = await convertOffice(docxBuffer, 'docx', 'html');
+      const htmlString = htmlResult.buffer.toString('utf-8');
+
+      expect(htmlString).toContain('Parent Row 1 Header<br/>Parent Subtitle Line');
+      expect(htmlString).toContain('Nested Cell 1');
+      expect(htmlString).toContain('Nested Cell 2');
+    });
   });
 
   describe('2. Resident UNO Socket Pool & Rolling Recycling', () => {

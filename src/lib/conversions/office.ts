@@ -767,6 +767,7 @@ export interface DocxTableCell {
     left?: TableBorder;
     right?: TableBorder;
   };
+  nestedTable?: DocxTable;
 }
 
 export interface DocxTable {
@@ -2590,6 +2591,148 @@ function parseDrawingBlockElement(
   return null;
 }
 
+function parseSingleDocxTable(chunk: string): DocxTable | null {
+  const rows: string[][] = [];
+  const structuredRows: DocxTableCell[][] = [];
+
+  const tblBordersEl = safeExtractFirstXmlElement(chunk, 'w:tblBorders');
+  let tblBorders: DocxTable['tblBorders'];
+  if (tblBordersEl) {
+    const bXml = tblBordersEl.content;
+    const topEl = safeExtractFirstXmlElement(bXml, 'w:top');
+    const bottomEl = safeExtractFirstXmlElement(bXml, 'w:bottom');
+    const leftEl = safeExtractFirstXmlElement(bXml, 'w:left');
+    const rightEl = safeExtractFirstXmlElement(bXml, 'w:right');
+    const inHEl = safeExtractFirstXmlElement(bXml, 'w:insideH');
+    const inVEl = safeExtractFirstXmlElement(bXml, 'w:insideV');
+    tblBorders = {
+      top: parseBorder(topEl ? topEl.raw : ''),
+      bottom: parseBorder(bottomEl ? bottomEl.raw : ''),
+      left: parseBorder(leftEl ? leftEl.raw : ''),
+      right: parseBorder(rightEl ? rightEl.raw : ''),
+      insideH: parseBorder(inHEl ? inHEl.raw : ''),
+      insideV: parseBorder(inVEl ? inVEl.raw : ''),
+    };
+  }
+
+  const trList = safeExtractXmlTags(chunk, 'w:tr');
+
+  for (const trXml of trList) {
+    const rowCells: string[] = [];
+    const sCells: DocxTableCell[] = [];
+    const isHeader = /<w:tblHeader(\/|>)/.test(trXml) || rows.length === 0;
+
+    const tcList = safeExtractXmlTags(trXml, 'w:tc');
+
+    for (const tcXml of tcList) {
+      const shdMatch = tcXml.match(/<w:shd[^>]*w:fill="([A-Fa-f0-9]{6})"/);
+      const shading = shdMatch ? shdMatch[1] : undefined;
+
+      const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
+      const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
+
+      const tcBordersEl = safeExtractFirstXmlElement(tcXml, 'w:tcBorders');
+      let borders: DocxTableCell['borders'];
+      if (tcBordersEl) {
+        const bXml = tcBordersEl.content;
+        const topEl = safeExtractFirstXmlElement(bXml, 'w:top');
+        const bottomEl = safeExtractFirstXmlElement(bXml, 'w:bottom');
+        const leftEl = safeExtractFirstXmlElement(bXml, 'w:left');
+        const rightEl = safeExtractFirstXmlElement(bXml, 'w:right');
+        borders = {
+          top: parseBorder(topEl ? topEl.raw : ''),
+          bottom: parseBorder(bottomEl ? bottomEl.raw : ''),
+          left: parseBorder(leftEl ? leftEl.raw : ''),
+          right: parseBorder(rightEl ? rightEl.raw : ''),
+        };
+      }
+
+      const jcMatch = tcXml.match(/<w:jc\b[^>]*w:val="([^"]+)"/i);
+      const alignment =
+        jcMatch && ['left', 'center', 'right'].includes(jcMatch[1])
+          ? (jcMatch[1] as 'left' | 'center' | 'right')
+          : undefined;
+
+      // Extract nested table if present inside cell
+      let nestedTable: DocxTable | undefined;
+      const nestedTblEl = safeExtractFirstXmlElement(tcXml, 'w:tbl');
+      if (nestedTblEl) {
+        nestedTable = parseSingleDocxTable(nestedTblEl.raw) ?? undefined;
+      }
+
+      // Isolate cell direct content without nested table text
+      const directTcXml = nestedTblEl ? tcXml.replace(nestedTblEl.raw, '') : tcXml;
+      const pList = safeExtractXmlTags(directTcXml, 'w:p');
+      let cellText = '';
+      if (pList.length > 0) {
+        cellText = pList
+          .map((pXml) => {
+            const tTags = safeExtractXmlTags(pXml, 'w:t');
+            return safeDecodeXmlEntities(
+              tTags.map((m) => m.replace(/<[^>]+>/g, '')).join('')
+            ).trim();
+          })
+          .filter(Boolean)
+          .join('\n');
+      } else {
+        const tTags = safeExtractXmlTags(directTcXml, 'w:t');
+        cellText = safeDecodeXmlEntities(
+          tTags.map((m) => m.replace(/<[^>]+>/g, '')).join('')
+        ).trim();
+      }
+
+      let fullCellText = cellText;
+      if (nestedTable && nestedTable.rows.length > 0) {
+        const nestedRowsText = nestedTable.rows.map((r) => r.join('\t')).join('\n');
+        fullCellText = fullCellText ? `${fullCellText}\n${nestedRowsText}` : nestedRowsText;
+      }
+
+      rowCells.push(fullCellText);
+      sCells.push({ text: cellText, shading, colSpan, isHeader, borders, alignment, nestedTable });
+    }
+
+    if (rowCells.length > 0) {
+      rows.push(rowCells);
+      structuredRows.push(sCells);
+    }
+  }
+
+  const tblGridEl = safeExtractFirstXmlElement(chunk, 'w:tblGrid');
+  let colWidths: number[] | undefined;
+  if (tblGridEl) {
+    const gridCols = safeExtractXmlTags(tblGridEl.content, 'w:gridCol');
+    const parsedWidths: number[] = [];
+    for (const colXml of gridCols) {
+      const wMatch = colXml.match(/w:w="(\d+)"/);
+      if (wMatch) {
+        parsedWidths.push(parseInt(wMatch[1], 10));
+      }
+    }
+    if (parsedWidths.length > 0) {
+      colWidths = parsedWidths;
+    }
+  }
+
+  if (rows.length === 0) return null;
+
+  const gridColCount = Math.max(
+    ...structuredRows.map((sr) =>
+      sr.reduce((sum, c) => sum + Math.max(1, c.colSpan || 1), 0)
+    ),
+    ...rows.map((r) => r.length)
+  );
+  const maxCols = colWidths && colWidths.length > 0 ? Math.max(colWidths.length, gridColCount) : gridColCount;
+
+  return {
+    rowCount: rows.length,
+    colCount: maxCols,
+    colWidths,
+    rows,
+    structuredRows,
+    tblBorders,
+  };
+}
+
 export function parseDocxXml(
   xml: string,
   chartMap?: Map<string, string>
@@ -2621,116 +2764,8 @@ export function parseDocxXml(
 
     // If chunk is a Table (<w:tbl>)
     if (chunk.startsWith('<w:tbl')) {
-      const rows: string[][] = [];
-      const structuredRows: DocxTableCell[][] = [];
-
-      const tblBordersEl = safeExtractFirstXmlElement(chunk, 'w:tblBorders');
-      let tblBorders: DocxTable['tblBorders'];
-      if (tblBordersEl) {
-        const bXml = tblBordersEl.content;
-        const topEl = safeExtractFirstXmlElement(bXml, 'w:top');
-        const bottomEl = safeExtractFirstXmlElement(bXml, 'w:bottom');
-        const leftEl = safeExtractFirstXmlElement(bXml, 'w:left');
-        const rightEl = safeExtractFirstXmlElement(bXml, 'w:right');
-        const inHEl = safeExtractFirstXmlElement(bXml, 'w:insideH');
-        const inVEl = safeExtractFirstXmlElement(bXml, 'w:insideV');
-        tblBorders = {
-          top: parseBorder(topEl ? topEl.raw : ''),
-          bottom: parseBorder(bottomEl ? bottomEl.raw : ''),
-          left: parseBorder(leftEl ? leftEl.raw : ''),
-          right: parseBorder(rightEl ? rightEl.raw : ''),
-          insideH: parseBorder(inHEl ? inHEl.raw : ''),
-          insideV: parseBorder(inVEl ? inVEl.raw : ''),
-        };
-      }
-
-      const trList = safeExtractXmlTags(chunk, 'w:tr');
-
-      for (const trXml of trList) {
-        const rowCells: string[] = [];
-        const sCells: DocxTableCell[] = [];
-        const isHeader = /<w:tblHeader(\/|>)/.test(trXml) || rows.length === 0;
-
-        const tcList = safeExtractXmlTags(trXml, 'w:tc');
-
-        for (const tcXml of tcList) {
-          const shdMatch = tcXml.match(/<w:shd[^>]*w:fill="([A-Fa-f0-9]{6})"/);
-          const shading = shdMatch ? shdMatch[1] : undefined;
-
-          const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
-          const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
-
-          const tcBordersEl = safeExtractFirstXmlElement(tcXml, 'w:tcBorders');
-          let borders: DocxTableCell['borders'];
-          if (tcBordersEl) {
-            const bXml = tcBordersEl.content;
-            const topEl = safeExtractFirstXmlElement(bXml, 'w:top');
-            const bottomEl = safeExtractFirstXmlElement(bXml, 'w:bottom');
-            const leftEl = safeExtractFirstXmlElement(bXml, 'w:left');
-            const rightEl = safeExtractFirstXmlElement(bXml, 'w:right');
-            borders = {
-              top: parseBorder(topEl ? topEl.raw : ''),
-              bottom: parseBorder(bottomEl ? bottomEl.raw : ''),
-              left: parseBorder(leftEl ? leftEl.raw : ''),
-              right: parseBorder(rightEl ? rightEl.raw : ''),
-            };
-          }
-
-          const jcMatch = tcXml.match(/<w:jc\b[^>]*w:val="([^"]+)"/i);
-          const alignment =
-            jcMatch && ['left', 'center', 'right'].includes(jcMatch[1])
-              ? (jcMatch[1] as 'left' | 'center' | 'right')
-              : undefined;
-
-          const tTags = safeExtractXmlTags(tcXml, 'w:t');
-          const cellText = safeDecodeXmlEntities(
-            tTags
-              .map((m) => m.replace(/<[^>]+>/g, ''))
-              .join('')
-          ).trim();
-
-          rowCells.push(cellText);
-          sCells.push({ text: cellText, shading, colSpan, isHeader, borders, alignment });
-        }
-
-        if (rowCells.length > 0) {
-          rows.push(rowCells);
-          structuredRows.push(sCells);
-        }
-      }
-
-      const tblGridEl = safeExtractFirstXmlElement(chunk, 'w:tblGrid');
-      let colWidths: number[] | undefined;
-      if (tblGridEl) {
-        const gridCols = safeExtractXmlTags(tblGridEl.content, 'w:gridCol');
-        const parsedWidths: number[] = [];
-        for (const colXml of gridCols) {
-          const wMatch = colXml.match(/w:w="(\d+)"/);
-          if (wMatch) {
-            parsedWidths.push(parseInt(wMatch[1], 10));
-          }
-        }
-        if (parsedWidths.length > 0) {
-          colWidths = parsedWidths;
-        }
-      }
-
-      if (rows.length > 0) {
-        const gridColCount = Math.max(
-          ...structuredRows.map((sr) =>
-            sr.reduce((sum, c) => sum + Math.max(1, c.colSpan || 1), 0)
-          ),
-          ...rows.map((r) => r.length)
-        );
-        const maxCols = colWidths && colWidths.length > 0 ? Math.max(colWidths.length, gridColCount) : gridColCount;
-        const tbl: DocxTable = {
-          rowCount: rows.length,
-          colCount: maxCols,
-          colWidths,
-          rows,
-          structuredRows,
-          tblBorders,
-        };
+      const tbl = parseSingleDocxTable(chunk);
+      if (tbl) {
         tables.push(tbl);
         elements.push({ type: 'table', table: tbl });
       }
@@ -2888,7 +2923,11 @@ function generateHtmlFromDocx(
             cellStyle += 'border:1px solid #E1E4EE;';
           }
           const colSpanAttr = cell.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
-          tblHtml += `  <${tag}${colSpanAttr} style="${cellStyle}">${escapeHtml(cell.text)}</${tag}>\n`;
+          let cellInner = escapeHtml(cell.text).replace(/\n/g, '<br/>');
+          if (cell.nestedTable) {
+            cellInner += (cellInner ? '<br/>' : '') + renderTable(cell.nestedTable);
+          }
+          tblHtml += `  <${tag}${colSpanAttr} style="${cellStyle}">${cellInner}</${tag}>\n`;
         });
         tblHtml += '</tr>\n';
       });
@@ -2955,9 +2994,12 @@ function generateMarkdownFromDocx(
 
   const renderTable = (tbl: DocxTable): string => {
     if (tbl.rows.length === 0) return '';
-    const header = `| ${tbl.rows[0].join(' | ')} |`;
-    const sep = `| ${tbl.rows[0].map(() => '---').join(' | ')} |`;
-    const body = tbl.rows
+    const cleanRows = tbl.rows.map((r) =>
+      r.map((c) => c.replace(/\n/g, ' ').replace(/\|/g, '\\|'))
+    );
+    const header = `| ${cleanRows[0].join(' | ')} |`;
+    const sep = `| ${cleanRows[0].map(() => '---').join(' | ')} |`;
+    const body = cleanRows
       .slice(1)
       .map((r) => `| ${r.join(' | ')} |`)
       .join('\n');

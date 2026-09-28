@@ -298,6 +298,41 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       expect(data.title || data.error || data.detail).toMatch(/spoof|invalid/i);
     });
 
+    it('fails closed (400 Bad Request) when storageKey points to an empty storage object', async () => {
+      const user = await redisUserStore.createUser({
+        email: 'queue-empty-storage@example.com',
+        name: 'Empty Storage User',
+        tier: 'pro',
+      });
+      const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key Empty Store', {
+        scopes: ['convert:write'],
+      });
+
+      // Save an empty 0-byte buffer under a .txt storage key
+      const key = `uploads/test_empty_${Date.now()}_empty.txt`;
+      storageProvider.saveObject(key, Buffer.alloc(0), 'text/plain', 'empty.txt');
+
+      const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          originalFilename: 'empty.txt',
+          sourceFormat: 'txt',
+          targetFormat: 'pdf',
+          storageKey: key,
+        }),
+      });
+
+      const res = await jobsPostHandler(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.title).toMatch(/empty/i);
+      expect(data.detail).toMatch(/empty or unreadable/i);
+    });
+
     it('enqueues authentic storageKey job successfully without memory bloat', async () => {
       const user = await redisUserStore.createUser({
         email: 'queue-storage-success@example.com',

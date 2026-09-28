@@ -13,6 +13,10 @@ export function assertNotSpoofedFilePath(
   if (!fs.existsSync(filePath)) {
     throw new Error(`File not found on disk: "${filePath}". Operation failed closed.`);
   }
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile()) {
+    throw new Error(`Target path is not a regular file: "${filePath}". Operation failed closed.`);
+  }
   const fd = fs.openSync(filePath, 'r');
   try {
     const headerBuf = Buffer.alloc(8192);
