@@ -74,6 +74,8 @@ export interface IStorageBackend {
   ): boolean;
 }
 
+import { globalSharedObjects } from './shared-store';
+
 /**
  * Oracle Cloud Infrastructure (OCI) Object Storage Service
  * Implements OCI Native Object Storage Multipart & OCI S3-Compatibility API.
@@ -299,6 +301,7 @@ export class OciObjectStorageService implements IStorageBackend {
     session.parts.clear();
 
     this.objects.set(session.key, stored);
+    globalSharedObjects.set(session.key, stored);
     this.sessions.delete(uploadId);
 
     return {
@@ -350,9 +353,11 @@ export class OciObjectStorageService implements IStorageBackend {
       expiresAt: now + ttlMs,
     };
     this.objects.set(ociKey, stored);
+    globalSharedObjects.set(ociKey, stored);
     // Also index by raw key for convenient lookup
     if (key !== ociKey) {
       this.objects.set(key, stored);
+      globalSharedObjects.set(key, stored);
     }
     return stored;
   }
@@ -361,7 +366,7 @@ export class OciObjectStorageService implements IStorageBackend {
    * Retrieve stored object by key with lazy expiration check
    */
   getObject(key: string): OciStoredObject | undefined {
-    const obj = this.objects.get(key);
+    const obj = this.objects.get(key) || globalSharedObjects.get(key);
     if (!obj) return undefined;
 
     // Lazy expiration eviction
@@ -377,6 +382,7 @@ export class OciObjectStorageService implements IStorageBackend {
    * Delete object from OCI Object Storage and cryptographically shred buffer
    */
   deleteObject(key: string): boolean {
+    globalSharedObjects.delete(key);
     const obj = this.objects.get(key);
     if (!obj) return false;
 

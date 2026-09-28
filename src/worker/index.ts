@@ -1,7 +1,7 @@
 import { conversionQueue } from '../lib/queue/conversion-queue';
 import { Worker, Job } from '../lib/queue/bullmq-engine';
 import { ConversionJobData, ConversionJobResult } from '../lib/types';
-import { ociStorage } from '../lib/storage/oci-storage';
+import { storageProvider as ociStorage } from '../lib/storage';
 import { executeWorkerConversion, WorkerConversionResult } from './engines';
 import { secureShredBuffer } from '../lib/security/memory-shredder';
 

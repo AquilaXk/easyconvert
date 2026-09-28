@@ -28,6 +28,8 @@ interface S3MultipartSession {
   parts: Map<number, { filePath: string; etag: string; size: number }>;
 }
 
+import { globalSharedObjects } from './shared-store';
+
 /**
  * Enterprise Zero-Heap S3 / R2 Object Storage Service.
  * Implements disk-backed chunk streaming (part-${partNumber}.bin) to keep Node.js heap flat
@@ -231,6 +233,7 @@ export class S3ObjectStorageService implements IStorageBackend {
     };
 
     this.objects.set(session.key, storedObject);
+    globalSharedObjects.set(session.key, storedObject);
 
     // Clean up temporary disk chunk directory
     try {
@@ -282,14 +285,16 @@ export class S3ObjectStorageService implements IStorageBackend {
       expiresAt: Date.now() + ttlMs,
     };
     this.objects.set(key, obj);
+    globalSharedObjects.set(key, obj);
     return obj;
   }
 
   getObject(key: string): StoredObject | undefined {
-    return this.objects.get(key);
+    return this.objects.get(key) || globalSharedObjects.get(key);
   }
 
   deleteObject(key: string): boolean {
+    globalSharedObjects.delete(key);
     const obj = this.objects.get(key);
     if (obj?.filePath && fs.existsSync(obj.filePath)) {
       try {
