@@ -235,5 +235,19 @@ export function buildFfmpegArguments(
     outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
   }
 
+  // Ensure odd video dimensions are normalized for H.264/HEVC/yuv420p to avoid encoder crashes
+  if (isVideo && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
+    const codec = options.videoCodec || 'h264';
+    if (codec === 'h264' || codec === 'hevc') {
+      const vfIdx = outputArgs.indexOf('-vf');
+      if (vfIdx === -1) {
+        outputArgs.push('-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2');
+      }
+      if (!outputArgs.includes('-pix_fmt')) {
+        outputArgs.push('-pix_fmt', 'yuv420p');
+      }
+    }
+  }
+
   return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }

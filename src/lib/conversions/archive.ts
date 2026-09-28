@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import zlib from 'zlib';
-import { ConversionOptions, ConversionResult } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
 import {
@@ -643,6 +643,10 @@ export function decompressLzma(
   props: Buffer | Uint8Array,
   unpackSize: number
 ): Buffer {
+  if (unpackSize === 0) {
+    return Buffer.alloc(0);
+  }
+
   if (props.length < 5) {
     throw new Error('Invalid LZMA properties header: expected at least 5 bytes');
   }
@@ -1707,11 +1711,17 @@ export async function convertArchive(
   // 1. Extract files from source if it is an archive
   let files: { filename: string; buffer: Buffer }[] = [];
   if (src === 'zip') {
+    const hasZipMagic =
+      effectiveBuffer.length >= 4 &&
+      effectiveBuffer[0] === 0x50 &&
+      effectiveBuffer[1] === 0x4b;
     try {
       files = await extractZipArchive(effectiveBuffer);
     } catch (err) {
-      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
-        throw err;
+      if (hasZipMagic || (err instanceof Error && err.message.includes('Archive bomb detected'))) {
+        throw new ConversionFailedError(
+          `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+        );
       }
       files = [];
     }
@@ -1719,10 +1729,9 @@ export async function convertArchive(
     try {
       files = extractTarArchive(effectiveBuffer);
     } catch (err) {
-      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
-        throw err;
-      }
-      files = [];
+      throw new ConversionFailedError(
+        `Failed to extract TAR archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   } else if (src === 'gz' || src === 'tgz' || src === 'tar.gz') {
     try {
@@ -1733,10 +1742,9 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
-        throw err;
-      }
-      files = [];
+      throw new ConversionFailedError(
+        `Failed to decompress GZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   } else if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || src === 'bz2' || src === 'bz') {
     try {
@@ -1757,10 +1765,9 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('Archive bomb detected')) {
-        throw err;
-      }
-      files = [];
+      throw new ConversionFailedError(
+        `Failed to decompress BZIP2 archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   } else if (src === 'rar') {
     files = extractRarArchive(effectiveBuffer);
@@ -1811,8 +1818,41 @@ export async function convertArchive(
     }
   }
 
+  const ARCHIVE_CONTAINER_FORMATS = new Set([
+    'zip',
+    'tar',
+    'gz',
+    'tgz',
+    'tar.gz',
+    'bz2',
+    'tar.bz2',
+    'tbz',
+    'tbz2',
+    '7z',
+    'tar.7z',
+    'rar',
+    'zst',
+    'zstd',
+    'tar.zst',
+  ]);
   if (files.length === 0) {
-    files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
+    const hasZipMagic =
+      src === 'zip' &&
+      effectiveBuffer.length >= 4 &&
+      effectiveBuffer[0] === 0x50 &&
+      effectiveBuffer[1] === 0x4b;
+    if (hasZipMagic) {
+      // Valid empty zip archive: retain files = [] so empty target archive is generated
+    } else if (ARCHIVE_CONTAINER_FORMATS.has(src)) {
+      if (src !== 'zip') {
+        throw new ConversionFailedError(
+          `Failed to extract any files from source archive '${effectiveFilename}' (corrupt or invalid archive format)`
+        );
+      }
+      files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
+    } else {
+      files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
+    }
   }
 
   let result: ConversionResult;
