@@ -2557,6 +2557,10 @@ export function tessellateCurvesToMesh(curves: BSplineCurve[], modelName: string
     const diag = Math.hypot(bbox.maxX - bbox.minX, bbox.maxY - bbox.minY, bbox.maxZ - bbox.minZ);
     const ribbonHalfWidth = Math.max(1e-4, diag * 0.005);
 
+    const leftRibbon: [number, number, number][] = [];
+    const rightRibbon: [number, number, number][] = [];
+    const ribbonNorms: [number, number, number][] = [];
+
     for (let i = 0; i < c1.length; i++) {
       const prev = c1[Math.max(0, i - 1)];
       const next = c1[Math.min(c1.length - 1, i + 1)];
@@ -2576,31 +2580,13 @@ export function tessellateCurvesToMesh(curves: BSplineCurve[], modelName: string
           nx = 0; ny = 0; nz = 1;
         }
       }
-      vertices.push([c1[i].x - nx * ribbonHalfWidth, c1[i].y - ny * ribbonHalfWidth, c1[i].z - nz * ribbonHalfWidth]);
-      normals.push([nx, ny, nz]);
+      leftRibbon.push([c1[i].x - nx * ribbonHalfWidth, c1[i].y - ny * ribbonHalfWidth, c1[i].z - nz * ribbonHalfWidth]);
+      rightRibbon.push([c1[i].x + nx * ribbonHalfWidth, c1[i].y + ny * ribbonHalfWidth, c1[i].z + nz * ribbonHalfWidth]);
+      ribbonNorms.push([nx, ny, nz]);
     }
-    for (let i = 0; i < c1.length; i++) {
-      const prev = c1[Math.max(0, i - 1)];
-      const next = c1[Math.min(c1.length - 1, i + 1)];
-      const tx = next.x - prev.x, ty = next.y - prev.y, tz = next.z - prev.z;
-      const tLen = Math.hypot(tx, ty, tz);
-      let nx = 0, ny = 0, nz = 1;
-      if (tLen > 1e-8) {
-        const utx = tx / tLen, uty = ty / tLen, utz = tz / tLen;
-        const ref = Math.abs(uty) > 0.9 ? [1, 0, 0] : [0, 1, 0];
-        nx = uty * ref[2] - utz * ref[1];
-        ny = utz * ref[0] - utx * ref[2];
-        nz = utx * ref[1] - uty * ref[0];
-        const nLen = Math.hypot(nx, ny, nz);
-        if (nLen > 1e-8) {
-          nx /= nLen; ny /= nLen; nz /= nLen;
-        } else {
-          nx = 0; ny = 0; nz = 1;
-        }
-      }
-      vertices.push([c1[i].x + nx * ribbonHalfWidth, c1[i].y + ny * ribbonHalfWidth, c1[i].z + nz * ribbonHalfWidth]);
-      normals.push([nx, ny, nz]);
-    }
+
+    vertices.push(...leftRibbon, ...rightRibbon);
+    normals.push(...ribbonNorms, ...ribbonNorms);
     for (let i = 0; i < samplesPerCurve; i++) {
       const i0 = baseIdx + i;
       const i1 = baseIdx + i + 1;

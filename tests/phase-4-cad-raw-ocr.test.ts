@@ -111,11 +111,11 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       ];
 
       const mesh = buildTrianglesFromPoints(points, 'test-polygon');
-      expect(mesh.vertices.length).toBe(5);
+      expect(mesh.vertices).toHaveLength(5);
       expect(mesh.faces.length).toBeGreaterThanOrEqual(3);
 
       for (const face of mesh.faces) {
-        expect(face.length).toBe(3);
+        expect(face).toHaveLength(3);
         expect(face[0]).toBeGreaterThanOrEqual(0);
         expect(face[0]).toBeLessThan(5);
         expect(face[1]).toBeGreaterThanOrEqual(0);
@@ -124,7 +124,7 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
         expect(face[2]).toBeLessThan(5);
       }
 
-      expect(mesh.normals.length).toBe(5);
+      expect(mesh.normals).toHaveLength(5);
       verifyNormals(mesh.normals, 'z');
     });
 
@@ -133,7 +133,7 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       const mesh = tessellateCurvesToMesh([curve], 'single-curve');
       expect(mesh.vertices.length).toBeGreaterThan(0);
       expect(mesh.faces.length).toBeGreaterThan(0);
-      expect(mesh.normals.length).toBe(mesh.vertices.length);
+      expect(mesh.normals).toHaveLength(mesh.vertices.length);
       verifyNormals(mesh.normals);
     });
 
@@ -143,7 +143,7 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
 
       const mesh = tessellateCurvesToMesh([curve1, curve2], 'ruled-surface');
       expect(mesh.faces.length).toBeGreaterThanOrEqual(60);
-      expect(mesh.normals.length).toBe(mesh.vertices.length);
+      expect(mesh.normals).toHaveLength(mesh.vertices.length);
       verifyNormals(mesh.normals, 'z');
     });
   });

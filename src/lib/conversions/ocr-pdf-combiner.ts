@@ -348,7 +348,7 @@ export function buildMinimalTrueTypeFont(): Buffer {
   const stringBuffers = nameStrings.map((s) => {
     const b = Buffer.alloc(s.length * 2);
     for (let j = 0; j < s.length; j++) {
-      b.writeUInt16BE(s.charCodeAt(j), j * 2);
+      b.writeUInt16BE(s.codePointAt(j) ?? 0, j * 2);
     }
     return b;
   });
