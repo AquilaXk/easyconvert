@@ -17,6 +17,7 @@ import {
   type VirtualSpannedPartSource,
   extractWithSpannedStream7z,
   get7zBinaryPath,
+  create7zArchive,
 } from '../src/lib/conversions/archive';
 
 describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)', () => {
@@ -461,21 +462,29 @@ describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)'
       const tempDir = createTempDir();
       try {
         const extractDir = path.join(tempDir, 'out');
-        const testFileContent = 'Multi-volume 7z stdin streaming verification content.';
+        const testFileContent = 'Multi-volume 7z authentic content for extraction verification.';
 
-        // Create an authentic small archive file
-        const srcFile = path.join(tempDir, 'test.txt');
-        fs.writeFileSync(srcFile, testFileContent);
-
-        // Split synthetic parts for testing extractWithSpannedStream7z
-        const parts: VirtualSpannedPartSource[] = [
-          { filename: 'test.7z.001', buffer: Buffer.from(testFileContent) },
+        // Create an authentic 7z archive
+        const testFiles = [
+          {
+            filename: 'hello.txt',
+            buffer: Buffer.from(testFileContent),
+          },
         ];
+        const archive = create7zArchive(testFiles, { archiveCoder: 'copy' }, 'multi_test.7z');
 
-        // Should execute extractWithSpannedStream7z without throwing unhandled exceptions
-        await expect(
-          extractWithSpannedStream7z(parts, extractDir, { timeoutMs: 5000 })
-        ).resolves.toBeDefined();
+        // Split authentic archive into sequential multi-volume parts
+        const parts = splitArchive(archive.buffer, 'multi_test.7z', Math.ceil(archive.buffer.length / 2));
+        expect(parts.length).toBeGreaterThanOrEqual(2);
+
+        // Execute extractWithSpannedStream7z
+        const result = await extractWithSpannedStream7z(parts, extractDir, { timeoutMs: 15000 });
+        expect(result.extractedFiles).toContain('hello.txt');
+
+        const extractedPath = path.join(extractDir, 'hello.txt');
+        expect(fs.existsSync(extractedPath)).toBe(true);
+        const extractedContent = fs.readFileSync(extractedPath, 'utf-8');
+        expect(extractedContent).toBe(testFileContent);
       } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
