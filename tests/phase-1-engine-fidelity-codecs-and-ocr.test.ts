@@ -8,6 +8,8 @@ import {
   decodeAudioBuffer,
   decodeAdtsAac,
   decodeOgg,
+  encodeOpusContainer,
+  encodeOggContainer,
   ARCHIVE_SECURITY_LIMITS,
 } from '../src/lib/conversions';
 import { convertArchive, gunzipStreamingWithLimits } from '../src/lib/conversions/archive';
@@ -117,42 +119,62 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       expect(decoded.channels).toBe(1);
     });
 
-    it('encapsulates RFC 7845 compliant OpusHead and OpusTags headers for opus target format', async () => {
-      const wav = createTestWav(48000, 2, 0.2);
-      const opusResult = await convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'sample.wav');
-
-      expect(opusResult.mimeType).toBe('audio/opus');
-      expect(opusResult.filename).toBe('sample.opus');
+    it('encapsulates RFC 7845 compliant OpusHead and OpusTags headers for opus target format and fails closed without authentic encoder', async () => {
+      const packets = [Buffer.from([0xc4, 0x01, 0x02, 0x03]), Buffer.from([0xc4, 0x04, 0x05, 0x06])];
+      const opusBuffer = encodeOpusContainer(packets, 48000, 2, 'sample');
 
       // OggS magic
-      expect(opusResult.buffer.toString('ascii', 0, 4)).toBe('OggS');
+      expect(opusBuffer.toString('ascii', 0, 4)).toBe('OggS');
+      expect(opusBuffer.indexOf('OpusHead')).toBeGreaterThan(0);
+      expect(opusBuffer.indexOf('OpusTags')).toBeGreaterThan(0);
 
-      // Verify roundtrip WAV -> OPUS -> WAV
-      const roundtripWav = await convertMedia(opusResult.buffer, 'opus', 'wav', {}, 'sample.opus');
-      expect(roundtripWav.mimeType).toBe('audio/wav');
-      expect(roundtripWav.buffer.toString('ascii', 0, 4)).toBe('RIFF');
+      // Verify Fail-Closed for pure TS WAV -> OPUS without native engine
+      const wav = createTestWav(48000, 2, 0.2);
+      await expect(
+        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'sample.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OPUS compression/i);
     });
 
-    it('handles audio > 0.67s without Ogg page overflow (multi-page RFC 3533 & RFC 7845 packaging)', async () => {
-      // 1.25 seconds of stereo audio
-      const longWav = createTestWav(48000, 2, 1.25);
-      const opusResult = await convertMedia(longWav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'long_sample.wav');
+    it('handles audio without Ogg page overflow (multi-page RFC 3533 & RFC 7845 packaging with authentic packets)', async () => {
+      // 70 authentic 20ms Opus frames (> 1.25s of audio)
+      const packets: Buffer[] = [];
+      for (let i = 0; i < 70; i++) {
+        packets.push(Buffer.from([0xc4, (i & 0xff), ((i * 2) & 0xff), 0x00]));
+      }
+      const opusBuffer = encodeOpusContainer(packets, 48000, 2, 'long_sample');
 
-      expect(opusResult.mimeType).toBe('audio/opus');
-      expect(opusResult.filename).toBe('long_sample.opus');
-      expect(opusResult.buffer.length).toBeGreaterThan(1000);
+      expect(opusBuffer.toString('ascii', 0, 4)).toBe('OggS');
+      expect(opusBuffer.length).toBeGreaterThan(1000);
 
-      // Verify roundtrip fidelity
-      const roundtripWav = await convertMedia(opusResult.buffer, 'opus', 'wav', {}, 'long_sample.opus');
-      expect(roundtripWav.buffer.length).toBeGreaterThan(1000);
+      // Verify page count: BOS (page 1) + Tags (page 2) + 70 audio pages
+      let pageCount = 0;
+      let offset = 0;
+      while (offset + 4 <= opusBuffer.length) {
+        if (opusBuffer.toString('ascii', offset, offset + 4) === 'OggS') {
+          pageCount++;
+          offset += 4;
+        } else {
+          offset++;
+        }
+      }
+      expect(pageCount).toBe(72);
     });
 
-    it('handles audio > 0.67s in Vorbis Ogg container with multi-page packaging', async () => {
+    it('handles Vorbis Ogg container with multi-page packaging with authentic packets', async () => {
+      const packets: Buffer[] = [];
+      for (let i = 0; i < 50; i++) {
+        packets.push(Buffer.from([0x00, (i & 0xff), ((i * 3) & 0xff)]));
+      }
+      const oggBuffer = encodeOggContainer(packets, 44100, 2, 'long_sample');
+
+      expect(oggBuffer.toString('ascii', 0, 4)).toBe('OggS');
+      expect(oggBuffer.length).toBeGreaterThan(1000);
+
+      // Verify Fail-Closed on raw PCM in convertMedia
       const longWav = createTestWav(44100, 2, 1.0);
-      const oggResult = await convertMedia(longWav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'long_sample.wav');
-
-      expect(oggResult.mimeType).toBe('audio/ogg');
-      expect(oggResult.buffer.length).toBeGreaterThan(1000);
+      await expect(
+        convertMedia(longWav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'long_sample.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
   });
 

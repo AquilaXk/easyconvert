@@ -74,14 +74,11 @@ describe('Media Conversion Engine (Audio & Video)', () => {
     expect((result.buffer[1] & 0xf0)).toBe(0xf0);
   });
 
-  it('converts WAV to OGG Vorbis with OggS magic markers', async () => {
+  it('enforces Fail-Closed when converting WAV to OGG Vorbis without native FFmpeg engine', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'audio.wav');
-
-    expect(result.mimeType).toBe('audio/ogg');
-    expect(result.filename).toBe('audio.ogg');
-    // OggS magic
-    expect(result.buffer.toString('ascii', 0, 4)).toBe('OggS');
+    await expect(
+      convertFile(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'audio.wav')
+    ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
   });
 
   it('converts WAV to FLAC with fLaC magic header', async () => {
