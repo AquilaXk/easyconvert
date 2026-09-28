@@ -41,8 +41,9 @@ services:
       - shared-storage:/shared/storage
     cap_drop:
       - ALL
+    cap_add:
+      - SYS_ADMIN
     security_opt:
-      - seccomp:./docker/seccomp-airgap.json
       - no-new-privileges:true
     devices:
       - /dev/dri:/dev/dri

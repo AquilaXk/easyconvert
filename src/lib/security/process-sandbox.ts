@@ -18,6 +18,8 @@ export interface SandboxedExecutionOptions {
   env?: Record<string, string>;
   cwd?: string;
   networkIsolated?: boolean;
+  strictIsolation?: boolean;
+  sandboxOptions?: UnshareIsolationOptions;
   memoryLimitMb?: number;
   stdin?: NodeJS.ReadableStream | Buffer | null;
 }
@@ -378,16 +380,21 @@ export function resolveSandboxedCommand(
     | {
         networkIsolated?: boolean;
         sandboxOptions?: UnshareIsolationOptions;
+        strictIsolation?: boolean;
       }
 ): { binary: string; args: string[]; wrapped: boolean } {
   let networkIsolated = true;
   let sandboxOptions: UnshareIsolationOptions = {};
+  let strictIsolation = process.env.STRICT_SANDBOX === 'true';
 
   if (typeof networkIsolatedOrOptions === 'boolean') {
     networkIsolated = networkIsolatedOrOptions;
   } else if (networkIsolatedOrOptions && typeof networkIsolatedOrOptions === 'object') {
     networkIsolated = networkIsolatedOrOptions.networkIsolated ?? true;
     sandboxOptions = networkIsolatedOrOptions.sandboxOptions ?? {};
+    if (networkIsolatedOrOptions.strictIsolation !== undefined) {
+      strictIsolation = networkIsolatedOrOptions.strictIsolation;
+    }
   }
 
   if (process.platform === 'linux' && networkIsolated) {
@@ -399,8 +406,21 @@ export function resolveSandboxedCommand(
         args: [...isolationArgs, '--', binaryPath, ...args],
         wrapped: true,
       };
+    } else if (strictIsolation) {
+      throw new SandboxedProcessError(
+        'Strict network isolation failed: Linux unshare capability is unavailable',
+        126,
+        'EPERM: unshare namespace isolation unavailable'
+      );
     }
+  } else if (strictIsolation && networkIsolated && process.platform !== 'linux') {
+    throw new SandboxedProcessError(
+      `Strict network isolation failed: OS platform "${process.platform}" does not support Linux network namespaces`,
+      126,
+      'ENOSYS: unshare unsupported on platform'
+    );
   }
+
   return { binary: binaryPath, args, wrapped: false };
 }
 
@@ -490,7 +510,11 @@ export async function executeSandboxedBinary(
     };
 
     // Resolve unshare network namespace wrapper if available
-    const resolvedCmd = resolveSandboxedCommand(binaryPath, args, networkIsolated);
+    const resolvedCmd = resolveSandboxedCommand(binaryPath, args, {
+      networkIsolated,
+      sandboxOptions: options.sandboxOptions,
+      strictIsolation: options.strictIsolation,
+    });
 
     // Spawn directly without shell to prevent shell injection vulnerabilities.
     // Use detached: true so child becomes process group leader, preventing orphan leaks.
