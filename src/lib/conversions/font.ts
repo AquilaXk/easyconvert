@@ -822,7 +822,7 @@ export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string
         try {
           glyphToUnicode.set(gId, String.fromCodePoint(codePoint));
         } catch {
-          glyphToUnicode.set(gId, String.fromCharCode(codePoint & 0xffff));
+          glyphToUnicode.set(gId, String.fromCodePoint(codePoint & 0xffff));
         }
       }
     }
@@ -1193,13 +1193,13 @@ export function decodeSvgFont(buffer: Buffer, defaultName: string): ParsedFont {
       const uStr = uMatch[1];
       let codePoint: number | undefined;
       if (uStr.startsWith('&#x') || uStr.startsWith('&#X')) {
-        codePoint = parseInt(uStr.slice(3, -1), 16);
+        codePoint = Number.parseInt(uStr.slice(3, -1), 16);
       } else if (uStr.startsWith('&#')) {
-        codePoint = parseInt(uStr.slice(2, -1), 10);
+        codePoint = Number.parseInt(uStr.slice(2, -1), 10);
       } else {
         codePoint = uStr.codePointAt(0);
       }
-      if (codePoint !== undefined && !isNaN(codePoint) && codePoint > 0) {
+      if (codePoint !== undefined && !Number.isNaN(codePoint) && codePoint > 0) {
         mappings.push({ charCode: codePoint, glyphId: gId++ });
       }
     }

@@ -888,6 +888,151 @@ export function computeGroupTransformMatrix(
   return multiplyMatrix(tCenter, multiplyMatrix(rRot, multiplyMatrix(sScale, tOrigin)));
 }
 
+export interface GroupTransformResult {
+  matrix: Matrix2D;
+  gx: number;
+  gy: number;
+  gw: number;
+  gh: number;
+  chx: number;
+  chy: number;
+  chw: number;
+  chh: number;
+  rot: number;
+  flipH: boolean;
+  flipV: boolean;
+}
+
+/**
+ * Extracts group shape transform (a:xfrm) attributes and computes the transformation matrix.
+ */
+export function parseGroupTransform(
+  grpXml: string,
+  defaultWidth = 100,
+  defaultHeight = 60
+): GroupTransformResult {
+  const grpSpPr = safeExtractFirstXmlElement(grpXml, ['p:grpSpPr', 'wpg:grpSpPr']);
+  const xfrm = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:xfrm');
+
+  let gx = 0;
+  let gy = 0;
+  let gw = defaultWidth;
+  let gh = defaultHeight;
+  let chx = 0;
+  let chy = 0;
+  let chw = defaultWidth;
+  let chh = defaultHeight;
+  let rot = 0;
+  let flipH = false;
+  let flipV = false;
+
+  if (xfrm) {
+    if (xfrm.attrs.rot) rot = Number.parseInt(xfrm.attrs.rot, 10) / 60000;
+    if (xfrm.attrs.flipH === '1' || xfrm.attrs.flipH === 'true') flipH = true;
+    if (xfrm.attrs.flipV === '1' || xfrm.attrs.flipV === 'true') flipV = true;
+
+    const offEl = safeExtractFirstXmlElement(xfrm.content, 'a:off');
+    if (offEl?.attrs.x && offEl?.attrs.y) {
+      gx = Math.round(Number.parseInt(offEl.attrs.x, 10) / 12700);
+      gy = Math.round(Number.parseInt(offEl.attrs.y, 10) / 12700);
+    }
+    const extEl = safeExtractFirstXmlElement(xfrm.content, 'a:ext');
+    if (extEl?.attrs.cx && extEl?.attrs.cy) {
+      gw = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cx, 10) / 12700));
+      gh = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cy, 10) / 12700));
+    }
+    const chOffEl = safeExtractFirstXmlElement(xfrm.content, 'a:chOff');
+    if (chOffEl?.attrs.x && chOffEl?.attrs.y) {
+      chx = Math.round(Number.parseInt(chOffEl.attrs.x, 10) / 12700);
+      chy = Math.round(Number.parseInt(chOffEl.attrs.y, 10) / 12700);
+    } else {
+      chx = gx;
+      chy = gy;
+    }
+    const chExtEl = safeExtractFirstXmlElement(xfrm.content, 'a:chExt');
+    if (chExtEl?.attrs.cx && chExtEl?.attrs.cy) {
+      chw = Math.max(1, Math.round(Number.parseInt(chExtEl.attrs.cx, 10) / 12700));
+      chh = Math.max(1, Math.round(Number.parseInt(chExtEl.attrs.cy, 10) / 12700));
+    } else {
+      chw = gw;
+      chh = gh;
+    }
+  }
+
+  const matrix = computeGroupTransformMatrix(
+    { x: gx, y: gy },
+    { cx: gw, cy: gh },
+    { x: chx, y: chy },
+    { cx: chw, cy: chh },
+    rot,
+    flipH,
+    flipV
+  );
+
+  return { matrix, gx, gy, gw, gh, chx, chy, chw, chh, rot, flipH, flipV };
+}
+
+export interface TransformedElementBounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rot: number;
+  flipH: boolean;
+  flipV: boolean;
+  matrix: Matrix2D;
+}
+
+/**
+ * Computes world coordinates and bounds for a standalone shape or picture element.
+ */
+export function computeTransformedElementBounds(
+  xml: string,
+  parentMatrix: Matrix2D
+): TransformedElementBounds | null {
+  const offEl = safeExtractFirstXmlElement(xml, 'a:off');
+  const extEl = safeExtractFirstXmlElement(xml, 'a:ext');
+  if (!offEl?.attrs.x || !offEl?.attrs.y || !extEl?.attrs.cx || !extEl?.attrs.cy) {
+    return null;
+  }
+
+  const rawX = Math.round(Number.parseInt(offEl.attrs.x, 10) / 12700);
+  const rawY = Math.round(Number.parseInt(offEl.attrs.y, 10) / 12700);
+  const rawW = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cx, 10) / 12700));
+  const rawH = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cy, 10) / 12700));
+
+  const xfrmEl = safeExtractFirstXmlElement(xml, 'a:xfrm');
+  let rot = 0;
+  let flipH = false;
+  let flipV = false;
+  if (xfrmEl) {
+    if (xfrmEl.attrs.rot) rot = Number.parseInt(xfrmEl.attrs.rot, 10) / 60000;
+    if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
+    if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
+  }
+
+  const localMatrix = computeGroupTransformMatrix(
+    { x: rawX, y: rawY },
+    { cx: rawW, cy: rawH },
+    { x: rawX, y: rawY },
+    { cx: rawW, cy: rawH },
+    rot,
+    flipH,
+    flipV
+  );
+  const worldMatrix = multiplyMatrix(parentMatrix, localMatrix);
+
+  const centerWorld = transformPoint(worldMatrix, rawX + rawW / 2, rawY + rawH / 2);
+  const worldW = Math.max(1, Math.round(Math.hypot(worldMatrix[0], worldMatrix[1]) * rawW));
+  const worldH = Math.max(1, Math.round(Math.hypot(worldMatrix[2], worldMatrix[3]) * rawH));
+  const worldRot = Math.round((Math.atan2(worldMatrix[1], worldMatrix[0]) * 180) / Math.PI);
+  const x = Math.round(centerWorld.x - worldW / 2);
+  const y = Math.round(centerWorld.y - worldH / 2);
+
+  return { x, y, w: worldW, h: worldH, rot: worldRot, flipH, flipV, matrix: worldMatrix };
+}
+
+
 export interface DrawingMlShape {
   id?: string;
   name?: string;
@@ -1443,55 +1588,7 @@ export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = ident
   for (const item of items) {
     if (item.kind === 'group') {
       const grpXml = item.el.content;
-      const grpSpPr = safeExtractFirstXmlElement(grpXml, ['p:grpSpPr', 'wpg:grpSpPr']);
-      const xfrm = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:xfrm');
-
-      let gx = 0, gy = 0, gw = 100, gh = 60;
-      let chx = 0, chy = 0, chw = 100, chh = 60;
-      let rot = 0, flipH = false, flipV = false;
-
-      if (xfrm) {
-        if (xfrm.attrs.rot) rot = parseInt(xfrm.attrs.rot, 10) / 60000;
-        if (xfrm.attrs.flipH === '1' || xfrm.attrs.flipH === 'true') flipH = true;
-        if (xfrm.attrs.flipV === '1' || xfrm.attrs.flipV === 'true') flipV = true;
-
-        const offEl = safeExtractFirstXmlElement(xfrm.content, 'a:off');
-        if (offEl?.attrs.x && offEl?.attrs.y) {
-          gx = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-          gy = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
-        }
-        const extEl = safeExtractFirstXmlElement(xfrm.content, 'a:ext');
-        if (extEl?.attrs.cx && extEl?.attrs.cy) {
-          gw = Math.max(1, Math.round(parseInt(extEl.attrs.cx, 10) / 12700));
-          gh = Math.max(1, Math.round(parseInt(extEl.attrs.cy, 10) / 12700));
-        }
-        const chOffEl = safeExtractFirstXmlElement(xfrm.content, 'a:chOff');
-        if (chOffEl?.attrs.x && chOffEl?.attrs.y) {
-          chx = Math.round(parseInt(chOffEl.attrs.x, 10) / 12700);
-          chy = Math.round(parseInt(chOffEl.attrs.y, 10) / 12700);
-        } else {
-          chx = gx;
-          chy = gy;
-        }
-        const chExtEl = safeExtractFirstXmlElement(xfrm.content, 'a:chExt');
-        if (chExtEl?.attrs.cx && chExtEl?.attrs.cy) {
-          chw = Math.max(1, Math.round(parseInt(chExtEl.attrs.cx, 10) / 12700));
-          chh = Math.max(1, Math.round(parseInt(chExtEl.attrs.cy, 10) / 12700));
-        } else {
-          chw = gw;
-          chh = gh;
-        }
-      }
-
-      const mGrp = computeGroupTransformMatrix(
-        { x: gx, y: gy },
-        { cx: gw, cy: gh },
-        { x: chx, y: chy },
-        { cx: chw, cy: chh },
-        rot,
-        flipH,
-        flipV
-      );
+      const { matrix: mGrp } = parseGroupTransform(grpXml, 100, 60);
       const mAccum = multiplyMatrix(parentMatrix, mGrp);
       const childShapes = parseDrawingMlShapes(grpXml, mAccum);
       shapes.push(...childShapes);
@@ -1510,19 +1607,19 @@ export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = ident
       flipV = false;
     if (xfrmEl) {
       const rotVal = xfrmEl.attrs.rot;
-      if (rotVal) rotation = parseInt(rotVal, 10) / 60000;
+      if (rotVal) rotation = Number.parseInt(rotVal, 10) / 60000;
       if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
       if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
 
       const offEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:off');
       if (offEl && offEl.attrs.x && offEl.attrs.y) {
-        x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-        y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
+        x = Math.round(Number.parseInt(offEl.attrs.x, 10) / 12700);
+        y = Math.round(Number.parseInt(offEl.attrs.y, 10) / 12700);
       }
       const extEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:ext');
       if (extEl && extEl.attrs.cx && extEl.attrs.cy) {
-        width = Math.max(1, Math.round(parseInt(extEl.attrs.cx, 10) / 12700));
-        height = Math.max(1, Math.round(parseInt(extEl.attrs.cy, 10) / 12700));
+        width = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cx, 10) / 12700));
+        height = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cy, 10) / 12700));
       }
     }
 
@@ -1552,8 +1649,8 @@ export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = ident
 
     if (isParentTransformed) {
       const centerWorld = transformPoint(worldMatrix, x + width / 2, y + height / 2);
-      const worldW = Math.max(1, Math.round(Math.sqrt(worldMatrix[0] * worldMatrix[0] + worldMatrix[1] * worldMatrix[1]) * width));
-      const worldH = Math.max(1, Math.round(Math.sqrt(worldMatrix[2] * worldMatrix[2] + worldMatrix[3] * worldMatrix[3]) * height));
+      const worldW = Math.max(1, Math.round(Math.hypot(worldMatrix[0], worldMatrix[1]) * width));
+      const worldH = Math.max(1, Math.round(Math.hypot(worldMatrix[2], worldMatrix[3]) * height));
       const worldRot = Math.round((Math.atan2(worldMatrix[1], worldMatrix[0]) * 180) / Math.PI);
       x = Math.round(centerWorld.x - worldW / 2);
       y = Math.round(centerWorld.y - worldH / 2);
@@ -1642,8 +1739,8 @@ export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = ident
       geomType = 'custom';
       const pathEl = safeExtractFirstXmlElement(custEl.content, 'a:path');
       if (pathEl) {
-        const pw = pathEl.attrs.w ? parseInt(pathEl.attrs.w, 10) : origW;
-        const ph = pathEl.attrs.h ? parseInt(pathEl.attrs.h, 10) : origH;
+        const pw = pathEl.attrs.w ? Number.parseInt(pathEl.attrs.w, 10) : origW;
+        const ph = pathEl.attrs.h ? Number.parseInt(pathEl.attrs.h, 10) : origH;
         const sx = origW / (pw || 1);
         const sy = origH / (ph || 1);
 
@@ -1663,16 +1760,16 @@ export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = ident
           if (cmdName === 'moveto') {
             const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
             if (ptEl && ptEl.attrs.x && ptEl.attrs.y) {
-              const rawPx = origX + parseInt(ptEl.attrs.x, 10) * sx;
-              const rawPy = origY + parseInt(ptEl.attrs.y, 10) * sy;
+              const rawPx = origX + Number.parseInt(ptEl.attrs.x, 10) * sx;
+              const rawPy = origY + Number.parseInt(ptEl.attrs.y, 10) * sy;
               const p = mapPt(rawPx, rawPy);
               dParts.push(`M ${p.x} ${p.y}`);
             }
           } else if (cmdName === 'lnto') {
             const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
             if (ptEl && ptEl.attrs.x && ptEl.attrs.y) {
-              const rawPx = origX + parseInt(ptEl.attrs.x, 10) * sx;
-              const rawPy = origY + parseInt(ptEl.attrs.y, 10) * sy;
+              const rawPx = origX + Number.parseInt(ptEl.attrs.x, 10) * sx;
+              const rawPy = origY + Number.parseInt(ptEl.attrs.y, 10) * sy;
               const p = mapPt(rawPx, rawPy);
               dParts.push(`L ${p.x} ${p.y}`);
             }
@@ -1681,8 +1778,8 @@ export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = ident
             const pts: string[] = [];
             for (const pt of ptEls) {
               if (pt.attrs.x && pt.attrs.y) {
-                const rawPx = origX + parseInt(pt.attrs.x, 10) * sx;
-                const rawPy = origY + parseInt(pt.attrs.y, 10) * sy;
+                const rawPx = origX + Number.parseInt(pt.attrs.x, 10) * sx;
+                const rawPy = origY + Number.parseInt(pt.attrs.y, 10) * sy;
                 const p = mapPt(rawPx, rawPy);
                 pts.push(`${p.x} ${p.y}`);
               }
@@ -1695,8 +1792,8 @@ export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = ident
             const pts: string[] = [];
             for (const pt of ptEls) {
               if (pt.attrs.x && pt.attrs.y) {
-                const rawPx = origX + parseInt(pt.attrs.x, 10) * sx;
-                const rawPy = origY + parseInt(pt.attrs.y, 10) * sy;
+                const rawPx = origX + Number.parseInt(pt.attrs.x, 10) * sx;
+                const rawPy = origY + Number.parseInt(pt.attrs.y, 10) * sy;
                 const p = mapPt(rawPx, rawPy);
                 pts.push(`${p.x} ${p.y}`);
               }
@@ -5427,55 +5524,7 @@ export async function parsePptxSlideSceneGraph(
     if (isChildGroup) continue;
 
     const grpXml = grpEl.content;
-    const grpSpPr = safeExtractFirstXmlElement(grpXml, 'p:grpSpPr');
-    const xfrm = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:xfrm');
-
-    let gx = 0, gy = 0, gw = slideWidth, gh = slideHeight;
-    let chx = 0, chy = 0, chw = slideWidth, chh = slideHeight;
-    let rot = 0, flipH = false, flipV = false;
-
-    if (xfrm) {
-      if (xfrm.attrs.rot) rot = parseInt(xfrm.attrs.rot, 10) / 60000;
-      if (xfrm.attrs.flipH === '1' || xfrm.attrs.flipH === 'true') flipH = true;
-      if (xfrm.attrs.flipV === '1' || xfrm.attrs.flipV === 'true') flipV = true;
-
-      const offEl = safeExtractFirstXmlElement(xfrm.content, 'a:off');
-      if (offEl?.attrs.x && offEl?.attrs.y) {
-        gx = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-        gy = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
-      }
-      const extEl = safeExtractFirstXmlElement(xfrm.content, 'a:ext');
-      if (extEl?.attrs.cx && extEl?.attrs.cy) {
-        gw = Math.max(1, Math.round(parseInt(extEl.attrs.cx, 10) / 12700));
-        gh = Math.max(1, Math.round(parseInt(extEl.attrs.cy, 10) / 12700));
-      }
-      const chOffEl = safeExtractFirstXmlElement(xfrm.content, 'a:chOff');
-      if (chOffEl?.attrs.x && chOffEl?.attrs.y) {
-        chx = Math.round(parseInt(chOffEl.attrs.x, 10) / 12700);
-        chy = Math.round(parseInt(chOffEl.attrs.y, 10) / 12700);
-      } else {
-        chx = gx;
-        chy = gy;
-      }
-      const chExtEl = safeExtractFirstXmlElement(xfrm.content, 'a:chExt');
-      if (chExtEl?.attrs.cx && chExtEl?.attrs.cy) {
-        chw = Math.max(1, Math.round(parseInt(chExtEl.attrs.cx, 10) / 12700));
-        chh = Math.max(1, Math.round(parseInt(chExtEl.attrs.cy, 10) / 12700));
-      } else {
-        chw = gw;
-        chh = gh;
-      }
-    }
-
-    const mGrp = computeGroupTransformMatrix(
-      { x: gx, y: gy },
-      { cx: gw, cy: gh },
-      { x: chx, y: chy },
-      { cx: chw, cy: chh },
-      rot,
-      flipH,
-      flipV
-    );
+    const { matrix: mGrp } = parseGroupTransform(grpXml, slideWidth, slideHeight);
     const mAccum = multiplyMatrix(parentMatrix, mGrp);
 
     const childShapes = await parsePptxSlideSceneGraph(
@@ -5760,73 +5809,42 @@ export async function parsePptxSlideSceneGraph(
     if (isInsideGroup) continue;
 
     const picXml = picEl.content;
-    const offEl = safeExtractFirstXmlElement(picXml, 'a:off');
-    const extEl = safeExtractFirstXmlElement(picXml, 'a:ext');
-    if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
-      const rawX = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-      const rawY = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
-      const rawW = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
-      const rawH = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
+    const bounds = computeTransformedElementBounds(picXml, parentMatrix);
+    if (!bounds) continue;
+    const { x, y, w: worldW, h: worldH, rot: worldRot, flipH, flipV, matrix: worldMatrix } = bounds;
 
-      const xfrmEl = safeExtractFirstXmlElement(picXml, 'a:xfrm');
-      let rot = 0, flipH = false, flipV = false;
-      if (xfrmEl) {
-        if (xfrmEl.attrs.rot) rot = parseInt(xfrmEl.attrs.rot, 10) / 60000;
-        if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
-        if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
-      }
-
-      const localMatrix = computeGroupTransformMatrix(
-        { x: rawX, y: rawY },
-        { cx: rawW, cy: rawH },
-        { x: rawX, y: rawY },
-        { cx: rawW, cy: rawH },
-        rot,
-        flipH,
-        flipV
-      );
-      const worldMatrix = multiplyMatrix(parentMatrix, localMatrix);
-
-      const centerWorld = transformPoint(worldMatrix, rawX + rawW / 2, rawY + rawH / 2);
-      const worldW = Math.max(1, Math.round(Math.sqrt(worldMatrix[0] * worldMatrix[0] + worldMatrix[1] * worldMatrix[1]) * rawW));
-      const worldH = Math.max(1, Math.round(Math.sqrt(worldMatrix[2] * worldMatrix[2] + worldMatrix[3] * worldMatrix[3]) * rawH));
-      const worldRot = Math.round((Math.atan2(worldMatrix[1], worldMatrix[0]) * 180) / Math.PI);
-      const x = Math.round(centerWorld.x - worldW / 2);
-      const y = Math.round(centerWorld.y - worldH / 2);
-
-      const blipEl = safeExtractFirstXmlElement(picXml, 'a:blip');
-      const rId = blipEl ? (blipEl.attrs['r:embed'] || blipEl.attrs.embed) : undefined;
-      if (rId) {
-        const target = relsMap.get(rId);
-        if (target) {
-          const mediaPath = resolveZipPath('ppt/slides', target);
-          const mediaFile = zip.file(mediaPath);
-          if (mediaFile) {
-            let imgBuffer = await mediaFile.async('nodebuffer');
-            let mimeType = 'image/png';
-            const lower = mediaPath.toLowerCase();
-            if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
-              mimeType = 'image/jpeg';
-            } else if (!lower.endsWith('.png')) {
-              try {
-                imgBuffer = await sharp(imgBuffer).png().toBuffer();
-                mimeType = 'image/png';
-              } catch {}
-            }
-            shapes.push({
-              x,
-              y,
-              width: worldW,
-              height: worldH,
-              shapeType: 'picture',
-              imageData: imgBuffer,
-              imageMimeType: mimeType,
-              rotation: worldRot || undefined,
-              flipH: flipH || undefined,
-              flipV: flipV || undefined,
-              transformMatrix: worldMatrix,
-            });
+    const blipEl = safeExtractFirstXmlElement(picXml, 'a:blip');
+    const rId = blipEl ? (blipEl.attrs['r:embed'] || blipEl.attrs.embed) : undefined;
+    if (rId) {
+      const target = relsMap.get(rId);
+      if (target) {
+        const mediaPath = resolveZipPath('ppt/slides', target);
+        const mediaFile = zip.file(mediaPath);
+        if (mediaFile) {
+          let imgBuffer = await mediaFile.async('nodebuffer');
+          let mimeType = 'image/png';
+          const lower = mediaPath.toLowerCase();
+          if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+            mimeType = 'image/jpeg';
+          } else if (!lower.endsWith('.png')) {
+            try {
+              imgBuffer = await sharp(imgBuffer).png().toBuffer();
+              mimeType = 'image/png';
+            } catch {}
           }
+          shapes.push({
+            x,
+            y,
+            width: worldW,
+            height: worldH,
+            shapeType: 'picture',
+            imageData: imgBuffer,
+            imageMimeType: mimeType,
+            rotation: worldRot || undefined,
+            flipH: flipH || undefined,
+            flipV: flipV || undefined,
+            transformMatrix: worldMatrix,
+          });
         }
       }
     }
@@ -5839,56 +5857,25 @@ export async function parsePptxSlideSceneGraph(
 
   for (const spEl of standaloneSpElements) {
     const spXml = spEl.content;
-    const offEl = safeExtractFirstXmlElement(spXml, 'a:off');
-    const extEl = safeExtractFirstXmlElement(spXml, 'a:ext');
+    const bounds = computeTransformedElementBounds(spXml, parentMatrix);
+    if (!bounds) continue;
+    const { x, y, w: worldW, h: worldH, rot: worldRot, flipH, flipV, matrix: worldMatrix } = bounds;
 
-    if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
-      const rawX = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-      const rawY = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
-      const rawW = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
-      const rawH = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
+    let fillColor: string | undefined;
+    const spPrEl = safeExtractFirstXmlElement(spXml, 'p:spPr');
+    if (spPrEl) {
+      fillColor = safeFindColor(spPrEl.content);
+    }
 
-      const xfrmEl = safeExtractFirstXmlElement(spXml, 'a:xfrm');
-      let rot = 0, flipH = false, flipV = false;
-      if (xfrmEl) {
-        if (xfrmEl.attrs.rot) rot = parseInt(xfrmEl.attrs.rot, 10) / 60000;
-        if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
-        if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
+    let strokeColor: string | undefined;
+    let strokeWidth: number | undefined;
+    const lnEl = safeExtractFirstXmlElement(spXml, 'a:ln');
+    if (lnEl) {
+      if (lnEl.attrs.w) {
+        strokeWidth = Math.max(1, Math.round(Number.parseInt(lnEl.attrs.w, 10) / 12700));
       }
-
-      const localMatrix = computeGroupTransformMatrix(
-        { x: rawX, y: rawY },
-        { cx: rawW, cy: rawH },
-        { x: rawX, y: rawY },
-        { cx: rawW, cy: rawH },
-        rot,
-        flipH,
-        flipV
-      );
-      const worldMatrix = multiplyMatrix(parentMatrix, localMatrix);
-
-      const centerWorld = transformPoint(worldMatrix, rawX + rawW / 2, rawY + rawH / 2);
-      const worldW = Math.max(1, Math.round(Math.sqrt(worldMatrix[0] * worldMatrix[0] + worldMatrix[1] * worldMatrix[1]) * rawW));
-      const worldH = Math.max(1, Math.round(Math.sqrt(worldMatrix[2] * worldMatrix[2] + worldMatrix[3] * worldMatrix[3]) * rawH));
-      const worldRot = Math.round((Math.atan2(worldMatrix[1], worldMatrix[0]) * 180) / Math.PI);
-      const x = Math.round(centerWorld.x - worldW / 2);
-      const y = Math.round(centerWorld.y - worldH / 2);
-
-      let fillColor: string | undefined;
-      const spPrEl = safeExtractFirstXmlElement(spXml, 'p:spPr');
-      if (spPrEl) {
-        fillColor = safeFindColor(spPrEl.content);
-      }
-
-      let strokeColor: string | undefined;
-      let strokeWidth: number | undefined;
-      const lnEl = safeExtractFirstXmlElement(spXml, 'a:ln');
-      if (lnEl) {
-        if (lnEl.attrs.w) {
-          strokeWidth = Math.max(1, Math.round(parseInt(lnEl.attrs.w, 10) / 12700));
-        }
-        strokeColor = safeFindColor(lnEl.content);
-      }
+      strokeColor = safeFindColor(lnEl.content);
+    }
 
       let shapeText = '';
       let fontSize: number | undefined;
@@ -5966,7 +5953,6 @@ export async function parsePptxSlideSceneGraph(
         transformMatrix: worldMatrix,
       });
     }
-  }
 
   return shapes;
 }

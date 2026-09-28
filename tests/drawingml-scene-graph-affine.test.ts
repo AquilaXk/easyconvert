@@ -299,13 +299,13 @@ describe('DrawingML 2D Scene Graph & Affine Transform Matrix (ISO/IEC 29500-1 §
       );
 
       // Expect 3 step node boxes + 2 connectors = 5 shapes total
-      expect(shapes.length).toBe(5);
+      expect(shapes).toHaveLength(5);
 
       const nodeShapes = shapes.filter((s) => s.shapeType === 'roundrect');
       const arrowShapes = shapes.filter((s) => s.shapeType === 'rightarrow');
 
-      expect(nodeShapes.length).toBe(3);
-      expect(arrowShapes.length).toBe(2);
+      expect(nodeShapes).toHaveLength(3);
+      expect(arrowShapes).toHaveLength(2);
 
       // Verify node labels
       expect(nodeShapes[0].text).toContain('Step 1: Input Analysis');
