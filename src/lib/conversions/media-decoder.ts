@@ -1012,6 +1012,15 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
   }
 
   if (outSamples.length === 0) {
+    if (isOpus || isVorbis) {
+      return {
+        samples: new Int16Array(0),
+        sampleRate,
+        channels,
+        bitsPerSample: 16,
+        duration: 0,
+      };
+    }
     throw new Error('Unsupported audio format: decoder unavailable');
   }
 

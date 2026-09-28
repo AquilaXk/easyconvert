@@ -422,10 +422,13 @@ export function encodeAacContainer(
   channels: number,
   baseName: string
 ): Buffer {
+  if (channels < 1 || channels > 2) {
+    throw new Error(`Unsupported channel configuration for AAC LC: ${channels} channels (only mono and stereo supported)`);
+  }
   const chunks: Buffer[] = [];
   const srFound = AAC_SAMPLE_RATES.indexOf(sampleRate);
   const srIdx = srFound !== -1 ? srFound : 4; // default to 44.1kHz
-  const chCount = channels === 1 ? 1 : 2;
+  const chCount = channels;
 
   const totalFrames = Math.max(1, Math.floor(samples.length / (1024 * chCount)));
   const frames = totalFrames;
@@ -464,6 +467,9 @@ export function encodeOpusContainer(
   channels: number,
   title: string
 ): Buffer {
+  if (channels < 1 || channels > 2) {
+    throw new Error(`Unsupported channel configuration for Ogg Opus: ${channels} channels (mapping family 0 only supports mono and stereo)`);
+  }
   const chunks: Buffer[] = [];
   const serial = 0x4f505553; // 'OPUS'
 
@@ -625,8 +631,11 @@ export function encodeOggContainer(
   samples: Int16Array,
   sampleRate: number,
   channels: number,
-  title: string
+  title?: string
 ): Buffer {
+  if (channels < 1 || channels > 2) {
+    throw new Error(`Unsupported channel configuration for Ogg Vorbis: ${channels} channels (only mono and stereo supported)`);
+  }
   const chunks: Buffer[] = [];
   const serial = 0x12345678;
 

@@ -586,15 +586,25 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
   // 7. Negative & Boundary Fuzzing (Fail-Closed)
   // ==========================================================================
   describe('7. Negative & Boundary Fuzzing (Fail-Closed)', () => {
-    it('handles 0-sample empty audio buffers gracefully without crashing', () => {
+    it('handles 0-sample empty audio buffers gracefully without crashing and decodes to 0-length PCM', () => {
       const empty = new Int16Array(0);
       const opusOgg = encodeOpusContainer(empty, 48000, 2, 'Empty');
       expect(opusOgg.length).toBeGreaterThan(0);
       expect(opusOgg.toString('ascii', 0, 4)).toBe('OggS');
 
+      const decOpus = decodeOgg(opusOgg);
+      expect(decOpus.samples.length).toBe(0);
+      expect(decOpus.duration).toBe(0);
+      expect(decOpus.channels).toBe(2);
+
       const vorbisOgg = encodeOggContainer(empty, 44100, 2, 'Empty');
       expect(vorbisOgg.length).toBeGreaterThan(0);
       expect(vorbisOgg.toString('ascii', 0, 4)).toBe('OggS');
+
+      const decVorbis = decodeOgg(vorbisOgg);
+      expect(decVorbis.samples.length).toBe(0);
+      expect(decVorbis.duration).toBe(0);
+      expect(decVorbis.channels).toBe(2);
     });
 
     it('fails closed when decoding severely truncated or corrupt Ogg headers', () => {
@@ -606,6 +616,165 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       const garbage = Buffer.from('RANDOM_CORRUPT_DATA_STRING_FOR_AUDIO_TESTING');
       expect(() => decodeOgg(garbage)).toThrow(/Unsupported audio format/i);
       expect(() => decodeAdtsAac(garbage)).toThrow(/Unsupported audio format/i);
+    });
+
+    it('rejects multi-channel audio (> 2 channels) and invalid channels with fail-closed errors', () => {
+      const samples = new Int16Array(1024 * 6); // 6 channels (5.1 surround)
+      expect(() => encodeAacContainer(samples, 44100, 6, 'surround')).toThrow(/Unsupported channel configuration for AAC LC/i);
+      expect(() => encodeAacContainer(samples, 44100, 0, 'invalid')).toThrow(/Unsupported channel configuration for AAC LC/i);
+      expect(() => encodeAacLcFramePayload(samples, 0, 6)).toThrow(/Unsupported channel count for AAC LC/i);
+      expect(() => encodeAacLcFramePayload(samples, 0, 0)).toThrow(/Unsupported channel count for AAC LC/i);
+      expect(() => encodeOpusContainer(samples, 48000, 6, 'surround')).toThrow(/Unsupported channel configuration for Ogg Opus/i);
+      expect(() => encodeOpusContainer(samples, 48000, 0, 'invalid')).toThrow(/Unsupported channel configuration for Ogg Opus/i);
+      expect(() => encodeOggContainer(samples, 44100, 6, 'surround')).toThrow(/Unsupported channel configuration for Ogg Vorbis/i);
+      expect(() => encodeOggContainer(samples, 44100, 0, 'invalid')).toThrow(/Unsupported channel configuration for Ogg Vorbis/i);
+
+      const fakePayload = Buffer.alloc(20, 0);
+      expect(decodeAacLcFramePayload(fakePayload, 6)).toBeNull();
+      expect(decodeAacLcFramePayload(fakePayload, 0)).toBeNull();
+    });
+
+    it('fails closed on truncated AAC raw data blocks or missing ID_END terminators', () => {
+      // 1. Valid header specifying max_sfb = 40, but cut off before scalefactor and spectral data
+      const writer = new BitWriter();
+      writer.writeBits(0, 3); // ID_SCE
+      writer.writeBits(0, 4); // tag
+      writer.writeBits(100, 8); // gain
+      writer.writeBit(0); // reserved
+      writer.writeBits(0, 2); // winSeq
+      writer.writeBit(0); // winShape
+      writer.writeBits(40, 6); // max_sfb = 40
+      writer.writeBit(0); // pred
+      writer.writeBits(5, 4); // cb = 5
+      writer.writeBits(31, 5); // run 31
+      writer.writeBits(9, 5); // + 9 = 40
+      writer.alignToByte();
+      const truncatedBuf = writer.toBuffer();
+
+      // Reader overrun must cause decodeAacLcFramePayload to return null
+      expect(decodeAacLcFramePayload(truncatedBuf, 1)).toBeNull();
+
+      // 2. Synthesize complete SCE payload with corrupt ID_END (tag 0 instead of 7)
+      const validPayload = encodeAacLcFramePayload(new Int16Array(1024), 0, 1);
+      const tamperedEnd = Buffer.from(validPayload);
+      // Flip the bits containing ID_END (111 -> 000)
+      tamperedEnd[tamperedEnd.length - 1] &= ~0x1c;
+      expect(decodeAacLcFramePayload(tamperedEnd, 1)).toBeNull();
+    });
+
+    it('fails closed on AAC raw data blocks with invalid section spectral codebooks (cb > 11)', () => {
+      // Mono SCE with cb = 12
+      const wMono = new BitWriter();
+      wMono.writeBits(0, 3); // ID_SCE
+      wMono.writeBits(0, 4); // tag
+      wMono.writeBits(100, 8); // gain
+      wMono.writeBit(0);
+      wMono.writeBits(0, 2);
+      wMono.writeBit(0);
+      wMono.writeBits(2, 6); // max_sfb = 2
+      wMono.writeBit(0);
+      wMono.writeBits(12, 4); // cb = 12 (INVALID for spectral data!)
+      wMono.writeBits(2, 5); // run = 2
+      wMono.writeBits(0, 1); // diff 0
+      wMono.writeBits(0, 1); // diff 0
+      wMono.writeBit(0); // pulse
+      wMono.writeBit(0); // tns
+      wMono.writeBit(0); // gain
+      wMono.writeBits(7, 3); // ID_END
+      wMono.alignToByte();
+      expect(decodeAacLcFramePayload(wMono.toBuffer(), 1)).toBeNull();
+
+      // Stereo CPE with cb = 13
+      const wStereo = new BitWriter();
+      wStereo.writeBits(1, 3); // ID_CPE
+      wStereo.writeBits(0, 4);
+      wStereo.writeBit(1); // common_window
+      wStereo.writeBit(0);
+      wStereo.writeBits(0, 2);
+      wStereo.writeBit(0);
+      wStereo.writeBits(2, 6);
+      wStereo.writeBit(0);
+      wStereo.writeBits(0, 2); // ms_mask_present = 0
+      // ch0 with cb = 13 (INVALID)
+      wStereo.writeBits(100, 8);
+      wStereo.writeBits(13, 4);
+      wStereo.writeBits(2, 5);
+      wStereo.writeBits(0, 1);
+      wStereo.writeBits(0, 1);
+      wStereo.writeBit(0);
+      wStereo.writeBit(0);
+      wStereo.writeBit(0);
+      // ch1
+      wStereo.writeBits(100, 8);
+      wStereo.writeBits(0, 4); // cb = 0
+      wStereo.writeBits(2, 5);
+      wStereo.writeBit(0);
+      wStereo.writeBit(0);
+      wStereo.writeBit(0);
+      wStereo.writeBits(7, 3); // ID_END
+      wStereo.alignToByte();
+      expect(decodeAacLcFramePayload(wStereo.toBuffer(), 2)).toBeNull();
+    });
+
+    it('handles Codebook 11 escape sequence prefix safely without 32-bit integer overflow', () => {
+      // Decode a spectral band using cb = 11 with escape prefix capped
+      const writer = new BitWriter();
+      // Write huffman codeword for cx = 16, cy = 0 (idx = 16 * 17 = 272)
+      const code11 = AAC_SPECTRAL_CODES_11[272];
+      const bits11 = AAC_SPECTRAL_BITS_11[272];
+      writer.writeBits(code11, bits11);
+      writer.writeBit(0); // signX = 0 (+)
+      // Write 25 ones (would exceed 32-bit shift if unbounded) followed by 0
+      for (let i = 0; i < 25; i++) writer.writeBit(1);
+      writer.writeBit(0);
+      writer.writeBits(100, 16); // 16-bit remainder
+      writer.alignToByte();
+
+      const r = new BitReader(writer.toBuffer());
+      const out = new Int16Array(2);
+      decodeSpectralBand(r, 11, out, 0, 2);
+      expect(Number.isFinite(out[0])).toBe(true);
+      expect(out[0]).toBeGreaterThan(0);
+    });
+
+    it('parses M/S stereo mask (ms_mask_present === 1) in stereo AAC LC payloads without bitstream desync', () => {
+      const max_sfb = 4;
+      const w = new BitWriter();
+      w.writeBits(1, 3); // ID_CPE
+      w.writeBits(0, 4); // tag
+      w.writeBit(1); // common_window
+      w.writeBit(0); // reserved
+      w.writeBits(0, 2); // winSeq
+      w.writeBit(0); // winShape
+      w.writeBits(max_sfb, 6);
+      w.writeBit(0); // pred
+      w.writeBits(1, 2); // ms_mask_present = 1 (followed by max_sfb bits)
+      for (let s = 0; s < max_sfb; s++) {
+        w.writeBit(s % 2); // ms_used mask bits
+      }
+
+      // ch0
+      w.writeBits(100, 8); // gain
+      w.writeBits(0, 4); // cb = 0 (zero hcb)
+      w.writeBits(max_sfb, 5); // run
+      w.writeBit(0); // pulse
+      w.writeBit(0); // tns
+      w.writeBit(0); // gain
+
+      // ch1
+      w.writeBits(100, 8); // gain
+      w.writeBits(0, 4); // cb = 0 (zero hcb)
+      w.writeBits(max_sfb, 5); // run
+      w.writeBit(0); // pulse
+      w.writeBit(0); // tns
+      w.writeBit(0); // gain
+
+      w.writeBits(7, 3); // ID_END
+      w.alignToByte();
+
+      const decoded = decodeAacLcFramePayload(w.toBuffer(), 2);
+      expect(decoded).not.toBeNull();
+      expect(decoded!.length).toBe(1024 * 2);
     });
   });
 });

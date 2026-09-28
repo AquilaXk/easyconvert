@@ -381,14 +381,20 @@ export function decodeSpectralBand(
       let ax = cx;
       if (cx === 16) {
         let n = 4;
-        while (reader.readBit() === 1) n++;
-        ax = (1 << n) + reader.readBits(n);
+        while (reader.readBit() === 1) {
+          n++;
+          if (n > 16) break;
+        }
+        ax = Math.min(8191, (1 << n) + reader.readBits(n));
       }
       let ay = cy;
       if (cy === 16) {
         let n = 4;
-        while (reader.readBit() === 1) n++;
-        ay = (1 << n) + reader.readBits(n);
+        while (reader.readBit() === 1) {
+          n++;
+          if (n > 16) break;
+        }
+        ay = Math.min(8191, (1 << n) + reader.readBits(n));
       }
       out[i] = signX ? -ax : ax;
       out[i + 1] = signY ? -ay : ay;
