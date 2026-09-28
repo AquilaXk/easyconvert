@@ -1199,10 +1199,6 @@ export function convertWithNative7z(
     'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
   ]);
 
-  if (!supportedExtract.has(src)) {
-    return null;
-  }
-
   const supportedTargets = new Set([
     '7z', 'zip', 'tar', 'tar.gz', 'tgz', 'tar.bz2', 'tbz2', 'tbz', 'tar.xz', 'txz',
   ]);
@@ -1224,11 +1220,16 @@ export function convertWithNative7z(
     const extractDir = path.join(workDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
-    execFileSync(p7zBin, ['x', '-y', `-o${extractDir}`, inputPath], {
-      cwd: workDir,
-      timeout: 60000,
-      maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-    });
+    if (supportedExtract.has(src)) {
+      execFileSync(p7zBin, ['x', '-y', `-o${extractDir}`, inputPath], {
+        cwd: workDir,
+        timeout: 60000,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      });
+    } else {
+      const destPath = path.join(extractDir, originalFilename || `file.${src}`);
+      fs.writeFileSync(destPath, inputBuffer);
+    }
 
     const extractedFiles = fs.readdirSync(extractDir);
     if (extractedFiles.length === 0) return null;
@@ -2067,17 +2068,19 @@ export async function convertArchive(
   const src = effectiveSourceFormat;
   const tgt = targetFormat.toLowerCase();
 
-  // Attempt native 7-Zip acceleration hook if available
-  const native7zRes = convertWithNative7z(effectiveBuffer, src, tgt, options, effectiveFilename);
-  if (native7zRes) {
-    if (options.splitVolumeBytes && options.splitVolumeBytes > 0) {
-      const parts = splitArchive(native7zRes.buffer, native7zRes.filename, options.splitVolumeBytes);
-      return {
-        ...native7zRes,
-        parts,
-      };
+  // Attempt native 7-Zip acceleration hook if explicitly enabled in options
+  if (options.useNative7z) {
+    const native7zRes = convertWithNative7z(effectiveBuffer, src, tgt, options, effectiveFilename);
+    if (native7zRes) {
+      if (options.splitVolumeBytes && options.splitVolumeBytes > 0) {
+        const parts = splitArchive(native7zRes.buffer, native7zRes.filename, options.splitVolumeBytes);
+        return {
+          ...native7zRes,
+          parts,
+        };
+      }
+      return native7zRes;
     }
-    return native7zRes;
   }
 
   // 1. Extract files from source if it is an archive
