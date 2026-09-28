@@ -58,6 +58,54 @@ function extractApiKeySecret(request: Request): string | null {
   return null;
 }
 
+function checkPreExpiryNotification(key: ApiKey): void {
+  if (!key.expiresAt || key.expiresAt <= Date.now() || !key.webhookUrl) {
+    return;
+  }
+  const timeUntilExpiry = key.expiresAt - Date.now();
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  if (timeUntilExpiry <= sevenDaysMs) {
+    webhookDispatcher.dispatch(
+      key.webhookUrl,
+      'key.expiring_soon',
+      {
+        keyId: key.id,
+        keyName: key.name,
+        prefix: key.prefix,
+        expiresAt: key.expiresAt,
+        daysRemaining: Math.max(1, Math.ceil(timeUntilExpiry / (24 * 60 * 60 * 1000))),
+      },
+      key.webhookSecret || ''
+    ).catch(() => {});
+  }
+}
+
+function checkScopeAccess(key: ApiKey, requiredScope?: ApiKeyScope): string | null {
+  if (!requiredScope || !key.scopes || key.scopes.length === 0) {
+    return null;
+  }
+  const hasScope = key.scopes.includes('*') || key.scopes.includes(requiredScope);
+  if (!hasScope) {
+    return `Forbidden: API key lacks required scope '${requiredScope}'.`;
+  }
+  return null;
+}
+
+async function checkDistributedQuota(userId: string, tier: string, requiredUnits: number): Promise<string | null> {
+  if (requiredUnits > 0) {
+    const quotaCheck = await redisKeyStore.recordUsage(userId, requiredUnits);
+    if (!quotaCheck.allowed) {
+      return `Daily conversion quota exceeded for tier '${tier}'. Please upgrade or wait for the midnight UTC reset.`;
+    }
+    return null;
+  }
+  const quota = await redisKeyStore.getQuotaUsage(userId);
+  if (quota.remaining <= 0) {
+    return `Daily conversion quota exceeded for tier '${tier}'.`;
+  }
+  return null;
+}
+
 async function verifyKeyAccess(
   apiKeySecret: string,
   requiredUnits: number,
@@ -84,65 +132,30 @@ async function verifyKeyAccess(
   }
 
   // Pre-expiry notification check (within 7 days of expiration)
-  if (verification.key.expiresAt && verification.key.expiresAt > Date.now()) {
-    const timeUntilExpiry = verification.key.expiresAt - Date.now();
-    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
-    if (timeUntilExpiry <= sevenDaysMs && verification.key.webhookUrl) {
-      webhookDispatcher.dispatch(
-        verification.key.webhookUrl,
-        'key.expiring_soon',
-        {
-          keyId: verification.key.id,
-          keyName: verification.key.name,
-          prefix: verification.key.prefix,
-          expiresAt: verification.key.expiresAt,
-          daysRemaining: Math.max(1, Math.ceil(timeUntilExpiry / (24 * 60 * 60 * 1000))),
-        },
-        verification.key.webhookSecret || ''
-      ).catch(() => {});
-    }
-  }
+  checkPreExpiryNotification(verification.key);
 
   // Enforce Granular Scopes (RBAC)
-  if (requiredScope) {
-    const keyScopes = verification.key.scopes;
-    if (Array.isArray(keyScopes) && keyScopes.length > 0) {
-      const hasScope = keyScopes.includes('*') || keyScopes.includes(requiredScope);
-      if (!hasScope) {
-        return {
-          authorized: false,
-          user: verification.user,
-          apiKey: verification.key,
-          error: `Forbidden: API key lacks required scope '${requiredScope}'.`,
-          status: 403,
-        };
-      }
-    }
+  const scopeError = checkScopeAccess(verification.key, requiredScope);
+  if (scopeError) {
+    return {
+      authorized: false,
+      user: verification.user,
+      apiKey: verification.key,
+      error: scopeError,
+      status: 403,
+    };
   }
 
   // Enforce Distributed Quotas via atomic Redis Lua transactions
-  if (requiredUnits > 0) {
-    const quotaCheck = await redisKeyStore.recordUsage(verification.user.id, requiredUnits);
-    if (!quotaCheck.allowed) {
-      return {
-        authorized: false,
-        user: verification.user,
-        apiKey: verification.key,
-        error: `Daily conversion quota exceeded for tier '${verification.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
-        status: 429,
-      };
-    }
-  } else {
-    const quota = await redisKeyStore.getQuotaUsage(verification.user.id);
-    if (quota.remaining <= 0) {
-      return {
-        authorized: false,
-        user: verification.user,
-        apiKey: verification.key,
-        error: `Daily conversion quota exceeded for tier '${verification.user.tier}'.`,
-        status: 429,
-      };
-    }
+  const quotaError = await checkDistributedQuota(verification.user.id, verification.user.tier, requiredUnits);
+  if (quotaError) {
+    return {
+      authorized: false,
+      user: verification.user,
+      apiKey: verification.key,
+      error: quotaError,
+      status: 429,
+    };
   }
 
   return {

@@ -196,7 +196,7 @@ export class WebhookDispatcher {
 
     // Preserve failed webhooks in Dead Letter Queue (DLQ)
     if (!success) {
-      const lastError = attempts[attempts.length - 1]?.error;
+      const lastError = attempts.at(-1)?.error;
       const dlqEntry: WebhookDlqEntry = {
         id: `dlq_${deliveryId}`,
         originalDeliveryId: deliveryId,
@@ -303,7 +303,7 @@ export class WebhookDispatcher {
 
     entry.retryCount += result.totalAttempts;
     entry.finalStatusCode = result.finalStatusCode;
-    entry.errorMessage = result.attempts[result.attempts.length - 1]?.error;
+    entry.errorMessage = result.attempts.at(-1)?.error;
     if (result.success) {
       entry.status = 'replayed';
       entry.replayedAt = Date.now();

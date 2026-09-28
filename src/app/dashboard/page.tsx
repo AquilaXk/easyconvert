@@ -128,6 +128,35 @@ print(response.json())`,
   );
 }
 
+function renderKeyExpirationBadge(expiresAt?: number) {
+  if (!expiresAt) {
+    return <span className="text-ink-muted dark:text-dark-muted">Never</span>;
+  }
+  const now = Date.now();
+  if (now > expiresAt) {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-300 dark:border-rose-800">
+        Expired
+      </span>
+    );
+  }
+  const msRemaining = expiresAt - now;
+  const sevenDaysMs = 7 * 86400 * 1000;
+  if (msRemaining <= sevenDaysMs) {
+    const daysRemaining = Math.max(1, Math.ceil(msRemaining / (86400 * 1000)));
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-300 dark:border-amber-800">
+        Expiring in {daysRemaining}d
+      </span>
+    );
+  }
+  return (
+    <span className="text-ink-secondary dark:text-dark-muted">
+      {new Date(expiresAt).toLocaleDateString()}
+    </span>
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
 
@@ -685,10 +714,11 @@ export default function DashboardPage() {
                   <h3 className="text-sm font-bold mb-3">Create New API Key</h3>
                   <form onSubmit={handleGenerateKey} className="space-y-4">
                     <div>
-                      <label className="block text-xs font-semibold text-ink-secondary dark:text-dark-muted mb-1">
+                      <label htmlFor="new-key-name-input" className="block text-xs font-semibold text-ink-secondary dark:text-dark-muted mb-1">
                         Key Name
                       </label>
                       <input
+                        id="new-key-name-input"
                         type="text"
                         required
                         placeholder="e.g. Production Backend Worker"
@@ -700,9 +730,9 @@ export default function DashboardPage() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-xs font-semibold text-ink-secondary dark:text-dark-muted mb-1.5">
+                        <div className="block text-xs font-semibold text-ink-secondary dark:text-dark-muted mb-1.5">
                           Granular Scopes (RBAC)
-                        </label>
+                        </div>
                         <div className="space-y-2">
                           {(
                             [
@@ -731,10 +761,11 @@ export default function DashboardPage() {
                       </div>
 
                       <div>
-                        <label className="block text-xs font-semibold text-ink-secondary dark:text-dark-muted mb-1.5">
+                        <label htmlFor="key-expiry-select" className="block text-xs font-semibold text-ink-secondary dark:text-dark-muted mb-1.5">
                           Key Expiration
                         </label>
                         <select
+                          id="key-expiry-select"
                           value={keyExpiry}
                           onChange={(e) => setKeyExpiry(e.target.value as any)}
                           className="w-full px-3 py-2 rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface text-xs focus:outline-none focus:ring-2 focus:ring-brand-700"
@@ -828,23 +859,7 @@ export default function DashboardPage() {
                               {new Date(key.createdAt).toLocaleDateString()}
                             </td>
                             <td className="py-4 text-xs">
-                              {key.expiresAt ? (
-                                Date.now() > key.expiresAt ? (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-300 dark:border-rose-800">
-                                    Expired
-                                  </span>
-                                ) : key.expiresAt - Date.now() <= 7 * 86400 * 1000 ? (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-300 dark:border-amber-800">
-                                    Expiring in {Math.ceil((key.expiresAt - Date.now()) / (86400 * 1000))}d
-                                  </span>
-                                ) : (
-                                  <span className="text-ink-secondary dark:text-dark-muted">
-                                    {new Date(key.expiresAt).toLocaleDateString()}
-                                  </span>
-                                )
-                              ) : (
-                                <span className="text-ink-muted dark:text-dark-muted">Never</span>
-                              )}
+                              {renderKeyExpirationBadge(key.expiresAt)}
                             </td>
                             <td className="py-4 text-xs text-ink-secondary dark:text-dark-muted">
                               {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleDateString() : 'Never'}

@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { sha256 } from '../auth/crypto';
 import { userStore } from '../auth/user-store';
 import type { User, UserTier } from '../auth/types';
-import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, ApiKeyScope, QuotaUsage, UserConversionFile } from './types';
+import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
 import { globalSharedObjects } from '../storage/shared-store';
 
@@ -154,17 +154,7 @@ export class KeyStore {
     };
   }
 
-  public async verifyApiKey(
-    secretKey: string,
-    clientIp?: string
-  ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string }> {
-    this.ensureInitialized();
-
-    if (!secretKey || typeof secretKey !== 'string') {
-      return { valid: false, error: 'Missing or invalid API key' };
-    }
-
-    const keyHash = sha256(secretKey.trim());
+  private findOrReloadKeyId(keyHash: string): string | undefined {
     let keyId = this.keyHashIndex.get(keyHash);
     if (!keyId && fs.existsSync(KEYS_FILE)) {
       try {
@@ -176,23 +166,46 @@ export class KeyStore {
         keyId = this.keyHashIndex.get(keyHash);
       } catch {}
     }
+    return keyId;
+  }
+
+  private validateKeyConstraints(key: ApiKey, clientIp?: string): string | null {
+    if (key.status !== 'active') {
+      return 'API key has been revoked';
+    }
+    if (key.expiresAt && Date.now() > key.expiresAt) {
+      return 'API key has expired';
+    }
+    if (key.allowedIps && key.allowedIps.length > 0 && clientIp && !isIpAllowed(clientIp, key.allowedIps)) {
+      return 'Client IP address is not permitted by API key IP whitelist';
+    }
+    return null;
+  }
+
+  public async verifyApiKey(
+    secretKey: string,
+    clientIp?: string
+  ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string }> {
+    this.ensureInitialized();
+
+    if (!secretKey || typeof secretKey !== 'string') {
+      return { valid: false, error: 'Missing or invalid API key' };
+    }
+
+    const keyHash = sha256(secretKey.trim());
+    const keyId = this.findOrReloadKeyId(keyHash);
     if (!keyId) {
       return { valid: false, error: 'Invalid or non-existent API key' };
     }
 
     const key = this.keys.get(keyId);
-    if (key?.status !== 'active') {
-      return { valid: false, error: 'API key has been revoked' };
+    if (!key) {
+      return { valid: false, error: 'Invalid or non-existent API key' };
     }
 
-    if (key.expiresAt && Date.now() > key.expiresAt) {
-      return { valid: false, error: 'API key has expired' };
-    }
-
-    if (key.allowedIps && key.allowedIps.length > 0 && clientIp) {
-      if (!isIpAllowed(clientIp, key.allowedIps)) {
-        return { valid: false, error: 'Client IP address is not permitted by API key IP whitelist' };
-      }
+    const constraintError = this.validateKeyConstraints(key, clientIp);
+    if (constraintError) {
+      return { valid: false, error: constraintError };
     }
 
     const userRecord = await userStore.findById(key.userId);

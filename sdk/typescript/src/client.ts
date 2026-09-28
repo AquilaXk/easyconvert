@@ -23,7 +23,8 @@ export class EasyConvertClient {
       throw new Error('EasyConvertClient requires a valid Bearer API key starting with ec_live_');
     }
     this.apiKey = config.apiKey.trim();
-    this.baseUrl = (config.baseUrl || 'https://easyconvert.app').replace(/\/+$/, '');
+    const rawUrl = config.baseUrl || 'https://easyconvert.app';
+    this.baseUrl = rawUrl.endsWith('/') ? rawUrl.slice(0, -1) : rawUrl;
     this.timeoutMs = config.timeoutMs || 30000;
   }
 
@@ -31,7 +32,8 @@ export class EasyConvertClient {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const url = `${this.baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+    const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : '/' + endpoint;
+    const url = this.baseUrl + normalizedEndpoint;
     const headers = new Headers(options.headers || {});
     headers.set('Authorization', `Bearer ${this.apiKey}`);
     headers.set('User-Agent', 'EasyConvert-Node-SDK/1.0.0');

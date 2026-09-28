@@ -218,7 +218,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       await webhookDispatcher.saveToDlq(mockEntry);
       await webhookDispatcher.clearDlq();
       const all = await webhookDispatcher.getDlqEntries();
-      expect(all.length).toBe(0);
+      expect(all).toHaveLength(0);
     });
   });
 

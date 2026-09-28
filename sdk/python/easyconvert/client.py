@@ -60,6 +60,32 @@ class EasyConvertClient:
             return resp.content
         return resp.json()
 
+    def _create_job_multipart(
+        self,
+        target_format: str,
+        file: Union[bytes, BinaryIO],
+        filename: Optional[str],
+        source_format: Optional[str],
+        options: Optional[Dict[str, Any]],
+        webhook_url: Optional[str],
+        webhook_secret: Optional[str],
+    ) -> Dict[str, Any]:
+        files = {"file": (filename or "upload.bin", file)}
+        data: Dict[str, Any] = {"targetFormat": target_format}
+        if source_format:
+            data["sourceFormat"] = source_format
+        if options:
+            data["options"] = json.dumps(options)
+        if webhook_url:
+            data["webhookUrl"] = webhook_url
+        if webhook_secret:
+            data["webhookSecret"] = webhook_secret
+        url = f"{self.base_url}/api/v1/jobs"
+        resp = self.session.post(url, files=files, data=data, timeout=self.timeout)
+        if not resp.ok:
+            raise RuntimeError(f"Job creation failed ({resp.status_code}): {resp.text}")
+        return resp.json()
+
     def create_job(
         self,
         target_format: str,
@@ -72,21 +98,9 @@ class EasyConvertClient:
     ) -> Dict[str, Any]:
         """Submit an asynchronous conversion job."""
         if file is not None:
-            files = {"file": (filename or "upload.bin", file)}
-            data = {"targetFormat": target_format}
-            if source_format:
-                data["sourceFormat"] = source_format
-            if options:
-                data["options"] = json.dumps(options)
-            if webhook_url:
-                data["webhookUrl"] = webhook_url
-            if webhook_secret:
-                data["webhookSecret"] = webhook_secret
-            url = f"{self.base_url}/api/v1/jobs"
-            resp = self.session.post(url, files=files, data=data, timeout=self.timeout)
-            if not resp.ok:
-                raise RuntimeError(f"Job creation failed ({resp.status_code}): {resp.text}")
-            return resp.json()
+            return self._create_job_multipart(
+                target_format, file, filename, source_format, options, webhook_url, webhook_secret
+            )
 
         payload: Dict[str, Any] = {"targetFormat": target_format}
         if source_format:
