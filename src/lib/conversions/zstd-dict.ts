@@ -9,7 +9,13 @@
  * - Lossless round-trip parity with official zstd CLI binary
  */
 
-import { ZSTD_MAGIC_LE, computeZstdChecksum, ZSTD_SECURITY_LIMITS } from './zstd';
+import {
+  ZSTD_MAGIC_LE,
+  computeZstdChecksum,
+  ZSTD_SECURITY_LIMITS,
+  FastStreamingXxHash64,
+  encodeZstdSingleSegmentHeader,
+} from './zstd';
 
 export const RFC8878_DICT_HEADER_MAGIC = 0xec30a437; // Canonical RFC 8878 Section 5 magic
 export const RFC8878_DICT_HEADER_MAGIC_ALT = 0xec30a428; // Alternative / legacy
@@ -230,29 +236,39 @@ export function getOFCode(
   return { code, extra, bits: code };
 }
 
-function findPrevState(
-  table: FseTableEntry[],
-  symbol: number,
-  targetState: number
-): { prevState: number; delta: number; numBits: number } {
-  for (let st = 0; st < table.length; st++) {
-    if (table[st].s === symbol) {
-      const base = table[st].base;
-      const count = 1 << table[st].b;
-      if (targetState >= base && targetState < base + count) {
-        return { prevState: st, delta: targetState - base, numBits: table[st].b };
-      }
-    }
-  }
-  throw new Error(`No FSE transition found for symbol ${symbol} targeting state ${targetState}`);
+interface FseTransitionTable {
+  prevStates: Int16Array;
+  deltas: Int16Array;
+  numBits: Uint8Array;
+  initialStates: Int16Array;
 }
 
-function findInitialState(table: FseTableEntry[], symbol: number): number {
+function buildTransitionTable(table: FseTableEntry[], maxSymbol: number, maxState: number): FseTransitionTable {
+  const prevStates = new Int16Array(maxSymbol * maxState).fill(-1);
+  const deltas = new Int16Array(maxSymbol * maxState).fill(-1);
+  const numBits = new Uint8Array(maxSymbol * maxState).fill(0);
+  const initialStates = new Int16Array(maxSymbol).fill(-1);
+
   for (let st = 0; st < table.length; st++) {
-    if (table[st].s === symbol) return st;
+    const sym = table[st].s;
+    if (initialStates[sym] === -1) {
+      initialStates[sym] = st;
+    }
+    const base = table[st].base;
+    const count = 1 << table[st].b;
+    for (let target = base; target < base + count && target < maxState; target++) {
+      const idx = sym * maxState + target;
+      prevStates[idx] = st;
+      deltas[idx] = target - base;
+      numBits[idx] = table[st].b;
+    }
   }
-  throw new Error(`Symbol ${symbol} not found in FSE distribution table`);
+  return { prevStates, deltas, numBits, initialStates };
 }
+
+const LL_TRANS = buildTransitionTable(LL_DEFAULT_TABLE, 36, 64);
+const ML_TRANS = buildTransitionTable(ML_DEFAULT_TABLE, 53, 64);
+const OF_TRANS = buildTransitionTable(OF_DEFAULT_TABLE, 32, 32);
 
 /**
  * Encodes sequences into a backward-readable FSE bitstream per RFC 8878 Section 3.1.1.3.
@@ -261,39 +277,48 @@ export function encodeSequencesFSE(seqs: ZstdSequence[]): Buffer {
   const numSeq = seqs.length;
   if (numSeq === 0) return Buffer.alloc(0);
 
-  const llCodes = [];
-  const mlCodes = [];
-  const ofCodes = [];
+  const llCodes = new Array(numSeq);
+  const mlCodes = new Array(numSeq);
+  const ofCodes = new Array(numSeq);
   for (let i = 0; i < numSeq; i++) {
-    llCodes.push(getLLCode(seqs[i].litLen));
-    mlCodes.push(getMLCode(seqs[i].matchLen));
-    ofCodes.push(getOFCode(seqs[i].offset));
+    llCodes[i] = getLLCode(seqs[i].litLen);
+    mlCodes[i] = getMLCode(seqs[i].matchLen);
+    ofCodes[i] = getOFCode(seqs[i].offset);
   }
 
-  const llStates = new Array(numSeq);
-  const mlStates = new Array(numSeq);
-  const ofStates = new Array(numSeq);
+  const llStates = new Int32Array(numSeq);
+  const mlStates = new Int32Array(numSeq);
+  const ofStates = new Int32Array(numSeq);
 
-  llStates[numSeq - 1] = findInitialState(LL_DEFAULT_TABLE, llCodes[numSeq - 1].code);
-  mlStates[numSeq - 1] = findInitialState(ML_DEFAULT_TABLE, mlCodes[numSeq - 1].code);
-  ofStates[numSeq - 1] = findInitialState(OF_DEFAULT_TABLE, ofCodes[numSeq - 1].code);
+  llStates[numSeq - 1] = LL_TRANS.initialStates[llCodes[numSeq - 1].code];
+  mlStates[numSeq - 1] = ML_TRANS.initialStates[mlCodes[numSeq - 1].code];
+  ofStates[numSeq - 1] = OF_TRANS.initialStates[ofCodes[numSeq - 1].code];
 
-  const llDeltas = new Array(numSeq - 1);
-  const mlDeltas = new Array(numSeq - 1);
-  const ofDeltas = new Array(numSeq - 1);
+  const llDeltas = new Int32Array(numSeq - 1);
+  const llBits = new Uint8Array(numSeq - 1);
+  const mlDeltas = new Int32Array(numSeq - 1);
+  const mlBits = new Uint8Array(numSeq - 1);
+  const ofDeltas = new Int32Array(numSeq - 1);
+  const ofBits = new Uint8Array(numSeq - 1);
 
   for (let i = numSeq - 2; i >= 0; i--) {
-    const prevLL = findPrevState(LL_DEFAULT_TABLE, llCodes[i].code, llStates[i + 1]);
-    llStates[i] = prevLL.prevState;
-    llDeltas[i] = { delta: prevLL.delta, numBits: prevLL.numBits };
+    const nextLL = llStates[i + 1];
+    const llIdx = (llCodes[i].code << 6) | nextLL;
+    llStates[i] = LL_TRANS.prevStates[llIdx];
+    llDeltas[i] = LL_TRANS.deltas[llIdx];
+    llBits[i] = LL_TRANS.numBits[llIdx];
 
-    const prevML = findPrevState(ML_DEFAULT_TABLE, mlCodes[i].code, mlStates[i + 1]);
-    mlStates[i] = prevML.prevState;
-    mlDeltas[i] = { delta: prevML.delta, numBits: prevML.numBits };
+    const nextML = mlStates[i + 1];
+    const mlIdx = (mlCodes[i].code << 6) | nextML;
+    mlStates[i] = ML_TRANS.prevStates[mlIdx];
+    mlDeltas[i] = ML_TRANS.deltas[mlIdx];
+    mlBits[i] = ML_TRANS.numBits[mlIdx];
 
-    const prevOF = findPrevState(OF_DEFAULT_TABLE, ofCodes[i].code, ofStates[i + 1]);
-    ofStates[i] = prevOF.prevState;
-    ofDeltas[i] = { delta: prevOF.delta, numBits: prevOF.numBits };
+    const nextOF = ofStates[i + 1];
+    const ofIdx = (ofCodes[i].code << 5) | nextOF;
+    ofStates[i] = OF_TRANS.prevStates[ofIdx];
+    ofDeltas[i] = OF_TRANS.deltas[ofIdx];
+    ofBits[i] = OF_TRANS.numBits[ofIdx];
   }
 
   // Assemble bit chunks in chronological DECOMPRESSOR read order:
@@ -308,30 +333,41 @@ export function encodeSequencesFSE(seqs: ZstdSequence[]): Buffer {
     if (llCodes[i].bits > 0) chunks.push({ val: llCodes[i].extra, bits: llCodes[i].bits });
 
     if (i < numSeq - 1) {
-      if (llDeltas[i].numBits > 0) chunks.push({ val: llDeltas[i].delta, bits: llDeltas[i].numBits });
-      if (mlDeltas[i].numBits > 0) chunks.push({ val: mlDeltas[i].delta, bits: mlDeltas[i].numBits });
-      if (ofDeltas[i].numBits > 0) chunks.push({ val: ofDeltas[i].delta, bits: ofDeltas[i].numBits });
+      if (llBits[i] > 0) chunks.push({ val: llDeltas[i], bits: llBits[i] });
+      if (mlBits[i] > 0) chunks.push({ val: mlDeltas[i], bits: mlBits[i] });
+      if (ofBits[i] > 0) chunks.push({ val: ofDeltas[i], bits: ofBits[i] });
     }
   }
 
-  // Reverse chunks for writing into forward bitstream:
-  const bitArray: number[] = [];
+  // Word-level bit writer into backward-readable bitstream
+  let totalBits = 0;
+  for (let i = 0; i < chunks.length; i++) totalBits += chunks[i].bits;
+  totalBits++; // Stop bit 1
+
+  const outBuf = Buffer.alloc(Math.ceil(totalBits / 8) + 2);
+  let bitPos = 0;
   for (let i = chunks.length - 1; i >= 0; i--) {
     const c = chunks[i];
-    for (let b = 0; b < c.bits; b++) {
-      bitArray.push((c.val >> b) & 1);
+    const val = c.val;
+    const bits = c.bits;
+    if (bits === 0) continue;
+
+    const byteIdx = bitPos >> 3;
+    const shift = bitPos & 7;
+    const word = val << shift;
+
+    outBuf[byteIdx] |= word & 0xff;
+    outBuf[byteIdx + 1] |= (word >> 8) & 0xff;
+    if (bits + shift > 16) {
+      outBuf[byteIdx + 2] |= (word >> 16) & 0xff;
     }
+    bitPos += bits;
   }
-
   // Stop bit 1 and alignment to byte boundary
-  bitArray.push(1);
-  while (bitArray.length % 8 !== 0) bitArray.push(0);
-
-  const outBuf = Buffer.alloc(bitArray.length / 8);
-  for (let b = 0; b < bitArray.length; b++) {
-    if (bitArray[b]) outBuf[b >> 3] |= 1 << (b & 7);
-  }
-  return outBuf;
+  outBuf[bitPos >> 3] |= 1 << (bitPos & 7);
+  bitPos++;
+  const numBytes = Math.ceil(bitPos / 8);
+  return outBuf.subarray(0, numBytes);
 }
 
 /**
@@ -462,39 +498,11 @@ export function compressWithZstdDict(
     dictId = 0;
   }
 
-  const chunks: Buffer[] = [];
-
-  // 1. Zstandard Magic Number
-  chunks.push(ZSTD_MAGIC_LE);
+  const chunks: Buffer[] = [ZSTD_MAGIC_LE];
 
   // 2. Frame Header with Dictionary ID and FCS
   const inputLen = inputBuffer.length;
-  let fcsFlag = 0;
-  let fcsBuf: Buffer;
-
-  if (inputLen < 256) {
-    fcsFlag = 0;
-    fcsBuf = Buffer.from([inputLen]);
-  } else if (inputLen < 65536 + 256) {
-    fcsFlag = 1;
-    fcsBuf = Buffer.alloc(2);
-    fcsBuf.writeUInt16LE(inputLen - 256, 0);
-  } else {
-    fcsFlag = 2;
-    fcsBuf = Buffer.alloc(4);
-    fcsBuf.writeUInt32LE(inputLen, 0);
-  }
-
-  let dictIdFlag = 0;
-  let dictIdBuf: Buffer | null = null;
-  if (dictId && dictId > 0) {
-    dictIdFlag = 3;
-    dictIdBuf = Buffer.alloc(4);
-    dictIdBuf.writeUInt32LE(dictId, 0);
-  }
-
-  // Single_Segment = 1 (bit 5), Content_Checksum_Flag = 1 (bit 2)
-  const fhd = (fcsFlag << 6) | (1 << 5) | (1 << 2) | dictIdFlag;
+  const { fhd, fcsBuf, dictIdBuf } = encodeZstdSingleSegmentHeader(inputLen, dictId);
   chunks.push(Buffer.from([fhd]));
 
   if (dictIdBuf) {
@@ -1026,4 +1034,506 @@ export function decompressWithZstdDict(
   }
 
   return uncompressed;
+}
+
+// ============================================================================
+// RFC 8878 Streaming Dictionary Compression & W3C TransformStream Pipeline
+// ============================================================================
+
+export interface ZstdDictionaryStreamOptions {
+  dictionary?: Buffer;
+  dictId?: number;
+  level?: number;
+  windowLog?: number;
+}
+
+export interface ZstdDictionaryDecompressOptions {
+  dictionary?: Buffer;
+  expectedDictId?: number;
+}
+
+const STREAM_HASH_BITS = 14;
+const STREAM_HASH_SIZE = 1 << STREAM_HASH_BITS;
+const STREAM_HASH_SHIFT = 32 - STREAM_HASH_BITS;
+const STREAM_HASH_MULT = -1640531527;
+
+const DICT_INDEX_CACHE = new WeakMap<Buffer, Int16Array>();
+
+export function getDictionarySearchIndex(rawDict: Buffer): Int16Array {
+  let table = DICT_INDEX_CACHE.get(rawDict);
+  if (!table) {
+    table = new Int16Array(STREAM_HASH_SIZE).fill(-1);
+    if (rawDict.length >= 4) {
+      for (let i = 0; i <= rawDict.length - 4; i++) {
+        const v = rawDict.readInt32LE(i);
+        const h = Math.imul(v, STREAM_HASH_MULT) >>> STREAM_HASH_SHIFT;
+        table[h] = i;
+      }
+    }
+    DICT_INDEX_CACHE.set(rawDict, table);
+  }
+  return table;
+}
+
+/**
+ * High-performance RFC 8878 Zstandard dictionary streaming compressor.
+ * Emits the 4-byte Dictionary ID (e.g. 0xEC012026) in the initial frame header
+ * and streams authentic FSE-compressed blocks on-the-fly.
+ */
+export class ZstdDictionaryStreamCompressor {
+  private dictionary: Buffer;
+  private rawDict: Buffer;
+  private dictIndex: Int16Array;
+  private inputTable = new Int32Array(STREAM_HASH_SIZE);
+  private hasher = new FastStreamingXxHash64();
+  private dictId: number;
+  private windowLog: number;
+  private headerEmitted = false;
+  private totalUncompressedSize = 0;
+
+  constructor(options: ZstdDictionaryStreamOptions = {}) {
+    this.dictionary = options.dictionary || DATA_DICTIONARY_JSON_CSV;
+    this.rawDict = getRawDictionaryContent(this.dictionary);
+    this.dictIndex = getDictionarySearchIndex(this.rawDict);
+
+    if (options.dictId !== undefined) {
+      this.dictId = options.dictId;
+    } else if (isFormattedDictionary(this.dictionary)) {
+      this.dictId = this.dictionary.readUInt32LE(4);
+    } else {
+      this.dictId = ZSTD_DICT_MAGIC;
+    }
+
+    this.windowLog = options.windowLog || 20; // 1MB window by default
+  }
+
+  public getDictionaryId(): number {
+    return this.dictId;
+  }
+
+  private emitHeader(): Buffer[] {
+    this.headerEmitted = true;
+    const fhd = (0 << 6) | (0 << 5) | (1 << 2) | 3;
+    const windowByte = Math.min(255, Math.max(0, ((this.windowLog - 10) << 3) & 0xff));
+    const dictIdBuf = Buffer.alloc(4);
+    dictIdBuf.writeUInt32LE(this.dictId, 0);
+    return [
+      ZSTD_MAGIC_LE,
+      Buffer.from([fhd]),
+      Buffer.from([windowByte]),
+      dictIdBuf,
+    ];
+  }
+
+  /**
+   * Compresses an incoming stream chunk and returns RFC 8878 streaming frames/blocks.
+   */
+  public write(chunk: Buffer): Buffer {
+    if (!chunk || chunk.length === 0) {
+      return Buffer.alloc(0);
+    }
+
+    const outChunks: Buffer[] = [];
+
+    // 1. Emit RFC 8878 Frame Header with 4-byte Dictionary ID on first chunk
+    if (!this.headerEmitted) {
+      outChunks.push(...this.emitHeader());
+    }
+
+    // 2. Feed chunk into streaming xxHash-64 hasher
+    this.hasher.update(chunk);
+    this.totalUncompressedSize += chunk.length;
+
+    // 3. Fast dictionary sequence finding with direct memory copy
+    this.inputTable.fill(-1);
+    const inputLen = chunk.length;
+    const seqs: ZstdSequence[] = [];
+    const litRanges: number[] = [];
+    let totalLitLen = 0;
+    let inPos = 0;
+    let litStart = 0;
+    let step = 1;
+    let stepShift = 0;
+
+    while (inPos <= inputLen - 4) {
+      const v = chunk.readInt32LE(inPos);
+      const h = Math.imul(v, STREAM_HASH_MULT) >>> STREAM_HASH_SHIFT;
+
+      let bestMatchLen = 0;
+      let bestOffset = 0;
+
+      // Check dictionary match
+      const dPos = this.dictIndex[h];
+      if (dPos >= 0 && this.rawDict.readInt32LE(dPos) === v) {
+        let l = 4;
+        while (
+          inPos + l + 4 <= inputLen &&
+          dPos + l + 4 <= this.rawDict.length &&
+          chunk.readInt32LE(inPos + l) === this.rawDict.readInt32LE(dPos + l)
+        ) {
+          l += 4;
+        }
+        while (inPos + l < inputLen && dPos + l < this.rawDict.length && chunk[inPos + l] === this.rawDict[dPos + l]) {
+          l++;
+        }
+        bestMatchLen = l;
+        bestOffset = inPos + (this.rawDict.length - dPos);
+      }
+
+      // Check input history match within chunk
+      const prevPos = this.inputTable[h];
+      this.inputTable[h] = inPos;
+
+      if (prevPos >= 0 && chunk.readInt32LE(prevPos) === v) {
+        if (bestMatchLen === 0 || (inPos + bestMatchLen < inputLen && chunk[inPos + bestMatchLen] === chunk[prevPos + bestMatchLen])) {
+          let l = 4;
+          while (
+            inPos + l + 4 <= inputLen &&
+            prevPos + l + 4 <= inputLen &&
+            chunk.readInt32LE(inPos + l) === chunk.readInt32LE(prevPos + l)
+          ) {
+            l += 4;
+          }
+          while (inPos + l < inputLen && chunk[inPos + l] === chunk[prevPos + l]) {
+            l++;
+          }
+          if (l > bestMatchLen) {
+            bestMatchLen = l;
+            bestOffset = inPos - prevPos;
+          }
+        }
+      }
+
+      if (bestMatchLen >= 4) {
+        const litLen = inPos - litStart;
+        if (litLen > 0) {
+          litRanges.push(litStart, inPos);
+          totalLitLen += litLen;
+        }
+        seqs.push({ litLen, matchLen: bestMatchLen, offset: bestOffset });
+        inPos += bestMatchLen;
+        litStart = inPos;
+        step = 1;
+        stepShift = 0;
+      } else {
+        inPos += step;
+        stepShift++;
+        step = 1 + (stepShift >> 5);
+      }
+    }
+
+    if (litStart < inputLen) {
+      litRanges.push(litStart, inputLen);
+      totalLitLen += inputLen - litStart;
+    }
+
+    let compressedPayload: Buffer | null = null;
+
+    if (seqs.length > 0) {
+      let litHeaderLen = 1;
+      if (totalLitLen >= 4096) litHeaderLen = 3;
+      else if (totalLitLen >= 32) litHeaderLen = 2;
+
+      const numSeq = seqs.length;
+      let numSeqLen = 1;
+      if (numSeq >= 0x7f00) numSeqLen = 3;
+      else if (numSeq >= 128) numSeqLen = 2;
+
+      const fseBitstream = encodeSequencesFSE(seqs);
+      const totalCompLen = litHeaderLen + totalLitLen + numSeqLen + 1 + fseBitstream.length;
+
+      if (totalCompLen < chunk.length) {
+        const payload = Buffer.allocUnsafe(totalCompLen);
+        let pOffset = 0;
+
+        if (totalLitLen < 32) {
+          payload[pOffset++] = (totalLitLen << 3) | 0;
+        } else if (totalLitLen < 4096) {
+          payload[pOffset++] = ((totalLitLen & 0x0f) << 4) | (1 << 2) | 0;
+          payload[pOffset++] = totalLitLen >> 4;
+        } else {
+          payload[pOffset++] = ((totalLitLen & 0x0f) << 4) | (3 << 2) | 0;
+          payload[pOffset++] = (totalLitLen >> 4) & 0xff;
+          payload[pOffset++] = totalLitLen >> 12;
+        }
+
+        for (let i = 0; i < litRanges.length; i += 2) {
+          const s = litRanges[i];
+          const e = litRanges[i + 1];
+          chunk.copy(payload, pOffset, s, e);
+          pOffset += e - s;
+        }
+
+        if (numSeq < 128) {
+          payload[pOffset++] = numSeq;
+        } else if (numSeq < 0x7f00) {
+          payload[pOffset++] = 128 + (numSeq >> 8);
+          payload[pOffset++] = numSeq & 0xff;
+        } else {
+          const offsetVal = numSeq - 0x7f00;
+          payload[pOffset++] = 255;
+          payload[pOffset++] = offsetVal & 0xff;
+          payload[pOffset++] = (offsetVal >> 8) & 0xff;
+        }
+
+        payload[pOffset++] = 0x00;
+        fseBitstream.copy(payload, pOffset);
+        compressedPayload = payload;
+      }
+    }
+
+    // Intermediate block: Last_Block = 0
+    const blockHeader = Buffer.alloc(3);
+    if (compressedPayload) {
+      // Block_Type = 2 (Compressed), Last_Block = 0
+      const headerVal = 0 | (2 << 1) | (compressedPayload.length << 3);
+      blockHeader[0] = headerVal & 0xff;
+      blockHeader[1] = (headerVal >> 8) & 0xff;
+      blockHeader[2] = (headerVal >> 16) & 0xff;
+      outChunks.push(blockHeader);
+      outChunks.push(compressedPayload);
+    } else {
+      // Block_Type = 0 (Raw), Last_Block = 0
+      const headerVal = 0 | (0 << 1) | (chunk.length << 3);
+      blockHeader[0] = headerVal & 0xff;
+      blockHeader[1] = (headerVal >> 8) & 0xff;
+      blockHeader[2] = (headerVal >> 16) & 0xff;
+      outChunks.push(blockHeader);
+      outChunks.push(chunk);
+    }
+
+    return Buffer.concat(outChunks);
+  }
+
+  /**
+   * Finalizes the stream by flushing a terminal block (Last_Block = 1)
+   * and the RFC 8878 Content Checksum (xxHash-64).
+   */
+  public end(): Buffer {
+    const outChunks: Buffer[] = [];
+
+    // If no chunk was ever written, emit the frame header first
+    if (!this.headerEmitted) {
+      outChunks.push(...this.emitHeader());
+    }
+
+    // Terminal block: Last_Block = 1, Block_Type = 0 (Raw), Block_Size = 0
+    const finalBlockHeader = Buffer.alloc(3);
+    finalBlockHeader[0] = 0x01; // Last_Block = 1
+    finalBlockHeader[1] = 0x00;
+    finalBlockHeader[2] = 0x00;
+    outChunks.push(finalBlockHeader);
+
+    // RFC 8878 xxHash-64 Checksum from streaming hasher
+    const checksum = this.hasher.digest();
+    const checksumBuf = Buffer.alloc(4);
+    checksumBuf.writeUInt32LE(checksum, 0);
+    outChunks.push(checksumBuf);
+
+    return Buffer.concat(outChunks);
+  }
+}
+
+/**
+ * Real-time RFC 8878 streaming decompressor with dictionary assistance.
+ */
+export class ZstdDictionaryStreamDecompressor {
+  private dictionary: Buffer;
+  private expectedDictId?: number;
+  private bufferAccumulator = Buffer.alloc(0);
+  private headerParsed = false;
+  private contentChecksumFlag = 1;
+  private uncompressedChunks: Buffer[] = [];
+  private totalUncompressedSize = 0;
+  private streamFinished = false;
+
+  constructor(options: ZstdDictionaryDecompressOptions = {}) {
+    this.dictionary = options.dictionary || DATA_DICTIONARY_JSON_CSV;
+    this.expectedDictId = options.expectedDictId;
+  }
+
+  public write(chunk: Buffer): Buffer {
+    if (!chunk || chunk.length === 0) return Buffer.alloc(0);
+
+    this.bufferAccumulator = Buffer.concat([this.bufferAccumulator, chunk]);
+    const decompressedOutputs: Buffer[] = [];
+
+    let offset = 0;
+
+    // 1. Parse Frame Header if not yet done
+    if (!this.headerParsed) {
+      if (this.bufferAccumulator.length < 10) {
+        return Buffer.alloc(0); // Need more bytes to parse frame header
+      }
+
+      if (!this.bufferAccumulator.subarray(0, 4).equals(ZSTD_MAGIC_LE)) {
+        throw new Error('Invalid Zstandard frame: missing magic number 0xFD2FB527');
+      }
+      offset += 4;
+
+      const fhd = this.bufferAccumulator[offset++];
+      const dictIdFlag = fhd & 3;
+      this.contentChecksumFlag = (fhd >> 2) & 1;
+      const singleSegment = (fhd >> 5) & 1;
+      const fcsField = (fhd >> 6) & 3;
+
+      if (singleSegment === 0) {
+        if (offset >= this.bufferAccumulator.length) return Buffer.alloc(0);
+        offset++; // Skip Window_Descriptor
+      }
+
+      let embeddedDictId = 0;
+      if (dictIdFlag === 1) {
+        if (offset + 1 > this.bufferAccumulator.length) return Buffer.alloc(0);
+        embeddedDictId = this.bufferAccumulator.readUInt8(offset);
+        offset += 1;
+      } else if (dictIdFlag === 2) {
+        if (offset + 2 > this.bufferAccumulator.length) return Buffer.alloc(0);
+        embeddedDictId = this.bufferAccumulator.readUInt16LE(offset);
+        offset += 2;
+      } else if (dictIdFlag === 3) {
+        if (offset + 4 > this.bufferAccumulator.length) return Buffer.alloc(0);
+        embeddedDictId = this.bufferAccumulator.readUInt32LE(offset);
+        offset += 4;
+      }
+
+      if (this.expectedDictId !== undefined && embeddedDictId !== this.expectedDictId) {
+        throw new Error(
+          `Zstandard dictionary ID mismatch: stream expects 0x${embeddedDictId.toString(
+            16
+          )}, provided 0x${this.expectedDictId.toString(16)}`
+        );
+      }
+
+      const fcsBytes = fcsField === 0 ? (singleSegment === 1 ? 1 : 0) : fcsField === 1 ? 2 : fcsField === 2 ? 4 : 8;
+      if (offset + fcsBytes > this.bufferAccumulator.length) return Buffer.alloc(0);
+      offset += fcsBytes;
+
+      this.headerParsed = true;
+    }
+
+    // 2. Decode Blocks
+    const checksumLength = this.contentChecksumFlag === 1 ? 4 : 0;
+
+    while (offset + 3 <= this.bufferAccumulator.length && !this.streamFinished) {
+      const b0 = this.bufferAccumulator[offset];
+      const b1 = this.bufferAccumulator[offset + 1];
+      const b2 = this.bufferAccumulator[offset + 2];
+      const headerVal = b0 | (b1 << 8) | (b2 << 16);
+      const isLastBlock = (headerVal & 1) === 1;
+      const blockType = (headerVal >> 1) & 3;
+      const blockSize = headerVal >> 3;
+
+      const totalRequired = offset + 3 + blockSize + (isLastBlock ? checksumLength : 0);
+      if (this.bufferAccumulator.length < totalRequired) {
+        break; // Wait for more data in the next chunk
+      }
+
+      offset += 3;
+      let blockData: Buffer;
+
+      if (blockType === 0) {
+        // Raw block
+        blockData = Buffer.from(this.bufferAccumulator.subarray(offset, offset + blockSize));
+        offset += blockSize;
+      } else if (blockType === 1) {
+        // RLE block
+        const rleByte = this.bufferAccumulator[offset++];
+        blockData = Buffer.alloc(blockSize, rleByte);
+      } else if (blockType === 2) {
+        // Compressed block
+        const compSlice = this.bufferAccumulator.subarray(offset, offset + blockSize);
+        offset += blockSize;
+        blockData = decodeZstdCompressedBlockWithDict(compSlice, this.dictionary, []);
+      } else {
+        throw new Error(`Reserved block type ${blockType}`);
+      }
+
+      if (blockData.length > 0) {
+        this.uncompressedChunks.push(blockData);
+        this.totalUncompressedSize += blockData.length;
+        decompressedOutputs.push(blockData);
+      }
+
+      if (this.totalUncompressedSize > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        throw new Error(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes`
+        );
+      }
+
+      if (isLastBlock) {
+        this.streamFinished = true;
+        if (this.contentChecksumFlag === 1) {
+          const expectedChecksum = this.bufferAccumulator.readUInt32LE(offset);
+          offset += 4;
+          const fullUncompressed = Buffer.concat(this.uncompressedChunks);
+          const actualChecksum = computeZstdChecksum(fullUncompressed);
+          if (actualChecksum !== expectedChecksum) {
+            throw new Error(
+              `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(
+                16
+              )}, got 0x${actualChecksum.toString(16)}`
+            );
+          }
+        }
+        break;
+      }
+    }
+
+    this.bufferAccumulator = Buffer.from(this.bufferAccumulator.subarray(offset));
+    return Buffer.concat(decompressedOutputs);
+  }
+
+  public end(): Buffer {
+    const trailing = this.write(Buffer.alloc(0));
+    return trailing;
+  }
+}
+
+/**
+ * Creates a standard W3C TransformStream for streaming RFC 8878 Zstandard dictionary compression.
+ */
+export function createZstdDictionaryTransformStream(
+  options: ZstdDictionaryStreamOptions = {}
+): TransformStream<Uint8Array | Buffer, Uint8Array> {
+  const compressor = new ZstdDictionaryStreamCompressor(options);
+  return new TransformStream<Uint8Array | Buffer, Uint8Array>({
+    transform(chunk, controller) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const out = compressor.write(buf);
+      if (out.length > 0) {
+        controller.enqueue(new Uint8Array(out));
+      }
+    },
+    flush(controller) {
+      const out = compressor.end();
+      if (out.length > 0) {
+        controller.enqueue(new Uint8Array(out));
+      }
+    },
+  });
+}
+
+/**
+ * Creates a standard W3C TransformStream for streaming RFC 8878 Zstandard dictionary decompression.
+ */
+export function createZstdDictionaryDecompressTransformStream(
+  options: ZstdDictionaryDecompressOptions = {}
+): TransformStream<Uint8Array | Buffer, Uint8Array> {
+  const decompressor = new ZstdDictionaryStreamDecompressor(options);
+  return new TransformStream<Uint8Array | Buffer, Uint8Array>({
+    transform(chunk, controller) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const out = decompressor.write(buf);
+      if (out.length > 0) {
+        controller.enqueue(new Uint8Array(out));
+      }
+    },
+    flush(controller) {
+      const out = decompressor.end();
+      if (out.length > 0) {
+        controller.enqueue(new Uint8Array(out));
+      }
+    },
+  });
 }
