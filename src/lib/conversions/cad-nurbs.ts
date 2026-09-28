@@ -841,12 +841,15 @@ export function calculateParametricSignedArea(loop: Parametric2DPoint[]): number
  */
 export function isPointInParametricPolygon(pt: Parametric2DPoint, loop: Parametric2DPoint[]): boolean {
   let inside = false;
+  // Infinitesimal perturbation in v to eliminate vertex and horizontal edge collinearity singularities
+  const pv = pt.v + 1e-11;
+  const pu = pt.u;
   for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
     const xi = loop[i].u;
     const yi = loop[i].v;
     const xj = loop[j].u;
     const yj = loop[j].v;
-    const intersect = yi > pt.v !== yj > pt.v && pt.u < ((xj - xi) * (pt.v - yi)) / (yj - yi) + xi;
+    const intersect = yi > pv !== yj > pv && pu < ((xj - xi) * (pv - yi)) / (yj - yi) + xi;
     if (intersect) inside = !inside;
   }
   return inside;
@@ -1087,13 +1090,18 @@ export function lawsonEdgeFlipHealing2D(
       // Delaunay in-circle condition
       const orient = crossAB_C > 0 ? [pA, pB, pC] : [pB, pA, pC];
       if (inCircle2D(orient[0], orient[1], orient[2], pD) > 1e-9) {
-        // Verify centroids remain within valid face domain
+        // Verify diagonal midpoint and triangle centroids remain within valid face domain
+        const midCD: Parametric2DPoint = { u: (pC.u + pD.u) / 2, v: (pC.v + pD.v) / 2 };
         const c1: Parametric2DPoint = { u: (pC.u + pD.u + pA.u) / 3, v: (pC.v + pD.v + pA.v) / 3 };
         const c2: Parametric2DPoint = { u: (pC.u + pB.u + pD.u) / 3, v: (pC.v + pB.v + pD.v) / 3 };
 
         let insideHole = false;
         for (const h of validHoles) {
-          if (isPointInParametricPolygon(c1, h) || isPointInParametricPolygon(c2, h)) {
+          if (
+            isPointInParametricPolygon(midCD, h) ||
+            isPointInParametricPolygon(c1, h) ||
+            isPointInParametricPolygon(c2, h)
+          ) {
             insideHole = true;
             break;
           }
@@ -1101,9 +1109,36 @@ export function lawsonEdgeFlipHealing2D(
         if (insideHole) continue;
 
         if (outerLoop) {
-          if (!isPointInParametricPolygon(c1, outerLoop) || !isPointInParametricPolygon(c2, outerLoop)) {
+          if (
+            !isPointInParametricPolygon(midCD, outerLoop) ||
+            !isPointInParametricPolygon(c1, outerLoop) ||
+            !isPointInParametricPolygon(c2, outerLoop)
+          ) {
             continue;
           }
+        }
+
+        // Verify diagonal CD does not intersect any hole or outer boundary constraint segments
+        let crossesConstraint = false;
+        for (const h of validHoles) {
+          for (let i = 0; i < h.length; i++) {
+            if (parametricSegmentsIntersect(pC, pD, h[i], h[(i + 1) % h.length])) {
+              crossesConstraint = true;
+              break;
+            }
+          }
+          if (crossesConstraint) break;
+        }
+        if (crossesConstraint) continue;
+
+        if (outerLoop) {
+          for (let i = 0; i < outerLoop.length; i++) {
+            if (parametricSegmentsIntersect(pC, pD, outerLoop[i], outerLoop[(i + 1) % outerLoop.length])) {
+              crossesConstraint = true;
+              break;
+            }
+          }
+          if (crossesConstraint) continue;
         }
 
         // Execute Lawson flip
@@ -1235,28 +1270,41 @@ export function tessellateTrimmedFaceCDT(
         }
       }
 
-      interface HoleBridge {
-        outerIdx: number;
-        holeIdx: number;
-        hole: Parametric2DPoint[];
-        distance: number;
-      }
-      const bridgeList: HoleBridge[] = [];
+      // Sort holes by rightmost u-coordinate descending for stable leftward bridging
+      const sortedHoles = [...validHoles].sort((hA, hB) => {
+        const maxA = Math.max(...hA.map((p) => p.u));
+        const maxB = Math.max(...hB.map((p) => p.u));
+        return maxB - maxA;
+      });
 
-      for (const hole of validHoles) {
+      for (const hole of sortedHoles) {
+        const hArea = calculateParametricSignedArea(hole);
+        const holeCW = hArea > 0 ? [...hole].reverse() : [...hole];
+
         let bestDist = Infinity;
-        let bestOuterIdx = 0;
-        let bestHoleIdx = 0;
+        let bestLoopIdx = -1;
+        let bestHoleIdx = -1;
 
-        for (let oi = 0; oi < outer.length; oi++) {
-          for (let hi = 0; hi < hole.length; hi++) {
-            const pO = outer[oi];
-            const pH = hole[hi];
-            const dist = Math.hypot(pO.u - pH.u, pO.v - pH.v);
+        for (let li = 0; li < consolidatedLoop.length; li++) {
+          for (let hi = 0; hi < holeCW.length; hi++) {
+            const pL = consolidatedLoop[li];
+            const pH = holeCW[hi];
+            const dist = Math.hypot(pL.u - pH.u, pL.v - pH.v);
+
+            // Verify bridge midpoint is strictly inside outer boundary and outside all inner holes
+            const mid = { u: (pL.u + pH.u) / 2, v: (pL.v + pH.v) / 2 };
+            let insideHole = false;
+            for (const h of validHoles) {
+              if (isPointInParametricPolygon(mid, h)) {
+                insideHole = true;
+                break;
+              }
+            }
+            if (insideHole || !isPointInParametricPolygon(mid, outer)) continue;
 
             let intersects = false;
             for (const [s1, s2] of allSegments) {
-              if (parametricSegmentsIntersect(pO, pH, s1, s2)) {
+              if (parametricSegmentsIntersect(pL, pH, s1, s2)) {
                 intersects = true;
                 break;
               }
@@ -1264,37 +1312,29 @@ export function tessellateTrimmedFaceCDT(
 
             if (!intersects && dist < bestDist) {
               bestDist = dist;
-              bestOuterIdx = oi;
+              bestLoopIdx = li;
               bestHoleIdx = hi;
             }
           }
         }
 
-        bridgeList.push({
-          outerIdx: bestOuterIdx,
-          holeIdx: bestHoleIdx,
-          hole,
-          distance: bestDist,
-        });
-      }
+        if (bestLoopIdx !== -1) {
+          const holeCycle: Parametric2DPoint[] = [];
+          for (let i = 0; i < holeCW.length; i++) {
+            holeCycle.push(holeCW[(bestHoleIdx + i) % holeCW.length]);
+          }
+          holeCycle.push({ ...holeCW[bestHoleIdx] });
+          const bridgeBack = { ...consolidatedLoop[bestLoopIdx] };
 
-      // Sort bridges descending by outerIdx so earlier index splices remain stable
-      bridgeList.sort((a, b) => b.outerIdx - a.outerIdx);
+          allSegments.push([consolidatedLoop[bestLoopIdx], holeCW[bestHoleIdx]]);
 
-      for (const b of bridgeList) {
-        const holeCycle: Parametric2DPoint[] = [];
-        for (let i = 0; i < b.hole.length; i++) {
-          holeCycle.push(b.hole[(b.holeIdx + i) % b.hole.length]);
+          consolidatedLoop = [
+            ...consolidatedLoop.slice(0, bestLoopIdx + 1),
+            ...holeCycle,
+            bridgeBack,
+            ...consolidatedLoop.slice(bestLoopIdx + 1),
+          ];
         }
-        holeCycle.push({ ...b.hole[b.holeIdx] }); // Close hole cycle
-        const bridgeBack = { ...consolidatedLoop[b.outerIdx] };
-
-        consolidatedLoop = [
-          ...consolidatedLoop.slice(0, b.outerIdx + 1),
-          ...holeCycle,
-          bridgeBack,
-          ...consolidatedLoop.slice(b.outerIdx + 1),
-        ];
       }
     }
 
@@ -1449,6 +1489,8 @@ export interface MeshTopologyReport {
   eulerCharacteristic: number; // chi = V - E + F
   boundaryEdges: number;
   nonManifoldEdges: number;
+  hasDegenerateFace?: boolean;
+  hasNonManifoldVertex?: boolean;
   verticesCount: number;
   edgesCount: number;
   facesCount: number;
@@ -1555,9 +1597,26 @@ export function verifyWatertightManifoldMesh(
 
   const directedEdges = new Map<string, number>();
   const undirectedEdges = new Map<string, number>();
-  let nonManifoldEdges = 0;
+  let hasDegenerateFace = false;
 
   for (const [v0, v1, v2] of faces) {
+    if (v0 < 0 || v0 >= V || v1 < 0 || v1 >= V || v2 < 0 || v2 >= V) {
+      return {
+        isManifold: false,
+        isWatertight: false,
+        eulerCharacteristic: 0,
+        boundaryEdges: 0,
+        nonManifoldEdges: 1,
+        verticesCount: V,
+        edgesCount: 0,
+        facesCount: F,
+        genus: 0,
+        componentsCount: 0,
+      };
+    }
+    if (v0 === v1 || v1 === v2 || v2 === v0) {
+      hasDegenerateFace = true;
+    }
     const pairs: [number, number][] = [
       [v0, v1],
       [v1, v2],
@@ -1573,17 +1632,82 @@ export function verifyWatertightManifoldMesh(
   }
 
   let boundaryEdges = 0;
-  for (const [, count] of undirectedEdges.entries()) {
+  let nonManifoldEdges = 0;
+  for (const [uKey, count] of undirectedEdges.entries()) {
     if (count === 1) {
       boundaryEdges++;
     } else if (count > 2) {
       nonManifoldEdges++;
+    } else {
+      // count === 2: check if directed edges are properly opposite
+      const [vA, vB] = uKey.split('-').map(Number);
+      const dir1 = directedEdges.get(`${vA}->${vB}`) || 0;
+      const dir2 = directedEdges.get(`${vB}->${vA}`) || 0;
+      if (dir1 > 1 || dir2 > 1) {
+        nonManifoldEdges++;
+      }
     }
   }
 
-  for (const [, count] of directedEdges.entries()) {
-    if (count > 1) {
-      nonManifoldEdges++;
+  // Non-manifold vertex check (1-ring star disk topology)
+  let hasNonManifoldVertex = false;
+  const vertexFaces = new Map<number, number[]>();
+  for (let fIdx = 0; fIdx < faces.length; fIdx++) {
+    const [v0, v1, v2] = faces[fIdx];
+    for (const v of [v0, v1, v2]) {
+      let fl = vertexFaces.get(v);
+      if (!fl) {
+        fl = [];
+        vertexFaces.set(v, fl);
+      }
+      fl.push(fIdx);
+    }
+  }
+
+  for (const [v, fIndices] of vertexFaces.entries()) {
+    if (fIndices.length <= 1) continue;
+    const vEdges = new Map<number, number[]>();
+    for (const fIdx of fIndices) {
+      const f = faces[fIdx];
+      for (const other of f) {
+        if (other !== v) {
+          let list = vEdges.get(other);
+          if (!list) {
+            list = [];
+            vEdges.set(other, list);
+          }
+          list.push(fIdx);
+        }
+      }
+    }
+    const visitedF = new Set<number>();
+    let fanComponents = 0;
+    for (const fIdx of fIndices) {
+      if (visitedF.has(fIdx)) continue;
+      fanComponents++;
+      const queue = [fIdx];
+      visitedF.add(fIdx);
+      while (queue.length > 0) {
+        const curr = queue.shift()!;
+        const f = faces[curr];
+        for (const other of f) {
+          if (other !== v) {
+            const sharedFaces = vEdges.get(other);
+            if (sharedFaces) {
+              for (const adjF of sharedFaces) {
+                if (!visitedF.has(adjF)) {
+                  visitedF.add(adjF);
+                  queue.push(adjF);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if (fanComponents > 1) {
+      hasNonManifoldVertex = true;
+      break;
     }
   }
 
@@ -1626,7 +1750,7 @@ export function verifyWatertightManifoldMesh(
   const hasIsolatedVertices = activeVertices.size < V;
 
   const genus = Math.max(0, Math.round((2 * componentsCount - chi) / 2));
-  const isManifold = nonManifoldEdges === 0;
+  const isManifold = nonManifoldEdges === 0 && !hasDegenerateFace && !hasNonManifoldVertex;
   // Watertight: manifold, 0 boundary edges, Euler characteristic chi === 2, and no floating isolated vertices
   const isWatertight = isManifold && boundaryEdges === 0 && chi === 2 && !hasIsolatedVertices;
 
@@ -1636,6 +1760,8 @@ export function verifyWatertightManifoldMesh(
     eulerCharacteristic: chi,
     boundaryEdges,
     nonManifoldEdges,
+    hasDegenerateFace,
+    hasNonManifoldVertex,
     verticesCount: V,
     edgesCount: E,
     facesCount: F,
@@ -1662,7 +1788,7 @@ export function weldCoincidentVertices(
   faces: [number, number, number][];
   normals: [number, number, number][];
 } {
-  const eps = options.epsilon ?? 1e-6;
+  const eps = Math.max(1e-12, Math.abs(options.epsilon ?? 1e-6));
   const epsSq = eps * eps;
   const cellSize = Math.max(1e-6, eps);
 
@@ -1719,6 +1845,13 @@ export function weldCoincidentVertices(
   // Remap faces and filter degenerate / collapsed triangles
   const newFaces: [number, number, number][] = [];
   for (const [i0, i1, i2] of faces) {
+    if (
+      i0 < 0 || i0 >= vertices.length ||
+      i1 < 0 || i1 >= vertices.length ||
+      i2 < 0 || i2 >= vertices.length
+    ) {
+      continue;
+    }
     const w0 = vertexRemap[i0];
     const w1 = vertexRemap[i1];
     const w2 = vertexRemap[i2];
@@ -1847,6 +1980,7 @@ export function glueBRepTopologicalEdges(
 
       const queue: number[] = [startFace];
       visited[startFace] = 1;
+      const componentFaces: number[] = [startFace];
 
       while (queue.length > 0) {
         const currIdx = queue.shift()!;
@@ -1857,7 +1991,7 @@ export function glueBRepTopologicalEdges(
           const b = currFace[(i + 1) % 3];
           const key = a < b ? `${a}-${b}` : `${b}-${a}`;
           const adjList = edgeAdj.get(key);
-          if (!adjList) continue;
+          if (!adjList || adjList.length !== 2) continue; // Only propagate across valid 2-manifold shared edges
 
           for (const neighbor of adjList) {
             const nIdx = neighbor.faceIdx;
@@ -1887,35 +2021,50 @@ export function glueBRepTopologicalEdges(
 
             visited[nIdx] = 1;
             queue.push(nIdx);
+            componentFaces.push(nIdx);
           }
         }
       }
-    }
 
-    // Step 3: Outward normal / Positive volume check for closed solids
-    let boundaryCount = 0;
-    for (const [, list] of edgeAdj.entries()) {
-      if (list.length === 1) boundaryCount++;
-    }
-
-    if (boundaryCount === 0) {
-      // Mesh is closed solid! Calculate signed volume
-      let totalSignedVolume = 0;
-      for (const [v0, v1, v2] of orientedFaces) {
-        const p0 = vertices[v0];
-        const p1 = vertices[v1];
-        const p2 = vertices[v2];
-        const crossX = p1[1] * p2[2] - p1[2] * p2[1];
-        const crossY = p1[2] * p2[0] - p1[0] * p2[2];
-        const crossZ = p1[0] * p2[1] - p1[1] * p2[0];
-        totalSignedVolume += (p0[0] * crossX + p0[1] * crossY + p0[2] * crossZ) / 6;
+      // Step 3: Outward normal / Positive volume check per connected component
+      const compEdges = new Map<string, number>();
+      for (const fIdx of componentFaces) {
+        const f = orientedFaces[fIdx];
+        for (let i = 0; i < 3; i++) {
+          const a = f[i];
+          const b = f[(i + 1) % 3];
+          const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+          compEdges.set(key, (compEdges.get(key) || 0) + 1);
+        }
       }
 
-      if (totalSignedVolume < 0) {
-        for (const f of orientedFaces) {
-          const tmp = f[1];
-          f[1] = f[2];
-          f[2] = tmp;
+      let compBoundaryEdges = 0;
+      for (const [, count] of compEdges.entries()) {
+        if (count === 1) compBoundaryEdges++;
+      }
+
+      // If this connected component has 0 boundary edges, it is a closed solid shell!
+      if (compBoundaryEdges === 0) {
+        let compSignedVolume = 0;
+        for (const fIdx of componentFaces) {
+          const [v0, v1, v2] = orientedFaces[fIdx];
+          const p0 = vertices[v0];
+          const p1 = vertices[v1];
+          const p2 = vertices[v2];
+          const crossX = p1[1] * p2[2] - p1[2] * p2[1];
+          const crossY = p1[2] * p2[0] - p1[0] * p2[2];
+          const crossZ = p1[0] * p2[1] - p1[1] * p2[0];
+          compSignedVolume += (p0[0] * crossX + p0[1] * crossY + p0[2] * crossZ) / 6;
+        }
+
+        // If inward-pointing, flip only the faces belonging to this closed component
+        if (compSignedVolume < 0) {
+          for (const fIdx of componentFaces) {
+            const f = orientedFaces[fIdx];
+            const tmp = f[1];
+            f[1] = f[2];
+            f[2] = tmp;
+          }
         }
       }
     }
@@ -1983,9 +2132,12 @@ export interface StepEntity {
 export function parseStepEntities(content: string): Map<number, StepEntity> {
   const entityMap = new Map<number, StepEntity>();
 
+  // Strip ISO 10303-21 comments /* ... */
+  const cleanedContent = content.replace(/\/\*[\s\S]*?\*\//g, '');
+
   // Extract DATA section
-  const dataMatch = content.match(/DATA\s*;([\s\S]*?)ENDSEC\s*;/i);
-  const dataSection = dataMatch ? dataMatch[1] : content;
+  const dataMatch = cleanedContent.match(/DATA\s*;([\s\S]*?)ENDSEC\s*;/i);
+  const dataSection = dataMatch ? dataMatch[1] : cleanedContent;
 
   // Split on semicolons that terminate statements
   const statements = dataSection.split(/;\s*(?=#|$)/);
@@ -2582,7 +2734,7 @@ function isPointInTriangle(
   if (!Number.isFinite(invDenom) || invDenom === 0) return false;
   const u = (dot11 * dot02 - dot01 * dot12) * invDenom;
   const v = (dot00 * dot12 - dot01 * dot02) * invDenom;
-  return u >= 0 && v >= 0 && u + v < 1;
+  return u > 1e-9 && v > 1e-9 && u + v < 1 - 1e-9;
 }
 
 function checkEar(
@@ -2602,6 +2754,14 @@ function checkEar(
   for (const otherIdx of indices) {
     if (otherIdx === prevIdx || otherIdx === earIdx || otherIdx === nextIdx) continue;
     const p = p2d[otherIdx];
+    // Skip points coincident with candidate ear vertices (e.g. duplicate seam/bridge vertices)
+    if (
+      (Math.abs(p.u - a.u) < 1e-9 && Math.abs(p.v - a.v) < 1e-9) ||
+      (Math.abs(p.u - b.u) < 1e-9 && Math.abs(p.v - b.v) < 1e-9) ||
+      (Math.abs(p.u - c.u) < 1e-9 && Math.abs(p.v - c.v) < 1e-9)
+    ) {
+      continue;
+    }
     if (isPointInTriangle(p.u, p.v, a.u, a.v, b.u, b.v, c.u, c.v)) {
       return false;
     }
@@ -2726,6 +2886,12 @@ export function extractStepBRepMesh(
       boundIds = face.args[0].filter((x: any): x is number => typeof x === 'number');
     }
 
+    interface ExtractedBound {
+      isOuter: boolean;
+      points: Point3D[];
+    }
+    const extractedBounds: ExtractedBound[] = [];
+
     for (const boundId of boundIds) {
       const boundEnt = entityMap.get(boundId);
       if (!boundEnt) continue;
@@ -2842,9 +3008,17 @@ export function extractStepBRepMesh(
         if (pt) uniquePoints.push(pt);
       }
 
-      if (uniquePoints.length < 3) continue;
+      extractedBounds.push({
+        isOuter: boundEnt.type.includes('FACE_OUTER_BOUND'),
+        points: uniquePoints,
+      });
+    }
 
-      // Compute face normal using Newell's method
+    if (extractedBounds.length === 0) continue;
+
+    if (extractedBounds.length === 1) {
+      // Single boundary loop (no inner holes)
+      const uniquePoints = extractedBounds[0].points;
       let nx = 0;
       let ny = 0;
       let nz = 0;
@@ -2864,10 +3038,251 @@ export function extractStepBRepMesh(
         normals.push(normal);
       }
 
-      // Constrained planar polygon / Ear-clipping triangulation preserving boundary topology
       const localTriangles = triangulatePolygonEarcut(uniquePoints, normal);
       for (const [i0, i1, i2] of localTriangles) {
         facesList.push([startIdx + i0, startIdx + i1, startIdx + i2]);
+      }
+    } else {
+      // Multiple boundary loops: outer face boundary with one or more inner cutout holes
+      let outerIdx = extractedBounds.findIndex((b) => b.isOuter);
+      if (outerIdx === -1) {
+        // Fallback: choose loop with largest 3D bounding box / Newell area magnitude
+        let maxNewellMag = -1;
+        for (let bi = 0; bi < extractedBounds.length; bi++) {
+          const pts = extractedBounds[bi].points;
+          let nx = 0, ny = 0, nz = 0;
+          for (let i = 0; i < pts.length; i++) {
+            const cur = pts[i];
+            const next = pts[(i + 1) % pts.length];
+            nx += (cur.y - next.y) * (cur.z + next.z);
+            ny += (cur.z - next.z) * (cur.x + next.x);
+            nz += (cur.x - next.x) * (cur.y + next.y);
+          }
+          const mag = Math.hypot(nx, ny, nz);
+          if (mag > maxNewellMag) {
+            maxNewellMag = mag;
+            outerIdx = bi;
+          }
+        }
+      }
+
+      let outerPoints = [...extractedBounds[outerIdx].points];
+      const holeBounds = extractedBounds.filter((_, idx) => idx !== outerIdx);
+
+      // Compute normal from outer loop using Newell's method
+      let nx = 0, ny = 0, nz = 0;
+      for (let i = 0; i < outerPoints.length; i++) {
+        const cur = outerPoints[i];
+        const next = outerPoints[(i + 1) % outerPoints.length];
+        nx += (cur.y - next.y) * (cur.z + next.z);
+        ny += (cur.z - next.z) * (cur.x + next.x);
+        nz += (cur.x - next.x) * (cur.y + next.y);
+      }
+      const len = Math.hypot(nx, ny, nz) || 1;
+      const normal: [number, number, number] = [nx / len, ny / len, nz / len];
+
+      // Construct orthonormal 2D basis on plane (uAxis, vAxis)
+      let uAxis: [number, number, number];
+      if (Math.abs(normal[2]) < 0.9) {
+        uAxis = [-normal[1], normal[0], 0];
+      } else {
+        uAxis = [normal[2], 0, -normal[0]];
+      }
+      const uLen = Math.hypot(uAxis[0], uAxis[1], uAxis[2]) || 1;
+      uAxis = [uAxis[0] / uLen, uAxis[1] / uLen, uAxis[2] / uLen];
+      const vAxis: [number, number, number] = [
+        normal[1] * uAxis[2] - normal[2] * uAxis[1],
+        normal[2] * uAxis[0] - normal[0] * uAxis[2],
+        normal[0] * uAxis[1] - normal[1] * uAxis[0],
+      ];
+
+      const to2D = (p: Point3D): Parametric2DPoint => ({
+        u: p.x * uAxis[0] + p.y * uAxis[1] + p.z * uAxis[2],
+        v: p.x * vAxis[0] + p.y * vAxis[1] + p.z * vAxis[2],
+      });
+
+      let outer2D = outerPoints.map(to2D);
+      const outerArea = calculateParametricSignedArea(outer2D);
+      if (outerArea < 0) {
+        outer2D.reverse();
+        outerPoints.reverse();
+      }
+
+      // Add outer vertices to mesh
+      const outerIndices: number[] = [];
+      for (const p of outerPoints) {
+        outerIndices.push(vertices.length);
+        vertices.push([p.x, p.y, p.z]);
+        normals.push(normal);
+      }
+
+      interface ProcessedHole {
+        pts: Point3D[];
+        pts2D: Parametric2DPoint[];
+        indices: number[];
+      }
+      const processedHoles: ProcessedHole[] = [];
+
+      for (const hb of holeBounds) {
+        let hPts = [...hb.points];
+        let h2D = hPts.map(to2D);
+        const hArea = calculateParametricSignedArea(h2D);
+        if (hArea > 0) {
+          // Invert to CW for inner cutout hole
+          h2D.reverse();
+          hPts.reverse();
+        }
+        const hIndices: number[] = [];
+        for (const p of hPts) {
+          hIndices.push(vertices.length);
+          vertices.push([p.x, p.y, p.z]);
+          normals.push(normal);
+        }
+        processedHoles.push({
+          pts: hPts,
+          pts2D: h2D,
+          indices: hIndices,
+        });
+      }
+
+      // Sort holes descending by rightmost u coordinate for stable leftward bridging
+      processedHoles.sort((a, b) => {
+        const maxA = Math.max(...a.pts2D.map((p) => p.u));
+        const maxB = Math.max(...b.pts2D.map((p) => p.u));
+        return maxB - maxA;
+      });
+
+      let consolidated2D = [...outer2D];
+      let consolidatedIndices = [...outerIndices];
+
+      const allSegments: [Parametric2DPoint, Parametric2DPoint][] = [];
+      for (let i = 0; i < outer2D.length; i++) {
+        allSegments.push([outer2D[i], outer2D[(i + 1) % outer2D.length]]);
+      }
+      for (const h of processedHoles) {
+        for (let i = 0; i < h.pts2D.length; i++) {
+          allSegments.push([h.pts2D[i], h.pts2D[(i + 1) % h.pts2D.length]]);
+        }
+      }
+
+      for (const hole of processedHoles) {
+        const h2D = hole.pts2D;
+        const hInd = hole.indices;
+
+        let bestDist = Infinity;
+        let bestLoopIdx = -1;
+        let bestHoleIdx = -1;
+
+        for (let li = 0; li < consolidated2D.length; li++) {
+          for (let hi = 0; hi < h2D.length; hi++) {
+            const pL = consolidated2D[li];
+            const pH = h2D[hi];
+            const dist = Math.hypot(pL.u - pH.u, pL.v - pH.v);
+
+            const mid = { u: (pL.u + pH.u) / 2, v: (pL.v + pH.v) / 2 };
+            let insideAnyHole = false;
+            for (const otherH of processedHoles) {
+              if (isPointInParametricPolygon(mid, otherH.pts2D)) {
+                insideAnyHole = true;
+                break;
+              }
+            }
+            if (insideAnyHole || !isPointInParametricPolygon(mid, outer2D)) continue;
+
+            let intersects = false;
+            for (const [s1, s2] of allSegments) {
+              if (parametricSegmentsIntersect(pL, pH, s1, s2)) {
+                intersects = true;
+                break;
+              }
+            }
+
+            if (!intersects && dist < bestDist) {
+              bestDist = dist;
+              bestLoopIdx = li;
+              bestHoleIdx = hi;
+            }
+          }
+        }
+
+        // Fallback if geometric intersection precision prevented bridge
+        if (bestLoopIdx === -1) {
+          for (let li = 0; li < consolidated2D.length; li++) {
+            for (let hi = 0; hi < h2D.length; hi++) {
+              const pL = consolidated2D[li];
+              const pH = h2D[hi];
+              const dist = Math.hypot(pL.u - pH.u, pL.v - pH.v);
+              if (dist < bestDist) {
+                bestDist = dist;
+                bestLoopIdx = li;
+                bestHoleIdx = hi;
+              }
+            }
+          }
+        }
+
+        if (bestLoopIdx !== -1) {
+          const holeCycle2D: Parametric2DPoint[] = [];
+          const holeCycleIndices: number[] = [];
+          for (let i = 0; i < h2D.length; i++) {
+            const idx = (bestHoleIdx + i) % h2D.length;
+            holeCycle2D.push(h2D[idx]);
+            holeCycleIndices.push(hInd[idx]);
+          }
+          holeCycle2D.push({ ...h2D[bestHoleIdx] });
+          holeCycleIndices.push(hInd[bestHoleIdx]);
+
+          const bridgeBack2D = { ...consolidated2D[bestLoopIdx] };
+          const bridgeBackIdx = consolidatedIndices[bestLoopIdx];
+
+          allSegments.push([consolidated2D[bestLoopIdx], h2D[bestHoleIdx]]);
+
+          consolidated2D = [
+            ...consolidated2D.slice(0, bestLoopIdx + 1),
+            ...holeCycle2D,
+            bridgeBack2D,
+            ...consolidated2D.slice(bestLoopIdx + 1),
+          ];
+          consolidatedIndices = [
+            ...consolidatedIndices.slice(0, bestLoopIdx + 1),
+            ...holeCycleIndices,
+            bridgeBackIdx,
+            ...consolidatedIndices.slice(bestLoopIdx + 1),
+          ];
+        }
+      }
+
+      const planePoints: Point3D[] = consolidated2D.map((p) => ({
+        x: p.u,
+        y: p.v,
+        z: 0,
+      }));
+      const localTriangles = triangulatePolygonEarcut(planePoints, [0, 0, 1]);
+
+      for (const [i0, i1, i2] of localTriangles) {
+        const v0 = consolidatedIndices[i0];
+        const v1 = consolidatedIndices[i1];
+        const v2 = consolidatedIndices[i2];
+        if (v0 === v1 || v1 === v2 || v2 === v0) continue;
+
+        const p0 = consolidated2D[i0];
+        const p1 = consolidated2D[i1];
+        const p2 = consolidated2D[i2];
+        const centroid: Parametric2DPoint = {
+          u: (p0.u + p1.u + p2.u) / 3,
+          v: (p0.v + p1.v + p2.v) / 3,
+        };
+
+        let inHole = false;
+        for (const h of processedHoles) {
+          if (isPointInParametricPolygon(centroid, h.pts2D)) {
+            inHole = true;
+            break;
+          }
+        }
+        if (inHole || !isPointInParametricPolygon(centroid, outer2D)) continue;
+
+        facesList.push([v0, v1, v2]);
       }
     }
   }
