@@ -4,11 +4,11 @@ import path from 'node:path';
 /**
  * Automated Anti-Cheating & Integrity Guard
  *
- * Deterministically scans the entire codebase to detect and reject:
- * 1. Circular Mocking: Test oracles importing production conversion modules.
- * 2. Silent Passes: Tests or oracles returning true / passing when CLI tools are absent.
- * 3. Production Hardcoded Cheats: Dummy text strings, fake confidence, arbitrary truncations.
- * 4. Hollow Assertions: Meaningless assertions like expect(true).toBe(true).
+ * Deterministically scans the entire codebase with whole-file multiline analysis to detect:
+ * 1. Circular Mocking: Independent test oracles importing production conversion/engine modules.
+ * 2. Silent Passes: Tests or oracles bypassing checks with return true / valid: true when CLI tools are missing.
+ * 3. Production Hardcoded Cheats: Backdoors (NODE_ENV === 'test'), dummy text placeholders, arbitrary truncations.
+ * 4. Hollow Assertions: Meaningless tautological assertions (expect(true).toBe(true), expect("a").toBe("a")).
  */
 
 interface Violation {
@@ -25,13 +25,27 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const SRC_DIR = path.join(ROOT_DIR, 'src');
 const TESTS_DIR = path.join(ROOT_DIR, 'tests');
 
-function scanDirectory(dir: string, extension: RegExp, fileList: string[] = []): string[] {
+const EXCLUDED_DIRS = new Set([
+  'node_modules',
+  '.next',
+  '.git',
+  '.turbo',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  '.cache',
+]);
+
+const SUPPORTED_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+
+function scanDirectory(dir: string, extension: RegExp = SUPPORTED_EXTENSIONS, fileList: string[] = []): string[] {
   if (!fs.existsSync(dir)) return fileList;
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== 'node_modules' && entry.name !== '.next' && entry.name !== '.git') {
+      if (!EXCLUDED_DIRS.has(entry.name)) {
         scanDirectory(fullPath, extension, fileList);
       }
     } else if (entry.isFile() && extension.test(entry.name)) {
@@ -41,27 +55,55 @@ function scanDirectory(dir: string, extension: RegExp, fileList: string[] = []):
   return fileList;
 }
 
+function getLineAndSnippet(
+  content: string,
+  index: number,
+  matchLength: number = 0
+): { line: number; snippet: string } {
+  const upToMatch = content.slice(0, index);
+  const line = upToMatch.split('\n').length;
+  const lineStart = content.lastIndexOf('\n', index) + 1;
+  let lineEnd = content.indexOf('\n', index + Math.max(matchLength, 1));
+  if (lineEnd === -1) lineEnd = content.length;
+  const snippet = content.slice(lineStart, lineEnd).replace(/\s+/g, ' ').trim();
+  return {
+    line,
+    snippet: snippet.length > 120 ? snippet.slice(0, 117) + '...' : snippet,
+  };
+}
+
 // ============================================================================
-// Gate 1: Circular Mocking in Test Helpers / Oracles
+// Gate 1: Circular Mocking in Test Helpers / Independent Oracles
 // ============================================================================
 function checkCircularMocking() {
-  const helperFiles = scanDirectory(path.join(TESTS_DIR, 'helpers'), /\.(ts|js)$/)
-    .filter((f) => !f.endsWith('corpus-synthesizer.ts') && !f.endsWith('golden-corpus-suite.ts'));
-  const circularImportPattern = /from\s+['"][^'"]*\/src\/lib\/conversions\/[^'"]*['"]/;
+  const oracleFiles = scanDirectory(path.join(TESTS_DIR, 'helpers'), SUPPORTED_EXTENSIONS).filter(
+    (f) => !f.endsWith('corpus-synthesizer.ts') && !f.endsWith('golden-corpus-suite.ts')
+  );
 
-  for (const file of helperFiles) {
-    const lines = fs.readFileSync(file, 'utf-8').split('\n');
-    lines.forEach((line, idx) => {
-      if (circularImportPattern.test(line)) {
+  // Catch path aliases, relative paths, require, and dynamic import
+  const circularPatterns = [
+    {
+      regex: /(?:import\s+[\s\S]*?\s+from|require\s*\(|import\s*\()\s*['"](@\/lib\/conversions|@\/worker\/engines|\.\.?\/[^'"]*(?:\/conversions|\/engines))(?:\/[^'"]*)?['"]/gs,
+      desc: 'Oracle or test helper directly imports production conversion/engine modules. Oracles must be independent.',
+    },
+  ];
+
+  for (const file of oracleFiles) {
+    const content = fs.readFileSync(file, 'utf-8');
+    for (const pattern of circularPatterns) {
+      pattern.regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.regex.exec(content)) !== null) {
+        const { line, snippet } = getLineAndSnippet(content, match.index, match[0].length);
         violations.push({
           file: path.relative(ROOT_DIR, file),
-          line: idx + 1,
+          line,
           rule: 'ANTI-CIRCULAR-MOCKING',
-          snippet: line.trim(),
-          message: 'Oracle or test helper directly imports production conversion modules. Oracles must be independent.',
+          snippet,
+          message: pattern.desc,
         });
       }
-    });
+    }
   }
 }
 
@@ -69,83 +111,96 @@ function checkCircularMocking() {
 // Gate 2: Silent Pass & Tool Absence Bypasses in Tests
 // ============================================================================
 function checkSilentPassBypasses() {
-  const testFiles = scanDirectory(TESTS_DIR, /\.(ts|js)$/);
+  const testFiles = scanDirectory(TESTS_DIR, SUPPORTED_EXTENSIONS);
   const bypassPatterns = [
     {
-      regex: /if\s*\(!toolPath\)\s*return\s+true/i,
-      desc: 'Bypassing verification with "return true" when tool is missing.',
+      // Missing tool variable check returning true or { valid: true } across multiline blocks
+      regex: /if\s*\(\s*!(?:toolPath|tool|binPath|binary|executable|ffmpeg|ffprobe|soffice|tesseract|sox|hasTool|isAvailable)\b[\s\S]{0,80}?\)\s*(?:\{\s*return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\}|true\s*;)\s*;?\s*\}|return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\}|true\s*;)\s*;?)/gis,
+      desc: 'Bypassing verification with "return true" or "valid: true" when tool is missing. Use test.skip() or fail closed.',
     },
     {
-      regex: /if\s*\(!tool\)\s*return\s+true/i,
-      desc: 'Bypassing verification with "return true" when tool is missing.',
+      // Missing tool function call check returning true or { valid: true }
+      regex: /if\s*\(\s*(?:!isOracleToolAvailable\s*\([^)]*\)|isOracleToolAvailable\s*\([^)]*\)\s*===?\s*false|!getOracleToolPath\s*\([^)]*\)|getOracleToolPath\s*\([^)]*\)\s*===?\s*null)[\s\S]{0,80}?\)\s*(?:\{\s*return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\}|true\s*;)\s*;?\s*\}|return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\}|true\s*;)\s*;?)/gis,
+      desc: 'Bypassing verification with "return true" or "valid: true" on oracle tool check. Use test.skip() or fail closed.',
     },
     {
-      regex: /if\s*\(!toolPath\)\s*return\s*\{[^}]*valid:\s*true/i,
-      desc: 'Bypassing verification with "valid: true" when tool is missing.',
-    },
-    {
-      regex: /catch\s*(?:\([^)]*\))?\s*\{\s*return\s+true\s*;\s*\}/i,
-      desc: 'Catching error and silently returning true.',
+      // catch block silently returning true or { valid: true }
+      regex: /catch\s*(?:\([^)]*\))?\s*\{[\s\S]{0,60}?return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\})\s*;?[\s\S]{0,20}?\}/gis,
+      desc: 'Catching error and silently returning true or valid: true.',
     },
   ];
 
   for (const file of testFiles) {
-    const lines = fs.readFileSync(file, 'utf-8').split('\n');
-    lines.forEach((line, idx) => {
-      for (const pattern of bypassPatterns) {
-        if (pattern.regex.test(line)) {
-          violations.push({
-            file: path.relative(ROOT_DIR, file),
-            line: idx + 1,
-            rule: 'ANTI-SILENT-PASS',
-            snippet: line.trim(),
-            message: pattern.desc,
-          });
-        }
+    const content = fs.readFileSync(file, 'utf-8');
+    for (const pattern of bypassPatterns) {
+      pattern.regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.regex.exec(content)) !== null) {
+        const { line, snippet } = getLineAndSnippet(content, match.index, match[0].length);
+        violations.push({
+          file: path.relative(ROOT_DIR, file),
+          line,
+          rule: 'ANTI-SILENT-PASS',
+          snippet,
+          message: pattern.desc,
+        });
       }
-    });
+    }
   }
 }
 
 // ============================================================================
-// Gate 3: Production Code Hardcoded Cheats & Fallbacks
+// Gate 3: Production Code Hardcoded Cheats & Backdoors
 // ============================================================================
 function checkProductionCheats() {
-  const srcFiles = scanDirectory(SRC_DIR, /\.(ts|tsx)$/);
+  const srcFiles = scanDirectory(SRC_DIR, SUPPORTED_EXTENSIONS);
   const cheatPatterns = [
     {
-      regex: /\[Text:\s*\$\{/i,
+      regex: /\[(?:Text|Dummy|Placeholder|Extracted)\s*(?:content|chars)?\s*:\s*\$\{/gis,
       desc: 'Dummy "[Text: N chars]" string placeholder detected in production conversion code.',
     },
     {
-      regex: /Math\.min\(\s*60\s*,\s*totalFrames\s*\)/i,
+      // Frame cap truncation with arbitrary parameter ordering and whitespace
+      regex: /Math\.min\s*\(\s*(?:60\s*,\s*totalFrames|totalFrames\s*,\s*60)\s*\)/gis,
       desc: 'Hardcoded audio frame truncation (1.39s cap) detected.',
     },
     {
-      regex: /Math\.min\(\s*samples\.length\s*,\s*sampleRate\s*\*\s*channels\s*\*\s*60\s*\)/i,
+      // Audio truncation with parameter permutation and whitespace
+      regex: /Math\.min\s*\(\s*(?:samples\.length\s*,\s*(?:sampleRate\s*\*\s*channels|channels\s*\*\s*sampleRate)\s*\*\s*60|(?:sampleRate\s*\*\s*channels|channels\s*\*\s*sampleRate)\s*\*\s*60\s*,\s*samples\.length)\s*\)/gis,
       desc: 'Hardcoded audio truncation (60s cap) detected.',
     },
     {
-      regex: /['"`]Optical character recognition completed with default fallback/i,
+      regex: /['"`]Optical character recognition completed with default fallback/gis,
       desc: 'Dummy OCR default fallback string detected. Fail-closed error must be thrown.',
+    },
+    {
+      // Test backdoor flag in production code
+      regex: /process\.env\.NODE_ENV\s*===?\s*['"]test['"]/gs,
+      desc: 'Test-specific backdoor branching (process.env.NODE_ENV === "test") detected in production bundle.',
+    },
+    {
+      // Test runner injection flag in production code
+      regex: /process\.env\.VITEST\b/gs,
+      desc: 'Test-specific runner flag (process.env.VITEST) detected in production bundle.',
     },
   ];
 
   for (const file of srcFiles) {
-    const lines = fs.readFileSync(file, 'utf-8').split('\n');
-    lines.forEach((line, idx) => {
-      for (const pattern of cheatPatterns) {
-        if (pattern.regex.test(line)) {
-          violations.push({
-            file: path.relative(ROOT_DIR, file),
-            line: idx + 1,
-            rule: 'ANTI-PRODUCTION-CHEAT',
-            snippet: line.trim(),
-            message: pattern.desc,
-          });
-        }
+    const content = fs.readFileSync(file, 'utf-8');
+    for (const pattern of cheatPatterns) {
+      pattern.regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.regex.exec(content)) !== null) {
+        const { line, snippet } = getLineAndSnippet(content, match.index, match[0].length);
+        violations.push({
+          file: path.relative(ROOT_DIR, file),
+          line,
+          rule: 'ANTI-PRODUCTION-CHEAT',
+          snippet,
+          message: pattern.desc,
+        });
       }
-    });
+    }
   }
 }
 
@@ -153,33 +208,45 @@ function checkProductionCheats() {
 // Gate 4: Hollow Assertions in Test Suites
 // ============================================================================
 function checkHollowAssertions() {
-  const testFiles = scanDirectory(TESTS_DIR, /\.(ts|js)$/);
+  const testFiles = scanDirectory(TESTS_DIR, SUPPORTED_EXTENSIONS);
   const hollowPatterns = [
     {
-      regex: /expect\(\s*true\s*\)\.toBe\(\s*true\s*\)/i,
-      desc: 'Hollow assertion expect(true).toBe(true) detected.',
+      // Boolean and numeric tautologies: expect(true).toBe(true), expect(1).toBe(1), multiline tolerant
+      regex: /expect\s*\(\s*(true|false|1|0)\s*\)[\s\S]{0,40}?\.toBe\s*\(\s*\1\s*\)/gis,
+      desc: 'Hollow assertion tautology detected (e.g., expect(true).toBe(true)).',
     },
     {
-      regex: /expect\(\s*1\s*\)\.toBe\(\s*1\s*\)/i,
-      desc: 'Hollow assertion expect(1).toBe(1) detected.',
+      // Literal string tautologies: expect("a").toBe("a")
+      regex: /expect\s*\(\s*(['"][^'"]*['"])\s*\)[\s\S]{0,40}?\.(?:toBe|toEqual)\s*\(\s*\1\s*\)/gis,
+      desc: 'Hollow assertion tautology with identical string literals detected.',
+    },
+    {
+      // Redundant boolean truthy/falsy assertions
+      regex: /expect\s*\(\s*true\s*\)[\s\S]{0,40}?\.toBeTruthy\s*\(\s*\)/gis,
+      desc: 'Hollow assertion expect(true).toBeTruthy() detected.',
+    },
+    {
+      regex: /expect\s*\(\s*false\s*\)[\s\S]{0,40}?\.toBeFalsy\s*\(\s*\)/gis,
+      desc: 'Hollow assertion expect(false).toBeFalsy() detected.',
     },
   ];
 
   for (const file of testFiles) {
-    const lines = fs.readFileSync(file, 'utf-8').split('\n');
-    lines.forEach((line, idx) => {
-      for (const pattern of hollowPatterns) {
-        if (pattern.regex.test(line)) {
-          violations.push({
-            file: path.relative(ROOT_DIR, file),
-            line: idx + 1,
-            rule: 'ANTI-HOLLOW-ASSERTION',
-            snippet: line.trim(),
-            message: pattern.desc,
-          });
-        }
+    const content = fs.readFileSync(file, 'utf-8');
+    for (const pattern of hollowPatterns) {
+      pattern.regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.regex.exec(content)) !== null) {
+        const { line, snippet } = getLineAndSnippet(content, match.index, match[0].length);
+        violations.push({
+          file: path.relative(ROOT_DIR, file),
+          line,
+          rule: 'ANTI-HOLLOW-ASSERTION',
+          snippet,
+          message: pattern.desc,
+        });
       }
-    });
+    }
   }
 }
 

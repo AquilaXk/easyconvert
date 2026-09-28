@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "guard:anti-cheat": "tsx scripts/guard-anti-cheat.ts",
+    "pretest": "npm run guard:anti-cheat",
     "test": "vitest run",
     "worker": "tsx src/worker/index.ts",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts"
