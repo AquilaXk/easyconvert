@@ -2,14 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess } from '@/lib/api-keys/guard';
 import { keyStore } from '@/lib/api-keys/key-store';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
+import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { convertFile } from '@/lib/conversions';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
+import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_PROGRAMMATIC_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+const ASYNC_THRESHOLD_BYTES = 10 * 1024 * 1024; // 10 MB auto-handoff threshold
+const MAX_PROGRAMMATIC_FILE_SIZE = 500 * 1024 * 1024; // 500 MB max payload for async handoff
 
 interface ValidatedConvertInput {
   file: File;
@@ -30,7 +34,7 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
   }
 
   if (file.size > MAX_PROGRAMMATIC_FILE_SIZE) {
-    return { error: 'File size exceeds the 100 MB memory conversion boundary.', status: 400 };
+    return { error: 'File size exceeds the 500 MB asynchronous payload boundary.', status: 400 };
   }
 
   const targetFormatEntry = formData.get('targetFormat');
@@ -79,28 +83,41 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
 
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
+  const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
 
   // 1. Guard check: Authenticate
   const auth = await validateApiAccess(req, 0);
   if (!auth.authorized || !auth.user) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: auth.error ?? 'Unauthorized',
-      },
-      { status: auth.status ?? 401 }
+    let headers: Record<string, string> | undefined;
+    if (auth.user) {
+      const userQuota = await redisKeyStore.getQuotaUsage(auth.user.id);
+      headers = buildRateLimitHeaders(auth.status === 429 ? { ...userQuota, remaining: 0 } : userQuota);
+    }
+    return createProblemDetailsResponse(
+      auth.status ?? 401,
+      auth.error ?? 'Unauthorized',
+      instanceUri,
+      auth.status === 429 ? 'Too Many Requests' : undefined,
+      auth.status === 429 ? 'https://api.easyconvert.io/problems/quota-exceeded' : undefined,
+      headers
     );
   }
+
+  // Obtain rate-limiting context and construct IETF RateLimit headers
+  const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
+  const rateLimitHeaders = buildRateLimitHeaders(quota);
 
   // 2. Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion (prevents TOCTOU races)
   const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
   if (!reservation.allowed) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
-      },
-      { status: 429 }
+    const exhaustedQuota = { ...quota, remaining: 0 };
+    return createProblemDetailsResponse(
+      429,
+      `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+      instanceUri,
+      'Too Many Requests',
+      undefined,
+      buildRateLimitHeaders(exhaustedQuota)
     );
   }
 
@@ -111,13 +128,85 @@ export async function POST(req: NextRequest) {
       if (reservation.reservationId) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
-      return NextResponse.json(
-        { success: false, error: validation.error },
-        { status: validation.status ?? 400 }
+      return createProblemDetailsResponse(
+        validation.status ?? 400,
+        validation.error || 'Invalid request parameters.',
+        instanceUri,
+        'Bad Request',
+        undefined,
+        rateLimitHeaders
       );
     }
 
     const { file, sourceDef, targetDef, options } = validation.data;
+
+    // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff
+    const preferHeader = req.headers.get('prefer') || '';
+    const isPreferAsync = preferHeader.toLowerCase().includes('respond-async');
+    const isOverSizeThreshold = file.size > ASYNC_THRESHOLD_BYTES;
+
+    if (isPreferAsync || isOverSizeThreshold) {
+      // Asynchronous handoff: persist input payload and enqueue to distributed job queue
+      const arrayBuffer = await file.arrayBuffer();
+      const init = storageProvider.initiateMultipartUpload(
+        file.name,
+        file.type || 'application/octet-stream',
+        file.size
+      );
+      storageProvider.uploadPart(init.uploadId, 1, Buffer.from(arrayBuffer));
+      const completed = storageProvider.completeMultipartUpload(init.uploadId);
+      const storageKey = completed.key;
+
+      const effectiveWebhookUrl = auth.apiKey?.webhookUrl;
+      const effectiveWebhookSecret = auth.apiKey?.webhookSecret;
+
+      const job = await conversionQueue.add(
+        'convert',
+        {
+          jobId: '',
+          originalFilename: file.name,
+          sourceFormat: sourceDef.id,
+          targetFormat: targetDef.id,
+          fileSize: file.size,
+          storageKey,
+          options,
+          webhookUrl: effectiveWebhookUrl,
+          webhookSecret: effectiveWebhookSecret,
+          userId: auth.user.id,
+          reservationId: reservation.reservationId,
+        },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 1000 },
+        }
+      );
+
+      return NextResponse.json(
+        {
+          success: true,
+          status: 'accepted',
+          jobId: job.id,
+          statusUrl: `/api/v1/jobs/${job.id}`,
+          location: `/api/v1/jobs/${job.id}`,
+          message: 'Conversion job accepted for asynchronous processing.',
+          sourceFormat: sourceDef.id,
+          targetFormat: targetDef.id,
+          originalFilename: file.name,
+          fileSize: file.size,
+          createdAt: job.timestamp,
+        },
+        {
+          status: 202,
+          headers: {
+            Location: `/api/v1/jobs/${job.id}`,
+            'Preference-Applied': 'respond-async',
+            ...rateLimitHeaders,
+          },
+        }
+      );
+    }
+
+    // Synchronous execution path for payloads <= 10MB without respond-async preference
     const arrayBuffer = await file.arrayBuffer();
     const inputBuffer = Buffer.from(arrayBuffer);
 
@@ -166,31 +255,42 @@ export async function POST(req: NextRequest) {
           'Content-Disposition': `attachment; filename="${outFileName}"`,
           'X-Conversion-Time-Ms': durationMs.toString(),
           'X-File-Id': userFile.id,
+          ...rateLimitHeaders,
         },
       });
     }
 
-    return NextResponse.json({
-      success: true,
-      fileId: userFile.id,
-      fileName: outFileName,
-      sourceFormat: sourceDef.id,
-      targetFormat: targetDef.id,
-      mimeType: conversionResult.mimeType,
-      size: outputBuffer.length,
-      durationMs,
-      dataUri,
-      downloadUrl,
-      expiresAt: userFile.expiresAt,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        fileId: userFile.id,
+        fileName: outFileName,
+        sourceFormat: sourceDef.id,
+        targetFormat: targetDef.id,
+        mimeType: conversionResult.mimeType,
+        size: outputBuffer.length,
+        durationMs,
+        dataUri,
+        downloadUrl,
+        expiresAt: userFile.expiresAt,
+      },
+      {
+        status: 200,
+        headers: rateLimitHeaders,
+      }
+    );
   } catch (err: unknown) {
     if (reservation.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
     const message = err instanceof Error ? err.message : 'Internal programmatic conversion error';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
+    return createProblemDetailsResponse(
+      500,
+      message,
+      instanceUri,
+      'Internal Server Error',
+      undefined,
+      rateLimitHeaders
     );
   }
 }
