@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth/session';
-import { keyStore } from '@/lib/api-keys/key-store';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
+import type { ApiKeyScope } from '@/lib/api-keys/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const keys = await keyStore.listApiKeys(user.id);
+  const keys = await redisKeyStore.listApiKeys(user.id);
   return NextResponse.json({
     success: true,
     keys,
@@ -32,8 +33,19 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const keyName = (body && typeof body.name === 'string' && body.name.trim()) || 'Production API Key';
+    const allowedIps = Array.isArray(body?.allowedIps) ? body.allowedIps : undefined;
+    const webhookUrl = typeof body?.webhookUrl === 'string' && body.webhookUrl.trim() ? body.webhookUrl.trim() : undefined;
+    const webhookSecret = typeof body?.webhookSecret === 'string' && body.webhookSecret.trim() ? body.webhookSecret.trim() : undefined;
+    const scopes = Array.isArray(body?.scopes) ? (body.scopes as ApiKeyScope[]) : undefined;
+    const expiresAt = typeof body?.expiresAt === 'number' && Number.isFinite(body.expiresAt) ? body.expiresAt : undefined;
 
-    const result = await keyStore.generateApiKey(user.id, keyName);
+    const result = await redisKeyStore.generateApiKey(user.id, keyName, {
+      allowedIps,
+      webhookUrl,
+      webhookSecret,
+      scopes,
+      expiresAt,
+    });
 
     return NextResponse.json({
       success: true,

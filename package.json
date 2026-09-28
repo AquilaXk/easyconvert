@@ -11,7 +11,8 @@
     "pretest": "npm run guard:anti-cheat",
     "test": "vitest run",
     "worker": "tsx src/worker/index.ts",
-    "generate:corpus": "tsx scripts/generate-golden-corpus.ts"
+    "generate:corpus": "tsx scripts/generate-golden-corpus.ts",
+    "generate:sdk": "tsx scripts/generate-sdk.ts"
   },
   "dependencies": {
     "@types/ioredis": "^4.28.10",

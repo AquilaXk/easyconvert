@@ -1,5 +1,13 @@
 import type { UserTier } from '../auth/types';
 
+export type ApiKeyScope = 'convert:read' | 'convert:write' | 'storage:download' | '*';
+
+export const ALL_API_KEY_SCOPES: ApiKeyScope[] = [
+  'convert:read',
+  'convert:write',
+  'storage:download',
+];
+
 export interface ApiKey {
   id: string;
   userId: string;
@@ -8,11 +16,20 @@ export interface ApiKey {
   keyHash: string;
   createdAt: number;
   lastUsedAt?: number;
+  expiresAt?: number;
   status: 'active' | 'revoked';
   allowedIps?: string[];
   webhookUrl?: string;
   webhookSecret?: string;
-  scopes?: string[];
+  scopes?: ApiKeyScope[];
+}
+
+export interface ApiKeyCreateOptions {
+  allowedIps?: string[];
+  webhookUrl?: string;
+  webhookSecret?: string;
+  scopes?: ApiKeyScope[];
+  expiresAt?: number;
 }
 
 export interface ApiKeyCreateResult {
@@ -47,4 +64,19 @@ export interface UserConversionFile {
   downloadUrl: string;
   createdAt: number;
   expiresAt: number;
+}
+
+export interface WebhookDlqEntry {
+  id: string;
+  originalDeliveryId: string;
+  targetUrl: string;
+  event: string;
+  payload: Record<string, unknown>;
+  secret: string;
+  failedAt: number;
+  finalStatusCode?: number;
+  errorMessage?: string;
+  retryCount: number;
+  status: 'failed' | 'replayed';
+  replayedAt?: number;
 }

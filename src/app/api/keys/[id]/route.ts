@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth/session';
-import { keyStore } from '@/lib/api-keys/key-store';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,7 +24,7 @@ export async function DELETE(
     );
   }
 
-  const revoked = await keyStore.revokeApiKey(user.id, keyId);
+  const revoked = await redisKeyStore.revokeApiKey(user.id, keyId);
   if (!revoked) {
     return NextResponse.json(
       { success: false, error: 'API key not found or not owned by the current user.' },

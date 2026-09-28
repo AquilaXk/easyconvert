@@ -1,8 +1,8 @@
-import { keyStore } from './key-store';
 import { redisKeyStore } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
 import type { User } from '../auth/types';
-import type { ApiKey } from './types';
+import type { ApiKey, ApiKeyScope } from './types';
+import { webhookDispatcher } from './webhook-dispatcher';
 
 export interface ApiAuthResult {
   authorized: boolean;
@@ -61,7 +61,8 @@ function extractApiKeySecret(request: Request): string | null {
 async function verifyKeyAccess(
   apiKeySecret: string,
   requiredUnits: number,
-  clientIp?: string
+  clientIp?: string,
+  requiredScope?: ApiKeyScope
 ): Promise<ApiAuthResult> {
   const verification = await redisKeyStore.verifyApiKey(apiKeySecret, clientIp);
   if (!verification.valid || !verification.user || !verification.key) {
@@ -73,8 +74,55 @@ async function verifyKeyAccess(
     };
   }
 
+  // Enforce Key Expiration
+  if (verification.key.expiresAt && Date.now() > verification.key.expiresAt) {
+    return {
+      authorized: false,
+      error: 'API key has expired.',
+      status: 401,
+    };
+  }
+
+  // Pre-expiry notification check (within 7 days of expiration)
+  if (verification.key.expiresAt && verification.key.expiresAt > Date.now()) {
+    const timeUntilExpiry = verification.key.expiresAt - Date.now();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    if (timeUntilExpiry <= sevenDaysMs && verification.key.webhookUrl) {
+      webhookDispatcher.dispatch(
+        verification.key.webhookUrl,
+        'key.expiring_soon',
+        {
+          keyId: verification.key.id,
+          keyName: verification.key.name,
+          prefix: verification.key.prefix,
+          expiresAt: verification.key.expiresAt,
+          daysRemaining: Math.max(1, Math.ceil(timeUntilExpiry / (24 * 60 * 60 * 1000))),
+        },
+        verification.key.webhookSecret || ''
+      ).catch(() => {});
+    }
+  }
+
+  // Enforce Granular Scopes (RBAC)
+  if (requiredScope) {
+    const keyScopes = verification.key.scopes;
+    if (Array.isArray(keyScopes) && keyScopes.length > 0) {
+      const hasScope = keyScopes.includes('*') || keyScopes.includes(requiredScope);
+      if (!hasScope) {
+        return {
+          authorized: false,
+          user: verification.user,
+          apiKey: verification.key,
+          error: `Forbidden: API key lacks required scope '${requiredScope}'.`,
+          status: 403,
+        };
+      }
+    }
+  }
+
+  // Enforce Distributed Quotas via atomic Redis Lua transactions
   if (requiredUnits > 0) {
-    const quotaCheck = await keyStore.recordUsage(verification.user.id, requiredUnits);
+    const quotaCheck = await redisKeyStore.recordUsage(verification.user.id, requiredUnits);
     if (!quotaCheck.allowed) {
       return {
         authorized: false,
@@ -85,7 +133,7 @@ async function verifyKeyAccess(
       };
     }
   } else {
-    const quota = await keyStore.getQuotaUsage(verification.user.id);
+    const quota = await redisKeyStore.getQuotaUsage(verification.user.id);
     if (quota.remaining <= 0) {
       return {
         authorized: false,
@@ -116,7 +164,7 @@ async function verifySessionAccess(request: Request, requiredUnits: number): Pro
   }
 
   if (requiredUnits > 0) {
-    const quotaCheck = await keyStore.recordUsage(sessionUser.id, requiredUnits);
+    const quotaCheck = await redisKeyStore.recordUsage(sessionUser.id, requiredUnits);
     if (!quotaCheck.allowed) {
       return {
         authorized: false,
@@ -126,7 +174,7 @@ async function verifySessionAccess(request: Request, requiredUnits: number): Pro
       };
     }
   } else {
-    const quota = await keyStore.getQuotaUsage(sessionUser.id);
+    const quota = await redisKeyStore.getQuotaUsage(sessionUser.id);
     if (quota.remaining <= 0) {
       return {
         authorized: false,
@@ -146,15 +194,17 @@ async function verifySessionAccess(request: Request, requiredUnits: number): Pro
 
 /**
  * Validates programmatic REST API requests using either API Key header or User session.
+ * Exclusively uses redisKeyStore for distributed atomic quota transactions.
  */
 export async function validateApiAccess(
   request: Request,
-  requiredUnits: number = 1
+  requiredUnits: number = 1,
+  requiredScope?: ApiKeyScope
 ): Promise<ApiAuthResult> {
   const clientIp = extractClientIp(request);
   const apiKeySecret = extractApiKeySecret(request);
   if (apiKeySecret) {
-    return verifyKeyAccess(apiKeySecret, requiredUnits, clientIp);
+    return verifyKeyAccess(apiKeySecret, requiredUnits, clientIp, requiredScope);
   }
   return verifySessionAccess(request, requiredUnits);
 }

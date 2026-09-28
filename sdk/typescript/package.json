@@ -1,0 +1,23 @@
+{
+  "name": "@easyconvert/sdk",
+  "version": "1.0.0",
+  "description": "Official type-safe TypeScript/JavaScript client SDK for the EasyConvert platform.",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "easyconvert",
+    "conversion",
+    "pdf",
+    "cad",
+    "media",
+    "sdk",
+    "api"
+  ],
+  "author": "EasyConvert Engineering",
+  "license": "MIT"
+}

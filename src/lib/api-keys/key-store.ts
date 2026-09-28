@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { sha256 } from '../auth/crypto';
 import { userStore } from '../auth/user-store';
 import type { User, UserTier } from '../auth/types';
-import type { ApiKey, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
+import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, ApiKeyScope, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
 import { globalSharedObjects } from '../storage/shared-store';
 
@@ -120,12 +120,7 @@ export class KeyStore {
   public async generateApiKey(
     userId: string,
     name: string,
-    options: {
-      allowedIps?: string[];
-      webhookUrl?: string;
-      webhookSecret?: string;
-      scopes?: string[];
-    } = {}
+    options: ApiKeyCreateOptions = {}
   ): Promise<ApiKeyCreateResult> {
     this.ensureInitialized();
 
@@ -141,6 +136,7 @@ export class KeyStore {
       prefix,
       keyHash,
       createdAt: Date.now(),
+      expiresAt: options.expiresAt,
       status: 'active',
       allowedIps: options.allowedIps,
       webhookUrl: options.webhookUrl,
@@ -187,6 +183,10 @@ export class KeyStore {
     const key = this.keys.get(keyId);
     if (key?.status !== 'active') {
       return { valid: false, error: 'API key has been revoked' };
+    }
+
+    if (key.expiresAt && Date.now() > key.expiresAt) {
+      return { valid: false, error: 'API key has expired' };
     }
 
     if (key.allowedIps && key.allowedIps.length > 0 && clientIp) {

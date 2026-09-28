@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth/session';
-import { keyStore } from '@/lib/api-keys/key-store';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const usage = await keyStore.getQuotaUsage(user.id);
+  const usage = await redisKeyStore.getQuotaUsage(user.id);
   return NextResponse.json({
     success: true,
     usage,

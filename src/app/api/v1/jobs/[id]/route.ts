@@ -9,7 +9,7 @@ interface RouteContext {
 }
 
 export async function GET(req: NextRequest, context: RouteContext) {
-  const auth = await validateApiAccess(req, 0);
+  const auth = await validateApiAccess(req, 0, 'convert:read');
   if (!auth.authorized || !auth.user) {
     return NextResponse.json(
       {

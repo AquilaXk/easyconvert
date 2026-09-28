@@ -12,7 +12,7 @@ const MAX_JOB_PAYLOAD_SIZE = 500 * 1024 * 1024; // 500 MB for asynchronous proce
 
 export async function POST(req: NextRequest) {
   // 1. Guard check: Authenticate API key or user session
-  const auth = await validateApiAccess(req, 0);
+  const auth = await validateApiAccess(req, 0, 'convert:write');
   if (!auth.authorized || !auth.user) {
     return NextResponse.json(
       {
@@ -225,7 +225,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await validateApiAccess(req, 0);
+  const auth = await validateApiAccess(req, 0, 'convert:read');
   if (!auth.authorized || !auth.user) {
     return NextResponse.json(
       {
