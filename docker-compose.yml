@@ -42,6 +42,7 @@ services:
     cap_drop:
       - ALL
     security_opt:
+      - seccomp:./docker/seccomp-airgap.json
       - no-new-privileges:true
     devices:
       - /dev/dri:/dev/dri
