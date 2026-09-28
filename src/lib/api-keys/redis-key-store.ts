@@ -60,6 +60,26 @@ export const COMMIT_QUOTA_LUA_SCRIPT = `
 return redis.call('DEL', KEYS[1])
 `;
 
+export const DEDUCT_QUOTA_LUA_SCRIPT = `
+-- KEYS[1]: usage key (e.g. easyconvert:usage:userId:YYYY-MM-DD)
+-- ARGV[1]: units requested
+-- ARGV[2]: max daily limit
+-- ARGV[3]: usage key TTL in seconds (until midnight UTC)
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+local units = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+
+if current + units <= limit then
+  redis.call('INCRBY', KEYS[1], units)
+  if current == 0 then
+    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+  end
+  return {1, limit - (current + units)}
+else
+  return {0, limit - current}
+end
+`;
+
 /**
  * Redis-backed Key Store with atomic Lua script metering and 2-phase quota transactions
  * (Reserve-Commit/Rollback) preventing TOCTOU races in distributed environments.
@@ -77,6 +97,62 @@ export class RedisKeyStore extends KeyStore {
     return this.keyPrefix;
   }
 
+  public getReservation(reservationId: string): QuotaReservation | undefined {
+    return this.reservations.get(reservationId);
+  }
+
+  public getActiveReservationsCount(): number {
+    this.cleanExpiredReservations();
+    return this.reservations.size;
+  }
+
+  public cleanExpiredReservations(): number {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [id, res] of this.reservations.entries()) {
+      if (res.expiresAt <= now && res.status === 'reserved') {
+        const dateKey = `${res.userId}:${getUtcDateKey()}`;
+        const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
+        this.dailyUsage.set(dateKey, Math.max(0, currentUsed - res.units));
+        this.reservations.delete(id);
+        cleaned++;
+      }
+    }
+    return cleaned;
+  }
+
+  /**
+   * Directly deduces quota atomically without 2-phase reservations.
+   */
+  public async deductQuota(
+    userId: string,
+    units: number = 1
+  ): Promise<{ allowed: boolean; remaining: number }> {
+    if (!userId || typeof userId !== 'string' || !Number.isFinite(units) || units < 0) {
+      return { allowed: false, remaining: 0 };
+    }
+    this.ensureInitialized();
+    const user = await userStore.findById(userId);
+    const tier: UserTier = user?.tier ?? 'free';
+    const dailyLimit = TIER_LIMITS[tier];
+    const dateKey = `${userId}:${getUtcDateKey()}`;
+    const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
+
+    if (units === 0) {
+      return {
+        allowed: dailyLimit - currentUsed > 0,
+        remaining: Math.max(0, dailyLimit - currentUsed),
+      };
+    }
+
+    if (currentUsed + units <= dailyLimit) {
+      this.dailyUsage.set(dateKey, currentUsed + units);
+      this.persist();
+      return { allowed: true, remaining: dailyLimit - (currentUsed + units) };
+    }
+    return { allowed: false, remaining: Math.max(0, dailyLimit - currentUsed) };
+  }
+
   /**
    * 2-Phase Quota Transaction: Phase 1 (Reserve)
    * Atomically verifies and reserves quota units before executing expensive distributed jobs.
@@ -85,6 +161,9 @@ export class RedisKeyStore extends KeyStore {
     userId: string,
     units: number = 1
   ): Promise<{ allowed: boolean; reservationId?: string; remaining: number }> {
+    if (!userId || typeof userId !== 'string' || !Number.isFinite(units) || units < 0) {
+      return { allowed: false, remaining: 0 };
+    }
     this.ensureInitialized();
 
     const user = await userStore.findById(userId);
@@ -94,7 +173,7 @@ export class RedisKeyStore extends KeyStore {
     const dateKey = `${userId}:${getUtcDateKey()}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
 
-    if (units <= 0) {
+    if (units === 0) {
       return {
         allowed: dailyLimit - currentUsed > 0,
         remaining: Math.max(0, dailyLimit - currentUsed),
@@ -134,6 +213,7 @@ export class RedisKeyStore extends KeyStore {
    * Confirms successful task completion and finalizes the reservation.
    */
   public async commitQuota(reservationId: string): Promise<boolean> {
+    if (!reservationId || typeof reservationId !== 'string') return false;
     const res = this.reservations.get(reservationId);
     if (!res || res.status !== 'reserved') return false;
 
@@ -147,6 +227,7 @@ export class RedisKeyStore extends KeyStore {
    * Rolls back reserved quota units when a conversion fails or times out.
    */
   public async rollbackQuota(reservationId: string): Promise<boolean> {
+    if (!reservationId || typeof reservationId !== 'string') return false;
     const res = this.reservations.get(reservationId);
     if (!res || res.status !== 'reserved') return false;
 
