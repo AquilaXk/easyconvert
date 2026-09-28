@@ -1400,6 +1400,27 @@ export async function runDifferentialComparison(
   let structuralScore = 1.0;
   let textSimilarity = 1.0;
   let vrtResult: VrtResult | undefined;
+  let oracleType: 'external_cli' | 'structural_ast_reference' = 'structural_ast_reference';
+
+  try {
+    assertFormatIntegrity(actualBuffer, fmt);
+  } catch (err: any) {
+    discrepancies.push(`Actual buffer integrity violation: ${err?.message || 'Failed format integrity check'}`);
+    return {
+      matched: false,
+      oracleType,
+      structuralScore: 0,
+      textSimilarity: 0,
+      vrtResult: undefined,
+      discrepancies,
+    };
+  }
+
+  try {
+    assertFormatIntegrity(referenceBuffer, fmt);
+  } catch (err: any) {
+    discrepancies.push(`Reference buffer integrity violation: ${err?.message || 'Failed reference integrity check'}`);
+  }
 
   if (fmt === 'pdf') {
     const res = await comparePdfDifferential(actualBuffer, referenceBuffer, discrepancies);
@@ -1427,29 +1448,60 @@ export async function runDifferentialComparison(
   const minScore = options.minStructuralScore ?? 0.8;
   const minText = options.minTextScore ?? 0.7;
 
-  let oracleType: 'external_cli' | 'structural_ast_reference' = 'structural_ast_reference';
   if (fmt === 'pdf' && isOracleToolAvailable('pdftotext')) {
     oracleType = 'external_cli';
-  } else if (fmt === 'tar' && isOracleToolAvailable('tar')) {
-    oracleType = 'external_cli';
-    const isValid = verifyArchiveWithTar(actualBuffer);
-    if (!isValid) {
-      discrepancies.push('External tar CLI archive verification failed');
-      structuralScore = 0;
+  } else if (fmt === 'tar') {
+    if (isOracleToolAvailable('tar')) {
+      oracleType = 'external_cli';
+      const isValid = verifyArchiveWithTar(actualBuffer);
+      if (!isValid) {
+        discrepancies.push('External tar CLI archive verification failed');
+        structuralScore = 0;
+      }
+    } else {
+      try {
+        checkTarIntegrity(actualBuffer);
+      } catch (err: any) {
+        discrepancies.push(`Native TAR validation failed: ${err?.message}`);
+        structuralScore = 0;
+      }
     }
-  } else if ((fmt === 'zstd' || fmt === 'zst') && isOracleToolAvailable('zstd')) {
-    oracleType = 'external_cli';
-    const isValid = verifyArchiveWithZstd(actualBuffer);
-    if (!isValid) {
-      discrepancies.push('External zstd CLI decompression verification failed');
-      structuralScore = 0;
+  } else if (fmt === 'zstd' || fmt === 'zst') {
+    if (isOracleToolAvailable('zstd')) {
+      oracleType = 'external_cli';
+      const isValid = verifyArchiveWithZstd(actualBuffer);
+      if (!isValid) {
+        discrepancies.push('External zstd CLI decompression verification failed');
+        structuralScore = 0;
+      }
+    } else {
+      try {
+        checkZstdIntegrity(actualBuffer);
+      } catch (err: any) {
+        discrepancies.push(`Native Zstandard validation failed: ${err?.message}`);
+        structuralScore = 0;
+      }
     }
-  } else if (fmt === '7z' && isOracleToolAvailable('7z')) {
-    oracleType = 'external_cli';
-    const isValid = verifyArchiveWith7z(actualBuffer);
-    if (!isValid) {
-      discrepancies.push('External 7z CLI archive test failed');
-      structuralScore = 0;
+  } else if (fmt === '7z') {
+    if (isOracleToolAvailable('7z')) {
+      oracleType = 'external_cli';
+      const isValid = verifyArchiveWith7z(actualBuffer);
+      if (!isValid) {
+        discrepancies.push('External 7z CLI archive test failed');
+        structuralScore = 0;
+      }
+    } else {
+      if (actualBuffer.length < 32) {
+        discrepancies.push('Native 7z validation failed: Truncated 7z archive header (minimum 32 bytes required)');
+        structuralScore = 0;
+      } else {
+        try {
+          check7zIntegrity(actualBuffer);
+        } catch (err: any) {
+          discrepancies.push(`Native 7z validation failed: ${err?.message}`);
+          structuralScore = 0;
+        }
+      }
     }
   }
 
