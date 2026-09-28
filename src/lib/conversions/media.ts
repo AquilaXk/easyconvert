@@ -125,8 +125,8 @@ export async function convertMedia(
     return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
   }
 
-  // When system FFmpeg is available, execute native transcoding
-  if (checkFfmpeg()) {
+  // When system FFmpeg is available and not explicitly disabled, execute native transcoding
+  if (!options.disableNativeEngine && checkFfmpeg()) {
     try {
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch (err) {

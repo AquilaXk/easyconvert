@@ -4,7 +4,7 @@ import JSZip from 'jszip';
 import { convertVectorCad, encodeCgm, parseCgmToSvg } from '../src/lib/conversions/vector-cad';
 import { convertOffice, extractTextContentForOffice } from '../src/lib/conversions/office';
 import { create7zArchive, extract7zArchive } from '../src/lib/conversions/archive';
-import { convertMedia, ConversionFailedError } from '../src/lib/conversions/media';
+import { convertMedia, ConversionFailedError, checkFfmpeg } from '../src/lib/conversions/media';
 import {
   applyRgbaQuantize,
   WasmEngine,
@@ -356,31 +356,31 @@ endobj
       return buf;
     }
 
-    it('strictly throws ConversionFailedError for lossy psychoacoustic formats when FFmpeg is absent and allowPureLossyBitstream is omitted', async () => {
+    it('strictly throws ConversionFailedError for lossy psychoacoustic formats when FFmpeg is absent or disabled and allowPureLossyBitstream is omitted', async () => {
       const wav = createTestWav();
 
-      await expect(convertMedia(wav, 'wav', 'opus', {}, 'test.wav')).rejects.toThrow(
-        ConversionFailedError
-      );
-      await expect(convertMedia(wav, 'wav', 'ogg', {}, 'test.wav')).rejects.toThrow(
-        ConversionFailedError
-      );
-      await expect(convertMedia(wav, 'wav', 'aac', {}, 'test.wav')).rejects.toThrow(
-        ConversionFailedError
-      );
-      await expect(convertMedia(wav, 'wav', 'mp4', {}, 'test.wav')).rejects.toThrow(
-        ConversionFailedError
-      );
+      await expect(
+        convertMedia(wav, 'wav', 'opus', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
+      await expect(
+        convertMedia(wav, 'wav', 'ogg', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
+      await expect(
+        convertMedia(wav, 'wav', 'aac', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
+      await expect(
+        convertMedia(wav, 'wav', 'mp4', { disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(ConversionFailedError);
     });
 
     it('allows lossless FLAC and pure TS MP3 conversion without throwing ConversionFailedError', async () => {
       const wav = createTestWav();
 
-      const flacRes = await convertMedia(wav, 'wav', 'flac', {}, 'test.wav');
+      const flacRes = await convertMedia(wav, 'wav', 'flac', { disableNativeEngine: true }, 'test.wav');
       expect(flacRes.mimeType).toBe('audio/flac');
       expect(flacRes.buffer.indexOf('fLaC')).toBe(0);
 
-      const mp3Res = await convertMedia(wav, 'wav', 'mp3', {}, 'test.wav');
+      const mp3Res = await convertMedia(wav, 'wav', 'mp3', { disableNativeEngine: true }, 'test.wav');
       expect(mp3Res.mimeType).toBe('audio/mpeg');
       expect(mp3Res.buffer.length).toBeGreaterThan(0);
     });

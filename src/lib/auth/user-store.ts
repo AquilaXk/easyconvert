@@ -6,7 +6,7 @@ import type { User, UserRecord } from './types';
 const STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
 const USERS_FILE = path.join(STORAGE_DIR, 'users.json');
 
-class UserStore {
+export class UserStore {
   private readonly users: Map<string, UserRecord> = new Map();
   private readonly emailIndex: Map<string, string> = new Map();
   private initialized = false;
@@ -112,6 +112,17 @@ class UserStore {
     this.users.set(id, updated);
     this.persist();
     return updated;
+  }
+
+  public async updateTier(id: string, tier: 'free' | 'pro' | 'enterprise'): Promise<UserRecord | null> {
+    return this.updateUser(id, { tier });
+  }
+
+  public async recordConversion(id: string): Promise<void> {
+    const user = await this.findById(id);
+    if (user) {
+      await this.updateUser(id, { conversionsCount: (user.conversionsCount || 0) + 1 });
+    }
   }
 
   public resetStore() {

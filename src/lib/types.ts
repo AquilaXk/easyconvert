@@ -122,6 +122,7 @@ export interface ConversionOptions {
   useFfmpeg?: boolean;
   fastStart?: boolean;
   disableHwaccel?: boolean;
+  disableNativeEngine?: boolean;
   allowPureLossyBitstream?: boolean;
 }
 
