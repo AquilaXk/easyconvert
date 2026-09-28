@@ -56,3 +56,11 @@ class WebhookDlqEntry:
     final_status_code: Optional[int] = None
     error_message: Optional[str] = None
     replayed_at: Optional[int] = None
+
+@dataclass
+class QuotaUsage:
+    tier: str
+    daily_limit: int
+    used_today: int
+    remaining: int
+    reset_at: int

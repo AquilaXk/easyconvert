@@ -22,6 +22,7 @@ export interface ApiKey {
   webhookUrl?: string;
   webhookSecret?: string;
   scopes?: ApiKeyScope[];
+  lastExpiryNotifiedAt?: number;
 }
 
 export interface ApiKeyCreateOptions {

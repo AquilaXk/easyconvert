@@ -23,6 +23,7 @@ export interface WebhookDispatchOptions {
   maxRetries?: number;
   timeoutMs?: number;
   initialDelayMs?: number;
+  skipDlq?: boolean;
 }
 
 export interface WebhookDeliveryAttempt {
@@ -195,7 +196,7 @@ export class WebhookDispatcher {
     }
 
     // Preserve failed webhooks in Dead Letter Queue (DLQ)
-    if (!success) {
+    if (!success && !options.skipDlq) {
       const lastError = attempts.at(-1)?.error;
       const dlqEntry: WebhookDlqEntry = {
         id: `dlq_${deliveryId}`,
@@ -292,13 +293,15 @@ export class WebhookDispatcher {
     const entry = await this.getDlqEntry(id);
     if (!entry) return null;
 
-    const payloadData = (entry.payload as any)?.data ?? entry.payload;
+    const payloadData = (entry.payload as any)?.data !== undefined
+      ? (entry.payload as any).data
+      : entry.payload;
     const result = await this.dispatch(
       entry.targetUrl,
       entry.event as WebhookEvent,
       payloadData,
       entry.secret,
-      { maxRetries: 3 }
+      { maxRetries: 3, skipDlq: true }
     );
 
     entry.retryCount += result.totalAttempts;
@@ -307,6 +310,8 @@ export class WebhookDispatcher {
     if (result.success) {
       entry.status = 'replayed';
       entry.replayedAt = Date.now();
+    } else {
+      entry.status = 'failed';
     }
     await this.saveToDlq(entry);
 

@@ -9,6 +9,7 @@ import type {
   ApiKey,
   ApiKeyCreateResult,
   ApiKeyScope,
+  QuotaUsage,
   WebhookDlqEntry,
   DlqReplayResult,
 } from './types';
@@ -190,6 +191,14 @@ export class EasyConvertClient {
       method: 'DELETE',
     });
     return res.success;
+  }
+
+  /**
+   * Get current quota usage and daily conversion limits.
+   */
+  public async getQuotaUsage(): Promise<QuotaUsage> {
+    const res = await this.request<{ success: boolean; usage: QuotaUsage }>('/api/keys/usage');
+    return res.usage;
   }
 
   /**

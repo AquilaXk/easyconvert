@@ -1,7 +1,7 @@
 import json
 import requests
 from typing import Optional, Dict, Any, Union, List, BinaryIO
-from .models import ConversionResponse, JobSummary, ApiKey, WebhookDlqEntry
+from .models import ConversionResponse, JobSummary, ApiKey, WebhookDlqEntry, QuotaUsage
 
 class EasyConvertClient:
     """Official EasyConvert REST API client."""
@@ -156,6 +156,11 @@ class EasyConvertClient:
         """Revoke an API key."""
         res = self._request("DELETE", f"/api/keys/{key_id}")
         return res.get("success", False)
+
+    def get_quota_usage(self) -> Dict[str, Any]:
+        """Get current quota usage and daily limits."""
+        res = self._request("GET", "/api/keys/usage")
+        return res.get("usage", {})
 
     def get_dlq_entries(self) -> List[Dict[str, Any]]:
         """List dead-lettered webhook entries."""

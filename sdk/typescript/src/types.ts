@@ -110,6 +110,14 @@ export interface WebhookDlqEntry {
   replayedAt?: number;
 }
 
+export interface QuotaUsage {
+  tier: string;
+  dailyLimit: number;
+  usedToday: number;
+  remaining: number;
+  resetAt: number;
+}
+
 export interface DlqReplayResult {
   success: boolean;
   deliveryId: string;

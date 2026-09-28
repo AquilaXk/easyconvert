@@ -1,7 +1,7 @@
 import { redisKeyStore } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
 import type { User } from '../auth/types';
-import type { ApiKey, ApiKeyScope } from './types';
+import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 
 export interface ApiAuthResult {
@@ -65,6 +65,11 @@ function checkPreExpiryNotification(key: ApiKey): void {
   const timeUntilExpiry = key.expiresAt - Date.now();
   const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
   if (timeUntilExpiry <= sevenDaysMs) {
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    if (key.lastExpiryNotifiedAt && Date.now() - key.lastExpiryNotifiedAt < oneDayMs) {
+      return;
+    }
+    key.lastExpiryNotifiedAt = Date.now();
     webhookDispatcher.dispatch(
       key.webhookUrl,
       'key.expiring_soon',
@@ -97,11 +102,6 @@ async function checkDistributedQuota(userId: string, tier: string, requiredUnits
     if (!quotaCheck.allowed) {
       return `Daily conversion quota exceeded for tier '${tier}'. Please upgrade or wait for the midnight UTC reset.`;
     }
-    return null;
-  }
-  const quota = await redisKeyStore.getQuotaUsage(userId);
-  if (quota.remaining <= 0) {
-    return `Daily conversion quota exceeded for tier '${tier}'.`;
   }
   return null;
 }
@@ -186,16 +186,6 @@ async function verifySessionAccess(request: Request, requiredUnits: number): Pro
         status: 429,
       };
     }
-  } else {
-    const quota = await redisKeyStore.getQuotaUsage(sessionUser.id);
-    if (quota.remaining <= 0) {
-      return {
-        authorized: false,
-        user: sessionUser,
-        error: `Daily conversion quota exceeded for tier '${sessionUser.tier}'.`,
-        status: 429,
-      };
-    }
   }
 
   return {
@@ -220,4 +210,11 @@ export async function validateApiAccess(
     return verifyKeyAccess(apiKeySecret, requiredUnits, clientIp, requiredScope);
   }
   return verifySessionAccess(request, requiredUnits);
+}
+
+/**
+ * Retrieves distributed quota usage for a user via redisKeyStore.
+ */
+export async function getQuotaUsage(userId: string): Promise<QuotaUsage> {
+  return redisKeyStore.getQuotaUsage(userId);
 }

@@ -174,6 +174,14 @@ export interface WebhookDlqEntry {
   replayedAt?: number;
 }
 
+export interface QuotaUsage {
+  tier: string;
+  dailyLimit: number;
+  usedToday: number;
+  remaining: number;
+  resetAt: number;
+}
+
 export interface DlqReplayResult {
   success: boolean;
   deliveryId: string;
@@ -199,6 +207,7 @@ export interface DlqReplayResult {
   ApiKey,
   ApiKeyCreateResult,
   ApiKeyScope,
+  QuotaUsage,
   WebhookDlqEntry,
   DlqReplayResult,
 } from './types';
@@ -383,6 +392,14 @@ export class EasyConvertClient {
   }
 
   /**
+   * Get current quota usage and daily conversion limits.
+   */
+  public async getQuotaUsage(): Promise<QuotaUsage> {
+    const res = await this.request<{ success: boolean; usage: QuotaUsage }>('/api/keys/usage');
+    return res.usage;
+  }
+
+  /**
    * List all dead-lettered webhooks.
    */
   public async getDlqEntries(): Promise<WebhookDlqEntry[]> {
@@ -527,6 +544,14 @@ class WebhookDlqEntry:
     final_status_code: Optional[int] = None
     error_message: Optional[str] = None
     replayed_at: Optional[int] = None
+
+@dataclass
+class QuotaUsage:
+    tier: str
+    daily_limit: int
+    used_today: int
+    remaining: int
+    reset_at: int
 `;
   fs.writeFileSync(path.join(pkgDir, 'models.py'), modelsContent, 'utf-8');
 
@@ -534,7 +559,7 @@ class WebhookDlqEntry:
   const clientPyContent = `import json
 import requests
 from typing import Optional, Dict, Any, Union, List, BinaryIO
-from .models import ConversionResponse, JobSummary, ApiKey, WebhookDlqEntry
+from .models import ConversionResponse, JobSummary, ApiKey, WebhookDlqEntry, QuotaUsage
 
 class EasyConvertClient:
     """Official EasyConvert REST API client."""
@@ -690,6 +715,11 @@ class EasyConvertClient:
         res = self._request("DELETE", f"/api/keys/{key_id}")
         return res.get("success", False)
 
+    def get_quota_usage(self) -> Dict[str, Any]:
+        """Get current quota usage and daily limits."""
+        res = self._request("GET", "/api/keys/usage")
+        return res.get("usage", {})
+
     def get_dlq_entries(self) -> List[Dict[str, Any]]:
         """List dead-lettered webhook entries."""
         res = self._request("GET", "/api/webhooks/dlq")
@@ -704,9 +734,9 @@ class EasyConvertClient:
   // easyconvert/__init__.py
   const initPy = `"""EasyConvert Official Python SDK."""
 from .client import EasyConvertClient
-from .models import ConversionResponse, JobSummary, ApiKey, WebhookDlqEntry
+from .models import ConversionResponse, JobSummary, ApiKey, WebhookDlqEntry, QuotaUsage
 
-__all__ = ["EasyConvertClient", "ConversionResponse", "JobSummary", "ApiKey", "WebhookDlqEntry"]
+__all__ = ["EasyConvertClient", "ConversionResponse", "JobSummary", "ApiKey", "WebhookDlqEntry", "QuotaUsage"]
 __version__ = "1.0.0"
 `;
   fs.writeFileSync(path.join(pkgDir, '__init__.py'), initPy, 'utf-8');

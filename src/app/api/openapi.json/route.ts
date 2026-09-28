@@ -332,6 +332,49 @@ export async function GET() {
           },
         },
       },
+      '/api/keys/{id}': {
+        delete: {
+          summary: 'Revoke API Key',
+          description: 'Revokes an active API key by ID.',
+          operationId: 'revokeApiKey',
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+              description: 'API key ID to revoke.',
+            },
+          ],
+          responses: {
+            '200': { description: 'API key successfully revoked.' },
+            '404': { description: 'API key not found.' },
+          },
+        },
+      },
+      '/api/keys/usage': {
+        get: {
+          summary: 'Get Quota Usage',
+          description: 'Retrieves current daily quota usage and limits.',
+          operationId: 'getQuotaUsage',
+          responses: {
+            '200': {
+              description: 'Daily conversion quota usage details.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      usage: { $ref: '#/components/schemas/QuotaUsage' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/webhooks/dlq': {
         get: {
           summary: 'List Webhook DLQ Entries',
@@ -575,6 +618,16 @@ export async function GET() {
             retryCount: { type: 'integer' },
             status: { type: 'string', enum: ['failed', 'replayed'] },
             replayedAt: { type: 'number' },
+          },
+        },
+        QuotaUsage: {
+          type: 'object',
+          properties: {
+            tier: { type: 'string', example: 'pro' },
+            dailyLimit: { type: 'integer', example: 500 },
+            usedToday: { type: 'integer', example: 42 },
+            remaining: { type: 'integer', example: 458 },
+            resetAt: { type: 'number', description: 'Unix timestamp in milliseconds for midnight UTC reset.' },
           },
         },
       },
