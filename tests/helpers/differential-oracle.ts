@@ -135,7 +135,7 @@ export function verifyAudioWithFfmpeg(buffer: Buffer, formatHint: string = 'mp3'
   const tmpPath = path.join(os.tmpdir(), `oracle_audio_${crypto.randomUUID()}.${formatHint}`);
   try {
     fs.writeFileSync(tmpPath, buffer);
-    execFileSync(ffmpegPath, ['-v', 'error', '-i', tmpPath, '-f', 'null', '-'], {
+    execFileSync(ffmpegPath, ['-nostdin', '-y', '-v', 'error', '-i', tmpPath, '-f', 'null', '-'], {
       stdio: ['ignore', 'ignore', 'pipe'],
       timeout: 10000,
     });
