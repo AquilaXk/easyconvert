@@ -254,6 +254,489 @@ export function verifyArchiveWithZstd(buffer: Buffer): boolean {
   }
 }
 
+export class OracleToolMissingError extends Error {
+  public readonly isOracleSkip = true;
+  public readonly tool: string;
+
+  constructor(tool: string, message?: string) {
+    super(message || `Differential Oracle external CLI tool "${tool}" is missing in runtime environment.`);
+    this.name = 'OracleToolMissingError';
+    this.tool = tool;
+  }
+}
+
+/**
+ * Validates ISO BMFF (MP4/MOV) container and H.264 NAL unit bitstream syntax.
+ * Rejects hollow containers, missing moov/mdat/trak/stsd boxes, and empty/invalid NAL units.
+ */
+export function checkIsoBmffIntegrity(buffer: Buffer): {
+  format: 'mp4' | 'mov';
+  codec: string;
+  hasMoov: boolean;
+  hasMdat: boolean;
+  hasTrak: boolean;
+  hasStsd: boolean;
+  isFastStart: boolean;
+  nalUnitsCount: number;
+} {
+  if (buffer.length < 32) {
+    throw new Error(`Integrity Violation: ISO BMFF buffer too short (${buffer.length} bytes, minimum 32 bytes)`);
+  }
+
+  let offset = 0;
+  let hasFtyp = false;
+  let hasMoov = false;
+  let hasMdat = false;
+  let moovOffset = -1;
+  let mdatOffset = -1;
+  let mdatDataOffset = -1;
+  let mdatDataLength = 0;
+  let majorBrand = '';
+  let foundTrak = false;
+  let foundMvhd = false;
+  let foundMdia = false;
+  let foundMinf = false;
+  let foundStbl = false;
+  let foundStsd = false;
+  let detectedCodec = '';
+
+  while (offset + 8 <= buffer.length) {
+    let size = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    let headerSize = 8;
+
+    if (size === 1) {
+      if (offset + 16 > buffer.length) {
+        throw new Error(`Integrity Violation: Truncated 64-bit box header for ${type} at offset ${offset}`);
+      }
+      const high = buffer.readUInt32BE(offset + 8);
+      const low = buffer.readUInt32BE(offset + 12);
+      size = high * 2 ** 32 + low;
+      headerSize = 16;
+    } else if (size === 0) {
+      size = buffer.length - offset;
+    }
+
+    if (size < headerSize || offset + size > buffer.length) {
+      throw new Error(`Integrity Violation: Invalid box size ${size} for ${type} at offset ${offset} (buffer length ${buffer.length})`);
+    }
+
+    const boxPayload = buffer.subarray(offset + headerSize, offset + size);
+
+    if (type === 'ftyp') {
+      hasFtyp = true;
+      if (boxPayload.length < 8) {
+        throw new Error('Integrity Violation: ftyp box is truncated (< 8 bytes payload)');
+      }
+      majorBrand = boxPayload.toString('ascii', 0, 4);
+    } else if (type === 'moov') {
+      hasMoov = true;
+      moovOffset = offset;
+
+      let subOffset = 0;
+      while (subOffset + 8 <= boxPayload.length) {
+        let subSize = boxPayload.readUInt32BE(subOffset);
+        const subType = boxPayload.toString('ascii', subOffset + 4, subOffset + 8);
+        if (subSize === 0) subSize = boxPayload.length - subOffset;
+        if (subSize < 8 || subOffset + subSize > boxPayload.length) break;
+
+        const subPayload = boxPayload.subarray(subOffset + 8, subOffset + subSize);
+        if (subType === 'mvhd') {
+          foundMvhd = true;
+          if (subPayload.length < 16) {
+            throw new Error('Integrity Violation: mvhd movie header box is truncated');
+          }
+        } else if (subType === 'trak') {
+          foundTrak = true;
+          let trakOff = 0;
+          while (trakOff + 8 <= subPayload.length) {
+            let tSize = subPayload.readUInt32BE(trakOff);
+            const tType = subPayload.toString('ascii', trakOff + 4, trakOff + 8);
+            if (tSize === 0) tSize = subPayload.length - trakOff;
+            if (tSize < 8 || trakOff + tSize > subPayload.length) break;
+
+            if (tType === 'mdia') {
+              foundMdia = true;
+              const mdiaPayload = subPayload.subarray(trakOff + 8, trakOff + tSize);
+              let mdiaOff = 0;
+              while (mdiaOff + 8 <= mdiaPayload.length) {
+                let mSize = mdiaPayload.readUInt32BE(mdiaOff);
+                const mType = mdiaPayload.toString('ascii', mdiaOff + 4, mdiaOff + 8);
+                if (mSize === 0) mSize = mdiaPayload.length - mdiaOff;
+                if (mSize < 8 || mdiaOff + mSize > mdiaPayload.length) break;
+
+                if (mType === 'minf') {
+                  foundMinf = true;
+                  const minfPayload = mdiaPayload.subarray(mdiaOff + 8, mdiaOff + mSize);
+                  let minfOff = 0;
+                  while (minfOff + 8 <= minfPayload.length) {
+                    let miSize = minfPayload.readUInt32BE(minfOff);
+                    const miType = minfPayload.toString('ascii', minfOff + 4, minfOff + 8);
+                    if (miSize === 0) miSize = minfPayload.length - minfOff;
+                    if (miSize < 8 || minfOff + miSize > minfPayload.length) break;
+
+                    if (miType === 'stbl') {
+                      foundStbl = true;
+                      const stblPayload = minfPayload.subarray(minfOff + 8, minfOff + miSize);
+                      let stblOff = 0;
+                      while (stblOff + 8 <= stblPayload.length) {
+                        let stSize = stblPayload.readUInt32BE(stblOff);
+                        const stType = stblPayload.toString('ascii', stblOff + 4, stblOff + 8);
+                        if (stSize === 0) stSize = stblPayload.length - stblOff;
+                        if (stSize < 8 || stblOff + stSize > stblPayload.length) break;
+
+                        if (stType === 'stsd') {
+                          foundStsd = true;
+                          const stsdPayload = stblPayload.subarray(stblOff + 8, stblOff + stSize);
+                          if (stsdPayload.length >= 8) {
+                            const entryCount = stsdPayload.readUInt32BE(4);
+                            if (entryCount > 0 && stsdPayload.length >= 16) {
+                              const entryFormat = stsdPayload.toString('ascii', 12, 16);
+                              detectedCodec = entryFormat;
+                            }
+                          }
+                        }
+                        stblOff += stSize;
+                      }
+                    }
+                    minfOff += miSize;
+                  }
+                }
+                mdiaOff += mSize;
+              }
+            }
+            trakOff += tSize;
+          }
+        }
+        subOffset += subSize;
+      }
+    } else if (type === 'mdat') {
+      hasMdat = true;
+      mdatOffset = offset;
+      mdatDataOffset = offset + headerSize;
+      mdatDataLength = size - headerSize;
+    }
+
+    offset += size;
+  }
+
+  if (!hasFtyp) {
+    throw new Error('Integrity Violation: Missing ftyp box in ISO BMFF container');
+  }
+  if (!hasMoov) {
+    throw new Error('Integrity Violation: Missing moov box in ISO BMFF container');
+  }
+  if (!foundMvhd) {
+    throw new Error('Integrity Violation: Missing mvhd (movie header) box in moov container');
+  }
+  if (!foundTrak) {
+    throw new Error('Integrity Violation: Missing trak (track) box in moov container');
+  }
+  if (!foundMdia || !foundMinf || !foundStbl || !foundStsd) {
+    throw new Error('Integrity Violation: Incomplete track descriptor hierarchy (mdia/minf/stbl/stsd) in moov');
+  }
+  if (!hasMdat) {
+    throw new Error('Integrity Violation: Missing mdat box in ISO BMFF container');
+  }
+  if (mdatDataLength <= 0) {
+    throw new Error('Integrity Violation: Empty mdat payload (0 bytes) in ISO BMFF container');
+  }
+
+  // Deep NAL unit header inspection for AVC / H.264
+  let nalUnitsCount = 0;
+  if (!detectedCodec || detectedCodec === 'avc1' || detectedCodec.startsWith('avc')) {
+    const mdatBuf = buffer.subarray(mdatDataOffset, mdatDataOffset + mdatDataLength);
+    const validNalTypes = new Set([1, 5, 6, 7, 8, 9]);
+    let hasSlice = false;
+
+    // Check Annex B start codes
+    const hasAnnexB = mdatBuf.indexOf(Buffer.from([0x00, 0x00, 0x01])) !== -1;
+
+    if (hasAnnexB) {
+      for (let i = 0; i < mdatBuf.length - 4; i++) {
+        if (
+          (mdatBuf[i] === 0 && mdatBuf[i + 1] === 0 && mdatBuf[i + 2] === 1) ||
+          (mdatBuf[i] === 0 && mdatBuf[i + 1] === 0 && mdatBuf[i + 2] === 0 && mdatBuf[i + 3] === 1)
+        ) {
+          const headerByteIdx = mdatBuf[i + 2] === 1 ? i + 3 : i + 4;
+          if (headerByteIdx < mdatBuf.length) {
+            const header = mdatBuf[headerByteIdx];
+            const forbiddenZero = (header >> 7) & 1;
+            const nalType = header & 0x1f;
+            if (forbiddenZero === 0 && validNalTypes.has(nalType)) {
+              nalUnitsCount++;
+              if (nalType === 1 || nalType === 5 || nalType === 7 || nalType === 8) {
+                hasSlice = true;
+              }
+            }
+          }
+        }
+      }
+    } else {
+      // Length-prefixed AVCC NALUs (4-byte big endian length prefix)
+      let naluOffset = 0;
+      while (naluOffset + 4 < mdatBuf.length) {
+        const naluLen = mdatBuf.readUInt32BE(naluOffset);
+        if (naluLen === 0 || naluOffset + 4 + naluLen > mdatBuf.length) {
+          break;
+        }
+        const header = mdatBuf[naluOffset + 4];
+        const forbiddenZero = (header >> 7) & 1;
+        const nalType = header & 0x1f;
+        if (forbiddenZero === 0 && validNalTypes.has(nalType)) {
+          nalUnitsCount++;
+          if (nalType === 1 || nalType === 5 || nalType === 7 || nalType === 8) {
+            hasSlice = true;
+          }
+        }
+        naluOffset += 4 + naluLen;
+      }
+    }
+
+    if (nalUnitsCount === 0 || !hasSlice) {
+      throw new Error('Integrity Violation: mdat payload contains no valid H.264 NAL units (SPS, PPS, IDR, or non-IDR slices)');
+    }
+  }
+
+  const isFastStart = moovOffset > 0 && mdatOffset > 0 && moovOffset < mdatOffset;
+
+  return {
+    format: majorBrand.startsWith('qt') ? 'mov' : 'mp4',
+    codec: detectedCodec || 'h264',
+    hasMoov,
+    hasMdat,
+    hasTrak: foundTrak,
+    hasStsd: foundStsd,
+    isFastStart,
+    nalUnitsCount,
+  };
+}
+
+/**
+ * Validates EBML container structure (WebM / Matroska).
+ */
+export function checkEbmlIntegrity(buffer: Buffer): {
+  format: 'webm' | 'mkv';
+  hasSegment: boolean;
+} {
+  if (buffer.length < 12) {
+    throw new Error(`Integrity Violation: EBML buffer too short (${buffer.length} bytes, minimum 12 bytes)`);
+  }
+
+  if (buffer[0] !== 0x1a || buffer[1] !== 0x45 || buffer[2] !== 0xdf || buffer[3] !== 0xa3) {
+    throw new Error('Integrity Violation: Missing EBML header signature 0x1A45DFA3 for WebM/MKV');
+  }
+
+  const str = buffer.subarray(0, Math.min(buffer.length, 4096)).toString('binary');
+  const isMkv = str.includes('matroska');
+
+  const segmentIdx = buffer.indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67]));
+  if (segmentIdx === -1 && buffer.length > 64) {
+    throw new Error('Integrity Violation: Missing Segment element (0x18538067) in EBML container');
+  }
+
+  return {
+    format: isMkv ? 'mkv' : 'webm',
+    hasSegment: segmentIdx !== -1,
+  };
+}
+
+/**
+ * Validates Ogg container structure and OpusHead / Vorbis identification headers.
+ */
+export function checkOggIntegrity(buffer: Buffer): {
+  format: 'ogg' | 'opus' | 'vorbis';
+  codec: 'opus' | 'vorbis';
+  channels: number;
+  sampleRate: number;
+  pageCount: number;
+} {
+  if (buffer.length < 28) {
+    throw new Error(`Integrity Violation: Ogg buffer too short (${buffer.length} bytes, minimum 28 bytes)`);
+  }
+
+  if (buffer.toString('ascii', 0, 4) !== 'OggS') {
+    throw new Error('Integrity Violation: Missing OggS magic page capture signature');
+  }
+
+  let offset = 0;
+  let pageCount = 0;
+  let codec: 'opus' | 'vorbis' = 'opus';
+  let channels = 0;
+  let sampleRate = 0;
+  let hasIdHeader = false;
+  let hasCommentHeader = false;
+
+  while (offset + 27 <= buffer.length) {
+    if (buffer.toString('ascii', offset, offset + 4) !== 'OggS') {
+      break;
+    }
+    const version = buffer[offset + 4];
+    if (version !== 0) {
+      throw new Error(`Integrity Violation: Invalid Ogg page version (${version} !== 0) at offset ${offset}`);
+    }
+    const headerType = buffer[offset + 5];
+    const numSegments = buffer[offset + 26];
+
+    if (offset + 27 + numSegments > buffer.length) {
+      throw new Error(`Integrity Violation: Truncated Ogg page lacing table at offset ${offset}`);
+    }
+
+    let payloadSize = 0;
+    for (let i = 0; i < numSegments; i++) {
+      payloadSize += buffer[offset + 27 + i];
+    }
+
+    const payloadOffset = offset + 27 + numSegments;
+    if (payloadOffset + payloadSize > buffer.length) {
+      throw new Error(`Integrity Violation: Truncated Ogg page payload at offset ${payloadOffset}`);
+    }
+
+    const payload = buffer.subarray(payloadOffset, payloadOffset + payloadSize);
+
+    if (pageCount === 0) {
+      if ((headerType & 0x02) === 0) {
+        throw new Error('Integrity Violation: First Ogg page must have BOS (beginning-of-stream) flag set');
+      }
+
+      if (payload.length >= 19 && payload.toString('ascii', 0, 8) === 'OpusHead') {
+        codec = 'opus';
+        const opusVersion = payload[8];
+        if (opusVersion !== 1) {
+          throw new Error(`Integrity Violation: Unsupported OpusHead version (${opusVersion} !== 1)`);
+        }
+        channels = payload[9];
+        if (channels < 1 || channels > 8) {
+          throw new Error(`Integrity Violation: Invalid Opus channel count (${channels})`);
+        }
+        sampleRate = payload.readUInt32LE(12);
+        hasIdHeader = true;
+      } else if (payload.length >= 15 && payload.toString('ascii', 1, 7) === 'vorbis' && payload[0] === 0x01) {
+        codec = 'vorbis';
+        channels = payload[11];
+        sampleRate = payload.readUInt32LE(12);
+        hasIdHeader = true;
+      } else {
+        throw new Error('Integrity Violation: First Ogg page must contain valid OpusHead or Vorbis identification header');
+      }
+    } else if (pageCount === 1) {
+      if (codec === 'opus') {
+        if (payload.length >= 8 && payload.toString('ascii', 0, 8) === 'OpusTags') {
+          hasCommentHeader = true;
+        }
+      } else {
+        if (payload.length >= 7 && payload.toString('ascii', 1, 7) === 'vorbis' && payload[0] === 0x03) {
+          hasCommentHeader = true;
+        }
+      }
+    }
+
+    pageCount++;
+    offset = payloadOffset + payloadSize;
+  }
+
+  if (!hasIdHeader) {
+    throw new Error('Integrity Violation: Missing valid audio identification header in Ogg container');
+  }
+  if (pageCount >= 2 && !hasCommentHeader) {
+    throw new Error('Integrity Violation: Missing valid OpusTags / Vorbis comment header in second Ogg page');
+  }
+
+  return {
+    format: codec === 'opus' ? 'opus' : 'ogg',
+    codec,
+    channels: channels || 2,
+    sampleRate: sampleRate || 48000,
+    pageCount,
+  };
+}
+
+/**
+ * Validates ADTS AAC stream header, frame lengths, and audio parameters.
+ */
+export function checkAdtsAacIntegrity(buffer: Buffer): {
+  format: 'aac';
+  channels: number;
+  sampleRate: number;
+  frameCount: number;
+} {
+  if (buffer.length < 7) {
+    throw new Error(`Integrity Violation: ADTS AAC buffer too short (${buffer.length} bytes, minimum 7 bytes)`);
+  }
+
+  const samplingFreqTable = [
+    96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
+  ];
+
+  let offset = 0;
+  let frameCount = 0;
+  let channels = 0;
+  let sampleRate = 0;
+
+  while (offset + 7 <= buffer.length) {
+    const b0 = buffer[offset];
+    const b1 = buffer[offset + 1];
+    if (b0 !== 0xff || (b1 & 0xf0) !== 0xf0) {
+      if (frameCount === 0) {
+        throw new Error('Integrity Violation: Missing ADTS AAC syncword 0xFFF at start of stream');
+      }
+      break;
+    }
+
+    const layer = (b1 >> 1) & 0x03;
+    if (layer !== 0) {
+      throw new Error(`Integrity Violation: Invalid ADTS AAC layer bits (${layer} !== 0)`);
+    }
+
+    const b2 = buffer[offset + 2];
+    const b3 = buffer[offset + 3];
+    const b4 = buffer[offset + 4];
+    const b5 = buffer[offset + 5];
+
+    const profile = (b2 >> 6) & 0x03;
+    if (profile === 3) {
+      throw new Error('Integrity Violation: Reserved ADTS AAC profile 3 encountered');
+    }
+
+    const srIdx = (b2 >> 2) & 0x0f;
+    if (srIdx >= 13) {
+      throw new Error(`Integrity Violation: Invalid ADTS AAC sampling frequency index (${srIdx})`);
+    }
+
+    const chan = ((b2 & 0x01) << 2) | ((b3 >> 6) & 0x03);
+    if (chan === 0) {
+      throw new Error('Integrity Violation: Channel configuration 0 not supported without PCE');
+    }
+
+    const frameLength = ((b3 & 0x03) << 11) | (b4 << 3) | ((b5 >> 5) & 0x07);
+    if (frameLength < 7) {
+      throw new Error(`Integrity Violation: Invalid ADTS frame length (${frameLength} < 7)`);
+    }
+    if (offset + frameLength > buffer.length && frameCount === 0) {
+      throw new Error(`Integrity Violation: Truncated ADTS frame (${offset + frameLength} > ${buffer.length})`);
+    }
+
+    if (frameCount === 0) {
+      channels = chan;
+      sampleRate = samplingFreqTable[srIdx];
+    }
+
+    frameCount++;
+    offset += frameLength;
+  }
+
+  if (frameCount === 0) {
+    throw new Error('Integrity Violation: No valid ADTS AAC frames found in stream');
+  }
+
+  return {
+    format: 'aac',
+    channels,
+    sampleRate,
+    frameCount,
+  };
+}
+
 export interface AudioBitstreamVerification {
   valid: boolean;
   formatName?: string;
@@ -271,12 +754,13 @@ export function verifyAudioBitstreamWithFfprobe(
 ): AudioBitstreamVerification {
   const toolPath = getOracleToolPath('ffprobe');
   if (!toolPath) {
-    const format = formatHint.toLowerCase().replace(/^\./, '');
-    if (buffer.length < 12) {
-      return { valid: false, error: 'Buffer too small for audio header' };
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('ffprobe', 'Strict oracle mode requires ffprobe for audio verification');
     }
-    if (format === 'wav') {
-      if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WAVE') {
+    const format = formatHint.toLowerCase().replace(/^\./, '');
+    try {
+      if (format === 'wav') {
+        checkWavIntegrity(buffer);
         const channels = buffer.readUInt16LE(22);
         const sampleRate = buffer.readUInt32LE(24);
         return {
@@ -287,51 +771,46 @@ export function verifyAudioBitstreamWithFfprobe(
           channels,
         };
       }
-      return { valid: false, error: 'Invalid WAV RIFF/WAVE header' };
-    }
-    if (format === 'aac') {
-      if (buffer.length >= 7 && buffer[0] === 0xff && (buffer[1] & 0xf0) === 0xf0) {
-        const chan = ((buffer[2] & 0x01) << 2) | ((buffer[3] >> 6) & 0x03);
+      if (format === 'aac') {
+        const info = checkAdtsAacIntegrity(buffer);
         return {
           valid: true,
           formatName: 'aac',
           codecName: expectedCodec || 'aac',
-          channels: chan,
+          channels: info.channels,
+          sampleRate: info.sampleRate,
         };
       }
-      return { valid: false, error: 'Invalid ADTS AAC header syncword' };
-    }
-    if (format === 'mp3') {
-      if (buffer.toString('ascii', 0, 3) === 'ID3' || (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0)) {
+      if (format === 'mp3') {
+        checkMp3Integrity(buffer);
         return {
           valid: true,
           formatName: 'mp3',
           codecName: expectedCodec || 'mp3',
         };
       }
-      return { valid: false, error: 'Invalid MP3 sync frame' };
-    }
-    if (format === 'flac') {
-      if (buffer.toString('ascii', 0, 4) === 'fLaC') {
+      if (format === 'flac') {
+        checkFlacIntegrity(buffer);
         return {
           valid: true,
           formatName: 'flac',
           codecName: expectedCodec || 'flac',
         };
       }
-      return { valid: false, error: 'Invalid FLAC magic marker' };
-    }
-    if (format === 'ogg' || format === 'opus' || format === 'vorbis') {
-      if (buffer.toString('ascii', 0, 4) === 'OggS') {
+      if (format === 'ogg' || format === 'opus' || format === 'vorbis') {
+        const info = checkOggIntegrity(buffer);
         return {
           valid: true,
-          formatName: 'ogg',
-          codecName: expectedCodec || format,
+          formatName: info.format,
+          codecName: info.codec,
+          channels: info.channels,
+          sampleRate: info.sampleRate,
         };
       }
-      return { valid: false, error: 'Invalid OggS page header' };
+      return { valid: false, error: `Unsupported audio format verification: ${format}` };
+    } catch (err: any) {
+      return { valid: false, error: err.message || String(err) };
     }
-    return { valid: false, error: `Unsupported audio format verification: ${format}` };
   }
 
   const tmpPath = path.join(os.tmpdir(), `oracle_audio_${crypto.randomUUID()}.${formatHint}`);
@@ -396,41 +875,49 @@ export function verifyVideoBitstreamWithFfprobe(
   expectedCodec?: string
 ): VideoBitstreamVerification {
   const toolPath = getOracleToolPath('ffprobe');
-  const moovIdx = buffer.indexOf('moov');
-  const mdatIdx = buffer.indexOf('mdat');
-  const isFastStart = moovIdx > 0 && mdatIdx > 0 && moovIdx < mdatIdx;
 
   if (!toolPath) {
-    if (buffer.length < 32) {
-      return { valid: false, error: 'Buffer too small' };
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('ffprobe', 'Strict oracle mode requires ffprobe for video verification');
     }
+
     const format = formatHint.toLowerCase().replace(/^\./, '');
     if (format === 'mp4' || format === 'mov') {
-      if (buffer.toString('ascii', 4, 8) !== 'ftyp') {
-        return { valid: false, error: 'Missing ftyp box in MP4 container' };
+      try {
+        const info = checkIsoBmffIntegrity(buffer);
+        const normCodec = (c: string) => c.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const isH264Family = (c: string) => {
+          const n = normCodec(c);
+          return n.includes('h264') || n.includes('avc') || n.includes('avc1');
+        };
+        const codecMatches = !expectedCodec ||
+          info.codec.toLowerCase().includes(expectedCodec.toLowerCase()) ||
+          (isH264Family(expectedCodec) && isH264Family(info.codec));
+
+        if (!codecMatches) {
+          return { valid: false, codecName: info.codec, error: `Codec mismatch: expected ${expectedCodec}, got ${info.codec}` };
+        }
+        return {
+          valid: true,
+          formatName: info.format,
+          codecName: expectedCodec || info.codec,
+          isFastStart: info.isFastStart,
+        };
+      } catch (err: any) {
+        return { valid: false, error: err.message || String(err) };
       }
-      if (moovIdx <= 0) {
-        return { valid: false, error: 'Missing moov box in MP4 container' };
-      }
-      if (mdatIdx <= 0) {
-        return { valid: false, error: 'Missing mdat box in MP4 container' };
-      }
-      return {
-        valid: true,
-        formatName: format,
-        codecName: expectedCodec || 'h264',
-        isFastStart,
-      };
     }
     if (format === 'webm' || format === 'mkv') {
-      if (buffer.length < 4 || buffer[0] !== 0x1a || buffer[1] !== 0x45 || buffer[2] !== 0xdf || buffer[3] !== 0xa3) {
-        return { valid: false, error: 'Invalid EBML header signature for WebM/MKV' };
+      try {
+        const info = checkEbmlIntegrity(buffer);
+        return {
+          valid: true,
+          formatName: info.format,
+          codecName: expectedCodec || 'vp9',
+        };
+      } catch (err: any) {
+        return { valid: false, error: err.message || String(err) };
       }
-      return {
-        valid: true,
-        formatName: format,
-        codecName: expectedCodec || 'vp9',
-      };
     }
     return {
       valid: false,
@@ -466,6 +953,10 @@ export function verifyVideoBitstreamWithFfprobe(
     if (expectedCodec && codecName && !codecName.includes(expectedCodec)) {
       return { valid: false, codecName, error: `Codec mismatch: expected ${expectedCodec}, got ${codecName}` };
     }
+    const moovIdx = buffer.indexOf('moov');
+    const mdatIdx = buffer.indexOf('mdat');
+    const isFastStart = moovIdx > 0 && mdatIdx > 0 && moovIdx < mdatIdx;
+
     return {
       valid: true,
       formatName: format?.format_name,
@@ -1975,7 +2466,7 @@ function checkParquetIntegrity(buffer: Buffer): void {
   }
 }
 
-function checkWavIntegrity(buffer: Buffer): void {
+export function checkWavIntegrity(buffer: Buffer): void {
   if (buffer.length < 44) {
     throw new Error('Integrity Violation: WAV buffer too small (minimum 44 bytes for standard header)');
   }
@@ -2019,7 +2510,7 @@ function checkWavIntegrity(buffer: Buffer): void {
   }
 }
 
-function checkWebpIntegrity(buffer: Buffer): void {
+export function checkWebpIntegrity(buffer: Buffer): void {
   if (buffer.length < 16) {
     throw new Error('Integrity Violation: WebP buffer too short (< 16 bytes)');
   }
@@ -2037,7 +2528,7 @@ function checkWebpIntegrity(buffer: Buffer): void {
   }
 }
 
-function checkFlacIntegrity(buffer: Buffer): void {
+export function checkFlacIntegrity(buffer: Buffer): void {
   if (buffer.length < 42) {
     throw new Error('Integrity Violation: FLAC buffer too small (< 42 bytes)');
   }
@@ -2049,8 +2540,8 @@ function checkFlacIntegrity(buffer: Buffer): void {
     throw new Error(`Integrity Violation: First FLAC metadata block must be STREAMINFO (type 0, found ${blockType})`);
   }
   const blockLen = (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
-  if (blockLen < 34) {
-    throw new Error(`Integrity Violation: Invalid FLAC STREAMINFO length (${blockLen} < 34)`);
+  if (blockLen !== 34) {
+    throw new Error(`Integrity Violation: Invalid FLAC STREAMINFO length (${blockLen} !== 34)`);
   }
   const b18 = buffer[18];
   const b19 = buffer[19];
@@ -2067,7 +2558,7 @@ function checkFlacIntegrity(buffer: Buffer): void {
   }
 }
 
-function checkMp3Integrity(buffer: Buffer): void {
+export function checkMp3Integrity(buffer: Buffer): void {
   let searchOffset = 0;
   if (buffer.length >= 10 && buffer.subarray(0, 3).toString('ascii') === 'ID3') {
     const b6 = buffer[6];
@@ -2120,7 +2611,7 @@ function checkMp3Integrity(buffer: Buffer): void {
   }
 }
 
-function checkJpegIntegrity(buffer: Buffer): void {
+export function checkJpegIntegrity(buffer: Buffer): void {
   if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8 || buffer[2] !== 0xff) {
     throw new Error('Integrity Violation: Missing JPEG SOI marker 0xFFD8FF');
   }
@@ -2151,7 +2642,7 @@ function checkJpegIntegrity(buffer: Buffer): void {
   }
 }
 
-function checkDxfIntegrity(buffer: Buffer): void {
+export function checkDxfIntegrity(buffer: Buffer): void {
   const str = buffer.toString('utf-8');
   if (!/\b0\s*\r?\n\s*SECTION\b/i.test(str)) {
     throw new Error('Integrity Violation: Missing AutoCAD DXF 0 SECTION header');
@@ -2164,7 +2655,8 @@ function checkDxfIntegrity(buffer: Buffer): void {
 export function assertFormatIntegrity(buffer: Buffer, format: string): void {
   const fmt = format.toLowerCase();
 
-  if (buffer.length < 8) {
+  const minLength = fmt === 'aac' ? 7 : 8;
+  if (buffer.length < minLength) {
     throw new Error(`Integrity Violation: ${fmt} buffer is too short (${buffer.length} bytes)`);
   }
 
@@ -2205,6 +2697,22 @@ export function assertFormatIntegrity(buffer: Buffer, format: string): void {
       break;
     case 'mp3':
       checkMp3Integrity(buffer);
+      break;
+    case 'aac':
+      checkAdtsAacIntegrity(buffer);
+      break;
+    case 'ogg':
+    case 'opus':
+    case 'vorbis':
+      checkOggIntegrity(buffer);
+      break;
+    case 'mp4':
+    case 'mov':
+      checkIsoBmffIntegrity(buffer);
+      break;
+    case 'webm':
+    case 'mkv':
+      checkEbmlIntegrity(buffer);
       break;
     case 'jpg':
     case 'jpeg':

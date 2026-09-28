@@ -1,0 +1,61 @@
+{
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_AARCH64",
+    "SCMP_ARCH_ARM"
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "socket",
+        "socketpair",
+        "connect",
+        "bind",
+        "listen",
+        "accept",
+        "accept4",
+        "sendto",
+        "recvfrom",
+        "sendmsg",
+        "recvmsg",
+        "sendmmsg",
+        "recvmmsg",
+        "shutdown",
+        "getsockname",
+        "getpeername",
+        "getsockopt",
+        "setsockopt"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "args": [],
+      "comment": "EasyConvert Zero-Trust Air-Gap: Block network egress system calls"
+    },
+    {
+      "names": [
+        "ptrace",
+        "bpf",
+        "mount",
+        "umount2",
+        "reboot",
+        "kexec_load",
+        "kexec_file_load",
+        "init_module",
+        "finit_module",
+        "delete_module",
+        "iopl",
+        "ioperm",
+        "swapon",
+        "swapoff",
+        "sysfs",
+        "settimeofday",
+        "clock_settime",
+        "adjtimex"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "args": [],
+      "comment": "Block dangerous kernel manipulation and privilege escalation system calls"
+    }
+  ]
+}

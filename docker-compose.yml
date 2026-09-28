@@ -41,6 +41,9 @@ services:
       - shared-storage:/shared/storage
     cap_add:
       - SYS_ADMIN
+    security_opt:
+      - seccomp:./docker/seccomp-airgap.json
+      - no-new-privileges:true
     deploy:
       resources:
         limits:

@@ -1,4 +1,5 @@
 import { spawn, execFileSync } from 'child_process';
+import { pipeline } from 'stream';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -18,6 +19,7 @@ export interface SandboxedExecutionOptions {
   cwd?: string;
   networkIsolated?: boolean;
   memoryLimitMb?: number;
+  stdin?: NodeJS.ReadableStream | Buffer;
 }
 
 export interface SandboxedExecutionResult {
@@ -326,6 +328,23 @@ export const DANGEROUS_SYSCALL_FILTER_LIST: string[] = [
   'adjtimex',
 ];
 
+export const NETWORK_SYSCALL_FILTER_LIST: string[] = [
+  'socket',
+  'socketpair',
+  'connect',
+  'bind',
+  'listen',
+  'accept',
+  'accept4',
+  'sendto',
+  'recvfrom',
+  'sendmsg',
+  'recvmsg',
+  'sendmmsg',
+  'recvmmsg',
+  'shutdown',
+];
+
 export interface SeccompBpfProfile {
   defaultAction: string;
   killAction: string;
@@ -333,13 +352,17 @@ export interface SeccompBpfProfile {
 }
 
 /**
- * Generates a defensive Seccomp BPF syscall filter profile blocking privileged operations.
+ * Generates a defensive Seccomp BPF syscall filter profile blocking privileged operations and optional network syscalls.
  */
-export function generateSeccompBpfProfile(): SeccompBpfProfile {
+export function generateSeccompBpfProfile(options?: { blockNetwork?: boolean }): SeccompBpfProfile {
+  const blocked = [...DANGEROUS_SYSCALL_FILTER_LIST];
+  if (options?.blockNetwork) {
+    blocked.push(...NETWORK_SYSCALL_FILTER_LIST);
+  }
   return {
     defaultAction: 'SCMP_ACT_ALLOW',
     killAction: 'SCMP_ACT_ERRNO',
-    blockedSyscalls: [...DANGEROUS_SYSCALL_FILTER_LIST],
+    blockedSyscalls: blocked,
   };
 }
 
@@ -402,6 +425,7 @@ export async function executeSandboxedBinary(
     env: customEnv = {},
     cwd = os.tmpdir(),
     networkIsolated = true,
+    stdin,
   } = options;
 
   if (!binaryPath || typeof binaryPath !== 'string') {
@@ -421,11 +445,23 @@ export async function executeSandboxedBinary(
     let memoryExceeded = false;
     let memoryInterval: NodeJS.Timeout | null = null;
 
+    let child: ReturnType<typeof spawn> | null = null;
+
     const cleanup = () => {
       clearTimeout(timer);
       if (memoryInterval) {
         clearInterval(memoryInterval);
         memoryInterval = null;
+      }
+      if (stdin && typeof (stdin as any).destroy === 'function' && !(stdin as any).destroyed) {
+        try {
+          (stdin as any).destroy();
+        } catch {}
+      }
+      if (child && child.stdin && !child.stdin.destroyed) {
+        try {
+          child.stdin.destroy();
+        } catch {}
       }
     };
 
@@ -433,76 +469,108 @@ export async function executeSandboxedBinary(
     const resolvedCmd = resolveSandboxedCommand(binaryPath, args, networkIsolated);
 
     // Spawn directly without shell to prevent shell injection vulnerabilities
-    const child = spawn(resolvedCmd.binary, resolvedCmd.args, {
+    const proc = spawn(resolvedCmd.binary, resolvedCmd.args, {
       cwd,
       env: sanitizedEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       shell: false,
     });
+    child = proc;
+
+    if (stdin && proc.stdin) {
+      proc.stdin.on('error', (err: any) => {
+        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
+          return;
+        }
+      });
+
+      if (Buffer.isBuffer(stdin)) {
+        proc.stdin.end(stdin);
+      } else {
+        pipeline(stdin, proc.stdin, (err) => {
+          if (err) {
+            const code = (err as any).code;
+            if (code !== 'EPIPE' && code !== 'ERR_STREAM_PREMATURE_CLOSE' && code !== 'ECONNRESET') {
+              if (!timedOut && !bufferExceeded && !memoryExceeded) {
+                cleanup();
+                try {
+                  proc.kill('SIGKILL');
+                } catch {}
+                reject(err);
+              }
+            }
+          }
+        });
+      }
+    }
 
     const timer = setTimeout(() => {
       if (bufferExceeded || memoryExceeded || timedOut) return;
       timedOut = true;
       cleanup();
       try {
-        child.kill('SIGKILL');
+        proc.kill('SIGKILL');
       } catch {}
       reject(new SandboxedTimeoutError(timeoutMs));
     }, timeoutMs);
 
     if (memoryLimitMb && memoryLimitMb > 0) {
       memoryInterval = setInterval(() => {
-        if (!child.pid || timedOut || bufferExceeded || memoryExceeded) return;
-        const rssMb = getProcessRssMb(child.pid);
+        if (!proc.pid || timedOut || bufferExceeded || memoryExceeded) return;
+        const rssMb = getProcessRssMb(proc.pid);
         if (rssMb !== null && rssMb > memoryLimitMb) {
           memoryExceeded = true;
           cleanup();
           try {
-            child.kill('SIGKILL');
+            proc.kill('SIGKILL');
           } catch {}
           reject(new SandboxedMemoryLimitError(memoryLimitMb));
         }
       }, 50);
     }
 
-    child.stdout.on('data', (chunk: Buffer) => {
-      if (bufferExceeded || timedOut || memoryExceeded) return;
-      currentBufferSize += chunk.length;
-      if (currentBufferSize > maxBuffer) {
-        bufferExceeded = true;
-        cleanup();
-        try {
-          child.kill('SIGKILL');
-        } catch {}
-        reject(new SandboxedBufferLimitError(maxBuffer));
-        return;
-      }
-      stdoutChunks.push(chunk);
-    });
+    if (proc.stdout) {
+      proc.stdout.on('data', (chunk: Buffer) => {
+        if (bufferExceeded || timedOut || memoryExceeded) return;
+        currentBufferSize += chunk.length;
+        if (currentBufferSize > maxBuffer) {
+          bufferExceeded = true;
+          cleanup();
+          try {
+            proc.kill('SIGKILL');
+          } catch {}
+          reject(new SandboxedBufferLimitError(maxBuffer));
+          return;
+        }
+        stdoutChunks.push(chunk);
+      });
+    }
 
-    child.stderr.on('data', (chunk: Buffer) => {
-      if (bufferExceeded || timedOut || memoryExceeded) return;
-      currentBufferSize += chunk.length;
-      if (currentBufferSize > maxBuffer) {
-        bufferExceeded = true;
-        cleanup();
-        try {
-          child.kill('SIGKILL');
-        } catch {}
-        reject(new SandboxedBufferLimitError(maxBuffer));
-        return;
-      }
-      stderrChunks.push(chunk);
-    });
+    if (proc.stderr) {
+      proc.stderr.on('data', (chunk: Buffer) => {
+        if (bufferExceeded || timedOut || memoryExceeded) return;
+        currentBufferSize += chunk.length;
+        if (currentBufferSize > maxBuffer) {
+          bufferExceeded = true;
+          cleanup();
+          try {
+            proc.kill('SIGKILL');
+          } catch {}
+          reject(new SandboxedBufferLimitError(maxBuffer));
+          return;
+        }
+        stderrChunks.push(chunk);
+      });
+    }
 
-    child.on('error', (err) => {
+    proc.on('error', (err) => {
       cleanup();
       if (!timedOut && !bufferExceeded && !memoryExceeded) {
         reject(err);
       }
     });
 
-    child.on('close', (code) => {
+    proc.on('close', (code) => {
       cleanup();
       if (timedOut || bufferExceeded || memoryExceeded) return;
 
