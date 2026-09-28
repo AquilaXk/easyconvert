@@ -131,7 +131,7 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       // Verify Fail-Closed for pure TS WAV -> OPUS without native engine
       const wav = createTestWav(48000, 2, 0.2);
       await expect(
-        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'sample.wav')
+        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'sample.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OPUS compression/i);
     });
 
@@ -173,7 +173,7 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       // Verify Fail-Closed on raw PCM in convertMedia
       const longWav = createTestWav(44100, 2, 1.0);
       await expect(
-        convertMedia(longWav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'long_sample.wav')
+        convertMedia(longWav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'long_sample.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
   });

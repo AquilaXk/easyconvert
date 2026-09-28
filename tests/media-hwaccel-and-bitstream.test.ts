@@ -276,11 +276,11 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
 
       // Fail-Closed on lossy Opus and OGG without native FFmpeg
       await expect(
-        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'test.wav')
+        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'test.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OPUS compression/i);
 
       await expect(
-        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'test.wav')
+        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'test.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 

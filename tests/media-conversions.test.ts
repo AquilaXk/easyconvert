@@ -77,7 +77,7 @@ describe('Media Conversion Engine (Audio & Video)', () => {
   it('enforces Fail-Closed when converting WAV to OGG Vorbis without native FFmpeg engine', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
     await expect(
-      convertFile(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'audio.wav')
+      convertFile(wav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'audio.wav')
     ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
   });
 

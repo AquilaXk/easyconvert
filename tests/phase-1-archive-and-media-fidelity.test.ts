@@ -282,7 +282,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       // 2. Verify pure TS convertMedia fails closed for ogg without native FFmpeg
       const origWav = createTestWav(44100, 2, 0.25);
       await expect(
-        convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'audio.wav')
+        convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'audio.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 
@@ -315,7 +315,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
     it('enforces Fail-Closed on WAV -> OGG conversion in pure TypeScript without native FFmpeg', async () => {
       const origWav = createTestWav(44100, 2, 0.2);
       await expect(
-        convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'sound.wav')
+        convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'sound.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 
@@ -366,7 +366,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
     it('enforces Fail-Closed on pure TS Ogg Vorbis conversion and packages multi-segment pages accurately', async () => {
       const wav = createTestWav(44100, 2, 0.1);
       await expect(
-        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'full.wav')
+        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'full.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
 
       // Verify multi-page packaging with discrete packets
