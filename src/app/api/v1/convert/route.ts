@@ -4,7 +4,7 @@ import { keyStore } from '@/lib/api-keys/key-store';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { convertFile } from '@/lib/conversions';
-import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
@@ -140,6 +140,26 @@ export async function POST(req: NextRequest) {
 
     const { file, sourceDef, targetDef, options } = validation.data;
 
+    const arrayBuffer = await file.arrayBuffer();
+    const inputBuffer = Buffer.from(arrayBuffer);
+
+    // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
+    try {
+      assertNotSpoofedFile(inputBuffer, sourceDef.extension, file.name);
+    } catch (err: any) {
+      if (reservation.reservationId) {
+        await redisKeyStore.rollbackQuota(reservation.reservationId);
+      }
+      return createProblemDetailsResponse(
+        400,
+        err.message || 'File spoofing detected.',
+        instanceUri,
+        'Bad Request',
+        undefined,
+        rateLimitHeaders
+      );
+    }
+
     // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff
     const preferHeader = req.headers.get('prefer') || '';
     const isPreferAsync = preferHeader.toLowerCase().includes('respond-async');
@@ -147,13 +167,12 @@ export async function POST(req: NextRequest) {
 
     if (isPreferAsync || isOverSizeThreshold) {
       // Asynchronous handoff: persist input payload and enqueue to distributed job queue
-      const arrayBuffer = await file.arrayBuffer();
       const init = storageProvider.initiateMultipartUpload(
         file.name,
         file.type || 'application/octet-stream',
         file.size
       );
-      storageProvider.uploadPart(init.uploadId, 1, Buffer.from(arrayBuffer));
+      storageProvider.uploadPart(init.uploadId, 1, inputBuffer);
       const completed = storageProvider.completeMultipartUpload(init.uploadId);
       const storageKey = completed.key;
 
@@ -207,9 +226,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Synchronous execution path for payloads <= 10MB without respond-async preference
-    const arrayBuffer = await file.arrayBuffer();
-    const inputBuffer = Buffer.from(arrayBuffer);
-
     // Convert
     const conversionResult = await convertFile(
       inputBuffer,

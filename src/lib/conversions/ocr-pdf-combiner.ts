@@ -17,6 +17,7 @@ import {
   PDFNumber,
   PDFHexString,
   PDFName,
+  PDFArray,
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
 
@@ -25,6 +26,12 @@ export interface OcrBBox {
   y: number;
   width: number;
   height: number;
+  rotation?: number;
+  angle?: number;
+  rotationDegrees?: number;
+  rotationRadians?: number;
+  skewX?: number;
+  skewY?: number;
 }
 
 export interface OcrWord {
@@ -78,6 +85,9 @@ export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines:
                 y: w.bbox.y0,
                 width: Math.max(1, w.bbox.x1 - w.bbox.x0),
                 height: Math.max(1, w.bbox.y1 - w.bbox.y0),
+                rotation: w.rotation ?? w.angle ?? line.rotation ?? line.angle ?? block.rotation ?? block.angle,
+                skewX: w.skewX ?? line.skewX,
+                skewY: w.skewY ?? line.skewY,
               },
             });
           }
@@ -90,6 +100,9 @@ export function parseTesseractBlocks(blocks: any[] | null | undefined): { lines:
             y: line.bbox.y0,
             width: Math.max(1, line.bbox.x1 - line.bbox.x0),
             height: Math.max(1, line.bbox.y1 - line.bbox.y0),
+            rotation: line.rotation ?? line.angle ?? block.rotation ?? block.angle,
+            skewX: line.skewX ?? block.skewX,
+            skewY: line.skewY ?? block.skewY,
           },
           words,
         });
@@ -621,8 +634,18 @@ export function encodeUnicodeTo4CharHex(text: string): string {
  * by serializing into exact 4-character hex strings without BOM (<XXXX>) conforming to ISO 32000-1.
  */
 export function safeEncodeText(font: PDFFont, text: string): PDFHexString | null {
+  if (!text) return null;
   const trimmed = text.trim();
-  if (!trimmed) return null;
+  if (!trimmed) {
+    if (text.length > 0) {
+      try {
+        return font.encodeText(text);
+      } catch {
+        return PDFHexString.of(encodeUnicodeTo4CharHex(text));
+      }
+    }
+    return null;
+  }
 
   // Check if text contains non-WinAnsi code points (CJK, symbols, Cyrillic, etc.)
   let hasNonWinAnsi = false;
@@ -646,13 +669,260 @@ export function safeEncodeText(font: PDFFont, text: string): PDFHexString | null
 }
 
 /**
+ * Computes an ISO 32000-1 2D affine skew/rotation transformation matrix
+ * [cos(θ), sin(θ), -sin(θ), cos(θ), x, y] cm for rotated or skewed OCR bounding boxes.
+ */
+export function computeAffineTransformationMatrix(
+  bbox: OcrBBox,
+  pageHeight: number,
+  scaleX: number = 1.0,
+  scaleY: number = 1.0
+): [number, number, number, number, number, number] {
+  const scaledX = bbox.x * scaleX;
+  const scaledY = pageHeight - (bbox.y + bbox.height) * scaleY;
+
+  // Resolve rotation angle in radians
+  let theta = 0;
+  if (bbox.rotationRadians !== undefined) {
+    theta = bbox.rotationRadians;
+  } else if (bbox.rotationDegrees !== undefined) {
+    theta = (bbox.rotationDegrees * Math.PI) / 180;
+  } else if (bbox.angle !== undefined) {
+    theta = Math.abs(bbox.angle) > 2 * Math.PI ? (bbox.angle * Math.PI) / 180 : bbox.angle;
+  } else if (bbox.rotation !== undefined) {
+    theta = Math.abs(bbox.rotation) > 2 * Math.PI ? (bbox.rotation * Math.PI) / 180 : bbox.rotation;
+  }
+
+  // Resolve skew angles in radians
+  const skewX = bbox.skewX ?? 0;
+  const skewY = bbox.skewY ?? 0;
+
+  const cosT = Math.cos(theta);
+  const sinT = Math.sin(theta);
+  const tanSkewX = Math.tan(skewX);
+  const tanSkewY = Math.tan(skewY);
+
+  const a = cosT;
+  const b = sinT + tanSkewX;
+  const c = -sinT + tanSkewY;
+  const d = cosT;
+  const e = scaledX;
+  const f = scaledY;
+
+  return [a, b, c, d, e, f];
+}
+
+/**
+ * Builds an ISO 32000-1 TJ array operator and word spacing (Tw) parameter
+ * with character kerning offsets between words or characters.
+ */
+export function buildTJArrayWithKerning(
+  doc: PDFDocument,
+  font: PDFFont,
+  words: Array<{ text: string; bbox?: OcrBBox }>,
+  fontSize: number,
+  tz: number = 100,
+  scaleX: number = 1.0,
+  originX: number = 0
+): { tjArray: any; wordSpacing: number; activeFontName: string } {
+  const tjArray = PDFArray.withContext(doc.context);
+  let activeFontName = font.name;
+
+  // Determine if any word contains non-WinAnsi / CJK characters
+  let hasNonWinAnsi = false;
+  for (const w of words) {
+    for (let i = 0; i < w.text.length; i++) {
+      const code = w.text.charCodeAt(i);
+      if (!((code >= 32 && code <= 126) || (code >= 160 && code <= 255))) {
+        hasNonWinAnsi = true;
+        break;
+      }
+    }
+    if (hasNonWinAnsi) break;
+  }
+
+  if (hasNonWinAnsi) {
+    const unicodeFont = ensureUnicodeFont(doc);
+    activeFontName = unicodeFont.fontName;
+  } else {
+    ensureStandardFontToUnicode(doc, font);
+    activeFontName = font.name;
+  }
+
+  const spaceWidthPt = hasNonWinAnsi
+    ? fontSize * 0.5 * (tz / 100)
+    : font.widthOfTextAtSize(' ', fontSize) * (tz / 100);
+
+  // Compute gaps between words
+  const gaps: number[] = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    const w0 = words[i];
+    const w1 = words[i + 1];
+    if (w0.bbox && w1.bbox) {
+      const gap = Math.max(0, (w1.bbox.x - (w0.bbox.x + w0.bbox.width)) * scaleX);
+      gaps.push(gap);
+    } else {
+      gaps.push(spaceWidthPt);
+    }
+  }
+
+  // Calculate average word spacing (Tw)
+  let wordSpacing = 0;
+  if (gaps.length > 0) {
+    const avgGap = gaps.reduce((acc, g) => acc + g, 0) / gaps.length;
+    wordSpacing = Math.max(0, avgGap - spaceWidthPt);
+  }
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const trimmed = w.text.trim();
+    if (!trimmed) continue;
+
+    // Relative X offset for the first word if originX is specified
+    if (i === 0 && w.bbox && originX > 0) {
+      const leadingGap = Math.max(0, w.bbox.x * scaleX - originX);
+      if (leadingGap > 1) {
+        const leadingKerning = -Math.round((leadingGap * 1000) / (fontSize * (tz / 100)));
+        if (leadingKerning !== 0) {
+          tjArray.push(PDFNumber.of(leadingKerning));
+        }
+      }
+    }
+
+    // Word text encoded
+    if (hasNonWinAnsi) {
+      tjArray.push(PDFHexString.of(encodeUnicodeTo4CharHex(trimmed)));
+    } else {
+      const enc = safeEncodeText(font, trimmed);
+      if (enc) tjArray.push(enc);
+    }
+
+    // Gap to next word
+    if (i < words.length - 1) {
+      // Push explicit space glyph to ensure PDF viewers copy text with spaces
+      if (hasNonWinAnsi) {
+        tjArray.push(PDFHexString.of('0020'));
+      } else {
+        const spaceEnc = safeEncodeText(font, ' ');
+        if (spaceEnc) tjArray.push(spaceEnc);
+      }
+
+      // Compute kerning offset for this specific gap
+      const gap = gaps[i];
+      const residual = gap - spaceWidthPt - wordSpacing;
+      if (Math.abs(residual) >= 0.1) {
+        const kerning = -Math.round((residual * 1000) / (fontSize * (tz / 100)));
+        if (kerning !== 0) {
+          tjArray.push(PDFNumber.of(kerning));
+        }
+      }
+    }
+  }
+
+  return { tjArray, wordSpacing, activeFontName };
+}
+
+/**
+ * Renders an OCR line block with ISO 32000-1 compliant word spacing (Tw)
+ * and TJ array operator with character kerning offsets, positioned using
+ * a 2D affine skew/rotation transformation matrix ([cos(θ), sin(θ), -sin(θ), cos(θ), x, y] cm).
+ */
+export function renderLineBlockWithSpacing(
+  page: PDFPage,
+  font: PDFFont,
+  block: OcrLineBlock,
+  pageHeight: number,
+  scaleX: number = 1.0,
+  scaleY: number = 1.0
+): void {
+  const scaledWidth = block.bbox.width * scaleX;
+  const scaledHeight = block.bbox.height * scaleY;
+  const maxAvailableWidth = Math.max(10, page.getSize().width - block.bbox.x * scaleX - 5);
+  const targetWidth = Math.min(scaledWidth, maxAvailableWidth);
+
+  const words =
+    block.words && block.words.length > 0
+      ? block.words.filter((w) => w.text.trim().length > 0)
+      : block.text
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((t) => ({ text: t, bbox: block.bbox }));
+
+  if (words.length === 0) return;
+
+  // Estimate typography units (1000 per em): CJK = 1000, Latin = 500, space = 300
+  let estUnits = 0;
+  for (const w of words) {
+    for (let i = 0; i < w.text.length; i++) {
+      estUnits += w.text.charCodeAt(i) > 255 ? 1000 : 500;
+    }
+  }
+  estUnits += Math.max(0, words.length - 1) * 300;
+
+  const maxFontForWidth = estUnits > 0 ? (targetWidth / estUnits) * 1000 : 72;
+  const maxFontForHeight = scaledHeight * 0.85;
+  const fontSize = Math.max(6, Math.min(72, maxFontForHeight, maxFontForWidth));
+
+  const estimatedWidth = (estUnits / 1000) * fontSize;
+  let tz = 100;
+  if (estimatedWidth > 0 && targetWidth > 0) {
+    tz = Math.max(70, Math.min(130, (targetWidth / estimatedWidth) * 100));
+  }
+
+  const originX = block.bbox.x * scaleX;
+  const { tjArray, wordSpacing, activeFontName } = buildTJArrayWithKerning(
+    page.doc,
+    font,
+    words,
+    fontSize,
+    tz,
+    scaleX,
+    originX
+  );
+
+  if (activeFontName === 'ECToUnicodeFont') {
+    const unicodeFont = ensureUnicodeFont(page.doc);
+    registerFontOnPage(page, unicodeFont);
+  }
+
+  const [a, b, c, d, e, f] = computeAffineTransformationMatrix(
+    block.bbox,
+    pageHeight,
+    scaleX,
+    scaleY
+  );
+
+  page.pushOperators(
+    pushGraphicsState(),
+    PDFOperator.of(PDFOperatorNames.ConcatTransformationMatrix, [
+      PDFNumber.of(Number(a.toFixed(6))),
+      PDFNumber.of(Number(b.toFixed(6))),
+      PDFNumber.of(Number(c.toFixed(6))),
+      PDFNumber.of(Number(d.toFixed(6))),
+      PDFNumber.of(Number(e.toFixed(4))),
+      PDFNumber.of(Number(f.toFixed(4))),
+    ]),
+    setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
+    beginText(),
+    setFontAndSize(activeFontName, fontSize),
+    PDFOperator.of(PDFOperatorNames.SetWordSpacing, [PDFNumber.of(Number(wordSpacing.toFixed(3)))]), // Tw
+    PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]), // Tz
+    setTextMatrix(1, 0, 0, 1, 0, 0), // 1 0 0 1 0 0 Tm
+    PDFOperator.of(PDFOperatorNames.ShowTextAdjusted, [tjArray]), // TJ
+    endText(),
+    popGraphicsState()
+  );
+}
+
+/**
  * Embeds an invisible text element on a PDF page with accurate positioning and metrics.
  */
 export function embedInvisibleText(
   page: PDFPage,
   font: PDFFont,
   text: string,
-  bbox: { x: number; y: number; width: number; height: number },
+  bbox: OcrBBox,
   pageHeight: number,
   scaleX: number = 1.0,
   scaleY: number = 1.0
@@ -660,11 +930,11 @@ export function embedInvisibleText(
   renderTextItem(page, font, text, bbox, pageHeight, scaleX, scaleY);
 }
 
-function renderTextItem(
+export function renderTextItem(
   page: PDFPage,
   font: PDFFont,
   text: string,
-  bbox: { x: number; y: number; width: number; height: number },
+  bbox: OcrBBox,
   pageHeight: number,
   scaleX: number,
   scaleY: number
@@ -672,14 +942,23 @@ function renderTextItem(
   const trimmed = text.trim();
   if (!trimmed) return;
 
-  const scaledX = bbox.x * scaleX;
-  const scaledY = pageHeight - (bbox.y + bbox.height) * scaleY;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    renderLineBlockWithSpacing(
+      page,
+      font,
+      { text: trimmed, bbox, words: words.map((w) => ({ text: w, bbox })) },
+      pageHeight,
+      scaleX,
+      scaleY
+    );
+    return;
+  }
+
   const scaledWidth = bbox.width * scaleX;
   const scaledHeight = bbox.height * scaleY;
-
   const fontSize = Math.max(6, Math.min(72, scaledHeight * 0.85));
 
-  // Determine if text contains non-WinAnsi / CJK characters
   let hasNonWinAnsi = false;
   for (let i = 0; i < trimmed.length; i++) {
     const code = trimmed.charCodeAt(i);
@@ -689,30 +968,23 @@ function renderTextItem(
     }
   }
 
-  // Ensure standard font has ToUnicode CMap
   ensureStandardFontToUnicode(page.doc, font);
-
   let activeFontName = font.name;
   let encodedText: PDFHexString | null = null;
   let tz = 100;
 
   if (hasNonWinAnsi) {
-    // For CJK and extended Unicode text: use ISO 32000-1 Type 0 CIDFont with ToUnicode CMap
     const unicodeFont = ensureUnicodeFont(page.doc);
     registerFontOnPage(page, unicodeFont);
     activeFontName = unicodeFont.fontName;
-
-    // Serialize 16-bit CID/Unicode code points as exact 4-character hex strings without BOM (<XXXX>)
-    // Eliminates PDFHexString.fromText to prevent BOM (0xFE, 0xFF) injection, eliminating 1 em shift and Tz distortion
     encodedText = PDFHexString.of(encodeUnicodeTo4CharHex(trimmed));
 
-    // Approximate character width: CJK glyphs = fontSize (1em = 1000 width), Latin glyphs = 0.5 * fontSize (500 width)
     let estimatedWidth = 0;
     for (let i = 0; i < trimmed.length; i++) {
       const code = trimmed.charCodeAt(i);
       estimatedWidth += code > 255 ? fontSize : fontSize * 0.5;
     }
-    const maxAvailableWidth = Math.max(10, page.getSize().width - scaledX - 5);
+    const maxAvailableWidth = Math.max(10, page.getSize().width - bbox.x * scaleX - 5);
     const targetWidth = Math.min(scaledWidth, maxAvailableWidth);
     if (estimatedWidth > 0 && targetWidth > 0) {
       tz = Math.max(70, Math.min(130, (targetWidth / estimatedWidth) * 100));
@@ -722,7 +994,7 @@ function renderTextItem(
     try {
       const rawWidth = font.widthOfTextAtSize(trimmed, fontSize);
       if (rawWidth > 0 && scaledWidth > 0) {
-        const maxAvailableWidth = Math.max(10, page.getSize().width - scaledX - 5);
+        const maxAvailableWidth = Math.max(10, page.getSize().width - bbox.x * scaleX - 5);
         const targetWidth = Math.min(scaledWidth, maxAvailableWidth);
         tz = Math.max(70, Math.min(130, (targetWidth / rawWidth) * 100));
       }
@@ -733,13 +1005,24 @@ function renderTextItem(
 
   if (!encodedText) return;
 
+  const [a, b, c, d, e, f] = computeAffineTransformationMatrix(bbox, pageHeight, scaleX, scaleY);
+
   page.pushOperators(
     pushGraphicsState(),
+    PDFOperator.of(PDFOperatorNames.ConcatTransformationMatrix, [
+      PDFNumber.of(Number(a.toFixed(6))),
+      PDFNumber.of(Number(b.toFixed(6))),
+      PDFNumber.of(Number(c.toFixed(6))),
+      PDFNumber.of(Number(d.toFixed(6))),
+      PDFNumber.of(Number(e.toFixed(4))),
+      PDFNumber.of(Number(f.toFixed(4))),
+    ]),
     setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
     beginText(),
     setFontAndSize(activeFontName, fontSize),
+    PDFOperator.of(PDFOperatorNames.SetWordSpacing, [PDFNumber.of(0)]),
     PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]),
-    setTextMatrix(1, 0, 0, 1, scaledX, Math.max(0, scaledY)),
+    setTextMatrix(1, 0, 0, 1, 0, 0),
     showText(encodedText),
     endText(),
     popGraphicsState()
@@ -749,7 +1032,8 @@ function renderTextItem(
 /**
  * Injects an invisible searchable text layer into a PDF page's /Contents stream.
  * Uses PDF rendering mode 3 (3 Tr = Neither fill nor stroke), horizontal scaling (Tz),
- * and text matrix positioning (Tm) matching Phase 3 specs.
+ * word spacing (Tw / TJ array operator with character kerning offsets),
+ * and 2D affine transformation matrices ([cos(θ), sin(θ), -sin(θ), cos(θ), x, y] cm).
  */
 export function injectInvisibleTextLayer(
   page: PDFPage,
@@ -764,16 +1048,7 @@ export function injectInvisibleTextLayer(
   if (blocks.length > 0) {
     for (const block of blocks) {
       if (!block.text) continue;
-
-      if (block.words && block.words.length > 0) {
-        for (const word of block.words) {
-          if (word.text.trim()) {
-            renderTextItem(page, font, word.text, word.bbox, pageHeight, scaleX, scaleY);
-          }
-        }
-      } else {
-        renderTextItem(page, font, block.text, block.bbox, pageHeight, scaleX, scaleY);
-      }
+      renderLineBlockWithSpacing(page, font, block, pageHeight, scaleX, scaleY);
     }
   } else if (ocrResult.lines && ocrResult.lines.length > 0) {
     // Fallback: estimate equidistant text lines
@@ -785,11 +1060,14 @@ export function injectInvisibleTextLayer(
       if (!lineText.trim()) continue;
 
       const y = 40 + i * lineHeight;
-      renderTextItem(
+      renderLineBlockWithSpacing(
         page,
         font,
-        lineText,
-        { x: 40, y, width: Math.max(10, pageWidth - 80), height: lineHeight },
+        {
+          text: lineText,
+          bbox: { x: 40, y, width: Math.max(10, pageWidth - 80), height: lineHeight },
+          words: [],
+        },
         pageHeight,
         scaleX,
         scaleY

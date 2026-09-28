@@ -1,4 +1,4 @@
-import { FormatCategory, FormatDefinition } from './types';
+import { FormatCategory, FormatDefinition, ConversionFailedError } from './types';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
   // ==========================================
@@ -2909,4 +2909,454 @@ export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinit
   return source.targetFormats
     .map((targetId) => FORMAT_REGISTRY[targetId])
     .filter((def): def is FormatDefinition => Boolean(def));
+}
+
+/**
+ * Authentic initial-byte MIME magic sniffing for common binary formats.
+ * Analyzes magic byte signatures to detect format families accurately,
+ * preventing extension spoofing and ensuring fail-closed input verification.
+ */
+export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string | undefined {
+  if (!buffer || buffer.length < 2) return undefined;
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+
+  // 1. PNG (8 bytes: \x89PNG\r\n\x1a\n)
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+
+  // 2. PDF (%PDF-)
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x25 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x44 &&
+    buf[3] === 0x46
+  ) {
+    return 'application/pdf';
+  }
+
+  // 3. JPEG (FF D8 FF)
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  // 4. GIF (GIF87a or GIF89a)
+  if (
+    buf.length >= 6 &&
+    buf[0] === 0x47 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x38 &&
+    (buf[4] === 0x37 || buf[4] === 0x39) &&
+    buf[5] === 0x61
+  ) {
+    return 'image/gif';
+  }
+
+  // 5. TIFF (II*\0 or MM\0* or BigTIFF)
+  if (buf.length >= 4) {
+    if (
+      buf[0] === 0x49 &&
+      buf[1] === 0x49 &&
+      ((buf[2] === 0x2a && buf[3] === 0x00) || (buf[2] === 0x2b && buf[3] === 0x00))
+    ) {
+      return 'image/tiff';
+    }
+    if (
+      buf[0] === 0x4d &&
+      buf[1] === 0x4d &&
+      ((buf[2] === 0x00 && buf[3] === 0x2a) || (buf[2] === 0x00 && buf[3] === 0x2b))
+    ) {
+      return 'image/tiff';
+    }
+  }
+
+  // 6. BMP (BM)
+  if (buf.length >= 14 && buf[0] === 0x42 && buf[1] === 0x4d) {
+    const reserved = buf.readUInt32LE(6);
+    if (reserved === 0) return 'image/bmp';
+  }
+
+  // 7. RIFF containers (WEBP, WAVE, AVI)
+  if (
+    buf.length >= 12 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46
+  ) {
+    const riffType = buf.toString('ascii', 8, 12);
+    if (riffType === 'WEBP') return 'image/webp';
+    if (riffType === 'WAVE') return 'audio/wav';
+    if (riffType === 'AVI ') return 'video/x-msvideo';
+  }
+
+  // 8. ZIP and Office Open Packaging Convention containers (PK\x03\x04, PK\x05\x06, PK\x07\x08)
+  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b) {
+    if (
+      (buf[2] === 0x03 && buf[3] === 0x04) ||
+      (buf[2] === 0x05 && buf[3] === 0x06) ||
+      (buf[2] === 0x07 && buf[3] === 0x08)
+    ) {
+      const scanLimit = Math.min(buf.length, 4096);
+      const headerSnippet = buf.toString('binary', 0, scanLimit);
+      if (headerSnippet.includes('word/') || headerSnippet.includes('word/document.xml')) {
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      }
+      if (headerSnippet.includes('xl/') || headerSnippet.includes('xl/workbook.xml')) {
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      }
+      if (headerSnippet.includes('ppt/') || headerSnippet.includes('ppt/presentation.xml')) {
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      }
+      if (headerSnippet.includes('mimetypeapplication/epub+zip')) {
+        return 'application/epub+zip';
+      }
+      if (headerSnippet.includes('mimetypeapplication/vnd.oasis.opendocument.text')) {
+        return 'application/vnd.oasis.opendocument.text';
+      }
+      if (headerSnippet.includes('mimetypeapplication/vnd.oasis.opendocument.spreadsheet')) {
+        return 'application/vnd.oasis.opendocument.spreadsheet';
+      }
+      if (headerSnippet.includes('mimetypeapplication/vnd.oasis.opendocument.presentation')) {
+        return 'application/vnd.oasis.opendocument.presentation';
+      }
+      if (headerSnippet.includes('Contents/section') || headerSnippet.includes('application/hwp+zip')) {
+        return 'application/hwp+zip';
+      }
+      return 'application/zip';
+    }
+  }
+
+  // 9. Compound File Binary Format (CFBF / OLE2)
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0xd0 &&
+    buf[1] === 0xcf &&
+    buf[2] === 0x11 &&
+    buf[3] === 0xe0 &&
+    buf[4] === 0xa1 &&
+    buf[5] === 0xb1 &&
+    buf[6] === 0x1a &&
+    buf[7] === 0xe1
+  ) {
+    const scanLimit = Math.min(buf.length, 4096);
+    const headerSnippet = buf.toString('latin1', 0, scanLimit);
+    if (headerSnippet.includes('HWP Document File')) return 'application/x-hwp';
+    if (headerSnippet.includes('Workbook') || headerSnippet.includes('Book')) return 'application/vnd.ms-excel';
+    if (headerSnippet.includes('WordDocument')) return 'application/msword';
+    if (headerSnippet.includes('PowerPoint Document')) return 'application/vnd.ms-powerpoint';
+    return 'application/x-cfbf';
+  }
+
+  // 10. 7z archive (7z\xBC\xAF\x27\x1C)
+  if (
+    buf.length >= 6 &&
+    buf[0] === 0x37 &&
+    buf[1] === 0x7a &&
+    buf[2] === 0xbc &&
+    buf[3] === 0xaf &&
+    buf[4] === 0x27 &&
+    buf[5] === 0x1c
+  ) {
+    return 'application/x-7z-compressed';
+  }
+
+  // 11. GZIP (\x1F\x8B)
+  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+    return 'application/gzip';
+  }
+
+  // 12. BZIP2 (BZh)
+  if (buf.length >= 3 && buf[0] === 0x42 && buf[1] === 0x5a && buf[2] === 0x68) {
+    return 'application/x-bzip2';
+  }
+
+  // 13. Zstandard (28 B5 2F FD)
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x28 &&
+    buf[1] === 0xb5 &&
+    buf[2] === 0x2f &&
+    buf[3] === 0xfd
+  ) {
+    return 'application/zstd';
+  }
+
+  // 14. RAR (Rar!\x1A\x07)
+  if (
+    buf.length >= 6 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x61 &&
+    buf[2] === 0x72 &&
+    buf[3] === 0x21 &&
+    buf[4] === 0x1a &&
+    buf[5] === 0x07
+  ) {
+    return 'application/vnd.rar';
+  }
+
+  // 15. Audio: FLAC (fLaC)
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x66 &&
+    buf[1] === 0x4c &&
+    buf[2] === 0x61 &&
+    buf[3] === 0x43
+  ) {
+    return 'audio/flac';
+  }
+
+  // 16. Audio: Ogg (OggS)
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x4f &&
+    buf[1] === 0x67 &&
+    buf[2] === 0x67 &&
+    buf[3] === 0x53
+  ) {
+    return 'audio/ogg';
+  }
+
+  // 17. Audio: MP3 (ID3 header or sync word FF FB/F3/F2)
+  if (buf.length >= 3 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) {
+    return 'audio/mpeg';
+  }
+  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) {
+    return 'audio/mpeg';
+  }
+
+  // 18. MP4 / MOV / M4A (ftyp)
+  if (
+    buf.length >= 12 &&
+    buf[4] === 0x66 &&
+    buf[5] === 0x74 &&
+    buf[6] === 0x79 &&
+    buf[7] === 0x70
+  ) {
+    const brand = buf.toString('ascii', 8, 12);
+    if (brand.startsWith('M4A') || brand.startsWith('M4B')) return 'audio/mp4';
+    return 'video/mp4';
+  }
+
+  // 19. Fonts
+  if (buf.length >= 4) {
+    const tag = buf.toString('ascii', 0, 4);
+    if (tag === 'wOFF') return 'font/woff';
+    if (tag === 'wOF2') return 'font/woff2';
+    if (tag === 'OTTO') return 'font/otf';
+    if (buf[0] === 0x00 && buf[1] === 0x01 && buf[2] === 0x00 && buf[3] === 0x00) return 'font/ttf';
+    if (tag === 'true') return 'font/ttf';
+  }
+
+  // 20. Parquet (PAR1)
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x50 &&
+    buf[1] === 0x41 &&
+    buf[2] === 0x52 &&
+    buf[3] === 0x31
+  ) {
+    return 'application/vnd.apache.parquet';
+  }
+
+  // 21. PostScript (%!PS)
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x25 &&
+    buf[1] === 0x21 &&
+    buf[2] === 0x50 &&
+    buf[3] === 0x53
+  ) {
+    return 'application/postscript';
+  }
+
+  // 22. STEP (ISO-10303-21;)
+  if (buf.length >= 12 && buf.toString('ascii', 0, 12) === 'ISO-10303-21') {
+    return 'model/step';
+  }
+
+  return undefined;
+}
+
+/**
+ * Verifies whether the buffer's initial magic bytes are compatible with the declared format.
+ * Rejects spoofed files (e.g. PDF masquerading as PNG, or PNG masquerading as DOCX) fail-closed.
+ */
+export function isFormatCompatibleWithMagicBytes(
+  buffer: Buffer | Uint8Array,
+  declaredExtensionOrFormatId: string
+): boolean {
+  if (!buffer || buffer.length === 0) return true;
+  const cleanExt = declaredExtensionOrFormatId.toLowerCase().replace(/^\./, '').trim();
+  const sniffed = sniffMimeTypeFromMagicBytes(buffer);
+
+  // If no definitive magic bytes were identified, allow unless declared format has strict signature
+  if (!sniffed) {
+    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    // Strict binary formats that MUST have valid magic if buffer >= 8 bytes
+    if (buf.length >= 8) {
+      if (cleanExt === 'pdf' || cleanExt === 'png' || cleanExt === 'gif' || cleanExt === 'webp') {
+        return false;
+      }
+      if ((cleanExt === 'jpg' || cleanExt === 'jpeg') && (buf[0] !== 0xff || buf[1] !== 0xd8)) {
+        return false;
+      }
+      if ((cleanExt === 'tif' || cleanExt === 'tiff') && buf[0] !== 0x49 && buf[0] !== 0x4d) {
+        return false;
+      }
+      if (cleanExt === 'parquet' && buf.toString('ascii', 0, 4) !== 'PAR1') {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Format mapping groups
+  const zipFormats = new Set([
+    'zip', 'docx', 'xlsx', 'pptx', 'epub', 'odt', 'ods', 'odp', 'hwpx',
+    'dotx', 'xltx', 'potx', 'cbz', 'htmlz', 'txtz', 'jar'
+  ]);
+  const cfbfFormats = new Set(['doc', 'xls', 'ppt', 'hwp', 'cfbf']);
+  const pdfFormats = new Set(['pdf', 'ai']);
+  const pngFormats = new Set(['png', 'apng']);
+  const jpegFormats = new Set(['jpg', 'jpeg', 'jpe', 'jfif']);
+  const gifFormats = new Set(['gif']);
+  const tiffFormats = new Set(['tif', 'tiff', 'dng', 'cr2', 'nef']);
+  const webpFormats = new Set(['webp']);
+  const bmpFormats = new Set(['bmp', 'dib']);
+  const mp3Formats = new Set(['mp3']);
+  const wavFormats = new Set(['wav']);
+  const flacFormats = new Set(['flac']);
+  const oggFormats = new Set(['ogg', 'oga', 'ogv', 'opus']);
+  const mp4Formats = new Set(['mp4', 'm4a', 'mov']);
+  const sevenZipFormats = new Set(['7z']);
+  const gzipFormats = new Set(['gz', 'tgz', 'gzip']);
+  const bzipFormats = new Set(['bz2', 'tbz', 'tbz2']);
+  const zstdFormats = new Set(['zst', 'zstd']);
+  const rarFormats = new Set(['rar']);
+
+  if (sniffed === 'application/pdf') return pdfFormats.has(cleanExt);
+  if (sniffed === 'image/png') return pngFormats.has(cleanExt);
+  if (sniffed === 'image/jpeg') return jpegFormats.has(cleanExt);
+  if (sniffed === 'image/gif') return gifFormats.has(cleanExt);
+  if (sniffed === 'image/tiff') return tiffFormats.has(cleanExt);
+  if (sniffed === 'image/webp') return webpFormats.has(cleanExt);
+  if (sniffed === 'image/bmp') return bmpFormats.has(cleanExt);
+
+  if (
+    sniffed === 'application/zip' ||
+    sniffed === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    sniffed === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    sniffed === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    sniffed === 'application/epub+zip' ||
+    sniffed === 'application/vnd.oasis.opendocument.text' ||
+    sniffed === 'application/vnd.oasis.opendocument.spreadsheet' ||
+    sniffed === 'application/vnd.oasis.opendocument.presentation' ||
+    sniffed === 'application/hwp+zip'
+  ) {
+    if (cleanExt === 'docx') {
+      return (
+        sniffed === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        sniffed === 'application/zip'
+      );
+    }
+    if (cleanExt === 'xlsx') {
+      return (
+        sniffed === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+        sniffed === 'application/zip'
+      );
+    }
+    if (cleanExt === 'pptx') {
+      return (
+        sniffed === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+        sniffed === 'application/zip'
+      );
+    }
+    if (cleanExt === 'epub') {
+      return sniffed === 'application/epub+zip' || sniffed === 'application/zip';
+    }
+    if (cleanExt === 'odt') {
+      return sniffed === 'application/vnd.oasis.opendocument.text' || sniffed === 'application/zip';
+    }
+    if (cleanExt === 'ods') {
+      return sniffed === 'application/vnd.oasis.opendocument.spreadsheet' || sniffed === 'application/zip';
+    }
+    if (cleanExt === 'odp') {
+      return sniffed === 'application/vnd.oasis.opendocument.presentation' || sniffed === 'application/zip';
+    }
+    if (cleanExt === 'hwpx') {
+      return sniffed === 'application/hwp+zip' || sniffed === 'application/zip';
+    }
+    return zipFormats.has(cleanExt);
+  }
+
+  if (
+    sniffed === 'application/x-cfbf' ||
+    sniffed === 'application/x-hwp' ||
+    sniffed === 'application/msword' ||
+    sniffed === 'application/vnd.ms-excel' ||
+    sniffed === 'application/vnd.ms-powerpoint'
+  ) {
+    return cfbfFormats.has(cleanExt);
+  }
+
+  if (sniffed === 'audio/mpeg') return mp3Formats.has(cleanExt);
+  if (sniffed === 'audio/wav') return wavFormats.has(cleanExt);
+  if (sniffed === 'audio/flac') return flacFormats.has(cleanExt);
+  if (sniffed === 'audio/ogg') return oggFormats.has(cleanExt);
+  if (sniffed === 'video/mp4' || sniffed === 'audio/mp4') return mp4Formats.has(cleanExt);
+  if (sniffed === 'application/x-7z-compressed') return sevenZipFormats.has(cleanExt);
+  if (sniffed === 'application/gzip') return gzipFormats.has(cleanExt);
+  if (sniffed === 'application/x-bzip2') return bzipFormats.has(cleanExt);
+  if (sniffed === 'application/zstd') return zstdFormats.has(cleanExt);
+  if (sniffed === 'application/vnd.rar') return rarFormats.has(cleanExt);
+  if (sniffed === 'application/postscript') return cleanExt === 'ps' || cleanExt === 'eps';
+  if (sniffed === 'model/step') return cleanExt === 'step' || cleanExt === 'stp';
+  if (sniffed === 'application/vnd.apache.parquet') return cleanExt === 'parquet';
+
+  // Text-based format attempting to pass binary magic bytes is incompatible
+  const textFormats = new Set([
+    'csv', 'tsv', 'txt', 'text', 'json', 'jsonl', 'ndjson', 'md', 'markdown',
+    'xml', 'html', 'htm', 'yaml', 'yml', 'sql', 'rtf', 'tab'
+  ]);
+  if (textFormats.has(cleanExt)) {
+    if (!sniffed.startsWith('text/') && sniffed !== 'application/json' && sniffed !== 'application/xml') {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Asserts fail-closed that the buffer's initial magic bytes match the declared format.
+ * Throws ConversionFailedError if the file extension is spoofed.
+ */
+export function assertNotSpoofedFile(
+  buffer: Buffer | Uint8Array,
+  declaredExtensionOrFormatId: string,
+  filename?: string
+): void {
+  if (!buffer || buffer.length === 0) return;
+  const isCompatible = isFormatCompatibleWithMagicBytes(buffer, declaredExtensionOrFormatId);
+  if (!isCompatible) {
+    const sniffed = sniffMimeTypeFromMagicBytes(buffer) ?? 'unknown/corrupted';
+    const cleanExt = declaredExtensionOrFormatId.toLowerCase().replace(/^\./, '').trim();
+    const nameStr = filename ? ` for file "${filename}"` : '';
+    throw new ConversionFailedError(
+      `File spoofing rejected${nameStr}: initial magic bytes indicate MIME type "${sniffed}", which is incompatible with declared format ".${cleanExt}". Operation failed closed.`
+    );
+  }
 }
