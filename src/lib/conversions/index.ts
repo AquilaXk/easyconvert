@@ -1,5 +1,10 @@
 import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
-import { FORMAT_REGISTRY } from '../registry';
+import {
+  FORMAT_REGISTRY,
+  assertNotSpoofedFile,
+  sniffMimeTypeFromMagicBytes,
+  isFormatCompatibleWithMagicBytes,
+} from '../registry';
 import {
   convertImage,
   demosaicBayerCfa,
@@ -289,6 +294,9 @@ export {
   ConversionFailedError,
   checkFfmpeg,
   formatSpreadsheetCellValue,
+  sniffMimeTypeFromMagicBytes,
+  isFormatCompatibleWithMagicBytes,
+  assertNotSpoofedFile,
 };
 
 export * from './color-quantizer';
@@ -352,6 +360,11 @@ export async function convertFile(
         ', '
       )}`
     );
+  }
+
+  // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
+  if (options.validateMagicBytes) {
+    assertNotSpoofedFile(inputBuffer, src, originalFilename);
   }
 
   // 1. Archive routing (including archive sources or archive targets)

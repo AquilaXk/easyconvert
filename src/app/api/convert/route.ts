@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { executeWorkerConversion } from '@/worker/engines';
-import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile } from '@/lib/registry';
 import { ConversionOptions, ConversionFailedError } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -95,6 +95,16 @@ export async function POST(req: NextRequest) {
 
     const arrayBuffer = await file.arrayBuffer();
     const inputBuffer = Buffer.from(arrayBuffer);
+
+    // Validate file integrity against spoofed extensions fail-closed
+    try {
+      assertNotSpoofedFile(inputBuffer, detectedDef.extension, file.name);
+    } catch (err: any) {
+      return NextResponse.json(
+        { success: false, error: err.message || 'File spoofing detected.' },
+        { status: 400 }
+      );
+    }
 
     // Perform conversion via worker orchestrator (with headless engine dispatch & pure TS fallback)
     const result = await executeWorkerConversion(

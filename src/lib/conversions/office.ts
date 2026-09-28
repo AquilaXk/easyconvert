@@ -466,10 +466,9 @@ export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
     if (contentXml) {
       const xml = await contentXml.async('text');
       const paragraphs: string[] = [];
-      const pRegex = /<text:(?:p|h)[^>]*>([\s\S]*?)<\/text:(?:p|h)>/g;
-      let m: RegExpExecArray | null;
-      while ((m = pRegex.exec(xml)) !== null) {
-        const text = m[1].replace(/<[^>]+>/g, '').trim();
+      const elements = safeExtractXmlElements(xml, ['text:p', 'text:h']);
+      for (const el of elements) {
+        const text = safeDecodeXmlEntities(el.content.replace(/<[^>]+>/g, '')).trim();
         if (text) paragraphs.push(text);
       }
       return paragraphs.join('\n\n');
@@ -608,20 +607,20 @@ async function convertDocxSource(
   const docRelsFile = zip.file('word/_rels/document.xml.rels');
   if (docRelsFile) {
     const relsXml = await docRelsFile.async('text');
-    const relRegex = /<Relationship\s+[^>]*?Id="([^"]+)"[^>]*?Target="([^"]+)"/gi;
-    let rMatch: RegExpExecArray | null;
-    while ((rMatch = relRegex.exec(relsXml)) !== null) {
-      const rId = rMatch[1];
-      const target = rMatch[2];
-      const chartPath = target.startsWith('/')
-        ? target.slice(1)
-        : target.startsWith('word/')
-        ? target
-        : `word/${target}`;
-      const cFile = zip.file(chartPath) || zip.file(target);
-      if (cFile) {
-        const cXml = await cFile.async('text');
-        chartMap.set(rId, cXml);
+    for (const rEl of safeExtractXmlElements(relsXml, 'Relationship')) {
+      const rId = rEl.attrs.Id;
+      const target = rEl.attrs.Target;
+      if (rId && target) {
+        const chartPath = target.startsWith('/')
+          ? target.slice(1)
+          : target.startsWith('word/')
+          ? target
+          : `word/${target}`;
+        const cFile = zip.file(chartPath) || zip.file(target);
+        if (cFile) {
+          const cXml = await cFile.async('text');
+          chartMap.set(rId, cXml);
+        }
       }
     }
   }
@@ -969,30 +968,22 @@ export function parseDrawingMlGuides(
 }
 
 function extractValuesFromPtXml(containerXml: string): string[] {
-  const ptRegex = /<c:pt\b([^>]*?)>([\s\S]*?)<\/c:pt>/gi;
+  const ptEls = safeExtractXmlElements(containerXml, 'c:pt');
   const results: Array<{ idx: number; val: string }> = [];
-  let m: RegExpExecArray | null;
   let fallbackIdx = 0;
-  while ((m = ptRegex.exec(containerXml)) !== null) {
-    const ptAttrs = m[1];
-    const ptBody = m[2];
-    const idxMatch = ptAttrs.match(/idx="(\d+)"/i);
-    const idx = idxMatch ? parseInt(idxMatch[1], 10) : fallbackIdx++;
-    const vMatch = ptBody.match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/i);
-    if (vMatch) {
-      results.push({ idx, val: vMatch[1].replace(/<[^>]+>/g, '').trim() });
+  for (const pt of ptEls) {
+    const idx = pt.attrs.idx !== undefined ? parseInt(pt.attrs.idx, 10) : fallbackIdx++;
+    const vContent = safeExtractTagContent(pt.content, 'c:v');
+    if (vContent !== null) {
+      results.push({ idx, val: safeDecodeXmlEntities(vContent.replace(/<[^>]+>/g, '')).trim() });
     }
   }
   if (results.length > 0) {
     results.sort((a, b) => a.idx - b.idx);
     return results.map((r) => r.val);
   }
-  const vRegex = /<c:v\b[^>]*>([\s\S]*?)<\/c:v>/gi;
-  const fallback: string[] = [];
-  while ((m = vRegex.exec(containerXml)) !== null) {
-    fallback.push(m[1].replace(/<[^>]+>/g, '').trim());
-  }
-  return fallback;
+  const vEls = safeExtractXmlElements(containerXml, 'c:v');
+  return vEls.map((v) => safeDecodeXmlEntities(v.content.replace(/<[^>]+>/g, '')).trim());
 }
 
 /**
@@ -1010,10 +1001,16 @@ export function parseOpenXmlChart(chartXml: string): OpenXmlChartData | null {
 
   // 1. Chart title
   let title: string | undefined;
-  const titleMatch = chartXml.match(/<c:title\b[\s\S]*?<\/c:title>/i);
-  if (titleMatch) {
-    const tList = titleMatch[0].match(/<(?:a:t|c:v)\b[^>]*>([\s\S]*?)<\/(?:a:t|c:v)>/gi) || [];
-    const joined = tList.map((t) => t.replace(/<[^>]+>/g, '').trim()).filter(Boolean).join(' ');
+  const titleEl = safeExtractFirstXmlElement(chartXml, 'c:title');
+  if (titleEl) {
+    const tEls = [
+      ...safeExtractXmlElements(titleEl.content, 'a:t'),
+      ...safeExtractXmlElements(titleEl.content, 'c:v'),
+    ];
+    const joined = tEls
+      .map((t) => safeDecodeXmlEntities(t.content.replace(/<[^>]+>/g, '')).trim())
+      .filter(Boolean)
+      .join(' ');
     if (joined) title = joined;
   }
 
@@ -1027,35 +1024,35 @@ export function parseOpenXmlChart(chartXml: string): OpenXmlChartData | null {
   else if (/<c:bar(?:3D)?Chart\b/i.test(chartXml)) type = 'bar';
 
   // 3. Series
-  const serRegex = /<c:ser\b[\s\S]*?<\/c:ser>/gi;
+  const serEls = safeExtractXmlElements(chartXml, 'c:ser');
   const series: OpenXmlChartSeries[] = [];
   let sharedCategories: string[] = [];
-  let sMatch: RegExpExecArray | null;
   let serIndex = 1;
 
-  while ((sMatch = serRegex.exec(chartXml)) !== null) {
-    const serXml = sMatch[0];
+  for (const serEl of serEls) {
+    const serXml = serEl.content;
 
     // Series name
     let name = `Series ${serIndex++}`;
-    const txMatch = serXml.match(/<c:tx\b[\s\S]*?<\/c:tx>/i);
-    if (txMatch) {
-      const vMatch =
-        txMatch[0].match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/i) ||
-        txMatch[0].match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/i);
-      if (vMatch) name = vMatch[1].replace(/<[^>]+>/g, '').trim() || name;
+    const txEl = safeExtractFirstXmlElement(serXml, 'c:tx');
+    if (txEl) {
+      const vContent = safeExtractTagContent(txEl.content, 'c:v') ?? safeExtractTagContent(txEl.content, 'a:t');
+      if (vContent) {
+        const decoded = safeDecodeXmlEntities(vContent.replace(/<[^>]+>/g, '')).trim();
+        if (decoded) name = decoded;
+      }
     }
 
     // Categories
-    const catMatch = serXml.match(/<c:cat\b[\s\S]*?<\/c:cat>/i);
-    const categories = catMatch ? extractValuesFromPtXml(catMatch[0]) : [];
+    const catEl = safeExtractFirstXmlElement(serXml, 'c:cat');
+    const categories = catEl ? extractValuesFromPtXml(catEl.raw) : [];
     if (categories.length > 0 && sharedCategories.length === 0) {
       sharedCategories = categories;
     }
 
     // Values
-    const valMatch = serXml.match(/<c:(?:val|yVal)\b[\s\S]*?<\/c:(?:val|yVal)>/i);
-    const numStrings = valMatch ? extractValuesFromPtXml(valMatch[0]) : [];
+    const valEl = safeExtractFirstXmlElement(serXml, ['c:val', 'c:yVal']);
+    const numStrings = valEl ? extractValuesFromPtXml(valEl.raw) : [];
     const values = numStrings.map((v) => parseFloat(v)).filter((v) => !isNaN(v));
 
     series.push({
@@ -1067,9 +1064,9 @@ export function parseOpenXmlChart(chartXml: string): OpenXmlChartData | null {
 
   // Fallback categories if not in series
   if (sharedCategories.length === 0) {
-    const axCatMatch = chartXml.match(/<c:cat\b[\s\S]*?<\/c:cat>/i);
-    if (axCatMatch) {
-      sharedCategories = extractValuesFromPtXml(axCatMatch[0]);
+    const axCatEl = safeExtractFirstXmlElement(chartXml, 'c:cat');
+    if (axCatEl) {
+      sharedCategories = extractValuesFromPtXml(axCatEl.raw);
     }
   }
 
@@ -1305,13 +1302,9 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
   const shapes: DrawingMlShape[] = [];
 
   // Match all shape tags: <p:sp>, <wps:wsp>, <a:graphicData>, <w:drawing>
-  const shapeRegex = /<(?:(?:p|wps):sp|a:graphicData|w:drawing)\b[\s\S]*?<\/(?:(?:p|wps):sp|a:graphicData|w:drawing)>/gi;
-  let spMatch: RegExpExecArray | null;
-  const matches: string[] = [];
-
-  while ((spMatch = shapeRegex.exec(xml)) !== null) {
-    matches.push(spMatch[0]);
-  }
+  const targetShapeTags = ['p:sp', 'wps:wsp', 'a:graphicData', 'w:drawing'];
+  const shapeElements = safeExtractXmlElements(xml, targetShapeTags);
+  const matches: string[] = shapeElements.map((e) => e.raw);
 
   if (
     matches.length === 0 &&
@@ -1326,7 +1319,7 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
 
   for (const spXml of matches) {
     // 1. Transform: <a:xfrm rot="..." flipH="..." flipV="..."> <a:off x="..." y="..."/> <a:ext cx="..." cy="..."/>
-    const xfrmMatch = spXml.match(/<a:xfrm\b([^>]*?)>([\s\S]*?)<\/a:xfrm>/i);
+    const xfrmEl = safeExtractFirstXmlElement(spXml, 'a:xfrm');
     let x = 0,
       y = 0,
       width = 100,
@@ -1334,23 +1327,21 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       rotation = 0,
       flipH = false,
       flipV = false;
-    if (xfrmMatch) {
-      const xfrmAttrs = xfrmMatch[1];
-      const xfrmBody = xfrmMatch[2];
-      const rotMatch = xfrmAttrs.match(/rot="(\d+)"/i);
-      if (rotMatch) rotation = parseInt(rotMatch[1], 10) / 60000;
-      if (/flipH="(?:1|true)"/i.test(xfrmAttrs)) flipH = true;
-      if (/flipV="(?:1|true)"/i.test(xfrmAttrs)) flipV = true;
+    if (xfrmEl) {
+      const rotVal = xfrmEl.attrs.rot;
+      if (rotVal) rotation = parseInt(rotVal, 10) / 60000;
+      if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
+      if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
 
-      const offMatch = xfrmBody.match(/<a:off\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
-      if (offMatch) {
-        x = Math.round(parseInt(offMatch[1], 10) / 12700);
-        y = Math.round(parseInt(offMatch[2], 10) / 12700);
+      const offEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:off');
+      if (offEl && offEl.attrs.x && offEl.attrs.y) {
+        x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
+        y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
       }
-      const extMatch = xfrmBody.match(/<a:ext\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
-      if (extMatch) {
-        width = Math.max(1, Math.round(parseInt(extMatch[1], 10) / 12700));
-        height = Math.max(1, Math.round(parseInt(extMatch[2], 10) / 12700));
+      const extEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:ext');
+      if (extEl && extEl.attrs.cx && extEl.attrs.cy) {
+        width = Math.max(1, Math.round(parseInt(extEl.attrs.cx, 10) / 12700));
+        height = Math.max(1, Math.round(parseInt(extEl.attrs.cy, 10) / 12700));
       }
     }
 
@@ -1393,18 +1384,15 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
     if (spXml.includes('<a:noFill/>') || spXml.includes('<a:noFill />')) {
       fillColor = 'none';
     } else {
-      const fillMatch = spXml.match(
-        /<a:solidFill>[\s\S]*?<a:srgbClr\b[^>]*val="([A-Fa-f0-9]{6})"/i
-      );
-      if (fillMatch) fillColor = `#${fillMatch[1]}`;
+      const solidFillColor = safeFindColor(spXml, ['a:solidFill']);
+      if (solidFillColor) fillColor = solidFillColor;
     }
 
-    const lnMatch = spXml.match(/<a:ln\b([^>]*?)>([\s\S]*?)<\/a:ln>/i);
-    if (lnMatch) {
-      const wMatch = lnMatch[1].match(/w="(\d+)"/i);
-      if (wMatch) strokeWidth = Math.max(0.5, Math.round(parseInt(wMatch[1], 10) / 12700));
-      const lnClrMatch = lnMatch[2].match(/<a:srgbClr\b[^>]*val="([A-Fa-f0-9]{6})"/i);
-      if (lnClrMatch) strokeColor = `#${lnClrMatch[1]}`;
+    const lnEl = safeExtractFirstXmlElement(spXml, 'a:ln');
+    if (lnEl) {
+      if (lnEl.attrs.w) strokeWidth = Math.max(0.5, Math.round(parseInt(lnEl.attrs.w, 10) / 12700));
+      const lnClr = safeFindColor(lnEl.content);
+      if (lnClr) strokeColor = lnClr;
     }
 
     // 3. Guides & Adjust Values (<a:avLst>, <a:gdLst>)
@@ -1421,73 +1409,67 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       ls: Math.max(width, height),
     };
     const guides = parseDrawingMlGuides(spXml, initialVars);
-    const avMatch = spXml.match(/<a:avLst\b[\s\S]*?<\/a:avLst>/i);
-    const adjustValues = avMatch ? parseDrawingMlGuides(avMatch[0], {}) : undefined;
+    const avEl = safeExtractFirstXmlElement(spXml, 'a:avLst');
+    const adjustValues = avEl ? parseDrawingMlGuides(avEl.raw, {}) : undefined;
 
     // 4. Geometry (Preset vs Custom)
     let geomType: 'preset' | 'custom' = 'preset';
     let presetGeom = 'rect';
     let svgPath = '';
 
-    const prstMatch = spXml.match(/<a:prstGeom\b[^>]*prst="([^"]+)"/i);
-    const custMatch = spXml.match(/<a:custGeom\b[\s\S]*?<\/a:custGeom>/i);
+    const prstEl = safeExtractFirstXmlElement(spXml, 'a:prstGeom');
+    const custEl = safeExtractFirstXmlElement(spXml, 'a:custGeom');
 
-    if (custMatch) {
+    if (custEl) {
       geomType = 'custom';
-      const custXml = custMatch[0];
-      const pathTagMatch = custXml.match(/<a:path\b([^>]*?)>([\s\S]*?)<\/a:path>/i);
-      if (pathTagMatch) {
-        const pathAttrs = pathTagMatch[1];
-        const pathBody = pathTagMatch[2];
-        const pwMatch = pathAttrs.match(/w="(\d+)"/i);
-        const phMatch = pathAttrs.match(/h="(\d+)"/i);
-        const pw = pwMatch ? parseInt(pwMatch[1], 10) : width;
-        const ph = phMatch ? parseInt(phMatch[1], 10) : height;
+      const pathEl = safeExtractFirstXmlElement(custEl.content, 'a:path');
+      if (pathEl) {
+        const pw = pathEl.attrs.w ? parseInt(pathEl.attrs.w, 10) : width;
+        const ph = pathEl.attrs.h ? parseInt(pathEl.attrs.h, 10) : height;
         const sx = width / (pw || 1);
         const sy = height / (ph || 1);
 
         const dParts: string[] = [];
-        const cmdRegex =
-          /<a:(moveTo|lnTo|cubicBezTo|quadBezTo|arcTo|close)\b([^>]*?)>([\s\S]*?)<\/a:\1>|<a:(close)\b[^>]*\/>/gi;
-        let cmdMatch: RegExpExecArray | null;
-        while ((cmdMatch = cmdRegex.exec(pathBody)) !== null) {
-          const cmdName = (cmdMatch[1] || cmdMatch[4]).toLowerCase();
-          const cmdContent = cmdMatch[3] || '';
-
+        const cmdTags = ['a:moveTo', 'a:lnTo', 'a:cubicBezTo', 'a:quadBezTo', 'a:arcTo', 'a:close'];
+        const cmdEls = safeExtractXmlElements(pathEl.content, cmdTags);
+        for (const cmdEl of cmdEls) {
+          const cmdName = cmdEl.localName.toLowerCase();
           if (cmdName === 'moveto') {
-            const ptMatch = cmdContent.match(/<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
-            if (ptMatch) {
-              const px = Math.round(parseInt(ptMatch[1], 10) * sx + x);
-              const py = Math.round(parseInt(ptMatch[2], 10) * sy + y);
+            const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
+            if (ptEl && ptEl.attrs.x && ptEl.attrs.y) {
+              const px = Math.round(parseInt(ptEl.attrs.x, 10) * sx + x);
+              const py = Math.round(parseInt(ptEl.attrs.y, 10) * sy + y);
               dParts.push(`M ${px} ${py}`);
             }
           } else if (cmdName === 'lnto') {
-            const ptMatch = cmdContent.match(/<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
-            if (ptMatch) {
-              const px = Math.round(parseInt(ptMatch[1], 10) * sx + x);
-              const py = Math.round(parseInt(ptMatch[2], 10) * sy + y);
+            const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
+            if (ptEl && ptEl.attrs.x && ptEl.attrs.y) {
+              const px = Math.round(parseInt(ptEl.attrs.x, 10) * sx + x);
+              const py = Math.round(parseInt(ptEl.attrs.y, 10) * sy + y);
               dParts.push(`L ${px} ${py}`);
             }
           } else if (cmdName === 'cubicbezto') {
-            const ptRegex = /<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+            const ptEls = safeExtractXmlElements(cmdEl.content, 'a:pt');
             const pts: string[] = [];
-            let ptM: RegExpExecArray | null;
-            while ((ptM = ptRegex.exec(cmdContent)) !== null) {
-              const px = Math.round(parseInt(ptM[1], 10) * sx + x);
-              const py = Math.round(parseInt(ptM[2], 10) * sy + y);
-              pts.push(`${px} ${py}`);
+            for (const pt of ptEls) {
+              if (pt.attrs.x && pt.attrs.y) {
+                const px = Math.round(parseInt(pt.attrs.x, 10) * sx + x);
+                const py = Math.round(parseInt(pt.attrs.y, 10) * sy + y);
+                pts.push(`${px} ${py}`);
+              }
             }
             if (pts.length >= 3) {
               dParts.push(`C ${pts[0]}, ${pts[1]}, ${pts[2]}`);
             }
           } else if (cmdName === 'quadbezto') {
-            const ptRegex = /<a:pt\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/gi;
+            const ptEls = safeExtractXmlElements(cmdEl.content, 'a:pt');
             const pts: string[] = [];
-            let ptM: RegExpExecArray | null;
-            while ((ptM = ptRegex.exec(cmdContent)) !== null) {
-              const px = Math.round(parseInt(ptM[1], 10) * sx + x);
-              const py = Math.round(parseInt(ptM[2], 10) * sy + y);
-              pts.push(`${px} ${py}`);
+            for (const pt of ptEls) {
+              if (pt.attrs.x && pt.attrs.y) {
+                const px = Math.round(parseInt(pt.attrs.x, 10) * sx + x);
+                const py = Math.round(parseInt(pt.attrs.y, 10) * sy + y);
+                pts.push(`${px} ${py}`);
+              }
             }
             if (pts.length >= 2) {
               dParts.push(`Q ${pts[0]}, ${pts[1]}`);
@@ -1498,15 +1480,15 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
         }
         svgPath = dParts.join(' ');
       }
-    } else if (prstMatch) {
+    } else if (prstEl && prstEl.attrs.prst) {
       geomType = 'preset';
-      presetGeom = prstMatch[1].toLowerCase();
+      presetGeom = prstEl.attrs.prst.toLowerCase();
     }
 
     // 5. Text inside shape
-    const tTags = spXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi) || [];
-    const text = tTags
-      .map((t) => t.replace(/<[^>]+>/g, '').trim())
+    const tEls = safeExtractXmlElements(spXml, 'a:t');
+    const text = tEls
+      .map((t) => safeDecodeXmlEntities(t.content.replace(/<[^>]+>/g, '')).trim())
       .filter(Boolean)
       .join(' ');
 
@@ -1798,32 +1780,369 @@ export function renderDrawingMlToSvg(
   return { svg, shapes };
 }
 
-function safeExtractXmlTags(xml: string, tagName: string): string[] {
-  const results: string[] = [];
-  const openTag = `<${tagName}`;
-  const closeTag = `</${tagName}>`;
-  let pos = 0;
-  while (pos < xml.length) {
-    const startIdx = xml.indexOf(openTag, pos);
-    if (startIdx === -1) break;
-    const charAfter = xml[startIdx + openTag.length];
-    if (
-      charAfter !== '>' &&
-      charAfter !== ' ' &&
-      charAfter !== '/' &&
-      charAfter !== '\t' &&
-      charAfter !== '\n' &&
-      charAfter !== '\r'
+export interface SafeXmlAttributeMap {
+  [key: string]: string;
+}
+
+export interface SafeXmlElement {
+  tag: string;
+  localName: string;
+  prefix?: string;
+  raw: string;
+  attrs: SafeXmlAttributeMap;
+  content: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+export interface SafeXmlScannerOptions {
+  maxDepth?: number;
+  maxElements?: number;
+}
+
+/**
+ * Linearly extracts XML attributes from an opening tag header in O(N) time with zero regex backtracking.
+ */
+export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap {
+  const attrs: SafeXmlAttributeMap = {};
+  let i = 0;
+  if (i < tagHeader.length && tagHeader[i] === '<') i++;
+  // Skip tag name
+  while (i < tagHeader.length && tagHeader.charCodeAt(i) > 32 && tagHeader[i] !== '/' && tagHeader[i] !== '>') i++;
+
+  while (i < tagHeader.length) {
+    // Skip whitespace
+    while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
+    if (i >= tagHeader.length || tagHeader[i] === '/' || tagHeader[i] === '>') break;
+
+    const keyStart = i;
+    while (
+      i < tagHeader.length &&
+      tagHeader[i] !== '=' &&
+      tagHeader.charCodeAt(i) > 32 &&
+      tagHeader[i] !== '/' &&
+      tagHeader[i] !== '>'
     ) {
-      pos = startIdx + openTag.length;
+      i++;
+    }
+    const key = tagHeader.slice(keyStart, i).trim();
+    while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
+
+    if (i < tagHeader.length && tagHeader[i] === '=') {
+      i++;
+      while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
+      if (i < tagHeader.length && (tagHeader[i] === '"' || tagHeader[i] === "'")) {
+        const quote = tagHeader[i++];
+        const valStart = i;
+        while (i < tagHeader.length && tagHeader[i] !== quote) i++;
+        attrs[key] = tagHeader.slice(valStart, i);
+        if (i < tagHeader.length) i++; // skip closing quote
+      } else {
+        const valStart = i;
+        while (
+          i < tagHeader.length &&
+          tagHeader.charCodeAt(i) > 32 &&
+          tagHeader[i] !== '>' &&
+          tagHeader[i] !== '/'
+        ) {
+          i++;
+        }
+        attrs[key] = tagHeader.slice(valStart, i);
+      }
+    } else if (key) {
+      attrs[key] = 'true';
+    }
+  }
+  return attrs;
+}
+
+/**
+ * Safely extracts XML elements in linear O(N) time without ReDoS backtracking.
+ * Accurately tracks nested elements of the same tag name and enforces strict depth bounds.
+ */
+export function safeExtractXmlElements(
+  xml: string,
+  tagName: string | string[],
+  options: SafeXmlScannerOptions = {}
+): SafeXmlElement[] {
+  const results: SafeXmlElement[] = [];
+  const maxElements = options.maxElements ?? 50000;
+  const maxDepth = options.maxDepth ?? 64;
+
+  const tagList = Array.isArray(tagName) ? tagName : [tagName];
+  const targetMap = new Map<string, { targetLocal: string; targetPrefix: string | null }>();
+  for (const t of tagList) {
+    targetMap.set(t, {
+      targetLocal: t.includes(':') ? t.split(':')[1] : t,
+      targetPrefix: t.includes(':') ? t.split(':')[0] : null,
+    });
+  }
+
+  const closingTagPresentMap = new Map<string, boolean>();
+  let pos = 0;
+  while (pos < xml.length && results.length < maxElements) {
+    const nextLt = xml.indexOf('<', pos);
+    if (nextLt === -1) break;
+
+    // Skip comments <!-- ... -->
+    if (xml.startsWith('<!--', nextLt)) {
+      const endComment = xml.indexOf('-->', nextLt + 4);
+      pos = endComment === -1 ? xml.length : endComment + 3;
       continue;
     }
-    const endIdx = xml.indexOf(closeTag, startIdx);
-    if (endIdx === -1) break;
-    results.push(xml.slice(startIdx, endIdx + closeTag.length));
-    pos = endIdx + closeTag.length;
+    // Skip CDATA <![CDATA[ ... ]]>
+    if (xml.startsWith('<![CDATA[', nextLt)) {
+      const endCdata = xml.indexOf(']]>', nextLt + 9);
+      pos = endCdata === -1 ? xml.length : endCdata + 3;
+      continue;
+    }
+    // Skip processing instructions <? ... ?> or <! ... >
+    if (xml[nextLt + 1] === '?' || xml[nextLt + 1] === '!') {
+      const endPi = xml.indexOf('>', nextLt + 2);
+      pos = endPi === -1 ? xml.length : endPi + 1;
+      continue;
+    }
+    // Skip closing tags
+    if (xml[nextLt + 1] === '/') {
+      const endClose = xml.indexOf('>', nextLt + 2);
+      pos = endClose === -1 ? xml.length : endClose + 1;
+      continue;
+    }
+
+    // Read current opening tag name
+    let tagEnd = nextLt + 1;
+    while (
+      tagEnd < xml.length &&
+      xml.charCodeAt(tagEnd) > 32 &&
+      xml[tagEnd] !== '>' &&
+      xml[tagEnd] !== '/'
+    ) {
+      tagEnd++;
+    }
+    const currentTag = xml.slice(nextLt + 1, tagEnd);
+    const currLocal = currentTag.includes(':') ? currentTag.split(':')[1] : currentTag;
+    const currPrefix = currentTag.includes(':') ? currentTag.split(':')[0] : undefined;
+
+    let isMatch = false;
+    for (const [tName, spec] of targetMap) {
+      if (spec.targetPrefix ? currentTag === tName : currLocal === spec.targetLocal) {
+        isMatch = true;
+        break;
+      }
+    }
+
+    // Find the end of this tag's header '>' taking quotes into account
+    let headerClose = tagEnd;
+    let inQuote = false;
+    let quoteChar = '';
+    while (headerClose < xml.length) {
+      const ch = xml[headerClose];
+      if (inQuote) {
+        if (ch === quoteChar) inQuote = false;
+      } else if (ch === '"' || ch === "'") {
+        inQuote = true;
+        quoteChar = ch;
+      } else if (ch === '>') {
+        break;
+      }
+      headerClose++;
+    }
+    if (headerClose >= xml.length) break;
+
+    let checkIdx = headerClose - 1;
+    while (checkIdx > nextLt && xml.charCodeAt(checkIdx) <= 32) checkIdx--;
+    const isSelfClosing = checkIdx > nextLt && xml[checkIdx] === '/';
+
+    if (!isMatch) {
+      pos = headerClose + 1;
+      continue;
+    }
+
+    const attrs = safeExtractXmlAttributes(
+      xml.slice(nextLt + 1, isSelfClosing ? checkIdx : headerClose)
+    );
+
+    if (isSelfClosing) {
+      results.push({
+        tag: currentTag,
+        localName: currLocal,
+        prefix: currPrefix,
+        raw: xml.slice(nextLt, headerClose + 1),
+        attrs,
+        content: '',
+        startIndex: nextLt,
+        endIndex: headerClose + 1,
+      });
+      pos = headerClose + 1;
+      continue;
+    }
+
+    // If document has no closing tags for this element, skip to avoid search
+    let hasClosing = closingTagPresentMap.get(currentTag);
+    if (hasClosing === undefined) {
+      hasClosing = xml.indexOf('</' + currLocal + '>') !== -1 || xml.indexOf('</' + currentTag + '>') !== -1;
+      closingTagPresentMap.set(currentTag, hasClosing);
+    }
+    if (!hasClosing) {
+      pos = headerClose + 1;
+      continue;
+    }
+
+    // Scan for matching closing tag with depth tracking
+    const endTag = '</' + currentTag + '>';
+    const startTag = '<' + currentTag;
+    let depth = 0;
+    let searchPos = headerClose + 1;
+    let matchedEnd = -1;
+    let contentEnd = -1;
+
+    while (searchPos < xml.length) {
+      // Skip inner comments or CDATA
+      if (xml.startsWith('<!--', searchPos)) {
+        const endC = xml.indexOf('-->', searchPos + 4);
+        searchPos = endC === -1 ? xml.length : endC + 3;
+        continue;
+      }
+      if (xml.startsWith('<![CDATA[', searchPos)) {
+        const endCd = xml.indexOf(']]>', searchPos + 9);
+        searchPos = endCd === -1 ? xml.length : endCd + 3;
+        continue;
+      }
+
+      const nextOpen = xml.indexOf(startTag, searchPos);
+      const nextClose = xml.indexOf(endTag, searchPos);
+
+      if (nextClose === -1) break; // Unclosed tag, abort gracefully
+
+      if (nextOpen !== -1 && nextOpen < nextClose) {
+        const charAfter = xml[nextOpen + startTag.length];
+        if (charAfter === '>' || charAfter === '/' || charAfter <= ' ') {
+          // Check if self-closing
+          const nextHeaderClose = xml.indexOf('>', nextOpen);
+          if (nextHeaderClose !== -1) {
+            let slashIdx = nextHeaderClose - 1;
+            while (slashIdx > nextOpen && xml.charCodeAt(slashIdx) <= 32) slashIdx--;
+            if (slashIdx > nextOpen && xml[slashIdx] === '/') {
+              // Self closing nested tag, does not increase depth
+            } else {
+              depth++;
+              if (depth > maxDepth) break; // Bound depth
+            }
+            searchPos = nextHeaderClose + 1;
+            continue;
+          }
+        }
+        searchPos = nextOpen + startTag.length;
+      } else {
+        if (depth === 0) {
+          contentEnd = nextClose;
+          matchedEnd = nextClose + endTag.length;
+          break;
+        } else {
+          depth--;
+          searchPos = nextClose + endTag.length;
+        }
+      }
+    }
+
+    if (matchedEnd !== -1) {
+      results.push({
+        tag: currentTag,
+        localName: currLocal,
+        prefix: currPrefix,
+        raw: xml.slice(nextLt, matchedEnd),
+        attrs,
+        content: xml.slice(headerClose + 1, contentEnd),
+        startIndex: nextLt,
+        endIndex: matchedEnd,
+      });
+      pos = matchedEnd;
+    } else {
+      pos = headerClose + 1;
+    }
   }
+
   return results;
+}
+
+/**
+ * Returns the first matching element in linear time, or null if not found.
+ */
+export function safeExtractFirstXmlElement(
+  xml: string,
+  tagName: string | string[],
+  options?: SafeXmlScannerOptions
+): SafeXmlElement | null {
+  const elements = safeExtractXmlElements(xml, tagName, { ...options, maxElements: 1 });
+  return elements.length > 0 ? elements[0] : null;
+}
+
+/**
+ * Safely extracts inner XML content of the first matching tag.
+ */
+export function safeExtractTagContent(xml: string, tagName: string | string[]): string | null {
+  const el = safeExtractFirstXmlElement(xml, tagName);
+  return el ? el.content : null;
+}
+
+/**
+ * Linearly decodes standard XML entities and strips tags safely in O(N) time.
+ */
+export function safeDecodeXmlEntities(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+/**
+ * Extracts and decodes all text content from specified tags (e.g. w:t, a:t, text:p)
+ * or strips tags linearly in O(N).
+ */
+export function safeExtractAllText(xml: string, tagName?: string): string {
+  if (!xml) return '';
+  if (tagName) {
+    const elements = safeExtractXmlElements(xml, tagName);
+    return elements.map((e) => safeDecodeXmlEntities(e.content.replace(/<[^>]+>/g, ''))).join('');
+  }
+  return safeDecodeXmlEntities(xml.replace(/<[^>]+>/g, ''));
+}
+
+/**
+ * Navigates linearly down an element hierarchy path (e.g. ['p:grpSpPr', 'a:xfrm', 'a:off']).
+ * Replaces dangerous chained regexes with deterministic O(N) depth-bounded traversal.
+ */
+export function safeFindXmlPath(xml: string, path: string[]): SafeXmlElement | null {
+  let currentXml = xml;
+  let currentEl: SafeXmlElement | null = null;
+  for (const step of path) {
+    currentEl = safeExtractFirstXmlElement(currentXml, step);
+    if (!currentEl) return null;
+    currentXml = currentEl.content;
+  }
+  return currentEl;
+}
+
+/**
+ * Safely extracts hex color from solidFill or srgbClr elements without regex backtracking.
+ */
+export function safeFindColor(xml: string, parentPath: string[] = []): string | undefined {
+  const targetXml = parentPath.length > 0 ? safeFindXmlPath(xml, parentPath)?.content : xml;
+  if (!targetXml) return undefined;
+  const srgbEl = safeExtractFirstXmlElement(targetXml, 'a:srgbClr') || safeExtractFirstXmlElement(targetXml, 'srgbClr');
+  if (srgbEl && srgbEl.attrs.val && /^[A-Fa-f0-9]{6}$/.test(srgbEl.attrs.val)) {
+    return `#${srgbEl.attrs.val}`;
+  }
+  return undefined;
+}
+
+function safeExtractXmlTags(xml: string, tagName: string): string[] {
+  return safeExtractXmlElements(xml, tagName).map((e) => e.raw);
 }
 
 function safeExtractDocxBlocks(bodyXml: string): string[] {
@@ -1846,12 +2165,14 @@ function safeExtractDocxBlocks(bodyXml: string): string[] {
     const startIdx = candidates[0].idx;
     const tag = candidates[0].tag;
 
-    const closeTag = `</${tag}>`;
-    const endIdx = bodyXml.indexOf(closeTag, startIdx);
-    if (endIdx === -1) break;
+    const el = safeExtractFirstXmlElement(bodyXml.slice(startIdx), tag);
+    if (!el) {
+      pos = startIdx + tag.length + 1;
+      continue;
+    }
 
-    blocks.push(bodyXml.slice(startIdx, endIdx + closeTag.length));
-    pos = endIdx + closeTag.length;
+    blocks.push(el.raw);
+    pos = startIdx + el.endIndex;
   }
   return blocks;
 }
@@ -1947,23 +2268,23 @@ function parseDocxXml(
       const rows: string[][] = [];
       const structuredRows: DocxTableCell[][] = [];
 
-      const tblBordersMatch = chunk.match(/<w:tblBorders\b[^>]*>([\s\S]*?)<\/w:tblBorders>/i);
+      const tblBordersEl = safeExtractFirstXmlElement(chunk, 'w:tblBorders');
       let tblBorders: DocxTable['tblBorders'];
-      if (tblBordersMatch) {
-        const bXml = tblBordersMatch[1];
-        const topM = bXml.match(/<w:top\b([^>]*?)\/?>/i);
-        const bottomM = bXml.match(/<w:bottom\b([^>]*?)\/?>/i);
-        const leftM = bXml.match(/<w:left\b([^>]*?)\/?>/i);
-        const rightM = bXml.match(/<w:right\b([^>]*?)\/?>/i);
-        const inHM = bXml.match(/<w:insideH\b([^>]*?)\/?>/i);
-        const inVM = bXml.match(/<w:insideV\b([^>]*?)\/?>/i);
+      if (tblBordersEl) {
+        const bXml = tblBordersEl.content;
+        const topEl = safeExtractFirstXmlElement(bXml, 'w:top');
+        const bottomEl = safeExtractFirstXmlElement(bXml, 'w:bottom');
+        const leftEl = safeExtractFirstXmlElement(bXml, 'w:left');
+        const rightEl = safeExtractFirstXmlElement(bXml, 'w:right');
+        const inHEl = safeExtractFirstXmlElement(bXml, 'w:insideH');
+        const inVEl = safeExtractFirstXmlElement(bXml, 'w:insideV');
         tblBorders = {
-          top: parseBorder(topM ? topM[1] : ''),
-          bottom: parseBorder(bottomM ? bottomM[1] : ''),
-          left: parseBorder(leftM ? leftM[1] : ''),
-          right: parseBorder(rightM ? rightM[1] : ''),
-          insideH: parseBorder(inHM ? inHM[1] : ''),
-          insideV: parseBorder(inVM ? inVM[1] : ''),
+          top: parseBorder(topEl ? topEl.raw : ''),
+          bottom: parseBorder(bottomEl ? bottomEl.raw : ''),
+          left: parseBorder(leftEl ? leftEl.raw : ''),
+          right: parseBorder(rightEl ? rightEl.raw : ''),
+          insideH: parseBorder(inHEl ? inHEl.raw : ''),
+          insideV: parseBorder(inVEl ? inVEl.raw : ''),
         };
       }
 
@@ -1983,19 +2304,19 @@ function parseDocxXml(
           const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
           const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
 
-          const tcBordersMatch = tcXml.match(/<w:tcBorders\b[^>]*>([\s\S]*?)<\/w:tcBorders>/i);
+          const tcBordersEl = safeExtractFirstXmlElement(tcXml, 'w:tcBorders');
           let borders: DocxTableCell['borders'];
-          if (tcBordersMatch) {
-            const bXml = tcBordersMatch[1];
-            const topM = bXml.match(/<w:top\b([^>]*?)\/?>/i);
-            const bottomM = bXml.match(/<w:bottom\b([^>]*?)\/?>/i);
-            const leftM = bXml.match(/<w:left\b([^>]*?)\/?>/i);
-            const rightM = bXml.match(/<w:right\b([^>]*?)\/?>/i);
+          if (tcBordersEl) {
+            const bXml = tcBordersEl.content;
+            const topEl = safeExtractFirstXmlElement(bXml, 'w:top');
+            const bottomEl = safeExtractFirstXmlElement(bXml, 'w:bottom');
+            const leftEl = safeExtractFirstXmlElement(bXml, 'w:left');
+            const rightEl = safeExtractFirstXmlElement(bXml, 'w:right');
             borders = {
-              top: parseBorder(topM ? topM[1] : ''),
-              bottom: parseBorder(bottomM ? bottomM[1] : ''),
-              left: parseBorder(leftM ? leftM[1] : ''),
-              right: parseBorder(rightM ? rightM[1] : ''),
+              top: parseBorder(topEl ? topEl.raw : ''),
+              bottom: parseBorder(bottomEl ? bottomEl.raw : ''),
+              left: parseBorder(leftEl ? leftEl.raw : ''),
+              right: parseBorder(rightEl ? rightEl.raw : ''),
             };
           }
 
@@ -2049,13 +2370,12 @@ function parseDocxXml(
 
     // Extract runs (<w:r>)
     const runs: DocxRun[] = [];
-    const rRegex = /<w:r[\s\S]*?<\/w:r>/g;
-    let rMatch: RegExpExecArray | null;
+    const rEls = safeExtractXmlElements(chunk, 'w:r');
     let overallBold = false;
     let overallItalic = false;
 
-    while ((rMatch = rRegex.exec(chunk)) !== null) {
-      const rXml = rMatch[0];
+    for (const rEl of rEls) {
+      const rXml = rEl.raw;
       const rBold = /<w:b(\/|>)/.test(rXml);
       const rItalic = /<w:i(\/|>)/.test(rXml);
       const rUnderline = /<w:u(\/|>)/.test(rXml);
@@ -2067,9 +2387,9 @@ function parseDocxXml(
       const szMatch = rXml.match(/<w:sz\s+[^>]*w:val="(\d+)"/);
       const fontSize = szMatch ? parseInt(szMatch[1], 10) / 2 : undefined;
 
-      const tMatches = rXml.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
-      const rText = tMatches
-        .map((m) => m.replace(/<[^>]+>/g, ''))
+      const tEls = safeExtractXmlElements(rEl.content, 'w:t');
+      const rText = tEls
+        .map((m) => safeDecodeXmlEntities(m.content.replace(/<[^>]+>/g, '')))
         .join('');
 
       if (rText) {
@@ -2105,9 +2425,9 @@ function parseDocxXml(
 
     // Extract inline DrawingML drawings from paragraph chunk
     if (chunk.includes('<w:drawing')) {
-      const drawingMatches = chunk.match(/<w:drawing\b[\s\S]*?<\/w:drawing>/gi) || [];
-      for (const dXml of drawingMatches) {
-        const el = parseDrawingBlockElement(dXml, chartMap);
+      const drawingEls = safeExtractXmlElements(chunk, 'w:drawing');
+      for (const dEl of drawingEls) {
+        const el = parseDrawingBlockElement(dEl.raw, chartMap);
         if (el) elements.push(el);
       }
     }
@@ -4072,12 +4392,16 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   const sstFile = zip.file('xl/sharedStrings.xml');
   if (sstFile) {
     const sstXml = await sstFile.async('text');
-    const tRegex = /<t[^>]*>([\s\S]*?)<\/t>/g;
-    let m: RegExpExecArray | null;
-    while ((m = tRegex.exec(sstXml)) !== null) {
-      sharedStrings.push(
-        m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-      );
+    const siElements = safeExtractXmlElements(sstXml, 'si');
+    if (siElements.length > 0) {
+      for (const si of siElements) {
+        sharedStrings.push(safeExtractAllText(si.content, 't'));
+      }
+    } else {
+      const tElements = safeExtractXmlElements(sstXml, 't');
+      for (const t of tElements) {
+        sharedStrings.push(safeDecodeXmlEntities(t.content));
+      }
     }
   }
 
@@ -4107,20 +4431,19 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
     // Parse fonts: <fonts><font>...<b/>...<sz val="11"/>...<color rgb="FF0000"/></font></fonts>
     const parsedFonts: Array<{ bold?: boolean; italic?: boolean; size?: number; color?: string }> = [];
-    const fontsMatch = stylesXml.match(/<fonts\b[^>]*>([\s\S]*?)<\/fonts>/i);
-    if (fontsMatch) {
-      const fontRegex = /<font\b[^>]*>([\s\S]*?)<\/font>/gi;
-      let fMatch: RegExpExecArray | null;
-      while ((fMatch = fontRegex.exec(fontsMatch[1])) !== null) {
-        const fBody = fMatch[1];
+    const fontsEl = safeExtractFirstXmlElement(stylesXml, 'fonts');
+    if (fontsEl) {
+      const fontEls = safeExtractXmlElements(fontsEl.content, 'font');
+      for (const fontEl of fontEls) {
+        const fBody = fontEl.content;
         const isBold = /<b\b/i.test(fBody);
         const isItalic = /<i\b/i.test(fBody);
-        const szMatch = fBody.match(/<sz\s+[^>]*?val="([\d.]+)"/i);
-        const sz = szMatch ? parseFloat(szMatch[1]) : undefined;
-        const clrMatch = fBody.match(/<color\s+[^>]*?rgb="([A-Fa-f0-9]{6,8})"/i);
+        const szEl = safeExtractFirstXmlElement(fBody, 'sz');
+        const sz = szEl && szEl.attrs.val ? parseFloat(szEl.attrs.val) : undefined;
+        const clrEl = safeExtractFirstXmlElement(fBody, 'color');
         let color: string | undefined;
-        if (clrMatch) {
-          const rawClr = clrMatch[1];
+        if (clrEl && clrEl.attrs.rgb) {
+          const rawClr = clrEl.attrs.rgb;
           color = '#' + (rawClr.length === 8 ? rawClr.slice(2) : rawClr);
         }
         parsedFonts.push({ bold: isBold, italic: isItalic, size: sz, color });
@@ -4129,16 +4452,14 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
     // Parse fills: <fills><fill><patternFill ...><fgColor rgb="FFF0F2FE"/></patternFill></fill></fills>
     const parsedFills: Array<{ fillColor?: string }> = [];
-    const fillsMatch = stylesXml.match(/<fills\b[^>]*>([\s\S]*?)<\/fills>/i);
-    if (fillsMatch) {
-      const fillRegex = /<fill\b[^>]*>([\s\S]*?)<\/fill>/gi;
-      let flMatch: RegExpExecArray | null;
-      while ((flMatch = fillRegex.exec(fillsMatch[1])) !== null) {
-        const flBody = flMatch[1];
-        const fgMatch = flBody.match(/<fgColor\s+[^>]*?rgb="([A-Fa-f0-9]{6,8})"/i);
+    const fillsEl = safeExtractFirstXmlElement(stylesXml, 'fills');
+    if (fillsEl) {
+      const fillEls = safeExtractXmlElements(fillsEl.content, 'fill');
+      for (const fillEl of fillEls) {
+        const fgEl = safeExtractFirstXmlElement(fillEl.content, 'fgColor');
         let fillColor: string | undefined;
-        if (fgMatch) {
-          const rawClr = fgMatch[1];
+        if (fgEl && fgEl.attrs.rgb) {
+          const rawClr = fgEl.attrs.rgb;
           fillColor = '#' + (rawClr.length === 8 ? rawClr.slice(2) : rawClr);
         }
         parsedFills.push({ fillColor });
@@ -4147,49 +4468,47 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
     // Parse borders: <borders><border><left style="thin">...
     const parsedBorders: Array<{ hasBorder?: boolean }> = [];
-    const bordersMatch = stylesXml.match(/<borders\b[^>]*>([\s\S]*?)<\/borders>/i);
-    if (bordersMatch) {
-      const borderRegex = /<border\b[^>]*>([\s\S]*?)<\/border>/gi;
-      let bMatch: RegExpExecArray | null;
-      while ((bMatch = borderRegex.exec(bordersMatch[1])) !== null) {
-        const bBody = bMatch[1];
+    const bordersEl = safeExtractFirstXmlElement(stylesXml, 'borders');
+    if (bordersEl) {
+      const borderEls = safeExtractXmlElements(bordersEl.content, 'border');
+      for (const borderEl of borderEls) {
+        const bBody = borderEl.content;
         const hasBorder = /<(left|right|top|bottom)\s+style="(?!none)[^"]+"/i.test(bBody);
         parsedBorders.push({ hasBorder });
       }
     }
 
     // Parse <cellXfs><xf numFmtId="..." .../>
-    const cellXfsMatch = stylesXml.match(/<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/i);
-    if (cellXfsMatch) {
-      const xfRegex = /<xf\b([^>]*?)(?:>([\s\S]*?)<\/xf>|\/>)/gi;
-      let xfMatch: RegExpExecArray | null;
+    const cellXfsEl = safeExtractFirstXmlElement(stylesXml, 'cellXfs');
+    if (cellXfsEl) {
+      const xfEls = safeExtractXmlElements(cellXfsEl.content, 'xf');
       let xfIdx = 0;
-      while ((xfMatch = xfRegex.exec(cellXfsMatch[1])) !== null) {
-        const xfAttrs = xfMatch[1];
-        const xfBody = xfMatch[2] || '';
+      for (const xfEl of xfEls) {
+        const xfAttrs = xfEl.attrs;
+        const xfBody = xfEl.content || '';
 
-        const nfId = xfAttrs.match(/numFmtId="(\d+)"/i);
-        const fontId = xfAttrs.match(/fontId="(\d+)"/i);
-        const fillId = xfAttrs.match(/fillId="(\d+)"/i);
-        const borderId = xfAttrs.match(/borderId="(\d+)"/i);
+        const nfId = xfAttrs.numFmtId;
+        const fontId = xfAttrs.fontId;
+        const fillId = xfAttrs.fillId;
+        const borderId = xfAttrs.borderId;
 
-        const alignMatch = (xfAttrs + xfBody).match(/<alignment\s+[^>]*?horizontal="([a-zA-Z]+)"/i);
+        const alignEl = safeExtractFirstXmlElement(xfBody || xfEl.raw, 'alignment');
         let align: 'left' | 'center' | 'right' | undefined;
-        if (alignMatch) {
-          const hAlign = alignMatch[1].toLowerCase();
+        if (alignEl && alignEl.attrs.horizontal) {
+          const hAlign = alignEl.attrs.horizontal.toLowerCase();
           if (hAlign === 'left' || hAlign === 'center' || hAlign === 'right') {
             align = hAlign;
           }
         }
 
-        const numFmtVal = nfId ? parseInt(nfId[1], 10) : undefined;
+        const numFmtVal = nfId ? parseInt(nfId, 10) : undefined;
         if (numFmtVal !== undefined) {
           styleNumFmtMap.set(xfIdx, numFmtVal);
         }
 
-        const font = fontId ? parsedFonts[parseInt(fontId[1], 10)] : undefined;
-        const fill = fillId ? parsedFills[parseInt(fillId[1], 10)] : undefined;
-        const border = borderId ? parsedBorders[parseInt(borderId[1], 10)] : undefined;
+        const font = fontId ? parsedFonts[parseInt(fontId, 10)] : undefined;
+        const fill = fillId ? parsedFills[parseInt(fillId, 10)] : undefined;
+        const border = borderId ? parsedBorders[parseInt(borderId, 10)] : undefined;
 
         cellStylesMap.set(xfIdx, {
           numFmtId: numFmtVal,
@@ -4216,24 +4535,24 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
     if (wbRelsFile) {
       const wbRelsXml = await wbRelsFile.async('text');
-      const relRegex = /<Relationship\s+[^>]*?Id="([^"]+)"[^>]*?Target="([^"]+)"/gi;
-      let rMatch: RegExpExecArray | null;
-      while ((rMatch = relRegex.exec(wbRelsXml)) !== null) {
-        relsMap.set(rMatch[1], rMatch[2]);
+      for (const rEl of safeExtractXmlElements(wbRelsXml, 'Relationship')) {
+        if (rEl.attrs.Id && rEl.attrs.Target) {
+          relsMap.set(rEl.attrs.Id, rEl.attrs.Target);
+        }
       }
     }
 
-    const sheetRegex = /<sheet\s+[^>]*?name="([^"]+)"[^>]*?r:id="([^"]+)"/gi;
-    let sMatch: RegExpExecArray | null;
-    while ((sMatch = sheetRegex.exec(wbXml)) !== null) {
-      const sheetName = sMatch[1];
-      const rId = sMatch[2];
-      let relTarget = relsMap.get(rId) || `worksheets/sheet${sheetEntries.length + 1}.xml`;
-      // Normalize target path
-      if (!relTarget.startsWith('xl/')) {
-        relTarget = relTarget.startsWith('/') ? relTarget.slice(1) : `xl/${relTarget}`;
+    for (const sEl of safeExtractXmlElements(wbXml, 'sheet')) {
+      const sheetName = sEl.attrs.name;
+      const rId = sEl.attrs['r:id'];
+      if (sheetName) {
+        let relTarget = (rId ? relsMap.get(rId) : undefined) || `worksheets/sheet${sheetEntries.length + 1}.xml`;
+        // Normalize target path
+        if (!relTarget.startsWith('xl/')) {
+          relTarget = relTarget.startsWith('/') ? relTarget.slice(1) : `xl/${relTarget}`;
+        }
+        sheetEntries.push({ name: sheetName, path: relTarget });
       }
-      sheetEntries.push({ name: sheetName, path: relTarget });
     }
   }
 
@@ -4271,30 +4590,28 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
     // Parse column widths from <cols><col min="1" max="1" width="15" customWidth="1"/></cols>
     const columnWidths: number[] = [];
-    const colsMatch = sheetXml.match(/<cols\b[^>]*>([\s\S]*?)<\/cols>/i);
-    if (colsMatch) {
-      const colRegex = /<col\s+[^>]*?min="(\d+)"[^>]*?max="(\d+)"[^>]*?width="([\d.]+)"/gi;
-      let clMatch: RegExpExecArray | null;
-      while ((clMatch = colRegex.exec(colsMatch[1])) !== null) {
-        const min = parseInt(clMatch[1], 10) - 1;
-        const max = parseInt(clMatch[2], 10) - 1;
-        const width = parseFloat(clMatch[3]);
-        const ptWidth = Math.round(width * 7.5);
-        for (let c = min; c <= max; c++) {
-          columnWidths[c] = ptWidth;
+    const colsEl = safeExtractFirstXmlElement(sheetXml, 'cols');
+    if (colsEl) {
+      const colEls = safeExtractXmlElements(colsEl.content, 'col');
+      for (const cl of colEls) {
+        if (cl.attrs.min && cl.attrs.max && cl.attrs.width) {
+          const min = parseInt(cl.attrs.min, 10) - 1;
+          const max = parseInt(cl.attrs.max, 10) - 1;
+          const width = parseFloat(cl.attrs.width);
+          const ptWidth = Math.round(width * 7.5);
+          for (let c = min; c <= max; c++) {
+            columnWidths[c] = ptWidth;
+          }
         }
       }
     }
 
-    const rowRegex = /<row\b([^>]*?)(?:>([\s\S]*?)<\/row>|\/>)/g;
-    let rMatch: RegExpExecArray | null;
+    const rowEls = safeExtractXmlElements(sheetXml, 'row');
 
-    while ((rMatch = rowRegex.exec(sheetXml)) !== null) {
-      const rowAttrs = rMatch[1];
-      const rowXml = rMatch[2] || '';
-      const rRowAttr = /r="(\d+)"/i.exec(rowAttrs);
-      if (rRowAttr) {
-        const targetRowIdx = parseInt(rRowAttr[1], 10) - 1;
+    for (const rowEl of rowEls) {
+      const rowAttrs = rowEl.attrs;
+      if (rowAttrs.r) {
+        const targetRowIdx = parseInt(rowAttrs.r, 10) - 1;
         while (rows.length < targetRowIdx) {
           rows.push([]);
           structuredRows.push([]);
@@ -4302,26 +4619,24 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       }
       const cells: string[] = [];
       const structuredCells: OfficeWorksheetCell[] = [];
-      const cellRegex = /<c\s+([^>]*?)(?:>([\s\S]*?)<\/c>|\/>)/g;
-      let cMatch: RegExpExecArray | null;
+      const cellEls = safeExtractXmlElements(rowEl.content, 'c');
       const rowIdx = rows.length;
       let nextColIdx = 0;
 
-      while ((cMatch = cellRegex.exec(rowXml)) !== null) {
-        const attrs = cMatch[1];
-        const body = cMatch[2] || '';
-        const isString = /t="s"/i.test(attrs);
-        const isInline = /t="inlineStr"/i.test(attrs);
-        const isBool = /t="b"/i.test(attrs);
-        const vMatch = body.match(/<v>([\s\S]*?)<\/v>/i);
-        const tMatch = body.match(/<t[^>]*>([\s\S]*?)<\/t>/i);
-        const fMatch = body.match(/<f[^>]*>([\s\S]*?)<\/f>/i);
-        const rRefMatch = attrs.match(/r="([A-Za-z]+)(\d+)"/i);
-        const ref = rRefMatch ? (rRefMatch[1] + rRefMatch[2]).toUpperCase() : '';
+      for (const cellEl of cellEls) {
+        const attrs = cellEl.attrs;
+        const body = cellEl.content;
+        const isString = attrs.t === 's';
+        const isInline = attrs.t === 'inlineStr';
+        const isBool = attrs.t === 'b';
+        const vContent = safeExtractTagContent(body, 'v');
+        const tContent = safeExtractTagContent(body, 't');
+        const fContent = safeExtractTagContent(body, 'f');
+        const ref = (attrs.r || '').toUpperCase();
+        const rRefMatch = ref.match(/^([A-Za-z]+)(\d+)/);
 
         // Extract style index for NumberFormat
-        const sMatch = attrs.match(/s="(\d+)"/i);
-        const styleIdx = sMatch ? parseInt(sMatch[1], 10) : undefined;
+        const styleIdx = attrs.s !== undefined ? parseInt(attrs.s, 10) : undefined;
         const numFmtId = styleIdx !== undefined ? styleNumFmtMap.get(styleIdx) : undefined;
         const customFmt = numFmtId !== undefined ? customNumFmtMap.get(numFmtId) : undefined;
 
@@ -4337,38 +4652,32 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
         let cellValue = '';
         if (isInline) {
-          const isMatch =
-            /<is>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/is>/i.exec(body) || tMatch;
-          if (isMatch) {
-            cellValue = isMatch[1]
-              .replace(/&lt;/g, '<')
-              .replace(/&gt;/g, '>')
-              .replace(/&amp;/g, '&');
+          const isEl = safeExtractFirstXmlElement(body, 'is');
+          if (isEl) {
+            cellValue = safeExtractAllText(isEl.content, 't') || safeExtractAllText(isEl.content);
+          } else if (tContent !== null) {
+            cellValue = safeDecodeXmlEntities(tContent);
           }
-        } else if (isBool && vMatch) {
-          cellValue = vMatch[1] === '1' ? 'TRUE' : 'FALSE';
-        } else if (vMatch) {
-          const val = vMatch[1];
+        } else if (isBool && vContent !== null) {
+          cellValue = vContent === '1' ? 'TRUE' : 'FALSE';
+        } else if (vContent !== null) {
           if (isString) {
-            const strIdx = Number.parseInt(val, 10);
+            const strIdx = Number.parseInt(vContent, 10);
             cellValue = sharedStrings[strIdx] ?? '';
           } else {
             // Apply NumberFormat formatting
-            cellValue = formatSpreadsheetCellValue(val, numFmtId, customFmt);
+            cellValue = formatSpreadsheetCellValue(vContent, numFmtId, customFmt);
           }
-        } else if (tMatch) {
-          cellValue = tMatch[1]
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/&amp;/g, '&');
+        } else if (tContent !== null) {
+          cellValue = safeDecodeXmlEntities(tContent);
         }
 
         if (ref) {
           cellMap[ref] = cellValue;
         }
 
-        if (fMatch && (!cellValue || cellValue.trim() === '')) {
-          formulaCells.push({ ref, formula: fMatch[1], rowIdx, colIdx });
+        if (fContent !== null && (!cellValue || cellValue.trim() === '')) {
+          formulaCells.push({ ref, formula: fContent, rowIdx, colIdx });
         }
 
         cells[colIdx] = cellValue;
@@ -4835,10 +5144,10 @@ async function convertPptxSource(
   const presFile = zip.file('ppt/presentation.xml');
   if (presFile) {
     const presXml = await presFile.async('text');
-    const szMatch = presXml.match(/<p:sldSz\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
-    if (szMatch) {
-      const cx = parseInt(szMatch[1], 10);
-      const cy = parseInt(szMatch[2], 10);
+    const sldSzEl = safeExtractFirstXmlElement(presXml, 'p:sldSz');
+    if (sldSzEl?.attrs.cx && sldSzEl?.attrs.cy) {
+      const cx = parseInt(sldSzEl.attrs.cx, 10);
+      const cy = parseInt(sldSzEl.attrs.cy, 10);
       if (cx > 0 && cy > 0) {
         slideWidth = Math.round(cx / 12700);
         slideHeight = Math.round(cy / 12700);
@@ -4862,17 +5171,16 @@ async function convertPptxSource(
 
     // Extract slide background color
     let backgroundColor: string | undefined;
-    const bgMatch = xml.match(/<p:bg>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
-    if (bgMatch) {
-      backgroundColor = `#${bgMatch[1]}`;
+    const bgEl = safeExtractFirstXmlElement(xml, 'p:bg');
+    if (bgEl) {
+      const bgClr = safeFindColor(bgEl.content);
+      if (bgClr) backgroundColor = bgClr;
     }
 
     // Extract all text content
-    const tRegex = /<a:t>([\s\S]*?)<\/a:t>/g;
     const texts: string[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = tRegex.exec(xml)) !== null) {
-      const clean = match[1].trim();
+    for (const tEl of safeExtractXmlElements(xml, 'a:t')) {
+      const clean = safeDecodeXmlEntities(tEl.content).trim();
       if (clean) texts.push(clean);
     }
 
@@ -4882,66 +5190,64 @@ async function convertPptxSource(
     const relsMap = new Map<string, string>();
     if (relsFile) {
       const relsXml = await relsFile.async('text');
-      const relRegex = /<Relationship\s+[^>]*?Id="([^"]+)"[^>]*?Target="([^"]+)"/gi;
-      let rMatch: RegExpExecArray | null;
-      while ((rMatch = relRegex.exec(relsXml)) !== null) {
-        relsMap.set(rMatch[1], rMatch[2]);
+      for (const rEl of safeExtractXmlElements(relsXml, 'Relationship')) {
+        if (rEl.attrs.Id && rEl.attrs.Target) {
+          relsMap.set(rEl.attrs.Id, rEl.attrs.Target);
+        }
       }
     }
 
     const shapes: VisualSlideShape[] = [];
 
     // 1. Group shapes (<p:grpSp>)
-    const grpRegex = /<p:grpSp\b[\s\S]*?<\/p:grpSp>/g;
-    let grpMatch: RegExpExecArray | null;
-    while ((grpMatch = grpRegex.exec(xml)) !== null) {
-      const grpXml = grpMatch[0];
-      const offMatch = grpXml.match(/<p:grpSpPr>[\s\S]*?<a:xfrm>[\s\S]*?<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
-      const extMatch = grpXml.match(/<p:grpSpPr>[\s\S]*?<a:xfrm>[\s\S]*?<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
-      const chOffMatch = grpXml.match(/<p:grpSpPr>[\s\S]*?<a:xfrm>[\s\S]*?<a:chOff\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
-      const chExtMatch = grpXml.match(/<p:grpSpPr>[\s\S]*?<a:xfrm>[\s\S]*?<a:chExt\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
+    const grpElements = safeExtractXmlElements(xml, 'p:grpSp');
+    for (const grpEl of grpElements) {
+      const grpXml = grpEl.content;
+      const grpSpPr = safeExtractFirstXmlElement(grpXml, 'p:grpSpPr');
+      const offEl = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:off');
+      const extEl = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:ext');
+      const chOffEl = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:chOff');
+      const chExtEl = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:chExt');
 
-      const gx = offMatch ? Math.round(parseInt(offMatch[1], 10) / 12700) : 0;
-      const gy = offMatch ? Math.round(parseInt(offMatch[2], 10) / 12700) : 0;
-      const gw = extMatch ? Math.round(parseInt(extMatch[1], 10) / 12700) : slideWidth;
-      const gh = extMatch ? Math.round(parseInt(extMatch[2], 10) / 12700) : slideHeight;
-      const chx = chOffMatch ? Math.round(parseInt(chOffMatch[1], 10) / 12700) : gx;
-      const chy = chOffMatch ? Math.round(parseInt(chOffMatch[2], 10) / 12700) : gy;
-      const chw = chExtMatch ? Math.max(1, Math.round(parseInt(chExtMatch[1], 10) / 12700)) : gw;
-      const chh = chExtMatch ? Math.max(1, Math.round(parseInt(chExtMatch[2], 10) / 12700)) : gh;
+      const gx = offEl?.attrs.x ? Math.round(parseInt(offEl.attrs.x, 10) / 12700) : 0;
+      const gy = offEl?.attrs.y ? Math.round(parseInt(offEl.attrs.y, 10) / 12700) : 0;
+      const gw = extEl?.attrs.cx ? Math.round(parseInt(extEl.attrs.cx, 10) / 12700) : slideWidth;
+      const gh = extEl?.attrs.cy ? Math.round(parseInt(extEl.attrs.cy, 10) / 12700) : slideHeight;
+      const chx = chOffEl?.attrs.x ? Math.round(parseInt(chOffEl.attrs.x, 10) / 12700) : gx;
+      const chy = chOffEl?.attrs.y ? Math.round(parseInt(chOffEl.attrs.y, 10) / 12700) : gy;
+      const chw = chExtEl?.attrs.cx ? Math.max(1, Math.round(parseInt(chExtEl.attrs.cx, 10) / 12700)) : gw;
+      const chh = chExtEl?.attrs.cy ? Math.max(1, Math.round(parseInt(chExtEl.attrs.cy, 10) / 12700)) : gh;
 
       const scaleX = gw / chw;
       const scaleY = gh / chh;
 
-      const childSpRegex = /<p:sp\b[\s\S]*?<\/p:sp>/g;
-      let childSpMatch: RegExpExecArray | null;
-      while ((childSpMatch = childSpRegex.exec(grpXml)) !== null) {
-        const childXml = childSpMatch[0];
-        const cOff = childXml.match(/<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
-        const cExt = childXml.match(/<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
-        if (cOff && cExt) {
-          const rawX = Math.round(parseInt(cOff[1], 10) / 12700);
-          const rawY = Math.round(parseInt(cOff[2], 10) / 12700);
-          const rawW = Math.round(parseInt(cExt[1], 10) / 12700);
-          const rawH = Math.round(parseInt(cExt[2], 10) / 12700);
+      for (const childEl of safeExtractXmlElements(grpXml, 'p:sp')) {
+        const childXml = childEl.content;
+        const cOff = safeExtractFirstXmlElement(childXml, 'a:off');
+        const cExt = safeExtractFirstXmlElement(childXml, 'a:ext');
+        if (cOff?.attrs.x && cOff?.attrs.y && cExt?.attrs.cx && cExt?.attrs.cy) {
+          const rawX = Math.round(parseInt(cOff.attrs.x, 10) / 12700);
+          const rawY = Math.round(parseInt(cOff.attrs.y, 10) / 12700);
+          const rawW = Math.round(parseInt(cExt.attrs.cx, 10) / 12700);
+          const rawH = Math.round(parseInt(cExt.attrs.cy, 10) / 12700);
 
           const x = Math.round(gx + (rawX - chx) * scaleX);
           const y = Math.round(gy + (rawY - chy) * scaleY);
           const width = Math.round(rawW * scaleX);
           const height = Math.round(rawH * scaleY);
 
+          const spPrEl = safeExtractFirstXmlElement(childXml, 'p:spPr');
           let fillColor: string | undefined;
-          const fillMatch = childXml.match(/<p:spPr>[\s\S]*?<a:solidFill>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
-          if (fillMatch) fillColor = `#${fillMatch[1]}`;
-
-          let shapeText = '';
-          const tMatches: string[] = [];
-          const rRegex = /<a:t>([\s\S]*?)<\/a:t>/g;
-          let tM: RegExpExecArray | null;
-          while ((tM = rRegex.exec(childXml)) !== null) {
-            tMatches.push(tM[1].trim());
+          if (spPrEl) {
+            fillColor = safeFindColor(spPrEl.content);
           }
-          if (tMatches.length > 0) shapeText = tMatches.join(' ');
+
+          const tMatches: string[] = [];
+          for (const tEl of safeExtractXmlElements(childXml, 'a:t')) {
+            const clean = safeDecodeXmlEntities(tEl.content).trim();
+            if (clean) tMatches.push(clean);
+          }
+          const shapeText = tMatches.length > 0 ? tMatches.join(' ') : '';
 
           shapes.push({
             x,
@@ -4957,43 +5263,36 @@ async function convertPptxSource(
     }
 
     // 2. Graphic frames (<p:graphicFrame> for tables & charts)
-    const gfRegex = /<p:graphicFrame\b[\s\S]*?<\/p:graphicFrame>/g;
-    let gfMatch: RegExpExecArray | null;
-    while ((gfMatch = gfRegex.exec(xml)) !== null) {
-      const gfXml = gfMatch[0];
-      const offMatch = gfXml.match(/<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
-      const extMatch = gfXml.match(/<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
-      if (offMatch && extMatch) {
-        const x = Math.round(parseInt(offMatch[1], 10) / 12700);
-        const y = Math.round(parseInt(offMatch[2], 10) / 12700);
-        const w = Math.round(parseInt(extMatch[1], 10) / 12700);
-        const h = Math.round(parseInt(extMatch[2], 10) / 12700);
+    const gfElements = safeExtractXmlElements(xml, 'p:graphicFrame');
+    for (const gfEl of gfElements) {
+      const gfXml = gfEl.content;
+      const offEl = safeExtractFirstXmlElement(gfXml, 'a:off');
+      const extEl = safeExtractFirstXmlElement(gfXml, 'a:ext');
+      if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
+        const x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
+        const y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
+        const w = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
+        const h = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
 
-        const tblMatch = gfXml.match(/<a:tbl\b[\s\S]*?<\/a:tbl>/i);
-        if (tblMatch) {
-          const tblXml = tblMatch[0];
+        const tblEl = safeExtractFirstXmlElement(gfXml, 'a:tbl');
+        if (tblEl) {
+          const tblXml = tblEl.content;
           const colWidths: number[] = [];
-          const gridColRegex = /<a:gridCol\s+[^>]*?w="(\d+)"/gi;
-          let gcMatch: RegExpExecArray | null;
-          while ((gcMatch = gridColRegex.exec(tblXml)) !== null) {
-            colWidths.push(Math.round(parseInt(gcMatch[1], 10) / 12700));
+          for (const gcEl of safeExtractXmlElements(tblXml, 'a:gridCol')) {
+            if (gcEl.attrs.w) {
+              colWidths.push(Math.round(parseInt(gcEl.attrs.w, 10) / 12700));
+            }
           }
 
           const tblRows: Array<Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }>> = [];
-          const trRegex = /<a:tr\b[\s\S]*?<\/a:tr>/gi;
-          let trMatch: RegExpExecArray | null;
-          while ((trMatch = trRegex.exec(tblXml)) !== null) {
-            const trXml = trMatch[0];
+          for (const trEl of safeExtractXmlElements(tblXml, 'a:tr')) {
+            const trXml = trEl.content;
             const rowCells: Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }> = [];
-            const tcRegex = /<a:tc\b[\s\S]*?<\/a:tc>/gi;
-            let tcMatch: RegExpExecArray | null;
-            while ((tcMatch = tcRegex.exec(trXml)) !== null) {
-              const tcXml = tcMatch[0];
+            for (const tcEl of safeExtractXmlElements(trXml, 'a:tc')) {
+              const tcXml = tcEl.content;
               const cellTexts: string[] = [];
-              const tRegexInner = /<a:t>([\s\S]*?)<\/a:t>/gi;
-              let tM: RegExpExecArray | null;
-              while ((tM = tRegexInner.exec(tcXml)) !== null) {
-                const clean = tM[1].trim();
+              for (const tEl of safeExtractXmlElements(tcXml, 'a:t')) {
+                const clean = safeDecodeXmlEntities(tEl.content).trim();
                 if (clean) cellTexts.push(clean);
               }
               const cellText = cellTexts.join(' ');
@@ -5001,15 +5300,22 @@ async function convertPptxSource(
                 texts.push(cellText);
               }
 
+              const tcPrEl = safeExtractFirstXmlElement(tcXml, 'a:tcPr');
               let cellFill: string | undefined;
-              const fillMatch = tcXml.match(/<a:tcPr>[\s\S]*?<a:solidFill>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
-              if (fillMatch) cellFill = `#${fillMatch[1]}`;
+              if (tcPrEl) {
+                cellFill = safeFindColor(tcPrEl.content);
+              }
 
               let cellBold = false;
               if (tcXml.includes('b="1"')) cellBold = true;
+              const rPrEl = safeExtractFirstXmlElement(tcXml, 'a:rPr');
               let cellFontColor: string | undefined;
-              const clrMatch = tcXml.match(/<a:rPr>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
-              if (clrMatch) cellFontColor = `#${clrMatch[1]}`;
+              if (rPrEl) {
+                cellFontColor = safeFindColor(rPrEl.content);
+                if (rPrEl.attrs.b === '1' || rPrEl.attrs.b === 'true') {
+                  cellBold = true;
+                }
+              }
 
               rowCells.push({
                 text: cellText,
@@ -5034,10 +5340,11 @@ async function convertPptxSource(
           });
         } else {
           // Check if graphicFrame contains or references an OpenXML chart
-          const chartRefMatch = gfXml.match(/<c:chart\b[^>]*r:id="([^"]+)"/i);
+          const chartEl = safeExtractFirstXmlElement(gfXml, 'c:chart');
+          const rId = chartEl ? (chartEl.attrs['r:id'] || chartEl.attrs.id) : undefined;
           let chartData: OpenXmlChartData | null = null;
-          if (chartRefMatch && relsMap.has(chartRefMatch[1])) {
-            const target = relsMap.get(chartRefMatch[1])!;
+          if (rId && relsMap.has(rId)) {
+            const target = relsMap.get(rId)!;
             const chartPath = resolveZipPath('ppt/slides', target);
             const chartFile = zip.file(chartPath) || zip.file(`ppt/${target}`);
             if (chartFile) {
@@ -5066,10 +5373,8 @@ async function convertPptxSource(
             });
           } else {
             const chartTexts: string[] = [];
-            const tRegexInner = /<a:t>([\s\S]*?)<\/a:t>/gi;
-            let tM: RegExpExecArray | null;
-            while ((tM = tRegexInner.exec(gfXml)) !== null) {
-              const clean = tM[1].trim();
+            for (const tEl of safeExtractXmlElements(gfXml, 'a:t')) {
+              const clean = safeDecodeXmlEntities(tEl.content).trim();
               if (clean) chartTexts.push(clean);
             }
             shapes.push({
@@ -5089,21 +5394,20 @@ async function convertPptxSource(
     }
 
     // 3. Pictures (<p:pic>)
-    const picRegex = /<p:pic\b[\s\S]*?<\/p:pic>/g;
-    let picMatch: RegExpExecArray | null;
-    while ((picMatch = picRegex.exec(xml)) !== null) {
-      const picXml = picMatch[0];
-      const offMatch = picXml.match(/<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
-      const extMatch = picXml.match(/<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
-      if (offMatch && extMatch) {
-        const x = Math.round(parseInt(offMatch[1], 10) / 12700);
-        const y = Math.round(parseInt(offMatch[2], 10) / 12700);
-        const w = Math.round(parseInt(extMatch[1], 10) / 12700);
-        const h = Math.round(parseInt(extMatch[2], 10) / 12700);
+    const picElements = safeExtractXmlElements(xml, 'p:pic');
+    for (const picEl of picElements) {
+      const picXml = picEl.content;
+      const offEl = safeExtractFirstXmlElement(picXml, 'a:off');
+      const extEl = safeExtractFirstXmlElement(picXml, 'a:ext');
+      if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
+        const x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
+        const y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
+        const w = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
+        const h = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
 
-        const blipMatch = picXml.match(/<a:blip\s+[^>]*?(?:r:)?embed="([^"]+)"/i);
-        if (blipMatch) {
-          const rId = blipMatch[1];
+        const blipEl = safeExtractFirstXmlElement(picXml, 'a:blip');
+        const rId = blipEl ? (blipEl.attrs['r:embed'] || blipEl.attrs.embed) : undefined;
+        if (rId) {
           const target = relsMap.get(rId);
           if (target) {
             const mediaPath = resolveZipPath('ppt/slides', target);
@@ -5136,43 +5440,46 @@ async function convertPptxSource(
     }
 
     // 4. Extract DrawingML shapes (<p:sp>) excluding groups, pics, and graphic frames
-    const spOnlyXml = xml
-      .replace(/<p:grpSp\b[\s\S]*?<\/p:grpSp>/g, '')
-      .replace(/<p:pic\b[\s\S]*?<\/p:pic>/g, '')
-      .replace(/<p:graphicFrame\b[\s\S]*?<\/p:graphicFrame>/g, '');
+    const excludedRanges: Array<[number, number]> = [];
+    for (const containerTag of ['p:grpSp', 'p:pic', 'p:graphicFrame']) {
+      for (const el of safeExtractXmlElements(xml, containerTag)) {
+        excludedRanges.push([el.startIndex, el.endIndex]);
+      }
+    }
+    const allSpElements = safeExtractXmlElements(xml, 'p:sp');
+    const standaloneSpElements = allSpElements.filter(
+      (sp) => !excludedRanges.some(([start, end]) => sp.startIndex >= start && sp.endIndex <= end)
+    );
 
-    const spRegex = /<p:sp\b[\s\S]*?<\/p:sp>/g;
-    let spMatch: RegExpExecArray | null;
-
-    while ((spMatch = spRegex.exec(spOnlyXml)) !== null) {
-      const spXml = spMatch[0];
+    for (const spEl of standaloneSpElements) {
+      const spXml = spEl.content;
 
       // Coordinate transform (<a:off x="..." y="..."/> and <a:ext cx="..." cy="..."/>)
-      const offMatch = spXml.match(/<a:off\s+[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"/i);
-      const extMatch = spXml.match(/<a:ext\s+[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"/i);
+      const offEl = safeExtractFirstXmlElement(spXml, 'a:off');
+      const extEl = safeExtractFirstXmlElement(spXml, 'a:ext');
 
-      if (offMatch && extMatch) {
-        const x = Math.round(parseInt(offMatch[1], 10) / 12700);
-        const y = Math.round(parseInt(offMatch[2], 10) / 12700);
-        const w = Math.round(parseInt(extMatch[1], 10) / 12700);
-        const h = Math.round(parseInt(extMatch[2], 10) / 12700);
+      if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
+        const x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
+        const y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
+        const w = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
+        const h = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
 
         // Solid fill
         let fillColor: string | undefined;
-        const fillMatch = spXml.match(/<p:spPr>[\s\S]*?<a:solidFill>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
-        if (fillMatch) {
-          fillColor = `#${fillMatch[1]}`;
+        const spPrEl = safeExtractFirstXmlElement(spXml, 'p:spPr');
+        if (spPrEl) {
+          fillColor = safeFindColor(spPrEl.content);
         }
 
         // Stroke line
         let strokeColor: string | undefined;
         let strokeWidth: number | undefined;
-        const lnMatch = spXml.match(/<a:ln\b([^>]*)>([\s\S]*?)<\/a:ln>/i);
-        if (lnMatch) {
-          const wMatch = lnMatch[1].match(/w="(\d+)"/i);
-          if (wMatch) strokeWidth = Math.max(1, Math.round(parseInt(wMatch[1], 10) / 12700));
-          const strokeClrMatch = lnMatch[2].match(/<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
-          if (strokeClrMatch) strokeColor = `#${strokeClrMatch[1]}`;
+        const lnEl = safeExtractFirstXmlElement(spXml, 'a:ln');
+        if (lnEl) {
+          if (lnEl.attrs.w) {
+            strokeWidth = Math.max(1, Math.round(parseInt(lnEl.attrs.w, 10) / 12700));
+          }
+          strokeColor = safeFindColor(lnEl.content);
         }
 
         // Shape text runs
@@ -5181,27 +5488,32 @@ async function convertPptxSource(
         let fontColor: string | undefined;
         let bold = false;
 
-        const txMatch = spXml.match(/<p:txBody>([\s\S]*?)<\/p:txBody>/i);
-        if (txMatch) {
-          const txBody = txMatch[1];
+        const txEl = safeExtractFirstXmlElement(spXml, 'p:txBody');
+        if (txEl) {
+          const txBody = txEl.content;
           const textMatches: string[] = [];
-          const runRegex = /<a:r>([\s\S]*?)<\/a:r>/g;
-          let rMatch: RegExpExecArray | null;
+          const runElements = safeExtractXmlElements(txBody, 'a:r');
 
-          while ((rMatch = runRegex.exec(txBody)) !== null) {
-            const runXml = rMatch[1];
-            const tVal = runXml.match(/<a:t>([\s\S]*?)<\/a:t>/i);
-            if (tVal) textMatches.push(tVal[1].trim());
+          for (const rEl of runElements) {
+            const runXml = rEl.content;
+            const tEl = safeExtractFirstXmlElement(runXml, 'a:t');
+            if (tEl) {
+              const clean = safeDecodeXmlEntities(tEl.content).trim();
+              if (clean) textMatches.push(clean);
+            }
 
-            if (!fontSize) {
-              const szMatch = runXml.match(/<a:rPr\s+[^>]*?sz="(\d+)"/i);
-              if (szMatch) fontSize = Math.round(parseInt(szMatch[1], 10) / 100);
+            const rPrEl = safeExtractFirstXmlElement(runXml, 'a:rPr');
+            if (rPrEl) {
+              if (!fontSize && rPrEl.attrs.sz) {
+                fontSize = Math.round(parseInt(rPrEl.attrs.sz, 10) / 100);
+              }
+              if (!fontColor) {
+                fontColor = safeFindColor(rPrEl.content);
+              }
+              if (rPrEl.attrs.b === '1' || rPrEl.attrs.b === 'true') {
+                bold = true;
+              }
             }
-            if (!fontColor) {
-              const clrMatch = runXml.match(/<a:rPr>[\s\S]*?<a:srgbClr\s+[^>]*?val="([A-Fa-f0-9]{6})"/i);
-              if (clrMatch) fontColor = `#${clrMatch[1]}`;
-            }
-            if (runXml.includes('b="1"')) bold = true;
           }
 
           if (textMatches.length > 0) {
@@ -5211,17 +5523,17 @@ async function convertPptxSource(
 
         // Extract preset or custom geometry
         let shapeType = 'rect';
-        const prstMatch = spXml.match(/<a:prstGeom\s+[^>]*?prst="([^"]+)"/i);
-        if (prstMatch) {
-          shapeType = prstMatch[1];
+        const prstEl = safeExtractFirstXmlElement(spXml, 'a:prstGeom');
+        if (prstEl?.attrs.prst) {
+          shapeType = prstEl.attrs.prst;
         }
         let geometryPath: string | undefined;
-        const custGeomMatch = spXml.match(/<a:custGeom\b[\s\S]*?<\/a:custGeom>/i);
-        if (custGeomMatch) {
+        const custGeomEl = safeExtractFirstXmlElement(spXml, 'a:custGeom');
+        if (custGeomEl) {
           shapeType = 'custom';
-          const pathMatch = custGeomMatch[0].match(/<a:path\b[^>]*>([\s\S]*?)<\/a:path>/i);
-          if (pathMatch) {
-            geometryPath = pathMatch[1];
+          const pathEl = safeExtractFirstXmlElement(custGeomEl.content, 'a:path');
+          if (pathEl) {
+            geometryPath = pathEl.content;
           }
         }
 
@@ -5336,16 +5648,13 @@ async function convertOdpSource(
     const contentXmlFile = zip.file('content.xml');
     if (contentXmlFile) {
       const xml = await contentXmlFile.async('text');
-      const pageRegex = /<draw:page[\s\S]*?<\/draw:page>/g;
-      let pageMatch: RegExpExecArray | null;
+      const pageElements = safeExtractXmlElements(xml, 'draw:page');
       let pageNum = 1;
-      while ((pageMatch = pageRegex.exec(xml)) !== null) {
-        const pageXml = pageMatch[0];
-        const pRegex = /<text:p[^>]*>([\s\S]*?)<\/text:p>/g;
-        let pMatch: RegExpExecArray | null;
+      for (const pageEl of pageElements) {
+        const pageXml = pageEl.content;
         const texts: string[] = [];
-        while ((pMatch = pRegex.exec(pageXml)) !== null) {
-          const t = pMatch[1].replace(/<[^>]+>/g, '').trim();
+        for (const pEl of safeExtractXmlElements(pageXml, 'text:p')) {
+          const t = safeExtractAllText(pEl.content).trim();
           if (t) texts.push(t);
         }
         slides.push({ number: pageNum++, texts });
@@ -5775,32 +6084,27 @@ async function convertFb2Source(
   const xml = inputBuffer.toString('utf-8');
 
   // Parse title and author
-  const titleMatch = xml.match(/<book-title>([\s\S]*?)<\/book-title>/);
-  const bookTitle = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : baseName;
+  const titleEl = safeExtractFirstXmlElement(xml, 'book-title');
+  const bookTitle = titleEl ? safeExtractAllText(titleEl.content).trim() : baseName;
 
-  const authorMatch = xml.match(/<author>([\s\S]*?)<\/author>/);
+  const authorEl = safeExtractFirstXmlElement(xml, 'author');
   let authorStr = '';
-  if (authorMatch) {
-    const fn = (authorMatch[1].match(/<first-name>([\s\S]*?)<\/first-name>/) || [])[1] || '';
-    const ln = (authorMatch[1].match(/<last-name>([\s\S]*?)<\/last-name>/) || [])[1] || '';
-    authorStr = `${fn.replace(/<[^>]+>/g, '').trim()} ${ln.replace(/<[^>]+>/g, '').trim()}`.trim();
+  if (authorEl) {
+    const fnEl = safeExtractFirstXmlElement(authorEl.content, 'first-name');
+    const lnEl = safeExtractFirstXmlElement(authorEl.content, 'last-name');
+    const fn = fnEl ? safeExtractAllText(fnEl.content).trim() : '';
+    const ln = lnEl ? safeExtractAllText(lnEl.content).trim() : '';
+    authorStr = `${fn} ${ln}`.trim();
   }
 
   // Parse tables (<table ...>)
   const tables: string[][][] = [];
-  const tblRegex = /<table[\s\S]*?<\/table>/g;
-  let tMatch: RegExpExecArray | null;
-  while ((tMatch = tblRegex.exec(xml)) !== null) {
-    const tblXml = tMatch[0];
-    const trRegex = /<tr[\s\S]*?<\/tr>/g;
-    let trMatch: RegExpExecArray | null;
+  for (const tblEl of safeExtractXmlElements(xml, 'table')) {
     const currentTbl: string[][] = [];
-    while ((trMatch = trRegex.exec(tblXml)) !== null) {
-      const cellRegex = /<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/g;
-      let cMatch: RegExpExecArray | null;
+    for (const trEl of safeExtractXmlElements(tblEl.content, 'tr')) {
       const row: string[] = [];
-      while ((cMatch = cellRegex.exec(trMatch[0])) !== null) {
-        row.push(cMatch[1].replace(/<[^>]+>/g, '').trim());
+      for (const cellEl of safeExtractXmlElements(trEl.content, ['td', 'th'])) {
+        row.push(safeExtractAllText(cellEl.content).trim());
       }
       if (row.length > 0) currentTbl.push(row);
     }
@@ -5808,11 +6112,9 @@ async function convertFb2Source(
   }
 
   // Parse paragraphs (<p>)
-  const pRegex = /<p>([\s\S]*?)<\/p>/g;
   const paragraphs: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = pRegex.exec(xml)) !== null) {
-    const text = m[1].replace(/<[^>]+>/g, '').trim();
+  for (const pEl of safeExtractXmlElements(xml, 'p')) {
+    const text = safeExtractAllText(pEl.content).trim();
     if (text) paragraphs.push(text);
   }
 
@@ -6986,22 +7288,17 @@ export async function convertOdsSource(
 
   const xml = await contentXml.async('text');
   const rows: string[][] = [];
-  const rowRegex = /<table:table-row[\s\S]*?<\/table:table-row>/g;
-  let rMatch: RegExpExecArray | null;
-
-  while ((rMatch = rowRegex.exec(xml)) !== null) {
-    const rowXml = rMatch[0];
+  const rowElements = safeExtractXmlElements(xml, 'table:table-row');
+  for (const rEl of rowElements) {
+    const rowXml = rEl.content;
     const cells: string[] = [];
-    const cellRegex = /<table:table-cell[\s\S]*?<\/table:table-cell>/g;
-    let cMatch: RegExpExecArray | null;
+    const cellElements = safeExtractXmlElements(rowXml, 'table:table-cell');
+    for (const cEl of cellElements) {
+      const pEl = safeExtractFirstXmlElement(cEl.content, 'text:p');
+      const text = pEl ? safeExtractAllText(pEl.content).trim() : '';
 
-    while ((cMatch = cellRegex.exec(rowXml)) !== null) {
-      const cellXml = cMatch[0];
-      const pMatch = cellXml.match(/<text:p>([\s\S]*?)<\/text:p>/);
-      const text = pMatch ? pMatch[1].replace(/<[^>]+>/g, '').trim() : '';
-
-      const repeatMatch = cellXml.match(/table:number-columns-repeated="(\d+)"/);
-      const repeat = repeatMatch ? Math.min(50, parseInt(repeatMatch[1], 10)) : 1;
+      const repeatVal = cEl.attrs['table:number-columns-repeated'];
+      const repeat = repeatVal ? Math.min(50, parseInt(repeatVal, 10)) : 1;
       for (let rep = 0; rep < repeat; rep++) {
         cells.push(text);
       }
@@ -7388,15 +7685,12 @@ export async function convertXlsSource(
   else {
     const text = inputBuffer.toString('utf-8');
     if (text.includes('<Row') || text.includes('<row')) {
-      const rowRegex = /<Row[\s\S]*?<\/Row>/gi;
-      let rMatch: RegExpExecArray | null;
-      while ((rMatch = rowRegex.exec(text)) !== null) {
-        const rowXml = rMatch[0];
+      const rowElements = safeExtractXmlElements(text, ['Row', 'row']);
+      for (const rEl of rowElements) {
+        const rowXml = rEl.content;
         const cells: string[] = [];
-        const cellRegex = /<Data[^>]*>([\s\S]*?)<\/Data>/gi;
-        let cMatch: RegExpExecArray | null;
-        while ((cMatch = cellRegex.exec(rowXml)) !== null) {
-          cells.push(cMatch[1].replace(/<[^>]+>/g, '').trim());
+        for (const cEl of safeExtractXmlElements(rowXml, ['Data', 'data'])) {
+          cells.push(safeExtractAllText(cEl.content).trim());
         }
         if (cells.length > 0) rows.push(cells);
       }
@@ -7507,10 +7801,8 @@ export async function convertOdtSource(
     if (contentXml) {
       const xml = await contentXml.async('text');
       const paragraphs: string[] = [];
-      const pRegex = /<text:(?:p|h)[^>]*>([\s\S]*?)<\/text:(?:p|h)>/g;
-      let m: RegExpExecArray | null;
-      while ((m = pRegex.exec(xml)) !== null) {
-        const t = m[1].replace(/<[^>]+>/g, '').trim();
+      for (const el of safeExtractXmlElements(xml, ['text:p', 'text:h'])) {
+        const t = safeExtractAllText(el.content).trim();
         if (t) paragraphs.push(t);
       }
       text = paragraphs.join('\n\n');

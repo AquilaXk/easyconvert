@@ -97,6 +97,7 @@ export interface ConversionOptions {
   ocrLanguage?: 'auto' | 'en' | 'ko' | 'de' | 'fr' | 'es' | 'ja' | 'zh';
   clientEdgeMode?: boolean;
   margin?: 'normal' | 'narrow' | 'wide';
+  validateMagicBytes?: boolean;
   // Data & Spreadsheet options
   delimiter?: string;
   hasHeaders?: boolean;
