@@ -3,12 +3,15 @@ import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
-import { ConversionOptions, ConversionResult } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
 import { encodeBmp, encodePostscript } from './image';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
+import { buildOpenXpsPackage, XpsPageInput } from './openxps';
+
+export { buildOpenXpsPackage };
 
 /**
  * Office & Ebook Conversion Engine
@@ -276,6 +279,19 @@ export async function convertOffice(
       mimeType: 'application/x-fictionbook+xml',
       filename: `${baseName}.fb2`,
       size: fb2Buffer.length,
+    };
+  }
+
+  // 23.2 Target is OpenXPS / XPS
+  if (tgt === 'xps' || tgt === 'oxps') {
+    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+    const lines = textContent.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    const buffer = await buildOpenXpsPackage([{ title: baseName, lines }], baseName);
+    return {
+      buffer,
+      mimeType: 'application/oxps',
+      filename: `${baseName}.${tgt}`,
+      size: buffer.length,
     };
   }
 
@@ -4417,6 +4433,8 @@ async function generatePdfFromWorksheets(
     const margin = 36;
     const availableWidth = pageWidth - margin * 2;
 
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+
     sheets.forEach((sheet, sheetIdx) => {
       if (sheetIdx > 0) doc.addPage();
 
@@ -4425,9 +4443,11 @@ async function generatePdfFromWorksheets(
       doc.y = 40;
 
       // Title & Sheet Name
-      doc.fillColor('#1F2340').font('Helvetica-Bold').fontSize(16).text(title, margin, doc.y);
+      doc.fillColor('#1F2340').fontSize(16);
+      renderSafePdfText(doc, title, hasUnicodeFont, {}, margin, doc.y);
       if (sheets.length > 1) {
-        doc.fillColor('#5C6BC0').font('Helvetica-Bold').fontSize(11).text(`Sheet: ${sheet.name}`, margin, doc.y + 4);
+        doc.fillColor('#5C6BC0').fontSize(11);
+        renderSafePdfText(doc, `Sheet: ${sheet.name}`, hasUnicodeFont, {}, margin, doc.y + 4);
       }
       doc.y += 12;
 
@@ -4486,20 +4506,28 @@ async function generatePdfFromWorksheets(
           if (text) {
             const bold = isHdr || !!cell?.bold;
             const italic = !!cell?.italic;
-            const fontName = bold && italic ? 'Helvetica-BoldOblique' : bold ? 'Helvetica-Bold' : italic ? 'Helvetica-Oblique' : 'Helvetica';
+            if (!hasUnicodeFont) {
+              const fontName = bold && italic ? 'Helvetica-BoldOblique' : bold ? 'Helvetica-Bold' : italic ? 'Helvetica-Oblique' : 'Helvetica';
+              doc.font(fontName);
+            }
             const fontCol = cell?.fontColor || (isHdr ? '#1F2340' : '#4D536B');
             const align = cell?.align || 'left';
 
-            doc.font(fontName)
-              .fontSize(isHdr ? 9 : 8.5)
-              .fillColor(fontCol)
-              .text(text, curX + 4, curY + 5, {
+            doc.fontSize(isHdr ? 9 : 8.5).fillColor(fontCol);
+            renderSafePdfText(
+              doc,
+              text,
+              hasUnicodeFont,
+              {
                 width: Math.max(10, colW - 8),
                 height: rowHeight - 8,
                 align,
                 lineBreak: false,
                 ellipsis: true,
-              });
+              },
+              curX + 4,
+              curY + 5
+            );
           }
 
           curX += colW;
@@ -5706,9 +5734,12 @@ async function convertEpubSource(
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', (err) => reject(err));
     });
-    doc.fillColor('#1F2340').fontSize(18).text(baseName);
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+    doc.fillColor('#1F2340').fontSize(18);
+    renderSafePdfText(doc, baseName, hasUnicodeFont);
     doc.moveDown(1);
-    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3).text(extractedText || 'Epub content');
+    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
+    renderSafePdfText(doc, extractedText || 'Epub content', hasUnicodeFont);
     doc.end();
 
     const buffer = await p;
@@ -5852,13 +5883,17 @@ async function convertFb2Source(
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', (err) => reject(err));
     });
-    doc.fillColor('#1F2340').fontSize(18).text(bookTitle);
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+    doc.fillColor('#1F2340').fontSize(18);
+    renderSafePdfText(doc, bookTitle, hasUnicodeFont);
     if (authorStr) {
       doc.moveDown(0.3);
-      doc.fillColor('#5C6BC0').fontSize(12).text(authorStr);
+      doc.fillColor('#5C6BC0').fontSize(12);
+      renderSafePdfText(doc, authorStr, hasUnicodeFont);
     }
     doc.moveDown(1);
-    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3).text(fullText || 'FB2 text content');
+    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
+    renderSafePdfText(doc, fullText || 'FB2 text content', hasUnicodeFont);
     doc.end();
 
     const buffer = await p;
@@ -6044,9 +6079,12 @@ async function convertMobiSource(
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', (err) => reject(err));
     });
-    doc.fillColor('#1F2340').fontSize(18).text(baseName);
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+    doc.fillColor('#1F2340').fontSize(18);
+    renderSafePdfText(doc, baseName, hasUnicodeFont);
     doc.moveDown(1);
-    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3).text(fullText);
+    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
+    renderSafePdfText(doc, fullText, hasUnicodeFont);
     doc.end();
 
     const buffer = await p;
@@ -6104,19 +6142,22 @@ async function convertCbzSource(
       doc.on('error', (err) => reject(err));
     });
 
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+
     for (const name of imageNames) {
       const imgBuf = await zip.files[name].async('nodebuffer');
       doc.addPage({ size: 'A4' });
       try {
         doc.image(imgBuf, 40, 40, { fit: [doc.page.width - 80, doc.page.height - 80], align: 'center', valign: 'center' });
       } catch {
-        doc.text(`[Image ${name}]`);
+        renderSafePdfText(doc, `[Image ${name}]`, hasUnicodeFont);
       }
     }
 
     if (imageNames.length === 0) {
       doc.addPage({ size: 'A4' });
-      doc.fontSize(16).text(`CBZ Comic: ${baseName} (No images extracted)`);
+      doc.fontSize(16);
+      renderSafePdfText(doc, `CBZ Comic: ${baseName} (No images extracted)`, hasUnicodeFont);
     }
 
     doc.end();
@@ -7062,6 +7103,233 @@ export async function convertOdsSource(
 }
 
 /**
+ * Decodes a 32-bit BIFF RK number into its floating point or integer value
+ */
+export function decodeRk(rk: number): number {
+  const is100 = (rk & 0x01) !== 0;
+  const isInt = (rk & 0x02) !== 0;
+  let val: number;
+  if (isInt) {
+    val = rk >> 2;
+  } else {
+    const buf = Buffer.alloc(8);
+    buf.writeUInt32LE(0, 0);
+    buf.writeUInt32LE(rk & ~3, 4);
+    val = buf.readDoubleLE(0);
+  }
+  return is100 ? val / 100 : val;
+}
+
+/**
+ * Authentic BIFF8 Binary Spreadsheet Stream Parser
+ * Parses BOF, SST, LABELSST, LABEL, NUMBER, RK, MULRK, FORMULA, STRING records.
+ */
+export function parseBiff8Workbook(stream: Buffer): string[][] {
+  if (stream.length < 4) return [];
+
+  const firstRec = stream.readUInt16LE(0);
+  if (firstRec !== 0x0809 && firstRec !== 0x0409 && firstRec !== 0x0209 && firstRec !== 0x0009) {
+    return [];
+  }
+
+  const sst: string[] = [];
+  const cells = new Map<number, Map<number, string>>();
+  let maxRow = -1;
+  let maxCol = -1;
+  let lastFormulaCell: { r: number; c: number } | null = null;
+
+  let pos = 0;
+  while (pos + 4 <= stream.length) {
+    const recId = stream.readUInt16LE(pos);
+    const recLen = stream.readUInt16LE(pos + 2);
+    pos += 4;
+    if (pos + recLen > stream.length) break;
+    const data = stream.subarray(pos, pos + recLen);
+    pos += recLen;
+
+    // 0x00FC: SST (Shared String Table)
+    if (recId === 0x00FC) {
+      const sstChunks: Buffer[] = [data];
+      let peekPos = pos;
+      while (peekPos + 4 <= stream.length) {
+        const nextId = stream.readUInt16LE(peekPos);
+        const nextLen = stream.readUInt16LE(peekPos + 2);
+        if (nextId === 0x003C && peekPos + 4 + nextLen <= stream.length) {
+          sstChunks.push(stream.subarray(peekPos + 4, peekPos + 4 + nextLen));
+          peekPos += 4 + nextLen;
+          pos = peekPos;
+        } else {
+          break;
+        }
+      }
+      const sstBuf = Buffer.concat(sstChunks);
+      if (sstBuf.length >= 8) {
+        const uniqueStrings = sstBuf.readUInt32LE(4);
+        let off = 8;
+        for (let i = 0; i < uniqueStrings && off < sstBuf.length; i++) {
+          if (off + 3 > sstBuf.length) break;
+          const charCount = sstBuf.readUInt16LE(off);
+          const flags = sstBuf.readUInt8(off + 2);
+          off += 3;
+          const isUnicode = (flags & 0x01) !== 0;
+          const hasExt = (flags & 0x04) !== 0;
+          const hasRich = (flags & 0x08) !== 0;
+          let richRuns = 0;
+          if (hasRich) {
+            if (off + 2 > sstBuf.length) break;
+            richRuns = sstBuf.readUInt16LE(off);
+            off += 2;
+          }
+          let extLen = 0;
+          if (hasExt) {
+            if (off + 4 > sstBuf.length) break;
+            extLen = sstBuf.readUInt32LE(off);
+            off += 4;
+          }
+          let str = '';
+          if (isUnicode) {
+            const byteLen = charCount * 2;
+            const avail = Math.min(byteLen, Math.floor((sstBuf.length - off) / 2) * 2);
+            str = sstBuf.toString('utf16le', off, off + avail);
+            off += byteLen;
+          } else {
+            const byteLen = charCount;
+            const avail = Math.min(byteLen, sstBuf.length - off);
+            str = sstBuf.toString('latin1', off, off + avail);
+            off += byteLen;
+          }
+          off += richRuns * 4;
+          off += extLen;
+          sst.push(str);
+        }
+      }
+    }
+
+    const setCell = (r: number, c: number, val: string) => {
+      if (!cells.has(r)) cells.set(r, new Map());
+      cells.get(r)!.set(c, val);
+      if (r > maxRow) maxRow = r;
+      if (c > maxCol) maxCol = c;
+    };
+
+    // 0x00FD: LABELSST
+    if (recId === 0x00FD && data.length >= 10) {
+      const r = data.readUInt16LE(0);
+      const c = data.readUInt16LE(2);
+      const sstIdx = data.readUInt32LE(6);
+      setCell(r, c, sst[sstIdx] ?? '');
+    }
+
+    // 0x0204: LABEL
+    else if (recId === 0x0204 && data.length >= 8) {
+      const r = data.readUInt16LE(0);
+      const c = data.readUInt16LE(2);
+      const len = data.readUInt16LE(6);
+      if (data.length >= 9) {
+        const flags = data.readUInt8(8);
+        const isUnicode = (flags & 0x01) !== 0;
+        let str = '';
+        if (isUnicode) {
+          const byteLen = len * 2;
+          str = data.toString('utf16le', 9, Math.min(data.length, 9 + byteLen));
+        } else {
+          str = data.toString('latin1', 9, Math.min(data.length, 9 + len));
+        }
+        setCell(r, c, str);
+      }
+    }
+
+    // 0x00D6: RSTRING (BIFF5)
+    else if (recId === 0x00D6 && data.length >= 8) {
+      const r = data.readUInt16LE(0);
+      const c = data.readUInt16LE(2);
+      const len = data.readUInt16LE(6);
+      const str = data.toString('latin1', 8, Math.min(data.length, 8 + len));
+      setCell(r, c, str);
+    }
+
+    // 0x0203: NUMBER
+    else if (recId === 0x0203 && data.length >= 14) {
+      const r = data.readUInt16LE(0);
+      const c = data.readUInt16LE(2);
+      const num = data.readDoubleLE(6);
+      setCell(r, c, String(num));
+    }
+
+    // 0x027E: RK
+    else if (recId === 0x027E && data.length >= 10) {
+      const r = data.readUInt16LE(0);
+      const c = data.readUInt16LE(2);
+      const rk = data.readUInt32LE(6);
+      setCell(r, c, String(decodeRk(rk)));
+    }
+
+    // 0x00BD: MULRK
+    else if (recId === 0x00BD && data.length >= 6) {
+      const r = data.readUInt16LE(0);
+      const colFirst = data.readUInt16LE(2);
+      const colLast = data.readUInt16LE(data.length - 2);
+      let c = colFirst;
+      let off = 4;
+      while (c <= colLast && off + 6 <= data.length) {
+        const rk = data.readUInt32LE(off + 2);
+        setCell(r, c, String(decodeRk(rk)));
+        off += 6;
+        c++;
+      }
+    }
+
+    // 0x0006: FORMULA
+    else if (recId === 0x0006 && data.length >= 14) {
+      const r = data.readUInt16LE(0);
+      const c = data.readUInt16LE(2);
+      lastFormulaCell = { r, c };
+      if (data[12] === 0xff && data[13] === 0xff) {
+        const fType = data[6];
+        if (fType === 1) setCell(r, c, data[8] === 1 ? 'TRUE' : 'FALSE');
+        else if (fType === 2) setCell(r, c, '#ERR!');
+      } else {
+        const num = data.readDoubleLE(6);
+        setCell(r, c, String(num));
+      }
+    }
+
+    // 0x0207: STRING
+    else if (recId === 0x0207 && lastFormulaCell && data.length >= 3) {
+      const len = data.readUInt16LE(0);
+      const flags = data.readUInt8(2);
+      const isUnicode = (flags & 0x01) !== 0;
+      let str = '';
+      if (isUnicode) {
+        str = data.toString('utf16le', 3, Math.min(data.length, 3 + len * 2));
+      } else {
+        str = data.toString('latin1', 3, Math.min(data.length, 3 + len));
+      }
+      setCell(lastFormulaCell.r, lastFormulaCell.c, str);
+      lastFormulaCell = null;
+    }
+  }
+
+  if (maxRow < 0 || maxCol < 0) return [];
+
+  const rows: string[][] = [];
+  for (let r = 0; r <= maxRow; r++) {
+    const rowMap = cells.get(r);
+    const row: string[] = [];
+    for (let c = 0; c <= maxCol; c++) {
+      row.push(rowMap?.get(c) ?? '');
+    }
+    rows.push(row);
+  }
+
+  while (rows.length > 0 && rows[rows.length - 1].every((cell) => !cell)) {
+    rows.pop();
+  }
+
+  return rows;
+}
+
+/**
  * Excel XLS Parser & Converter
  */
 export async function convertXlsSource(
@@ -7070,34 +7338,70 @@ export async function convertXlsSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const text = inputBuffer.toString('utf-8');
   const rows: string[][] = [];
 
-  // Parse Excel XML Spreadsheet (<Row><Cell><Data ...>)
-  if (text.includes('<Row') || text.includes('<row')) {
-    const rowRegex = /<Row[\s\S]*?<\/Row>/gi;
-    let rMatch: RegExpExecArray | null;
-    while ((rMatch = rowRegex.exec(text)) !== null) {
-      const rowXml = rMatch[0];
-      const cells: string[] = [];
-      const cellRegex = /<Data[^>]*>([\s\S]*?)<\/Data>/gi;
-      let cMatch: RegExpExecArray | null;
-      while ((cMatch = cellRegex.exec(rowXml)) !== null) {
-        cells.push(cMatch[1].replace(/<[^>]+>/g, '').trim());
+  // 1. CFBF Compound File Binary Format containing Workbook stream
+  if (isCfbfContainer(inputBuffer)) {
+    const cfbf = parseCfbf(inputBuffer);
+    let workbookStream: Buffer | undefined;
+    for (const [name, buf] of cfbf.streams.entries()) {
+      if (name.toLowerCase() === 'workbook' || name.toLowerCase() === 'book') {
+        workbookStream = buf;
+        break;
       }
-      if (cells.length > 0) rows.push(cells);
+    }
+    if (!workbookStream) {
+      throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
+    }
+    const parsed = parseBiff8Workbook(workbookStream);
+    if (parsed.length === 0) {
+      throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
+    }
+    rows.push(...parsed);
+  }
+  // 2. Raw BIFF stream (without CFBF container)
+  else if (
+    inputBuffer.length >= 4 &&
+    (inputBuffer.readUInt16LE(0) === 0x0809 || inputBuffer.readUInt16LE(0) === 0x0409)
+  ) {
+    const parsed = parseBiff8Workbook(inputBuffer);
+    if (parsed.length === 0) {
+      throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in raw BIFF stream');
+    }
+    rows.push(...parsed);
+  }
+  // 3. XML Spreadsheet 2003 (<Row><Cell><Data ...>)
+  else {
+    const text = inputBuffer.toString('utf-8');
+    if (text.includes('<Row') || text.includes('<row')) {
+      const rowRegex = /<Row[\s\S]*?<\/Row>/gi;
+      let rMatch: RegExpExecArray | null;
+      while ((rMatch = rowRegex.exec(text)) !== null) {
+        const rowXml = rMatch[0];
+        const cells: string[] = [];
+        const cellRegex = /<Data[^>]*>([\s\S]*?)<\/Data>/gi;
+        let cMatch: RegExpExecArray | null;
+        while ((cMatch = cellRegex.exec(rowXml)) !== null) {
+          cells.push(cMatch[1].replace(/<[^>]+>/g, '').trim());
+        }
+        if (cells.length > 0) rows.push(cells);
+      }
+    }
+
+    if (rows.length === 0) {
+      // Delimited text fallback only if printable
+      const isPrintable = /^[\x20-\x7E\r\n\t]+$/.test(text.slice(0, 1024));
+      if (isPrintable) {
+        text.split(/\r?\n/).forEach((l) => {
+          const trimmed = l.trim();
+          if (trimmed) rows.push(trimmed.split('\t'));
+        });
+      }
     }
   }
 
   if (rows.length === 0) {
-    text.split(/\r?\n/).forEach((l) => {
-      const trimmed = l.trim();
-      if (trimmed) rows.push(trimmed.split('\t'));
-    });
-  }
-
-  if (rows.length === 0) {
-    rows.push(['Data'], ['XLS spreadsheet content']);
+    throw new ConversionFailedError('Failed to parse XLS spreadsheet: invalid or empty content');
   }
 
   if (tgt === 'csv') {
@@ -7606,12 +7910,8 @@ async function convertGenericDocumentSource(
     return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
   }
   if (tgt === 'xps') {
-    const zip = new JSZip();
-    zip.file(
-      '[Content_Types].xml',
-      '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="fdseq" ContentType="application/vnd.ms-package.xps-fixeddocumentsequence+xml"/></Types>'
-    );
-    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    const buffer = await buildOpenXpsPackage([{ title: baseName, lines }], baseName);
     return { buffer, mimeType: 'application/oxps', filename: `${baseName}.xps`, size: buffer.length };
   }
   if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(tgt)) {

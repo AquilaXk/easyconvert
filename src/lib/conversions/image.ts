@@ -2,6 +2,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult } from '../types';
+import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -1412,12 +1413,31 @@ export async function convertImage(
     }
 
     case 'xps': {
-      const zip = new JSZip();
-      zip.file(
-        '[Content_Types].xml',
-        '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="fdseq" ContentType="application/vnd.ms-package.xps-fixeddocumentsequence+xml"/></Types>'
+      let pngBuffer = inputBuffer;
+      let imgMeta: sharp.Metadata | undefined;
+      try {
+        const s = sharp(inputBuffer);
+        imgMeta = await s.metadata();
+        if (imgMeta.format !== 'png') {
+          pngBuffer = await s.png().toBuffer();
+        }
+      } catch {
+        // If sharp cannot decode directly, fallback to inputBuffer
+      }
+      outputBuffer = await buildOpenXpsPackage(
+        [
+          {
+            title: baseName,
+            image: {
+              buffer: pngBuffer,
+              format: 'png',
+              width: imgMeta?.width || 800,
+              height: imgMeta?.height || 600,
+            },
+          },
+        ],
+        baseName
       );
-      outputBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
       mimeType = 'application/oxps';
       break;
     }

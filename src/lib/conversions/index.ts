@@ -21,7 +21,8 @@ import {
   type FfmpegEnvironmentInfo,
   checkFfmpeg,
 } from './media';
-import { convertOffice, formatSpreadsheetCellValue } from './office';
+import { convertOffice, formatSpreadsheetCellValue, parseBiff8Workbook, decodeRk } from './office';
+import { buildOpenXpsPackage } from './openxps';
 import {
   convertFont,
   convertFontToTrueType,
@@ -162,6 +163,9 @@ export {
   convertToArchive,
   convertMedia,
   convertOffice,
+  parseBiff8Workbook,
+  decodeRk,
+  buildOpenXpsPackage,
   convertDocument,
   extractTextFromPdf,
   convertImage,

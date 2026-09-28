@@ -4,6 +4,7 @@ import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
 import { encodeBmp } from './image';
+import { buildOpenXpsPackage } from './openxps';
 
 /**
  * HWP 5.0 Record Tag IDs
@@ -1448,13 +1449,9 @@ async function generateOdtFromHwp(doc: HwpDocument, title: string): Promise<Buff
 /**
  * Builds Open Packaging Convention XPS package
  */
-async function generateXpsFromHwp(_doc: HwpDocument, _title: string): Promise<Buffer> {
-  const zip = new JSZip();
-  zip.file(
-    '[Content_Types].xml',
-    `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="fdseq" ContentType="application/vnd.ms-package.xps-fixeddocumentsequence+xml"/><Default Extension="fpage" ContentType="application/vnd.ms-package.xps-fixedpage+xml"/></Types>`
-  );
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+async function generateXpsFromHwp(doc: HwpDocument, title: string): Promise<Buffer> {
+  const lines = doc.paragraphs.map((p) => p.text).filter(Boolean);
+  return buildOpenXpsPackage([{ title, lines }], title);
 }
 
 /**
