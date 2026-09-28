@@ -287,10 +287,10 @@ export class KeyStore {
 
     const now = Date.now();
     let downloadUrl = data.downloadUrl;
-    if (downloadUrl && downloadUrl.startsWith('data:')) {
+    if (downloadUrl?.startsWith('data:')) {
       const storageKey = `conversions/${data.userId}/${Date.now()}_${encodeURIComponent(data.fileName)}`;
       try {
-        const matches = downloadUrl.match(/^data:([^;]+);base64,(.*)$/);
+        const matches = /^data:([^;]+);base64,(.*)$/.exec(downloadUrl);
         if (matches) {
           const mimeType = matches[1];
           const buf = Buffer.from(matches[2], 'base64');
@@ -300,7 +300,7 @@ export class KeyStore {
             mimeType,
             buffer: buf,
             size: buf.length,
-            etag: `"${crypto.createHash('md5').update(buf).digest('hex')}"`,
+            etag: `"${crypto.createHash('sha256').update(buf).digest('hex')}"`,
             uploadedAt: now,
             expiresAt: now + 3600 * 1000,
           });
