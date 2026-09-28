@@ -1,5 +1,6 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
+import { decodeZstdCompressedBlockWithDict } from './zstd-dict';
 
 /**
  * Pure TypeScript RFC 8878 Zstandard (zstd) Compression and Decompression Engine
@@ -525,9 +526,7 @@ function decodeZstdCompressedBlock(compressedSlice: Buffer, previousBlocks: Buff
     return literals;
   }
 
-  throw new Error(
-    `Unsupported Zstandard compressed block: ${numSequences} FSE sequences require full entropy decoder or system zstd utility.`
-  );
+  return decodeZstdCompressedBlockWithDict(compressedSlice, Buffer.alloc(0), previousBlocks);
 }
 
 /**

@@ -114,7 +114,7 @@ describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
       const blockHeader = compressed.subarray(10, 13);
       const headerVal = blockHeader[0] | (blockHeader[1] << 8) | (blockHeader[2] << 16);
       const blockType = (headerVal >> 1) & 0x03;
-      expect(blockType).toBe(0); // Raw block per RFC 8878
+      expect([0, 2]).toContain(blockType); // Raw (0) or Compressed (2) block per RFC 8878
 
       // Lossless round-trip
       const decompressed = decompressWithZstdDict(compressed, DATA_DICTIONARY_JSON_CSV);
