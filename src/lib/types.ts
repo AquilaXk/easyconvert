@@ -108,6 +108,7 @@ export interface ConversionOptions {
   splitVolumeBytes?: number;
   zstdDict?: boolean | 'data' | 'office';
   archiveParts?: { filename: string; buffer: Buffer }[];
+  useNative7z?: boolean;
   // Audio options
   audioBitrate?: '64k' | '96k' | '128k' | '192k' | '256k' | '320k';
   audioChannels?: 'mono' | 'stereo' | '5.1';
