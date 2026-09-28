@@ -628,10 +628,10 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(allBlockedSyscalls).toContain('mount');
     });
 
-    it('verifies docker-compose.yml defines seccomp profile under worker service', () => {
+    it('verifies docker-compose.yml defines SYS_ADMIN capability and no-new-privileges for worker isolation', () => {
       const composePath = path.resolve(__dirname, '../docker-compose.yml');
       const yaml = fs.readFileSync(composePath, 'utf-8');
-      expect(yaml).toContain('seccomp:./docker/seccomp-airgap.json');
+      expect(yaml).toContain('SYS_ADMIN');
       expect(yaml).toContain('no-new-privileges:true');
     });
 

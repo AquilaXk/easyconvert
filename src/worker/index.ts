@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { conversionQueue } from '../lib/queue/conversion-queue';
+import { conversionQueue, attachJobLifecycleListeners } from '../lib/queue/conversion-queue';
 import { Worker, Job } from '../lib/queue/bullmq-engine';
 import { ConversionJobData, ConversionJobResult } from '../lib/types';
 import { storageProvider as ociStorage } from '../lib/storage';
@@ -92,6 +92,9 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
   },
   { concurrency: CONCURRENCY }
 );
+
+// Attach 2-phase quota accounting and webhook dispatch listeners
+attachJobLifecycleListeners(ociWorker);
 
 // Graceful shutdown
 function shutdown(signal: string) {
