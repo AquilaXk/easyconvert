@@ -35,6 +35,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const failWithRollback = async (status: number, message: string, title: string = 'Bad Request') => {
+    if (reservation.reservationId) {
+      await redisKeyStore.rollbackQuota(reservation.reservationId);
+    }
+    return createProblemDetailsResponse(status, message, instanceUri, title);
+  };
+
   try {
     const contentType = req.headers.get('content-type') || '';
     let originalFilename = '';
@@ -64,29 +71,13 @@ export async function POST(req: NextRequest) {
             options = parsed;
           }
         } catch {
-          if (reservation.reservationId) {
-            await redisKeyStore.rollbackQuota(reservation.reservationId);
-          }
-          return createProblemDetailsResponse(
-            400,
-            'Invalid JSON string provided in "options" parameter.',
-            instanceUri,
-            'Bad Request'
-          );
+          return failWithRollback(400, 'Invalid JSON string provided in "options" parameter.');
         }
       }
 
       if (file && file instanceof Blob && file.size > 0) {
         if (file.size > MAX_JOB_PAYLOAD_SIZE) {
-          if (reservation.reservationId) {
-            await redisKeyStore.rollbackQuota(reservation.reservationId);
-          }
-          return createProblemDetailsResponse(
-            400,
-            'File size exceeds the 500 MB asynchronous payload boundary.',
-            instanceUri,
-            'Payload Too Large'
-          );
+          return failWithRollback(400, 'File size exceeds the 500 MB asynchronous payload boundary.', 'Payload Too Large');
         }
 
         originalFilename = file.name;
@@ -118,26 +109,13 @@ export async function POST(req: NextRequest) {
     }
 
     if (!targetFormat) {
-      if (reservation.reservationId) {
-        await redisKeyStore.rollbackQuota(reservation.reservationId);
-      }
-      return createProblemDetailsResponse(
-        400,
-        'Missing required parameter: "targetFormat".',
-        instanceUri,
-        'Bad Request'
-      );
+      return failWithRollback(400, 'Missing required parameter: "targetFormat".');
     }
 
     if (!storageKey && !inputBufferBase64) {
-      if (reservation.reservationId) {
-        await redisKeyStore.rollbackQuota(reservation.reservationId);
-      }
-      return createProblemDetailsResponse(
+      return failWithRollback(
         400,
-        'Missing input file data. Please upload a "file" or provide "storageKey" / "inputBufferBase64".',
-        instanceUri,
-        'Bad Request'
+        'Missing input file data. Please upload a "file" or provide "storageKey" / "inputBufferBase64".'
       );
     }
 
@@ -146,42 +124,21 @@ export async function POST(req: NextRequest) {
     sourceDef ??= detectFormatFromFilename(originalFilename);
 
     if (!sourceDef) {
-      if (reservation.reservationId) {
-        await redisKeyStore.rollbackQuota(reservation.reservationId);
-      }
-      return createProblemDetailsResponse(
-        400,
-        `Could not identify source format for file "${originalFilename}".`,
-        instanceUri,
-        'Bad Request'
-      );
+      return failWithRollback(400, `Could not identify source format for file "${originalFilename}".`);
     }
 
     // Resolve target format definition
     const cleanTarget = targetFormat.toLowerCase().replace(/^\./, '').trim();
     const targetDef = getFormatByExtension(cleanTarget);
     if (!targetDef) {
-      if (reservation.reservationId) {
-        await redisKeyStore.rollbackQuota(reservation.reservationId);
-      }
-      return createProblemDetailsResponse(
-        400,
-        `Unsupported target format "${targetFormat}".`,
-        instanceUri,
-        'Bad Request'
-      );
+      return failWithRollback(400, `Unsupported target format "${targetFormat}".`);
     }
 
     // Check format compatibility
     if (!sourceDef.targetFormats.includes(cleanTarget) && !sourceDef.targetFormats.includes(targetDef.id)) {
-      if (reservation.reservationId) {
-        await redisKeyStore.rollbackQuota(reservation.reservationId);
-      }
-      return createProblemDetailsResponse(
+      return failWithRollback(
         400,
-        `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`,
-        instanceUri,
-        'Bad Request'
+        `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`
       );
     }
 
@@ -227,11 +184,8 @@ export async function POST(req: NextRequest) {
       { status: 202 }
     );
   } catch (error: unknown) {
-    if (reservation.reservationId) {
-      await redisKeyStore.rollbackQuota(reservation.reservationId);
-    }
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
-    return createProblemDetailsResponse(500, message, instanceUri, 'Internal Server Error');
+    return failWithRollback(500, message, 'Internal Server Error');
   }
 }
 

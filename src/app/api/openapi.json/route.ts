@@ -2,6 +2,14 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
+const createProblemResponse = (description: string) => ({
+  description,
+  content: {
+    'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+    'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+  },
+});
+
 export async function GET() {
   const openApiSpec = {
     openapi: '3.1.0',
@@ -83,41 +91,11 @@ export async function GET() {
                 },
               },
             },
-            '400': {
-              description: 'Invalid input format, missing parameter, or unsupported conversion pair.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
-            '401': {
-              description: 'Missing or invalid API key.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
-            '403': {
-              description: 'Access denied due to IP address, CIDR whitelist, or missing scope restriction.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
-            '429': {
-              description: 'Rate limit or daily conversion quota exhausted.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
-            '500': {
-              description: 'Internal engine processing failure (quota reservation rolled back).',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
+            '400': createProblemResponse('Invalid input format, missing parameter, or unsupported conversion pair.'),
+            '401': createProblemResponse('Missing or invalid API key.'),
+            '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing scope restriction.'),
+            '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
+            '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
           },
         },
       },
@@ -186,27 +164,9 @@ export async function GET() {
                 },
               },
             },
-            '400': {
-              description: 'Bad request or parameter validation failure.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
-            '401': {
-              description: 'Unauthorized or missing scope.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
-            '429': {
-              description: 'Quota exceeded.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
+            '400': createProblemResponse('Bad request or parameter validation failure.'),
+            '401': createProblemResponse('Unauthorized or missing scope.'),
+            '429': createProblemResponse('Quota exceeded.'),
           },
         },
         get: {
@@ -247,13 +207,7 @@ export async function GET() {
                 },
               },
             },
-            '401': {
-              description: 'Unauthorized.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
+            '401': createProblemResponse('Unauthorized.'),
           },
         },
       },
@@ -280,27 +234,9 @@ export async function GET() {
                 },
               },
             },
-            '401': {
-              description: 'Unauthorized.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
-            '403': {
-              description: 'Access denied.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
-            '404': {
-              description: 'Job not found.',
-              content: {
-                'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-                'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-            },
+            '401': createProblemResponse('Unauthorized.'),
+            '403': createProblemResponse('Access denied.'),
+            '404': createProblemResponse('Job not found.'),
           },
         },
       },

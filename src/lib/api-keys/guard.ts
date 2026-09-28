@@ -68,6 +68,41 @@ function extractApiKeySecret(request: Request): string | null {
   return null;
 }
 
+async function checkQuotaAndReserve(
+  userId: string,
+  tier: string,
+  requiredUnits: number
+): Promise<{ allowed: boolean; error?: string; reservationId?: string; remaining?: number }> {
+  if (requiredUnits > 0) {
+    const reservation = await redisKeyStore.reserveQuota(userId, requiredUnits);
+    if (!reservation.allowed) {
+      return {
+        allowed: false,
+        error: `Daily conversion quota exceeded for tier '${tier}'. Please upgrade or wait for the midnight UTC reset.`,
+        remaining: reservation.remaining,
+      };
+    }
+    return {
+      allowed: true,
+      reservationId: reservation.reservationId,
+      remaining: reservation.remaining,
+    };
+  }
+
+  const quota = await redisKeyStore.getQuotaUsage(userId);
+  if (quota.remaining <= 0) {
+    return {
+      allowed: false,
+      error: `Daily conversion quota exceeded for tier '${tier}'.`,
+      remaining: 0,
+    };
+  }
+  return {
+    allowed: true,
+    remaining: quota.remaining,
+  };
+}
+
 async function verifyKeyAccess(
   apiKeySecret: string,
   requiredUnits: number,
@@ -95,46 +130,26 @@ async function verifyKeyAccess(
     };
   }
 
-  if (requiredUnits > 0) {
-    const reservation = await redisKeyStore.reserveQuota(verification.user.id, requiredUnits);
-    if (!reservation.allowed) {
-      return {
-        authorized: false,
-        user: verification.user,
-        apiKey: verification.key,
-        error: `Daily conversion quota exceeded for tier '${verification.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
-        status: 429,
-        remaining: reservation.remaining,
-      };
-    }
+  const quota = await checkQuotaAndReserve(verification.user.id, verification.user.tier, requiredUnits);
+  if (!quota.allowed) {
     return {
-      authorized: true,
+      authorized: false,
       user: verification.user,
       apiKey: verification.key,
-      authMethod: 'api_key',
-      reservationId: reservation.reservationId,
-      remaining: reservation.remaining,
-    };
-  } else {
-    const quota = await redisKeyStore.getQuotaUsage(verification.user.id);
-    if (quota.remaining <= 0) {
-      return {
-        authorized: false,
-        user: verification.user,
-        apiKey: verification.key,
-        error: `Daily conversion quota exceeded for tier '${verification.user.tier}'.`,
-        status: 429,
-        remaining: 0,
-      };
-    }
-    return {
-      authorized: true,
-      user: verification.user,
-      apiKey: verification.key,
-      authMethod: 'api_key',
+      error: quota.error,
+      status: 429,
       remaining: quota.remaining,
     };
   }
+
+  return {
+    authorized: true,
+    user: verification.user,
+    apiKey: verification.key,
+    authMethod: 'api_key',
+    reservationId: quota.reservationId,
+    remaining: quota.remaining,
+  };
 }
 
 async function verifySessionAccess(
@@ -150,42 +165,24 @@ async function verifySessionAccess(
     };
   }
 
-  if (requiredUnits > 0) {
-    const reservation = await redisKeyStore.reserveQuota(sessionUser.id, requiredUnits);
-    if (!reservation.allowed) {
-      return {
-        authorized: false,
-        user: sessionUser,
-        error: `Daily conversion quota exceeded for tier '${sessionUser.tier}'.`,
-        status: 429,
-        remaining: reservation.remaining,
-      };
-    }
+  const quota = await checkQuotaAndReserve(sessionUser.id, sessionUser.tier, requiredUnits);
+  if (!quota.allowed) {
     return {
-      authorized: true,
+      authorized: false,
       user: sessionUser,
-      authMethod: 'session',
-      reservationId: reservation.reservationId,
-      remaining: reservation.remaining,
-    };
-  } else {
-    const quota = await redisKeyStore.getQuotaUsage(sessionUser.id);
-    if (quota.remaining <= 0) {
-      return {
-        authorized: false,
-        user: sessionUser,
-        error: `Daily conversion quota exceeded for tier '${sessionUser.tier}'.`,
-        status: 429,
-        remaining: 0,
-      };
-    }
-    return {
-      authorized: true,
-      user: sessionUser,
-      authMethod: 'session',
+      error: quota.error,
+      status: 429,
       remaining: quota.remaining,
     };
   }
+
+  return {
+    authorized: true,
+    user: sessionUser,
+    authMethod: 'session',
+    reservationId: quota.reservationId,
+    remaining: quota.remaining,
+  };
 }
 
 /**
