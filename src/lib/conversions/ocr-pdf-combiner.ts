@@ -766,22 +766,24 @@ end`;
 
   const entries: string[] = [];
   const pushCMapEntry = (src: number, dst: number): void => {
-    if (src <= 0xffff) {
-      entries.push(`<${toHex16(src)}> <${toHex(dst)}>`);
-    } else {
-      const highSrc = Math.floor((src - 0x10000) / 0x400) + 0xd800;
-      const lowSrc = ((src - 0x10000) % 0x400) + 0xdc00;
-      const highDst = Math.floor((dst - 0x10000) / 0x400) + 0xd800;
-      const lowDst = ((dst - 0x10000) % 0x400) + 0xdc00;
-      entries.push(`<${toHex16(highSrc)}> <${toHex16(highDst)}>`);
-      entries.push(`<${toHex16(lowSrc)}> <${toHex16(lowDst)}>`);
-    }
+    // In ISO 32000-1 Section 9.10.3 (CMap Type 2), the source CID is always a 2-byte hex (<0000> to <FFFF>).
+    // The target is a UTF-16BE hex sequence: 2 bytes (<XXXX>) for BMP or 4 bytes (<D8xxDCxx>) for Astral (> 0xFFFF).
+    const cidHex = toHex16(src <= 0xffff ? src : src & 0xffff);
+    entries.push(`<${cidHex}> <${toHex(dst)}>`);
   };
 
   if (Array.isArray(mappings)) {
     for (const m of mappings) {
       if (typeof m === 'number') {
-        pushCMapEntry(m, m);
+        if (m <= 0xffff) {
+          entries.push(`<${toHex16(m)}> <${toHex16(m)}>`);
+        } else {
+          // Decompose bare astral code point into surrogate CID pairs for identity mapping
+          const high = Math.floor((m - 0x10000) / 0x400) + 0xd800;
+          const low = ((m - 0x10000) % 0x400) + 0xdc00;
+          entries.push(`<${toHex16(high)}> <${toHex16(high)}>`);
+          entries.push(`<${toHex16(low)}> <${toHex16(low)}>`);
+        }
       } else {
         pushCMapEntry(m[0], m[1]);
       }

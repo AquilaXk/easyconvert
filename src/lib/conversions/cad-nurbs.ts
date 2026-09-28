@@ -1912,9 +1912,16 @@ export function tessellateTrimmedFaceCDT(
     if (steinerPoints.length > 0) {
       for (const sp of steinerPoints) {
         const spIdx = getOrAddPointIndex(sp);
-        // Find enclosing triangle and subdivide into 3 triangles
+        let pointInserted = false;
+
+        // 1. Check for interior triangle split (Shewchuk orientation strictly non-zero)
         for (let tIdx = 0; tIdx < finalTriangles.length; tIdx++) {
           const [v0, v1, v2] = finalTriangles[tIdx];
+          if (spIdx === v0 || spIdx === v1 || spIdx === v2) {
+            pointInserted = true;
+            break;
+          }
+
           const p0 = uniqueParametricPoints[v0];
           const p1 = uniqueParametricPoints[v1];
           const p2 = uniqueParametricPoints[v2];
@@ -1927,7 +1934,90 @@ export function tessellateTrimmedFaceCDT(
           if ((o0 > 0 && o1 > 0 && o2 > 0) || (o0 < 0 && o1 < 0 && o2 < 0)) {
             // Split triangle into 3 triangles
             finalTriangles.splice(tIdx, 1, [v0, v1, spIdx], [v1, v2, spIdx], [v2, v0, spIdx]);
+            pointInserted = true;
             break;
+          }
+        }
+
+        // 2. If not strictly interior, check if sp lies on an edge of any triangle (edge-split)
+        if (!pointInserted) {
+          const EPS = 1e-11;
+          const isOnSegment = (pa: Parametric2DPoint, pb: Parametric2DPoint, p: Parametric2DPoint) => {
+            const minU = Math.min(pa.u, pb.u) - 1e-9;
+            const maxU = Math.max(pa.u, pb.u) + 1e-9;
+            const minV = Math.min(pa.v, pb.v) - 1e-9;
+            const maxV = Math.max(pa.v, pb.v) + 1e-9;
+            return p.u >= minU && p.u <= maxU && p.v >= minV && p.v <= maxV;
+          };
+
+          for (let tIdx = 0; tIdx < finalTriangles.length; tIdx++) {
+            const [v0, v1, v2] = finalTriangles[tIdx];
+            if (spIdx === v0 || spIdx === v1 || spIdx === v2) break;
+
+            const p0 = uniqueParametricPoints[v0];
+            const p1 = uniqueParametricPoints[v1];
+            const p2 = uniqueParametricPoints[v2];
+
+            const o0 = orient2dPoints(p0, p1, sp);
+            const o1 = orient2dPoints(p1, p2, sp);
+            const o2 = orient2dPoints(p2, p0, sp);
+
+            let edgeV0 = -1;
+            let edgeV1 = -1;
+            let oppV = -1;
+
+            if (Math.abs(o0) <= EPS && isOnSegment(p0, p1, sp)) {
+              edgeV0 = v0; edgeV1 = v1; oppV = v2;
+            } else if (Math.abs(o1) <= EPS && isOnSegment(p1, p2, sp)) {
+              edgeV0 = v1; edgeV1 = v2; oppV = v0;
+            } else if (Math.abs(o2) <= EPS && isOnSegment(p2, p0, sp)) {
+              edgeV0 = v2; edgeV1 = v0; oppV = v1;
+            }
+
+            if (edgeV0 !== -1 && edgeV1 !== -1) {
+              const newTris: Array<[number, number, number]> = [
+                [edgeV0, spIdx, oppV],
+                [spIdx, edgeV1, oppV],
+              ];
+
+              // Find neighboring triangle sharing edge (edgeV0, edgeV1)
+              let neighborIdx = -1;
+              let neighborOppV = -1;
+              for (let nIdx = 0; nIdx < finalTriangles.length; nIdx++) {
+                if (nIdx === tIdx) continue;
+                const [nv0, nv1, nv2] = finalTriangles[nIdx];
+                if ((nv0 === edgeV0 && nv1 === edgeV1) || (nv0 === edgeV1 && nv1 === edgeV0)) {
+                  neighborIdx = nIdx; neighborOppV = nv2; break;
+                }
+                if ((nv1 === edgeV0 && nv2 === edgeV1) || (nv1 === edgeV1 && nv2 === edgeV0)) {
+                  neighborIdx = nIdx; neighborOppV = nv0; break;
+                }
+                if ((nv2 === edgeV0 && nv0 === edgeV1) || (nv2 === edgeV1 && nv0 === edgeV0)) {
+                  neighborIdx = nIdx; neighborOppV = nv1; break;
+                }
+              }
+
+              if (neighborIdx !== -1) {
+                const [nv0, nv1, nv2] = finalTriangles[neighborIdx];
+                const nEdgeForward = (nv0 === edgeV0 && nv1 === edgeV1) ||
+                                     (nv1 === edgeV0 && nv2 === edgeV1) ||
+                                     (nv2 === edgeV0 && nv0 === edgeV1);
+                const nV0 = nEdgeForward ? edgeV0 : edgeV1;
+                const nV1 = nEdgeForward ? edgeV1 : edgeV0;
+                const neighborSplit: Array<[number, number, number]> = [
+                  [nV0, spIdx, neighborOppV],
+                  [spIdx, nV1, neighborOppV],
+                ];
+
+                const firstIdx = Math.max(tIdx, neighborIdx);
+                const secondIdx = Math.min(tIdx, neighborIdx);
+                finalTriangles.splice(firstIdx, 1);
+                finalTriangles.splice(secondIdx, 1, ...newTris, ...neighborSplit);
+              } else {
+                finalTriangles.splice(tIdx, 1, ...newTris);
+              }
+              break;
+            }
           }
         }
       }
