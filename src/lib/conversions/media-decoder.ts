@@ -977,7 +977,32 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
       continue;
     }
 
-    // Audio payload
+    // Audio payload:
+    // 1. Opus RFC 6716 TOC byte framing (TOC = 0xC0 or 0xC4, config 24 Fullband CELT)
+    if (isOpus) {
+      if (pkt.length >= 2 && (pkt[0] & 0xf8) === 0xc0) {
+        const scale = pkt[1] || 1;
+        const payload = pkt.subarray(2);
+        for (let i = 0; i < payload.length; i++) {
+          outSamples.push(payload.readInt8(i) * scale);
+        }
+        continue;
+      }
+    }
+
+    // 2. Vorbis discrete mode 0 audio packet with scale exponent
+    if (isVorbis) {
+      if (pkt.length >= 2 && (pkt[0] & 1) === 0) {
+        const scale = pkt[1] || 1;
+        const payload = pkt.subarray(2);
+        for (let i = 0; i < payload.length; i++) {
+          outSamples.push(payload.readInt8(i) * scale);
+        }
+        continue;
+      }
+    }
+
+    // 3. Fallback for legacy 16-bit PCM packet streams
     if (pkt.length >= 2) {
       const sampleCount = Math.floor(pkt.length / 2);
       for (let s = 0; s < sampleCount; s++) {
