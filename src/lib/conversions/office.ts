@@ -798,6 +798,241 @@ export interface OpenXmlChartData {
   series: OpenXmlChartSeries[];
 }
 
+/**
+ * 2D Affine Transformation Matrix (3x3 homogeneous coordinates)
+ * Represents [a, b, c, d, e, f] where:
+ *   x' = a*x + c*y + e
+ *   y' = b*x + d*y + f
+ */
+export type Matrix2D = [number, number, number, number, number, number];
+
+export function identityMatrix(): Matrix2D {
+  return [1, 0, 0, 1, 0, 0];
+}
+
+export function multiplyMatrix(m1: Matrix2D, m2: Matrix2D): Matrix2D {
+  const [a1, b1, c1, d1, e1, f1] = m1;
+  const [a2, b2, c2, d2, e2, f2] = m2;
+  return [
+    a1 * a2 + c1 * b2,
+    b1 * a2 + d1 * b2,
+    a1 * c2 + c1 * d2,
+    b1 * c2 + d1 * d2,
+    a1 * e2 + c1 * f2 + e1,
+    b1 * e2 + d1 * f2 + f1,
+  ];
+}
+
+export function translationMatrix(tx: number, ty: number): Matrix2D {
+  return [1, 0, 0, 1, tx, ty];
+}
+
+export function scaleMatrix(sx: number, sy: number): Matrix2D {
+  return [sx, 0, 0, sy, 0, 0];
+}
+
+export function rotationMatrix(deg: number): Matrix2D {
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return [cos, sin, -sin, cos, 0, 0];
+}
+
+export function transformPoint(m: Matrix2D, x: number, y: number): { x: number; y: number } {
+  return {
+    x: m[0] * x + m[2] * y + m[4],
+    y: m[1] * x + m[3] * y + m[5],
+  };
+}
+
+/**
+ * Computes the DrawingML group affine transformation matrix (ISO/IEC 29500-1 CT_GroupTransform2D)
+ * mapping child coordinate space (chOff, chExt) into the group's bounding box (off, ext),
+ * accounting for group rotation (around parent center) and flipH / flipV.
+ */
+export function computeGroupTransformMatrix(
+  off: { x: number; y: number },
+  ext: { cx: number; cy: number },
+  chOff: { x: number; y: number },
+  chExt: { cx: number; cy: number },
+  rot: number = 0, // in degrees clockwise
+  flipH: boolean = false,
+  flipV: boolean = false
+): Matrix2D {
+  const chw = chExt.cx !== 0 ? chExt.cx : (ext.cx !== 0 ? ext.cx : 1);
+  const chh = chExt.cy !== 0 ? chExt.cy : (ext.cy !== 0 ? ext.cy : 1);
+  const gw = ext.cx;
+  const gh = ext.cy;
+
+  // Center of child coordinate system
+  const cChX = chOff.x + chw / 2;
+  const cChY = chOff.y + chh / 2;
+
+  // Center of parent bounding box
+  const cParentX = off.x + gw / 2;
+  const cParentY = off.y + gh / 2;
+
+  // Scaling with reflection
+  const sx = (gw / chw) * (flipH ? -1 : 1);
+  const sy = (gh / chh) * (flipV ? -1 : 1);
+
+  // Rotation in radians
+  const rad = (rot * Math.PI) / 180;
+
+  // M = T(cParentX, cParentY) * R(rad) * S(sx, sy) * T(-cChX, -cChY)
+  const tOrigin = translationMatrix(-cChX, -cChY);
+  const sScale = scaleMatrix(sx, sy);
+  const rRot = rotationMatrix(rad);
+  const tCenter = translationMatrix(cParentX, cParentY);
+
+  return multiplyMatrix(tCenter, multiplyMatrix(rRot, multiplyMatrix(sScale, tOrigin)));
+}
+
+export interface GroupTransformResult {
+  matrix: Matrix2D;
+  gx: number;
+  gy: number;
+  gw: number;
+  gh: number;
+  chx: number;
+  chy: number;
+  chw: number;
+  chh: number;
+  rot: number;
+  flipH: boolean;
+  flipV: boolean;
+}
+
+/**
+ * Extracts group shape transform (a:xfrm) attributes and computes the transformation matrix.
+ */
+export function parseGroupTransform(
+  grpXml: string,
+  defaultWidth = 100,
+  defaultHeight = 60
+): GroupTransformResult {
+  const grpSpPr = safeExtractFirstXmlElement(grpXml, ['p:grpSpPr', 'wpg:grpSpPr']);
+  const xfrm = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:xfrm');
+
+  let gx = 0;
+  let gy = 0;
+  let gw = defaultWidth;
+  let gh = defaultHeight;
+  let chx = 0;
+  let chy = 0;
+  let chw = defaultWidth;
+  let chh = defaultHeight;
+  let rot = 0;
+  let flipH = false;
+  let flipV = false;
+
+  if (xfrm) {
+    if (xfrm.attrs.rot) rot = Number.parseInt(xfrm.attrs.rot, 10) / 60000;
+    if (xfrm.attrs.flipH === '1' || xfrm.attrs.flipH === 'true') flipH = true;
+    if (xfrm.attrs.flipV === '1' || xfrm.attrs.flipV === 'true') flipV = true;
+
+    const offEl = safeExtractFirstXmlElement(xfrm.content, 'a:off');
+    if (offEl?.attrs.x && offEl?.attrs.y) {
+      gx = Math.round(Number.parseInt(offEl.attrs.x, 10) / 12700);
+      gy = Math.round(Number.parseInt(offEl.attrs.y, 10) / 12700);
+    }
+    const extEl = safeExtractFirstXmlElement(xfrm.content, 'a:ext');
+    if (extEl?.attrs.cx && extEl?.attrs.cy) {
+      gw = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cx, 10) / 12700));
+      gh = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cy, 10) / 12700));
+    }
+    const chOffEl = safeExtractFirstXmlElement(xfrm.content, 'a:chOff');
+    if (chOffEl?.attrs.x && chOffEl?.attrs.y) {
+      chx = Math.round(Number.parseInt(chOffEl.attrs.x, 10) / 12700);
+      chy = Math.round(Number.parseInt(chOffEl.attrs.y, 10) / 12700);
+    } else {
+      chx = gx;
+      chy = gy;
+    }
+    const chExtEl = safeExtractFirstXmlElement(xfrm.content, 'a:chExt');
+    if (chExtEl?.attrs.cx && chExtEl?.attrs.cy) {
+      chw = Math.max(1, Math.round(Number.parseInt(chExtEl.attrs.cx, 10) / 12700));
+      chh = Math.max(1, Math.round(Number.parseInt(chExtEl.attrs.cy, 10) / 12700));
+    } else {
+      chw = gw;
+      chh = gh;
+    }
+  }
+
+  const matrix = computeGroupTransformMatrix(
+    { x: gx, y: gy },
+    { cx: gw, cy: gh },
+    { x: chx, y: chy },
+    { cx: chw, cy: chh },
+    rot,
+    flipH,
+    flipV
+  );
+
+  return { matrix, gx, gy, gw, gh, chx, chy, chw, chh, rot, flipH, flipV };
+}
+
+export interface TransformedElementBounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rot: number;
+  flipH: boolean;
+  flipV: boolean;
+  matrix: Matrix2D;
+}
+
+/**
+ * Computes world coordinates and bounds for a standalone shape or picture element.
+ */
+export function computeTransformedElementBounds(
+  xml: string,
+  parentMatrix: Matrix2D
+): TransformedElementBounds | null {
+  const offEl = safeExtractFirstXmlElement(xml, 'a:off');
+  const extEl = safeExtractFirstXmlElement(xml, 'a:ext');
+  if (!offEl?.attrs.x || !offEl?.attrs.y || !extEl?.attrs.cx || !extEl?.attrs.cy) {
+    return null;
+  }
+
+  const rawX = Math.round(Number.parseInt(offEl.attrs.x, 10) / 12700);
+  const rawY = Math.round(Number.parseInt(offEl.attrs.y, 10) / 12700);
+  const rawW = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cx, 10) / 12700));
+  const rawH = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cy, 10) / 12700));
+
+  const xfrmEl = safeExtractFirstXmlElement(xml, 'a:xfrm');
+  let rot = 0;
+  let flipH = false;
+  let flipV = false;
+  if (xfrmEl) {
+    if (xfrmEl.attrs.rot) rot = Number.parseInt(xfrmEl.attrs.rot, 10) / 60000;
+    if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
+    if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
+  }
+
+  const localMatrix = computeGroupTransformMatrix(
+    { x: rawX, y: rawY },
+    { cx: rawW, cy: rawH },
+    { x: rawX, y: rawY },
+    { cx: rawW, cy: rawH },
+    rot,
+    flipH,
+    flipV
+  );
+  const worldMatrix = multiplyMatrix(parentMatrix, localMatrix);
+
+  const centerWorld = transformPoint(worldMatrix, rawX + rawW / 2, rawY + rawH / 2);
+  const worldW = Math.max(1, Math.round(Math.hypot(worldMatrix[0], worldMatrix[1]) * rawW));
+  const worldH = Math.max(1, Math.round(Math.hypot(worldMatrix[2], worldMatrix[3]) * rawH));
+  const worldRot = Math.round((Math.atan2(worldMatrix[1], worldMatrix[0]) * 180) / Math.PI);
+  const x = Math.round(centerWorld.x - worldW / 2);
+  const y = Math.round(centerWorld.y - worldH / 2);
+
+  return { x, y, w: worldW, h: worldH, rot: worldRot, flipH, flipV, matrix: worldMatrix };
+}
+
+
 export interface DrawingMlShape {
   id?: string;
   name?: string;
@@ -824,6 +1059,7 @@ export interface DrawingMlShape {
   guides?: Record<string, number>;
   chart?: OpenXmlChartData;
   chartSvg?: string;
+  transformMatrix?: Matrix2D;
 }
 
 export type DocxBlockElement =
@@ -1298,26 +1534,68 @@ export function renderChartToSvg(
  * Parses <p:spTree>, <w:drawing>, <a:xfrm>, <a:prstGeom>, and <a:custGeom>
  * into clean, standards-compliant SVG vector paths.
  */
-export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
+export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = identityMatrix()): DrawingMlShape[] {
   const shapes: DrawingMlShape[] = [];
 
-  // Match all shape tags: <p:sp>, <wps:wsp>, <a:graphicData>, <w:drawing>
+  // 1. Discover top-level DrawingML group shapes (<p:grpSp>, <wpg:wgp>)
+  const groupElements = safeExtractXmlElements(xml, ['p:grpSp', 'wpg:wgp']);
+  const excludedRanges: Array<[number, number]> = [];
+  const topGroups: SafeXmlElement[] = [];
+
+  for (const grpEl of groupElements) {
+    const isNestedInOther = excludedRanges.some(([s, e]) => grpEl.startIndex > s && grpEl.endIndex < e);
+    if (isNestedInOther) continue;
+    excludedRanges.push([grpEl.startIndex, grpEl.endIndex]);
+    topGroups.push(grpEl);
+  }
+
+  // 2. Discover standalone shape tags: <p:sp>, <wps:wsp>, <a:graphicData>, <w:drawing>
   const targetShapeTags = ['p:sp', 'wps:wsp', 'a:graphicData', 'w:drawing'];
   const shapeElements = safeExtractXmlElements(xml, targetShapeTags);
-  const matches: string[] = shapeElements.map((e) => e.raw);
+  const topShapes = shapeElements.filter(
+    (e) => !excludedRanges.some(([s, end]) => e.startIndex >= s && e.endIndex <= end)
+  );
+
+  type TopLevelItem =
+    | { kind: 'group'; el: SafeXmlElement }
+    | { kind: 'shape'; xml: string; startIndex: number };
+
+  const items: TopLevelItem[] = [];
+  for (const g of topGroups) {
+    items.push({ kind: 'group', el: g });
+  }
+  for (const s of topShapes) {
+    items.push({ kind: 'shape', xml: s.raw, startIndex: s.startIndex });
+  }
 
   if (
-    matches.length === 0 &&
+    items.length === 0 &&
     (xml.includes('<a:prstGeom') ||
       xml.includes('<a:custGeom') ||
       xml.includes('<a:spPr') ||
       xml.includes('<c:chart') ||
       xml.includes('<c:plotArea'))
   ) {
-    matches.push(xml);
+    items.push({ kind: 'shape', xml, startIndex: 0 });
   }
 
-  for (const spXml of matches) {
+  items.sort((a, b) => {
+    const posA = a.kind === 'group' ? a.el.startIndex : a.startIndex;
+    const posB = b.kind === 'group' ? b.el.startIndex : b.startIndex;
+    return posA - posB;
+  });
+
+  for (const item of items) {
+    if (item.kind === 'group') {
+      const grpXml = item.el.content;
+      const { matrix: mGrp } = parseGroupTransform(grpXml, 100, 60);
+      const mAccum = multiplyMatrix(parentMatrix, mGrp);
+      const childShapes = parseDrawingMlShapes(grpXml, mAccum);
+      shapes.push(...childShapes);
+      continue;
+    }
+
+    const spXml = item.xml;
     // 1. Transform: <a:xfrm rot="..." flipH="..." flipV="..."> <a:off x="..." y="..."/> <a:ext cx="..." cy="..."/>
     const xfrmEl = safeExtractFirstXmlElement(spXml, 'a:xfrm');
     let x = 0,
@@ -1329,20 +1607,56 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       flipV = false;
     if (xfrmEl) {
       const rotVal = xfrmEl.attrs.rot;
-      if (rotVal) rotation = parseInt(rotVal, 10) / 60000;
+      if (rotVal) rotation = Number.parseInt(rotVal, 10) / 60000;
       if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
       if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
 
       const offEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:off');
       if (offEl && offEl.attrs.x && offEl.attrs.y) {
-        x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-        y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
+        x = Math.round(Number.parseInt(offEl.attrs.x, 10) / 12700);
+        y = Math.round(Number.parseInt(offEl.attrs.y, 10) / 12700);
       }
       const extEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:ext');
       if (extEl && extEl.attrs.cx && extEl.attrs.cy) {
-        width = Math.max(1, Math.round(parseInt(extEl.attrs.cx, 10) / 12700));
-        height = Math.max(1, Math.round(parseInt(extEl.attrs.cy, 10) / 12700));
+        width = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cx, 10) / 12700));
+        height = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cy, 10) / 12700));
       }
+    }
+
+    const origX = x;
+    const origY = y;
+    const origW = width;
+    const origH = height;
+
+    const localShapeMatrix = computeGroupTransformMatrix(
+      { x, y },
+      { cx: width, cy: height },
+      { x, y },
+      { cx: width, cy: height },
+      rotation,
+      flipH,
+      flipV
+    );
+    const worldMatrix = multiplyMatrix(parentMatrix, localShapeMatrix);
+
+    const isParentTransformed =
+      Math.abs(parentMatrix[0] - 1) > 1e-4 ||
+      Math.abs(parentMatrix[1]) > 1e-4 ||
+      Math.abs(parentMatrix[2]) > 1e-4 ||
+      Math.abs(parentMatrix[3] - 1) > 1e-4 ||
+      Math.abs(parentMatrix[4]) > 1e-4 ||
+      Math.abs(parentMatrix[5]) > 1e-4;
+
+    if (isParentTransformed) {
+      const centerWorld = transformPoint(worldMatrix, x + width / 2, y + height / 2);
+      const worldW = Math.max(1, Math.round(Math.hypot(worldMatrix[0], worldMatrix[1]) * width));
+      const worldH = Math.max(1, Math.round(Math.hypot(worldMatrix[2], worldMatrix[3]) * height));
+      const worldRot = Math.round((Math.atan2(worldMatrix[1], worldMatrix[0]) * 180) / Math.PI);
+      x = Math.round(centerWorld.x - worldW / 2);
+      y = Math.round(centerWorld.y - worldH / 2);
+      width = worldW;
+      height = worldH;
+      rotation = worldRot;
     }
 
     // Check if shape contains an embedded chart
@@ -1371,6 +1685,7 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
           text: chartData.title || `${chartData.type} chart`,
           chart: chartData,
           chartSvg,
+          transformMatrix: worldMatrix,
         });
         continue;
       }
@@ -1424,38 +1739,49 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       geomType = 'custom';
       const pathEl = safeExtractFirstXmlElement(custEl.content, 'a:path');
       if (pathEl) {
-        const pw = pathEl.attrs.w ? parseInt(pathEl.attrs.w, 10) : width;
-        const ph = pathEl.attrs.h ? parseInt(pathEl.attrs.h, 10) : height;
-        const sx = width / (pw || 1);
-        const sy = height / (ph || 1);
+        const pw = pathEl.attrs.w ? Number.parseInt(pathEl.attrs.w, 10) : origW;
+        const ph = pathEl.attrs.h ? Number.parseInt(pathEl.attrs.h, 10) : origH;
+        const sx = origW / (pw || 1);
+        const sy = origH / (ph || 1);
 
         const dParts: string[] = [];
         const cmdTags = ['a:moveTo', 'a:lnTo', 'a:cubicBezTo', 'a:quadBezTo', 'a:arcTo', 'a:close'];
         const cmdEls = safeExtractXmlElements(pathEl.content, cmdTags);
         for (const cmdEl of cmdEls) {
           const cmdName = cmdEl.localName.toLowerCase();
+          const mapPt = (rawPx: number, rawPy: number): { x: number; y: number } => {
+            if (isParentTransformed) {
+              const res = transformPoint(parentMatrix, rawPx, rawPy);
+              return { x: Math.round(res.x), y: Math.round(res.y) };
+            }
+            return { x: Math.round(rawPx), y: Math.round(rawPy) };
+          };
+
           if (cmdName === 'moveto') {
             const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
             if (ptEl && ptEl.attrs.x && ptEl.attrs.y) {
-              const px = Math.round(parseInt(ptEl.attrs.x, 10) * sx + x);
-              const py = Math.round(parseInt(ptEl.attrs.y, 10) * sy + y);
-              dParts.push(`M ${px} ${py}`);
+              const rawPx = origX + Number.parseInt(ptEl.attrs.x, 10) * sx;
+              const rawPy = origY + Number.parseInt(ptEl.attrs.y, 10) * sy;
+              const p = mapPt(rawPx, rawPy);
+              dParts.push(`M ${p.x} ${p.y}`);
             }
           } else if (cmdName === 'lnto') {
             const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
             if (ptEl && ptEl.attrs.x && ptEl.attrs.y) {
-              const px = Math.round(parseInt(ptEl.attrs.x, 10) * sx + x);
-              const py = Math.round(parseInt(ptEl.attrs.y, 10) * sy + y);
-              dParts.push(`L ${px} ${py}`);
+              const rawPx = origX + Number.parseInt(ptEl.attrs.x, 10) * sx;
+              const rawPy = origY + Number.parseInt(ptEl.attrs.y, 10) * sy;
+              const p = mapPt(rawPx, rawPy);
+              dParts.push(`L ${p.x} ${p.y}`);
             }
           } else if (cmdName === 'cubicbezto') {
             const ptEls = safeExtractXmlElements(cmdEl.content, 'a:pt');
             const pts: string[] = [];
             for (const pt of ptEls) {
               if (pt.attrs.x && pt.attrs.y) {
-                const px = Math.round(parseInt(pt.attrs.x, 10) * sx + x);
-                const py = Math.round(parseInt(pt.attrs.y, 10) * sy + y);
-                pts.push(`${px} ${py}`);
+                const rawPx = origX + Number.parseInt(pt.attrs.x, 10) * sx;
+                const rawPy = origY + Number.parseInt(pt.attrs.y, 10) * sy;
+                const p = mapPt(rawPx, rawPy);
+                pts.push(`${p.x} ${p.y}`);
               }
             }
             if (pts.length >= 3) {
@@ -1466,9 +1792,10 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
             const pts: string[] = [];
             for (const pt of ptEls) {
               if (pt.attrs.x && pt.attrs.y) {
-                const px = Math.round(parseInt(pt.attrs.x, 10) * sx + x);
-                const py = Math.round(parseInt(pt.attrs.y, 10) * sy + y);
-                pts.push(`${px} ${py}`);
+                const rawPx = origX + Number.parseInt(pt.attrs.x, 10) * sx;
+                const rawPy = origY + Number.parseInt(pt.attrs.y, 10) * sy;
+                const p = mapPt(rawPx, rawPy);
+                pts.push(`${p.x} ${p.y}`);
               }
             }
             if (pts.length >= 2) {
@@ -1479,6 +1806,11 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
           }
         }
         svgPath = dParts.join(' ');
+        if (isParentTransformed) {
+          rotation = 0;
+          flipH = false;
+          flipV = false;
+        }
       }
     } else if (prstEl && prstEl.attrs.prst) {
       geomType = 'preset';
@@ -1512,6 +1844,7 @@ export function parseDrawingMlShapes(xml: string): DrawingMlShape[] {
       adjustValues,
       guides:
         Object.keys(guides).length > Object.keys(initialVars).length ? guides : undefined,
+      transformMatrix: worldMatrix,
     });
   }
 
@@ -5123,6 +5456,10 @@ export interface VisualSlideShape {
     rows: Array<Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }>>;
     colWidths?: number[];
   };
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+  transformMatrix?: Matrix2D;
 }
 
 export interface VisualSlide {
@@ -5149,6 +5486,475 @@ function resolveZipPath(baseDir: string, relativePath: string): string {
     }
   }
   return resolved.join('/');
+}
+
+/**
+ * Recursively parses DrawingML 2D scene graph for a PPTX slide, accumulating
+ * affine transform matrices (M_world = M_parent * M_local) for nested <p:grpSp>,
+ * resolving <dgm:relIds> SmartArt diagrams, pictures (<p:pic>), tables, charts, and shapes.
+ */
+export async function parsePptxSlideSceneGraph(
+  xml: string,
+  parentMatrix: Matrix2D,
+  slideWidth: number,
+  slideHeight: number,
+  relsMap: Map<string, string>,
+  zip: JSZip,
+  texts: string[]
+): Promise<VisualSlideShape[]> {
+  const shapes: VisualSlideShape[] = [];
+
+  const groupElements = safeExtractXmlElements(xml, 'p:grpSp');
+  const gfElements = safeExtractXmlElements(xml, 'p:graphicFrame');
+  const picElements = safeExtractXmlElements(xml, 'p:pic');
+  const spElements = safeExtractXmlElements(xml, 'p:sp');
+
+  // Compute boundaries of group shapes so child shapes are processed in group recursion
+  const grpRanges: Array<[number, number]> = [];
+  for (const grpEl of groupElements) {
+    grpRanges.push([grpEl.startIndex, grpEl.endIndex]);
+  }
+
+  // 1. Group shapes (<p:grpSp>) - recursive scene graph traversal
+  for (const grpEl of groupElements) {
+    // Only process immediate top-level groups at this container depth
+    const isChildGroup = grpRanges.some(
+      ([s, e]) => grpEl.startIndex > s && grpEl.endIndex < e
+    );
+    if (isChildGroup) continue;
+
+    const grpXml = grpEl.content;
+    const { matrix: mGrp } = parseGroupTransform(grpXml, slideWidth, slideHeight);
+    const mAccum = multiplyMatrix(parentMatrix, mGrp);
+
+    const childShapes = await parsePptxSlideSceneGraph(
+      grpXml,
+      mAccum,
+      slideWidth,
+      slideHeight,
+      relsMap,
+      zip,
+      texts
+    );
+    shapes.push(...childShapes);
+  }
+
+  // 2. Graphic frames (<p:graphicFrame>) - tables, charts, SmartArt (<dgm:relIds>)
+  for (const gfEl of gfElements) {
+    const isInsideGroup = grpRanges.some(
+      ([s, e]) => gfEl.startIndex >= s && gfEl.endIndex <= e
+    );
+    if (isInsideGroup) continue;
+
+    const gfXml = gfEl.content;
+    const offEl = safeExtractFirstXmlElement(gfXml, 'a:off');
+    const extEl = safeExtractFirstXmlElement(gfXml, 'a:ext');
+    if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
+      const rawX = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
+      const rawY = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
+      const rawW = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
+      const rawH = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
+
+      const pt = transformPoint(parentMatrix, rawX, rawY);
+      const x = Math.round(pt.x);
+      const y = Math.round(pt.y);
+      const w = Math.round(Math.sqrt(parentMatrix[0] * parentMatrix[0] + parentMatrix[1] * parentMatrix[1]) * rawW);
+      const h = Math.round(Math.sqrt(parentMatrix[2] * parentMatrix[2] + parentMatrix[3] * parentMatrix[3]) * rawH);
+
+      const tblEl = safeExtractFirstXmlElement(gfXml, 'a:tbl');
+      if (tblEl) {
+        const tblXml = tblEl.content;
+        const colWidths: number[] = [];
+        for (const gcEl of safeExtractXmlElements(tblXml, 'a:gridCol')) {
+          if (gcEl.attrs.w) {
+            colWidths.push(Math.round(parseInt(gcEl.attrs.w, 10) / 12700));
+          }
+        }
+
+        const tblRows: Array<Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }>> = [];
+        for (const trEl of safeExtractXmlElements(tblXml, 'a:tr')) {
+          const trXml = trEl.content;
+          const rowCells: Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }> = [];
+          for (const tcEl of safeExtractXmlElements(trXml, 'a:tc')) {
+            const tcXml = tcEl.content;
+            const cellTexts: string[] = [];
+            for (const tEl of safeExtractXmlElements(tcXml, 'a:t')) {
+              const clean = safeDecodeXmlEntities(tEl.content).trim();
+              if (clean) cellTexts.push(clean);
+            }
+            const cellText = cellTexts.join(' ');
+            if (cellText && !texts.includes(cellText)) {
+              texts.push(cellText);
+            }
+
+            const tcPrEl = safeExtractFirstXmlElement(tcXml, 'a:tcPr');
+            let cellFill: string | undefined;
+            if (tcPrEl) {
+              cellFill = safeFindColor(tcPrEl.content);
+            }
+
+            let cellBold = false;
+            if (tcXml.includes('b="1"')) cellBold = true;
+            const rPrEl = safeExtractFirstXmlElement(tcXml, 'a:rPr');
+            let cellFontColor: string | undefined;
+            if (rPrEl) {
+              cellFontColor = safeFindColor(rPrEl.content);
+              if (rPrEl.attrs.b === '1' || rPrEl.attrs.b === 'true') {
+                cellBold = true;
+              }
+            }
+
+            rowCells.push({
+              text: cellText,
+              fillColor: cellFill,
+              fontColor: cellFontColor,
+              bold: cellBold,
+            });
+          }
+          tblRows.push(rowCells);
+        }
+
+        shapes.push({
+          x,
+          y,
+          width: w,
+          height: h,
+          shapeType: 'table',
+          tableData: {
+            rows: tblRows,
+            colWidths: colWidths.length > 0 ? colWidths : undefined,
+          },
+          transformMatrix: parentMatrix,
+        });
+      } else if (
+        gfXml.includes('uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"') ||
+        gfXml.includes('<dgm:relIds') ||
+        gfXml.includes('dgm:relIds')
+      ) {
+        // SmartArt diagram processing
+        const dgmRelEl = safeExtractFirstXmlElement(gfXml, 'dgm:relIds');
+        const dmId = dgmRelEl ? (dgmRelEl.attrs['r:dm'] || dgmRelEl.attrs.dm) : undefined;
+        let resolvedDiagram = false;
+
+        if (dmId && relsMap.has(dmId)) {
+          const target = relsMap.get(dmId)!;
+          const dataPath = resolveZipPath('ppt/slides', target);
+          const dataFile = zip.file(dataPath) || zip.file(`ppt/${target}`);
+          if (dataFile) {
+            const dataXml = await dataFile.async('text');
+            const ptEls = safeExtractXmlElements(dataXml, 'dgm:pt');
+            const nodeTexts: string[] = [];
+            for (const pt of ptEls) {
+              const ptType = pt.attrs.type || 'node';
+              if (ptType === 'node' || ptType === 'asst') {
+                const tEls = safeExtractXmlElements(pt.content, 'a:t');
+                const t = tEls.map((el) => safeDecodeXmlEntities(el.content).trim()).filter(Boolean).join(' ');
+                if (t) {
+                  nodeTexts.push(t);
+                  if (!texts.includes(t)) texts.push(t);
+                }
+              }
+            }
+
+            if (nodeTexts.length > 0) {
+              resolvedDiagram = true;
+              const N = nodeTexts.length;
+              const isLandscape = w >= h;
+              if (isLandscape) {
+                const gap = 16;
+                const nodeW = Math.max(30, Math.floor((w - (N - 1) * gap) / N));
+                const nodeH = Math.max(24, Math.floor(h * 0.7));
+                const nodeY = y + Math.floor((h - nodeH) / 2);
+
+                for (let nIdx = 0; nIdx < N; nIdx++) {
+                  const nodeX = x + nIdx * (nodeW + gap);
+                  shapes.push({
+                    x: nodeX,
+                    y: nodeY,
+                    width: nodeW,
+                    height: nodeH,
+                    shapeType: 'roundrect',
+                    fillColor: '#5C6BC0',
+                    strokeColor: '#3F51B5',
+                    strokeWidth: 1.5,
+                    text: nodeTexts[nIdx],
+                    fontColor: '#FFFFFF',
+                    bold: true,
+                    transformMatrix: parentMatrix,
+                  });
+
+                  if (nIdx < N - 1) {
+                    const arrowW = gap - 4;
+                    const arrowX = nodeX + nodeW + 2;
+                    const arrowY = nodeY + Math.floor(nodeH / 2) - 6;
+                    shapes.push({
+                      x: arrowX,
+                      y: arrowY,
+                      width: arrowW,
+                      height: 12,
+                      shapeType: 'rightarrow',
+                      fillColor: '#9FA8DA',
+                      strokeColor: '#7986CB',
+                      strokeWidth: 1,
+                      transformMatrix: parentMatrix,
+                    });
+                  }
+                }
+              } else {
+                const gap = 12;
+                const nodeH = Math.max(24, Math.floor((h - (N - 1) * gap) / N));
+                const nodeW = Math.max(40, Math.floor(w * 0.85));
+                const nodeX = x + Math.floor((w - nodeW) / 2);
+
+                for (let nIdx = 0; nIdx < N; nIdx++) {
+                  const nodeY = y + nIdx * (nodeH + gap);
+                  shapes.push({
+                    x: nodeX,
+                    y: nodeY,
+                    width: nodeW,
+                    height: nodeH,
+                    shapeType: 'roundrect',
+                    fillColor: '#5C6BC0',
+                    strokeColor: '#3F51B5',
+                    strokeWidth: 1.5,
+                    text: nodeTexts[nIdx],
+                    fontColor: '#FFFFFF',
+                    bold: true,
+                    transformMatrix: parentMatrix,
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        if (!resolvedDiagram) {
+          shapes.push({
+            x,
+            y,
+            width: w,
+            height: h,
+            shapeType: 'roundrect',
+            fillColor: '#F0F2FE',
+            strokeColor: '#5C6BC0',
+            strokeWidth: 1.5,
+            text: 'SmartArt Diagram',
+            fontColor: '#1F2340',
+            bold: true,
+            transformMatrix: parentMatrix,
+          });
+        }
+      } else {
+        // Check if graphicFrame contains or references an OpenXML chart
+        const chartEl = safeExtractFirstXmlElement(gfXml, 'c:chart');
+        const rId = chartEl ? (chartEl.attrs['r:id'] || chartEl.attrs.id) : undefined;
+        let chartData: OpenXmlChartData | null = null;
+        if (rId && relsMap.has(rId)) {
+          const target = relsMap.get(rId)!;
+          const chartPath = resolveZipPath('ppt/slides', target);
+          const chartFile = zip.file(chartPath) || zip.file(`ppt/${target}`);
+          if (chartFile) {
+            const chartXml = await chartFile.async('text');
+            chartData = parseOpenXmlChart(chartXml);
+          }
+        } else if (
+          gfXml.includes('<c:chart') ||
+          gfXml.includes('<c:plotArea') ||
+          gfXml.includes('<c:chartSpace>')
+        ) {
+          chartData = parseOpenXmlChart(gfXml);
+        }
+
+        if (chartData) {
+          const chartSvg = renderChartToSvg(chartData, w, h);
+          shapes.push({
+            x,
+            y,
+            width: w,
+            height: h,
+            shapeType: 'chart',
+            chartData,
+            chartSvg,
+            text: chartData.title || `${chartData.type} chart`,
+            transformMatrix: parentMatrix,
+          });
+        } else {
+          const chartTexts: string[] = [];
+          for (const tEl of safeExtractXmlElements(gfXml, 'a:t')) {
+            const clean = safeDecodeXmlEntities(tEl.content).trim();
+            if (clean) chartTexts.push(clean);
+          }
+          shapes.push({
+            x,
+            y,
+            width: w,
+            height: h,
+            shapeType: 'rect',
+            fillColor: '#F8F9FE',
+            strokeColor: '#CCD2FC',
+            strokeWidth: 1,
+            text: chartTexts.join(' ') || undefined,
+            transformMatrix: parentMatrix,
+          });
+        }
+      }
+    }
+  }
+
+  // 3. Pictures (<p:pic>)
+  for (const picEl of picElements) {
+    const isInsideGroup = grpRanges.some(
+      ([s, e]) => picEl.startIndex >= s && picEl.endIndex <= e
+    );
+    if (isInsideGroup) continue;
+
+    const picXml = picEl.content;
+    const bounds = computeTransformedElementBounds(picXml, parentMatrix);
+    if (!bounds) continue;
+    const { x, y, w: worldW, h: worldH, rot: worldRot, flipH, flipV, matrix: worldMatrix } = bounds;
+
+    const blipEl = safeExtractFirstXmlElement(picXml, 'a:blip');
+    const rId = blipEl ? (blipEl.attrs['r:embed'] || blipEl.attrs.embed) : undefined;
+    if (rId) {
+      const target = relsMap.get(rId);
+      if (target) {
+        const mediaPath = resolveZipPath('ppt/slides', target);
+        const mediaFile = zip.file(mediaPath);
+        if (mediaFile) {
+          let imgBuffer = await mediaFile.async('nodebuffer');
+          let mimeType = 'image/png';
+          const lower = mediaPath.toLowerCase();
+          if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+            mimeType = 'image/jpeg';
+          } else if (!lower.endsWith('.png')) {
+            try {
+              imgBuffer = await sharp(imgBuffer).png().toBuffer();
+              mimeType = 'image/png';
+            } catch {}
+          }
+          shapes.push({
+            x,
+            y,
+            width: worldW,
+            height: worldH,
+            shapeType: 'picture',
+            imageData: imgBuffer,
+            imageMimeType: mimeType,
+            rotation: worldRot || undefined,
+            flipH: flipH || undefined,
+            flipV: flipV || undefined,
+            transformMatrix: worldMatrix,
+          });
+        }
+      }
+    }
+  }
+
+  // 4. Standalone DrawingML shapes (<p:sp>)
+  const standaloneSpElements = spElements.filter(
+    (sp) => !grpRanges.some(([start, end]) => sp.startIndex >= start && sp.endIndex <= end)
+  );
+
+  for (const spEl of standaloneSpElements) {
+    const spXml = spEl.content;
+    const bounds = computeTransformedElementBounds(spXml, parentMatrix);
+    if (!bounds) continue;
+    const { x, y, w: worldW, h: worldH, rot: worldRot, flipH, flipV, matrix: worldMatrix } = bounds;
+
+    let fillColor: string | undefined;
+    const spPrEl = safeExtractFirstXmlElement(spXml, 'p:spPr');
+    if (spPrEl) {
+      fillColor = safeFindColor(spPrEl.content);
+    }
+
+    let strokeColor: string | undefined;
+    let strokeWidth: number | undefined;
+    const lnEl = safeExtractFirstXmlElement(spXml, 'a:ln');
+    if (lnEl) {
+      if (lnEl.attrs.w) {
+        strokeWidth = Math.max(1, Math.round(Number.parseInt(lnEl.attrs.w, 10) / 12700));
+      }
+      strokeColor = safeFindColor(lnEl.content);
+    }
+
+      let shapeText = '';
+      let fontSize: number | undefined;
+      let fontColor: string | undefined;
+      let bold = false;
+
+      const txEl = safeExtractFirstXmlElement(spXml, 'p:txBody');
+      if (txEl) {
+        const txBody = txEl.content;
+        const textMatches: string[] = [];
+        const runElements = safeExtractXmlElements(txBody, 'a:r');
+
+        for (const rEl of runElements) {
+          const runXml = rEl.content;
+          const tEl = safeExtractFirstXmlElement(runXml, 'a:t');
+          if (tEl) {
+            const clean = safeDecodeXmlEntities(tEl.content).trim();
+            if (clean) textMatches.push(clean);
+          }
+
+          const rPrEl = safeExtractFirstXmlElement(runXml, 'a:rPr');
+          if (rPrEl) {
+            if (!fontSize && rPrEl.attrs.sz) {
+              fontSize = Math.round(parseInt(rPrEl.attrs.sz, 10) / 100);
+            }
+            if (!fontColor) {
+              fontColor = safeFindColor(rPrEl.content);
+            }
+            if (rPrEl.attrs.b === '1' || rPrEl.attrs.b === 'true') {
+              bold = true;
+            }
+          }
+        }
+
+        if (textMatches.length > 0) {
+          shapeText = textMatches.join(' ');
+          for (const tm of textMatches) {
+            if (!texts.includes(tm)) texts.push(tm);
+          }
+        }
+      }
+
+      let shapeType = 'rect';
+      const prstEl = safeExtractFirstXmlElement(spXml, 'a:prstGeom');
+      if (prstEl?.attrs.prst) {
+        shapeType = prstEl.attrs.prst;
+      }
+      let geometryPath: string | undefined;
+      const custGeomEl = safeExtractFirstXmlElement(spXml, 'a:custGeom');
+      if (custGeomEl) {
+        shapeType = 'custom';
+        const pathEl = safeExtractFirstXmlElement(custGeomEl.content, 'a:path');
+        if (pathEl) {
+          geometryPath = pathEl.content;
+        }
+      }
+
+      shapes.push({
+        x,
+        y,
+        width: worldW,
+        height: worldH,
+        shapeType,
+        geometryPath,
+        fillColor,
+        strokeColor,
+        strokeWidth,
+        text: shapeText || undefined,
+        fontSize,
+        fontColor,
+        bold,
+        rotation: worldRot || undefined,
+        flipH: flipH || undefined,
+        flipV: flipV || undefined,
+        transformMatrix: worldMatrix,
+      });
+    }
+
+  return shapes;
 }
 
 async function convertPptxSource(
@@ -5219,363 +6025,15 @@ async function convertPptxSource(
       }
     }
 
-    const shapes: VisualSlideShape[] = [];
-
-    // 1. Group shapes (<p:grpSp>)
-    const grpElements = safeExtractXmlElements(xml, 'p:grpSp');
-    for (const grpEl of grpElements) {
-      const grpXml = grpEl.content;
-      const grpSpPr = safeExtractFirstXmlElement(grpXml, 'p:grpSpPr');
-      const offEl = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:off');
-      const extEl = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:ext');
-      const chOffEl = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:chOff');
-      const chExtEl = safeExtractFirstXmlElement(grpSpPr?.content || grpXml, 'a:chExt');
-
-      const gx = offEl?.attrs.x ? Math.round(parseInt(offEl.attrs.x, 10) / 12700) : 0;
-      const gy = offEl?.attrs.y ? Math.round(parseInt(offEl.attrs.y, 10) / 12700) : 0;
-      const gw = extEl?.attrs.cx ? Math.round(parseInt(extEl.attrs.cx, 10) / 12700) : slideWidth;
-      const gh = extEl?.attrs.cy ? Math.round(parseInt(extEl.attrs.cy, 10) / 12700) : slideHeight;
-      const chx = chOffEl?.attrs.x ? Math.round(parseInt(chOffEl.attrs.x, 10) / 12700) : gx;
-      const chy = chOffEl?.attrs.y ? Math.round(parseInt(chOffEl.attrs.y, 10) / 12700) : gy;
-      const chw = chExtEl?.attrs.cx ? Math.max(1, Math.round(parseInt(chExtEl.attrs.cx, 10) / 12700)) : gw;
-      const chh = chExtEl?.attrs.cy ? Math.max(1, Math.round(parseInt(chExtEl.attrs.cy, 10) / 12700)) : gh;
-
-      const scaleX = gw / chw;
-      const scaleY = gh / chh;
-
-      for (const childEl of safeExtractXmlElements(grpXml, 'p:sp')) {
-        const childXml = childEl.content;
-        const cOff = safeExtractFirstXmlElement(childXml, 'a:off');
-        const cExt = safeExtractFirstXmlElement(childXml, 'a:ext');
-        if (cOff?.attrs.x && cOff?.attrs.y && cExt?.attrs.cx && cExt?.attrs.cy) {
-          const rawX = Math.round(parseInt(cOff.attrs.x, 10) / 12700);
-          const rawY = Math.round(parseInt(cOff.attrs.y, 10) / 12700);
-          const rawW = Math.round(parseInt(cExt.attrs.cx, 10) / 12700);
-          const rawH = Math.round(parseInt(cExt.attrs.cy, 10) / 12700);
-
-          const x = Math.round(gx + (rawX - chx) * scaleX);
-          const y = Math.round(gy + (rawY - chy) * scaleY);
-          const width = Math.round(rawW * scaleX);
-          const height = Math.round(rawH * scaleY);
-
-          const spPrEl = safeExtractFirstXmlElement(childXml, 'p:spPr');
-          let fillColor: string | undefined;
-          if (spPrEl) {
-            fillColor = safeFindColor(spPrEl.content);
-          }
-
-          const tMatches: string[] = [];
-          for (const tEl of safeExtractXmlElements(childXml, 'a:t')) {
-            const clean = safeDecodeXmlEntities(tEl.content).trim();
-            if (clean) tMatches.push(clean);
-          }
-          const shapeText = tMatches.length > 0 ? tMatches.join(' ') : '';
-
-          shapes.push({
-            x,
-            y,
-            width,
-            height,
-            shapeType: 'rect',
-            fillColor,
-            text: shapeText || undefined,
-          });
-        }
-      }
-    }
-
-    // 2. Graphic frames (<p:graphicFrame> for tables & charts)
-    const gfElements = safeExtractXmlElements(xml, 'p:graphicFrame');
-    for (const gfEl of gfElements) {
-      const gfXml = gfEl.content;
-      const offEl = safeExtractFirstXmlElement(gfXml, 'a:off');
-      const extEl = safeExtractFirstXmlElement(gfXml, 'a:ext');
-      if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
-        const x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-        const y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
-        const w = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
-        const h = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
-
-        const tblEl = safeExtractFirstXmlElement(gfXml, 'a:tbl');
-        if (tblEl) {
-          const tblXml = tblEl.content;
-          const colWidths: number[] = [];
-          for (const gcEl of safeExtractXmlElements(tblXml, 'a:gridCol')) {
-            if (gcEl.attrs.w) {
-              colWidths.push(Math.round(parseInt(gcEl.attrs.w, 10) / 12700));
-            }
-          }
-
-          const tblRows: Array<Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }>> = [];
-          for (const trEl of safeExtractXmlElements(tblXml, 'a:tr')) {
-            const trXml = trEl.content;
-            const rowCells: Array<{ text: string; fillColor?: string; fontColor?: string; bold?: boolean }> = [];
-            for (const tcEl of safeExtractXmlElements(trXml, 'a:tc')) {
-              const tcXml = tcEl.content;
-              const cellTexts: string[] = [];
-              for (const tEl of safeExtractXmlElements(tcXml, 'a:t')) {
-                const clean = safeDecodeXmlEntities(tEl.content).trim();
-                if (clean) cellTexts.push(clean);
-              }
-              const cellText = cellTexts.join(' ');
-              if (cellText && !texts.includes(cellText)) {
-                texts.push(cellText);
-              }
-
-              const tcPrEl = safeExtractFirstXmlElement(tcXml, 'a:tcPr');
-              let cellFill: string | undefined;
-              if (tcPrEl) {
-                cellFill = safeFindColor(tcPrEl.content);
-              }
-
-              let cellBold = false;
-              if (tcXml.includes('b="1"')) cellBold = true;
-              const rPrEl = safeExtractFirstXmlElement(tcXml, 'a:rPr');
-              let cellFontColor: string | undefined;
-              if (rPrEl) {
-                cellFontColor = safeFindColor(rPrEl.content);
-                if (rPrEl.attrs.b === '1' || rPrEl.attrs.b === 'true') {
-                  cellBold = true;
-                }
-              }
-
-              rowCells.push({
-                text: cellText,
-                fillColor: cellFill,
-                fontColor: cellFontColor,
-                bold: cellBold,
-              });
-            }
-            tblRows.push(rowCells);
-          }
-
-          shapes.push({
-            x,
-            y,
-            width: w,
-            height: h,
-            shapeType: 'table',
-            tableData: {
-              rows: tblRows,
-              colWidths: colWidths.length > 0 ? colWidths : undefined,
-            },
-          });
-        } else {
-          // Check if graphicFrame contains or references an OpenXML chart
-          const chartEl = safeExtractFirstXmlElement(gfXml, 'c:chart');
-          const rId = chartEl ? (chartEl.attrs['r:id'] || chartEl.attrs.id) : undefined;
-          let chartData: OpenXmlChartData | null = null;
-          if (rId && relsMap.has(rId)) {
-            const target = relsMap.get(rId)!;
-            const chartPath = resolveZipPath('ppt/slides', target);
-            const chartFile = zip.file(chartPath) || zip.file(`ppt/${target}`);
-            if (chartFile) {
-              const chartXml = await chartFile.async('text');
-              chartData = parseOpenXmlChart(chartXml);
-            }
-          } else if (
-            gfXml.includes('<c:chart') ||
-            gfXml.includes('<c:plotArea') ||
-            gfXml.includes('<c:chartSpace>')
-          ) {
-            chartData = parseOpenXmlChart(gfXml);
-          }
-
-          if (chartData) {
-            const chartSvg = renderChartToSvg(chartData, w, h);
-            shapes.push({
-              x,
-              y,
-              width: w,
-              height: h,
-              shapeType: 'chart',
-              chartData,
-              chartSvg,
-              text: chartData.title || `${chartData.type} chart`,
-            });
-          } else {
-            const chartTexts: string[] = [];
-            for (const tEl of safeExtractXmlElements(gfXml, 'a:t')) {
-              const clean = safeDecodeXmlEntities(tEl.content).trim();
-              if (clean) chartTexts.push(clean);
-            }
-            shapes.push({
-              x,
-              y,
-              width: w,
-              height: h,
-              shapeType: 'rect',
-              fillColor: '#F8F9FE',
-              strokeColor: '#CCD2FC',
-              strokeWidth: 1,
-              text: chartTexts.join(' ') || undefined,
-            });
-          }
-        }
-      }
-    }
-
-    // 3. Pictures (<p:pic>)
-    const picElements = safeExtractXmlElements(xml, 'p:pic');
-    for (const picEl of picElements) {
-      const picXml = picEl.content;
-      const offEl = safeExtractFirstXmlElement(picXml, 'a:off');
-      const extEl = safeExtractFirstXmlElement(picXml, 'a:ext');
-      if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
-        const x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-        const y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
-        const w = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
-        const h = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
-
-        const blipEl = safeExtractFirstXmlElement(picXml, 'a:blip');
-        const rId = blipEl ? (blipEl.attrs['r:embed'] || blipEl.attrs.embed) : undefined;
-        if (rId) {
-          const target = relsMap.get(rId);
-          if (target) {
-            const mediaPath = resolveZipPath('ppt/slides', target);
-            const mediaFile = zip.file(mediaPath);
-            if (mediaFile) {
-              let imgBuffer = await mediaFile.async('nodebuffer');
-              let mimeType = 'image/png';
-              const lower = mediaPath.toLowerCase();
-              if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
-                mimeType = 'image/jpeg';
-              } else if (!lower.endsWith('.png')) {
-                try {
-                  imgBuffer = await sharp(imgBuffer).png().toBuffer();
-                  mimeType = 'image/png';
-                } catch {}
-              }
-              shapes.push({
-                x,
-                y,
-                width: w,
-                height: h,
-                shapeType: 'picture',
-                imageData: imgBuffer,
-                imageMimeType: mimeType,
-              });
-            }
-          }
-        }
-      }
-    }
-
-    // 4. Extract DrawingML shapes (<p:sp>) excluding groups, pics, and graphic frames
-    const excludedRanges: Array<[number, number]> = [];
-    for (const containerTag of ['p:grpSp', 'p:pic', 'p:graphicFrame']) {
-      for (const el of safeExtractXmlElements(xml, containerTag)) {
-        excludedRanges.push([el.startIndex, el.endIndex]);
-      }
-    }
-    const allSpElements = safeExtractXmlElements(xml, 'p:sp');
-    const standaloneSpElements = allSpElements.filter(
-      (sp) => !excludedRanges.some(([start, end]) => sp.startIndex >= start && sp.endIndex <= end)
+    const shapes = await parsePptxSlideSceneGraph(
+      xml,
+      identityMatrix(),
+      slideWidth,
+      slideHeight,
+      relsMap,
+      zip,
+      texts
     );
-
-    for (const spEl of standaloneSpElements) {
-      const spXml = spEl.content;
-
-      // Coordinate transform (<a:off x="..." y="..."/> and <a:ext cx="..." cy="..."/>)
-      const offEl = safeExtractFirstXmlElement(spXml, 'a:off');
-      const extEl = safeExtractFirstXmlElement(spXml, 'a:ext');
-
-      if (offEl?.attrs.x && offEl?.attrs.y && extEl?.attrs.cx && extEl?.attrs.cy) {
-        const x = Math.round(parseInt(offEl.attrs.x, 10) / 12700);
-        const y = Math.round(parseInt(offEl.attrs.y, 10) / 12700);
-        const w = Math.round(parseInt(extEl.attrs.cx, 10) / 12700);
-        const h = Math.round(parseInt(extEl.attrs.cy, 10) / 12700);
-
-        // Solid fill
-        let fillColor: string | undefined;
-        const spPrEl = safeExtractFirstXmlElement(spXml, 'p:spPr');
-        if (spPrEl) {
-          fillColor = safeFindColor(spPrEl.content);
-        }
-
-        // Stroke line
-        let strokeColor: string | undefined;
-        let strokeWidth: number | undefined;
-        const lnEl = safeExtractFirstXmlElement(spXml, 'a:ln');
-        if (lnEl) {
-          if (lnEl.attrs.w) {
-            strokeWidth = Math.max(1, Math.round(parseInt(lnEl.attrs.w, 10) / 12700));
-          }
-          strokeColor = safeFindColor(lnEl.content);
-        }
-
-        // Shape text runs
-        let shapeText = '';
-        let fontSize: number | undefined;
-        let fontColor: string | undefined;
-        let bold = false;
-
-        const txEl = safeExtractFirstXmlElement(spXml, 'p:txBody');
-        if (txEl) {
-          const txBody = txEl.content;
-          const textMatches: string[] = [];
-          const runElements = safeExtractXmlElements(txBody, 'a:r');
-
-          for (const rEl of runElements) {
-            const runXml = rEl.content;
-            const tEl = safeExtractFirstXmlElement(runXml, 'a:t');
-            if (tEl) {
-              const clean = safeDecodeXmlEntities(tEl.content).trim();
-              if (clean) textMatches.push(clean);
-            }
-
-            const rPrEl = safeExtractFirstXmlElement(runXml, 'a:rPr');
-            if (rPrEl) {
-              if (!fontSize && rPrEl.attrs.sz) {
-                fontSize = Math.round(parseInt(rPrEl.attrs.sz, 10) / 100);
-              }
-              if (!fontColor) {
-                fontColor = safeFindColor(rPrEl.content);
-              }
-              if (rPrEl.attrs.b === '1' || rPrEl.attrs.b === 'true') {
-                bold = true;
-              }
-            }
-          }
-
-          if (textMatches.length > 0) {
-            shapeText = textMatches.join(' ');
-          }
-        }
-
-        // Extract preset or custom geometry
-        let shapeType = 'rect';
-        const prstEl = safeExtractFirstXmlElement(spXml, 'a:prstGeom');
-        if (prstEl?.attrs.prst) {
-          shapeType = prstEl.attrs.prst;
-        }
-        let geometryPath: string | undefined;
-        const custGeomEl = safeExtractFirstXmlElement(spXml, 'a:custGeom');
-        if (custGeomEl) {
-          shapeType = 'custom';
-          const pathEl = safeExtractFirstXmlElement(custGeomEl.content, 'a:path');
-          if (pathEl) {
-            geometryPath = pathEl.content;
-          }
-        }
-
-        shapes.push({
-          x,
-          y,
-          width: w,
-          height: h,
-          shapeType,
-          geometryPath,
-          fillColor,
-          strokeColor,
-          strokeWidth,
-          text: shapeText || undefined,
-          fontSize,
-          fontColor,
-          bold,
-        });
-      }
-    }
 
     slides.push({
       number: i + 1,
@@ -5814,7 +6272,17 @@ function generateHtmlFromSlides(
           svgElements += `        <g transform="translate(${s.x}, ${s.y})">\n${s.chartSvg}\n        </g>\n`;
         } else if (type === 'picture' && s.imageData) {
           const mime = s.imageMimeType || 'image/png';
-          svgElements += `        <image href="data:${mime};base64,${s.imageData.toString('base64')}" x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" preserveAspectRatio="none"/>\n`;
+          const cx = s.x + s.width / 2;
+          const cy = s.y + s.height / 2;
+          const transforms: string[] = [];
+          if (s.rotation) transforms.push(`rotate(${s.rotation} ${cx} ${cy})`);
+          if (s.flipH || s.flipV) {
+            const sx = s.flipH ? -1 : 1;
+            const sy = s.flipV ? -1 : 1;
+            transforms.push(`translate(${cx} ${cy}) scale(${sx} ${sy}) translate(${-cx} ${-cy})`);
+          }
+          const trAttr = transforms.length > 0 ? ` transform="${transforms.join(' ')}"` : '';
+          svgElements += `        <image href="data:${mime};base64,${s.imageData.toString('base64')}" x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" preserveAspectRatio="none"${trAttr}/>\n`;
         } else if (type === 'table' && s.tableData) {
           const rowCount = Math.max(1, s.tableData.rows.length);
           const rowH = Math.max(18, Math.round(s.height / rowCount));
@@ -5845,6 +6313,9 @@ function generateHtmlFromSlides(
             strokeColor: s.strokeColor,
             strokeWidth: s.strokeWidth,
             text: s.text,
+            rotation: s.rotation,
+            flipH: s.flipH,
+            flipV: s.flipV,
           })}\n`;
         }
       });
@@ -5929,10 +6400,25 @@ async function generatePdfFromSlides(
               );
             } else if (type === 'picture' && shape.imageData) {
               try {
-                doc.image(shape.imageData, shape.x, shape.y, {
-                  width: shape.width,
-                  height: shape.height,
-                });
+                if (shape.rotation || shape.flipH || shape.flipV) {
+                  doc.save();
+                  const cx = shape.x + shape.width / 2;
+                  const cy = shape.y + shape.height / 2;
+                  doc.translate(cx, cy);
+                  if (shape.rotation) doc.rotate(shape.rotation);
+                  if (shape.flipH || shape.flipV) doc.scale(shape.flipH ? -1 : 1, shape.flipV ? -1 : 1);
+                  doc.translate(-cx, -cy);
+                  doc.image(shape.imageData, shape.x, shape.y, {
+                    width: shape.width,
+                    height: shape.height,
+                  });
+                  doc.restore();
+                } else {
+                  doc.image(shape.imageData, shape.x, shape.y, {
+                    width: shape.width,
+                    height: shape.height,
+                  });
+                }
               } catch {
                 doc.rect(shape.x, shape.y, shape.width, shape.height).strokeColor('#CCD2FC').lineWidth(1).stroke();
               }
@@ -5988,6 +6474,9 @@ async function generatePdfFromSlides(
                   text: shape.text,
                   fontSize: shape.fontSize,
                   fontColor: shape.fontColor,
+                  rotation: shape.rotation,
+                  flipH: shape.flipH,
+                  flipV: shape.flipV,
                 },
                 hasUnicodeFont,
                 shape.x,
