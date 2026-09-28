@@ -236,8 +236,247 @@ export interface UnicodeFontInfo {
 }
 
 /**
- * Registers an ISO 32000-1 Type 0 (Composite) CIDFont with Identity-H encoding
- * and a 16-bit /ToUnicode CMap stream into the PDFDocument.
+ * Generates an ISO 32000-1 / OpenType compliant minimal TrueType (SFNT) binary font.
+ * Includes all 10 mandatory standard tables (OS/2, cmap, glyf, head, hhea, hmtx, loca, maxp, name, post)
+ * with strict 4-byte alignment and checksum calculations, allowing strict PDF viewers
+ * to parse embedded /FontFile2 CIDFontType2 glyph streams without missing font errors.
+ */
+export function buildMinimalTrueTypeFont(): Buffer {
+  const calcTableChecksum = (buf: Buffer): number => {
+    let sum = 0;
+    const n = Math.floor(buf.length / 4);
+    for (let i = 0; i < n; i++) {
+      sum = (sum + buf.readUInt32BE(i * 4)) >>> 0;
+    }
+    return sum;
+  };
+
+  // 1. Table 'head' (54 bytes)
+  const head = Buffer.alloc(54);
+  head.writeUInt32BE(0x00010000, 0); // version 1.0
+  head.writeUInt32BE(0x00010000, 4); // fontRevision 1.0
+  head.writeUInt32BE(0x00000000, 8); // checkSumAdjustment (calculated later)
+  head.writeUInt32BE(0x5f0f3cf5, 12); // magicNumber
+  head.writeUInt16BE(0x0003, 16); // flags
+  head.writeUInt16BE(1000, 18); // unitsPerEm
+  head.writeInt16BE(-1000, 36); // xMin
+  head.writeInt16BE(-200, 38); // yMin
+  head.writeInt16BE(1000, 40); // xMax
+  head.writeInt16BE(1000, 42); // yMax
+  head.writeUInt16BE(0, 44); // macStyle
+  head.writeUInt16BE(6, 46); // lowestRecPPEM
+  head.writeInt16BE(2, 48); // fontDirectionHint
+  head.writeInt16BE(0, 50); // indexToLocFormat: 0 (16-bit offset / 2)
+  head.writeInt16BE(0, 52); // glyphDataFormat: 0
+
+  // 2. Table 'hhea' (36 bytes)
+  const hhea = Buffer.alloc(36);
+  hhea.writeUInt32BE(0x00010000, 0); // version 1.0
+  hhea.writeInt16BE(1000, 4); // ascender
+  hhea.writeInt16BE(-200, 6); // descender
+  hhea.writeInt16BE(0, 8); // lineGap
+  hhea.writeUInt16BE(1000, 10); // advanceWidthMax
+  hhea.writeInt16BE(0, 12); // minLeftSideBearing
+  hhea.writeInt16BE(0, 14); // minRightSideBearing
+  hhea.writeInt16BE(1000, 16); // xMaxExtent
+  hhea.writeInt16BE(1, 18); // caretSlopeRise
+  hhea.writeInt16BE(0, 20); // caretSlopeRun
+  hhea.writeInt16BE(0, 22); // caretOffset
+  hhea.writeInt16BE(0, 32); // metricDataFormat
+  hhea.writeUInt16BE(1, 34); // numberOfHMetrics
+
+  // 3. Table 'maxp' (32 bytes)
+  const maxp = Buffer.alloc(32);
+  maxp.writeUInt32BE(0x00010000, 0); // version 1.0
+  maxp.writeUInt16BE(1, 4); // numGlyphs = 1 (.notdef)
+
+  // 4. Table 'OS/2' (86 bytes)
+  const os2 = Buffer.alloc(86);
+  os2.writeUInt16BE(1, 0); // version 1
+  os2.writeInt16BE(1000, 2); // xAvgCharWidth
+  os2.writeUInt16BE(400, 4); // usWeightClass (Regular)
+  os2.writeUInt16BE(5, 6); // usWidthClass (Medium)
+  os2.writeUInt16BE(0, 8); // fsType (0 = installable)
+  os2.writeInt16BE(650, 10); // ySubscriptXSize
+  os2.writeInt16BE(600, 12); // ySubscriptYSize
+  os2.writeInt16BE(0, 14); // ySubscriptXOffset
+  os2.writeInt16BE(75, 16); // ySubscriptYOffset
+  os2.writeInt16BE(650, 18); // ySuperscriptXSize
+  os2.writeInt16BE(600, 20); // ySuperscriptYSize
+  os2.writeInt16BE(0, 22); // ySuperscriptXOffset
+  os2.writeInt16BE(350, 24); // ySuperscriptYOffset
+  os2.writeInt16BE(50, 26); // yStrikeoutSize
+  os2.writeInt16BE(300, 28); // yStrikeoutPosition
+  os2.writeInt16BE(0, 30); // sFamilyClass
+  os2.write('ECVT', 58, 4, 'ascii'); // achVendID
+  os2.writeUInt16BE(0x0040, 62); // fsSelection (REGULAR)
+  os2.writeUInt16BE(0x0020, 64); // usFirstCharIndex
+  os2.writeUInt16BE(0xffff, 66); // usLastCharIndex
+  os2.writeInt16BE(1000, 68); // sTypoAscender
+  os2.writeInt16BE(-200, 70); // sTypoDescender
+  os2.writeInt16BE(0, 72); // sTypoLineGap
+  os2.writeUInt16BE(1000, 74); // usWinAscent
+  os2.writeUInt16BE(200, 76); // usWinDescent
+
+  // 5. Table 'hmtx' (4 bytes)
+  const hmtx = Buffer.alloc(4);
+  hmtx.writeUInt16BE(1000, 0); // advanceWidth = 1000
+  hmtx.writeInt16BE(0, 2); // leftSideBearing = 0
+
+  // 6. Table 'loca' (4 bytes)
+  const loca = Buffer.alloc(4);
+  loca.writeUInt16BE(0, 0); // glyph 0 offset: 0 / 2 = 0
+  loca.writeUInt16BE(5, 2); // glyph 1 offset: 10 / 2 = 5
+
+  // 7. Table 'glyf' (10 bytes -> padded to 12)
+  const glyf = Buffer.alloc(10);
+  glyf.writeInt16BE(0, 0); // numberOfContours: 0 (empty .notdef glyph)
+  glyf.writeInt16BE(0, 2); // xMin
+  glyf.writeInt16BE(0, 4); // yMin
+  glyf.writeInt16BE(0, 6); // xMax
+  glyf.writeInt16BE(0, 8); // yMax
+
+  // 8. Table 'name'
+  const nameStrings = [
+    'EasyConvert-ToUnicode', // 1: Family
+    'Regular', // 2: Subfamily
+    'EasyConvert-ToUnicode', // 3: Unique ID
+    'EasyConvert-ToUnicode', // 4: Full Name
+    'EasyConvert-ToUnicode', // 6: PostScript Name
+  ];
+  const nameIds = [1, 2, 3, 4, 6];
+  const stringBuffers = nameStrings.map((s) => {
+    const b = Buffer.alloc(s.length * 2);
+    for (let j = 0; j < s.length; j++) {
+      b.writeUInt16BE(s.charCodeAt(j), j * 2);
+    }
+    return b;
+  });
+  const stringHeaderSize = 6 + nameIds.length * 12;
+  let stringDataTotal = 0;
+  for (const b of stringBuffers) stringDataTotal += b.length;
+
+  const name = Buffer.alloc(stringHeaderSize + stringDataTotal);
+  name.writeUInt16BE(0, 0); // format 0
+  name.writeUInt16BE(nameIds.length, 2); // count
+  name.writeUInt16BE(stringHeaderSize, 4); // stringOffset
+
+  let curStrOffset = 0;
+  for (let i = 0; i < nameIds.length; i++) {
+    const recOff = 6 + i * 12;
+    name.writeUInt16BE(3, recOff); // platformID: Windows
+    name.writeUInt16BE(1, recOff + 2); // encodingID: Unicode BMP
+    name.writeUInt16BE(0x0409, recOff + 4); // languageID: English US
+    name.writeUInt16BE(nameIds[i], recOff + 6); // nameID
+    name.writeUInt16BE(stringBuffers[i].length, recOff + 8); // length
+    name.writeUInt16BE(curStrOffset, recOff + 10); // offset
+    stringBuffers[i].copy(name, stringHeaderSize + curStrOffset);
+    curStrOffset += stringBuffers[i].length;
+  }
+
+  // 9. Table 'post' (32 bytes)
+  const post = Buffer.alloc(32);
+  post.writeUInt32BE(0x00030000, 0); // format 3.0
+  post.writeUInt32BE(0, 4); // italicAngle
+  post.writeInt16BE(-100, 8); // underlinePosition
+  post.writeInt16BE(50, 10); // underlineThickness
+  post.writeUInt32BE(1, 12); // isFixedPitch = 1
+
+  // 10. Table 'cmap' (44 bytes)
+  const cmap = Buffer.alloc(44);
+  cmap.writeUInt16BE(0, 0); // version 0
+  cmap.writeUInt16BE(1, 2); // numTables = 1
+  cmap.writeUInt16BE(3, 4); // platformID: Windows
+  cmap.writeUInt16BE(1, 6); // encodingID: Unicode BMP
+  cmap.writeUInt32BE(12, 8); // subtable offset = 12
+
+  // cmap subtable format 4 (32 bytes at offset 12)
+  const sub = cmap.subarray(12);
+  sub.writeUInt16BE(4, 0); // format 4
+  sub.writeUInt16BE(32, 2); // length 32
+  sub.writeUInt16BE(0, 4); // language 0
+  sub.writeUInt16BE(4, 6); // segCountX2 = 4 (2 segments)
+  sub.writeUInt16BE(4, 8); // searchRange
+  sub.writeUInt16BE(1, 10); // entrySelector
+  sub.writeUInt16BE(0, 12); // rangeShift
+  sub.writeUInt16BE(0x0020, 14); // endCode seg 0
+  sub.writeUInt16BE(0xffff, 16); // endCode seg 1
+  sub.writeUInt16BE(0, 18); // reservedPad
+  sub.writeUInt16BE(0x0020, 20); // startCode seg 0
+  sub.writeUInt16BE(0xffff, 22); // startCode seg 1
+  sub.writeInt16BE(-0x0020, 24); // idDelta seg 0
+  sub.writeInt16BE(1, 26); // idDelta seg 1
+  sub.writeUInt16BE(0, 28); // idRangeOffset seg 0
+  sub.writeUInt16BE(0, 30); // idRangeOffset seg 1
+
+  // Alphabetically sorted table entries
+  const rawTables: Array<{ tag: string; buf: Buffer }> = [
+    { tag: 'OS/2', buf: os2 },
+    { tag: 'cmap', buf: cmap },
+    { tag: 'glyf', buf: glyf },
+    { tag: 'head', buf: head },
+    { tag: 'hhea', buf: hhea },
+    { tag: 'hmtx', buf: hmtx },
+    { tag: 'loca', buf: loca },
+    { tag: 'maxp', buf: maxp },
+    { tag: 'name', buf: name },
+    { tag: 'post', buf: post },
+  ];
+
+  const tables = rawTables.map((t) => {
+    const pad = (4 - (t.buf.length % 4)) % 4;
+    const paddedBuf = pad === 0 ? t.buf : Buffer.concat([t.buf, Buffer.alloc(pad)]);
+    return {
+      tag: t.tag,
+      origLength: t.buf.length,
+      paddedBuf,
+      checksum: calcTableChecksum(paddedBuf),
+    };
+  });
+
+  const numTables = tables.length;
+  const headerSize = 12 + numTables * 16;
+  let totalSize = headerSize;
+  for (const t of tables) {
+    totalSize += t.paddedBuf.length;
+  }
+
+  const fontFile = Buffer.alloc(totalSize);
+  fontFile.writeUInt32BE(0x00010000, 0); // sfntVersion (TrueType)
+  fontFile.writeUInt16BE(numTables, 4);
+  const maxPow2 = 1 << Math.floor(Math.log2(numTables));
+  fontFile.writeUInt16BE(maxPow2 * 16, 6); // searchRange
+  fontFile.writeUInt16BE(Math.floor(Math.log2(numTables)), 8); // entrySelector
+  fontFile.writeUInt16BE(numTables * 16 - maxPow2 * 16, 10); // rangeShift
+
+  let curOffset = headerSize;
+  let headTableOffset = 0;
+
+  for (let i = 0; i < numTables; i++) {
+    const t = tables[i];
+    const dirOffset = 12 + i * 16;
+    fontFile.write(t.tag, dirOffset, 4, 'ascii');
+    fontFile.writeUInt32BE(t.checksum, dirOffset + 4);
+    fontFile.writeUInt32BE(curOffset, dirOffset + 8);
+    fontFile.writeUInt32BE(t.origLength, dirOffset + 12);
+
+    t.paddedBuf.copy(fontFile, curOffset);
+    if (t.tag === 'head') {
+      headTableOffset = curOffset;
+    }
+    curOffset += t.paddedBuf.length;
+  }
+
+  const fullFontChecksum = calcTableChecksum(fontFile);
+  const checkSumAdjustment = (0xb1b0afba - fullFontChecksum) >>> 0;
+  fontFile.writeUInt32BE(checkSumAdjustment, headTableOffset + 8);
+
+  return fontFile;
+}
+
+/**
+ * Ensures a Type 0 CIDFont with an embedded TrueType stream (/FontFile2)
+ * and a 16-bit /ToUnicode CMap stream into the PDFDocument per ISO 32000-1.
  */
 export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
   if ((doc as any)._unicodeFontInfo) {
@@ -247,6 +486,11 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
   const cmap = createToUnicodeCMap();
   const cmapStream = doc.context.flateStream(cmap);
   const cmapRef = doc.context.register(cmapStream);
+
+  const ttfBuffer = buildMinimalTrueTypeFont();
+  const fontStream = doc.context.flateStream(ttfBuffer);
+  fontStream.dict.set(PDFName.of('Length1'), PDFNumber.of(ttfBuffer.length));
+  const fontStreamRef = doc.context.register(fontStream);
 
   const fontDescDict = doc.context.obj({
     Type: 'FontDescriptor',
@@ -258,6 +502,7 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
     Descent: -200,
     CapHeight: 800,
     StemV: 80,
+    FontFile2: fontStreamRef,
   });
   const fontDescRef = doc.context.register(fontDescDict);
 

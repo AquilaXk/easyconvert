@@ -60,7 +60,7 @@ export async function performOcr(
     // Fall back to built-in geometric OCR engine or CJK pipeline
   }
 
-  // 2. If CJK script requested (ko, ja, zh), route through ONNX CJK OCR Pipeline
+  // 2. If CJK script requested (ko, ja, zh), route through multi-script CJK OCR Pipeline
   const langLower = language.toLowerCase();
   const isCjk = ['ko', 'kor', 'korean', 'ja', 'jpn', 'japanese', 'zh', 'chi_sim', 'chi_tra', 'chinese', 'cjk'].includes(langLower);
   if (isCjk) {
@@ -510,7 +510,7 @@ export function classifyGlyph(
 }
 
 /**
- * Lightweight CJK Neural OCR Pipeline.
+ * Multi-script CJK OCR Pipeline.
  * Formulates structured multi-script detection and CJK character tokenization
  * for high-accuracy local client/edge execution.
  */

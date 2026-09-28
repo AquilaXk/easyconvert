@@ -2542,13 +2542,61 @@ export function tessellateCurvesToMesh(curves: BSplineCurve[], modelName: string
     // Single curve: generate extruded ribbon wireframe
     const c1 = curvePointsList[0];
     const baseIdx = vertices.length;
+
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
+    for (const p of c1) {
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+    }
+    const diag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+    const ribbonHalfWidth = Math.max(1e-4, diag * 0.005);
+
     for (let i = 0; i < c1.length; i++) {
-      vertices.push([c1[i].x, c1[i].y, c1[i].z]);
-      normals.push([0, 0, 1]);
+      const prev = c1[Math.max(0, i - 1)];
+      const next = c1[Math.min(c1.length - 1, i + 1)];
+      const tx = next.x - prev.x, ty = next.y - prev.y, tz = next.z - prev.z;
+      const tLen = Math.hypot(tx, ty, tz);
+      let nx = 0, ny = 0, nz = 1;
+      if (tLen > 1e-8) {
+        const utx = tx / tLen, uty = ty / tLen, utz = tz / tLen;
+        const ref = Math.abs(uty) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+        nx = uty * ref[2] - utz * ref[1];
+        ny = utz * ref[0] - utx * ref[2];
+        nz = utx * ref[1] - uty * ref[0];
+        const nLen = Math.hypot(nx, ny, nz);
+        if (nLen > 1e-8) {
+          nx /= nLen; ny /= nLen; nz /= nLen;
+        } else {
+          nx = 0; ny = 0; nz = 1;
+        }
+      }
+      vertices.push([c1[i].x - nx * ribbonHalfWidth, c1[i].y - ny * ribbonHalfWidth, c1[i].z - nz * ribbonHalfWidth]);
+      normals.push([nx, ny, nz]);
     }
     for (let i = 0; i < c1.length; i++) {
-      vertices.push([c1[i].x + 0.1, c1[i].y + 0.1, c1[i].z + 0.1]);
-      normals.push([0, 0, 1]);
+      const prev = c1[Math.max(0, i - 1)];
+      const next = c1[Math.min(c1.length - 1, i + 1)];
+      const tx = next.x - prev.x, ty = next.y - prev.y, tz = next.z - prev.z;
+      const tLen = Math.hypot(tx, ty, tz);
+      let nx = 0, ny = 0, nz = 1;
+      if (tLen > 1e-8) {
+        const utx = tx / tLen, uty = ty / tLen, utz = tz / tLen;
+        const ref = Math.abs(uty) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+        nx = uty * ref[2] - utz * ref[1];
+        ny = utz * ref[0] - utx * ref[2];
+        nz = utx * ref[1] - uty * ref[0];
+        const nLen = Math.hypot(nx, ny, nz);
+        if (nLen > 1e-8) {
+          nx /= nLen; ny /= nLen; nz /= nLen;
+        } else {
+          nx = 0; ny = 0; nz = 1;
+        }
+      }
+      vertices.push([c1[i].x + nx * ribbonHalfWidth, c1[i].y + ny * ribbonHalfWidth, c1[i].z + nz * ribbonHalfWidth]);
+      normals.push([nx, ny, nz]);
     }
     for (let i = 0; i < samplesPerCurve; i++) {
       const i0 = baseIdx + i;
@@ -2621,36 +2669,251 @@ function mergeTessellatedSurfaces(surfaces: BSplineSurface[], modelName: string)
   };
 }
 
-function buildTrianglesFromPoints(points: Point3D[], modelName: string): TessellatedMesh {
-  const vertices: [number, number, number][] = points.map((p) => [p.x, p.y, p.z]);
-  const faces: [number, number, number][] = [];
-  const normals: [number, number, number][] = [];
+export function delaunayTriangulation2DPoints(pts: Parametric2DPoint[]): Array<[number, number, number]> {
+  const n = pts.length;
+  if (n < 3) return [];
+  if (n === 3) {
+    const signedArea = (pts[1].u - pts[0].u) * (pts[2].v - pts[0].v) - (pts[2].u - pts[0].u) * (pts[1].v - pts[0].v);
+    return signedArea >= 0 ? [[0, 1, 2]] : [[0, 2, 1]];
+  }
 
-  for (let i = 0; i + 2 < vertices.length; i += 3) {
-    faces.push([i, i + 1, i + 2]);
-    const v1 = vertices[i];
-    const v2 = vertices[i + 1];
-    const v3 = vertices[i + 2];
-    const ax = v2[0] - v1[0];
-    const ay = v2[1] - v1[1];
-    const az = v2[2] - v1[2];
-    const bx = v3[0] - v1[0];
-    const by = v3[1] - v1[1];
-    const bz = v3[2] - v1[2];
-    const nx = ay * bz - az * by;
-    const ny = az * bx - ax * bz;
-    const nz = ax * by - ay * bx;
-    const len = Math.hypot(nx, ny, nz);
-    if (len > 1e-8) {
-      normals.push([nx / len, ny / len, nz / len]);
-      normals.push([nx / len, ny / len, nz / len]);
-      normals.push([nx / len, ny / len, nz / len]);
-    } else {
-      normals.push([0, 0, 1]);
-      normals.push([0, 0, 1]);
-      normals.push([0, 0, 1]);
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (const p of pts) {
+    if (p.u < minU) minU = p.u;
+    if (p.u > maxU) maxU = p.u;
+    if (p.v < minV) minV = p.v;
+    if (p.v > maxV) maxV = p.v;
+  }
+
+  const dU = Math.max(1e-4, maxU - minU);
+  const dV = Math.max(1e-4, maxV - minV);
+  const midU = (minU + maxU) / 2;
+  const midV = (minV + maxV) / 2;
+  const delta = Math.max(dU, dV) * 20;
+
+  const allPts: Parametric2DPoint[] = [...pts];
+  allPts.push({ u: midU - delta, v: midV - delta });
+  allPts.push({ u: midU + delta, v: midV - delta });
+  allPts.push({ u: midU, v: midV + delta });
+
+  let triangles: Array<[number, number, number]> = [[n, n + 1, n + 2]];
+
+  for (let i = 0; i < n; i++) {
+    const p = allPts[i];
+    const badTriangles: number[] = [];
+    const polygonEdges: Array<[number, number]> = [];
+
+    for (let tIdx = 0; tIdx < triangles.length; tIdx++) {
+      const tri = triangles[tIdx];
+      const p0 = allPts[tri[0]];
+      const p1 = allPts[tri[1]];
+      const p2 = allPts[tri[2]];
+
+      const ax = p0.u - p.u, ay = p0.v - p.v;
+      const bx = p1.u - p.u, by = p1.v - p.v;
+      const cx = p2.u - p.u, cy = p2.v - p.v;
+      const det =
+        (ax * ax + ay * ay) * (bx * cy - cx * by) -
+        (bx * bx + by * by) * (ax * cy - cx * ay) +
+        (cx * cx + cy * cy) * (ax * by - bx * ay);
+
+      const area = (p1.u - p0.u) * (p2.v - p0.v) - (p2.u - p0.u) * (p1.v - p0.v);
+      const inCircle = area > 0 ? det > 1e-12 : det < -1e-12;
+
+      if (inCircle) {
+        badTriangles.push(tIdx);
+      }
+    }
+
+    const edgeCount = new Map<string, { edge: [number, number]; count: number }>();
+    for (const bIdx of badTriangles) {
+      const tri = triangles[bIdx];
+      for (let e = 0; e < 3; e++) {
+        const vA = tri[e];
+        const vB = tri[(e + 1) % 3];
+        const key = vA < vB ? `${vA}-${vB}` : `${vB}-${vA}`;
+        const existing = edgeCount.get(key);
+        if (existing) {
+          existing.count++;
+        } else {
+          edgeCount.set(key, { edge: [vA, vB], count: 1 });
+        }
+      }
+    }
+
+    for (const entry of edgeCount.values()) {
+      if (entry.count === 1) {
+        polygonEdges.push(entry.edge);
+      }
+    }
+
+    triangles = triangles.filter((_, idx) => !badTriangles.includes(idx));
+
+    for (const [vA, vB] of polygonEdges) {
+      const signedArea =
+        (allPts[vB].u - allPts[vA].u) * (p.v - allPts[vA].v) -
+        (p.u - allPts[vA].u) * (allPts[vB].v - allPts[vA].v);
+      if (signedArea >= 0) {
+        triangles.push([vA, vB, i]);
+      } else {
+        triangles.push([vB, vA, i]);
+      }
     }
   }
+
+  const validTriangles = triangles.filter(
+    (tri) => tri[0] < n && tri[1] < n && tri[2] < n
+  );
+
+  return lawsonEdgeFlipHealing2D(pts, validTriangles);
+}
+
+export function buildTrianglesFromPoints(points: Point3D[], modelName: string): TessellatedMesh {
+  if (points.length < 3) {
+    return { name: modelName, vertices: [], normals: [], faces: [] };
+  }
+
+  const uniquePoints: Point3D[] = [];
+  for (const pt of points) {
+    if (!uniquePoints.some((u) => Math.hypot(u.x - pt.x, u.y - pt.y, u.z - pt.z) < 1e-7)) {
+      uniquePoints.push(pt);
+    }
+  }
+
+  if (uniquePoints.length < 3) {
+    return { name: modelName, vertices: [], normals: [], faces: [] };
+  }
+
+  const vertices: [number, number, number][] = uniquePoints.map((p) => [p.x, p.y, p.z]);
+
+  // Compute Centroid
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (const p of uniquePoints) {
+    cx += p.x;
+    cy += p.y;
+    cz += p.z;
+  }
+  cx /= uniquePoints.length;
+  cy /= uniquePoints.length;
+  cz /= uniquePoints.length;
+
+  // Find Best-Fit Plane Normal via cross product accumulation
+  let nx = 0;
+  let ny = 0;
+  let nz = 0;
+  for (let i = 0; i < uniquePoints.length; i++) {
+    const p1 = uniquePoints[i];
+    const p2 = uniquePoints[(i + 1) % uniquePoints.length];
+    const ax = p1.x - cx;
+    const ay = p1.y - cy;
+    const az = p1.z - cz;
+    const bx = p2.x - cx;
+    const by = p2.y - cy;
+    const bz = p2.z - cz;
+    nx += ay * bz - az * by;
+    ny += az * bx - ax * bz;
+    nz += ax * by - ay * bx;
+  }
+  let normLen = Math.hypot(nx, ny, nz);
+
+  if (normLen < 1e-6) {
+    for (let i = 0; i < uniquePoints.length - 2; i++) {
+      for (let j = i + 1; j < uniquePoints.length - 1; j++) {
+        for (let k = j + 1; k < uniquePoints.length; k++) {
+          const v1x = uniquePoints[j].x - uniquePoints[i].x;
+          const v1y = uniquePoints[j].y - uniquePoints[i].y;
+          const v1z = uniquePoints[j].z - uniquePoints[i].z;
+          const v2x = uniquePoints[k].x - uniquePoints[i].x;
+          const v2y = uniquePoints[k].y - uniquePoints[i].y;
+          const v2z = uniquePoints[k].z - uniquePoints[i].z;
+          const tx = v1y * v2z - v1z * v2y;
+          const ty = v1z * v2x - v1x * v2z;
+          const tz = v1x * v2y - v1y * v2x;
+          const tLen = Math.hypot(tx, ty, tz);
+          if (tLen > normLen) {
+            nx = tx;
+            ny = ty;
+            nz = tz;
+            normLen = tLen;
+          }
+        }
+      }
+    }
+  }
+
+  if (normLen < 1e-8) {
+    return { name: modelName, vertices, normals: vertices.map(() => [0, 0, 1]), faces: [] };
+  }
+
+  nx /= normLen;
+  ny /= normLen;
+  nz /= normLen;
+
+  let refX = 0;
+  let refY = 1;
+  let refZ = 0;
+  if (Math.abs(ny) > 0.9) {
+    refX = 1;
+    refY = 0;
+    refZ = 0;
+  }
+  let ux = refY * nz - refZ * ny;
+  let uy = refZ * nx - refX * nz;
+  let uz = refX * ny - refY * nx;
+  const uLen = Math.hypot(ux, uy, uz);
+  ux /= uLen;
+  uy /= uLen;
+  uz /= uLen;
+
+  const vx = ny * uz - nz * uy;
+  const vy = nz * ux - nx * uz;
+  const vz = nx * uy - ny * ux;
+
+  const pts2D: Parametric2DPoint[] = uniquePoints.map((p) => {
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    const dz = p.z - cz;
+    return {
+      u: dx * ux + dy * uy + dz * uz,
+      v: dx * vx + dy * vy + dz * vz,
+    };
+  });
+
+  const faces = delaunayTriangulation2DPoints(pts2D);
+
+  const accumNormals: [number, number, number][] = vertices.map(() => [0, 0, 0]);
+  for (const f of faces) {
+    const v0 = vertices[f[0]];
+    const v1 = vertices[f[1]];
+    const v2 = vertices[f[2]];
+    const ax = v1[0] - v0[0];
+    const ay = v1[1] - v0[1];
+    const az = v1[2] - v0[2];
+    const bx = v2[0] - v0[0];
+    const by = v2[1] - v0[1];
+    const bz = v2[2] - v0[2];
+    const fnx = ay * bz - az * by;
+    const fny = az * bx - ax * bz;
+    const fnz = ax * by - ay * bx;
+    const fLen = Math.hypot(fnx, fny, fnz);
+    if (fLen > 1e-8) {
+      const unx = fnx / fLen;
+      const uny = fny / fLen;
+      const unz = fnz / fLen;
+      for (const idx of f) {
+        accumNormals[idx][0] += unx;
+        accumNormals[idx][1] += uny;
+        accumNormals[idx][2] += unz;
+      }
+    }
+  }
+
+  const normals: [number, number, number][] = accumNormals.map((norm) => {
+    const len = Math.hypot(norm[0], norm[1], norm[2]);
+    return len > 1e-8 ? [norm[0] / len, norm[1] / len, norm[2] / len] : [nx, ny, nz];
+  });
 
   return { name: modelName, vertices, normals, faces };
 }
