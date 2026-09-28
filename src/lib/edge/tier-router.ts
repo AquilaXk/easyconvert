@@ -637,13 +637,58 @@ export function resolveConversionTier(
   }
 
   // 5. Level 1: WebCodecs Hardware Media
-  const isVideoOrAudio = ['mp4', 'webm', 'mov', 'm4a', 'aac', 'opus'].includes(tgt);
-  if (isVideoOrAudio && (capabilities?.hasWebCodecsVideo || capabilities?.hasWebCodecsAudio)) {
+  const isVideoTarget = ['mp4', 'webm', 'mov'].includes(tgt);
+  if (isVideoTarget && capabilities?.hasWebCodecsVideo) {
     return {
       tier: 'L1',
       tierName: 'Edge L1 (Hardware VPU)',
       isClientEdge: true,
       reason: 'WebCodecs GPU/VPU hardware-accelerated media pipeline',
+    };
+  }
+
+  if (tgt === 'opus') {
+    const supportsOpus =
+      Boolean(capabilities?.hasWebCodecsAudio) &&
+      (!capabilities?.supportedAudioEncoders ||
+        capabilities.supportedAudioEncoders.includes('opus'));
+    if (supportsOpus) {
+      return {
+        tier: 'L1',
+        tierName: 'Edge L1 (Hardware VPU)',
+        isClientEdge: true,
+        reason: 'WebCodecs AudioEncoder hardware Opus pipeline',
+      };
+    }
+    return {
+      tier: 'L4',
+      tierName: 'Cloud (Zero-Retention)',
+      isClientEdge: false,
+      reason: 'Opus encoding requires WebCodecs AudioEncoder or native cloud worker engine',
+    };
+  }
+
+  if (tgt === 'aac' || tgt === 'm4a') {
+    const supportsAac =
+      Boolean(capabilities?.hasWebCodecsAudio) &&
+      (!capabilities?.supportedAudioEncoders ||
+        capabilities.supportedAudioEncoders.includes('mp4a.40.2'));
+    if (supportsAac) {
+      return {
+        tier: 'L1',
+        tierName: 'Edge L1 (Hardware VPU)',
+        isClientEdge: true,
+        reason: 'WebCodecs AudioEncoder hardware AAC pipeline',
+      };
+    }
+  }
+
+  if (tgt === 'ogg' || tgt === 'vorbis') {
+    return {
+      tier: 'L4',
+      tierName: 'Cloud (Zero-Retention)',
+      isClientEdge: false,
+      reason: 'Ogg Vorbis encoding requires native FFmpeg cloud worker engine (Fail-Closed on edge)',
     };
   }
 

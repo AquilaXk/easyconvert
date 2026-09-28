@@ -255,13 +255,11 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
   // 5. End-to-End Media Conversions & Worker Dispatch
   // ==========================================================================
   describe('5. End-to-End Media Pipeline Integration', () => {
-    it('converts synthetic WAV to MP4, OPUS, OGG, FLAC, and MP3 via pure TS pipeline', async () => {
+    it('converts synthetic WAV to MP4, FLAC, and MP3 via pure TS pipeline, and enforces Fail-Closed on Opus/OGG without native engine', async () => {
       const wav = createSyntheticWav(44100, 2, 0.25);
 
-      const [mp4Res, opusRes, oggRes, flacRes, mp3Res] = await Promise.all([
+      const [mp4Res, flacRes, mp3Res] = await Promise.all([
         convertMedia(wav, 'wav', 'mp4', { allowPureLossyBitstream: true }, 'test.wav'),
-        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true }, 'test.wav'),
-        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true }, 'test.wav'),
         convertMedia(wav, 'wav', 'flac', {}, 'test.wav'),
         convertMedia(wav, 'wav', 'mp3', { allowPureLossyBitstream: true }, 'test.wav'),
       ]);
@@ -270,17 +268,20 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(mp4Res.buffer.indexOf('moov')).toBeGreaterThan(0);
       expect(mp4Res.mimeType).toBe('video/mp4');
 
-      expect(opusRes.buffer.indexOf('OpusHead')).toBeGreaterThan(0);
-      expect(opusRes.mimeType).toBe('audio/opus');
-
-      expect(oggRes.buffer.indexOf('OggS')).toBe(0);
-      expect(oggRes.mimeType).toBe('audio/ogg');
-
       expect(flacRes.buffer.indexOf('fLaC')).toBe(0);
       expect(flacRes.mimeType).toBe('audio/flac');
 
       expect(mp3Res.buffer.indexOf('ID3')).toBe(0);
       expect(mp3Res.mimeType).toBe('audio/mpeg');
+
+      // Fail-Closed on lossy Opus and OGG without native FFmpeg
+      await expect(
+        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OPUS compression/i);
+
+      await expect(
+        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'test.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 
     it('executes worker media conversion dispatching to native ffmpeg or internal fallback', async () => {

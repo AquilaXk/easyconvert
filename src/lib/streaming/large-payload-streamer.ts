@@ -13,6 +13,8 @@
 import { Readable, Transform, TransformCallback, Writable, pipeline } from 'node:stream';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import type { IStorageBackend } from '../storage';
+import { assertNotSpoofedFile } from '../registry';
 
 export interface LargePayloadStreamConfig {
   /** Size of individual transfer chunks in bytes. Default: 64KB (65,536 bytes) */
@@ -372,3 +374,159 @@ export class EnduranceSoakController {
     };
   }
 }
+
+export interface StreamToStorageOptions {
+  filename: string;
+  mimeType: string;
+  expectedTotalSize: number;
+  sourceExtension: string;
+  storage: IStorageBackend;
+  partSizeBytes?: number; // default 5MB (5 * 1024 * 1024)
+  signal?: AbortSignal;
+}
+
+export interface StreamToStorageResult {
+  storageKey: string;
+  uploadId: string;
+  totalBytes: number;
+  totalParts: number;
+  sha256Digest: string;
+  elapsedMs: number;
+  peakHeapDeltaBytes: number;
+}
+
+/**
+ * Universal async chunk generator supporting both Node.js Readable streams and W3C ReadableStream.
+ */
+async function* getStreamChunkGenerator(
+  stream: Readable | ReadableStream<Uint8Array> | any
+): AsyncGenerator<Buffer> {
+  if (typeof stream[Symbol.asyncIterator] === 'function') {
+    for await (const chunk of stream) {
+      yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    }
+  } else if (typeof stream.getReader === 'function') {
+    const reader = stream.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          yield Buffer.isBuffer(value) ? value : Buffer.from(value);
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } else {
+    throw new Error('Unsupported stream: stream object must provide async iterator or getReader() method.');
+  }
+}
+
+/**
+ * Pipes an incoming ReadableStream/Readable directly to storage multipart upload
+ * with bounded O(1) heap memory consumption (<= 50MB) and early MIME magic sniffing.
+ */
+export async function pipeStreamToStorageMultipart(
+  stream: Readable | ReadableStream<Uint8Array> | any,
+  options: StreamToStorageOptions
+): Promise<StreamToStorageResult> {
+  const {
+    filename,
+    mimeType,
+    expectedTotalSize,
+    sourceExtension,
+    storage,
+    partSizeBytes = 5 * 1024 * 1024, // 5MB standard multipart part size
+    signal,
+  } = options;
+
+  const startTime = Date.now();
+  const initialHeap = process.memoryUsage().heapUsed;
+  let peakHeap = initialHeap;
+
+  const generator = getStreamChunkGenerator(stream);
+
+  // 1. Read first chunk for early MIME magic sniffing
+  const firstResult = await generator.next();
+  if (firstResult.done || !firstResult.value || firstResult.value.length === 0) {
+    throw new Error('File payload is empty (0 bytes).');
+  }
+
+  const initialChunk = firstResult.value;
+  // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
+  assertNotSpoofedFile(initialChunk, sourceExtension, filename);
+
+  // 2. Initiate multipart session in storage
+  const init = storage.initiateMultipartUpload(filename, mimeType, expectedTotalSize);
+  const uploadId = init.uploadId;
+
+  const hasher = crypto.createHash('sha256');
+  hasher.update(initialChunk);
+
+  let totalBytes = initialChunk.length;
+  let partNumber = 1;
+  let currentPartChunks: Buffer[] = [initialChunk];
+  let currentPartBytes = initialChunk.length;
+
+  try {
+    for await (const chunk of generator) {
+      if (signal?.aborted) {
+        throw new Error('Streaming upload aborted by client signal.');
+      }
+
+      hasher.update(chunk);
+      totalBytes += chunk.length;
+      currentPartChunks.push(chunk);
+      currentPartBytes += chunk.length;
+
+      const curHeap = process.memoryUsage().heapUsed;
+      if (curHeap > peakHeap) {
+        peakHeap = curHeap;
+      }
+
+      // When accumulated chunks reach or exceed partSizeBytes (5MB), upload part
+      if (currentPartBytes >= partSizeBytes) {
+        const partBuffer = currentPartChunks.length === 1
+          ? currentPartChunks[0]
+          : Buffer.concat(currentPartChunks);
+        storage.uploadPart(uploadId, partNumber++, partBuffer);
+
+        // Clear references immediately to keep heap consumption bounded to O(1)
+        currentPartChunks = [];
+        currentPartBytes = 0;
+      }
+    }
+
+    // Upload remaining trailing chunk if any, or if no parts were uploaded yet
+    if (currentPartBytes > 0 || partNumber === 1) {
+      const finalPartBuffer = currentPartChunks.length === 1
+        ? currentPartChunks[0]
+        : Buffer.concat(currentPartChunks);
+      storage.uploadPart(uploadId, partNumber++, finalPartBuffer);
+      currentPartChunks = [];
+      currentPartBytes = 0;
+    }
+
+    const completed = storage.completeMultipartUpload(uploadId);
+    const elapsedMs = Math.max(1, Date.now() - startTime);
+    const sha256Digest = hasher.digest('hex');
+    const peakHeapDeltaBytes = Math.max(0, peakHeap - initialHeap);
+
+    return {
+      storageKey: completed.key,
+      uploadId,
+      totalBytes,
+      totalParts: partNumber - 1,
+      sha256Digest,
+      elapsedMs,
+      peakHeapDeltaBytes,
+    };
+  } catch (err) {
+    try {
+      storage.abortMultipartUpload(uploadId);
+    } catch {}
+    throw err;
+  }
+}
+
