@@ -2,6 +2,14 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
+const createProblemResponse = (description: string) => ({
+  description,
+  content: {
+    'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+    'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+  },
+});
+
 export async function GET() {
   const openApiSpec = {
     openapi: '3.1.0',
@@ -87,26 +95,11 @@ export async function GET() {
                 },
               },
             },
-            '400': {
-              description: 'Invalid input format, missing parameter, or unsupported conversion pair.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
-            '401': {
-              description: 'Missing, expired, or invalid API key.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
-            '403': {
-              description: 'Access denied due to IP address or missing "convert:write" scope.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
-            '429': {
-              description: 'Rate limit or daily conversion quota exhausted.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
-            '500': {
-              description: 'Internal engine processing failure (quota reservation rolled back).',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
+            '400': createProblemResponse('Invalid input format, missing parameter, or unsupported conversion pair.'),
+            '401': createProblemResponse('Missing, expired, or invalid API key.'),
+            '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing "convert:write" scope.'),
+            '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
+            '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
           },
         },
       },
@@ -179,22 +172,11 @@ export async function GET() {
                 },
               },
             },
-            '400': {
-              description: 'Bad request.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
-            '401': {
-              description: 'Unauthorized.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
-            '403': {
-              description: 'Missing "convert:write" scope.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
-            '429': {
-              description: 'Quota exceeded.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
+            '400': createProblemResponse('Bad request or parameter validation failure.'),
+            '401': createProblemResponse('Missing, expired, or invalid API key.'),
+            '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
+            '429': createProblemResponse('Daily conversion quota exhausted.'),
+            '500': createProblemResponse('Job enqueue failure.'),
           },
         },
         get: {
@@ -239,6 +221,7 @@ export async function GET() {
                 },
               },
             },
+            '401': createProblemResponse('Unauthorized.'),
           },
         },
       },
@@ -269,10 +252,9 @@ export async function GET() {
                 },
               },
             },
-            '404': {
-              description: 'Job not found.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
+            '401': createProblemResponse('Unauthorized.'),
+            '403': createProblemResponse('Access denied.'),
+            '404': createProblemResponse('Job not found.'),
           },
         },
       },
@@ -568,6 +550,29 @@ export async function GET() {
           properties: {
             success: { type: 'boolean', example: false },
             error: { type: 'string', example: 'Detailed error description' },
+          },
+        },
+        ProblemDetails: {
+          type: 'object',
+          required: ['type', 'title', 'status', 'detail', 'instance'],
+          properties: {
+            type: { type: 'string', format: 'uri', example: 'https://api.easyconvert.io/problems/bad-request' },
+            title: { type: 'string', example: 'Bad Request' },
+            status: { type: 'integer', example: 400 },
+            detail: { type: 'string', example: 'Invalid parameter provided.' },
+            instance: { type: 'string', example: '/api/v1/jobs' },
+            invalidParams: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  reason: { type: 'string' },
+                },
+              },
+            },
+            success: { type: 'boolean', example: false },
+            error: { type: 'string', example: 'Invalid parameter provided.' },
           },
         },
         ConversionResponse: {

@@ -11,6 +11,14 @@
  * 6. IGES Entity 128 (B-Spline Surface) and 126 (B-Spline Curve) parser
  */
 
+import {
+  orient2dPoints,
+  incirclePoints,
+  robustSegmentsIntersect,
+  orient2dExact,
+  incircleExact,
+} from './cad-predicates';
+
 export interface Point3D {
   x: number;
   y: number;
@@ -734,13 +742,40 @@ export function evaluateSurfaceCurvature(
 }
 
 export interface AdaptiveTessellationOptions extends TessellationOptions {
-  chordalTolerance?: number; // Model unit max chordal deflection
-  angularTolerance?: number; // Radians normal deviation threshold
+  chordalTolerance?: number; // Model unit max chordal deflection (default 0.005)
+  angularTolerance?: number; // Radians normal deviation threshold (default 0.15)
+  curvatureThreshold?: number; // Gaussian & principal curvature threshold (default 1e-4)
+  minDepth?: number; // Minimum quadtree depth (default 1, i.e. 2x2 base grid)
+  maxDepth?: number; // Maximum quadtree depth (default 5, up to 32x32)
+}
+
+interface QuadCell {
+  id: number;
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+  depth: number;
+  isLeaf: boolean;
+  children: [QuadCell, QuadCell, QuadCell, QuadCell] | null; // SW, SE, NW, NE
+  parent: QuadCell | null;
 }
 
 /**
- * Tessellates a B-spline surface with curvature-driven adaptive subdivision
- * balancing triangle budget between flat and high-curvature zones.
+ * Tessellates a B-spline surface using a Curvature-Adaptive Quadtree algorithm.
+ *
+ * Mathematical Principles:
+ * 1. Evaluates differential geometry curvature: Gaussian curvature K = kappa_1 * kappa_2
+ *    and maximum principal curvature kappa_max.
+ * 2. Flat / developable zones (|K| < epsilon and kappa_max < epsilon): preserves coarse
+ *    2x2 base quads with minimal triangles.
+ * 3. High-curvature zones (|K| >= threshold or chordal deflection > tolerance):
+ *    recursively subdivides quads into 4 quadrants up to maxDepth.
+ * 4. 2:1 Balance Rule (Restricted Quadtree): guarantees adjacent cells never differ
+ *    in subdivision depth by more than 1 level.
+ * 5. T-Junction & Crack Prevention: eliminates hanging nodes along subdivision boundaries
+ *    by inserting Steiner center vertices and performing adaptive fan-out triangulation,
+ *    producing a perfectly watertight 2-manifold triangle mesh.
  */
 export function tessellateBSplineSurfaceAdaptive(
   surface: BSplineSurface,
@@ -749,6 +784,9 @@ export function tessellateBSplineSurfaceAdaptive(
 ): TessellatedMesh {
   const chordalTol = options.chordalTolerance ?? 0.005;
   const angularTol = options.angularTolerance ?? 0.15; // ~8.6 degrees
+  const curvThresh = options.curvatureThreshold ?? 1e-4;
+  const minDepth = Math.max(1, options.minDepth ?? 1);
+  const maxDepth = Math.max(minDepth, Math.min(7, options.maxDepth ?? 5));
 
   const uMin = surface.uKnots && surface.uKnots.length > surface.uDegree ? surface.uKnots[surface.uDegree] : 0;
   const uMaxRaw = surface.uKnots && surface.uKnots.length > surface.uDegree ? surface.uKnots[surface.uKnots.length - 1 - surface.uDegree] : 1;
@@ -758,43 +796,273 @@ export function tessellateBSplineSurfaceAdaptive(
   const vMaxRaw = surface.vKnots && surface.vKnots.length > surface.vDegree ? surface.vKnots[surface.vKnots.length - 1 - surface.vDegree] : 1;
   const vMax = vMaxRaw > vMin ? vMaxRaw : vMin + 1;
 
-  // Initial base coarse grid
-  const baseU = Math.max(4, options.uSamples || 8);
-  const baseV = Math.max(4, options.vSamples || 8);
+  let nextCellId = 1;
 
-  // We can measure max principal curvature across sample points to determine refinement
-  let globalMaxCurvature = 0;
-  for (let i = 0; i <= baseU; i++) {
-    const u = uMin + (i / baseU) * (uMax - uMin);
-    for (let j = 0; j <= baseV; j++) {
-      const v = vMin + (j / baseV) * (vMax - vMin);
-      const curv = evaluateSurfaceCurvature(surface, u, v);
-      if (curv.maxPrincipalCurvature > globalMaxCurvature) {
-        globalMaxCurvature = curv.maxPrincipalCurvature;
+  function createCell(
+    u0: number,
+    u1: number,
+    v0: number,
+    v1: number,
+    depth: number,
+    parent: QuadCell | null
+  ): QuadCell {
+    return {
+      id: nextCellId++,
+      u0,
+      u1,
+      v0,
+      v1,
+      depth,
+      isLeaf: true,
+      children: null,
+      parent,
+    };
+  }
+
+  // 1. Initialize Base 2x2 Root Cells
+  const roots: QuadCell[] = [];
+  const baseU = 2;
+  const baseV = 2;
+  for (let i = 0; i < baseU; i++) {
+    const u0 = uMin + (i / baseU) * (uMax - uMin);
+    const u1 = uMin + ((i + 1) / baseU) * (uMax - uMin);
+    for (let j = 0; j < baseV; j++) {
+      const v0 = vMin + (j / baseV) * (vMax - vMin);
+      const v1 = vMin + ((j + 1) / baseV) * (vMax - vMin);
+      roots.push(createCell(u0, u1, v0, v1, 1, null));
+    }
+  }
+
+  function shouldSubdivideCell(cell: QuadCell): boolean {
+    if (cell.depth >= maxDepth) return false;
+    if (cell.depth < minDepth) return true;
+
+    const uMid = (cell.u0 + cell.u1) / 2;
+    const vMid = (cell.v0 + cell.v1) / 2;
+
+    const c00 = evaluateSurfaceCurvature(surface, cell.u0, cell.v0);
+    const c10 = evaluateSurfaceCurvature(surface, cell.u1, cell.v0);
+    const c01 = evaluateSurfaceCurvature(surface, cell.u0, cell.v1);
+    const c11 = evaluateSurfaceCurvature(surface, cell.u1, cell.v1);
+    const center = evaluateSurfaceCurvature(surface, uMid, vMid);
+
+    const maxK = Math.max(
+      Math.abs(c00.gaussianCurvature),
+      Math.abs(c10.gaussianCurvature),
+      Math.abs(c01.gaussianCurvature),
+      Math.abs(c11.gaussianCurvature),
+      Math.abs(center.gaussianCurvature)
+    );
+
+    const maxKappa = Math.max(
+      c00.maxPrincipalCurvature,
+      c10.maxPrincipalCurvature,
+      c01.maxPrincipalCurvature,
+      c11.maxPrincipalCurvature,
+      center.maxPrincipalCurvature
+    );
+
+    // Flat plane or zero-curvature developable surface
+    if (maxK < curvThresh && maxKappa < curvThresh) {
+      return false;
+    }
+
+    // Chordal deflection between actual evaluated center and bilinear corner average
+    const linCenterX = (c00.point.x + c10.point.x + c01.point.x + c11.point.x) / 4;
+    const linCenterY = (c00.point.y + c10.point.y + c01.point.y + c11.point.y) / 4;
+    const linCenterZ = (c00.point.z + c10.point.z + c01.point.z + c11.point.z) / 4;
+    const chordalDeflection = Math.hypot(
+      center.point.x - linCenterX,
+      center.point.y - linCenterY,
+      center.point.z - linCenterZ
+    );
+
+    if (chordalDeflection > chordalTol) {
+      return true;
+    }
+
+    // Angular deviation of unit normals
+    const dot = (a: Point3D, b: Point3D) => a.x * b.x + a.y * b.y + a.z * b.z;
+    const minDot = Math.min(
+      dot(c00.normal, center.normal),
+      dot(c10.normal, center.normal),
+      dot(c01.normal, center.normal),
+      dot(c11.normal, center.normal)
+    );
+    const clampedDot = Math.max(-1, Math.min(1, minDot));
+    const angularDev = Math.acos(clampedDot);
+
+    if (angularDev > angularTol) {
+      return true;
+    }
+
+    // For non-flat surfaces, guarantee at least depth 2 for resolution
+    if (maxK >= curvThresh && cell.depth < 2) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function splitCell(cell: QuadCell): void {
+    const uMid = (cell.u0 + cell.u1) / 2;
+    const vMid = (cell.v0 + cell.v1) / 2;
+    const childDepth = cell.depth + 1;
+
+    // [SW, SE, NW, NE]
+    cell.children = [
+      createCell(cell.u0, uMid, cell.v0, vMid, childDepth, cell),
+      createCell(uMid, cell.u1, cell.v0, vMid, childDepth, cell),
+      createCell(cell.u0, uMid, vMid, cell.v1, childDepth, cell),
+      createCell(uMid, cell.u1, vMid, cell.v1, childDepth, cell),
+    ];
+    cell.isLeaf = false;
+  }
+
+  function subdivideRecursive(cell: QuadCell): void {
+    if (shouldSubdivideCell(cell)) {
+      splitCell(cell);
+      if (cell.children) {
+        for (const child of cell.children) {
+          subdivideRecursive(child);
+        }
       }
     }
   }
 
-  // Refine grid density based on curvature deflection h <= sqrt(8 * delta / kappa)
-  let effectiveUSamples = 4;
-  let effectiveVSamples = 4;
-
-  if (globalMaxCurvature > 1e-4) {
-    const optimalStep = Math.sqrt((8 * chordalTol) / globalMaxCurvature);
-    const neededU = Math.ceil((uMax - uMin) / Math.max(0.01, optimalStep));
-    const neededV = Math.ceil((vMax - vMin) / Math.max(0.01, optimalStep));
-    effectiveUSamples = Math.max(8, Math.min(48, neededU));
-    effectiveVSamples = Math.max(8, Math.min(48, neededV));
-  } else {
-    effectiveUSamples = options.uSamples ? Math.max(2, options.uSamples) : 4;
-    effectiveVSamples = options.vSamples ? Math.max(2, options.vSamples) : 4;
+  for (const root of roots) {
+    subdivideRecursive(root);
   }
 
-  return tessellateBSplineSurface(
-    surface,
-    { uSamples: effectiveUSamples, vSamples: effectiveVSamples },
-    meshName
-  );
+  // 2. 2:1 Balancing Rule (Restricted Quadtree)
+  function getAllLeaves(cellList: QuadCell[]): QuadCell[] {
+    const leaves: QuadCell[] = [];
+    function collect(c: QuadCell) {
+      if (c.isLeaf) {
+        leaves.push(c);
+      } else if (c.children) {
+        for (const child of c.children) collect(child);
+      }
+    }
+    for (const r of cellList) collect(r);
+    return leaves;
+  }
+
+  const eps = 1e-9;
+  function areCellsAdjacent(a: QuadCell, b: QuadCell): boolean {
+    const uOverlap = Math.max(0, Math.min(a.u1, b.u1) - Math.max(a.u0, b.u0));
+    const vOverlap = Math.max(0, Math.min(a.v1, b.v1) - Math.max(a.v0, b.v0));
+
+    // Vertical edge contact
+    const touchesU = Math.abs(a.u1 - b.u0) < eps || Math.abs(a.u0 - b.u1) < eps;
+    if (touchesU && vOverlap > eps) return true;
+
+    // Horizontal edge contact
+    const touchesV = Math.abs(a.v1 - b.v0) < eps || Math.abs(a.v0 - b.v1) < eps;
+    if (touchesV && uOverlap > eps) return true;
+
+    return false;
+  }
+
+  let balanced = false;
+  let balancePass = 0;
+  while (!balanced && balancePass < 10) {
+    balanced = true;
+    balancePass++;
+    const currentLeaves = getAllLeaves(roots);
+    for (const leaf of currentLeaves) {
+      if (!leaf.isLeaf) continue;
+      for (const other of currentLeaves) {
+        if (!other.isLeaf || leaf === other) continue;
+        if (leaf.depth > other.depth + 1 && areCellsAdjacent(leaf, other)) {
+          splitCell(other);
+          balanced = false;
+        }
+      }
+    }
+  }
+
+  // 3. Collect Final Leaves and Build Corner Vertex Set
+  const finalLeaves = getAllLeaves(roots);
+  const cornerKey = (u: number, v: number) => `${Math.round(u * 1e7)}:${Math.round(v * 1e7)}`;
+  const cornerSet = new Set<string>();
+
+  for (const leaf of finalLeaves) {
+    cornerSet.add(cornerKey(leaf.u0, leaf.v0));
+    cornerSet.add(cornerKey(leaf.u1, leaf.v0));
+    cornerSet.add(cornerKey(leaf.u0, leaf.v1));
+    cornerSet.add(cornerKey(leaf.u1, leaf.v1));
+  }
+
+  // 4. Mesh Generation with Watertight T-Junction Elimination
+  const vertices: [number, number, number][] = [];
+  const normals: [number, number, number][] = [];
+  const faces: [number, number, number][] = [];
+  const vertexCache = new Map<string, number>();
+
+  function getOrAddVertex(u: number, v: number): number {
+    const key = cornerKey(u, v);
+    const existing = vertexCache.get(key);
+    if (existing !== undefined) return existing;
+
+    const ev = evaluateBSplineSurface(surface, u, v);
+    const idx = vertices.length;
+    vertices.push([ev.point.x, ev.point.y, ev.point.z]);
+    normals.push([ev.normal.x, ev.normal.y, ev.normal.z]);
+    vertexCache.set(key, idx);
+    return idx;
+  }
+
+  for (const leaf of finalLeaves) {
+    const u0 = leaf.u0;
+    const u1 = leaf.u1;
+    const v0 = leaf.v0;
+    const v1 = leaf.v1;
+    const uMid = (u0 + u1) / 2;
+    const vMid = (v0 + v1) / 2;
+
+    const hasSouthMid = cornerSet.has(cornerKey(uMid, v0));
+    const hasEastMid = cornerSet.has(cornerKey(u1, vMid));
+    const hasNorthMid = cornerSet.has(cornerKey(uMid, v1));
+    const hasWestMid = cornerSet.has(cornerKey(u0, vMid));
+
+    if (!hasSouthMid && !hasEastMid && !hasNorthMid && !hasWestMid) {
+      // Standard quad with 0 hanging nodes -> 2 triangles
+      const i00 = getOrAddVertex(u0, v0);
+      const i10 = getOrAddVertex(u1, v0);
+      const i11 = getOrAddVertex(u1, v1);
+      const i01 = getOrAddVertex(u0, v1);
+
+      faces.push([i00, i10, i11]);
+      faces.push([i00, i11, i01]);
+    } else {
+      // Quad with hanging midpoints along boundary: insert center Steiner point and fan out
+      const centerIdx = getOrAddVertex(uMid, vMid);
+
+      // Boundary polygon vertices in counter-clockwise order
+      const boundaryIndices: number[] = [];
+      boundaryIndices.push(getOrAddVertex(u0, v0));
+      if (hasSouthMid) boundaryIndices.push(getOrAddVertex(uMid, v0));
+
+      boundaryIndices.push(getOrAddVertex(u1, v0));
+      if (hasEastMid) boundaryIndices.push(getOrAddVertex(u1, vMid));
+
+      boundaryIndices.push(getOrAddVertex(u1, v1));
+      if (hasNorthMid) boundaryIndices.push(getOrAddVertex(uMid, v1));
+
+      boundaryIndices.push(getOrAddVertex(u0, v1));
+      if (hasWestMid) boundaryIndices.push(getOrAddVertex(u0, vMid));
+
+      const count = boundaryIndices.length;
+      for (let k = 0; k < count; k++) {
+        const pCurrent = boundaryIndices[k];
+        const pNext = boundaryIndices[(k + 1) % count];
+        faces.push([centerIdx, pCurrent, pNext]);
+      }
+    }
+  }
+
+  return { name: meshName, vertices, normals, faces };
 }
 
 // ============================================================================
@@ -968,7 +1236,7 @@ export function buildLoopHierarchy(loops: Parametric2DPoint[][]): LoopHierarchyN
 }
 
 /**
- * Tests whether two 2D parametric segments strictly intersect.
+ * Tests whether two 2D parametric segments strictly intersect using Shewchuk exact predicates.
  */
 export function parametricSegmentsIntersect(
   p1: Parametric2DPoint,
@@ -976,41 +1244,19 @@ export function parametricSegmentsIntersect(
   p3: Parametric2DPoint,
   p4: Parametric2DPoint
 ): boolean {
-  const ccw = (a: Parametric2DPoint, b: Parametric2DPoint, c: Parametric2DPoint) =>
-    (c.v - a.v) * (b.u - a.u) > (b.v - a.v) * (c.u - a.u);
-
-  if (
-    (Math.abs(p1.u - p3.u) < 1e-7 && Math.abs(p1.v - p3.v) < 1e-7) ||
-    (Math.abs(p1.u - p4.u) < 1e-7 && Math.abs(p1.v - p4.v) < 1e-7) ||
-    (Math.abs(p2.u - p3.u) < 1e-7 && Math.abs(p2.v - p3.v) < 1e-7) ||
-    (Math.abs(p2.u - p4.u) < 1e-7 && Math.abs(p2.v - p4.v) < 1e-7)
-  ) {
-    return false;
-  }
-  return ccw(p1, p3, p4) !== ccw(p2, p3, p4) && ccw(p1, p2, p3) !== ccw(p1, p2, p4);
+  return robustSegmentsIntersect(p1, p2, p3, p4, true);
 }
+
+/**
+ * Evaluates the 2D Delaunay in-circle condition using Shewchuk exact predicates.
+ */
 export function inCircle2D(
   a: Parametric2DPoint,
   b: Parametric2DPoint,
   c: Parametric2DPoint,
   d: Parametric2DPoint
 ): number {
-  const adx = a.u - d.u;
-  const ady = a.v - d.v;
-  const bdx = b.u - d.u;
-  const bdy = b.v - d.v;
-  const cdx = c.u - d.u;
-  const cdy = c.v - d.v;
-
-  const abdet = adx * bdy - bdx * ady;
-  const bcdet = bdx * cdy - cdx * bdy;
-  const cadet = cdx * ady - adx * cdy;
-
-  const alift = adx * adx + ady * ady;
-  const blift = bdx * bdx + bdy * bdy;
-  const clift = cdx * cdx + cdy * cdy;
-
-  return alift * bcdet + blift * cadet + clift * abdet;
+  return incirclePoints(a, b, c, d);
 }
 
 /**
@@ -1078,18 +1324,18 @@ export function lawsonEdgeFlipHealing2D(
       const pC = points[vC];
       const pD = points[vD];
 
-      // Strict convexity check: diagonal CD intersects segment AB
-      const crossAB_C = (pB.u - pA.u) * (pC.v - pA.v) - (pB.v - pA.v) * (pC.u - pA.u);
-      const crossAB_D = (pB.u - pA.u) * (pD.v - pA.v) - (pB.v - pA.v) * (pD.u - pA.u);
-      if (crossAB_C * crossAB_D >= -1e-12) continue;
+      // Strict convexity check via Shewchuk orient2d
+      const oAB_C = orient2dPoints(pA, pB, pC);
+      const oAB_D = orient2dPoints(pA, pB, pD);
+      if ((oAB_C > 0 && oAB_D > 0) || (oAB_C < 0 && oAB_D < 0) || oAB_C === 0 || oAB_D === 0) continue;
 
-      const crossCD_A = (pD.u - pC.u) * (pA.v - pC.v) - (pD.v - pC.v) * (pA.u - pC.u);
-      const crossCD_B = (pD.u - pC.u) * (pB.v - pC.v) - (pD.v - pC.v) * (pB.u - pC.u);
-      if (crossCD_A * crossCD_B >= -1e-12) continue;
+      const oCD_A = orient2dPoints(pC, pD, pA);
+      const oCD_B = orient2dPoints(pC, pD, pB);
+      if ((oCD_A > 0 && oCD_B > 0) || (oCD_A < 0 && oCD_B < 0) || oCD_A === 0 || oCD_B === 0) continue;
 
-      // Delaunay in-circle condition
-      const orient = crossAB_C > 0 ? [pA, pB, pC] : [pB, pA, pC];
-      if (inCircle2D(orient[0], orient[1], orient[2], pD) > 1e-9) {
+      // Delaunay in-circle condition via Shewchuk incircle
+      const orient = oAB_C > 0 ? [pA, pB, pC] : [pB, pA, pC];
+      if (incirclePoints(orient[0], orient[1], orient[2], pD) > 0) {
         // Verify diagonal midpoint and triangle centroids remain within valid face domain
         const midCD: Parametric2DPoint = { u: (pC.u + pD.u) / 2, v: (pC.v + pD.v) / 2 };
         const c1: Parametric2DPoint = { u: (pC.u + pD.u + pA.u) / 3, v: (pC.v + pD.v + pA.v) / 3 };
@@ -1122,7 +1368,7 @@ export function lawsonEdgeFlipHealing2D(
         let crossesConstraint = false;
         for (const h of validHoles) {
           for (let i = 0; i < h.length; i++) {
-            if (parametricSegmentsIntersect(pC, pD, h[i], h[(i + 1) % h.length])) {
+            if (robustSegmentsIntersect(pC, pD, h[i], h[(i + 1) % h.length], true)) {
               crossesConstraint = true;
               break;
             }
@@ -1133,7 +1379,7 @@ export function lawsonEdgeFlipHealing2D(
 
         if (outerLoop) {
           for (let i = 0; i < outerLoop.length; i++) {
-            if (parametricSegmentsIntersect(pC, pD, outerLoop[i], outerLoop[(i + 1) % outerLoop.length])) {
+            if (robustSegmentsIntersect(pC, pD, outerLoop[i], outerLoop[(i + 1) % outerLoop.length], true)) {
               crossesConstraint = true;
               break;
             }
@@ -1169,6 +1415,319 @@ export function lawsonEdgeFlipHealing2D(
   }
 
   return cleanedTriangles;
+}
+
+/**
+ * Consolidates an outer boundary loop with inner cutout hole loops by creating
+ * non-intersecting bridge cut segments based on mutual visibility and Shewchuk exact predicates.
+ * Guarantees zero non-manifold self-intersecting boundary edges even for 3+ nested island hierarchies.
+ */
+export function consolidatePolygonLoopsWithBridges(
+  outer: Parametric2DPoint[],
+  holes: Parametric2DPoint[][],
+  associatedIndices?: { outer: number[]; holes: number[][] }
+): {
+  consolidated2D: Parametric2DPoint[];
+  consolidatedIndices?: number[];
+  allSegments: [Parametric2DPoint, Parametric2DPoint][];
+} {
+  if (!holes || holes.length === 0) {
+    const allSegments: [Parametric2DPoint, Parametric2DPoint][] = [];
+    for (let i = 0; i < outer.length; i++) {
+      allSegments.push([outer[i], outer[(i + 1) % outer.length]]);
+    }
+    return {
+      consolidated2D: [...outer],
+      consolidatedIndices: associatedIndices ? [...associatedIndices.outer] : undefined,
+      allSegments,
+    };
+  }
+
+  // Pre-process holes: ensure all holes have clockwise (CW, negative area) orientation
+  interface ProcessedHoleData {
+    pts2D: Parametric2DPoint[];
+    indices?: number[];
+  }
+  const processedHoles: ProcessedHoleData[] = [];
+  for (let hi = 0; hi < holes.length; hi++) {
+    const rawH = holes[hi];
+    if (!rawH || rawH.length < 3) continue;
+    const hArea = calculateParametricSignedArea(rawH);
+    const pts = hArea > 0 ? [...rawH].reverse() : [...rawH];
+    let inds: number[] | undefined;
+    if (associatedIndices && associatedIndices.holes[hi]) {
+      const rawInds = associatedIndices.holes[hi];
+      inds = hArea > 0 ? [...rawInds].reverse() : [...rawInds];
+    }
+    processedHoles.push({ pts2D: pts, indices: inds });
+  }
+
+  // Sort holes by rightmost u coordinate descending
+  processedHoles.sort((a, b) => {
+    const maxA = Math.max(...a.pts2D.map((p) => p.u));
+    const maxB = Math.max(...b.pts2D.map((p) => p.u));
+    return maxB - maxA;
+  });
+
+  let consolidated2D = [...outer];
+  let consolidatedIndices = associatedIndices ? [...associatedIndices.outer] : undefined;
+
+  const allSegments: [Parametric2DPoint, Parametric2DPoint][] = [];
+  for (let i = 0; i < outer.length; i++) {
+    allSegments.push([outer[i], outer[(i + 1) % outer.length]]);
+  }
+  for (const h of processedHoles) {
+    for (let i = 0; i < h.pts2D.length; i++) {
+      allSegments.push([h.pts2D[i], h.pts2D[(i + 1) % h.pts2D.length]]);
+    }
+  }
+
+  for (const hole of processedHoles) {
+    const h2D = hole.pts2D;
+    const hInd = hole.indices;
+
+    let bestDist = Infinity;
+    let bestLoopIdx = -1;
+    let bestHoleIdx = -1;
+
+    for (let li = 0; li < consolidated2D.length; li++) {
+      const pL = consolidated2D[li];
+      for (let hi = 0; hi < h2D.length; hi++) {
+        const pH = h2D[hi];
+        const dist = Math.hypot(pL.u - pH.u, pL.v - pH.v);
+        if (dist >= bestDist) continue;
+
+        // Verify bridge interior sample points are strictly inside outer boundary and outside all inner holes
+        const s25 = { u: pL.u * 0.75 + pH.u * 0.25, v: pL.v * 0.75 + pH.v * 0.25 };
+        const s50 = { u: (pL.u + pH.u) * 0.5, v: (pL.v + pH.v) * 0.5 };
+        const s75 = { u: pL.u * 0.25 + pH.u * 0.75, v: pL.v * 0.25 + pH.v * 0.75 };
+
+        if (
+          !isPointInParametricPolygon(s25, outer) ||
+          !isPointInParametricPolygon(s50, outer) ||
+          !isPointInParametricPolygon(s75, outer)
+        ) {
+          continue;
+        }
+
+        let insideAnyHole = false;
+        for (const otherH of processedHoles) {
+          if (
+            isPointInParametricPolygon(s25, otherH.pts2D) ||
+            isPointInParametricPolygon(s50, otherH.pts2D) ||
+            isPointInParametricPolygon(s75, otherH.pts2D)
+          ) {
+            insideAnyHole = true;
+            break;
+          }
+        }
+        if (insideAnyHole) continue;
+
+        // Exact Shewchuk segment intersection check against all existing perimeter and bridge edges
+        let intersects = false;
+        for (const [s1, s2] of allSegments) {
+          if (robustSegmentsIntersect(pL, pH, s1, s2, true)) {
+            intersects = true;
+            break;
+          }
+        }
+        if (intersects) continue;
+
+        bestDist = dist;
+        bestLoopIdx = li;
+        bestHoleIdx = hi;
+      }
+    }
+
+    if (bestLoopIdx !== -1) {
+      const pBridgeL = consolidated2D[bestLoopIdx];
+      const pBridgeH = h2D[bestHoleIdx];
+
+      allSegments.push([pBridgeL, pBridgeH]);
+
+      const holeCycle2D: Parametric2DPoint[] = [];
+      const holeCycleIndices: number[] = [];
+      for (let i = 0; i < h2D.length; i++) {
+        const idx = (bestHoleIdx + i) % h2D.length;
+        holeCycle2D.push(h2D[idx]);
+        if (hInd) holeCycleIndices.push(hInd[idx]);
+      }
+      holeCycle2D.push({ ...h2D[bestHoleIdx] });
+      if (hInd) holeCycleIndices.push(hInd[bestHoleIdx]);
+
+      const bridgeBack2D = { ...pBridgeL };
+      consolidated2D = [
+        ...consolidated2D.slice(0, bestLoopIdx + 1),
+        ...holeCycle2D,
+        bridgeBack2D,
+        ...consolidated2D.slice(bestLoopIdx + 1),
+      ];
+
+      if (consolidatedIndices && hInd) {
+        const bridgeBackIdx = consolidatedIndices[bestLoopIdx];
+        consolidatedIndices = [
+          ...consolidatedIndices.slice(0, bestLoopIdx + 1),
+          ...holeCycleIndices,
+          bridgeBackIdx,
+          ...consolidatedIndices.slice(bestLoopIdx + 1),
+        ];
+      }
+    }
+  }
+
+  return { consolidated2D, consolidatedIndices, allSegments };
+}
+
+/**
+ * Recursively refines high-curvature regions of a trimmed NURBS surface patch
+ * using a 2:1 balanced quadtree in parameter space based on normal angular deviation and chordal sagitta.
+ */
+export function refineCurvatureAdaptiveQuadtree(
+  surface: BSplineSurface,
+  outerLoop: Parametric2DPoint[],
+  holes: Parametric2DPoint[][] = [],
+  options: {
+    maxDepth?: number;
+    angleToleranceDeg?: number;
+    chordTolerance?: number;
+  } = {}
+): Parametric2DPoint[] {
+  const isCurved = (surface.uDegree && surface.uDegree > 1) || (surface.vDegree && surface.vDegree > 1);
+  if (!isCurved) return [];
+
+  const maxDepth = options.maxDepth ?? 3;
+  const angleTol = options.angleToleranceDeg ?? 12.0;
+  const chordTol = options.chordTolerance ?? 0.05;
+
+  let uMin = Infinity;
+  let uMax = -Infinity;
+  let vMin = Infinity;
+  let vMax = -Infinity;
+
+  for (const p of outerLoop) {
+    if (p.u < uMin) uMin = p.u;
+    if (p.u > uMax) uMax = p.u;
+    if (p.v < vMin) vMin = p.v;
+    if (p.v > vMax) vMax = p.v;
+  }
+
+  if (!Number.isFinite(uMin) || uMax <= uMin || vMax <= vMin) {
+    return [];
+  }
+
+  interface QuadNode {
+    u0: number;
+    u1: number;
+    v0: number;
+    v1: number;
+    depth: number;
+    children?: QuadNode[];
+  }
+
+  const root: QuadNode = {
+    u0: uMin,
+    u1: uMax,
+    v0: vMin,
+    v1: vMax,
+    depth: 0,
+  };
+
+  const evaluateCellCurvature = (node: QuadNode): boolean => {
+    const { u0, u1, v0, v1 } = node;
+    const umid = (u0 + u1) / 2;
+    const vmid = (v0 + v1) / 2;
+
+    const p00 = evaluateBSplineSurface(surface, u0, v0);
+    const p10 = evaluateBSplineSurface(surface, u1, v0);
+    const p11 = evaluateBSplineSurface(surface, u1, v1);
+    const p01 = evaluateBSplineSurface(surface, u0, v1);
+    const pMid = evaluateBSplineSurface(surface, umid, vmid);
+
+    const normals = [p00.normal, p10.normal, p11.normal, p01.normal, pMid.normal];
+
+    // Angular deviation check
+    let minDot = 1.0;
+    for (let i = 0; i < normals.length; i++) {
+      for (let j = i + 1; j < normals.length; j++) {
+        const dot =
+          normals[i].x * normals[j].x +
+          normals[i].y * normals[j].y +
+          normals[i].z * normals[j].z;
+        if (dot < minDot) minDot = dot;
+      }
+    }
+    const angleDev = Math.acos(Math.max(-1, Math.min(1, minDot))) * (180 / Math.PI);
+
+    // Chordal deviation (sagitta) check
+    const avgX = (p00.point.x + p10.point.x + p11.point.x + p01.point.x) / 4;
+    const avgY = (p00.point.y + p10.point.y + p11.point.y + p01.point.y) / 4;
+    const avgZ = (p00.point.z + p10.point.z + p11.point.z + p01.point.z) / 4;
+    const sagitta = Math.hypot(pMid.point.x - avgX, pMid.point.y - avgY, pMid.point.z - avgZ);
+
+    return angleDev > angleTol || sagitta > chordTol;
+  };
+
+  const subdivide = (node: QuadNode) => {
+    if (node.depth >= maxDepth) return;
+    const shouldRefine = evaluateCellCurvature(node);
+    if (!shouldRefine && node.depth >= 1) return;
+
+    const umid = (node.u0 + node.u1) / 2;
+    const vmid = (node.v0 + node.v1) / 2;
+    const nextDepth = node.depth + 1;
+
+    node.children = [
+      { u0: node.u0, u1: umid, v0: node.v0, v1: vmid, depth: nextDepth },
+      { u0: umid, u1: node.u1, v0: node.v0, v1: vmid, depth: nextDepth },
+      { u0: node.u0, u1: umid, v0: vmid, v1: node.v1, depth: nextDepth },
+      { u0: umid, u1: node.u1, v0: vmid, v1: node.v1, depth: nextDepth },
+    ];
+
+    for (const child of node.children) {
+      subdivide(child);
+    }
+  };
+
+  subdivide(root);
+
+  // Extract Steiner points located inside the valid trimmed face domain
+  const steinerPoints: Parametric2DPoint[] = [];
+  const pointKeySet = new Set<string>();
+
+  const collectSteinerPoints = (node: QuadNode) => {
+    if (node.children) {
+      for (const child of node.children) {
+        collectSteinerPoints(child);
+      }
+      return;
+    }
+
+    if (node.depth > 0) {
+      const umid = (node.u0 + node.u1) / 2;
+      const vmid = (node.v0 + node.v1) / 2;
+      const pt = { u: umid, v: vmid };
+
+      if (isPointInParametricPolygon(pt, outerLoop)) {
+        let insideHole = false;
+        for (const h of holes) {
+          if (isPointInParametricPolygon(pt, h)) {
+            insideHole = true;
+            break;
+          }
+        }
+        if (!insideHole) {
+          const key = `${pt.u.toFixed(6)},${pt.v.toFixed(6)}`;
+          if (!pointKeySet.has(key)) {
+            pointKeySet.add(key);
+            steinerPoints.push(pt);
+          }
+        }
+      }
+    }
+  };
+
+  collectSteinerPoints(root);
+  return steinerPoints;
 }
 
 /**
@@ -1257,89 +1816,10 @@ export function tessellateTrimmedFaceCDT(
     const outer = region.outer;
     const validHoles = region.holes;
 
-    let consolidatedLoop: Parametric2DPoint[] = [...outer];
-
-    if (validHoles.length > 0) {
-      const allSegments: [Parametric2DPoint, Parametric2DPoint][] = [];
-      for (let i = 0; i < outer.length; i++) {
-        allSegments.push([outer[i], outer[(i + 1) % outer.length]]);
-      }
-      for (const h of validHoles) {
-        for (let i = 0; i < h.length; i++) {
-          allSegments.push([h[i], h[(i + 1) % h.length]]);
-        }
-      }
-
-      // Sort holes by rightmost u-coordinate descending for stable leftward bridging
-      const sortedHoles = [...validHoles].sort((hA, hB) => {
-        const maxA = Math.max(...hA.map((p) => p.u));
-        const maxB = Math.max(...hB.map((p) => p.u));
-        return maxB - maxA;
-      });
-
-      for (const hole of sortedHoles) {
-        const hArea = calculateParametricSignedArea(hole);
-        const holeCW = hArea > 0 ? [...hole].reverse() : [...hole];
-
-        let bestDist = Infinity;
-        let bestLoopIdx = -1;
-        let bestHoleIdx = -1;
-
-        for (let li = 0; li < consolidatedLoop.length; li++) {
-          for (let hi = 0; hi < holeCW.length; hi++) {
-            const pL = consolidatedLoop[li];
-            const pH = holeCW[hi];
-            const dist = Math.hypot(pL.u - pH.u, pL.v - pH.v);
-
-            // Verify bridge midpoint is strictly inside outer boundary and outside all inner holes
-            const mid = { u: (pL.u + pH.u) / 2, v: (pL.v + pH.v) / 2 };
-            let insideHole = false;
-            for (const h of validHoles) {
-              if (isPointInParametricPolygon(mid, h)) {
-                insideHole = true;
-                break;
-              }
-            }
-            if (insideHole || !isPointInParametricPolygon(mid, outer)) continue;
-
-            let intersects = false;
-            for (const [s1, s2] of allSegments) {
-              if (parametricSegmentsIntersect(pL, pH, s1, s2)) {
-                intersects = true;
-                break;
-              }
-            }
-
-            if (!intersects && dist < bestDist) {
-              bestDist = dist;
-              bestLoopIdx = li;
-              bestHoleIdx = hi;
-            }
-          }
-        }
-
-        if (bestLoopIdx !== -1) {
-          const holeCycle: Parametric2DPoint[] = [];
-          for (let i = 0; i < holeCW.length; i++) {
-            holeCycle.push(holeCW[(bestHoleIdx + i) % holeCW.length]);
-          }
-          holeCycle.push({ ...holeCW[bestHoleIdx] });
-          const bridgeBack = { ...consolidatedLoop[bestLoopIdx] };
-
-          allSegments.push([consolidatedLoop[bestLoopIdx], holeCW[bestHoleIdx]]);
-
-          consolidatedLoop = [
-            ...consolidatedLoop.slice(0, bestLoopIdx + 1),
-            ...holeCycle,
-            bridgeBack,
-            ...consolidatedLoop.slice(bestLoopIdx + 1),
-          ];
-        }
-      }
-    }
+    const { consolidated2D } = consolidatePolygonLoopsWithBridges(outer, validHoles);
 
     // Convert consolidated loop to 3D plane points for earcut planar triangulation
-    const planePoints: Point3D[] = consolidatedLoop.map((p) => ({
+    const planePoints: Point3D[] = consolidated2D.map((p) => ({
       x: p.u,
       y: p.v,
       z: 0,
@@ -1350,9 +1830,9 @@ export function tessellateTrimmedFaceCDT(
     const regionMappedTriangles: Array<[number, number, number]> = [];
 
     for (const [i0, i1, i2] of rawTriangles) {
-      const uIdx0 = getOrAddPointIndex(consolidatedLoop[i0]);
-      const uIdx1 = getOrAddPointIndex(consolidatedLoop[i1]);
-      const uIdx2 = getOrAddPointIndex(consolidatedLoop[i2]);
+      const uIdx0 = getOrAddPointIndex(consolidated2D[i0]);
+      const uIdx1 = getOrAddPointIndex(consolidated2D[i1]);
+      const uIdx2 = getOrAddPointIndex(consolidated2D[i2]);
 
       // Skip degenerate triangles with shared indices
       if (uIdx0 === uIdx1 || uIdx1 === uIdx2 || uIdx2 === uIdx0) {
@@ -1414,38 +1894,50 @@ export function tessellateTrimmedFaceCDT(
     allRegionTriangles.push(...healedRegionTriangles);
   }
 
-  // 6. Adaptive curvature refinement on curved NURBS surfaces
+  // 6. Curvature-adaptive mesh refinement via 2:1 balanced quadtree
   const isCurvedSurface = (surface.uDegree && surface.uDegree > 1) || (surface.vDegree && surface.vDegree > 1);
   let finalTriangles: Array<[number, number, number]> = allRegionTriangles;
 
-  if (isCurvedSurface) {
-    const refinedTriangles: Array<[number, number, number]> = [];
-    const maxEdgeParametricSq = 0.45 * 0.45;
-
-    for (const [i0, i1, i2] of allRegionTriangles) {
-      const p0 = uniqueParametricPoints[i0];
-      const p1 = uniqueParametricPoints[i1];
-      const p2 = uniqueParametricPoints[i2];
-
-      const len01 = (p1.u - p0.u) ** 2 + (p1.v - p0.v) ** 2;
-      const len12 = (p2.u - p1.u) ** 2 + (p2.v - p1.v) ** 2;
-      const len20 = (p0.u - p2.u) ** 2 + (p0.v - p2.v) ** 2;
-
-      if (len01 > maxEdgeParametricSq || len12 > maxEdgeParametricSq || len20 > maxEdgeParametricSq) {
-        // Subdivide at centroid
-        const mid: Parametric2DPoint = {
-          u: (p0.u + p1.u + p2.u) / 3,
-          v: (p0.v + p1.v + p2.v) / 3,
-        };
-        const midIdx = getOrAddPointIndex(mid);
-        refinedTriangles.push([i0, i1, midIdx]);
-        refinedTriangles.push([i1, i2, midIdx]);
-        refinedTriangles.push([i2, i0, midIdx]);
-      } else {
-        refinedTriangles.push([i0, i1, i2]);
-      }
+  if (isCurvedSurface && regions.length > 0) {
+    const steinerPoints: Parametric2DPoint[] = [];
+    for (const region of regions) {
+      const pts = refineCurvatureAdaptiveQuadtree(surface, region.outer, region.holes, {
+        maxDepth: 3,
+        angleToleranceDeg: 12.0,
+        chordTolerance: 0.05,
+      });
+      steinerPoints.push(...pts);
     }
-    finalTriangles = refinedTriangles;
+
+    if (steinerPoints.length > 0) {
+      for (const sp of steinerPoints) {
+        const spIdx = getOrAddPointIndex(sp);
+        // Find enclosing triangle and subdivide into 3 triangles
+        for (let tIdx = 0; tIdx < finalTriangles.length; tIdx++) {
+          const [v0, v1, v2] = finalTriangles[tIdx];
+          const p0 = uniqueParametricPoints[v0];
+          const p1 = uniqueParametricPoints[v1];
+          const p2 = uniqueParametricPoints[v2];
+
+          // Check if sp lies inside triangle v0-v1-v2 using Shewchuk orientation
+          const o0 = orient2dPoints(p0, p1, sp);
+          const o1 = orient2dPoints(p1, p2, sp);
+          const o2 = orient2dPoints(p2, p0, sp);
+
+          if ((o0 > 0 && o1 > 0 && o2 > 0) || (o0 < 0 && o1 < 0 && o2 < 0)) {
+            // Split triangle into 3 triangles
+            finalTriangles.splice(tIdx, 1, [v0, v1, spIdx], [v1, v2, spIdx], [v2, v0, spIdx]);
+            break;
+          }
+        }
+      }
+
+      // Re-run Lawson flip healing on refined triangles
+      finalTriangles = lawsonEdgeFlipHealing2D(
+        uniqueParametricPoints,
+        finalTriangles
+      );
+    }
   }
 
   // 7. Evaluate 3D coordinates and analytical surface normals from B-Spline surface
@@ -3554,7 +4046,7 @@ function mergeTessellatedSurfaces(surfaces: BSplineSurface[], modelName: string)
   const mergedFaces: [number, number, number][] = [];
 
   surfaces.forEach((s, idx) => {
-    const mesh = tessellateBSplineSurface(s, { uSamples: 16, vSamples: 16 }, `${modelName}_s${idx}`);
+    const mesh = tessellateBSplineSurfaceAdaptive(s, {}, `${modelName}_s${idx}`);
     const vOffset = mergedVertices.length;
 
     mesh.vertices.forEach((v) => mergedVertices.push(v));

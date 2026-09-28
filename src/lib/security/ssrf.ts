@@ -1,4 +1,5 @@
 import dns from 'dns';
+import net from 'node:net';
 import { Agent } from 'undici';
 
 export const MAX_STREAM_BYTES = 100 * 1024 * 1024; // 100MB limit
@@ -99,7 +100,7 @@ export async function validateUrlForSsrf(targetUrl: URL): Promise<boolean> {
     hostname.endsWith('.local') ||
     hostname.endsWith('.internal') ||
     hostname.endsWith('.localhost') ||
-    isBlockedIp(hostname)
+    (net.isIP(hostname) !== 0 && isBlockedIp(hostname))
   ) {
     return false;
   }

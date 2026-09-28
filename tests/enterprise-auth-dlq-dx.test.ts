@@ -144,7 +144,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         return new Response('Internal Webhook Endpoint Error', { status: 500 });
       });
 
-      const targetUrl = 'https://mock.webhook.sink/callback';
+      const targetUrl = 'https://example.com/callback';
       const secret = 'test_webhook_secret_key';
       const payloadData = { jobId: 'job_test_123', status: 'completed' };
 
@@ -188,7 +188,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         return new Response(JSON.stringify({ received: true }), { status: 200 });
       });
 
-      const targetUrl = 'https://mock.webhook.sink/replay-test';
+      const targetUrl = 'https://example.com/replay-test';
       const secret = 'replay_secret_456';
       await webhookDispatcher.dispatch(
         targetUrl,
@@ -251,7 +251,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         return new Response('Permanent Webhook Failure', { status: 503 });
       });
 
-      const targetUrl = 'https://mock.webhook.sink/duplicate-test';
+      const targetUrl = 'https://example.com/duplicate-test';
       const secret = 'dup_sec';
       await webhookDispatcher.dispatch(
         targetUrl,
@@ -499,6 +499,80 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(notFoundRes.status).toBe(404);
     });
 
+    it('enforces RBAC scopes on /api/webhooks/dlq routes (rejects unauthorized mutations)', async () => {
+      const readOnlyKey = await redisKeyStore.generateApiKey(testUser.id, 'DLQ Read Key', {
+        scopes: ['convert:read'],
+      });
+      const storageKey = await redisKeyStore.generateApiKey(testUser.id, 'DLQ Storage Key', {
+        scopes: ['storage:download'],
+      });
+      const adminKey = await redisKeyStore.generateApiKey(testUser.id, 'DLQ Admin Key', {
+        scopes: ['*'],
+      });
+
+      // Populate DLQ entry
+      const testEntry: WebhookDlqEntry = {
+        id: 'dlq_rbac_test_1',
+        originalDeliveryId: 'wh_rbac_1',
+        targetUrl: 'https://rbac.test/webhook',
+        event: 'job.failed',
+        payload: { failure: 'Access test' },
+        secret: 'sec',
+        failedAt: Date.now(),
+        finalStatusCode: 500,
+        errorMessage: 'Internal Server Error',
+        retryCount: 3,
+        status: 'failed',
+      };
+      await webhookDispatcher.saveToDlq(testEntry);
+
+      // Storage-only key attempting to view DLQ -> 403 Forbidden
+      const unauthorizedGet = new Request('https://easyconvert.app/api/webhooks/dlq', {
+        headers: { Authorization: `Bearer ${storageKey.secretKey}` },
+      });
+      const storageGetRes = await getDlqList(unauthorizedGet as any);
+      expect(storageGetRes.status).toBe(403);
+
+      // Read-only key viewing DLQ -> 200 OK
+      const readGetReq = new Request('https://easyconvert.app/api/webhooks/dlq', {
+        headers: { Authorization: `Bearer ${readOnlyKey.secretKey}` },
+      });
+      const readGetRes = await getDlqList(readGetReq as any);
+      expect(readGetRes.status).toBe(200);
+
+      // Read-only key attempting DELETE /api/webhooks/dlq -> 403 Forbidden
+      const readDelAllReq = new Request('https://easyconvert.app/api/webhooks/dlq', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${readOnlyKey.secretKey}` },
+      });
+      const readDelAllRes = await clearDlqList(readDelAllReq as any);
+      expect(readDelAllRes.status).toBe(403);
+
+      // Read-only key attempting DELETE /api/webhooks/dlq/:id -> 403 Forbidden
+      const readDelItemReq = new Request('https://easyconvert.app/api/webhooks/dlq/dlq_rbac_test_1', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${readOnlyKey.secretKey}` },
+      });
+      const readDelItemRes = await deleteDlqItem(readDelItemReq as any, { params: { id: 'dlq_rbac_test_1' } });
+      expect(readDelItemRes.status).toBe(403);
+
+      // Read-only key attempting POST /api/webhooks/dlq/:id/replay -> 403 Forbidden
+      const readReplayReq = new Request('https://easyconvert.app/api/webhooks/dlq/dlq_rbac_test_1/replay', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${readOnlyKey.secretKey}` },
+      });
+      const readReplayRes = await replayDlqItem(readReplayReq as any, { params: { id: 'dlq_rbac_test_1' } });
+      expect(readReplayRes.status).toBe(403);
+
+      // Admin key attempting DELETE /api/webhooks/dlq/:id -> 200 OK
+      const adminDelReq = new Request('https://easyconvert.app/api/webhooks/dlq/dlq_rbac_test_1', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${adminKey.secretKey}` },
+      });
+      const adminDelRes = await deleteDlqItem(adminDelReq as any, { params: { id: 'dlq_rbac_test_1' } });
+      expect(adminDelRes.status).toBe(200);
+    });
+
     it('authenticates /api/keys, /api/keys/[id], and /api/keys/usage using Bearer API keys', async () => {
       // Create admin key with wildcard scope
       const adminKeyResult = await redisKeyStore.generateApiKey(testUser.id, 'Admin Master Key', {
@@ -662,6 +736,10 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(pyContent).toContain('class EasyConvertClient');
       expect(pyContent).toContain('def convert(');
       expect(pyContent).toContain('def create_job(');
+      expect(pyContent).toContain('def get_dlq_entries(');
+      expect(pyContent).toContain('def get_dlq_entry(');
+      expect(pyContent).toContain('def delete_dlq_entry(');
+      expect(pyContent).toContain('def clear_dlq(');
       expect(pyContent).toContain('def replay_dlq(');
       expect(pyContent).toContain('def get_quota_usage(');
     });

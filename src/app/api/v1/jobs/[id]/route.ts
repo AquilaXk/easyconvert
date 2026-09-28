@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,40 +10,45 @@ interface RouteContext {
 }
 
 export async function GET(req: NextRequest, context: RouteContext) {
-  const auth = await validateApiAccess(req, 0, 'convert:read');
+  const resolvedParams = await Promise.resolve(context.params);
+  const jobId = resolvedParams.id;
+  const instanceUri = req.nextUrl?.pathname || `/api/v1/jobs/${jobId || ''}`;
+
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: auth.error ?? 'Unauthorized',
-      },
-      { status: auth.status ?? 401 }
+    return createProblemDetailsResponse(
+      auth.status ?? 401,
+      auth.error ?? 'Unauthorized',
+      instanceUri
     );
   }
 
-  const resolvedParams = await Promise.resolve(context.params);
-  const jobId = resolvedParams.id;
-
   if (!jobId) {
-    return NextResponse.json(
-      { success: false, error: 'Missing job ID in request path.' },
-      { status: 400 }
+    return createProblemDetailsResponse(
+      400,
+      'Missing job ID in request path.',
+      instanceUri,
+      'Bad Request'
     );
   }
 
   const job = await conversionQueue.getJob(jobId);
   if (!job) {
-    return NextResponse.json(
-      { success: false, error: `Job with ID "${jobId}" not found.` },
-      { status: 404 }
+    return createProblemDetailsResponse(
+      404,
+      `Job with ID "${jobId}" not found.`,
+      instanceUri,
+      'Not Found'
     );
   }
 
   // Enforce tenant boundary: user can only inspect their own jobs
   if (!job.data?.userId || job.data.userId !== auth.user.id) {
-    return NextResponse.json(
-      { success: false, error: 'Access denied to this conversion job.' },
-      { status: 403 }
+    return createProblemDetailsResponse(
+      403,
+      'Access denied to this conversion job.',
+      instanceUri,
+      'Forbidden'
     );
   }
 
@@ -64,3 +70,4 @@ export async function GET(req: NextRequest, context: RouteContext) {
     logs: job.logs,
   });
 }
+
