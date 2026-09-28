@@ -39,6 +39,8 @@ services:
     volumes:
       - worker-tmp:/tmp
       - shared-storage:/shared/storage
+    cap_drop:
+      - ALL
     cap_add:
       - SYS_ADMIN
     devices:
