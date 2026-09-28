@@ -1874,7 +1874,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'archive',
     description: 'Open-architecture high compression ratio LZMA/LZMA2 archive.',
     targetFormats: ['zip', 'tar', 'gz', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
-    optionsSchema: { compressionLevel: true, archiveCoder: true, splitVolumeBytes: true },
+    optionsSchema: { compressionLevel: true, archiveCoder: true, splitVolumeBytes: true, solid: true },
   },
   zst: {
     id: 'zst',
