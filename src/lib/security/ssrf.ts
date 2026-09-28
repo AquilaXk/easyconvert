@@ -83,10 +83,17 @@ export function isBlockedIpv6(ip: string): boolean {
 
 export function isBlockedIp(ip: string): boolean {
   const clean = ip.replace(/^\[|\]$/g, '').trim().toLowerCase();
+  const ipType = net.isIP(clean);
+  if (ipType === 4) {
+    return isBlockedIpv4(clean);
+  }
+  if (ipType === 6) {
+    return isBlockedIpv6(clean);
+  }
   if (clean.includes(':')) {
     return isBlockedIpv6(clean);
   }
-  return isBlockedIpv4(clean);
+  return false;
 }
 
 export async function validateUrlForSsrf(targetUrl: URL): Promise<boolean> {
@@ -142,7 +149,7 @@ export function createSsrfSafeAgent(): Agent {
           cleanHost.endsWith('.local') ||
           cleanHost.endsWith('.internal') ||
           cleanHost.endsWith('.localhost') ||
-          isBlockedIp(cleanHost)
+          (net.isIP(cleanHost) !== 0 && isBlockedIp(cleanHost))
         ) {
           return callback(new Error(`SSRF blocked: host ${hostname} is restricted`), '', 4);
         }

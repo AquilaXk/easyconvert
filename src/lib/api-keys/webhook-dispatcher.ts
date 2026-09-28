@@ -202,7 +202,7 @@ export class WebhookDispatcher {
       let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
-        const fetchFn = globalThis.fetch || undiciFetch;
+        const fetchFn = (globalThis.fetch || undiciFetch) as unknown as typeof undiciFetch;
         const response = (await fetchFn(targetUrl, {
           method: 'POST',
           headers: {
@@ -216,7 +216,7 @@ export class WebhookDispatcher {
           body: bodyString,
           dispatcher: this.ssrfAgent,
           signal: controller.signal as any,
-        })) as unknown as Response;
+        } as any)) as unknown as Response;
 
         finalStatusCode = response.status;
         const attemptDuration = Date.now() - attemptStart;

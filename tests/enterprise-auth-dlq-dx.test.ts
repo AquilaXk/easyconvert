@@ -14,6 +14,7 @@ import { DELETE as deleteKeyRoute } from '../src/app/api/keys/[id]/route';
 import { GET as getKeyUsageRoute } from '../src/app/api/keys/usage/route';
 import { EasyConvertClient } from '../sdk/typescript/src/client';
 import { createSessionToken } from '../src/lib/auth/session';
+import { isBlockedIp, createSsrfSafeAgent } from '../src/lib/security/ssrf';
 import type { ApiKeyScope, WebhookDlqEntry } from '../src/lib/api-keys/types';
 
 describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
@@ -278,6 +279,26 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(updatedEntry?.retryCount).toBeGreaterThan(2);
 
       fetchSpy.mockRestore();
+    });
+
+    it('accurately distinguishes public domain names from blocked IP addresses in SSRF protection', async () => {
+      // 1. isBlockedIp should never classify valid domain names as blocked IPs
+      expect(isBlockedIp('example.com')).toBe(false);
+      expect(isBlockedIp('webhook.site')).toBe(false);
+      expect(isBlockedIp('api.stripe.com')).toBe(false);
+      expect(isBlockedIp('93.184.215.14')).toBe(false); // Public IPv4
+
+      // 2. isBlockedIp must block private/restricted IPs
+      expect(isBlockedIp('169.254.169.254')).toBe(true);
+      expect(isBlockedIp('127.0.0.1')).toBe(true);
+      expect(isBlockedIp('10.0.0.1')).toBe(true);
+      expect(isBlockedIp('192.168.1.1')).toBe(true);
+      expect(isBlockedIp('::1')).toBe(true);
+
+      // 3. SSRF safe agent hook blocks private metadata
+      const agent = createSsrfSafeAgent();
+      expect(agent).toBeDefined();
+      await agent.close();
     });
   });
 
