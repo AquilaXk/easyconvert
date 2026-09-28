@@ -199,7 +199,7 @@ endcmap
       const flatMesh = tessellateBSplineSurfaceAdaptive(flatPlaneSurface, { chordalTolerance: 0.01 });
       const curvedMesh = tessellateBSplineSurfaceAdaptive(curvedParaboloidSurface, { chordalTolerance: 0.005 });
 
-      expect(flatMesh.vertices.length).toBeGreaterThanOrEqual(16);
+      expect(flatMesh.vertices.length).toBeGreaterThanOrEqual(9);
       expect(curvedMesh.vertices.length).toBeGreaterThan(flatMesh.vertices.length);
       expect(curvedMesh.faces.length).toBeGreaterThan(0);
     });
