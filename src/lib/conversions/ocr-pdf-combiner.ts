@@ -136,6 +136,7 @@ end
 end`;
   }
 
+  const toHex16 = (cp: number): string => (cp & 0xffff).toString(16).padStart(4, '0').toUpperCase();
   const toHex = (cp: number): string => {
     if (cp <= 0xffff) {
       return cp.toString(16).padStart(4, '0').toUpperCase();
@@ -149,22 +150,30 @@ end`;
   };
 
   const entries: string[] = [];
+  const pushCMapEntry = (src: number, dst: number): void => {
+    if (src <= 0xffff) {
+      entries.push(`<${toHex16(src)}> <${toHex(dst)}>`);
+    } else {
+      const highSrc = Math.floor((src - 0x10000) / 0x400) + 0xd800;
+      const lowSrc = ((src - 0x10000) % 0x400) + 0xdc00;
+      const highDst = Math.floor((dst - 0x10000) / 0x400) + 0xd800;
+      const lowDst = ((dst - 0x10000) % 0x400) + 0xdc00;
+      entries.push(`<${toHex16(highSrc)}> <${toHex16(highDst)}>`);
+      entries.push(`<${toHex16(lowSrc)}> <${toHex16(lowDst)}>`);
+    }
+  };
+
   if (Array.isArray(mappings)) {
     for (const m of mappings) {
       if (typeof m === 'number') {
-        const hex = toHex(m);
-        entries.push(`<${hex}> <${hex}>`);
+        pushCMapEntry(m, m);
       } else {
-        const srcHex = toHex(m[0]);
-        const dstHex = toHex(m[1]);
-        entries.push(`<${srcHex}> <${dstHex}>`);
+        pushCMapEntry(m[0], m[1]);
       }
     }
   } else if (mappings instanceof Map) {
     for (const [src, dst] of mappings.entries()) {
-      const srcHex = toHex(src);
-      const dstHex = toHex(dst);
-      entries.push(`<${srcHex}> <${dstHex}>`);
+      pushCMapEntry(src, dst);
     }
   }
 
