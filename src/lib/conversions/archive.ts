@@ -1179,9 +1179,37 @@ export function convertWithNative7z(
   const p7zBin = get7zBinaryPath();
   if (!p7zBin) return null;
 
+  // Delegate zstd dictionary-trained frames or custom zstd streams to authentic TS engine
+  if (
+    options.zstdDict ||
+    sourceFormat.includes('zst') ||
+    sourceFormat.includes('zstd') ||
+    targetFormat.includes('zst') ||
+    targetFormat.includes('zstd')
+  ) {
+    return null;
+  }
+
   const src = sourceFormat.toLowerCase().trim();
   const tgt = targetFormat.toLowerCase().trim();
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+
+  const supportedExtract = new Set([
+    'zip', '7z', 'rar', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
+    'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
+  ]);
+
+  if (!supportedExtract.has(src)) {
+    return null;
+  }
+
+  const supportedTargets = new Set([
+    '7z', 'zip', 'tar', 'tar.gz', 'tgz', 'tar.bz2', 'tbz2', 'tbz', 'tar.xz', 'txz',
+  ]);
+
+  if (!supportedTargets.has(tgt)) {
+    return null;
+  }
 
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
@@ -1196,24 +1224,39 @@ export function convertWithNative7z(
     const extractDir = path.join(workDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
-    const supportedExtract = new Set([
-      'zip', '7z', 'rar', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
-      'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
-    ]);
-
-    if (supportedExtract.has(src)) {
-      execFileSync(p7zBin, ['x', '-y', `-o${extractDir}`, inputPath], {
-        cwd: workDir,
-        timeout: 60000,
-        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-      });
-    } else {
-      const destPath = path.join(extractDir, originalFilename || `file.${src}`);
-      fs.writeFileSync(destPath, inputBuffer);
-    }
+    execFileSync(p7zBin, ['x', '-y', `-o${extractDir}`, inputPath], {
+      cwd: workDir,
+      timeout: 60000,
+      maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+    });
 
     const extractedFiles = fs.readdirSync(extractDir);
     if (extractedFiles.length === 0) return null;
+
+    let totalExtractedSize = 0;
+    const computeDirSize = (dir: string) => {
+      for (const item of fs.readdirSync(dir)) {
+        const full = path.join(dir, item);
+        const stat = fs.statSync(full);
+        if (stat.isDirectory()) {
+          computeDirSize(full);
+        } else {
+          totalExtractedSize += stat.size;
+        }
+      }
+    };
+    computeDirSize(extractDir);
+
+    if (totalExtractedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      throw new ConversionFailedError(
+        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+      );
+    }
+    if (inputBuffer.length > 0 && totalExtractedSize / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+      throw new ConversionFailedError(
+        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+      );
+    }
 
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
@@ -1251,7 +1294,10 @@ export function convertWithNative7z(
       filename: `${baseName}.${tgt}`,
       size: outputBuffer.length,
     };
-  } catch {
+  } catch (err) {
+    if (err instanceof ConversionFailedError) {
+      throw err;
+    }
     return null;
   } finally {
     try {
