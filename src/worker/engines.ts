@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { ConversionOptions, ConversionResult } from '../lib/types';
 import { convertFile } from '../lib/conversions';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
+import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import {
   buildFfmpegArguments,
   probeHardwareAcceleration,
@@ -196,16 +197,8 @@ export function assertNotSpoofedFileVfs(
       assertNotSpoofedFile(input.inputBuffer, declaredExt, filename);
       return;
     }
-    if (input.inputPath && fs.existsSync(input.inputPath)) {
-      const fd = fs.openSync(input.inputPath, 'r');
-      try {
-        const headerBuf = Buffer.alloc(8192);
-        const bytesRead = fs.readSync(fd, headerBuf, 0, 8192, 0);
-        const slice = bytesRead < 8192 ? headerBuf.subarray(0, bytesRead) : headerBuf;
-        assertNotSpoofedFile(slice, declaredExt, filename);
-      } finally {
-        fs.closeSync(fd);
-      }
+    if (input.inputPath) {
+      assertNotSpoofedFilePath(input.inputPath, declaredExt, filename);
     }
   }
 }

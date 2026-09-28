@@ -1,9 +1,11 @@
+import fs from 'node:fs';
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
+import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus } from '@/lib/types';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
@@ -73,13 +75,13 @@ export async function POST(req: NextRequest) {
             options = parsed;
           }
         } catch {
-          return failWithRollback(400, 'Invalid JSON string provided in "options" parameter.');
+          return await failWithRollback(400, 'Invalid JSON string provided in "options" parameter.');
         }
       }
 
       if (file && file instanceof Blob && file.size > 0) {
         if (file.size > MAX_JOB_PAYLOAD_SIZE) {
-          return failWithRollback(400, 'File size exceeds the 500 MB asynchronous payload boundary.', 'Payload Too Large');
+          return await failWithRollback(400, 'File size exceeds the 500 MB asynchronous payload boundary.', 'Payload Too Large');
         }
 
         originalFilename = file.name;
@@ -112,11 +114,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (!targetFormat) {
-      return failWithRollback(400, 'Missing required parameter: "targetFormat".');
+      return await failWithRollback(400, 'Missing required parameter: "targetFormat".');
     }
 
     if (!storageKey && !inputBufferBase64 && !uploadedBuffer) {
-      return failWithRollback(
+      return await failWithRollback(
         400,
         'Missing input file data. Please upload a "file" or provide "storageKey" / "inputBufferBase64".'
       );
@@ -127,7 +129,7 @@ export async function POST(req: NextRequest) {
     sourceDef ??= detectFormatFromFilename(originalFilename);
 
     if (!sourceDef) {
-      return failWithRollback(400, `Could not identify source format for file "${originalFilename}".`);
+      return await failWithRollback(400, `Could not identify source format for file "${originalFilename}".`);
     }
 
     // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
@@ -139,12 +141,17 @@ export async function POST(req: NextRequest) {
         assertNotSpoofedFile(decodedBuf, sourceDef.extension, originalFilename);
       } else if (storageKey) {
         const stored = s3Storage.getObject(storageKey);
-        if (stored?.buffer && stored.buffer.length > 0) {
+        if (!stored) {
+          return await failWithRollback(400, `Storage object not found for key: "${storageKey}".`, 'Storage Object Not Found');
+        }
+        if (stored.filePath && fs.existsSync(stored.filePath)) {
+          assertNotSpoofedFilePath(stored.filePath, sourceDef.extension, originalFilename);
+        } else if (stored.buffer && stored.buffer.length > 0) {
           assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
         }
       }
     } catch (err: any) {
-      return failWithRollback(400, err.message || 'File spoofing detected.', 'File Spoofing Detected');
+      return await failWithRollback(400, err.message || 'File spoofing detected.', 'File Spoofing Detected');
     }
 
     // Persist multipart upload into S3 staging storage only after magic byte validation passes
@@ -159,12 +166,12 @@ export async function POST(req: NextRequest) {
     const cleanTarget = targetFormat.toLowerCase().replace(/^\./, '').trim();
     const targetDef = getFormatByExtension(cleanTarget);
     if (!targetDef) {
-      return failWithRollback(400, `Unsupported target format "${targetFormat}".`);
+      return await failWithRollback(400, `Unsupported target format "${targetFormat}".`);
     }
 
     // Check format compatibility
     if (!sourceDef.targetFormats.includes(cleanTarget) && !sourceDef.targetFormats.includes(targetDef.id)) {
-      return failWithRollback(
+      return await failWithRollback(
         400,
         `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`
       );

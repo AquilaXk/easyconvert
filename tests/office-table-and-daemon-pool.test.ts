@@ -151,6 +151,75 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
       expect(htmlString).toContain('Col 1');
       expect(htmlString).toContain('Col 2');
     });
+
+    it('decodes XML entities in table cells without double-escaping in HTML or leaking raw entities in PDF', async () => {
+      const tableXml = `
+      <w:tbl>
+        <w:tblGrid>
+          <w:gridCol w:w="3000"/>
+          <w:gridCol w:w="3000"/>
+        </w:tblGrid>
+        <w:tr>
+          <w:tc><w:p><w:r><w:t>Revenue &amp; Profit</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>Target &lt;100%&gt;</w:t></w:r></w:p></w:tc>
+        </w:tr>
+      </w:tbl>`;
+
+      const docxBuffer = await buildMockDocxWithTable(tableXml);
+      const htmlResult = await convertOffice(docxBuffer, 'docx', 'html');
+      const htmlString = htmlResult.buffer.toString('utf-8');
+
+      // HTML should contain valid single-escaped entities, NOT double-escaped &amp;amp; or &amp;lt;
+      expect(htmlString).toContain('Revenue &amp; Profit');
+      expect(htmlString).not.toContain('&amp;amp;');
+      expect(htmlString).toContain('Target &lt;100%&gt;');
+      expect(htmlString).not.toContain('&amp;lt;');
+
+      const pdfResult = await convertOffice(docxBuffer, 'docx', 'pdf');
+      expect(pdfResult.buffer.length).toBeGreaterThan(500);
+    });
+
+    it('computes accurate grid colCount and cell widths for tables without w:tblGrid having merged cells', async () => {
+      // Table WITHOUT <w:tblGrid> where both rows contain merged cells
+      // Row 0: span 2 + span 1 (total 3 columns)
+      // Row 1: span 1 + span 2 (total 3 columns)
+      // If colCount were computed from row.length, it would be 2 instead of 3!
+      const tableXml = `
+      <w:tbl>
+        <w:tr>
+          <w:tc>
+            <w:tcPr><w:gridSpan w:val="2"/></w:tcPr>
+            <w:p><w:r><w:t>Merged Col 1-2</w:t></w:r></w:p>
+          </w:tc>
+          <w:tc>
+            <w:p><w:r><w:t>Single Col 3</w:t></w:r></w:p>
+          </w:tc>
+        </w:tr>
+        <w:tr>
+          <w:tc>
+            <w:p><w:r><w:t>Single Col 1</w:t></w:r></w:p>
+          </w:tc>
+          <w:tc>
+            <w:tcPr><w:gridSpan w:val="2"/></w:tcPr>
+            <w:p><w:r><w:t>Merged Col 2-3</w:t></w:r></w:p>
+          </w:tc>
+        </w:tr>
+      </w:tbl>`;
+
+      const parsed = parseDocxXml(tableXml);
+      expect(parsed.tables).toHaveLength(1);
+      const tbl = parsed.tables[0];
+      // Must be 3 columns, NOT 2!
+      expect(tbl.colCount).toBe(3);
+
+      const docxBuffer = await buildMockDocxWithTable(tableXml);
+      const pdfResult = await convertOffice(docxBuffer, 'docx', 'pdf');
+      expect(pdfResult.buffer.length).toBeGreaterThan(500);
+
+      const htmlResult = await convertOffice(docxBuffer, 'docx', 'html');
+      const htmlString = htmlResult.buffer.toString('utf-8');
+      expect(htmlString).toContain('colspan="2"');
+    });
   });
 
   describe('2. Resident UNO Socket Pool & Rolling Recycling', () => {

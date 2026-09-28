@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { sha256 } from '../auth/crypto';
-import { userStore } from '../auth/user-store';
+import { redisUserStore } from '../auth/redis-user-store';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
@@ -208,7 +208,7 @@ export class KeyStore {
       return { valid: false, error: constraintError };
     }
 
-    const userRecord = await userStore.findById(key.userId);
+    const userRecord = await redisUserStore.findById(key.userId);
     if (!userRecord) {
       return { valid: false, error: 'User associated with API key not found' };
     }
@@ -219,7 +219,7 @@ export class KeyStore {
     return {
       valid: true,
       key,
-      user: userStore.sanitizeUser(userRecord),
+      user: redisUserStore.sanitizeUser(userRecord),
     };
   }
 
@@ -261,7 +261,7 @@ export class KeyStore {
   public async getQuotaUsage(userId: string): Promise<QuotaUsage> {
     this.ensureInitialized();
 
-    const user = await userStore.findById(userId);
+    const user = await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier || 'free';
     const dailyLimit = TIER_LIMITS[tier];
 
@@ -282,7 +282,7 @@ export class KeyStore {
   public async recordUsage(userId: string, units: number = 1): Promise<{ allowed: boolean; remaining: number }> {
     this.ensureInitialized();
 
-    const user = await userStore.findById(userId);
+    const user = await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = TIER_LIMITS[tier];
 

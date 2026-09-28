@@ -80,6 +80,82 @@ describe('Phase 5: B-Rep Mesh Watertightness & Astral Unicode CMap Compliance', 
       const interiorEdges = Array.from(edgeCount.values()).filter((c) => c === 2);
       expect(interiorEdges.length).toBeGreaterThan(0);
     });
+
+    it('heals edge topology and maintains watertight 2-manifold when multiple collinear Steiner points refine boundaries', () => {
+      // High curvature saddle surface (biquadratic) to trigger extensive adaptive Steiner refinement
+      const surface: BSplineSurface = {
+        uDegree: 2,
+        vDegree: 2,
+        uKnots: [0, 0, 0, 0.5, 1, 1, 1],
+        vKnots: [0, 0, 0, 0.5, 1, 1, 1],
+        controlPoints: [
+          [
+            { x: 0, y: 0, z: 5 },
+            { x: 5, y: 0, z: -5 },
+            { x: 10, y: 0, z: 5 },
+            { x: 15, y: 0, z: -5 },
+          ],
+          [
+            { x: 0, y: 5, z: -5 },
+            { x: 5, y: 5, z: 10 },
+            { x: 10, y: 5, z: -5 },
+            { x: 15, y: 5, z: 10 },
+          ],
+          [
+            { x: 0, y: 10, z: 5 },
+            { x: 5, y: 10, z: -5 },
+            { x: 10, y: 10, z: 5 },
+            { x: 15, y: 10, z: -5 },
+          ],
+          [
+            { x: 0, y: 15, z: -5 },
+            { x: 5, y: 15, z: 10 },
+            { x: 10, y: 15, z: -5 },
+            { x: 15, y: 15, z: 10 },
+          ],
+        ],
+      };
+
+      const outerLoop: Parametric2DPoint[] = [
+        { u: 0, v: 0 },
+        { u: 1, v: 0 },
+        { u: 1, v: 1 },
+        { u: 0, v: 1 },
+      ];
+
+      const mesh = tessellateTrimmedFaceCDT(
+        {
+          surface,
+          outerLoop,
+        },
+        'test_saddle_mesh'
+      );
+
+      expect(mesh).not.toBeNull();
+      expect(mesh.faces.length).toBeGreaterThan(6);
+
+      const edgeCount = new Map<string, number>();
+      for (const [v0, v1, v2] of mesh.faces) {
+        // No degenerate triangles
+        expect(v0 !== v1 && v1 !== v2 && v2 !== v0).toBe(true);
+
+        const edges = [
+          [Math.min(v0, v1), Math.max(v0, v1)],
+          [Math.min(v1, v2), Math.max(v1, v2)],
+          [Math.min(v2, v0), Math.max(v2, v0)],
+        ];
+        for (const [e0, e1] of edges) {
+          const key = `${e0}_${e1}`;
+          edgeCount.set(key, (edgeCount.get(key) || 0) + 1);
+        }
+      }
+
+      // Watertight manifold rule: exactly 1 (boundary) or 2 (interior), NEVER 3+
+      for (const [key, count] of edgeCount.entries()) {
+        expect(count).toBeLessThanOrEqual(2);
+        expect(count).toBeGreaterThanOrEqual(1);
+      }
+    });
   });
 
   describe('2. ISO 32000-1 Astral Unicode ToUnicode CMap Generation', () => {

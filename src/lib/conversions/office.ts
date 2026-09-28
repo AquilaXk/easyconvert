@@ -2683,10 +2683,11 @@ export function parseDocxXml(
               : undefined;
 
           const tTags = safeExtractXmlTags(tcXml, 'w:t');
-          const cellText = tTags
-            .map((m) => m.replace(/<[^>]+>/g, ''))
-            .join('')
-            .trim();
+          const cellText = safeDecodeXmlEntities(
+            tTags
+              .map((m) => m.replace(/<[^>]+>/g, ''))
+              .join('')
+          ).trim();
 
           rowCells.push(cellText);
           sCells.push({ text: cellText, shading, colSpan, isHeader, borders, alignment });
@@ -2715,7 +2716,13 @@ export function parseDocxXml(
       }
 
       if (rows.length > 0) {
-        const maxCols = Math.max(...rows.map((r) => r.length));
+        const gridColCount = Math.max(
+          ...structuredRows.map((sr) =>
+            sr.reduce((sum, c) => sum + Math.max(1, c.colSpan || 1), 0)
+          ),
+          ...rows.map((r) => r.length)
+        );
+        const maxCols = colWidths && colWidths.length > 0 ? Math.max(colWidths.length, gridColCount) : gridColCount;
         const tbl: DocxTable = {
           rowCount: rows.length,
           colCount: maxCols,

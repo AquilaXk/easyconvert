@@ -754,6 +754,10 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
   const bitDepth = sensor.bitsPerSample ?? (sensor as any).bitDepth ?? (rawInput instanceof Uint16Array ? 16 : 8);
   const maxVal = (1 << bitDepth) - 1;
 
+  const hasArrayBlackLevel = Array.isArray(sensor.blackLevel) && sensor.blackLevel.length > 0;
+  const defaultBLevel = typeof sensor.blackLevel === 'number' ? sensor.blackLevel : 0;
+  const wLevel = sensor.whiteLevel || maxVal;
+
   const mirrorCoord = (c: number, max: number): number => {
     if (c < 0) return -c;
     if (c >= max) return 2 * max - c - 2;
@@ -768,14 +772,24 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
     const my = mirrorCoord(y, height);
     const offset = my * width + mx;
 
+    let rawVal = 0;
     if (isUint16Array) {
-      return (rawInput[offset] / maxVal) * 255.0;
+      rawVal = rawInput[offset];
     } else if (is16BitBuffer) {
-      const val = (rawInput as Buffer).readUInt16LE(offset * 2);
-      return (val / maxVal) * 255.0;
+      rawVal = (rawInput as Buffer).readUInt16LE(offset * 2);
     } else {
-      return (rawInput[offset] / maxVal) * 255.0;
+      rawVal = rawInput[offset];
     }
+
+    let bLevel = defaultBLevel;
+    if (hasArrayBlackLevel) {
+      const blkArr = sensor.blackLevel as number[];
+      const blkIdx = ((my & 1) << 1) | (mx & 1);
+      bLevel = blkArr[blkIdx % blkArr.length] ?? 0;
+    }
+    const range = Math.max(1, wLevel - bLevel);
+    const clamped = Math.max(bLevel, Math.min(wLevel, rawVal));
+    return ((clamped - bLevel) / range) * 255.0;
   };
 
   // Determine CFA channel layout

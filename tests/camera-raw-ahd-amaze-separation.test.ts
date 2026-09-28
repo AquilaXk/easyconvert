@@ -208,4 +208,53 @@ describe('Camera RAW Demosaicing Algorithm Separation (AHD vs AMaZE)', () => {
     expect(topRowAvg).toBeLessThan(40);
     expect(botRowAvg).toBeGreaterThan(200);
   });
+
+  it('normalizes blackLevel offset and scales by whiteLevel in demosaicAhdBayerCfa', () => {
+    const width = 8;
+    const height = 8;
+    const blackLevel = 512;
+    const whiteLevel = 4095;
+
+    // Synthetic 12-bit sensor where all pixels are at black level
+    const dataAtBlack = new Uint16Array(width * height);
+    dataAtBlack.fill(blackLevel);
+
+    const sensorBlack: BayerSensorData = {
+      width,
+      height,
+      data: dataAtBlack,
+      pattern: 'RGGB',
+      bitsPerSample: 12,
+      blackLevel,
+      whiteLevel,
+      applySrgbGamma: false,
+    };
+
+    const resBlack = demosaicAhdBayerCfa(sensorBlack);
+    // When raw is at blackLevel, output must be clamped to 0
+    for (let i = 0; i < resBlack.data.length; i++) {
+      expect(resBlack.data[i]).toBe(0);
+    }
+
+    // Mid-level sensor signal: blackLevel + 1000
+    const dataMid = new Uint16Array(width * height);
+    dataMid.fill(blackLevel + 1000);
+
+    const sensorMid: BayerSensorData = {
+      width,
+      height,
+      data: dataMid,
+      pattern: 'RGGB',
+      bitsPerSample: 12,
+      blackLevel,
+      whiteLevel,
+      applySrgbGamma: false,
+    };
+
+    const resMid = demosaicAhdBayerCfa(sensorMid);
+    // (1000 / (4095 - 512)) * 255 = (1000 / 3583) * 255 = ~71.17
+    const expected = Math.round((1000 / (whiteLevel - blackLevel)) * 255);
+    const actual = resMid.data[0];
+    expect(Math.abs(actual - expected)).toBeLessThanOrEqual(2);
+  });
 });
