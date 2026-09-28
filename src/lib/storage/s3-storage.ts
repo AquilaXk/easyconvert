@@ -289,6 +289,42 @@ export class S3ObjectStorageService implements IStorageBackend {
     return obj;
   }
 
+  saveObjectFromFile(
+    key: string,
+    filePath: string,
+    mimeType: string,
+    filename: string,
+    ttlMs: number = 24 * 60 * 60 * 1000
+  ): StoredObject {
+    const stat = fs.statSync(filePath);
+    const etag = `"${crypto.createHash('sha256').update(filePath + stat.mtimeMs).digest('hex').slice(0, 32)}"`;
+    let cachedBuffer: Buffer | null = null;
+    const obj: StoredObject = {
+      key,
+      filename,
+      mimeType,
+      size: stat.size,
+      etag,
+      uploadedAt: Date.now(),
+      expiresAt: Date.now() + ttlMs,
+      filePath,
+      get buffer(): Buffer {
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(filePath)) {
+          cachedBuffer = fs.readFileSync(filePath);
+          return cachedBuffer;
+        }
+        return Buffer.alloc(0);
+      },
+      set buffer(b: Buffer) {
+        cachedBuffer = b;
+      },
+    };
+    this.objects.set(key, obj);
+    globalSharedObjects.set(key, obj);
+    return obj;
+  }
+
   getObject(key: string): StoredObject | undefined {
     return this.objects.get(key) || globalSharedObjects.get(key);
   }

@@ -321,7 +321,7 @@ export class LibreOfficePoolManager {
    * Executes a document conversion job using a pre-warmed worker daemon from the pool.
    */
   public async convert(
-    inputBuffer: Buffer,
+    input: Buffer | { inputPath?: string; outputPath?: string; inputBuffer?: Buffer },
     sourceFormat: string,
     targetFormat: string,
     options: WorkerEngineOptions = {},
@@ -342,8 +342,19 @@ export class LibreOfficePoolManager {
 
     try {
       fs.mkdirSync(jobSubdir, { recursive: true, mode: 0o700 });
-      const inputPath = path.join(jobSubdir, `input.${src}`);
-      fs.writeFileSync(inputPath, inputBuffer);
+      let inputPath: string;
+
+      if (Buffer.isBuffer(input)) {
+        inputPath = path.join(jobSubdir, `input.${src}`);
+        fs.writeFileSync(inputPath, input);
+      } else if (input.inputPath && fs.existsSync(input.inputPath)) {
+        inputPath = input.inputPath;
+      } else if (input.inputBuffer) {
+        inputPath = path.join(jobSubdir, `input.${src}`);
+        fs.writeFileSync(inputPath, input.inputBuffer);
+      } else {
+        throw new Error('LibreOffice pool conversion received invalid input payload');
+      }
 
       const timeout = Math.min(options.timeoutMs || 45000, 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
@@ -379,16 +390,44 @@ export class LibreOfficePoolManager {
         return null;
       }
 
-      const outputPath = path.join(jobSubdir, matches[0]);
-      const outputBuffer = fs.readFileSync(outputPath);
+      const tempOutputPath = path.join(jobSubdir, matches[0]);
+      let persistedPath = (input as any)?.outputPath || (options as any)?.outputPath;
+      if (!persistedPath) {
+        const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
+        if (!fs.existsSync(vfsDir)) {
+          try {
+            fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
+          } catch {}
+        }
+        persistedPath = path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${tgt}`);
+      }
+      fs.copyFileSync(tempOutputPath, persistedPath);
 
+      const stat = fs.statSync(persistedPath);
+      let cachedBuffer: Buffer | null = null;
       return {
-        buffer: outputBuffer,
+        filePath: persistedPath,
         mimeType: MIME_TYPES[targetFormat] || 'application/octet-stream',
         filename: `${baseName}.${targetFormat}`,
-        size: outputBuffer.length,
+        size: stat.size,
         engineUsed: 'native-soffice-pool',
         executionTimeMs: Date.now() - startTime,
+        get buffer(): Buffer {
+          if (cachedBuffer) return cachedBuffer;
+          if (stat.size > 2 * 1024 * 1024 * 1024 - 1) {
+            throw new RangeError(
+              `Cannot read file (${stat.size} bytes) into single Node.js Buffer because it exceeds 2GB V8 buffer limit. Use filePath streaming instead.`
+            );
+          }
+          if (fs.existsSync(persistedPath)) {
+            cachedBuffer = fs.readFileSync(persistedPath);
+            return cachedBuffer;
+          }
+          return Buffer.alloc(0);
+        },
+        set buffer(b: Buffer) {
+          cachedBuffer = b;
+        },
       };
     } catch (err) {
       hasError = true;

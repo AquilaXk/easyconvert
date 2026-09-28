@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { ConversionOptions, ConversionResult } from '../lib/types';
 import { convertFile } from '../lib/conversions';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
@@ -13,16 +14,24 @@ import { executeSandboxedBinary } from './sandbox';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 import { LibreOfficePoolManager } from './libreoffice-pool';
 
+export interface WorkerVfsPayload {
+  inputPath?: string;
+  outputPath?: string;
+  inputBuffer?: Buffer;
+}
+
 export interface WorkerEngineOptions extends ConversionOptions {
   timeoutMs?: number;
   maxBufferBytes?: number;
   page?: number;
   dpi?: number;
+  zeroHeap?: boolean;
 }
 
 export interface WorkerConversionResult extends ConversionResult {
   engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'internal-fallback';
   executionTimeMs: number;
+  filePath?: string;
 }
 
 // Fixed standard locations for native CLI binaries (hardened against injection)
@@ -145,12 +154,132 @@ async function withSandboxDir<T>(
 }
 
 /**
+ * Resolves disk input path and ownership from Buffer or WorkerVfsPayload.
+ */
+export function resolveInputContext(
+  input: Buffer | WorkerVfsPayload,
+  ext: string,
+  tempDir: string
+): { inputPath: string; isTemporary: boolean } {
+  if (Buffer.isBuffer(input)) {
+    const p = path.join(tempDir, `input.${ext}`);
+    fs.writeFileSync(p, input);
+    return { inputPath: p, isTemporary: true };
+  }
+  if (typeof input === 'object' && input !== null) {
+    if (input.inputPath && fs.existsSync(input.inputPath)) {
+      return { inputPath: input.inputPath, isTemporary: false };
+    }
+    if (input.inputBuffer) {
+      const p = path.join(tempDir, `input.${ext}`);
+      fs.writeFileSync(p, input.inputBuffer);
+      return { inputPath: p, isTemporary: true };
+    }
+  }
+  throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
+}
+
+/**
+ * Asserts fail-closed that magic bytes match declared format using zero-heap header sniffing.
+ */
+export function assertNotSpoofedFileVfs(
+  input: Buffer | WorkerVfsPayload,
+  declaredExt: string,
+  filename?: string
+): void {
+  if (Buffer.isBuffer(input)) {
+    assertNotSpoofedFile(input, declaredExt, filename);
+    return;
+  }
+  if (typeof input === 'object' && input !== null) {
+    if (input.inputBuffer) {
+      assertNotSpoofedFile(input.inputBuffer, declaredExt, filename);
+      return;
+    }
+    if (input.inputPath && fs.existsSync(input.inputPath)) {
+      const fd = fs.openSync(input.inputPath, 'r');
+      try {
+        const headerBuf = Buffer.alloc(8192);
+        const bytesRead = fs.readSync(fd, headerBuf, 0, 8192, 0);
+        const slice = bytesRead < 8192 ? headerBuf.subarray(0, bytesRead) : headerBuf;
+        assertNotSpoofedFile(slice, declaredExt, filename);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  }
+}
+
+/**
+ * Persists an output file to target VFS destination outside ephemeral sandbox before cleanup.
+ */
+export function preserveOutput(
+  tempOutputPath: string,
+  targetFormat: string,
+  options?: WorkerEngineOptions,
+  vfsPayload?: WorkerVfsPayload
+): string {
+  const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
+  let finalPath = desiredOutput;
+  if (!finalPath) {
+    const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
+    if (!fs.existsSync(vfsDir)) {
+      try {
+        fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
+      } catch {}
+    }
+    finalPath = path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
+  }
+  fs.copyFileSync(tempOutputPath, finalPath);
+  return finalPath;
+}
+
+/**
+ * Creates lazy zero-heap WorkerConversionResult supporting 2GB+ payloads without heap overflow.
+ */
+export function createConversionResult(
+  persistedFilePath: string,
+  targetFormat: string,
+  baseName: string,
+  engineUsed: WorkerConversionResult['engineUsed'],
+  executionTimeMs: number
+): WorkerConversionResult {
+  const stat = fs.statSync(persistedFilePath);
+  let cachedBuffer: Buffer | null = null;
+  return {
+    filePath: persistedFilePath,
+    mimeType: getMimeType(targetFormat),
+    filename: `${baseName}.${targetFormat}`,
+    size: stat.size,
+    engineUsed,
+    executionTimeMs,
+    get buffer(): Buffer {
+      if (cachedBuffer) return cachedBuffer;
+      // V8 Buffer max size is 2GB - 1 byte (2147483647)
+      if (stat.size > 2 * 1024 * 1024 * 1024 - 1) {
+        throw new RangeError(
+          `Cannot read file (${stat.size} bytes) into single Node.js Buffer because it exceeds 2GB V8 buffer limit. Use filePath streaming instead.`
+        );
+      }
+      if (fs.existsSync(persistedFilePath)) {
+        cachedBuffer = fs.readFileSync(persistedFilePath);
+        return cachedBuffer;
+      }
+      return Buffer.alloc(0);
+    },
+    set buffer(b: Buffer) {
+      cachedBuffer = b;
+    },
+  };
+}
+
+/**
  * Converts an Office document using headless LibreOffice in an isolated sandbox.
  * Leverages the pre-warmed daemon pool with sub-200ms dispatch, auto-recycling,
  * and seamless fail-closed fallback to standalone sandbox execution.
  */
 export async function convertWithHeadlessOffice(
-  inputBuffer: Buffer,
+  input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
   targetFormat: string,
   options: WorkerEngineOptions = {},
@@ -166,7 +295,7 @@ export async function convertWithHeadlessOffice(
   if (libreOfficePool.isEnabled()) {
     try {
       const poolResult = await libreOfficePool.convert(
-        inputBuffer,
+        input as any,
         src,
         tgt,
         options,
@@ -184,8 +313,7 @@ export async function convertWithHeadlessOffice(
   const startTime = Date.now();
 
   return withSandboxDir('easyconvert-office-', async (tempDir) => {
-    const inputPath = path.join(tempDir, `input.${src}`);
-    fs.writeFileSync(inputPath, inputBuffer);
+    const { inputPath } = resolveInputContext(input, src, tempDir);
 
     const timeout = Math.min(options.timeoutMs || 45000, 120000);
     const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
@@ -216,17 +344,17 @@ export async function convertWithHeadlessOffice(
     const matches = fs.readdirSync(tempDir).filter((f) => f.startsWith('input.') && !f.endsWith(`.${src}`));
     if (matches.length === 0) return null;
 
-    const outputPath = path.join(tempDir, matches[0]);
-    const outputBuffer = fs.readFileSync(outputPath);
+    const tempOutputPath = path.join(tempDir, matches[0]);
+    const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
 
-    return {
-      buffer: outputBuffer,
-      mimeType: getMimeType(tgt),
-      filename: `${baseName}.${tgt}`,
-      size: outputBuffer.length,
-      engineUsed: 'native-soffice',
-      executionTimeMs: Date.now() - startTime,
-    };
+    return createConversionResult(
+      persistedPath,
+      tgt,
+      baseName,
+      'native-soffice',
+      Date.now() - startTime
+    );
   });
 }
 
@@ -234,7 +362,7 @@ export async function convertWithHeadlessOffice(
  * Transcodes media using native FFmpeg with strict argument boundaries.
  */
 export async function convertWithNativeFfmpeg(
-  inputBuffer: Buffer,
+  input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
   targetFormat: string,
   options: WorkerEngineOptions = {},
@@ -249,13 +377,12 @@ export async function convertWithNativeFfmpeg(
   const startTime = Date.now();
 
   return withSandboxDir('easyconvert-ffmpeg-', async (tempDir) => {
-    const inputPath = path.join(tempDir, `input.${src}`);
-    const outputPath = path.join(tempDir, `output.${tgt}`);
-    fs.writeFileSync(inputPath, inputBuffer);
+    const { inputPath } = resolveInputContext(input, src, tempDir);
+    const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
     const timeout = Math.min(options.timeoutMs || 60000, 180000);
     const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
-    const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin);
+    const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
 
     await executeSandboxedBinary(ffmpegBin, args, {
       cwd: tempDir,
@@ -264,17 +391,18 @@ export async function convertWithNativeFfmpeg(
       networkIsolated: true,
     });
 
-    if (!fs.existsSync(outputPath)) return null;
+    if (!fs.existsSync(tempOutputPath)) return null;
 
-    const outputBuffer = fs.readFileSync(outputPath);
-    return {
-      buffer: outputBuffer,
-      mimeType: getMimeType(tgt),
-      filename: `${baseName}.${tgt}`,
-      size: outputBuffer.length,
-      engineUsed: 'native-ffmpeg',
-      executionTimeMs: Date.now() - startTime,
-    };
+    const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+    return createConversionResult(
+      persistedPath,
+      tgt,
+      baseName,
+      'native-ffmpeg',
+      Date.now() - startTime
+    );
   });
 }
 
@@ -323,7 +451,7 @@ function get7zArchiveType(format: string): string | null {
  * Converts or extracts archives using the native 7-Zip CLI engine.
  */
 export async function convertWithNative7z(
-  inputBuffer: Buffer,
+  input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
   targetFormat: string,
   options: WorkerEngineOptions = {},
@@ -339,15 +467,14 @@ export async function convertWithNative7z(
 
   return withSandboxDir('easyconvert-7z-', async (tempDir) => {
     const inputExt = src.includes('.') ? src.split('.').pop()! : src;
-    const inputPath = path.join(tempDir, `input.${inputExt}`);
-    fs.writeFileSync(inputPath, inputBuffer);
+    const { inputPath } = resolveInputContext(input, inputExt, tempDir);
 
     const timeout = Math.min(options.timeoutMs || 60000, 180000);
     const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
     const extractDir = path.join(tempDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
-    // Step 1: Extract if source is an archive container, otherwise place single file into extract directory
+    // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
     if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
       if (options.archiveParts && options.archiveParts.length > 0) {
         // Multi-volume split archive extraction via Virtual Spanned Stream pipeline
@@ -370,7 +497,7 @@ export async function convertWithNative7z(
       }
     } else {
       const destPath = path.join(extractDir, originalFilename || `file.${src}`);
-      fs.writeFileSync(destPath, inputBuffer);
+      fs.copyFileSync(inputPath, destPath);
     }
 
     const extractedFiles = fs.readdirSync(extractDir);
@@ -378,7 +505,7 @@ export async function convertWithNative7z(
       return null;
     }
 
-    const outputPath = path.join(tempDir, `output.${tgt}`);
+    const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
     // Step 2: Re-archive contents into requested target format
     if (tgt === 'tar.gz' || tgt === 'tgz') {
@@ -395,7 +522,7 @@ export async function convertWithNative7z(
       );
       await executeSandboxedBinary(
         p7zBin,
-        ['a', '-y', '-tgzip', outputPath, tarPath],
+        ['a', '-y', '-tgzip', tempOutputPath, tarPath],
         {
           cwd: tempDir,
           timeoutMs: timeout,
@@ -417,7 +544,7 @@ export async function convertWithNative7z(
       );
       await executeSandboxedBinary(
         p7zBin,
-        ['a', '-y', '-tbzip2', outputPath, tarPath],
+        ['a', '-y', '-tbzip2', tempOutputPath, tarPath],
         {
           cwd: tempDir,
           timeoutMs: timeout,
@@ -439,7 +566,7 @@ export async function convertWithNative7z(
       );
       await executeSandboxedBinary(
         p7zBin,
-        ['a', '-y', '-txz', outputPath, tarPath],
+        ['a', '-y', '-txz', tempOutputPath, tarPath],
         {
           cwd: tempDir,
           timeoutMs: timeout,
@@ -453,7 +580,7 @@ export async function convertWithNative7z(
 
       await executeSandboxedBinary(
         p7zBin,
-        ['a', '-y', `-t${archiveType}`, outputPath, '.'],
+        ['a', '-y', `-t${archiveType}`, tempOutputPath, '.'],
         {
           cwd: extractDir,
           timeoutMs: timeout,
@@ -463,17 +590,18 @@ export async function convertWithNative7z(
       );
     }
 
-    if (!fs.existsSync(outputPath)) return null;
+    if (!fs.existsSync(tempOutputPath)) return null;
 
-    const outputBuffer = fs.readFileSync(outputPath);
-    return {
-      buffer: outputBuffer,
-      mimeType: getMimeType(tgt),
-      filename: `${baseName}.${tgt}`,
-      size: outputBuffer.length,
-      engineUsed: 'native-7z',
-      executionTimeMs: Date.now() - startTime,
-    };
+    const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+    return createConversionResult(
+      persistedPath,
+      tgt,
+      baseName,
+      'native-7z',
+      Date.now() - startTime
+    );
   });
 }
 
@@ -486,7 +614,7 @@ const POPPLER_IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'tiff', 'tif', 'ppm
  * Converts PDF documents using native Poppler utilities (pdftoppm and pdftotext).
  */
 export async function convertWithNativePoppler(
-  inputBuffer: Buffer,
+  input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
   targetFormat: string,
   options: WorkerEngineOptions = {},
@@ -507,13 +635,12 @@ export async function convertWithNativePoppler(
     if (!pdftotextBin) return null;
 
     return withSandboxDir('easyconvert-poppler-txt-', async (tempDir) => {
-      const inputPath = path.join(tempDir, 'input.pdf');
-      const outputPath = path.join(tempDir, 'output.txt');
-      fs.writeFileSync(inputPath, inputBuffer);
+      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
+      const tempOutputPath = path.join(tempDir, 'output.txt');
 
       await executeSandboxedBinary(
         pdftotextBin,
-        ['-layout', inputPath, outputPath],
+        ['-layout', inputPath, tempOutputPath],
         {
           cwd: tempDir,
           timeoutMs: timeout,
@@ -522,17 +649,18 @@ export async function convertWithNativePoppler(
         }
       );
 
-      if (!fs.existsSync(outputPath)) return null;
+      if (!fs.existsSync(tempOutputPath)) return null;
 
-      const outputBuffer = fs.readFileSync(outputPath);
-      return {
-        buffer: outputBuffer,
-        mimeType: 'text/plain; charset=utf-8',
-        filename: `${baseName}.txt`,
-        size: outputBuffer.length,
-        engineUsed: 'native-poppler',
-        executionTimeMs: Date.now() - startTime,
-      };
+      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+      const persistedPath = preserveOutput(tempOutputPath, 'txt', options, vfsPayload);
+
+      return createConversionResult(
+        persistedPath,
+        'txt',
+        baseName,
+        'native-poppler',
+        Date.now() - startTime
+      );
     });
   }
 
@@ -542,8 +670,7 @@ export async function convertWithNativePoppler(
     if (!pdftoppmBin) return null;
 
     return withSandboxDir('easyconvert-poppler-img-', async (tempDir) => {
-      const inputPath = path.join(tempDir, 'input.pdf');
-      fs.writeFileSync(inputPath, inputBuffer);
+      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
 
       const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
       const args: string[] = ['-r', String(dpi)];
@@ -572,21 +699,22 @@ export async function convertWithNativePoppler(
         networkIsolated: true,
       });
 
-      const files = fs.readdirSync(tempDir).filter((f) => f.startsWith('page') && f !== 'input.pdf');
+      const files = fs.readdirSync(tempDir).filter((f) => f.startsWith('page') && !f.endsWith('.pdf'));
       if (files.length === 0) return null;
 
       const selectedFile = files.sort()[0];
-      const outputPath = path.join(tempDir, selectedFile);
-      const outputBuffer = fs.readFileSync(outputPath);
+      const tempOutputPath = path.join(tempDir, selectedFile);
 
-      return {
-        buffer: outputBuffer,
-        mimeType: getMimeType(tgt),
-        filename: `${baseName}.${tgt}`,
-        size: outputBuffer.length,
-        engineUsed: 'native-poppler',
-        executionTimeMs: Date.now() - startTime,
-      };
+      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+      return createConversionResult(
+        persistedPath,
+        tgt,
+        baseName,
+        'native-poppler',
+        Date.now() - startTime
+      );
     });
   }
 
@@ -601,7 +729,7 @@ const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'od
 const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
 
 export async function executeWorkerConversion(
-  inputBuffer: Buffer,
+  input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
   targetFormat: string,
   options: WorkerEngineOptions = {},
@@ -612,34 +740,62 @@ export async function executeWorkerConversion(
   const startTime = Date.now();
 
   // Fail-closed verification against spoofed file extensions before any native engine execution
-  assertNotSpoofedFile(inputBuffer, src, originalFilename);
+  assertNotSpoofedFileVfs(input, src, originalFilename);
 
   // 1. Native Headless Office
   if (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt))) {
-    const officeRes = await convertWithHeadlessOffice(inputBuffer, src, tgt, options, originalFilename);
+    const officeRes = await convertWithHeadlessOffice(input, src, tgt, options, originalFilename);
     if (officeRes) return officeRes;
   }
 
   // 2. Native FFmpeg
   if (MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) {
-    const ffmpegRes = await convertWithNativeFfmpeg(inputBuffer, src, tgt, options, originalFilename);
+    const ffmpegRes = await convertWithNativeFfmpeg(input, src, tgt, options, originalFilename);
     if (ffmpegRes) return ffmpegRes;
   }
 
   // 3. Native Poppler (PDF -> Image or Text)
   if (src === 'pdf' && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'txt' || tgt === 'text')) {
-    const popplerRes = await convertWithNativePoppler(inputBuffer, src, tgt, options, originalFilename);
+    const popplerRes = await convertWithNativePoppler(input, src, tgt, options, originalFilename);
     if (popplerRes) return popplerRes;
   }
 
   // 4. Native 7-Zip (Archive handling)
   if (ARCHIVE_EXTRACT_FORMATS.has(src) && ARCHIVE_TARGET_FORMATS.has(tgt)) {
-    const p7zRes = await convertWithNative7z(inputBuffer, src, tgt, options, originalFilename);
+    const p7zRes = await convertWithNative7z(input, src, tgt, options, originalFilename);
     if (p7zRes) return p7zRes;
   }
 
   // 5. In-Repo Pure TS Fallback
+  const inputBuffer = Buffer.isBuffer(input)
+    ? input
+    : input.inputBuffer
+      ? input.inputBuffer
+      : input.inputPath
+        ? fs.readFileSync(input.inputPath)
+        : Buffer.alloc(0);
   const internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
+  const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+  const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
+  let finalPath = desiredOutput;
+  if (!finalPath && options.zeroHeap) {
+    const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
+    if (!fs.existsSync(vfsDir)) {
+      try {
+        fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
+      } catch {}
+    }
+    finalPath = path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${tgt}`);
+  }
+  if (finalPath) {
+    fs.writeFileSync(finalPath, internalRes.buffer);
+    return {
+      ...internalRes,
+      filePath: finalPath,
+      engineUsed: 'internal-fallback',
+      executionTimeMs: Date.now() - startTime,
+    };
+  }
   return {
     ...internalRes,
     engineUsed: 'internal-fallback',

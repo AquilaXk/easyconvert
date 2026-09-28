@@ -34,7 +34,10 @@ jobs:
             tar \
             libreoffice-calc \
             libreoffice-writer \
-            libreoffice-impress
+            libreoffice-impress \
+            imagemagick \
+            tesseract-ocr \
+            unrar
 
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
@@ -43,6 +46,8 @@ jobs:
         run: npm run lint
 
       - name: Run unit and integration tests
+        env:
+          ORACLE_STRICT_MODE: "1"
         run: npm test
 
       - name: Build application
