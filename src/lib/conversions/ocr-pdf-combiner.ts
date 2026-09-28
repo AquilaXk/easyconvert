@@ -150,44 +150,30 @@ end`;
   };
 
   const entries: string[] = [];
+  const pushCMapEntry = (src: number, dst: number): void => {
+    if (src <= 0xffff) {
+      entries.push(`<${toHex16(src)}> <${toHex(dst)}>`);
+    } else {
+      const highSrc = Math.floor((src - 0x10000) / 0x400) + 0xd800;
+      const lowSrc = ((src - 0x10000) % 0x400) + 0xdc00;
+      const highDst = Math.floor((dst - 0x10000) / 0x400) + 0xd800;
+      const lowDst = ((dst - 0x10000) % 0x400) + 0xdc00;
+      entries.push(`<${toHex16(highSrc)}> <${toHex16(highDst)}>`);
+      entries.push(`<${toHex16(lowSrc)}> <${toHex16(lowDst)}>`);
+    }
+  };
+
   if (Array.isArray(mappings)) {
     for (const m of mappings) {
       if (typeof m === 'number') {
-        if (m <= 0xffff) {
-          const hex = toHex16(m);
-          entries.push(`<${hex}> <${hex}>`);
-        } else {
-          const high = Math.floor((m - 0x10000) / 0x400) + 0xd800;
-          const low = ((m - 0x10000) % 0x400) + 0xdc00;
-          entries.push(`<${toHex16(high)}> <${toHex16(high)}>`);
-          entries.push(`<${toHex16(low)}> <${toHex16(low)}>`);
-        }
+        pushCMapEntry(m, m);
       } else {
-        const [src, dst] = m;
-        if (src <= 0xffff) {
-          entries.push(`<${toHex16(src)}> <${toHex(dst)}>`);
-        } else {
-          const highSrc = Math.floor((src - 0x10000) / 0x400) + 0xd800;
-          const lowSrc = ((src - 0x10000) % 0x400) + 0xdc00;
-          const highDst = Math.floor((dst - 0x10000) / 0x400) + 0xd800;
-          const lowDst = ((dst - 0x10000) % 0x400) + 0xdc00;
-          entries.push(`<${toHex16(highSrc)}> <${toHex16(highDst)}>`);
-          entries.push(`<${toHex16(lowSrc)}> <${toHex16(lowDst)}>`);
-        }
+        pushCMapEntry(m[0], m[1]);
       }
     }
   } else if (mappings instanceof Map) {
     for (const [src, dst] of mappings.entries()) {
-      if (src <= 0xffff) {
-        entries.push(`<${toHex16(src)}> <${toHex(dst)}>`);
-      } else {
-        const highSrc = Math.floor((src - 0x10000) / 0x400) + 0xd800;
-        const lowSrc = ((src - 0x10000) % 0x400) + 0xdc00;
-        const highDst = Math.floor((dst - 0x10000) / 0x400) + 0xd800;
-        const lowDst = ((dst - 0x10000) % 0x400) + 0xdc00;
-        entries.push(`<${toHex16(highSrc)}> <${toHex16(highDst)}>`);
-        entries.push(`<${toHex16(lowSrc)}> <${toHex16(lowDst)}>`);
-      }
+      pushCMapEntry(src, dst);
     }
   }
 
