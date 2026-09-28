@@ -23,6 +23,7 @@ export interface LibreOfficeWorker {
   createdAt: number;
   lastUsedAt: number;
   port: number;
+  unoAccept?: string;
 }
 
 export interface LibreOfficePoolOptions {
@@ -33,6 +34,8 @@ export interface LibreOfficePoolOptions {
   sofficePath?: string | null;
   enabled?: boolean;
   executor?: SandboxedProcessRunner;
+  daemonMode?: boolean;
+  unoAcceptHost?: string;
 }
 
 export interface LibreOfficePoolStats {
@@ -43,6 +46,8 @@ export interface LibreOfficePoolStats {
   deadWorkers: number;
   queueLength: number;
   totalJobsProcessed: number;
+  maxJobsPerWorker?: number;
+  daemonMode?: boolean;
 }
 
 export class LibreOfficePoolTimeoutError extends Error {
@@ -96,6 +101,8 @@ export class LibreOfficePoolManager {
   private sofficePath: string | null;
   private enabled: boolean;
   private executor: SandboxedProcessRunner;
+  private daemonMode: boolean;
+  private unoAcceptHost: string;
 
   private isShuttingDown = false;
   private totalJobsProcessed = 0;
@@ -106,11 +113,13 @@ export class LibreOfficePoolManager {
     const cpus = os.cpus()?.length || 2;
     this.maxWorkers = options.maxWorkers ?? Math.max(1, Math.min(4, cpus));
     this.minWorkers = options.minWorkers ?? Math.min(1, this.maxWorkers);
-    this.maxJobsPerWorker = options.maxJobsPerWorker ?? 50;
+    this.maxJobsPerWorker = options.maxJobsPerWorker ?? 150;
     this.acquireTimeoutMs = options.acquireTimeoutMs ?? 30000;
     this.sofficePath = options.sofficePath ?? null;
     this.enabled = options.enabled ?? (this.sofficePath !== null);
     this.executor = options.executor ?? executeSandboxedBinary;
+    this.daemonMode = options.daemonMode ?? true;
+    this.unoAcceptHost = options.unoAcceptHost ?? '127.0.0.1';
   }
 
   public isEnabled(): boolean {
@@ -160,6 +169,7 @@ export class LibreOfficePoolManager {
     const port = this.basePort + (this.portCounter++ % 1000);
     const userProfileDir = createWorkerSandboxDir(`libreoffice_profile_${id}_`);
     const workDir = createWorkerSandboxDir(`libreoffice_work_${id}_`);
+    const unoAccept = `socket,host=${this.unoAcceptHost},port=${port};urp;`;
 
     const worker: LibreOfficeWorker = {
       id,
@@ -170,21 +180,27 @@ export class LibreOfficePoolManager {
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
       port,
+      unoAccept,
     };
 
     // Pre-warm user profile if binary is configured and exists or custom executor is set
     if (this.sofficePath && (fs.existsSync(this.sofficePath) || this.executor !== executeSandboxedBinary)) {
       try {
+        const warmArgs = [
+          '--headless',
+          '--norestore',
+          '--nofirststartwizard',
+          '--nologo',
+          `-env:UserInstallation=file://${userProfileDir}`,
+        ];
+        if (this.daemonMode) {
+          warmArgs.push(`--accept=${unoAccept}`);
+        }
+        warmArgs.push('--help');
+
         await this.executor(
           this.sofficePath,
-          [
-            '--headless',
-            '--norestore',
-            '--nofirststartwizard',
-            '--nologo',
-            `-env:UserInstallation=file://${userProfileDir}`,
-            '--help',
-          ],
+          warmArgs,
           {
             cwd: workDir,
             timeoutMs: 15000,
@@ -416,20 +432,27 @@ export class LibreOfficePoolManager {
       const timeout = Math.min(options.timeoutMs || 45000, 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
+      const convertArgs = [
+        '--headless',
+        '--norestore',
+        '--nofirststartwizard',
+        '--nologo',
+        `-env:UserInstallation=file://${worker.userProfileDir}`,
+      ];
+      if (this.daemonMode && worker.unoAccept) {
+        convertArgs.push(`--accept=${worker.unoAccept}`);
+      }
+      convertArgs.push(
+        '--convert-to',
+        tgt,
+        '--outdir',
+        jobSubdir,
+        inputPath
+      );
+
       await this.executor(
         this.sofficePath,
-        [
-          '--headless',
-          '--norestore',
-          '--nofirststartwizard',
-          '--nologo',
-          `-env:UserInstallation=file://${worker.userProfileDir}`,
-          '--convert-to',
-          tgt,
-          '--outdir',
-          jobSubdir,
-          inputPath,
-        ],
+        convertArgs,
         {
           cwd: jobSubdir,
           timeoutMs: timeout,
@@ -523,6 +546,8 @@ export class LibreOfficePoolManager {
       deadWorkers: dead,
       queueLength: this.queue.length,
       totalJobsProcessed: this.totalJobsProcessed,
+      maxJobsPerWorker: this.maxJobsPerWorker,
+      daemonMode: this.daemonMode,
     };
   }
 }

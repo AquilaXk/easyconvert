@@ -772,6 +772,7 @@ export interface DocxTableCell {
 export interface DocxTable {
   rowCount?: number;
   colCount?: number;
+  colWidths?: number[];
   rows: string[][];
   structuredRows?: DocxTableCell[][];
   tblBorders?: {
@@ -2589,7 +2590,7 @@ function parseDrawingBlockElement(
   return null;
 }
 
-function parseDocxXml(
+export function parseDocxXml(
   xml: string,
   chartMap?: Map<string, string>
 ): {
@@ -2697,11 +2698,28 @@ function parseDocxXml(
         }
       }
 
+      const tblGridEl = safeExtractFirstXmlElement(chunk, 'w:tblGrid');
+      let colWidths: number[] | undefined;
+      if (tblGridEl) {
+        const gridCols = safeExtractXmlTags(tblGridEl.content, 'w:gridCol');
+        const parsedWidths: number[] = [];
+        for (const colXml of gridCols) {
+          const wMatch = colXml.match(/w:w="(\d+)"/);
+          if (wMatch) {
+            parsedWidths.push(parseInt(wMatch[1], 10));
+          }
+        }
+        if (parsedWidths.length > 0) {
+          colWidths = parsedWidths;
+        }
+      }
+
       if (rows.length > 0) {
         const maxCols = Math.max(...rows.map((r) => r.length));
         const tbl: DocxTable = {
           rowCount: rows.length,
           colCount: maxCols,
+          colWidths,
           rows,
           structuredRows,
           tblBorders,
@@ -3648,21 +3666,82 @@ async function generatePdfFromDocx(
     const renderTable = (tbl: DocxTable) => {
       if (tbl.rows.length === 0) return;
       doc.moveDown(0.8);
-      const colCount = Math.max(1, tbl.colCount || tbl.rows[0].length);
-      const colWidth = (doc.page.width - 100) / colCount;
+      const colCount = Math.max(1, tbl.colCount || (tbl.colWidths ? tbl.colWidths.length : tbl.rows[0].length));
+      const availableWidth = doc.page.width - 100;
+
+      // Compute base grid column widths from w:gridCol or fallback evenly
+      const gridColWidths: number[] = [];
+      if (tbl.colWidths && tbl.colWidths.length > 0) {
+        const totalGridW = tbl.colWidths.reduce((sum, w) => sum + w, 0);
+        if (totalGridW > 0) {
+          for (let i = 0; i < colCount; i++) {
+            const rawW = tbl.colWidths[i] ?? (totalGridW / tbl.colWidths.length);
+            gridColWidths.push((rawW / totalGridW) * availableWidth);
+          }
+        }
+      }
+      if (gridColWidths.length === 0) {
+        const defaultW = availableWidth / colCount;
+        for (let i = 0; i < colCount; i++) {
+          gridColWidths.push(defaultW);
+        }
+      }
 
       if (tbl.structuredRows && tbl.structuredRows.length > 0) {
         tbl.structuredRows.forEach((sRow, rIdx) => {
-          const y = doc.y;
-          if (y > doc.page.height - 80) {
+          // 1. Calculate cell widths and starting X positions using gridSpan / colSpan
+          const cellWidths: number[] = [];
+          const cellXPositions: number[] = [];
+          let currentGridIdx = 0;
+
+          sRow.forEach((cell) => {
+            const span = Math.max(1, cell.colSpan || 1);
+            let cellW = 0;
+            for (let s = 0; s < span; s++) {
+              const gIdx = Math.min(currentGridIdx + s, gridColWidths.length - 1);
+              cellW += gridColWidths[gIdx] ?? (availableWidth / colCount);
+            }
+            let startX = 50;
+            for (let k = 0; k < currentGridIdx; k++) {
+              const gIdx = Math.min(k, gridColWidths.length - 1);
+              startX += gridColWidths[gIdx] ?? (availableWidth / colCount);
+            }
+            cellWidths.push(cellW);
+            cellXPositions.push(startX);
+            currentGridIdx += span;
+          });
+
+          // 2. Compute dynamic row height based on wrapped text height across all cells
+          let maxCellHeight = 20;
+          sRow.forEach((cell, cIdx) => {
+            const cWidth = cellWidths[cIdx];
+            const textWidth = Math.max(10, cWidth - 10);
+            const fontSize = cell.isHeader || rIdx === 0 ? 9 : 8.5;
+            doc.fontSize(fontSize);
+            const textHeight = doc.heightOfString(cell.text || ' ', { width: textWidth });
+            const requiredHeight = Math.ceil(textHeight + 10);
+            if (requiredHeight > maxCellHeight) {
+              maxCellHeight = requiredHeight;
+            }
+          });
+
+          const rowHeight = maxCellHeight;
+
+          // Check page overflow
+          if (doc.y + rowHeight > doc.page.height - 60) {
             doc.addPage();
           }
+          const y = doc.y;
+
+          // 3. Render each cell
           sRow.forEach((cell, cIdx) => {
-            const x = 50 + cIdx * colWidth;
+            const x = cellXPositions[cIdx];
+            const colWidth = cellWidths[cIdx];
+
             if (cell.shading && cell.shading !== 'auto') {
-              doc.rect(x, y, colWidth, 20).fill('#' + cell.shading);
+              doc.rect(x, y, colWidth, rowHeight).fill('#' + cell.shading);
             } else if (cell.isHeader || rIdx === 0) {
-              doc.rect(x, y, colWidth, 20).fill('#F0F2FE');
+              doc.rect(x, y, colWidth, rowHeight).fill('#F0F2FE');
             }
 
             const topBorder = cell.borders?.top || tbl.tblBorders?.top;
@@ -3681,8 +3760,8 @@ async function generatePdfFromDocx(
               }
               if (bottomBorder && bottomBorder.style !== 'none') {
                 doc
-                  .moveTo(x, y + 20)
-                  .lineTo(x + colWidth, y + 20)
+                  .moveTo(x, y + rowHeight)
+                  .lineTo(x + colWidth, y + rowHeight)
                   .lineWidth(bottomBorder.size || 0.5)
                   .strokeColor(bottomBorder.color || '#CCD2FC')
                   .stroke();
@@ -3690,7 +3769,7 @@ async function generatePdfFromDocx(
               if (leftBorder && leftBorder.style !== 'none') {
                 doc
                   .moveTo(x, y)
-                  .lineTo(x, y + 20)
+                  .lineTo(x, y + rowHeight)
                   .lineWidth(leftBorder.size || 0.5)
                   .strokeColor(leftBorder.color || '#CCD2FC')
                   .stroke();
@@ -3698,13 +3777,13 @@ async function generatePdfFromDocx(
               if (rightBorder && rightBorder.style !== 'none') {
                 doc
                   .moveTo(x + colWidth, y)
-                  .lineTo(x + colWidth, y + 20)
+                  .lineTo(x + colWidth, y + rowHeight)
                   .lineWidth(rightBorder.size || 0.5)
                   .strokeColor(rightBorder.color || '#CCD2FC')
                   .stroke();
               }
             } else {
-              doc.rect(x, y, colWidth, 20).strokeColor('#CCD2FC').lineWidth(0.5).stroke();
+              doc.rect(x, y, colWidth, rowHeight).strokeColor('#CCD2FC').lineWidth(0.5).stroke();
             }
 
             const textCol = cell.isHeader || rIdx === 0 ? '#1F2340' : '#4D536B';
@@ -3714,23 +3793,36 @@ async function generatePdfFromDocx(
               doc,
               cell.text,
               hasUnicodeFont,
-              { width: colWidth - 10, lineBreak: false, align },
+              { width: colWidth - 10, lineBreak: true, align },
               x + 5,
-              y + 4
+              y + 5
             );
           });
-          doc.y = y + 20;
+
+          doc.y = y + rowHeight;
         });
       } else {
+        // Fallback for simple rows with dynamic text wrapping
         tbl.rows.forEach((row, rIdx) => {
-          const y = doc.y;
-          if (y > doc.page.height - 80) {
+          let maxCellHeight = 20;
+          const colWidth = availableWidth / Math.max(1, row.length);
+          const fontSize = rIdx === 0 ? 9 : 8.5;
+          doc.fontSize(fontSize);
+          row.forEach((cellText) => {
+            const textHeight = doc.heightOfString(cellText || ' ', { width: Math.max(10, colWidth - 10) });
+            const reqH = Math.ceil(textHeight + 10);
+            if (reqH > maxCellHeight) maxCellHeight = reqH;
+          });
+          const rowHeight = maxCellHeight;
+
+          if (doc.y + rowHeight > doc.page.height - 60) {
             doc.addPage();
           }
+          const y = doc.y;
           const isHdr = rIdx === 0;
-          doc.rect(50, doc.y, doc.page.width - 100, 20).strokeColor('#CCD2FC').lineWidth(0.5);
+          doc.rect(50, y, availableWidth, rowHeight).strokeColor('#CCD2FC').lineWidth(0.5);
           if (isHdr) {
-            doc.rect(50, doc.y, doc.page.width - 100, 20).fill('#F0F2FE');
+            doc.rect(50, y, availableWidth, rowHeight).fill('#F0F2FE');
             doc.fillColor('#1F2340').fontSize(9);
           } else {
             doc.fillColor('#4D536B').fontSize(8.5);
@@ -3741,12 +3833,12 @@ async function generatePdfFromDocx(
               doc,
               cell,
               hasUnicodeFont,
-              { width: colWidth - 10, lineBreak: false },
-              55 + cIdx * colWidth,
-              y + 4
+              { width: colWidth - 10, lineBreak: true, align: isHdr ? 'center' : 'left' },
+              50 + cIdx * colWidth + 5,
+              y + 5
             );
           });
-          doc.y = y + 20;
+          doc.y = y + rowHeight;
         });
       }
       doc.moveDown(0.4);
