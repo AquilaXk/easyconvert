@@ -6,6 +6,7 @@ import { userStore } from '../auth/user-store';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
+import { globalSharedObjects } from '../storage/shared-store';
 
 const STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
 const KEYS_FILE = path.join(STORAGE_DIR, 'api-keys.json');
@@ -285,6 +286,31 @@ export class KeyStore {
     this.ensureInitialized();
 
     const now = Date.now();
+    let downloadUrl = data.downloadUrl;
+    if (downloadUrl && downloadUrl.startsWith('data:')) {
+      const storageKey = `conversions/${data.userId}/${Date.now()}_${encodeURIComponent(data.fileName)}`;
+      try {
+        const matches = downloadUrl.match(/^data:([^;]+);base64,(.*)$/);
+        if (matches) {
+          const mimeType = matches[1];
+          const buf = Buffer.from(matches[2], 'base64');
+          globalSharedObjects.set(storageKey, {
+            key: storageKey,
+            filename: data.fileName,
+            mimeType,
+            buffer: buf,
+            size: buf.length,
+            etag: `"${crypto.createHash('md5').update(buf).digest('hex')}"`,
+            uploadedAt: now,
+            expiresAt: now + 3600 * 1000,
+          });
+          downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
+        }
+      } catch {
+        downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
+      }
+    }
+
     const file: UserConversionFile = {
       id: crypto.randomUUID(),
       userId: data.userId,
@@ -292,7 +318,7 @@ export class KeyStore {
       fromFormat: data.fromFormat,
       toFormat: data.toFormat,
       size: data.size,
-      downloadUrl: data.downloadUrl,
+      downloadUrl,
       createdAt: now,
       expiresAt: now + 3600 * 1000, // 1 hour lifetime
     };

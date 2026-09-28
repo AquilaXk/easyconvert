@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageProvider as s3Storage } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 

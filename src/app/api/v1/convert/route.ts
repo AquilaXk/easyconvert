@@ -4,6 +4,7 @@ import { keyStore } from '@/lib/api-keys/key-store';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { convertFile } from '@/lib/conversions';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { storageProvider } from '@/lib/storage';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -143,6 +144,9 @@ export async function POST(req: NextRequest) {
     // Record in user's file conversion history
     const baseName = file.name.replace(/\.[^/.]+$/, '');
     const outFileName = `${baseName}.${targetDef.extension || targetDef.id}`;
+    const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
+    storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
+    const downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
 
     const userFile = await keyStore.recordUserFile({
       userId: auth.user.id,
@@ -150,7 +154,7 @@ export async function POST(req: NextRequest) {
       fromFormat: sourceDef.id,
       toFormat: targetDef.id,
       size: outputBuffer.length,
-      downloadUrl: dataUri,
+      downloadUrl,
     });
 
     // Check if raw binary is requested
@@ -177,6 +181,7 @@ export async function POST(req: NextRequest) {
       size: outputBuffer.length,
       durationMs,
       dataUri,
+      downloadUrl,
       expiresAt: userFile.expiresAt,
     });
   } catch (err: unknown) {
