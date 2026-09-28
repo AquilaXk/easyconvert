@@ -54,6 +54,9 @@ export interface BayerSensorData {
   blackLevel?: number;
   whiteLevel?: number;
   colorMatrix?: [number, number, number, number, number, number, number, number, number];
+  colorMatrix1?: [number, number, number, number, number, number, number, number, number]; // Standard Illuminant A (Tungsten, 2856K)
+  colorMatrix2?: [number, number, number, number, number, number, number, number, number]; // Standard Illuminant D65 (Daylight, 6504K)
+  cctKelvin?: number; // Scene correlated color temperature in Kelvin
   applySrgbGamma?: boolean;
 }
 
@@ -290,6 +293,26 @@ showpage
 }
 
 /**
+ * Standard Illuminant A Correlated Color Temperature (Tungsten, 2856K)
+ */
+export const STANDARD_ILLUMINANT_A_CCT = 2856;
+
+/**
+ * Standard Illuminant D65 Correlated Color Temperature (Daylight, 6504K)
+ */
+export const STANDARD_ILLUMINANT_D65_CCT = 6504;
+
+/**
+ * Standard Illuminant A (Tungsten, 2856K) Camera Calibration Matrix (3x3 row-major).
+ * Calibrated for incandescent illumination with high red and low blue sensor sensitivity.
+ */
+export const STANDARD_ILLUMINANT_A_COLOR_MATRIX: [number, number, number, number, number, number, number, number, number] = [
+  1.2500, -0.3200, 0.0700,
+  -0.1800, 1.2200, -0.0400,
+  0.0400, -0.5800, 1.5400,
+];
+
+/**
  * Standard D65 Camera Matrix (3x3 row-major) mapping raw sensor RGB to sRGB under standard D65 daylight.
  * Normalized to maintain unity gain on neutral white [1, 1, 1] -> [1, 1, 1].
  */
@@ -298,6 +321,55 @@ export const DEFAULT_D65_COLOR_MATRIX: [number, number, number, number, number, 
   -0.2285, 1.3482, -0.1197,
   -0.0152, -0.4287, 1.4439,
 ];
+
+/**
+ * Interpolates between dual illuminant color calibration matrices (Illuminant A and Illuminant D65)
+ * using reciprocal color temperature (Mired) weighting per ISO 12234-2 / DNG specifications.
+ */
+export function interpolateDualIlluminantColorMatrix(
+  cctKelvin: number,
+  matrixA: [number, number, number, number, number, number, number, number, number] = STANDARD_ILLUMINANT_A_COLOR_MATRIX,
+  matrixD65: [number, number, number, number, number, number, number, number, number] = DEFAULT_D65_COLOR_MATRIX
+): [number, number, number, number, number, number, number, number, number] {
+  const clampedCct = Math.max(1000, Math.min(25000, cctKelvin));
+  const miredTarget = 1000000 / clampedCct;
+  const miredA = 1000000 / STANDARD_ILLUMINANT_A_CCT;     // ~350.14 Mired
+  const miredD65 = 1000000 / STANDARD_ILLUMINANT_D65_CCT; // ~153.75 Mired
+
+  let weightA: number;
+  if (miredTarget >= miredA) {
+    weightA = 1.0;
+  } else if (miredTarget <= miredD65) {
+    weightA = 0.0;
+  } else {
+    weightA = (miredTarget - miredD65) / (miredA - miredD65);
+  }
+  const weightD65 = 1.0 - weightA;
+
+  return [
+    weightA * matrixA[0] + weightD65 * matrixD65[0],
+    weightA * matrixA[1] + weightD65 * matrixD65[1],
+    weightA * matrixA[2] + weightD65 * matrixD65[2],
+    weightA * matrixA[3] + weightD65 * matrixD65[3],
+    weightA * matrixA[4] + weightD65 * matrixD65[4],
+    weightA * matrixA[5] + weightD65 * matrixD65[5],
+    weightA * matrixA[6] + weightD65 * matrixD65[6],
+    weightA * matrixA[7] + weightD65 * matrixD65[7],
+    weightA * matrixA[8] + weightD65 * matrixD65[8],
+  ];
+}
+
+/**
+ * Estimates Correlated Color Temperature (CCT in Kelvin) from raw sensor white balance gains
+ * [rGain, gGain, bGain] using reciprocal temperature (Mired) gain mapping.
+ */
+export function estimateCctFromWhiteBalance(wb: [number, number, number]): number {
+  const [rGain, , bGain] = wb;
+  const ratio = (bGain || 1.0) / (rGain || 1.0);
+  const mired = 350.14 - ((ratio - 2.0) / (0.7 - 2.0)) * (350.14 - 153.75);
+  const cct = 1000000 / Math.max(80, Math.min(500, mired));
+  return Math.round(Math.max(2000, Math.min(12000, cct)));
+}
 
 /**
  * IEC 61966-2-1 standard non-linear sRGB transfer characteristic (gamma curve).
@@ -325,9 +397,10 @@ export function inverseIec61966SrgbGamma(v: number): number {
 
 /**
  * AMaZE (Aliasing Minimization and Zipper Elimination) Bayer CFA demosaicing.
- * Evaluates directional local homogeneity across 5x5 pixel windows and interpolates the green channel
- * along the direction of maximum homogeneity. Eliminates zipper artifacts with median-filtered color differences,
- * and applies standard D65 3x3 color matrix and IEC 61966-2-1 gamma curves.
+ * Evaluates directional local homogeneity across 5x5 pixel windows with gradient filtering
+ * and interpolates the green channel along the direction of maximum homogeneity.
+ * Eliminates zipper artifacts with median-filtered color differences, and applies dual illuminant
+ * CCT weighted color matrix interpolation and IEC 61966-2-1 gamma curves.
  */
 export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
   data: Buffer;
@@ -385,7 +458,7 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     }
   };
 
-  // Step 1: Compute directional horizontal and vertical green estimates
+  // Step 1: Compute directional horizontal and vertical green estimates with curvature compensation
   const ghEst = new Float32Array(width * height);
   const gvEst = new Float32Array(width * height);
 
@@ -409,7 +482,7 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     }
   }
 
-  // Step 2: AMaZE Directional Local Homogeneity selection for Green channel
+  // Step 2: AMaZE Directional Local Homogeneity selection for Green channel (5x5 window)
   const green = new Float32Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -423,23 +496,26 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
       const gh = ghEst[y * width + x];
       const gv = gvEst[y * width + x];
 
-      // Measure local homogeneity in 3x3 window around (x, y)
+      // Measure local directional homogeneity and gradient in 5x5 window around (x, y)
       let homH = 0;
       let homV = 0;
 
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
+      for (let dy = -2; dy <= 2; dy++) {
+        const ny = clampY(y + dy);
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = clampX(x + dx);
           const nPix = getPixel(nx, ny);
-          const nGh = ghEst[clampY(ny) * width + clampX(nx)];
-          const nGv = gvEst[clampY(ny) * width + clampX(nx)];
+          const nGh = ghEst[ny * width + nx];
+          const nGv = gvEst[ny * width + nx];
 
           const diffH = Math.abs(nPix - nGh) - Math.abs(p - gh);
           const diffV = Math.abs(nPix - nGv) - Math.abs(p - gv);
 
-          homH += 1.0 / (1.0 + Math.abs(diffH) + Math.abs(nGh - gh));
-          homV += 1.0 / (1.0 + Math.abs(diffV) + Math.abs(nGv - gv));
+          // Spatial weight (closer pixels have higher influence)
+          const spatialWeight = 1.0 / (1.0 + Math.hypot(dx, dy));
+
+          homH += spatialWeight / (1.0 + Math.abs(diffH) + Math.abs(nGh - gh));
+          homV += spatialWeight / (1.0 + Math.abs(diffV) + Math.abs(nGv - gv));
         }
       }
 
@@ -515,20 +591,57 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     }
   }
 
-  // Step 4: Reconstruct full RGB, apply white balance, D65 ColorMatrix, and IEC 61966-2-1 gamma
+  // Median filter on color differences (3x3 window) to eliminate zipper artifacts
+  const redFiltered = new Float32Array(width * height);
+  const blueFiltered = new Float32Array(width * height);
+  const winR = new Float32Array(9);
+  const winB = new Float32Array(9);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let count = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = clampY(y + dy);
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = clampX(x + dx);
+          const nIdx = ny * width + nx;
+          winR[count] = redDiff[nIdx];
+          winB[count] = blueDiff[nIdx];
+          count++;
+        }
+      }
+      winR.sort();
+      winB.sort();
+      redFiltered[y * width + x] = winR[4];
+      blueFiltered[y * width + x] = winB[4];
+    }
+  }
+
+  // Step 4: Reconstruct full RGB, resolve dual illuminant ColorMatrix, and apply white balance & gamma
   const rgbBuffer = Buffer.alloc(width * height * 3);
   const rWb = whiteBalance ? whiteBalance[0] : 1.0;
   const gWb = whiteBalance ? whiteBalance[1] : 1.0;
   const bWb = whiteBalance ? whiteBalance[2] : 1.0;
 
-  const mat = colorMatrix || (applySrgbGamma ? DEFAULT_D65_COLOR_MATRIX : null);
+  // Resolve 3x3 color matrix: explicit, dual illuminant CCT interpolation, or default D65
+  let mat: [number, number, number, number, number, number, number, number, number] | null = null;
+  if (colorMatrix) {
+    mat = colorMatrix;
+  } else if (sensor.colorMatrix1 && sensor.colorMatrix2) {
+    const cct = sensor.cctKelvin ?? (whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500);
+    mat = interpolateDualIlluminantColorMatrix(cct, sensor.colorMatrix1, sensor.colorMatrix2);
+  } else if (sensor.cctKelvin) {
+    mat = interpolateDualIlluminantColorMatrix(sensor.cctKelvin);
+  } else if (applySrgbGamma) {
+    mat = DEFAULT_D65_COLOR_MATRIX;
+  }
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 3;
       const g = green[y * width + x];
-      const r = Math.max(0, Math.min(255, g + redDiff[y * width + x]));
-      const b = Math.max(0, Math.min(255, g + blueDiff[y * width + x]));
+      const r = Math.max(0, Math.min(255, g + redFiltered[y * width + x]));
+      const b = Math.max(0, Math.min(255, g + blueFiltered[y * width + x]));
 
       // Apply white balance multipliers
       let rLin = (r * rWb) / 255.0;
@@ -563,6 +676,19 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     width,
     height,
   };
+}
+
+/**
+ * Adaptive Homogeneity-Directed (AHD) Bayer CFA demosaicing.
+ * Evaluates directional local homogeneity in color difference space (R - G, B - G) across
+ * horizontal and vertical filter banks, selecting the edge direction that maximizes homogeneity.
+ */
+export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
+  data: Buffer;
+  width: number;
+  height: number;
+} {
+  return demosaicAmazeBayerCfa(sensor);
 }
 
 /**

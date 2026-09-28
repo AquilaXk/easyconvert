@@ -301,15 +301,29 @@ export {
   inCircle2D,
   verifyWatertightManifoldMesh,
   HalfEdgeMesh,
+  glueBRepTopologicalEdges,
+  weldCoincidentVertices,
+  buildLoopHierarchy,
+  type LoopHierarchyNode,
+  type TrimmedParametricFace,
+  type Parametric2DPoint,
+  type WeldOptions,
+  type GlueBRepOptions,
   type HalfEdge,
   type MeshTopologyReport,
 } from './cad-nurbs';
 
 export {
   demosaicAmazeBayerCfa,
+  demosaicAhdBayerCfa,
   applyIec61966SrgbGamma,
   inverseIec61966SrgbGamma,
   DEFAULT_D65_COLOR_MATRIX,
+  STANDARD_ILLUMINANT_A_COLOR_MATRIX,
+  STANDARD_ILLUMINANT_A_CCT,
+  STANDARD_ILLUMINANT_D65_CCT,
+  interpolateDualIlluminantColorMatrix,
+  estimateCctFromWhiteBalance,
 } from './image';
 
 export async function convertFile(

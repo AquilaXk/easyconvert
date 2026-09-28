@@ -806,20 +806,28 @@ export interface Parametric2DPoint {
   v: number;
 }
 
+export interface LoopHierarchyNode {
+  loop: Parametric2DPoint[];
+  signedArea: number;
+  isHole: boolean;
+  depth: number;
+  parent?: LoopHierarchyNode;
+  children: LoopHierarchyNode[];
+}
+
 export interface TrimmedParametricFace {
   surface: BSplineSurface;
-  outerLoop: Parametric2DPoint[];
+  outerLoop?: Parametric2DPoint[];
   innerHoles?: Parametric2DPoint[][];
+  islands?: Parametric2DPoint[][];
+  loops?: Parametric2DPoint[][];
 }
 
 /**
- * Triangulates a trimmed B-Rep face with boundary loops in the (u, v) parameter plane
- * and projects triangles onto the 3D NURBS surface with analytical normals.
- */
-/**
  * Calculates 2D signed area of a polygon loop in parameter space.
+ * Positive indicates counter-clockwise (CCW), negative indicates clockwise (CW).
  */
-function calculateParametricSignedArea(loop: Parametric2DPoint[]): number {
+export function calculateParametricSignedArea(loop: Parametric2DPoint[]): number {
   let area = 0;
   for (let i = 0; i < loop.length; i++) {
     const j = (i + 1) % loop.length;
@@ -831,7 +839,7 @@ function calculateParametricSignedArea(loop: Parametric2DPoint[]): number {
 /**
  * Tests whether a 2D parametric point lies inside a parametric polygon loop.
  */
-function isPointInParametricPolygon(pt: Parametric2DPoint, loop: Parametric2DPoint[]): boolean {
+export function isPointInParametricPolygon(pt: Parametric2DPoint, loop: Parametric2DPoint[]): boolean {
   let inside = false;
   for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
     const xi = loop[i].u;
@@ -845,9 +853,139 @@ function isPointInParametricPolygon(pt: Parametric2DPoint, loop: Parametric2DPoi
 }
 
 /**
- * In-circle determinant test in 2D parameter space.
- * Returns > 0 if point D lies strictly inside the circumcircle of counter-clockwise triangle (A, B, C).
+ * Obtains an interior point strictly inside a 2D parametric polygon loop.
  */
+export function getInteriorPointOfLoop(loop: Parametric2DPoint[]): Parametric2DPoint {
+  let cu = 0;
+  let cv = 0;
+  for (const p of loop) {
+    cu += p.u;
+    cv += p.v;
+  }
+  const centroid = { u: cu / loop.length, v: cv / loop.length };
+  if (isPointInParametricPolygon(centroid, loop)) {
+    return centroid;
+  }
+
+  // Ear midpoint fallback for non-convex polygons
+  const n = loop.length;
+  for (let i = 0; i < n; i++) {
+    const prev = loop[(i + n - 1) % n];
+    const cur = loop[i];
+    const next = loop[(i + 1) % n];
+    const earPt = {
+      u: (prev.u + cur.u * 2 + next.u) / 4,
+      v: (prev.v + cur.v * 2 + next.v) / 4,
+    };
+    if (isPointInParametricPolygon(earPt, loop)) {
+      return earPt;
+    }
+  }
+  return centroid;
+}
+
+/**
+ * Constructs a robust loop hierarchy containment forest for trimmed B-Rep parametric faces.
+ * Classifies loops by containment depth:
+ * Even depth (0, 2, ...) = positive solid boundaries (CCW)
+ * Odd depth (1, 3, ...) = negative hole cutouts (CW)
+ */
+export function buildLoopHierarchy(loops: Parametric2DPoint[][]): LoopHierarchyNode[] {
+  const validLoops: Array<{ loop: Parametric2DPoint[]; area: number }> = [];
+  for (const rawLoop of loops) {
+    if (!rawLoop || rawLoop.length < 3) continue;
+    const loop = rawLoop.map((p) => ({ u: p.u, v: p.v }));
+    const area = calculateParametricSignedArea(loop);
+    if (Math.abs(area) > 1e-9) {
+      validLoops.push({ loop, area });
+    }
+  }
+
+  if (validLoops.length === 0) return [];
+
+  // Sort descending by absolute enclosed area so that outermost bounding loops come first
+  validLoops.sort((a, b) => Math.abs(b.area) - Math.abs(a.area));
+
+  const nodes: LoopHierarchyNode[] = validLoops.map((vl) => ({
+    loop: vl.loop,
+    signedArea: vl.area,
+    isHole: false,
+    depth: 0,
+    children: [],
+  }));
+
+  // Find direct enclosing parent for each loop (the smallest-area loop that contains it)
+  for (let i = 0; i < nodes.length; i++) {
+    const child = nodes[i];
+    let parentNode: LoopHierarchyNode | undefined;
+    const testPt = getInteriorPointOfLoop(child.loop);
+
+    for (let j = i - 1; j >= 0; j--) {
+      const candidate = nodes[j];
+      if (isPointInParametricPolygon(testPt, candidate.loop)) {
+        if (!parentNode || Math.abs(candidate.signedArea) < Math.abs(parentNode.signedArea)) {
+          parentNode = candidate;
+        }
+      }
+    }
+
+    if (parentNode) {
+      child.parent = parentNode;
+      parentNode.children.push(child);
+    }
+  }
+
+  // Assign depth and topological orientation:
+  // Even depth (0, 2, ...) -> solid boundary (CCW, positive area)
+  // Odd depth (1, 3, ...) -> cutout hole (CW, negative area)
+  const assignDepthAndOrientation = (node: LoopHierarchyNode, depth: number) => {
+    node.depth = depth;
+    node.isHole = depth % 2 === 1;
+
+    const currentArea = calculateParametricSignedArea(node.loop);
+    if (node.isHole && currentArea > 0) {
+      node.loop.reverse();
+      node.signedArea = -currentArea;
+    } else if (!node.isHole && currentArea < 0) {
+      node.loop.reverse();
+      node.signedArea = -currentArea;
+    }
+
+    for (const child of node.children) {
+      assignDepthAndOrientation(child, depth + 1);
+    }
+  };
+
+  const roots = nodes.filter((n) => !n.parent);
+  for (const root of roots) {
+    assignDepthAndOrientation(root, 0);
+  }
+
+  return roots;
+}
+
+/**
+ * Tests whether two 2D parametric segments strictly intersect.
+ */
+export function parametricSegmentsIntersect(
+  p1: Parametric2DPoint,
+  p2: Parametric2DPoint,
+  p3: Parametric2DPoint,
+  p4: Parametric2DPoint
+): boolean {
+  const ccw = (a: Parametric2DPoint, b: Parametric2DPoint, c: Parametric2DPoint) =>
+    (c.v - a.v) * (b.u - a.u) > (b.v - a.v) * (c.u - a.u);
+
+  if (
+    (Math.abs(p1.u - p3.u) < 1e-7 && Math.abs(p1.v - p3.v) < 1e-7) ||
+    (Math.abs(p1.u - p4.u) < 1e-7 && Math.abs(p1.v - p4.v) < 1e-7) ||
+    (Math.abs(p2.u - p3.u) < 1e-7 && Math.abs(p2.v - p3.v) < 1e-7) ||
+    (Math.abs(p2.u - p4.u) < 1e-7 && Math.abs(p2.v - p4.v) < 1e-7)
+  ) {
+    return false;
+  }
+  return ccw(p1, p3, p4) !== ccw(p2, p3, p4) && ccw(p1, p2, p3) !== ccw(p1, p2, p4);
+}
 export function inCircle2D(
   a: Parametric2DPoint,
   b: Parametric2DPoint,
@@ -978,159 +1116,90 @@ export function lawsonEdgeFlipHealing2D(
   }
 
   // Final pass: ensure all triangles maintain counter-clockwise (positive signed area) orientation
+  // and eliminate any degenerate zero-area sliver triangles
+  const cleanedTriangles: Array<[number, number, number]> = [];
   for (const tri of currentTriangles) {
     const p0 = points[tri[0]];
     const p1 = points[tri[1]];
     const p2 = points[tri[2]];
     const signedArea = (p1.u - p0.u) * (p2.v - p0.v) - (p2.u - p0.u) * (p1.v - p0.v);
+    if (Math.abs(signedArea) < 1e-10) {
+      continue;
+    }
     if (signedArea < 0) {
-      const tmp = tri[1];
-      tri[1] = tri[2];
-      tri[2] = tmp;
+      cleanedTriangles.push([tri[0], tri[2], tri[1]]);
+    } else {
+      cleanedTriangles.push(tri);
     }
   }
 
-  return currentTriangles;
+  return cleanedTriangles;
 }
 
 /**
  * Triangulates a trimmed B-Rep face with boundary loops in the (u, v) parameter plane
- * preserving all inner cutouts (innerHoles) via Ruppert Constrained Delaunay Triangulation (CDT)
- * and projects triangles onto the 3D NURBS surface with analytical surface normals.
+ * preserving all inner cutouts (innerHoles) and nested island boundaries via Loop Hierarchy
+ * Constrained Delaunay Triangulation (CDT), eliminating degenerate zero-area sliver triangles
+ * and projecting onto the 3D NURBS surface with exact analytical normals.
  */
 export function tessellateTrimmedFaceCDT(
   face: TrimmedParametricFace,
   meshName = 'trimmed_face'
 ): TessellatedMesh {
-  const { surface, outerLoop, innerHoles = [] } = face;
-  if (!outerLoop || outerLoop.length < 3) {
+  const { surface } = face;
+
+  // 1. Gather all loops from face (either loops, or outerLoop + innerHoles + islands)
+  const allLoops: Parametric2DPoint[][] = [];
+  if (face.loops && face.loops.length > 0) {
+    allLoops.push(...face.loops);
+  } else {
+    if (face.outerLoop && face.outerLoop.length >= 3) {
+      allLoops.push(face.outerLoop);
+    }
+    if (face.innerHoles) {
+      for (const h of face.innerHoles) {
+        if (h && h.length >= 3) allLoops.push(h);
+      }
+    }
+    if (face.islands) {
+      for (const isl of face.islands) {
+        if (isl && isl.length >= 3) allLoops.push(isl);
+      }
+    }
+  }
+
+  if (allLoops.length === 0) {
     return { name: meshName, vertices: [], normals: [], faces: [] };
   }
 
-  // 1. Orient outer boundary counter-clockwise (CCW)
-  const outer: Parametric2DPoint[] = outerLoop.map((p) => ({ u: p.u, v: p.v }));
-  if (calculateParametricSignedArea(outer) < 0) {
-    outer.reverse();
+  // 2. Build loop containment hierarchy forest
+  const hierarchyRoots = buildLoopHierarchy(allLoops);
+  if (hierarchyRoots.length === 0) {
+    return { name: meshName, vertices: [], normals: [], faces: [] };
   }
 
-  // 2. Filter and orient inner hole boundaries clockwise (CW) (reject degenerate zero-area loops)
-  const validHoles: Parametric2DPoint[][] = [];
-  for (const hole of innerHoles) {
-    if (hole && hole.length >= 3) {
-      const h = hole.map((p) => ({ u: p.u, v: p.v }));
-      const area = calculateParametricSignedArea(h);
-      if (Math.abs(area) > 1e-9) {
-        if (area > 0) {
-          h.reverse();
-        }
-        validHoles.push(h);
-      }
-    }
+  // 3. Extract solid regions (even depth) with their corresponding cutout holes (odd depth)
+  interface SolidRegion {
+    outer: Parametric2DPoint[];
+    holes: Parametric2DPoint[][];
   }
-
-/**
- * Tests whether two 2D parametric segments strictly intersect.
- */
-function parametricSegmentsIntersect(
-  p1: Parametric2DPoint,
-  p2: Parametric2DPoint,
-  p3: Parametric2DPoint,
-  p4: Parametric2DPoint
-): boolean {
-  const ccw = (a: Parametric2DPoint, b: Parametric2DPoint, c: Parametric2DPoint) =>
-    (c.v - a.v) * (b.u - a.u) > (b.v - a.v) * (c.u - a.u);
-
-  if (
-    (Math.abs(p1.u - p3.u) < 1e-7 && Math.abs(p1.v - p3.v) < 1e-7) ||
-    (Math.abs(p1.u - p4.u) < 1e-7 && Math.abs(p1.v - p4.v) < 1e-7) ||
-    (Math.abs(p2.u - p3.u) < 1e-7 && Math.abs(p2.v - p3.v) < 1e-7) ||
-    (Math.abs(p2.u - p4.u) < 1e-7 && Math.abs(p2.v - p4.v) < 1e-7)
-  ) {
-    return false;
-  }
-  return ccw(p1, p3, p4) !== ccw(p2, p3, p4) && ccw(p1, p2, p3) !== ccw(p1, p2, p4);
-}
-
-  // 3. Connect inner holes to the outer boundary via non-intersecting bridge cuts
-  let consolidatedLoop: Parametric2DPoint[] = [...outer];
-
-  if (validHoles.length > 0) {
-    // Collect all boundary obstacle segments from outer and all holes
-    const allSegments: [Parametric2DPoint, Parametric2DPoint][] = [];
-    for (let i = 0; i < outer.length; i++) {
-      allSegments.push([outer[i], outer[(i + 1) % outer.length]]);
-    }
-    for (const h of validHoles) {
-      for (let i = 0; i < h.length; i++) {
-        allSegments.push([h[i], h[(i + 1) % h.length]]);
-      }
-    }
-
-    interface HoleBridge {
-      outerIdx: number;
-      holeIdx: number;
-      hole: Parametric2DPoint[];
-      distance: number;
-    }
-
-    const bridgeList: HoleBridge[] = [];
-
-    for (const hole of validHoles) {
-      let bestDist = Infinity;
-      let bestOuterIdx = 0;
-      let bestHoleIdx = 0;
-
-      for (let oi = 0; oi < outer.length; oi++) {
-        for (let hi = 0; hi < hole.length; hi++) {
-          const pO = outer[oi];
-          const pH = hole[hi];
-          const dist = Math.hypot(pO.u - pH.u, pO.v - pH.v);
-
-          let intersects = false;
-          for (const [s1, s2] of allSegments) {
-            if (parametricSegmentsIntersect(pO, pH, s1, s2)) {
-              intersects = true;
-              break;
-            }
-          }
-
-          if (!intersects && dist < bestDist) {
-            bestDist = dist;
-            bestOuterIdx = oi;
-            bestHoleIdx = hi;
-          }
-        }
-      }
-
-      bridgeList.push({
-        outerIdx: bestOuterIdx,
-        holeIdx: bestHoleIdx,
-        hole,
-        distance: bestDist,
+  const regions: SolidRegion[] = [];
+  const collectRegions = (node: LoopHierarchyNode) => {
+    if (node.depth % 2 === 0) {
+      regions.push({
+        outer: node.loop,
+        holes: node.children.map((c) => c.loop),
       });
     }
-
-    // Sort bridges descending by outerIdx so earlier index splices remain stable
-    bridgeList.sort((a, b) => b.outerIdx - a.outerIdx);
-
-    for (const b of bridgeList) {
-      const holeCycle: Parametric2DPoint[] = [];
-      for (let i = 0; i < b.hole.length; i++) {
-        holeCycle.push(b.hole[(b.holeIdx + i) % b.hole.length]);
-      }
-      holeCycle.push({ ...b.hole[b.holeIdx] }); // Close hole cycle
-      const bridgeBack = { ...consolidatedLoop[b.outerIdx] };
-
-      consolidatedLoop = [
-        ...consolidatedLoop.slice(0, b.outerIdx + 1),
-        ...holeCycle,
-        bridgeBack,
-        ...consolidatedLoop.slice(b.outerIdx + 1),
-      ];
+    for (const child of node.children) {
+      collectRegions(child);
     }
+  };
+  for (const root of hierarchyRoots) {
+    collectRegions(root);
   }
 
-  // 4. Index unique parametric vertices
+  // 4. Index unique parametric vertices across all regions
   const uniqueParametricPoints: Parametric2DPoint[] = [];
   const vertexIndexMap = new Map<string, number>();
 
@@ -1146,91 +1215,174 @@ function parametricSegmentsIntersect(
     return newIdx;
   };
 
-  // Convert consolidated loop to 3D plane points for earcut planar triangulation
-  const planePoints: Point3D[] = consolidatedLoop.map((p) => ({
-    x: p.u,
-    y: p.v,
-    z: 0,
-  }));
-  const normal: [number, number, number] = [0, 0, 1];
+  const allRegionTriangles: Array<[number, number, number]> = [];
 
-  // Triangulate consolidated boundary
-  const rawTriangles = triangulatePolygonEarcut(planePoints, normal);
+  // 5. Triangulate each solid region preserving its holes
+  for (const region of regions) {
+    const outer = region.outer;
+    const validHoles = region.holes;
 
-  // Map raw triangle indices back to unique parametric vertex indices
-  const mappedTriangles: Array<[number, number, number]> = [];
+    let consolidatedLoop: Parametric2DPoint[] = [...outer];
 
-  for (const [i0, i1, i2] of rawTriangles) {
-    const uIdx0 = getOrAddPointIndex(consolidatedLoop[i0]);
-    const uIdx1 = getOrAddPointIndex(consolidatedLoop[i1]);
-    const uIdx2 = getOrAddPointIndex(consolidatedLoop[i2]);
+    if (validHoles.length > 0) {
+      const allSegments: [Parametric2DPoint, Parametric2DPoint][] = [];
+      for (let i = 0; i < outer.length; i++) {
+        allSegments.push([outer[i], outer[(i + 1) % outer.length]]);
+      }
+      for (const h of validHoles) {
+        for (let i = 0; i < h.length; i++) {
+          allSegments.push([h[i], h[(i + 1) % h.length]]);
+        }
+      }
 
-    // Skip degenerate triangles with shared indices
-    if (uIdx0 === uIdx1 || uIdx1 === uIdx2 || uIdx2 === uIdx0) {
-      continue;
-    }
+      interface HoleBridge {
+        outerIdx: number;
+        holeIdx: number;
+        hole: Parametric2DPoint[];
+        distance: number;
+      }
+      const bridgeList: HoleBridge[] = [];
 
-    const p0 = uniqueParametricPoints[uIdx0];
-    const p1 = uniqueParametricPoints[uIdx1];
-    const p2 = uniqueParametricPoints[uIdx2];
+      for (const hole of validHoles) {
+        let bestDist = Infinity;
+        let bestOuterIdx = 0;
+        let bestHoleIdx = 0;
 
-    // Compute 2D triangle cross product area
-    const crossArea = Math.abs((p1.u - p0.u) * (p2.v - p0.v) - (p2.u - p0.u) * (p1.v - p0.v));
-    if (crossArea < 1e-10) {
-      continue;
-    }
+        for (let oi = 0; oi < outer.length; oi++) {
+          for (let hi = 0; hi < hole.length; hi++) {
+            const pO = outer[oi];
+            const pH = hole[hi];
+            const dist = Math.hypot(pO.u - pH.u, pO.v - pH.v);
 
-    // Verify centroid is inside outer loop and outside all inner holes
-    const centroid: Parametric2DPoint = {
-      u: (p0.u + p1.u + p2.u) / 3,
-      v: (p0.v + p1.v + p2.v) / 3,
-    };
+            let intersects = false;
+            for (const [s1, s2] of allSegments) {
+              if (parametricSegmentsIntersect(pO, pH, s1, s2)) {
+                intersects = true;
+                break;
+              }
+            }
 
-    let insideAnyHole = false;
-    for (const h of validHoles) {
-      if (isPointInParametricPolygon(centroid, h)) {
-        insideAnyHole = true;
-        break;
+            if (!intersects && dist < bestDist) {
+              bestDist = dist;
+              bestOuterIdx = oi;
+              bestHoleIdx = hi;
+            }
+          }
+        }
+
+        bridgeList.push({
+          outerIdx: bestOuterIdx,
+          holeIdx: bestHoleIdx,
+          hole,
+          distance: bestDist,
+        });
+      }
+
+      // Sort bridges descending by outerIdx so earlier index splices remain stable
+      bridgeList.sort((a, b) => b.outerIdx - a.outerIdx);
+
+      for (const b of bridgeList) {
+        const holeCycle: Parametric2DPoint[] = [];
+        for (let i = 0; i < b.hole.length; i++) {
+          holeCycle.push(b.hole[(b.holeIdx + i) % b.hole.length]);
+        }
+        holeCycle.push({ ...b.hole[b.holeIdx] }); // Close hole cycle
+        const bridgeBack = { ...consolidatedLoop[b.outerIdx] };
+
+        consolidatedLoop = [
+          ...consolidatedLoop.slice(0, b.outerIdx + 1),
+          ...holeCycle,
+          bridgeBack,
+          ...consolidatedLoop.slice(b.outerIdx + 1),
+        ];
       }
     }
 
-    if (!insideAnyHole && isPointInParametricPolygon(centroid, outer)) {
-      mappedTriangles.push([uIdx0, uIdx1, uIdx2]);
-    }
-  }
+    // Convert consolidated loop to 3D plane points for earcut planar triangulation
+    const planePoints: Point3D[] = consolidatedLoop.map((p) => ({
+      x: p.u,
+      y: p.v,
+      z: 0,
+    }));
+    const normal: [number, number, number] = [0, 0, 1];
 
-  // 4.3 Lawson edge-flip topology healing respecting constrained outer/inner boundary loops
-  const constrainedEdges = new Set<string>();
-  for (let i = 0; i < outer.length; i++) {
-    const i0 = getOrAddPointIndex(outer[i]);
-    const i1 = getOrAddPointIndex(outer[(i + 1) % outer.length]);
-    constrainedEdges.add(i0 < i1 ? `${i0}-${i1}` : `${i1}-${i0}`);
-  }
-  for (const h of validHoles) {
-    for (let i = 0; i < h.length; i++) {
-      const i0 = getOrAddPointIndex(h[i]);
-      const i1 = getOrAddPointIndex(h[(i + 1) % h.length]);
+    const rawTriangles = triangulatePolygonEarcut(planePoints, normal);
+    const regionMappedTriangles: Array<[number, number, number]> = [];
+
+    for (const [i0, i1, i2] of rawTriangles) {
+      const uIdx0 = getOrAddPointIndex(consolidatedLoop[i0]);
+      const uIdx1 = getOrAddPointIndex(consolidatedLoop[i1]);
+      const uIdx2 = getOrAddPointIndex(consolidatedLoop[i2]);
+
+      // Skip degenerate triangles with shared indices
+      if (uIdx0 === uIdx1 || uIdx1 === uIdx2 || uIdx2 === uIdx0) {
+        continue;
+      }
+
+      const p0 = uniqueParametricPoints[uIdx0];
+      const p1 = uniqueParametricPoints[uIdx1];
+      const p2 = uniqueParametricPoints[uIdx2];
+
+      // Compute 2D triangle cross product area
+      const crossArea = Math.abs((p1.u - p0.u) * (p2.v - p0.v) - (p2.u - p0.u) * (p1.v - p0.v));
+      if (crossArea < 1e-10) {
+        continue;
+      }
+
+      // Verify centroid is strictly inside outer loop and outside all inner holes
+      const centroid: Parametric2DPoint = {
+        u: (p0.u + p1.u + p2.u) / 3,
+        v: (p0.v + p1.v + p2.v) / 3,
+      };
+
+      let insideAnyHole = false;
+      for (const h of validHoles) {
+        if (isPointInParametricPolygon(centroid, h)) {
+          insideAnyHole = true;
+          break;
+        }
+      }
+
+      if (!insideAnyHole && isPointInParametricPolygon(centroid, outer)) {
+        regionMappedTriangles.push([uIdx0, uIdx1, uIdx2]);
+      }
+    }
+
+    // Lawson edge-flip topology healing respecting constrained outer/inner boundary loops
+    const constrainedEdges = new Set<string>();
+    for (let i = 0; i < outer.length; i++) {
+      const i0 = getOrAddPointIndex(outer[i]);
+      const i1 = getOrAddPointIndex(outer[(i + 1) % outer.length]);
       constrainedEdges.add(i0 < i1 ? `${i0}-${i1}` : `${i1}-${i0}`);
     }
+    for (const h of validHoles) {
+      for (let i = 0; i < h.length; i++) {
+        const i0 = getOrAddPointIndex(h[i]);
+        const i1 = getOrAddPointIndex(h[(i + 1) % h.length]);
+        constrainedEdges.add(i0 < i1 ? `${i0}-${i1}` : `${i1}-${i0}`);
+      }
+    }
+
+    const healedRegionTriangles = lawsonEdgeFlipHealing2D(
+      uniqueParametricPoints,
+      regionMappedTriangles,
+      constrainedEdges,
+      validHoles,
+      outer
+    );
+
+    allRegionTriangles.push(...healedRegionTriangles);
   }
 
-  const healedTriangles = lawsonEdgeFlipHealing2D(
-    uniqueParametricPoints,
-    mappedTriangles,
-    constrainedEdges,
-    validHoles,
-    outer
-  );
-
-  // 5. Ruppert CDT adaptive curvature refinement on curved NURBS surfaces
+  // 6. Adaptive curvature refinement on curved NURBS surfaces
   const isCurvedSurface = (surface.uDegree && surface.uDegree > 1) || (surface.vDegree && surface.vDegree > 1);
-  let finalTriangles: Array<[number, number, number]> = healedTriangles;
+  let finalTriangles: Array<[number, number, number]> = allRegionTriangles;
 
   if (isCurvedSurface) {
     const refinedTriangles: Array<[number, number, number]> = [];
     const maxEdgeParametricSq = 0.45 * 0.45;
 
-    for (const [i0, i1, i2] of healedTriangles) {
+    for (const [i0, i1, i2] of allRegionTriangles) {
       const p0 = uniqueParametricPoints[i0];
       const p1 = uniqueParametricPoints[i1];
       const p2 = uniqueParametricPoints[i2];
@@ -1256,21 +1408,24 @@ function parametricSegmentsIntersect(
     finalTriangles = refinedTriangles;
   }
 
-  // 6. Evaluate 3D coordinates and analytical surface normals from B-Spline surface
-  const vertices: [number, number, number][] = [];
-  const normals: [number, number, number][] = [];
+  // 7. Evaluate 3D coordinates and analytical surface normals from B-Spline surface
+  const rawVertices: [number, number, number][] = [];
+  const rawNormals: [number, number, number][] = [];
 
   for (const p of uniqueParametricPoints) {
     const evalPt = evaluateBSplineSurface(surface, p.u, p.v);
-    vertices.push([evalPt.point.x, evalPt.point.y, evalPt.point.z]);
-    normals.push([evalPt.normal.x, evalPt.normal.y, evalPt.normal.z]);
+    rawVertices.push([evalPt.point.x, evalPt.point.y, evalPt.point.z]);
+    rawNormals.push([evalPt.normal.x, evalPt.normal.y, evalPt.normal.z]);
   }
+
+  // 8. Weld duplicate seam vertices along bridge cuts
+  const welded = weldCoincidentVertices(rawVertices, finalTriangles, { epsilon: 1e-6 });
 
   return {
     name: meshName,
-    vertices,
-    normals,
-    faces: finalTriangles,
+    vertices: welded.vertices,
+    normals: welded.normals,
+    faces: welded.faces,
   };
 }
 
@@ -1486,6 +1641,322 @@ export function verifyWatertightManifoldMesh(
     facesCount: F,
     genus,
     componentsCount,
+  };
+}
+
+export interface WeldOptions {
+  epsilon?: number; // default 1e-6
+}
+
+/**
+ * Welds coincident 3D vertices within tolerance epsilon (default 1e-6) using a 3D spatial hash grid.
+ * Remaps face indices, removes degenerate collapsed triangles and zero-area slivers,
+ * compacts the vertex buffer to eliminate isolated unused vertices, and recalculates normals.
+ */
+export function weldCoincidentVertices(
+  vertices: [number, number, number][],
+  faces: [number, number, number][],
+  options: WeldOptions = {}
+): {
+  vertices: [number, number, number][];
+  faces: [number, number, number][];
+  normals: [number, number, number][];
+} {
+  const eps = options.epsilon ?? 1e-6;
+  const epsSq = eps * eps;
+  const cellSize = Math.max(1e-6, eps);
+
+  const weldedVertices: [number, number, number][] = [];
+  const grid = new Map<string, number[]>();
+  const vertexRemap = new Int32Array(vertices.length);
+
+  for (let i = 0; i < vertices.length; i++) {
+    const v = vertices[i];
+    const cx = Math.floor(v[0] / cellSize);
+    const cy = Math.floor(v[1] / cellSize);
+    const cz = Math.floor(v[2] / cellSize);
+
+    let foundIdx = -1;
+
+    neighborLoop: for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const key = `${cx + dx},${cy + dy},${cz + dz}`;
+          const cellList = grid.get(key);
+          if (cellList) {
+            for (const candIdx of cellList) {
+              const cand = weldedVertices[candIdx];
+              const distSq =
+                (v[0] - cand[0]) ** 2 +
+                (v[1] - cand[1]) ** 2 +
+                (v[2] - cand[2]) ** 2;
+              if (distSq <= epsSq) {
+                foundIdx = candIdx;
+                break neighborLoop;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (foundIdx !== -1) {
+      vertexRemap[i] = foundIdx;
+    } else {
+      const newIdx = weldedVertices.length;
+      weldedVertices.push([v[0], v[1], v[2]]);
+      const cellKey = `${cx},${cy},${cz}`;
+      let cellList = grid.get(cellKey);
+      if (!cellList) {
+        cellList = [];
+        grid.set(cellKey, cellList);
+      }
+      cellList.push(newIdx);
+      vertexRemap[i] = newIdx;
+    }
+  }
+
+  // Remap faces and filter degenerate / collapsed triangles
+  const newFaces: [number, number, number][] = [];
+  for (const [i0, i1, i2] of faces) {
+    const w0 = vertexRemap[i0];
+    const w1 = vertexRemap[i1];
+    const w2 = vertexRemap[i2];
+    if (w0 === w1 || w1 === w2 || w2 === w0) {
+      continue;
+    }
+    const p0 = weldedVertices[w0];
+    const p1 = weldedVertices[w1];
+    const p2 = weldedVertices[w2];
+    const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2];
+    const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
+    const cx = ay * bz - az * by;
+    const cy = az * bx - ax * bz;
+    const cz = ax * by - ay * bx;
+    const areaSq = cx * cx + cy * cy + cz * cz;
+    if (areaSq < 1e-20) {
+      continue;
+    }
+    newFaces.push([w0, w1, w2]);
+  }
+
+  // Compact vertices to eliminate unreferenced vertices
+  const usedMap = new Int32Array(weldedVertices.length).fill(-1);
+  const compactVertices: [number, number, number][] = [];
+  for (const [w0, w1, w2] of newFaces) {
+    if (usedMap[w0] === -1) {
+      usedMap[w0] = compactVertices.length;
+      compactVertices.push(weldedVertices[w0]);
+    }
+    if (usedMap[w1] === -1) {
+      usedMap[w1] = compactVertices.length;
+      compactVertices.push(weldedVertices[w1]);
+    }
+    if (usedMap[w2] === -1) {
+      usedMap[w2] = compactVertices.length;
+      compactVertices.push(weldedVertices[w2]);
+    }
+  }
+
+  const finalFaces: [number, number, number][] = newFaces.map(([w0, w1, w2]) => [
+    usedMap[w0],
+    usedMap[w1],
+    usedMap[w2],
+  ]);
+
+  // Recalculate area-weighted smooth vertex normals
+  const normals: [number, number, number][] = [];
+  const normalAcc = Array.from({ length: compactVertices.length }, () => [0, 0, 0]);
+
+  for (const [f0, f1, f2] of finalFaces) {
+    const p0 = compactVertices[f0];
+    const p1 = compactVertices[f1];
+    const p2 = compactVertices[f2];
+    const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2];
+    const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
+    const fnx = ay * bz - az * by;
+    const fny = az * bx - ax * bz;
+    const fnz = ax * by - ay * bx;
+
+    normalAcc[f0][0] += fnx; normalAcc[f0][1] += fny; normalAcc[f0][2] += fnz;
+    normalAcc[f1][0] += fnx; normalAcc[f1][1] += fny; normalAcc[f1][2] += fnz;
+    normalAcc[f2][0] += fnx; normalAcc[f2][1] += fny; normalAcc[f2][2] += fnz;
+  }
+
+  for (let i = 0; i < compactVertices.length; i++) {
+    const n = normalAcc[i];
+    const len = Math.hypot(n[0], n[1], n[2]);
+    if (len > 1e-10) {
+      normals.push([n[0] / len, n[1] / len, n[2] / len]);
+    } else {
+      normals.push([0, 0, 1]);
+    }
+  }
+
+  return { vertices: compactVertices, faces: finalFaces, normals };
+}
+
+export interface GlueBRepOptions extends WeldOptions {
+  enforceOrientedManifold?: boolean; // default true
+}
+
+/**
+ * Glues B-Rep topological boundary edges by welding coincident vertices and stitching
+ * half-edge topology to enforce watertight 2-manifold meshing (Euler characteristic V - E + F = 2
+ * and 0 open boundary edges for closed solids).
+ * Also coherently orients adjacent faces and guarantees outward-pointing surface normals.
+ */
+export function glueBRepTopologicalEdges(
+  mesh: TessellatedMesh,
+  options: GlueBRepOptions = {}
+): TessellatedMesh {
+  const { epsilon = 1e-6, enforceOrientedManifold = true } = options;
+
+  // Step 1: Weld coincident vertices
+  const welded = weldCoincidentVertices(mesh.vertices, mesh.faces, { epsilon });
+  let faces = welded.faces;
+  const vertices = welded.vertices;
+
+  if (faces.length === 0 || vertices.length === 0) {
+    return { name: mesh.name, vertices, normals: [], faces: [] };
+  }
+
+  if (enforceOrientedManifold) {
+    // Step 2: Coherent face orientation propagation via half-edge graph
+    const edgeAdj = new Map<string, Array<{ faceIdx: number; vFrom: number; vTo: number }>>();
+    for (let fIdx = 0; fIdx < faces.length; fIdx++) {
+      const f = faces[fIdx];
+      for (let i = 0; i < 3; i++) {
+        const a = f[i];
+        const b = f[(i + 1) % 3];
+        const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+        let list = edgeAdj.get(key);
+        if (!list) {
+          list = [];
+          edgeAdj.set(key, list);
+        }
+        list.push({ faceIdx: fIdx, vFrom: a, vTo: b });
+      }
+    }
+
+    const visited = new Uint8Array(faces.length);
+    const orientedFaces = faces.map((f) => [...f] as [number, number, number]);
+
+    for (let startFace = 0; startFace < faces.length; startFace++) {
+      if (visited[startFace]) continue;
+
+      const queue: number[] = [startFace];
+      visited[startFace] = 1;
+
+      while (queue.length > 0) {
+        const currIdx = queue.shift()!;
+        const currFace = orientedFaces[currIdx];
+
+        for (let i = 0; i < 3; i++) {
+          const a = currFace[i];
+          const b = currFace[(i + 1) % 3];
+          const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+          const adjList = edgeAdj.get(key);
+          if (!adjList) continue;
+
+          for (const neighbor of adjList) {
+            const nIdx = neighbor.faceIdx;
+            if (visited[nIdx]) continue;
+
+            const nFace = orientedFaces[nIdx];
+            let nEdgeA = -1;
+            let nEdgeB = -1;
+            for (let ni = 0; ni < 3; ni++) {
+              const na = nFace[ni];
+              const nb = nFace[(ni + 1) % 3];
+              if ((na === a && nb === b) || (na === b && nb === a)) {
+                nEdgeA = na;
+                nEdgeB = nb;
+                break;
+              }
+            }
+
+            // In a valid 2-manifold orientation, the edge must be traversed in opposite directions:
+            // currFace traverses a -> b, so neighbor must traverse b -> a.
+            // If neighbor also traverses a -> b, flip neighbor face winding!
+            if (nEdgeA === a && nEdgeB === b) {
+              const tmp = nFace[1];
+              nFace[1] = nFace[2];
+              nFace[2] = tmp;
+            }
+
+            visited[nIdx] = 1;
+            queue.push(nIdx);
+          }
+        }
+      }
+    }
+
+    // Step 3: Outward normal / Positive volume check for closed solids
+    let boundaryCount = 0;
+    for (const [, list] of edgeAdj.entries()) {
+      if (list.length === 1) boundaryCount++;
+    }
+
+    if (boundaryCount === 0) {
+      // Mesh is closed solid! Calculate signed volume
+      let totalSignedVolume = 0;
+      for (const [v0, v1, v2] of orientedFaces) {
+        const p0 = vertices[v0];
+        const p1 = vertices[v1];
+        const p2 = vertices[v2];
+        const crossX = p1[1] * p2[2] - p1[2] * p2[1];
+        const crossY = p1[2] * p2[0] - p1[0] * p2[2];
+        const crossZ = p1[0] * p2[1] - p1[1] * p2[0];
+        totalSignedVolume += (p0[0] * crossX + p0[1] * crossY + p0[2] * crossZ) / 6;
+      }
+
+      if (totalSignedVolume < 0) {
+        for (const f of orientedFaces) {
+          const tmp = f[1];
+          f[1] = f[2];
+          f[2] = tmp;
+        }
+      }
+    }
+
+    faces = orientedFaces;
+  }
+
+  // Recalculate vertex normals
+  const normals: [number, number, number][] = [];
+  const normalAcc = Array.from({ length: vertices.length }, () => [0, 0, 0]);
+
+  for (const [f0, f1, f2] of faces) {
+    const p0 = vertices[f0];
+    const p1 = vertices[f1];
+    const p2 = vertices[f2];
+    const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2];
+    const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
+    const fnx = ay * bz - az * by;
+    const fny = az * bx - ax * bz;
+    const fnz = ax * by - ay * bx;
+
+    normalAcc[f0][0] += fnx; normalAcc[f0][1] += fny; normalAcc[f0][2] += fnz;
+    normalAcc[f1][0] += fnx; normalAcc[f1][1] += fny; normalAcc[f1][2] += fnz;
+    normalAcc[f2][0] += fnx; normalAcc[f2][1] += fny; normalAcc[f2][2] += fnz;
+  }
+
+  for (let i = 0; i < vertices.length; i++) {
+    const n = normalAcc[i];
+    const len = Math.hypot(n[0], n[1], n[2]);
+    if (len > 1e-10) {
+      normals.push([n[0] / len, n[1] / len, n[2] / len]);
+    } else {
+      normals.push([0, 0, 1]);
+    }
+  }
+
+  return {
+    name: mesh.name,
+    vertices,
+    normals,
+    faces,
   };
 }
 
@@ -2277,7 +2748,12 @@ export function extractStepBRepMesh(
         edgeIds = loopEnt.args[0].filter((x: any): x is number => typeof x === 'number');
       }
 
-      const loopPoints: Point3D[] = [];
+      interface RawEdgePair {
+        v1Id: number;
+        v2Id: number;
+        sameSense: boolean;
+      }
+      const rawEdgePairs: RawEdgePair[] = [];
 
       for (const edgeId of edgeIds) {
         const edgeEnt = entityMap.get(edgeId);
@@ -2314,37 +2790,56 @@ export function extractStepBRepMesh(
           sameSense = !sameSense;
         }
 
-        const v1Id = sameSense ? startVertexId : endVertexId;
-        const v2Id = sameSense ? endVertexId : startVertexId;
-
-        const pt1 = resolveVertexPoint(v1Id, entityMap);
-        const pt2 = resolveVertexPoint(v2Id, entityMap);
-
-        if (pt1) loopPoints.push(pt1);
-        if (pt2) loopPoints.push(pt2);
+        if (startVertexId !== null && endVertexId !== null) {
+          rawEdgePairs.push({
+            v1Id: startVertexId,
+            v2Id: endVertexId,
+            sameSense,
+          });
+        }
       }
 
-      // Deduplicate consecutive identical points
-      const uniquePoints: Point3D[] = [];
-      for (const pt of loopPoints) {
-        if (uniquePoints.length === 0) {
-          uniquePoints.push(pt);
-        } else {
-          const prev = uniquePoints[uniquePoints.length - 1];
-          const distSq = (pt.x - prev.x) ** 2 + (pt.y - prev.y) ** 2 + (pt.z - prev.z) ** 2;
-          if (distSq > 1e-10) {
-            uniquePoints.push(pt);
+      if (rawEdgePairs.length < 3) continue;
+
+      // Topologically chain edge pairs into an ordered cyclic sequence of vertices
+      const orderedVertexIds: number[] = [];
+      const remainingEdges = [...rawEdgePairs];
+
+      let currentV = remainingEdges[0].sameSense ? remainingEdges[0].v1Id : remainingEdges[0].v2Id;
+      orderedVertexIds.push(currentV);
+
+      while (remainingEdges.length > 0) {
+        let matchIdx = -1;
+        let nextV = -1;
+
+        for (let i = 0; i < remainingEdges.length; i++) {
+          const e = remainingEdges[i];
+          if (e.v1Id === currentV) {
+            nextV = e.v2Id;
+            matchIdx = i;
+            break;
+          } else if (e.v2Id === currentV) {
+            nextV = e.v1Id;
+            matchIdx = i;
+            break;
           }
         }
+
+        if (matchIdx === -1) {
+          break;
+        }
+
+        remainingEdges.splice(matchIdx, 1);
+        if (nextV !== orderedVertexIds[0]) {
+          orderedVertexIds.push(nextV);
+        }
+        currentV = nextV;
       }
 
-      if (uniquePoints.length >= 3) {
-        const first = uniquePoints[0];
-        const last = uniquePoints[uniquePoints.length - 1];
-        const distSq = (first.x - last.x) ** 2 + (first.y - last.y) ** 2 + (first.z - last.z) ** 2;
-        if (distSq < 1e-10) {
-          uniquePoints.pop();
-        }
+      const uniquePoints: Point3D[] = [];
+      for (const vId of orderedVertexIds) {
+        const pt = resolveVertexPoint(vId, entityMap);
+        if (pt) uniquePoints.push(pt);
       }
 
       if (uniquePoints.length < 3) continue;
@@ -2381,12 +2876,14 @@ export function extractStepBRepMesh(
     return null;
   }
 
-  return {
+  const rawMesh: TessellatedMesh = {
     name: modelName,
     vertices,
     normals,
     faces: facesList,
   };
+
+  return glueBRepTopologicalEdges(rawMesh, { epsilon: 1e-6, enforceOrientedManifold: true });
 }
 
 /**
