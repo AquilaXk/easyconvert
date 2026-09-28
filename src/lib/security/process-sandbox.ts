@@ -1,4 +1,5 @@
 import { spawn, execFileSync } from 'child_process';
+import { pipeline } from 'stream';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -18,6 +19,7 @@ export interface SandboxedExecutionOptions {
   cwd?: string;
   networkIsolated?: boolean;
   memoryLimitMb?: number;
+  stdin?: Buffer | NodeJS.ReadableStream | null;
 }
 
 export interface SandboxedExecutionResult {
@@ -418,6 +420,7 @@ export async function executeSandboxedBinary(
     env: customEnv = {},
     cwd = os.tmpdir(),
     networkIsolated = true,
+    stdin,
   } = options;
 
   if (!binaryPath || typeof binaryPath !== 'string') {
@@ -437,11 +440,23 @@ export async function executeSandboxedBinary(
     let memoryExceeded = false;
     let memoryInterval: NodeJS.Timeout | null = null;
 
+    let activeChild: ReturnType<typeof spawn> | null = null;
+
     const cleanup = () => {
       clearTimeout(timer);
       if (memoryInterval) {
         clearInterval(memoryInterval);
         memoryInterval = null;
+      }
+      if (stdin && typeof (stdin as any).destroy === 'function' && !(stdin as any).destroyed) {
+        try {
+          (stdin as any).destroy();
+        } catch {}
+      }
+      if (activeChild && activeChild.stdin && !activeChild.stdin.destroyed) {
+        try {
+          activeChild.stdin.destroy();
+        } catch {}
       }
     };
 
@@ -453,10 +468,37 @@ export async function executeSandboxedBinary(
     const child = spawn(resolvedCmd.binary, resolvedCmd.args, {
       cwd,
       env: sanitizedEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       shell: false,
       detached: true,
     });
+    activeChild = child;
+
+    if (stdin && child.stdin) {
+      child.stdin.on('error', (err: any) => {
+        // EPIPE or ECONNRESET can occur if child closes stdin before stream is exhausted.
+        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
+          return;
+        }
+      });
+
+      if (Buffer.isBuffer(stdin)) {
+        child.stdin.end(stdin);
+      } else {
+        pipeline(stdin, child.stdin, (err) => {
+          if (err) {
+            const code = (err as any).code;
+            if (code !== 'EPIPE' && code !== 'ERR_STREAM_PREMATURE_CLOSE' && code !== 'ECONNRESET') {
+              if (!timedOut && !bufferExceeded && !memoryExceeded) {
+                cleanup();
+                killProcessGroup(child.pid, 'SIGKILL');
+                reject(err);
+              }
+            }
+          }
+        });
+      }
+    }
 
     const timer = setTimeout(() => {
       if (bufferExceeded || memoryExceeded || timedOut) return;
@@ -479,31 +521,35 @@ export async function executeSandboxedBinary(
       }, 50);
     }
 
-    child.stdout.on('data', (chunk: Buffer) => {
-      if (bufferExceeded || timedOut || memoryExceeded) return;
-      currentBufferSize += chunk.length;
-      if (currentBufferSize > maxBuffer) {
-        bufferExceeded = true;
-        cleanup();
-        killProcessGroup(child.pid, 'SIGKILL');
-        reject(new SandboxedBufferLimitError(maxBuffer));
-        return;
-      }
-      stdoutChunks.push(chunk);
-    });
+    if (child.stdout) {
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (bufferExceeded || timedOut || memoryExceeded) return;
+        currentBufferSize += chunk.length;
+        if (currentBufferSize > maxBuffer) {
+          bufferExceeded = true;
+          cleanup();
+          killProcessGroup(child.pid, 'SIGKILL');
+          reject(new SandboxedBufferLimitError(maxBuffer));
+          return;
+        }
+        stdoutChunks.push(chunk);
+      });
+    }
 
-    child.stderr.on('data', (chunk: Buffer) => {
-      if (bufferExceeded || timedOut || memoryExceeded) return;
-      currentBufferSize += chunk.length;
-      if (currentBufferSize > maxBuffer) {
-        bufferExceeded = true;
-        cleanup();
-        killProcessGroup(child.pid, 'SIGKILL');
-        reject(new SandboxedBufferLimitError(maxBuffer));
-        return;
-      }
-      stderrChunks.push(chunk);
-    });
+    if (child.stderr) {
+      child.stderr.on('data', (chunk: Buffer) => {
+        if (bufferExceeded || timedOut || memoryExceeded) return;
+        currentBufferSize += chunk.length;
+        if (currentBufferSize > maxBuffer) {
+          bufferExceeded = true;
+          cleanup();
+          killProcessGroup(child.pid, 'SIGKILL');
+          reject(new SandboxedBufferLimitError(maxBuffer));
+          return;
+        }
+        stderrChunks.push(chunk);
+      });
+    }
 
     child.on('error', (err) => {
       cleanup();

@@ -421,10 +421,9 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
   // ==========================================================================
   describe('5. RFC 7845 Ogg Opus Container & RFC 6716 TOC Framing', () => {
     it('creates RFC 7845 compliant OpusHead (BOS) and OpusTags pages with valid CRCs', () => {
-      const samples = new Int16Array(960 * 2);
-      for (let i = 0; i < samples.length; i++) samples[i] = Math.round(Math.sin(i * 0.1) * 8000);
+      const packets = [Buffer.from([0xc4, 0x01, 0x02, 0x03]), Buffer.from([0xc4, 0x04, 0x05, 0x06])];
 
-      const oggOpus = encodeOpusContainer(samples, 48000, 2, 'Test Song');
+      const oggOpus = encodeOpusContainer(packets, 48000, 2, 'Test Song');
       expect(oggOpus.toString('ascii', 0, 4)).toBe('OggS');
 
       // Verify Page 1: OpusHead
@@ -445,13 +444,17 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       const tagsIdx = oggOpus.indexOf('OpusTags');
       expect(tagsIdx).toBeGreaterThan(headIdx);
       expect(oggOpus.indexOf('EasyConvert Engine')).toBeGreaterThan(tagsIdx);
+
+      // Verify Fail-Closed on raw PCM Int16Array
+      expect(() => encodeOpusContainer(new Int16Array(960 * 2), 48000, 2)).toThrow(
+        /Authentic Opus bitstream encoder is required/i
+      );
     });
 
     it('packages discrete Opus audio packets with RFC 6716 TOC byte structure (0xC0 mono, 0xC4 stereo)', () => {
       // Stereo: TOC = 0xC4
-      const stereoSamples = new Int16Array(960 * 2);
-      for (let i = 0; i < stereoSamples.length; i++) stereoSamples[i] = 1000;
-      const stereoOgg = encodeOpusContainer(stereoSamples, 48000, 2, 'Stereo');
+      const stereoPackets = [Buffer.from([0xc4, 0x10, 0x20, 0x30]), Buffer.from([0xc4, 0x40, 0x50, 0x60])];
+      const stereoOgg = encodeOpusContainer(stereoPackets, 48000, 2, 'Stereo');
 
       // Find third OggS page (first audio page)
       let offset = 0;
@@ -480,9 +483,8 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       expect(tocByteStereo).toBe(0xc4); // Config 24 CELT 20ms + Stereo flag 0x04
 
       // Mono: TOC = 0xC0
-      const monoSamples = new Int16Array(960);
-      for (let i = 0; i < monoSamples.length; i++) monoSamples[i] = 1000;
-      const monoOgg = encodeOpusContainer(monoSamples, 48000, 1, 'Mono');
+      const monoPackets = [Buffer.from([0xc0, 0x10, 0x20, 0x30]), Buffer.from([0xc0, 0x40, 0x50, 0x60])];
+      const monoOgg = encodeOpusContainer(monoPackets, 48000, 1, 'Mono');
 
       offset = 0;
       pageCount = 0;
@@ -510,29 +512,11 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       expect(tocByteMono).toBe(0xc0); // Config 24 CELT 20ms + Mono
     });
 
-    it('performs roundtrip WAV -> OPUS -> WAV with non-zero RMS waveform reconstruction', async () => {
+    it('enforces Fail-Closed for pure TS WAV -> OPUS without native FFmpeg engine', async () => {
       const wav = createSineWavBuffer(48000, 2, 0.2);
-      const opusRes = await convertMedia(wav, 'wav', 'opus', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'test.wav');
-      expect(opusRes.mimeType).toBe('audio/opus');
-      expect(opusRes.buffer.toString('ascii', 0, 4)).toBe('OggS');
-
-      // Decode using decodeOgg
-      const decodedOgg = decodeOgg(opusRes.buffer);
-      expect(decodedOgg.sampleRate).toBe(48000);
-      expect(decodedOgg.channels).toBe(2);
-      expect(decodedOgg.samples.length).toBeGreaterThan(0);
-
-      // Re-encode to WAV and check RMS
-      const roundtripWav = await convertMedia(opusRes.buffer, 'opus', 'wav', { disableNativeEngine: true }, 'test.opus');
-      expect(roundtripWav.mimeType).toBe('audio/wav');
-      const wavDec = decodeAudioBuffer(roundtripWav.buffer, 'wav');
-
-      let sumSq = 0;
-      for (let i = 0; i < wavDec.samples.length; i++) {
-        sumSq += wavDec.samples[i] * wavDec.samples[i];
-      }
-      const rms = Math.sqrt(sumSq / wavDec.samples.length);
-      expect(rms).toBeGreaterThan(100);
+      await expect(
+        convertMedia(wav, 'wav', 'opus', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'test.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OPUS compression/i);
     });
   });
 
@@ -541,10 +525,9 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
   // ==========================================================================
   describe('6. RFC 3533 Ogg Vorbis Header Triad & Discrete Audio Framing', () => {
     it('encodes all 3 mandatory Vorbis headers (Identification, Comments, Setup) in order', () => {
-      const samples = new Int16Array(2048);
-      for (let i = 0; i < samples.length; i++) samples[i] = Math.round(Math.sin(i * 0.1) * 8000);
+      const packets = [Buffer.from([0x00, 0x11, 0x22]), Buffer.from([0x00, 0x33, 0x44])];
 
-      const oggVorbis = encodeOggContainer(samples, 44100, 2, 'Vorbis Song');
+      const oggVorbis = encodeOggContainer(packets, 44100, 2, 'Vorbis Song');
 
       // Verify all 3 headers are present
       const idIdx = oggVorbis.indexOf(Buffer.from([0x01, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73]));
@@ -557,28 +540,18 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
 
       // Verify setup header codebook magic 'BCV' (0x564342)
       expect(oggVorbis.indexOf(Buffer.from([0x42, 0x43, 0x56]))).toBeGreaterThan(setupIdx);
+
+      // Verify Fail-Closed on raw PCM Int16Array
+      expect(() => encodeOggContainer(new Int16Array(1024), 44100, 2)).toThrow(
+        /Authentic Vorbis bitstream encoder is required/i
+      );
     });
 
-    it('performs roundtrip WAV -> OGG (Vorbis) -> WAV with authentic discrete audio framing', async () => {
+    it('enforces Fail-Closed for pure TS WAV -> OGG (Vorbis) without native FFmpeg engine', async () => {
       const wav = createSineWavBuffer(44100, 2, 0.2);
-      const oggRes = await convertMedia(wav, 'wav', 'ogg', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'vorbis.wav');
-      expect(oggRes.mimeType).toBe('audio/ogg');
-
-      const decodedOgg = decodeOgg(oggRes.buffer);
-      expect(decodedOgg.sampleRate).toBe(44100);
-      expect(decodedOgg.channels).toBe(2);
-      expect(decodedOgg.samples.length).toBeGreaterThan(0);
-
-      const roundtripWav = await convertMedia(oggRes.buffer, 'ogg', 'wav', { disableNativeEngine: true }, 'vorbis.ogg');
-      expect(roundtripWav.mimeType).toBe('audio/wav');
-      const wavDec = decodeAudioBuffer(roundtripWav.buffer, 'wav');
-
-      let sumSq = 0;
-      for (let i = 0; i < wavDec.samples.length; i++) {
-        sumSq += wavDec.samples[i] * wavDec.samples[i];
-      }
-      const rms = Math.sqrt(sumSq / wavDec.samples.length);
-      expect(rms).toBeGreaterThan(100);
+      await expect(
+        convertMedia(wav, 'wav', 'ogg', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'vorbis.wav')
+      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
   });
 
@@ -586,8 +559,8 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
   // 7. Negative & Boundary Fuzzing (Fail-Closed)
   // ==========================================================================
   describe('7. Negative & Boundary Fuzzing (Fail-Closed)', () => {
-    it('handles 0-sample empty audio buffers gracefully without crashing and decodes to 0-length PCM', () => {
-      const empty = new Int16Array(0);
+    it('handles 0-packet empty audio buffers gracefully without crashing and decodes to 0-length PCM', () => {
+      const empty: Buffer[] = [];
       const opusOgg = encodeOpusContainer(empty, 48000, 2, 'Empty');
       expect(opusOgg.length).toBeGreaterThan(0);
       expect(opusOgg.toString('ascii', 0, 4)).toBe('OggS');
@@ -620,14 +593,15 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
 
     it('rejects multi-channel audio (> 2 channels) and invalid channels with fail-closed errors', () => {
       const samples = new Int16Array(1024 * 6); // 6 channels (5.1 surround)
+      const packets = [Buffer.from([0xc0, 0x01, 0x02])];
       expect(() => encodeAacContainer(samples, 44100, 6, 'surround')).toThrow(/Unsupported channel configuration for AAC LC/i);
       expect(() => encodeAacContainer(samples, 44100, 0, 'invalid')).toThrow(/Unsupported channel configuration for AAC LC/i);
       expect(() => encodeAacLcFramePayload(samples, 0, 6)).toThrow(/Unsupported channel count for AAC LC/i);
       expect(() => encodeAacLcFramePayload(samples, 0, 0)).toThrow(/Unsupported channel count for AAC LC/i);
-      expect(() => encodeOpusContainer(samples, 48000, 6, 'surround')).toThrow(/Unsupported channel configuration for Ogg Opus/i);
-      expect(() => encodeOpusContainer(samples, 48000, 0, 'invalid')).toThrow(/Unsupported channel configuration for Ogg Opus/i);
-      expect(() => encodeOggContainer(samples, 44100, 6, 'surround')).toThrow(/Unsupported channel configuration for Ogg Vorbis/i);
-      expect(() => encodeOggContainer(samples, 44100, 0, 'invalid')).toThrow(/Unsupported channel configuration for Ogg Vorbis/i);
+      expect(() => encodeOpusContainer(packets, 48000, 6, 'surround')).toThrow(/Unsupported channel configuration for Ogg Opus/i);
+      expect(() => encodeOpusContainer(packets, 48000, 0, 'invalid')).toThrow(/Unsupported channel configuration for Ogg Opus/i);
+      expect(() => encodeOggContainer(packets, 44100, 6, 'surround')).toThrow(/Unsupported channel configuration for Ogg Vorbis/i);
+      expect(() => encodeOggContainer(packets, 44100, 0, 'invalid')).toThrow(/Unsupported channel configuration for Ogg Vorbis/i);
 
       const fakePayload = Buffer.alloc(20, 0);
       expect(decodeAacLcFramePayload(fakePayload, 6)).toBeNull();
