@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { fetch as undiciFetch, Agent } from 'undici';
+import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 
 export type WebhookEvent =
   | 'conversion.completed'
@@ -20,6 +22,8 @@ export interface WebhookDispatchOptions {
   maxRetries?: number;
   timeoutMs?: number;
   initialDelayMs?: number;
+  deliveryId?: string;
+  async?: boolean;
 }
 
 export interface WebhookDeliveryAttempt {
@@ -42,12 +46,21 @@ export interface WebhookDispatchResult {
 }
 
 /**
- * Enterprise Asynchronous Webhook Dispatcher with HMAC-SHA256 Signature Verification.
- * Supports configurable exponential retries, event signing, and non-blocking asynchronous delivery.
+ * Enterprise Asynchronous Webhook Dispatcher with HMAC-SHA256 Signature Verification
+ * and Zero-Trust SSRF Protection against cloud metadata (169.254.169.254) and private networks.
  */
 export class WebhookDispatcher {
   private readonly deliveryHistory: WebhookDispatchResult[] = [];
   private readonly maxHistorySize = 100;
+  private readonly ssrfAgent: Agent;
+
+  constructor(customAgent?: Agent) {
+    this.ssrfAgent = customAgent || createSsrfSafeAgent();
+  }
+
+  public async close(): Promise<void> {
+    await this.ssrfAgent.close().catch(() => {});
+  }
 
   /**
    * Generates standard HMAC-SHA256 signature for the given payload string and secret.
@@ -85,8 +98,15 @@ export class WebhookDispatcher {
     }
   }
 
+  private recordHistory(result: WebhookDispatchResult): void {
+    this.deliveryHistory.push(result);
+    if (this.deliveryHistory.length > this.maxHistorySize) {
+      this.deliveryHistory.shift();
+    }
+  }
+
   /**
-   * Asynchronously dispatches a signed webhook payload to the destination URL.
+   * Dispatches a signed webhook payload to the destination URL with SSRF protection.
    */
   public async dispatch<T = Record<string, unknown>>(
     targetUrl: string,
@@ -96,8 +116,63 @@ export class WebhookDispatcher {
     options: WebhookDispatchOptions = {}
   ): Promise<WebhookDispatchResult> {
     const { maxRetries = 3, timeoutMs = 5000, initialDelayMs = 200 } = options;
-    const deliveryId = `wh_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    const deliveryId = options.deliveryId || `wh_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
     const timestamp = Math.floor(Date.now() / 1000);
+    const startTime = Date.now();
+
+    // 1. URL Structure & Protocol Validation
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(targetUrl);
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error(`Unsupported webhook protocol: ${parsedUrl.protocol}`);
+      }
+    } catch (urlErr: unknown) {
+      const errMsg = urlErr instanceof Error ? urlErr.message : 'Invalid target URL';
+      const result: WebhookDispatchResult = {
+        id: deliveryId,
+        url: targetUrl,
+        event,
+        success: false,
+        totalAttempts: 1,
+        finalStatusCode: 400,
+        durationMs: Date.now() - startTime,
+        attempts: [
+          {
+            attemptNumber: 1,
+            timestamp: Date.now(),
+            error: errMsg,
+            durationMs: Date.now() - startTime,
+          },
+        ],
+      };
+      this.recordHistory(result);
+      return result;
+    }
+
+    // 2. Pre-flight SSRF Validation (fail closed on private / link-local / cloud metadata ranges)
+    const isSsrfSafe = await validateUrlForSsrf(parsedUrl);
+    if (!isSsrfSafe) {
+      const result: WebhookDispatchResult = {
+        id: deliveryId,
+        url: targetUrl,
+        event,
+        success: false,
+        totalAttempts: 1,
+        finalStatusCode: 403,
+        durationMs: Date.now() - startTime,
+        attempts: [
+          {
+            attemptNumber: 1,
+            timestamp: Date.now(),
+            error: `SSRF blocked: host ${parsedUrl.hostname} is restricted`,
+            durationMs: Date.now() - startTime,
+          },
+        ],
+      };
+      this.recordHistory(result);
+      return result;
+    }
 
     const payload: WebhookPayload<T> = {
       id: deliveryId,
@@ -108,7 +183,6 @@ export class WebhookDispatcher {
 
     const bodyString = JSON.stringify(payload);
     const signature = this.generateSignature(bodyString, secret, timestamp);
-    const startTime = Date.now();
     const attempts: WebhookDeliveryAttempt[] = [];
 
     let success = false;
@@ -117,10 +191,10 @@ export class WebhookDispatcher {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       const attemptStart = Date.now();
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
-        const response = await fetch(targetUrl, {
+        const response = (await undiciFetch(targetUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -131,8 +205,9 @@ export class WebhookDispatcher {
             'X-EasyConvert-Signature': `sha256=${signature}`,
           },
           body: bodyString,
-          signal: controller.signal,
-        });
+          dispatcher: this.ssrfAgent,
+          signal: controller.signal as any,
+        })) as unknown as Response;
 
         finalStatusCode = response.status;
         const attemptDuration = Date.now() - attemptStart;
@@ -162,8 +237,17 @@ export class WebhookDispatcher {
           error: errMsg,
           durationMs: attemptDuration,
         });
+
+        // Fast-fail if blocked by SSRF agent during connection lookup
+        if (errMsg.includes('SSRF blocked') || errMsg.includes('restricted')) {
+          finalStatusCode = 403;
+          break;
+        }
       } finally {
-        clearTimeout(timer);
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
       }
 
       if (attempt < maxRetries) {
@@ -183,12 +267,24 @@ export class WebhookDispatcher {
       attempts,
     };
 
-    this.deliveryHistory.push(result);
-    if (this.deliveryHistory.length > this.maxHistorySize) {
-      this.deliveryHistory.shift();
-    }
-
+    this.recordHistory(result);
     return result;
+  }
+
+  /**
+   * Dispatches a webhook asynchronously in the background without blocking the caller thread.
+   */
+  public dispatchAsync<T = Record<string, unknown>>(
+    targetUrl: string,
+    event: WebhookEvent,
+    data: T,
+    secret: string,
+    options: WebhookDispatchOptions = {}
+  ): { deliveryId: string; promise: Promise<WebhookDispatchResult> } {
+    const deliveryId = options.deliveryId || `wh_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    const promise = this.dispatch(targetUrl, event, data, secret, { ...options, deliveryId });
+    promise.catch(() => {});
+    return { deliveryId, promise };
   }
 
   public getHistory(): WebhookDispatchResult[] {
@@ -201,3 +297,4 @@ export class WebhookDispatcher {
 }
 
 export const webhookDispatcher = new WebhookDispatcher();
+

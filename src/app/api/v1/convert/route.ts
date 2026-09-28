@@ -85,8 +85,8 @@ export async function POST(req: NextRequest) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
 
-  // 1. Guard check: Authenticate
-  const auth = await validateApiAccess(req, 0);
+  // 1. Guard check: Authenticate and enforce 'convert' scope
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert' });
   if (!auth.authorized || !auth.user) {
     let headers: Record<string, string> | undefined;
     if (auth.user) {
