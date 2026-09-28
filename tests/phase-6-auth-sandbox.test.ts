@@ -140,6 +140,45 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       expect(result.stdout.toString('utf-8').trim()).toBe('sandbox-ok');
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
     });
+
+    it('runInWorkerSandbox injects ephemeral sandboxDir into process environment (TMPDIR, HOME)', async () => {
+      const envBin = process.platform === 'win32' ? 'cmd.exe' : '/usr/bin/env';
+      const result = await runInWorkerSandbox(envBin, []);
+
+      expect(result.exitCode).toBe(0);
+      const out = result.stdout.toString('utf-8');
+      const lines = out.split('\n');
+      const tmpdirLine = lines.find((l) => l.startsWith('TMPDIR='));
+      const homeLine = lines.find((l) => l.startsWith('HOME='));
+
+      expect(tmpdirLine).toBeDefined();
+      expect(homeLine).toBeDefined();
+
+      const tmpdirVal = tmpdirLine!.split('=')[1].trim();
+      const homeVal = homeLine!.split('=')[1].trim();
+
+      expect(tmpdirVal).toContain('easyconvert_worker_sandbox_');
+      expect(homeVal).toContain('easyconvert_worker_sandbox_');
+      expect(tmpdirVal).toBe(homeVal);
+
+      // Ephemeral directory must be already cleaned up after execution completes
+      expect(fs.existsSync(tmpdirVal)).toBe(false);
+    });
+
+    it('withWorkerSandbox guarantees cleanup even when ENOSPC disk-full error occurs', async () => {
+      let trappedDir = '';
+      await expect(
+        withWorkerSandbox(async (ctx) => {
+          trappedDir = ctx.sandboxDir;
+          const enospcError = new Error('ENOSPC: no space left on device, write');
+          (enospcError as any).code = 'ENOSPC';
+          throw enospcError;
+        })
+      ).rejects.toThrow(/ENOSPC/);
+
+      expect(trappedDir.length).toBeGreaterThan(0);
+      expect(fs.existsSync(trappedDir)).toBe(false);
+    });
   });
 
   // ==========================================================================
@@ -344,6 +383,72 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       // Quota should be restored to full 25
       const probe = await keyStore.reserveQuota(testUserId, 0);
       expect(probe.remaining).toBe(25);
+    });
+
+    it('unifies keyStore and redisKeyStore state and eliminates decoupled disk overwrites', async () => {
+      const { keyStore: defaultKeyStore, KeyStore } = await import('../src/lib/api-keys/key-store');
+      // Reserve 10 units via redisKeyStore
+      const res = await keyStore.reserveQuota(testUserId, 10);
+      expect(res.allowed).toBe(true);
+
+      // Verify that defaultKeyStore immediately sees the reservation
+      const defaultUsage = await defaultKeyStore.getQuotaUsage(testUserId);
+      expect(defaultUsage.usedToday).toBe(10);
+      expect(defaultUsage.remaining).toBe(15);
+
+      // Record additional 5 units via defaultKeyStore
+      await defaultKeyStore.recordUsage(testUserId, 5);
+
+      // redisKeyStore must immediately reflect the combined 15 units
+      const redisUsage = await keyStore.getQuotaUsage(testUserId);
+      expect(redisUsage.usedToday).toBe(15);
+      expect(redisUsage.remaining).toBe(10);
+
+      // A fresh instance loaded from disk must also reflect 15, not clobbered
+      const diskStore = new KeyStore();
+      const diskUsage = await diskStore.getQuotaUsage(testUserId);
+      expect(diskUsage.usedToday).toBe(15);
+    });
+
+    it('refunds expired or rolled back reservations to original reservation date across UTC midnight', async () => {
+      const res = await keyStore.reserveQuota(testUserId, 5);
+      expect(res.allowed).toBe(true);
+
+      const reservation = keyStore.getReservation(res.reservationId!);
+      expect(reservation).toBeDefined();
+
+      // Simulate reservation made on a different date (e.g. 2026-09-01)
+      const fakePastDateKey = `${testUserId}:2026-09-01`;
+      (keyStore as any).dailyUsage.set(fakePastDateKey, 5);
+      reservation!.dateKey = fakePastDateKey;
+      reservation!.expiresAt = Date.now() - 1000;
+
+      // Clean expired reservations
+      const cleaned = keyStore.cleanExpiredReservations();
+      expect(cleaned).toBe(1);
+
+      // The past date usage must be refunded to 0
+      expect((keyStore as any).dailyUsage.get(fakePastDateKey)).toBe(0);
+    });
+
+    it('automatically cleans expired reservations on reserveQuota without requiring manual query', async () => {
+      // Consume all 25 units
+      const fullRes = await keyStore.reserveQuota(testUserId, 25);
+      expect(fullRes.allowed).toBe(true);
+
+      // Further reservation is blocked
+      const blocked = await keyStore.reserveQuota(testUserId, 1);
+      expect(blocked.allowed).toBe(false);
+
+      // Simulate expiration
+      const reservation = keyStore.getReservation(fullRes.reservationId!);
+      expect(reservation).toBeDefined();
+      reservation!.expiresAt = Date.now() - 1000;
+
+      // Directly attempt reserveQuota without calling getActiveReservationsCount()
+      const afterExpiry = await keyStore.reserveQuota(testUserId, 5);
+      expect(afterExpiry.allowed).toBe(true);
+      expect(afterExpiry.remaining).toBe(20);
     });
   });
 });

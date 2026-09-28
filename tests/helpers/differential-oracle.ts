@@ -1420,6 +1420,14 @@ export async function runDifferentialComparison(
     assertFormatIntegrity(referenceBuffer, fmt);
   } catch (err: any) {
     discrepancies.push(`Reference buffer integrity violation: ${err?.message || 'Failed reference integrity check'}`);
+    return {
+      matched: false,
+      oracleType,
+      structuralScore: 0,
+      textSimilarity: 0,
+      vrtResult: undefined,
+      discrepancies,
+    };
   }
 
   if (fmt === 'pdf') {
