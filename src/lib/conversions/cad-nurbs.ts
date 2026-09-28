@@ -2543,15 +2543,18 @@ export function tessellateCurvesToMesh(curves: BSplineCurve[], modelName: string
     const c1 = curvePointsList[0];
     const baseIdx = vertices.length;
 
-    let minX = Infinity, maxX = -Infinity;
-    let minY = Infinity, maxY = -Infinity;
-    let minZ = Infinity, maxZ = -Infinity;
-    for (const p of c1) {
-      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
-      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
-      if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
-    }
-    const diag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+    const bbox = c1.reduce(
+      (acc, p) => ({
+        minX: Math.min(acc.minX, p.x),
+        maxX: Math.max(acc.maxX, p.x),
+        minY: Math.min(acc.minY, p.y),
+        maxY: Math.max(acc.maxY, p.y),
+        minZ: Math.min(acc.minZ, p.z),
+        maxZ: Math.max(acc.maxZ, p.z),
+      }),
+      { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity }
+    );
+    const diag = Math.hypot(bbox.maxX - bbox.minX, bbox.maxY - bbox.minY, bbox.maxZ - bbox.minZ);
     const ribbonHalfWidth = Math.max(1e-4, diag * 0.005);
 
     for (let i = 0; i < c1.length; i++) {

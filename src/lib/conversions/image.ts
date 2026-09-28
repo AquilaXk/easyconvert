@@ -927,6 +927,25 @@ export function decodeRawBayerSensor(
         const pattern = chosen.cfaPattern || 'RGGB';
         const bytesPerPixel = bpp > 8 ? 2 : 1;
 
+        const decodeSensorChunk = (chunk: Buffer, expW?: number, expH?: number) => {
+          if (chunk.length >= 4 && chunk[0] === 0xff && chunk[1] === 0xd8) {
+            const lj92 = decodeLosslessJpegStrip(chunk);
+            if (lj92) {
+              return { data: lj92.data, width: lj92.width, height: lj92.height, bpp: lj92.bpp };
+            }
+          }
+          const maxPixels = expW && expH ? expW * expH : Math.floor(chunk.length / bytesPerPixel);
+          const data =
+            bpp > 8
+              ? new Uint16Array(
+                  chunk.buffer,
+                  chunk.byteOffset,
+                  Math.min(maxPixels, Math.floor(chunk.length / 2))
+                )
+              : new Uint8Array(chunk.buffer, chunk.byteOffset, Math.min(maxPixels, chunk.length));
+          return { data, width: expW, height: expH, bpp };
+        };
+
         let sensorData: Uint16Array | Uint8Array;
         let sensorWidth = width;
         let sensorHeight = height;
@@ -949,31 +968,11 @@ export function decodeRawBayerSensor(
                 (chosen.tileByteCounts && chosen.tileByteCounts[tileIdx]) || tw * th * bytesPerPixel;
               const end = Math.min(buffer.length, tileOff + tileLen);
               if (tileOff >= end) continue;
-              const tileBuf = buffer.subarray(tileOff, end);
 
-              let tileDecoded: Uint16Array | Uint8Array;
-              let actualTw = tw;
-              let actualTh = th;
-
-              if (tileBuf.length >= 4 && tileBuf[0] === 0xff && tileBuf[1] === 0xd8) {
-                const lj92 = decodeLosslessJpegStrip(tileBuf);
-                if (lj92) {
-                  tileDecoded = lj92.data;
-                  actualTw = lj92.width;
-                  actualTh = lj92.height;
-                  sensorBpp = lj92.bpp;
-                } else {
-                  tileDecoded =
-                    bpp > 8
-                      ? new Uint16Array(tileBuf.buffer, tileBuf.byteOffset, Math.floor(tileBuf.length / 2))
-                      : new Uint8Array(tileBuf.buffer, tileBuf.byteOffset, tileBuf.length);
-                }
-              } else {
-                tileDecoded =
-                  bpp > 8
-                    ? new Uint16Array(tileBuf.buffer, tileBuf.byteOffset, Math.floor(tileBuf.length / 2))
-                    : new Uint8Array(tileBuf.buffer, tileBuf.byteOffset, tileBuf.length);
-              }
+              const tileDecoded = decodeSensorChunk(buffer.subarray(tileOff, end), tw, th);
+              const actualTw = tileDecoded.width || tw;
+              const actualTh = tileDecoded.height || th;
+              sensorBpp = tileDecoded.bpp;
 
               const rowCount = Math.min(actualTh, height - ty * th);
               const colCount = Math.min(actualTw, width - tx * tw);
@@ -981,7 +980,7 @@ export function decodeRawBayerSensor(
                 const srcStart = r * actualTw;
                 const dstStart = (ty * th + r) * width + tx * tw;
                 for (let c = 0; c < colCount; c++) {
-                  assembled[dstStart + c] = tileDecoded[srcStart + c];
+                  assembled[dstStart + c] = tileDecoded.data[srcStart + c];
                 }
               }
             }
@@ -996,35 +995,11 @@ export function decodeRawBayerSensor(
             const byteCount =
               (chosen.stripByteCounts && chosen.stripByteCounts[0]) || width * height * bytesPerPixel;
             const end = Math.min(buffer.length, stripOffset + byteCount);
-            const strip = buffer.subarray(stripOffset, end);
-
-            if (strip.length >= 4 && strip[0] === 0xff && strip[1] === 0xd8) {
-              const lj92 = decodeLosslessJpegStrip(strip);
-              if (lj92) {
-                sensorData = lj92.data;
-                sensorWidth = lj92.width;
-                sensorHeight = lj92.height;
-                sensorBpp = lj92.bpp;
-              } else {
-                sensorData =
-                  bpp > 8
-                    ? new Uint16Array(
-                        strip.buffer,
-                        strip.byteOffset,
-                        Math.min(width * height, Math.floor(strip.length / 2))
-                      )
-                    : new Uint8Array(strip.buffer, strip.byteOffset, Math.min(width * height, strip.length));
-              }
-            } else {
-              sensorData =
-                bpp > 8
-                  ? new Uint16Array(
-                      strip.buffer,
-                      strip.byteOffset,
-                      Math.min(width * height, Math.floor(strip.length / 2))
-                    )
-                  : new Uint8Array(strip.buffer, strip.byteOffset, Math.min(width * height, strip.length));
-            }
+            const decoded = decodeSensorChunk(buffer.subarray(stripOffset, end), width, height);
+            sensorData = decoded.data;
+            sensorWidth = decoded.width || width;
+            sensorHeight = decoded.height || height;
+            sensorBpp = decoded.bpp;
           } else {
             // Multi-strip sensor assembly
             const assembled = bpp > 8 ? new Uint16Array(width * height) : new Uint8Array(width * height);
@@ -1038,33 +1013,15 @@ export function decodeRawBayerSensor(
                 width * rowsPerStrip * bytesPerPixel;
               const end = Math.min(buffer.length, sOff + sBytes);
               if (sOff >= end) continue;
-              const strip = buffer.subarray(sOff, end);
 
-              let stripData: Uint16Array | Uint8Array;
-              let stripRows = Math.min(rowsPerStrip, height - currentRow);
+              const stripRows = Math.min(rowsPerStrip, height - currentRow);
+              const decoded = decodeSensorChunk(buffer.subarray(sOff, end), width, stripRows);
+              const actualRows = decoded.height || stripRows;
+              sensorBpp = decoded.bpp;
 
-              if (strip.length >= 4 && strip[0] === 0xff && strip[1] === 0xd8) {
-                const lj92 = decodeLosslessJpegStrip(strip);
-                if (lj92) {
-                  stripData = lj92.data;
-                  stripRows = lj92.height;
-                  sensorBpp = lj92.bpp;
-                } else {
-                  stripData =
-                    bpp > 8
-                      ? new Uint16Array(strip.buffer, strip.byteOffset, Math.floor(strip.length / 2))
-                      : new Uint8Array(strip.buffer, strip.byteOffset, strip.length);
-                }
-              } else {
-                stripData =
-                  bpp > 8
-                    ? new Uint16Array(strip.buffer, strip.byteOffset, Math.floor(strip.length / 2))
-                    : new Uint8Array(strip.buffer, strip.byteOffset, strip.length);
-              }
-
-              const copyPixels = Math.min(stripRows * width, (height - currentRow) * width, stripData.length);
-              assembled.set(stripData.subarray(0, copyPixels), currentRow * width);
-              currentRow += stripRows;
+              const copyPixels = Math.min(actualRows * width, (height - currentRow) * width, decoded.data.length);
+              assembled.set(decoded.data.subarray(0, copyPixels), currentRow * width);
+              currentRow += actualRows;
             }
             sensorData = assembled;
           }
