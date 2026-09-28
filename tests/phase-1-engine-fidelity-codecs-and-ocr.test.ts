@@ -170,6 +170,12 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       const cmapWinAnsi = createWinAnsiToUnicodeCMap();
       expect(cmapWinAnsi).toContain('/CMapName /WinAnsi-ToUnicode def');
       expect(cmapWinAnsi).toContain('<00> <FF>');
+
+      // Astral code points (> 0xFFFF, e.g. U+20BB7) decomposed into 4-hex surrogate CIDs
+      const cmapAstral = createToUnicodeCMap([0x20bb7]);
+      expect(cmapAstral).toContain('2 beginbfchar');
+      expect(cmapAstral).toContain('<D842> <D842>');
+      expect(cmapAstral).toContain('<DFB7> <DFB7>');
     });
 
     it('injects Type 0 CIDFont with /ToUnicode CMap ensuring 100% CJK text extraction in PDF viewers', async () => {
