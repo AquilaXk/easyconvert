@@ -230,16 +230,24 @@ export class WebhookDispatcher {
         }
       } catch (err: unknown) {
         const attemptDuration = Date.now() - attemptStart;
+        const causeMsg = (err as any)?.cause?.message || ((err as any)?.cause ? String((err as any).cause) : '');
         const errMsg = err instanceof Error ? err.message : String(err);
+        const fullError = causeMsg ? `${errMsg}: ${causeMsg}` : errMsg;
         attempts.push({
           attemptNumber: attempt,
           timestamp: Date.now(),
-          error: errMsg,
+          error: fullError,
           durationMs: attemptDuration,
         });
 
-        // Fast-fail if blocked by SSRF agent during connection lookup
-        if (errMsg.includes('SSRF blocked') || errMsg.includes('restricted')) {
+        // Fast-fail if blocked by SSRF agent during connection lookup or DNS rebinding
+        if (
+          fullError.includes('SSRF blocked') ||
+          fullError.includes('restricted') ||
+          errMsg.includes('SSRF blocked') ||
+          causeMsg.includes('SSRF blocked') ||
+          causeMsg.includes('restricted')
+        ) {
           finalStatusCode = 403;
           break;
         }

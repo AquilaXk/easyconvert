@@ -383,10 +383,23 @@ export function resolveSandboxedCommand(
 
 /**
  * Terminates a process group using negative PID signal delivery on POSIX systems,
- * falling back to single-process termination. Prevents orphan/zombie child processes (e.g. soffice.bin).
+ * or taskkill /T /F on Windows, preventing orphan/zombie child processes (e.g. soffice.bin).
  */
 export function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals = 'SIGKILL'): void {
-  if (!pid) return;
+  if (!pid || typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0) return;
+
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' });
+      return;
+    } catch {
+      try {
+        process.kill(pid, signal);
+      } catch {}
+      return;
+    }
+  }
+
   try {
     process.kill(-pid, signal);
   } catch {

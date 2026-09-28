@@ -33,18 +33,22 @@ export function isScopeAllowed(grantedScopes?: string[], requiredScope?: string)
   if (grantedScopes.includes('*')) return true;
   if (grantedScopes.includes(requiredScope)) return true;
 
-  // Hierarchical wildcard support: e.g. 'jobs:*' covers 'jobs:read' and 'jobs:write'
+  // Resource-level match: e.g. granted 'jobs' or 'jobs:*' covers 'jobs:read' and 'jobs:write'
   const colonIndex = requiredScope.indexOf(':');
   if (colonIndex > 0) {
-    const parentScope = requiredScope.substring(0, colonIndex) + ':*';
-    if (grantedScopes.includes(parentScope)) return true;
+    const parentPrefix = requiredScope.substring(0, colonIndex);
+    if (grantedScopes.includes(parentPrefix) || grantedScopes.includes(`${parentPrefix}:*`)) {
+      return true;
+    }
   }
 
   // Cross-compatibility mappings
-  if (requiredScope === 'convert' && (grantedScopes.includes('convert:write') || grantedScopes.includes('convert:read'))) {
+  // 1. 'convert' umbrella scope allows submitting and polling conversion jobs
+  if ((requiredScope === 'jobs:write' || requiredScope === 'jobs:read') && grantedScopes.includes('convert')) {
     return true;
   }
-  if (requiredScope === 'jobs:write' && grantedScopes.includes('convert')) {
+  // 2. 'convert:write' or 'convert:*' allows 'convert'
+  if (requiredScope === 'convert' && (grantedScopes.includes('convert:write') || grantedScopes.includes('convert:*'))) {
     return true;
   }
 
@@ -90,13 +94,6 @@ async function checkQuotaAndReserve(
   }
 
   const quota = await redisKeyStore.getQuotaUsage(userId);
-  if (quota.remaining <= 0) {
-    return {
-      allowed: false,
-      error: `Daily conversion quota exceeded for tier '${tier}'.`,
-      remaining: 0,
-    };
-  }
   return {
     allowed: true,
     remaining: quota.remaining,

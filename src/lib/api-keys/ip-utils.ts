@@ -12,17 +12,20 @@ export function normalizeIp(ip: string): string {
   if (bracketMatch) {
     clean = bracketMatch[1];
   } else {
-    // Strip trailing port from IPv4, e.g. 192.168.1.1:8080
-    const portMatch = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/);
+    // Strip trailing port from IPv4 or unbracketed IPv4-mapped IPv6, e.g. 192.168.1.1:8080 or ::ffff:192.168.1.1:8080
+    const portMatch = clean.match(/^(.+?):(\d+)$/);
     if (portMatch) {
-      clean = portMatch[1];
+      const hostPart = portMatch[1];
+      if (net.isIPv4(hostPart) || /^(?:::ffff:|0:0:0:0:0:ffff:)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/i.test(hostPart)) {
+        clean = hostPart;
+      }
     }
   }
 
   // Handle IPv4-mapped IPv6 addresses: ::ffff:192.168.1.1 or 0:0:0:0:0:ffff:192.168.1.1
   const lower = clean.toLowerCase();
   if (lower.startsWith('::ffff:') || lower.startsWith('0:0:0:0:0:ffff:')) {
-    const candidate = lower.replace(/^.*ffff:/, '');
+    const candidate = lower.replace(/^.*ffff:/, '').replace(/:\d+$/, '');
     if (net.isIPv4(candidate)) {
       return candidate;
     }
@@ -154,12 +157,24 @@ export function extractClientIp(request: Request): string {
     if (net.isIP(normalized) !== 0) return normalized;
   }
 
-  // 3. Forwarded proxy chain (take leftmost client IP)
+  // 3. RFC 7239 standard Forwarded header (e.g. for=192.0.2.60 or for="[::ffff:192.0.2.60]")
+  const forwardedStandard = request.headers.get('forwarded');
+  if (forwardedStandard) {
+    const match = forwardedStandard.match(/for=(?:"?\[?([a-fA-F0-9:.]+)(?:\](?::\d+)?)?"?)/i);
+    if (match) {
+      const normalized = normalizeIp(match[1]);
+      if (net.isIP(normalized) !== 0) return normalized;
+    }
+  }
+
+  // 4. Forwarded proxy chain (take leftmost valid client IP)
   const forwarded = request.headers.get('x-forwarded-for');
   if (forwarded) {
-    const leftmost = forwarded.split(',')[0].trim();
-    const normalized = normalizeIp(leftmost);
-    if (net.isIP(normalized) !== 0) return normalized;
+    const parts = forwarded.split(',');
+    for (const part of parts) {
+      const normalized = normalizeIp(part.trim());
+      if (net.isIP(normalized) !== 0) return normalized;
+    }
   }
 
   return '127.0.0.1';

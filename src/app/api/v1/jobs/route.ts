@@ -6,6 +6,7 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { ConversionOptions, JobStatus } from '@/lib/types';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { validateUrlForSsrf } from '@/lib/security/ssrf';
 
 export const dynamic = 'force-dynamic';
 
@@ -145,6 +146,21 @@ export async function POST(req: NextRequest) {
     // Fall back to API Key configured webhook URL/Secret if not overridden in request
     const effectiveWebhookUrl = webhookUrl || auth.apiKey?.webhookUrl;
     const effectiveWebhookSecret = webhookSecret || auth.apiKey?.webhookSecret;
+
+    if (effectiveWebhookUrl) {
+      try {
+        const parsedWebhook = new URL(effectiveWebhookUrl);
+        if (parsedWebhook.protocol !== 'http:' && parsedWebhook.protocol !== 'https:') {
+          return failWithRollback(400, `Unsupported webhook protocol: ${parsedWebhook.protocol}`);
+        }
+        const isSafe = await validateUrlForSsrf(parsedWebhook);
+        if (!isSafe) {
+          return failWithRollback(400, 'Webhook URL points to a restricted IP address or host.');
+        }
+      } catch {
+        return failWithRollback(400, 'Invalid webhookUrl provided.');
+      }
+    }
 
     // Enqueue conversion job to BullMQ queue
     const job = await conversionQueue.add(
