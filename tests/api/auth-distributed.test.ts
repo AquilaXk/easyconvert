@@ -232,6 +232,106 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       expect(data.success).toBe(true);
       expect(data.jobId).toBeDefined();
     });
+
+    it('fails closed (400 Bad Request) when storageKey does not exist in storage', async () => {
+      const user = await redisUserStore.createUser({
+        email: 'queue-missing-storage@example.com',
+        name: 'Missing Storage User',
+        tier: 'pro',
+      });
+      const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key Missing', {
+        scopes: ['convert:write'],
+      });
+
+      const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          originalFilename: 'data.txt',
+          sourceFormat: 'txt',
+          targetFormat: 'pdf',
+          storageKey: 'non_existent_storage_key_99999',
+        }),
+      });
+
+      const res = await jobsPostHandler(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.title || data.error || data.detail).toMatch(/not found/i);
+    });
+
+    it('fails closed (400 Bad Request) when storageKey points to a spoofed file', async () => {
+      const user = await redisUserStore.createUser({
+        email: 'queue-spoofed-storage@example.com',
+        name: 'Spoofed Storage User',
+        tier: 'pro',
+      });
+      const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key Spoofed Store', {
+        scopes: ['convert:write'],
+      });
+
+      // Save an ELF binary under a .docx storage key
+      const key = `uploads/test_spoof_${Date.now()}_doc.docx`;
+      const elfBytes = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]);
+      storageProvider.saveObject(key, elfBytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'doc.docx');
+
+      const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          originalFilename: 'doc.docx',
+          sourceFormat: 'docx',
+          targetFormat: 'pdf',
+          storageKey: key,
+        }),
+      });
+
+      const res = await jobsPostHandler(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.title || data.error || data.detail).toMatch(/spoof|invalid/i);
+    });
+
+    it('enqueues authentic storageKey job successfully without memory bloat', async () => {
+      const user = await redisUserStore.createUser({
+        email: 'queue-storage-success@example.com',
+        name: 'Storage Success User',
+        tier: 'pro',
+      });
+      const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key Storage Ok', {
+        scopes: ['convert:write'],
+      });
+
+      const key = `uploads/valid_${Date.now()}_file.txt`;
+      const validText = Buffer.from('Plain text valid document body in object storage');
+      storageProvider.saveObject(key, validText, 'text/plain', 'file.txt');
+
+      const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          originalFilename: 'file.txt',
+          sourceFormat: 'txt',
+          targetFormat: 'pdf',
+          storageKey: key,
+        }),
+      });
+
+      const res = await jobsPostHandler(req);
+      expect(res.status).toBe(202);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.jobId).toBeDefined();
+    });
   });
 
   describe('3. Worker Engine Dispatcher Magic Byte Guard', () => {

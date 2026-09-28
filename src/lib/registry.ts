@@ -1,4 +1,4 @@
-import { FormatCategory, FormatDefinition, ConversionFailedError } from './types';
+import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
   // ==========================================
@@ -3399,12 +3399,7 @@ export function isFormatCompatibleWithMagicBytes(
 /**
  * Custom error thrown when input file extension or declared format mismatches initial magic bytes.
  */
-export class FileExtensionSpoofError extends ConversionFailedError {
-  constructor(message: string) {
-    super(message);
-    this.name = 'FileExtensionSpoofError';
-  }
-}
+export { FileExtensionSpoofError };
 
 /**
  * Asserts fail-closed that the buffer's initial magic bytes match the declared format.
@@ -3426,3 +3421,5 @@ export function assertNotSpoofedFile(
     );
   }
 }
+
+

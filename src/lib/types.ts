@@ -230,3 +230,10 @@ export class ConversionFailedError extends Error {
   }
 }
 
+export class FileExtensionSpoofError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FileExtensionSpoofError';
+  }
+}
+

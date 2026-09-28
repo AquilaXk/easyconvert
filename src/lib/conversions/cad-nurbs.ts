@@ -1952,7 +1952,7 @@ export function tessellateTrimmedFaceCDT(
 
           for (let tIdx = 0; tIdx < finalTriangles.length; tIdx++) {
             const [v0, v1, v2] = finalTriangles[tIdx];
-            if (spIdx === v0 || spIdx === v1 || spIdx === v2) break;
+            if (spIdx === v0 || spIdx === v1 || spIdx === v2) continue;
 
             const p0 = uniqueParametricPoints[v0];
             const p1 = uniqueParametricPoints[v1];
@@ -2016,6 +2016,7 @@ export function tessellateTrimmedFaceCDT(
               } else {
                 finalTriangles.splice(tIdx, 1, ...newTris);
               }
+              pointInserted = true;
               break;
             }
           }
