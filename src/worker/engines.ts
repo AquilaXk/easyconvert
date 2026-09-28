@@ -10,6 +10,7 @@ import {
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import { executeSandboxedBinary } from './sandbox';
+import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 import { LibreOfficePoolManager } from './libreoffice-pool';
 
 export interface WorkerEngineOptions extends ConversionOptions {
@@ -348,16 +349,25 @@ export async function convertWithNative7z(
 
     // Step 1: Extract if source is an archive container, otherwise place single file into extract directory
     if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
-      await executeSandboxedBinary(
-        p7zBin,
-        ['x', '-y', `-o${extractDir}`, inputPath],
-        {
-          cwd: tempDir,
+      if (options.archiveParts && options.archiveParts.length > 0) {
+        // Multi-volume split archive extraction via Virtual Spanned Stream pipeline
+        await extractWithSpannedStream7z(options.archiveParts as any, extractDir, {
           timeoutMs: timeout,
           maxBuffer,
-          networkIsolated: true,
-        }
-      );
+          password: options.password,
+        });
+      } else {
+        await executeSandboxedBinary(
+          p7zBin,
+          ['x', '-y', `-o${extractDir}`, inputPath],
+          {
+            cwd: tempDir,
+            timeoutMs: timeout,
+            maxBuffer,
+            networkIsolated: true,
+          }
+        );
+      }
     } else {
       const destPath = path.join(extractDir, originalFilename || `file.${src}`);
       fs.writeFileSync(destPath, inputBuffer);
