@@ -230,6 +230,201 @@ END-ISO-10303-21;
       expect(report.nonManifoldEdges).toBe(0);
       expect(report.eulerCharacteristic).toBe(1); // 4 - 5 + 2 = 1
     });
+
+    it('correctly cuts out inner holes and preserves true surface area in STEP B-Rep faces', () => {
+      // ADVANCED_FACE with outer square bound [0, 10] x [0, 10] and inner square hole [2, 8] x [2, 8]
+      const stepWithHole = `ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('STEP Face with Inner Hole'),'2;1');
+FILE_NAME('face_hole.step','2026-09-28T00:00:00','','','EasyConvert','','');
+FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
+ENDSEC;
+DATA;
+/* Outer 10x10 vertices */
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#4 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#11 = VERTEX_POINT('', #1);
+#12 = VERTEX_POINT('', #2);
+#13 = VERTEX_POINT('', #3);
+#14 = VERTEX_POINT('', #4);
+#21 = EDGE_CURVE('', #11, #12, .T.);
+#22 = EDGE_CURVE('', #12, #13, .T.);
+#23 = EDGE_CURVE('', #13, #14, .T.);
+#24 = EDGE_CURVE('', #14, #11, .T.);
+#41 = EDGE_LOOP('', (#21, #22, #23, #24));
+#51 = FACE_OUTER_BOUND('', #41, .T.);
+
+/* Inner 6x6 hole vertices */
+#5 = CARTESIAN_POINT('', (2.0, 2.0, 0.0));
+#6 = CARTESIAN_POINT('', (8.0, 2.0, 0.0));
+#7 = CARTESIAN_POINT('', (8.0, 8.0, 0.0));
+#8 = CARTESIAN_POINT('', (2.0, 8.0, 0.0));
+#15 = VERTEX_POINT('', #5);
+#16 = VERTEX_POINT('', #6);
+#17 = VERTEX_POINT('', #7);
+#18 = VERTEX_POINT('', #8);
+#25 = EDGE_CURVE('', #15, #16, .T.);
+#26 = EDGE_CURVE('', #16, #17, .T.);
+#27 = EDGE_CURVE('', #17, #18, .T.);
+#28 = EDGE_CURVE('', #18, #15, .T.);
+#42 = EDGE_LOOP('', (#25, #26, #27, #28));
+#52 = FACE_BOUND('', #42, .T.);
+
+#61 = ADVANCED_FACE('', (#51, #52));
+ENDSEC;
+END-ISO-10303-21;
+`;
+
+      const entityMap = parseStepEntities(stepWithHole);
+      const mesh = extractStepBRepMesh(entityMap, 'face_with_hole');
+      expect(mesh).not.toBeNull();
+      if (!mesh) return;
+
+      // Calculate total 3D surface area of generated triangles
+      let totalArea = 0;
+      for (const [v0, v1, v2] of mesh.faces) {
+        const p0 = mesh.vertices[v0];
+        const p1 = mesh.vertices[v1];
+        const p2 = mesh.vertices[v2];
+        const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2];
+        const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
+        const cx = ay * bz - az * by;
+        const cy = az * bx - ax * bz;
+        const cz = ax * by - ay * bx;
+        const triArea = 0.5 * Math.hypot(cx, cy, cz);
+        totalArea += triArea;
+
+        // Centroid of every triangle must be outside the hole (2..8, 2..8)
+        const midX = (p0[0] + p1[0] + p2[0]) / 3;
+        const midY = (p0[1] + p1[1] + p2[1]) / 3;
+        const isInsideHole = midX > 2.01 && midX < 7.99 && midY > 2.01 && midY < 7.99;
+        expect(isInsideHole).toBe(false);
+      }
+
+      // Expected area = 10x10 - 6x6 = 100 - 36 = 64
+      expect(totalArea).toBeCloseTo(64.0, 4);
+    });
+
+    it('detects non-manifold edges, non-manifold vertices (pinched pinch-points), and degenerate faces', () => {
+      // 1. T-junction (3 triangles sharing one edge)
+      const tJunctionVertices: [number, number, number][] = [
+        [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1],
+      ];
+      const tJunctionFaces: [number, number, number][] = [
+        [0, 1, 2],
+        [0, 1, 3],
+        [0, 1, 4],
+      ];
+      const reportTJunction = verifyWatertightManifoldMesh(tJunctionVertices, tJunctionFaces);
+      expect(reportTJunction.isManifold).toBe(false);
+      expect(reportTJunction.nonManifoldEdges).toBeGreaterThan(0);
+
+      // 2. Pinched non-manifold vertex (two tetrahedra meeting at a single shared apex vertex [0, 0, 0])
+      const hourglassVertices: [number, number, number][] = [
+        // Apex vertex 0
+        [0, 0, 0],
+        // Pyramid 1 base (Z = -1)
+        [-1, -1, -1], [1, -1, -1], [0, 1, -1],
+        // Pyramid 2 base (Z = 1)
+        [-1, -1, 1], [1, -1, 1], [0, 1, 1],
+      ];
+      const hourglassFaces: [number, number, number][] = [
+        // Tetrahedron 1: base + 3 sides
+        [1, 2, 3],
+        [0, 2, 1], [0, 3, 2], [0, 1, 3],
+        // Tetrahedron 2: base + 3 sides
+        [4, 6, 5],
+        [0, 4, 5], [0, 5, 6], [0, 6, 4],
+      ];
+      const reportHourglass = verifyWatertightManifoldMesh(hourglassVertices, hourglassFaces);
+      expect(reportHourglass.isManifold).toBe(false);
+
+      // 3. Degenerate face with collapsed edge [0, 1, 1]
+      const degenerateVertices: [number, number, number][] = [
+        [0, 0, 0], [1, 0, 0], [0, 1, 0],
+      ];
+      const degenerateFaces: [number, number, number][] = [
+        [0, 1, 1],
+      ];
+      const reportDegenerate = verifyWatertightManifoldMesh(degenerateVertices, degenerateFaces);
+      expect(reportDegenerate.isManifold).toBe(false);
+      expect(reportDegenerate.hasDegenerateFace).toBe(true);
+    });
+
+    it('orients normals independently per connected component for multi-body disconnected solids', () => {
+      // Helper to generate a cube mesh with specified offset and winding
+      const makeCube = (offsetX: number, invertWinding: boolean): { vertices: [number, number, number][]; faces: [number, number, number][] } => {
+        const v: [number, number, number][] = [
+          [offsetX + 0, 0, 0], [offsetX + 2, 0, 0], [offsetX + 2, 2, 0], [offsetX + 0, 2, 0],
+          [offsetX + 0, 0, 2], [offsetX + 2, 0, 2], [offsetX + 2, 2, 2], [offsetX + 0, 2, 2],
+        ];
+        let f: [number, number, number][] = [
+          // bottom
+          [0, 2, 1], [0, 3, 2],
+          // top
+          [4, 5, 6], [4, 6, 7],
+          // front
+          [0, 1, 5], [0, 5, 4],
+          // back
+          [2, 3, 7], [2, 7, 6],
+          // left
+          [3, 0, 4], [3, 4, 7],
+          // right
+          [1, 2, 6], [1, 6, 5],
+        ];
+        if (invertWinding) {
+          f = f.map(([v0, v1, v2]) => [v0, v2, v1]);
+        }
+        return { vertices: v, faces: f };
+      };
+
+      // Cube 1: at X = 0, outward oriented (positive volume = 8)
+      const c1 = makeCube(0, false);
+      // Cube 2: at X = 10, inward oriented (inverted winding -> negative volume = -8)
+      const c2 = makeCube(10, true);
+
+      // Combine both into one disjoint mesh
+      const combinedVertices: [number, number, number][] = [...c1.vertices, ...c2.vertices];
+      const combinedFaces: [number, number, number][] = [
+        ...c1.faces,
+        ...c2.faces.map(([a, b, c]) => [a + 8, b + 8, c + 8] as [number, number, number]),
+      ];
+
+      const multiMesh: TessellatedMesh = {
+        name: 'multi_cube',
+        vertices: combinedVertices,
+        normals: combinedVertices.map(() => [0, 0, 1]),
+        faces: combinedFaces,
+      };
+
+      const glued = glueBRepTopologicalEdges(multiMesh, { epsilon: 1e-6, enforceOrientedManifold: true });
+
+      // Calculate signed volume of each component
+      const volOfComponent = (faceIndices: number[]): number => {
+        let vol = 0;
+        for (const fIdx of faceIndices) {
+          const [v0, v1, v2] = glued.faces[fIdx];
+          const p0 = glued.vertices[v0];
+          const p1 = glued.vertices[v1];
+          const p2 = glued.vertices[v2];
+          const crossX = p1[1] * p2[2] - p1[2] * p2[1];
+          const crossY = p1[2] * p2[0] - p1[0] * p2[2];
+          const crossZ = p1[0] * p2[1] - p1[1] * p2[0];
+          vol += (p0[0] * crossX + p0[1] * crossY + p0[2] * crossZ) / 6;
+        }
+        return vol;
+      };
+
+      // Faces 0..11 belong to Cube 1, 12..23 belong to Cube 2
+      const vol1 = volOfComponent(Array.from({ length: 12 }, (_, i) => i));
+      const vol2 = volOfComponent(Array.from({ length: 12 }, (_, i) => i + 12));
+
+      // Both cubes must have POSITIVE signed volume (outward pointing normals)
+      expect(vol1).toBeCloseTo(8.0, 3);
+      expect(vol2).toBeCloseTo(8.0, 3);
+    });
   });
 
   // ==========================================================================
@@ -473,6 +668,59 @@ END-ISO-10303-21;
       // Zipper oscillation along a uniform vertical edge must be minimal (< 10 levels)
       expect(maxZipperDelta).toBeLessThan(10);
     });
+
+    it('preserves boundary CFA parity without channel cross-bleed at frame borders', () => {
+      // Create an 8x8 RGGB pattern with uniform pure colors:
+      // Red sensors = 200, Green sensors = 100, Blue sensors = 50
+      const width = 8;
+      const height = 8;
+      const bayer = new Uint8Array(width * height);
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const isRed = (y % 2 === 0) && (x % 2 === 0);
+          const isBlue = (y % 2 === 1) && (x % 2 === 1);
+          if (isRed) {
+            bayer[y * width + x] = 200;
+          } else if (isBlue) {
+            bayer[y * width + x] = 50;
+          } else {
+            bayer[y * width + x] = 100;
+          }
+        }
+      }
+
+      const sensor: BayerSensorData = {
+        width,
+        height,
+        pattern: 'RGGB',
+        data: bayer,
+      };
+
+      const result = demosaicAmazeBayerCfa(sensor);
+
+      // Check corner pixel (0, 0): top-left corner
+      // Before fix: clamp(-1) flipped parity causing G to blend with R -> G was ~150, B was ~131
+      // After fix: parity-preserving reflection keeps R = 200, G = 100, B = 50
+      const idx00 = 0;
+      const r0 = result.data[idx00];
+      const g0 = result.data[idx00 + 1];
+      const b0 = result.data[idx00 + 2];
+
+      expect(r0).toBe(200);
+      expect(Math.abs(g0 - 100)).toBeLessThanOrEqual(2);
+      expect(Math.abs(b0 - 50)).toBeLessThanOrEqual(2);
+
+      // Check bottom-right corner (7, 7) (blue pixel)
+      const idx77 = (7 * width + 7) * 3;
+      const r7 = result.data[idx77];
+      const g7 = result.data[idx77 + 1];
+      const b7 = result.data[idx77 + 2];
+
+      expect(b7).toBe(50);
+      expect(Math.abs(g7 - 100)).toBeLessThanOrEqual(2);
+      expect(Math.abs(r7 - 200)).toBeLessThanOrEqual(2);
+    });
   });
 
   // ==========================================================================
@@ -583,6 +831,45 @@ END-ISO-10303-21;
       const rD65 = resultD65.data[midIdx];
       const bD65 = resultD65.data[midIdx + 2];
       expect(bD65).toBeGreaterThan(rD65);
+    });
+
+    it('safely handles NaN CCT, single colorMatrix1, and validates buffer dimensions', () => {
+      // 1. NaN CCT input defaults to Standard Illuminant D65 matrix without producing NaN
+      const matNan = interpolateDualIlluminantColorMatrix(Number.NaN);
+      for (let i = 0; i < 9; i++) {
+        expect(Number.isFinite(matNan[i])).toBe(true);
+        expect(matNan[i]).toBeCloseTo(DEFAULT_D65_COLOR_MATRIX[i], 5);
+      }
+
+      // 2. Single colorMatrix1 provided (no colorMatrix2): returns colorMatrix1
+      const singleMatrix: [number, number, number, number, number, number, number, number, number] = [
+        1.1, 0.2, 0.3,
+        0.4, 1.2, 0.5,
+        0.6, 0.7, 1.3,
+      ];
+      const matSingle = interpolateDualIlluminantColorMatrix(3000, singleMatrix);
+      for (let i = 0; i < 9; i++) {
+        expect(matSingle[i]).toBeCloseTo(singleMatrix[i], 5);
+      }
+
+      // 3. Buffer dimension non-parity and buffer underflow fail closed
+      expect(() => {
+        demosaicAmazeBayerCfa({
+          width: 5, // Odd width is invalid for 2x2 Bayer CFA
+          height: 4,
+          pattern: 'RGGB',
+          data: new Uint8Array(20),
+        });
+      }).toThrow();
+
+      expect(() => {
+        demosaicAmazeBayerCfa({
+          width: 4,
+          height: 4,
+          pattern: 'RGGB',
+          data: new Uint8Array(10), // Underflow: 10 < 16
+        });
+      }).toThrow();
     });
   });
 });

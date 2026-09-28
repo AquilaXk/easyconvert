@@ -328,10 +328,17 @@ export const DEFAULT_D65_COLOR_MATRIX: [number, number, number, number, number, 
  */
 export function interpolateDualIlluminantColorMatrix(
   cctKelvin: number,
-  matrixA: [number, number, number, number, number, number, number, number, number] = STANDARD_ILLUMINANT_A_COLOR_MATRIX,
-  matrixD65: [number, number, number, number, number, number, number, number, number] = DEFAULT_D65_COLOR_MATRIX
+  matrixA?: [number, number, number, number, number, number, number, number, number],
+  matrixD65?: [number, number, number, number, number, number, number, number, number]
 ): [number, number, number, number, number, number, number, number, number] {
-  const clampedCct = Math.max(1000, Math.min(25000, cctKelvin));
+  if (matrixA && !matrixD65) {
+    return [...matrixA];
+  }
+  const matA = matrixA ?? STANDARD_ILLUMINANT_A_COLOR_MATRIX;
+  const matD65 = matrixD65 ?? DEFAULT_D65_COLOR_MATRIX;
+
+  const safeCct = typeof cctKelvin === 'number' && Number.isFinite(cctKelvin) && cctKelvin > 0 ? cctKelvin : STANDARD_ILLUMINANT_D65_CCT;
+  const clampedCct = Math.max(1000, Math.min(25000, safeCct));
   const miredTarget = 1000000 / clampedCct;
   const miredA = 1000000 / STANDARD_ILLUMINANT_A_CCT;     // ~350.14 Mired
   const miredD65 = 1000000 / STANDARD_ILLUMINANT_D65_CCT; // ~153.75 Mired
@@ -342,20 +349,21 @@ export function interpolateDualIlluminantColorMatrix(
   } else if (miredTarget <= miredD65) {
     weightA = 0.0;
   } else {
-    weightA = (miredTarget - miredD65) / (miredA - miredD65);
+    const denom = miredA - miredD65;
+    weightA = Math.abs(denom) > 1e-6 ? (miredTarget - miredD65) / denom : 0.5;
   }
   const weightD65 = 1.0 - weightA;
 
   return [
-    weightA * matrixA[0] + weightD65 * matrixD65[0],
-    weightA * matrixA[1] + weightD65 * matrixD65[1],
-    weightA * matrixA[2] + weightD65 * matrixD65[2],
-    weightA * matrixA[3] + weightD65 * matrixD65[3],
-    weightA * matrixA[4] + weightD65 * matrixD65[4],
-    weightA * matrixA[5] + weightD65 * matrixD65[5],
-    weightA * matrixA[6] + weightD65 * matrixD65[6],
-    weightA * matrixA[7] + weightD65 * matrixD65[7],
-    weightA * matrixA[8] + weightD65 * matrixD65[8],
+    weightA * matA[0] + weightD65 * matD65[0],
+    weightA * matA[1] + weightD65 * matD65[1],
+    weightA * matA[2] + weightD65 * matD65[2],
+    weightA * matA[3] + weightD65 * matD65[3],
+    weightA * matA[4] + weightD65 * matD65[4],
+    weightA * matA[5] + weightD65 * matD65[5],
+    weightA * matA[6] + weightD65 * matD65[6],
+    weightA * matA[7] + weightD65 * matD65[7],
+    weightA * matA[8] + weightD65 * matD65[8],
   ];
 }
 
@@ -364,8 +372,15 @@ export function interpolateDualIlluminantColorMatrix(
  * [rGain, gGain, bGain] using reciprocal temperature (Mired) gain mapping.
  */
 export function estimateCctFromWhiteBalance(wb: [number, number, number]): number {
-  const [rGain, , bGain] = wb;
-  const ratio = (bGain || 1.0) / (rGain || 1.0);
+  if (!Array.isArray(wb) || wb.length < 3) {
+    return 5500;
+  }
+  const [rGain, gGain, bGain] = wb;
+  const r = typeof rGain === 'number' && !isNaN(rGain) && rGain > 0 ? rGain : 1.0;
+  const g = typeof gGain === 'number' && !isNaN(gGain) && gGain > 0 ? gGain : 1.0;
+  const b = typeof bGain === 'number' && !isNaN(bGain) && bGain > 0 ? bGain : 1.0;
+
+  const ratio = (b / g) / (r / g);
   const mired = 350.14 - ((ratio - 2.0) / (0.7 - 2.0)) * (350.14 - 153.75);
   const cct = 1000000 / Math.max(80, Math.min(500, mired));
   return Math.round(Math.max(2000, Math.min(12000, cct)));
@@ -408,8 +423,14 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
   height: number;
 } {
   const { width, height, pattern, data, whiteBalance, colorMatrix, applySrgbGamma } = sensor;
-  if (width < 2 || height < 2) {
-    throw new Error(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 required.`);
+  if (width < 2 || height < 2 || (width & 1) !== 0 || (height & 1) !== 0) {
+    throw new Error(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 with even dimensions required.`);
+  }
+  if (!['RGGB', 'BGGR', 'GRBG', 'GBRG'].includes(pattern)) {
+    throw new Error(`Unsupported Bayer CFA pattern: '${pattern}'. Expected RGGB, BGGR, GRBG, or GBRG.`);
+  }
+  if (!data || data.length < width * height) {
+    throw new Error(`Bayer sensor buffer underflow: expected at least ${width * height} samples, got ${data ? data.length : 0}.`);
   }
 
   // Determine normalization factor
@@ -440,9 +461,19 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     norm[i] = ((clamped - bLevel) / range) * 255;
   }
 
-  const clampX = (x: number) => (x < 0 ? 0 : x >= width ? width - 1 : x);
-  const clampY = (y: number) => (y < 0 ? 0 : y >= height ? height - 1 : y);
-  const getPixel = (x: number, y: number) => norm[clampY(y) * width + clampX(x)];
+  // Parity-preserving symmetric reflection: for even dimensions, (mirrorCoord(c, max) & 1) === (c & 1)
+  const mirrorCoord = (v: number, max: number): number => {
+    if (max <= 1) return 0;
+    while (v < 0 || v >= max) {
+      if (v < 0) {
+        v = -v;
+      } else if (v >= max) {
+        v = 2 * (max - 1) - v;
+      }
+    }
+    return v;
+  };
+  const getPixel = (x: number, y: number) => norm[mirrorCoord(y, height) * width + mirrorCoord(x, width)];
 
   const getCfaChannel = (x: number, y: number): 'R' | 'G1' | 'G2' | 'B' => {
     const rx = x & 1;
@@ -501,9 +532,9 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
       let homV = 0;
 
       for (let dy = -2; dy <= 2; dy++) {
-        const ny = clampY(y + dy);
+        const ny = mirrorCoord(y + dy, height);
         for (let dx = -2; dx <= 2; dx++) {
-          const nx = clampX(x + dx);
+          const nx = mirrorCoord(x + dx, width);
           const nPix = getPixel(nx, ny);
           const nGh = ghEst[ny * width + nx];
           const nGv = gvEst[ny * width + nx];
@@ -550,7 +581,10 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     }
   }
 
-  // Interpolate missing color differences
+  // Interpolate missing color differences without in-place clobbering
+  const interpRedDiff = new Float32Array(redDiff);
+  const interpBlueDiff = new Float32Array(blueDiff);
+
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const ch = getCfaChannel(x, y);
@@ -559,19 +593,19 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
       if (ch === 'B') {
         // Red is at diagonals
         const dR =
-          (redDiff[clampY(y - 1) * width + clampX(x - 1)] +
-            redDiff[clampY(y - 1) * width + clampX(x + 1)] +
-            redDiff[clampY(y + 1) * width + clampX(x - 1)] +
-            redDiff[clampY(y + 1) * width + clampX(x + 1)]) / 4;
-        redDiff[idx] = dR;
+          (redDiff[mirrorCoord(y - 1, height) * width + mirrorCoord(x - 1, width)] +
+            redDiff[mirrorCoord(y - 1, height) * width + mirrorCoord(x + 1, width)] +
+            redDiff[mirrorCoord(y + 1, height) * width + mirrorCoord(x - 1, width)] +
+            redDiff[mirrorCoord(y + 1, height) * width + mirrorCoord(x + 1, width)]) / 4;
+        interpRedDiff[idx] = dR;
       } else if (ch === 'R') {
         // Blue is at diagonals
         const dB =
-          (blueDiff[clampY(y - 1) * width + clampX(x - 1)] +
-            blueDiff[clampY(y - 1) * width + clampX(x + 1)] +
-            blueDiff[clampY(y + 1) * width + clampX(x - 1)] +
-            blueDiff[clampY(y + 1) * width + clampX(x + 1)]) / 4;
-        blueDiff[idx] = dB;
+          (blueDiff[mirrorCoord(y - 1, height) * width + mirrorCoord(x - 1, width)] +
+            blueDiff[mirrorCoord(y - 1, height) * width + mirrorCoord(x + 1, width)] +
+            blueDiff[mirrorCoord(y + 1, height) * width + mirrorCoord(x - 1, width)] +
+            blueDiff[mirrorCoord(y + 1, height) * width + mirrorCoord(x + 1, width)]) / 4;
+        interpBlueDiff[idx] = dB;
       } else {
         // Green pixels: one difference is horizontal, other is vertical
         const isRHorizontal =
@@ -581,11 +615,15 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
           ch === 'G2';
 
         if (isRHorizontal) {
-          redDiff[idx] = (redDiff[y * width + clampX(x - 1)] + redDiff[y * width + clampX(x + 1)]) / 2;
-          blueDiff[idx] = (blueDiff[clampY(y - 1) * width + x] + blueDiff[clampY(y + 1) * width + x]) / 2;
+          interpRedDiff[idx] =
+            (redDiff[y * width + mirrorCoord(x - 1, width)] + redDiff[y * width + mirrorCoord(x + 1, width)]) / 2;
+          interpBlueDiff[idx] =
+            (blueDiff[mirrorCoord(y - 1, height) * width + x] + blueDiff[mirrorCoord(y + 1, height) * width + x]) / 2;
         } else {
-          blueDiff[idx] = (blueDiff[y * width + clampX(x - 1)] + blueDiff[y * width + clampX(x + 1)]) / 2;
-          redDiff[idx] = (redDiff[clampY(y - 1) * width + x] + redDiff[clampY(y + 1) * width + x]) / 2;
+          interpBlueDiff[idx] =
+            (blueDiff[y * width + mirrorCoord(x - 1, width)] + blueDiff[y * width + mirrorCoord(x + 1, width)]) / 2;
+          interpRedDiff[idx] =
+            (redDiff[mirrorCoord(y - 1, height) * width + x] + redDiff[mirrorCoord(y + 1, height) * width + x]) / 2;
         }
       }
     }
@@ -601,12 +639,12 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     for (let x = 0; x < width; x++) {
       let count = 0;
       for (let dy = -1; dy <= 1; dy++) {
-        const ny = clampY(y + dy);
+        const ny = mirrorCoord(y + dy, height);
         for (let dx = -1; dx <= 1; dx++) {
-          const nx = clampX(x + dx);
+          const nx = mirrorCoord(x + dx, width);
           const nIdx = ny * width + nx;
-          winR[count] = redDiff[nIdx];
-          winB[count] = blueDiff[nIdx];
+          winR[count] = interpRedDiff[nIdx];
+          winB[count] = interpBlueDiff[nIdx];
           count++;
         }
       }
@@ -623,14 +661,21 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
   const gWb = whiteBalance ? whiteBalance[1] : 1.0;
   const bWb = whiteBalance ? whiteBalance[2] : 1.0;
 
-  // Resolve 3x3 color matrix: explicit, dual illuminant CCT interpolation, or default D65
+  // Resolve 3x3 color matrix: explicit, dual illuminant CCT interpolation, single matrix fallback, or default D65
   let mat: [number, number, number, number, number, number, number, number, number] | null = null;
   if (colorMatrix) {
     mat = colorMatrix;
   } else if (sensor.colorMatrix1 && sensor.colorMatrix2) {
-    const cct = sensor.cctKelvin ?? (whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500);
+    let cct = sensor.cctKelvin;
+    if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
+      cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
+    }
     mat = interpolateDualIlluminantColorMatrix(cct, sensor.colorMatrix1, sensor.colorMatrix2);
-  } else if (sensor.cctKelvin) {
+  } else if (sensor.colorMatrix1) {
+    mat = sensor.colorMatrix1;
+  } else if (sensor.colorMatrix2) {
+    mat = sensor.colorMatrix2;
+  } else if (typeof sensor.cctKelvin === 'number' && !isNaN(sensor.cctKelvin) && sensor.cctKelvin > 0) {
     mat = interpolateDualIlluminantColorMatrix(sensor.cctKelvin);
   } else if (applySrgbGamma) {
     mat = DEFAULT_D65_COLOR_MATRIX;
