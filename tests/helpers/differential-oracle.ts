@@ -129,17 +129,23 @@ export function verifyImageWithImageMagick(buffer: Buffer): boolean {
 /**
  * Validates audio container/bitstream using FFmpeg CLI when available.
  */
-export function verifyAudioWithFfmpeg(buffer: Buffer): boolean {
+export function verifyAudioWithFfmpeg(buffer: Buffer, formatHint: string = 'mp3'): boolean {
   const ffmpegPath = getOracleToolPath('ffmpeg');
   if (!ffmpegPath) return false;
+  const tmpPath = path.join(os.tmpdir(), `oracle_audio_${crypto.randomUUID()}.${formatHint}`);
   try {
-    execFileSync(ffmpegPath, ['-v', 'error', '-i', 'pipe:0', '-f', 'null', '-'], {
-      input: buffer,
-      stdio: ['pipe', 'ignore', 'pipe'],
+    fs.writeFileSync(tmpPath, buffer);
+    execFileSync(ffmpegPath, ['-v', 'error', '-i', tmpPath, '-f', 'null', '-'], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      timeout: 10000,
     });
     return true;
   } catch {
     return false;
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
   }
 }
 
@@ -2503,7 +2509,7 @@ export function checkWavIntegrity(buffer: Buffer): void {
     }
 
     if (isOracleToolAvailable('ffmpeg')) {
-      if (!verifyAudioWithFfmpeg(buffer)) {
+      if (!verifyAudioWithFfmpeg(buffer, 'wav')) {
         throw new Error('Integrity Violation: FFmpeg CLI failed to decode WAV bitstream');
       }
     }
@@ -2552,7 +2558,7 @@ export function checkFlacIntegrity(buffer: Buffer): void {
     throw new Error(`Integrity Violation: Invalid FLAC parameters (sampleRate=${sampleRate}, channels=${channels})`);
   }
   if (isOracleToolAvailable('ffmpeg') && buffer.length > 100) {
-    if (!verifyAudioWithFfmpeg(buffer)) {
+    if (!verifyAudioWithFfmpeg(buffer, 'flac')) {
       throw new Error('Integrity Violation: FFmpeg CLI failed to decode FLAC bitstream');
     }
   }
