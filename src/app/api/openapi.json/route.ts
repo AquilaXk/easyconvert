@@ -17,7 +17,7 @@ export async function GET() {
       title: 'EasyConvert Enterprise REST API',
       version: '1.0.0',
       description:
-        'Enterprise data, media, document, CAD, and RAW conversion platform with asynchronous job queues, zero-heap streaming, and HMAC-signed webhooks.',
+        'Enterprise data, media, document, CAD, and RAW conversion platform with asynchronous job queues, zero-heap streaming, dead-letter webhook queues, and granular RBAC scopes.',
       contact: {
         name: 'EasyConvert Engineering',
         url: 'https://github.com/AquilaXk/easyconvert',
@@ -42,8 +42,12 @@ export async function GET() {
         post: {
           summary: 'Synchronous File Conversion',
           description:
-            'Converts an uploaded file synchronously. Protected by 2-phase quota transactions (reserve -> commit/rollback).',
+            'Converts an uploaded file synchronously. Protected by 2-phase quota transactions (reserve -> commit/rollback). Requires "convert:write" scope.',
           operationId: 'convertFileV1',
+          security: [
+            { ApiKeyAuth: ['convert:write'] },
+            { BearerAuth: ['convert:write'] },
+          ],
           requestBody: {
             required: true,
             content: {
@@ -92,8 +96,8 @@ export async function GET() {
               },
             },
             '400': createProblemResponse('Invalid input format, missing parameter, or unsupported conversion pair.'),
-            '401': createProblemResponse('Missing or invalid API key.'),
-            '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing scope restriction.'),
+            '401': createProblemResponse('Missing, expired, or invalid API key.'),
+            '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing "convert:write" scope.'),
             '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
             '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
           },
@@ -103,8 +107,12 @@ export async function GET() {
         post: {
           summary: 'Submit Asynchronous Conversion Job',
           description:
-            'Enqueues a conversion job to the distributed BullMQ queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback.',
+            'Enqueues a conversion job to the distributed BullMQ queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.',
           operationId: 'createJobV1',
+          security: [
+            { ApiKeyAuth: ['convert:write'] },
+            { BearerAuth: ['convert:write'] },
+          ],
           requestBody: {
             required: true,
             content: {
@@ -165,14 +173,20 @@ export async function GET() {
               },
             },
             '400': createProblemResponse('Bad request or parameter validation failure.'),
-            '401': createProblemResponse('Unauthorized or missing scope.'),
-            '429': createProblemResponse('Quota exceeded.'),
+            '401': createProblemResponse('Missing, expired, or invalid API key.'),
+            '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
+            '429': createProblemResponse('Daily conversion quota exhausted.'),
+            '500': createProblemResponse('Job enqueue failure.'),
           },
         },
         get: {
           summary: 'List Conversion Jobs',
-          description: 'Returns asynchronous conversion jobs created by the authenticated user.',
+          description: 'Returns asynchronous conversion jobs created by the authenticated user. Requires "convert:read" scope.',
           operationId: 'listJobsV1',
+          security: [
+            { ApiKeyAuth: ['convert:read'] },
+            { BearerAuth: ['convert:read'] },
+          ],
           parameters: [
             {
               name: 'status',
@@ -214,8 +228,12 @@ export async function GET() {
       '/api/v1/jobs/{id}': {
         get: {
           summary: 'Get Job Status and Details',
-          description: 'Polls status, real-time progress, logs, and artifacts of a specific conversion job.',
+          description: 'Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires "convert:read" scope.',
           operationId: 'getJobStatusV1',
+          security: [
+            { ApiKeyAuth: ['convert:read'] },
+            { BearerAuth: ['convert:read'] },
+          ],
           parameters: [
             {
               name: 'id',
@@ -255,16 +273,24 @@ export async function GET() {
       '/api/keys': {
         get: {
           summary: 'List API Keys',
-          description: 'Retrieves developer API keys, scopes, and IP/CIDR whitelist restrictions.',
+          description: 'Retrieves developer API keys, granular scopes, expiration dates, and IP whitelist restrictions.',
           operationId: 'listApiKeys',
+          security: [
+            { ApiKeyAuth: [] },
+            { BearerAuth: [] },
+          ],
           responses: {
             '200': { description: 'User API keys list.' },
           },
         },
         post: {
           summary: 'Create API Key',
-          description: 'Generates a new API key with custom name, CIDR restrictions, and webhook URL.',
+          description: 'Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and webhook URL. Requires admin wildcard (*) scope.',
           operationId: 'createApiKey',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
           requestBody: {
             required: true,
             content: {
@@ -281,7 +307,11 @@ export async function GET() {
                     },
                     webhookUrl: { type: 'string', format: 'uri' },
                     webhookSecret: { type: 'string' },
-                    scopes: { type: 'array', items: { type: 'string' } },
+                    scopes: {
+                      type: 'array',
+                      items: { type: 'string', enum: ['convert:read', 'convert:write', 'storage:download', '*'] },
+                    },
+                    expiresAt: { type: 'number', description: 'Unix timestamp in milliseconds when the key expires.' },
                   },
                 },
               },
@@ -289,6 +319,213 @@ export async function GET() {
           },
           responses: {
             '201': { description: 'API Key generated.' },
+          },
+        },
+      },
+      '/api/keys/{id}': {
+        delete: {
+          summary: 'Revoke API Key',
+          description: 'Revokes an active API key by ID. Requires admin wildcard (*) scope.',
+          operationId: 'revokeApiKey',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+              description: 'API key ID to revoke.',
+            },
+          ],
+          responses: {
+            '200': { description: 'API key successfully revoked.' },
+            '404': { description: 'API key not found.' },
+          },
+        },
+      },
+      '/api/keys/usage': {
+        get: {
+          summary: 'Get Quota Usage',
+          description: 'Retrieves current daily quota usage and limits.',
+          operationId: 'getQuotaUsage',
+          security: [
+            { ApiKeyAuth: [] },
+            { BearerAuth: [] },
+          ],
+          responses: {
+            '200': {
+              description: 'Daily conversion quota usage details.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      usage: { $ref: '#/components/schemas/QuotaUsage' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/webhooks/dlq': {
+        get: {
+          summary: 'List Webhook DLQ Entries',
+          description: 'Retrieves failed webhook dispatches stored in the Dead Letter Queue. Requires "convert:read" scope.',
+          operationId: 'listWebhookDlq',
+          security: [
+            { ApiKeyAuth: ['convert:read'] },
+            { BearerAuth: ['convert:read'] },
+          ],
+          responses: {
+            '200': {
+              description: 'List of dead-lettered webhook entries.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      total: { type: 'integer' },
+                      entries: {
+                        type: 'array',
+                        items: { $ref: '#/components/schemas/WebhookDlqEntry' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        delete: {
+          summary: 'Clear Webhook DLQ',
+          description: 'Purges all entries from the Webhook Dead Letter Queue. Requires admin wildcard (*) scope.',
+          operationId: 'clearWebhookDlq',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
+          responses: {
+            '200': {
+              description: 'DLQ purged successfully.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      message: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/webhooks/dlq/{id}': {
+        get: {
+          summary: 'Get Webhook DLQ Entry',
+          description: 'Inspects a specific failed webhook payload and delivery attempt details. Requires "convert:read" scope.',
+          operationId: 'getWebhookDlqEntry',
+          security: [
+            { ApiKeyAuth: ['convert:read'] },
+            { BearerAuth: ['convert:read'] },
+          ],
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+              description: 'DLQ entry identifier.',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'DLQ entry details.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      entry: { $ref: '#/components/schemas/WebhookDlqEntry' },
+                    },
+                  },
+                },
+              },
+            },
+            '404': { description: 'Entry not found.' },
+          },
+        },
+        delete: {
+          summary: 'Delete Webhook DLQ Entry',
+          description: 'Removes a single failed webhook entry from the DLQ. Requires admin wildcard (*) scope.',
+          operationId: 'deleteWebhookDlqEntry',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': { description: 'Entry deleted.' },
+            '404': { description: 'Entry not found.' },
+          },
+        },
+      },
+      '/api/webhooks/dlq/{id}/replay': {
+        post: {
+          summary: 'Replay Dead-Lettered Webhook',
+          description: 'Triggers a 1-click manual re-dispatch of a dead-lettered webhook with fresh HMAC signature. Requires admin wildcard (*) scope.',
+          operationId: 'replayWebhookDlq',
+          security: [
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
+          ],
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Replay attempt result.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      deliveryId: { type: 'string' },
+                      url: { type: 'string' },
+                      event: { type: 'string' },
+                      statusCode: { type: 'integer' },
+                      attempts: { type: 'integer' },
+                      durationMs: { type: 'number' },
+                      message: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+            '404': { description: 'DLQ entry not found.' },
           },
         },
       },
@@ -387,6 +624,51 @@ export async function GET() {
             failedReason: { type: 'string' },
             result: { type: 'object' },
             logs: { type: 'array', items: { type: 'string' } },
+          },
+        },
+        ApiKey: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            userId: { type: 'string' },
+            name: { type: 'string' },
+            prefix: { type: 'string' },
+            createdAt: { type: 'number' },
+            lastUsedAt: { type: 'number' },
+            expiresAt: { type: 'number' },
+            status: { type: 'string', enum: ['active', 'revoked'] },
+            allowedIps: { type: 'array', items: { type: 'string' } },
+            webhookUrl: { type: 'string' },
+            scopes: {
+              type: 'array',
+              items: { type: 'string', enum: ['convert:read', 'convert:write', 'storage:download', '*'] },
+            },
+          },
+        },
+        WebhookDlqEntry: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            originalDeliveryId: { type: 'string' },
+            targetUrl: { type: 'string' },
+            event: { type: 'string' },
+            payload: { type: 'object' },
+            failedAt: { type: 'number' },
+            finalStatusCode: { type: 'integer' },
+            errorMessage: { type: 'string' },
+            retryCount: { type: 'integer' },
+            status: { type: 'string', enum: ['failed', 'replayed'] },
+            replayedAt: { type: 'number' },
+          },
+        },
+        QuotaUsage: {
+          type: 'object',
+          properties: {
+            tier: { type: 'string', example: 'pro' },
+            dailyLimit: { type: 'integer', example: 500 },
+            usedToday: { type: 'integer', example: 42 },
+            remaining: { type: 'integer', example: 458 },
+            resetAt: { type: 'number', description: 'Unix timestamp in milliseconds for midnight UTC reset.' },
           },
         },
       },

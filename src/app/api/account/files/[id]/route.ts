@@ -1,23 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionFromRequest } from '@/lib/auth/session';
-import { keyStore } from '@/lib/api-keys/key-store';
+import { validateApiAccess } from '@/lib/api-keys/guard';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 
 export const dynamic = 'force-dynamic';
 
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  const user = await getSessionFromRequest(req);
-  if (!user) {
+interface RouteContext {
+  params: Promise<{ id: string }> | { id: string };
+}
+
+export async function DELETE(req: NextRequest, context: RouteContext) {
+  const auth = await validateApiAccess(req, 0, 'storage:download');
+  if (!auth.authorized || !auth.user) {
     return NextResponse.json(
-      { success: false, error: 'Unauthorized: Sign in required.' },
-      { status: 401 }
+      { success: false, error: auth.error ?? 'Unauthorized: Sign in or valid API key required.' },
+      { status: auth.status ?? 401 }
     );
   }
 
-  const fileId = params.id;
-  const deleted = await keyStore.deleteUserFile(user.id, fileId);
+  const resolvedParams = await Promise.resolve(context.params);
+  const fileId = resolvedParams.id;
+  if (!fileId) {
+    return NextResponse.json(
+      { success: false, error: 'File ID parameter missing.' },
+      { status: 400 }
+    );
+  }
+  const deleted = await redisKeyStore.deleteUserFile(auth.user.id, fileId);
 
   if (!deleted) {
     return NextResponse.json(

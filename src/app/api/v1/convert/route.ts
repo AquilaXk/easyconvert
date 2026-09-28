@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess } from '@/lib/api-keys/guard';
-import { keyStore } from '@/lib/api-keys/key-store';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { convertFile } from '@/lib/conversions';
@@ -271,7 +270,7 @@ export async function POST(req: NextRequest) {
     storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
     const downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
 
-    const userFile = await keyStore.recordUserFile({
+    const userFile = await redisKeyStore.recordUserFile({
       userId: auth.user.id,
       fileName: outFileName,
       fromFormat: sourceDef.id,

@@ -5,6 +5,8 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+__pycache__/
+*.pyc
 
 # Dependencies
 node_modules

@@ -1,7 +1,8 @@
 import { redisKeyStore } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
 import type { User } from '../auth/types';
-import type { ApiKey } from './types';
+import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
+import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
 
 export { extractClientIp };
@@ -44,7 +45,16 @@ export function isScopeAllowed(grantedScopes?: string[], requiredScope?: string)
   if (requiredScope === 'convert' && (grantedScopes.includes('convert:write') || grantedScopes.includes('convert:read'))) {
     return true;
   }
-  if (requiredScope === 'jobs:write' && grantedScopes.includes('convert')) {
+  if (requiredScope === 'convert:write' && (grantedScopes.includes('convert') || grantedScopes.includes('jobs:write'))) {
+    return true;
+  }
+  if (requiredScope === 'convert:read' && (grantedScopes.includes('convert') || grantedScopes.includes('jobs:read'))) {
+    return true;
+  }
+  if (requiredScope === 'jobs:write' && (grantedScopes.includes('convert') || grantedScopes.includes('convert:write'))) {
+    return true;
+  }
+  if (requiredScope === 'jobs:read' && (grantedScopes.includes('convert') || grantedScopes.includes('convert:read'))) {
     return true;
   }
 
@@ -68,6 +78,33 @@ function extractApiKeySecret(request: Request): string | null {
   return null;
 }
 
+function checkPreExpiryNotification(key: ApiKey): void {
+  if (!key.expiresAt || key.expiresAt <= Date.now() || !key.webhookUrl) {
+    return;
+  }
+  const timeUntilExpiry = key.expiresAt - Date.now();
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  if (timeUntilExpiry <= sevenDaysMs) {
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    if (key.lastExpiryNotifiedAt && Date.now() - key.lastExpiryNotifiedAt < oneDayMs) {
+      return;
+    }
+    key.lastExpiryNotifiedAt = Date.now();
+    webhookDispatcher.dispatch(
+      key.webhookUrl,
+      'key.expiring_soon',
+      {
+        keyId: key.id,
+        keyName: key.name,
+        prefix: key.prefix,
+        expiresAt: key.expiresAt,
+        daysRemaining: Math.max(1, Math.ceil(timeUntilExpiry / (24 * 60 * 60 * 1000))),
+      },
+      key.webhookSecret || ''
+    ).catch(() => {});
+  }
+}
+
 async function checkQuotaAndReserve(
   userId: string,
   tier: string,
@@ -89,14 +126,8 @@ async function checkQuotaAndReserve(
     };
   }
 
+  // Zero-unit check (reads/downloads/status inspections) - non-consuming, must not lock out user
   const quota = await redisKeyStore.getQuotaUsage(userId);
-  if (quota.remaining <= 0) {
-    return {
-      allowed: false,
-      error: `Daily conversion quota exceeded for tier '${tier}'.`,
-      remaining: 0,
-    };
-  }
   return {
     allowed: true,
     remaining: quota.remaining,
@@ -118,6 +149,18 @@ async function verifyKeyAccess(
       status: isIpDenied ? 403 : 401,
     };
   }
+
+  // Enforce Key Expiration
+  if (verification.key.expiresAt && Date.now() > verification.key.expiresAt) {
+    return {
+      authorized: false,
+      error: 'API key has expired.',
+      status: 401,
+    };
+  }
+
+  // Pre-expiry notification check (within 7 days of expiration, throttled to 24h)
+  checkPreExpiryNotification(verification.key);
 
   // Scope enforcement
   if (requiredScope && !isScopeAllowed(verification.key.scopes, requiredScope)) {
@@ -213,6 +256,20 @@ export async function validateApiAccess(
 }
 
 /**
+ * Directly records quota usage against redisKeyStore.
+ */
+export async function recordUsage(userId: string, count: number = 1): Promise<{ allowed: boolean; remaining: number }> {
+  return redisKeyStore.recordUsage(userId, count);
+}
+
+/**
+ * Retrieves distributed quota usage for a user via redisKeyStore.
+ */
+export async function getQuotaUsage(userId: string): Promise<QuotaUsage> {
+  return redisKeyStore.getQuotaUsage(userId);
+}
+
+/**
  * Commits a previously reserved quota transaction.
  */
 export async function commitQuota(reservationId: string): Promise<boolean> {
@@ -225,4 +282,3 @@ export async function commitQuota(reservationId: string): Promise<boolean> {
 export async function rollbackQuota(reservationId: string): Promise<boolean> {
   return redisKeyStore.rollbackQuota(reservationId);
 }
-
