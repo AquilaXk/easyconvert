@@ -405,12 +405,28 @@ export function resolveSandboxedCommand(
 }
 
 /**
+ * Terminates a process group using negative PID signal delivery on POSIX systems,
+ * falling back to single-process termination. Prevents orphan/zombie child processes (e.g. soffice.bin).
+ */
+export function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals = 'SIGKILL'): void {
+  if (!pid) return;
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {}
+  }
+}
+
+/**
  * Executes a binary under defensive process guards:
  * - Environment sanitization (credential purging)
  * - Strict stdio buffer threshold (default 50MB)
  * - Execution timeout enforcement (default 30s)
  * - Memory limit enforcement (optional memoryLimitMb)
  * - Network isolation guard (via unshare -n or proxy stripping)
+ * - Process group detachment (detached: true) and whole process tree termination
  * - Non-zero exit code error handling
  */
 export async function executeSandboxedBinary(
@@ -468,12 +484,14 @@ export async function executeSandboxedBinary(
     // Resolve unshare network namespace wrapper if available
     const resolvedCmd = resolveSandboxedCommand(binaryPath, args, networkIsolated);
 
-    // Spawn directly without shell to prevent shell injection vulnerabilities
+    // Spawn directly without shell to prevent shell injection vulnerabilities.
+    // Use detached: true so child becomes process group leader, preventing orphan leaks.
     const proc = spawn(resolvedCmd.binary, resolvedCmd.args, {
       cwd,
       env: sanitizedEnv,
       stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       shell: false,
+      detached: true,
     });
     child = proc;
 
@@ -493,6 +511,7 @@ export async function executeSandboxedBinary(
             if (code !== 'EPIPE' && code !== 'ERR_STREAM_PREMATURE_CLOSE' && code !== 'ECONNRESET') {
               if (!timedOut && !bufferExceeded && !memoryExceeded) {
                 cleanup();
+                killProcessGroup(proc.pid, 'SIGKILL');
                 try {
                   proc.kill('SIGKILL');
                 } catch {}
@@ -508,6 +527,7 @@ export async function executeSandboxedBinary(
       if (bufferExceeded || memoryExceeded || timedOut) return;
       timedOut = true;
       cleanup();
+      killProcessGroup(proc.pid, 'SIGKILL');
       try {
         proc.kill('SIGKILL');
       } catch {}
@@ -521,6 +541,7 @@ export async function executeSandboxedBinary(
         if (rssMb !== null && rssMb > memoryLimitMb) {
           memoryExceeded = true;
           cleanup();
+          killProcessGroup(proc.pid, 'SIGKILL');
           try {
             proc.kill('SIGKILL');
           } catch {}
@@ -536,6 +557,7 @@ export async function executeSandboxedBinary(
         if (currentBufferSize > maxBuffer) {
           bufferExceeded = true;
           cleanup();
+          killProcessGroup(proc.pid, 'SIGKILL');
           try {
             proc.kill('SIGKILL');
           } catch {}
@@ -553,6 +575,7 @@ export async function executeSandboxedBinary(
         if (currentBufferSize > maxBuffer) {
           bufferExceeded = true;
           cleanup();
+          killProcessGroup(proc.pid, 'SIGKILL');
           try {
             proc.kill('SIGKILL');
           } catch {}

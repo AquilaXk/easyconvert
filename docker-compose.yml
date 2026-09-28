@@ -39,8 +39,8 @@ services:
     volumes:
       - worker-tmp:/tmp
       - shared-storage:/shared/storage
-    cap_add:
-      - SYS_ADMIN
+    cap_drop:
+      - ALL
     security_opt:
       - seccomp:./docker/seccomp-airgap.json
       - no-new-privileges:true
