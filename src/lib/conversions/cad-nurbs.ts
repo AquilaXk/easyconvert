@@ -17,6 +17,7 @@ import {
   robustSegmentsIntersect,
   orient2dExact,
   incircleExact,
+  windingNumberPointInPolygon,
 } from './cad-predicates';
 
 export interface Point3D {
@@ -1105,22 +1106,12 @@ export function calculateParametricSignedArea(loop: Parametric2DPoint[]): number
 }
 
 /**
- * Tests whether a 2D parametric point lies inside a parametric polygon loop.
+ * Tests whether a 2D parametric point lies inside a parametric polygon loop
+ * using exact Shewchuk orientation predicates and Dan Sunday winding number.
  */
 export function isPointInParametricPolygon(pt: Parametric2DPoint, loop: Parametric2DPoint[]): boolean {
-  let inside = false;
-  // Infinitesimal perturbation in v to eliminate vertex and horizontal edge collinearity singularities
-  const pv = pt.v + 1e-11;
-  const pu = pt.u;
-  for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
-    const xi = loop[i].u;
-    const yi = loop[i].v;
-    const xj = loop[j].u;
-    const yj = loop[j].v;
-    const intersect = yi > pv !== yj > pv && pu < ((xj - xi) * (pv - yi)) / (yj - yi) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
+  if (!loop || loop.length < 3) return false;
+  return windingNumberPointInPolygon(pt, loop) !== 0;
 }
 
 /**

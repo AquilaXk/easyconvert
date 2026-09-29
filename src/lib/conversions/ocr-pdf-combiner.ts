@@ -21,6 +21,13 @@ import {
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
 
+export interface OcrTableCellInfo {
+  rowIndex: number;
+  colIndex: number;
+  rowSpan?: number;
+  colSpan?: number;
+}
+
 export interface OcrBBox {
   x: number;
   y: number;
@@ -32,6 +39,7 @@ export interface OcrBBox {
   rotationRadians?: number;
   skewX?: number;
   skewY?: number;
+  tableCell?: OcrTableCellInfo;
 }
 
 export interface OcrWord {
@@ -43,6 +51,7 @@ export interface OcrLineBlock {
   text: string;
   bbox: OcrBBox;
   words: OcrWord[];
+  tableId?: string | number;
 }
 
 export interface OcrResult {
@@ -347,6 +356,125 @@ export function detectColumnGutters(
 }
 
 /**
+ * Sorts table blocks into topologically correct reading order:
+ * Row-by-row (top-to-bottom), column-by-column (left-to-right),
+ * and intra-cell lines (top-to-bottom).
+ * Prevents horizontal interleaving of multi-line cells within rows or across columns.
+ */
+export function sortTableBlocksReadingOrder(blocks: OcrLineBlock[]): OcrLineBlock[] {
+  if (!blocks || blocks.length <= 1) return blocks ? [...blocks] : [];
+
+  interface CellAssignedBlock {
+    block: OcrLineBlock;
+    rowIndex: number;
+    colIndex: number;
+  }
+
+  const assigned: CellAssignedBlock[] = [];
+  const hasExplicitCell = blocks.some((b) => b.bbox.tableCell !== undefined);
+
+  if (hasExplicitCell) {
+    for (const b of blocks) {
+      const tc = b.bbox.tableCell;
+      assigned.push({
+        block: b,
+        rowIndex: tc ? tc.rowIndex : 0,
+        colIndex: tc ? tc.colIndex : 0,
+      });
+    }
+  } else {
+    // Spatial grid inference:
+    // 1. Identify distinct column bands by X clustering
+    const xClusters: { minX: number; maxX: number; midX: number }[] = [];
+    const sortedByX = [...blocks].sort((a, b) => a.bbox.x - b.bbox.x);
+    for (const b of sortedByX) {
+      const px = b.bbox.x;
+      const pw = Math.max(1, b.bbox.width);
+      let matched = false;
+      for (const xc of xClusters) {
+        if (Math.abs(px - xc.minX) <= 18 || (px >= xc.minX - 5 && px <= xc.maxX + 5)) {
+          xc.minX = Math.min(xc.minX, px);
+          xc.maxX = Math.max(xc.maxX, px + pw);
+          xc.midX = (xc.minX + xc.maxX) / 2;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        xClusters.push({ minX: px, maxX: px + pw, midX: px + pw / 2 });
+      }
+    }
+    xClusters.sort((a, b) => a.midX - b.midX);
+
+    // 2. Identify distinct row baselines by Y clustering
+    const yClusters: { minY: number; maxY: number; midY: number }[] = [];
+    const sortedByY = [...blocks].sort((a, b) => a.bbox.y - b.bbox.y);
+    for (const b of sortedByY) {
+      const py = b.bbox.y;
+      const ph = Math.max(1, b.bbox.height);
+      let matched = false;
+      for (const yc of yClusters) {
+        const lineTol = Math.max(4, Math.min(ph, yc.maxY - yc.minY) * 0.6);
+        if (Math.abs(py - yc.minY) <= lineTol || (py >= yc.minY - lineTol && py <= yc.maxY + lineTol)) {
+          yc.minY = Math.min(yc.minY, py);
+          yc.maxY = Math.max(yc.maxY, py + ph);
+          yc.midY = (yc.minY + yc.maxY) / 2;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        yClusters.push({ minY: py, maxY: py + ph, midY: py + ph / 2 });
+      }
+    }
+    yClusters.sort((a, b) => a.midY - b.midY);
+
+    for (const b of blocks) {
+      const px = b.bbox.x + b.bbox.width / 2;
+      const py = b.bbox.y + b.bbox.height / 2;
+
+      let bestCol = 0;
+      let bestColDist = Infinity;
+      for (let ci = 0; ci < xClusters.length; ci++) {
+        const dist = Math.abs(px - xClusters[ci].midX);
+        if (dist < bestColDist) {
+          bestColDist = dist;
+          bestCol = ci;
+        }
+      }
+
+      let bestRow = 0;
+      let bestRowDist = Infinity;
+      for (let ri = 0; ri < yClusters.length; ri++) {
+        const dist = Math.abs(py - yClusters[ri].midY);
+        if (dist < bestRowDist) {
+          bestRowDist = dist;
+          bestRow = ri;
+        }
+      }
+
+      assigned.push({ block: b, rowIndex: bestRow, colIndex: bestCol });
+    }
+  }
+
+  // Sort assigned pairs:
+  // 1. rowIndex ascending (Row 0, Row 1, Row 2...)
+  // 2. colIndex ascending (Col 0, Col 1, Col 2...)
+  // 3. Y ascending within the same cell (Line 1, Line 2...)
+  assigned.sort((a, b) => {
+    if (a.rowIndex !== b.rowIndex) {
+      return a.rowIndex - b.rowIndex;
+    }
+    if (a.colIndex !== b.colIndex) {
+      return a.colIndex - b.colIndex;
+    }
+    return a.block.bbox.y - b.block.bbox.y;
+  });
+
+  return assigned.map((a) => a.block);
+}
+
+/**
  * Sorts OCR line blocks into topologically correct reading order
  * by detecting multi-column layouts, column gutters, and spanning elements.
  * Prevents horizontal interleaving of lines in 2-column or multi-column documents.
@@ -416,33 +544,105 @@ export function sortLineBlocksTopological(
         .map((p) => p.original);
     }
 
-    // Standard horizontal lines
-    // Sort primarily by Y ascending
-    const sorted = [...colPairs].sort((a, b) => a.geo.bbox.y - b.geo.bbox.y);
-    // Cluster lines that belong to the same visual baseline
-    const clusters: BlockPair[][] = [];
-    for (const pair of sorted) {
-      let placed = false;
-      for (const cluster of clusters) {
-        const rep = cluster[0];
-        const lineTol = Math.max(3, Math.min(pair.geo.bbox.height, rep.geo.bbox.height) * 0.45);
-        if (Math.abs(pair.geo.bbox.y - rep.geo.bbox.y) <= lineTol) {
-          cluster.push(pair);
-          placed = true;
-          break;
+    const sortStandard = (pairsToSort: BlockPair[]): OcrLineBlock[] => {
+      if (pairsToSort.length <= 1) return pairsToSort.map((p) => p.original);
+      const sorted = [...pairsToSort].sort((a, b) => a.geo.bbox.y - b.geo.bbox.y);
+      const clusters: BlockPair[][] = [];
+      for (const pair of sorted) {
+        let placed = false;
+        for (const cluster of clusters) {
+          const rep = cluster[0];
+          const lineTol = Math.max(3, Math.min(pair.geo.bbox.height, rep.geo.bbox.height) * 0.45);
+          if (Math.abs(pair.geo.bbox.y - rep.geo.bbox.y) <= lineTol) {
+            cluster.push(pair);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          clusters.push([pair]);
         }
       }
-      if (!placed) {
-        clusters.push([pair]);
+      const res: OcrLineBlock[] = [];
+      for (const cluster of clusters) {
+        cluster.sort((a, b) => a.geo.bbox.x - b.geo.bbox.x);
+        res.push(...cluster.map((p) => p.original));
+      }
+      return res;
+    };
+
+    // Check if colPairs contain table cells (explicit tableId or bbox.tableCell)
+    const tableGroups = new Map<string, BlockPair[]>();
+    const nonTablePairs: BlockPair[] = [];
+
+    for (const pair of colPairs) {
+      const tId =
+        pair.original.tableId ??
+        (pair.original.bbox.tableCell !== undefined ? '__default_table__' : undefined);
+      if (tId !== undefined) {
+        const key = String(tId);
+        if (!tableGroups.has(key)) tableGroups.set(key, []);
+        tableGroups.get(key)!.push(pair);
+      } else {
+        nonTablePairs.push(pair);
       }
     }
-    // Within each baseline cluster, sort left-to-right (X ascending)
-    const result: OcrLineBlock[] = [];
-    for (const cluster of clusters) {
-      cluster.sort((a, b) => a.geo.bbox.x - b.geo.bbox.x);
-      result.push(...cluster.map((p) => p.original));
+
+    if (tableGroups.size === 0) {
+      return sortStandard(colPairs);
     }
-    return result;
+
+    interface ColumnSection {
+      minY: number;
+      blocks: OcrLineBlock[];
+    }
+    const sections: ColumnSection[] = [];
+
+    for (const [, tPairs] of tableGroups) {
+      const tMinY = tPairs.reduce((m, p) => Math.min(m, p.geo.bbox.y), Infinity);
+      const sortedTable = sortTableBlocksReadingOrder(tPairs.map((p) => p.original));
+      sections.push({ minY: tMinY, blocks: sortedTable });
+    }
+
+    if (nonTablePairs.length > 0) {
+      const sortedNonTable = [...nonTablePairs].sort((a, b) => a.geo.bbox.y - b.geo.bbox.y);
+      let currentCluster: BlockPair[] = [sortedNonTable[0]];
+
+      for (let i = 1; i < sortedNonTable.length; i++) {
+        const prev = sortedNonTable[i - 1];
+        const curr = sortedNonTable[i];
+        const gap = curr.geo.bbox.y - (prev.geo.bbox.y + prev.geo.bbox.height);
+
+        const hasInterveningTable = Array.from(tableGroups.values()).some((tPairs) => {
+          const tMinY = tPairs.reduce((m, p) => Math.min(m, p.geo.bbox.y), Infinity);
+          const tMaxY = tPairs.reduce(
+            (m, p) => Math.max(m, p.geo.bbox.y + p.geo.bbox.height),
+            -Infinity
+          );
+          return tMinY >= prev.geo.bbox.y && tMaxY <= curr.geo.bbox.y + curr.geo.bbox.height;
+        });
+
+        if (hasInterveningTable || gap > 40) {
+          sections.push({
+            minY: currentCluster[0].geo.bbox.y,
+            blocks: sortStandard(currentCluster),
+          });
+          currentCluster = [curr];
+        } else {
+          currentCluster.push(curr);
+        }
+      }
+
+      if (currentCluster.length > 0) {
+        sections.push({
+          minY: currentCluster[0].geo.bbox.y,
+          blocks: sortStandard(currentCluster),
+        });
+      }
+    }
+
+    sections.sort((a, b) => a.minY - b.minY);
+    return sections.flatMap((s) => s.blocks);
   };
 
   // 1. Compute overall bounding envelope from de-skewed coordinates

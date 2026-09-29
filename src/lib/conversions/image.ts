@@ -64,6 +64,7 @@ export interface BayerSensorData {
   defaultCropSize?: [number, number]; // [width, height]
   cctKelvin?: number; // Scene correlated color temperature in Kelvin
   applySrgbGamma?: boolean;
+  falseColorSuppression?: boolean | number;
 }
 
 export function encodeBmp(raw: Buffer, width: number, height: number, channels: number): Buffer {
@@ -639,6 +640,72 @@ export function resolveBayerColorMatrix(
 }
 
 /**
+ * Parity-preserving symmetric reflection for Bayer grid coordinates:
+ * for even dimensions, (mirrorBayerCoord(c, max) & 1) === (c & 1)
+ */
+export function mirrorBayerCoord(v: number, max: number): number {
+  if (max <= 1) return 0;
+  while (v < 0 || v >= max) {
+    if (v < 0) {
+      v = -v;
+    } else if (v >= max) {
+      v = 2 * (max - 1) - v;
+    }
+  }
+  return v;
+}
+
+/**
+ * Applies 5x5 adaptive median filtering on chrominance difference planes (R - G and B - G)
+ * to suppress false color artifacts, chromatic moiré, and high-ISO zipper overshoots
+ * while strictly preserving luminance edge transitions.
+ */
+export function applyFalseColorSuppression(
+  redDiff: Float32Array,
+  blueDiff: Float32Array,
+  width: number,
+  height: number,
+  passes: number = 1
+): { filteredRedDiff: Float32Array; filteredBlueDiff: Float32Array } {
+  let currR = redDiff;
+  let currB = blueDiff;
+  const numPasses = Math.max(1, Math.min(5, Math.round(passes)));
+
+  const winR = new Float32Array(25);
+  const winB = new Float32Array(25);
+
+  for (let p = 0; p < numPasses; p++) {
+    const nextR = new Float32Array(width * height);
+    const nextB = new Float32Array(width * height);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let count = 0;
+        for (let dy = -2; dy <= 2; dy++) {
+          const ny = mirrorBayerCoord(y + dy, height);
+          for (let dx = -2; dx <= 2; dx++) {
+            const nx = mirrorBayerCoord(x + dx, width);
+            const nIdx = ny * width + nx;
+            winR[count] = currR[nIdx];
+            winB[count] = currB[nIdx];
+            count++;
+          }
+        }
+        winR.sort();
+        winB.sort();
+        // 25 elements: index 12 is the exact median
+        nextR[y * width + x] = winR[12];
+        nextB[y * width + x] = winB[12];
+      }
+    }
+    currR = nextR;
+    currB = nextB;
+  }
+
+  return { filteredRedDiff: currR, filteredBlueDiff: currB };
+}
+
+/**
  * AMaZE (Aliasing Minimization and Zipper Elimination) Bayer CFA demosaicing.
  * Evaluates directional local homogeneity across 5x5 pixel windows with gradient filtering
  * and interpolates the green channel along the direction of maximum homogeneity.
@@ -893,6 +960,15 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     }
   }
 
+  let finalRedDiff: Float32Array<ArrayBufferLike> = redFiltered;
+  let finalBlueDiff: Float32Array<ArrayBufferLike> = blueFiltered;
+  if (sensor.falseColorSuppression) {
+    const passes = typeof sensor.falseColorSuppression === 'number' ? sensor.falseColorSuppression : 1;
+    const fcs = applyFalseColorSuppression(redFiltered, blueFiltered, width, height, passes);
+    finalRedDiff = fcs.filteredRedDiff;
+    finalBlueDiff = fcs.filteredBlueDiff;
+  }
+
   // Step 4: Reconstruct full RGB, resolve dual illuminant ColorMatrix, and apply white balance & gamma
   const rgbBuffer = Buffer.alloc(width * height * 3);
   const rWb = whiteBalance ? whiteBalance[0] : 1.0;
@@ -906,8 +982,8 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 3;
       const g = green[y * width + x];
-      const r = Math.max(0, Math.min(255, g + redFiltered[y * width + x]));
-      const b = Math.max(0, Math.min(255, g + blueFiltered[y * width + x]));
+      const r = Math.max(0, Math.min(255, g + finalRedDiff[y * width + x]));
+      const b = Math.max(0, Math.min(255, g + finalBlueDiff[y * width + x]));
 
       // Apply white balance multipliers
       let rLin = (r * rWb) / 255.0;
@@ -1297,6 +1373,9 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
   const window9R = new Float32Array(9);
   const window9B = new Float32Array(9);
 
+  const medDiffR = new Float32Array(width * height);
+  const medDiffB = new Float32Array(width * height);
+
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
@@ -1315,12 +1394,23 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
 
       window9R.sort();
       window9B.sort();
-      const medR = window9R[4];
-      const medB = window9B[4];
-
-      filteredR[idx] = Math.max(0, Math.min(255, finalG[idx] + medR));
-      filteredB[idx] = Math.max(0, Math.min(255, finalG[idx] + medB));
+      medDiffR[idx] = window9R[4];
+      medDiffB[idx] = window9B[4];
     }
+  }
+
+  let finalDiffR: Float32Array<ArrayBufferLike> = medDiffR;
+  let finalDiffB: Float32Array<ArrayBufferLike> = medDiffB;
+  if (sensor.falseColorSuppression) {
+    const passes = typeof sensor.falseColorSuppression === 'number' ? sensor.falseColorSuppression : 1;
+    const fcs = applyFalseColorSuppression(medDiffR, medDiffB, width, height, passes);
+    finalDiffR = fcs.filteredRedDiff;
+    finalDiffB = fcs.filteredBlueDiff;
+  }
+
+  for (let i = 0; i < width * height; i++) {
+    filteredR[i] = Math.max(0, Math.min(255, finalG[i] + finalDiffR[i]));
+    filteredB[i] = Math.max(0, Math.min(255, finalG[i] + finalDiffB[i]));
   }
 
   // Step 6: White Balance, Color Matrix, and sRGB Gamma Transfer Function
@@ -1567,7 +1657,8 @@ export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
  */
 export function decodeRawBayerSensor(
   buffer: Buffer,
-  formatHint?: string
+  formatHint?: string,
+  options?: ConversionOptions
 ): { rgb: Buffer; width: number; height: number } | null {
   if (!buffer || buffer.length < 16) {
     return null;
@@ -1592,6 +1683,7 @@ export function decodeRawBayerSensor(
       pattern,
       data: sensorData,
       bitsPerSample: bpp,
+      falseColorSuppression: options?.falseColorSuppression,
     });
     return { rgb: result.data, width, height };
   }
@@ -2025,6 +2117,7 @@ export function decodeRawBayerSensor(
           defaultCropOrigin: chosen.defaultCropOrigin,
           defaultCropSize: chosen.defaultCropSize,
           applySrgbGamma: true,
+          falseColorSuppression: options?.falseColorSuppression,
         });
 
         let outRgb = result.data;
