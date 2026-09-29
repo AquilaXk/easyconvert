@@ -1,19 +1,57 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { subscribeToJobTelemetry } from '@/lib/queue/bullmq-engine';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Jobs created through the authenticated API carry `userId` and are visible only to that user;
+ * any other caller gets the route's regular not-found response so job ids cannot be probed.
+ * Jobs without an owner (anonymous uploads) keep capability-URL access by job id.
+ * Returns the response to send when access is denied, or null when the caller may proceed.
+ */
+async function denyUnlessJobOwner(
+  req: NextRequest,
+  ownerUserId: string | undefined,
+  requiredScope: string,
+  notFound: () => NextResponse
+): Promise<NextResponse | null> {
+  if (!ownerUserId) {
+    return null;
+  }
+
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope });
+  if (auth.user?.id !== ownerUserId) {
+    return notFound();
+  }
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { success: false, error: auth.error ?? 'Unauthorized' },
+      { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
+    );
+  }
+  return null;
+}
 
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const job = await conversionQueue.getJob(params.id);
-  if (!job) {
-    return NextResponse.json(
+  const notFound = () =>
+    NextResponse.json(
       { success: false, error: `Job with ID "${params.id}" not found.` },
       { status: 404 }
     );
+
+  const job = await conversionQueue.getJob(params.id);
+  if (!job) {
+    return notFound();
+  }
+
+  const denied = await denyUnlessJobOwner(req, job.data?.userId, 'convert:read', notFound);
+  if (denied) {
+    return denied;
   }
 
   const streamParam = req.nextUrl.searchParams.get('stream') === 'true';
@@ -97,9 +135,16 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const notFound = () => NextResponse.json({ success: false, error: 'Job not found' }, { status: 404 });
+
   const job = await conversionQueue.getJob(params.id);
   if (!job) {
-    return NextResponse.json({ success: false, error: 'Job not found' }, { status: 404 });
+    return notFound();
+  }
+
+  const denied = await denyUnlessJobOwner(req, job.data?.userId, 'convert:write', notFound);
+  if (denied) {
+    return denied;
   }
 
   job.state = 'failed';

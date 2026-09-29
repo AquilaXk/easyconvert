@@ -141,7 +141,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
-    const id = `job_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    const id = `job_${Date.now()}_${crypto.randomBytes(16).toString('hex')}`;
     const job = new Job<T, R>(id, name, data, opts, this);
     this.jobs.set(id, job);
 
@@ -701,7 +701,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
     if (this.redisClient && this.redisConnected) {
-      const id = `job_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+      const id = `job_${Date.now()}_${crypto.randomBytes(16).toString('hex')}`;
       const job = new Job<T, R>(
         id,
         name,
