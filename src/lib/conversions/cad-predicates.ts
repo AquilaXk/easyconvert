@@ -405,3 +405,45 @@ export function robustSegmentsIntersect(
 
   return false;
 }
+
+/**
+ * Computes exact winding number of a 2D point with respect to a closed polygon loop
+ * using Shewchuk exact orientation predicates (orient2dExact).
+ *
+ * Returns wn:
+ *   wn === 0 -> point is strictly outside polygon
+ *   wn !== 0 -> point is inside polygon (magnitude/sign gives winding count)
+ *
+ * Robustly handles collinear points, horizontal edges, and ray-crossing vertices
+ * without requiring artificial heuristic perturbations.
+ */
+export function windingNumberPointInPolygon(pt: Point2D, polygon: Point2D[]): number {
+  if (!polygon || polygon.length < 3) return 0;
+  let wn = 0;
+  const n = polygon.length;
+
+  for (let i = 0; i < n; i++) {
+    const p1 = polygon[i];
+    const p2 = polygon[(i + 1) % n];
+
+    if (p1.v <= pt.v) {
+      if (p2.v > pt.v) {
+        // Upward edge crossing
+        const o = orient2dExact(p1.u, p1.v, p2.u, p2.v, pt.u, pt.v);
+        if (o > 0) {
+          wn++;
+        }
+      }
+    } else {
+      if (p2.v <= pt.v) {
+        // Downward edge crossing
+        const o = orient2dExact(p1.u, p1.v, p2.u, p2.v, pt.u, pt.v);
+        if (o < 0) {
+          wn--;
+        }
+      }
+    }
+  }
+
+  return wn;
+}

@@ -83,6 +83,7 @@ export interface ConversionOptions {
   ditherMethod?: string;
   useWebGpu?: boolean;
   gpuAcceleration?: boolean;
+  falseColorSuppression?: boolean | number;
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;
