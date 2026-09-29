@@ -3,6 +3,8 @@ import { NextRequest } from 'next/server';
 import {
   extractClientIp,
   isIpInCidr,
+  normalizeIp,
+  isIpAllowed,
   getTrustedProxies,
   DEFAULT_TRUSTED_PROXIES,
 } from '../src/lib/api-keys/ip-utils';
@@ -79,6 +81,45 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
       });
       expect(extractClientIp(directReq)).toBe('198.51.100.77');
     });
+
+    it('rejects spoofed CF-Connecting-IP and X-Real-IP when direct connecting peer is untrusted', () => {
+      // Attacker connecting directly from untrusted public IP 203.0.113.99 trying to spoof internal IP
+      const spoofedCf = new NextRequest('https://easyconvert.app/api/v1/convert', {
+        headers: {
+          'cf-connecting-ip': '10.0.0.1',
+        },
+      });
+      // Pass direct peer IP 203.0.113.99
+      const resolvedCf = extractClientIp(spoofedCf, ['127.0.0.1/32', '172.16.0.0/12'], '203.0.113.99');
+      expect(resolvedCf).toBe('203.0.113.99');
+
+      const spoofedReal = new NextRequest('https://easyconvert.app/api/v1/convert', {
+        headers: {
+          'x-real-ip': '192.168.1.50',
+        },
+      });
+      const resolvedReal = extractClientIp(spoofedReal, ['127.0.0.1/32', '172.16.0.0/12'], '198.51.100.200');
+      expect(resolvedReal).toBe('198.51.100.200');
+    });
+
+    it('trusts CF-Connecting-IP and X-Real-IP when direct connecting peer is a verified trusted proxy', () => {
+      // Direct peer is trusted reverse proxy (172.16.0.5)
+      const trustedCf = new NextRequest('https://easyconvert.app/api/v1/convert', {
+        headers: {
+          'cf-connecting-ip': '203.0.113.42',
+        },
+      });
+      const resolvedCf = extractClientIp(trustedCf, ['172.16.0.0/12'], '172.16.0.5');
+      expect(resolvedCf).toBe('203.0.113.42');
+    });
+
+    it('normalizes hex-encoded IPv4-mapped IPv6 addresses to standard dotted-quad format', () => {
+      expect(normalizeIp('::ffff:c0a8:0101')).toBe('192.168.1.1');
+      expect(normalizeIp('::ffff:7f00:0001')).toBe('127.0.0.1');
+      expect(normalizeIp('0:0:0:0:0:ffff:0a00:0001')).toBe('10.0.0.1');
+      expect(isIpAllowed('::ffff:c0a8:0101', ['192.168.1.0/24'])).toBe(true);
+      expect(isIpAllowed('::ffff:c0a8:0101', ['10.0.0.0/8'])).toBe(false);
+    });
   });
 
   describe('Token Bucket Burst Rate Limiter', () => {
@@ -133,6 +174,25 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
       const afterWait = await checkTokenBucketRateLimit(identifier, options);
       expect(afterWait.allowed).toBe(true);
       expect(afterWait.tokensRemaining).toBeGreaterThanOrEqual(0);
+    });
+
+    it('handles refillRate: 0 gracefully without division by zero or NaN retryAfterMs', async () => {
+      const identifier = 'zero-refill-user';
+      const options = {
+        capacity: 1,
+        refillRate: 0,
+        cost: 1,
+      };
+
+      const res1 = await checkTokenBucketRateLimit(identifier, options);
+      expect(res1.allowed).toBe(true);
+      expect(res1.tokensRemaining).toBe(0);
+
+      const res2 = await checkTokenBucketRateLimit(identifier, options);
+      expect(res2.allowed).toBe(false);
+      expect(res2.tokensRemaining).toBe(0);
+      expect(Number.isFinite(res2.resetMs)).toBe(true);
+      expect(res2.resetMs).toBeGreaterThan(0);
     });
   });
 

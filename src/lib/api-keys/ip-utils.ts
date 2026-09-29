@@ -19,12 +19,28 @@ export function normalizeIp(ip: string): string {
     }
   }
 
-  // Handle IPv4-mapped IPv6 addresses: ::ffff:192.168.1.1 or 0:0:0:0:0:ffff:192.168.1.1
+  // Handle IPv4-mapped IPv6 addresses: ::ffff:192.168.1.1 or ::ffff:c0a8:0101
   const lower = clean.toLowerCase();
-  if (lower.startsWith('::ffff:') || lower.startsWith('0:0:0:0:0:ffff:')) {
+  if (lower.startsWith('::ffff:') || lower.startsWith('0:0:0:0:0:ffff:') || /^(?:0{1,4}:){5}ffff:/i.test(lower)) {
     const candidate = lower.replace(/^.*ffff:/, '');
     if (net.isIPv4(candidate)) {
       return candidate;
+    }
+    // Hex-encoded 32-bit IPv4 mapped into IPv6 (e.g. c0a8:0101 or 7f00:1)
+    const hexMatch = candidate.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (hexMatch) {
+      const h1 = parseInt(hexMatch[1], 16);
+      const h2 = parseInt(hexMatch[2], 16);
+      if (!isNaN(h1) && !isNaN(h2) && h1 >= 0 && h1 <= 0xffff && h2 >= 0 && h2 <= 0xffff) {
+        const b1 = (h1 >> 8) & 0xff;
+        const b2 = h1 & 0xff;
+        const b3 = (h2 >> 8) & 0xff;
+        const b4 = h2 & 0xff;
+        const ipv4 = `${b1}.${b2}.${b3}.${b4}`;
+        if (net.isIPv4(ipv4)) {
+          return ipv4;
+        }
+      }
     }
   }
 
@@ -163,13 +179,27 @@ export function isIpAllowed(clientIp: string, allowedIps?: string[]): boolean {
 
 /**
  * Securely extracts and normalizes the client IP from trusted reverse proxy headers.
- * Protects against IP spoofing attacks by parsing X-Forwarded-For chains from right-to-left
- * against trusted reverse proxy subnets (RFC 7239 / Nginx standard practice).
+ * Protects against IP spoofing attacks by verifying connecting peer against trusted proxies
+ * and parsing X-Forwarded-For chains from right-to-left against trusted reverse proxy subnets (RFC 7239 / Nginx).
  */
 export function extractClientIp(
   request: Request,
-  trustedProxies?: string[]
+  trustedProxies?: string[],
+  peerIp?: string
 ): string {
+  const proxies = trustedProxies || getTrustedProxies();
+  const directPeer = peerIp ?? (request as any).ip ?? (request as any).socket?.remoteAddress;
+
+  // If immediate connecting peer is known and is NOT in trusted proxies list,
+  // reject any forwarded/proxy headers (CF-Connecting-IP, X-Real-IP, X-Forwarded-For)
+  // to prevent arbitrary IP whitelist bypass.
+  if (directPeer) {
+    const normalizedPeer = normalizeIp(directPeer);
+    if (!isIpAllowed(normalizedPeer, proxies)) {
+      return normalizedPeer;
+    }
+  }
+
   // 1. Authenticated CDN edge header (Cloudflare)
   const cfIp = request.headers.get('cf-connecting-ip');
   if (cfIp) {
@@ -193,7 +223,6 @@ export function extractClientIp(
       .filter((ip) => net.isIP(ip) !== 0);
 
     if (rawIps.length > 0) {
-      const proxies = trustedProxies || getTrustedProxies();
       // Scan right-to-left: peel away trusted reverse proxies
       for (let i = rawIps.length - 1; i >= 0; i--) {
         const candidate = rawIps[i];
@@ -205,6 +234,10 @@ export function extractClientIp(
       // If all hops are trusted (e.g. private VPC mesh), fallback to leftmost
       return rawIps[0];
     }
+  }
+
+  if (directPeer) {
+    return normalizeIp(directPeer);
   }
 
   return '127.0.0.1';
