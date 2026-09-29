@@ -5949,7 +5949,34 @@ export async function parsePptxSlideSceneGraph(
               resolvedDiagram = true;
               const N = nodeTexts.length;
               const isLandscape = w >= h;
-              if (isLandscape) {
+              const isSquareGrid = N === 4 && w / h >= 0.7 && w / h <= 1.5;
+
+              if (isSquareGrid) {
+                // 2x2 Matrix / Quadrant SmartArt layout
+                const gap = 12;
+                const nodeW = Math.max(30, Math.floor((w - gap) / 2));
+                const nodeH = Math.max(24, Math.floor((h - gap) / 2));
+                for (let nIdx = 0; nIdx < 4; nIdx++) {
+                  const col = nIdx % 2;
+                  const row = Math.floor(nIdx / 2);
+                  const nodeX = x + col * (nodeW + gap);
+                  const nodeY = y + row * (nodeH + gap);
+                  shapes.push({
+                    x: nodeX,
+                    y: nodeY,
+                    width: nodeW,
+                    height: nodeH,
+                    shapeType: 'roundrect',
+                    fillColor: nIdx % 2 === 0 ? '#3F51B5' : '#5C6BC0',
+                    strokeColor: '#303F9F',
+                    strokeWidth: 1.5,
+                    text: nodeTexts[nIdx],
+                    fontColor: '#FFFFFF',
+                    bold: true,
+                    transformMatrix: parentMatrix,
+                  });
+                }
+              } else if (isLandscape) {
                 const gap = 16;
                 const nodeW = Math.max(30, Math.floor((w - (N - 1) * gap) / N));
                 const nodeH = Math.max(24, Math.floor(h * 0.7));
@@ -6189,6 +6216,13 @@ export async function parsePptxSlideSceneGraph(
         strokeWidth = Math.max(1, Math.round(Number.parseInt(lnEl.attrs.w, 10) / 12700));
       }
       strokeColor = safeFindColor(lnEl.content);
+    }
+
+    if (spPrEl && (spPrEl.content.includes('<a:sp3d') || spPrEl.content.includes('<a:bevelT') || spPrEl.content.includes('bevelT'))) {
+      if (!strokeWidth) strokeWidth = 2;
+      if (!strokeColor && fillColor) {
+        strokeColor = '#1A237E';
+      }
     }
 
       let shapeText = '';

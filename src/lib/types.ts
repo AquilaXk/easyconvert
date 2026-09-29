@@ -128,6 +128,11 @@ export interface ConversionOptions {
   disableHwaccel?: boolean;
   disableNativeEngine?: boolean;
   allowPureLossyBitstream?: boolean;
+  // Office & PDF export options
+  pdfStandard?: 'pdfa' | 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
+  pdfVersion?: string;
+  libreOfficeFilter?: string;
+  losslessImageCompression?: boolean;
 }
 
 export type QueueItemStatus =
