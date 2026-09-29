@@ -277,7 +277,7 @@ export async function GET(req: NextRequest) {
   const statusParam = searchParams.get('status');
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '50', 10)));
 
-  const validStates: JobStatus[] = ['waiting', 'active', 'completed', 'failed', 'delayed'];
+  const validStates: JobStatus[] = ['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled'];
   const requestedStates = statusParam
     ? (statusParam.split(',').map((s) => s.trim()) as JobStatus[]).filter((s) => validStates.includes(s))
     : validStates;

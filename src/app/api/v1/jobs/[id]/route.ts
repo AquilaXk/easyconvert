@@ -150,7 +150,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   return NextResponse.json({
     success: true,
     jobId,
-    status: 'failed',
+    status: 'cancelled',
     cancelled: true,
     message: 'Job was successfully cancelled and quota reservation was refunded.',
   });

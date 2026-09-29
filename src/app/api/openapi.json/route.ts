@@ -269,7 +269,7 @@ export async function GET() {
         delete: {
           summary: 'Cancel Asynchronous Conversion Job',
           description:
-            'Cancels a pending or waiting conversion job, aborting worker processing and rolling back reserved quota units. Requires "convert:write" scope.',
+            'Cancels a waiting, delayed, or active conversion job, aborting worker processing and rolling back reserved quota units. Requires "convert:write" scope.',
           operationId: 'cancelJobV1',
           security: [
             { ApiKeyAuth: ['convert:write'] },
@@ -646,7 +646,7 @@ export async function GET() {
           type: 'object',
           properties: {
             jobId: { type: 'string' },
-            status: { type: 'string', enum: ['waiting', 'active', 'completed', 'failed', 'delayed'] },
+            status: { type: 'string', enum: ['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled'] },
             progress: { type: 'number' },
             sourceFormat: { type: 'string' },
             targetFormat: { type: 'string' },
