@@ -428,7 +428,7 @@ export async function GET() {
       '/api/webhooks/dlq': {
         get: {
           summary: 'List Webhook DLQ Entries',
-          description: 'Retrieves failed webhook dispatches stored in the Dead Letter Queue. Requires "convert:read" scope.',
+          description: 'Retrieves the caller\'s failed webhook dispatches stored in the Dead Letter Queue. Requires "convert:read" scope.',
           operationId: 'listWebhookDlq',
           security: [
             { ApiKeyAuth: ['convert:read'] },
@@ -457,7 +457,7 @@ export async function GET() {
         },
         delete: {
           summary: 'Clear Webhook DLQ',
-          description: 'Purges all entries from the Webhook Dead Letter Queue. Requires admin wildcard (*) scope.',
+          description: 'Purges the caller\'s entries from the Webhook Dead Letter Queue. Requires admin wildcard (*) scope.',
           operationId: 'clearWebhookDlq',
           security: [
             { ApiKeyAuth: ['*'] },
@@ -484,7 +484,7 @@ export async function GET() {
       '/api/webhooks/dlq/{id}': {
         get: {
           summary: 'Get Webhook DLQ Entry',
-          description: 'Inspects a specific failed webhook payload and delivery attempt details. Requires "convert:read" scope.',
+          description: 'Inspects one of the caller\'s failed webhook payloads and delivery attempt details. Entries owned by other users return 404. Requires "convert:read" scope.',
           operationId: 'getWebhookDlqEntry',
           security: [
             { ApiKeyAuth: ['convert:read'] },
@@ -519,7 +519,7 @@ export async function GET() {
         },
         delete: {
           summary: 'Delete Webhook DLQ Entry',
-          description: 'Removes a single failed webhook entry from the DLQ. Requires admin wildcard (*) scope.',
+          description: 'Removes one of the caller\'s failed webhook entries from the DLQ. Entries owned by other users return 404. Requires admin wildcard (*) scope.',
           operationId: 'deleteWebhookDlqEntry',
           security: [
             { ApiKeyAuth: ['*'] },
@@ -542,7 +542,7 @@ export async function GET() {
       '/api/webhooks/dlq/{id}/replay': {
         post: {
           summary: 'Replay Dead-Lettered Webhook',
-          description: 'Triggers a 1-click manual re-dispatch of a dead-lettered webhook with fresh HMAC signature. Requires admin wildcard (*) scope.',
+          description: 'Triggers a 1-click manual re-dispatch of one of the caller\'s dead-lettered webhooks with fresh HMAC signature. Entries owned by other users return 404. Requires admin wildcard (*) scope.',
           operationId: 'replayWebhookDlq',
           security: [
             { ApiKeyAuth: ['*'] },
@@ -729,6 +729,8 @@ export async function GET() {
             retryCount: { type: 'integer' },
             status: { type: 'string', enum: ['failed', 'replayed'] },
             replayedAt: { type: 'number' },
+            ownerUserId: { type: 'string', description: 'User who owns the webhook; only the owner can see or manage the entry.' },
+            ownerKeyId: { type: 'string', description: 'API key whose settings produced the webhook, when known.' },
           },
         },
         QuotaUsage: {

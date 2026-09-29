@@ -10,10 +10,10 @@ interface RouteContext {
 }
 
 export async function POST(req: NextRequest, context: RouteContext) {
-  const sessionUser = await getSessionFromRequest(req);
-  if (!sessionUser) {
+  let ownerUserId = (await getSessionFromRequest(req))?.id;
+  if (!ownerUserId) {
     const auth = await validateApiAccess(req, 0);
-    if (!auth.authorized) {
+    if (!auth.authorized || !auth.user) {
       return NextResponse.json(
         { success: false, error: auth.error ?? 'Unauthorized: Authentication required.' },
         { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
@@ -25,6 +25,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
         { status: 403 }
       );
     }
+    ownerUserId = auth.user.id;
   }
 
   const resolvedParams = await Promise.resolve(context.params);
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
     );
   }
 
-  const result = await webhookDispatcher.replayDlq(id);
+  const result = await webhookDispatcher.replayDlq(id, ownerUserId);
   if (!result) {
     return NextResponse.json(
       { success: false, error: `DLQ entry "${id}" not found.` },

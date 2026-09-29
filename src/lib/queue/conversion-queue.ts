@@ -175,7 +175,8 @@ export function attachJobLifecycleListeners(
             job.data.webhookUrl,
             'job.completed',
             result,
-            job.data.webhookSecret || 'easyconvert-default-secret'
+            job.data.webhookSecret || 'easyconvert-default-secret',
+            { ownerUserId: job.data.userId }
           );
         } catch (err) {
           console.error(`[ConversionQueue] Failed to dispatch completed webhook for job ${job.id}:`, err);
@@ -210,7 +211,8 @@ export function attachJobLifecycleListeners(
               error: err instanceof Error ? err.message : String(err),
               originalFilename: job.data.originalFilename,
             },
-            job.data.webhookSecret || 'easyconvert-default-secret'
+            job.data.webhookSecret || 'easyconvert-default-secret',
+            { ownerUserId: job.data.userId }
           );
         } catch (dispatchErr) {
           console.error(`[ConversionQueue] Failed to dispatch failed webhook for job ${job.id}:`, dispatchErr);

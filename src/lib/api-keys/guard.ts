@@ -120,7 +120,8 @@ function checkPreExpiryNotification(key: ApiKey): void {
         expiresAt: key.expiresAt,
         daysRemaining: Math.max(1, Math.ceil(timeUntilExpiry / (24 * 60 * 60 * 1000))),
       },
-      key.webhookSecret || ''
+      key.webhookSecret || '',
+      { ownerUserId: key.userId, ownerKeyId: key.id }
     ).catch(() => {});
   }
 }
