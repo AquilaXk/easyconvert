@@ -22,7 +22,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
       auth.error ?? 'Unauthorized',
       instanceUri,
       undefined,
-      undefined,
+      auth.problemType,
       authErrorHeaders(auth)
     );
   }
@@ -89,7 +89,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       auth.error ?? 'Unauthorized',
       instanceUri,
       undefined,
-      undefined,
+      auth.problemType,
       authErrorHeaders(auth)
     );
   }

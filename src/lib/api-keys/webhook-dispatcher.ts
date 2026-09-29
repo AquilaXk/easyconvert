@@ -436,10 +436,22 @@ export class WebhookDispatcher {
   }
 
   /**
-   * Lists the DLQ entries owned by `ownerUserId`, newest first.
+   * Deletes entries recorded before owners were tracked (or for anonymous jobs). No API caller can
+   * reach them, so keeping them would only retain their plaintext signing secrets indefinitely.
+   */
+  private async purgeOwnerlessEntries(entries: readonly WebhookDlqEntry[]): Promise<void> {
+    const ownerless = entries.filter((entry) => !entry.ownerUserId).map((entry) => entry.id);
+    if (ownerless.length === 0) return;
+    await this.removeDlqEntries(ownerless);
+    console.warn(`[WebhookDispatcher] Purged ${ownerless.length} DLQ entries without an owner.`);
+  }
+
+  /**
+   * Lists the DLQ entries owned by `ownerUserId`, newest first. Also purges ownerless entries.
    */
   public async getDlqEntries(ownerUserId: string): Promise<WebhookDlqEntry[]> {
     const entries = await this.readAllDlqEntries();
+    await this.purgeOwnerlessEntries(entries);
     return entries
       .filter((entry) => isDlqEntryOwnedBy(entry, ownerUserId))
       .sort((a, b) => b.failedAt - a.failedAt);

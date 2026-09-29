@@ -99,8 +99,8 @@ export async function POST(req: NextRequest) {
       auth.status ?? 401,
       auth.error ?? 'Unauthorized',
       instanceUri,
-      auth.status === 429 ? 'Too Many Requests' : undefined,
-      auth.status === 429 ? 'https://api.easyconvert.io/problems/quota-exceeded' : undefined,
+      undefined,
+      auth.problemType,
       headers
     );
   }

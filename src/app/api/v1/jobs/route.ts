@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
       auth.error ?? 'Unauthorized',
       instanceUri,
       undefined,
-      undefined,
+      auth.problemType,
       authErrorHeaders(auth)
     );
   }
@@ -268,7 +268,7 @@ export async function GET(req: NextRequest) {
       auth.error ?? 'Unauthorized',
       instanceUri,
       undefined,
-      undefined,
+      auth.problemType,
       authErrorHeaders(auth)
     );
   }

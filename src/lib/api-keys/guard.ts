@@ -5,6 +5,7 @@ import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
+import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 
 export { extractClientIp };
 
@@ -19,6 +20,8 @@ export interface ApiAuthResult {
   remaining?: number;
   /** Seconds the caller should wait before retrying; set on burst rate limit (429) rejections. */
   retryAfterSeconds?: number;
+  /** RFC 9457 problem type for the rejection when it differs from the status default (burst limit). */
+  problemType?: string;
 }
 
 export interface ValidateApiAccessOptions {
@@ -207,6 +210,7 @@ async function verifyKeyAccess(
       error: 'Rate limit exceeded: too many requests for this API key. Retry after the delay in the Retry-After header.',
       status: 429,
       retryAfterSeconds: toRetryAfterSeconds(burst.retryAfterMs),
+      problemType: RATE_LIMITED_PROBLEM_TYPE,
     };
   }
 
