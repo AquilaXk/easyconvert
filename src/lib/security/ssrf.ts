@@ -25,6 +25,52 @@ export function parseIpv4MappedIpv6(ip: string): string | null {
   return null;
 }
 
+export function parseIpv6ToWords(ip: string): number[] | null {
+  const clean = ip.replace(/^\[|\]$/g, '').trim().toLowerCase();
+  if (net.isIP(clean) !== 6) return null;
+
+  let hexPart = clean;
+  let embeddedIpv4Words: number[] | null = null;
+  const match = clean.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (match) {
+    const v4Parts = match[2].split('.').map(Number);
+    if (v4Parts.length === 4 && v4Parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
+      embeddedIpv4Words = [
+        (v4Parts[0] << 8) | v4Parts[1],
+        (v4Parts[2] << 8) | v4Parts[3],
+      ];
+      hexPart = match[1].endsWith('::') ? match[1] : match[1].slice(0, -1);
+    }
+  }
+
+  const dblColon = hexPart.indexOf('::');
+  let parts: string[];
+  const targetWords = embeddedIpv4Words ? 6 : 8;
+
+  if (dblColon !== -1) {
+    const leftStr = hexPart.slice(0, dblColon);
+    const rightStr = hexPart.slice(dblColon + 2);
+    const left = leftStr ? leftStr.split(':') : [];
+    const right = rightStr ? rightStr.split(':') : [];
+    const missing = targetWords - (left.length + right.length);
+    if (missing < 0) return null;
+    parts = [...left, ...Array(missing).fill('0'), ...right];
+  } else {
+    parts = hexPart.split(':');
+  }
+
+  if (parts.length !== targetWords) return null;
+
+  const words = parts.map((p) => parseInt(p || '0', 16));
+  if (words.some((w) => isNaN(w) || w < 0 || w > 0xffff)) return null;
+
+  if (embeddedIpv4Words) {
+    words.push(...embeddedIpv4Words);
+  }
+
+  return words;
+}
+
 export function isBlockedIpv4(ip: string): boolean {
   const parts = ip.split('.').map(Number);
   if (parts.length !== 4 || parts.some((p) => isNaN(p) || p < 0 || p > 255)) {
@@ -62,21 +108,74 @@ export function isBlockedIpv4(ip: string): boolean {
 }
 
 export function isBlockedIpv6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  const mappedIpv4 = parseIpv4MappedIpv6(lower);
-  if (mappedIpv4) {
-    return isBlockedIpv4(mappedIpv4);
+  const clean = ip.replace(/^\[|\]$/g, '').trim().toLowerCase();
+  const words = parseIpv6ToWords(clean);
+  if (!words) {
+    const mappedIpv4 = parseIpv4MappedIpv6(clean);
+    if (mappedIpv4) {
+      return isBlockedIpv4(mappedIpv4);
+    }
+    return clean.includes(':');
   }
-  // Loopback (::1)
-  if (lower === '::1' || lower === '0:0:0:0:0:0:0:1') return true;
+
   // Unspecified (::)
-  if (lower === '::' || lower === '0:0:0:0:0:0:0:0') return true;
-  // Link-local (fe80::/10)
-  if (/^fe[89ab]/i.test(lower)) return true;
-  // Unique local (fc00::/7)
-  if (/^f[cd]/i.test(lower)) return true;
+  if (words.every((w) => w === 0)) return true;
+
+  // Loopback (::1)
+  if (words.slice(0, 7).every((w) => w === 0) && words[7] === 1) return true;
+
+  // IPv4-compatible (::x.x.x.x) or IPv4-mapped (::ffff:x.x.x.x)
+  const isCompatible = words.slice(0, 6).every((w) => w === 0);
+  const isMapped = words.slice(0, 5).every((w) => w === 0) && words[5] === 0xffff;
+  if (isCompatible || isMapped) {
+    const v4 = [
+      (words[6] >> 8) & 0xff,
+      words[6] & 0xff,
+      (words[7] >> 8) & 0xff,
+      words[7] & 0xff,
+    ].join('.');
+    return isBlockedIpv4(v4);
+  }
+
+  // IPv4-translated (64:ff9b::/96)
+  if (words[0] === 0x0064 && words[1] === 0xff9b && words.slice(2, 6).every((w) => w === 0)) {
+    const v4 = [
+      (words[6] >> 8) & 0xff,
+      words[6] & 0xff,
+      (words[7] >> 8) & 0xff,
+      words[7] & 0xff,
+    ].join('.');
+    return isBlockedIpv4(v4);
+  }
+
+  // 6to4 encapsulation (2002::/16)
+  if (words[0] === 0x2002) {
+    const v4 = [
+      (words[1] >> 8) & 0xff,
+      words[1] & 0xff,
+      (words[2] >> 8) & 0xff,
+      words[2] & 0xff,
+    ].join('.');
+    if (isBlockedIpv4(v4)) return true;
+  }
+
+  // Unique local address (fc00::/7)
+  if ((words[0] & 0xfe00) === 0xfc00) return true;
+
+  // Link-local unicast (fe80::/10)
+  if ((words[0] & 0xffc0) === 0xfe80) return true;
+
+  // Site-local (fec0::/10, deprecated)
+  if ((words[0] & 0xffc0) === 0xfec0) return true;
+
   // Multicast (ff00::/8)
-  if (/^ff/i.test(lower)) return true;
+  if ((words[0] & 0xff00) === 0xff00) return true;
+
+  // Documentation (2001:db8::/32)
+  if (words[0] === 0x2001 && words[1] === 0x0db8) return true;
+
+  // Discard prefix (0100::/64)
+  if (words[0] === 0x0100 && words.slice(1, 4).every((w) => w === 0)) return true;
 
   return false;
 }
@@ -102,18 +201,25 @@ export function isBlockedIp(ip: string): boolean {
 export function isPrivateOrRestrictedHost(hostname: string): boolean {
   if (!hostname || typeof hostname !== 'string') return true;
   const raw = hostname.toLowerCase().trim();
-  const clean = raw.startsWith('[') && raw.endsWith(']') ? raw.slice(1, -1) : raw;
+  const unbracketed = raw.startsWith('[') && raw.endsWith(']') ? raw.slice(1, -1) : raw;
+  const clean = unbracketed.replace(/\.+$/, '');
 
   if (
+    !clean ||
     clean === 'localhost' ||
+    clean === 'metadata' ||
     clean === 'metadata.google.internal' ||
+    clean === 'instance-data' ||
     clean.endsWith('.local') ||
     clean.endsWith('.internal') ||
     clean.endsWith('.localhost') ||
     clean.endsWith('.arpa') ||
     clean.endsWith('.lan') ||
     clean.endsWith('.home') ||
-    clean.endsWith('.corp')
+    clean.endsWith('.corp') ||
+    clean.endsWith('.onion') ||
+    clean.endsWith('.invalid') ||
+    clean.endsWith('.test')
   ) {
     return true;
   }
