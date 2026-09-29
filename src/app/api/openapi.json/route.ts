@@ -130,6 +130,10 @@ export async function GET() {
                     sourceFormat: { type: 'string', description: 'Source format extension.' },
                     storageKey: { type: 'string', description: 'Pre-uploaded S3 storage key.' },
                     options: { type: 'string', description: 'JSON-serialized conversion options.' },
+                    tasks: {
+                      type: 'string',
+                      description: 'JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }].',
+                    },
                     webhookUrl: { type: 'string', format: 'uri', description: 'Destination URL for job events.' },
                     webhookSecret: { type: 'string', description: 'Secret used for HMAC-SHA256 signature.' },
                   },
@@ -146,6 +150,11 @@ export async function GET() {
                     storageKey: { type: 'string', description: 'Pre-uploaded S3 storage key.' },
                     inputBufferBase64: { type: 'string', description: 'Base64-encoded source payload.' },
                     options: { type: 'object', description: 'Conversion configuration options.' },
+                    tasks: {
+                      type: 'array',
+                      description: 'Array of sequential pipeline tasks for multi-stage conversion execution.',
+                      items: { $ref: '#/components/schemas/PipelineTask' },
+                    },
                     webhookUrl: { type: 'string', format: 'uri' },
                     webhookSecret: { type: 'string' },
                   },
@@ -255,6 +264,49 @@ export async function GET() {
             '401': createProblemResponse('Unauthorized.'),
             '403': createProblemResponse('Access denied.'),
             '404': createProblemResponse('Job not found.'),
+          },
+        },
+        delete: {
+          summary: 'Cancel Asynchronous Conversion Job',
+          description:
+            'Cancels a pending or waiting conversion job, aborting worker processing and rolling back reserved quota units. Requires "convert:write" scope.',
+          operationId: 'cancelJobV1',
+          security: [
+            { ApiKeyAuth: ['convert:write'] },
+            { BearerAuth: ['convert:write'] },
+          ],
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+              description: 'Conversion job identifier.',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Job cancellation acknowledged and quota reservation rolled back.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      jobId: { type: 'string' },
+                      status: { type: 'string', example: 'cancelled' },
+                      message: { type: 'string' },
+                      quotaRollback: { type: 'boolean' },
+                    },
+                  },
+                },
+              },
+            },
+            '400': createProblemResponse('Missing or invalid job identifier.'),
+            '401': createProblemResponse('Unauthorized.'),
+            '403': createProblemResponse('Access denied.'),
+            '404': createProblemResponse('Job not found.'),
+            '409': createProblemResponse('Job has already completed, failed, or cannot be cancelled.'),
           },
         },
       },
@@ -623,7 +675,25 @@ export async function GET() {
             attemptsMade: { type: 'integer' },
             failedReason: { type: 'string' },
             result: { type: 'object' },
+            tasks: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/PipelineTask' },
+            },
             logs: { type: 'array', items: { type: 'string' } },
+          },
+        },
+        PipelineTask: {
+          type: 'object',
+          required: ['operation', 'targetFormat'],
+          properties: {
+            name: { type: 'string', description: 'Task stage identifier or label.' },
+            operation: {
+              type: 'string',
+              enum: ['convert', 'transform', 'optimize', 'watermark'],
+              description: 'Pipeline stage operation.',
+            },
+            targetFormat: { type: 'string', description: 'Target format extension for this stage.' },
+            options: { type: 'object', description: 'Stage-specific transformation or conversion options.' },
           },
         },
         ApiKey: {

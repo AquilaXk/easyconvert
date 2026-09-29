@@ -1,5 +1,5 @@
 import { Queue, Worker, Job, createQueueEngine, IQueueEngine, WorkerOptions } from './bullmq-engine';
-import { ConversionJobData, ConversionJobResult } from '../types';
+import { ConversionJobData, ConversionJobResult, ConversionResult } from '../types';
 import { convertFile } from '../conversions';
 import { s3Storage } from '../storage/s3-storage';
 import { redisKeyStore } from '../api-keys/redis-key-store';
@@ -44,14 +44,55 @@ export async function processConversionJob(
     );
     await job.updateProgress(35);
 
-    // 2. Execute conversion engine
-    const conversionResult = await convertFile(
-      inputBuffer,
-      job.data.sourceFormat,
-      job.data.targetFormat,
-      job.data.options,
-      job.data.originalFilename
-    );
+    // 2. Execute conversion engine or multi-task pipeline chaining
+    let conversionResult: ConversionResult;
+    if (job.data.tasks && job.data.tasks.length > 0) {
+      await job.log(`Executing ${job.data.tasks.length}-stage pipeline chaining...`);
+      let currentBuffer = inputBuffer;
+      let currentSourceFormat = job.data.sourceFormat;
+      let currentFilename = job.data.originalFilename;
+      let lastResult: ConversionResult | undefined;
+
+      for (let i = 0; i < job.data.tasks.length; i++) {
+        const task = job.data.tasks[i];
+        const taskProgress = Math.round(20 + ((i + 1) / job.data.tasks.length) * 60);
+        const stageTarget = task.targetFormat || (task.operation === 'ocr' ? 'pdf' : job.data.targetFormat);
+        await job.log(
+          `[Stage ${i + 1}/${job.data.tasks.length}] Task "${task.name}" (${task.operation}): ${currentSourceFormat} -> ${stageTarget}`
+        );
+
+        const mergedOptions = { ...job.data.options, ...(task.options || {}) };
+        if (task.operation === 'ocr') {
+          mergedOptions.ocrEnabled = true;
+        }
+
+        lastResult = await convertFile(
+          currentBuffer,
+          currentSourceFormat,
+          stageTarget,
+          mergedOptions,
+          currentFilename
+        );
+
+        currentBuffer = lastResult.buffer;
+        currentSourceFormat = stageTarget;
+        currentFilename = lastResult.filename;
+        await job.updateProgress(taskProgress);
+      }
+
+      if (!lastResult) {
+        throw new Error('Pipeline task chain execution did not produce an output result.');
+      }
+      conversionResult = lastResult;
+    } else {
+      conversionResult = await convertFile(
+        inputBuffer,
+        job.data.sourceFormat,
+        job.data.targetFormat,
+        job.data.options,
+        job.data.originalFilename
+      );
+    }
 
     await job.updateProgress(80);
     await job.log(`Conversion completed (${conversionResult.size} bytes). Uploading result to S3 storage...`);

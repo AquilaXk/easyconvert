@@ -202,6 +202,13 @@ export type JobStatus =
 
 export type JobState = JobStatus;
 
+export interface PipelineTask {
+  name: string;
+  operation: 'convert' | 'ocr' | 'archive' | 'optimize';
+  targetFormat?: string;
+  options?: ConversionOptions;
+}
+
 export interface ConversionJobData {
   jobId: string;
   originalFilename: string;
@@ -215,6 +222,7 @@ export interface ConversionJobData {
   webhookSecret?: string;
   userId?: string;
   reservationId?: string;
+  tasks?: PipelineTask[];
 }
 
 export interface ConversionJobResult {

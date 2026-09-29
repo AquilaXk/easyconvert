@@ -6,7 +6,7 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
-import { ConversionOptions, JobStatus } from '@/lib/types';
+import { ConversionOptions, JobStatus, PipelineTask } from '@/lib/types';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
@@ -50,6 +50,7 @@ export async function POST(req: NextRequest) {
     let targetFormat = '';
     let sourceFormatParam: string | undefined;
     let options: ConversionOptions = {};
+    let tasks: PipelineTask[] | undefined;
     let storageKey: string | undefined;
     let inputBufferBase64: string | undefined;
     let fileSize = 0;
@@ -79,6 +80,18 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      const tasksRaw = formData.get('tasks') as string | null;
+      if (tasksRaw) {
+        try {
+          const parsedTasks = JSON.parse(tasksRaw);
+          if (Array.isArray(parsedTasks)) {
+            tasks = parsedTasks;
+          }
+        } catch {
+          return await failWithRollback(400, 'Invalid JSON string provided in "tasks" parameter.');
+        }
+      }
+
       if (file && file instanceof Blob && file.size > 0) {
         if (file.size > MAX_JOB_PAYLOAD_SIZE) {
           return await failWithRollback(400, 'File size exceeds the 500 MB asynchronous payload boundary.', 'Payload Too Large');
@@ -102,11 +115,18 @@ export async function POST(req: NextRequest) {
       targetFormat = (body.targetFormat || '').trim();
       sourceFormatParam = (body.sourceFormat || '').trim() || undefined;
       options = body.options && typeof body.options === 'object' ? body.options : {};
+      if (body.tasks && Array.isArray(body.tasks)) {
+        tasks = body.tasks;
+      }
       storageKey = (body.storageKey || '').trim() || undefined;
       inputBufferBase64 = body.inputBufferBase64;
       fileSize = Number(body.fileSize) || 0;
       webhookUrl = (body.webhookUrl || '').trim() || undefined;
       webhookSecret = (body.webhookSecret || '').trim() || undefined;
+    }
+
+    if (tasks && tasks.length > 0 && !targetFormat) {
+      targetFormat = (tasks[tasks.length - 1].targetFormat || '').trim();
     }
 
     if (!originalFilename && storageKey) {
@@ -202,6 +222,7 @@ export async function POST(req: NextRequest) {
         webhookSecret: effectiveWebhookSecret,
         userId: auth.user.id,
         reservationId: reservation.reservationId,
+        tasks,
       },
       {
         attempts: 3,
