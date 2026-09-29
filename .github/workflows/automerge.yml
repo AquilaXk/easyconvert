@@ -80,9 +80,9 @@ jobs:
           # $owner/$repo/$pr in the query are GraphQL variables, not shell expansions.
           # shellcheck disable=SC2016
           issues=$(gh api graphql \
-            -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){closingIssuesReferences(first:20){nodes{number state}}}}}' \
+            -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){closingIssuesReferences(first:20){nodes{number state repository{nameWithOwner}}}}}}' \
             -f owner="$owner" -f repo="$repo" -F pr="$PR_NUMBER" \
-            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.state == "OPEN") | .number')
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.state == "OPEN" and .repository.nameWithOwner == env.GITHUB_REPOSITORY) | .number')
           for issue in $issues; do
             gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --comment "Resolved by #$PR_NUMBER (merged)."
           done
