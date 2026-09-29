@@ -44,13 +44,31 @@ Universal file conversion platform: Next.js 14 (App Router) + TypeScript, pure-T
 
 ## Git & GitHub
 
-- Never push to `main` (the `main` ruleset is the real enforcement; `.claude/settings.json` deny rules are only a safety net). Branch from `main` (`feat/`, `fix/`, `test/`, `chore/`, `docs/`), preferably in a worktree under `.worktrees/`.
+- Never push to `main` (the `main` ruleset is the real enforcement; `.claude/settings.json` deny rules are only a safety net). Branch from `main` (`feat/`, `fix/`, `test/`, `chore/`, `docs/`), in an isolated worktree (`claude --worktree` / `.claude/worktrees/`, or `.worktrees/` for manual ones).
 - Flow: plan → issue → branch → local verification → PR → review (see below) → resolve every thread → CI green (`verify`, SonarCloud) → `automerge` label. Squash merge only.
 - Commits: `<type>(<scope>): <imperative summary>`, one commit per planned unit.
 - Everything posted to GitHub (issues, PRs, commits, review replies) is concise English starting with an imperative verb; titles ≤ 72 chars. Use `.github/PULL_REQUEST_TEMPLATE.md`.
 - Do not name or compare against other services or external reference projects in code, commits, issues, PRs, or docs; describe everything in this project's own domain terms.
 - Do not split DB migrations, infra/deploy, auth/security, or legal changes into the same PR as other work.
 - Stage explicit paths; never `git add -A` / `git add .`.
+
+## Agent orchestration
+
+The lead session owns scope, design decisions, integration, commits, and PR gates. Delegate only work whose scope and acceptance criteria are already settled.
+
+| Need | Use |
+|---|---|
+| Broad read-only search or doc lookup | built-in `Explore` subagent |
+| One bounded conversion-engine/format change | `format-engine-worker` (own worktree; commits locally, never pushes) |
+| Several independent format changes | several `format-engine-worker`s in parallel, then integrate one by one |
+| Test/oracle integrity check | `test-integrity-reviewer` |
+| Prove outputs with standard toolchains | `bitstream-verifier` |
+| Deterministic gate + PR Verification table | `/verify [test files \| --full]` |
+| Pre-PR multi-lens review with adversarial verification | `/pre-pr-review [base]` (saved workflow) |
+
+- Give delegates a brief with goal, allowed/forbidden paths, acceptance criteria, and the verification to run. Never delegate a decision the lead has not made.
+- Parallel writers must each have their own worktree and non-overlapping files; the lead reviews every delegate's diff and re-runs `/verify` after integrating.
+- Worktrees branch from `origin/main` (`worktree.baseRef: fresh`) so unpushed work from another agent never leaks in; `node_modules` is symlinked from the main checkout.
 
 ## Multi-agent coexistence
 
@@ -64,5 +82,5 @@ This repository is developed by Claude Code and by Gemini/Antigravity agents in 
 ## Code review
 
 - Every non-draft PR, from either agent, gets an automated Claude Code review through `.github/workflows/claude-code-review.yml`. Comment `@claude` on the PR for a follow-up review or questions (`.github/workflows/claude.yml`).
-- Claude Code sessions: run `/code-review` locally before opening a PR, and use the `test-integrity-reviewer` subagent for test/oracle changes. Running `aquila-review` is not required from Claude Code.
+- Claude Code sessions: run `/verify` and `/code-review` locally before opening a PR; for conversion, test, or security changes also run `/pre-pr-review`. Running `aquila-review` is not required from Claude Code.
 - Findings from any reviewer (Claude Code review or `aquila-review`) are fixed in a separate commit and their threads resolved; the `main` ruleset requires all review threads resolved before merge.
