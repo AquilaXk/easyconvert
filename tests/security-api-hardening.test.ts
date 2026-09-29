@@ -13,6 +13,7 @@ import {
   rollbackQuota,
 } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import type { ApiKeyScope } from '../src/lib/api-keys/types';
 import { userStore } from '../src/lib/auth/user-store';
 import { WebhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { POST as jobsPostHandler, GET as jobsGetHandler } from '../src/app/api/v1/jobs/route';
@@ -51,7 +52,8 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
     });
 
     wildcardJobsKey = await redisKeyStore.generateApiKey(testUser.id, 'Wildcard Jobs Key', {
-      scopes: ['convert:*'],
+      // Namespace wildcard is honored by the guard but is not a creatable ApiKeyScope literal.
+      scopes: ['convert:*' as ApiKeyScope],
     });
   });
 

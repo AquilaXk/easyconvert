@@ -114,8 +114,8 @@ describe('Per-key burst rate limit and Retry-After (#242)', () => {
     });
 
     it('authErrorHeaders emits Retry-After only when a retry delay is known', () => {
-      expect(authErrorHeaders({ authorized: false, status: 429, retryAfterSeconds: 7 })).toEqual({ 'Retry-After': '7' });
-      expect(authErrorHeaders({ authorized: false, status: 403 })).toEqual({});
+      expect(authErrorHeaders({ retryAfterSeconds: 7 })).toEqual({ 'Retry-After': '7' });
+      expect(authErrorHeaders({})).toEqual({});
     });
   });
 
