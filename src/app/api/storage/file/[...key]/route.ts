@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { storageProvider as s3Storage } from '@/lib/storage';
-import { conversionQueue } from '@/lib/queue/conversion-queue';
-import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
+import { denyUnlessOwner, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { parseByteRange, satisfiedContentRange, unsatisfiedContentRange } from '@/lib/api/http-range';
 
 export const dynamic = 'force-dynamic';
 
 const STORAGE_DOWNLOAD_SCOPE = 'storage:download';
-/** `conversions/<userId>/...`: synchronous API outputs, owned by that user. */
-const USER_CONVERSION_KEY_PATTERN = /^conversions\/([^/]+)\//;
-/** `results/<jobId>/...`: queue job outputs, owned by the job's user when the job has one. */
-const JOB_RESULT_KEY_PATTERN = /^results\/([^/]+)\//;
 /** Outputs can be private to one user and expire with their storage TTL, so no shared cache may keep them. */
 const PRIVATE_NO_STORE = 'private, no-store';
 
@@ -25,35 +20,6 @@ function decodeStorageKey(rawKey: string): string | undefined {
     }
     throw error;
   }
-}
-
-type ObjectOwnership =
-  | { resolved: true; ownerUserId: string | undefined }
-  | { resolved: false };
-
-/**
- * Resolves the user that owns a stored object from its key namespace.
- * A job result is resolved only while its job record can be read: jobs are never removed after
- * they finish, so a missing record means a queue outage (the distributed adapter reports a Redis
- * error as a missing job) or a restarted in-memory queue, and the owner cannot be proven.
- * Every other key (anonymous uploads) has no owner.
- */
-async function resolveObjectOwnership(key: string): Promise<ObjectOwnership> {
-  const userConversion = USER_CONVERSION_KEY_PATTERN.exec(key);
-  if (userConversion) {
-    return { resolved: true, ownerUserId: userConversion[1] };
-  }
-
-  const jobResult = JOB_RESULT_KEY_PATTERN.exec(key);
-  if (jobResult) {
-    const job = await conversionQueue.getJob(jobResult[1]);
-    if (!job) {
-      return { resolved: false };
-    }
-    return { resolved: true, ownerUserId: job.data?.userId };
-  }
-
-  return { resolved: true, ownerUserId: undefined };
 }
 
 export async function GET(
