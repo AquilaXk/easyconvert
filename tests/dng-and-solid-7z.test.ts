@@ -15,7 +15,7 @@ function sha256(buf: Buffer): string {
 /**
  * Builds a synthetically valid DNG TIFF byte buffer with authentic IFD0 and tags.
  */
-function buildSyntheticDngBuffer(options: {
+export function buildSyntheticDngBuffer(options: {
   width: number;
   height: number;
   bitsPerSample: number;

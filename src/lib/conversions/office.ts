@@ -2665,8 +2665,10 @@ export function parseWordStyles(stylesXml: string): Map<string, WordTableStyle> 
 
 function parseSingleDocxTable(
   chunk: string,
-  styleMap?: Map<string, WordTableStyle>
+  styleMap?: Map<string, WordTableStyle>,
+  depth: number = 0
 ): DocxTable | null {
+  if (depth > 16) return null;
   const rows: string[][] = [];
   const structuredRows: DocxTableCell[][] = [];
 
@@ -2745,15 +2747,20 @@ function parseSingleDocxTable(
           ? (jcMatch[1] as 'left' | 'center' | 'right')
           : undefined;
 
-      // Extract nested table if present inside cell
-      let nestedTable: DocxTable | undefined;
-      const nestedTblEl = safeExtractFirstXmlElement(tcXml, 'w:tbl');
-      if (nestedTblEl) {
-        nestedTable = parseSingleDocxTable(nestedTblEl.raw, styleMap) ?? undefined;
+      // Extract nested tables if present inside cell
+      const nestedTblEls = safeExtractXmlElements(tcXml, 'w:tbl');
+      const nestedTables: DocxTable[] = [];
+      let directTcXml = tcXml;
+      for (const nEl of nestedTblEls) {
+        const parsedN = parseSingleDocxTable(nEl.raw, styleMap, depth + 1);
+        if (parsedN) {
+          nestedTables.push(parsedN);
+        }
+        directTcXml = directTcXml.replace(nEl.raw, '');
       }
+      const nestedTable = nestedTables[0];
 
       // Isolate cell direct content without nested table text
-      const directTcXml = nestedTblEl ? tcXml.replace(nestedTblEl.raw, '') : tcXml;
       const pList = safeExtractXmlTags(directTcXml, 'w:p');
       let cellText = '';
       if (pList.length > 0) {
@@ -2774,9 +2781,11 @@ function parseSingleDocxTable(
       }
 
       let fullCellText = cellText;
-      if (nestedTable && nestedTable.rows.length > 0) {
-        const nestedRowsText = nestedTable.rows.map((r) => r.join('\t')).join('\n');
-        fullCellText = fullCellText ? `${fullCellText}\n${nestedRowsText}` : nestedRowsText;
+      for (const nTbl of nestedTables) {
+        if (nTbl.rows.length > 0) {
+          const nestedRowsText = nTbl.rows.map((r) => r.join(' | ')).join('\n');
+          fullCellText = fullCellText ? `${fullCellText}\n${nestedRowsText}` : nestedRowsText;
+        }
       }
 
       const cellObj: DocxTableCell = {

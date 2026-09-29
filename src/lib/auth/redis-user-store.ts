@@ -81,7 +81,7 @@ export class RedisUserStore {
 
   constructor(options: RedisUserStoreOptions = {}) {
     const rawPrefix = options.keyPrefix || 'easyconvert:{user}:';
-    if (!rawPrefix.includes('{')) {
+    if (!/\{[^}]+\}/.test(rawPrefix)) {
       if (rawPrefix.includes('user')) {
         this.keyPrefix = rawPrefix.replace(/user/g, '{user}');
       } else {

@@ -382,4 +382,79 @@ Summary after table.`;
     expect(fullText).toContain('Sub 1 | Sub 2');
     expect(fullText).toContain('Sub 3 | Sub 4');
   });
+
+  it('renders multiple nested tables in a cell and gracefully bounds deep recursion', async () => {
+    // 1. Synthetic DOCX with two sibling nested tables inside one cell
+    const zip = new JSZip();
+    zip.file(
+      '[Content_Types].xml',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`
+    );
+    zip.file(
+      '_rels/.rels',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`
+    );
+    const docXmlWithMultiNested = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>Parent Container</w:t></w:r></w:p>
+          <w:tbl>
+            <w:tr>
+              <w:tc><w:p><w:r><w:t>SubTable1 Item</w:t></w:r></w:p></w:tc>
+            </w:tr>
+          </w:tbl>
+          <w:tbl>
+            <w:tr>
+              <w:tc><w:p><w:r><w:t>SubTable2 Item</w:t></w:r></w:p></w:tc>
+            </w:tr>
+          </w:tbl>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+    zip.file('word/document.xml', docXmlWithMultiNested);
+    const docxBuf = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const pdfResult = await convertFile(docxBuf, 'docx', 'pdf', {}, 'multi_nested.docx');
+    expect(pdfResult.mimeType).toBe('application/pdf');
+
+    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(pdfResult.buffer) });
+    const pdfDoc = await loadingTask.promise;
+    const page = await pdfDoc.getPage(1);
+    const textContent = await page.getTextContent();
+    const extractedStr = textContent.items
+      .map((item: any) => ('str' in item ? item.str : ''))
+      .filter(Boolean)
+      .join(' ');
+
+    expect(extractedStr).toContain('Parent Container');
+    expect(extractedStr).toContain('SubTable1 Item');
+    expect(extractedStr).toContain('SubTable2 Item');
+
+    // 2. Deep recursive nesting test: 20 levels deep does not throw RangeError: Maximum call stack size exceeded
+    let nestedXml = '<w:p><w:r><w:t>Deep Leaf</w:t></w:r></w:p>';
+    for (let i = 0; i < 20; i++) {
+      nestedXml = `<w:tbl><w:tr><w:tc>${nestedXml}</w:tc></w:tr></w:tbl>`;
+    }
+    const deepDocXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>${nestedXml}</w:body>
+</w:document>`;
+    zip.file('word/document.xml', deepDocXml);
+    const deepBuf = await zip.generateAsync({ type: 'nodebuffer' });
+    // Should complete cleanly without stack overflow
+    await expect(convertFile(deepBuf, 'docx', 'pdf', {}, 'deep.docx')).resolves.toBeDefined();
+  });
 });
