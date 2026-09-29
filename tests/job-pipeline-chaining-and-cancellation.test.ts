@@ -41,7 +41,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
   });
 
   describe('1. Engine-Level Job Cancellation (Queue & Adapter)', () => {
-    it('cancels a waiting job and transitions state to failed with reason', async () => {
+    it('cancels a waiting job and transitions state to cancelled with reason', async () => {
       const queue = new Queue<ConversionJobData, ConversionJobResult>('test-cancel-queue');
       const job = await queue.add('convert', {
         jobId: 'job_wait_123',
@@ -59,7 +59,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
 
       const updated = await queue.getJob(job.id);
       expect(updated).toBeDefined();
-      expect(updated?.state).toBe('failed');
+      expect(updated?.state).toBe('cancelled');
       expect(updated?.failedReason).toBe('User requested cancellation');
       expect(updated?.finishedOn).toBeDefined();
       expect(updated?.logs.some((l) => l.includes('Job cancelled: User requested cancellation'))).toBe(true);
@@ -90,8 +90,9 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
       expect(cancelled).toBe(true);
 
       const updated = await queue.getJob(job.id);
-      expect(updated?.state).toBe('failed');
+      expect(updated?.state).toBe('cancelled');
       expect(updated?.failedReason).toBe('Abort delayed task');
+      expect((await queue.getJobCounts()).delayed).toBe(0);
     });
 
     it('fails closed when attempting to cancel non-existent or completed jobs', async () => {
@@ -192,6 +193,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
 
       const usageBefore = await redisKeyStore.getQuotaUsage(user.id);
       expect(usageBefore.usedToday).toBe(1);
+      const rollbackSpy = vi.spyOn(redisKeyStore, 'rollbackQuota');
 
       const job = await conversionQueue.add('convert', {
         jobId: 'job_cancel_refund_test',
@@ -213,9 +215,12 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
       const json = await res.json();
       expect(json.success).toBe(true);
       expect(json.cancelled).toBe(true);
-      expect(json.status).toBe('failed');
+      expect(json.status).toBe('cancelled');
+      expect((await conversionQueue.getJob(job.id))?.state).toBe('cancelled');
 
-      // Check quota was refunded
+      // Check quota was refunded exactly once (the queue's cancellation listener owns the refund)
+      expect(rollbackSpy).toHaveBeenCalledTimes(1);
+      expect(rollbackSpy).toHaveBeenCalledWith(reservation.reservationId);
       const usageAfter = await redisKeyStore.getQuotaUsage(user.id);
       expect(usageAfter.usedToday).toBe(0);
     });

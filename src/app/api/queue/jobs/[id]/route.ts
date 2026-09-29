@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
-import { subscribeToJobTelemetry } from '@/lib/queue/bullmq-engine';
+import {
+  subscribeToJobTelemetry,
+  TERMINAL_JOB_STATES,
+  TERMINAL_TELEMETRY_EVENTS,
+} from '@/lib/queue/bullmq-engine';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 
 export const dynamic = 'force-dynamic';
@@ -72,7 +76,7 @@ export async function GET(
         });
         controller.enqueue(encoder.encode(`event: initial\ndata: ${initialPayload}\n\n`));
 
-        if (job.state === 'completed' || job.state === 'failed') {
+        if (TERMINAL_JOB_STATES.has(job.state)) {
           controller.close();
           return;
         }
@@ -82,7 +86,7 @@ export async function GET(
             const dataStr = JSON.stringify(event.data);
             controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${dataStr}\n\n`));
 
-            if (event.event === 'completed' || event.event === 'failed') {
+            if (TERMINAL_TELEMETRY_EVENTS.has(event.event)) {
               unsubscribe();
               controller.close();
             }
@@ -147,9 +151,13 @@ export async function DELETE(
     return denied;
   }
 
-  job.state = 'failed';
-  job.failedReason = 'Job was cancelled by client request.';
-  job.finishedOn = Date.now();
+  const cancelled = await conversionQueue.cancelJob(params.id, 'Job was cancelled by client request.');
+  if (!cancelled) {
+    return NextResponse.json(
+      { success: false, error: `Job in state "${job.state}" cannot be cancelled.` },
+      { status: 409 }
+    );
+  }
 
   return NextResponse.json({ success: true, message: 'Job cancelled successfully.' });
 }

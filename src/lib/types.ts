@@ -198,7 +198,8 @@ export type JobStatus =
   | 'active'
   | 'completed'
   | 'failed'
-  | 'delayed';
+  | 'delayed'
+  | 'cancelled';
 
 export type JobState = JobStatus;
 

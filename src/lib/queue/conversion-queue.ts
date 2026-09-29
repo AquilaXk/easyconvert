@@ -17,6 +17,9 @@ export async function processConversionJob(
   job: Job<ConversionJobData, ConversionJobResult>
 ): Promise<ConversionJobResult> {
   const startTime = Date.now();
+  // Capture this attempt's signal before the first await: a retry gets a fresh one, and a stale
+  // attempt that outlived its timeout must still see its own aborted signal.
+  const attemptSignal = job.signal;
   await job.log(`Worker picked up conversion job for file: ${job.data.originalFilename}`);
   await job.updateProgress(10);
 
@@ -54,6 +57,7 @@ export async function processConversionJob(
       let lastResult: ConversionResult | undefined;
 
       for (let i = 0; i < job.data.tasks.length; i++) {
+        attemptSignal.throwIfAborted();
         const task = job.data.tasks[i];
         const taskProgress = Math.round(20 + ((i + 1) / job.data.tasks.length) * 60);
         const stageTarget = task.targetFormat || (task.operation === 'ocr' ? 'pdf' : job.data.targetFormat);
@@ -85,6 +89,7 @@ export async function processConversionJob(
       }
       conversionResult = lastResult;
     } else {
+      attemptSignal.throwIfAborted();
       conversionResult = await convertFile(
         inputBuffer,
         job.data.sourceFormat,
@@ -97,7 +102,8 @@ export async function processConversionJob(
     await job.updateProgress(80);
     await job.log(`Conversion completed (${conversionResult.size} bytes). Uploading result to S3 storage...`);
 
-    // 3. Save output artifact to storage with 1-hour TTL
+    // 3. Save output artifact to storage with 1-hour TTL (never for a cancelled or timed-out attempt)
+    attemptSignal.throwIfAborted();
     const resultKey = `results/${job.id}/${conversionResult.filename}`;
     s3Storage.saveObject(
       resultKey,
@@ -134,15 +140,24 @@ export async function processConversionJob(
         // Ignore if detached
       }
     }
-    // Clean up temporary input object from storage backend upon job success or when retry attempts are exhausted
+    // Delete the uploaded input once retry attempts are exhausted. After a success the input is kept
+    // until the completion is recorded (attachInputCleanupOnCompletion): if recording fails, the
+    // stalled sweep runs the job again and it needs the input to convert again.
     const isFinalAttempt = !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
-    if (job.data.storageKey && (conversionSucceeded || isFinalAttempt)) {
-      try {
-        s3Storage.deleteObject(job.data.storageKey);
-      } catch {
-        // Ignore
-      }
+    if (job.data.storageKey && !conversionSucceeded && isFinalAttempt) {
+      removeJobInput(job.id, job.data.storageKey);
     }
+  }
+}
+
+/** Deletes a job's uploaded input, reporting a missing object or a failed delete. */
+function removeJobInput(jobId: string, storageKey: string): void {
+  try {
+    if (!s3Storage.deleteObject(storageKey)) {
+      console.warn(`[ConversionQueue] Input cleanup for job ${jobId} found no object at key "${storageKey}".`);
+    }
+  } catch (err) {
+    console.warn(`[ConversionQueue] Input cleanup for job ${jobId} failed to delete key "${storageKey}":`, err);
   }
 }
 
@@ -222,6 +237,44 @@ export function attachJobLifecycleListeners(
   );
 }
 
+/**
+ * Deletes a job's uploaded input once the worker has recorded its completion. Attach it to every
+ * worker that runs processConversionJob.
+ */
+export function attachInputCleanupOnCompletion(
+  worker: Worker<ConversionJobData, ConversionJobResult>
+): void {
+  worker.on('completed', (job: Job<ConversionJobData, ConversionJobResult>) => {
+    if (job.data?.storageKey) {
+      removeJobInput(job.id, job.data.storageKey);
+    }
+  });
+}
+
+/**
+ * Owns the quota refund for cancelled jobs. The engine emits `cancelled` once per cancelled job, in
+ * the process whose cancelJob won the transition, so every cancel path refunds exactly once.
+ */
+export function attachJobCancellationListeners(
+  queue: IQueueEngine<ConversionJobData, ConversionJobResult>
+): void {
+  queue.on('cancelled', async (job: Job<ConversionJobData, ConversionJobResult>) => {
+    if (!job.data?.reservationId) {
+      return;
+    }
+    try {
+      await redisKeyStore.rollbackQuota(job.data.reservationId);
+    } catch (err) {
+      console.error(
+        `[ConversionQueue] Failed to rollback quota for cancelled job ${job.id} (reservation ${job.data.reservationId}):`,
+        err
+      );
+    }
+  });
+}
+
+attachJobCancellationListeners(conversionQueue);
+
 // 2. Worker Lifecycle Management (Producer/Consumer Decoupled)
 let workerInstance: Worker<ConversionJobData, ConversionJobResult> | null = null;
 
@@ -237,6 +290,7 @@ export function startConversionWorker(
     { concurrency: opts.concurrency || 5 }
   );
   attachJobLifecycleListeners(worker);
+  attachInputCleanupOnCompletion(worker);
   workerInstance = worker;
   return worker;
 }

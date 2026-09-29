@@ -104,8 +104,8 @@ export async function POST(req: NextRequest) {
   }
 }
 
-const LISTABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'active', 'completed', 'failed', 'delayed']);
-const DEFAULT_LISTED_STATES: JobState[] = ['waiting', 'active', 'completed', 'failed'];
+const LISTABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled']);
+const DEFAULT_LISTED_STATES: JobState[] = ['waiting', 'active', 'completed', 'failed', 'cancelled'];
 const MAX_LISTED_JOBS = 50;
 
 function isListableJobState(value: string): value is JobState {

@@ -58,7 +58,7 @@ export interface JobCreatedResult {
 
 export interface JobSummary {
   jobId: string;
-  status: 'waiting' | 'active' | 'completed' | 'failed' | 'delayed';
+  status: 'waiting' | 'active' | 'completed' | 'failed' | 'delayed' | 'cancelled';
   progress?: number;
   sourceFormat?: string;
   targetFormat?: string;

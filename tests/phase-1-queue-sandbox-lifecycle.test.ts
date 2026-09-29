@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+import Redis from 'ioredis';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   Queue,
@@ -191,6 +193,24 @@ class InMemoryRedisMock {
   }
 }
 
+/**
+ * Connects an adapter to the real Redis server at REDIS_URL under a unique key prefix.
+ * `cleanup` deletes every key under that prefix and closes the adapter.
+ */
+function createRealRedisAdapter(queueName: string) {
+  const client = new Redis(process.env.REDIS_URL as string, { maxRetriesPerRequest: 1 });
+  const keyPrefix = `testqueue-${crypto.randomBytes(6).toString('hex')}:`;
+  const adapter = new DistributedBullMQAdapter(queueName, { redisClient: client, keyPrefix });
+  const cleanup = async () => {
+    const keys = await client.keys(`${keyPrefix}*`);
+    if (keys.length > 0) {
+      await client.del(...keys);
+    }
+    await adapter.close();
+  };
+  return { adapter, cleanup };
+}
+
 describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remediation', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -259,12 +279,9 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       await adapter.close();
     });
 
-    it('pops waiting jobs and tracks active, completed, and failed counts accurately', async () => {
-      const mockRedis = new InMemoryRedisMock();
-      const adapter = new DistributedBullMQAdapter('analytics-queue', {
-        redisClient: mockRedis as any,
-        keyPrefix: 'testqueue:',
-      });
+    // Pop and completion are atomic Lua scripts, which InMemoryRedisMock cannot execute.
+    it.skipIf(!process.env.REDIS_URL)('pops waiting jobs and tracks active, completed, and failed counts accurately', async () => {
+      const { adapter, cleanup } = createRealRedisAdapter('analytics-queue');
 
       const job = await adapter.add('compute-metrics', { count: 100 });
 
@@ -300,15 +317,11 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       expect(completedJob?.progress).toBe(100);
       expect(completedJob?.returnvalue).toEqual({ result: 'done' });
 
-      await adapter.close();
+      await cleanup();
     });
 
-    it('schedules delayed jobs in sorted sets and promotes them when due', async () => {
-      const mockRedis = new InMemoryRedisMock();
-      const adapter = new DistributedBullMQAdapter('delayed-queue', {
-        redisClient: mockRedis as any,
-        keyPrefix: 'testqueue:',
-      });
+    it.skipIf(!process.env.REDIS_URL)('schedules delayed jobs in sorted sets and promotes them when due', async () => {
+      const { adapter, cleanup } = createRealRedisAdapter('delayed-queue');
 
       // Add delayed job
       const delayMs = 50;
@@ -336,7 +349,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       expect(counts.delayed).toBe(0);
       expect(counts.active).toBe(1);
 
-      await adapter.close();
+      await cleanup();
     });
 
     it('supports Dead-Letter Queue (DLQ) operations on Redis backend', async () => {

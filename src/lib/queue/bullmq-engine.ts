@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import Redis from 'ioredis';
 
 export interface JobOptions {
@@ -15,10 +15,65 @@ export interface JobOptions {
   timeout?: number;
 }
 
-export type JobState = 'waiting' | 'active' | 'completed' | 'failed' | 'delayed';
+export type JobState = 'waiting' | 'active' | 'completed' | 'failed' | 'delayed' | 'cancelled';
+
+export type JobCounts = Record<JobState, number>;
+
+/** States from which a job can still be cancelled. */
+export const CANCELLABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'delayed', 'active']);
+
+/** States a job never leaves. */
+export const TERMINAL_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['completed', 'failed', 'cancelled']);
+
+/** Redis mode: how often a worker refreshes the heartbeat of each job it is running. */
+export const HEARTBEAT_INTERVAL_MS = 5000;
+
+/** Redis mode: heartbeat key TTL. An active job whose heartbeat expired is treated as stalled. */
+export const STALL_TIMEOUT_MS = 30000;
+
+/** Redis mode: how often a worker sweeps the active set for stalled jobs. */
+export const STALLED_SWEEP_INTERVAL_MS = 15000;
+
+export const STALLED_JOB_FAILURE_REASON = 'Job stalled: worker heartbeat lost';
+
+/** Redis mode: tries to record a completion before leaving the job to the stalled sweep. */
+export const COMPLETION_COMMIT_MAX_ATTEMPTS = 3;
+
+/** Redis mode: wait before the first completion retry; it doubles for every further retry. */
+export const COMPLETION_COMMIT_RETRY_BASE_DELAY_MS = 100;
+
+/** Abort reason for an attempt whose job was cancelled. Cancelled jobs never retry. */
+export class JobCancelledError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'AbortError';
+  }
+}
+
+/** Abort reason for an attempt that exceeded `JobOptions.timeout`. The attempt fails and may retry. */
+export class JobTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Job timed out after ${timeoutMs}ms`);
+    this.name = 'TimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/** Abort reason for an attempt that lost its job to another attempt (Redis mode, after stall recovery). */
+export class JobOwnershipLostError extends Error {
+  constructor(jobId: string) {
+    super(`Attempt no longer owns job ${jobId}: another attempt took it over after a stall`);
+    this.name = 'OwnershipLostError';
+  }
+}
 
 /** Random bytes in a job id (128 bits); ids of anonymous jobs act as capability URLs. */
 const JOB_ID_RANDOM_BYTES = 16;
+
+/** Random bytes in a Redis attempt token, which fences writes from stale attempts. */
+const ATTEMPT_TOKEN_BYTES = 16;
 
 export class Job<T = any, R = any> {
   id: string;
@@ -36,8 +91,28 @@ export class Job<T = any, R = any> {
   state: JobState = 'waiting';
   logs: string[] = [];
 
+  /**
+   * @internal Redis mode: token of the attempt that popped this job. Completion, failure, requeue,
+   * heartbeat, and progress writes are accepted only while the job hash still holds this token.
+   */
+  _attemptToken?: string;
+
   private emitter: EventEmitter;
   private onUpdateHook?: (job: Job<T, R>) => Promise<void> | void;
+
+  /**
+   * Abort controller of the current processing attempt. The worker replaces it when each attempt
+   * starts (`_beginAttempt`), so a timeout that aborted one attempt does not leak into its retry.
+   */
+  private attemptController = new AbortController();
+
+  /**
+   * Aborts when the job is cancelled or the current attempt exceeds `opts.timeout`. Each attempt has
+   * its own signal; processors should read it once when the attempt starts and keep that reference.
+   */
+  get signal(): AbortSignal {
+    return this.attemptController.signal;
+  }
 
   constructor(
     id: string,
@@ -86,6 +161,28 @@ export class Job<T = any, R = any> {
   getState(): JobState {
     return this.state;
   }
+
+  /** True once the job was cancelled, either in this process or through the attempt's signal. */
+  isCancelled(): boolean {
+    return this.state === 'cancelled' || this.signal.reason instanceof JobCancelledError;
+  }
+
+  /** True once another attempt took this job over, so this attempt must not record anything. */
+  hasLostOwnership(): boolean {
+    return this.signal.reason instanceof JobOwnershipLostError;
+  }
+
+  /** @internal Starts a processing attempt with a fresh abort signal. Called by the worker. */
+  _beginAttempt(): void {
+    this.attemptController = new AbortController();
+  }
+
+  /** @internal Aborts the current attempt. The first reason wins. */
+  _abortAttempt(reason: JobCancelledError | JobTimeoutError | JobOwnershipLostError): void {
+    if (!this.attemptController.signal.aborted) {
+      this.attemptController.abort(reason);
+    }
+  }
 }
 
 export interface DlqEntry<T = any> {
@@ -104,23 +201,28 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   add(name: string, data: T, opts?: JobOptions): Promise<Job<T, R>>;
   getJob(id: string): Promise<Job<T, R> | undefined>;
   getJobs(types: JobState[]): Promise<Job<T, R>[]>;
-  getJobCounts(): Promise<{
-    waiting: number;
-    active: number;
-    completed: number;
-    failed: number;
-    delayed: number;
-  }>;
-  clean(grace: number, limit: number, type: 'completed' | 'failed'): Promise<string[]>;
+  getJobCounts(): Promise<JobCounts>;
+  clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]>;
   close(): Promise<void>;
   _popNextWaiting?(): Promise<Job<T, R> | undefined> | Job<T, R> | undefined;
-  _requeue?(job: Job<T, R>, delayMs?: number): Promise<void> | void;
-  _onJobCompleted?(job: Job<T, R>, result: R): Promise<void> | void;
-  _onJobFailed?(job: Job<T, R>, err: any): Promise<void> | void;
+  /** Moves an active job back to waiting/delayed. Returns false when the job is no longer active. */
+  _requeue?(job: Job<T, R>, delayMs?: number): Promise<boolean> | boolean;
+  /** Records completion. Returns false when the job is no longer active (for example, it was cancelled). */
+  _onJobCompleted?(job: Job<T, R>, result: R): Promise<boolean> | boolean;
+  /** Records final failure. Returns false when the job is no longer active (for example, it was cancelled). */
+  _onJobFailed?(job: Job<T, R>, err: any): Promise<boolean> | boolean;
+  /** Supervises an attempt the worker just started (heartbeat, remote cancel). Returns a stop function. */
+  _monitorActiveJob?(job: Job<T, R>): () => void;
+  /** Recovers active jobs whose worker stopped heartbeating. Returns the jobs it moved to failed. */
+  _recoverStalledJobs?(): Promise<Job<T, R>[]>;
   getDlqEntries?(): Promise<DlqEntry<T>[]>;
   moveToDlq?(job: Job<T, R>, reason: string): Promise<void>;
   purgeDlq?(): Promise<number>;
-  cancelJob?(id: string, reason?: string): Promise<boolean>;
+  /**
+   * Cancels a waiting, delayed, or active job, emitting `cancelled` once. Returns false for
+   * completed, failed, already cancelled, or unknown jobs.
+   */
+  cancelJob(id: string, reason?: string): Promise<boolean>;
   ping?(): Promise<{ ok: boolean; latencyMs: number }>;
 }
 
@@ -177,14 +279,8 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     return Array.from(this.jobs.values()).filter((j) => types.includes(j.state));
   }
 
-  async getJobCounts(): Promise<{
-    waiting: number;
-    active: number;
-    completed: number;
-    failed: number;
-    delayed: number;
-  }> {
-    const counts = { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
+  async getJobCounts(): Promise<JobCounts> {
+    const counts: JobCounts = { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0, cancelled: 0 };
     for (const job of this.jobs.values()) {
       counts[job.state]++;
     }
@@ -198,7 +294,11 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     return this.jobs.get(id);
   }
 
-  _requeue(job: Job<T, R>, delayMs: number = 0) {
+  _requeue(job: Job<T, R>, delayMs: number = 0): boolean {
+    // Only an attempt that is still active may be retried; a cancel during the failure path wins.
+    if (job.state !== 'active') {
+      return false;
+    }
     if (delayMs > 0) {
       job.state = 'delayed';
       this.delayedIds.push(job.id);
@@ -218,9 +318,10 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
       this.waitingIds.push(job.id);
       this.emit('waiting', job);
     }
+    return true;
   }
 
-  async clean(grace: number, limit: number, type: 'completed' | 'failed'): Promise<string[]> {
+  async clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]> {
     const threshold = Date.now() - grace;
     const removed: string[] = [];
 
@@ -236,9 +337,10 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const job = this.jobs.get(id);
-    if (!job) return false;
-    if (job.state === 'completed' || job.state === 'failed') return false;
+    if (!job || !CANCELLABLE_JOB_STATES.has(job.state)) return false;
 
+    // Every state change happens before the first await, so no worker step can interleave with it.
+    const wasActive = job.state === 'active';
     this.waitingIds = this.waitingIds.filter((wid) => wid !== id);
     this.delayedIds = this.delayedIds.filter((did) => did !== id);
     const timer = this.delayTimers.get(id);
@@ -247,11 +349,14 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
       this.delayTimers.delete(id);
     }
 
-    job.state = 'failed';
+    job.state = 'cancelled';
     job.failedReason = reason;
     job.finishedOn = Date.now();
+    if (wasActive) {
+      job._abortAttempt(new JobCancelledError(reason));
+    }
     await job.log(`Job cancelled: ${reason}`);
-    this.emit('failed', job, new Error(reason));
+    this.emit('cancelled', job);
     return true;
   }
 
@@ -313,6 +418,11 @@ export function calculateBackoffWithJitter(
   return Math.min(capped, jitter);
 }
 
+/** An attempt whose job was cancelled or taken over by another attempt must not record anything. */
+function isAttemptDiscarded(job: Job): boolean {
+  return job.isCancelled() || job.hasLostOwnership();
+}
+
 export class Worker<T = any, R = any> extends EventEmitter implements IQueueWorker<T, R> {
   readonly name: string;
   private queue: IQueueEngine<T, R>;
@@ -321,6 +431,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   private activeCount: number = 0;
   private isRunning: boolean = true;
   private pollingTimer?: NodeJS.Timeout;
+  private stalledSweepTimer?: NodeJS.Timeout;
 
   constructor(queue: IQueueEngine<T, R>, processor: Processor<T, R>, opts: WorkerOptions = {}) {
     super();
@@ -341,6 +452,16 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
       }, 500);
       if (typeof this.pollingTimer.unref === 'function') {
         this.pollingTimer.unref();
+      }
+    }
+
+    // Recover jobs whose worker process died mid-attempt (distributed engines only)
+    if (this.queue.isDistributed && this.queue._recoverStalledJobs) {
+      this.stalledSweepTimer = setInterval(() => {
+        void this.recoverStalledJobs();
+      }, STALLED_SWEEP_INTERVAL_MS);
+      if (typeof this.stalledSweepTimer.unref === 'function') {
+        this.stalledSweepTimer.unref();
       }
     }
 
@@ -388,25 +509,93 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   }
 
   private async executeJob(job: Job<T, R>): Promise<void> {
+    // A cancel can land between the pop and this call; a cancelled job never starts an attempt.
+    if (job.state === 'cancelled') {
+      return;
+    }
+    job._beginAttempt();
     job.state = 'active';
     job.processedOn = Date.now();
     job.attemptsMade++;
     this.emit('active', job);
 
+    const stopMonitoring = this.queue._monitorActiveJob ? this.queue._monitorActiveJob(job) : undefined;
     try {
-      const result = await this.processor(job);
-      job.returnvalue = result;
-      job.state = 'completed';
-      job.finishedOn = Date.now();
-      job.progress = 100;
-
-      if (this.queue._onJobCompleted) {
-        await this.queue._onJobCompleted(job, result);
+      let result: R;
+      try {
+        result = await this.runAttempt(job);
+      } catch (err: any) {
+        // A cancelled or superseded attempt never retries, never reaches the DLQ, and never emits `failed`.
+        if (isAttemptDiscarded(job)) {
+          return;
+        }
+        await this.handleJobFailure(job, err);
+        return;
       }
+      await this.completeJob(job, result);
+    } finally {
+      stopMonitoring?.();
+    }
+  }
 
-      this.emit('completed', job, result);
-    } catch (err: any) {
-      await this.handleJobFailure(job, err);
+  /**
+   * Runs the processor for one attempt. With `opts.timeout`, the attempt's signal is aborted with a
+   * JobTimeoutError once the timeout elapses and the attempt fails even if the processor ignores it.
+   */
+  private async runAttempt(job: Job<T, R>): Promise<R> {
+    const timeoutMs = job.opts.timeout;
+    if (!timeoutMs || timeoutMs <= 0) {
+      return this.processor(job);
+    }
+
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const timeoutError = new JobTimeoutError(timeoutMs);
+        job._abortAttempt(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([this.processor(job), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async completeJob(job: Job<T, R>, result: R): Promise<void> {
+    // A cancel (or a takeover) that landed while the processor ran wins: nothing is recorded or emitted.
+    if (isAttemptDiscarded(job)) {
+      return;
+    }
+    if (this.queue._onJobCompleted) {
+      const committed = await this.queue._onJobCompleted(job, result);
+      if (!committed) {
+        return;
+      }
+    }
+    // In-process engines share this job object, so a cancel can also land during the await above.
+    if (isAttemptDiscarded(job)) {
+      return;
+    }
+    job.returnvalue = result;
+    job.state = 'completed';
+    job.finishedOn = Date.now();
+    job.progress = 100;
+    this.emit('completed', job, result);
+  }
+
+  private async recoverStalledJobs(): Promise<void> {
+    if (!this.isRunning || !this.queue._recoverStalledJobs) {
+      return;
+    }
+    try {
+      const failedJobs = await this.queue._recoverStalledJobs();
+      for (const job of failedJobs) {
+        this.emit('failed', job, new Error(STALLED_JOB_FAILURE_REASON));
+      }
+    } catch (err) {
+      console.error(`[Worker:${this.name}] Stalled job sweep failed:`, err);
     }
   }
 
@@ -426,17 +615,24 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
           : backoffCfg.delay;
 
       await job.log(`Job attempt ${job.attemptsMade} failed. Retrying in ${delay}ms...`);
+      // The engine refuses the requeue when the job stopped being active (for example, it was cancelled).
       if (this.queue._requeue) {
         await this.queue._requeue(job, delay);
       }
       return;
     }
 
+    if (this.queue._onJobFailed) {
+      const committed = await this.queue._onJobFailed(job, err);
+      if (!committed) {
+        return;
+      }
+    }
+    if (isAttemptDiscarded(job)) {
+      return;
+    }
     job.state = 'failed';
     job.finishedOn = Date.now();
-    if (this.queue._onJobFailed) {
-      await this.queue._onJobFailed(job, err);
-    }
     if (this.queue.moveToDlq) {
       await this.queue.moveToDlq(job, errorMessage);
     }
@@ -448,6 +644,10 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     if (this.pollingTimer) {
       clearInterval(this.pollingTimer);
       this.pollingTimer = undefined;
+    }
+    if (this.stalledSweepTimer) {
+      clearInterval(this.stalledSweepTimer);
+      this.stalledSweepTimer = undefined;
     }
     this.removeAllListeners();
   }
@@ -483,6 +683,243 @@ end
 return #promoted
 `;
 
+export const POP_NEXT_WAITING_JOB_LUA_SCRIPT = `
+-- KEYS[1]: waitingKey
+-- KEYS[2]: activeKey
+-- KEYS[3]: job key prefix (e.g. prefix:{queue}:job:)
+-- KEYS[4]: heartbeat key prefix (e.g. prefix:{queue}:heartbeat:)
+-- ARGV[1]: processedOn timestamp in milliseconds
+-- ARGV[2]: heartbeat TTL in milliseconds
+-- ARGV[3]: attempt token of the new attempt
+-- Pops ids until one is still waiting, marks it active under the new attempt token, starts its
+-- heartbeat, and returns its hash. Ids whose job is no longer waiting (cancelled, missing) are dropped.
+while true do
+  local jobId = redis.call('LPOP', KEYS[1])
+  if not jobId then
+    return false
+  end
+  local jobKey = KEYS[3] .. jobId
+  if redis.call('HGET', jobKey, 'state') == 'waiting' then
+    redis.call('SADD', KEYS[2], jobId)
+    redis.call('HSET', jobKey, 'state', 'active', 'processedOn', ARGV[1], 'attemptToken', ARGV[3])
+    redis.call('SET', KEYS[4] .. jobId, ARGV[1], 'PX', ARGV[2])
+    return redis.call('HGETALL', jobKey)
+  end
+end
+`;
+
+export const CANCEL_JOB_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- KEYS[2]: waitingKey
+-- KEYS[3]: delayedKey
+-- KEYS[4]: activeKey
+-- KEYS[5]: cancelledKey
+-- KEYS[6]: heartbeat key
+-- ARGV[1]: job id
+-- ARGV[2]: cancellation reason
+-- ARGV[3]: finishedOn timestamp in milliseconds
+-- ARGV[4]: log line to append
+-- Returns 0 unless the job is waiting, delayed, or active; otherwise { previousState, job hash }.
+local state = redis.call('HGET', KEYS[1], 'state')
+if state ~= 'waiting' and state ~= 'delayed' and state ~= 'active' then
+  return 0
+end
+redis.call('LREM', KEYS[2], 0, ARGV[1])
+redis.call('ZREM', KEYS[3], ARGV[1])
+redis.call('SREM', KEYS[4], ARGV[1])
+redis.call('DEL', KEYS[6])
+redis.call('SADD', KEYS[5], ARGV[1])
+local logs = {}
+local rawLogs = redis.call('HGET', KEYS[1], 'logs')
+if rawLogs and rawLogs ~= '' then
+  local ok, decoded = pcall(cjson.decode, rawLogs)
+  if ok and type(decoded) == 'table' then
+    logs = decoded
+  end
+end
+table.insert(logs, ARGV[4])
+redis.call('HSET', KEYS[1], 'state', 'cancelled', 'failedReason', ARGV[2], 'finishedOn', ARGV[3], 'logs', cjson.encode(logs))
+return { state, redis.call('HGETALL', KEYS[1]) }
+`;
+
+export const REQUEUE_JOB_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- KEYS[2]: activeKey
+-- KEYS[3]: waitingKey
+-- KEYS[4]: delayedKey
+-- KEYS[5]: heartbeat key
+-- ARGV[1]: job id
+-- ARGV[2]: attemptsMade
+-- ARGV[3]: failedReason of the attempt
+-- ARGV[4]: retry delay in milliseconds
+-- ARGV[5]: current timestamp in milliseconds
+-- ARGV[6]: attempt token of the caller
+-- Returns 1 after moving the job from active to waiting/delayed, or 0 when it is no longer active
+-- or another attempt owns it.
+if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[6] then
+  return 0
+end
+redis.call('SREM', KEYS[2], ARGV[1])
+redis.call('DEL', KEYS[5])
+local delayMs = tonumber(ARGV[4])
+if delayMs > 0 then
+  redis.call('ZADD', KEYS[4], tonumber(ARGV[5]) + delayMs, ARGV[1])
+  redis.call('HSET', KEYS[1], 'state', 'delayed', 'attemptsMade', ARGV[2], 'failedReason', ARGV[3])
+else
+  redis.call('RPUSH', KEYS[3], ARGV[1])
+  redis.call('HSET', KEYS[1], 'state', 'waiting', 'attemptsMade', ARGV[2], 'failedReason', ARGV[3])
+end
+return 1
+`;
+
+export const COMPLETE_JOB_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- KEYS[2]: activeKey
+-- KEYS[3]: completedKey
+-- KEYS[4]: heartbeat key
+-- ARGV[1]: job id
+-- ARGV[2]: finishedOn timestamp in milliseconds
+-- ARGV[3]: JSON return value ('' when undefined)
+-- ARGV[4]: attemptsMade
+-- ARGV[5]: '1' to delete the job hash (removeOnComplete)
+-- ARGV[6]: attempt token of the caller
+-- Returns 1 after moving the job from active to completed, or 0 when it is no longer active
+-- or another attempt owns it. A retry by the attempt that already completed the job also
+-- returns 1, so a commit whose reply was lost is not reported as refused.
+local state = redis.call('HGET', KEYS[1], 'state')
+local ownsAttempt = redis.call('HGET', KEYS[1], 'attemptToken') == ARGV[6]
+if state == 'completed' and ownsAttempt then
+  return 1
+end
+if state ~= 'active' or not ownsAttempt then
+  return 0
+end
+redis.call('SREM', KEYS[2], ARGV[1])
+redis.call('DEL', KEYS[4])
+if ARGV[5] == '1' then
+  redis.call('DEL', KEYS[1])
+else
+  redis.call('SADD', KEYS[3], ARGV[1])
+  redis.call('HSET', KEYS[1], 'state', 'completed', 'finishedOn', ARGV[2], 'progress', '100', 'returnvalue', ARGV[3], 'attemptsMade', ARGV[4])
+end
+return 1
+`;
+
+export const FAIL_JOB_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- KEYS[2]: activeKey
+-- KEYS[3]: failedKey
+-- KEYS[4]: heartbeat key
+-- ARGV[1]: job id
+-- ARGV[2]: finishedOn timestamp in milliseconds
+-- ARGV[3]: failedReason
+-- ARGV[4]: JSON stacktrace
+-- ARGV[5]: attemptsMade
+-- ARGV[6]: '1' to delete the job hash (removeOnFail)
+-- ARGV[7]: attempt token of the caller
+-- Returns 1 after moving the job from active to failed, or 0 when it is no longer active
+-- or another attempt owns it.
+if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[7] then
+  return 0
+end
+redis.call('SREM', KEYS[2], ARGV[1])
+redis.call('DEL', KEYS[4])
+if ARGV[6] == '1' then
+  redis.call('DEL', KEYS[1])
+else
+  redis.call('SADD', KEYS[3], ARGV[1])
+  redis.call('HSET', KEYS[1], 'state', 'failed', 'finishedOn', ARGV[2], 'failedReason', ARGV[3], 'stacktrace', ARGV[4], 'attemptsMade', ARGV[5])
+end
+return 1
+`;
+
+export const REFRESH_HEARTBEAT_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- KEYS[2]: heartbeat key
+-- ARGV[1]: current timestamp in milliseconds
+-- ARGV[2]: heartbeat TTL in milliseconds
+-- ARGV[3]: attempt token of the caller
+-- Returns { 'refreshed', '' } after refreshing the heartbeat of the caller's own active attempt,
+-- { 'cancelled', failedReason } when the job was cancelled, or { 'lost', state } when the caller
+-- no longer owns the job. Only the owning attempt refreshes the heartbeat.
+local state = redis.call('HGET', KEYS[1], 'state')
+if state == 'cancelled' then
+  return { 'cancelled', redis.call('HGET', KEYS[1], 'failedReason') or '' }
+end
+if state ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[3] then
+  return { 'lost', state or '' }
+end
+redis.call('SET', KEYS[2], ARGV[1], 'PX', ARGV[2])
+return { 'refreshed', '' }
+`;
+
+export const UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- ARGV[1]: attempt token of the caller
+-- ARGV[2]: progress
+-- ARGV[3]: JSON logs
+-- Returns 1 after writing progress and logs for the owning active attempt, or 0 otherwise.
+if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[1] then
+  return 0
+end
+redis.call('HSET', KEYS[1], 'progress', ARGV[2], 'logs', ARGV[3])
+return 1
+`;
+
+export const RECOVER_STALLED_JOBS_LUA_SCRIPT = `
+-- KEYS[1]: activeKey
+-- KEYS[2]: waitingKey
+-- KEYS[3]: failedKey
+-- KEYS[4]: job key prefix (e.g. prefix:{queue}:job:)
+-- KEYS[5]: heartbeat key prefix (e.g. prefix:{queue}:heartbeat:)
+-- ARGV[1]: current timestamp in milliseconds
+-- ARGV[2]: stalled failure reason
+-- Active jobs without a live heartbeat lost their worker. The stalled attempt counts as made:
+-- the job returns to waiting while attempts remain, otherwise it fails.
+-- Returns { requeued ids, failed ids }.
+local requeued = {}
+local failed = {}
+local activeIds = redis.call('SMEMBERS', KEYS[1])
+for _, jobId in ipairs(activeIds) do
+  if redis.call('EXISTS', KEYS[5] .. jobId) == 0 then
+    local jobKey = KEYS[4] .. jobId
+    redis.call('SREM', KEYS[1], jobId)
+    if redis.call('HGET', jobKey, 'state') == 'active' then
+      local attemptsMade = (tonumber(redis.call('HGET', jobKey, 'attemptsMade')) or 0) + 1
+      local maxAttempts = 1
+      local rawOpts = redis.call('HGET', jobKey, 'opts')
+      if rawOpts then
+        local ok, opts = pcall(cjson.decode, rawOpts)
+        if ok and type(opts) == 'table' and tonumber(opts.attempts) and tonumber(opts.attempts) > 0 then
+          maxAttempts = tonumber(opts.attempts)
+        end
+      end
+      -- The stalled attempt loses ownership: clearing its token fences any write it still tries.
+      redis.call('HDEL', jobKey, 'attemptToken')
+      if attemptsMade < maxAttempts then
+        redis.call('HSET', jobKey, 'state', 'waiting', 'attemptsMade', attemptsMade, 'failedReason', ARGV[2])
+        redis.call('RPUSH', KEYS[2], jobId)
+        table.insert(requeued, jobId)
+      else
+        redis.call('HSET', jobKey, 'state', 'failed', 'attemptsMade', attemptsMade, 'failedReason', ARGV[2], 'finishedOn', ARGV[1])
+        redis.call('SADD', KEYS[3], jobId)
+        table.insert(failed, jobId)
+      end
+    end
+  end
+end
+return { requeued, failed }
+`;
+
+/** Converts a flat HGETALL reply (field, value, field, value, ...) into a record. */
+function flatHashToRecord(flat: string[]): Record<string, string> {
+  const record: Record<string, string> = {};
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    record[flat[i]] = flat[i + 1];
+  }
+  return record;
+}
+
 /**
  * Distributed Queue Adapter for Redis/BullMQ clustering.
  * Provides authentic Redis cluster storage (Hashes, Lists, Sets, Sorted Sets, Pub/Sub)
@@ -497,6 +934,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   private redisConnected: boolean = false;
   private keyPrefix: string = 'easyconvert:queue:';
   private eventsChannel: string;
+  /** Redis mode: attempts this process is running, so a remote cancel can abort their signal. */
+  private localActiveJobs = new Map<string, Job<T, R>>();
 
   constructor(name: string, connectionOpts?: RedisConnectionOptions) {
     super();
@@ -509,6 +948,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     this.memoryFallback.on('waiting', (job) => this.emit('waiting', job));
     this.memoryFallback.on('completed', (job, result) => this.emit('completed', job, result));
     this.memoryFallback.on('failed', (job, err) => this.emit('failed', job, err));
+    this.memoryFallback.on('cancelled', (job) => this.emit('cancelled', job));
     this.memoryFallback.on('progress', (job, progress) => this.emit('progress', job, progress));
     this.memoryFallback.on('dlq', (entry) => this.emit('dlq', entry));
 
@@ -563,6 +1003,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             const payload = JSON.parse(msg);
             if (payload.event === 'waiting') {
               this.emit('waiting');
+            } else if (payload.event === 'cancelled' && typeof payload.jobId === 'string') {
+              // Abort only; the refund and the `cancelled` event belong to the process that cancelled.
+              this.abortLocalActiveJob(payload.jobId, String(payload.reason ?? ''));
             }
           } catch {}
         });
@@ -626,6 +1069,33 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return `${this.keyPrefix}{${this.name}}:dlq`;
   }
 
+  private get cancelledKey(): string {
+    return `${this.keyPrefix}{${this.name}}:cancelled`;
+  }
+
+  private get jobKeyPrefix(): string {
+    return `${this.keyPrefix}{${this.name}}:job:`;
+  }
+
+  private get heartbeatKeyPrefix(): string {
+    return `${this.keyPrefix}{${this.name}}:heartbeat:`;
+  }
+
+  private getHeartbeatKey(id: string): string {
+    return `${this.heartbeatKeyPrefix}${id}`;
+  }
+
+  /** Aborts the attempt this process is running for `jobId`, if any, as cancelled. */
+  private abortLocalActiveJob(jobId: string, reason: string): void {
+    const job = this.localActiveJobs.get(jobId);
+    if (!job) {
+      return;
+    }
+    job.state = 'cancelled';
+    job.failedReason = reason;
+    job._abortAttempt(new JobCancelledError(reason));
+  }
+
   private jobToHash(job: Job<T, R>): Record<string, string> {
     return {
       id: job.id,
@@ -665,13 +1135,25 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       async (j) => {
         if (this.redisClient && this.redisConnected) {
           try {
-            await this.redisClient.hset(
-              this.getJobKey(j.id),
-              'progress',
-              String(j.progress),
-              'logs',
-              JSON.stringify(j.logs)
-            );
+            if (j._attemptToken) {
+              // A running attempt writes only while it still owns the job.
+              await this.redisClient.eval(
+                UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
+                1,
+                this.getJobKey(j.id),
+                j._attemptToken,
+                String(j.progress),
+                JSON.stringify(j.logs)
+              );
+            } else {
+              await this.redisClient.hset(
+                this.getJobKey(j.id),
+                'progress',
+                String(j.progress),
+                'logs',
+                JSON.stringify(j.logs)
+              );
+            }
           } catch {}
         }
       }
@@ -777,6 +1259,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           } else if (type === 'failed') {
             const set = await this.redisClient.smembers(this.failedKey);
             ids.push(...set);
+          } else if (type === 'cancelled') {
+            const set = await this.redisClient.smembers(this.cancelledKey);
+            ids.push(...set);
           }
         }
         const uniqueIds = Array.from(new Set(ids));
@@ -793,21 +1278,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback.getJobs(types);
   }
 
-  async getJobCounts(): Promise<{
-    waiting: number;
-    active: number;
-    completed: number;
-    failed: number;
-    delayed: number;
-  }> {
+  async getJobCounts(): Promise<JobCounts> {
     if (this.redisClient && this.redisConnected) {
       try {
-        const [waiting, active, completed, failed, delayed] = await Promise.all([
+        const [waiting, active, completed, failed, delayed, cancelled] = await Promise.all([
           this.redisClient.llen(this.waitingKey),
           this.redisClient.scard(this.activeKey),
           this.redisClient.scard(this.completedKey),
           this.redisClient.scard(this.failedKey),
           this.redisClient.zcard(this.delayedKey),
+          this.redisClient.scard(this.cancelledKey),
         ]);
         return {
           waiting: waiting || 0,
@@ -815,18 +1295,24 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           completed: completed || 0,
           failed: failed || 0,
           delayed: delayed || 0,
+          cancelled: cancelled || 0,
         };
       } catch {
-        return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
+        return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0, cancelled: 0 };
       }
     }
     return this.memoryFallback.getJobCounts();
   }
 
-  async clean(grace: number, limit: number, type: 'completed' | 'failed'): Promise<string[]> {
+  async clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]> {
     if (this.redisClient && this.redisConnected) {
       try {
-        const key = type === 'completed' ? this.completedKey : this.failedKey;
+        const setKeysByType = {
+          completed: this.completedKey,
+          failed: this.failedKey,
+          cancelled: this.cancelledKey,
+        };
+        const key = setKeysByType[type];
         const ids = await this.redisClient.smembers(key);
         const threshold = Date.now() - grace;
         const removed: string[] = [];
@@ -849,33 +1335,39 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
-    if (this.redisClient && this.redisConnected) {
-      try {
-        const raw = await this.redisClient.hgetall(this.getJobKey(id));
-        if (!raw || Object.keys(raw).length === 0) return false;
-        const currentState = raw.state;
-        if (currentState === 'completed' || currentState === 'failed') return false;
-
-        await this.redisClient.lrem(this.waitingKey, 0, id);
-        await this.redisClient.zrem(this.delayedKey, id);
-        await this.redisClient.srem(this.activeKey, id);
-        await this.redisClient.sadd(this.failedKey, id);
-
-        await this.redisClient.hset(
-          this.getJobKey(id),
-          'state',
-          'failed',
-          'failedReason',
-          reason,
-          'finishedOn',
-          Date.now().toString()
-        );
-        return true;
-      } catch {
-        return this.memoryFallback.cancelJob ? this.memoryFallback.cancelJob(id, reason) : false;
-      }
+    const client = this.redisClient;
+    if (!client || !this.redisConnected) {
+      return this.memoryFallback.cancelJob(id, reason);
     }
-    return this.memoryFallback.cancelJob ? this.memoryFallback.cancelJob(id, reason) : false;
+
+    // Fail closed: a Redis error propagates instead of reporting a cancel that did not happen.
+    const finishedOn = Date.now();
+    const logEntry = `[${new Date(finishedOn).toISOString()}] Job cancelled: ${reason}`;
+    const outcome = await client.eval(
+      CANCEL_JOB_LUA_SCRIPT,
+      6,
+      this.getJobKey(id),
+      this.waitingKey,
+      this.delayedKey,
+      this.activeKey,
+      this.cancelledKey,
+      this.getHeartbeatKey(id),
+      id,
+      reason,
+      String(finishedOn),
+      logEntry
+    );
+    if (!Array.isArray(outcome)) {
+      return false;
+    }
+
+    const [previousState, rawHash] = outcome as [string, string[]];
+    if (previousState === 'active') {
+      this.abortLocalActiveJob(id, reason);
+      await this.publishEvent({ event: 'cancelled', jobId: id, reason });
+    }
+    this.emit('cancelled', this.hashToJob(flatHashToRecord(rawHash)));
+    return true;
   }
 
   async getDlqEntries(): Promise<DlqEntry<T>[]> {
@@ -966,6 +1458,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       this.redisClient = null;
     }
     this.redisConnected = false;
+    this.localActiveJobs.clear();
     await this.memoryFallback.close();
     this.removeAllListeners();
   }
@@ -998,113 +1491,260 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           }
         }
 
-        // 2. Pop next waiting job ID
-        const jobId = await this.redisClient.lpop(this.waitingKey);
-        if (!jobId) {
+        // 2. Atomically pop the next waiting job, mark it active under a fresh attempt token,
+        //    and start its heartbeat
+        const attemptToken = crypto.randomBytes(ATTEMPT_TOKEN_BYTES).toString('hex');
+        const popped = await this.redisClient.eval(
+          POP_NEXT_WAITING_JOB_LUA_SCRIPT,
+          4,
+          this.waitingKey,
+          this.activeKey,
+          this.jobKeyPrefix,
+          this.heartbeatKeyPrefix,
+          String(now),
+          String(STALL_TIMEOUT_MS),
+          attemptToken
+        );
+        if (!Array.isArray(popped) || popped.length === 0) {
           return undefined;
         }
-
-        // 3. Mark as active
-        await this.redisClient.sadd(this.activeKey, jobId);
-        const raw = await this.redisClient.hgetall(this.getJobKey(jobId));
-        if (!raw || !raw.id) {
-          await this.redisClient.srem(this.activeKey, jobId);
-          return undefined;
-        }
-
-        await this.redisClient.hset(this.getJobKey(jobId), 'state', 'active');
-        raw.state = 'active';
-        return this.hashToJob(raw);
-      } catch {
+        const job = this.hashToJob(flatHashToRecord(popped as string[]));
+        job._attemptToken = attemptToken;
+        return job;
+      } catch (err) {
+        console.error(`[DistributedBullMQAdapter:${this.name}] Failed to pop the next waiting job:`, err);
         return undefined;
       }
     }
     return this.memoryFallback._popNextWaiting();
   }
 
-  async _requeue(job: Job<T, R>, delayMs: number = 0): Promise<void> {
-    if (this.redisClient && this.redisConnected) {
-      try {
-        await this.redisClient.srem(this.activeKey, job.id);
-        if (delayMs > 0) {
-          await this.redisClient.zadd(this.delayedKey, Date.now() + delayMs, job.id);
-          await this.redisClient.hset(
-            this.getJobKey(job.id),
-            'state',
-            'delayed',
-            'attemptsMade',
-            String(job.attemptsMade),
-            'failedReason',
-            job.failedReason || ''
-          );
-        } else {
-          await this.redisClient.rpush(this.waitingKey, job.id);
-          await this.redisClient.hset(
-            this.getJobKey(job.id),
-            'state',
-            'waiting',
-            'attemptsMade',
-            String(job.attemptsMade),
-            'failedReason',
-            job.failedReason || ''
-          );
-          await this.publishEvent({ event: 'waiting', jobId: job.id });
-          this.emit('waiting', job);
-        }
-      } catch {}
-      return;
+  async _requeue(job: Job<T, R>, delayMs: number = 0): Promise<boolean> {
+    if (!this.redisClient || !this.redisConnected) {
+      return this.memoryFallback._requeue(job, delayMs);
     }
-    this.memoryFallback._requeue(job, delayMs);
+    try {
+      const moved = await this.redisClient.eval(
+        REQUEUE_JOB_LUA_SCRIPT,
+        5,
+        this.getJobKey(job.id),
+        this.activeKey,
+        this.waitingKey,
+        this.delayedKey,
+        this.getHeartbeatKey(job.id),
+        job.id,
+        String(job.attemptsMade),
+        job.failedReason || '',
+        String(Math.max(0, delayMs)),
+        String(Date.now()),
+        job._attemptToken ?? ''
+      );
+      if (Number(moved) !== 1) {
+        return false;
+      }
+      if (delayMs <= 0) {
+        await this.publishEvent({ event: 'waiting', jobId: job.id });
+        this.emit('waiting', job);
+      }
+      return true;
+    } catch (err) {
+      // The job stays active without a heartbeat, so the stalled sweep will recover it.
+      console.error(`[DistributedBullMQAdapter:${this.name}] Failed to requeue job ${job.id}:`, err);
+      return false;
+    }
   }
 
-  async _onJobCompleted(job: Job<T, R>, result: R): Promise<void> {
-    if (this.redisClient && this.redisConnected) {
+  async _onJobCompleted(job: Job<T, R>, result: R): Promise<boolean> {
+    const client = this.redisClient;
+    if (!client || !this.redisConnected) {
+      // In-process fallback: the worker guards the shared job object itself.
+      return true;
+    }
+    const finishedOn = String(job.finishedOn || Date.now());
+    const returnValue = result === undefined ? '' : JSON.stringify(result);
+    let lastError: unknown;
+    for (let commitAttempt = 1; commitAttempt <= COMPLETION_COMMIT_MAX_ATTEMPTS; commitAttempt++) {
+      if (commitAttempt > 1) {
+        const delayMs = COMPLETION_COMMIT_RETRY_BASE_DELAY_MS * 2 ** (commitAttempt - 2);
+        console.warn(
+          `[DistributedBullMQAdapter:${this.name}] Retrying completion of job ${job.id} in ${delayMs}ms (${commitAttempt}/${COMPLETION_COMMIT_MAX_ATTEMPTS}):`,
+          lastError
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
       try {
-        await this.redisClient.srem(this.activeKey, job.id);
-        if (job.opts?.removeOnComplete) {
-          await this.redisClient.del(this.getJobKey(job.id));
-        } else {
-          await this.redisClient.sadd(this.completedKey, job.id);
-          await this.redisClient.hset(
-            this.getJobKey(job.id),
-            'state',
-            'completed',
-            'finishedOn',
-            String(job.finishedOn || Date.now()),
-            'progress',
-            '100',
-            'returnvalue',
-            JSON.stringify(result)
+        const committed = await client.eval(
+          COMPLETE_JOB_LUA_SCRIPT,
+          4,
+          this.getJobKey(job.id),
+          this.activeKey,
+          this.completedKey,
+          this.getHeartbeatKey(job.id),
+          job.id,
+          finishedOn,
+          returnValue,
+          String(job.attemptsMade),
+          job.opts?.removeOnComplete ? '1' : '0',
+          job._attemptToken ?? ''
+        );
+        if (Number(committed) !== 1) {
+          console.warn(
+            `[DistributedBullMQAdapter:${this.name}] Discarded completion of job ${job.id}: this attempt no longer owns it.`
           );
+          return false;
         }
         await this.publishEvent({ event: 'completed', jobId: job.id, result });
-      } catch {}
+        return true;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    // The job stays active without a heartbeat, so the stalled sweep will run it again.
+    console.error(
+      `[DistributedBullMQAdapter:${this.name}] Failed to record completion of job ${job.id} after ${COMPLETION_COMMIT_MAX_ATTEMPTS} attempts:`,
+      lastError
+    );
+    return false;
+  }
+
+  async _onJobFailed(job: Job<T, R>, err: any): Promise<boolean> {
+    if (!this.redisClient || !this.redisConnected) {
+      // In-process fallback: the worker guards the shared job object itself.
+      return true;
+    }
+    try {
+      const committed = await this.redisClient.eval(
+        FAIL_JOB_LUA_SCRIPT,
+        4,
+        this.getJobKey(job.id),
+        this.activeKey,
+        this.failedKey,
+        this.getHeartbeatKey(job.id),
+        job.id,
+        String(job.finishedOn || Date.now()),
+        job.failedReason || String(err),
+        JSON.stringify(job.stacktrace || []),
+        String(job.attemptsMade),
+        job.opts?.removeOnFail ? '1' : '0',
+        job._attemptToken ?? ''
+      );
+      if (Number(committed) !== 1) {
+        console.warn(
+          `[DistributedBullMQAdapter:${this.name}] Discarded failure of job ${job.id}: it is no longer active.`
+        );
+        return false;
+      }
+      await this.publishEvent({ event: 'failed', jobId: job.id, error: String(err) });
+      return true;
+    } catch (redisErr) {
+      // The job stays active without a heartbeat, so the stalled sweep will recover it.
+      console.error(`[DistributedBullMQAdapter:${this.name}] Failed to record failure of job ${job.id}:`, redisErr);
+      return false;
     }
   }
 
-  async _onJobFailed(job: Job<T, R>, err: any): Promise<void> {
-    if (this.redisClient && this.redisConnected) {
-      try {
-        await this.redisClient.srem(this.activeKey, job.id);
-        if (job.opts?.removeOnFail) {
-          await this.redisClient.del(this.getJobKey(job.id));
-        } else {
-          await this.redisClient.sadd(this.failedKey, job.id);
-          await this.redisClient.hset(
-            this.getJobKey(job.id),
-            'state',
-            'failed',
-            'finishedOn',
-            String(job.finishedOn || Date.now()),
-            'failedReason',
-            job.failedReason || String(err),
-            'stacktrace',
-            JSON.stringify(job.stacktrace || [])
-          );
-        }
-        await this.publishEvent({ event: 'failed', jobId: job.id, error: String(err) });
-      } catch {}
+  /**
+   * Redis mode: while the worker runs `job`, refreshes its heartbeat key every HEARTBEAT_INTERVAL_MS
+   * and watches for a cancel from another process. Returns a function that stops the supervision.
+   */
+  _monitorActiveJob(job: Job<T, R>): () => void {
+    if (!this.redisClient || !this.redisConnected) {
+      // In-process fallback: cancelJob aborts the shared job object directly.
+      return () => undefined;
     }
+    this.localActiveJobs.set(job.id, job);
+    const timer = setInterval(() => {
+      void this.refreshHeartbeat(job);
+    }, HEARTBEAT_INTERVAL_MS);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    return () => {
+      clearInterval(timer);
+      if (this.localActiveJobs.get(job.id) === job) {
+        this.localActiveJobs.delete(job.id);
+      }
+    };
+  }
+
+  /**
+   * Refreshes the heartbeat of the attempt `job` belongs to. Aborts the attempt when the job was
+   * cancelled elsewhere, or when another attempt took it over (the refresh is then refused).
+   */
+  private async refreshHeartbeat(job: Job<T, R>): Promise<void> {
+    const client = this.redisClient;
+    if (!client || !this.redisConnected) {
+      return;
+    }
+    try {
+      const reply = (await client.eval(
+        REFRESH_HEARTBEAT_LUA_SCRIPT,
+        2,
+        this.getJobKey(job.id),
+        this.getHeartbeatKey(job.id),
+        String(Date.now()),
+        String(STALL_TIMEOUT_MS),
+        job._attemptToken ?? ''
+      )) as [string, string];
+      const [outcome, detail] = reply;
+      if (outcome === 'cancelled') {
+        this.abortLocalActiveJob(job.id, detail);
+      } else if (outcome === 'lost') {
+        console.warn(
+          `[DistributedBullMQAdapter:${this.name}] Attempt of job ${job.id} lost ownership (job is now ${detail || 'missing'}); aborting it.`
+        );
+        job._abortAttempt(new JobOwnershipLostError(job.id));
+      }
+    } catch (err) {
+      console.warn(`[DistributedBullMQAdapter:${this.name}] Heartbeat refresh failed for job ${job.id}:`, err);
+    }
+  }
+
+  /**
+   * Redis mode: moves active jobs whose heartbeat expired back to waiting, or to failed plus the DLQ
+   * once their attempts are exhausted. Returns the jobs it failed so the worker can report them.
+   */
+  async _recoverStalledJobs(): Promise<Job<T, R>[]> {
+    const client = this.redisClient;
+    if (!client || !this.redisConnected) {
+      return [];
+    }
+    const [requeuedIds, failedIds] = (await client.eval(
+      RECOVER_STALLED_JOBS_LUA_SCRIPT,
+      5,
+      this.activeKey,
+      this.waitingKey,
+      this.failedKey,
+      this.jobKeyPrefix,
+      this.heartbeatKeyPrefix,
+      String(Date.now()),
+      STALLED_JOB_FAILURE_REASON
+    )) as [string[], string[]];
+
+    if (requeuedIds.length > 0) {
+      console.warn(
+        `[DistributedBullMQAdapter:${this.name}] Requeued stalled jobs: ${requeuedIds.join(', ')}`
+      );
+      await this.publishEvent({ event: 'waiting' });
+      this.emit('waiting');
+    }
+
+    const failedJobs: Job<T, R>[] = [];
+    for (const jobId of failedIds) {
+      const job = await this.getJob(jobId);
+      if (!job) {
+        console.error(`[DistributedBullMQAdapter:${this.name}] Stalled job ${jobId} vanished before DLQ transfer.`);
+        continue;
+      }
+      await this.moveToDlq(job, STALLED_JOB_FAILURE_REASON);
+      failedJobs.push(job);
+    }
+    if (failedJobs.length > 0) {
+      console.warn(
+        `[DistributedBullMQAdapter:${this.name}] Failed stalled jobs with exhausted attempts: ${failedIds.join(', ')}`
+      );
+    }
+    return failedJobs;
   }
 }
 
@@ -1127,9 +1767,16 @@ export function createQueueEngine<T = any, R = any>(
 }
 
 export interface JobTelemetryEvent {
-  event: 'progress' | 'completed' | 'failed' | 'log';
+  event: 'progress' | 'completed' | 'failed' | 'cancelled' | 'log';
   data: any;
 }
+
+/** Telemetry events after which a job emits nothing more. */
+export const TERMINAL_TELEMETRY_EVENTS: ReadonlySet<JobTelemetryEvent['event']> = new Set<JobTelemetryEvent['event']>([
+  'completed',
+  'failed',
+  'cancelled',
+]);
 
 /**
  * Subscribes to real-time job events for Server-Sent Events (SSE) telemetry.
@@ -1155,14 +1802,21 @@ export function subscribeToJobTelemetry(
       onEvent({ event: 'failed', data: { jobId, state: 'failed', error: job.failedReason } });
     }
   };
+  const onCancelled = (job: Job) => {
+    if (job.id === jobId) {
+      onEvent({ event: 'cancelled', data: { jobId, state: 'cancelled', error: job.failedReason } });
+    }
+  };
 
   queue.on('progress', onProgress);
   queue.on('completed', onCompleted);
   queue.on('failed', onFailed);
+  queue.on('cancelled', onCancelled);
 
   return () => {
     queue.off('progress', onProgress);
     queue.off('completed', onCompleted);
     queue.off('failed', onFailed);
+    queue.off('cancelled', onCancelled);
   };
 }
