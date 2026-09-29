@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
+import { GET as getOpenApiSpec } from '../src/app/api/openapi.json/route';
 import { storageProvider } from '../src/lib/storage';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -300,5 +301,25 @@ describe('/api/storage/file Range requests per RFC 9110 (#249)', () => {
     expect(suffixRes.status).toBe(200);
     expect((await bodyBytes(suffixRes)).length).toBe(0);
     expect(suffixRes.headers.get('content-range')).toBeNull();
+  });
+});
+
+describe('/api/storage/file OpenAPI contract (#249)', () => {
+  it('documents owner-only access, ranges, and the storage:download scope', async () => {
+    const spec = await (await getOpenApiSpec()).json();
+    const operation = spec.paths['/api/storage/file/{key}']?.get;
+
+    expect(Object.keys(operation?.responses ?? {}).sort()).toEqual(['200', '206', '403', '404', '416', '429']);
+    expect(operation.security).toEqual([
+      { ApiKeyAuth: ['storage:download'] },
+      { BearerAuth: ['storage:download'] },
+      {},
+    ]);
+    expect(operation.parameters.map((param: { in: string; name: string }) => `${param.in}:${param.name}`)).toEqual([
+      'path:key',
+      'header:Range',
+    ]);
+    expect(Object.keys(operation.responses['206'].headers).sort()).toEqual(['Content-Range']);
+    expect(Object.keys(operation.responses['416'].headers).sort()).toEqual(['Content-Range']);
   });
 });

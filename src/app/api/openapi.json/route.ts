@@ -310,6 +310,79 @@ export async function GET() {
           },
         },
       },
+      '/api/storage/file/{key}': {
+        get: {
+          summary: 'Download Stored File',
+          description:
+            'Downloads a stored file by the key in a `downloadUrl`. Outputs owned by a user (`conversions/{userId}/...` keys and results of jobs created with credentials) are served only to that user through a session or an API key with the "storage:download" scope; any other caller gets 404 so keys cannot be probed. Anonymous job results keep capability-URL access. Every file response is sent with `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`. A single byte range is supported; multi-range requests return the full file.',
+          operationId: 'downloadStoredFile',
+          security: [
+            { ApiKeyAuth: ['storage:download'] },
+            { BearerAuth: ['storage:download'] },
+            {},
+          ],
+          parameters: [
+            {
+              name: 'key',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+              description: 'URL-encoded storage key, as returned in `downloadUrl`.',
+            },
+            {
+              name: 'Range',
+              in: 'header',
+              required: false,
+              schema: { type: 'string', example: 'bytes=0-1023' },
+              description: 'One RFC 9110 byte range: `bytes=first-last`, `bytes=first-`, or suffix `bytes=-length`.',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Full file content.',
+              headers: {
+                'Content-Disposition': {
+                  schema: { type: 'string' },
+                  description: 'Attachment with an ASCII `filename` and a UTF-8 `filename*`.',
+                },
+                ETag: { schema: { type: 'string' } },
+                'Cache-Control': { schema: { type: 'string', example: 'private, no-store' } },
+              },
+              content: {
+                'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+              },
+            },
+            '206': {
+              description: 'Requested byte range.',
+              headers: {
+                'Content-Range': { schema: { type: 'string', example: 'bytes 0-1023/4096' } },
+              },
+              content: {
+                'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+              },
+            },
+            '403': {
+              description: 'The owner\'s API key lacks the "storage:download" scope.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+            },
+            '404': {
+              description: 'Object not found, expired, or owned by another user.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+            },
+            '416': {
+              description: 'Malformed or unsatisfiable range.',
+              headers: {
+                'Content-Range': { schema: { type: 'string', example: 'bytes */4096' } },
+              },
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+            },
+            '429': {
+              description: 'The owner\'s API key exceeded its burst rate limit; see `Retry-After`.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+            },
+          },
+        },
+      },
       '/api/formats': {
         get: {
           summary: 'List Supported Formats',
