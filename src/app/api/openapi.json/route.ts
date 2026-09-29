@@ -366,7 +366,7 @@ export async function GET() {
               content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
             },
             '404': {
-              description: 'Object not found, expired, or owned by another user.',
+              description: 'Object not found, expired, owned by another user, or a job result whose job cannot be read.',
               content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
             },
             '416': {

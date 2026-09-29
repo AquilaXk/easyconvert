@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
@@ -21,6 +21,7 @@ const MIME_TYPE = 'text/plain';
 const createdKeys: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const key of createdKeys.splice(0)) {
     storageProvider.deleteObject(key);
   }
@@ -154,12 +155,30 @@ describe('/api/storage/file owner access (#249)', () => {
     expect((await bodyBytes(res)).toString('hex')).toBe(FIXTURE.toString('hex'));
   });
 
-  it('keeps capability-URL access for results whose job record no longer exists', async () => {
+  it('hides results whose job record cannot be found behind the missing-object 404', async () => {
     const key = storeObject(`results/job_0_${crypto.randomBytes(16).toString('hex')}/result.json`);
 
     const res = await download(key);
-    expect(res.status).toBe(200);
-    expect((await bodyBytes(res)).toString('hex')).toBe(FIXTURE.toString('hex'));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual(notFoundBody(key));
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+  });
+
+  it('fails closed for an owned result when the job lookup comes back empty', async () => {
+    const alice = await createUser('dl_alice');
+    const job = await conversionQueue.add('convert', jobData(alice.id));
+    const key = storeObject(`results/${job.id}/result.json`);
+    // The distributed adapter answers a swallowed Redis error with undefined, like a missing job.
+    const getJob = vi.spyOn(conversionQueue, 'getJob').mockResolvedValue(undefined);
+
+    const ownerRes = await download(key, sessionHeaders(alice));
+    expect(getJob).toHaveBeenCalledWith(job.id);
+    expect(ownerRes.status).toBe(404);
+    expect(await ownerRes.json()).toEqual(notFoundBody(key));
+
+    const anonymousRes = await download(key);
+    expect(anonymousRes.status).toBe(404);
+    expect(await anonymousRes.json()).toEqual(notFoundBody(key));
   });
 });
 

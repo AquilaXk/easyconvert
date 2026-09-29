@@ -15,26 +15,33 @@ const JOB_RESULT_KEY_PATTERN = /^results\/([^/]+)\//;
 /** Outputs can be private to one user and expire with their storage TTL, so no shared cache may keep them. */
 const PRIVATE_NO_STORE = 'private, no-store';
 
+type ObjectOwnership =
+  | { resolved: true; ownerUserId: string | undefined }
+  | { resolved: false };
+
 /**
  * Resolves the user that owns a stored object from its key namespace.
- * A job result whose job record no longer exists (cleaned up, or lost with an in-memory queue)
- * cannot be tied to a user any more, so it keeps capability-URL access like an anonymous
- * job result until the object's storage TTL removes it.
+ * A job result is resolved only while its job record can be read: jobs are never removed after
+ * they finish, so a missing record means a queue outage (the distributed adapter reports a Redis
+ * error as a missing job) or a restarted in-memory queue, and the owner cannot be proven.
  * Every other key (anonymous uploads) has no owner.
  */
-async function resolveObjectOwner(key: string): Promise<string | undefined> {
+async function resolveObjectOwnership(key: string): Promise<ObjectOwnership> {
   const userConversion = USER_CONVERSION_KEY_PATTERN.exec(key);
   if (userConversion) {
-    return userConversion[1];
+    return { resolved: true, ownerUserId: userConversion[1] };
   }
 
   const jobResult = JOB_RESULT_KEY_PATTERN.exec(key);
   if (jobResult) {
     const job = await conversionQueue.getJob(jobResult[1]);
-    return job?.data?.userId;
+    if (!job) {
+      return { resolved: false };
+    }
+    return { resolved: true, ownerUserId: job.data?.userId };
   }
 
-  return undefined;
+  return { resolved: true, ownerUserId: undefined };
 }
 
 export async function GET(
@@ -60,12 +67,11 @@ export async function GET(
     return notFound();
   }
 
-  const denied = await denyUnlessOwner(
-    req,
-    await resolveObjectOwner(resolvedKey),
-    STORAGE_DOWNLOAD_SCOPE,
-    notFound
-  );
+  const ownership = await resolveObjectOwnership(resolvedKey);
+  if (!ownership.resolved) {
+    return notFound();
+  }
+  const denied = await denyUnlessOwner(req, ownership.ownerUserId, STORAGE_DOWNLOAD_SCOPE, notFound);
   if (denied) {
     return denied;
   }
