@@ -10,10 +10,25 @@ const CONCURRENCY = Number.parseInt(process.env.WORKER_CONCURRENCY || '3', 10);
 
 console.log(`[EasyConvert OCI Worker] Initializing daemon (Concurrency: ${CONCURRENCY})...`);
 
+/** Removes the output file an aborted attempt produced, so nothing of that attempt is persisted. */
+function discardConversionOutput(jobId: string, result: WorkerConversionResult): void {
+  if (!result.filePath) {
+    return;
+  }
+  try {
+    fs.rmSync(result.filePath, { force: true });
+  } catch (err) {
+    console.warn(`[EasyConvert OCI Worker] Failed to discard output of aborted job ${jobId} at "${result.filePath}":`, err);
+  }
+}
+
 export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
   conversionQueue,
   async (job: Job<ConversionJobData, ConversionJobResult>): Promise<ConversionJobResult> => {
     const startTime = Date.now();
+    // Capture this attempt's signal before the first await: a retry gets a fresh one, and a stale
+    // attempt that outlived its timeout must still see its own aborted signal.
+    const attemptSignal = job.signal;
     await job.log(`[OCI Worker] Picked up job ${job.id} for "${job.data.originalFilename}" (${job.data.sourceFormat} -> ${job.data.targetFormat})`);
     await job.updateProgress(10);
 
@@ -44,6 +59,7 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
       await job.updateProgress(30);
 
       // 2. Execute conversion (Native LibreOffice / FFmpeg or pure TS fallback)
+      attemptSignal.throwIfAborted();
       const result: WorkerConversionResult = await executeWorkerConversion(
         inputPayload,
         job.data.sourceFormat,
@@ -55,7 +71,12 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
       await job.updateProgress(75);
       await job.log(`[OCI Worker] Conversion completed via [${result.engineUsed}] in ${result.executionTimeMs}ms. Size: ${result.size} bytes`);
 
-      // 3. Store result in OCI Object Storage with 1-hour TTL (Zero-Heap from file if available)
+      // 3. Store result in OCI Object Storage with 1-hour TTL (Zero-Heap from file if available),
+      //    never for a cancelled or timed-out attempt
+      if (attemptSignal.aborted) {
+        discardConversionOutput(job.id, result);
+        attemptSignal.throwIfAborted();
+      }
       const resultKey = `results/${job.id}/${result.filename}`;
       const oneHourTtlMs = 60 * 60 * 1000;
       if (result.filePath && fs.existsSync(result.filePath) && typeof ociStorage.saveObjectFromFile === 'function') {
