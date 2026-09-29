@@ -33,7 +33,7 @@ Universal file conversion platform: Next.js 14 (App Router) + TypeScript, pure-T
 - Do not hard-code AI model names in code or docs.
 - Never commit secrets, tokens, or `.env*` / `.easyconvert/` data.
 
-## Test integrity (zero tolerance)
+## Test integrity
 
 - No circular mocking: an oracle or expected value must never come from the module under test. Use an independent parser, a standard CLI binary, or a separately authored golden set.
 - No silent passes: when a required tool is missing, use `test.skip()` / `it.skipIf()` or throw. Never `return true` / `valid: true`.
@@ -58,7 +58,7 @@ The lead session owns scope, design decisions, integration, commits, and PR gate
 
 | Need | Use |
 |---|---|
-| Broad read-only search or doc lookup | built-in `Explore` subagent |
+| Broad read-only search or doc lookup | built-in `Explore` subagent, or your own user-level read-only explorer if you have one |
 | One bounded conversion-engine/format change | `format-engine-worker` (own worktree; commits locally, never pushes) |
 | Several independent format changes | several `format-engine-worker`s in parallel, then integrate one by one |
 | Test/oracle integrity check | `test-integrity-reviewer` |
@@ -75,7 +75,7 @@ The lead session owns scope, design decisions, integration, commits, and PR gate
 This repository is developed by Claude Code and by Gemini/Antigravity agents in parallel.
 
 - Antigravity/Gemini sessions follow the local, gitignored `AGENTS.md` and `GEMINI.md`, and review PRs with their own `aquila-review` skill. Claude Code sessions follow this file. The engineering rules (fail-closed, test integrity, architecture, Git flow) are the same on both sides; when changing a shared rule here, flag that `GEMINI.md`/`AGENTS.md` need the same change.
-- One tracked task per branch/worktree. Never modify, rebase, push to, or clean up a branch, worktree, or uncommitted change you did not create in this session — it may belong to the other agent. Check `git status`, `git worktree list`, and open PRs before starting.
+- One tracked task per branch/worktree. Never modify, rebase, push to, or clean up a branch, worktree, or uncommitted change you did not create in this session — it may belong to the other agent. The exception is an open Claude Code PR you are asked to follow up on: reuse its issue, branch, and PR. Check `git status`, `git worktree list`, and open PRs before starting.
 - `implementation_plan.md` and `walkthrough.md` are Antigravity planning artifacts. Read them for context; do not rewrite them unless the task is explicitly about them.
 - Do not edit, hide, or resolve `aquila-review` comments on the other agent's behalf without fixing the underlying finding.
 

@@ -14,7 +14,7 @@ Rules:
 - Stay inside the brief's allowed paths. If the fix needs files outside them, or a design decision the brief does not settle, stop and report back instead of guessing.
 - Keep the format registry (`src/lib/registry.ts`) and existing SSOT modules authoritative; extend them rather than duplicating specs.
 - Test first for bug fixes: add a failing regression test, then make it pass.
-- Tests must use independent oracles (standard CLI binaries or separately authored golden fixtures) and substantive assertions, and must `skip` explicitly when a tool is missing. Follow the test-integrity rules in `CLAUDE.md` without exception.
+- Tests must use independent oracles (standard CLI binaries or separately authored golden fixtures) and substantive assertions, and must `skip` explicitly when a tool is missing. Follow the test-integrity rules in `CLAUDE.md`.
 - Fail closed on malformed input with a typed error; never emit dummy or truncated output.
 
 Before returning, run and include the output of:

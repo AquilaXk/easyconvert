@@ -12,7 +12,7 @@ Run the gate in this order and stop at the first failure, reporting the failing 
 3. Tests:
    - If `$ARGUMENTS` lists test files, run `npx vitest run $ARGUMENTS`.
    - If `$ARGUMENTS` is `--full`, or the change touches `src/lib/registry.ts`, shared helpers under `tests/helpers/`, or more than one conversion family, run `npm test`.
-   - Otherwise run `git fetch origin --quiet` and derive the affected test files from `git diff --name-only origin/main...HEAD` plus uncommitted changes (tests next to the changed modules, and tests that import them) and run only those with `npx vitest run`.
+   - Otherwise run `git fetch origin --quiet` and `npx vitest run --changed origin/main`, which selects the tests affected by the diff (including uncommitted and untracked files) through the module graph. "No test files found" means no test covers the change: report it as NOT RUN, not as a pass.
 4. `npm run build` — only when source under `src/`, `tsconfig.json`, `next.config.mjs`, or dependencies changed.
 
 Skipped oracle tests count as NOT RUN, not as passes; list each with the missing tool.

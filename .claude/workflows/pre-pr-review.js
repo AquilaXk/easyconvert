@@ -13,12 +13,9 @@ const BASE = typeof args === 'string' && args.trim() ? args.trim() : 'origin/mai
 
 const SCOPE_SCHEMA = {
   type: 'object',
-  required: ['files', 'conversions', 'tests', 'security', 'summary'],
+  required: ['files', 'summary'],
   properties: {
     files: { type: 'array', items: { type: 'string' } },
-    conversions: { type: 'boolean', description: 'touches src/lib/conversions, src/lib/edge, src/lib/registry.ts, or src/worker' },
-    tests: { type: 'boolean', description: 'touches tests/ or tests/helpers/' },
-    security: { type: 'boolean', description: 'touches src/lib/security, src/lib/auth, src/lib/api-keys, src/app/api, sandbox, or network fetching' },
     summary: { type: 'string' },
   },
 }
@@ -56,7 +53,7 @@ const VERDICT_SCHEMA = {
 
 phase('Scope')
 const scope = await agent(
-  `Run \`git fetch origin --quiet\`, then list the files changed on this branch versus ${BASE} (\`git diff --name-only ${BASE}...HEAD\` plus uncommitted and untracked files) and classify the change. Summarize the intent in two sentences.`,
+  `Run \`git fetch origin --quiet\`, then list the files changed on this branch versus ${BASE} (\`git diff --name-only ${BASE}...HEAD\` plus uncommitted and untracked files), as repository-relative paths. Summarize the intent in two sentences.`,
   { label: 'scope', phase: 'Scope', schema: SCOPE_SCHEMA, effort: 'low' },
 )
 
@@ -67,6 +64,14 @@ if (scope.files.length === 0) {
   log(`No changes against ${BASE}; nothing to review.`)
   return { base: BASE, confirmed: [], dismissed: [], not_run: [] }
 }
+
+const CONVERSION_PATHS = ['src/lib/conversions/', 'src/lib/edge/', 'src/lib/registry.ts', 'src/worker/']
+const TEST_PATHS = ['tests/']
+const SECURITY_PATHS = ['src/lib/security/', 'src/lib/auth/', 'src/lib/api-keys/', 'src/app/api/', 'src/worker/']
+const touches = paths => scope.files.some(file => paths.some(p => file.startsWith(p)))
+const touchesConversions = touches(CONVERSION_PATHS)
+const touchesTests = touches(TEST_PATHS)
+const touchesSecurity = touches(SECURITY_PATHS)
 
 const DIFF_HINT = `Review only the changes on this branch versus ${BASE} (committed and uncommitted). Changed files: ${scope.files.join(', ')}. Intent: ${scope.summary}`
 
@@ -80,20 +85,20 @@ const LENSES = [
     prompt: `${DIFF_HINT}\n\nCheck the diff against the architecture boundaries and code rules in CLAUDE.md (layer boundaries, SSOT modules, node: imports, no nested ternaries, named constants, cloud-free local mocks, no hard-coded model names, no external service names). Mark pure style items as nit.`,
   },
 ]
-if (scope.security) {
+if (touchesSecurity) {
   LENSES.push({
     key: 'security',
     prompt: `${DIFF_HINT}\n\nAudit the diff for security defects: SSRF (IPv4/IPv6/DNS rebinding), path traversal, zip-slip and archive bombs, sandbox escapes, authn/authz gaps, API key handling, secrets or PII in logs and errors.`,
   })
 }
-if (scope.tests || scope.conversions) {
+if (touchesTests || touchesConversions) {
   LENSES.push({
     key: 'test-integrity',
     agentType: 'test-integrity-reviewer',
     prompt: `${DIFF_HINT}\n\nApply all test-integrity gates and return findings.`,
   })
 }
-if (scope.conversions) {
+if (touchesConversions) {
   LENSES.push({
     key: 'bitstream',
     agentType: 'bitstream-verifier',
