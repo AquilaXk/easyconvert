@@ -44,16 +44,25 @@ Universal file conversion platform: Next.js 14 (App Router) + TypeScript, pure-T
 
 ## Git & GitHub
 
-- Never push to `main`. Branch from `main` (`feat/`, `fix/`, `test/`, `chore/`, `docs/`), preferably in a worktree under `.worktrees/`.
-- Flow: issue → branch → local verification → PR → Claude Code review → resolve every thread → CI green (`verify`, SonarCloud) → `automerge` label. Squash merge only.
+- Never push to `main` (the `main` ruleset is the real enforcement; `.claude/settings.json` deny rules are only a safety net). Branch from `main` (`feat/`, `fix/`, `test/`, `chore/`, `docs/`), preferably in a worktree under `.worktrees/`.
+- Flow: plan → issue → branch → local verification → PR → review (see below) → resolve every thread → CI green (`verify`, SonarCloud) → `automerge` label. Squash merge only.
 - Commits: `<type>(<scope>): <imperative summary>`, one commit per planned unit.
 - Everything posted to GitHub (issues, PRs, commits, review replies) is concise English starting with an imperative verb; titles ≤ 72 chars. Use `.github/PULL_REQUEST_TEMPLATE.md`.
 - Do not name or compare against other services or external reference projects in code, commits, issues, PRs, or docs; describe everything in this project's own domain terms.
 - Do not split DB migrations, infra/deploy, auth/security, or legal changes into the same PR as other work.
 - Stage explicit paths; never `git add -A` / `git add .`.
 
+## Multi-agent coexistence
+
+This repository is developed by Claude Code and by Gemini/Antigravity agents in parallel.
+
+- Antigravity/Gemini sessions follow the local, gitignored `AGENTS.md` and `GEMINI.md`, and review PRs with their own `aquila-review` skill. Claude Code sessions follow this file. The engineering rules (fail-closed, test integrity, architecture, Git flow) are the same on both sides; when changing a shared rule here, flag that `GEMINI.md`/`AGENTS.md` need the same change.
+- One tracked task per branch/worktree. Never modify, rebase, push to, or clean up a branch, worktree, or uncommitted change you did not create in this session — it may belong to the other agent. Check `git status`, `git worktree list`, and open PRs before starting.
+- `implementation_plan.md` and `walkthrough.md` are Antigravity planning artifacts. Read them for context; do not rewrite them unless the task is explicitly about them.
+- Do not edit, hide, or resolve `aquila-review` comments on the other agent's behalf without fixing the underlying finding.
+
 ## Code review
 
-- Automated review runs through the Claude Code GitHub Action (`.github/workflows/claude-code-review.yml`) on every non-draft PR. Comment `@claude` on the PR for a follow-up review or questions (`.github/workflows/claude.yml`).
-- Locally, run `/code-review` before opening a PR, and use the `test-integrity-reviewer` subagent for test/oracle changes.
-- Every actionable finding is fixed in a separate commit and its thread resolved; the `main` ruleset requires all review threads resolved before merge.
+- Every non-draft PR, from either agent, gets an automated Claude Code review through `.github/workflows/claude-code-review.yml`. Comment `@claude` on the PR for a follow-up review or questions (`.github/workflows/claude.yml`).
+- Claude Code sessions: run `/code-review` locally before opening a PR, and use the `test-integrity-reviewer` subagent for test/oracle changes. Running `aquila-review` is not required from Claude Code.
+- Findings from any reviewer (Claude Code review or `aquila-review`) are fixed in a separate commit and their threads resolved; the `main` ruleset requires all review threads resolved before merge.
