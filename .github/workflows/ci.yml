@@ -37,7 +37,10 @@ jobs:
             libreoffice-impress \
             imagemagick \
             tesseract-ocr \
+            tesseract-ocr-kor \
             unrar
+          # Pre-stage Tesseract traineddata assets for offline inference
+          find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
 
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
