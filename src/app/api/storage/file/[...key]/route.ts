@@ -3,6 +3,7 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
+import { parseByteRange, satisfiedContentRange, unsatisfiedContentRange } from '@/lib/api/http-range';
 
 export const dynamic = 'force-dynamic';
 
@@ -74,25 +75,31 @@ export async function GET(
     'Cache-Control': PRIVATE_NO_STORE,
     'X-Content-Type-Options': 'nosniff',
     'ETag': stored.etag,
+  };
+  const contentHeaders: Record<string, string> = {
+    ...fileHeaders,
     'Content-Type': stored.mimeType,
     'Content-Disposition': attachmentContentDisposition(stored.filename),
   };
 
-  // Support HTTP Range requests
-  const range = req.headers.get('range');
-  if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : stored.size - 1;
-    const chunkSize = end - start + 1;
-    const chunkBuffer = stored.buffer.subarray(start, end + 1);
-
+  const range = parseByteRange(req.headers.get('range'), stored.size);
+  if (range.kind === 'unsatisfiable') {
+    return NextResponse.json(
+      { success: false, error: 'Requested range not satisfiable.' },
+      {
+        status: 416,
+        headers: { ...fileHeaders, 'Content-Range': unsatisfiedContentRange(stored.size) },
+      }
+    );
+  }
+  if (range.kind === 'partial') {
+    const chunkBuffer = stored.buffer.subarray(range.start, range.end + 1);
     return new NextResponse(new Uint8Array(chunkBuffer), {
       status: 206,
       headers: {
-        ...fileHeaders,
-        'Content-Range': `bytes ${start}-${end}/${stored.size}`,
-        'Content-Length': chunkSize.toString(),
+        ...contentHeaders,
+        'Content-Range': satisfiedContentRange(range.start, range.end, stored.size),
+        'Content-Length': String(range.end - range.start + 1),
       },
     });
   }
@@ -100,7 +107,7 @@ export async function GET(
   return new NextResponse(new Uint8Array(stored.buffer), {
     status: 200,
     headers: {
-      ...fileHeaders,
+      ...contentHeaders,
       'Content-Length': stored.size.toString(),
     },
   });

@@ -238,3 +238,67 @@ describe('/api/storage/file response headers (#249)', () => {
   });
 });
 
+
+describe('/api/storage/file Range requests per RFC 9110 (#249)', () => {
+  const partialCases: Array<{ range: string; body: string; contentRange: string }> = [
+    { range: 'bytes=0-3', body: '0123', contentRange: 'bytes 0-3/10' },
+    { range: 'bytes=-2', body: '89', contentRange: 'bytes 8-9/10' },
+    { range: 'bytes=5-', body: '56789', contentRange: 'bytes 5-9/10' },
+    { range: 'bytes=3-100', body: '3456789', contentRange: 'bytes 3-9/10' },
+    { range: 'bytes=-100', body: '0123456789', contentRange: 'bytes 0-9/10' },
+    { range: 'Bytes=2-2', body: '2', contentRange: 'bytes 2-2/10' },
+  ];
+
+  it.each(partialCases)('answers $range with 206 and exactly the requested bytes', async ({ range, body, contentRange }) => {
+    const key = storeObject(`uploads/${uniqueSuffix()}_range.txt`);
+
+    const res = await download(key, { Range: range });
+    expect(res.status).toBe(206);
+    const bytes = await bodyBytes(res);
+    expect(bytes.toString('ascii')).toBe(body);
+    const [, first, last] = /^bytes (\d+)-(\d+)\/10$/.exec(contentRange) ?? [];
+    expect(bytes.toString('hex')).toBe(FIXTURE.subarray(Number(first), Number(last) + 1).toString('hex'));
+    expect(res.headers.get('content-range')).toBe(contentRange);
+    expect(res.headers.get('content-length')).toBe(String(body.length));
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+  });
+
+  const unsatisfiableRanges = ['bytes=10-', 'bytes=abc', 'bytes=abc-', 'bytes=4-2', 'bytes=-0', 'bytes=', 'bytes=1-2-3', '=0-3'];
+
+  it.each(unsatisfiableRanges)('rejects %s with 416 and Content-Range: bytes */10', async (range) => {
+    const key = storeObject(`uploads/${uniqueSuffix()}_range.txt`);
+
+    const res = await download(key, { Range: range });
+    expect(res.status).toBe(416);
+    expect(res.headers.get('content-range')).toBe('bytes */10');
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  const ignoredRanges = ['bytes=0-1,3-4', 'items=0-3'];
+
+  it.each(ignoredRanges)('ignores %s and returns the full 200 body', async (range) => {
+    const key = storeObject(`uploads/${uniqueSuffix()}_range.txt`);
+
+    const res = await download(key, { Range: range });
+    expect(res.status).toBe(200);
+    expect((await bodyBytes(res)).toString('hex')).toBe(FIXTURE.toString('hex'));
+    expect(res.headers.get('content-range')).toBeNull();
+    expect(res.headers.get('content-length')).toBe(String(FIXTURE_SIZE));
+  });
+
+  it('rejects an int-range on an empty object and serves a suffix range as the full empty body', async () => {
+    const key = storeObject(`uploads/${uniqueSuffix()}_empty.txt`, Buffer.alloc(0));
+
+    const intRangeRes = await download(key, { Range: 'bytes=0-' });
+    expect(intRangeRes.status).toBe(416);
+    expect(intRangeRes.headers.get('content-range')).toBe('bytes */0');
+
+    const suffixRes = await download(key, { Range: 'bytes=-5' });
+    expect(suffixRes.status).toBe(200);
+    expect((await bodyBytes(suffixRes)).length).toBe(0);
+    expect(suffixRes.headers.get('content-range')).toBeNull();
+  });
+});
