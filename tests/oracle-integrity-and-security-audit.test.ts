@@ -11,6 +11,8 @@ import {
   checkWavIntegrity,
   verifyVideoBitstreamWithFfprobe,
   verifyAudioBitstreamWithFfprobe,
+  verifyArchiveWith7z,
+  verifyPdfWithPoppler,
   assertFormatIntegrity,
   OracleToolMissingError,
 } from './helpers/differential-oracle';
@@ -286,19 +288,39 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(() => checkMp3Integrity(corruptMp3)).toThrow(/Missing valid MPEG audio frame sync/);
     });
 
-    it('enforces strict skip mode (OracleToolMissingError) when ORACLE_STRICT_MODE is enabled', () => {
+    it('enforces strict skip mode (OracleToolMissingError) across all oracle tools when ORACLE_STRICT_MODE is enabled', () => {
       const origEnv = process.env.ORACLE_STRICT_MODE;
       try {
         process.env.ORACLE_STRICT_MODE = '1';
-        // When tool is missing (e.g. on test runner where ffprobe might not be in PATH)
+        // Test ffprobe
         const fakeBuf = Buffer.alloc(100);
         try {
           const res = verifyVideoBitstreamWithFfprobe(fakeBuf, 'mp4');
-          // If ffprobe was installed on this machine, res is returned; if missing, OracleToolMissingError is thrown
           expect(res).toBeDefined();
         } catch (err: any) {
           expect(err).toBeInstanceOf(OracleToolMissingError);
           expect(err.isOracleSkip).toBe(true);
+        }
+
+        // Test 7z
+        const fake7z = Buffer.concat([Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]), Buffer.alloc(30)]);
+        try {
+          const res7z = verifyArchiveWith7z(fake7z);
+          expect(typeof res7z).toBe('boolean');
+        } catch (err: any) {
+          expect(err).toBeInstanceOf(OracleToolMissingError);
+          expect(err.isOracleSkip).toBe(true);
+          expect(err.tool).toBe('7z');
+        }
+
+        // Test pdfinfo
+        try {
+          const resPdf = verifyPdfWithPoppler(Buffer.from('%PDF-1.4\n...'));
+          expect(typeof resPdf).toBe('boolean');
+        } catch (err: any) {
+          expect(err).toBeInstanceOf(OracleToolMissingError);
+          expect(err.isOracleSkip).toBe(true);
+          expect(err.tool).toBe('pdfinfo');
         }
       } finally {
         if (origEnv === undefined) {

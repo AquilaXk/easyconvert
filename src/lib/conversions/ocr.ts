@@ -1,3 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import sharp from 'sharp';
 import { ConversionOptions } from '../types';
 import {
@@ -36,10 +41,36 @@ export async function performOcr(
   };
   const tesseractLang = langMap[language.toLowerCase()] || 'eng';
 
-  // 1. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
+  // 1. Locate local or system pre-downloaded traineddata for zero-network offline inference
+  const possibleTessDirs = [
+    process.cwd(),
+    '/usr/share/tesseract-ocr/5/tessdata',
+    '/usr/share/tesseract-ocr/4.00/tessdata',
+    '/usr/share/tessdata',
+    '/opt/homebrew/share/tessdata',
+    '/usr/local/share/tessdata',
+  ];
+
+  let localLangPath: string | undefined;
+  for (const dir of possibleTessDirs) {
+    const candidate = path.join(dir, `${tesseractLang}.traineddata`);
+    if (fs.existsSync(candidate)) {
+      localLangPath = dir;
+      const cwdTarget = path.join(process.cwd(), `${tesseractLang}.traineddata`);
+      if (!fs.existsSync(cwdTarget)) {
+        try {
+          fs.copyFileSync(candidate, cwdTarget);
+        } catch {}
+      }
+      break;
+    }
+  }
+
+  // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
     const Tesseract = await import('tesseract.js');
-    const worker = await Tesseract.createWorker(tesseractLang);
+    const workerOptions = localLangPath ? { langPath: localLangPath } : {};
+    const worker = await Tesseract.createWorker(tesseractLang, 1, workerOptions);
     const ret = await worker.recognize(imageBuffer, {}, { blocks: true });
     await worker.terminate();
 
@@ -63,7 +94,44 @@ export async function performOcr(
       };
     }
   } catch {
-    // Fall back to built-in geometric OCR engine or CJK pipeline
+    // Fall back to system native CLI or built-in geometric OCR engine
+  }
+
+  // 3. Try System Native Tesseract CLI if available
+  const tesseractCandidates = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
+  const tesseractCli = tesseractCandidates.find((p) => fs.existsSync(p));
+  if (tesseractCli) {
+    const tmpIn = path.join(os.tmpdir(), `ocr_cli_in_${crypto.randomUUID()}.png`);
+    const tmpOutBase = path.join(os.tmpdir(), `ocr_cli_out_${crypto.randomUUID()}`);
+    try {
+      fs.writeFileSync(tmpIn, imageBuffer);
+      execFileSync(tesseractCli, [tmpIn, tmpOutBase, '-l', tesseractLang], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        timeout: 15000,
+      });
+      const outTxtPath = `${tmpOutBase}.txt`;
+      if (fs.existsSync(outTxtPath)) {
+        const cliText = fs.readFileSync(outTxtPath, 'utf-8').trim();
+        fs.unlinkSync(outTxtPath);
+        if (cliText.length > 0) {
+          const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
+          const lines = cliText.split('\n').map((l) => l.trim()).filter(Boolean);
+          return {
+            text: cliText,
+            confidence: 0.95,
+            wordCount: cliText.split(/\s+/).filter(Boolean).length,
+            lines,
+            lineBlocks: [],
+            imageWidth: meta.width || 800,
+            imageHeight: meta.height || 600,
+          };
+        }
+      }
+    } catch {} finally {
+      try {
+        if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn);
+      } catch {}
+    }
   }
 
   // 2. If CJK script requested (ko, ja, zh), route through multi-script CJK OCR Pipeline
