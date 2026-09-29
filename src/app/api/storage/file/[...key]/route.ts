@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
+import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,6 +11,8 @@ const STORAGE_DOWNLOAD_SCOPE = 'storage:download';
 const USER_CONVERSION_KEY_PATTERN = /^conversions\/([^/]+)\//;
 /** `results/<jobId>/...`: queue job outputs, owned by the job's user when the job has one. */
 const JOB_RESULT_KEY_PATTERN = /^results\/([^/]+)\//;
+/** Outputs can be private to one user and expire with their storage TTL, so no shared cache may keep them. */
+const PRIVATE_NO_STORE = 'private, no-store';
 
 /**
  * Resolves the user that owns a stored object from its key namespace.
@@ -43,7 +46,7 @@ export async function GET(
   const notFound = () =>
     NextResponse.json(
       { success: false, error: `Object not found for key: "${fullKey}"` },
-      { status: 404 }
+      { status: 404, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
     );
 
   let resolvedKey = fullKey;
@@ -66,6 +69,15 @@ export async function GET(
     return denied;
   }
 
+  const fileHeaders: Record<string, string> = {
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': PRIVATE_NO_STORE,
+    'X-Content-Type-Options': 'nosniff',
+    'ETag': stored.etag,
+    'Content-Type': stored.mimeType,
+    'Content-Disposition': attachmentContentDisposition(stored.filename),
+  };
+
   // Support HTTP Range requests
   const range = req.headers.get('range');
   if (range) {
@@ -78,11 +90,9 @@ export async function GET(
     return new NextResponse(new Uint8Array(chunkBuffer), {
       status: 206,
       headers: {
+        ...fileHeaders,
         'Content-Range': `bytes ${start}-${end}/${stored.size}`,
-        'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize.toString(),
-        'Content-Type': stored.mimeType,
-        'ETag': stored.etag,
       },
     });
   }
@@ -90,11 +100,8 @@ export async function GET(
   return new NextResponse(new Uint8Array(stored.buffer), {
     status: 200,
     headers: {
-      'Content-Type': stored.mimeType,
-      'Content-Disposition': `attachment; filename="${stored.filename}"`,
+      ...fileHeaders,
       'Content-Length': stored.size.toString(),
-      'ETag': stored.etag,
-      'Cache-Control': 'public, max-age=86400, immutable',
     },
   });
 }

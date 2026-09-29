@@ -14,6 +14,7 @@ const BASE_URL = 'http://localhost:3000';
 const ONE_HOUR_MS = 60 * 60 * 1000;
 // Ten ASCII digits: every byte value equals its offset, so expected slices are readable literals.
 const FIXTURE = Buffer.from('0123456789', 'ascii');
+const FIXTURE_SIZE = 10;
 const MIME_TYPE = 'text/plain';
 
 const createdKeys: string[] = [];
@@ -160,3 +161,80 @@ describe('/api/storage/file owner access (#249)', () => {
     expect((await bodyBytes(res)).toString('hex')).toBe(FIXTURE.toString('hex'));
   });
 });
+
+describe('/api/storage/file response headers (#249)', () => {
+  it('marks owner downloads private, no-store, and nosniff', async () => {
+    const alice = await createUser('dl_alice');
+    const key = storeObject(`conversions/${alice.id}/${uniqueSuffix()}_result.txt`);
+
+    const res = await download(key, sessionHeaders(alice));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+    expect(res.headers.get('etag')).toBe(storageProvider.getObject(key)?.etag);
+    expect(res.headers.get('content-length')).toBe(String(FIXTURE_SIZE));
+    expect(res.headers.get('content-type')).toBe(MIME_TYPE);
+  });
+
+  it('marks anonymous capability downloads private and no-store as well', async () => {
+    const job = await conversionQueue.add('convert', jobData(undefined));
+    const key = storeObject(`results/${job.id}/result.json`);
+
+    const res = await download(key);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  it('keeps a hidden object 404 out of shared caches', async () => {
+    const alice = await createUser('dl_alice');
+    const key = storeObject(`conversions/${alice.id}/${uniqueSuffix()}_result.txt`);
+
+    const res = await download(key);
+    expect(res.status).toBe(404);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+  });
+
+  it('strips CR, LF, and quotes from the Content-Disposition filename', async () => {
+    const key = storeObject(`uploads/${uniqueSuffix()}_report.txt`, FIXTURE, 're"port\r\nX-Injected: 1.txt');
+
+    const res = await download(key);
+    expect(res.status).toBe(200);
+    const disposition = res.headers.get('content-disposition');
+    expect(disposition).toBe(`attachment; filename="reportX-Injected: 1.txt"; filename*=UTF-8''reportX-Injected%3A%201.txt`);
+    expect(res.headers.get('x-injected')).toBeNull();
+  });
+
+  it('encodes non-ASCII filenames with an RFC 5987 filename* and an ASCII fallback', async () => {
+    const filename = '변환 결과.pdf';
+    const key = storeObject(`uploads/${uniqueSuffix()}_korean.pdf`, FIXTURE, filename);
+
+    const res = await download(key);
+    expect(res.status).toBe(200);
+    const disposition = res.headers.get('content-disposition') ?? '';
+    expect(disposition).toBe(
+      `attachment; filename="__ __.pdf"; filename*=UTF-8''%EB%B3%80%ED%99%98%20%EA%B2%B0%EA%B3%BC.pdf`
+    );
+    const extValue = disposition.split("filename*=UTF-8''")[1];
+    expect(decodeURIComponent(extValue)).toBe(filename);
+  });
+
+  it('drops lone UTF-16 surrogates instead of failing to encode the filename', async () => {
+    const key = storeObject(`uploads/${uniqueSuffix()}_surrogate.txt`, FIXTURE, 'bad\ud800name.txt');
+
+    const res = await download(key);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toBe(`attachment; filename="badname.txt"; filename*=UTF-8''badname.txt`);
+  });
+
+  it("percent-encodes the characters RFC 5987 excludes from attr-char (' ( ) *)", async () => {
+    const key = storeObject(`uploads/${uniqueSuffix()}_marks.txt`, FIXTURE, "a'b(c)*.txt");
+
+    const res = await download(key);
+    expect(res.headers.get('content-disposition')).toBe(
+      `attachment; filename="a'b(c)*.txt"; filename*=UTF-8''a%27b%28c%29%2A.txt`
+    );
+  });
+});
+
