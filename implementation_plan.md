@@ -1,47 +1,49 @@
-# Master Implementation Plan: Next-Generation Enterprise Conversion Architecture & Hardening
+# Implementation Plan: Adversarial Audit Gap Remediation
 
 ## Overview
-Remediate newly uncovered critical gaps and architectural deficiencies in `AquilaXk/easyconvert` against commercial enterprise conversion service standards and international specifications (ISO 32000-1, RFC 8878, RFC 9842, Adobe DNG 1.6, W3C WebCodecs). Enforce strict zero-leak quota accounting, zero test cheating, authentic distributed queue decoupling, true watertight B-Rep tessellation, and zero-trust container security with 100% Fail-Closed integrity.
+Remediate the 5 critical and high-priority gaps identified in the adversarial audit of commits `acaf119` ~ `06dda3c` across domain conversion engines, security guards, and distributed data store clustering. Enforce strict Fail-Closed error handling, authentic standard specifications (ISO/IEC 29500, Adobe DNG 1.7.1.0, Redis Cluster RFC), clean modularity, and superior developer experience (DX).
 
 ---
 
-## Phase Breakdown
+## Phases
 
-### Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remediation (P0)
-- **True Distributed BullMQ Engine**: In [`src/lib/queue/bullmq-engine.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/queue/bullmq-engine.ts), eliminate in-memory `memoryFallback` delegation when `REDIS_URL` is configured; connect authentic Redis Stream/Hash queue.
-- **Producer / Consumer Lifecycle Decoupling**: In [`src/lib/queue/conversion-queue.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/queue/conversion-queue.ts), eliminate unconditional module-level `conversionWorker` spawning in Next.js web API routes; isolate consumer worker to dedicated backend daemon environment.
-- **Worker Lifecycle Integration**: In [`src/worker/index.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/worker/index.ts), unify job completion/failure lifecycle with `redisKeyStore.commitQuota / rollbackQuota` and `webhookDispatcher.dispatch` to prevent split-brain quota leaks and missed webhooks.
-- **Container Airgap Architecture Fix**: In [`docker-compose.yml`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/docker-compose.yml), remove container-wide `seccomp:./docker/seccomp-airgap.json` that breaks Redis TCP socket connections. Enable `cap_add: [SYS_ADMIN]` or child-process seccomp injection so that [`src/lib/security/process-sandbox.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/security/process-sandbox.ts) can actually create `unshare -n` network namespaces without silent fallback to unsandboxed execution.
+### Phase 1: Domain Conversions Fidelity & Spec Parity (Office & Camera RAW)
+- **Word OpenXML PDF Nested Table Rendering** ([`src/lib/conversions/office.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/conversions/office.ts)):
+  - Enhance `DocxTableCell` interface to support `fullCellText?: string`.
+  - In `parseSingleDocxTable`, store `fullCellText` on each `DocxTableCell` containing parent text and formatted nested table text (`row.join('\t')`).
+  - Provide `getFullDocxCellText(cell: DocxTableCell): string` helper.
+  - In `generatePdfFromDocx`, compute dynamic row height using `getFullDocxCellText(cell)` and render `getFullDocxCellText(cell)` instead of dropping nested tables.
+- **Bayer Sensor Dynamic Range & Calibration Validation** ([`src/lib/conversions/image.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/conversions/image.ts)):
+  - Extract and enforce unified `validateBayerSensorCalibration` across `demosaicAhdBayerCfa` and `demosaicAmazeBayerCfa`.
+  - Validate `whiteLevel > maxBLevel` and strict `blackLevel` array length/finiteness checks.
+  - Fail closed consistently with descriptive errors on inverted dynamic range or malformed calibration arrays in production DNG decoding pipelines.
+- **Adobe DNG 1.7.1.0 ColorMatrix1 Inversion & sRGB Mapping** ([`src/lib/conversions/image.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/conversions/image.ts)):
+  - Implement robust 3x3 matrix inversion `invert3x3(matrix)` via Gauss-Jordan elimination with row pivoting.
+  - Implement 3x3 matrix multiplication `multiply3x3(a, b)`.
+  - Define Bradford-adapted $M_{XYZ\_D50\_TO\_SRGB}$ matrix.
+  - In `decodeRawBayerSensor`, correctly invert DNG Tag 50721 `ColorMatrix1` ($XYZ_{D50} \to Camera$) and map to sRGB: $M = M_{XYZ\_D50\_TO\_SRGB} \times (\text{ColorMatrix1})^{-1}$, passing $M$ as `colorMatrix` to demosaicing.
+- **Verification**:
+  - Deterministic tests in `tests/office-conversions.test.ts` verifying nested table content in generated PDF buffers.
+  - Deterministic tests in `tests/camera-raw-ahd-amaze-separation.test.ts` verifying fail-closed validation on inverted dynamic range in `demosaicAmazeBayerCfa` and authentic DNG ColorMatrix1 inversion.
 
-### Phase 2: Domain Engine Spec Parity & Defect Remediation (P0 / P1)
-- **Office vMerge & DrawingML Crop**: In [`src/lib/conversions/office.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/conversions/office.ts), implement vertical table cell merging (`w:vMerge w:val="restart"` / `w:vMerge`) in `parseSingleDocxTable` and inherit table styles from `word/styles.xml`. Parse `<a:srcRect>` in `<p:pic>` to apply authentic image cropping.
-- **Camera RAW DNG Tag Collision Fix**: In [`src/lib/conversions/image.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/conversions/image.ts), separate DNG tags 50738 (`ForwardMatrix1`) and 50739 (`ForwardMatrix2`) from `blackLevel` and `whiteLevel` case blocks; map to dedicated 3x3 Forward Matrix fields. Parse `ActiveArea` (50710), `DefaultCropOrigin` (50719), and `DefaultCropSize` (50720) to crop optical black sensor borders.
-- **3D CAD Red-Green Watertight Tessellation**: In [`src/lib/conversions/cad-nurbs.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/conversions/cad-nurbs.ts), replace naive 1:4 midpoint subdivision with Red-Green conforming refinement (Rivara longest-edge bisection) to mathematically eliminate T-junctions (hanging nodes). Add tolerance-based ($\epsilon = 10^{-5}\text{m}$) boundary vertex sewing across adjacent B-Rep trimmed faces.
-- **Archive Password Schema & WebCrypto ZIP**: In [`src/lib/registry.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/registry.ts), expose `password: true` in `optionsSchema` for archive formats. Add pure TS PKZIP AES-256 decryption in [`src/lib/conversions/archive.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/conversions/archive.ts).
-
-### Phase 3: Developer API Enterprise Hardening & DX (P1)
-- **Trusted Proxy IP Spoofing Defense**: In [`src/lib/api-keys/ip-utils.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/api-keys/ip-utils.ts), validate incoming request proxy hops against `TRUSTED_PROXIES` CIDR ranges; reject unverified `cf-connecting-ip` / `x-forwarded-for` header spoofing for API key IP whitelists.
-- **Sliding-Window Burst Rate Limiter**: In [`src/lib/api-keys/redis-key-store.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/api-keys/redis-key-store.ts), implement an atomic Lua sliding-window token bucket (e.g. 20 RPS / 300 RPM) to protect backend workers against burst request exhaustion.
-- **Webhook Subscriptions & Secret Rolling**: In [`src/lib/api-keys/webhook-dispatcher.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/api-keys/webhook-dispatcher.ts), support event filtering (`subscribedEvents`), dual-secret rolling (Active/Retiring), and persistent Redis retry scheduling.
-- **OpenAPI 3.1 & SDK Generation**: Provide `/api/v1/openapi.json` route and generate TypeScript/Python SDK client definitions.
-
-### Phase 4: Testnet & Anti-Cheating Differential Oracle Hardening (P0)
-- **Eliminate Hollow CJK OCR Assertions**: In [`tests/skeptical-audit.test.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/tests/skeptical-audit.test.ts), replace `expect(result.confidence).toBeGreaterThanOrEqual(0.9)` with actual Korean substring assertions (`expect(result.text).toContain('한글')`). Eliminate fake `"DE"` fallback passes in [`src/lib/conversions/ocr.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/conversions/ocr.ts).
-- **Enforce `ORACLE_STRICT_MODE=1`**: In [`tests/helpers/differential-oracle.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/tests/helpers/differential-oracle.ts), throw explicit configuration errors or trigger explicit `test.skip()` when external CLI tools are missing in strict CI runs, preventing silent green passes.
-
-### Phase 5: High-Performance Algorithmic Upgrades (P2)
-- **WebGPU WGSL AMaZE/AHD Demosaicing**: Implement WGSL 2D compute shader kernels (`@workgroup_size(16, 16)`) in `src/lib/edge/shaders/` to accelerate 24MP Bayer CFA demosaicing from 4.5s (single-thread CPU) down to 10~15ms on WebGPU hardware.
-- **RFC 8878 Zstandard Streaming Dictionary Pipeline**: Complete chunked streaming dictionary compression for high-volume enterprise office/JSON/CSV payload streams.
-- **Remote Multi-Volume Range VFS**: Design Range-Request VFS for extracting individual files from split multi-volume archives without downloading the entire spanned sequence.
+### Phase 2: Security Guards & Distributed Cluster Integrity (Spoofing & Redis Store)
+- **Anti-Spoofing Fail-Closed Rejection of 0-Byte Payloads** ([`src/lib/registry.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/registry.ts), [`src/lib/security/file-guard.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/security/file-guard.ts)):
+  - In `assertNotSpoofedFile`: reject empty or 0-byte buffers (`!buffer || buffer.length === 0`) with `FileExtensionSpoofError`.
+  - In `assertNotSpoofedFilePath`: reject 0-byte files (`stat.size === 0`) with `FileExtensionSpoofError`.
+  - Ensure zero silent pass bypass for empty payloads.
+- **Redis User Store Cluster Slot Compatibility** ([`src/lib/auth/redis-user-store.ts`](file:///Volumes/MACSSD/Projects/GitProjects/easyconvert/src/lib/auth/redis-user-store.ts)):
+  - Ensure `keyPrefix` defaults to `'easyconvert:{user}:'`.
+  - In `RedisUserStore` constructor, enforce hash tag `{user}` on user-related key prefixes.
+  - Ensure `KEYS[1]` (`emailIndexKey`) and `KEYS[2]` (`userKey`) in `CREATE_USER_LUA_SCRIPT` share `{user}` hash tag, guaranteeing Redis cluster slot parity and preventing `CROSSSLOT` failures.
+- **Verification**:
+  - Tests in `tests/phase-5-ocr-and-security.test.ts` and `tests/worker-native-engines-and-api-dx.test.ts` verifying 0-byte rejection.
+  - Tests in `tests/phase-6-auth-sandbox.test.ts` verifying `{user}` hash tags in distributed Lua eval arguments.
 
 ---
 
-## Verification & Review Gate
-For each phase:
+## Standard 5-Step Delivery Pipeline per Phase
 1. Create GitHub Issue via `gh issue create`.
-2. Branch from `main` (`git checkout -b <branch>`).
-3. Implement changes and add deterministic regression tests (Anti-Cheating strictly enforced).
-4. Verify locally: `npm run lint`, `npm test`, `npm run build`.
-5. Push branch, open PR via `gh pr create`.
-6. Compile and submit code review via `aquila-review` skill (`~/.gemini/config/skills/aquila-review/SKILL.md`).
-7. Obtain clean verification and trigger automerge.
+2. Checkout new branch from `main` (`git checkout -b <branch> origin/main`).
+3. Implement features, clean DX code, and deterministic tests (Zero Cheating).
+4. Run full deterministic test gate: `npm run guard:anti-cheat && npm run lint && npm test && npm run build`.
+5. Create PR via `gh pr create`, run `aquila-review` skill, post review payload comment, address feedback, and trigger automerge.

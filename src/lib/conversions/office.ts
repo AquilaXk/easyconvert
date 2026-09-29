@@ -631,8 +631,18 @@ async function convertDocxSource(
     }
   }
 
+  // Load table styles from word/styles.xml if present
+  let styleMap: Map<string, WordTableStyle> | undefined;
+  const stylesFile = zip.file('word/styles.xml');
+  if (stylesFile) {
+    try {
+      const stylesXml = await stylesFile.async('text');
+      styleMap = parseWordStyles(stylesXml);
+    } catch {}
+  }
+
   // Extract paragraphs, headings, and tables in sequential document order
-  const { paragraphs, tables, elements } = parseDocxXml(xmlText, chartMap);
+  const { paragraphs, tables, elements } = parseDocxXml(xmlText, chartMap, styleMap);
 
   // DOCX -> TXT
   if (tgt === 'txt') {
@@ -756,6 +766,7 @@ export interface TableBorder {
 
 export interface DocxTableCell {
   text: string;
+  fullCellText?: string;
   shading?: string;
   isHeader?: boolean;
   colSpan?: number;
@@ -768,6 +779,20 @@ export interface DocxTableCell {
     right?: TableBorder;
   };
   nestedTable?: DocxTable;
+}
+
+/**
+ * Returns complete text representation of a cell including nested tables.
+ */
+export function getFullDocxCellText(cell: DocxTableCell): string {
+  if (cell.fullCellText && cell.fullCellText.trim().length > 0) {
+    return cell.fullCellText;
+  }
+  if (cell.nestedTable && cell.nestedTable.rows.length > 0) {
+    const nestedRowsText = cell.nestedTable.rows.map((r) => r.join(' | ')).join('\n');
+    return cell.text ? `${cell.text}\n${nestedRowsText}` : nestedRowsText;
+  }
+  return cell.text || '';
 }
 
 export interface DocxTable {
@@ -2591,9 +2616,63 @@ function parseDrawingBlockElement(
   return null;
 }
 
-function parseSingleDocxTable(chunk: string): DocxTable | null {
+export interface WordTableStyle {
+  borders?: DocxTable['tblBorders'];
+  shading?: string;
+}
+
+export function parseWordStyles(stylesXml: string): Map<string, WordTableStyle> {
+  const styleMap = new Map<string, WordTableStyle>();
+  if (!stylesXml) return styleMap;
+
+  const styleTags = safeExtractXmlTags(stylesXml, 'w:style');
+  for (const sXml of styleTags) {
+    const isTableStyle = /w:type="table"/.test(sXml);
+    if (!isTableStyle) continue;
+
+    const idMatch = sXml.match(/w:styleId="([^"]+)"/);
+    if (!idMatch) continue;
+    const styleId = idMatch[1];
+
+    let borders: DocxTable['tblBorders'] | undefined;
+    const tblBordersEl = safeExtractFirstXmlElement(sXml, 'w:tblBorders');
+    if (tblBordersEl) {
+      const bXml = tblBordersEl.content;
+      const topEl = safeExtractFirstXmlElement(bXml, 'w:top');
+      const bottomEl = safeExtractFirstXmlElement(bXml, 'w:bottom');
+      const leftEl = safeExtractFirstXmlElement(bXml, 'w:left');
+      const rightEl = safeExtractFirstXmlElement(bXml, 'w:right');
+      const inHEl = safeExtractFirstXmlElement(bXml, 'w:insideH');
+      const inVEl = safeExtractFirstXmlElement(bXml, 'w:insideV');
+      borders = {
+        top: parseBorder(topEl ? topEl.raw : ''),
+        bottom: parseBorder(bottomEl ? bottomEl.raw : ''),
+        left: parseBorder(leftEl ? leftEl.raw : ''),
+        right: parseBorder(rightEl ? rightEl.raw : ''),
+        insideH: parseBorder(inHEl ? inHEl.raw : ''),
+        insideV: parseBorder(inVEl ? inVEl.raw : ''),
+      };
+    }
+
+    const shdMatch = sXml.match(/<w:shd[^>]*w:fill="([A-Fa-f0-9]{6})"/);
+    const shading = shdMatch ? shdMatch[1] : undefined;
+
+    styleMap.set(styleId, { borders, shading });
+  }
+
+  return styleMap;
+}
+
+function parseSingleDocxTable(
+  chunk: string,
+  styleMap?: Map<string, WordTableStyle>
+): DocxTable | null {
   const rows: string[][] = [];
   const structuredRows: DocxTableCell[][] = [];
+
+  const styleMatch = chunk.match(/<w:tblStyle[^>]*w:val="([^"]+)"/);
+  const tableStyleId = styleMatch ? styleMatch[1] : undefined;
+  const inheritedStyle = tableStyleId && styleMap ? styleMap.get(tableStyleId) : undefined;
 
   const tblBordersEl = safeExtractFirstXmlElement(chunk, 'w:tblBorders');
   let tblBorders: DocxTable['tblBorders'];
@@ -2613,23 +2692,36 @@ function parseSingleDocxTable(chunk: string): DocxTable | null {
       insideH: parseBorder(inHEl ? inHEl.raw : ''),
       insideV: parseBorder(inVEl ? inVEl.raw : ''),
     };
+  } else if (inheritedStyle?.borders) {
+    tblBorders = inheritedStyle.borders;
   }
 
   const trList = safeExtractXmlTags(chunk, 'w:tr');
+  const activeVMerge = new Map<number, { cell: DocxTableCell; rowIdx: number }>();
 
-  for (const trXml of trList) {
+  for (let rIdx = 0; rIdx < trList.length; rIdx++) {
+    const trXml = trList[rIdx];
     const rowCells: string[] = [];
     const sCells: DocxTableCell[] = [];
-    const isHeader = /<w:tblHeader(\/|>)/.test(trXml) || rows.length === 0;
+    const isHeader = /<w:tblHeader(\/|>)/.test(trXml) || rIdx === 0;
 
     const tcList = safeExtractXmlTags(trXml, 'w:tc');
+    let currentGridCol = 0;
 
     for (const tcXml of tcList) {
       const shdMatch = tcXml.match(/<w:shd[^>]*w:fill="([A-Fa-f0-9]{6})"/);
-      const shading = shdMatch ? shdMatch[1] : undefined;
+      const shading = shdMatch ? shdMatch[1] : inheritedStyle?.shading;
 
       const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
       const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
+
+      // Vertical merge detection per OpenXML ISO/IEC 29500-1 §17.4.84
+      const vMergeMatch = tcXml.match(/<w:vMerge\b([^>]*)\/?>/);
+      let vMergeType: 'restart' | 'continue' | undefined;
+      if (vMergeMatch) {
+        const valMatch = vMergeMatch[1].match(/w:val="([^"]+)"/);
+        vMergeType = valMatch && valMatch[1] === 'restart' ? 'restart' : 'continue';
+      }
 
       const tcBordersEl = safeExtractFirstXmlElement(tcXml, 'w:tcBorders');
       let borders: DocxTableCell['borders'];
@@ -2657,7 +2749,7 @@ function parseSingleDocxTable(chunk: string): DocxTable | null {
       let nestedTable: DocxTable | undefined;
       const nestedTblEl = safeExtractFirstXmlElement(tcXml, 'w:tbl');
       if (nestedTblEl) {
-        nestedTable = parseSingleDocxTable(nestedTblEl.raw) ?? undefined;
+        nestedTable = parseSingleDocxTable(nestedTblEl.raw, styleMap) ?? undefined;
       }
 
       // Isolate cell direct content without nested table text
@@ -2687,8 +2779,48 @@ function parseSingleDocxTable(chunk: string): DocxTable | null {
         fullCellText = fullCellText ? `${fullCellText}\n${nestedRowsText}` : nestedRowsText;
       }
 
+      const cellObj: DocxTableCell = {
+        text: cellText,
+        fullCellText,
+        shading,
+        colSpan,
+        isHeader,
+        borders,
+        alignment,
+        nestedTable,
+      };
+
+      if (vMergeType === 'restart') {
+        cellObj.rowSpan = 1;
+        for (let c = 0; c < colSpan; c++) {
+          activeVMerge.set(currentGridCol + c, { cell: cellObj, rowIdx: rIdx });
+        }
+      } else if (vMergeType === 'continue') {
+        const mergeRoot = activeVMerge.get(currentGridCol);
+        if (mergeRoot) {
+          if (mergeRoot.rowIdx !== rIdx) {
+            mergeRoot.cell.rowSpan = (mergeRoot.cell.rowSpan || 1) + 1;
+            mergeRoot.rowIdx = rIdx;
+          }
+          if (cellText) {
+            mergeRoot.cell.text = mergeRoot.cell.text
+              ? `${mergeRoot.cell.text}\n${cellText}`
+              : cellText;
+            mergeRoot.cell.fullCellText = mergeRoot.cell.fullCellText
+              ? `${mergeRoot.cell.fullCellText}\n${fullCellText}`
+              : fullCellText;
+          }
+          cellObj.rowSpan = 0; // Marked as vertically merged
+        }
+      } else {
+        for (let c = 0; c < colSpan; c++) {
+          activeVMerge.delete(currentGridCol + c);
+        }
+      }
+
+      currentGridCol += colSpan;
       rowCells.push(fullCellText);
-      sCells.push({ text: cellText, shading, colSpan, isHeader, borders, alignment, nestedTable });
+      sCells.push(cellObj);
     }
 
     if (rowCells.length > 0) {
@@ -2735,7 +2867,8 @@ function parseSingleDocxTable(chunk: string): DocxTable | null {
 
 export function parseDocxXml(
   xml: string,
-  chartMap?: Map<string, string>
+  chartMap?: Map<string, string>,
+  styleMap?: Map<string, WordTableStyle>
 ): {
   paragraphs: DocxParagraph[];
   tables: DocxTable[];
@@ -2764,7 +2897,7 @@ export function parseDocxXml(
 
     // If chunk is a Table (<w:tbl>)
     if (chunk.startsWith('<w:tbl')) {
-      const tbl = parseSingleDocxTable(chunk);
+      const tbl = parseSingleDocxTable(chunk, styleMap);
       if (tbl) {
         tables.push(tbl);
         elements.push({ type: 'table', table: tbl });
@@ -2899,6 +3032,7 @@ function generateHtmlFromDocx(
       tbl.structuredRows.forEach((sRow, rIdx) => {
         tblHtml += '<tr>\n';
         sRow.forEach((cell) => {
+          if (cell.rowSpan === 0) return; // Skip cells vertically merged from previous row
           const tag = cell.isHeader || rIdx === 0 ? 'th' : 'td';
           let cellStyle = 'padding:8px;text-align:left;';
           if (cell.shading && cell.shading !== 'auto') {
@@ -2923,11 +3057,12 @@ function generateHtmlFromDocx(
             cellStyle += 'border:1px solid #E1E4EE;';
           }
           const colSpanAttr = cell.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
+          const rowSpanAttr = cell.rowSpan && cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '';
           let cellInner = escapeHtml(cell.text).replace(/\n/g, '<br/>');
           if (cell.nestedTable) {
             cellInner += (cellInner ? '<br/>' : '') + renderTable(cell.nestedTable);
           }
-          tblHtml += `  <${tag}${colSpanAttr} style="${cellStyle}">${cellInner}</${tag}>\n`;
+          tblHtml += `  <${tag}${colSpanAttr}${rowSpanAttr} style="${cellStyle}">${cellInner}</${tag}>\n`;
         });
         tblHtml += '</tr>\n';
       });
@@ -3763,11 +3898,13 @@ async function generatePdfFromDocx(
           // 2. Compute dynamic row height based on wrapped text height across all cells
           let maxCellHeight = 20;
           sRow.forEach((cell, cIdx) => {
+            if (cell.rowSpan === 0) return;
             const cWidth = cellWidths[cIdx];
             const textWidth = Math.max(10, cWidth - 10);
             const fontSize = cell.isHeader || rIdx === 0 ? 9 : 8.5;
             doc.fontSize(fontSize);
-            const textHeight = doc.heightOfString(cell.text || ' ', { width: textWidth });
+            const displayText = getFullDocxCellText(cell);
+            const textHeight = doc.heightOfString(displayText || ' ', { width: textWidth });
             const requiredHeight = Math.ceil(textHeight + 10);
             if (requiredHeight > maxCellHeight) {
               maxCellHeight = requiredHeight;
@@ -3784,6 +3921,7 @@ async function generatePdfFromDocx(
 
           // 3. Render each cell
           sRow.forEach((cell, cIdx) => {
+            if (cell.rowSpan === 0) return;
             const x = cellXPositions[cIdx];
             const colWidth = cellWidths[cIdx];
 
@@ -3838,9 +3976,10 @@ async function generatePdfFromDocx(
             const textCol = cell.isHeader || rIdx === 0 ? '#1F2340' : '#4D536B';
             doc.fillColor(textCol).fontSize(cell.isHeader || rIdx === 0 ? 9 : 8.5);
             const align = cell.alignment || (cell.isHeader || rIdx === 0 ? 'center' : 'left');
+            const displayText = getFullDocxCellText(cell);
             renderSafePdfText(
               doc,
-              cell.text,
+              displayText,
               hasUnicodeFont,
               { width: colWidth - 10, lineBreak: true, align },
               x + 5,
@@ -5972,6 +6111,31 @@ export async function parsePptxSlideSceneGraph(
               imgBuffer = await sharp(imgBuffer).png().toBuffer();
               mimeType = 'image/png';
             } catch {}
+          }
+
+          // DrawingML <a:srcRect> image cropping (ISO/IEC 29500-1 §20.1.8.56)
+          const srcRectEl = safeExtractFirstXmlElement(picXml, 'a:srcRect');
+          if (srcRectEl) {
+            const l = parseInt(srcRectEl.attrs.l || '0', 10);
+            const t = parseInt(srcRectEl.attrs.t || '0', 10);
+            const r = parseInt(srcRectEl.attrs.r || '0', 10);
+            const b = parseInt(srcRectEl.attrs.b || '0', 10);
+            if (l > 0 || t > 0 || r > 0 || b > 0) {
+              try {
+                const meta = await sharp(imgBuffer).metadata();
+                if (meta.width && meta.height) {
+                  const cropLeft = Math.max(0, Math.min(meta.width - 1, Math.round((meta.width * l) / 100000)));
+                  const cropTop = Math.max(0, Math.min(meta.height - 1, Math.round((meta.height * t) / 100000)));
+                  const cropRight = Math.max(0, Math.min(meta.width - cropLeft - 1, Math.round((meta.width * r) / 100000)));
+                  const cropBottom = Math.max(0, Math.min(meta.height - cropTop - 1, Math.round((meta.height * b) / 100000)));
+                  const extractW = Math.max(1, meta.width - cropLeft - cropRight);
+                  const extractH = Math.max(1, meta.height - cropTop - cropBottom);
+                  imgBuffer = await sharp(imgBuffer)
+                    .extract({ left: cropLeft, top: cropTop, width: extractW, height: extractH })
+                    .toBuffer();
+                }
+              } catch {}
+            }
           }
           shapes.push({
             x,
