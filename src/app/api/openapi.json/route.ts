@@ -368,10 +368,6 @@ export async function GET() {
                 'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
               },
             },
-            '400': {
-              description: 'Malformed percent-encoding in the storage key.',
-              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-            },
             '403': {
               description: 'The owner\'s API key lacks the "storage:download" scope.',
               content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },

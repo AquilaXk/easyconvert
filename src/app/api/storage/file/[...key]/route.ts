@@ -10,7 +10,11 @@ const STORAGE_DOWNLOAD_SCOPE = 'storage:download';
 /** Outputs can be private to one user and expire with their storage TTL, so no shared cache may keep them. */
 const PRIVATE_NO_STORE = 'private, no-store';
 
-/** Decodes the request path key, or returns undefined when its percent-encoding is malformed. */
+/**
+ * Decodes a still-encoded path key. Next.js already decodes catch-all segments, so a key that
+ * legitimately contains `%` (for example `50% off.pdf`) is not valid percent-encoding: it is then
+ * used as-is. Ownership is always checked on the key that actually matched a stored object.
+ */
 function decodeStorageKey(rawKey: string): string | undefined {
   try {
     return decodeURIComponent(rawKey);
@@ -27,13 +31,7 @@ export async function GET(
   { params }: { params: { key: string[] } }
 ) {
   const rawKey = Array.isArray(params.key) ? params.key.join('/') : params.key;
-  const fullKey = decodeStorageKey(rawKey);
-  if (fullKey === undefined) {
-    return NextResponse.json(
-      { success: false, error: 'Malformed storage key.' },
-      { status: 400, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
-    );
-  }
+  const fullKey = decodeStorageKey(rawKey) ?? rawKey;
   // Owned objects answer other callers with this same response, so their existence is not revealed.
   const notFound = () =>
     NextResponse.json(
