@@ -14,8 +14,8 @@ export interface RedisUserStoreOptions {
  * Enterprise Distributed Atomic Lua Scripts for User Records and Quotas.
  */
 export const CREATE_USER_LUA_SCRIPT = `
--- KEYS[1]: email index key (e.g. easyconvert:emailIndex:user@example.com)
--- KEYS[2]: user record key (e.g. easyconvert:user:userId)
+-- KEYS[1]: email index key (e.g. easyconvert:{user}:emailIndex:user@example.com)
+-- KEYS[2]: user record key (e.g. easyconvert:{user}:userId)
 -- ARGV[1]: user ID
 -- ARGV[2]: serialized user JSON
 -- ARGV[3]: user key TTL in seconds (optional, 0 for infinite)
@@ -80,7 +80,16 @@ export class RedisUserStore {
   private readonly distributedEmails: Map<string, string> = new Map();
 
   constructor(options: RedisUserStoreOptions = {}) {
-    this.keyPrefix = options.keyPrefix || 'easyconvert:user:';
+    const rawPrefix = options.keyPrefix || 'easyconvert:{user}:';
+    if (!rawPrefix.includes('{')) {
+      if (rawPrefix.includes('user')) {
+        this.keyPrefix = rawPrefix.replace(/user/g, '{user}');
+      } else {
+        this.keyPrefix = rawPrefix.endsWith(':') ? `${rawPrefix}{user}:` : `${rawPrefix}:{user}:`;
+      }
+    } else {
+      this.keyPrefix = rawPrefix;
+    }
     if (options.redisClient) {
       this.redisClient = options.redisClient;
       this.isConnectedToRedis = true;

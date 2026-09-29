@@ -11,6 +11,7 @@ import {
   assertNotSpoofedFileVfs,
 } from '../src/worker/engines';
 import { assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
+import { FileExtensionSpoofError } from '../src/lib/registry';
 import { convertArchive } from '../src/lib/conversions/archive';
 import { POST as convertRouteHandler } from '../src/app/api/v1/convert/route';
 import { keyStore } from '../src/lib/api-keys/key-store';
@@ -400,10 +401,33 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       );
     });
 
+    it('fails closed when assertNotSpoofedFileVfs receives an empty 0-byte buffer', () => {
+      expect(() =>
+        assertNotSpoofedFileVfs({ inputBuffer: Buffer.alloc(0) }, 'png', 'empty.png')
+      ).toThrow(FileExtensionSpoofError);
+    });
+
     it('fails closed when assertNotSpoofedFilePath is called with a directory path', () => {
       expect(() => assertNotSpoofedFilePath('/tmp', 'png', 'test.png')).toThrow(
         /Target path is not a regular file/
       );
+    });
+
+    it('fails closed when assertNotSpoofedFilePath is called with a 0-byte file on disk', () => {
+      const emptyFile = path.join('/tmp', `easyconvert_empty_${Date.now()}.png`);
+      fs.writeFileSync(emptyFile, Buffer.alloc(0));
+      try {
+        expect(() => assertNotSpoofedFilePath(emptyFile, 'png', 'empty.png')).toThrow(
+          FileExtensionSpoofError
+        );
+        expect(() => assertNotSpoofedFilePath(emptyFile, 'png')).toThrow(
+          /target file is empty \(0 bytes\)/
+        );
+      } finally {
+        try {
+          fs.unlinkSync(emptyFile);
+        } catch {}
+      }
     });
   });
 });

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { assertNotSpoofedFile } from '../registry';
+import { assertNotSpoofedFile, FileExtensionSpoofError } from '../registry';
 
 /**
  * Asserts fail-closed that initial magic bytes of a file on disk match the declared format.
@@ -16,6 +16,13 @@ export function assertNotSpoofedFilePath(
   const stat = fs.statSync(filePath);
   if (!stat.isFile()) {
     throw new Error(`Target path is not a regular file: "${filePath}". Operation failed closed.`);
+  }
+  const nameStr = filename ? ` for file "${filename}"` : '';
+  if (stat.size === 0) {
+    const cleanExt = (declaredExtensionOrFormatId || '').toLowerCase().replace(/^\./, '').trim();
+    throw new FileExtensionSpoofError(
+      `File spoofing rejected${nameStr}: target file is empty (0 bytes), incompatible with declared format ".${cleanExt}". Operation failed closed.`
+    );
   }
   const fd = fs.openSync(filePath, 'r');
   try {
