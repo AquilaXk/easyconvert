@@ -1,7 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { storageProvider as s3Storage } from '@/lib/storage';
+import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
 
 export const dynamic = 'force-dynamic';
+
+const STORAGE_DOWNLOAD_SCOPE = 'storage:download';
+/** `conversions/<userId>/...`: synchronous API outputs, owned by that user. */
+const USER_CONVERSION_KEY_PATTERN = /^conversions\/([^/]+)\//;
+/** `results/<jobId>/...`: queue job outputs, owned by the job's user when the job has one. */
+const JOB_RESULT_KEY_PATTERN = /^results\/([^/]+)\//;
+
+/**
+ * Resolves the user that owns a stored object from its key namespace.
+ * A job result whose job record no longer exists (cleaned up, or lost with an in-memory queue)
+ * cannot be tied to a user any more, so it keeps capability-URL access like an anonymous
+ * job result until the object's storage TTL removes it.
+ * Every other key (anonymous uploads) has no owner.
+ */
+async function resolveObjectOwner(key: string): Promise<string | undefined> {
+  const userConversion = USER_CONVERSION_KEY_PATTERN.exec(key);
+  if (userConversion) {
+    return userConversion[1];
+  }
+
+  const jobResult = JOB_RESULT_KEY_PATTERN.exec(key);
+  if (jobResult) {
+    const job = await conversionQueue.getJob(jobResult[1]);
+    return job?.data?.userId;
+  }
+
+  return undefined;
+}
 
 export async function GET(
   req: NextRequest,
@@ -9,13 +39,31 @@ export async function GET(
 ) {
   const rawKey = Array.isArray(params.key) ? params.key.join('/') : params.key;
   const fullKey = decodeURIComponent(rawKey);
-
-  const stored = s3Storage.getObject(fullKey) || s3Storage.getObject(rawKey);
-  if (!stored) {
-    return NextResponse.json(
+  // Owned objects answer other callers with this same response, so their existence is not revealed.
+  const notFound = () =>
+    NextResponse.json(
       { success: false, error: `Object not found for key: "${fullKey}"` },
       { status: 404 }
     );
+
+  let resolvedKey = fullKey;
+  let stored = s3Storage.getObject(fullKey);
+  if (!stored) {
+    resolvedKey = rawKey;
+    stored = s3Storage.getObject(rawKey);
+  }
+  if (!stored) {
+    return notFound();
+  }
+
+  const denied = await denyUnlessOwner(
+    req,
+    await resolveObjectOwner(resolvedKey),
+    STORAGE_DOWNLOAD_SCOPE,
+    notFound
+  );
+  if (denied) {
+    return denied;
   }
 
   // Support HTTP Range requests
