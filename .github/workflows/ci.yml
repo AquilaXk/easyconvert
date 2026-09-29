@@ -10,6 +10,19 @@ jobs:
   verify:
     runs-on: ubuntu-latest
 
+    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
+    # and stall recovery (an in-process mock cannot execute Lua).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -53,6 +66,14 @@ jobs:
         env:
           ORACLE_STRICT_MODE: "1"
         run: npm test
+
+      # Kept separate from `npm test`: some suites assume no Redis is configured.
+      - name: Run Redis-mode queue tests
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+        run: |
+          npx vitest run tests/job-lifecycle-redis.test.ts
+          npx vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t "pops waiting jobs|schedules delayed jobs"
 
       - name: Build application
         run: npm run build
