@@ -68,8 +68,8 @@ COPY --from=builder --chown=easyconvert:easyconvert /app/src ./src
 
 # 3. Create strictly permissioned scratch directories
 RUN mkdir -p /shared/storage /tmp \
-    && chown -R easyconvert:easyconvert /app /shared/storage \
-    && chmod 1777 /tmp
+    && chown -R easyconvert:easyconvert /app /shared/storage /tmp \
+    && chmod 0750 /tmp /shared/storage
 
 # 4. Drop to unprivileged non-root user (UID:GID 10001:10001)
 USER easyconvert:easyconvert
