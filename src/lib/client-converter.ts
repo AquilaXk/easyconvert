@@ -1,6 +1,6 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
-import { resolveConversionTier, checkOpfsSupport } from './edge/tier-router';
+import { resolveConversionTier, checkOpfsSupport, ConversionTier } from './edge/tier-router';
 import { isPureDataConvertible, convertPureData } from './edge/pure/pure-data';
 import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
@@ -15,17 +15,54 @@ import {
   WebGpuComputeTask,
 } from './edge/pipelines/webgpu-compute-pipeline';
 
+/** The tier a conversion fell back from, and why that tier did not produce the result. */
+export interface EdgeTierFallback {
+  fallbackFrom: ConversionTier;
+  escalationReason: string;
+}
+
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
-  onSuccess: (resultUrl: string, resultSize: number, edgeProcessed?: boolean, edgeTier?: string) => void;
+  onSuccess: (
+    resultUrl: string,
+    resultSize: number,
+    edgeProcessed?: boolean,
+    edgeTier?: string,
+    fallback?: EdgeTierFallback
+  ) => void;
   onError: (errorMessage: string) => void;
 }
 
 export interface ClientEdgeResult {
   resultUrl: string;
   resultSize: number;
+  /** The tier that actually produced the result. */
   tier?: string;
   tierName?: string;
+  /** Set when a higher tier failed first and this tier ran as its fallback. */
+  fallbackFrom?: ConversionTier;
+  escalationReason?: string;
+}
+
+/** Reason recorded when a tier returned no result without raising an error. */
+const L1A_NO_RESULT_REASON = 'L1A returned no result';
+
+/**
+ * Raised when an edge tier failed and the conversion may escalate to the cloud tier (L4).
+ * Carries the failed tier and its error so the cloud result can report why it ran.
+ */
+export class ClientEdgeEscalationError extends Error {
+  readonly fallbackFrom: ConversionTier;
+
+  constructor(fallbackFrom: ConversionTier, reason: string) {
+    super(reason);
+    this.name = 'ClientEdgeEscalationError';
+    this.fallbackFrom = fallbackFrom;
+  }
+}
+
+function describeEdgeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -161,20 +198,22 @@ export async function tryProcessClientEdge(
 
   // 3. Level 1A: WebGPU Compute Pipeline
   if (resolution.tier === 'L1A') {
+    let escalationReason = L1A_NO_RESULT_REASON;
     try {
       const l1aRes = await processL1AWebGpuConversion(item, src, tgt, onProgress);
       if (l1aRes) {
         return l1aRes;
       }
-    } catch {
-      // Graceful cascade to L2 Wasm
+    } catch (err: unknown) {
+      // Graceful cascade to L2 Wasm, keeping the reason
+      escalationReason = describeEdgeError(err);
     }
     const l2Res = await processL2Conversion(item, src, tgt, onProgress);
     if (l2Res) {
       return {
         ...l2Res,
-        tier: 'L1A',
-        tierName: 'Edge L1A (WebGPU Compute)',
+        fallbackFrom: 'L1A',
+        escalationReason,
       };
     }
   }
@@ -200,9 +239,9 @@ export async function tryProcessClientEdge(
         tier: 'L3',
         tierName: 'Edge L3 (OPFS Stream)',
       };
-    } catch {
-      // Graceful fallback to L4 cloud pipeline
-      return null;
+    } catch (err: unknown) {
+      // Escalate to the L4 cloud pipeline, keeping the reason
+      throw new ClientEdgeEscalationError('L3', describeEdgeError(err));
     }
   }
 
@@ -487,14 +526,21 @@ export async function executeItemConversion(
   callbacks: ConvertItemCallbacks
 ): Promise<void> {
   // 1. Check for client-side Edge processing (L0 pure, L2 OCR, etc.)
+  let escalation: EdgeTierFallback | undefined;
   try {
     const edgeRes = await tryProcessClientEdge(item, callbacks.onProgress);
     if (edgeRes) {
-      callbacks.onSuccess(edgeRes.resultUrl, edgeRes.resultSize, true, edgeRes.tierName);
+      const fallback =
+        edgeRes.fallbackFrom && edgeRes.escalationReason
+          ? { fallbackFrom: edgeRes.fallbackFrom, escalationReason: edgeRes.escalationReason }
+          : undefined;
+      callbacks.onSuccess(edgeRes.resultUrl, edgeRes.resultSize, true, edgeRes.tierName, fallback);
       return;
     }
   } catch (err: any) {
-    if (item.options.clientEdgeMode === true) {
+    if (err instanceof ClientEdgeEscalationError) {
+      escalation = { fallbackFrom: err.fallbackFrom, escalationReason: err.message };
+    } else if (item.options.clientEdgeMode === true) {
       // Fail-closed on client edge conversion errors: do not silently upload corrupted files to server
       callbacks.onError(err.message || 'Client edge conversion failed.');
       return;
@@ -518,7 +564,7 @@ export async function executeItemConversion(
       item.options,
       callbacks.onProgress
     );
-    callbacks.onSuccess(cloudRes.url, cloudRes.size, false, 'Cloud (Zero-Retention)');
+    callbacks.onSuccess(cloudRes.url, cloudRes.size, false, 'Cloud (Zero-Retention)', escalation);
   } catch (err: any) {
     callbacks.onError(err.message || 'Conversion failed. Please try another format.');
   }
