@@ -9,7 +9,7 @@ name: Automerge Label
 
 on:
   pull_request_target:
-    types: [labeled, unlabeled, ready_for_review]
+    types: [labeled, unlabeled, ready_for_review, closed]
 
 concurrency:
   group: automerge-${{ github.event.pull_request.number }}
@@ -56,3 +56,33 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --disable-auto
+
+  # A merge performed through GITHUB_TOKEN does not fire the `Closes #N`
+  # keywords, so close the PR's linked issues explicitly after it merges.
+  close-linked-issues:
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Close issues linked by closing keywords
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          owner="${GITHUB_REPOSITORY%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          # $owner/$repo/$pr in the query are GraphQL variables, not shell expansions.
+          # shellcheck disable=SC2016
+          issues=$(gh api graphql \
+            -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){closingIssuesReferences(first:20){nodes{number state repository{nameWithOwner}}}}}}' \
+            -f owner="$owner" -f repo="$repo" -F pr="$PR_NUMBER" \
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.state == "OPEN" and .repository.nameWithOwner == env.GITHUB_REPOSITORY) | .number')
+          for issue in $issues; do
+            gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --comment "Resolved by #$PR_NUMBER (merged)."
+          done

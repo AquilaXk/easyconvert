@@ -46,6 +46,12 @@ jobs:
             libreoffice-writer \
             libreoffice-impress
 
+      # Wall-clock throughput floors are opt-in (PERF_BENCH=1) and run here, not in PR CI.
+      # A slow shared runner must not cancel the endurance soak that follows.
+      - name: Run streaming throughput benchmarks
+        continue-on-error: true
+        run: npm run bench:zstd
+
       - name: Run Endurance Soak Test
         run: |
           SOAK_DURATION="${{ github.event.inputs.duration || '24h' }}"
