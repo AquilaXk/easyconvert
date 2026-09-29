@@ -113,7 +113,10 @@ if not currentTokens or not lastRefill then
   lastRefill = now
 else
   local elapsed = math.max(0, now - lastRefill)
-  local replenished = (elapsed / 1000.0) * refillRate
+  local replenished = 0
+  if refillRate > 0 then
+    replenished = (elapsed / 1000.0) * refillRate
+  end
   currentTokens = math.min(capacity, currentTokens + replenished)
   lastRefill = now
 end
@@ -125,7 +128,12 @@ if currentTokens >= cost then
   return {1, math.floor(currentTokens), 0}
 else
   local needed = cost - currentTokens
-  local retryAfterMs = math.ceil((needed / refillRate) * 1000.0)
+  local retryAfterMs = 0
+  if refillRate > 0 then
+    retryAfterMs = math.ceil((needed / refillRate) * 1000.0)
+  else
+    retryAfterMs = ttl * 1000
+  end
   redis.call('HMSET', KEYS[1], 'tokens', tostring(currentTokens), 'lastRefill', tostring(lastRefill))
   redis.call('EXPIRE', KEYS[1], ttl)
   return {0, math.floor(currentTokens), retryAfterMs}
@@ -296,7 +304,7 @@ export class RedisKeyStore extends KeyStore {
 
     if (this.redisClient) {
       try {
-        const usageKey = `${this.keyPrefix}usage:${userId}:${getUtcDateKey()}`;
+        const usageKey = `${this.keyPrefix}usage:{${userId}}:${getUtcDateKey()}`;
         const midnight = new Date();
         midnight.setUTCHours(24, 0, 0, 0);
         const expireAtMidnightSec = Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
@@ -363,9 +371,9 @@ export class RedisKeyStore extends KeyStore {
 
     if (this.redisClient) {
       try {
-        const usageKey = `${this.keyPrefix}usage:${userId}:${getUtcDateKey()}`;
+        const usageKey = `${this.keyPrefix}usage:{${userId}}:${getUtcDateKey()}`;
         const reservationId = `res_${encodeURIComponent(userId)}_${getUtcDateKey()}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
-        const resKey = `${this.keyPrefix}res:${reservationId}`;
+        const resKey = `${this.keyPrefix}res:{${userId}}:${reservationId}`;
         const ttlSec = 300;
         const midnight = new Date();
         midnight.setUTCHours(24, 0, 0, 0);
@@ -452,7 +460,16 @@ export class RedisKeyStore extends KeyStore {
 
     if (this.redisClient) {
       try {
-        const resKey = `${this.keyPrefix}res:${reservationId}`;
+        const res = this.reservations.get(reservationId);
+        let userId = res?.userId;
+        if (!userId) {
+          const parts = reservationId.split('_');
+          if (parts.length >= 5 && parts[0] === 'res') {
+            userId = decodeURIComponent(parts[1]);
+          }
+        }
+        const finalUserId = userId || 'unknown';
+        const resKey = `${this.keyPrefix}res:{${finalUserId}}:${reservationId}`;
         const deleted = await this.redisClient.eval(COMMIT_QUOTA_LUA_SCRIPT, 1, resKey);
         this.reservations.delete(reservationId);
         return Number(deleted) > 0;
@@ -490,8 +507,8 @@ export class RedisKeyStore extends KeyStore {
         }
         const finalUserId = userId || 'unknown';
         const finalDateKey = dateKey || getUtcDateKey();
-        const usageKey = `${this.keyPrefix}usage:${finalUserId}:${finalDateKey}`;
-        const resKey = `${this.keyPrefix}res:${reservationId}`;
+        const usageKey = `${this.keyPrefix}usage:{${finalUserId}}:${finalDateKey}`;
+        const resKey = `${this.keyPrefix}res:{${finalUserId}}:${reservationId}`;
         const rolled = await this.redisClient.eval(ROLLBACK_QUOTA_LUA_SCRIPT, 2, usageKey, resKey);
         this.reservations.delete(reservationId);
         return Number(rolled) > 0;
@@ -618,7 +635,7 @@ export class RedisKeyStore extends KeyStore {
       state = { tokens: capacity, lastRefill: now };
     } else {
       const elapsed = Math.max(0, now - state.lastRefill);
-      const replenished = (elapsed / 1000) * refillRate;
+      const replenished = refillRate > 0 ? (elapsed / 1000) * refillRate : 0;
       state.tokens = Math.min(capacity, state.tokens + replenished);
       state.lastRefill = now;
     }
@@ -633,7 +650,7 @@ export class RedisKeyStore extends KeyStore {
       };
     } else {
       const needed = cost - state.tokens;
-      const retryAfterMs = Math.ceil((needed / refillRate) * 1000);
+      const retryAfterMs = refillRate > 0 ? Math.ceil((needed / refillRate) * 1000) : ttl * 1000;
       this.tokenBuckets.set(identifier, state);
       return {
         allowed: false,

@@ -592,7 +592,8 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       // Verify that ROLLBACK_QUOTA_LUA_SCRIPT was called with testUserId, NOT 'unknown'
       const rollbackCall = evalCalls.find((c) => c.script === ROLLBACK_QUOTA_LUA_SCRIPT);
       expect(rollbackCall).toBeDefined();
-      expect(rollbackCall.args[0]).toContain(`cluster:quota:usage:${testUserId}:`);
+      expect(rollbackCall.args[0]).toContain(`cluster:quota:usage:{${testUserId}}:`);
+      expect(rollbackCall.args[1]).toContain(`cluster:quota:res:{${testUserId}}:`);
       expect(rollbackCall.args[0]).not.toContain('unknown');
     });
   });
