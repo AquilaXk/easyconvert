@@ -46,6 +46,12 @@ jobs:
             libreoffice-writer \
             libreoffice-impress
 
+      # Wall-clock throughput floors are opt-in (PERF_BENCH=1) and run here, not in PR CI.
+      - name: Run streaming throughput benchmarks
+        env:
+          PERF_BENCH: "1"
+        run: npx vitest run tests/zstd-streaming-dict.test.ts
+
       - name: Run Endurance Soak Test
         run: |
           SOAK_DURATION="${{ github.event.inputs.duration || '24h' }}"
