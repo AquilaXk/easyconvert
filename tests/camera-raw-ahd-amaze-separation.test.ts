@@ -8,6 +8,7 @@ import {
   multiply3x3,
   XYZ_D50_TO_SRGB_MATRIX,
   decodeRawBayerSensor,
+  resolveBayerColorMatrix,
 } from '../src/lib/conversions/image';
 import { buildSyntheticDngBuffer } from './dng-and-solid-7z.test';
 
@@ -463,5 +464,33 @@ describe('Camera RAW Demosaicing Algorithm Separation (AHD vs AMaZE)', () => {
     expect(() => decodeRawBayerSensor(singularDng)).toThrow(
       /Invalid DNG ColorMatrix: matrix is singular or non-invertible/
     );
+  });
+
+  it('inverts ColorMatrix1 in resolveBayerColorMatrix via Gauss-Jordan elimination and maps to sRGB', () => {
+    const cm1: [number, number, number, number, number, number, number, number, number] = [
+      0.65, -0.15, -0.05,
+      -0.40,  1.30,  0.10,
+      -0.10,  0.20,  0.70,
+    ];
+
+    const sensor: BayerSensorData = {
+      width: 4,
+      height: 4,
+      data: new Uint16Array(16),
+      pattern: 'RGGB',
+      colorMatrix1: cm1,
+    };
+
+    const resolved = resolveBayerColorMatrix(sensor);
+    expect(resolved).not.toBeNull();
+
+    // Verify expected = XYZ_D50_TO_SRGB_MATRIX * (cm1)^-1
+    const inv = invert3x3(cm1);
+    expect(inv).not.toBeNull();
+    const expected = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, inv!);
+
+    for (let i = 0; i < 9; i++) {
+      expect(resolved![i]).toBeCloseTo(expected[i], 6);
+    }
   });
 });

@@ -78,4 +78,46 @@ describe('BullMQ Distributed Task Queue Tests', () => {
     await worker.close();
     await queue.close();
   });
+
+  it('strictly enforces concurrency limit under burst arrivals', async () => {
+    const queue = new Queue<{ id: number }, number>('test-concurrency-queue');
+    let currentActive = 0;
+    let maxObservedActive = 0;
+    const concurrencyLimit = 2;
+    const totalJobs = 8;
+    let completedCount = 0;
+
+    const worker = new Worker(
+      queue,
+      async (job) => {
+        currentActive++;
+        if (currentActive > maxObservedActive) {
+          maxObservedActive = currentActive;
+        }
+        // Artificial work delay to ensure concurrent execution window
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        currentActive--;
+        return job.data.id;
+      },
+      { concurrency: concurrencyLimit }
+    );
+
+    // Burst enqueue 8 jobs simultaneously
+    await Promise.all(
+      Array.from({ length: totalJobs }, (_, i) => queue.add('burst', { id: i }))
+    );
+
+    await new Promise((resolve) => {
+      worker.on('completed', () => {
+        completedCount++;
+        if (completedCount === totalJobs) resolve(true);
+      });
+    });
+
+    expect(maxObservedActive).toBeLessThanOrEqual(concurrencyLimit);
+    expect(completedCount).toBe(totalJobs);
+
+    await worker.close();
+    await queue.close();
+  });
 });

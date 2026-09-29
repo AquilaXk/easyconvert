@@ -595,20 +595,36 @@ export function resolveBayerColorMatrix(
     }
   }
 
-  if (colorMatrix1 && colorMatrix2) {
-    let cct = cctKelvin;
-    if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
-      cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
+  if (colorMatrix1 || colorMatrix2) {
+    let cm: [number, number, number, number, number, number, number, number, number] | undefined;
+    if (colorMatrix1 && colorMatrix2) {
+      let cct = cctKelvin;
+      if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
+        cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
+      }
+      cm = interpolateDualIlluminantColorMatrix(cct, colorMatrix1, colorMatrix2);
+    } else if (colorMatrix1) {
+      cm = colorMatrix1;
+    } else if (colorMatrix2) {
+      cm = colorMatrix2;
     }
-    return interpolateDualIlluminantColorMatrix(cct, colorMatrix1, colorMatrix2);
-  }
 
-  if (colorMatrix1) {
-    return colorMatrix1;
-  }
-
-  if (colorMatrix2) {
-    return colorMatrix2;
+    if (cm) {
+      const isDiagonal =
+        cm[1] === 0 &&
+        cm[2] === 0 &&
+        cm[3] === 0 &&
+        cm[5] === 0 &&
+        cm[6] === 0 &&
+        cm[7] === 0;
+      if (!isDiagonal) {
+        const inv = invert3x3(cm);
+        if (inv) {
+          return multiply3x3(XYZ_D50_TO_SRGB_MATRIX, inv);
+        }
+      }
+      return cm;
+    }
   }
 
   if (typeof cctKelvin === 'number' && !isNaN(cctKelvin) && cctKelvin > 0) {

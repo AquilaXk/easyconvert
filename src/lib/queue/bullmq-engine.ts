@@ -323,18 +323,38 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     this.checkAndProcess();
   }
 
+  private isProcessing: boolean = false;
+  private hasPendingCheck: boolean = false;
+
   private async checkAndProcess(): Promise<void> {
     if (!this.isRunning) return;
+    if (this.isProcessing) {
+      this.hasPendingCheck = true;
+      return;
+    }
+    this.isProcessing = true;
 
-    while (this.activeCount < this.concurrency) {
-      const job = this.queue._popNextWaiting ? await this.queue._popNextWaiting() : undefined;
-      if (!job) break;
+    try {
+      do {
+        this.hasPendingCheck = false;
+        while (this.isRunning && this.activeCount < this.concurrency) {
+          let job: Job<T, R> | undefined;
+          try {
+            job = this.queue._popNextWaiting ? await this.queue._popNextWaiting() : undefined;
+          } catch {
+            break;
+          }
+          if (!job) break;
 
-      this.activeCount++;
-      this.executeJob(job).finally(() => {
-        this.activeCount--;
-        this.checkAndProcess();
-      });
+          this.activeCount++;
+          this.executeJob(job).finally(() => {
+            this.activeCount--;
+            this.checkAndProcess();
+          });
+        }
+      } while (this.hasPendingCheck && this.isRunning && this.activeCount < this.concurrency);
+    } finally {
+      this.isProcessing = false;
     }
 
     if (this.activeCount === 0) {
@@ -417,6 +437,26 @@ export interface RedisConnectionOptions {
   redisClient?: Redis;
   keyPrefix?: string;
 }
+
+export const PROMOTE_DELAYED_JOBS_LUA_SCRIPT = `
+-- KEYS[1]: delayedKey
+-- KEYS[2]: waitingKey
+-- KEYS[3]: jobPrefix (e.g. prefix:job:)
+-- ARGV[1]: current timestamp in milliseconds
+-- ARGV[2]: max batch size
+local due = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1], 'LIMIT', 0, tonumber(ARGV[2] or 50))
+local promoted = {}
+if due and #due > 0 then
+  for i, id in ipairs(due) do
+    if redis.call('ZREM', KEYS[1], id) > 0 then
+      redis.call('RPUSH', KEYS[2], id)
+      redis.call('HSET', KEYS[3] .. id, 'state', 'waiting')
+      table.insert(promoted, id)
+    end
+  end
+end
+return #promoted
+`;
 
 /**
  * Distributed Queue Adapter for Redis/BullMQ clustering.
@@ -878,14 +918,28 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   async _popNextWaiting(): Promise<Job<T, R> | undefined> {
     if (this.redisClient && this.redisConnected) {
       try {
-        // 1. Promote due delayed jobs
+        // 1. Promote due delayed jobs atomically
         const now = Date.now();
-        const dueDelayed = await this.redisClient.zrangebyscore(this.delayedKey, 0, now);
-        if (dueDelayed && dueDelayed.length > 0) {
-          for (const delayedId of dueDelayed) {
-            await this.redisClient.zrem(this.delayedKey, delayedId);
-            await this.redisClient.rpush(this.waitingKey, delayedId);
-            await this.redisClient.hset(this.getJobKey(delayedId), 'state', 'waiting');
+        try {
+          await this.redisClient.eval(
+            PROMOTE_DELAYED_JOBS_LUA_SCRIPT,
+            3,
+            this.delayedKey,
+            this.waitingKey,
+            `${this.keyPrefix}${this.name}:job:`,
+            now.toString(),
+            '50'
+          );
+        } catch {
+          const dueDelayed = await this.redisClient.zrangebyscore(this.delayedKey, 0, now);
+          if (dueDelayed && dueDelayed.length > 0) {
+            for (const delayedId of dueDelayed) {
+              const removed = await this.redisClient.zrem(this.delayedKey, delayedId);
+              if (Number(removed) > 0) {
+                await this.redisClient.rpush(this.waitingKey, delayedId);
+                await this.redisClient.hset(this.getJobKey(delayedId), 'state', 'waiting');
+              }
+            }
           }
         }
 
