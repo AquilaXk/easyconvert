@@ -779,6 +779,7 @@ export interface DocxTableCell {
     right?: TableBorder;
   };
   nestedTable?: DocxTable;
+  nestedTables?: DocxTable[];
 }
 
 /**
@@ -787,6 +788,10 @@ export interface DocxTableCell {
 export function getFullDocxCellText(cell: DocxTableCell): string {
   if (cell.fullCellText && cell.fullCellText.trim().length > 0) {
     return cell.fullCellText;
+  }
+  if (cell.nestedTables && cell.nestedTables.length > 0) {
+    const nestedRowsText = cell.nestedTables.flatMap((t) => t.rows.map((r) => r.join(' | '))).join('\n');
+    return cell.text ? `${cell.text}\n${nestedRowsText}` : nestedRowsText;
   }
   if (cell.nestedTable && cell.nestedTable.rows.length > 0) {
     const nestedRowsText = cell.nestedTable.rows.map((r) => r.join(' | ')).join('\n');
@@ -2797,6 +2802,7 @@ function parseSingleDocxTable(
         borders,
         alignment,
         nestedTable,
+        nestedTables: nestedTables.length > 0 ? nestedTables : undefined,
       };
 
       if (vMergeType === 'restart') {
@@ -3912,9 +3918,43 @@ async function generatePdfFromDocx(
             const textWidth = Math.max(10, cWidth - 10);
             const fontSize = cell.isHeader || rIdx === 0 ? 9 : 8.5;
             doc.fontSize(fontSize);
-            const displayText = getFullDocxCellText(cell);
-            const textHeight = doc.heightOfString(displayText || ' ', { width: textWidth });
-            const requiredHeight = Math.ceil(textHeight + 10);
+            const cellText = cell.text || '';
+            const textHeight = cellText.trim().length > 0 ? doc.heightOfString(cellText, { width: textWidth }) : 0;
+            let requiredHeight = Math.ceil(textHeight + 10);
+
+            const tablesToRender = cell.nestedTables && cell.nestedTables.length > 0
+              ? cell.nestedTables
+              : (cell.nestedTable && cell.nestedTable.rows.length > 0 ? [cell.nestedTable] : []);
+
+            if (tablesToRender.length > 0) {
+              for (const nTbl of tablesToRender) {
+                const nRows =
+                  nTbl.structuredRows && nTbl.structuredRows.length > 0
+                    ? nTbl.structuredRows
+                    : nTbl.rows;
+                const nColCount = Math.max(
+                  1,
+                  nTbl.colCount || nTbl.colWidths?.length || (nRows[0]?.length || 1)
+                );
+                const nColW = Math.max(10, (cWidth - 8) / nColCount);
+                doc.fontSize(7.5);
+                for (const rowItem of nRows) {
+                  let maxSubH = 16;
+                  if (Array.isArray(rowItem)) {
+                    for (const subCell of rowItem) {
+                      const subText = typeof subCell === 'string' ? subCell : (subCell?.text || '');
+                      const subTh = doc.heightOfString(subText || ' ', { width: Math.max(5, nColW - 6) });
+                      if (subTh + 6 > maxSubH) maxSubH = Math.ceil(subTh + 6);
+                    }
+                  }
+                  requiredHeight += maxSubH;
+                }
+                requiredHeight += 4;
+              }
+            } else if (cell.fullCellText && cell.fullCellText !== cell.text) {
+              const fullH = doc.heightOfString(cell.fullCellText, { width: textWidth });
+              requiredHeight = Math.max(requiredHeight, Math.ceil(fullH + 10));
+            }
             if (requiredHeight > maxCellHeight) {
               maxCellHeight = requiredHeight;
             }
@@ -3985,15 +4025,82 @@ async function generatePdfFromDocx(
             const textCol = cell.isHeader || rIdx === 0 ? '#1F2340' : '#4D536B';
             doc.fillColor(textCol).fontSize(cell.isHeader || rIdx === 0 ? 9 : 8.5);
             const align = cell.alignment || (cell.isHeader || rIdx === 0 ? 'center' : 'left');
-            const displayText = getFullDocxCellText(cell);
-            renderSafePdfText(
-              doc,
-              displayText,
-              hasUnicodeFont,
-              { width: colWidth - 10, lineBreak: true, align },
-              x + 5,
-              y + 5
-            );
+            let textOffsetY = y + 5;
+            if (cell.text && cell.text.trim().length > 0) {
+              renderSafePdfText(
+                doc,
+                cell.text,
+                hasUnicodeFont,
+                { width: colWidth - 10, lineBreak: true, align },
+                x + 5,
+                textOffsetY
+              );
+              const tH = doc.heightOfString(cell.text, { width: colWidth - 10 });
+              textOffsetY += Math.ceil(tH + 4);
+            }
+
+            const tablesToRender = cell.nestedTables && cell.nestedTables.length > 0
+              ? cell.nestedTables
+              : (cell.nestedTable && cell.nestedTable.rows.length > 0 ? [cell.nestedTable] : []);
+
+            if (tablesToRender.length > 0) {
+              for (const nTbl of tablesToRender) {
+                const nX = x + 4;
+                const nY = textOffsetY;
+                const nW = colWidth - 8;
+                const nRows =
+                  nTbl.structuredRows && nTbl.structuredRows.length > 0
+                    ? nTbl.structuredRows
+                    : nTbl.rows.map((r) => r.map((c) => ({ text: c } as DocxTableCell)));
+                const nColCount = Math.max(
+                  1,
+                  nTbl.colCount || (nTbl.colWidths ? nTbl.colWidths.length : (nRows[0]?.length || 1))
+                );
+                const nColW = nW / nColCount;
+
+                let curNY = nY;
+                nRows.forEach((nRow, nrIdx) => {
+                  let nRowH = 16;
+                  doc.fontSize(7.5);
+                  nRow.forEach((nCell) => {
+                    const nText = nCell.text || '';
+                    const nTh = doc.heightOfString(nText || ' ', { width: Math.max(5, nColW - 6) });
+                    if (nTh + 6 > nRowH) nRowH = Math.ceil(nTh + 6);
+                  });
+
+                  nRow.forEach((nCell, ncIdx) => {
+                    const cellSubX = nX + ncIdx * nColW;
+                    if (nCell.shading && nCell.shading !== 'auto') {
+                      doc.rect(cellSubX, curNY, nColW, nRowH).fill('#' + nCell.shading);
+                    } else if (nCell.isHeader || nrIdx === 0) {
+                      doc.rect(cellSubX, curNY, nColW, nRowH).fill('#E8EAF6');
+                    }
+                    doc.rect(cellSubX, curNY, nColW, nRowH).strokeColor('#B0B8E8').lineWidth(0.5).stroke();
+
+                    doc.fillColor('#2C304E').fontSize(7.5);
+                    renderSafePdfText(
+                      doc,
+                      nCell.text || '',
+                      hasUnicodeFont,
+                      { width: nColW - 6, lineBreak: true, align: nCell.alignment || 'left' },
+                      cellSubX + 3,
+                      curNY + 3
+                    );
+                  });
+                  curNY += nRowH;
+                });
+                textOffsetY = curNY + 4;
+              }
+            } else if (!cell.text && cell.fullCellText) {
+              renderSafePdfText(
+                doc,
+                cell.fullCellText,
+                hasUnicodeFont,
+                { width: colWidth - 10, lineBreak: true, align },
+                x + 5,
+                y + 5
+              );
+            }
           });
 
           doc.y = y + rowHeight;
