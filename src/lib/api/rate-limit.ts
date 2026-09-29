@@ -1,5 +1,7 @@
 import type { QuotaUsage } from '../api-keys/types';
 
+const MIN_RETRY_AFTER_SECONDS = 1;
+
 /**
  * Builds standard IETF Draft RateLimit headers (draft-ietf-httpapi-ratelimit-headers)
  * and legacy X-RateLimit headers for developer experience and cross-client compatibility.
@@ -12,7 +14,7 @@ export function buildRateLimitHeaders(quota: QuotaUsage): Record<string, string>
   const resetStr = resetDeltaSeconds.toString();
   const policyStr = `${limitStr};w=86400;comment="${quota.tier} daily quota"`;
 
-  return {
+  const headers: Record<string, string> = {
     'RateLimit-Limit': limitStr,
     'RateLimit-Remaining': remainingStr,
     'RateLimit-Reset': resetStr,
@@ -21,4 +23,11 @@ export function buildRateLimitHeaders(quota: QuotaUsage): Record<string, string>
     'X-RateLimit-Remaining': remainingStr,
     'X-RateLimit-Reset': resetStr,
   };
+
+  // RFC 9110 Retry-After (delay-seconds) once the daily quota is exhausted.
+  if (quota.remaining <= 0) {
+    headers['Retry-After'] = Math.max(MIN_RETRY_AFTER_SECONDS, resetDeltaSeconds).toString();
+  }
+
+  return headers;
 }

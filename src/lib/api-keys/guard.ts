@@ -1,6 +1,7 @@
 import { redisKeyStore } from './redis-key-store';
+import type { TokenBucketOptions } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
-import type { User } from '../auth/types';
+import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
@@ -16,6 +17,8 @@ export interface ApiAuthResult {
   status?: number;
   reservationId?: string;
   remaining?: number;
+  /** Seconds the caller should wait before retrying; set on burst rate limit (429) rejections. */
+  retryAfterSeconds?: number;
 }
 
 export interface ValidateApiAccessOptions {
@@ -25,6 +28,37 @@ export interface ValidateApiAccessOptions {
 }
 
 const WILDCARD_SCOPE = '*';
+
+type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
+
+/**
+ * Per-API-key token bucket sizes by account tier: `capacity` is the maximum burst,
+ * `refillRate` the sustained requests per second.
+ */
+export const API_KEY_BURST_LIMITS: Readonly<Record<UserTier, BurstLimit>> = {
+  free: { capacity: 20, refillRate: 2 },
+  pro: { capacity: 100, refillRate: 20 },
+  enterprise: { capacity: 500, refillRate: 100 },
+};
+
+const API_KEY_RATE_LIMIT_PREFIX = 'apikey:';
+const MIN_RETRY_AFTER_SECONDS = 1;
+const MS_PER_SECOND = 1000;
+
+function toRetryAfterSeconds(retryAfterMs: number): number {
+  return Math.max(MIN_RETRY_AFTER_SECONDS, Math.ceil(retryAfterMs / MS_PER_SECOND));
+}
+
+/**
+ * Builds the extra response headers for a failed authorization result
+ * (currently `Retry-After` when a burst rate limit rejected the request).
+ */
+export function authErrorHeaders(auth: Pick<ApiAuthResult, 'retryAfterSeconds'>): Record<string, string> {
+  if (auth.retryAfterSeconds === undefined) {
+    return {};
+  }
+  return { 'Retry-After': String(auth.retryAfterSeconds) };
+}
 
 /**
  * Validates whether an API key's granted scopes satisfy the required permission scope.
@@ -156,6 +190,22 @@ async function verifyKeyAccess(
       apiKey: verification.key,
       error: `Forbidden: API key lacks required scope '${requiredScope}'`,
       status: 403,
+    };
+  }
+
+  // Per-key burst rate limit (token bucket sized by account tier)
+  const burst = await redisKeyStore.checkTokenBucketRateLimit(
+    `${API_KEY_RATE_LIMIT_PREFIX}${verification.key.id}`,
+    API_KEY_BURST_LIMITS[verification.user.tier]
+  );
+  if (!burst.allowed) {
+    return {
+      authorized: false,
+      user: verification.user,
+      apiKey: verification.key,
+      error: 'Rate limit exceeded: too many requests for this API key. Retry after the delay in the Retry-After header.',
+      status: 429,
+      retryAfterSeconds: toRetryAfterSeconds(burst.retryAfterMs),
     };
   }
 

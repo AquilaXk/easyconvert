@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { convertFile } from '@/lib/conversions';
@@ -88,10 +88,12 @@ export async function POST(req: NextRequest) {
   // 1. Guard check: Authenticate and enforce 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    let headers: Record<string, string> | undefined;
+    // The guard only rejects with 429 here for the per-key burst limit (requiredUnits is 0), so the
+    // daily-quota headers report the real remaining quota and the burst Retry-After takes precedence.
+    let headers = authErrorHeaders(auth);
     if (auth.user) {
       const userQuota = await redisKeyStore.getQuotaUsage(auth.user.id);
-      headers = buildRateLimitHeaders(auth.status === 429 ? { ...userQuota, remaining: 0 } : userQuota);
+      headers = { ...buildRateLimitHeaders(userQuota), ...headers };
     }
     return createProblemDetailsResponse(
       auth.status ?? 401,

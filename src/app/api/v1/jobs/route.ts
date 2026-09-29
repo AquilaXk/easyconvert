@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { NextRequest, NextResponse } from 'next/server';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider as s3Storage } from '@/lib/storage';
@@ -8,6 +8,7 @@ import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } 
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask } from '@/lib/types';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,18 +23,24 @@ export async function POST(req: NextRequest) {
     return createProblemDetailsResponse(
       auth.status ?? 401,
       auth.error ?? 'Unauthorized',
-      instanceUri
+      instanceUri,
+      undefined,
+      undefined,
+      authErrorHeaders(auth)
     );
   }
 
   // 2. Phase 1: Atomically reserve quota unit BEFORE enqueueing
   const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
   if (!reservation.allowed) {
+    const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
     return createProblemDetailsResponse(
       429,
       `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
       instanceUri,
-      'Too Many Requests'
+      'Too Many Requests',
+      undefined,
+      buildRateLimitHeaders({ ...quota, remaining: 0 })
     );
   }
 
@@ -259,7 +266,10 @@ export async function GET(req: NextRequest) {
     return createProblemDetailsResponse(
       auth.status ?? 401,
       auth.error ?? 'Unauthorized',
-      instanceUri
+      instanceUri,
+      undefined,
+      undefined,
+      authErrorHeaders(auth)
     );
   }
 

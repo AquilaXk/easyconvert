@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -20,7 +20,10 @@ export async function GET(req: NextRequest, context: RouteContext) {
     return createProblemDetailsResponse(
       auth.status ?? 401,
       auth.error ?? 'Unauthorized',
-      instanceUri
+      instanceUri,
+      undefined,
+      undefined,
+      authErrorHeaders(auth)
     );
   }
 
@@ -84,7 +87,10 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     return createProblemDetailsResponse(
       auth.status ?? 401,
       auth.error ?? 'Unauthorized',
-      instanceUri
+      instanceUri,
+      undefined,
+      undefined,
+      authErrorHeaders(auth)
     );
   }
 

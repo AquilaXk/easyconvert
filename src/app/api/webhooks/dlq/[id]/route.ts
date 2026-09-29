@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth/session';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { webhookDispatcher } from '@/lib/api-keys/webhook-dispatcher';
 
 export const dynamic = 'force-dynamic';
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
     if (!auth.authorized) {
       return NextResponse.json(
         { success: false, error: auth.error ?? 'Unauthorized: Authentication required.' },
-        { status: auth.status ?? 401 }
+        { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
       );
     }
   }
@@ -51,7 +51,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     if (!auth.authorized) {
       return NextResponse.json(
         { success: false, error: auth.error ?? 'Unauthorized: Authentication required.' },
-        { status: auth.status ?? 401 }
+        { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
       );
     }
     if (auth.apiKey && !auth.apiKey.scopes?.includes('*')) {

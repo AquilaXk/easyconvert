@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth/session';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope } from '@/lib/api-keys/types';
 import type { User } from '@/lib/auth/types';
@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 async function resolveAuthenticatedUser(
   req: NextRequest,
   requireAdminKey = false
-): Promise<{ user: User | null; error?: string; status: number }> {
+): Promise<{ user: User | null; error?: string; status: number; headers?: Record<string, string> }> {
   const sessionUser = await getSessionFromRequest(req);
   if (sessionUser) {
     return { user: sessionUser, status: 200 };
@@ -22,6 +22,7 @@ async function resolveAuthenticatedUser(
       user: null,
       error: auth.error ?? 'Unauthorized: Sign in or valid API key required.',
       status: auth.status ?? 401,
+      headers: authErrorHeaders(auth),
     };
   }
 
@@ -44,7 +45,7 @@ export async function GET(req: NextRequest) {
   if (!auth.user) {
     return NextResponse.json(
       { success: false, error: auth.error },
-      { status: auth.status }
+      { status: auth.status, headers: auth.headers }
     );
   }
 
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
   if (!auth.user) {
     return NextResponse.json(
       { success: false, error: auth.error },
-      { status: auth.status }
+      { status: auth.status, headers: auth.headers }
     );
   }
 
