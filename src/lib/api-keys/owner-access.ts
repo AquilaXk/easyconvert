@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from './guard';
 import { conversionQueue } from '../queue/conversion-queue';
-import { classifyStorageKey } from '../storage/key-namespace';
+import { storageProvider } from '../storage';
+import { classifyStorageKey, isUploadKey } from '../storage/key-namespace';
+
+/** Response detail for a job input key that is missing or that the caller may not use. */
+export const STORAGE_OBJECT_NOT_FOUND = 'Storage object not found.';
 
 /**
  * Restricts a resource to the user that owns it.
@@ -58,4 +62,27 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
     return { resolved: true, ownerUserId: job.data?.userId };
   }
   return { resolved: true, ownerUserId: undefined };
+}
+
+/**
+ * Decides whether a caller may submit a stored object as a job input. The object must exist and be
+ * either an upload (reachable by anyone holding its key) or an output owned by the authenticated
+ * caller; anonymous callers may only use uploads. Answer a rejected key exactly like a missing
+ * object, so other users' keys can be neither probed nor converted.
+ */
+export async function mayUseStorageKeyAsJobInput(
+  key: string,
+  callerUserId: string | undefined
+): Promise<boolean> {
+  if (!storageProvider.getObject(key)) {
+    return false;
+  }
+  if (isUploadKey(key)) {
+    return true;
+  }
+  if (!callerUserId) {
+    return false;
+  }
+  const ownership = await resolveObjectOwnership(key);
+  return ownership.resolved && ownership.ownerUserId === callerUserId;
 }

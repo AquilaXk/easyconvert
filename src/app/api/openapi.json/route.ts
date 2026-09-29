@@ -128,7 +128,10 @@ export async function GET() {
                     },
                     targetFormat: { type: 'string', description: 'Target format extension.' },
                     sourceFormat: { type: 'string', description: 'Source format extension.' },
-                    storageKey: { type: 'string', description: 'Pre-uploaded S3 storage key.' },
+                    storageKey: {
+                      type: 'string',
+                      description: 'Key of an object from the multipart upload API (`uploads/...`), or an output owned by the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404.',
+                    },
                     options: { type: 'string', description: 'JSON-serialized conversion options.' },
                     tasks: {
                       type: 'string',
@@ -147,7 +150,10 @@ export async function GET() {
                     filename: { type: 'string', description: 'Original filename.' },
                     targetFormat: { type: 'string', description: 'Target format extension.' },
                     sourceFormat: { type: 'string', description: 'Source format extension.' },
-                    storageKey: { type: 'string', description: 'Pre-uploaded S3 storage key.' },
+                    storageKey: {
+                      type: 'string',
+                      description: 'Key of an object from the multipart upload API (`uploads/...`), or an output owned by the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404.',
+                    },
                     inputBufferBase64: { type: 'string', description: 'Base64-encoded source payload.' },
                     options: { type: 'object', description: 'Conversion configuration options.' },
                     tasks: {
@@ -184,6 +190,7 @@ export async function GET() {
             '400': createProblemResponse('Bad request or parameter validation failure.'),
             '401': createProblemResponse('Missing, expired, or invalid API key.'),
             '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
+            '404': createProblemResponse('Storage object not found, or not usable by the caller as an input.'),
             '429': createProblemResponse('Daily conversion quota exhausted.'),
             '500': createProblemResponse('Job enqueue failure.'),
           },
