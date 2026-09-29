@@ -14,6 +14,9 @@ esac
 
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
+# Skip when dependencies are not installed yet (e.g. a fresh worktree).
+[ -x node_modules/.bin/eslint ] || exit 0
+
 if ! output="$(npx --no-install eslint --max-warnings=-1 "$file_path" 2>&1)"; then
   echo "ESLint failed for $file_path:" >&2
   echo "$output" >&2
