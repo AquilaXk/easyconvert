@@ -117,6 +117,7 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   getDlqEntries?(): Promise<DlqEntry<T>[]>;
   moveToDlq?(job: Job<T, R>, reason: string): Promise<void>;
   purgeDlq?(): Promise<number>;
+  cancelJob?(id: string, reason?: string): Promise<boolean>;
   ping?(): Promise<{ ok: boolean; latencyMs: number }>;
 }
 
@@ -228,6 +229,27 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
       }
     }
     return removed;
+  }
+
+  async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    if (job.state === 'completed' || job.state === 'failed') return false;
+
+    this.waitingIds = this.waitingIds.filter((wid) => wid !== id);
+    this.delayedIds = this.delayedIds.filter((did) => did !== id);
+    const timer = this.delayTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this.delayTimers.delete(id);
+    }
+
+    job.state = 'failed';
+    job.failedReason = reason;
+    job.finishedOn = Date.now();
+    await job.log(`Job cancelled: ${reason}`);
+    this.emit('failed', job, new Error(reason));
+    return true;
   }
 
   async getDlqEntries(): Promise<DlqEntry<T>[]> {
@@ -821,6 +843,36 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       }
     }
     return this.memoryFallback.clean(grace, limit, type);
+  }
+
+  async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
+    if (this.redisClient && this.redisConnected) {
+      try {
+        const raw = await this.redisClient.hgetall(this.getJobKey(id));
+        if (!raw || Object.keys(raw).length === 0) return false;
+        const currentState = raw.state;
+        if (currentState === 'completed' || currentState === 'failed') return false;
+
+        await this.redisClient.lrem(this.waitingKey, 0, id);
+        await this.redisClient.zrem(this.delayedKey, id);
+        await this.redisClient.srem(this.activeKey, id);
+        await this.redisClient.sadd(this.failedKey, id);
+
+        await this.redisClient.hset(
+          this.getJobKey(id),
+          'state',
+          'failed',
+          'failedReason',
+          reason,
+          'finishedOn',
+          Date.now().toString()
+        );
+        return true;
+      } catch {
+        return this.memoryFallback.cancelJob ? this.memoryFallback.cancelJob(id, reason) : false;
+      }
+    }
+    return this.memoryFallback.cancelJob ? this.memoryFallback.cancelJob(id, reason) : false;
   }
 
   async getDlqEntries(): Promise<DlqEntry<T>[]> {
