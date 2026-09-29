@@ -143,12 +143,19 @@ export async function processConversionJob(
     // Clean up temporary input object from storage backend upon job success or when retry attempts are exhausted
     const isFinalAttempt = !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
     if (job.data.storageKey && (conversionSucceeded || isFinalAttempt)) {
-      try {
-        s3Storage.deleteObject(job.data.storageKey);
-      } catch {
-        // Ignore
-      }
+      removeJobInput(job.id, job.data.storageKey);
     }
+  }
+}
+
+/** Deletes a job's uploaded input, reporting a missing object or a failed delete. */
+function removeJobInput(jobId: string, storageKey: string): void {
+  try {
+    if (!s3Storage.deleteObject(storageKey)) {
+      console.warn(`[ConversionQueue] Input cleanup for job ${jobId} found no object at key "${storageKey}".`);
+    }
+  } catch (err) {
+    console.warn(`[ConversionQueue] Input cleanup for job ${jobId} failed to delete key "${storageKey}":`, err);
   }
 }
 

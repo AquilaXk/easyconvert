@@ -620,4 +620,60 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       });
     }, 5000);
   });
+
+  describe('6. Input cleanup failures are reported', () => {
+    it('warns with the job id and key when the final input cleanup reports a missing object', async () => {
+      const inputKey = `uploads/lifecycle-cleanup-${Date.now()}.csv`;
+      s3Storage.saveObject(inputKey, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'scores.csv');
+      const queue = new Queue<ConversionJobData, ConversionJobResult>('cleanup-false');
+      const job = await queue.add(
+        'convert',
+        csvJobData({ storageKey: inputKey, inputBufferBase64: undefined }),
+        { attempts: 1 }
+      );
+
+      vi.spyOn(s3Storage, 'deleteObject').mockReturnValue(false);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const result = await processConversionJob(job);
+      expect(result.status).toBe('completed');
+      expect(JSON.parse(s3Storage.getObject(result.resultKey)!.buffer.toString('utf-8'))).toEqual([
+        // CSV cells are untyped text, so the JSON rows keep them as strings.
+        { name: 'Alice', score: '100' },
+        { name: 'Bob', score: '95' },
+      ]);
+
+      const warnings = warnSpy.mock.calls.map((args) => args.map(String).join(' '));
+      expect(warnings.some((w) => w.includes(job.id) && w.includes(inputKey))).toBe(true);
+
+      await queue.close();
+    });
+
+    it('warns with the job id, key, and error when the final input cleanup throws', async () => {
+      const inputKey = `uploads/lifecycle-cleanup-throw-${Date.now()}.csv`;
+      s3Storage.saveObject(inputKey, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'scores.csv');
+      const queue = new Queue<ConversionJobData, ConversionJobResult>('cleanup-throw');
+      const job = await queue.add(
+        'convert',
+        csvJobData({ storageKey: inputKey, inputBufferBase64: undefined }),
+        { attempts: 1 }
+      );
+
+      vi.spyOn(s3Storage, 'deleteObject').mockImplementation(() => {
+        throw new Error('storage backend unavailable');
+      });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await processConversionJob(job);
+
+      const warnings = warnSpy.mock.calls.map((args) => args.map(String).join(' '));
+      expect(
+        warnings.some(
+          (w) => w.includes(job.id) && w.includes(inputKey) && w.includes('storage backend unavailable')
+        )
+      ).toBe(true);
+
+      await queue.close();
+    });
+  });
 });
