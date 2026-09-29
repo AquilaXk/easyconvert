@@ -24,38 +24,24 @@ export interface ValidateApiAccessOptions {
   scope?: string;
 }
 
+const WILDCARD_SCOPE = '*';
+
 /**
  * Validates whether an API key's granted scopes satisfy the required permission scope.
- * Supports exact matches, wildcard root ('*'), and hierarchical sub-scopes (e.g. 'jobs:*').
+ * Only an exact match, the root wildcard ('*'), or a same-namespace wildcard
+ * (e.g. 'convert:*' for 'convert:write') is accepted; there are no cross-namespace aliases.
  */
 export function isScopeAllowed(grantedScopes?: string[], requiredScope?: string): boolean {
   if (!requiredScope) return true;
-  if (!grantedScopes || grantedScopes.length === 0) return true; // Full access for unscoped keys
-  if (grantedScopes.includes('*')) return true;
+  // Legacy keys created before scopes existed carry no scopes; they keep full access for backward compatibility.
+  if (!grantedScopes || grantedScopes.length === 0) return true;
+  if (grantedScopes.includes(WILDCARD_SCOPE)) return true;
   if (grantedScopes.includes(requiredScope)) return true;
 
-  // Hierarchical wildcard support: e.g. 'jobs:*' covers 'jobs:read' and 'jobs:write'
   const colonIndex = requiredScope.indexOf(':');
   if (colonIndex > 0) {
-    const parentScope = requiredScope.substring(0, colonIndex) + ':*';
-    if (grantedScopes.includes(parentScope)) return true;
-  }
-
-  // Cross-compatibility mappings
-  if (requiredScope === 'convert' && (grantedScopes.includes('convert:write') || grantedScopes.includes('convert:read'))) {
-    return true;
-  }
-  if (requiredScope === 'convert:write' && (grantedScopes.includes('convert') || grantedScopes.includes('jobs:write'))) {
-    return true;
-  }
-  if (requiredScope === 'convert:read' && (grantedScopes.includes('convert') || grantedScopes.includes('jobs:read'))) {
-    return true;
-  }
-  if (requiredScope === 'jobs:write' && (grantedScopes.includes('convert') || grantedScopes.includes('convert:write'))) {
-    return true;
-  }
-  if (requiredScope === 'jobs:read' && (grantedScopes.includes('convert') || grantedScopes.includes('convert:read'))) {
-    return true;
+    const namespaceWildcard = `${requiredScope.substring(0, colonIndex)}:${WILDCARD_SCOPE}`;
+    return grantedScopes.includes(namespaceWildcard);
   }
 
   return false;

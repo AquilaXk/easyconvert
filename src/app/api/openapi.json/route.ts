@@ -325,11 +325,11 @@ export async function GET() {
       '/api/keys': {
         get: {
           summary: 'List API Keys',
-          description: 'Retrieves developer API keys, granular scopes, expiration dates, and IP whitelist restrictions.',
+          description: 'Retrieves developer API keys, granular scopes, expiration dates, and IP whitelist restrictions. Requires admin wildcard (*) scope.',
           operationId: 'listApiKeys',
           security: [
-            { ApiKeyAuth: [] },
-            { BearerAuth: [] },
+            { ApiKeyAuth: ['*'] },
+            { BearerAuth: ['*'] },
           ],
           responses: {
             '200': { description: 'User API keys list.' },

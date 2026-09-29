@@ -40,7 +40,7 @@ async function resolveAuthenticatedUser(
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await resolveAuthenticatedUser(req, false);
+  const auth = await resolveAuthenticatedUser(req, true);
   if (!auth.user) {
     return NextResponse.json(
       { success: false, error: auth.error },
