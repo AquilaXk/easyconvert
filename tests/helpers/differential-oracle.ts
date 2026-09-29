@@ -88,6 +88,17 @@ export function isOracleToolAvailable(tool: ExternalOracleTool): boolean {
   return getOracleToolPath(tool) !== null;
 }
 
+export function assertOracleToolAvailable(tool: ExternalOracleTool): string {
+  const toolPath = getOracleToolPath(tool);
+  if (!toolPath) {
+    throw new OracleToolMissingError(
+      tool,
+      `Differential Oracle external CLI tool "${tool}" is missing in runtime environment.`
+    );
+  }
+  return toolPath;
+}
+
 export interface OracleToolDiagnostic {
   tool: ExternalOracleTool;
   available: boolean;

@@ -37,7 +37,7 @@ export async function forEachCooperative<T>(
   batchSize: number,
   callback: (item: T, index: number) => Promise<void> | void
 ): Promise<void> {
-  const effectiveBatchSize = Math.max(1, batchSize);
+  const effectiveBatchSize = Math.max(1, Math.floor(Number(batchSize) || 1));
   for (let i = 0; i < items.length; i++) {
     await callback(items[i], i);
     if ((i + 1) % effectiveBatchSize === 0 && i + 1 < items.length) {
@@ -64,8 +64,8 @@ export class EventLoopMonitor {
   private lastLagMs = 0;
 
   constructor(options: EventLoopMonitorOptions = {}) {
-    this.checkIntervalMs = options.checkIntervalMs ?? 1000;
-    this.lagThresholdMs = options.lagThresholdMs ?? 100;
+    this.checkIntervalMs = Math.max(10, Math.floor(Number(options.checkIntervalMs) || 1000));
+    this.lagThresholdMs = Math.max(1, Math.floor(Number(options.lagThresholdMs) || 100));
     this.onLagExceeded = options.onLagExceeded;
   }
 

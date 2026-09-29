@@ -46,12 +46,26 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
     it('iterates through collections with periodic event loop yields', async () => {
       const items = Array.from({ length: 10 }, (_, i) => i);
       const processed: number[] = [];
+      let yieldCount = 0;
 
-      await forEachCooperative(items, 3, async (item) => {
-        processed.push(item);
+      // Wrap setImmediate to verify libuv yields occur periodically
+      const originalSetImmediate = globalThis.setImmediate;
+      const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate').mockImplementation((fn: any, ...args: any[]) => {
+        yieldCount++;
+        return originalSetImmediate(fn, ...args);
       });
 
-      expect(processed).toEqual(items);
+      try {
+        await forEachCooperative(items, 3, async (item) => {
+          processed.push(item);
+        });
+
+        expect(processed).toEqual(items);
+        // For 10 items and batch size 3: yields at index 2, 5, 8 (3 yields total)
+        expect(yieldCount).toBe(3);
+      } finally {
+        setImmediateSpy.mockRestore();
+      }
     });
 
     it('EventLoopMonitor tracks lag and emits threshold warning callback', async () => {
@@ -67,15 +81,16 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
 
       // Artificially block the thread briefly to simulate heavy synchronous CPU task
       const start = Date.now();
-      while (Date.now() - start < 40) {
+      while (Date.now() - start < 45) {
         // busy wait
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 60));
       monitor.stop();
 
       expect(monitor.getActive()).toBe(false);
       expect(monitor.getLastLagMs()).toBeGreaterThanOrEqual(0);
+      expect(onLagExceeded).toHaveBeenCalled();
     });
   });
 
@@ -86,6 +101,8 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
       expect(isBlockedIp('169.254.169.254')).toBe(true);
       expect(isPrivateOrRestrictedHost('169.254.169.254')).toBe(true);
       expect(isPrivateOrRestrictedHost('metadata.google.internal')).toBe(true);
+      expect(isPrivateOrRestrictedHost('metadata.google.internal.')).toBe(true);
+      expect(isPrivateOrRestrictedHost('instance-data')).toBe(true);
     });
 
     it('blocks Alibaba Cloud metadata endpoint (100.100.100.200)', () => {
@@ -99,6 +116,32 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
       expect(isBlockedIpv6('::ffff:127.0.0.1')).toBe(true);
       expect(isBlockedIpv6('::ffff:10.0.0.1')).toBe(true);
       expect(isBlockedIp('::ffff:192.168.1.1')).toBe(true);
+    });
+
+    it('blocks IPv4-compatible IPv6 addresses representing restricted IP targets', () => {
+      expect(isBlockedIpv6('::169.254.169.254')).toBe(true);
+      expect(isBlockedIpv6('::127.0.0.1')).toBe(true);
+      expect(isBlockedIpv6('::10.0.0.1')).toBe(true);
+      expect(isBlockedIpv6('::a9fe:a9fe')).toBe(true);
+      expect(isBlockedIp('::169.254.169.254')).toBe(true);
+      expect(isBlockedIp('::a9fe:a9fe')).toBe(true);
+    });
+
+    it('blocks IPv6 loopback variants, unspecified, and tunneling encapsulations', () => {
+      expect(isBlockedIpv6('::1')).toBe(true);
+      expect(isBlockedIpv6('0::1')).toBe(true);
+      expect(isBlockedIpv6('::0001')).toBe(true);
+      expect(isBlockedIpv6('0000::1')).toBe(true);
+      expect(isBlockedIpv6('::')).toBe(true);
+      expect(isBlockedIpv6('::0')).toBe(true);
+
+      // IPv4-translated (64:ff9b::/96)
+      expect(isBlockedIpv6('64:ff9b::169.254.169.254')).toBe(true);
+      expect(isBlockedIpv6('64:ff9b::127.0.0.1')).toBe(true);
+
+      // 6to4 encapsulation (2002::/16)
+      expect(isBlockedIpv6('2002:a9fe:a9fe::')).toBe(true);
+      expect(isBlockedIpv6('2002:7f00:0001::')).toBe(true);
     });
 
     it('blocks RFC 1918, RFC 3927, RFC 6598, loopback, and broadcast ranges', () => {
@@ -131,15 +174,23 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
       expect(isBlockedIpv4('8.8.8.8')).toBe(false);
       expect(isBlockedIpv4('1.1.1.1')).toBe(false);
       expect(isBlockedIpv6('2606:2800:220:1:248:1893:25c8:1946')).toBe(false);
+      expect(isBlockedIpv6('2001:4860:4860::8888')).toBe(false);
+      expect(isBlockedIpv6('2600:9000::1')).toBe(false);
     });
 
-    it('validateUrlForSsrf rejects dangerous URLs with private or metadata hosts', async () => {
+    it('validateUrlForSsrf rejects dangerous URLs with private, IPv6, or metadata hosts', async () => {
       expect(await validateUrlForSsrf(new URL('http://169.254.169.254/latest/meta-data'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://[::169.254.169.254]/latest/meta-data'))).toBe(false);
       expect(await validateUrlForSsrf(new URL('http://metadata.google.internal/computeMetadata/v1'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://metadata.google.internal./computeMetadata/v1'))).toBe(false);
       expect(await validateUrlForSsrf(new URL('http://localhost:8080/admin'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://localhost.:8080/admin'))).toBe(false);
       expect(await validateUrlForSsrf(new URL('http://127.0.0.1:6379'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://[::127.0.0.1]/admin'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://[0::1]/admin'))).toBe(false);
       expect(await validateUrlForSsrf(new URL('http://10.0.0.5/secrets'))).toBe(false);
       expect(await validateUrlForSsrf(new URL('http://server.local/internal'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://server.local./internal'))).toBe(false);
     });
   });
 
@@ -205,13 +256,17 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
     });
 
     it('fails closed when strictIsolation is demanded on non-Linux platform', () => {
-      if (process.platform !== 'linux') {
+      const originalPlatform = process.platform;
+      try {
+        Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
         expect(() => {
           resolveSandboxedCommand('/bin/echo', ['hello'], {
             networkIsolated: true,
             strictIsolation: true,
           });
         }).toThrow(SandboxedProcessError);
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
       }
     });
   });
