@@ -48,6 +48,14 @@ GEMINI.md
 .agents/
 .codex/
 
+# Claude Code personal overrides (shared config lives in CLAUDE.md and .claude/)
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Git worktrees (manual and Claude Code managed)
+.worktrees/
+.claude/worktrees/
+
 # OCR artifacts
 *.traineddata
 

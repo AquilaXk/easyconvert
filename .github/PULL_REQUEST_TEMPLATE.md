@@ -49,5 +49,6 @@
 ## Checklist
 
 - [ ] All automated tests and linter pass locally.
+- [ ] Claude Code review findings are addressed and all review threads are resolved.
 - [ ] Changes match acceptance criteria of the related issue.
 - [ ] No extraneous files or secrets included.
