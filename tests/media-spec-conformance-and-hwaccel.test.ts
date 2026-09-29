@@ -10,7 +10,11 @@ import {
   ConversionFailedError,
 } from '../src/lib/conversions/media';
 import { resolveConversionTier } from '../src/lib/edge/tier-router';
-import { muxOggOpus, createOggPageTyped } from '../src/lib/edge/workers/webcodecs.worker';
+import {
+  muxOggOpus,
+  createOggPageTyped,
+  resolveWebCodecsConfig,
+} from '../src/lib/edge/workers/webcodecs.worker';
 
 describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
   // ==========================================================================
@@ -298,6 +302,25 @@ describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
       const composeContent = fs.readFileSync(composePath, 'utf-8');
 
       expect(composeContent).toContain('/dev/dri:/dev/dri');
+    });
+
+    it('enforces fail-closed behavior when Ogg Vorbis is requested on WebCodecs and allows authentic Opus', () => {
+      // 1. Generic .ogg without explicit opus codec must fail-closed on WebCodecs
+      expect(() => resolveWebCodecsConfig('ogg')).toThrow(
+        'Ogg Vorbis encoding is not supported by WebCodecs hardware encoder'
+      );
+
+      // 2. Explicit opus userCodec on .ogg target succeeds with audio/ogg; codecs=opus
+      const oggOpus = resolveWebCodecsConfig('ogg', 'opus');
+      expect(oggOpus.codec).toBe('opus');
+      expect(oggOpus.mimeType).toBe('audio/ogg; codecs=opus');
+      expect(oggOpus.isVideo).toBe(false);
+
+      // 3. Direct .opus target succeeds with audio/ogg; codecs=opus
+      const directOpus = resolveWebCodecsConfig('opus');
+      expect(directOpus.codec).toBe('opus');
+      expect(directOpus.mimeType).toBe('audio/ogg; codecs=opus');
+      expect(directOpus.isVideo).toBe(false);
     });
   });
 });

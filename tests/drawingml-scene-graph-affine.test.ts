@@ -476,5 +476,103 @@ describe('DrawingML 2D Scene Graph & Affine Transform Matrix (ISO/IEC 29500-1 §
       expect(pdfResult.buffer.length).toBeGreaterThan(1000);
       expect(pdfResult.buffer.subarray(0, 4).toString('utf-8')).toBe('%PDF');
     });
+
+    it('renders 4-node square SmartArt diagram using 2x2 quadrant matrix layout', async () => {
+      const zip = new JSZip();
+      zip.file(
+        '[Content_Types].xml',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+          <Default Extension="xml" ContentType="application/xml"/>
+          <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+          <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+          <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+          <Override PartName="/ppt/diagrams/swot.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"/>
+        </Types>`
+      );
+
+      zip.file(
+        '_rels/.rels',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+        </Relationships>`
+      );
+
+      zip.file(
+        'ppt/presentation.xml',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <p:sldIdLst>
+            <p:sldId id="256" r:id="rIdSlide1"/>
+          </p:sldIdLst>
+          <p:sldSz cx="9144000" cy="6858000"/>
+        </p:presentation>`
+      );
+
+      zip.file(
+        'ppt/_rels/presentation.xml.rels',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rIdSlide1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+        </Relationships>`
+      );
+
+      // Square graphicFrame: cx = cy = 5080000 (approx 400x400pt, aspect ratio 1.0)
+      const slide1Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+               xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+               xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+               xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram">
+          <p:cSld>
+            <p:spTree>
+              <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+              <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
+              <p:graphicFrame>
+                <p:nvGraphicFramePr><p:cNvPr id="2" name="SWOT Matrix"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>
+                <p:xfrm><a:off x="1270000" y="1270000"/><a:ext cx="5080000" cy="5080000"/></p:xfrm>
+                <a:graphic>
+                  <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram">
+                    <dgm:relIds r:dm="rIdSwot"/>
+                  </a:graphicData>
+                </a:graphic>
+              </p:graphicFrame>
+            </p:spTree>
+          </p:cSld>
+        </p:sld>`;
+
+      zip.file('ppt/slides/slide1.xml', slide1Xml);
+
+      zip.file(
+        'ppt/slides/_rels/slide1.xml.rels',
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rIdSwot" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="../diagrams/swot.xml"/>
+        </Relationships>`
+      );
+
+      const swotDataXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <dgm:ptLst>
+            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Strengths</a:t></a:r></p></dgm:t></dgm:pt>
+            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Weaknesses</a:t></a:r></p></dgm:t></dgm:pt>
+            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Opportunities</a:t></a:r></p></dgm:t></dgm:pt>
+            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Threats</a:t></a:r></p></dgm:t></dgm:pt>
+          </dgm:ptLst>
+        </dgm:dataModel>`;
+
+      zip.file('ppt/diagrams/swot.xml', swotDataXml);
+
+      const pptxBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+      const htmlResult = await convertOffice(pptxBuffer, 'pptx', 'html', {}, 'swot-analysis');
+      const htmlStr = htmlResult.buffer.toString('utf-8');
+
+      expect(htmlStr).toContain('Strengths');
+      expect(htmlStr).toContain('Weaknesses');
+      expect(htmlStr).toContain('Opportunities');
+      expect(htmlStr).toContain('Threats');
+    });
   });
 });

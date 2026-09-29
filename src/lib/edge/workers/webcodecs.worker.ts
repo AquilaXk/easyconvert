@@ -172,9 +172,17 @@ export function resolveWebCodecsConfig(targetFormat: string, userCodec?: string)
   const tgt = targetFormat.toLowerCase();
   if (userCodec) {
     const isAudioCodec = ['mp4a', 'aac', 'opus', 'vorbis', 'pcm'].some((c) => userCodec.toLowerCase().includes(c));
+    let mimeType = 'video/mp4';
+    if (tgt === 'webm') {
+      mimeType = isAudioCodec ? 'audio/webm' : 'video/webm';
+    } else if (tgt === 'ogg' || tgt === 'opus') {
+      mimeType = 'audio/ogg; codecs=opus';
+    } else if (isAudioCodec) {
+      mimeType = 'audio/mp4';
+    }
     return {
       codec: userCodec,
-      mimeType: tgt === 'webm' ? (isAudioCodec ? 'audio/webm' : 'video/webm') : (isAudioCodec ? 'audio/mp4' : 'video/mp4'),
+      mimeType,
       isVideo: !isAudioCodec,
     };
   }
@@ -192,6 +200,13 @@ export function resolveWebCodecsConfig(targetFormat: string, userCodec?: string)
       return { codec: 'mp4a.40.2', mimeType: 'audio/mp4', isVideo: false };
     case 'opus':
       return { codec: 'opus', mimeType: 'audio/ogg; codecs=opus', isVideo: false };
+    case 'ogg':
+      if (userCodec === 'opus') {
+        return { codec: 'opus', mimeType: 'audio/ogg; codecs=opus', isVideo: false };
+      }
+      throw new Error(
+        'Ogg Vorbis encoding is not supported by WebCodecs hardware encoder. Native FFmpeg engine is required for authentic lossy Vorbis compression (Fail-Closed).'
+      );
     default:
       return { codec: 'avc1.4d002a', mimeType: 'video/mp4', isVideo: true };
   }
@@ -2271,7 +2286,8 @@ function muxFinalMedia(
   height: number,
   sampleRate: number = 44100,
   channels: number = 2,
-  audioChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = []
+  audioChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [],
+  userCodec?: string
 ): Uint8Array {
   if (targetFormat === 'webm') {
     return muxWebmVideo(encodedChunks, width, height, audioChunks, sampleRate, channels);
@@ -2287,7 +2303,7 @@ function muxFinalMedia(
     }
     return finalBytes;
   }
-  if (targetFormat === 'opus' || targetFormat === 'ogg') {
+  if (targetFormat === 'opus' || (targetFormat === 'ogg' && userCodec === 'opus')) {
     return muxOggOpus(encodedChunks, sampleRate, channels);
   }
   return muxMp4Media(encodedChunks, width, height, {
@@ -2389,7 +2405,8 @@ export async function processWebCodecsConversion(
       height,
       sampleRate,
       channels,
-      encodedAudioChunks
+      encodedAudioChunks,
+      options.codec
     );
 
     onProgress?.(100);
@@ -2431,7 +2448,9 @@ export async function processWebCodecsConversion(
       width,
       height,
       sampleRate,
-      channels
+      channels,
+      [],
+      options.codec
     );
 
     onProgress?.(100);

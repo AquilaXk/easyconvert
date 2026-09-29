@@ -81,6 +81,50 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 /**
+ * Resolves compliant LibreOffice --convert-to filter specification according to
+ * source document domain and output parameters (PDF/A profiles, lossless compression).
+ */
+export function resolveLibreOfficeFilter(
+  targetFormat: string,
+  sourceFormat: string,
+  options: WorkerEngineOptions = {}
+): string {
+  const tgt = targetFormat.toLowerCase();
+  const src = sourceFormat.toLowerCase();
+
+  if (options.libreOfficeFilter) {
+    return `${tgt}:${options.libreOfficeFilter}`;
+  }
+
+  if (tgt === 'pdf') {
+    const isSpreadsheet = ['xlsx', 'xls', 'ods', 'csv', 'tsv'].includes(src);
+    const isPresentation = ['pptx', 'ppt', 'odp', 'potx', 'key'].includes(src);
+    const filterName = isSpreadsheet
+      ? 'calc_pdf_Export'
+      : isPresentation
+      ? 'impress_pdf_Export'
+      : 'writer_pdf_Export';
+
+    const pdfVersion = (options.pdfVersion || options.pdfStandard || '').toLowerCase();
+    if (pdfVersion === 'pdfa' || pdfVersion === 'pdfa-1b' || pdfVersion === 'pdf/a-1b') {
+      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"1"}}`;
+    }
+    if (pdfVersion === 'pdfa-2b' || pdfVersion === 'pdf/a-2b') {
+      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"2"}}`;
+    }
+    if (pdfVersion === 'pdfa-3b' || pdfVersion === 'pdf/a-3b') {
+      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"3"}}`;
+    }
+
+    if (options.losslessImageCompression) {
+      return `${tgt}:${filterName}:{"UseLosslessCompression":{"type":"boolean","value":"true"}}`;
+    }
+  }
+
+  return tgt;
+}
+
+/**
  * Pre-warmed LibreOffice Daemon Worker Pool Manager.
  * Maintains isolated background worker environments with dedicated user profiles,
  * FIFO queueing, auto-recycling (every N jobs) to prevent memory leaks,
@@ -444,7 +488,7 @@ export class LibreOfficePoolManager {
       }
       convertArgs.push(
         '--convert-to',
-        tgt,
+        resolveLibreOfficeFilter(tgt, src, options),
         '--outdir',
         jobSubdir,
         inputPath

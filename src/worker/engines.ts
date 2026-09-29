@@ -13,7 +13,7 @@ import {
 } from '../lib/conversions/media-ffmpeg-args';
 import { executeSandboxedBinary } from './sandbox';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
-import { LibreOfficePoolManager } from './libreoffice-pool';
+import { LibreOfficePoolManager, resolveLibreOfficeFilter } from './libreoffice-pool';
 
 export interface WorkerVfsPayload {
   inputPath?: string;
@@ -322,7 +322,7 @@ export async function convertWithHeadlessOffice(
         '--nologo',
         `-env:UserInstallation=file://${tempDir}/user`,
         '--convert-to',
-        tgt,
+        resolveLibreOfficeFilter(tgt, src, options),
         '--outdir',
         tempDir,
         inputPath,

@@ -5,6 +5,7 @@ import {
   LibreOfficePoolManager,
   LibreOfficePoolTimeoutError,
   WorkerLifecycleState,
+  resolveLibreOfficeFilter,
 } from '../src/worker/libreoffice-pool';
 import {
   convertWithHeadlessOffice,
@@ -348,6 +349,41 @@ describe('Phase 3: Pre-warmed LibreOffice Daemon Pool Architecture', () => {
       } else {
         expect(['native-soffice', 'native-soffice-pool']).toContain(res.engineUsed);
       }
+    });
+
+    it('resolves compliant LibreOffice PDF export filter specifications according to document domain and options', () => {
+      // 1. Default clean format without redundant filter options
+      expect(resolveLibreOfficeFilter('pdf', 'docx')).toBe('pdf');
+      expect(resolveLibreOfficeFilter('pdf', 'xlsx')).toBe('pdf');
+      expect(resolveLibreOfficeFilter('pdf', 'pptx')).toBe('pdf');
+
+      // 2. PDF/A-1b profile for document
+      expect(resolveLibreOfficeFilter('pdf', 'docx', { pdfStandard: 'pdfa-1b' })).toBe(
+        'pdf:writer_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"1"}}'
+      );
+
+      // 3. PDF/A-2b profile for spreadsheet
+      expect(resolveLibreOfficeFilter('pdf', 'xlsx', { pdfStandard: 'pdfa-2b' })).toBe(
+        'pdf:calc_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"2"}}'
+      );
+
+      // 4. PDF/A-3b profile for presentation
+      expect(resolveLibreOfficeFilter('pdf', 'pptx', { pdfStandard: 'pdfa-3b' })).toBe(
+        'pdf:impress_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"3"}}'
+      );
+
+      // 6. Lossless image compression
+      expect(resolveLibreOfficeFilter('pdf', 'docx', { losslessImageCompression: true })).toBe(
+        'pdf:writer_pdf_Export:{"UseLosslessCompression":{"type":"boolean","value":"true"}}'
+      );
+
+      // 7. Explicit custom filter
+      expect(resolveLibreOfficeFilter('pdf', 'odt', { libreOfficeFilter: 'custom_filter' })).toBe(
+        'pdf:custom_filter'
+      );
+
+      // 8. Non-PDF target formats pass through untouched
+      expect(resolveLibreOfficeFilter('html', 'docx')).toBe('html');
     });
   });
 });
