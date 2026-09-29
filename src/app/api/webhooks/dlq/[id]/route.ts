@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth/session';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { webhookDispatcher } from '@/lib/api-keys/webhook-dispatcher';
+import { toPublicDlqEntry } from '@/lib/api-keys/public-views';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,15 +11,16 @@ interface RouteContext {
 }
 
 export async function GET(req: NextRequest, context: RouteContext) {
-  const sessionUser = await getSessionFromRequest(req);
-  if (!sessionUser) {
+  let ownerUserId = (await getSessionFromRequest(req))?.id;
+  if (!ownerUserId) {
     const auth = await validateApiAccess(req, 0, 'convert:read');
-    if (!auth.authorized) {
+    if (!auth.authorized || !auth.user) {
       return NextResponse.json(
         { success: false, error: auth.error ?? 'Unauthorized: Authentication required.' },
-        { status: auth.status ?? 401 }
+        { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
       );
     }
+    ownerUserId = auth.user.id;
   }
 
   const resolvedParams = await Promise.resolve(context.params);
@@ -30,7 +32,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
     );
   }
 
-  const entry = await webhookDispatcher.getDlqEntry(id);
+  const entry = await webhookDispatcher.getDlqEntry(id, ownerUserId);
   if (!entry) {
     return NextResponse.json(
       { success: false, error: `DLQ entry "${id}" not found.` },
@@ -40,18 +42,18 @@ export async function GET(req: NextRequest, context: RouteContext) {
 
   return NextResponse.json({
     success: true,
-    entry,
+    entry: toPublicDlqEntry(entry),
   });
 }
 
 export async function DELETE(req: NextRequest, context: RouteContext) {
-  const sessionUser = await getSessionFromRequest(req);
-  if (!sessionUser) {
+  let ownerUserId = (await getSessionFromRequest(req))?.id;
+  if (!ownerUserId) {
     const auth = await validateApiAccess(req, 0);
-    if (!auth.authorized) {
+    if (!auth.authorized || !auth.user) {
       return NextResponse.json(
         { success: false, error: auth.error ?? 'Unauthorized: Authentication required.' },
-        { status: auth.status ?? 401 }
+        { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
       );
     }
     if (auth.apiKey && !auth.apiKey.scopes?.includes('*')) {
@@ -60,6 +62,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
         { status: 403 }
       );
     }
+    ownerUserId = auth.user.id;
   }
 
   const resolvedParams = await Promise.resolve(context.params);
@@ -71,7 +74,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     );
   }
 
-  const deleted = await webhookDispatcher.deleteDlqEntry(id);
+  const deleted = await webhookDispatcher.deleteDlqEntry(id, ownerUserId);
   if (!deleted) {
     return NextResponse.json(
       { success: false, error: `DLQ entry "${id}" not found.` },

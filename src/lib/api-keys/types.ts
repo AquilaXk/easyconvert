@@ -80,4 +80,8 @@ export interface WebhookDlqEntry {
   retryCount: number;
   status: 'failed' | 'replayed';
   replayedAt?: number;
+  /** User who owns the webhook; entries without an owner are not exposed through the API. */
+  ownerUserId?: string;
+  /** API key whose settings produced the webhook, when known. */
+  ownerKeyId?: string;
 }

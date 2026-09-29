@@ -190,6 +190,10 @@ cd easyconvert
 npm install
 ```
 
+### Configuration
+
+- `KEY_HASH_PEPPER`: server-side secret used to store API key hashes as HMAC-SHA256 instead of plain SHA-256; set it to a long random value (at least 32 bytes) in production, and note that rotating it invalidates every key created or rehashed under the previous value.
+
 ### Development Server
 
 ```bash

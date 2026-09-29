@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { convertFile } from '@/lib/conversions';
@@ -85,20 +85,22 @@ export async function POST(req: NextRequest) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
 
-  // 1. Guard check: Authenticate and enforce 'convert' scope
-  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert' });
+  // 1. Guard check: Authenticate and enforce 'convert:write' scope
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    let headers: Record<string, string> | undefined;
+    // The guard only rejects with 429 here for the per-key burst limit (requiredUnits is 0), so the
+    // daily-quota headers report the real remaining quota and the burst Retry-After takes precedence.
+    let headers = authErrorHeaders(auth);
     if (auth.user) {
       const userQuota = await redisKeyStore.getQuotaUsage(auth.user.id);
-      headers = buildRateLimitHeaders(auth.status === 429 ? { ...userQuota, remaining: 0 } : userQuota);
+      headers = { ...buildRateLimitHeaders(userQuota), ...headers };
     }
     return createProblemDetailsResponse(
       auth.status ?? 401,
       auth.error ?? 'Unauthorized',
       instanceUri,
-      auth.status === 429 ? 'Too Many Requests' : undefined,
-      auth.status === 429 ? 'https://api.easyconvert.io/problems/quota-exceeded' : undefined,
+      undefined,
+      auth.problemType,
       headers
     );
   }

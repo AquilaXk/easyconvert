@@ -470,7 +470,8 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
         'https://api.example.com/webhooks/easyconvert',
         'job.completed',
         expect.objectContaining({ status: 'completed', filename: 'out.pdf' }),
-        'test-secret-key'
+        'test-secret-key',
+        { ownerUserId: undefined }
       );
 
       await testWorker.close();
@@ -516,7 +517,8 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
           error: 'Fatal native transcoding engine failure',
           originalFilename: 'broken.cad',
         }),
-        'fail-secret-key'
+        'fail-secret-key',
+        { ownerUserId: undefined }
       );
 
       await testWorker.close();

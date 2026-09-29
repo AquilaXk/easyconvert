@@ -13,6 +13,7 @@ import {
   rollbackQuota,
 } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import type { ApiKeyScope } from '../src/lib/api-keys/types';
 import { userStore } from '../src/lib/auth/user-store';
 import { WebhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { POST as jobsPostHandler, GET as jobsGetHandler } from '../src/app/api/v1/jobs/route';
@@ -39,19 +40,20 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
     });
 
     readOnlyKey = await redisKeyStore.generateApiKey(testUser.id, 'Read Only Key', {
-      scopes: ['jobs:read'],
+      scopes: ['convert:read'],
     });
 
     convertOnlyKey = await redisKeyStore.generateApiKey(testUser.id, 'Convert Only Key', {
-      scopes: ['convert'],
+      scopes: ['convert:write'],
     });
 
     jobsWriteKey = await redisKeyStore.generateApiKey(testUser.id, 'Jobs Write Key', {
-      scopes: ['jobs:write'],
+      scopes: ['convert:write'],
     });
 
     wildcardJobsKey = await redisKeyStore.generateApiKey(testUser.id, 'Wildcard Jobs Key', {
-      scopes: ['jobs:*'],
+      // Namespace wildcard is honored by the guard but is not a creatable ApiKeyScope literal.
+      scopes: ['convert:*' as ApiKeyScope],
     });
   });
 
@@ -117,24 +119,24 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
         },
       });
 
-      // Requesting 'jobs:write' with read-only key
-      const result = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'jobs:write' });
+      // Requesting 'convert:write' with read-only key
+      const result = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
       expect(result.authorized).toBe(false);
       expect(result.status).toBe(403);
-      expect(result.error).toContain("Forbidden: API key lacks required scope 'jobs:write'");
+      expect(result.error).toContain("Forbidden: API key lacks required scope 'convert:write'");
     });
 
     it('permits access when API key has exact or hierarchical scope', async () => {
       const reqRead = new Request('http://localhost/api/v1/jobs', {
         headers: { 'x-api-key': readOnlyKey.secretKey },
       });
-      const resultRead = await validateApiAccess(reqRead, { requiredUnits: 0, requiredScope: 'jobs:read' });
+      const resultRead = await validateApiAccess(reqRead, { requiredUnits: 0, requiredScope: 'convert:read' });
       expect(resultRead.authorized).toBe(true);
 
       const reqWildcard = new Request('http://localhost/api/v1/jobs', {
         headers: { 'x-api-key': wildcardJobsKey.secretKey },
       });
-      const resultWildcard = await validateApiAccess(reqWildcard, { requiredUnits: 0, requiredScope: 'jobs:write' });
+      const resultWildcard = await validateApiAccess(reqWildcard, { requiredUnits: 0, requiredScope: 'convert:write' });
       expect(resultWildcard.authorized).toBe(true);
     });
 
@@ -144,7 +146,7 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
       });
 
       // 1. Reserve quota unit
-      const auth = await validateApiAccess(req, { requiredUnits: 1, requiredScope: 'convert' });
+      const auth = await validateApiAccess(req, { requiredUnits: 1, requiredScope: 'convert:write' });
       expect(auth.authorized).toBe(true);
       expect(auth.reservationId).toBeDefined();
 
@@ -155,7 +157,7 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
       expect(rolledBack).toBe(true);
 
       // 3. Second reservation and commit
-      const auth2 = await validateApiAccess(req, { requiredUnits: 1, requiredScope: 'convert' });
+      const auth2 = await validateApiAccess(req, { requiredUnits: 1, requiredScope: 'convert:write' });
       expect(auth2.authorized).toBe(true);
       const committed = await commitQuota(auth2.reservationId!);
       expect(committed).toBe(true);
@@ -280,7 +282,7 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
 
       const problem = await res.json();
       expect(problem.status).toBe(403);
-      expect(problem.detail).toContain("Forbidden: API key lacks required scope 'convert'");
+      expect(problem.detail).toContain("Forbidden: API key lacks required scope 'convert:write'");
     });
 
     it('GET /api/openapi.json exposes ProblemDetails schema and RFC 9457 error mappings', async () => {

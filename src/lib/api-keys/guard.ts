@@ -1,9 +1,11 @@
 import { redisKeyStore } from './redis-key-store';
+import type { TokenBucketOptions } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
-import type { User } from '../auth/types';
+import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
+import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 
 export { extractClientIp };
 
@@ -16,6 +18,10 @@ export interface ApiAuthResult {
   status?: number;
   reservationId?: string;
   remaining?: number;
+  /** Seconds the caller should wait before retrying; set on burst rate limit (429) rejections. */
+  retryAfterSeconds?: number;
+  /** RFC 9457 problem type for the rejection when it differs from the status default (burst limit). */
+  problemType?: string;
 }
 
 export interface ValidateApiAccessOptions {
@@ -24,38 +30,55 @@ export interface ValidateApiAccessOptions {
   scope?: string;
 }
 
+const WILDCARD_SCOPE = '*';
+
+type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
+
+/**
+ * Per-API-key token bucket sizes by account tier: `capacity` is the maximum burst,
+ * `refillRate` the sustained requests per second.
+ */
+export const API_KEY_BURST_LIMITS: Readonly<Record<UserTier, BurstLimit>> = {
+  free: { capacity: 20, refillRate: 2 },
+  pro: { capacity: 100, refillRate: 20 },
+  enterprise: { capacity: 500, refillRate: 100 },
+};
+
+const API_KEY_RATE_LIMIT_PREFIX = 'apikey:';
+const MIN_RETRY_AFTER_SECONDS = 1;
+const MS_PER_SECOND = 1000;
+
+function toRetryAfterSeconds(retryAfterMs: number): number {
+  return Math.max(MIN_RETRY_AFTER_SECONDS, Math.ceil(retryAfterMs / MS_PER_SECOND));
+}
+
+/**
+ * Builds the extra response headers for a failed authorization result
+ * (currently `Retry-After` when a burst rate limit rejected the request).
+ */
+export function authErrorHeaders(auth: Pick<ApiAuthResult, 'retryAfterSeconds'>): Record<string, string> {
+  if (auth.retryAfterSeconds === undefined) {
+    return {};
+  }
+  return { 'Retry-After': String(auth.retryAfterSeconds) };
+}
+
 /**
  * Validates whether an API key's granted scopes satisfy the required permission scope.
- * Supports exact matches, wildcard root ('*'), and hierarchical sub-scopes (e.g. 'jobs:*').
+ * Only an exact match, the root wildcard ('*'), or a same-namespace wildcard
+ * (e.g. 'convert:*' for 'convert:write') is accepted; there are no cross-namespace aliases.
  */
 export function isScopeAllowed(grantedScopes?: string[], requiredScope?: string): boolean {
   if (!requiredScope) return true;
-  if (!grantedScopes || grantedScopes.length === 0) return true; // Full access for unscoped keys
-  if (grantedScopes.includes('*')) return true;
+  // Legacy keys created before scopes existed carry no scopes; they keep full access for backward compatibility.
+  if (!grantedScopes || grantedScopes.length === 0) return true;
+  if (grantedScopes.includes(WILDCARD_SCOPE)) return true;
   if (grantedScopes.includes(requiredScope)) return true;
 
-  // Hierarchical wildcard support: e.g. 'jobs:*' covers 'jobs:read' and 'jobs:write'
   const colonIndex = requiredScope.indexOf(':');
   if (colonIndex > 0) {
-    const parentScope = requiredScope.substring(0, colonIndex) + ':*';
-    if (grantedScopes.includes(parentScope)) return true;
-  }
-
-  // Cross-compatibility mappings
-  if (requiredScope === 'convert' && (grantedScopes.includes('convert:write') || grantedScopes.includes('convert:read'))) {
-    return true;
-  }
-  if (requiredScope === 'convert:write' && (grantedScopes.includes('convert') || grantedScopes.includes('jobs:write'))) {
-    return true;
-  }
-  if (requiredScope === 'convert:read' && (grantedScopes.includes('convert') || grantedScopes.includes('jobs:read'))) {
-    return true;
-  }
-  if (requiredScope === 'jobs:write' && (grantedScopes.includes('convert') || grantedScopes.includes('convert:write'))) {
-    return true;
-  }
-  if (requiredScope === 'jobs:read' && (grantedScopes.includes('convert') || grantedScopes.includes('convert:read'))) {
-    return true;
+    const namespaceWildcard = `${requiredScope.substring(0, colonIndex)}:${WILDCARD_SCOPE}`;
+    return grantedScopes.includes(namespaceWildcard);
   }
 
   return false;
@@ -100,7 +123,8 @@ function checkPreExpiryNotification(key: ApiKey): void {
         expiresAt: key.expiresAt,
         daysRemaining: Math.max(1, Math.ceil(timeUntilExpiry / (24 * 60 * 60 * 1000))),
       },
-      key.webhookSecret || ''
+      key.webhookSecret || '',
+      { ownerUserId: key.userId, ownerKeyId: key.id }
     ).catch(() => {});
   }
 }
@@ -170,6 +194,23 @@ async function verifyKeyAccess(
       apiKey: verification.key,
       error: `Forbidden: API key lacks required scope '${requiredScope}'`,
       status: 403,
+    };
+  }
+
+  // Per-key burst rate limit (token bucket sized by account tier)
+  const burst = await redisKeyStore.checkTokenBucketRateLimit(
+    `${API_KEY_RATE_LIMIT_PREFIX}${verification.key.id}`,
+    API_KEY_BURST_LIMITS[verification.user.tier]
+  );
+  if (!burst.allowed) {
+    return {
+      authorized: false,
+      user: verification.user,
+      apiKey: verification.key,
+      error: 'Rate limit exceeded: too many requests for this API key. Retry after the delay in the Retry-After header.',
+      status: 429,
+      retryAfterSeconds: toRetryAfterSeconds(burst.retryAfterMs),
+      problemType: RATE_LIMITED_PROBLEM_TYPE,
     };
   }
 

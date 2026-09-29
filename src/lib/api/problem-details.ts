@@ -87,6 +87,9 @@ const DEFAULT_PROBLEM_TYPES: Record<number, { type: string; title: string }> = {
   },
 };
 
+/** Problem type for a short-lived per-key burst rejection (retry after seconds), distinct from the daily quota. */
+export const RATE_LIMITED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/rate-limited';
+
 /**
  * Formats and returns an RFC 9457 compliant problem details JSON response with Content-Type: application/problem+json.
  */

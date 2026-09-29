@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +13,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   if (!auth.authorized || !auth.user) {
     return NextResponse.json(
       { success: false, error: auth.error ?? 'Unauthorized: Sign in or valid API key required.' },
-      { status: auth.status ?? 401 }
+      { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
     );
   }
 

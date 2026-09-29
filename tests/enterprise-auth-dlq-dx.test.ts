@@ -23,7 +23,6 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
 
   beforeEach(async () => {
     redisKeyStore.resetStore();
-    await webhookDispatcher.clearDlq();
     webhookDispatcher.clearHistory();
 
     const email = `dev_${Date.now()}_${Math.random().toString(36).substring(7)}@example.com`;
@@ -41,7 +40,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
 
   afterEach(async () => {
     redisKeyStore.resetStore();
-    await webhookDispatcher.clearDlq();
+    await webhookDispatcher.clearDlq(testUser.id);
     vi.restoreAllMocks();
   });
 
@@ -154,7 +153,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         'job.completed',
         payloadData,
         secret,
-        { maxRetries: 3, initialDelayMs: 10, timeoutMs: 500 }
+        { maxRetries: 3, initialDelayMs: 10, timeoutMs: 500, ownerUserId: testUser.id }
       );
 
       expect(result.success).toBe(false);
@@ -162,7 +161,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(result.finalStatusCode).toBe(500);
 
       // Verify delivery is preserved in DLQ
-      const dlqEntries = await webhookDispatcher.getDlqEntries();
+      const dlqEntries = await webhookDispatcher.getDlqEntries(testUser.id);
       expect(dlqEntries.length).toBeGreaterThanOrEqual(1);
 
       const entry = dlqEntries.find((e) => e.targetUrl === targetUrl);
@@ -196,20 +195,20 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         'conversion.completed',
         { fileId: 'file_999', format: 'pdf' },
         secret,
-        { maxRetries: 3, initialDelayMs: 10 }
+        { maxRetries: 3, initialDelayMs: 10, ownerUserId: testUser.id }
       );
 
-      const dlqEntries = await webhookDispatcher.getDlqEntries();
+      const dlqEntries = await webhookDispatcher.getDlqEntries(testUser.id);
       const failedEntry = dlqEntries.find((e) => e.targetUrl === targetUrl);
       expect(failedEntry).toBeDefined();
       expect(failedEntry!.status).toBe('failed');
 
       // Now replay DLQ entry
-      const replayResult = await webhookDispatcher.replayDlq(failedEntry!.id);
+      const replayResult = await webhookDispatcher.replayDlq(failedEntry!.id, testUser.id);
       expect(replayResult).not.toBeNull();
       expect(replayResult!.success).toBe(true);
 
-      const updatedEntry = await webhookDispatcher.getDlqEntry(failedEntry!.id);
+      const updatedEntry = await webhookDispatcher.getDlqEntry(failedEntry!.id, testUser.id);
       expect(updatedEntry).not.toBeNull();
       expect(updatedEntry!.status).toBe('replayed');
       expect(updatedEntry!.replayedAt).toBeDefined();
@@ -229,21 +228,22 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         failedAt: Date.now(),
         retryCount: 3,
         status: 'failed',
+        ownerUserId: testUser.id,
       };
 
       await webhookDispatcher.saveToDlq(mockEntry);
-      let entry = await webhookDispatcher.getDlqEntry('dlq_custom_to_delete');
+      let entry = await webhookDispatcher.getDlqEntry('dlq_custom_to_delete', testUser.id);
       expect(entry).not.toBeNull();
 
-      const deleted = await webhookDispatcher.deleteDlqEntry('dlq_custom_to_delete');
+      const deleted = await webhookDispatcher.deleteDlqEntry('dlq_custom_to_delete', testUser.id);
       expect(deleted).toBe(true);
 
-      entry = await webhookDispatcher.getDlqEntry('dlq_custom_to_delete');
+      entry = await webhookDispatcher.getDlqEntry('dlq_custom_to_delete', testUser.id);
       expect(entry).toBeNull();
 
       await webhookDispatcher.saveToDlq(mockEntry);
-      await webhookDispatcher.clearDlq();
-      const all = await webhookDispatcher.getDlqEntries();
+      await webhookDispatcher.clearDlq(testUser.id);
+      const all = await webhookDispatcher.getDlqEntries(testUser.id);
       expect(all).toHaveLength(0);
     });
 
@@ -259,22 +259,22 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         'job.failed',
         { reason: 'Crash' },
         secret,
-        { maxRetries: 2, initialDelayMs: 5 }
+        { maxRetries: 2, initialDelayMs: 5, ownerUserId: testUser.id }
       );
 
-      const dlqBefore = await webhookDispatcher.getDlqEntries();
+      const dlqBefore = await webhookDispatcher.getDlqEntries(testUser.id);
       const initialEntry = dlqBefore.find((e) => e.targetUrl === targetUrl);
       expect(initialEntry).toBeDefined();
       const countBefore = dlqBefore.length;
 
       // Replay again (which fails with 503)
-      const replayResult = await webhookDispatcher.replayDlq(initialEntry!.id);
+      const replayResult = await webhookDispatcher.replayDlq(initialEntry!.id, testUser.id);
       expect(replayResult?.success).toBe(false);
 
-      const dlqAfter = await webhookDispatcher.getDlqEntries();
+      const dlqAfter = await webhookDispatcher.getDlqEntries(testUser.id);
       expect(dlqAfter).toHaveLength(countBefore); // Must NOT duplicate!
 
-      const updatedEntry = await webhookDispatcher.getDlqEntry(initialEntry!.id);
+      const updatedEntry = await webhookDispatcher.getDlqEntry(initialEntry!.id, testUser.id);
       expect(updatedEntry?.status).toBe('failed');
       expect(updatedEntry?.retryCount).toBeGreaterThan(2);
 
@@ -490,6 +490,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         errorMessage: 'Gateway Timeout',
         retryCount: 3,
         status: 'failed',
+        ownerUserId: testUser.id,
       };
       await webhookDispatcher.saveToDlq(testEntry);
 
@@ -544,6 +545,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         errorMessage: 'Internal Server Error',
         retryCount: 3,
         status: 'failed',
+        ownerUserId: testUser.id,
       };
       await webhookDispatcher.saveToDlq(testEntry);
 

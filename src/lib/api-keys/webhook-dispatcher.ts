@@ -29,6 +29,9 @@ export interface WebhookDispatchOptions {
   deliveryId?: string;
   async?: boolean;
   subscribedEvents?: string[];
+  /** Owner recorded on the DLQ entry if delivery fails; required to see or manage the entry later. */
+  ownerUserId?: string;
+  ownerKeyId?: string;
 }
 
 export interface WebhookDeliveryAttempt {
@@ -49,6 +52,10 @@ export interface WebhookDispatchResult {
   finalStatusCode?: number;
   durationMs: number;
   attempts: WebhookDeliveryAttempt[];
+}
+
+function isDlqEntryOwnedBy(entry: WebhookDlqEntry, ownerUserId: string): boolean {
+  return Boolean(ownerUserId) && entry.ownerUserId === ownerUserId;
 }
 
 /**
@@ -354,6 +361,8 @@ export class WebhookDispatcher {
         errorMessage: lastError,
         retryCount: attempts.length,
         status: 'failed',
+        ownerUserId: options.ownerUserId,
+        ownerKeyId: options.ownerKeyId,
       };
       await this.saveToDlq(dlqEntry).catch(() => {});
     }
@@ -374,7 +383,7 @@ export class WebhookDispatcher {
     this.inMemoryDlq.set(entry.id, entry);
   }
 
-  public async getDlqEntries(): Promise<WebhookDlqEntry[]> {
+  private async readAllDlqEntries(): Promise<WebhookDlqEntry[]> {
     const client = redisKeyStore.getRedisClient();
     if (client) {
       try {
@@ -385,15 +394,15 @@ export class WebhookDispatcher {
             entries.push(JSON.parse(str));
           } catch {}
         }
-        return entries.sort((a, b) => b.failedAt - a.failedAt);
+        return entries;
       } catch {
         // Fallback to in-memory
       }
     }
-    return Array.from(this.inMemoryDlq.values()).sort((a, b) => b.failedAt - a.failedAt);
+    return Array.from(this.inMemoryDlq.values());
   }
 
-  public async getDlqEntry(id: string): Promise<WebhookDlqEntry | null> {
+  private async readDlqEntry(id: string): Promise<WebhookDlqEntry | null> {
     const client = redisKeyStore.getRedisClient();
     if (client) {
       try {
@@ -406,35 +415,75 @@ export class WebhookDispatcher {
     return this.inMemoryDlq.get(id) || null;
   }
 
-  public async deleteDlqEntry(id: string): Promise<boolean> {
-    let deleted = false;
+  private async removeDlqEntries(ids: readonly string[]): Promise<boolean> {
+    if (ids.length === 0) return false;
+    let removed = false;
     const client = redisKeyStore.getRedisClient();
     if (client) {
       try {
-        const count = await client.hdel(this.dlqKey, id);
-        deleted = count > 0;
+        const count = await client.hdel(this.dlqKey, ...ids);
+        removed = count > 0;
       } catch {
         // Fallback
       }
     }
-    if (this.inMemoryDlq.delete(id)) {
-      deleted = true;
+    for (const id of ids) {
+      if (this.inMemoryDlq.delete(id)) {
+        removed = true;
+      }
     }
-    return deleted;
+    return removed;
   }
 
-  public async clearDlq(): Promise<void> {
-    const client = redisKeyStore.getRedisClient();
-    if (client) {
-      try {
-        await client.del(this.dlqKey);
-      } catch {}
-    }
-    this.inMemoryDlq.clear();
+  /**
+   * Deletes entries recorded before owners were tracked (or for anonymous jobs). No API caller can
+   * reach them, so keeping them would only retain their plaintext signing secrets indefinitely.
+   */
+  private async purgeOwnerlessEntries(entries: readonly WebhookDlqEntry[]): Promise<void> {
+    const ownerless = entries.filter((entry) => !entry.ownerUserId).map((entry) => entry.id);
+    if (ownerless.length === 0) return;
+    await this.removeDlqEntries(ownerless);
+    console.warn(`[WebhookDispatcher] Purged ${ownerless.length} DLQ entries without an owner.`);
   }
 
-  public async replayDlq(id: string): Promise<WebhookDispatchResult | null> {
-    const entry = await this.getDlqEntry(id);
+  /**
+   * Lists the DLQ entries owned by `ownerUserId`, newest first. Also purges ownerless entries.
+   */
+  public async getDlqEntries(ownerUserId: string): Promise<WebhookDlqEntry[]> {
+    const entries = await this.readAllDlqEntries();
+    await this.purgeOwnerlessEntries(entries);
+    return entries
+      .filter((entry) => isDlqEntryOwnedBy(entry, ownerUserId))
+      .sort((a, b) => b.failedAt - a.failedAt);
+  }
+
+  /**
+   * Returns the entry only when `ownerUserId` owns it; any other entry reads as not found.
+   */
+  public async getDlqEntry(id: string, ownerUserId: string): Promise<WebhookDlqEntry | null> {
+    const entry = await this.readDlqEntry(id);
+    if (!entry || !isDlqEntryOwnedBy(entry, ownerUserId)) {
+      return null;
+    }
+    return entry;
+  }
+
+  public async deleteDlqEntry(id: string, ownerUserId: string): Promise<boolean> {
+    const entry = await this.getDlqEntry(id, ownerUserId);
+    if (!entry) return false;
+    return this.removeDlqEntries([entry.id]);
+  }
+
+  /**
+   * Removes every DLQ entry owned by `ownerUserId`; other owners' entries are untouched.
+   */
+  public async clearDlq(ownerUserId: string): Promise<void> {
+    const owned = await this.getDlqEntries(ownerUserId);
+    await this.removeDlqEntries(owned.map((entry) => entry.id));
+  }
+
+  public async replayDlq(id: string, ownerUserId: string): Promise<WebhookDispatchResult | null> {
+    const entry = await this.getDlqEntry(id, ownerUserId);
     if (!entry) return null;
 
     const isWrappedEnvelope =

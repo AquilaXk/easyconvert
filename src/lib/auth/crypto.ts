@@ -68,3 +68,10 @@ export function generateSecureToken(byteLength: number = 32): string {
 export function sha256(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
+
+/**
+ * Computes an HMAC-SHA256 (RFC 2104) of a string with the given secret key, as lowercase hex.
+ */
+export function hmacSha256(key: string, content: string): string {
+  return crypto.createHmac('sha256', key).update(content).digest('hex');
+}

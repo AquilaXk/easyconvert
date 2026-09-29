@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { sha256 } from '../auth/crypto';
+import { hmacSha256, sha256 } from '../auth/crypto';
 import { redisUserStore } from '../auth/redis-user-store';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
@@ -18,6 +18,55 @@ export const TIER_LIMITS: Record<UserTier, number> = {
   pro: 500,
   enterprise: 10000,
 };
+
+const KEY_HASH_PEPPER_ENV = 'KEY_HASH_PEPPER';
+let pepperWarningEmitted = false;
+
+/**
+ * Reads the server-side API key hash pepper at call time. Warns once when it is unset,
+ * because unpeppered SHA-256 hashes let anyone holding the key file test guessed keys offline.
+ */
+function readKeyHashPepper(): string | undefined {
+  const pepper = process.env[KEY_HASH_PEPPER_ENV];
+  if (pepper) {
+    return pepper;
+  }
+  if (!pepperWarningEmitted) {
+    pepperWarningEmitted = true;
+    console.warn(
+      `[KeyStore] ${KEY_HASH_PEPPER_ENV} is not set; API key hashes use unpeppered SHA-256. Set it to a long random secret.`
+    );
+  }
+  return undefined;
+}
+
+/**
+ * Hashes an API key secret for storage: HMAC-SHA256(pepper, secret) when a pepper is
+ * configured, otherwise the legacy SHA-256(secret).
+ */
+function hashApiKeySecret(secret: string): string {
+  const pepper = readKeyHashPepper();
+  if (pepper) {
+    return hmacSha256(pepper, secret);
+  }
+  return sha256(secret);
+}
+
+interface ApiKeyHashCandidates {
+  /** Lookup order: the current (peppered when configured) hash first, then the legacy SHA-256. */
+  hashes: string[];
+  /** Hash a legacy-hashed key is migrated to after a successful verification, if different. */
+  currentHash: string;
+}
+
+function apiKeyHashCandidates(secret: string): ApiKeyHashCandidates {
+  const currentHash = hashApiKeySecret(secret);
+  const legacyHash = sha256(secret);
+  if (currentHash === legacyHash) {
+    return { hashes: [currentHash], currentHash };
+  }
+  return { hashes: [currentHash, legacyHash], currentHash };
+}
 
 export function getUtcDateKey(): string {
   const now = new Date();
@@ -126,7 +175,7 @@ export class KeyStore {
 
     const rawRandom = crypto.randomBytes(24).toString('hex');
     const secretKey = `ec_live_${rawRandom}`;
-    const keyHash = sha256(secretKey);
+    const keyHash = hashApiKeySecret(secretKey);
     const prefix = `${secretKey.substring(0, 12)}...`;
 
     const key: ApiKey = {
@@ -154,8 +203,18 @@ export class KeyStore {
     };
   }
 
-  private findOrReloadKeyId(keyHash: string): string | undefined {
-    let keyId = this.keyHashIndex.get(keyHash);
+  private lookupKeyId(candidateHashes: readonly string[]): string | undefined {
+    for (const keyHash of candidateHashes) {
+      const keyId = this.keyHashIndex.get(keyHash);
+      if (keyId) {
+        return keyId;
+      }
+    }
+    return undefined;
+  }
+
+  private findOrReloadKeyId(candidateHashes: readonly string[]): string | undefined {
+    let keyId = this.lookupKeyId(candidateHashes);
     if (!keyId && fs.existsSync(KEYS_FILE)) {
       try {
         const list: ApiKey[] = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf-8'));
@@ -163,10 +222,22 @@ export class KeyStore {
           this.keys.set(k.id, k);
           this.keyHashIndex.set(k.keyHash, k.id);
         }
-        keyId = this.keyHashIndex.get(keyHash);
+        keyId = this.lookupKeyId(candidateHashes);
       } catch {}
     }
     return keyId;
+  }
+
+  /**
+   * Re-indexes a key verified through its legacy SHA-256 hash under the current (peppered) hash.
+   */
+  private migrateKeyHash(key: ApiKey, currentHash: string): void {
+    if (key.keyHash === currentHash) {
+      return;
+    }
+    this.keyHashIndex.delete(key.keyHash);
+    key.keyHash = currentHash;
+    this.keyHashIndex.set(currentHash, key.id);
   }
 
   private validateKeyConstraints(key: ApiKey, clientIp?: string): string | null {
@@ -192,8 +263,8 @@ export class KeyStore {
       return { valid: false, error: 'Missing or invalid API key' };
     }
 
-    const keyHash = sha256(secretKey.trim());
-    const keyId = this.findOrReloadKeyId(keyHash);
+    const candidates = apiKeyHashCandidates(secretKey.trim());
+    const keyId = this.findOrReloadKeyId(candidates.hashes);
     if (!keyId) {
       return { valid: false, error: 'Invalid or non-existent API key' };
     }
@@ -213,6 +284,7 @@ export class KeyStore {
       return { valid: false, error: 'User associated with API key not found' };
     }
 
+    this.migrateKeyHash(key, candidates.currentHash);
     key.lastUsedAt = Date.now();
     this.persist();
 

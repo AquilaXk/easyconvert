@@ -3,6 +3,8 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { s3Storage } from '@/lib/storage/s3-storage';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import type { JobState } from '@/lib/queue/bullmq-engine';
 
 export const dynamic = 'force-dynamic';
 
@@ -102,20 +104,42 @@ export async function POST(req: NextRequest) {
   }
 }
 
+const LISTABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'active', 'completed', 'failed', 'delayed']);
+const DEFAULT_LISTED_STATES: JobState[] = ['waiting', 'active', 'completed', 'failed'];
+const MAX_LISTED_JOBS = 50;
+
+function isListableJobState(value: string): value is JobState {
+  return LISTABLE_JOB_STATES.has(value as JobState);
+}
+
+/**
+ * Lists the caller's own jobs. Requires a session or an API key with `convert:read`;
+ * anonymous jobs are reachable only through their capability URL and are never listed.
+ */
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const statusFilter = searchParams.get('status');
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
+  if (!auth.authorized || !auth.user) {
+    return NextResponse.json(
+      { success: false, error: auth.error ?? 'Unauthorized: Sign in or valid API key required.' },
+      { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
+    );
+  }
+  const callerId = auth.user.id;
 
-  const counts = await conversionQueue.getJobCounts();
-
-  let jobs = [];
-  if (statusFilter) {
-    jobs = await conversionQueue.getJobs([statusFilter as any]);
-  } else {
-    jobs = await conversionQueue.getJobs(['waiting', 'active', 'completed', 'failed']);
+  const statusFilter = new URL(req.url).searchParams.get('status');
+  let states = DEFAULT_LISTED_STATES;
+  if (statusFilter !== null) {
+    if (!isListableJobState(statusFilter)) {
+      return NextResponse.json(
+        { success: false, error: `Unsupported status filter '${statusFilter}'.` },
+        { status: 400 }
+      );
+    }
+    states = [statusFilter];
   }
 
-  const jobSummaries = jobs.slice(0, 50).map((j) => ({
+  const ownJobs = (await conversionQueue.getJobs(states)).filter((j) => j.data?.userId === callerId);
+  const jobSummaries = ownJobs.slice(0, MAX_LISTED_JOBS).map((j) => ({
     id: j.id,
     name: j.name,
     state: j.state,
@@ -130,7 +154,6 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     success: true,
-    counts,
     total: jobSummaries.length,
     jobs: jobSummaries,
   });

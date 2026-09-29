@@ -17,6 +17,9 @@ export interface JobOptions {
 
 export type JobState = 'waiting' | 'active' | 'completed' | 'failed' | 'delayed';
 
+/** Random bytes in a job id (128 bits); ids of anonymous jobs act as capability URLs. */
+const JOB_ID_RANDOM_BYTES = 16;
+
 export class Job<T = any, R = any> {
   id: string;
   name: string;
@@ -141,7 +144,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
-    const id = `job_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    const id = `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
     const job = new Job<T, R>(id, name, data, opts, this);
     this.jobs.set(id, job);
 
@@ -701,7 +704,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
     if (this.redisClient && this.redisConnected) {
-      const id = `job_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+      const id = `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
       const job = new Job<T, R>(
         id,
         name,
