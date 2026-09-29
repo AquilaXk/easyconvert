@@ -9,10 +9,16 @@ import {
   JobTimeoutError,
   type IQueueEngine,
 } from '../src/lib/queue/bullmq-engine';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
-import { GET as getLegacyJob } from '../src/app/api/queue/jobs/[id]/route';
+import {
+  conversionQueue,
+  processConversionJob,
+  attachJobLifecycleListeners,
+  attachJobCancellationListeners,
+} from '../src/lib/queue/conversion-queue';
+import { GET as getLegacyJob, DELETE as deleteLegacyJob } from '../src/app/api/queue/jobs/[id]/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
+import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 interface Gate {
@@ -374,5 +380,244 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       expect(payload.state).toBe('cancelled');
       expect(payload.error).toBe('client cancelled');
     });
+  });
+
+  describe('4. Conversion processor honours cancellation', () => {
+    it('stores no result and refunds quota exactly once when an active conversion is cancelled', async () => {
+      const { user, reservationId } = await createQuotaUser('pipeline_cancel');
+      expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(1);
+
+      const queue = new Queue<ConversionJobData, ConversionJobResult>('pipeline-cancel');
+      attachJobCancellationListeners(queue);
+      const rollbackSpy = vi.spyOn(redisKeyStore, 'rollbackQuota');
+      const commitSpy = vi.spyOn(redisKeyStore, 'commitQuota');
+      const saveSpy = vi.spyOn(s3Storage, 'saveObject');
+      const objectsBefore = s3Storage.getObjectsCount();
+
+      const job = await queue.add('convert', csvJobData({ userId: user.id, reservationId }), { attempts: 1 });
+
+      // Pause the real pipeline right after the input is loaded and before convertFile runs.
+      const reachedConversion = createGate();
+      const resume = createGate();
+      const originalUpdateProgress = job.updateProgress.bind(job);
+      job.updateProgress = async (progress: number) => {
+        await originalUpdateProgress(progress);
+        if (progress === PIPELINE_INPUT_LOADED_PROGRESS) {
+          reachedConversion.release();
+          await resume.promise;
+        }
+      };
+
+      const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
+      attachJobLifecycleListeners(worker);
+      const completedEvents: unknown[] = [];
+      worker.on('completed', (j) => completedEvents.push(j));
+
+      await reachedConversion.promise;
+      const drained = nextEvent(worker, 'drained');
+      expect(await queue.cancelJob(job.id, 'client cancelled')).toBe(true);
+      expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(0);
+
+      resume.release();
+      await drained;
+
+      const final = await queue.getJob(job.id);
+      expect(final?.state).toBe('cancelled');
+      expect(final?.returnvalue).toBeUndefined();
+      expect(completedEvents).toHaveLength(0);
+      expect(commitSpy).not.toHaveBeenCalled();
+      expect(rollbackSpy).toHaveBeenCalledTimes(1);
+      expect(rollbackSpy).toHaveBeenCalledWith(reservationId);
+      expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(0);
+
+      const resultWrites = saveSpy.mock.calls.filter(([key]) => String(key).startsWith(`results/${job.id}/`));
+      expect(resultWrites).toEqual([]);
+      expect(s3Storage.getObjectsCount()).toBe(objectsBefore);
+
+      await worker.close();
+      await queue.close();
+    });
+
+    it('stops a multi-stage pipeline before its first stage when cancelled after the input loads', async () => {
+      const queue = new Queue<ConversionJobData, ConversionJobResult>('pipeline-stage-cancel');
+      const job = await queue.add(
+        'convert',
+        csvJobData({
+          targetFormat: 'yaml',
+          tasks: [
+            { name: 'to-json', operation: 'convert', targetFormat: 'json' },
+            { name: 'to-yaml', operation: 'convert', targetFormat: 'yaml' },
+          ],
+        }),
+        { attempts: 1 }
+      );
+      const saveSpy = vi.spyOn(s3Storage, 'saveObject');
+
+      const reachedPipeline = createGate();
+      const resume = createGate();
+      const originalUpdateProgress = job.updateProgress.bind(job);
+      job.updateProgress = async (progress: number) => {
+        await originalUpdateProgress(progress);
+        if (progress === PIPELINE_INPUT_LOADED_PROGRESS) {
+          reachedPipeline.release();
+          await resume.promise;
+        }
+      };
+
+      const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
+      await reachedPipeline.promise;
+      const drained = nextEvent(worker, 'drained');
+      expect(await queue.cancelJob(job.id, 'stop the chain')).toBe(true);
+      resume.release();
+      await drained;
+
+      expect((await queue.getJob(job.id))?.state).toBe('cancelled');
+      expect(job.logs.some((line) => line.includes('Executing 2-stage pipeline chaining'))).toBe(true);
+      expect(job.logs.some((line) => line.includes('[Stage 1/2]'))).toBe(false);
+      expect(saveSpy.mock.calls.filter(([key]) => String(key).startsWith(`results/${job.id}/`))).toEqual([]);
+
+      await worker.close();
+      await queue.close();
+    });
+
+    it('never lets a timed-out attempt that outlived its timeout store a result after the retry', async () => {
+      const queue = new Queue<ConversionJobData, ConversionJobResult>('stale-attempt');
+      const job = await queue.add('convert', csvJobData(), {
+        attempts: 2,
+        backoff: { type: 'fixed', delay: 5 },
+        timeout: 50,
+      });
+      const saveSpy = vi.spyOn(s3Storage, 'saveObject');
+
+      // Hold only the first attempt past its 50ms timeout, right before convertFile.
+      const releaseFirstAttempt = createGate();
+      let heldFirstAttempt = false;
+      const originalUpdateProgress = job.updateProgress.bind(job);
+      job.updateProgress = async (progress: number) => {
+        await originalUpdateProgress(progress);
+        if (progress === PIPELINE_INPUT_LOADED_PROGRESS && !heldFirstAttempt) {
+          heldFirstAttempt = true;
+          await releaseFirstAttempt.promise;
+        }
+      };
+
+      const attempts: Promise<ConversionJobResult>[] = [];
+      const worker = new Worker(
+        queue,
+        (j) => {
+          const attempt = processConversionJob(j);
+          attempts.push(attempt);
+          return attempt;
+        },
+        { concurrency: 1 }
+      );
+      const completed = nextEvent(worker, 'completed');
+      await completed;
+
+      releaseFirstAttempt.release();
+      const outcomes = await Promise.allSettled(attempts);
+      expect(outcomes.map((o) => o.status)).toEqual(['rejected', 'fulfilled']);
+      expect((outcomes[0] as PromiseRejectedResult).reason).toBeInstanceOf(JobTimeoutError);
+
+      const resultWrites = saveSpy.mock.calls.filter(([key]) => String(key).startsWith(`results/${job.id}/`));
+      expect(resultWrites).toHaveLength(1);
+      const final = await queue.getJob(job.id);
+      expect(final?.state).toBe('completed');
+      expect(final?.attemptsMade).toBe(2);
+
+      await worker.close();
+      await queue.close();
+    });
+  });
+
+  describe('5. DELETE /api/queue/jobs/{id} cancels through the engine', () => {
+    it('cancels a waiting job in the engine, removes it from the waiting list, and refunds quota once', async () => {
+      const { user, reservationId } = await createQuotaUser('legacy_delete');
+      const rollbackSpy = vi.spyOn(redisKeyStore, 'rollbackQuota');
+      const job = await conversionQueue.add('convert', csvJobData({ userId: user.id, reservationId }));
+
+      const res = await deleteLegacyJob(
+        new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, { method: 'DELETE' }),
+        { params: { id: job.id } }
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+
+      const engineJob = await conversionQueue.getJob(job.id);
+      expect(engineJob?.state).toBe('cancelled');
+      expect(engineJob?.failedReason).toBe('Job was cancelled by client request.');
+      expect((await conversionQueue.getJobs(['waiting'])).map((j) => j.id)).not.toContain(job.id);
+      expect((await conversionQueue.getJobs(['cancelled'])).map((j) => j.id)).toContain(job.id);
+
+      expect(rollbackSpy).toHaveBeenCalledTimes(1);
+      expect(rollbackSpy).toHaveBeenCalledWith(reservationId);
+      expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(0);
+    });
+
+    it('returns 409 for a job that already completed and leaves it completed', async () => {
+      const worker = new Worker(
+        conversionQueue,
+        async (job) => ({
+          jobId: job.id,
+          status: 'completed' as const,
+          resultKey: `results/${job.id}/scores.json`,
+          downloadUrl: `/api/storage/file/results%2F${job.id}%2Fscores.json`,
+          filename: 'scores.json',
+          mimeType: 'application/json',
+          size: 2,
+          durationMs: 1,
+        }),
+        { concurrency: 1 }
+      );
+      const completed = nextEvent(worker, 'completed');
+      const job = await conversionQueue.add('convert', csvJobData());
+      await completed;
+      await worker.close();
+
+      const res = await deleteLegacyJob(
+        new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, { method: 'DELETE' }),
+        { params: { id: job.id } }
+      );
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(body.error).toContain('completed');
+      expect((await conversionQueue.getJob(job.id))?.state).toBe('completed');
+    });
+
+    it('returns 404 for an unknown job id', async () => {
+      const res = await deleteLegacyJob(
+        new NextRequest('https://easyconvert.app/api/queue/jobs/job_unknown', { method: 'DELETE' }),
+        { params: { id: 'job_unknown' } }
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it('emits a cancelled event and closes a live SSE stream when the job is cancelled', async () => {
+      const job = await conversionQueue.add('convert', csvJobData());
+      const res = await getLegacyJob(
+        new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}?stream=true`),
+        { params: { id: job.id } }
+      );
+      const eventsPromise = readSseEvents(res);
+
+      const cancelRes = await deleteLegacyJob(
+        new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, { method: 'DELETE' }),
+        { params: { id: job.id } }
+      );
+      expect(cancelRes.status).toBe(200);
+
+      const events = await eventsPromise;
+      expect(events).toHaveLength(2);
+      expect(events[0].startsWith('event: initial')).toBe(true);
+      expect(events[1].startsWith('event: cancelled')).toBe(true);
+      const payload = JSON.parse(events[1].split('data: ')[1]);
+      expect(payload).toEqual({
+        jobId: job.id,
+        state: 'cancelled',
+        error: 'Job was cancelled by client request.',
+      });
+    }, 5000);
   });
 });

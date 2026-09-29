@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
@@ -132,7 +131,8 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     );
   }
 
-  const cancelled = conversionQueue.cancelJob ? await conversionQueue.cancelJob(jobId, 'Cancelled by user') : false;
+  // The queue's cancellation listener refunds the reserved quota unit exactly once.
+  const cancelled = await conversionQueue.cancelJob(jobId, 'Cancelled by user');
   if (!cancelled) {
     return createProblemDetailsResponse(
       409,
@@ -140,11 +140,6 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       instanceUri,
       'Conflict'
     );
-  }
-
-  // Rollback reserved quota unit upon cancellation
-  if (job.data?.reservationId) {
-    await redisKeyStore.rollbackQuota(job.data.reservationId);
   }
 
   return NextResponse.json({

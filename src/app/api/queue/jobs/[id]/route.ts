@@ -151,9 +151,13 @@ export async function DELETE(
     return denied;
   }
 
-  job.state = 'failed';
-  job.failedReason = 'Job was cancelled by client request.';
-  job.finishedOn = Date.now();
+  const cancelled = await conversionQueue.cancelJob(params.id, 'Job was cancelled by client request.');
+  if (!cancelled) {
+    return NextResponse.json(
+      { success: false, error: `Job in state "${job.state}" cannot be cancelled.` },
+      { status: 409 }
+    );
+  }
 
   return NextResponse.json({ success: true, message: 'Job cancelled successfully.' });
 }
