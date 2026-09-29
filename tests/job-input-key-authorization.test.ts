@@ -1,19 +1,30 @@
+import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as submitLegacyJob } from '../src/app/api/queue/jobs/route';
 import { POST as submitV1Job } from '../src/app/api/v1/jobs/route';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import {
+  conversionQueue,
+  processConversionJob,
+  attachInputCleanupOnCompletion,
+} from '../src/lib/queue/conversion-queue';
+import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { storageProvider } from '../src/lib/storage';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
-import type { ConversionJobData } from '../src/lib/types';
+import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 const BASE_URL = 'http://localhost:3000';
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
+// CSV cells are untyped text, so the converted JSON rows keep them as strings.
+const EXPECTED_JSON_ROWS = [
+  { name: 'Alice', score: '100' },
+  { name: 'Bob', score: '95' },
+];
 const NOT_FOUND_DETAIL = 'Storage object not found.';
 
 const createdKeys: string[] = [];
@@ -84,6 +95,28 @@ function sessionHeaders(user: User): Record<string, string> {
 async function writeKeyHeaders(user: User): Promise<Record<string, string>> {
   const key = await redisKeyStore.generateApiKey(user.id, `${user.name} write`, { scopes: ['convert:write'] });
   return { Authorization: `Bearer ${key.secretKey}` };
+}
+
+function waitForJobEvent(worker: EventEmitter, event: 'completed' | 'failed', jobId: string): Promise<unknown[]> {
+  return new Promise((resolve) => {
+    const listener = (...args: unknown[]) => {
+      const job = args[0] as { id: string };
+      if (job.id === jobId) {
+        worker.off(event, listener);
+        resolve(args);
+      }
+    };
+    worker.on(event, listener);
+  });
+}
+
+/** Runs queued jobs with the standard processor and input cleanup until `jobId` completes. */
+async function completeQueuedJob(jobId: string): Promise<ConversionJobResult> {
+  const worker = new Worker(conversionQueue, processConversionJob, { concurrency: 1 });
+  attachInputCleanupOnCompletion(worker);
+  const [, result] = (await waitForJobEvent(worker, 'completed', jobId)) as [unknown, ConversionJobResult];
+  await worker.close();
+  return result;
 }
 
 describe('job submission authorizes caller-supplied storage keys (#249)', () => {
@@ -191,5 +224,54 @@ describe('job submission authorizes caller-supplied storage keys (#249)', () => 
     expect(v1Res.status).toBe(202);
     const v1Body = await v1Res.json();
     expect((await conversionQueue.getJob(v1Body.jobId))?.data.storageKey).toBe(uploadKey);
+  });
+});
+
+describe('job input cleanup deletes only uploads (#249)', () => {
+  it('keeps the owner\'s conversions/ object after a chained job completes', async () => {
+    const alice = await createUser('input_alice');
+    const key = storeCsv(`conversions/${alice.id}/${uniqueSuffix()}_scores.csv`);
+
+    const res = await v1Submit(key, await writeKeyHeaders(alice));
+    expect(res.status).toBe(202);
+    const { jobId } = await res.json();
+
+    const result = await completeQueuedJob(jobId);
+    expect(JSON.parse(storedText(result.resultKey) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
+    expect(storedText(key)).toBe(CSV_INPUT);
+    createdKeys.push(result.resultKey);
+  });
+
+  it('keeps the owner\'s results/ object when the final attempt of a chained job fails', async () => {
+    const alice = await createUser('input_alice');
+    const producer = await conversionQueue.add('convert', victimJobData(alice.id));
+    const key = storeCsv(`results/${producer.id}/scores.csv`);
+    const queue = new Queue<ConversionJobData, ConversionJobResult>(`input-cleanup-failure-${uniqueSuffix()}`);
+    const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
+    attachInputCleanupOnCompletion(worker);
+
+    const job = await queue.add(
+      'convert',
+      { ...victimJobData(alice.id), inputBufferBase64: undefined, storageKey: key, targetFormat: 'not-a-format' },
+      { attempts: 1 }
+    );
+    await waitForJobEvent(worker, 'failed', job.id);
+
+    expect(storedText(key)).toBe(CSV_INPUT);
+    await worker.close();
+    await queue.close();
+  });
+
+  it('still deletes an anonymous uploads/ input after its job completes', async () => {
+    const uploadKey = storeCsv(`uploads/${uniqueSuffix()}_scores.csv`);
+
+    const res = await legacySubmit(uploadKey);
+    expect(res.status).toBe(200);
+    const { jobId } = await res.json();
+
+    const result = await completeQueuedJob(jobId);
+    expect(JSON.parse(storedText(result.resultKey) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
+    expect(storageProvider.getObject(uploadKey)).toBeUndefined();
+    createdKeys.push(result.resultKey);
   });
 });

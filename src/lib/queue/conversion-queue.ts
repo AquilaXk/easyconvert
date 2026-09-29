@@ -2,6 +2,7 @@ import { Queue, Worker, Job, createQueueEngine, IQueueEngine, WorkerOptions } fr
 import { ConversionJobData, ConversionJobResult, ConversionResult } from '../types';
 import { convertFile } from '../conversions';
 import { s3Storage } from '../storage/s3-storage';
+import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { webhookDispatcher } from '../api-keys/webhook-dispatcher';
 
@@ -150,8 +151,14 @@ export async function processConversionJob(
   }
 }
 
-/** Deletes a job's uploaded input, reporting a missing object or a failed delete. */
+/**
+ * Deletes a job's uploaded input, reporting a missing object or a failed delete. Only an upload
+ * belongs to the job: a user's `conversions/` or `results/` output chained as the input is kept.
+ */
 function removeJobInput(jobId: string, storageKey: string): void {
+  if (!isUploadKey(storageKey)) {
+    return;
+  }
   try {
     if (!s3Storage.deleteObject(storageKey)) {
       console.warn(`[ConversionQueue] Input cleanup for job ${jobId} found no object at key "${storageKey}".`);
