@@ -1,0 +1,58 @@
+name: Automerge Label
+
+# Turns the `automerge` label into GitHub auto-merge (squash). The `main`
+# ruleset still gates the merge: required checks must pass and every review
+# thread must be resolved. This workflow never checks out or runs PR code.
+#
+# Note: a merge enabled with GITHUB_TOKEN does not trigger `push` workflows on
+# `main`; PR-level CI (`verify`) is the gate.
+
+on:
+  pull_request_target:
+    types: [labeled, unlabeled, ready_for_review]
+
+concurrency:
+  group: automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    # Runs when the label is added to a ready PR, or when a labeled draft PR
+    # is marked ready for review.
+    if: >-
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'automerge') ||
+        (github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'automerge'))
+      ) &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable squash auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash
+
+  disable:
+    if: >-
+      github.event.action == 'unlabeled' &&
+      github.event.label.name == 'automerge' &&
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.auto_merge != null &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Disable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --disable-auto
