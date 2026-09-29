@@ -26,6 +26,17 @@ export type ExternalOracleTool =
   | 'magick'
   | 'identify';
 
+export class OracleToolMissingError extends Error {
+  public readonly isOracleSkip = true;
+  public readonly tool: string;
+
+  constructor(tool: string, message?: string) {
+    super(message || `Differential Oracle external CLI tool "${tool}" is missing in runtime environment.`);
+    this.name = 'OracleToolMissingError';
+    this.tool = tool;
+  }
+}
+
 const toolCache = new Map<string, string | null>();
 
 export function getOracleToolPath(tool: ExternalOracleTool): string | null {
@@ -110,7 +121,12 @@ export function getOracleToolDiagnostics(): OracleToolDiagnostic[] {
  */
 export function verifyImageWithImageMagick(buffer: Buffer): boolean {
   const identifyPath = getOracleToolPath('identify') || getOracleToolPath('magick');
-  if (!identifyPath) return false;
+  if (!identifyPath) {
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('identify/magick', 'Strict oracle mode requires ImageMagick for image verification');
+    }
+    return false;
+  }
   try {
     const args = identifyPath.endsWith('identify')
       ? ['-format', '%m %w %h', '-']
@@ -159,7 +175,12 @@ export function verifyAudioWithFfmpeg(buffer: Buffer, formatHint: string = 'mp3'
  */
 export function verifyPdfWithPoppler(buffer: Buffer): boolean {
   const pdfinfoPath = getOracleToolPath('pdfinfo');
-  if (!pdfinfoPath) return false;
+  if (!pdfinfoPath) {
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('pdfinfo', 'Strict oracle mode requires pdfinfo for PDF verification');
+    }
+    return false;
+  }
   const tmpPath = path.join(os.tmpdir(), `oracle_pdfinfo_${crypto.randomUUID()}.pdf`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -181,7 +202,12 @@ export function verifyPdfWithPoppler(buffer: Buffer): boolean {
  */
 export function extractTextWithExternalPdftotext(buffer: Buffer): string | null {
   const toolPath = getOracleToolPath('pdftotext');
-  if (!toolPath) return null;
+  if (!toolPath) {
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('pdftotext', 'Strict oracle mode requires pdftotext for PDF text extraction');
+    }
+    return null;
+  }
   const tmpPath = path.join(os.tmpdir(), `oracle_pdf_${crypto.randomUUID()}.pdf`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -209,7 +235,12 @@ export function verifyArchiveWith7z(buffer: Buffer): boolean {
     return false;
   }
   const toolPath = getOracleToolPath('7z');
-  if (!toolPath) return false;
+  if (!toolPath) {
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('7z', 'Strict oracle mode requires 7z for 7-Zip archive verification');
+    }
+    return false;
+  }
   const tmpPath = path.join(os.tmpdir(), `oracle_7z_${crypto.randomUUID()}.7z`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -232,7 +263,12 @@ export function verifyArchiveWith7z(buffer: Buffer): boolean {
 export function verifyArchiveWithTar(buffer: Buffer): boolean {
   if (buffer.length < 512) return false;
   const toolPath = getOracleToolPath('tar');
-  if (!toolPath) return false;
+  if (!toolPath) {
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('tar', 'Strict oracle mode requires tar for TAR archive verification');
+    }
+    return false;
+  }
   try {
     execFileSync(toolPath, ['-tf', '-'], {
       input: buffer,
@@ -253,7 +289,12 @@ export function verifyArchiveWithZstd(buffer: Buffer): boolean {
     return false;
   }
   const toolPath = getOracleToolPath('zstd');
-  if (!toolPath) return false;
+  if (!toolPath) {
+    if (process.env.ORACLE_STRICT_MODE === '1') {
+      throw new OracleToolMissingError('zstd', 'Strict oracle mode requires zstd for Zstandard archive verification');
+    }
+    return false;
+  }
   try {
     execFileSync(toolPath, ['-t', '-q'], {
       input: buffer,
@@ -262,17 +303,6 @@ export function verifyArchiveWithZstd(buffer: Buffer): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-export class OracleToolMissingError extends Error {
-  public readonly isOracleSkip = true;
-  public readonly tool: string;
-
-  constructor(tool: string, message?: string) {
-    super(message || `Differential Oracle external CLI tool "${tool}" is missing in runtime environment.`);
-    this.name = 'OracleToolMissingError';
-    this.tool = tool;
   }
 }
 
