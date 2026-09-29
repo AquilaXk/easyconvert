@@ -113,41 +113,52 @@ function rarHeaderCrc(headerWithoutCrc: Buffer): number {
   return (c ^ 0xffffffff) & 0xffff;
 }
 
+function createEncryptedArchiveVia7z(
+  files: { filename: string; buffer: Buffer }[],
+  archiveName: string,
+  archiveType: 'zip' | '7z',
+  mimeType: string,
+  password?: string
+): ConversionResult | null {
+  const p7z = get7zBinaryPath();
+  if (!p7z || !password) return null;
+
+  const tmpDir = os.tmpdir();
+  const token = crypto.randomBytes(8).toString('hex');
+  const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
+  const stagingDir = path.join(workDir, 'staging');
+  fs.mkdirSync(stagingDir, { recursive: true });
+  try {
+    for (const f of files) {
+      const dest = path.join(stagingDir, f.filename);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, f.buffer);
+    }
+    const outPath = path.join(workDir, archiveName);
+    execFileSync(p7z, ['a', '-y', `-t${archiveType}`, `-p${password}`, outPath, '.'], {
+      cwd: stagingDir,
+      timeout: 60000,
+    });
+    const content = fs.readFileSync(outPath);
+    return {
+      buffer: content,
+      mimeType,
+      filename: archiveName,
+      size: content.length,
+    };
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 export async function createZipArchive(
   files: { filename: string; buffer: Buffer }[],
   options: ConversionOptions = {},
   archiveName = 'converted_files.zip'
 ): Promise<ConversionResult> {
   if (options.password) {
-    const p7z = get7zBinaryPath();
-    if (p7z) {
-      const tmpDir = os.tmpdir();
-      const token = crypto.randomBytes(8).toString('hex');
-      const workDir = path.join(tmpDir, `easyconvert_zip_create_${Date.now()}_${token}`);
-      const stagingDir = path.join(workDir, 'staging');
-      fs.mkdirSync(stagingDir, { recursive: true });
-      try {
-        for (const f of files) {
-          const dest = path.join(stagingDir, f.filename);
-          fs.mkdirSync(path.dirname(dest), { recursive: true });
-          fs.writeFileSync(dest, f.buffer);
-        }
-        const outZip = path.join(workDir, archiveName);
-        execFileSync(p7z, ['a', '-y', '-tzip', `-p${options.password}`, outZip, '.'], {
-          cwd: stagingDir,
-          timeout: 60000,
-        });
-        const content = fs.readFileSync(outZip);
-        return {
-          buffer: content,
-          mimeType: 'application/zip',
-          filename: archiveName,
-          size: content.length,
-        };
-      } finally {
-        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
-      }
-    }
+    const encRes = createEncryptedArchiveVia7z(files, archiveName, 'zip', 'application/zip', options.password);
+    if (encRes) return encRes;
   }
 
   const zip = new JSZip();
@@ -1704,35 +1715,8 @@ export function create7zArchive(
   archiveName = 'converted_files.7z'
 ): ConversionResult {
   if (options.password) {
-    const p7z = get7zBinaryPath();
-    if (p7z) {
-      const tmpDir = os.tmpdir();
-      const token = crypto.randomBytes(8).toString('hex');
-      const workDir = path.join(tmpDir, `easyconvert_7z_create_${Date.now()}_${token}`);
-      const stagingDir = path.join(workDir, 'staging');
-      fs.mkdirSync(stagingDir, { recursive: true });
-      try {
-        for (const f of files) {
-          const dest = path.join(stagingDir, f.filename);
-          fs.mkdirSync(path.dirname(dest), { recursive: true });
-          fs.writeFileSync(dest, f.buffer);
-        }
-        const out7z = path.join(workDir, archiveName);
-        execFileSync(p7z, ['a', '-y', '-t7z', `-p${options.password}`, out7z, '.'], {
-          cwd: stagingDir,
-          timeout: 60000,
-        });
-        const content = fs.readFileSync(out7z);
-        return {
-          buffer: content,
-          mimeType: 'application/x-7z-compressed',
-          filename: archiveName,
-          size: content.length,
-        };
-      } finally {
-        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
-      }
-    }
+    const encRes = createEncryptedArchiveVia7z(files, archiveName, '7z', 'application/x-7z-compressed', options.password);
+    if (encRes) return encRes;
   }
 
   const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;

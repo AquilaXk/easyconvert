@@ -4532,22 +4532,21 @@ export function adaptiveIncrementalBRepMesh(
 
     if (m12 !== undefined && m23 !== undefined && m31 !== undefined) {
       // Red Refinement (1:4 split)
-      refinedFaces.push([i1, m12, m31]);
-      refinedFaces.push([m12, i2, m23]);
-      refinedFaces.push([m31, m23, i3]);
-      refinedFaces.push([m12, m23, m31]);
+      refinedFaces.push(
+        [i1, m12, m31],
+        [m12, i2, m23],
+        [m31, m23, i3],
+        [m12, m23, m31]
+      );
     } else if (m12 !== undefined) {
       // Green Refinement (1:2 bisection across edge 1-2)
-      refinedFaces.push([i1, m12, i3]);
-      refinedFaces.push([m12, i2, i3]);
+      refinedFaces.push([i1, m12, i3], [m12, i2, i3]);
     } else if (m23 !== undefined) {
       // Green Refinement (1:2 bisection across edge 2-3)
-      refinedFaces.push([i2, m23, i1]);
-      refinedFaces.push([m23, i3, i1]);
+      refinedFaces.push([i2, m23, i1], [m23, i3, i1]);
     } else if (m31 !== undefined) {
       // Green Refinement (1:2 bisection across edge 3-1)
-      refinedFaces.push([i3, m31, i2]);
-      refinedFaces.push([m31, i1, i2]);
+      refinedFaces.push([i3, m31, i2], [m31, i1, i2]);
     } else {
       // Untouched triangle
       refinedFaces.push([i1, i2, i3]);

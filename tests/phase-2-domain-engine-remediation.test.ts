@@ -20,112 +20,80 @@ import { FORMAT_REGISTRY } from '../src/lib/registry';
 describe('Phase 2 Domain Engine Remediation Test Suite', () => {
   describe('1. Camera RAW DNG Tag Disentanglement & ActiveArea Cropping', () => {
     function buildDngWithForwardMatrixAndCrop(): Buffer {
-      const width = 16;
-      const height = 16;
-      const bpp = 16;
-      const rawBytes = width * height * 2;
+      const w = 16;
+      const h = 16;
+      const rawBytes = w * h * 2;
 
-      const tagList: Array<{
-        tag: number;
-        type: number;
-        count: number;
-        inlineVal?: number;
-        data?: Buffer;
-      }> = [];
-
-      tagList.push({ tag: 256, type: 4, count: 1, inlineVal: width }); // ImageWidth
-      tagList.push({ tag: 257, type: 4, count: 1, inlineVal: height }); // ImageLength
-      tagList.push({ tag: 258, type: 3, count: 1, inlineVal: bpp }); // BitsPerSample
-      tagList.push({ tag: 259, type: 3, count: 1, inlineVal: 1 }); // Compression (raw)
-      tagList.push({ tag: 33422, type: 1, count: 4, data: Buffer.from([0, 1, 1, 2]) }); // CFAPattern: RGGB
-      tagList.push({ tag: 278, type: 4, count: 1, inlineVal: height }); // RowsPerStrip
-      tagList.push({ tag: 279, type: 4, count: 1, inlineVal: rawBytes }); // StripByteCounts
-      tagList.push({ tag: 273, type: 4, count: 1, inlineVal: 0 }); // StripOffsets placeholder
-
-      // BlackLevel = 512
-      tagList.push({ tag: 50714, type: 4, count: 1, inlineVal: 512 });
-      // WhiteLevel = 16383
-      tagList.push({ tag: 50717, type: 4, count: 1, inlineVal: 16383 });
-
-      // ForwardMatrix1 (Tag 50738) - 9 RATIONAL values
-      const fm1Buf = Buffer.alloc(9 * 8);
-      const fm1Values = [0.8, 0.1, 0.1, 0.1, 0.8, 0.1, 0.1, 0.1, 0.8];
-      for (let i = 0; i < 9; i++) {
-        fm1Buf.writeUInt32LE(Math.round(fm1Values[i] * 10000), i * 8);
+      // Encode ForwardMatrix1 (Tag 50738): 9 rational values
+      const fm1Buf = Buffer.alloc(72);
+      const fmValues = [0.8, 0.1, 0.1, 0.1, 0.8, 0.1, 0.1, 0.1, 0.8];
+      fmValues.forEach((v, i) => {
+        fm1Buf.writeUInt32LE(Math.round(v * 10000), i * 8);
         fm1Buf.writeUInt32LE(10000, i * 8 + 4);
-      }
-      tagList.push({ tag: 50738, type: 5, count: 9, data: fm1Buf });
+      });
 
-      // ActiveArea (Tag 50710) - [top: 2, left: 2, bottom: 14, right: 14] -> 12x12 active crop
-      const aaBuf = Buffer.alloc(4 * 4);
-      aaBuf.writeUInt32LE(2, 0);
-      aaBuf.writeUInt32LE(2, 4);
-      aaBuf.writeUInt32LE(14, 8);
-      aaBuf.writeUInt32LE(14, 12);
-      tagList.push({ tag: 50710, type: 4, count: 4, data: aaBuf });
+      // Encode ActiveArea (Tag 50710): [top: 2, left: 2, bottom: 14, right: 14] -> 12x12
+      const aaBuf = Buffer.alloc(16);
+      [2, 2, 14, 14].forEach((val, i) => aaBuf.writeUInt32LE(val, i * 4));
 
-      // Layout buffer
-      const ifdOffset = 8;
-      const numEntries = tagList.length;
-      const ifdSize = 2 + numEntries * 12 + 4;
-      let outOfLineOffset = ifdOffset + ifdSize;
+      const entries: Array<{ tag: number; type: number; count: number; val?: number; buf?: Buffer }> = [
+        { tag: 256, type: 4, count: 1, val: w },
+        { tag: 257, type: 4, count: 1, val: h },
+        { tag: 258, type: 3, count: 1, val: 16 },
+        { tag: 259, type: 3, count: 1, val: 1 },
+        { tag: 33422, type: 1, count: 4, buf: Buffer.from([0, 1, 1, 2]) },
+        { tag: 278, type: 4, count: 1, val: h },
+        { tag: 279, type: 4, count: 1, val: rawBytes },
+        { tag: 273, type: 4, count: 1, val: 0 }, // StripOffsets placeholder
+        { tag: 50714, type: 4, count: 1, val: 512 }, // BlackLevel
+        { tag: 50717, type: 4, count: 1, val: 16383 }, // WhiteLevel
+        { tag: 50738, type: 5, count: 9, buf: fm1Buf },
+        { tag: 50710, type: 4, count: 4, buf: aaBuf },
+      ];
 
-      const outOfLineBuffers: Buffer[] = [];
-      for (const t of tagList) {
-        if (t.data) {
-          outOfLineBuffers.push(t.data);
-        }
-      }
+      const ifdStart = 8;
+      const ifdLength = 2 + entries.length * 12 + 4;
+      let payloadOff = ifdStart + ifdLength;
 
-      let dataOffset = outOfLineOffset;
-      const tagOffsets: number[] = [];
-      for (const t of tagList) {
-        if (t.data) {
-          tagOffsets.push(dataOffset);
-          dataOffset += t.data.length;
+      const tagDataOffsets: number[] = [];
+      for (const entry of entries) {
+        if (entry.buf) {
+          tagDataOffsets.push(payloadOff);
+          payloadOff += entry.buf.length;
         } else {
-          tagOffsets.push(0);
+          tagDataOffsets.push(0);
         }
       }
 
-      const pixelOffset = dataOffset;
-      // StripOffsets index is 7
-      tagList[7].inlineVal = pixelOffset;
+      const pixelOffset = payloadOff;
+      entries[7].val = pixelOffset; // StripOffsets
 
-      const totalSize = pixelOffset + rawBytes;
-      const buf = Buffer.alloc(totalSize);
+      const dng = Buffer.alloc(pixelOffset + rawBytes);
+      dng.write('II', 0);
+      dng.writeUInt16LE(42, 2);
+      dng.writeUInt32LE(ifdStart, 4);
 
-      // TIFF Header
-      buf.write('II', 0);
-      buf.writeUInt16LE(42, 2);
-      buf.writeUInt32LE(ifdOffset, 4);
-
-      // IFD0
-      buf.writeUInt16LE(numEntries, ifdOffset);
-      let curr = ifdOffset + 2;
-      let dataIdx = 0;
-      for (let i = 0; i < tagList.length; i++) {
-        const t = tagList[i];
-        buf.writeUInt16LE(t.tag, curr);
-        buf.writeUInt16LE(t.type, curr + 2);
-        buf.writeUInt32LE(t.count, curr + 4);
-        if (t.data) {
-          buf.writeUInt32LE(tagOffsets[i], curr + 8);
-          t.data.copy(buf, tagOffsets[i]);
-          dataIdx++;
+      dng.writeUInt16LE(entries.length, ifdStart);
+      let ptr = ifdStart + 2;
+      entries.forEach((e, idx) => {
+        dng.writeUInt16LE(e.tag, ptr);
+        dng.writeUInt16LE(e.type, ptr + 2);
+        dng.writeUInt32LE(e.count, ptr + 4);
+        if (e.buf) {
+          dng.writeUInt32LE(tagDataOffsets[idx], ptr + 8);
+          e.buf.copy(dng, tagDataOffsets[idx]);
         } else {
-          buf.writeUInt32LE(t.inlineVal || 0, curr + 8);
+          dng.writeUInt32LE(e.val || 0, ptr + 8);
         }
-        curr += 12;
-      }
-      buf.writeUInt32LE(0, curr); // next IFD offset = 0
+        ptr += 12;
+      });
+      dng.writeUInt32LE(0, ptr);
 
-      // Fill pixel payload with 2048 (above blacklevel 512)
-      for (let p = 0; p < width * height; p++) {
-        buf.writeUInt16LE(2048, pixelOffset + p * 2);
+      for (let p = 0; p < w * h; p++) {
+        dng.writeUInt16LE(2048, pixelOffset + p * 2);
       }
 
-      return buf;
+      return dng;
     }
 
     it('decodes DNG with ForwardMatrix without corrupting BlackLevel/WhiteLevel and crops ActiveArea', () => {
@@ -135,7 +103,7 @@ describe('Phase 2 Domain Engine Remediation Test Suite', () => {
       // Original dimensions: 16x16. ActiveArea: [2, 2, 14, 14] -> 12x12
       expect(decoded!.width).toBe(12);
       expect(decoded!.height).toBe(12);
-      expect(decoded!.rgb.length).toBe(12 * 12 * 3);
+      expect(decoded!.rgb).toHaveLength(12 * 12 * 3);
 
       // Check pixel values are positive and non-zero
       let hasNonZero = false;
@@ -230,10 +198,10 @@ describe('Phase 2 Domain Engine Remediation Test Suite', () => {
       `;
 
       const parsed = parseDocxXml(docxTableXml, undefined, styleMap);
-      expect(parsed.tables.length).toBe(1);
+      expect(parsed.tables).toHaveLength(1);
       const tbl = parsed.tables[0];
       expect(tbl.structuredRows).toBeDefined();
-      expect(tbl.structuredRows!.length).toBe(3);
+      expect(tbl.structuredRows!).toHaveLength(3);
 
       const row0Col0 = tbl.structuredRows![0][0];
       const row1Col0 = tbl.structuredRows![1][0];
@@ -257,75 +225,35 @@ describe('Phase 2 Domain Engine Remediation Test Suite', () => {
   });
 
   describe('3. 3D CAD Conforming Red-Green B-Rep Tessellation', () => {
+    function generateSyntheticStepSolidBox(): string {
+      const coords = [
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+      ];
+      const ptEntities = coords.map((c, i) => `#${i + 1} = CARTESIAN_POINT('', (${c.map((v) => v.toFixed(1)).join(', ')}));`).join('\n');
+      const vtEntities = coords.map((_, i) => `#${i + 11} = VERTEX_POINT('', #${i + 1});`).join('\n');
+
+      const edges = [
+        [11, 12], [12, 13], [13, 14], [14, 11],
+        [15, 16], [16, 17], [17, 18], [18, 15],
+        [11, 15], [12, 16], [13, 17], [14, 18],
+      ];
+      const edEntities = edges.map((e, i) => `#${i + 21} = EDGE_CURVE('', #${e[0]}, #${e[1]}, .T.);`).join('\n');
+
+      const loops = [
+        [21, 22, 23, 24], [25, 26, 27, 28], [21, 30, 25, 29],
+        [22, 31, 26, 30], [23, 32, 27, 31], [24, 29, 28, 32],
+      ];
+      const loopEntities = loops.map((l, i) => `#${i + 41} = EDGE_LOOP('', (${l.map((id) => `#${id}`).join(', ')}));`).join('\n');
+      const boundEntities = loops.map((_, i) => `#${i + 51} = FACE_OUTER_BOUND('', #${i + 41}, .T.);`).join('\n');
+      const faceEntities = loops.map((_, i) => `#${i + 61} = ADVANCED_FACE('', (#${i + 51}));`).join('\n');
+      const shellFaces = loops.map((_, i) => `#${i + 61}`).join(', ');
+
+      return `ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('Watertight Box Test'),'2;1');\nFILE_NAME('box.step','2026-09-28T00:00:00','','','EasyConvert','','');\nFILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));\nENDSEC;\nDATA;\n${ptEntities}\n${vtEntities}\n${edEntities}\n${loopEntities}\n${boundEntities}\n${faceEntities}\n#70 = CLOSED_SHELL('', (${shellFaces}));\n#80 = MANIFOLD_SOLID_BREP('', #70);\nENDSEC;\nEND-ISO-10303-21;\n`;
+    }
+
     it('eliminates hanging nodes (T-junctions) via Red-Green closure', () => {
-      // Parse a valid STEP closed box to test conforming Red-Green B-Rep mesh refinement
-      const stepBoxText = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('Watertight Box Test'),'2;1');
-FILE_NAME('box.step','2026-09-28T00:00:00','','','EasyConvert','','');
-FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
-ENDSEC;
-DATA;
-#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
-#2 = CARTESIAN_POINT('', (1.0, 0.0, 0.0));
-#3 = CARTESIAN_POINT('', (1.0, 1.0, 0.0));
-#4 = CARTESIAN_POINT('', (0.0, 1.0, 0.0));
-#5 = CARTESIAN_POINT('', (0.0, 0.0, 1.0));
-#6 = CARTESIAN_POINT('', (1.0, 0.0, 1.0));
-#7 = CARTESIAN_POINT('', (1.0, 1.0, 1.0));
-#8 = CARTESIAN_POINT('', (0.0, 1.0, 1.0));
-
-#11 = VERTEX_POINT('', #1);
-#12 = VERTEX_POINT('', #2);
-#13 = VERTEX_POINT('', #3);
-#14 = VERTEX_POINT('', #4);
-#15 = VERTEX_POINT('', #5);
-#16 = VERTEX_POINT('', #6);
-#17 = VERTEX_POINT('', #7);
-#18 = VERTEX_POINT('', #8);
-
-#21 = EDGE_CURVE('', #11, #12, .T.);
-#22 = EDGE_CURVE('', #12, #13, .T.);
-#23 = EDGE_CURVE('', #13, #14, .T.);
-#24 = EDGE_CURVE('', #14, #11, .T.);
-
-#25 = EDGE_CURVE('', #15, #16, .T.);
-#26 = EDGE_CURVE('', #16, #17, .T.);
-#27 = EDGE_CURVE('', #17, #18, .T.);
-#28 = EDGE_CURVE('', #18, #15, .T.);
-
-#29 = EDGE_CURVE('', #11, #15, .T.);
-#30 = EDGE_CURVE('', #12, #16, .T.);
-#31 = EDGE_CURVE('', #13, #17, .T.);
-#32 = EDGE_CURVE('', #14, #18, .T.);
-
-#41 = EDGE_LOOP('', (#21, #22, #23, #24));
-#42 = EDGE_LOOP('', (#25, #26, #27, #28));
-#43 = EDGE_LOOP('', (#21, #30, #25, #29));
-#44 = EDGE_LOOP('', (#22, #31, #26, #30));
-#45 = EDGE_LOOP('', (#23, #32, #27, #31));
-#46 = EDGE_LOOP('', (#24, #29, #28, #32));
-
-#51 = FACE_OUTER_BOUND('', #41, .T.);
-#52 = FACE_OUTER_BOUND('', #42, .T.);
-#53 = FACE_OUTER_BOUND('', #43, .T.);
-#54 = FACE_OUTER_BOUND('', #44, .T.);
-#55 = FACE_OUTER_BOUND('', #45, .T.);
-#56 = FACE_OUTER_BOUND('', #46, .T.);
-
-#61 = ADVANCED_FACE('', (#51));
-#62 = ADVANCED_FACE('', (#52));
-#63 = ADVANCED_FACE('', (#53));
-#64 = ADVANCED_FACE('', (#54));
-#65 = ADVANCED_FACE('', (#55));
-#66 = ADVANCED_FACE('', (#56));
-
-#70 = CLOSED_SHELL('', (#61, #62, #63, #64, #65, #66));
-#80 = MANIFOLD_SOLID_BREP('', #70);
-ENDSEC;
-END-ISO-10303-21;
-`;
-
+      const stepBoxText = generateSyntheticStepSolidBox();
       const entityMap = parseStepEntities(stepBoxText);
       expect(entityMap.size).toBeGreaterThan(0);
 
