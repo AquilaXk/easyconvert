@@ -4430,8 +4430,22 @@ export function adaptiveIncrementalBRepMesh(
   }
 
   const maxEdgeLenSq = Math.max(0.01, linearDeflection * 10) ** 2;
+  const hasNormals = baseMesh.normals && baseMesh.normals.length === baseMesh.vertices.length;
 
-  // 1. Collect all edges from baseMesh faces and identify those exceeding maxEdgeLenSq
+  const checkNormalAngle = (idxA: number, idxB: number): boolean => {
+    if (!hasNormals || !baseMesh.normals) return false;
+    const nA = baseMesh.normals[idxA];
+    const nB = baseMesh.normals[idxB];
+    if (!nA || !nB) return false;
+    const lenA = Math.hypot(nA[0], nA[1], nA[2]);
+    const lenB = Math.hypot(nB[0], nB[1], nB[2]);
+    if (lenA < 1e-6 || lenB < 1e-6) return false;
+    const dot = Math.max(-1, Math.min(1, (nA[0] * nB[0] + nA[1] * nB[1] + nA[2] * nB[2]) / (lenA * lenB)));
+    const angle = Math.acos(dot);
+    return angle > angularDeflection;
+  };
+
+  // 1. Collect all edges from baseMesh faces and identify those exceeding maxEdgeLenSq or angularDeflection
   const edgeKey = (a: number, b: number) => (a < b ? `${a}_${b}` : `${b}_${a}`);
   const markedEdges = new Set<string>();
 
@@ -4444,9 +4458,9 @@ export function adaptiveIncrementalBRepMesh(
     const d23Sq = (v2[0] - v3[0]) ** 2 + (v2[1] - v3[1]) ** 2 + (v2[2] - v3[2]) ** 2;
     const d31Sq = (v3[0] - v1[0]) ** 2 + (v3[1] - v1[1]) ** 2 + (v3[2] - v1[2]) ** 2;
 
-    if (d12Sq > maxEdgeLenSq) markedEdges.add(edgeKey(i1, i2));
-    if (d23Sq > maxEdgeLenSq) markedEdges.add(edgeKey(i2, i3));
-    if (d31Sq > maxEdgeLenSq) markedEdges.add(edgeKey(i3, i1));
+    if (d12Sq > maxEdgeLenSq || checkNormalAngle(i1, i2)) markedEdges.add(edgeKey(i1, i2));
+    if (d23Sq > maxEdgeLenSq || checkNormalAngle(i2, i3)) markedEdges.add(edgeKey(i2, i3));
+    if (d31Sq > maxEdgeLenSq || checkNormalAngle(i3, i1)) markedEdges.add(edgeKey(i3, i1));
   }
 
   if (markedEdges.size === 0) {

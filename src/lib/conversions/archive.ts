@@ -135,9 +135,10 @@ function createEncryptedArchiveVia7z(
       fs.writeFileSync(dest, f.buffer);
     }
     const outPath = path.join(workDir, archiveName);
-    execFileSync(p7z, ['a', '-y', `-t${archiveType}`, `-p${password}`, outPath, '.'], {
+    execFileSync(p7z, ['a', '-y', `-t${archiveType}`, '-p', outPath, '.'], {
       cwd: stagingDir,
       timeout: 60000,
+      input: Buffer.from(password + '\n'),
     });
     const content = fs.readFileSync(outPath);
     return {
@@ -265,10 +266,12 @@ export async function extractZipArchive(
         const extractDir = path.join(workDir, 'out');
         fs.mkdirSync(extractDir, { recursive: true });
         try {
-          execFileSync(p7z, ['x', '-y', `-p${options.password}`, `-o${extractDir}`, zipPath], {
+          const pwArgs = options.password ? ['-p'] : [];
+          execFileSync(p7z, ['x', '-y', ...pwArgs, `-o${extractDir}`, zipPath], {
             cwd: workDir,
             timeout: 60000,
             maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+            input: options.password ? Buffer.from(options.password + '\n') : undefined,
           });
         } catch (err: any) {
           const msg = (err?.message || '') + (err?.stderr?.toString() || '');
@@ -674,11 +677,12 @@ export function extractRarArchive(
     fs.mkdirSync(extractDir, { recursive: true });
 
     try {
-      const pwArgs = options.password ? [`-p${options.password}`] : ['-p-'];
+      const pwArgs = options.password ? ['-p'] : ['-p-'];
       try {
         execFileSync(unrarBin, ['x', '-inul', '-y', ...pwArgs, tmpFile, extractDir], {
           timeout: 30000,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+          input: options.password ? Buffer.from(options.password + '\n') : undefined,
         });
       } catch (err: any) {
         const msg = (err?.message || '') + (err?.stderr?.toString() || '');
@@ -1419,13 +1423,14 @@ export function convertWithNative7z(
     const extractDir = path.join(workDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
-    const pwExtractArgs = options.password ? [`-p${options.password}`] : [];
+    const pwExtractArgs = options.password ? ['-p'] : [];
     if (supportedExtract.has(src)) {
       try {
         execFileSync(p7zBin, ['x', '-y', ...pwExtractArgs, `-o${extractDir}`, inputPath], {
           cwd: workDir,
           timeout: 60000,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+          input: options.password ? Buffer.from(options.password + '\n') : undefined,
         });
       } catch (err: any) {
         const msg = (err?.message || '') + (err?.stderr?.toString() || '');
@@ -1482,7 +1487,8 @@ export function convertWithNative7z(
       );
     }
 
-    const pwCreateArgs = options.password && (tgt === 'zip' || tgt === '7z') ? [`-p${options.password}`] : [];
+    const pwCreateArgs = options.password && (tgt === 'zip' || tgt === '7z') ? ['-p'] : [];
+    const pwCreateInput = options.password && (tgt === 'zip' || tgt === '7z') ? Buffer.from(options.password + '\n') : undefined;
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
       const tarPath = path.join(workDir, 'archive.tar');
@@ -1497,7 +1503,11 @@ export function convertWithNative7z(
       execFileSync(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { cwd: extractDir, timeout: 60000 });
       execFileSync(p7zBin, ['a', '-y', '-txz', outputPath, tarPath], { cwd: workDir, timeout: 60000 });
     } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
-      execFileSync(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { cwd: extractDir, timeout: 60000 });
+      execFileSync(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], {
+        cwd: extractDir,
+        timeout: 60000,
+        input: pwCreateInput,
+      });
     } else {
       return null;
     }
@@ -1558,7 +1568,7 @@ export async function extractWithSpannedStream7z(
 
   const timeoutMs = options.timeoutMs ?? 60000;
   const maxBuffer = options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
-  const passwordArgs = options.password ? [`-p${options.password}`] : [];
+  const passwordArgs = options.password ? ['-p'] : [];
   const formatMap: Record<string, string> = {
     tar: 'tar',
     zip: 'zip',
@@ -1611,6 +1621,7 @@ export async function extractWithSpannedStream7z(
         ['x', '-y', ...typeFlag, `-o${resolvedExtractDir}`, tempDiskFile, ...passwordArgs],
         {
           cwd: resolvedExtractDir,
+          stdin: options.password ? Buffer.from(options.password + '\n') : undefined,
           timeoutMs,
           maxBuffer,
           networkIsolated: true,

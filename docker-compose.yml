@@ -36,6 +36,7 @@ services:
       - OCI_ENDPOINT=${OCI_ENDPOINT:-https://axvym6vk8g7i.compat.objectstorage.ap-seoul-1.oraclecloud.com}
       - WORKER_CONCURRENCY=3
       - EASYCONVERT_STORAGE_DIR=/shared/storage
+      - STRICT_SANDBOX=true
     volumes:
       - worker-tmp:/tmp
       - shared-storage:/shared/storage

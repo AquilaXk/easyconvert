@@ -263,24 +263,23 @@ describe('Phase 2 Domain Engine Remediation Test Suite', () => {
         angularDeflection: 0.1,
       });
 
-      if (refined) {
-        expect(refined.faces.length).toBeGreaterThanOrEqual(1);
+      expect(refined).not.toBeNull();
+      expect(refined!.faces.length).toBeGreaterThanOrEqual(1);
 
-        // Verify manifold property: every undirected interior edge is shared by conforming triangles
-        const edgeUsage = new Map<string, number>();
-        for (const [a, b, c] of refined.faces) {
-          const e1 = a < b ? `${a}-${b}` : `${b}-${a}`;
-          const e2 = b < c ? `${b}-${c}` : `${c}-${b}`;
-          const e3 = c < a ? `${c}-${a}` : `${a}-${c}`;
-          edgeUsage.set(e1, (edgeUsage.get(e1) || 0) + 1);
-          edgeUsage.set(e2, (edgeUsage.get(e2) || 0) + 1);
-          edgeUsage.set(e3, (edgeUsage.get(e3) || 0) + 1);
-        }
+      // Verify manifold property: every undirected interior edge is shared by conforming triangles
+      const edgeUsage = new Map<string, number>();
+      for (const [a, b, c] of refined!.faces) {
+        const e1 = a < b ? `${a}-${b}` : `${b}-${a}`;
+        const e2 = b < c ? `${b}-${c}` : `${c}-${b}`;
+        const e3 = c < a ? `${c}-${a}` : `${a}-${c}`;
+        edgeUsage.set(e1, (edgeUsage.get(e1) || 0) + 1);
+        edgeUsage.set(e2, (edgeUsage.get(e2) || 0) + 1);
+        edgeUsage.set(e3, (edgeUsage.get(e3) || 0) + 1);
+      }
 
-        // In a conforming triangulation, no edge should be over-shared (> 2 for 2-manifold)
-        for (const [edge, count] of edgeUsage.entries()) {
-          expect(count).toBeLessThanOrEqual(2);
-        }
+      // In a conforming triangulation, no edge should be over-shared (> 2 for 2-manifold)
+      for (const [edge, count] of edgeUsage.entries()) {
+        expect(count).toBeLessThanOrEqual(2);
       }
     });
   });
