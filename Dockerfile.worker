@@ -1,13 +1,37 @@
 # EasyConvert OCI Backend Container Worker
-# Multi-architecture: linux/arm64 (OCI Ampere A1), linux/amd64
-FROM node:20-bookworm-slim
+# Enterprise Multi-Stage Build: linux/arm64 (OCI Ampere A1), linux/amd64
 
-# Prevent interactive prompts during package installation
+# ==============================================================================
+# Stage 1: Dependency & Application Builder
+# ==============================================================================
+FROM node:20-bookworm-slim AS builder
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
-# 1. Install Native Conversion Engines, Korean/CJK Fonts, and create dedicated non-root user
+WORKDIR /app
+
+# Copy dependency manifests
+COPY package*.json ./
+
+# Install dependencies (ignoring lifecycle scripts for supply-chain security)
+RUN npm ci --include=dev --ignore-scripts
+
+# Copy configuration and source files
+COPY tsconfig.json ./
+COPY src/ ./src/
+
+# ==============================================================================
+# Stage 2: Hardened Runtime Container
+# ==============================================================================
+FROM node:20-bookworm-slim AS runner
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_ENV=production
+
+# 1. Install Tini Init, Native Conversion Engines, and CJK Font Packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    tini \
     ca-certificates \
     curl \
     ffmpeg \
@@ -30,29 +54,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-kor \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r -f video && groupadd -r -f render && groupadd -r easyconvert \
-    && useradd -r -g easyconvert -G video,render -m -s /bin/bash easyconvert
+    && groupadd -r -f video && groupadd -r -f render \
+    && groupadd -g 10001 -r easyconvert \
+    && useradd -u 10001 -r -g easyconvert -G video,render -m -d /home/easyconvert -s /bin/bash easyconvert
 
 WORKDIR /app
 
-# 2. Copy dependency manifests
-COPY package*.json ./
+# 2. Copy artifacts from builder with explicit non-root ownership
+COPY --from=builder --chown=easyconvert:easyconvert /app/node_modules ./node_modules
+COPY --from=builder --chown=easyconvert:easyconvert /app/package*.json ./
+COPY --from=builder --chown=easyconvert:easyconvert /app/tsconfig.json ./
+COPY --from=builder --chown=easyconvert:easyconvert /app/src ./src
 
-# 3. Install production & dev dependencies with lifecycle scripts ignored for security
-RUN npm ci --include=dev --ignore-scripts
+# 3. Create strictly permissioned scratch directories
+RUN mkdir -p /shared/storage /tmp \
+    && chown -R easyconvert:easyconvert /app /shared/storage \
+    && chmod 1777 /tmp
 
-# 4. Copy application source explicitly
-COPY tsconfig.json ./
-COPY src/ ./src/
-
-# 5. Ensure non-root ownership for app & temp directory
-RUN chown -R easyconvert:easyconvert /app
-
-USER easyconvert
+# 4. Drop to unprivileged non-root user (UID:GID 10001:10001)
+USER easyconvert:easyconvert
 
 # Healthcheck to verify native tools and daemon vitality
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD node -e "require('child_process').execSync('soffice --version && ffmpeg -version')" || exit 1
+
+# Process init wrapper for signal forwarding (SIGTERM/SIGINT) and zombie reaping
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
 # Start the OCI worker daemon
 CMD ["npm", "run", "worker"]

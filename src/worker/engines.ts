@@ -449,7 +449,8 @@ async function package7zArchive(
   tempDir: string,
   tempOutputPath: string,
   timeout: number,
-  maxBuffer: number
+  maxBuffer: number,
+  options?: WorkerEngineOptions
 ): Promise<boolean> {
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
@@ -481,11 +482,18 @@ async function package7zArchive(
   const archiveType = get7zArchiveType(tgt);
   if (!archiveType) return false;
 
-  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, tempOutputPath, '.'], {
+  const pwArgs = options?.password && (tgt === 'zip' || tgt === '7z') ? ['-p'] : [];
+  const pwInput =
+    options?.password && (tgt === 'zip' || tgt === '7z')
+      ? Buffer.from(`${options.password}\n${options.password}\n`)
+      : undefined;
+
+  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...pwArgs, tempOutputPath, '.'], {
     cwd: extractDir,
     timeoutMs: timeout,
     maxBuffer,
     networkIsolated: true,
+    stdin: pwInput,
   });
   return true;
 }
@@ -527,14 +535,16 @@ export async function convertWithNative7z(
           password: options.password,
         });
       } else {
+        const pwArgs = options.password ? ['-p'] : [];
         await executeSandboxedBinary(
           p7zBin,
-          ['x', '-y', `-o${extractDir}`, inputPath],
+          ['x', '-y', ...pwArgs, `-o${extractDir}`, inputPath],
           {
             cwd: tempDir,
             timeoutMs: timeout,
             maxBuffer,
             networkIsolated: true,
+            stdin: options.password ? Buffer.from(options.password + '\n') : undefined,
           }
         );
       }
@@ -549,7 +559,7 @@ export async function convertWithNative7z(
     }
 
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
-    const packaged = await package7zArchive(p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer);
+    const packaged = await package7zArchive(p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options);
     if (!packaged || !fs.existsSync(tempOutputPath)) return null;
 
     const vfsPayload = Buffer.isBuffer(input) ? undefined : input;

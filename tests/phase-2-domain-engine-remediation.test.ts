@@ -14,7 +14,9 @@ import {
 import {
   isZipBufferEncrypted,
   extractZipArchive,
+  convertArchive,
 } from '../src/lib/conversions/archive';
+import { DistributedBullMQAdapter } from '../src/lib/queue/bullmq-engine';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 
 describe('Phase 2 Domain Engine Remediation Test Suite', () => {
@@ -317,5 +319,70 @@ describe('Phase 2 Domain Engine Remediation Test Suite', () => {
         /ZIP archive is password[- ]protected/i
       );
     });
+
+    it('rejects passwords containing embedded newline or null characters to prevent CWE-214 injection', async () => {
+      const mockEncryptedZip = Buffer.alloc(40);
+      mockEncryptedZip.writeUInt32LE(0x04034b50, 0);
+      mockEncryptedZip.writeUInt16LE(20, 4);
+      mockEncryptedZip.writeUInt16LE(0x0001, 6);
+
+      await expect(
+        extractZipArchive(mockEncryptedZip, { password: 'bad\npassword' })
+      ).rejects.toThrow(/Archive password contains invalid newline or null characters/i);
+
+      await expect(
+        extractZipArchive(mockEncryptedZip, { password: 'bad\rpassword' })
+      ).rejects.toThrow(/Archive password contains invalid newline or null characters/i);
+    });
+
+    it('forwards options.password during convertArchive without dropping it', async () => {
+      const mockEncryptedZip = Buffer.alloc(40);
+      mockEncryptedZip.writeUInt32LE(0x04034b50, 0);
+      mockEncryptedZip.writeUInt16LE(20, 4);
+      mockEncryptedZip.writeUInt16LE(0x0001, 6);
+
+      // With an invalid newline password passed to convertArchive, it should fail with the password validation error,
+      // proving that options was passed to extractZipArchive rather than dropped.
+      await expect(
+        convertArchive(mockEncryptedZip, 'zip', 'tar', { password: 'injected\npassword' }, 'test.zip')
+      ).rejects.toThrow(/Archive password contains invalid newline or null characters/i);
+    });
+  });
+
+  describe('5. Distributed Queue Redis Cluster Hash Tag Enforcement', () => {
+    it('enforces {queueName} cluster hash tags on all queue keys preventing CROSSSLOT errors', () => {
+      const adapter = new DistributedBullMQAdapter('transcode-pipeline');
+      const waiting = (adapter as any).waitingKey;
+      const delayed = (adapter as any).delayedKey;
+      const active = (adapter as any).activeKey;
+      const completed = (adapter as any).completedKey;
+      const failed = (adapter as any).failedKey;
+      const dlq = (adapter as any).dlqKey;
+      const jobKey = (adapter as any).getJobKey('job-999');
+
+      // Verify each key includes the cluster hash tag {transcode-pipeline}
+      expect(waiting).toContain('{transcode-pipeline}');
+      expect(delayed).toContain('{transcode-pipeline}');
+      expect(active).toContain('{transcode-pipeline}');
+      expect(completed).toContain('{transcode-pipeline}');
+      expect(failed).toContain('{transcode-pipeline}');
+      expect(dlq).toContain('{transcode-pipeline}');
+      expect(jobKey).toContain('{transcode-pipeline}');
+
+      // Verify that all keys share the exact identical cluster hash tag
+      const extractHashTag = (k: string) => {
+        const m = k.match(/\{([^}]+)\}/);
+        return m ? m[1] : null;
+      };
+      const tag = extractHashTag(waiting);
+      expect(tag).toBe('transcode-pipeline');
+      expect(extractHashTag(delayed)).toBe(tag);
+      expect(extractHashTag(active)).toBe(tag);
+      expect(extractHashTag(completed)).toBe(tag);
+      expect(extractHashTag(failed)).toBe(tag);
+      expect(extractHashTag(dlq)).toBe(tag);
+      expect(extractHashTag(jobKey)).toBe(tag);
+    });
   });
 });
+

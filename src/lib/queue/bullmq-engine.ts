@@ -596,31 +596,31 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   private getJobKey(id: string): string {
-    return `${this.keyPrefix}${this.name}:job:${id}`;
+    return `${this.keyPrefix}{${this.name}}:job:${id}`;
   }
 
   private get waitingKey(): string {
-    return `${this.keyPrefix}${this.name}:waiting`;
+    return `${this.keyPrefix}{${this.name}}:waiting`;
   }
 
   private get activeKey(): string {
-    return `${this.keyPrefix}${this.name}:active`;
+    return `${this.keyPrefix}{${this.name}}:active`;
   }
 
   private get completedKey(): string {
-    return `${this.keyPrefix}${this.name}:completed`;
+    return `${this.keyPrefix}{${this.name}}:completed`;
   }
 
   private get failedKey(): string {
-    return `${this.keyPrefix}${this.name}:failed`;
+    return `${this.keyPrefix}{${this.name}}:failed`;
   }
 
   private get delayedKey(): string {
-    return `${this.keyPrefix}${this.name}:delayed`;
+    return `${this.keyPrefix}{${this.name}}:delayed`;
   }
 
   private get dlqKey(): string {
-    return `${this.keyPrefix}${this.name}:dlq`;
+    return `${this.keyPrefix}{${this.name}}:dlq`;
   }
 
   private jobToHash(job: Job<T, R>): Record<string, string> {
@@ -978,7 +978,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             3,
             this.delayedKey,
             this.waitingKey,
-            `${this.keyPrefix}${this.name}:job:`,
+            `${this.keyPrefix}{${this.name}}:job:`,
             now.toString(),
             '50'
           );

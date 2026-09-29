@@ -96,19 +96,43 @@ export function isBlockedIp(ip: string): boolean {
   return false;
 }
 
+/**
+ * Validates whether a hostname or IP string represents a private, loopback, or cloud-metadata address.
+ */
+export function isPrivateOrRestrictedHost(hostname: string): boolean {
+  if (!hostname || typeof hostname !== 'string') return true;
+  const raw = hostname.toLowerCase().trim();
+  const clean = raw.startsWith('[') && raw.endsWith(']') ? raw.slice(1, -1) : raw;
+
+  if (
+    clean === 'localhost' ||
+    clean === 'metadata.google.internal' ||
+    clean.endsWith('.local') ||
+    clean.endsWith('.internal') ||
+    clean.endsWith('.localhost') ||
+    clean.endsWith('.arpa') ||
+    clean.endsWith('.lan') ||
+    clean.endsWith('.home') ||
+    clean.endsWith('.corp')
+  ) {
+    return true;
+  }
+
+  const ipType = net.isIP(clean);
+  if (ipType !== 0) {
+    return isBlockedIp(clean);
+  }
+
+  return false;
+}
+
 export async function validateUrlForSsrf(targetUrl: URL): Promise<boolean> {
   const rawHostname = targetUrl.hostname.toLowerCase();
   const hostname = rawHostname.startsWith('[') && rawHostname.endsWith(']')
     ? rawHostname.slice(1, -1)
     : rawHostname;
 
-  if (
-    hostname === 'localhost' ||
-    hostname.endsWith('.local') ||
-    hostname.endsWith('.internal') ||
-    hostname.endsWith('.localhost') ||
-    (net.isIP(hostname) !== 0 && isBlockedIp(hostname))
-  ) {
+  if (isPrivateOrRestrictedHost(hostname)) {
     return false;
   }
 
@@ -144,13 +168,7 @@ export function createSsrfSafeAgent(): Agent {
           ? rawHost.slice(1, -1)
           : rawHost;
 
-        if (
-          cleanHost === 'localhost' ||
-          cleanHost.endsWith('.local') ||
-          cleanHost.endsWith('.internal') ||
-          cleanHost.endsWith('.localhost') ||
-          (net.isIP(cleanHost) !== 0 && isBlockedIp(cleanHost))
-        ) {
+        if (isPrivateOrRestrictedHost(cleanHost)) {
           return callback(new Error(`SSRF blocked: host ${hostname} is restricted`), '', 4);
         }
 

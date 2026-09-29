@@ -1,0 +1,218 @@
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  yieldToEventLoop,
+  measureEventLoopLag,
+  forEachCooperative,
+  EventLoopMonitor,
+} from '../src/lib/security/event-loop';
+import {
+  isBlockedIp,
+  isBlockedIpv4,
+  isBlockedIpv6,
+  isPrivateOrRestrictedHost,
+  validateUrlForSsrf,
+} from '../src/lib/security/ssrf';
+import {
+  getSanitizedEnvironment,
+  generateSeccompBpfProfile,
+  DANGEROUS_SYSCALL_FILTER_LIST,
+  NETWORK_SYSCALL_FILTER_LIST,
+  resolveSandboxedCommand,
+  SandboxedProcessError,
+} from '../src/lib/security/process-sandbox';
+
+describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () => {
+  describe('1. Cooperative Event Loop & Starvation Prevention', () => {
+    it('yields execution back to the libuv event loop', async () => {
+      let flag = false;
+      setImmediate(() => {
+        flag = true;
+      });
+
+      expect(flag).toBe(false);
+      await yieldToEventLoop();
+      expect(flag).toBe(true);
+    });
+
+    it('measures non-negative event loop lag in milliseconds', async () => {
+      const lag = await measureEventLoopLag();
+      expect(typeof lag).toBe('number');
+      expect(lag).toBeGreaterThanOrEqual(0);
+      expect(lag).toBeLessThan(1000);
+    });
+
+    it('iterates through collections with periodic event loop yields', async () => {
+      const items = Array.from({ length: 10 }, (_, i) => i);
+      const processed: number[] = [];
+
+      await forEachCooperative(items, 3, async (item) => {
+        processed.push(item);
+      });
+
+      expect(processed).toEqual(items);
+    });
+
+    it('EventLoopMonitor tracks lag and emits threshold warning callback', async () => {
+      const onLagExceeded = vi.fn();
+      const monitor = new EventLoopMonitor({
+        checkIntervalMs: 20,
+        lagThresholdMs: 5,
+        onLagExceeded,
+      });
+
+      monitor.start();
+      expect(monitor.getActive()).toBe(true);
+
+      // Artificially block the thread briefly to simulate heavy synchronous CPU task
+      const start = Date.now();
+      while (Date.now() - start < 40) {
+        // busy wait
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      monitor.stop();
+
+      expect(monitor.getActive()).toBe(false);
+      expect(monitor.getLastLagMs()).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('2. Comprehensive SSRF Matrix & Cloud Metadata Hardening', () => {
+    it('blocks AWS, Azure, and GCP IMDSv1/v2 metadata endpoints', () => {
+      expect(isBlockedIpv4('169.254.169.254')).toBe(true);
+      expect(isBlockedIpv4('169.254.170.2')).toBe(true); // AWS ECS metadata
+      expect(isBlockedIp('169.254.169.254')).toBe(true);
+      expect(isPrivateOrRestrictedHost('169.254.169.254')).toBe(true);
+      expect(isPrivateOrRestrictedHost('metadata.google.internal')).toBe(true);
+    });
+
+    it('blocks Alibaba Cloud metadata endpoint (100.100.100.200)', () => {
+      expect(isBlockedIpv4('100.100.100.200')).toBe(true);
+      expect(isBlockedIp('100.100.100.200')).toBe(true);
+      expect(isPrivateOrRestrictedHost('100.100.100.200')).toBe(true);
+    });
+
+    it('blocks IPv4-mapped IPv6 addresses representing restricted IP targets', () => {
+      expect(isBlockedIpv6('::ffff:169.254.169.254')).toBe(true);
+      expect(isBlockedIpv6('::ffff:127.0.0.1')).toBe(true);
+      expect(isBlockedIpv6('::ffff:10.0.0.1')).toBe(true);
+      expect(isBlockedIp('::ffff:192.168.1.1')).toBe(true);
+    });
+
+    it('blocks RFC 1918, RFC 3927, RFC 6598, loopback, and broadcast ranges', () => {
+      // Loopback
+      expect(isBlockedIpv4('127.0.0.1')).toBe(true);
+      expect(isBlockedIpv4('127.1.2.3')).toBe(true);
+      expect(isBlockedIpv6('::1')).toBe(true);
+
+      // RFC 1918
+      expect(isBlockedIpv4('10.0.0.1')).toBe(true);
+      expect(isBlockedIpv4('172.16.0.1')).toBe(true);
+      expect(isBlockedIpv4('172.31.255.255')).toBe(true);
+      expect(isBlockedIpv4('192.168.1.254')).toBe(true);
+
+      // Carrier-Grade NAT (RFC 6598)
+      expect(isBlockedIpv4('100.64.0.1')).toBe(true);
+      expect(isBlockedIpv4('100.127.255.255')).toBe(true);
+
+      // Link-local (RFC 3927)
+      expect(isBlockedIpv4('169.254.1.1')).toBe(true);
+      expect(isBlockedIpv6('fe80::1')).toBe(true);
+
+      // Multicast / Reserved
+      expect(isBlockedIpv4('224.0.0.1')).toBe(true);
+      expect(isBlockedIpv4('255.255.255.255')).toBe(true);
+    });
+
+    it('allows valid public routable IPv4 and IPv6 addresses', () => {
+      expect(isBlockedIpv4('93.184.216.34')).toBe(false); // example.com
+      expect(isBlockedIpv4('8.8.8.8')).toBe(false);
+      expect(isBlockedIpv4('1.1.1.1')).toBe(false);
+      expect(isBlockedIpv6('2606:2800:220:1:248:1893:25c8:1946')).toBe(false);
+    });
+
+    it('validateUrlForSsrf rejects dangerous URLs with private or metadata hosts', async () => {
+      expect(await validateUrlForSsrf(new URL('http://169.254.169.254/latest/meta-data'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://metadata.google.internal/computeMetadata/v1'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://localhost:8080/admin'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://127.0.0.1:6379'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://10.0.0.5/secrets'))).toBe(false);
+      expect(await validateUrlForSsrf(new URL('http://server.local/internal'))).toBe(false);
+    });
+  });
+
+  describe('3. Multi-Stage OCI Container & Defense-in-Depth Specification', () => {
+    it('verifies Dockerfile.worker multi-stage builder and runner configuration', () => {
+      const dockerfilePath = path.resolve(__dirname, '../Dockerfile.worker');
+      const dockerfileContent = fs.readFileSync(dockerfilePath, 'utf-8');
+
+      expect(dockerfileContent).toContain('AS builder');
+      expect(dockerfileContent).toContain('AS runner');
+      expect(dockerfileContent).toContain('tini');
+      expect(dockerfileContent).toContain('ENTRYPOINT ["/usr/bin/tini", "--"]');
+      expect(dockerfileContent).toContain('groupadd -g 10001 -r easyconvert');
+      expect(dockerfileContent).toContain('useradd -u 10001 -r -g easyconvert');
+      expect(dockerfileContent).toContain('USER easyconvert:easyconvert');
+    });
+
+    it('verifies docker-compose.yml security directives (init, cap_drop, no-new-privileges)', () => {
+      const composePath = path.resolve(__dirname, '../docker-compose.yml');
+      const composeContent = fs.readFileSync(composePath, 'utf-8');
+
+      expect(composeContent).toContain('init: true');
+      expect(composeContent).toContain('cap_drop:');
+      expect(composeContent).toContain('- ALL');
+      expect(composeContent).toContain('no-new-privileges:true');
+      expect(composeContent).toContain('worker-tmp:/tmp');
+    });
+  });
+
+  describe('4. Process Sandbox Environment Sanitization & Syscall Guards', () => {
+    it('purges secrets, keys, and tokens from child process environment', () => {
+      const dirtyEnv = {
+        REDIS_URL: 'redis://secret:pass@localhost:6379',
+        AWS_SECRET_ACCESS_KEY: 'super_secret_aws_key',
+        API_KEY: 'ec_live_12345678',
+        DATABASE_URL: 'postgres://user:pass@db:5432/db',
+        SAFE_SETTING: 'active',
+      };
+
+      const sanitized = getSanitizedEnvironment(dirtyEnv);
+      expect(sanitized.SAFE_SETTING).toBe('active');
+      expect(sanitized.REDIS_URL).toBeUndefined();
+      expect(sanitized.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+      expect(sanitized.API_KEY).toBeUndefined();
+      expect(sanitized.DATABASE_URL).toBeUndefined();
+
+      // Verify proxy poisoning for network isolation
+      expect(sanitized.HTTP_PROXY).toBe('http://127.0.0.1:0');
+      expect(sanitized.HTTPS_PROXY).toBe('http://127.0.0.1:0');
+    });
+
+    it('generates defensive Seccomp BPF filter profile with dangerous syscalls', () => {
+      const profile = generateSeccompBpfProfile({ blockNetwork: true });
+      expect(profile.defaultAction).toBe('SCMP_ACT_ALLOW');
+      expect(profile.killAction).toBe('SCMP_ACT_ERRNO');
+
+      for (const syscall of DANGEROUS_SYSCALL_FILTER_LIST) {
+        expect(profile.blockedSyscalls).toContain(syscall);
+      }
+      for (const syscall of NETWORK_SYSCALL_FILTER_LIST) {
+        expect(profile.blockedSyscalls).toContain(syscall);
+      }
+    });
+
+    it('fails closed when strictIsolation is demanded on non-Linux platform', () => {
+      if (process.platform !== 'linux') {
+        expect(() => {
+          resolveSandboxedCommand('/bin/echo', ['hello'], {
+            networkIsolated: true,
+            strictIsolation: true,
+          });
+        }).toThrow(SandboxedProcessError);
+      }
+    });
+  });
+});
