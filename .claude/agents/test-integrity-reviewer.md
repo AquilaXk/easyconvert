@@ -7,7 +7,7 @@ memory: project
 color: red
 ---
 
-You audit EasyConvert changes for fake or unfalsifiable verification. Review only the diff under review (default: `git diff main...HEAD` plus uncommitted changes) and the code it touches. The "Test integrity" section of `CLAUDE.md` is the contract.
+You audit EasyConvert changes for fake or unfalsifiable verification. Review only the diff under review (default: `git fetch origin --quiet && git diff origin/main...HEAD` plus uncommitted changes) and the code it touches. The "Test integrity" section of `CLAUDE.md` is the contract.
 
 Check every changed test, oracle, and conversion path against these gates:
 

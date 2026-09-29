@@ -1,7 +1,7 @@
 export const meta = {
   name: 'pre-pr-review',
   description: 'Multi-lens review of the current branch with adversarial verification before opening a PR',
-  whenToUse: 'Before opening or updating a PR that changes conversion engines, tests/oracles, security, or API code. Pass a base ref as the argument (default: main).',
+  whenToUse: 'Before opening or updating a PR that changes conversion engines, tests/oracles, security, or API code. Pass a base ref as the argument (default: origin/main).',
   phases: [
     { title: 'Scope', detail: 'classify the diff against the base ref' },
     { title: 'Review', detail: 'one reviewer per applicable lens' },
@@ -9,7 +9,7 @@ export const meta = {
   ],
 }
 
-const BASE = typeof args === 'string' && args.trim() ? args.trim() : 'main'
+const BASE = typeof args === 'string' && args.trim() ? args.trim() : 'origin/main'
 
 const SCOPE_SCHEMA = {
   type: 'object',
@@ -56,11 +56,14 @@ const VERDICT_SCHEMA = {
 
 phase('Scope')
 const scope = await agent(
-  `List the files changed on this branch versus ${BASE} (\`git diff --name-only ${BASE}...HEAD\` plus uncommitted and untracked files) and classify the change. Summarize the intent in two sentences.`,
+  `Run \`git fetch origin --quiet\`, then list the files changed on this branch versus ${BASE} (\`git diff --name-only ${BASE}...HEAD\` plus uncommitted and untracked files) and classify the change. Summarize the intent in two sentences.`,
   { label: 'scope', phase: 'Scope', schema: SCOPE_SCHEMA, effort: 'low' },
 )
 
-if (!scope || scope.files.length === 0) {
+if (!scope) {
+  throw new Error('Scope agent did not return; the review did not run.')
+}
+if (scope.files.length === 0) {
   log(`No changes against ${BASE}; nothing to review.`)
   return { base: BASE, confirmed: [], dismissed: [], not_run: [] }
 }
@@ -124,8 +127,9 @@ const all = results.flatMap(r => r.verified)
 const confirmed = all
   .filter(f => f.verdict && !f.verdict.refuted)
   .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])
-const dismissed = all.filter(f => !f.verdict || f.verdict.refuted)
+const dismissed = all.filter(f => f.verdict && f.verdict.refuted)
+const unverified = all.filter(f => !f.verdict)
 const notRun = results.flatMap(r => r.not_run)
 
-log(`${confirmed.length} confirmed, ${dismissed.length} dismissed, ${notRun.length} checks not run`)
-return { base: BASE, lenses: LENSES.map(l => l.key), confirmed, dismissed, not_run: notRun }
+log(`${confirmed.length} confirmed, ${unverified.length} unverified, ${dismissed.length} dismissed, ${notRun.length} checks not run`)
+return { base: BASE, lenses: LENSES.map(l => l.key), confirmed, unverified, dismissed, not_run: notRun }

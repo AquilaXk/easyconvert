@@ -64,7 +64,7 @@ The lead session owns scope, design decisions, integration, commits, and PR gate
 | Test/oracle integrity check | `test-integrity-reviewer` |
 | Prove outputs with standard toolchains | `bitstream-verifier` |
 | Deterministic gate + PR Verification table | `/verify [test files \| --full]` |
-| Pre-PR multi-lens review with adversarial verification | `/pre-pr-review [base]` (saved workflow) |
+| Pre-PR multi-lens review with adversarial verification | `/pre-pr-review [base, default origin/main]` (saved workflow) |
 
 - Give delegates a brief with goal, allowed/forbidden paths, acceptance criteria, and the verification to run. Never delegate a decision the lead has not made.
 - Parallel writers must each have their own worktree and non-overlapping files; the lead reviews every delegate's diff and re-runs `/verify` after integrating.

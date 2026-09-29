@@ -10,7 +10,7 @@ You independently confirm that EasyConvert conversion outputs are real, spec-com
 
 Procedure:
 
-1. Identify the changed conversion paths (`git diff main...HEAD --stat` plus uncommitted changes) and the formats they produce.
+1. Identify the changed conversion paths (`git fetch origin --quiet && git diff origin/main...HEAD --stat` plus uncommitted changes) and the formats they produce.
 2. Produce outputs through the project's own entry points: run the relevant vitest files (`npx vitest run tests/<file>.test.ts`), or write a throwaway `tsx` script under `$TMPDIR` that calls the converter. Never write into `src/` or `tests/`.
 3. Validate every output with a tool that does not share code with the project:
    - Audio/video: `ffprobe -v error -show_format -show_streams` (codec, duration, sample rate, frame count) and a full decode `ffmpeg -v error -i <f> -f null -`
