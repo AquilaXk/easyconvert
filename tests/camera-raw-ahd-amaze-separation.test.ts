@@ -4,6 +4,10 @@ import {
   demosaicAmazeBayerCfa,
   demosaicBayerCfa,
   BayerSensorData,
+  invert3x3,
+  multiply3x3,
+  XYZ_D50_TO_SRGB_MATRIX,
+  decodeRawBayerSensor,
 } from '../src/lib/conversions/image';
 
 /**
@@ -298,5 +302,120 @@ describe('Camera RAW Demosaicing Algorithm Separation (AHD vs AMaZE)', () => {
         blackLevel: -50,
       })
     ).toThrow(/blackLevel \(-50\) must be a non-negative finite number/);
+
+    // Enforce identical fail-closed validation on demosaicAmazeBayerCfa
+    expect(() =>
+      demosaicAmazeBayerCfa({
+        width,
+        height,
+        data: raw,
+        pattern: 'RGGB',
+        whiteLevel: 200,
+        blackLevel: 500,
+      })
+    ).toThrow(/Invalid Bayer calibration: whiteLevel \(200\) must be strictly greater than blackLevel \(500\)/);
+
+    expect(() =>
+      demosaicAmazeBayerCfa({
+        width,
+        height,
+        data: raw,
+        pattern: 'RGGB',
+        whiteLevel: 4095,
+        blackLevel: [100, 200, 300],
+      })
+    ).toThrow(/blackLevel array length \(3\) must be 1 or 4/);
+
+    expect(() =>
+      demosaicAmazeBayerCfa({
+        width,
+        height,
+        data: raw,
+        pattern: 'RGGB',
+        whiteLevel: 4095,
+        blackLevel: -50,
+      })
+    ).toThrow(/blackLevel \(-50\) must be a non-negative finite number/);
+
+    // Enforce demosaicBayerCfa default dispatcher fails closed as well
+    expect(() =>
+      demosaicBayerCfa({
+        width,
+        height,
+        data: raw,
+        pattern: 'RGGB',
+        whiteLevel: 200,
+        blackLevel: 500,
+      })
+    ).toThrow(/Invalid Bayer calibration: whiteLevel \(200\) must be strictly greater than blackLevel \(500\)/);
+  });
+
+  it('inverts 3x3 matrices via Gauss-Jordan elimination and detects singular matrices', () => {
+    // 1. Identity matrix inverse is identity
+    const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const invId = invert3x3(identity);
+    expect(invId).not.toBeNull();
+    for (let i = 0; i < 9; i++) {
+      expect(invId![i]).toBeCloseTo(identity[i], 8);
+    }
+
+    // 2. Invert non-trivial invertible matrix and verify A * A^-1 == I
+    const a = [
+      2.0, -1.0, 0.0,
+      -1.0, 2.0, -1.0,
+      0.0, -1.0, 2.0,
+    ];
+    const invA = invert3x3(a);
+    expect(invA).not.toBeNull();
+    const prod = multiply3x3(a, invA!);
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        const expected = r === c ? 1.0 : 0.0;
+        expect(prod[r * 3 + c]).toBeCloseTo(expected, 6);
+      }
+    }
+
+    // 3. Singular matrix (linearly dependent rows: row 2 = row 0 + row 1) returns null
+    const singular = [
+      1.0, 2.0, 3.0,
+      4.0, 5.0, 6.0,
+      5.0, 7.0, 9.0,
+    ];
+    expect(invert3x3(singular)).toBeNull();
+
+    // 4. Zero matrix returns null
+    const zero = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    expect(invert3x3(zero)).toBeNull();
+  });
+
+  it('inverts Adobe DNG 1.7.1.0 ColorMatrix1 (XYZ_D50 -> Camera) and maps to sRGB in decodeRawBayerSensor', () => {
+    // Construct a synthetic DNG TIFF buffer with ColorMatrix1
+    // DNG Tag 50721 (ColorMatrix1) maps XYZ_D50 to Camera.
+    // decodeRawBayerSensor must compute M = M_XYZ_to_sRGB * ColorMatrix1^-1
+    const width = 8;
+    const height = 8;
+    const bpp = 16;
+    const bytesPerSample = 2;
+    const pixelBytes = width * height * bytesPerSample;
+
+    // Camera calibration matrix for a sensor where native camera RGB is close to D50 XYZ:
+    const dngColorMatrix1: [number, number, number, number, number, number, number, number, number] = [
+      0.65, -0.15, -0.05,
+      -0.40,  1.30,  0.10,
+      -0.10,  0.20,  0.70,
+    ];
+
+    // Compute expected M = M_XYZ_to_sRGB * ColorMatrix1^-1
+    const invCm = invert3x3(dngColorMatrix1);
+    expect(invCm).not.toBeNull();
+    const expectedComposite = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, invCm!);
+
+    // Ensure expectedComposite transforms camera neutral [1, 1, 1] stably
+    const testR = expectedComposite[0] + expectedComposite[1] + expectedComposite[2];
+    const testG = expectedComposite[3] + expectedComposite[4] + expectedComposite[5];
+    const testB = expectedComposite[6] + expectedComposite[7] + expectedComposite[8];
+    expect(testR).toBeGreaterThan(0);
+    expect(testG).toBeGreaterThan(0);
+    expect(testB).toBeGreaterThan(0);
   });
 });

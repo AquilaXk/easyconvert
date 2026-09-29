@@ -57,6 +57,11 @@ export interface BayerSensorData {
   colorMatrix?: [number, number, number, number, number, number, number, number, number];
   colorMatrix1?: [number, number, number, number, number, number, number, number, number]; // Standard Illuminant A (Tungsten, 2856K)
   colorMatrix2?: [number, number, number, number, number, number, number, number, number]; // Standard Illuminant D65 (Daylight, 6504K)
+  forwardMatrix1?: [number, number, number, number, number, number, number, number, number]; // Camera neutral to XYZ D50 under Illuminant A
+  forwardMatrix2?: [number, number, number, number, number, number, number, number, number]; // Camera neutral to XYZ D50 under Illuminant D65
+  activeArea?: [number, number, number, number]; // [top, left, bottom, right]
+  defaultCropOrigin?: [number, number]; // [x, y]
+  defaultCropSize?: [number, number]; // [width, height]
   cctKelvin?: number; // Scene correlated color temperature in Kelvin
   applySrgbGamma?: boolean;
 }
@@ -324,6 +329,144 @@ export const DEFAULT_D65_COLOR_MATRIX: [number, number, number, number, number, 
 ];
 
 /**
+ * Standard Bradford-adapted CIE XYZ D50 to sRGB (D65) transformation matrix.
+ * Used in Adobe DNG Specification 1.7.1.0 to map XYZ coordinates to standard sRGB.
+ */
+export const XYZ_D50_TO_SRGB_MATRIX: [number, number, number, number, number, number, number, number, number] = [
+  3.1338561, -1.6168667, -0.4906146,
+  -0.9787684, 1.9161415, 0.0334540,
+  0.0719453, -0.2289914, 1.4052427,
+];
+
+/**
+ * Multiplies two 3x3 matrices in row-major order: C = A * B.
+ */
+export function multiply3x3(
+  a: readonly number[],
+  b: readonly number[]
+): [number, number, number, number, number, number, number, number, number] {
+  const res = new Array(9);
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      res[r * 3 + c] =
+        a[r * 3 + 0] * b[0 * 3 + c] +
+        a[r * 3 + 1] * b[1 * 3 + c] +
+        a[r * 3 + 2] * b[2 * 3 + c];
+    }
+  }
+  return res as [number, number, number, number, number, number, number, number, number];
+}
+
+/**
+ * Computes exact 3x3 matrix inverse using Gauss-Jordan elimination with partial row pivoting.
+ * Returns null if the matrix is singular or non-invertible.
+ */
+export function invert3x3(
+  matrix: readonly number[]
+): [number, number, number, number, number, number, number, number, number] | null {
+  if (!matrix || matrix.length !== 9) return null;
+  const a: number[][] = [
+    [matrix[0], matrix[1], matrix[2], 1, 0, 0],
+    [matrix[3], matrix[4], matrix[5], 0, 1, 0],
+    [matrix[6], matrix[7], matrix[8], 0, 0, 1],
+  ];
+
+  for (let i = 0; i < 3; i++) {
+    let maxRow = i;
+    let maxVal = Math.abs(a[i][i]);
+    for (let r = i + 1; r < 3; r++) {
+      const val = Math.abs(a[r][i]);
+      if (val > maxVal) {
+        maxVal = val;
+        maxRow = r;
+      }
+    }
+    if (maxVal < 1e-12 || !Number.isFinite(maxVal)) {
+      return null;
+    }
+    if (maxRow !== i) {
+      const tmp = a[i];
+      a[i] = a[maxRow];
+      a[maxRow] = tmp;
+    }
+
+    const pivot = a[i][i];
+    for (let c = 0; c < 6; c++) {
+      a[i][c] /= pivot;
+    }
+
+    for (let r = 0; r < 3; r++) {
+      if (r === i) continue;
+      const factor = a[r][i];
+      for (let c = 0; c < 6; c++) {
+        a[r][c] -= factor * a[i][c];
+      }
+    }
+  }
+
+  return [
+    a[0][3], a[0][4], a[0][5],
+    a[1][3], a[1][4], a[1][5],
+    a[2][3], a[2][4], a[2][5],
+  ];
+}
+
+/**
+ * Validates Bayer sensor calibration parameters (whiteLevel, blackLevel) fail-closed.
+ * Guarantees whiteLevel > maxBLevel and valid non-negative finite calibrations.
+ */
+export function validateBayerSensorCalibration(
+  sensor: BayerSensorData,
+  defaultWhiteLevel: number
+): {
+  defaultBLevel: number;
+  maxBLevel: number;
+  wLevel: number;
+  hasArrayBlackLevel: boolean;
+  blackLevelArr?: number[];
+} {
+  if (sensor.whiteLevel !== undefined) {
+    if (!Number.isFinite(sensor.whiteLevel) || sensor.whiteLevel <= 0) {
+      throw new Error(`Invalid Bayer calibration: whiteLevel (${sensor.whiteLevel}) must be a positive finite number.`);
+    }
+  }
+
+  if (typeof sensor.blackLevel === 'number') {
+    if (!Number.isFinite(sensor.blackLevel) || sensor.blackLevel < 0) {
+      throw new Error(`Invalid Bayer calibration: blackLevel (${sensor.blackLevel}) must be a non-negative finite number.`);
+    }
+  } else if (Array.isArray(sensor.blackLevel)) {
+    if (sensor.blackLevel.length !== 1 && sensor.blackLevel.length !== 4) {
+      throw new Error(`Invalid Bayer calibration: blackLevel array length (${sensor.blackLevel.length}) must be 1 or 4 matching 2x2 CFA pattern.`);
+    }
+    for (const b of sensor.blackLevel) {
+      if (!Number.isFinite(b) || b < 0) {
+        throw new Error(`Invalid Bayer calibration: blackLevel elements must be non-negative finite numbers, got ${b}.`);
+      }
+    }
+  }
+
+  const blackLevelArr = Array.isArray(sensor.blackLevel) ? sensor.blackLevel : undefined;
+  const hasArrayBlackLevel = blackLevelArr !== undefined && blackLevelArr.length > 0;
+  const defaultBLevel =
+    typeof sensor.blackLevel === 'number'
+      ? sensor.blackLevel
+      : blackLevelArr && blackLevelArr.length === 1
+      ? blackLevelArr[0]
+      : 0;
+  const maxBLevel = blackLevelArr && blackLevelArr.length > 0 ? Math.max(...blackLevelArr) : defaultBLevel;
+  const wLevel = sensor.whiteLevel !== undefined ? sensor.whiteLevel : defaultWhiteLevel;
+
+  if (wLevel <= maxBLevel) {
+    throw new Error(
+      `Invalid Bayer calibration: whiteLevel (${wLevel}) must be strictly greater than blackLevel (${maxBLevel}).`
+    );
+  }
+
+  return { defaultBLevel, maxBLevel, wLevel, hasArrayBlackLevel, blackLevelArr };
+}
+
+/**
  * Interpolates between dual illuminant color calibration matrices (Illuminant A and Illuminant D65)
  * using reciprocal color temperature (Mired) weighting per ISO 12234-2 / DNG specifications.
  */
@@ -450,9 +593,10 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     else maxPossible = 255;
   }
 
-  const hasArrayBlackLevel = Array.isArray(sensor.blackLevel) && sensor.blackLevel.length > 0;
-  const defaultBLevel = typeof sensor.blackLevel === 'number' ? sensor.blackLevel : 0;
-  const wLevel = sensor.whiteLevel || maxPossible;
+  const { defaultBLevel, wLevel, hasArrayBlackLevel, blackLevelArr } = validateBayerSensorCalibration(
+    sensor,
+    maxPossible
+  );
 
   // Normalize raw sensor data to Float32Array in [0, 255]
   const norm = new Float32Array(width * height);
@@ -461,10 +605,9 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
       const i = y * width + x;
       const rawVal = data[i] !== undefined ? data[i] : 0;
       let bLevel = defaultBLevel;
-      if (hasArrayBlackLevel) {
-        const blkArr = sensor.blackLevel as number[];
+      if (hasArrayBlackLevel && blackLevelArr) {
         const blkIdx = ((y & 1) << 1) | (x & 1);
-        bLevel = blkArr[blkIdx % blkArr.length] ?? 0;
+        bLevel = blackLevelArr[blkIdx % blackLevelArr.length] ?? defaultBLevel;
       }
       const range = Math.max(1, wLevel - bLevel);
       const clamped = Math.max(bLevel, Math.min(wLevel, rawVal));
@@ -672,10 +815,26 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
   const gWb = whiteBalance ? whiteBalance[1] : 1.0;
   const bWb = whiteBalance ? whiteBalance[2] : 1.0;
 
-  // Resolve 3x3 color matrix: explicit, dual illuminant CCT interpolation, single matrix fallback, or default D65
+  // Resolve 3x3 color matrix: explicit, forward matrix, dual illuminant CCT interpolation, single matrix fallback, or default D65
   let mat: [number, number, number, number, number, number, number, number, number] | null = null;
   if (colorMatrix) {
     mat = colorMatrix;
+  } else if (sensor.forwardMatrix1 || sensor.forwardMatrix2) {
+    let fMat: [number, number, number, number, number, number, number, number, number] | undefined;
+    if (sensor.forwardMatrix1 && sensor.forwardMatrix2) {
+      let cct = sensor.cctKelvin;
+      if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
+        cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
+      }
+      fMat = interpolateDualIlluminantColorMatrix(cct, sensor.forwardMatrix1, sensor.forwardMatrix2);
+    } else if (sensor.forwardMatrix1) {
+      fMat = sensor.forwardMatrix1;
+    } else if (sensor.forwardMatrix2) {
+      fMat = sensor.forwardMatrix2;
+    }
+    if (fMat) {
+      mat = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, fMat);
+    }
   } else if (sensor.colorMatrix1 && sensor.colorMatrix2) {
     let cct = sensor.cctKelvin;
     if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
@@ -754,43 +913,10 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
   const bitDepth = sensor.bitsPerSample ?? (sensor as any).bitDepth ?? (rawInput instanceof Uint16Array ? 16 : 8);
   const maxVal = (1 << bitDepth) - 1;
 
-  if (sensor.whiteLevel !== undefined) {
-    if (!Number.isFinite(sensor.whiteLevel) || sensor.whiteLevel <= 0) {
-      throw new Error(`Invalid Bayer calibration: whiteLevel (${sensor.whiteLevel}) must be a positive finite number.`);
-    }
-  }
-
-  if (typeof sensor.blackLevel === 'number') {
-    if (!Number.isFinite(sensor.blackLevel) || sensor.blackLevel < 0) {
-      throw new Error(`Invalid Bayer calibration: blackLevel (${sensor.blackLevel}) must be a non-negative finite number.`);
-    }
-  } else if (Array.isArray(sensor.blackLevel)) {
-    if (sensor.blackLevel.length !== 1 && sensor.blackLevel.length !== 4) {
-      throw new Error(`Invalid Bayer calibration: blackLevel array length (${sensor.blackLevel.length}) must be 1 or 4 matching 2x2 CFA pattern.`);
-    }
-    for (const b of sensor.blackLevel) {
-      if (!Number.isFinite(b) || b < 0) {
-        throw new Error(`Invalid Bayer calibration: blackLevel elements must be non-negative finite numbers, got ${b}.`);
-      }
-    }
-  }
-
-  const blackLevelArr = Array.isArray(sensor.blackLevel) ? sensor.blackLevel : undefined;
-  const hasArrayBlackLevel = blackLevelArr !== undefined && blackLevelArr.length > 0;
-  const defaultBLevel =
-    typeof sensor.blackLevel === 'number'
-      ? sensor.blackLevel
-      : blackLevelArr && blackLevelArr.length === 1
-      ? blackLevelArr[0]
-      : 0;
-  const maxBLevel = blackLevelArr && blackLevelArr.length > 0 ? Math.max(...blackLevelArr) : defaultBLevel;
-  const wLevel = sensor.whiteLevel !== undefined ? sensor.whiteLevel : maxVal;
-
-  if (wLevel <= maxBLevel) {
-    throw new Error(
-      `Invalid Bayer calibration: whiteLevel (${wLevel}) must be strictly greater than blackLevel (${maxBLevel}).`
-    );
-  }
+  const { defaultBLevel, maxBLevel, wLevel, hasArrayBlackLevel, blackLevelArr } = validateBayerSensorCalibration(
+    sensor,
+    maxVal
+  );
 
   const mirrorCoord = (c: number, max: number): number => {
     if (c < 0) return -c;
@@ -1461,8 +1587,14 @@ export function decodeRawBayerSensor(
         asShotNeutral?: [number, number, number];
         colorMatrix1?: [number, number, number, number, number, number, number, number, number];
         colorMatrix2?: [number, number, number, number, number, number, number, number, number];
+        forwardMatrix1?: [number, number, number, number, number, number, number, number, number];
+        forwardMatrix2?: [number, number, number, number, number, number, number, number, number];
+        activeArea?: [number, number, number, number];
+        defaultCropOrigin?: [number, number];
+        defaultCropSize?: [number, number];
         calibrationIlluminant1?: number;
         calibrationIlluminant2?: number;
+        cctKelvin?: number;
       }
 
       const parseIfd = (offset: number): TagData => {
@@ -1548,8 +1680,14 @@ export function decodeRawBayerSensor(
               else if (p[0] === 1 && p[1] === 2 && p[2] === 0 && p[3] === 1) data.cfaPattern = 'GBRG';
               break;
             }
-            case 50714: // DNG BlackLevel
-            case 50738: {
+            case 50710: { // DNG ActiveArea [top, left, bottom, right]
+              const nums = getNumberArray(type, count, valOff);
+              if (nums.length >= 4) {
+                data.activeArea = [nums[0], nums[1], nums[2], nums[3]];
+              }
+              break;
+            }
+            case 50714: { // DNG BlackLevel
               if (type === 5 || type === 10) {
                 const rationals = getRationalArray(type, count, valOff);
                 if (rationals.length === 1) data.blackLevel = rationals[0];
@@ -1561,9 +1699,28 @@ export function decodeRawBayerSensor(
               }
               break;
             }
-            case 50717: // DNG WhiteLevel
-            case 50739: {
+            case 50717: { // DNG WhiteLevel
               data.whiteLevel = getScalar();
+              break;
+            }
+            case 50719: { // DNG DefaultCropOrigin [x, y]
+              if (type === 5 || type === 10) {
+                const r = getRationalArray(type, count, valOff);
+                if (r.length >= 2) data.defaultCropOrigin = [Math.round(r[0]), Math.round(r[1])];
+              } else {
+                const nums = getNumberArray(type, count, valOff);
+                if (nums.length >= 2) data.defaultCropOrigin = [nums[0], nums[1]];
+              }
+              break;
+            }
+            case 50720: { // DNG DefaultCropSize [width, height]
+              if (type === 5 || type === 10) {
+                const r = getRationalArray(type, count, valOff);
+                if (r.length >= 2) data.defaultCropSize = [Math.round(r[0]), Math.round(r[1])];
+              } else {
+                const nums = getNumberArray(type, count, valOff);
+                if (nums.length >= 2) data.defaultCropSize = [nums[0], nums[1]];
+              }
               break;
             }
             case 50721: { // DNG ColorMatrix1
@@ -1584,6 +1741,20 @@ export function decodeRawBayerSensor(
               const rationals = getRationalArray(type, count, valOff);
               if (rationals.length >= 3) {
                 data.asShotNeutral = [rationals[0], rationals[1], rationals[2]];
+              }
+              break;
+            }
+            case 50738: { // DNG ForwardMatrix1 (maps camera coordinates to XYZ D50)
+              const rationals = getRationalArray(type, count, valOff);
+              if (rationals.length >= 9) {
+                data.forwardMatrix1 = rationals.slice(0, 9) as [number, number, number, number, number, number, number, number, number];
+              }
+              break;
+            }
+            case 50739: { // DNG ForwardMatrix2 (maps camera coordinates to XYZ D50)
+              const rationals = getRationalArray(type, count, valOff);
+              if (rationals.length >= 9) {
+                data.forwardMatrix2 = rationals.slice(0, 9) as [number, number, number, number, number, number, number, number, number];
               }
               break;
             }
@@ -1628,6 +1799,11 @@ export function decodeRawBayerSensor(
         chosen.asShotNeutral = chosen.asShotNeutral ?? rootParsed.asShotNeutral;
         chosen.colorMatrix1 = chosen.colorMatrix1 ?? rootParsed.colorMatrix1;
         chosen.colorMatrix2 = chosen.colorMatrix2 ?? rootParsed.colorMatrix2;
+        chosen.forwardMatrix1 = chosen.forwardMatrix1 ?? rootParsed.forwardMatrix1;
+        chosen.forwardMatrix2 = chosen.forwardMatrix2 ?? rootParsed.forwardMatrix2;
+        chosen.activeArea = chosen.activeArea ?? rootParsed.activeArea;
+        chosen.defaultCropOrigin = chosen.defaultCropOrigin ?? rootParsed.defaultCropOrigin;
+        chosen.defaultCropSize = chosen.defaultCropSize ?? rootParsed.defaultCropSize;
         chosen.calibrationIlluminant1 = chosen.calibrationIlluminant1 ?? rootParsed.calibrationIlluminant1;
         chosen.calibrationIlluminant2 = chosen.calibrationIlluminant2 ?? rootParsed.calibrationIlluminant2;
         chosen.cfaPattern = chosen.cfaPattern ?? rootParsed.cfaPattern;
@@ -1749,6 +1925,35 @@ export function decodeRawBayerSensor(
           }
         }
 
+        // In Adobe DNG 1.7.1.0:
+        // ForwardMatrix maps Camera -> XYZ_D50, so M = M_XYZ_to_sRGB * ForwardMatrix
+        // ColorMatrix maps XYZ_D50 -> Camera, so M = M_XYZ_to_sRGB * ColorMatrix^-1
+        let resolvedColorMatrix: [number, number, number, number, number, number, number, number, number] | undefined;
+        if (chosen.forwardMatrix1) {
+          let fwd = chosen.forwardMatrix1;
+          if (chosen.forwardMatrix2) {
+            let cct = chosen.cctKelvin;
+            if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
+              cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
+            }
+            fwd = interpolateDualIlluminantColorMatrix(cct, chosen.forwardMatrix1, chosen.forwardMatrix2);
+          }
+          resolvedColorMatrix = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, fwd);
+        } else if (chosen.colorMatrix1) {
+          let cm = chosen.colorMatrix1;
+          if (chosen.colorMatrix2) {
+            let cct = chosen.cctKelvin;
+            if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
+              cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
+            }
+            cm = interpolateDualIlluminantColorMatrix(cct, chosen.colorMatrix1, chosen.colorMatrix2);
+          }
+          const inv = invert3x3(cm);
+          if (inv) {
+            resolvedColorMatrix = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, inv);
+          }
+        }
+
         const result = demosaicBayerCfa({
           width: sensorWidth,
           height: sensorHeight,
@@ -1759,12 +1964,53 @@ export function decodeRawBayerSensor(
           whiteLevel: chosen.whiteLevel,
           asShotNeutral: chosen.asShotNeutral,
           whiteBalance,
+          colorMatrix: resolvedColorMatrix,
           colorMatrix1: chosen.colorMatrix1,
           colorMatrix2: chosen.colorMatrix2,
+          forwardMatrix1: chosen.forwardMatrix1,
+          forwardMatrix2: chosen.forwardMatrix2,
+          activeArea: chosen.activeArea,
+          defaultCropOrigin: chosen.defaultCropOrigin,
+          defaultCropSize: chosen.defaultCropSize,
           applySrgbGamma: true,
         });
 
-        return { rgb: result.data, width: sensorWidth, height: sensorHeight };
+        let outRgb = result.data;
+        let outW = sensorWidth;
+        let outH = sensorHeight;
+
+        // Apply ActiveArea / DefaultCrop cropping if specified in DNG tags
+        let cropX = 0;
+        let cropY = 0;
+        let cropW = outW;
+        let cropH = outH;
+
+        if (chosen.defaultCropOrigin && chosen.defaultCropSize) {
+          cropX = Math.max(0, Math.min(outW - 1, chosen.defaultCropOrigin[0]));
+          cropY = Math.max(0, Math.min(outH - 1, chosen.defaultCropOrigin[1]));
+          cropW = Math.max(1, Math.min(outW - cropX, chosen.defaultCropSize[0]));
+          cropH = Math.max(1, Math.min(outH - cropY, chosen.defaultCropSize[1]));
+        } else if (chosen.activeArea && chosen.activeArea.length >= 4) {
+          const [top, left, bottom, right] = chosen.activeArea;
+          cropY = Math.max(0, Math.min(outH - 1, top));
+          cropX = Math.max(0, Math.min(outW - 1, left));
+          cropH = Math.max(1, Math.min(outH - cropY, bottom - top));
+          cropW = Math.max(1, Math.min(outW - cropX, right - left));
+        }
+
+        if (cropX > 0 || cropY > 0 || cropW < outW || cropH < outH) {
+          const croppedBuffer = Buffer.alloc(cropW * cropH * 3);
+          for (let row = 0; row < cropH; row++) {
+            const srcOff = ((cropY + row) * outW + cropX) * 3;
+            const dstOff = row * cropW * 3;
+            outRgb.copy(croppedBuffer, dstOff, srcOff, srcOff + cropW * 3);
+          }
+          outRgb = croppedBuffer;
+          outW = cropW;
+          outH = cropH;
+        }
+
+        return { rgb: outRgb, width: outW, height: outH };
       }
     }
   }

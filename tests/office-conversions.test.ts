@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions/index';
+import { getFullDocxCellText } from '../src/lib/conversions/office';
 
 describe('Office & Ebook Conversion Engine (DOCX, XLSX, PPTX, EPUB, MOBI, FB2, ODP)', () => {
   it('converts Markdown to a genuine OpenXML DOCX archive', async () => {
@@ -295,5 +297,89 @@ Summary after table.`;
     expect(result.mimeType).toBe('text/plain');
     expect(result.buffer.toString('utf-8')).toContain('OpenDocument Heading');
     expect(result.buffer.toString('utf-8')).toContain('First paragraph of ODT document.');
+  });
+
+  it('renders nested tables inside DOCX cells during PDF conversion without dropping content', async () => {
+    // 1. Build a synthetic DOCX package with an outer table containing a nested table in a cell
+    const zip = new JSZip();
+    zip.file(
+      '[Content_Types].xml',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`
+    );
+    zip.file(
+      '_rels/.rels',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`
+    );
+    const docXmlWithNestedTable = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Document with Nested Table</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>Outer Column 1</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc>
+          <w:p><w:r><w:t>Outer Column 2 Header</w:t></w:r></w:p>
+          <w:tbl>
+            <w:tr>
+              <w:tc><w:p><w:r><w:t>Nested Cell Alpha</w:t></w:r></w:p></w:tc>
+              <w:tc><w:p><w:r><w:t>Nested Cell Beta</w:t></w:r></w:p></w:tc>
+            </w:tr>
+          </w:tbl>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+    zip.file('word/document.xml', docXmlWithNestedTable);
+    const docxBuf = await zip.generateAsync({ type: 'nodebuffer' });
+
+    // 2. Convert DOCX to PDF
+    const pdfResult = await convertFile(docxBuf, 'docx', 'pdf', {}, 'nested_table.docx');
+    expect(pdfResult.mimeType).toBe('application/pdf');
+    expect(pdfResult.buffer.length).toBeGreaterThan(500);
+
+    // Verify PDF header
+    const binary = pdfResult.buffer.toString('binary');
+    expect(binary.startsWith('%PDF-')).toBe(true);
+
+    // Extract text from PDF using authentic pdfjs-dist oracle
+    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(pdfResult.buffer) });
+    const pdfDoc = await loadingTask.promise;
+    const page = await pdfDoc.getPage(1);
+    const textContent = await page.getTextContent();
+    const extractedStr = textContent.items
+      .map((item: any) => ('str' in item ? item.str : ''))
+      .filter(Boolean)
+      .join(' ');
+
+    expect(extractedStr).toContain('Outer Column 1');
+    expect(extractedStr).toContain('Outer Column 2 Header');
+    expect(extractedStr).toContain('Nested Cell Alpha');
+    expect(extractedStr).toContain('Nested Cell Beta');
+
+    // Also verify getFullDocxCellText directly
+    const testCell = {
+      text: 'Parent Cell',
+      nestedTable: {
+        rows: [
+          ['Sub 1', 'Sub 2'],
+          ['Sub 3', 'Sub 4'],
+        ],
+      },
+    };
+    const fullText = getFullDocxCellText(testCell);
+    expect(fullText).toContain('Parent Cell');
+    expect(fullText).toContain('Sub 1 | Sub 2');
+    expect(fullText).toContain('Sub 3 | Sub 4');
   });
 });
