@@ -1837,7 +1837,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'archive',
     description: 'Universal lossless compression archive container.',
     targetFormats: ['tar', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
-    optionsSchema: { compressionLevel: true, splitVolumeBytes: true },
+    optionsSchema: { compressionLevel: true, splitVolumeBytes: true, password: true },
   },
   tar: {
     id: 'tar',
@@ -1874,7 +1874,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'archive',
     description: 'Open-architecture high compression ratio LZMA/LZMA2 archive.',
     targetFormats: ['zip', 'tar', 'gz', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
-    optionsSchema: { compressionLevel: true, archiveCoder: true, splitVolumeBytes: true, solid: true },
+    optionsSchema: { compressionLevel: true, archiveCoder: true, splitVolumeBytes: true, solid: true, password: true },
   },
   zst: {
     id: 'zst',

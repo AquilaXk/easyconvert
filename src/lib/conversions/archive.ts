@@ -113,11 +113,54 @@ function rarHeaderCrc(headerWithoutCrc: Buffer): number {
   return (c ^ 0xffffffff) & 0xffff;
 }
 
+function createEncryptedArchiveVia7z(
+  files: { filename: string; buffer: Buffer }[],
+  archiveName: string,
+  archiveType: 'zip' | '7z',
+  mimeType: string,
+  password?: string
+): ConversionResult | null {
+  const p7z = get7zBinaryPath();
+  if (!p7z || !password) return null;
+
+  const tmpDir = os.tmpdir();
+  const token = crypto.randomBytes(8).toString('hex');
+  const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
+  const stagingDir = path.join(workDir, 'staging');
+  fs.mkdirSync(stagingDir, { recursive: true });
+  try {
+    for (const f of files) {
+      const dest = path.join(stagingDir, f.filename);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, f.buffer);
+    }
+    const outPath = path.join(workDir, archiveName);
+    execFileSync(p7z, ['a', '-y', `-t${archiveType}`, `-p${password}`, outPath, '.'], {
+      cwd: stagingDir,
+      timeout: 60000,
+    });
+    const content = fs.readFileSync(outPath);
+    return {
+      buffer: content,
+      mimeType,
+      filename: archiveName,
+      size: content.length,
+    };
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 export async function createZipArchive(
   files: { filename: string; buffer: Buffer }[],
   options: ConversionOptions = {},
   archiveName = 'converted_files.zip'
 ): Promise<ConversionResult> {
+  if (options.password) {
+    const encRes = createEncryptedArchiveVia7z(files, archiveName, 'zip', 'application/zip', options.password);
+    if (encRes) return encRes;
+  }
+
   const zip = new JSZip();
 
   for (const f of files) {
@@ -169,9 +212,102 @@ export function sanitizeArchivePath(filename: string): string | null {
   return normalized;
 }
 
+/**
+ * Inspects PKZIP local file headers and central directory records for bit 0 or bit 6 encryption flags.
+ */
+export function isZipBufferEncrypted(buffer: Buffer): boolean {
+  if (buffer.length < 30) return false;
+  let pos = 0;
+  while (pos + 30 <= buffer.length) {
+    if (buffer[pos] === 0x50 && buffer[pos + 1] === 0x4b && buffer[pos + 2] === 0x03 && buffer[pos + 3] === 0x04) {
+      const flags = buffer.readUInt16LE(pos + 6);
+      if ((flags & 0x0041) !== 0) return true;
+      const compSize = buffer.readUInt32LE(pos + 18);
+      const fnLen = buffer.readUInt16LE(pos + 26);
+      const extraLen = buffer.readUInt16LE(pos + 28);
+      pos += 30 + fnLen + extraLen + compSize;
+    } else {
+      break;
+    }
+  }
+  let cdPos = 0;
+  while (cdPos + 46 <= buffer.length) {
+    const nextCd = buffer.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), cdPos);
+    if (nextCd === -1) break;
+    const flags = buffer.readUInt16LE(nextCd + 8);
+    if ((flags & 0x0041) !== 0) return true;
+    const fnLen = buffer.readUInt16LE(nextCd + 28);
+    const extraLen = buffer.readUInt16LE(nextCd + 30);
+    const commentLen = buffer.readUInt16LE(nextCd + 32);
+    cdPos = nextCd + 46 + fnLen + extraLen + commentLen;
+  }
+  return false;
+}
+
 export async function extractZipArchive(
-  zipBuffer: Buffer
+  zipBuffer: Buffer,
+  options: { password?: string } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
+  const isEncrypted = isZipBufferEncrypted(zipBuffer);
+  if (isEncrypted) {
+    if (!options.password) {
+      throw new ConversionFailedError('ZIP archive is password protected. A password is required to extract.');
+    }
+    const p7z = get7zBinaryPath();
+    if (p7z) {
+      const tmpDir = os.tmpdir();
+      const token = crypto.randomBytes(8).toString('hex');
+      const workDir = path.join(tmpDir, `easyconvert_pw_${Date.now()}_${token}`);
+      fs.mkdirSync(workDir, { recursive: true });
+      try {
+        const zipPath = path.join(workDir, 'archive.zip');
+        fs.writeFileSync(zipPath, zipBuffer);
+        const extractDir = path.join(workDir, 'out');
+        fs.mkdirSync(extractDir, { recursive: true });
+        try {
+          execFileSync(p7z, ['x', '-y', `-p${options.password}`, `-o${extractDir}`, zipPath], {
+            cwd: workDir,
+            timeout: 60000,
+            maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+          });
+        } catch (err: any) {
+          const msg = (err?.message || '') + (err?.stderr?.toString() || '');
+          if (msg.includes('Wrong password') || msg.includes('Can not open encrypted') || msg.includes('Data Error')) {
+            throw new ConversionFailedError('Invalid password for encrypted ZIP archive.');
+          }
+          throw new ConversionFailedError(`Failed to decrypt ZIP archive: ${err.message}`);
+        }
+
+        const results: { filename: string; buffer: Buffer }[] = [];
+        let totalSize = 0;
+        const readRec = (dir: string, prefix = '') => {
+          for (const item of fs.readdirSync(dir)) {
+            const full = path.join(dir, item);
+            const rel = prefix ? `${prefix}/${item}` : item;
+            const stat = fs.statSync(full);
+            if (stat.isDirectory()) {
+              readRec(full, rel);
+            } else {
+              totalSize += stat.size;
+              if (totalSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+                throw new ConversionFailedError(
+                  `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+                );
+              }
+              results.push({ filename: rel, buffer: fs.readFileSync(full) });
+            }
+          }
+        };
+        readRec(extractDir);
+        return results;
+      } finally {
+        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+      }
+    } else {
+      throw new ConversionFailedError('Cannot extract encrypted ZIP archive: 7-Zip binary not available.');
+    }
+  }
+
   const zip = await JSZip.loadAsync(zipBuffer);
   const entries = Object.entries(zip.files).filter(([, f]) => !f.dir);
 
@@ -496,7 +632,10 @@ export function getUnrarBinaryPath(): string | null {
   return null;
 }
 
-export function extractRarArchive(rarBuffer: Buffer): { filename: string; buffer: Buffer }[] {
+export function extractRarArchive(
+  rarBuffer: Buffer,
+  options: { password?: string } = {}
+): { filename: string; buffer: Buffer }[] {
   if (!rarBuffer || rarBuffer.length < 14) {
     throw new Error('Invalid RAR archive: buffer too small');
   }
@@ -535,10 +674,19 @@ export function extractRarArchive(rarBuffer: Buffer): { filename: string; buffer
     fs.mkdirSync(extractDir, { recursive: true });
 
     try {
-      execFileSync(unrarBin, ['x', '-inul', '-y', tmpFile, extractDir], {
-        timeout: 30000,
-        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-      });
+      const pwArgs = options.password ? [`-p${options.password}`] : ['-p-'];
+      try {
+        execFileSync(unrarBin, ['x', '-inul', '-y', ...pwArgs, tmpFile, extractDir], {
+          timeout: 30000,
+          maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        });
+      } catch (err: any) {
+        const msg = (err?.message || '') + (err?.stderr?.toString() || '');
+        if (msg.includes('password') || msg.includes('CRC error')) {
+          throw new ConversionFailedError('Invalid password for encrypted RAR archive.');
+        }
+        throw err;
+      }
 
       const extracted: { filename: string; buffer: Buffer }[] = [];
       let totalUncompressedSize = 0;
@@ -1271,12 +1419,21 @@ export function convertWithNative7z(
     const extractDir = path.join(workDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
+    const pwExtractArgs = options.password ? [`-p${options.password}`] : [];
     if (supportedExtract.has(src)) {
-      execFileSync(p7zBin, ['x', '-y', `-o${extractDir}`, inputPath], {
-        cwd: workDir,
-        timeout: 60000,
-        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-      });
+      try {
+        execFileSync(p7zBin, ['x', '-y', ...pwExtractArgs, `-o${extractDir}`, inputPath], {
+          cwd: workDir,
+          timeout: 60000,
+          maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        });
+      } catch (err: any) {
+        const msg = (err?.message || '') + (err?.stderr?.toString() || '');
+        if (msg.includes('Wrong password') || msg.includes('Can not open encrypted') || msg.includes('Data Error')) {
+          throw new ConversionFailedError(`Invalid password for encrypted ${src.toUpperCase()} archive.`);
+        }
+        throw err;
+      }
 
       // If extracting a compressed tarball (tar.gz, tar.bz2, tar.xz, tgz, etc.), 7-Zip produces an intermediate .tar archive
       if (src.startsWith('tar.') || src === 'tgz' || src === 'tbz2' || src === 'tbz' || src === 'txz') {
@@ -1325,6 +1482,7 @@ export function convertWithNative7z(
       );
     }
 
+    const pwCreateArgs = options.password && (tgt === 'zip' || tgt === '7z') ? [`-p${options.password}`] : [];
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
       const tarPath = path.join(workDir, 'archive.tar');
@@ -1339,7 +1497,7 @@ export function convertWithNative7z(
       execFileSync(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { cwd: extractDir, timeout: 60000 });
       execFileSync(p7zBin, ['a', '-y', '-txz', outputPath, tarPath], { cwd: workDir, timeout: 60000 });
     } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
-      execFileSync(p7zBin, ['a', '-y', `-t${tgt}`, outputPath, '.'], { cwd: extractDir, timeout: 60000 });
+      execFileSync(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { cwd: extractDir, timeout: 60000 });
     } else {
       return null;
     }
@@ -1556,6 +1714,11 @@ export function create7zArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.7z'
 ): ConversionResult {
+  if (options.password) {
+    const encRes = createEncryptedArchiveVia7z(files, archiveName, '7z', 'application/x-7z-compressed', options.password);
+    if (encRes) return encRes;
+  }
+
   const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;
   const compressionLevel = options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6;
 

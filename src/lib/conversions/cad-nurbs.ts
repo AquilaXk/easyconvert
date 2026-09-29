@@ -4438,85 +4438,128 @@ export function adaptiveIncrementalBRepMesh(
     return baseMesh;
   }
 
-  // Refine triangles adaptively where edge length or chordal deviation exceeds linearDeflection
-  const refinedVertices: [number, number, number][] = [...baseMesh.vertices];
-  const refinedNormals: [number, number, number][] = [...baseMesh.normals];
-  const refinedFaces: [number, number, number][] = [];
-
   const maxEdgeLenSq = Math.max(0.01, linearDeflection * 10) ** 2;
 
+  // 1. Collect all edges from baseMesh faces and identify those exceeding maxEdgeLenSq
+  const edgeKey = (a: number, b: number) => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const markedEdges = new Set<string>();
+
   for (const [i1, i2, i3] of baseMesh.faces) {
-    const v1 = refinedVertices[i1];
-    const v2 = refinedVertices[i2];
-    const v3 = refinedVertices[i3];
+    const v1 = baseMesh.vertices[i1];
+    const v2 = baseMesh.vertices[i2];
+    const v3 = baseMesh.vertices[i3];
 
     const d12Sq = (v1[0] - v2[0]) ** 2 + (v1[1] - v2[1]) ** 2 + (v1[2] - v2[2]) ** 2;
     const d23Sq = (v2[0] - v3[0]) ** 2 + (v2[1] - v3[1]) ** 2 + (v2[2] - v3[2]) ** 2;
     const d31Sq = (v3[0] - v1[0]) ** 2 + (v3[1] - v1[1]) ** 2 + (v3[2] - v1[2]) ** 2;
 
-    if (d12Sq > maxEdgeLenSq || d23Sq > maxEdgeLenSq || d31Sq > maxEdgeLenSq) {
-      // 1-to-4 Midpoint Triangle Subdivision
-      const m12: [number, number, number] = [
-        (v1[0] + v2[0]) / 2,
-        (v1[1] + v2[1]) / 2,
-        (v1[2] + v2[2]) / 2,
-      ];
-      const m23: [number, number, number] = [
-        (v2[0] + v3[0]) / 2,
-        (v2[1] + v3[1]) / 2,
-        (v2[2] + v3[2]) / 2,
-      ];
-      const m31: [number, number, number] = [
-        (v3[0] + v1[0]) / 2,
-        (v3[1] + v1[1]) / 2,
-        (v3[2] + v1[2]) / 2,
-      ];
+    if (d12Sq > maxEdgeLenSq) markedEdges.add(edgeKey(i1, i2));
+    if (d23Sq > maxEdgeLenSq) markedEdges.add(edgeKey(i2, i3));
+    if (d31Sq > maxEdgeLenSq) markedEdges.add(edgeKey(i3, i1));
+  }
 
-      const n1 = refinedNormals[i1] || [0, 0, 1];
-      const n2 = refinedNormals[i2] || [0, 0, 1];
-      const n3 = refinedNormals[i3] || [0, 0, 1];
+  if (markedEdges.size === 0) {
+    return baseMesh;
+  }
 
-      const nm12: [number, number, number] = [
-        (n1[0] + n2[0]) / 2,
-        (n1[1] + n2[1]) / 2,
-        (n1[2] + n2[2]) / 2,
-      ];
-      const nm23: [number, number, number] = [
-        (n2[0] + n3[0]) / 2,
-        (n2[1] + n3[1]) / 2,
-        (n2[2] + n3[2]) / 2,
-      ];
-      const nm31: [number, number, number] = [
-        (n3[0] + n1[0]) / 2,
-        (n3[1] + n1[1]) / 2,
-        (n3[2] + n1[2]) / 2,
-      ];
+  // 2. Red-Green Conforming Closure:
+  // Any triangle with 2 marked edges is promoted to Red refinement (mark 3rd edge),
+  // preventing hanging nodes and aspect ratio degradation.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [i1, i2, i3] of baseMesh.faces) {
+      const k12 = edgeKey(i1, i2);
+      const k23 = edgeKey(i2, i3);
+      const k31 = edgeKey(i3, i1);
 
-      const idxM12 = refinedVertices.length;
-      refinedVertices.push(m12);
-      refinedNormals.push(nm12);
+      const m12 = markedEdges.has(k12);
+      const m23 = markedEdges.has(k23);
+      const m31 = markedEdges.has(k31);
 
-      const idxM23 = refinedVertices.length;
-      refinedVertices.push(m23);
-      refinedNormals.push(nm23);
+      const count = (m12 ? 1 : 0) + (m23 ? 1 : 0) + (m31 ? 1 : 0);
+      if (count === 2) {
+        if (!m12) { markedEdges.add(k12); changed = true; }
+        if (!m23) { markedEdges.add(k23); changed = true; }
+        if (!m31) { markedEdges.add(k31); changed = true; }
+      }
+    }
+  }
 
-      const idxM31 = refinedVertices.length;
-      refinedVertices.push(m31);
-      refinedNormals.push(nm31);
+  // 3. Compute unique midpoints for all marked edges
+  const refinedVertices: [number, number, number][] = [...baseMesh.vertices];
+  const refinedNormals: [number, number, number][] = [...baseMesh.normals];
+  const edgeMidpointMap = new Map<string, number>();
 
-      refinedFaces.push([i1, idxM12, idxM31]);
-      refinedFaces.push([idxM12, i2, idxM23]);
-      refinedFaces.push([idxM31, idxM23, i3]);
-      refinedFaces.push([idxM12, idxM23, idxM31]);
+  for (const k of markedEdges) {
+    const [uStr, vStr] = k.split('_');
+    const u = parseInt(uStr, 10);
+    const v = parseInt(vStr, 10);
+    const vu = refinedVertices[u];
+    const vv = refinedVertices[v];
+    const nu = refinedNormals[u] || [0, 0, 1];
+    const nv = refinedNormals[v] || [0, 0, 1];
+
+    const midV: [number, number, number] = [
+      (vu[0] + vv[0]) / 2,
+      (vu[1] + vv[1]) / 2,
+      (vu[2] + vv[2]) / 2,
+    ];
+
+    let nx = (nu[0] + nv[0]) / 2;
+    let ny = (nu[1] + nv[1]) / 2;
+    let nz = (nu[2] + nv[2]) / 2;
+    const nLen = Math.hypot(nx, ny, nz) || 1;
+    const midN: [number, number, number] = [nx / nLen, ny / nLen, nz / nLen];
+
+    const midIdx = refinedVertices.length;
+    refinedVertices.push(midV);
+    refinedNormals.push(midN);
+    edgeMidpointMap.set(k, midIdx);
+  }
+
+  // 4. Construct conforming sub-triangles (Red 1:4 or Green 1:2 bisection)
+  const refinedFaces: [number, number, number][] = [];
+
+  for (const [i1, i2, i3] of baseMesh.faces) {
+    const k12 = edgeKey(i1, i2);
+    const k23 = edgeKey(i2, i3);
+    const k31 = edgeKey(i3, i1);
+
+    const m12 = edgeMidpointMap.get(k12);
+    const m23 = edgeMidpointMap.get(k23);
+    const m31 = edgeMidpointMap.get(k31);
+
+    if (m12 !== undefined && m23 !== undefined && m31 !== undefined) {
+      // Red Refinement (1:4 split)
+      refinedFaces.push(
+        [i1, m12, m31],
+        [m12, i2, m23],
+        [m31, m23, i3],
+        [m12, m23, m31]
+      );
+    } else if (m12 !== undefined) {
+      // Green Refinement (1:2 bisection across edge 1-2)
+      refinedFaces.push([i1, m12, i3], [m12, i2, i3]);
+    } else if (m23 !== undefined) {
+      // Green Refinement (1:2 bisection across edge 2-3)
+      refinedFaces.push([i2, m23, i1], [m23, i3, i1]);
+    } else if (m31 !== undefined) {
+      // Green Refinement (1:2 bisection across edge 3-1)
+      refinedFaces.push([i3, m31, i2], [m31, i1, i2]);
     } else {
+      // Untouched triangle
       refinedFaces.push([i1, i2, i3]);
     }
   }
 
-  return {
+  const refinedMesh: TessellatedMesh = {
     name: modelName,
     vertices: refinedVertices,
     normals: refinedNormals,
     faces: refinedFaces,
   };
+
+  // 5. Sew and glue B-Rep topological boundary edges with tolerance epsilon = 1e-5
+  return glueBRepTopologicalEdges(refinedMesh, { epsilon: 1e-5, enforceOrientedManifold: true });
 }
