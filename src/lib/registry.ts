@@ -3410,12 +3410,17 @@ export function assertNotSpoofedFile(
   declaredExtensionOrFormatId: string,
   filename?: string
 ): void {
-  if (!buffer || buffer.length === 0) return;
+  const nameStr = filename ? ` for file "${filename}"` : '';
+  if (!buffer || buffer.length === 0) {
+    const cleanExt = (declaredExtensionOrFormatId || '').toLowerCase().replace(/^\./, '').trim();
+    throw new FileExtensionSpoofError(
+      `File spoofing rejected${nameStr}: payload is empty (0 bytes), incompatible with declared format ".${cleanExt}". Operation failed closed.`
+    );
+  }
   const isCompatible = isFormatCompatibleWithMagicBytes(buffer, declaredExtensionOrFormatId);
   if (!isCompatible) {
     const sniffed = sniffMimeTypeFromMagicBytes(buffer) ?? 'unknown/corrupted';
     const cleanExt = declaredExtensionOrFormatId.toLowerCase().replace(/^\./, '').trim();
-    const nameStr = filename ? ` for file "${filename}"` : '';
     throw new FileExtensionSpoofError(
       `File spoofing rejected${nameStr}: initial magic bytes indicate MIME type "${sniffed}", which is incompatible with declared format ".${cleanExt}". Operation failed closed.`
     );

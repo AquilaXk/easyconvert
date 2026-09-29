@@ -201,7 +201,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       expect(CREATE_USER_LUA_SCRIPT).toContain("redis.call('SET'");
       expect(UPDATE_USER_LUA_SCRIPT).toContain("redis.call('GET'");
       expect(RECORD_CONVERSION_LUA_SCRIPT).toContain("redis.call('GET'");
-      expect(store.getKeyPrefix()).toBe('test:user:');
+      expect(store.getKeyPrefix()).toBe('test:{user}:');
     });
 
     it('verifies connectivity and health ping', async () => {
@@ -283,9 +283,12 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       expect(evalCalls.length).toBe(1);
       expect(evalCalls[0].script).toBe(CREATE_USER_LUA_SCRIPT);
       expect(evalCalls[0].numKeys).toBe(2);
-      expect(evalCalls[0].args[0]).toBe('cluster:user:emailIndex:cluster-user@example.com');
-      expect(evalCalls[0].args[1]).toBe(`cluster:user:${user.id}`);
+      expect(evalCalls[0].args[0]).toBe('cluster:{user}:emailIndex:cluster-user@example.com');
+      expect(evalCalls[0].args[1]).toBe(`cluster:{user}:${user.id}`);
       expect(evalCalls[0].args[2]).toBe(user.id);
+      // Guarantee both multi-key eval arguments hash to identical Redis Cluster slot
+      expect(evalCalls[0].args[0]).toContain('{user}');
+      expect(evalCalls[0].args[1]).toContain('{user}');
     });
 
     it('executes atomic UPDATE_USER_LUA_SCRIPT and RECORD_CONVERSION_LUA_SCRIPT via redis.eval', async () => {

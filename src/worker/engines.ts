@@ -193,7 +193,7 @@ export function assertNotSpoofedFileVfs(
     return;
   }
   if (typeof input === 'object' && input !== null) {
-    if (input.inputBuffer && input.inputBuffer.length > 0) {
+    if (input.inputBuffer !== undefined) {
       assertNotSpoofedFile(input.inputBuffer, declaredExt, filename);
       return;
     }

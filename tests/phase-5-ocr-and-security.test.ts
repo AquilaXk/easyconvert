@@ -504,6 +504,17 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       // 6. Valid PNG buffer matches declared PNG
       expect(isFormatCompatibleWithMagicBytes(pngBytes, 'png')).toBe(true);
       expect(() => assertNotSpoofedFile(pngBytes, 'png', 'real.png')).not.toThrow();
+
+      // 7. Empty or 0-byte buffer fails closed
+      expect(() => assertNotSpoofedFile(Buffer.alloc(0), 'pdf', 'empty.pdf')).toThrowError(
+        FileExtensionSpoofError
+      );
+      expect(() => assertNotSpoofedFile(new Uint8Array(0), 'png', 'empty.png')).toThrowError(
+        FileExtensionSpoofError
+      );
+      expect(() => assertNotSpoofedFile(Buffer.alloc(0), 'pdf')).toThrow(
+        /payload is empty \(0 bytes\)/
+      );
     });
   });
 
