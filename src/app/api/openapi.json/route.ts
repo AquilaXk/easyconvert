@@ -709,6 +709,7 @@ export async function GET() {
             status: { type: 'string', enum: ['active', 'revoked'] },
             allowedIps: { type: 'array', items: { type: 'string' } },
             webhookUrl: { type: 'string' },
+            hasWebhookSecret: { type: 'boolean', description: 'Whether a webhook signing secret is configured; the secret itself is never returned.' },
             scopes: {
               type: 'array',
               items: { type: 'string', enum: ['convert:read', 'convert:write', 'storage:download', '*'] },

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth/session';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { webhookDispatcher } from '@/lib/api-keys/webhook-dispatcher';
+import { toPublicDlqEntry } from '@/lib/api-keys/public-views';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     success: true,
     total: entries.length,
-    entries,
+    entries: entries.map(toPublicDlqEntry),
   });
 }
 

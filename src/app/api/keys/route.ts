@@ -3,6 +3,7 @@ import { getSessionFromRequest } from '@/lib/auth/session';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope } from '@/lib/api-keys/types';
+import { toPublicApiKey } from '@/lib/api-keys/public-views';
 import type { User } from '@/lib/auth/types';
 
 export const dynamic = 'force-dynamic';
@@ -52,7 +53,7 @@ export async function GET(req: NextRequest) {
   const keys = await redisKeyStore.listApiKeys(auth.user.id);
   return NextResponse.json({
     success: true,
-    keys,
+    keys: keys.map(toPublicApiKey),
   });
 }
 
@@ -119,7 +120,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      key: result.key,
+      key: toPublicApiKey(result.key),
       secretKey: result.secretKey,
       warning: 'Please copy your API key now. You will not be able to see it again.',
     });
