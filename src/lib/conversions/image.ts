@@ -364,7 +364,7 @@ export function multiply3x3(
 export function invert3x3(
   matrix: readonly number[]
 ): [number, number, number, number, number, number, number, number, number] | null {
-  if (!matrix || matrix.length !== 9) return null;
+  if (!matrix || matrix.length !== 9 || matrix.some((v) => !Number.isFinite(v))) return null;
   const a: number[][] = [
     [matrix[0], matrix[1], matrix[2], 1, 0, 0],
     [matrix[3], matrix[4], matrix[5], 0, 1, 0],
@@ -552,6 +552,74 @@ export function inverseIec61966SrgbGamma(v: number): number {
     return clamped / 12.92;
   }
   return Math.pow((clamped + 0.055) / 1.055, 2.4);
+}
+
+/**
+ * Resolves 3x3 color matrix mapping sensor radiance to sRGB for Bayer demosaicing engines.
+ * Handles explicit colorMatrix, forward matrices, dual illuminant CCT interpolation,
+ * single matrix fallback, or default D65 daylight matrix.
+ */
+export function resolveBayerColorMatrix(
+  sensor: BayerSensorData
+): [number, number, number, number, number, number, number, number, number] | null {
+  const {
+    colorMatrix,
+    forwardMatrix1,
+    forwardMatrix2,
+    colorMatrix1,
+    colorMatrix2,
+    cctKelvin,
+    whiteBalance,
+    applySrgbGamma,
+  } = sensor;
+
+  if (colorMatrix) {
+    return colorMatrix;
+  }
+
+  if (forwardMatrix1 || forwardMatrix2) {
+    let fMat: [number, number, number, number, number, number, number, number, number] | undefined;
+    if (forwardMatrix1 && forwardMatrix2) {
+      let cct = cctKelvin;
+      if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
+        cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
+      }
+      fMat = interpolateDualIlluminantColorMatrix(cct, forwardMatrix1, forwardMatrix2);
+    } else if (forwardMatrix1) {
+      fMat = forwardMatrix1;
+    } else if (forwardMatrix2) {
+      fMat = forwardMatrix2;
+    }
+    if (fMat) {
+      return multiply3x3(XYZ_D50_TO_SRGB_MATRIX, fMat);
+    }
+  }
+
+  if (colorMatrix1 && colorMatrix2) {
+    let cct = cctKelvin;
+    if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
+      cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
+    }
+    return interpolateDualIlluminantColorMatrix(cct, colorMatrix1, colorMatrix2);
+  }
+
+  if (colorMatrix1) {
+    return colorMatrix1;
+  }
+
+  if (colorMatrix2) {
+    return colorMatrix2;
+  }
+
+  if (typeof cctKelvin === 'number' && !isNaN(cctKelvin) && cctKelvin > 0) {
+    return interpolateDualIlluminantColorMatrix(cctKelvin);
+  }
+
+  if (applySrgbGamma) {
+    return DEFAULT_D65_COLOR_MATRIX;
+  }
+
+  return null;
 }
 
 /**
@@ -816,40 +884,7 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
   const bWb = whiteBalance ? whiteBalance[2] : 1.0;
 
   // Resolve 3x3 color matrix: explicit, forward matrix, dual illuminant CCT interpolation, single matrix fallback, or default D65
-  let mat: [number, number, number, number, number, number, number, number, number] | null = null;
-  if (colorMatrix) {
-    mat = colorMatrix;
-  } else if (sensor.forwardMatrix1 || sensor.forwardMatrix2) {
-    let fMat: [number, number, number, number, number, number, number, number, number] | undefined;
-    if (sensor.forwardMatrix1 && sensor.forwardMatrix2) {
-      let cct = sensor.cctKelvin;
-      if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
-        cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
-      }
-      fMat = interpolateDualIlluminantColorMatrix(cct, sensor.forwardMatrix1, sensor.forwardMatrix2);
-    } else if (sensor.forwardMatrix1) {
-      fMat = sensor.forwardMatrix1;
-    } else if (sensor.forwardMatrix2) {
-      fMat = sensor.forwardMatrix2;
-    }
-    if (fMat) {
-      mat = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, fMat);
-    }
-  } else if (sensor.colorMatrix1 && sensor.colorMatrix2) {
-    let cct = sensor.cctKelvin;
-    if (typeof cct !== 'number' || isNaN(cct) || cct <= 0) {
-      cct = whiteBalance ? estimateCctFromWhiteBalance(whiteBalance) : 5500;
-    }
-    mat = interpolateDualIlluminantColorMatrix(cct, sensor.colorMatrix1, sensor.colorMatrix2);
-  } else if (sensor.colorMatrix1) {
-    mat = sensor.colorMatrix1;
-  } else if (sensor.colorMatrix2) {
-    mat = sensor.colorMatrix2;
-  } else if (typeof sensor.cctKelvin === 'number' && !isNaN(sensor.cctKelvin) && sensor.cctKelvin > 0) {
-    mat = interpolateDualIlluminantColorMatrix(sensor.cctKelvin);
-  } else if (applySrgbGamma) {
-    mat = DEFAULT_D65_COLOR_MATRIX;
-  }
+  const mat = colorMatrix || resolveBayerColorMatrix(sensor);
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -1279,7 +1314,7 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
     applySrgbGamma = true,
   } = sensor;
   const [rWb, gWb, bWb] = whiteBalance;
-  const mat = colorMatrix;
+  const mat = colorMatrix || resolveBayerColorMatrix(sensor);
 
   const rgbBuffer = Buffer.alloc(width * height * 3);
 
@@ -1949,9 +1984,10 @@ export function decodeRawBayerSensor(
             cm = interpolateDualIlluminantColorMatrix(cct, chosen.colorMatrix1, chosen.colorMatrix2);
           }
           const inv = invert3x3(cm);
-          if (inv) {
-            resolvedColorMatrix = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, inv);
+          if (!inv) {
+            throw new Error('Invalid DNG ColorMatrix: matrix is singular or non-invertible.');
           }
+          resolvedColorMatrix = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, inv);
         }
 
         const result = demosaicBayerCfa({

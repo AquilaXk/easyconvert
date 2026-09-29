@@ -91,13 +91,69 @@ else
 end
 `;
 
+export const TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT = `
+-- KEYS[1]: rate limit key (e.g. easyconvert:rate:keyId)
+-- ARGV[1]: current timestamp in milliseconds
+-- ARGV[2]: bucket capacity (max burst tokens)
+-- ARGV[3]: refill rate (tokens added per second)
+-- ARGV[4]: cost (tokens required for this request)
+-- ARGV[5]: key TTL in seconds
+local now = tonumber(ARGV[1])
+local capacity = tonumber(ARGV[2])
+local refillRate = tonumber(ARGV[3])
+local cost = tonumber(ARGV[4] or '1')
+local ttl = tonumber(ARGV[5] or '3600')
+
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'lastRefill')
+local currentTokens = tonumber(data[1])
+local lastRefill = tonumber(data[2])
+
+if not currentTokens or not lastRefill then
+  currentTokens = capacity
+  lastRefill = now
+else
+  local elapsed = math.max(0, now - lastRefill)
+  local replenished = (elapsed / 1000.0) * refillRate
+  currentTokens = math.min(capacity, currentTokens + replenished)
+  lastRefill = now
+end
+
+if currentTokens >= cost then
+  currentTokens = currentTokens - cost
+  redis.call('HMSET', KEYS[1], 'tokens', tostring(currentTokens), 'lastRefill', tostring(lastRefill))
+  redis.call('EXPIRE', KEYS[1], ttl)
+  return {1, math.floor(currentTokens), 0}
+else
+  local needed = cost - currentTokens
+  local retryAfterMs = math.ceil((needed / refillRate) * 1000.0)
+  redis.call('HMSET', KEYS[1], 'tokens', tostring(currentTokens), 'lastRefill', tostring(lastRefill))
+  redis.call('EXPIRE', KEYS[1], ttl)
+  return {0, math.floor(currentTokens), retryAfterMs}
+end
+`;
+
+export interface TokenBucketOptions {
+  capacity?: number;
+  refillRate?: number;
+  cost?: number;
+  ttlSeconds?: number;
+}
+
+export interface TokenBucketResult {
+  allowed: boolean;
+  remainingTokens: number;
+  retryAfterMs: number;
+}
+
 /**
  * Redis-backed Key Store with atomic Lua script metering and 2-phase quota transactions
  * (Reserve-Commit/Rollback) preventing TOCTOU races in distributed environments.
  */
 export class RedisKeyStore extends KeyStore {
   protected static sharedReservations = new Map<string, QuotaReservation>();
+  protected static sharedTokenBuckets = new Map<string, { tokens: number; lastRefill: number }>();
   private readonly reservations: Map<string, QuotaReservation>;
+  private readonly tokenBuckets: Map<string, { tokens: number; lastRefill: number }>;
   private readonly keyPrefix: string;
   private redisClient: Redis | null = null;
 
@@ -168,6 +224,7 @@ export class RedisKeyStore extends KeyStore {
     super(isIsolated);
     this.keyPrefix = prefix;
     this.reservations = isIsolated ? new Map() : RedisKeyStore.sharedReservations;
+    this.tokenBuckets = isIsolated ? new Map() : RedisKeyStore.sharedTokenBuckets;
     this.redisClient = client ?? null;
   }
 
@@ -515,6 +572,88 @@ export class RedisKeyStore extends KeyStore {
     this.persist();
     return file;
   }
+
+  /**
+   * Evaluates burst rate limit using an atomic Token Bucket algorithm.
+   * If Redis is connected, executes TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT.
+   * In local/fallback mode, performs atomic in-memory token bucket calculations.
+   */
+  public async checkTokenBucketRateLimit(
+    identifier: string,
+    options: TokenBucketOptions = {}
+  ): Promise<TokenBucketResult> {
+    const capacity = options.capacity ?? 50;
+    const refillRate = options.refillRate ?? 10;
+    const cost = options.cost ?? 1;
+    const ttl = options.ttlSeconds ?? 3600;
+    const now = Date.now();
+
+    if (this.redisClient) {
+      try {
+        const key = `${this.keyPrefix}rate:${identifier}`;
+        const res = (await this.redisClient.eval(
+          TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT,
+          1,
+          key,
+          now.toString(),
+          capacity.toString(),
+          refillRate.toString(),
+          cost.toString(),
+          ttl.toString()
+        )) as [number, number, number];
+
+        return {
+          allowed: res[0] === 1,
+          remainingTokens: Number(res[1]),
+          retryAfterMs: Number(res[2]),
+        };
+      } catch (err) {
+        console.warn('Redis rate limit Lua failed, falling back to local memory:', err);
+      }
+    }
+
+    // In-memory token bucket
+    let state = this.tokenBuckets.get(identifier);
+    if (!state) {
+      state = { tokens: capacity, lastRefill: now };
+    } else {
+      const elapsed = Math.max(0, now - state.lastRefill);
+      const replenished = (elapsed / 1000) * refillRate;
+      state.tokens = Math.min(capacity, state.tokens + replenished);
+      state.lastRefill = now;
+    }
+
+    if (state.tokens >= cost) {
+      state.tokens -= cost;
+      this.tokenBuckets.set(identifier, state);
+      return {
+        allowed: true,
+        remainingTokens: Math.floor(state.tokens),
+        retryAfterMs: 0,
+      };
+    } else {
+      const needed = cost - state.tokens;
+      const retryAfterMs = Math.ceil((needed / refillRate) * 1000);
+      this.tokenBuckets.set(identifier, state);
+      return {
+        allowed: false,
+        remainingTokens: Math.floor(state.tokens),
+        retryAfterMs,
+      };
+    }
+  }
 }
 
 export const redisKeyStore = new RedisKeyStore();
+
+export async function checkTokenBucketRateLimit(
+  identifier: string,
+  options?: TokenBucketOptions
+): Promise<TokenBucketResult & { tokensRemaining: number; resetMs: number }> {
+  const result = await redisKeyStore.checkTokenBucketRateLimit(identifier, options);
+  return {
+    ...result,
+    tokensRemaining: result.remainingTokens,
+    resetMs: result.retryAfterMs,
+  };
+}

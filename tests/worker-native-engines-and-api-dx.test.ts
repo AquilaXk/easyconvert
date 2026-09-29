@@ -407,6 +407,14 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       ).toThrow(FileExtensionSpoofError);
     });
 
+    it('verifies Uint8Array input payloads directly in assertNotSpoofedFileVfs', () => {
+      const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      expect(() => assertNotSpoofedFileVfs(pngHeader, 'png', 'test.png')).not.toThrow();
+      expect(() => assertNotSpoofedFileVfs(new Uint8Array(0), 'png', 'empty.png')).toThrow(
+        FileExtensionSpoofError
+      );
+    });
+
     it('fails closed when assertNotSpoofedFilePath is called with a directory path', () => {
       expect(() => assertNotSpoofedFilePath('/tmp', 'png', 'test.png')).toThrow(
         /Target path is not a regular file/

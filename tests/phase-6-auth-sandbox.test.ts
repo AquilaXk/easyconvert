@@ -202,6 +202,14 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       expect(UPDATE_USER_LUA_SCRIPT).toContain("redis.call('GET'");
       expect(RECORD_CONVERSION_LUA_SCRIPT).toContain("redis.call('GET'");
       expect(store.getKeyPrefix()).toBe('test:{user}:');
+
+      // Empty braces without inner chars must normalize to enforce {user} slot tag
+      const emptyBraceStore = new RedisUserStore({ keyPrefix: 'myapp{}:user:' });
+      expect(emptyBraceStore.getKeyPrefix()).toBe('myapp{}:{user}:');
+
+      // Custom valid hash tag must be preserved
+      const customTagStore = new RedisUserStore({ keyPrefix: '{tenant123}:user:' });
+      expect(customTagStore.getKeyPrefix()).toBe('{tenant123}:user:');
     });
 
     it('verifies connectivity and health ping', async () => {

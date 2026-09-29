@@ -117,6 +117,33 @@ export function isIpInCidr(ip: string, cidr: string): boolean {
  * Validates whether a client IP matches an allowed whitelist of IP addresses and CIDR subnets.
  * Normalizes IPv4-mapped IPv6 addresses for consistent comparison.
  */
+export const DEFAULT_TRUSTED_PROXIES: readonly string[] = [
+  '127.0.0.1/8',
+  '::1/128',
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  'fc00::/7',
+];
+
+/**
+ * Returns the active list of trusted proxy CIDRs/IPs from environment or defaults.
+ */
+export function getTrustedProxies(): string[] {
+  const envVal = process.env.TRUSTED_PROXIES;
+  if (!envVal || !envVal.trim()) {
+    return [...DEFAULT_TRUSTED_PROXIES];
+  }
+  return envVal
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Validates whether a client IP matches an allowed whitelist of IP addresses and CIDR subnets.
+ * Normalizes IPv4-mapped IPv6 addresses for consistent comparison.
+ */
 export function isIpAllowed(clientIp: string, allowedIps?: string[]): boolean {
   if (!allowedIps || allowedIps.length === 0) return true;
   const cleanIp = normalizeIp(clientIp);
@@ -136,10 +163,13 @@ export function isIpAllowed(clientIp: string, allowedIps?: string[]): boolean {
 
 /**
  * Securely extracts and normalizes the client IP from trusted reverse proxy headers.
- * Protects against spoofing by prioritizing authentic CDN edge headers (cf-connecting-ip)
- * and verifying extracted addresses.
+ * Protects against IP spoofing attacks by parsing X-Forwarded-For chains from right-to-left
+ * against trusted reverse proxy subnets (RFC 7239 / Nginx standard practice).
  */
-export function extractClientIp(request: Request): string {
+export function extractClientIp(
+  request: Request,
+  trustedProxies?: string[]
+): string {
   // 1. Authenticated CDN edge header (Cloudflare)
   const cfIp = request.headers.get('cf-connecting-ip');
   if (cfIp) {
@@ -154,12 +184,27 @@ export function extractClientIp(request: Request): string {
     if (net.isIP(normalized) !== 0) return normalized;
   }
 
-  // 3. Forwarded proxy chain (take leftmost client IP)
+  // 3. Parse X-Forwarded-For chain from right-to-left against trusted reverse proxies
   const forwarded = request.headers.get('x-forwarded-for');
   if (forwarded) {
-    const leftmost = forwarded.split(',')[0].trim();
-    const normalized = normalizeIp(leftmost);
-    if (net.isIP(normalized) !== 0) return normalized;
+    const rawIps = forwarded
+      .split(',')
+      .map((s) => normalizeIp(s.trim()))
+      .filter((ip) => net.isIP(ip) !== 0);
+
+    if (rawIps.length > 0) {
+      const proxies = trustedProxies || getTrustedProxies();
+      // Scan right-to-left: peel away trusted reverse proxies
+      for (let i = rawIps.length - 1; i >= 0; i--) {
+        const candidate = rawIps[i];
+        if (!isIpAllowed(candidate, proxies)) {
+          // First untrusted IP from the right is the genuine client IP
+          return candidate;
+        }
+      }
+      // If all hops are trusted (e.g. private VPC mesh), fallback to leftmost
+      return rawIps[0];
+    }
   }
 
   return '127.0.0.1';

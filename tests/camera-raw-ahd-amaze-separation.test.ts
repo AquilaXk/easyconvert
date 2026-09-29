@@ -9,6 +9,7 @@ import {
   XYZ_D50_TO_SRGB_MATRIX,
   decodeRawBayerSensor,
 } from '../src/lib/conversions/image';
+import { buildSyntheticDngBuffer } from './dng-and-solid-7z.test';
 
 /**
  * Calculates Peak Signal-to-Noise Ratio (PSNR) between two RGB buffers.
@@ -388,15 +389,17 @@ describe('Camera RAW Demosaicing Algorithm Separation (AHD vs AMaZE)', () => {
     expect(invert3x3(zero)).toBeNull();
   });
 
+  it('safely handles non-finite NaN / Infinity in invert3x3', () => {
+    expect(invert3x3([NaN, 0, 0, 0, 1, 0, 0, 0, 1])).toBeNull();
+    expect(invert3x3([Infinity, 0, 0, 0, 1, 0, 0, 0, 1])).toBeNull();
+    expect(invert3x3([1, 0, 0, 0, -Infinity, 0, 0, 0, 1])).toBeNull();
+  });
+
   it('inverts Adobe DNG 1.7.1.0 ColorMatrix1 (XYZ_D50 -> Camera) and maps to sRGB in decodeRawBayerSensor', () => {
-    // Construct a synthetic DNG TIFF buffer with ColorMatrix1
-    // DNG Tag 50721 (ColorMatrix1) maps XYZ_D50 to Camera.
-    // decodeRawBayerSensor must compute M = M_XYZ_to_sRGB * ColorMatrix1^-1
     const width = 8;
     const height = 8;
-    const bpp = 16;
-    const bytesPerSample = 2;
-    const pixelBytes = width * height * bytesPerSample;
+    const pixelValues = new Uint16Array(width * height);
+    pixelValues.fill(2048);
 
     // Camera calibration matrix for a sensor where native camera RGB is close to D50 XYZ:
     const dngColorMatrix1: [number, number, number, number, number, number, number, number, number] = [
@@ -405,17 +408,60 @@ describe('Camera RAW Demosaicing Algorithm Separation (AHD vs AMaZE)', () => {
       -0.10,  0.20,  0.70,
     ];
 
-    // Compute expected M = M_XYZ_to_sRGB * ColorMatrix1^-1
+    const dngBuf = buildSyntheticDngBuffer({
+      width,
+      height,
+      bitsPerSample: 12,
+      blackLevel: 0,
+      whiteLevel: 4095,
+      colorMatrix1: dngColorMatrix1,
+      pixelValues,
+    });
+
+    const decoded = decodeRawBayerSensor(dngBuf);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.width).toBe(width);
+    expect(decoded!.height).toBe(height);
+    expect(decoded!.rgb.length).toBe(width * height * 3);
+
+    // Verify expectedComposite transforms camera neutral [1, 1, 1] stably to positive sRGB values
     const invCm = invert3x3(dngColorMatrix1);
     expect(invCm).not.toBeNull();
     const expectedComposite = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, invCm!);
+    expect(expectedComposite[0]).toBeGreaterThan(0);
 
-    // Ensure expectedComposite transforms camera neutral [1, 1, 1] stably
-    const testR = expectedComposite[0] + expectedComposite[1] + expectedComposite[2];
-    const testG = expectedComposite[3] + expectedComposite[4] + expectedComposite[5];
-    const testB = expectedComposite[6] + expectedComposite[7] + expectedComposite[8];
-    expect(testR).toBeGreaterThan(0);
-    expect(testG).toBeGreaterThan(0);
-    expect(testB).toBeGreaterThan(0);
+    const midIdx = (4 * width + 4) * 3;
+    const r = decoded!.rgb[midIdx];
+    const g = decoded!.rgb[midIdx + 1];
+    const b = decoded!.rgb[midIdx + 2];
+    expect(r).toBeGreaterThan(0);
+    expect(g).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(0);
+  });
+
+  it('fails closed when decodeRawBayerSensor encounters a singular or non-invertible ColorMatrix1 in DNG', () => {
+    const width = 8;
+    const height = 8;
+    const pixelValues = new Uint16Array(width * height).fill(2048);
+    // Singular matrix (linearly dependent rows: row 2 = row 0 + row 1)
+    const singularColorMatrix = [
+      1.0, 2.0, 3.0,
+      4.0, 5.0, 6.0,
+      5.0, 7.0, 9.0,
+    ];
+
+    const singularDng = buildSyntheticDngBuffer({
+      width,
+      height,
+      bitsPerSample: 12,
+      blackLevel: 0,
+      whiteLevel: 4095,
+      colorMatrix1: singularColorMatrix,
+      pixelValues,
+    });
+
+    expect(() => decodeRawBayerSensor(singularDng)).toThrow(
+      /Invalid DNG ColorMatrix: matrix is singular or non-invertible/
+    );
   });
 });

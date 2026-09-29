@@ -184,11 +184,11 @@ export function resolveInputContext(
  * Asserts fail-closed that magic bytes match declared format using zero-heap header sniffing.
  */
 export function assertNotSpoofedFileVfs(
-  input: Buffer | WorkerVfsPayload,
+  input: Buffer | Uint8Array | WorkerVfsPayload,
   declaredExt: string,
   filename?: string
 ): void {
-  if (Buffer.isBuffer(input)) {
+  if (Buffer.isBuffer(input) || input instanceof Uint8Array) {
     assertNotSpoofedFile(input, declaredExt, filename);
     return;
   }

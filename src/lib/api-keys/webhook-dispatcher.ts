@@ -28,6 +28,7 @@ export interface WebhookDispatchOptions {
   skipDlq?: boolean;
   deliveryId?: string;
   async?: boolean;
+  subscribedEvents?: string[];
 }
 
 export interface WebhookDeliveryAttempt {
@@ -43,6 +44,7 @@ export interface WebhookDispatchResult {
   url: string;
   event: WebhookEvent;
   success: boolean;
+  skipped?: boolean;
   totalAttempts: number;
   finalStatusCode?: number;
   durationMs: number;
@@ -72,9 +74,16 @@ export class WebhookDispatcher {
   /**
    * Generates standard HMAC-SHA256 signature for the given payload string and secret.
    */
-  public generateSignature(bodyString: string, secret: string, timestamp: number): string {
+  public static signPayload(bodyString: string, secret: string, timestamp: number): string {
     const stringToSign = `${timestamp}.${bodyString}`;
     return crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
+  }
+
+  /**
+   * Generates standard HMAC-SHA256 signature for the given payload string and secret.
+   */
+  public generateSignature(bodyString: string, secret: string, timestamp: number): string {
+    return WebhookDispatcher.signPayload(bodyString, secret, timestamp);
   }
 
   /**
@@ -105,6 +114,42 @@ export class WebhookDispatcher {
     }
   }
 
+  /**
+   * Verifies an incoming HMAC-SHA256 signature with dual secrets support (primary and optional secondary).
+   * Enables seamless zero-downtime secret rotation without interrupting webhook processing.
+   */
+  public verifySignatureWithDualSecrets(
+    bodyString: string,
+    signatureHeader: string,
+    timestamp: number,
+    primarySecret: string,
+    secondarySecret?: string,
+    toleranceSeconds: number = 300
+  ): boolean {
+    if (this.verifySignature(bodyString, signatureHeader, timestamp, primarySecret, toleranceSeconds)) {
+      return true;
+    }
+    if (secondarySecret && secondarySecret.trim().length > 0) {
+      return this.verifySignature(bodyString, signatureHeader, timestamp, secondarySecret, toleranceSeconds);
+    }
+    return false;
+  }
+
+  /**
+   * Determines whether an event should be dispatched based on subscriber filters.
+   */
+  public shouldDispatchEvent(event: WebhookEvent | string, subscribedEvents?: string[]): boolean {
+    if (!subscribedEvents || subscribedEvents.length === 0) return true;
+    return subscribedEvents.some((pattern) => {
+      if (pattern === '*' || pattern === event) return true;
+      if (pattern.endsWith('.*')) {
+        const prefix = pattern.slice(0, -2);
+        return event.startsWith(prefix + '.');
+      }
+      return false;
+    });
+  }
+
   private recordHistory(result: WebhookDispatchResult): void {
     this.deliveryHistory.push(result);
     if (this.deliveryHistory.length > this.maxHistorySize) {
@@ -127,6 +172,22 @@ export class WebhookDispatcher {
     const deliveryId = options.deliveryId || `wh_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
     const timestamp = Math.floor(Date.now() / 1000);
     const startTime = Date.now();
+
+    // Check event subscription filter
+    if (options.subscribedEvents && !this.shouldDispatchEvent(event, options.subscribedEvents)) {
+      const skippedResult: WebhookDispatchResult = {
+        id: deliveryId,
+        url: targetUrl,
+        event,
+        success: true,
+        skipped: true,
+        totalAttempts: 0,
+        durationMs: 0,
+        attempts: [],
+      };
+      this.recordHistory(skippedResult);
+      return skippedResult;
+    }
 
     // 1. URL Structure & Protocol Validation
     let parsedUrl: URL;
@@ -435,3 +496,28 @@ export class WebhookDispatcher {
 }
 
 export const webhookDispatcher = new WebhookDispatcher();
+
+export function verifySignatureWithDualSecrets(
+  bodyString: string,
+  signatureHeader: string,
+  timestamp: number,
+  primarySecret: string,
+  secondarySecret?: string,
+  toleranceSeconds: number = 300
+): boolean {
+  return webhookDispatcher.verifySignatureWithDualSecrets(
+    bodyString,
+    signatureHeader,
+    timestamp,
+    primarySecret,
+    secondarySecret,
+    toleranceSeconds
+  );
+}
+
+export function shouldDispatchEvent(
+  event: WebhookEvent | string,
+  subscribedEvents?: string[]
+): boolean {
+  return webhookDispatcher.shouldDispatchEvent(event, subscribedEvents);
+}
