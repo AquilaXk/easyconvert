@@ -323,12 +323,24 @@ describe('/api/storage/file Range requests per RFC 9110 (#249)', () => {
   });
 });
 
+describe('/api/storage/file key decoding (#249)', () => {
+  it('rejects malformed percent-encoding with 400 instead of a server error', async () => {
+    const malformedKey = '%E0%A4%A';
+    const req = new NextRequest(`${BASE_URL}/api/storage/file/${malformedKey}`);
+
+    const res = await downloadRoute(req, { params: { key: [malformedKey] } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ success: false, error: 'Malformed storage key.' });
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+  });
+});
+
 describe('/api/storage/file OpenAPI contract (#249)', () => {
   it('documents owner-only access, ranges, and the storage:download scope', async () => {
     const spec = await (await getOpenApiSpec()).json();
     const operation = spec.paths['/api/storage/file/{key}']?.get;
 
-    expect(Object.keys(operation?.responses ?? {}).sort()).toEqual(['200', '206', '403', '404', '416', '429']);
+    expect(Object.keys(operation?.responses ?? {}).sort()).toEqual(['200', '206', '400', '403', '404', '416', '429']);
     expect(operation.security).toEqual([
       { ApiKeyAuth: ['storage:download'] },
       { BearerAuth: ['storage:download'] },

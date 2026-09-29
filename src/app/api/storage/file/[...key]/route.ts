@@ -15,6 +15,18 @@ const JOB_RESULT_KEY_PATTERN = /^results\/([^/]+)\//;
 /** Outputs can be private to one user and expire with their storage TTL, so no shared cache may keep them. */
 const PRIVATE_NO_STORE = 'private, no-store';
 
+/** Decodes the request path key, or returns undefined when its percent-encoding is malformed. */
+function decodeStorageKey(rawKey: string): string | undefined {
+  try {
+    return decodeURIComponent(rawKey);
+  } catch (error) {
+    if (error instanceof URIError) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 type ObjectOwnership =
   | { resolved: true; ownerUserId: string | undefined }
   | { resolved: false };
@@ -49,7 +61,13 @@ export async function GET(
   { params }: { params: { key: string[] } }
 ) {
   const rawKey = Array.isArray(params.key) ? params.key.join('/') : params.key;
-  const fullKey = decodeURIComponent(rawKey);
+  const fullKey = decodeStorageKey(rawKey);
+  if (fullKey === undefined) {
+    return NextResponse.json(
+      { success: false, error: 'Malformed storage key.' },
+      { status: 400, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
+    );
+  }
   // Owned objects answer other callers with this same response, so their existence is not revealed.
   const notFound = () =>
     NextResponse.json(
