@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
+import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
@@ -151,6 +152,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Authorize a caller-supplied key before anything reads the object.
+    if (storageKey && !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id))) {
+      return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
+    }
+
     // Resolve source format definition
     let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
     sourceDef ??= detectFormatFromFilename(originalFilename);
@@ -169,7 +175,7 @@ export async function POST(req: NextRequest) {
       } else if (storageKey) {
         const stored = s3Storage.getObject(storageKey);
         if (!stored) {
-          return await failWithRollback(400, `Storage object not found for key: "${storageKey}".`, 'Storage Object Not Found');
+          return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
         }
         if (stored.filePath) {
           if (!fs.existsSync(stored.filePath)) {

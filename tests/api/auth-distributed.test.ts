@@ -233,7 +233,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       expect(data.jobId).toBeDefined();
     });
 
-    it('fails closed (400 Bad Request) when storageKey does not exist in storage', async () => {
+    it('fails closed (404 Not Found) when storageKey does not exist in storage', async () => {
       const user = await redisUserStore.createUser({
         email: 'queue-missing-storage@example.com',
         name: 'Missing Storage User',
@@ -258,9 +258,9 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       });
 
       const res = await jobsPostHandler(req);
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(404);
       const data = await res.json();
-      expect(data.title || data.error || data.detail).toMatch(/not found/i);
+      expect(data.detail).toBe('Storage object not found.');
     });
 
     it('fails closed (400 Bad Request) when storageKey points to a spoofed file', async () => {

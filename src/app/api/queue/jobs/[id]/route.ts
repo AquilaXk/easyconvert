@@ -5,38 +5,12 @@ import {
   TERMINAL_JOB_STATES,
   TERMINAL_TELEMETRY_EVENTS,
 } from '@/lib/queue/bullmq-engine';
-import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
 
 export const dynamic = 'force-dynamic';
 
-/**
- * Jobs created through the authenticated API carry `userId` and are visible only to that user;
- * any other caller gets the route's regular not-found response so job ids cannot be probed.
- * Jobs without an owner (anonymous uploads) keep capability-URL access by job id.
- * Returns the response to send when access is denied, or null when the caller may proceed.
- */
-async function denyUnlessJobOwner(
-  req: NextRequest,
-  ownerUserId: string | undefined,
-  requiredScope: string,
-  notFound: () => NextResponse
-): Promise<NextResponse | null> {
-  if (!ownerUserId) {
-    return null;
-  }
-
-  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope });
-  if (auth.user?.id !== ownerUserId) {
-    return notFound();
-  }
-  if (!auth.authorized) {
-    return NextResponse.json(
-      { success: false, error: auth.error ?? 'Unauthorized' },
-      { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
-    );
-  }
-  return null;
-}
+// Jobs created through the authenticated API carry `userId` and are visible only to that user;
+// jobs without an owner (anonymous uploads) keep capability-URL access by job id.
 
 export async function GET(
   req: NextRequest,
@@ -53,7 +27,7 @@ export async function GET(
     return notFound();
   }
 
-  const denied = await denyUnlessJobOwner(req, job.data?.userId, 'convert:read', notFound);
+  const denied = await denyUnlessOwner(req, job.data?.userId, 'convert:read', notFound);
   if (denied) {
     return denied;
   }
@@ -146,7 +120,7 @@ export async function DELETE(
     return notFound();
   }
 
-  const denied = await denyUnlessJobOwner(req, job.data?.userId, 'convert:write', notFound);
+  const denied = await denyUnlessOwner(req, job.data?.userId, 'convert:write', notFound);
   if (denied) {
     return denied;
   }

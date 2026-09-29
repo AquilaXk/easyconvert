@@ -4,6 +4,7 @@ import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { s3Storage } from '@/lib/storage/s3-storage';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 
 export const dynamic = 'force-dynamic';
@@ -53,6 +54,14 @@ export async function POST(req: NextRequest) {
       storageKey = body.storageKey;
       inputBufferBase64 = body.inputBufferBase64;
       fileSize = body.fileSize || 0;
+    }
+
+    // This route creates anonymous jobs, so a supplied key must be an upload.
+    if (
+      storageKey &&
+      (typeof storageKey !== 'string' || !(await mayUseStorageKeyAsJobInput(storageKey, undefined)))
+    ) {
+      return NextResponse.json({ success: false, error: STORAGE_OBJECT_NOT_FOUND }, { status: 404 });
     }
 
     if (!originalFilename && storageKey) {

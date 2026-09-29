@@ -128,7 +128,10 @@ export async function GET() {
                     },
                     targetFormat: { type: 'string', description: 'Target format extension.' },
                     sourceFormat: { type: 'string', description: 'Source format extension.' },
-                    storageKey: { type: 'string', description: 'Pre-uploaded S3 storage key.' },
+                    storageKey: {
+                      type: 'string',
+                      description: 'Key of an object from the multipart upload API (`uploads/...`), or an output owned by the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404.',
+                    },
                     options: { type: 'string', description: 'JSON-serialized conversion options.' },
                     tasks: {
                       type: 'string',
@@ -147,7 +150,10 @@ export async function GET() {
                     filename: { type: 'string', description: 'Original filename.' },
                     targetFormat: { type: 'string', description: 'Target format extension.' },
                     sourceFormat: { type: 'string', description: 'Source format extension.' },
-                    storageKey: { type: 'string', description: 'Pre-uploaded S3 storage key.' },
+                    storageKey: {
+                      type: 'string',
+                      description: 'Key of an object from the multipart upload API (`uploads/...`), or an output owned by the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404.',
+                    },
                     inputBufferBase64: { type: 'string', description: 'Base64-encoded source payload.' },
                     options: { type: 'object', description: 'Conversion configuration options.' },
                     tasks: {
@@ -184,6 +190,7 @@ export async function GET() {
             '400': createProblemResponse('Bad request or parameter validation failure.'),
             '401': createProblemResponse('Missing, expired, or invalid API key.'),
             '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
+            '404': createProblemResponse('Storage object not found, or not usable by the caller as an input.'),
             '429': createProblemResponse('Daily conversion quota exhausted.'),
             '500': createProblemResponse('Job enqueue failure.'),
           },
@@ -307,6 +314,79 @@ export async function GET() {
             '403': createProblemResponse('Access denied.'),
             '404': createProblemResponse('Job not found.'),
             '409': createProblemResponse('Job has already completed, failed, or cannot be cancelled.'),
+          },
+        },
+      },
+      '/api/storage/file/{key}': {
+        get: {
+          summary: 'Download Stored File',
+          description:
+            'Downloads a stored file by the key in a `downloadUrl`. Outputs owned by a user (`conversions/{userId}/...` keys and results of jobs created with credentials) are served only to that user through a session or an API key with the "storage:download" scope; any other caller gets 404 so keys cannot be probed. Anonymous job results keep capability-URL access. Every file response is sent with `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`. A single byte range is supported; multi-range requests return the full file.',
+          operationId: 'downloadStoredFile',
+          security: [
+            { ApiKeyAuth: ['storage:download'] },
+            { BearerAuth: ['storage:download'] },
+            {},
+          ],
+          parameters: [
+            {
+              name: 'key',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+              description: 'URL-encoded storage key, as returned in `downloadUrl`.',
+            },
+            {
+              name: 'Range',
+              in: 'header',
+              required: false,
+              schema: { type: 'string', example: 'bytes=0-1023' },
+              description: 'One RFC 9110 byte range: `bytes=first-last`, `bytes=first-`, or suffix `bytes=-length`.',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Full file content.',
+              headers: {
+                'Content-Disposition': {
+                  schema: { type: 'string' },
+                  description: 'Attachment with an ASCII `filename` and a UTF-8 `filename*`.',
+                },
+                ETag: { schema: { type: 'string' } },
+                'Cache-Control': { schema: { type: 'string', example: 'private, no-store' } },
+              },
+              content: {
+                'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+              },
+            },
+            '206': {
+              description: 'Requested byte range.',
+              headers: {
+                'Content-Range': { schema: { type: 'string', example: 'bytes 0-1023/4096' } },
+              },
+              content: {
+                'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+              },
+            },
+            '403': {
+              description: 'The owner\'s API key lacks the "storage:download" scope.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+            },
+            '404': {
+              description: 'Object not found, expired, owned by another user, or a job result whose job cannot be read.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+            },
+            '416': {
+              description: 'Malformed or unsatisfiable range.',
+              headers: {
+                'Content-Range': { schema: { type: 'string', example: 'bytes */4096' } },
+              },
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+            },
+            '429': {
+              description: 'The owner\'s API key exceeded its burst rate limit; see `Retry-After`.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+            },
           },
         },
       },
