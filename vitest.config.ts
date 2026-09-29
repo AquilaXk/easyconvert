@@ -12,6 +12,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    exclude: ['**/node_modules/**', '**/.worktrees/**'],
+    exclude: ['**/node_modules/**', '**/.worktrees/**', '**/.claude/worktrees/**'],
   },
 });

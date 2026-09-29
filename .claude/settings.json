@@ -37,6 +37,12 @@
       "Bash(git push *refs/heads/main*)"
     ]
   },
+  "worktree": {
+    "baseRef": "fresh",
+    "symlinkDirectories": [
+      "node_modules"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
