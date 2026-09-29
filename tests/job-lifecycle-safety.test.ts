@@ -14,6 +14,7 @@ import {
   processConversionJob,
   attachJobLifecycleListeners,
   attachJobCancellationListeners,
+  attachInputCleanupOnCompletion,
 } from '../src/lib/queue/conversion-queue';
 import { GET as getLegacyJob, DELETE as deleteLegacyJob } from '../src/app/api/queue/jobs/[id]/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -626,50 +627,97 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
     }, 5000);
   });
 
-  describe('6. Input cleanup failures are reported', () => {
-    it('warns with the job id and key when the final input cleanup reports a missing object', async () => {
-      const inputKey = `uploads/lifecycle-cleanup-${Date.now()}.csv`;
+  describe('6. Uploaded input cleanup follows the recorded outcome', () => {
+    function storeCsvInput(label: string): string {
+      const inputKey = `uploads/lifecycle-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.csv`;
       s3Storage.saveObject(inputKey, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'scores.csv');
-      const queue = new Queue<ConversionJobData, ConversionJobResult>('cleanup-false');
+      return inputKey;
+    }
+
+    async function completeThroughWorker(queueName: string, inputKey: string) {
+      const queue = new Queue<ConversionJobData, ConversionJobResult>(queueName);
+      const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
+      attachInputCleanupOnCompletion(worker);
+      const completed = nextEvent(worker, 'completed');
+      const job = await queue.add(
+        'convert',
+        csvJobData({ storageKey: inputKey, inputBufferBase64: undefined }),
+        { attempts: 1 }
+      );
+      const [, result] = (await completed) as [unknown, ConversionJobResult];
+      await worker.close();
+      await queue.close();
+      return { job, result };
+    }
+
+    it('keeps the input when a successful attempt has not been recorded as completed yet', async () => {
+      const inputKey = storeCsvInput('unrecorded');
+      const queue = new Queue<ConversionJobData, ConversionJobResult>('cleanup-unrecorded');
       const job = await queue.add(
         'convert',
         csvJobData({ storageKey: inputKey, inputBufferBase64: undefined }),
         { attempts: 1 }
       );
 
-      vi.spyOn(s3Storage, 'deleteObject').mockReturnValue(false);
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
+      // The processor alone does not know whether the completion will be recorded.
       const result = await processConversionJob(job);
+
       expect(result.status).toBe('completed');
+      expect(s3Storage.getObject(inputKey)?.buffer.toString('utf-8')).toBe(CSV_INPUT);
+      s3Storage.deleteObject(inputKey);
+      await queue.close();
+    });
+
+    it('deletes the input once the worker records the completion', async () => {
+      const inputKey = storeCsvInput('recorded');
+      const { result } = await completeThroughWorker('cleanup-recorded', inputKey);
+
       expect(JSON.parse(s3Storage.getObject(result.resultKey)!.buffer.toString('utf-8'))).toEqual([
         // CSV cells are untyped text, so the JSON rows keep them as strings.
         { name: 'Alice', score: '100' },
         { name: 'Bob', score: '95' },
       ]);
+      expect(s3Storage.getObject(inputKey)).toBeUndefined();
+    });
 
-      const warnings = warnSpy.mock.calls.map((args) => args.map(String).join(' '));
-      expect(warnings.some((w) => w.includes(job.id) && w.includes(inputKey))).toBe(true);
+    it('still deletes the input when the final attempt fails', async () => {
+      const inputKey = storeCsvInput('final-failure');
+      const queue = new Queue<ConversionJobData, ConversionJobResult>('cleanup-final-failure');
+      const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
+      attachInputCleanupOnCompletion(worker);
+      const failed = nextEvent(worker, 'failed');
+      await queue.add(
+        'convert',
+        csvJobData({ storageKey: inputKey, inputBufferBase64: undefined, targetFormat: 'not-a-format' }),
+        { attempts: 1 }
+      );
+      await failed;
 
+      expect(s3Storage.getObject(inputKey)).toBeUndefined();
+      await worker.close();
       await queue.close();
     });
 
-    it('warns with the job id, key, and error when the final input cleanup throws', async () => {
-      const inputKey = `uploads/lifecycle-cleanup-throw-${Date.now()}.csv`;
-      s3Storage.saveObject(inputKey, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'scores.csv');
-      const queue = new Queue<ConversionJobData, ConversionJobResult>('cleanup-throw');
-      const job = await queue.add(
-        'convert',
-        csvJobData({ storageKey: inputKey, inputBufferBase64: undefined }),
-        { attempts: 1 }
-      );
+    it('warns with the job id and key when the cleanup after completion finds no object', async () => {
+      const inputKey = storeCsvInput('cleanup-false');
+      vi.spyOn(s3Storage, 'deleteObject').mockReturnValue(false);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
+      const { job, result } = await completeThroughWorker('cleanup-false', inputKey);
+
+      expect(result.status).toBe('completed');
+      const warnings = warnSpy.mock.calls.map((args) => args.map(String).join(' '));
+      expect(warnings.some((w) => w.includes(job.id) && w.includes(inputKey))).toBe(true);
+    });
+
+    it('warns with the job id, key, and error when the cleanup after completion throws', async () => {
+      const inputKey = storeCsvInput('cleanup-throw');
       vi.spyOn(s3Storage, 'deleteObject').mockImplementation(() => {
         throw new Error('storage backend unavailable');
       });
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-      await processConversionJob(job);
+      const { job } = await completeThroughWorker('cleanup-throw', inputKey);
 
       const warnings = warnSpy.mock.calls.map((args) => args.map(String).join(' '));
       expect(
@@ -677,8 +725,6 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
           (w) => w.includes(job.id) && w.includes(inputKey) && w.includes('storage backend unavailable')
         )
       ).toBe(true);
-
-      await queue.close();
     });
   });
 });

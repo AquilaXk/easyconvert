@@ -36,6 +36,12 @@ export const STALLED_SWEEP_INTERVAL_MS = 15000;
 
 export const STALLED_JOB_FAILURE_REASON = 'Job stalled: worker heartbeat lost';
 
+/** Redis mode: tries to record a completion before leaving the job to the stalled sweep. */
+export const COMPLETION_COMMIT_MAX_ATTEMPTS = 3;
+
+/** Redis mode: wait before the first completion retry; it doubles for every further retry. */
+export const COMPLETION_COMMIT_RETRY_BASE_DELAY_MS = 100;
+
 /** Abort reason for an attempt whose job was cancelled. Cancelled jobs never retry. */
 export class JobCancelledError extends Error {
   constructor(reason: string) {
@@ -778,8 +784,14 @@ export const COMPLETE_JOB_LUA_SCRIPT = `
 -- ARGV[5]: '1' to delete the job hash (removeOnComplete)
 -- ARGV[6]: attempt token of the caller
 -- Returns 1 after moving the job from active to completed, or 0 when it is no longer active
--- or another attempt owns it.
-if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[6] then
+-- or another attempt owns it. A retry by the attempt that already completed the job also
+-- returns 1, so a commit whose reply was lost is not reported as refused.
+local state = redis.call('HGET', KEYS[1], 'state')
+local ownsAttempt = redis.call('HGET', KEYS[1], 'attemptToken') == ARGV[6]
+if state == 'completed' and ownsAttempt then
+  return 1
+end
+if state ~= 'active' or not ownsAttempt then
   return 0
 end
 redis.call('SREM', KEYS[2], ARGV[1])
@@ -1543,38 +1555,56 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async _onJobCompleted(job: Job<T, R>, result: R): Promise<boolean> {
-    if (!this.redisClient || !this.redisConnected) {
+    const client = this.redisClient;
+    if (!client || !this.redisConnected) {
       // In-process fallback: the worker guards the shared job object itself.
       return true;
     }
-    try {
-      const committed = await this.redisClient.eval(
-        COMPLETE_JOB_LUA_SCRIPT,
-        4,
-        this.getJobKey(job.id),
-        this.activeKey,
-        this.completedKey,
-        this.getHeartbeatKey(job.id),
-        job.id,
-        String(job.finishedOn || Date.now()),
-        result === undefined ? '' : JSON.stringify(result),
-        String(job.attemptsMade),
-        job.opts?.removeOnComplete ? '1' : '0',
-        job._attemptToken ?? ''
-      );
-      if (Number(committed) !== 1) {
+    const finishedOn = String(job.finishedOn || Date.now());
+    const returnValue = result === undefined ? '' : JSON.stringify(result);
+    let lastError: unknown;
+    for (let commitAttempt = 1; commitAttempt <= COMPLETION_COMMIT_MAX_ATTEMPTS; commitAttempt++) {
+      if (commitAttempt > 1) {
+        const delayMs = COMPLETION_COMMIT_RETRY_BASE_DELAY_MS * 2 ** (commitAttempt - 2);
         console.warn(
-          `[DistributedBullMQAdapter:${this.name}] Discarded completion of job ${job.id}: it is no longer active.`
+          `[DistributedBullMQAdapter:${this.name}] Retrying completion of job ${job.id} in ${delayMs}ms (${commitAttempt}/${COMPLETION_COMMIT_MAX_ATTEMPTS}):`,
+          lastError
         );
-        return false;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
-      await this.publishEvent({ event: 'completed', jobId: job.id, result });
-      return true;
-    } catch (err) {
-      // The job stays active without a heartbeat, so the stalled sweep will recover it.
-      console.error(`[DistributedBullMQAdapter:${this.name}] Failed to record completion of job ${job.id}:`, err);
-      return false;
+      try {
+        const committed = await client.eval(
+          COMPLETE_JOB_LUA_SCRIPT,
+          4,
+          this.getJobKey(job.id),
+          this.activeKey,
+          this.completedKey,
+          this.getHeartbeatKey(job.id),
+          job.id,
+          finishedOn,
+          returnValue,
+          String(job.attemptsMade),
+          job.opts?.removeOnComplete ? '1' : '0',
+          job._attemptToken ?? ''
+        );
+        if (Number(committed) !== 1) {
+          console.warn(
+            `[DistributedBullMQAdapter:${this.name}] Discarded completion of job ${job.id}: this attempt no longer owns it.`
+          );
+          return false;
+        }
+        await this.publishEvent({ event: 'completed', jobId: job.id, result });
+        return true;
+      } catch (err) {
+        lastError = err;
+      }
     }
+    // The job stays active without a heartbeat, so the stalled sweep will run it again.
+    console.error(
+      `[DistributedBullMQAdapter:${this.name}] Failed to record completion of job ${job.id} after ${COMPLETION_COMMIT_MAX_ATTEMPTS} attempts:`,
+      lastError
+    );
+    return false;
   }
 
   async _onJobFailed(job: Job<T, R>, err: any): Promise<boolean> {

@@ -140,9 +140,11 @@ export async function processConversionJob(
         // Ignore if detached
       }
     }
-    // Clean up temporary input object from storage backend upon job success or when retry attempts are exhausted
+    // Delete the uploaded input once retry attempts are exhausted. After a success the input is kept
+    // until the completion is recorded (attachInputCleanupOnCompletion): if recording fails, the
+    // stalled sweep runs the job again and it needs the input to convert again.
     const isFinalAttempt = !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
-    if (job.data.storageKey && (conversionSucceeded || isFinalAttempt)) {
+    if (job.data.storageKey && !conversionSucceeded && isFinalAttempt) {
       removeJobInput(job.id, job.data.storageKey);
     }
   }
@@ -236,6 +238,20 @@ export function attachJobLifecycleListeners(
 }
 
 /**
+ * Deletes a job's uploaded input once the worker has recorded its completion. Attach it to every
+ * worker that runs processConversionJob.
+ */
+export function attachInputCleanupOnCompletion(
+  worker: Worker<ConversionJobData, ConversionJobResult>
+): void {
+  worker.on('completed', (job: Job<ConversionJobData, ConversionJobResult>) => {
+    if (job.data?.storageKey) {
+      removeJobInput(job.id, job.data.storageKey);
+    }
+  });
+}
+
+/**
  * Owns the quota refund for cancelled jobs. The engine emits `cancelled` once per cancelled job, in
  * the process whose cancelJob won the transition, so every cancel path refunds exactly once.
  */
@@ -274,6 +290,7 @@ export function startConversionWorker(
     { concurrency: opts.concurrency || 5 }
   );
   attachJobLifecycleListeners(worker);
+  attachInputCleanupOnCompletion(worker);
   workerInstance = worker;
   return worker;
 }

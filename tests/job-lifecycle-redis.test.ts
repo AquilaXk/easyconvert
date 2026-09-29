@@ -10,7 +10,16 @@ import {
   HEARTBEAT_INTERVAL_MS,
   STALL_TIMEOUT_MS,
   STALLED_SWEEP_INTERVAL_MS,
+  COMPLETE_JOB_LUA_SCRIPT,
+  COMPLETION_COMMIT_MAX_ATTEMPTS,
 } from '../src/lib/queue/bullmq-engine';
+import {
+  processConversionJob,
+  attachJobLifecycleListeners,
+  attachInputCleanupOnCompletion,
+} from '../src/lib/queue/conversion-queue';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
  * Redis-mode lifecycle guarantees need a real Redis server: the transitions are Lua scripts,
@@ -19,6 +28,7 @@ import {
  */
 const REDIS_URL = process.env.REDIS_URL;
 const STALLED_REASON = 'Job stalled: worker heartbeat lost';
+const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
 
 interface Payload {
   payload: string;
@@ -41,13 +51,40 @@ function createGate() {
 describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () => {
   let keyPrefix: string;
   let admin: Redis;
-  const adapters: DistributedBullMQAdapter<Payload, string>[] = [];
+  const adapters: DistributedBullMQAdapter<any, any>[] = [];
 
-  function connect(queueName: string): DistributedBullMQAdapter<Payload, string> {
+  function connect<T = Payload, R = string>(queueName: string): DistributedBullMQAdapter<T, R> {
     const client = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
-    const adapter = new DistributedBullMQAdapter<Payload, string>(queueName, { redisClient: client, keyPrefix });
+    const adapter = new DistributedBullMQAdapter<T, R>(queueName, { redisClient: client, keyPrefix });
     adapters.push(adapter);
     return adapter;
+  }
+
+  /**
+   * Makes the adapter's completion script fail as a dropped connection would. `mode` decides
+   * whether the script runs on the server before the reply is lost.
+   */
+  function injectCompletionFailures(
+    adapter: DistributedBullMQAdapter<any, any>,
+    plan: { failures: () => boolean; runBeforeFailing?: boolean }
+  ): { commitCalls: () => number } {
+    const client = adapter.getRedisClient() as Redis;
+    const realEval = client.eval.bind(client) as (...args: unknown[]) => Promise<unknown>;
+    let calls = 0;
+    vi.spyOn(client, 'eval').mockImplementation((async (...args: unknown[]) => {
+      if (args[0] !== COMPLETE_JOB_LUA_SCRIPT) {
+        return realEval(...args);
+      }
+      calls++;
+      if (!plan.failures()) {
+        return realEval(...args);
+      }
+      if (plan.runBeforeFailing) {
+        await realEval(...args);
+      }
+      throw new Error('Connection is closed.');
+    }) as never);
+    return { commitCalls: () => calls };
   }
 
   function keyOf(queueName: string, suffix: string): string {
@@ -425,5 +462,98 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
 
       await worker.close();
     });
+  });
+
+  describe('5. Recording a completion through transient Redis errors', () => {
+    it('retries the completion commit after a transient Redis error', async () => {
+      const queue = connect('commit-retry');
+      const job = await queue.add('convert', { payload: 'x' });
+      const attempt = await queue._popNextWaiting();
+      attempt!.attemptsMade = 1;
+      let remainingFailures = 1;
+      const injected = injectCompletionFailures(queue, { failures: () => remainingFailures-- > 0 });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      expect(await queue._onJobCompleted(attempt!, 'converted')).toBe(true);
+
+      expect(injected.commitCalls()).toBe(2);
+      const stored = await queue.getJob(job.id);
+      expect(stored?.state).toBe('completed');
+      expect(stored?.returnvalue).toBe('converted');
+    });
+
+    it('treats a retried commit whose first reply was lost as recorded', async () => {
+      const queue = connect('commit-lost-reply');
+      const job = await queue.add('convert', { payload: 'x' });
+      const attempt = await queue._popNextWaiting();
+      attempt!.attemptsMade = 1;
+      let remainingFailures = 1;
+      const injected = injectCompletionFailures(queue, {
+        failures: () => remainingFailures-- > 0,
+        runBeforeFailing: true,
+      });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      expect(await queue._onJobCompleted(attempt!, 'converted')).toBe(true);
+
+      expect(injected.commitCalls()).toBe(2);
+      expect((await queue.getJob(job.id))?.state).toBe('completed');
+      expect(await queue.getJobCounts()).toMatchObject({ active: 0, completed: 1 });
+    });
+
+    it('keeps the input when the completion cannot be recorded, so the recovered job reconverts', async () => {
+      const queue = connect<ConversionJobData, ConversionJobResult>('commit-failure');
+      const inputKey = `uploads/commit-failure-${crypto.randomBytes(6).toString('hex')}.csv`;
+      s3Storage.saveObject(inputKey, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'scores.csv');
+      const job = await queue.add(
+        'convert',
+        {
+          jobId: 'commit-failure',
+          originalFilename: 'scores.csv',
+          sourceFormat: 'csv',
+          targetFormat: 'json',
+          fileSize: CSV_INPUT.length,
+          options: {},
+          storageKey: inputKey,
+        },
+        { attempts: 2 }
+      );
+      let redisDown = true;
+      const injected = injectCompletionFailures(queue, { failures: () => redisDown });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
+      attachJobLifecycleListeners(worker);
+      attachInputCleanupOnCompletion(worker);
+      const completedEvents: unknown[] = [];
+      worker.on('completed', (j) => completedEvents.push(j));
+      const firstAttemptDone = nextEvent(worker, 'drained');
+      await firstAttemptDone;
+
+      expect(injected.commitCalls()).toBe(COMPLETION_COMMIT_MAX_ATTEMPTS);
+      expect((await queue.getJob(job.id))?.state).toBe('active');
+      expect(completedEvents).toHaveLength(0);
+      expect(s3Storage.getObject(inputKey)?.buffer.toString('utf-8')).toBe(CSV_INPUT);
+
+      // Redis recovers; the attempt's heartbeat expires and the sweep hands the job to a new attempt.
+      redisDown = false;
+      await admin.del(keyOf('commit-failure', `heartbeat:${job.id}`));
+      const completed = nextEvent(worker, 'completed');
+      expect(await queue._recoverStalledJobs()).toEqual([]);
+      const [, result] = (await completed) as [unknown, ConversionJobResult];
+
+      expect(JSON.parse(s3Storage.getObject(result.resultKey)!.buffer.toString('utf-8'))).toEqual([
+        // CSV cells are untyped text, so the JSON rows keep them as strings.
+        { name: 'Alice', score: '100' },
+        { name: 'Bob', score: '95' },
+      ]);
+      const recorded = await queue.getJob(job.id);
+      expect(recorded?.state).toBe('completed');
+      expect(recorded?.attemptsMade).toBe(2);
+      expect(s3Storage.getObject(inputKey)).toBeUndefined();
+
+      await worker.close();
+    }, 10000);
   });
 });
