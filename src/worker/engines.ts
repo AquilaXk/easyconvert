@@ -442,15 +442,19 @@ function get7zArchiveType(format: string): string | null {
   }
 }
 
-async function package7zArchive(
-  p7zBin: string,
-  tgt: string,
-  extractDir: string,
-  tempDir: string,
-  tempOutputPath: string,
-  timeout: number,
-  maxBuffer: number
-): Promise<boolean> {
+interface Package7zArchiveParams {
+  p7zBin: string;
+  tgt: string;
+  extractDir: string;
+  tempDir: string;
+  tempOutputPath: string;
+  timeout: number;
+  maxBuffer: number;
+  options?: WorkerEngineOptions;
+}
+
+async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
+  const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options } = params;
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
@@ -481,13 +485,54 @@ async function package7zArchive(
   const archiveType = get7zArchiveType(tgt);
   if (!archiveType) return false;
 
-  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, tempOutputPath, '.'], {
+  const pwArgs = options?.password && (tgt === 'zip' || tgt === '7z') ? ['-p'] : [];
+  const pwInput =
+    options?.password && (tgt === 'zip' || tgt === '7z')
+      ? Buffer.from(`${options.password}\n${options.password}\n`)
+      : undefined;
+
+  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...pwArgs, tempOutputPath, '.'], {
     cwd: extractDir,
     timeoutMs: timeout,
     maxBuffer,
     networkIsolated: true,
+    stdin: pwInput,
   });
   return true;
+}
+
+interface ExtractArchiveParams {
+  p7zBin: string;
+  inputPath: string;
+  extractDir: string;
+  tempDir: string;
+  timeout: number;
+  maxBuffer: number;
+  options?: WorkerEngineOptions;
+}
+
+async function extractSourceArchive(params: ExtractArchiveParams): Promise<void> {
+  const { p7zBin, inputPath, extractDir, tempDir, timeout, maxBuffer, options } = params;
+  if (options?.archiveParts && options.archiveParts.length > 0) {
+    await extractWithSpannedStream7z(options.archiveParts as any, extractDir, {
+      timeoutMs: timeout,
+      maxBuffer,
+      password: options.password,
+    });
+  } else {
+    const pwArgs = options?.password ? ['-p'] : [];
+    await executeSandboxedBinary(
+      p7zBin,
+      ['x', '-y', ...pwArgs, `-o${extractDir}`, inputPath],
+      {
+        cwd: tempDir,
+        timeoutMs: timeout,
+        maxBuffer,
+        networkIsolated: true,
+        stdin: options?.password ? Buffer.from(options.password + '\n') : undefined,
+      }
+    );
+  }
 }
 
 /**
@@ -519,25 +564,15 @@ export async function convertWithNative7z(
 
     // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
     if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
-      if (options.archiveParts && options.archiveParts.length > 0) {
-        // Multi-volume split archive extraction via Virtual Spanned Stream pipeline
-        await extractWithSpannedStream7z(options.archiveParts as any, extractDir, {
-          timeoutMs: timeout,
-          maxBuffer,
-          password: options.password,
-        });
-      } else {
-        await executeSandboxedBinary(
-          p7zBin,
-          ['x', '-y', `-o${extractDir}`, inputPath],
-          {
-            cwd: tempDir,
-            timeoutMs: timeout,
-            maxBuffer,
-            networkIsolated: true,
-          }
-        );
-      }
+      await extractSourceArchive({
+        p7zBin,
+        inputPath,
+        extractDir,
+        tempDir,
+        timeout,
+        maxBuffer,
+        options,
+      });
     } else {
       const destPath = path.join(extractDir, originalFilename || `file.${src}`);
       fs.copyFileSync(inputPath, destPath);
@@ -549,7 +584,16 @@ export async function convertWithNative7z(
     }
 
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
-    const packaged = await package7zArchive(p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer);
+    const packaged = await package7zArchive({
+      p7zBin,
+      tgt,
+      extractDir,
+      tempDir,
+      tempOutputPath,
+      timeout,
+      maxBuffer,
+      options,
+    });
     if (!packaged || !fs.existsSync(tempOutputPath)) return null;
 
     const vfsPayload = Buffer.isBuffer(input) ? undefined : input;

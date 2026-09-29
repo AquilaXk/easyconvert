@@ -4493,7 +4493,10 @@ export function adaptiveIncrementalBRepMesh(
 
   // 3. Compute unique midpoints for all marked edges
   const refinedVertices: [number, number, number][] = [...baseMesh.vertices];
-  const refinedNormals: [number, number, number][] = [...baseMesh.normals];
+  const refinedNormals: [number, number, number][] =
+    hasNormals && baseMesh.normals
+      ? [...baseMesh.normals]
+      : baseMesh.vertices.map(() => [0, 0, 1]);
   const edgeMidpointMap = new Map<string, number>();
 
   for (const k of markedEdges) {

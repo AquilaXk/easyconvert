@@ -31,7 +31,11 @@ import {
   type VirtualSpannedStreamOptions,
   type SpannedArchiveMetadata,
 } from './archive-split';
-import { executeSandboxedBinary } from '../security/process-sandbox';
+import {
+  executeSandboxedBinary,
+  resolveSandboxedCommand,
+  getSanitizedEnvironment,
+} from '../security/process-sandbox';
 import {
   compressWithZstdDict,
   decompressWithZstdDict,
@@ -122,6 +126,9 @@ function createEncryptedArchiveVia7z(
 ): ConversionResult | null {
   const p7z = get7zBinaryPath();
   if (!p7z || !password) return null;
+  if (/[\r\n\0]/.test(password)) {
+    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+  }
 
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
@@ -135,10 +142,14 @@ function createEncryptedArchiveVia7z(
       fs.writeFileSync(dest, f.buffer);
     }
     const outPath = path.join(workDir, archiveName);
-    execFileSync(p7z, ['a', '-y', `-t${archiveType}`, '-p', outPath, '.'], {
+    const resolved = resolveSandboxedCommand(p7z, ['a', '-y', `-t${archiveType}`, '-p', outPath, '.'], {
+      networkIsolated: true,
+    });
+    execFileSync(resolved.binary, resolved.args, {
       cwd: stagingDir,
+      env: getSanitizedEnvironment({}, true),
       timeout: 60000,
-      input: Buffer.from(password + '\n'),
+      input: Buffer.from(`${password}\n${password}\n`),
     });
     const content = fs.readFileSync(outPath);
     return {
@@ -249,6 +260,10 @@ export async function extractZipArchive(
   zipBuffer: Buffer,
   options: { password?: string } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
+  if (options.password && /[\r\n\0]/.test(options.password)) {
+    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+  }
+
   const isEncrypted = isZipBufferEncrypted(zipBuffer);
   if (isEncrypted) {
     if (!options.password) {
@@ -267,12 +282,17 @@ export async function extractZipArchive(
         fs.mkdirSync(extractDir, { recursive: true });
         try {
           const pwArgs = options.password ? ['-p'] : [];
-          execFileSync(p7z, ['x', '-y', ...pwArgs, `-o${extractDir}`, zipPath], {
-            cwd: workDir,
-            timeout: 60000,
-            maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-            input: options.password ? Buffer.from(options.password + '\n') : undefined,
-          });
+          await executeSandboxedBinary(
+            p7z,
+            ['x', '-y', ...pwArgs, `-o${extractDir}`, zipPath],
+            {
+              cwd: workDir,
+              timeoutMs: 60000,
+              maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+              networkIsolated: true,
+              stdin: options.password ? Buffer.from(options.password + '\n') : undefined,
+            }
+          );
         } catch (err: any) {
           const msg = (err?.message || '') + (err?.stderr?.toString() || '');
           if (msg.includes('Wrong password') || msg.includes('Can not open encrypted') || msg.includes('Data Error')) {
@@ -666,6 +686,10 @@ export function extractRarArchive(
     throw new Error('Invalid RAR archive: signature mismatch');
   }
 
+  if (options.password && /[\r\n\0]/.test(options.password)) {
+    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+  }
+
   // If unrar binary is available on the system, execute under defensive limits
   const unrarBin = getUnrarBinaryPath();
   if (unrarBin) {
@@ -679,7 +703,12 @@ export function extractRarArchive(
     try {
       const pwArgs = options.password ? ['-p'] : ['-p-'];
       try {
-        execFileSync(unrarBin, ['x', '-inul', '-y', ...pwArgs, tmpFile, extractDir], {
+        const resolved = resolveSandboxedCommand(unrarBin, ['x', '-inul', '-y', ...pwArgs, tmpFile, extractDir], {
+          networkIsolated: true,
+        });
+        execFileSync(resolved.binary, resolved.args, {
+          cwd: extractDir,
+          env: getSanitizedEnvironment({}, true),
           timeout: 30000,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
           input: options.password ? Buffer.from(options.password + '\n') : undefined,
@@ -1423,11 +1452,19 @@ export function convertWithNative7z(
     const extractDir = path.join(workDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
+    if (options.password && /[\r\n\0]/.test(options.password)) {
+      throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+    }
+
     const pwExtractArgs = options.password ? ['-p'] : [];
     if (supportedExtract.has(src)) {
       try {
-        execFileSync(p7zBin, ['x', '-y', ...pwExtractArgs, `-o${extractDir}`, inputPath], {
+        const resolved = resolveSandboxedCommand(p7zBin, ['x', '-y', ...pwExtractArgs, `-o${extractDir}`, inputPath], {
+          networkIsolated: true,
+        });
+        execFileSync(resolved.binary, resolved.args, {
           cwd: workDir,
+          env: getSanitizedEnvironment({}, true),
           timeout: 60000,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
           input: options.password ? Buffer.from(options.password + '\n') : undefined,
@@ -1446,8 +1483,12 @@ export function convertWithNative7z(
         const intermediateNoExt = path.join(extractDir, 'input');
         const tarToExtract = fs.existsSync(intermediateTar) ? intermediateTar : (fs.existsSync(intermediateNoExt) ? intermediateNoExt : null);
         if (tarToExtract) {
-          execFileSync(p7zBin, ['x', '-y', `-o${extractDir}`, tarToExtract], {
+          const rTarExt = resolveSandboxedCommand(p7zBin, ['x', '-y', `-o${extractDir}`, tarToExtract], {
+            networkIsolated: true,
+          });
+          execFileSync(rTarExt.binary, rTarExt.args, {
             cwd: workDir,
+            env: getSanitizedEnvironment({}, true),
             timeout: 60000,
             maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
           });
@@ -1488,23 +1529,31 @@ export function convertWithNative7z(
     }
 
     const pwCreateArgs = options.password && (tgt === 'zip' || tgt === '7z') ? ['-p'] : [];
-    const pwCreateInput = options.password && (tgt === 'zip' || tgt === '7z') ? Buffer.from(options.password + '\n') : undefined;
+    const pwCreateInput = options.password && (tgt === 'zip' || tgt === '7z') ? Buffer.from(`${options.password}\n${options.password}\n`) : undefined;
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
       const tarPath = path.join(workDir, 'archive.tar');
-      execFileSync(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { cwd: extractDir, timeout: 60000 });
-      execFileSync(p7zBin, ['a', '-y', '-tgzip', outputPath, tarPath], { cwd: workDir, timeout: 60000 });
+      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true });
+      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
+      const rGz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-tgzip', outputPath, tarPath], { networkIsolated: true });
+      execFileSync(rGz.binary, rGz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
     } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
       const tarPath = path.join(workDir, 'archive.tar');
-      execFileSync(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { cwd: extractDir, timeout: 60000 });
-      execFileSync(p7zBin, ['a', '-y', '-tbzip2', outputPath, tarPath], { cwd: workDir, timeout: 60000 });
+      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true });
+      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
+      const rBz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-tbzip2', outputPath, tarPath], { networkIsolated: true });
+      execFileSync(rBz.binary, rBz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
     } else if (tgt === 'tar.xz' || tgt === 'txz') {
       const tarPath = path.join(workDir, 'archive.tar');
-      execFileSync(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { cwd: extractDir, timeout: 60000 });
-      execFileSync(p7zBin, ['a', '-y', '-txz', outputPath, tarPath], { cwd: workDir, timeout: 60000 });
+      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true });
+      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
+      const rXz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-txz', outputPath, tarPath], { networkIsolated: true });
+      execFileSync(rXz.binary, rXz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
     } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
-      execFileSync(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], {
+      const rCreate = resolveSandboxedCommand(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { networkIsolated: true });
+      execFileSync(rCreate.binary, rCreate.args, {
         cwd: extractDir,
+        env: getSanitizedEnvironment({}, true),
         timeout: 60000,
         input: pwCreateInput,
       });
@@ -2547,7 +2596,7 @@ export async function convertArchive(
       effectiveBuffer[0] === 0x50 &&
       effectiveBuffer[1] === 0x4b;
     try {
-      files = await extractZipArchive(effectiveBuffer);
+      files = await extractZipArchive(effectiveBuffer, options);
     } catch (err) {
       if (hasZipMagic || (err instanceof Error && err.message.includes('Archive bomb detected'))) {
         throw new ConversionFailedError(
@@ -2601,7 +2650,7 @@ export async function convertArchive(
       );
     }
   } else if (src === 'rar') {
-    files = extractRarArchive(effectiveBuffer);
+    files = extractRarArchive(effectiveBuffer, options);
   } else if (src === '7z' || src === 'tar.7z') {
     files = extract7zArchive(effectiveBuffer);
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {

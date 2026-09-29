@@ -24,6 +24,7 @@ services:
       dockerfile: Dockerfile.worker
     container_name: easyconvert-oci-worker
     restart: unless-stopped
+    init: true
     depends_on:
       - redis
     environment:

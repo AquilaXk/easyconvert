@@ -221,7 +221,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       expect(job.state).toBe('waiting');
 
       // Verify Redis Hash
-      const hashKey = `testqueue:transcode-cluster:job:${job.id}`;
+      const hashKey = (adapter as any).getJobKey(job.id);
       const hash = await mockRedis.hgetall(hashKey);
       expect(hash.id).toBe(job.id);
       expect(hash.name).toBe('document_conversion');
@@ -233,7 +233,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       });
 
       // Verify waiting list
-      const waitingList = await mockRedis.lrange('testqueue:transcode-cluster:waiting', 0, -1);
+      const waitingList = await mockRedis.lrange((adapter as any).waitingKey, 0, -1);
       expect(waitingList).toContain(job.id);
 
       // Verify pub/sub publish event
