@@ -108,7 +108,7 @@ describe('Legacy /api/queue/jobs/[id] owner access (#242)', () => {
 
     const ownerRes = await cancelQueueJobRoute(sessionRequest(alice, pathName, 'DELETE'), params);
     expect(ownerRes.status).toBe(200);
-    expect((await conversionQueue.getJob(aliceJobId))?.state).toBe('failed');
+    expect((await conversionQueue.getJob(aliceJobId))?.state).toBe('cancelled');
   });
 
   it('keeps capability-URL access for anonymous jobs', async () => {

@@ -18,6 +18,7 @@ import {
 import { GET as getLegacyJob, DELETE as deleteLegacyJob } from '../src/app/api/queue/jobs/[id]/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
+import { createSessionToken } from '../src/lib/auth/session';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
@@ -536,8 +537,12 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       const rollbackSpy = vi.spyOn(redisKeyStore, 'rollbackQuota');
       const job = await conversionQueue.add('convert', csvJobData({ userId: user.id, reservationId }));
 
+      // Owned jobs are cancellable only by their owner (owner gate on the legacy route).
       const res = await deleteLegacyJob(
-        new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, { method: 'DELETE' }),
+        new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, {
+          method: 'DELETE',
+          headers: { Cookie: `easyconvert_session=${createSessionToken(redisUserStore.sanitizeUser(user))}` },
+        }),
         { params: { id: job.id } }
       );
       expect(res.status).toBe(200);
