@@ -6,6 +6,8 @@ import {
   DistributedBullMQAdapter,
   Worker,
   JobCancelledError,
+  JobOwnershipLostError,
+  HEARTBEAT_INTERVAL_MS,
   STALL_TIMEOUT_MS,
   STALLED_SWEEP_INTERVAL_MS,
 } from '../src/lib/queue/bullmq-engine';
@@ -59,6 +61,7 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
 
   afterEach(async () => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     while (adapters.length > 0) {
       await adapters.pop()!.close();
     }
@@ -302,6 +305,123 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
       expect(failedJob.id).toBe(job.id);
       expect(failedJob.state).toBe('failed');
       expect(err.message).toBe(STALLED_REASON);
+
+      await worker.close();
+    });
+  });
+
+  describe('4. Attempt ownership fencing after stalled recovery', () => {
+    it('rejects every write from a stale attempt once a new attempt owns the job', async () => {
+      const staleSide = connect('fencing');
+      const freshSide = connect('fencing');
+      const job = await staleSide.add('convert', { payload: 'contended' }, { attempts: 3 });
+      const jobKey = keyOf('fencing', `job:${job.id}`);
+      const heartbeatKey = keyOf('fencing', `heartbeat:${job.id}`);
+
+      const staleAttempt = await staleSide._popNextWaiting();
+      expect(staleAttempt?.id).toBe(job.id);
+      staleAttempt!.attemptsMade = 1;
+
+      // The stale worker stops heartbeating (blocked event loop), so the sweep hands the job on.
+      await admin.del(heartbeatKey);
+      expect(await freshSide._recoverStalledJobs()).toEqual([]);
+      const freshAttempt = await freshSide._popNextWaiting();
+      expect(freshAttempt?.id).toBe(job.id);
+      expect(freshAttempt?.attemptsMade).toBe(1);
+
+      const hashBefore = await admin.hgetall(jobKey);
+      const heartbeatBefore = await admin.get(heartbeatKey);
+      expect(hashBefore.state).toBe('active');
+
+      staleAttempt!.failedReason = 'stale attempt failure';
+      expect(await staleSide._onJobCompleted(staleAttempt!, 'stale result')).toBe(false);
+      expect(await staleSide._onJobFailed(staleAttempt!, new Error('stale attempt failure'))).toBe(false);
+      expect(await staleSide._requeue(staleAttempt!, 0)).toBe(false);
+      expect(await staleSide._requeue(staleAttempt!, 1000)).toBe(false);
+      await staleAttempt!.updateProgress(99);
+      await staleAttempt!.log('stale attempt log line');
+
+      expect(await admin.hgetall(jobKey)).toEqual(hashBefore);
+      expect(await admin.get(heartbeatKey)).toBe(heartbeatBefore);
+      expect(await admin.lrange(keyOf('fencing', 'waiting'), 0, -1)).toEqual([]);
+      expect(await admin.zrange(keyOf('fencing', 'delayed'), 0, '-1')).toEqual([]);
+      expect(await freshSide.getDlqEntries()).toEqual([]);
+      expect(await freshSide.getJobCounts()).toMatchObject({ active: 1, completed: 0, failed: 0 });
+
+      // The stale attempt's heartbeat refresh is refused and aborts its signal.
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      const stopMonitoring = staleSide._monitorActiveJob(staleAttempt!);
+      const aborted = new Promise<void>((resolve) => {
+        staleAttempt!.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+      await aborted;
+      stopMonitoring();
+      expect(staleAttempt!.signal.reason).toBeInstanceOf(JobOwnershipLostError);
+      expect(await admin.get(heartbeatKey)).toBe(heartbeatBefore);
+      expect(await admin.hgetall(jobKey)).toEqual(hashBefore);
+
+      // The owning attempt still completes normally.
+      freshAttempt!.attemptsMade = 2;
+      expect(await freshSide._onJobCompleted(freshAttempt!, 'fresh result')).toBe(true);
+      const completed = await freshSide.getJob(job.id);
+      expect(completed?.state).toBe('completed');
+      expect(completed?.returnvalue).toBe('fresh result');
+      expect(completed?.attemptsMade).toBe(2);
+      expect(await freshSide.getJobCounts()).toMatchObject({ active: 0, completed: 1, failed: 0 });
+    });
+
+    it('stops a worker whose attempt lost ownership without recording anything', async () => {
+      const staleSide = connect('fencing-worker');
+      const freshSide = connect('fencing-worker');
+      const job = await freshSide.add('convert', { payload: 'contended' }, { attempts: 3 });
+      const heartbeatKey = keyOf('fencing-worker', `heartbeat:${job.id}`);
+      const completeSpy = vi.spyOn(staleSide, '_onJobCompleted');
+      const failSpy = vi.spyOn(staleSide, '_onJobFailed');
+      const requeueSpy = vi.spyOn(staleSide, '_requeue');
+
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      const started = createGate();
+      let observedReason: unknown;
+      const worker = new Worker(
+        staleSide,
+        async (attempt) => {
+          started.release();
+          await new Promise<void>((resolve) => {
+            attempt.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          observedReason = attempt.signal.reason;
+          return 'stale result';
+        },
+        { concurrency: 1 }
+      );
+      const workerEvents: string[] = [];
+      worker.on('completed', () => workerEvents.push('completed'));
+      worker.on('failed', () => workerEvents.push('failed'));
+      await started.promise;
+
+      await admin.del(heartbeatKey);
+      expect(await freshSide._recoverStalledJobs()).toEqual([]);
+      const freshAttempt = await freshSide._popNextWaiting();
+      expect(freshAttempt?.id).toBe(job.id);
+
+      const drained = nextEvent(worker, 'drained');
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+      await drained;
+
+      expect(observedReason).toBeInstanceOf(JobOwnershipLostError);
+      expect(workerEvents).toEqual([]);
+      expect(completeSpy).not.toHaveBeenCalled();
+      expect(failSpy).not.toHaveBeenCalled();
+      expect(requeueSpy).not.toHaveBeenCalled();
+
+      const owned = await freshSide.getJob(job.id);
+      expect(owned?.state).toBe('active');
+      expect(owned?.attemptsMade).toBe(1);
+
+      freshAttempt!.attemptsMade = 2;
+      expect(await freshSide._onJobCompleted(freshAttempt!, 'fresh result')).toBe(true);
+      expect((await freshSide.getJob(job.id))?.returnvalue).toBe('fresh result');
 
       await worker.close();
     });

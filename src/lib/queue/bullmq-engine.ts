@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import Redis from 'ioredis';
 
 export interface JobOptions {
@@ -55,8 +55,19 @@ export class JobTimeoutError extends Error {
   }
 }
 
+/** Abort reason for an attempt that lost its job to another attempt (Redis mode, after stall recovery). */
+export class JobOwnershipLostError extends Error {
+  constructor(jobId: string) {
+    super(`Attempt no longer owns job ${jobId}: another attempt took it over after a stall`);
+    this.name = 'OwnershipLostError';
+  }
+}
+
 /** Random bytes in a job id (128 bits); ids of anonymous jobs act as capability URLs. */
 const JOB_ID_RANDOM_BYTES = 16;
+
+/** Random bytes in a Redis attempt token, which fences writes from stale attempts. */
+const ATTEMPT_TOKEN_BYTES = 16;
 
 export class Job<T = any, R = any> {
   id: string;
@@ -73,6 +84,12 @@ export class Job<T = any, R = any> {
   attemptsMade: number = 0;
   state: JobState = 'waiting';
   logs: string[] = [];
+
+  /**
+   * @internal Redis mode: token of the attempt that popped this job. Completion, failure, requeue,
+   * heartbeat, and progress writes are accepted only while the job hash still holds this token.
+   */
+  _attemptToken?: string;
 
   private emitter: EventEmitter;
   private onUpdateHook?: (job: Job<T, R>) => Promise<void> | void;
@@ -144,13 +161,18 @@ export class Job<T = any, R = any> {
     return this.state === 'cancelled' || this.signal.reason instanceof JobCancelledError;
   }
 
+  /** True once another attempt took this job over, so this attempt must not record anything. */
+  hasLostOwnership(): boolean {
+    return this.signal.reason instanceof JobOwnershipLostError;
+  }
+
   /** @internal Starts a processing attempt with a fresh abort signal. Called by the worker. */
   _beginAttempt(): void {
     this.attemptController = new AbortController();
   }
 
   /** @internal Aborts the current attempt. The first reason wins. */
-  _abortAttempt(reason: JobCancelledError | JobTimeoutError): void {
+  _abortAttempt(reason: JobCancelledError | JobTimeoutError | JobOwnershipLostError): void {
     if (!this.attemptController.signal.aborted) {
       this.attemptController.abort(reason);
     }
@@ -390,6 +412,11 @@ export function calculateBackoffWithJitter(
   return Math.min(capped, jitter);
 }
 
+/** An attempt whose job was cancelled or taken over by another attempt must not record anything. */
+function isAttemptDiscarded(job: Job): boolean {
+  return job.isCancelled() || job.hasLostOwnership();
+}
+
 export class Worker<T = any, R = any> extends EventEmitter implements IQueueWorker<T, R> {
   readonly name: string;
   private queue: IQueueEngine<T, R>;
@@ -492,8 +519,8 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
       try {
         result = await this.runAttempt(job);
       } catch (err: any) {
-        // A cancelled job never retries, never reaches the DLQ, and never emits `failed`.
-        if (job.isCancelled()) {
+        // A cancelled or superseded attempt never retries, never reaches the DLQ, and never emits `failed`.
+        if (isAttemptDiscarded(job)) {
           return;
         }
         await this.handleJobFailure(job, err);
@@ -531,8 +558,8 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   }
 
   private async completeJob(job: Job<T, R>, result: R): Promise<void> {
-    // A cancel that landed while the processor ran wins: no completion is recorded or emitted.
-    if (job.isCancelled()) {
+    // A cancel (or a takeover) that landed while the processor ran wins: nothing is recorded or emitted.
+    if (isAttemptDiscarded(job)) {
       return;
     }
     if (this.queue._onJobCompleted) {
@@ -542,7 +569,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
       }
     }
     // In-process engines share this job object, so a cancel can also land during the await above.
-    if (job.isCancelled()) {
+    if (isAttemptDiscarded(job)) {
       return;
     }
     job.returnvalue = result;
@@ -595,7 +622,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
         return;
       }
     }
-    if (job.isCancelled()) {
+    if (isAttemptDiscarded(job)) {
       return;
     }
     job.state = 'failed';
@@ -657,8 +684,9 @@ export const POP_NEXT_WAITING_JOB_LUA_SCRIPT = `
 -- KEYS[4]: heartbeat key prefix (e.g. prefix:{queue}:heartbeat:)
 -- ARGV[1]: processedOn timestamp in milliseconds
 -- ARGV[2]: heartbeat TTL in milliseconds
--- Pops ids until one is still waiting, marks it active, starts its heartbeat, and returns its hash.
--- Ids whose job is no longer waiting (for example, cancelled or missing) are dropped.
+-- ARGV[3]: attempt token of the new attempt
+-- Pops ids until one is still waiting, marks it active under the new attempt token, starts its
+-- heartbeat, and returns its hash. Ids whose job is no longer waiting (cancelled, missing) are dropped.
 while true do
   local jobId = redis.call('LPOP', KEYS[1])
   if not jobId then
@@ -667,7 +695,7 @@ while true do
   local jobKey = KEYS[3] .. jobId
   if redis.call('HGET', jobKey, 'state') == 'waiting' then
     redis.call('SADD', KEYS[2], jobId)
-    redis.call('HSET', jobKey, 'state', 'active', 'processedOn', ARGV[1])
+    redis.call('HSET', jobKey, 'state', 'active', 'processedOn', ARGV[1], 'attemptToken', ARGV[3])
     redis.call('SET', KEYS[4] .. jobId, ARGV[1], 'PX', ARGV[2])
     return redis.call('HGETALL', jobKey)
   end
@@ -719,8 +747,10 @@ export const REQUEUE_JOB_LUA_SCRIPT = `
 -- ARGV[3]: failedReason of the attempt
 -- ARGV[4]: retry delay in milliseconds
 -- ARGV[5]: current timestamp in milliseconds
--- Returns 1 after moving the job from active to waiting/delayed, or 0 when it is no longer active.
-if redis.call('HGET', KEYS[1], 'state') ~= 'active' then
+-- ARGV[6]: attempt token of the caller
+-- Returns 1 after moving the job from active to waiting/delayed, or 0 when it is no longer active
+-- or another attempt owns it.
+if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[6] then
   return 0
 end
 redis.call('SREM', KEYS[2], ARGV[1])
@@ -746,8 +776,10 @@ export const COMPLETE_JOB_LUA_SCRIPT = `
 -- ARGV[3]: JSON return value ('' when undefined)
 -- ARGV[4]: attemptsMade
 -- ARGV[5]: '1' to delete the job hash (removeOnComplete)
--- Returns 1 after moving the job from active to completed, or 0 when it is no longer active.
-if redis.call('HGET', KEYS[1], 'state') ~= 'active' then
+-- ARGV[6]: attempt token of the caller
+-- Returns 1 after moving the job from active to completed, or 0 when it is no longer active
+-- or another attempt owns it.
+if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[6] then
   return 0
 end
 redis.call('SREM', KEYS[2], ARGV[1])
@@ -772,8 +804,10 @@ export const FAIL_JOB_LUA_SCRIPT = `
 -- ARGV[4]: JSON stacktrace
 -- ARGV[5]: attemptsMade
 -- ARGV[6]: '1' to delete the job hash (removeOnFail)
--- Returns 1 after moving the job from active to failed, or 0 when it is no longer active.
-if redis.call('HGET', KEYS[1], 'state') ~= 'active' then
+-- ARGV[7]: attempt token of the caller
+-- Returns 1 after moving the job from active to failed, or 0 when it is no longer active
+-- or another attempt owns it.
+if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[7] then
   return 0
 end
 redis.call('SREM', KEYS[2], ARGV[1])
@@ -792,13 +826,32 @@ export const REFRESH_HEARTBEAT_LUA_SCRIPT = `
 -- KEYS[2]: heartbeat key
 -- ARGV[1]: current timestamp in milliseconds
 -- ARGV[2]: heartbeat TTL in milliseconds
--- Refreshes the heartbeat only while the job is active. Returns { state, failedReason }.
+-- ARGV[3]: attempt token of the caller
+-- Returns { 'refreshed', '' } after refreshing the heartbeat of the caller's own active attempt,
+-- { 'cancelled', failedReason } when the job was cancelled, or { 'lost', state } when the caller
+-- no longer owns the job. Only the owning attempt refreshes the heartbeat.
 local state = redis.call('HGET', KEYS[1], 'state')
-if state == 'active' then
-  redis.call('SET', KEYS[2], ARGV[1], 'PX', ARGV[2])
-  return { state, '' }
+if state == 'cancelled' then
+  return { 'cancelled', redis.call('HGET', KEYS[1], 'failedReason') or '' }
 end
-return { state or '', redis.call('HGET', KEYS[1], 'failedReason') or '' }
+if state ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[3] then
+  return { 'lost', state or '' }
+end
+redis.call('SET', KEYS[2], ARGV[1], 'PX', ARGV[2])
+return { 'refreshed', '' }
+`;
+
+export const UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- ARGV[1]: attempt token of the caller
+-- ARGV[2]: progress
+-- ARGV[3]: JSON logs
+-- Returns 1 after writing progress and logs for the owning active attempt, or 0 otherwise.
+if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[1] then
+  return 0
+end
+redis.call('HSET', KEYS[1], 'progress', ARGV[2], 'logs', ARGV[3])
+return 1
 `;
 
 export const RECOVER_STALLED_JOBS_LUA_SCRIPT = `
@@ -829,6 +882,8 @@ for _, jobId in ipairs(activeIds) do
           maxAttempts = tonumber(opts.attempts)
         end
       end
+      -- The stalled attempt loses ownership: clearing its token fences any write it still tries.
+      redis.call('HDEL', jobKey, 'attemptToken')
       if attemptsMade < maxAttempts then
         redis.call('HSET', jobKey, 'state', 'waiting', 'attemptsMade', attemptsMade, 'failedReason', ARGV[2])
         redis.call('RPUSH', KEYS[2], jobId)
@@ -1068,13 +1123,25 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       async (j) => {
         if (this.redisClient && this.redisConnected) {
           try {
-            await this.redisClient.hset(
-              this.getJobKey(j.id),
-              'progress',
-              String(j.progress),
-              'logs',
-              JSON.stringify(j.logs)
-            );
+            if (j._attemptToken) {
+              // A running attempt writes only while it still owns the job.
+              await this.redisClient.eval(
+                UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
+                1,
+                this.getJobKey(j.id),
+                j._attemptToken,
+                String(j.progress),
+                JSON.stringify(j.logs)
+              );
+            } else {
+              await this.redisClient.hset(
+                this.getJobKey(j.id),
+                'progress',
+                String(j.progress),
+                'logs',
+                JSON.stringify(j.logs)
+              );
+            }
           } catch {}
         }
       }
@@ -1412,7 +1479,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           }
         }
 
-        // 2. Atomically pop the next waiting job, mark it active, and start its heartbeat
+        // 2. Atomically pop the next waiting job, mark it active under a fresh attempt token,
+        //    and start its heartbeat
+        const attemptToken = crypto.randomBytes(ATTEMPT_TOKEN_BYTES).toString('hex');
         const popped = await this.redisClient.eval(
           POP_NEXT_WAITING_JOB_LUA_SCRIPT,
           4,
@@ -1421,12 +1490,15 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           this.jobKeyPrefix,
           this.heartbeatKeyPrefix,
           String(now),
-          String(STALL_TIMEOUT_MS)
+          String(STALL_TIMEOUT_MS),
+          attemptToken
         );
         if (!Array.isArray(popped) || popped.length === 0) {
           return undefined;
         }
-        return this.hashToJob(flatHashToRecord(popped as string[]));
+        const job = this.hashToJob(flatHashToRecord(popped as string[]));
+        job._attemptToken = attemptToken;
+        return job;
       } catch (err) {
         console.error(`[DistributedBullMQAdapter:${this.name}] Failed to pop the next waiting job:`, err);
         return undefined;
@@ -1452,7 +1524,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         String(job.attemptsMade),
         job.failedReason || '',
         String(Math.max(0, delayMs)),
-        String(Date.now())
+        String(Date.now()),
+        job._attemptToken ?? ''
       );
       if (Number(moved) !== 1) {
         return false;
@@ -1486,7 +1559,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         String(job.finishedOn || Date.now()),
         result === undefined ? '' : JSON.stringify(result),
         String(job.attemptsMade),
-        job.opts?.removeOnComplete ? '1' : '0'
+        job.opts?.removeOnComplete ? '1' : '0',
+        job._attemptToken ?? ''
       );
       if (Number(committed) !== 1) {
         console.warn(
@@ -1521,7 +1595,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         job.failedReason || String(err),
         JSON.stringify(job.stacktrace || []),
         String(job.attemptsMade),
-        job.opts?.removeOnFail ? '1' : '0'
+        job.opts?.removeOnFail ? '1' : '0',
+        job._attemptToken ?? ''
       );
       if (Number(committed) !== 1) {
         console.warn(
@@ -1562,7 +1637,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     };
   }
 
-  /** Refreshes the heartbeat and aborts the local attempt when the job was cancelled elsewhere. */
+  /**
+   * Refreshes the heartbeat of the attempt `job` belongs to. Aborts the attempt when the job was
+   * cancelled elsewhere, or when another attempt took it over (the refresh is then refused).
+   */
   private async refreshHeartbeat(job: Job<T, R>): Promise<void> {
     const client = this.redisClient;
     if (!client || !this.redisConnected) {
@@ -1575,11 +1653,17 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         this.getJobKey(job.id),
         this.getHeartbeatKey(job.id),
         String(Date.now()),
-        String(STALL_TIMEOUT_MS)
+        String(STALL_TIMEOUT_MS),
+        job._attemptToken ?? ''
       )) as [string, string];
-      const [state, failedReason] = reply;
-      if (state === 'cancelled') {
-        this.abortLocalActiveJob(job.id, failedReason);
+      const [outcome, detail] = reply;
+      if (outcome === 'cancelled') {
+        this.abortLocalActiveJob(job.id, detail);
+      } else if (outcome === 'lost') {
+        console.warn(
+          `[DistributedBullMQAdapter:${this.name}] Attempt of job ${job.id} lost ownership (job is now ${detail || 'missing'}); aborting it.`
+        );
+        job._abortAttempt(new JobOwnershipLostError(job.id));
       }
     } catch (err) {
       console.warn(`[DistributedBullMQAdapter:${this.name}] Heartbeat refresh failed for job ${job.id}:`, err);
