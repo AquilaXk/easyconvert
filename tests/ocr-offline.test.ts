@@ -56,7 +56,7 @@ describe('OCR Offline Language Enforcement & Zero-Egress', () => {
     // Use a language definitely not preinstalled on system
     await expect(
       performOcr(sampleImage, 'de')
-    ).rejects.toThrow(OcrEngineUnavailableError);
+    ).rejects.toThrow(OcrLanguageUnavailableError);
 
     await expect(
       performOcr(sampleImage, 'fr')
@@ -76,8 +76,8 @@ describe('OCR Offline Language Enforcement & Zero-Egress', () => {
       thrownError = err;
     }
 
-    expect(thrownError).toBeInstanceOf(OcrEngineUnavailableError);
-    expect((thrownError as OcrEngineUnavailableError).name).toBe('OcrEngineUnavailableError');
+    expect(thrownError).toBeInstanceOf(OcrLanguageUnavailableError);
+    expect((thrownError as OcrLanguageUnavailableError).name).toBe('OcrLanguageUnavailableError');
     expect((thrownError as Error).message).toBe("OCR language 'ja' (jpn.traineddata) is not available locally.");
   });
 });

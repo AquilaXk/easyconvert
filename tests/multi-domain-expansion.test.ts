@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions/index';
 import { createCanonicalFont, encodeSfnt } from '../src/lib/conversions/font';
+import { CadGeometryUnavailableError } from '../src/lib/types';
 
 describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadsheet, Presentation, Document)', () => {
   // Helper to generate a minimal valid TrueType font buffer
@@ -147,8 +148,8 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
       expect(meta.height).toBeGreaterThan(0);
     });
 
-    it('converts 3D STEP solid model to standard 3D STL mesh', async () => {
-      const step = `ISO-10303-21;
+    it('fails closed when 3D STEP payload contains only points without surface or curve geometry', async () => {
+      const pointOnlyStep = `ISO-10303-21;
 HEADER;
 FILE_DESCRIPTION(('EasyConvert Test Model'),'2;1');
 ENDSEC;
@@ -156,6 +157,25 @@ DATA;
 #10 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
 #11 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
 #12 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+ENDSEC;
+END-ISO-10303-21;`;
+      const buffer = Buffer.from(pointOnlyStep, 'utf-8');
+      await expect(
+        convertFile(buffer, 'step', 'stl', {}, 'points_only.step')
+      ).rejects.toThrow(CadGeometryUnavailableError);
+    });
+
+    it('converts 3D STEP solid/curve model to standard 3D STL mesh', async () => {
+      const step = `ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('EasyConvert Test Model'),'2;1');
+ENDSEC;
+DATA;
+#101 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#102 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#103 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#10 = B_SPLINE_CURVE_WITH_KNOTS('c1', 1, (#101, #102), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);
+#20 = B_SPLINE_CURVE_WITH_KNOTS('c2', 1, (#102, #103), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);
 ENDSEC;
 END-ISO-10303-21;`;
       const buffer = Buffer.from(step, 'utf-8');

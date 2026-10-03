@@ -203,6 +203,8 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       "#404 = CARTESIAN_POINT('Node_Diag', (12.50, 14.50, 3.75));",
       "#505 = CARTESIAN_POINT('Node_Apex', (6.87, 8.50, 15.20));",
       "#606 = CARTESIAN_POINT('Node_Base', (1.25, 2.50, 3.75));",
+      "#10 = B_SPLINE_CURVE_WITH_KNOTS('c1', 1, (#101, #202), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);",
+      "#20 = B_SPLINE_CURVE_WITH_KNOTS('c2', 1, (#303, #404), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);",
       'ENDSEC;',
       'END-ISO-10303-21;',
     ].join('\n');

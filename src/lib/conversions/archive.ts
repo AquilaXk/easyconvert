@@ -568,6 +568,9 @@ export function createRarArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.rar'
 ): ConversionResult {
+  if (options.password) {
+    throw new UnsupportedOptionError("Target archive format 'rar' does not support password encryption.");
+  }
   const blocks: Buffer[] = [];
 
   // 1. Marker block (7 bytes)
@@ -1442,15 +1445,7 @@ export function convertWithNative7z(
     throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
   }
 
-  const isTarFamily =
-    tgt === 'tar' ||
-    tgt.startsWith('tar.') ||
-    tgt === 'tgz' ||
-    tgt === 'tbz' ||
-    tgt === 'tbz2' ||
-    tgt === 'txz';
-
-  if (options.password && isTarFamily) {
+  if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
 
@@ -2647,15 +2642,7 @@ export async function convertArchive(
     throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
   }
 
-  const isTarFamily =
-    tgt === 'tar' ||
-    tgt.startsWith('tar.') ||
-    tgt === 'tgz' ||
-    tgt === 'tbz' ||
-    tgt === 'tbz2' ||
-    tgt === 'txz';
-
-  if (options.password && isTarFamily) {
+  if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
 

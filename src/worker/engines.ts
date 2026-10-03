@@ -522,9 +522,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
-  const isTarFamily = tgt === 'tar' || tgt.startsWith('tar.') || isTarGz || isTarBz2 || isTarXz;
-
-  if (options?.password && isTarFamily) {
+  if (options?.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
 
@@ -631,9 +629,7 @@ export async function convertWithNative7z(
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
-  const isTarFamily = tgt === 'tar' || tgt.startsWith('tar.') || isTarGz || isTarBz2 || isTarXz;
-
-  if (options.password && isTarFamily) {
+  if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
 
