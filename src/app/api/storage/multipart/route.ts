@@ -193,9 +193,49 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      if (parts !== undefined) {
+        if (!Array.isArray(parts) || parts.length === 0) {
+          return createProblemDetailsResponse(
+            400,
+            'Missing or empty "parts" array in complete request.',
+            instanceUri
+          );
+        }
+        for (const p of parts) {
+          if (!p || typeof p.partNumber !== 'number' || p.partNumber < 1 || p.partNumber > 10000) {
+            return createProblemDetailsResponse(
+              400,
+              `Invalid part number in parts list.`,
+              instanceUri
+            );
+          }
+          const sessionPart = session.parts.get(p.partNumber);
+          if (!sessionPart) {
+            return createProblemDetailsResponse(
+              400,
+              `Missing part number ${p.partNumber} in multipart upload session.`,
+              instanceUri
+            );
+          }
+          if (p.etag && p.etag !== sessionPart.etag) {
+            return createProblemDetailsResponse(
+              400,
+              `ETag mismatch for part number ${p.partNumber}.`,
+              instanceUri
+            );
+          }
+        }
+      }
+
       let totalPartBytes = 0;
-      for (const partInfo of session.parts.values()) {
-        totalPartBytes += partInfo.size;
+      const targetParts = parts && Array.isArray(parts)
+        ? parts.map((p: any) => session.parts.get(p.partNumber)!)
+        : Array.from(session.parts.values());
+
+      for (const partInfo of targetParts) {
+        if (partInfo) {
+          totalPartBytes += partInfo.size;
+        }
       }
       const maxAllowedBytes =
         (currentUser.tier && TIER_MAX_MULTIPART_BYTES[currentUser.tier]) || MAX_MULTIPART_TOTAL_BYTES;
@@ -300,9 +340,13 @@ export async function POST(req: NextRequest) {
       instanceUri
     );
   } catch (error: any) {
+    console.error('Storage operation error:', error);
+    const safeMessage = error instanceof Error && !error.message.includes('/') && !error.message.includes('\\')
+      ? error.message
+      : 'Storage operation error';
     return createProblemDetailsResponse(
       500,
-      error instanceof Error ? error.message : 'Storage operation error',
+      safeMessage,
       instanceUri
     );
   }

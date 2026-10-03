@@ -308,4 +308,91 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
 
     s3Storage.abortMultipartUpload(largeSession.uploadId);
   });
+
+  it('(f) validates parts on complete: rejects empty parts, missing parts, and mismatched ETags with 400', async () => {
+    const alice = await createUser('alice_part_val');
+
+    // Initiate upload
+    const initReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ filename: 'multi-part.bin', totalSize: 2048 }),
+    });
+    const initRes = await multipartPost(initReq);
+    expect(initRes.status).toBe(200);
+    const { uploadId } = await initRes.json();
+
+    // Upload part 1
+    const chunk1Req = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, {
+        'x-upload-id': uploadId,
+        'x-part-number': '1',
+      }),
+      body: Buffer.from('part-1-content'),
+    });
+    const chunk1Res = await multipartPost(chunk1Req);
+    expect(chunk1Res.status).toBe(200);
+    const { etag: etag1 } = await chunk1Res.json();
+
+    // 1. Rejects empty parts array with 400
+    const emptyPartsReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ uploadId, parts: [] }),
+    });
+    const emptyPartsRes = await multipartPost(emptyPartsReq);
+    expect(emptyPartsRes.status).toBe(400);
+    expect((await emptyPartsRes.json()).detail).toContain('Missing or empty "parts" array');
+
+    // 2. Rejects missing part number (part 2 was never uploaded) with 400
+    const missingPartReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        uploadId,
+        parts: [{ partNumber: 2, etag: '"00000000000000000000000000000000"' }],
+      }),
+    });
+    const missingPartRes = await multipartPost(missingPartReq);
+    expect(missingPartRes.status).toBe(400);
+    expect((await missingPartRes.json()).detail).toContain('Missing part number 2');
+
+    // 3. Rejects mismatched ETag for part 1 with 400
+    const wrongEtagReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        uploadId,
+        parts: [{ partNumber: 1, etag: '"tampered_etag_value_00000000000"' }],
+      }),
+    });
+    const wrongEtagRes = await multipartPost(wrongEtagReq);
+    expect(wrongEtagRes.status).toBe(400);
+    expect((await wrongEtagRes.json()).detail).toContain('ETag mismatch');
+
+    // 4. Direct low-level s3Storage validation asserts fail-closed
+    expect(() => s3Storage.completeMultipartUpload(uploadId, [])).toThrow(/zero parts/i);
+    expect(() =>
+      s3Storage.completeMultipartUpload(uploadId, [{ partNumber: 99 }])
+    ).toThrow(/Missing part number 99/i);
+    expect(() =>
+      s3Storage.completeMultipartUpload(uploadId, [{ partNumber: 1, etag: '"bad"' }])
+    ).toThrow(/ETag mismatch/i);
+
+    // 5. Valid complete with correct parts succeeds
+    const validCompleteReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        uploadId,
+        parts: [{ partNumber: 1, etag: etag1 }],
+      }),
+    });
+    const validCompleteRes = await multipartPost(validCompleteReq);
+    expect(validCompleteRes.status).toBe(200);
+    const validJson = await validCompleteRes.json();
+    expect(validJson.success).toBe(true);
+    createdKeys.push(validJson.key);
+  });
 });
