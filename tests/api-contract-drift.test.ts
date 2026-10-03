@@ -1,0 +1,77 @@
+import { describe, it, expect } from 'vitest';
+import { Validator } from '@seriousme/openapi-schema-validator';
+import { GET as getOpenApiSpec } from '../src/app/api/openapi.json/route';
+import { PIPELINE_OPERATIONS } from '../src/lib/api/contracts/enums';
+import {
+  PipelineTaskSchema,
+  ConversionOptionsSchema,
+  JobCreateRequestSchema,
+  ProblemDetailsSchema,
+  JobResourceSchema,
+} from '../src/lib/api/contracts/schemas';
+import { FORMAT_REGISTRY } from '../src/lib/registry';
+
+describe('API Contract SSOT & Schema Drift Safeguards', () => {
+  it('(a) validates OpenAPI 3.1 specification document using third-party OpenAPI schema validator', async () => {
+    const res = await getOpenApiSpec();
+    expect(res.status).toBe(200);
+
+    const openApiSpec = await res.json();
+    expect(openApiSpec.openapi).toBe('3.1.0');
+    expect(openApiSpec.info.title).toContain('EasyConvert');
+
+    const validator = new Validator();
+    const validationResult = await validator.validate(openApiSpec);
+
+    expect(validationResult.valid).toBe(true);
+    expect(validationResult.errors).toBeUndefined();
+  });
+
+  it('(b) guarantees PipelineTaskSchema operation enum strictly mirrors PIPELINE_OPERATIONS SSOT', () => {
+    const schemaOperationEnum = Array.from(PipelineTaskSchema.properties.operation.enum);
+    const expectedOperations = ['convert', 'ocr', 'archive', 'optimize'];
+
+    expect(schemaOperationEnum).toEqual(expectedOperations);
+    expect(schemaOperationEnum).toEqual(Array.from(PIPELINE_OPERATIONS));
+  });
+
+  it('(c) verifies every format optionsSchema key across the registry exists in ConversionOptionsSchema', () => {
+    const registryOptionKeys = new Set<string>();
+
+    for (const format of Object.values(FORMAT_REGISTRY)) {
+      if (format.optionsSchema) {
+        for (const key of Object.keys(format.optionsSchema)) {
+          registryOptionKeys.add(key);
+        }
+      }
+    }
+
+    expect(registryOptionKeys.size).toBeGreaterThan(15);
+    const schemaPropertyKeys = Object.keys(ConversionOptionsSchema.properties);
+
+    for (const registryKey of registryOptionKeys) {
+      expect(schemaPropertyKeys).toContain(registryKey);
+      const propDefinition = (ConversionOptionsSchema.properties as Record<string, any>)[registryKey];
+      expect(propDefinition).toBeDefined();
+      expect(typeof propDefinition).toBe('object');
+    }
+  });
+
+  it('marks all unread planned options with x-easyconvert-status: planned', () => {
+    const plannedKeys = ['pages', 'sheetIndex', 'aspectRatio', 'fastStart', 'duration'];
+    const properties = ConversionOptionsSchema.properties as Record<string, any>;
+
+    for (const plannedKey of plannedKeys) {
+      expect(properties[plannedKey]).toBeDefined();
+      expect(properties[plannedKey]['x-easyconvert-status']).toBe('planned');
+    }
+  });
+
+  it('enforces canonical $id URIs across all contract schemas', () => {
+    expect(ConversionOptionsSchema.$id).toBe('https://easyconvert.local/schemas/conversion-options.json');
+    expect(PipelineTaskSchema.$id).toBe('https://easyconvert.local/schemas/pipeline-task.json');
+    expect(JobCreateRequestSchema.$id).toBe('https://easyconvert.local/schemas/job-create-request.json');
+    expect(ProblemDetailsSchema.$id).toBe('https://easyconvert.local/schemas/problem-details.json');
+    expect(JobResourceSchema.$id).toBe('https://easyconvert.local/schemas/job-resource.json');
+  });
+});

@@ -1,3 +1,5 @@
+import { PIPELINE_OPERATIONS } from './api/contracts/enums';
+
 export type FormatCategory =
   | 'image'
   | 'document'
@@ -203,7 +205,7 @@ export type JobState = JobStatus;
 
 export interface PipelineTask {
   name: string;
-  operation: 'convert' | 'ocr' | 'archive' | 'optimize';
+  operation: (typeof PIPELINE_OPERATIONS)[number];
   targetFormat?: string;
   options?: ConversionOptions;
 }
