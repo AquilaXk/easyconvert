@@ -248,7 +248,8 @@ export class OciObjectStorageService implements IStorageBackend {
           throw new Error(`Missing part number ${num} in OCI upload session.`);
         }
         if (!fs.existsSync(part.filePath)) {
-          throw new Error(`Part file missing on disk: ${part.filePath}`);
+          console.error(`Part file missing on disk: "${part.filePath}"`);
+          throw new Error(`Part file missing on disk for part ${num}`);
         }
         const inFd = fs.openSync(part.filePath, 'r');
         let bytesRead = 0;

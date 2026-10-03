@@ -229,9 +229,11 @@ describe('Security: Webhook secret enforcement', () => {
         return {
           jobId: job.id,
           status: 'completed',
+          resultKey: 'results/test/result.pdf',
           filename: 'result.pdf',
-          format: 'pdf',
+          mimeType: 'application/pdf',
           size: 100,
+          durationMs: 42,
           downloadUrl: '/api/download/test',
         };
       },
@@ -252,6 +254,7 @@ describe('Security: Webhook secret enforcement', () => {
         sourceFormat: 'txt',
         targetFormat: 'pdf',
         fileSize: 100,
+        options: {},
         webhookUrl: webhookTargetUrl,
         userId: testUser.id,
       });

@@ -167,7 +167,7 @@ export class S3ObjectStorageService implements IStorageBackend {
 
   completeMultipartUpload(
     uploadId: string,
-    _expectedParts?: { partNumber: number; etag?: string }[]
+    expectedParts?: { partNumber: number; etag?: string }[]
   ): MultipartUploadComplete {
     const session = this.sessions.get(uploadId);
     if (!session) {
@@ -178,7 +178,27 @@ export class S3ObjectStorageService implements IStorageBackend {
       throw new Error(`Cannot complete empty multipart upload session: ${uploadId}`);
     }
 
-    const sortedPartNumbers = Array.from(session.parts.keys()).sort((a, b) => a - b);
+    if (expectedParts !== undefined) {
+      if (!Array.isArray(expectedParts) || expectedParts.length === 0) {
+        throw new Error(`Cannot complete multipart upload with zero parts: ${uploadId}`);
+      }
+      for (const p of expectedParts) {
+        if (!p || typeof p.partNumber !== 'number' || p.partNumber < 1 || p.partNumber > 10000) {
+          throw new Error(`Invalid part number ${p?.partNumber} in expected parts list.`);
+        }
+        const sessionPart = session.parts.get(p.partNumber);
+        if (!sessionPart) {
+          throw new Error(`Missing part number ${p.partNumber} in multipart upload session: ${uploadId}`);
+        }
+        if (p.etag && p.etag !== sessionPart.etag) {
+          throw new Error(`ETag mismatch for part number ${p.partNumber}: expected ${p.etag}, got ${sessionPart.etag}`);
+        }
+      }
+    }
+
+    const sortedPartNumbers = expectedParts
+      ? expectedParts.map((p) => p.partNumber).sort((a, b) => a - b)
+      : Array.from(session.parts.keys()).sort((a, b) => a - b);
     const objectsDir = path.join(this.baseUploadDir, 'objects');
     try {
       if (!fs.existsSync(objectsDir)) {
@@ -197,7 +217,8 @@ export class S3ObjectStorageService implements IStorageBackend {
       for (const partNum of sortedPartNumbers) {
         const partInfo = session.parts.get(partNum)!;
         if (!fs.existsSync(partInfo.filePath)) {
-          throw new Error(`Part file missing on disk: ${partInfo.filePath}`);
+          console.error(`Part file missing on disk: "${partInfo.filePath}"`);
+          throw new Error(`Part file missing on disk for part ${partNum}`);
         }
         const inFd = fs.openSync(partInfo.filePath, 'r');
         const partHasher = crypto.createHash('sha256');

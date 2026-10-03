@@ -5,7 +5,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider as s3Storage } from '@/lib/storage';
-import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask } from '@/lib/types';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -190,7 +190,11 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch (err: any) {
-      return await failWithRollback(400, err.message || 'File spoofing detected.', 'File Spoofing Detected');
+      if (err instanceof FileExtensionSpoofError) {
+        return await failWithRollback(400, err.message, 'File Spoofing Detected');
+      }
+      console.error(`Storage file verification error: ${err instanceof Error ? err.message : String(err)}`);
+      return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
     }
 
     // Persist multipart upload into S3 staging storage only after magic byte validation passes
