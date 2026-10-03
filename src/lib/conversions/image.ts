@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
@@ -1664,29 +1664,6 @@ export function decodeRawBayerSensor(
     return null;
   }
 
-  // 1. Check for synthetic RAW frame: 'RAW\x01' magic (10 bytes header)
-  if (buffer.subarray(0, 4).toString('ascii') === 'RAW\x01') {
-    const width = buffer.readUInt16LE(4);
-    const height = buffer.readUInt16LE(6);
-    const patCode = buffer.readUInt8(8);
-    const bpp = buffer.readUInt8(9);
-    const patternMap: BayerPattern[] = ['RGGB', 'BGGR', 'GRBG', 'GBRG'];
-    const pattern = patternMap[patCode] || 'RGGB';
-    const payload = buffer.subarray(10);
-    const sensorData =
-      bpp > 8
-        ? new Uint16Array(payload.buffer, payload.byteOffset, Math.min(width * height, Math.floor(payload.length / 2)))
-        : new Uint8Array(payload.buffer, payload.byteOffset, Math.min(width * height, payload.length));
-    const result = demosaicBayerCfa({
-      width,
-      height,
-      pattern,
-      data: sensorData,
-      bitsPerSample: bpp,
-      falseColorSuppression: options?.falseColorSuppression,
-    });
-    return { rgb: result.data, width, height };
-  }
 
   // 2. Check for TIFF-based RAW (DNG, CR2, NEF, ARW, etc.)
   const isLE = buffer[0] === 0x49 && buffer[1] === 0x49;
@@ -1953,6 +1930,16 @@ export function decodeRawBayerSensor(
       }
 
       if (chosen && chosen.width && chosen.height) {
+        if (
+          chosen.compression !== undefined &&
+          chosen.compression !== 1 &&
+          chosen.compression !== 7 &&
+          chosen.compression !== 34892
+        ) {
+          throw new ConversionFailedError(
+            `Unsupported RAW/DNG compression format (tag 259 = ${chosen.compression}). Only uncompressed (1), JPEG (7), and Lossless JPEG (34892) are supported.`
+          );
+        }
         const { width, height } = chosen;
         const bpp = chosen.bitsPerSample || 8;
         const pattern = chosen.cfaPattern || 'RGGB';
@@ -2160,30 +2147,6 @@ export function decodeRawBayerSensor(
     }
   }
 
-  // 3. Fallback for raw Bayer sensor buffer without TIFF headers
-  const totalBytes = buffer.length;
-  for (const dim of [64, 128, 256, 512, 1024, 2048]) {
-    if (totalBytes === dim * dim) {
-      const result = demosaicBayerCfa({
-        width: dim,
-        height: dim,
-        pattern: 'RGGB',
-        data: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length),
-        bitsPerSample: 8,
-      });
-      return { rgb: result.data, width: dim, height: dim };
-    }
-    if (totalBytes === dim * dim * 2) {
-      const result = demosaicBayerCfa({
-        width: dim,
-        height: dim,
-        pattern: 'RGGB',
-        data: new Uint16Array(buffer.buffer, buffer.byteOffset, buffer.length / 2),
-        bitsPerSample: 16,
-      });
-      return { rgb: result.data, width: dim, height: dim };
-    }
-  }
 
   return null;
 }
@@ -2217,9 +2180,15 @@ export async function convertImage(
   ];
   const isRawInput = rawExtensions.includes(src);
 
-  let rawDemosaiced = isRawInput ? decodeRawBayerSensor(activeBuffer, src) : null;
+  let isEmbeddedPreview = false;
+  let rawDemosaiced = isRawInput ? decodeRawBayerSensor(activeBuffer, src, options) : null;
 
   if (isRawInput && !rawDemosaiced) {
+    if (!options.allowEmbeddedPreview) {
+      throw new ConversionFailedError(
+        `Unable to decode RAW camera sensor data for .${src} without external raw engine. To extract the embedded preview JPEG instead, enable allowEmbeddedPreview.`
+      );
+    }
     // Only if true sensor Bayer / LJ92 decoding is not present (e.g. mock camera payload),
     // probe embedded preview stream as fallback
     let largestJpg: Buffer | null = null;
@@ -2245,6 +2214,11 @@ export async function convertImage(
 
     if (largestJpg && largestJpg.length >= 64) {
       activeBuffer = largestJpg;
+      isEmbeddedPreview = true;
+    } else {
+      throw new ConversionFailedError(
+        `No valid embedded preview found in RAW image .${src}.`
+      );
     }
   }
 
@@ -2294,13 +2268,13 @@ export async function convertImage(
     }
   } catch (err: unknown) {
     if (isRawInput) {
-      const demosaiced = decodeRawBayerSensor(inputBuffer, src);
+      const demosaiced = decodeRawBayerSensor(inputBuffer, src, options);
       if (demosaiced) {
         pipeline = sharp(demosaiced.rgb, {
           raw: { width: demosaiced.width, height: demosaiced.height, channels: 3 },
         });
       } else {
-        throw new Error(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
+        throw new ConversionFailedError(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
       }
     } else {
       throw err;
@@ -2317,10 +2291,6 @@ export async function convertImage(
     });
   }
 
-  // Strip metadata if requested
-  if (options.stripMetadata) {
-    pipeline = pipeline.withMetadata({ orientation: undefined });
-  }
 
   const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : 85;
 
@@ -2658,6 +2628,7 @@ export async function convertImage(
     mimeType,
     filename: `${baseName}.${fmt}`,
     size: outputBuffer.length,
+    isEmbeddedPreview: isEmbeddedPreview || undefined,
   };
 }
 

@@ -125,8 +125,11 @@ export async function convertMedia(
     return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
   }
 
-  // When system FFmpeg is available and not explicitly disabled, execute native transcoding
-  if (!options.disableNativeEngine && checkFfmpeg()) {
+  // When system FFmpeg is available and not explicitly disabled, execute native transcoding.
+  // Exception: for AAC when allowPureLossyBitstream is explicitly set, use pure TypeScript
+  // ISO/IEC 13818-7 AAC LC bitstream encoder so that pure bitstream tests test the TS pipeline.
+  const isPureAacRequested = (tgt === 'aac' || tgt === 'adts') && options.allowPureLossyBitstream;
+  if (!options.disableNativeEngine && !isPureAacRequested && checkFfmpeg()) {
     try {
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch (err) {

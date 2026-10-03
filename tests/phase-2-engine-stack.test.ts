@@ -290,7 +290,8 @@ END-ISO-10303-21;
       const rawFormats = ['cr2', 'nef', 'arw', 'dng'];
 
       for (const fmt of rawFormats) {
-        const res = await convertImage(mockRawPayload, 'png', {}, `photo.${fmt}`, fmt);
+        const res = await convertImage(mockRawPayload, 'png', { allowEmbeddedPreview: true }, `photo.${fmt}`, fmt);
+        expect(res.isEmbeddedPreview).toBe(true);
         expect(res.filename).toBe('photo.png');
         expect(res.mimeType).toBe('image/png');
         expect(res.size).toBeGreaterThan(0);
@@ -306,7 +307,7 @@ END-ISO-10303-21;
       const corruptedRaw = Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x00, 0x00]); // Truncated TIFF
       await expect(
         convertImage(corruptedRaw, 'png', {}, 'corrupted.cr2', 'cr2')
-      ).rejects.toThrow(/Unsupported camera RAW format 'cr2'/);
+      ).rejects.toThrow(/Unable to decode RAW camera sensor data|Unsupported camera RAW format/);
     });
   });
 });

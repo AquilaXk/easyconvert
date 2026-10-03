@@ -3898,7 +3898,7 @@ export function tessellateCadText(
       return tessellateCurvesToMesh(curves, modelName);
     }
 
-    // Fallback 2: Check for IGES 116 points
+    // IGES Entity 116 points (point cloud geometry without fake triangles)
     const pointList: Point3D[] = [];
     const ptRegex = /116\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)/g;
     let m: RegExpExecArray | null;
@@ -3912,6 +3912,13 @@ export function tessellateCadText(
 
     if (pointList.length >= 3) {
       return buildTrianglesFromPoints(pointList, modelName);
+    } else if (pointList.length > 0) {
+      return {
+        name: modelName,
+        vertices: pointList.map((p) => [p.x, p.y, p.z]),
+        faces: [],
+        normals: [],
+      };
     }
   } else {
     // STEP format
@@ -3933,7 +3940,7 @@ export function tessellateCadText(
       return tessellateCurvesToMesh(curves, modelName);
     }
 
-    // Fallback 2: If no B-spline surface or curves but Cartesian points exist in STEP
+    // STEP Cartesian points (point cloud geometry without fake triangles)
     const pointList: Point3D[] = [];
     for (const ent of entityMap.values()) {
       if (ent.type.includes('CARTESIAN_POINT')) {
@@ -3944,10 +3951,17 @@ export function tessellateCadText(
 
     if (pointList.length >= 3) {
       return buildTrianglesFromPoints(pointList, modelName);
+    } else if (pointList.length > 0) {
+      return {
+        name: modelName,
+        vertices: pointList.map((p) => [p.x, p.y, p.z]),
+        faces: [],
+        normals: [],
+      };
     }
   }
 
-  throw new Error(`Failed to tessellate CAD geometry from ${format}: No valid B-spline surfaces or Cartesian points found.`);
+  throw new Error(`Failed to tessellate CAD geometry from ${format}: No valid B-spline surfaces, B-Rep topology, or curves found.`);
 }
 
 /**

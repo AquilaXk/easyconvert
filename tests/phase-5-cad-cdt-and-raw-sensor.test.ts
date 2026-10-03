@@ -259,20 +259,35 @@ describe('Phase 5: CAD B-Rep Ruppert CDT Watertight Mesh & Camera RAW Sensor Dec
     });
 
     it('converts camera RAW through full pipeline preserving real sensor colors', async () => {
-      // Build raw Bayer frame with synthetic header 'RAW\x01'
+      // Build authentic TIFF DNG container with 8x8 raw Bayer sensor strip
       const width = 8;
       const height = 8;
-      const header = Buffer.alloc(10);
-      header.write('RAW\x01', 0, 4, 'ascii');
-      header.writeUInt16LE(width, 4);
-      header.writeUInt16LE(height, 6);
-      header.writeUInt8(0, 8); // RGGB
-      header.writeUInt8(8, 9); // 8-bit
+      const bayer = Buffer.alloc(width * height * 2, 128);
+      const tiffHeader = Buffer.alloc(8);
+      tiffHeader.write('II', 0, 'ascii');
+      tiffHeader.writeUInt16LE(42, 2);
+      tiffHeader.writeUInt32LE(8, 4);
 
-      const bayer = Buffer.alloc(width * height, 128);
-      const rawPayload = Buffer.concat([header, bayer]);
+      const ifd = Buffer.alloc(2 + 6 * 12 + 4);
+      ifd.writeUInt16LE(6, 0);
+      const writeTag = (idx: number, tag: number, type: number, count: number, val: number) => {
+        const off = 2 + idx * 12;
+        ifd.writeUInt16LE(tag, off);
+        ifd.writeUInt16LE(type, off + 2);
+        ifd.writeUInt32LE(count, off + 4);
+        ifd.writeUInt32LE(val, off + 8);
+      };
+      const stripOffset = 8 + ifd.length;
+      writeTag(0, 256, 3, 1, width);
+      writeTag(1, 257, 3, 1, height);
+      writeTag(2, 258, 3, 1, 16);
+      writeTag(3, 273, 4, 1, stripOffset);
+      writeTag(4, 279, 4, 1, bayer.length);
+      writeTag(5, 33422, 1, 4, 0x02010100); // RGGB
 
-      const res = await convertImage(rawPayload, 'png', {}, 'test_sensor.raw', 'raw');
+      const rawPayload = Buffer.concat([tiffHeader, ifd, bayer]);
+
+      const res = await convertImage(rawPayload, 'png', {}, 'test_sensor.dng', 'dng');
       expect(res.filename).toBe('test_sensor.png');
       expect(res.mimeType).toBe('image/png');
       expect(res.size).toBeGreaterThan(0);

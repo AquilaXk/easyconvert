@@ -12,6 +12,7 @@ import {
   convertMedia,
   decodeAudioBuffer,
   decodeAdtsAac,
+  encodeAacContainer,
   decodeOgg,
   encodeOggContainer,
   detectFfmpegEnvironment,
@@ -327,18 +328,8 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
     });
 
     it('decodes ADTS AAC frames when prefixed by ID3v2 metadata and skips false syncwords', () => {
-      // 1. Build authentic 7-byte ADTS frame (44.1kHz stereo)
-      const validFrame = Buffer.alloc(14);
-      validFrame[0] = 0xff;
-      validFrame[1] = 0xf1;
-      validFrame[2] = 0x50;
-      validFrame[3] = (2 & 3) << 6 | ((14 >> 11) & 3);
-      validFrame[4] = (14 >> 3) & 0xff;
-      validFrame[5] = ((14 & 7) << 5) | 0x1f;
-      validFrame[6] = 0xfc;
-      validFrame.writeInt16LE(1234, 7);
-      validFrame.writeInt16LE(2345, 9);
-      validFrame.writeInt16LE(3456, 11);
+      // 1. Build authentic ADTS frame (44.1kHz stereo)
+      const validFrame = encodeAacContainer(new Int16Array(2048), 44100, 2, 'valid');
 
       // 2. Prepend ID3v2 tag (10 bytes header + 10 bytes payload)
       const id3Header = Buffer.alloc(20);
