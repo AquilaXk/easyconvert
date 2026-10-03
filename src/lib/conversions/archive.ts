@@ -2720,9 +2720,21 @@ export async function convertArchive(
       );
     }
   } else if (src === 'rar') {
-    files = extractRarArchive(effectiveBuffer, options);
+    try {
+      files = extractRarArchive(effectiveBuffer, options);
+    } catch (err: any) {
+      throw new ConversionFailedError(
+        `Failed to extract RAR archive '${effectiveFilename}': ${err?.message || String(err)}`
+      );
+    }
   } else if (src === '7z' || src === 'tar.7z') {
-    files = extract7zArchive(effectiveBuffer);
+    try {
+      files = extract7zArchive(effectiveBuffer);
+    } catch (err: any) {
+      throw new ConversionFailedError(
+        `Failed to extract 7z archive '${effectiveFilename}': ${err?.message || String(err)}`
+      );
+    }
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
     let uncompressed: Buffer;
     if (options.zstdDict) {

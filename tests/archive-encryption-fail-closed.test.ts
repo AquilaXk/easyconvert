@@ -132,11 +132,11 @@ describe('Archive Encryption Fail-Closed Verification', () => {
     });
 
     it('convertArchive rejects non-zip container format starting with PK bytes fail-closed when empty', async () => {
-      const fakeTarWithPk = Buffer.alloc(512);
-      fakeTarWithPk[0] = 0x50;
-      fakeTarWithPk[1] = 0x4b;
+      const fakeRarWithPk = Buffer.alloc(30);
+      fakeRarWithPk[0] = 0x50;
+      fakeRarWithPk[1] = 0x4b;
       await expect(
-        convertArchive(fakeTarWithPk, 'tar', 'zip', {}, 'corrupt.tar')
+        convertArchive(fakeRarWithPk, 'rar', 'zip', {}, 'corrupt.rar')
       ).rejects.toThrow(ConversionFailedError);
     });
   });
