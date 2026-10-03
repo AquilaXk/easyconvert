@@ -52,7 +52,7 @@ export interface PresignedUrlResult {
 
 export interface IStorageBackend {
   readonly providerName: string;
-  initiateMultipartUpload(filename: string, mimeType: string, totalSize: number): MultipartUploadInit;
+  initiateMultipartUpload(filename: string, mimeType: string, totalSize: number, ownerUserId?: string): MultipartUploadInit;
   uploadPart(uploadId: string, partNumber: number, buffer: Buffer): UploadedPart;
   completeMultipartUpload(uploadId: string, expectedParts?: { partNumber: number; etag?: string }[]): MultipartUploadComplete;
   abortMultipartUpload(uploadId: string): boolean;

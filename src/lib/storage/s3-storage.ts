@@ -26,6 +26,7 @@ interface S3MultipartSession {
   createdAt: number;
   diskDir: string;
   parts: Map<number, { filePath: string; etag: string; size: number }>;
+  ownerUserId?: string;
 }
 
 import { globalSharedObjects } from './shared-store';
@@ -74,13 +75,16 @@ export class S3ObjectStorageService implements IStorageBackend {
   initiateMultipartUpload(
     filename: string,
     mimeType: string,
-    totalSize: number
+    totalSize: number,
+    ownerUserId?: string
   ): MultipartUploadInit {
     const timestamp = Date.now();
     const randomHex = crypto.randomBytes(8).toString('hex');
     const uploadId = `oci_mp_s3_${timestamp}_${randomHex}`;
     const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = `uploads/${timestamp}_${randomHex}_${sanitizedFilename}`;
+    const key = ownerUserId
+      ? `conversions/${ownerUserId}/${timestamp}_${randomHex}_${sanitizedFilename}`
+      : `uploads/${timestamp}_${randomHex}_${sanitizedFilename}`;
 
     const partSize = this.DEFAULT_PART_SIZE;
     const totalParts = Math.max(1, Math.ceil(totalSize / partSize));
@@ -103,6 +107,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       createdAt: timestamp,
       diskDir: sessionDir,
       parts: new Map(),
+      ownerUserId,
     };
 
     this.sessions.set(uploadId, session);
@@ -114,6 +119,14 @@ export class S3ObjectStorageService implements IStorageBackend {
       totalParts,
       expiresAt: timestamp + 24 * 60 * 60 * 1000,
     };
+  }
+
+  getUploadSession(uploadId: string): S3MultipartSession | undefined {
+    return this.sessions.get(uploadId);
+  }
+
+  getUploadOwner(uploadId: string): string | undefined {
+    return this.sessions.get(uploadId)?.ownerUserId;
   }
 
   uploadPart(
