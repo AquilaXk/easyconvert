@@ -130,6 +130,15 @@ describe('Archive Encryption Fail-Closed Verification', () => {
         convertArchive(truncated, 'zip', 'tar', {}, 'truncated.zip')
       ).rejects.toThrow(ConversionFailedError);
     });
+
+    it('convertArchive rejects non-zip container format starting with PK bytes fail-closed when empty', async () => {
+      const fakeTarWithPk = Buffer.alloc(512);
+      fakeTarWithPk[0] = 0x50;
+      fakeTarWithPk[1] = 0x4b;
+      await expect(
+        convertArchive(fakeTarWithPk, 'tar', 'zip', {}, 'corrupt.tar')
+      ).rejects.toThrow(ConversionFailedError);
+    });
   });
 
   describe('3. Native 7z header encryption and AES-256 inspection via Oracle CLI', () => {
