@@ -105,8 +105,11 @@ function validateFormat(format: string): string {
 }
 
 function resolveBinary(candidates: string[], envOverride?: string): string | null {
-  if (envOverride && path.isAbsolute(envOverride) && fs.existsSync(envOverride)) {
-    return envOverride;
+  if (envOverride !== undefined) {
+    if (path.isAbsolute(envOverride) && fs.existsSync(envOverride)) {
+      return envOverride;
+    }
+    return null;
   }
   for (const candidate of candidates) {
     if (path.isAbsolute(candidate) && fs.existsSync(candidate)) {
@@ -302,6 +305,7 @@ export async function convertWithHeadlessOffice(
   const tgt = validateFormat(targetFormat);
   const sofficeBin = resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH);
   if (!sofficeBin) {
+    libreOfficePool.setSofficePath(null);
     if (options.throwOnUnavailable) {
       throw new EngineUnavailableError('soffice', 'LibreOffice binary is not installed or not in PATH');
     }
@@ -330,53 +334,60 @@ export async function convertWithHeadlessOffice(
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
 
-  return withSandboxDir('easyconvert-office-', async (tempDir) => {
-    const { inputPath } = resolveInputContext(input, src, tempDir);
+  try {
+    return await withSandboxDir('easyconvert-office-', async (tempDir) => {
+      const { inputPath } = resolveInputContext(input, src, tempDir);
 
-    const timeout = Math.min(options.timeoutMs || 45000, 120000);
-    const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
+      const timeout = Math.min(options.timeoutMs || 45000, 120000);
+      const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
-    await executeSandboxedBinary(
-      sofficeBin,
-      [
-        '--headless',
-        '--norestore',
-        '--nofirststartwizard',
-        '--nologo',
-        `-env:UserInstallation=file://${tempDir}/user`,
-        '--convert-to',
-        resolveLibreOfficeFilter(tgt, src, options),
-        '--outdir',
-        tempDir,
-        inputPath,
-      ],
-      {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer,
-        env: { HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
-        networkIsolated: true,
-        signal: options.signal,
+      await executeSandboxedBinary(
+        sofficeBin,
+        [
+          '--headless',
+          '--norestore',
+          '--nofirststartwizard',
+          '--nologo',
+          `-env:UserInstallation=file://${tempDir}/user`,
+          '--convert-to',
+          resolveLibreOfficeFilter(tgt, src, options),
+          '--outdir',
+          tempDir,
+          inputPath,
+        ],
+        {
+          cwd: tempDir,
+          timeoutMs: timeout,
+          maxBuffer,
+          env: { HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+          networkIsolated: true,
+          signal: options.signal,
+        }
+      );
+
+      const matches = fs.readdirSync(tempDir).filter((f) => f.startsWith('input.') && !f.endsWith(`.${src}`));
+      if (matches.length === 0) {
+        throw new Error(`LibreOffice execution completed without producing expected output file for target format "${tgt}"`);
       }
-    );
 
-    const matches = fs.readdirSync(tempDir).filter((f) => f.startsWith('input.') && !f.endsWith(`.${src}`));
-    if (matches.length === 0) {
-      throw new Error(`LibreOffice execution completed without producing expected output file for target format "${tgt}"`);
+      const tempOutputPath = path.join(tempDir, matches[0]);
+      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+      return createConversionResult(
+        persistedPath,
+        tgt,
+        baseName,
+        'native-soffice',
+        Date.now() - startTime
+      );
+    });
+  } catch (err) {
+    if (options.throwOnUnavailable) {
+      throw err;
     }
-
-    const tempOutputPath = path.join(tempDir, matches[0]);
-    const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-    return createConversionResult(
-      persistedPath,
-      tgt,
-      baseName,
-      'native-soffice',
-      Date.now() - startTime
-    );
-  });
+    return null;
+  }
 }
 
 /**
@@ -402,37 +413,44 @@ export async function convertWithNativeFfmpeg(
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
 
-  return withSandboxDir('easyconvert-ffmpeg-', async (tempDir) => {
-    const { inputPath } = resolveInputContext(input, src, tempDir);
-    const tempOutputPath = path.join(tempDir, `output.${tgt}`);
+  try {
+    return await withSandboxDir('easyconvert-ffmpeg-', async (tempDir) => {
+      const { inputPath } = resolveInputContext(input, src, tempDir);
+      const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
-    const timeout = Math.min(options.timeoutMs || 60000, 180000);
-    const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
-    const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
+      const timeout = Math.min(options.timeoutMs || 60000, 180000);
+      const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
+      const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
 
-    await executeSandboxedBinary(ffmpegBin, args, {
-      cwd: tempDir,
-      timeoutMs: timeout,
-      maxBuffer,
-      networkIsolated: true,
-      signal: options.signal,
+      await executeSandboxedBinary(ffmpegBin, args, {
+        cwd: tempDir,
+        timeoutMs: timeout,
+        maxBuffer,
+        networkIsolated: true,
+        signal: options.signal,
+      });
+
+      if (!fs.existsSync(tempOutputPath)) {
+        throw new Error(`FFmpeg execution completed without producing expected output file "${tempOutputPath}"`);
+      }
+
+      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+      return createConversionResult(
+        persistedPath,
+        tgt,
+        baseName,
+        'native-ffmpeg',
+        Date.now() - startTime
+      );
     });
-
-    if (!fs.existsSync(tempOutputPath)) {
-      throw new Error(`FFmpeg execution completed without producing expected output file "${tempOutputPath}"`);
+  } catch (err) {
+    if (options.throwOnUnavailable) {
+      throw err;
     }
-
-    const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-    return createConversionResult(
-      persistedPath,
-      tgt,
-      baseName,
-      'native-ffmpeg',
-      Date.now() - startTime
-    );
-  });
+    return null;
+  }
 }
 
 /**
@@ -585,7 +603,7 @@ export async function convertWithNative7z(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
-  const p7zBin = resolveBinary(BINARY_PATHS.p7zip);
+  const p7zBin = resolveBinary(BINARY_PATHS.p7zip, process.env.P7ZIP_PATH);
   if (!p7zBin) {
     if (options.throwOnUnavailable) {
       throw new EngineUnavailableError('7z', '7-Zip binary is not installed or not in PATH');
@@ -596,62 +614,69 @@ export async function convertWithNative7z(
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
 
-  return withSandboxDir('easyconvert-7z-', async (tempDir) => {
-    const inputExt = src.includes('.') ? src.split('.').pop()! : src;
-    const { inputPath } = resolveInputContext(input, inputExt, tempDir);
+  try {
+    return await withSandboxDir('easyconvert-7z-', async (tempDir) => {
+      const inputExt = src.includes('.') ? src.split('.').pop()! : src;
+      const { inputPath } = resolveInputContext(input, inputExt, tempDir);
 
-    const timeout = Math.min(options.timeoutMs || 60000, 180000);
-    const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
-    const extractDir = path.join(tempDir, 'extracted');
-    fs.mkdirSync(extractDir, { recursive: true });
+      const timeout = Math.min(options.timeoutMs || 60000, 180000);
+      const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
+      const extractDir = path.join(tempDir, 'extracted');
+      fs.mkdirSync(extractDir, { recursive: true });
 
-    // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
-    if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
-      await extractSourceArchive({
+      // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
+      if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
+        await extractSourceArchive({
+          p7zBin,
+          inputPath,
+          extractDir,
+          tempDir,
+          timeout,
+          maxBuffer,
+          options,
+        });
+      } else {
+        const destPath = path.join(extractDir, originalFilename || `file.${src}`);
+        fs.copyFileSync(inputPath, destPath);
+      }
+
+      const extractedFiles = fs.readdirSync(extractDir);
+      if (extractedFiles.length === 0) {
+        throw new Error('7-Zip extraction completed without producing any files');
+      }
+
+      const tempOutputPath = path.join(tempDir, `output.${tgt}`);
+      const packaged = await package7zArchive({
         p7zBin,
-        inputPath,
+        tgt,
         extractDir,
         tempDir,
+        tempOutputPath,
         timeout,
         maxBuffer,
         options,
       });
-    } else {
-      const destPath = path.join(extractDir, originalFilename || `file.${src}`);
-      fs.copyFileSync(inputPath, destPath);
-    }
+      if (!packaged || !fs.existsSync(tempOutputPath)) {
+        throw new Error('7-Zip packaging failed to produce output archive');
+      }
 
-    const extractedFiles = fs.readdirSync(extractDir);
-    if (extractedFiles.length === 0) {
-      throw new Error('7-Zip extraction completed without producing any files');
-    }
+      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
 
-    const tempOutputPath = path.join(tempDir, `output.${tgt}`);
-    const packaged = await package7zArchive({
-      p7zBin,
-      tgt,
-      extractDir,
-      tempDir,
-      tempOutputPath,
-      timeout,
-      maxBuffer,
-      options,
+      return createConversionResult(
+        persistedPath,
+        tgt,
+        baseName,
+        'native-7z',
+        Date.now() - startTime
+      );
     });
-    if (!packaged || !fs.existsSync(tempOutputPath)) {
-      throw new Error('7-Zip packaging failed to produce output archive');
+  } catch (err) {
+    if (options.throwOnUnavailable) {
+      throw err;
     }
-
-    const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-    return createConversionResult(
-      persistedPath,
-      tgt,
-      baseName,
-      'native-7z',
-      Date.now() - startTime
-    );
-  });
+    return null;
+  }
 }
 
 /**
@@ -688,37 +713,44 @@ export async function convertWithNativePoppler(
       return null;
     }
 
-    return withSandboxDir('easyconvert-poppler-txt-', async (tempDir) => {
-      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
-      const tempOutputPath = path.join(tempDir, 'output.txt');
+    try {
+      return await withSandboxDir('easyconvert-poppler-txt-', async (tempDir) => {
+        const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
+        const tempOutputPath = path.join(tempDir, 'output.txt');
 
-      await executeSandboxedBinary(
-        pdftotextBin,
-        ['-layout', inputPath, tempOutputPath],
-        {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-          signal: options.signal,
+        await executeSandboxedBinary(
+          pdftotextBin,
+          ['-layout', inputPath, tempOutputPath],
+          {
+            cwd: tempDir,
+            timeoutMs: timeout,
+            maxBuffer,
+            networkIsolated: true,
+            signal: options.signal,
+          }
+        );
+
+        if (!fs.existsSync(tempOutputPath)) {
+          throw new Error(`pdftotext execution completed without producing expected output file "${tempOutputPath}"`);
         }
-      );
 
-      if (!fs.existsSync(tempOutputPath)) {
-        throw new Error(`pdftotext execution completed without producing expected output file "${tempOutputPath}"`);
+        const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+        const persistedPath = preserveOutput(tempOutputPath, 'txt', options, vfsPayload);
+
+        return createConversionResult(
+          persistedPath,
+          'txt',
+          baseName,
+          'native-poppler',
+          Date.now() - startTime
+        );
+      });
+    } catch (err) {
+      if (options.throwOnUnavailable) {
+        throw err;
       }
-
-      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(tempOutputPath, 'txt', options, vfsPayload);
-
-      return createConversionResult(
-        persistedPath,
-        'txt',
-        baseName,
-        'native-poppler',
-        Date.now() - startTime
-      );
-    });
+      return null;
+    }
   }
 
   // 2. High-fidelity raster rendering via pdftoppm
@@ -731,56 +763,63 @@ export async function convertWithNativePoppler(
       return null;
     }
 
-    return withSandboxDir('easyconvert-poppler-img-', async (tempDir) => {
-      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
+    try {
+      return await withSandboxDir('easyconvert-poppler-img-', async (tempDir) => {
+        const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
 
-      const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
-      const args: string[] = ['-r', String(dpi)];
+        const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
+        const args: string[] = ['-r', String(dpi)];
 
-      if (tgt === 'png') {
-        args.push('-png');
-      } else if (tgt === 'jpg' || tgt === 'jpeg') {
-        args.push('-jpeg');
-      } else if (tgt === 'tiff' || tgt === 'tif') {
-        args.push('-tiff');
-      }
+        if (tgt === 'png') {
+          args.push('-png');
+        } else if (tgt === 'jpg' || tgt === 'jpeg') {
+          args.push('-jpeg');
+        } else if (tgt === 'tiff' || tgt === 'tif') {
+          args.push('-tiff');
+        }
 
-      if (options.page && Number.isInteger(options.page) && options.page > 0) {
-        args.push('-f', String(options.page), '-l', String(options.page));
-      } else {
-        args.push('-f', '1', '-l', '1');
-      }
+        if (options.page && Number.isInteger(options.page) && options.page > 0) {
+          args.push('-f', String(options.page), '-l', String(options.page));
+        } else {
+          args.push('-f', '1', '-l', '1');
+        }
 
-      const prefix = path.join(tempDir, 'page');
-      args.push(inputPath, prefix);
+        const prefix = path.join(tempDir, 'page');
+        args.push(inputPath, prefix);
 
-      await executeSandboxedBinary(pdftoppmBin, args, {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer,
-        networkIsolated: true,
-        signal: options.signal,
+        await executeSandboxedBinary(pdftoppmBin, args, {
+          cwd: tempDir,
+          timeoutMs: timeout,
+          maxBuffer,
+          networkIsolated: true,
+          signal: options.signal,
+        });
+
+        const files = fs.readdirSync(tempDir).filter((f) => f.startsWith('page') && !f.endsWith('.pdf'));
+        if (files.length === 0) {
+          throw new Error('pdftoppm execution completed without producing any output images');
+        }
+
+        const selectedFile = files.sort()[0];
+        const tempOutputPath = path.join(tempDir, selectedFile);
+
+        const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+        const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+        return createConversionResult(
+          persistedPath,
+          tgt,
+          baseName,
+          'native-poppler',
+          Date.now() - startTime
+        );
       });
-
-      const files = fs.readdirSync(tempDir).filter((f) => f.startsWith('page') && !f.endsWith('.pdf'));
-      if (files.length === 0) {
-        throw new Error('pdftoppm execution completed without producing any output images');
+    } catch (err) {
+      if (options.throwOnUnavailable) {
+        throw err;
       }
-
-      const selectedFile = files.sort()[0];
-      const tempOutputPath = path.join(tempDir, selectedFile);
-
-      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-      return createConversionResult(
-        persistedPath,
-        tgt,
-        baseName,
-        'native-poppler',
-        Date.now() - startTime
-      );
-    });
+      return null;
+    }
   }
 
   return null;

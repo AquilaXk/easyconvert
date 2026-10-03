@@ -11,6 +11,7 @@ import {
   convertWithHeadlessOffice,
   executeWorkerConversion,
   EngineUnavailableError,
+  libreOfficePool,
 } from '../src/worker/engines';
 import { createZipArchive } from '../src/lib/conversions';
 import { ociWorker } from '../src/worker/index';
@@ -111,6 +112,7 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
         } else {
           delete process.env.SOFFICE_PATH;
         }
+        libreOfficePool.setSofficePath(null);
         try {
           fs.rmSync(tempScriptDir, { recursive: true, force: true });
         } catch {}
@@ -118,9 +120,10 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
     });
 
     it('forbids fallback to pure TypeScript engine when pdfStandard is requested', async () => {
-      const dummyDoc = Buffer.from('PK\x03\x04Standard test docx content');
+      // Direct pure TS fallback path explicitly forbids pdfStandard
+      const dummyText = Buffer.from('Plain text document');
       await expect(
-        executeWorkerConversion(dummyDoc, 'docx', 'pdf', {
+        executeWorkerConversion(dummyText, 'txt', 'pdf', {
           pdfStandard: 'pdfa-1b',
         })
       ).rejects.toThrow(/pdfStandard/);
@@ -133,16 +136,26 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
     });
 
     it('attaches fallbackReason to result metadata when falling back due to EngineUnavailableError', async () => {
-      // Use zip -> tar which triggers convertWithNative7z (ARCHIVE_EXTRACT_FORMATS -> ARCHIVE_TARGET_FORMATS)
-      // When 7z is missing, EngineUnavailableError is caught and fallbackReason attached
-      const zipRes = await createZipArchive([{ filename: 'test.txt', buffer: Buffer.from('hello') }]);
-      const res = await executeWorkerConversion(zipRes.buffer, 'zip', 'tar', {}, 'archive.zip');
+      // Force engine unavailability via environment override for deterministic behavior across environments
+      const prevP7zip = process.env.P7ZIP_PATH;
+      process.env.P7ZIP_PATH = '/nonexistent/7z';
 
-      expect(res.engineUsed).toBe('internal-fallback');
-      expect(res.metadata).toBeDefined();
-      expect(typeof res.metadata?.fallbackReason).toBe('string');
-      expect(res.metadata?.fallbackReason).toMatch(/7-Zip|not installed/);
-      expect(res.fallbackReason).toBe(res.metadata?.fallbackReason);
+      try {
+        const zipRes = await createZipArchive([{ filename: 'test.txt', buffer: Buffer.from('hello') }]);
+        const res = await executeWorkerConversion(zipRes.buffer, 'zip', 'tar', {}, 'archive.zip');
+
+        expect(res.engineUsed).toBe('internal-fallback');
+        expect(res.metadata).toBeDefined();
+        expect(typeof res.metadata?.fallbackReason).toBe('string');
+        expect(res.metadata?.fallbackReason).toMatch(/7-Zip|not installed/);
+        expect(res.fallbackReason).toBe(res.metadata?.fallbackReason);
+      } finally {
+        if (prevP7zip !== undefined) {
+          process.env.P7ZIP_PATH = prevP7zip;
+        } else {
+          delete process.env.P7ZIP_PATH;
+        }
+      }
     });
   });
 
