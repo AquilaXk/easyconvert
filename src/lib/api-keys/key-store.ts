@@ -7,6 +7,8 @@ import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
 import { globalSharedObjects } from '../storage/shared-store';
+import { encryptSecret, decryptSecret } from './secret-encryption';
+import type { ApiKeyRotateOptions, ApiKeyRotateResult, ApiKeyUpdateOptions } from './types';
 
 const STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
 const KEYS_FILE = path.join(STORAGE_DIR, 'api-keys.json');
@@ -31,6 +33,11 @@ function readKeyHashPepper(): string | undefined {
   if (pepper) {
     return pepper;
   }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      `[KeyStore] FATAL: ${KEY_HASH_PEPPER_ENV} environment variable is required in production.`
+    );
+  }
   if (!pepperWarningEmitted) {
     pepperWarningEmitted = true;
     console.warn(
@@ -44,7 +51,7 @@ function readKeyHashPepper(): string | undefined {
  * Hashes an API key secret for storage: HMAC-SHA256(pepper, secret) when a pepper is
  * configured, otherwise the legacy SHA-256(secret).
  */
-function hashApiKeySecret(secret: string): string {
+export function hashApiKeySecret(secret: string): string {
   const pepper = readKeyHashPepper();
   if (pepper) {
     return hmacSha256(pepper, secret);
@@ -52,14 +59,14 @@ function hashApiKeySecret(secret: string): string {
   return sha256(secret);
 }
 
-interface ApiKeyHashCandidates {
+export interface ApiKeyHashCandidates {
   /** Lookup order: the current (peppered when configured) hash first, then the legacy SHA-256. */
   hashes: string[];
   /** Hash a legacy-hashed key is migrated to after a successful verification, if different. */
   currentHash: string;
 }
 
-function apiKeyHashCandidates(secret: string): ApiKeyHashCandidates {
+export function apiKeyHashCandidates(secret: string): ApiKeyHashCandidates {
   const currentHash = hashApiKeySecret(secret);
   const legacyHash = sha256(secret);
   if (currentHash === legacyHash) {
@@ -189,7 +196,7 @@ export class KeyStore {
       status: 'active',
       allowedIps: options.allowedIps,
       webhookUrl: options.webhookUrl,
-      webhookSecret: options.webhookSecret,
+      webhookSecret: encryptSecret(options.webhookSecret),
       scopes: options.scopes,
     };
 
@@ -198,7 +205,10 @@ export class KeyStore {
     this.persist();
 
     return {
-      key,
+      key: {
+        ...key,
+        webhookSecret: options.webhookSecret,
+      },
       secretKey,
     };
   }
@@ -208,6 +218,13 @@ export class KeyStore {
       const keyId = this.keyHashIndex.get(keyHash);
       if (keyId) {
         return keyId;
+      }
+    }
+    for (const key of this.keys.values()) {
+      if (key.previousKeyHash && candidateHashes.includes(key.previousKeyHash)) {
+        if (!key.graceExpiresAt || Date.now() <= key.graceExpiresAt) {
+          return key.id;
+        }
       }
     }
     return undefined;
@@ -274,6 +291,12 @@ export class KeyStore {
       return { valid: false, error: 'Invalid or non-existent API key' };
     }
 
+    if (key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash)) {
+      if (key.graceExpiresAt && Date.now() > key.graceExpiresAt) {
+        return { valid: false, error: 'Previous API key has expired following key rotation' };
+      }
+    }
+
     const constraintError = this.validateKeyConstraints(key, clientIp);
     if (constraintError) {
       return { valid: false, error: constraintError };
@@ -284,13 +307,21 @@ export class KeyStore {
       return { valid: false, error: 'User associated with API key not found' };
     }
 
-    this.migrateKeyHash(key, candidates.currentHash);
+    // Only migrate hash if verifying against current secret
+    if (!key.previousKeyHash || !candidates.hashes.includes(key.previousKeyHash)) {
+      this.migrateKeyHash(key, candidates.currentHash);
+    }
     key.lastUsedAt = Date.now();
     this.persist();
 
+    const decryptedKey: ApiKey = {
+      ...key,
+      webhookSecret: decryptSecret(key.webhookSecret),
+    };
+
     return {
       valid: true,
-      key,
+      key: decryptedKey,
       user: redisUserStore.sanitizeUser(userRecord),
     };
   }
@@ -300,10 +331,90 @@ export class KeyStore {
     const result: ApiKey[] = [];
     for (const key of this.keys.values()) {
       if (key.userId === userId) {
-        result.push(key);
+        result.push({
+          ...key,
+          webhookSecret: decryptSecret(key.webhookSecret),
+        });
       }
     }
     return result.sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  public async rotateApiKey(
+    userId: string,
+    keyId: string,
+    options: ApiKeyRotateOptions = {}
+  ): Promise<ApiKeyRotateResult | null> {
+    this.ensureInitialized();
+    const key = this.keys.get(keyId);
+    if (!key || key.userId !== userId) {
+      return null;
+    }
+    if (key.status !== 'active') {
+      return null;
+    }
+
+    const rawRandom = crypto.randomBytes(24).toString('hex');
+    const newSecretKey = `ec_live_${rawRandom}`;
+    const newKeyHash = hashApiKeySecret(newSecretKey);
+    const prefix = `${newSecretKey.substring(0, 12)}...`;
+
+    const gracePeriodSeconds = Math.max(0, Math.min(options.gracePeriodSeconds ?? 3600, 7 * 24 * 3600));
+    const graceExpiresAt = Date.now() + gracePeriodSeconds * 1000;
+
+    key.previousKeyHash = key.keyHash;
+    key.graceExpiresAt = graceExpiresAt;
+    key.keyHash = newKeyHash;
+    key.prefix = prefix;
+
+    this.keyHashIndex.set(newKeyHash, key.id);
+    this.persist();
+
+    return {
+      key: {
+        ...key,
+        webhookSecret: decryptSecret(key.webhookSecret),
+      },
+      newSecretKey,
+      graceExpiresAt,
+    };
+  }
+
+  public async updateApiKey(
+    userId: string,
+    keyId: string,
+    updates: ApiKeyUpdateOptions
+  ): Promise<ApiKey | null> {
+    this.ensureInitialized();
+    const key = this.keys.get(keyId);
+    if (!key || key.userId !== userId || key.status !== 'active') {
+      return null;
+    }
+
+    if (updates.name !== undefined) {
+      key.name = updates.name.trim() || key.name;
+    }
+    if (updates.allowedIps !== undefined) {
+      key.allowedIps = updates.allowedIps;
+    }
+    if (updates.webhookUrl !== undefined) {
+      key.webhookUrl = updates.webhookUrl;
+    }
+    if (updates.webhookSecret !== undefined) {
+      key.webhookSecret = encryptSecret(updates.webhookSecret);
+    }
+    if (updates.scopes !== undefined) {
+      key.scopes = updates.scopes;
+    }
+    if (updates.expiresAt !== undefined) {
+      key.expiresAt = updates.expiresAt;
+    }
+
+    this.persist();
+    return {
+      ...key,
+      webhookSecret: decryptSecret(key.webhookSecret),
+    };
   }
 
   public async revokeApiKey(userId: string, keyId: string): Promise<boolean> {
@@ -326,8 +437,19 @@ export class KeyStore {
     }
     this.keys.delete(keyId);
     this.keyHashIndex.delete(key.keyHash);
+    if (key.previousKeyHash) {
+      this.keyHashIndex.delete(key.previousKeyHash);
+    }
     this.persist();
     return true;
+  }
+
+  public markKeyExpiryNotified(keyId: string, timestamp: number): void {
+    const k = this.keys.get(keyId);
+    if (k) {
+      k.lastExpiryNotifiedAt = timestamp;
+      this.persist();
+    }
   }
 
   public async getQuotaUsage(userId: string): Promise<QuotaUsage> {

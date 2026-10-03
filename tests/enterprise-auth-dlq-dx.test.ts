@@ -698,7 +698,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       const pastJson = await pastRes.json();
       expect(pastJson.error).toContain('expiresAt must be a timestamp in the future');
 
-      // Invalid scopes filtered out
+      // Invalid scopes rejected fail-closed
       const invalidScopeReq = new Request('https://easyconvert.app/api/keys', {
         method: 'POST',
         headers: {
@@ -711,9 +711,9 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         }),
       });
       const scopeRes = await createKeyRoute(invalidScopeReq as any);
-      expect(scopeRes.status).toBe(200);
+      expect(scopeRes.status).toBe(400);
       const scopeJson = await scopeRes.json();
-      expect(scopeJson.key.scopes).toEqual(['convert:read']);
+      expect(scopeJson.error).toContain('Invalid scope');
     });
   });
 

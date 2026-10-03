@@ -69,7 +69,20 @@ interface ParsedKeyPayload {
 
 function parseKeyCreationPayload(body: Record<string, unknown> | null | undefined): ParsedKeyPayload {
   const keyName = (typeof body?.name === 'string' && body.name.trim()) || 'Production API Key';
-  const allowedIps = Array.isArray(body?.allowedIps) ? body.allowedIps : undefined;
+
+  let allowedIps: string[] | undefined;
+  if (body?.allowedIps !== undefined) {
+    if (!Array.isArray(body.allowedIps)) {
+      return { keyName, error: 'allowedIps must be an array of IP addresses or CIDR blocks.' };
+    }
+    for (const ip of body.allowedIps) {
+      if (typeof ip !== 'string' || !ip.trim()) {
+        return { keyName, error: 'Every item in allowedIps must be a non-empty string.' };
+      }
+    }
+    allowedIps = body.allowedIps.map((ip) => ip.trim());
+  }
+
   const webhookUrl = typeof body?.webhookUrl === 'string' && body.webhookUrl.trim() ? body.webhookUrl.trim() : undefined;
   const webhookSecret = typeof body?.webhookSecret === 'string' && body.webhookSecret.trim() ? body.webhookSecret.trim() : undefined;
 
@@ -85,11 +98,24 @@ function parseKeyCreationPayload(body: Record<string, unknown> | null | undefine
     expiresAt = body.expiresAt;
   }
 
-  let scopes: ApiKeyScope[] | undefined;
-  if (Array.isArray(body?.scopes)) {
+  let scopes: ApiKeyScope[];
+  if (body?.scopes !== undefined) {
+    if (!Array.isArray(body.scopes) || body.scopes.length === 0) {
+      return { keyName, error: 'scopes must be a non-empty array of valid scopes or omitted.' };
+    }
     const valid = new Set<ApiKeyScope>([...ALL_API_KEY_SCOPES, '*']);
-    const filtered = body.scopes.filter((s: unknown): s is ApiKeyScope => typeof s === 'string' && valid.has(s as ApiKeyScope));
-    scopes = filtered.length > 0 ? filtered : undefined;
+    for (const s of body.scopes) {
+      if (typeof s !== 'string' || !valid.has(s as ApiKeyScope)) {
+        return {
+          keyName,
+          error: `Invalid scope '${String(s)}'. Valid scopes are: ${[...ALL_API_KEY_SCOPES, '*'].join(', ')}.`,
+        };
+      }
+    }
+    scopes = [...new Set(body.scopes as ApiKeyScope[])];
+  } else {
+    // Default to least privilege
+    scopes = ['convert:read'];
   }
 
   return { keyName, allowedIps, webhookUrl, webhookSecret, expiresAt, scopes };

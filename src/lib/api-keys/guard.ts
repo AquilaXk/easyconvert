@@ -70,8 +70,10 @@ export function authErrorHeaders(auth: Pick<ApiAuthResult, 'retryAfterSeconds'>)
  */
 export function isScopeAllowed(grantedScopes?: string[], requiredScope?: string): boolean {
   if (!requiredScope) return true;
-  // Legacy keys created before scopes existed carry no scopes; they keep full access for backward compatibility.
-  if (!grantedScopes || grantedScopes.length === 0) return true;
+  // An explicit empty scope list grants NO access (least privilege).
+  if (Array.isArray(grantedScopes) && grantedScopes.length === 0) return false;
+  // Legacy keys created before scopes existed carry undefined scopes; they keep full access for backward compatibility.
+  if (grantedScopes === undefined) return true;
   if (grantedScopes.includes(WILDCARD_SCOPE)) return true;
   if (grantedScopes.includes(requiredScope)) return true;
 
@@ -113,6 +115,7 @@ function checkPreExpiryNotification(key: ApiKey): void {
       return;
     }
     key.lastExpiryNotifiedAt = Date.now();
+    redisKeyStore.markKeyExpiryNotified(key.id, key.lastExpiryNotifiedAt);
     webhookDispatcher.dispatch(
       key.webhookUrl,
       'key.expiring_soon',
