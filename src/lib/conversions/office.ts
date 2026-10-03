@@ -8244,11 +8244,11 @@ function escapeXml(str: string): string {
  */
 export function escapeRtf(text: string): string {
   if (!text) return '';
-  return text.replace(/[\\{}]|[^\x20-\x7E\r\n\t]|\r?\n/g, (ch) => {
+  return text.replace(/[\\{}]|\t|\r\n|[\r\n]|[^\x20-\x7E]/g, (ch) => {
     if (ch === '\\') return '\\\\';
     if (ch === '{') return '\\{';
     if (ch === '}') return '\\}';
-    if (ch === '\r\n' || ch === '\n') return '\\par\n';
+    if (ch === '\r\n' || ch === '\n' || ch === '\r') return '\\par\n';
     if (ch === '\t') return '\\tab ';
     const code = ch.charCodeAt(0);
     if (code > 127) {

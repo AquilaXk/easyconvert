@@ -25,6 +25,7 @@ import {
 import { performOcr } from '../src/lib/conversions/ocr';
 import { BitReader } from '../src/lib/conversions/media-encoder';
 import { OcrEngineUnavailableError } from '../src/lib/types';
+import { escapeRtf } from '../src/lib/conversions/office';
 
 describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fail-Closed Guards (#127)', () => {
   function createTestWav(sampleRate = 44100, channels = 2, durationSec = 0.25): Buffer {
@@ -393,6 +394,32 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       } finally {
         ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE = origLimit;
       }
+    });
+  });
+
+  describe('6. Authentic RTF Text & Unicode Escaping (RFC 1.9.1)', () => {
+    it('escapes RTF syntax characters, tabs, and diverse newline forms', () => {
+      const input = 'Header: {section}\nKey \\ Value\tColumn\r\nNext\rFinal';
+      const escaped = escapeRtf(input);
+      expect(escaped).toBe('Header: \\{section\\}\\par\nKey \\\\ Value\\tab Column\\par\nNext\\par\nFinal');
+    });
+
+    it('encodes non-ASCII characters using signed 16-bit \\uN? notation', () => {
+      // 'é': code 233 (positive 16-bit)
+      // '안': code 50504 (> 32767 -> signed 50504 - 65536 = -15032)
+      // '녕': code 45397 -> -20139
+      // '하': code 54616 -> -10920
+      // '세': code 49464 -> -16072
+      // '요': code 50836 -> -14700
+      const input = 'Café: 안녕하세요';
+      const escaped = escapeRtf(input);
+      expect(escaped).toBe('Caf\\u233?: \\u-15032?\\u-20139?\\u-10920?\\u-16072?\\u-14700?');
+    });
+
+    it('returns empty string for empty or null inputs', () => {
+      expect(escapeRtf('')).toBe('');
+      expect(escapeRtf(null as unknown as string)).toBe('');
+      expect(escapeRtf(undefined as unknown as string)).toBe('');
     });
   });
 });
