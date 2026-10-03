@@ -24,7 +24,8 @@ export type ExternalOracleTool =
   | 'tar'
   | 'zstd'
   | 'magick'
-  | 'identify';
+  | 'identify'
+  | 'unrar';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;
@@ -88,15 +89,21 @@ export function isOracleToolAvailable(tool: ExternalOracleTool): boolean {
   return getOracleToolPath(tool) !== null;
 }
 
-export function assertOracleToolAvailable(tool: ExternalOracleTool): string {
-  const toolPath = getOracleToolPath(tool);
-  if (!toolPath) {
-    throw new OracleToolMissingError(
-      tool,
-      `Differential Oracle external CLI tool "${tool}" is missing in runtime environment.`
-    );
+export function requireOracleTool(tool: ExternalOracleTool | ExternalOracleTool[]): string {
+  const tools = Array.isArray(tool) ? tool : [tool];
+  for (const t of tools) {
+    const p = getOracleToolPath(t);
+    if (p) return p;
   }
-  return toolPath;
+  const toolName = tools.join('/');
+  throw new OracleToolMissingError(
+    toolName,
+    `Differential Oracle external CLI tool "${toolName}" is missing in runtime environment.`
+  );
+}
+
+export function assertOracleToolAvailable(tool: ExternalOracleTool): string {
+  return requireOracleTool(tool);
 }
 
 export interface OracleToolDiagnostic {
@@ -131,13 +138,7 @@ export function getOracleToolDiagnostics(): OracleToolDiagnostic[] {
  * Validates image bitstream decoding using ImageMagick CLI (identify or magick identify) when available.
  */
 export function verifyImageWithImageMagick(buffer: Buffer): boolean {
-  const identifyPath = getOracleToolPath('identify') || getOracleToolPath('magick');
-  if (!identifyPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('identify/magick', 'Strict oracle mode requires ImageMagick for image verification');
-    }
-    return false;
-  }
+  const identifyPath = requireOracleTool(['identify', 'magick']);
   try {
     const args = identifyPath.endsWith('identify')
       ? ['-format', '%m %w %h', '-']
@@ -157,13 +158,7 @@ export function verifyImageWithImageMagick(buffer: Buffer): boolean {
  * Validates audio container/bitstream using FFmpeg CLI when available.
  */
 export function verifyAudioWithFfmpeg(buffer: Buffer, formatHint: string = 'mp3'): boolean {
-  const ffmpegPath = getOracleToolPath('ffmpeg');
-  if (!ffmpegPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('ffmpeg', 'Strict oracle mode requires ffmpeg for audio verification');
-    }
-    return false;
-  }
+  const ffmpegPath = requireOracleTool('ffmpeg');
   const tmpPath = path.join(os.tmpdir(), `oracle_audio_${crypto.randomUUID()}.${formatHint}`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -185,13 +180,7 @@ export function verifyAudioWithFfmpeg(buffer: Buffer, formatHint: string = 'mp3'
  * Validates PDF document structure using Poppler pdfinfo CLI when available.
  */
 export function verifyPdfWithPoppler(buffer: Buffer): boolean {
-  const pdfinfoPath = getOracleToolPath('pdfinfo');
-  if (!pdfinfoPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('pdfinfo', 'Strict oracle mode requires pdfinfo for PDF verification');
-    }
-    return false;
-  }
+  const pdfinfoPath = requireOracleTool('pdfinfo');
   const tmpPath = path.join(os.tmpdir(), `oracle_pdfinfo_${crypto.randomUUID()}.pdf`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -212,13 +201,7 @@ export function verifyPdfWithPoppler(buffer: Buffer): boolean {
  * Extracts plain text using external Poppler pdftotext binary when available.
  */
 export function extractTextWithExternalPdftotext(buffer: Buffer): string | null {
-  const toolPath = getOracleToolPath('pdftotext');
-  if (!toolPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('pdftotext', 'Strict oracle mode requires pdftotext for PDF text extraction');
-    }
-    return null;
-  }
+  const toolPath = requireOracleTool('pdftotext');
   const tmpPath = path.join(os.tmpdir(), `oracle_pdf_${crypto.randomUUID()}.pdf`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -245,13 +228,7 @@ export function verifyArchiveWith7z(buffer: Buffer): boolean {
   if (buffer.length < 32 || !buffer.subarray(0, 6).equals(sevenZMagic)) {
     return false;
   }
-  const toolPath = getOracleToolPath('7z');
-  if (!toolPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('7z', 'Strict oracle mode requires 7z for 7-Zip archive verification');
-    }
-    return false;
-  }
+  const toolPath = requireOracleTool('7z');
   const tmpPath = path.join(os.tmpdir(), `oracle_7z_${crypto.randomUUID()}.7z`);
   try {
     fs.writeFileSync(tmpPath, buffer);
@@ -273,13 +250,7 @@ export function verifyArchiveWith7z(buffer: Buffer): boolean {
  */
 export function verifyArchiveWithTar(buffer: Buffer): boolean {
   if (buffer.length < 512) return false;
-  const toolPath = getOracleToolPath('tar');
-  if (!toolPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('tar', 'Strict oracle mode requires tar for TAR archive verification');
-    }
-    return false;
-  }
+  const toolPath = requireOracleTool('tar');
   try {
     execFileSync(toolPath, ['-tf', '-'], {
       input: buffer,
@@ -299,13 +270,7 @@ export function verifyArchiveWithZstd(buffer: Buffer): boolean {
   if (buffer.length < 4 || !buffer.subarray(0, 4).equals(zstdMagic)) {
     return false;
   }
-  const toolPath = getOracleToolPath('zstd');
-  if (!toolPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('zstd', 'Strict oracle mode requires zstd for Zstandard archive verification');
-    }
-    return false;
-  }
+  const toolPath = requireOracleTool('zstd');
   try {
     execFileSync(toolPath, ['-t', '-q'], {
       input: buffer,
@@ -924,6 +889,9 @@ export function verifyAudioBitstreamWithFfprobe(
       }
       return { valid: false, error: `Unsupported audio format verification: ${format}` };
     } catch (err: any) {
+      if (err instanceof OracleToolMissingError || err?.isOracleSkip) {
+        throw err;
+      }
       return { valid: false, error: err.message || String(err) };
     }
   }
@@ -2109,14 +2077,11 @@ async function comparePdfDifferential(
     structuralScore -= 0.1;
   }
   let textSimilarity = 1.0;
-  if (isOracleToolAvailable('pdftotext')) {
-    const actualText = extractTextWithExternalPdftotext(actualBuffer);
-    const refText = extractTextWithExternalPdftotext(referenceBuffer);
-    if (actualText !== null && refText !== null) {
-      textSimilarity = calculateNormalizedTextSimilarity(actualText, refText);
-    } else {
-      textSimilarity = calculateNormalizedTextSimilarity(actualAst.extractedText, refAst.extractedText);
-    }
+  requireOracleTool('pdftotext');
+  const actualText = extractTextWithExternalPdftotext(actualBuffer);
+  const refText = extractTextWithExternalPdftotext(referenceBuffer);
+  if (actualText !== null && refText !== null) {
+    textSimilarity = calculateNormalizedTextSimilarity(actualText, refText);
   } else {
     textSimilarity = calculateNormalizedTextSimilarity(actualAst.extractedText, refAst.extractedText);
   }
@@ -2209,6 +2174,9 @@ export async function runDifferentialComparison(
   try {
     assertFormatIntegrity(actualBuffer, fmt);
   } catch (err: any) {
+    if (err instanceof OracleToolMissingError || err?.isOracleSkip) {
+      throw err;
+    }
     discrepancies.push(`Actual buffer integrity violation: ${err?.message || 'Failed format integrity check'}`);
     return {
       matched: false,
@@ -2223,6 +2191,9 @@ export async function runDifferentialComparison(
   try {
     assertFormatIntegrity(referenceBuffer, fmt);
   } catch (err: any) {
+    if (err instanceof OracleToolMissingError || err?.isOracleSkip) {
+      throw err;
+    }
     discrepancies.push(`Reference buffer integrity violation: ${err?.message || 'Failed reference integrity check'}`);
     return {
       matched: false,
@@ -2235,11 +2206,10 @@ export async function runDifferentialComparison(
   }
 
   if (fmt === 'pdf') {
-    if (isOracleToolAvailable('pdfinfo') || isOracleToolAvailable('pdftotext')) {
-      oracleType = 'external_cli';
-      if (isOracleToolAvailable('pdfinfo') && !verifyPdfWithPoppler(actualBuffer)) {
-        discrepancies.push('Poppler external oracle CLI failed to verify PDF structure');
-      }
+    requireOracleTool('pdfinfo');
+    oracleType = 'external_cli';
+    if (!verifyPdfWithPoppler(actualBuffer)) {
+      discrepancies.push('Poppler external oracle CLI failed to verify PDF structure');
     }
     const res = await comparePdfDifferential(actualBuffer, referenceBuffer, discrepancies);
     structuralScore = res.structuralScore;
@@ -2255,11 +2225,10 @@ export async function runDifferentialComparison(
     const res = compareCadStepDifferential(actualBuffer, referenceBuffer, discrepancies);
     structuralScore = res.structuralScore;
   } else if (['png', 'webp', 'bmp', 'jpg', 'jpeg'].includes(fmt)) {
-    if (isOracleToolAvailable('identify') || isOracleToolAvailable('magick')) {
-      oracleType = 'external_cli';
-      if (!verifyImageWithImageMagick(actualBuffer)) {
-        discrepancies.push('ImageMagick external oracle CLI failed to decode actual image bitstream');
-      }
+    requireOracleTool(['identify', 'magick']);
+    oracleType = 'external_cli';
+    if (!verifyImageWithImageMagick(actualBuffer)) {
+      discrepancies.push('ImageMagick external oracle CLI failed to decode actual image bitstream');
     }
     vrtResult = await compareImages(actualBuffer, referenceBuffer, options.vrtOptions);
     const ssim = vrtResult.ssim;
@@ -2284,12 +2253,11 @@ export async function runDifferentialComparison(
       );
     }
   } else if (['wav', 'mp3', 'flac'].includes(fmt)) {
-    if (isOracleToolAvailable('ffmpeg')) {
-      oracleType = 'external_cli';
-      if (!verifyAudioWithFfmpeg(actualBuffer, fmt)) {
-        discrepancies.push(`FFmpeg external oracle CLI failed to decode ${fmt} audio bitstream`);
-        structuralScore = 0;
-      }
+    requireOracleTool('ffmpeg');
+    oracleType = 'external_cli';
+    if (!verifyAudioWithFfmpeg(actualBuffer, fmt)) {
+      discrepancies.push(`FFmpeg external oracle CLI failed to decode ${fmt} audio bitstream`);
+      structuralScore = 0;
     }
     const actualAst = parseAudioMediaToAst(actualBuffer, fmt);
     const refAst = parseAudioMediaToAst(referenceBuffer, fmt);
@@ -2312,57 +2280,54 @@ export async function runDifferentialComparison(
   const minText = options.minTextScore ?? 0.7;
 
   if (fmt === 'tar') {
-    if (isOracleToolAvailable('tar')) {
-      oracleType = 'external_cli';
-      const isValid = verifyArchiveWithTar(actualBuffer);
-      if (!isValid) {
-        discrepancies.push('External tar CLI archive verification failed');
-        structuralScore = 0;
-      }
-    } else {
-      try {
-        checkTarIntegrity(actualBuffer);
-      } catch (err: any) {
-        discrepancies.push(`Native TAR validation failed: ${err?.message}`);
-        structuralScore = 0;
-      }
+    try {
+      checkTarIntegrity(actualBuffer);
+    } catch (err: any) {
+      if (err instanceof OracleToolMissingError) throw err;
+      discrepancies.push(`Native TAR validation failed: ${err?.message}`);
+      structuralScore = 0;
+    }
+    requireOracleTool('tar');
+    oracleType = 'external_cli';
+    const isValid = verifyArchiveWithTar(actualBuffer);
+    if (!isValid) {
+      discrepancies.push('External tar CLI archive verification failed');
+      structuralScore = 0;
     }
   } else if (fmt === 'zstd' || fmt === 'zst') {
-    if (isOracleToolAvailable('zstd')) {
-      oracleType = 'external_cli';
-      const isValid = verifyArchiveWithZstd(actualBuffer);
-      if (!isValid) {
-        discrepancies.push('External zstd CLI decompression verification failed');
-        structuralScore = 0;
-      }
+    try {
+      checkZstdIntegrity(actualBuffer);
+    } catch (err: any) {
+      if (err instanceof OracleToolMissingError) throw err;
+      discrepancies.push(`Native Zstandard validation failed: ${err?.message}`);
+      structuralScore = 0;
+    }
+    requireOracleTool('zstd');
+    oracleType = 'external_cli';
+    const isValid = verifyArchiveWithZstd(actualBuffer);
+    if (!isValid) {
+      discrepancies.push('External zstd CLI decompression verification failed');
+      structuralScore = 0;
+    }
+  } else if (fmt === '7z') {
+    if (actualBuffer.length < 32) {
+      discrepancies.push('Native 7z validation failed: Truncated 7z archive header (minimum 32 bytes required)');
+      structuralScore = 0;
     } else {
       try {
-        checkZstdIntegrity(actualBuffer);
+        check7zIntegrity(actualBuffer);
       } catch (err: any) {
-        discrepancies.push(`Native Zstandard validation failed: ${err?.message}`);
+        if (err instanceof OracleToolMissingError) throw err;
+        discrepancies.push(`Native 7z validation failed: ${err?.message}`);
         structuralScore = 0;
       }
     }
-  } else if (fmt === '7z') {
-    if (isOracleToolAvailable('7z')) {
-      oracleType = 'external_cli';
-      const isValid = verifyArchiveWith7z(actualBuffer);
-      if (!isValid) {
-        discrepancies.push('External 7z CLI archive test failed');
-        structuralScore = 0;
-      }
-    } else {
-      if (actualBuffer.length < 32) {
-        discrepancies.push('Native 7z validation failed: Truncated 7z archive header (minimum 32 bytes required)');
-        structuralScore = 0;
-      } else {
-        try {
-          check7zIntegrity(actualBuffer);
-        } catch (err: any) {
-          discrepancies.push(`Native 7z validation failed: ${err?.message}`);
-          structuralScore = 0;
-        }
-      }
+    requireOracleTool('7z');
+    oracleType = 'external_cli';
+    const isValid = verifyArchiveWith7z(actualBuffer);
+    if (!isValid) {
+      discrepancies.push('External 7z CLI archive test failed');
+      structuralScore = 0;
     }
   }
 
@@ -2393,7 +2358,8 @@ function checkPdfIntegrity(buffer: Buffer): void {
   if (!latin1.includes('obj') || !latin1.includes('endobj')) {
     throw new Error('Integrity Violation: Missing PDF object definitions (obj / endobj)');
   }
-  if (isOracleToolAvailable('pdfinfo') && buffer.length > 200 && latin1.includes('/Root')) {
+  if (buffer.length > 200 && latin1.includes('/Root')) {
+    requireOracleTool('pdfinfo');
     if (!verifyPdfWithPoppler(buffer)) {
       throw new Error('Integrity Violation: Poppler pdfinfo CLI verification failed on PDF document');
     }
@@ -2418,10 +2384,9 @@ function checkPngIntegrity(buffer: Buffer): void {
   if (!buffer.includes(Buffer.from('IEND', 'ascii'))) {
     throw new Error('Integrity Violation: Missing PNG IEND chunk');
   }
-  if (isOracleToolAvailable('identify') || isOracleToolAvailable('magick')) {
-    if (!verifyImageWithImageMagick(buffer)) {
-      throw new Error('Integrity Violation: ImageMagick CLI failed to decode PNG bitstream');
-    }
+  requireOracleTool(['identify', 'magick']);
+  if (!verifyImageWithImageMagick(buffer)) {
+    throw new Error('Integrity Violation: ImageMagick CLI failed to decode PNG bitstream');
   }
 }
 
@@ -2437,7 +2402,8 @@ function check7zIntegrity(buffer: Buffer): void {
   if (major > 10) {
     throw new Error(`Integrity Violation: Invalid 7z major version ${major}`);
   }
-  if (isOracleToolAvailable('7z') && buffer.length > 100) {
+  if (buffer.length > 100) {
+    requireOracleTool('7z');
     if (!verifyArchiveWith7z(buffer)) {
       throw new Error('Integrity Violation: External 7z CLI verification failed');
     }
@@ -2663,10 +2629,9 @@ export function checkWavIntegrity(buffer: Buffer): void {
       throw new Error('Integrity Violation: Empty PCM payload in WAV data chunk');
     }
 
-    if (isOracleToolAvailable('ffmpeg')) {
-      if (!verifyAudioWithFfmpeg(buffer, 'wav')) {
-        throw new Error('Integrity Violation: FFmpeg CLI failed to decode WAV bitstream');
-      }
+    requireOracleTool('ffmpeg');
+    if (!verifyAudioWithFfmpeg(buffer, 'wav')) {
+      throw new Error('Integrity Violation: FFmpeg CLI failed to decode WAV bitstream');
     }
   }
 }
@@ -2682,7 +2647,8 @@ export function checkWebpIntegrity(buffer: Buffer): void {
   if (!['VP8 ', 'VP8L', 'VP8X'].includes(chunkType)) {
     throw new Error(`Integrity Violation: Invalid WebP chunk type '${chunkType}' (expected VP8, VP8L, or VP8X)`);
   }
-  if ((isOracleToolAvailable('identify') || isOracleToolAvailable('magick')) && buffer.length > 64) {
+  if (buffer.length > 64) {
+    requireOracleTool(['identify', 'magick']);
     if (!verifyImageWithImageMagick(buffer)) {
       throw new Error('Integrity Violation: ImageMagick CLI failed to decode WebP bitstream');
     }
@@ -2712,7 +2678,8 @@ export function checkFlacIntegrity(buffer: Buffer): void {
   if (sampleRate === 0 || channels === 0) {
     throw new Error(`Integrity Violation: Invalid FLAC parameters (sampleRate=${sampleRate}, channels=${channels})`);
   }
-  if (isOracleToolAvailable('ffmpeg') && buffer.length > 100) {
+  if (buffer.length > 100) {
+    requireOracleTool('ffmpeg');
     if (!verifyAudioWithFfmpeg(buffer, 'flac')) {
       throw new Error('Integrity Violation: FFmpeg CLI failed to decode FLAC bitstream');
     }
@@ -2765,7 +2732,8 @@ export function checkMp3Integrity(buffer: Buffer): void {
     throw new Error('Integrity Violation: Missing valid MPEG audio frame sync or ID3 header');
   }
 
-  if (isOracleToolAvailable('ffmpeg') && buffer.length > 200) {
+  if (buffer.length > 200) {
+    requireOracleTool('ffmpeg');
     if (!verifyAudioWithFfmpeg(buffer, 'mp3')) {
       throw new Error('Integrity Violation: FFmpeg CLI failed to decode MP3 bitstream');
     }
@@ -2796,7 +2764,8 @@ export function checkJpegIntegrity(buffer: Buffer): void {
       throw new Error('Integrity Violation: Missing JPEG structural markers (SOF/DQT/APPn) or EOI');
     }
   }
-  if ((isOracleToolAvailable('identify') || isOracleToolAvailable('magick')) && buffer.length > 64) {
+  if (buffer.length > 64) {
+    requireOracleTool(['identify', 'magick']);
     if (!verifyImageWithImageMagick(buffer)) {
       throw new Error('Integrity Violation: ImageMagick CLI failed to decode JPEG bitstream');
     }
