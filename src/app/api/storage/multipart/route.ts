@@ -111,14 +111,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      if (session.totalParts && partNumber > session.totalParts) {
-        return createProblemDetailsResponse(
-          400,
-          `Part number ${partNumber} exceeds total parts (${session.totalParts}).`,
-          instanceUri
-        );
-      }
-
       const maxAllowedBytes =
         (currentUser.tier && TIER_MAX_MULTIPART_BYTES[currentUser.tier]) || MAX_MULTIPART_TOTAL_BYTES;
 
