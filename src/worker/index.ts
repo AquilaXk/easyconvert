@@ -96,6 +96,11 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
 
       await job.updateProgress(75);
       await job.log(`[OCI Worker] Conversion completed via [${result.engineUsed}] in ${result.executionTimeMs}ms. Size: ${result.size} bytes`);
+      if (result.fallbackChain && result.fallbackChain.length > 0) {
+        for (const step of result.fallbackChain) {
+          await job.log(`[OCI Worker] Engine fallback: ${step}`);
+        }
+      }
 
       // 3. Store result in OCI Object Storage with 1-hour TTL (Zero-Heap from file if available),
       //    never for a cancelled or timed-out attempt
