@@ -65,6 +65,7 @@ export interface FormatDefinition {
   description: string;
   targetFormats: string[];
   optionsSchema?: FormatOptionsSchema;
+  available?: boolean;
 }
 
 export interface ConversionOptions {
@@ -166,7 +167,7 @@ export interface ConversionResult {
   filename: string;
   size: number;
   ocrExtractedText?: string;
-  ocrConfidence?: number;
+  ocrConfidence?: number | null;
   parts?: { filename: string; buffer: Buffer }[];
 }
 
@@ -251,4 +252,48 @@ export class FileExtensionSpoofError extends ConversionFailedError {
     this.name = 'FileExtensionSpoofError';
   }
 }
+
+export class OcrEngineUnavailableError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrEngineUnavailableError';
+  }
+}
+
+export class UnsupportedTargetError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedTargetError';
+  }
+}
+
+export class ArchiveEncryptionUnavailableError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArchiveEncryptionUnavailableError';
+  }
+}
+
+export class UnsupportedOptionError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedOptionError';
+  }
+}
+
+export class OcrLanguageUnavailableError extends Error {
+  readonly status = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrLanguageUnavailableError';
+  }
+}
+
+export class CadGeometryUnavailableError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CadGeometryUnavailableError';
+  }
+}
+
 

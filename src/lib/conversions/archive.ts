@@ -5,7 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import zlib from 'zlib';
-import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
+import {
+  ConversionOptions,
+  ConversionResult,
+  ConversionFailedError,
+  ArchiveEncryptionUnavailableError,
+  UnsupportedOptionError,
+} from '../types';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
 import {
@@ -142,7 +148,10 @@ function createEncryptedArchiveVia7z(
       fs.writeFileSync(dest, f.buffer);
     }
     const outPath = path.join(workDir, archiveName);
-    const resolved = resolveSandboxedCommand(p7z, ['a', '-y', `-t${archiveType}`, '-p', outPath, '.'], {
+    const extraArgs = archiveType === '7z'
+      ? ['-t7z', '-mhe=on', '-p']
+      : ['-tzip', '-mem=AES256', '-p'];
+    const resolved = resolveSandboxedCommand(p7z, ['a', '-y', ...extraArgs, outPath, '.'], {
       networkIsolated: true,
     });
     execFileSync(resolved.binary, resolved.args, {
@@ -169,8 +178,15 @@ export async function createZipArchive(
   archiveName = 'converted_files.zip'
 ): Promise<ConversionResult> {
   if (options.password) {
+    const p7z = get7zBinaryPath();
+    if (!p7z) {
+      throw new ArchiveEncryptionUnavailableError(
+        'Archive encryption is unavailable: native 7z binary is required for encrypted ZIP archives.'
+      );
+    }
     const encRes = createEncryptedArchiveVia7z(files, archiveName, 'zip', 'application/zip', options.password);
     if (encRes) return encRes;
+    throw new ArchiveEncryptionUnavailableError('Failed to create encrypted ZIP archive.');
   }
 
   const zip = new JSZip();
@@ -448,6 +464,9 @@ export function createTarArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.tar'
 ): ConversionResult {
+  if (options.password) {
+    throw new UnsupportedOptionError('TAR archives do not support password encryption.');
+  }
   const blocks: Buffer[] = [];
 
   for (const file of files) {
@@ -754,6 +773,9 @@ export function extractRarArchive(
       walkDir(extractDir, '');
       return extracted;
     } catch (err) {
+      if (err instanceof ConversionFailedError) {
+        throw err;
+      }
       if (err instanceof Error && err.message.includes('Archive bomb detected')) {
         throw err;
       }
@@ -1196,6 +1218,13 @@ export function getXzBinaryPath(): string | null {
 
 let resolved7zPath: string | null = null;
 export function get7zBinaryPath(): string | null {
+  const envOverride = process.env.P7ZIP_PATH ?? process.env.P7Z_PATH;
+  if (envOverride !== undefined) {
+    if (path.isAbsolute(envOverride) && fs.existsSync(envOverride)) {
+      return envOverride;
+    }
+    return null;
+  }
   if (resolved7zPath !== null) return resolved7zPath || null;
   const fixedLocations = [
     '/usr/bin/7z',
@@ -1408,8 +1437,32 @@ export function convertWithNative7z(
   options: ConversionOptions = {},
   originalFilename = 'file'
 ): ConversionResult | null {
+  const tgt = targetFormat.toLowerCase();
+  if (options.password && /[\r\n\0]/.test(options.password)) {
+    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+  }
+
+  const isTarFamily =
+    tgt === 'tar' ||
+    tgt.startsWith('tar.') ||
+    tgt === 'tgz' ||
+    tgt === 'tbz' ||
+    tgt === 'tbz2' ||
+    tgt === 'txz';
+
+  if (options.password && isTarFamily) {
+    throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
+  }
+
   const p7zBin = get7zBinaryPath();
-  if (!p7zBin) return null;
+  if (!p7zBin) {
+    if (options.password) {
+      throw new ArchiveEncryptionUnavailableError(
+        'Archive encryption is unavailable: native 7z binary is required for encrypted archives.'
+      );
+    }
+    return null;
+  }
 
   // Delegate zstd dictionary-trained frames or custom zstd streams to authentic TS engine
   if (
@@ -1423,7 +1476,6 @@ export function convertWithNative7z(
   }
 
   const src = sourceFormat.toLowerCase().trim();
-  const tgt = targetFormat.toLowerCase().trim();
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
 
   const supportedExtract = new Set([
@@ -1528,8 +1580,19 @@ export function convertWithNative7z(
       );
     }
 
-    const pwCreateArgs = options.password && (tgt === 'zip' || tgt === '7z') ? ['-p'] : [];
-    const pwCreateInput = options.password && (tgt === 'zip' || tgt === '7z') ? Buffer.from(`${options.password}\n${options.password}\n`) : undefined;
+
+    const pwCreateArgs: string[] = [];
+    if (options.password) {
+      if (tgt === '7z') {
+        pwCreateArgs.push('-mhe=on', '-p');
+      } else if (tgt === 'zip') {
+        pwCreateArgs.push('-mem=AES256', '-p');
+      }
+    }
+    const pwCreateInput =
+      options.password && (tgt === 'zip' || tgt === '7z')
+        ? Buffer.from(`${options.password}\n${options.password}\n`)
+        : undefined;
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
       const tarPath = path.join(workDir, 'archive.tar');
@@ -1775,8 +1838,15 @@ export function create7zArchive(
   archiveName = 'converted_files.7z'
 ): ConversionResult {
   if (options.password) {
+    const p7z = get7zBinaryPath();
+    if (!p7z) {
+      throw new ArchiveEncryptionUnavailableError(
+        'Archive encryption is unavailable: native 7z binary is required for encrypted 7z archives.'
+      );
+    }
     const encRes = createEncryptedArchiveVia7z(files, archiveName, '7z', 'application/x-7z-compressed', options.password);
     if (encRes) return encRes;
+    throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
   }
 
   const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;
@@ -2572,6 +2642,22 @@ export async function convertArchive(
   const baseName = effectiveFilename.replace(/\.[^/.]+$/, '');
   const src = effectiveSourceFormat;
   const tgt = targetFormat.toLowerCase();
+
+  if (options.password && /[\r\n\0]/.test(options.password)) {
+    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+  }
+
+  const isTarFamily =
+    tgt === 'tar' ||
+    tgt.startsWith('tar.') ||
+    tgt === 'tgz' ||
+    tgt === 'tbz' ||
+    tgt === 'tbz2' ||
+    tgt === 'txz';
+
+  if (options.password && isTarFamily) {
+    throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
+  }
 
   // Attempt native 7-Zip acceleration hook if explicitly enabled in options
   if (options.useNative7z) {

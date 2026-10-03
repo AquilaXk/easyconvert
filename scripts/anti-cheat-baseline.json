@@ -41,41 +41,7 @@
     "reason": "Hardcoded numeric truncation \"ax.tag.padEnd(4, ' ').slice(0, 4)\" inside generator/converter function \"createStatTable\".",
     "owningWP": "WP-42"
   },
-  {
-    "rule": "G3c-IGNORED-INPUT",
-    "file": "src/lib/conversions/vector-cad.ts",
-    "symbol": "encodeEmf",
-    "reason": "Exported function \"encodeEmf\" ignores its first parameter \"svgBuffer\" entirely.",
-    "owningWP": "WP-46"
-  },
-  {
-    "rule": "G3c-IGNORED-INPUT",
-    "file": "src/lib/conversions/vector-cad.ts",
-    "symbol": "encodeWmf",
-    "reason": "Exported function \"encodeWmf\" ignores its first parameter \"svgBuffer\" entirely.",
-    "owningWP": "WP-46"
-  },
-  {
-    "rule": "G3c-IGNORED-INPUT",
-    "file": "src/lib/conversions/vector-cad.ts",
-    "symbol": "encodeCgm",
-    "reason": "Exported function \"encodeCgm\" ignores its first parameter \"svgBuffer\" entirely.",
-    "owningWP": "WP-46"
-  },
-  {
-    "rule": "G3b-TRUNCATION",
-    "file": "src/lib/conversions/vector-cad.ts",
-    "symbol": "encodeStep",
-    "reason": "Hardcoded numeric truncation \"mesh.vertices.slice(0, 100)\" inside generator/converter function \"encodeStep\".",
-    "owningWP": "WP-46"
-  },
-  {
-    "rule": "G3b-TRUNCATION",
-    "file": "src/lib/conversions/vector-cad.ts",
-    "symbol": "encodeIges",
-    "reason": "Hardcoded numeric truncation \"mesh.vertices.slice(0, 50)\" inside generator/converter function \"encodeIges\".",
-    "owningWP": "WP-46"
-  },
+
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/advanced-conversions-boost.test.ts",

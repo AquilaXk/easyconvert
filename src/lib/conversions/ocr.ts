@@ -4,7 +4,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import sharp from 'sharp';
-import { ConversionOptions } from '../types';
+import { ConversionOptions, OcrLanguageUnavailableError, OcrEngineUnavailableError } from '../types';
 import {
   createLosslessSandwichPdfFromImage,
   parseTesseractBlocks,
@@ -22,8 +22,8 @@ export { sortLineBlocksTopological, detectColumnGutters };
 
 /**
  * Optical Character Recognition (OCR) Engine
- * Powered by high-performance WebAssembly inference (Tesseract.js)
- * with deterministic geometric computer-vision fallback.
+ * Powered by authentic WebAssembly inference (Tesseract.js) and native Tesseract CLI.
+ * Strictly fail-closed without geometric fallback or fabricated glyph classification.
  */
 export async function performOcr(
   imageBuffer: Buffer,
@@ -32,17 +32,30 @@ export async function performOcr(
   const langMap: Record<string, string> = {
     auto: 'eng',
     en: 'eng',
+    eng: 'eng',
     ko: 'kor',
+    kor: 'kor',
     de: 'deu',
+    deu: 'deu',
     fr: 'fra',
+    fra: 'fra',
     es: 'spa',
+    spa: 'spa',
     ja: 'jpn',
+    jpn: 'jpn',
     zh: 'chi_sim',
+    chi_sim: 'chi_sim',
   };
-  const tesseractLang = langMap[language.toLowerCase()] || 'eng';
+  const tesseractLang = langMap[language.toLowerCase()];
+  if (!tesseractLang) {
+    throw new OcrLanguageUnavailableError(
+      `Unsupported or unrecognized OCR language: '${language}'. Supported languages: ${Object.keys(langMap).join(', ')}.`
+    );
+  }
 
   // 1. Locate local or system pre-downloaded traineddata for zero-network offline inference
-  const possibleTessDirs = [
+  const candidateDirs = [
+    ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
     process.cwd(),
     '/usr/share/tesseract-ocr/5/tessdata',
     '/usr/share/tesseract-ocr/4.00/tessdata',
@@ -52,30 +65,41 @@ export async function performOcr(
   ];
 
   let localLangPath: string | undefined;
-  for (const dir of possibleTessDirs) {
-    const candidate = path.join(dir, `${tesseractLang}.traineddata`);
-    if (fs.existsSync(candidate)) {
+  let isGzip = false;
+  for (const dir of candidateDirs) {
+    const candidateGz = path.join(dir, `${tesseractLang}.traineddata.gz`);
+    const candidateRaw = path.join(dir, `${tesseractLang}.traineddata`);
+    if (fs.existsSync(candidateGz)) {
       localLangPath = dir;
-      const cwdTarget = path.join(process.cwd(), `${tesseractLang}.traineddata`);
-      if (!fs.existsSync(cwdTarget)) {
-        try {
-          fs.copyFileSync(candidate, cwdTarget);
-        } catch {}
-      }
+      isGzip = true;
       break;
     }
+    if (fs.existsSync(candidateRaw)) {
+      localLangPath = dir;
+      isGzip = false;
+      break;
+    }
+  }
+
+  if (!localLangPath) {
+    throw new OcrEngineUnavailableError(
+      `OCR language '${language}' (${tesseractLang}.traineddata) is not available locally.`
+    );
   }
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
     const Tesseract = await import('tesseract.js');
-    const workerOptions = localLangPath ? { langPath: localLangPath } : {};
-    const worker = await Tesseract.createWorker(tesseractLang, 1, workerOptions);
+    const worker = await Tesseract.createWorker(tesseractLang, 1, {
+      langPath: localLangPath,
+      cacheMethod: 'none',
+      gzip: isGzip,
+    });
     const ret = await worker.recognize(imageBuffer, {}, { blocks: true });
     await worker.terminate();
 
-    if (ret && ret.data && ret.data.text && ret.data.text.trim()) {
-      const fullText = ret.data.text.trim();
+    if (ret && ret.data) {
+      const fullText = (ret.data.text || '').trim();
       const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
       const imgWidth = meta.width || 800;
       const imgHeight = meta.height || 600;
@@ -83,18 +107,52 @@ export async function performOcr(
 
       const words = fullText.split(/\s+/).filter(Boolean);
 
+      // Compute authentic mean word confidence across recognized blocks/words
+      let totalConf = 0;
+      let confCount = 0;
+      if (Array.isArray((ret.data as any).words) && (ret.data as any).words.length > 0) {
+        for (const w of (ret.data as any).words) {
+          if (typeof w.confidence === 'number' && !isNaN(w.confidence)) {
+            totalConf += w.confidence;
+            confCount++;
+          }
+        }
+      } else if (Array.isArray(lineBlocks) && lineBlocks.length > 0) {
+        for (const block of lineBlocks) {
+          if (Array.isArray(block.words)) {
+            for (const w of block.words) {
+              const wConf = (w as any).confidence;
+              if (typeof wConf === 'number' && !isNaN(wConf)) {
+                totalConf += wConf;
+                confCount++;
+              }
+            }
+          }
+        }
+      }
+
+      const meanConf =
+        confCount > 0
+          ? totalConf / confCount / 100
+          : typeof ret.data.confidence === 'number'
+          ? ret.data.confidence / 100
+          : null;
+
       return {
         text: fullText,
-        confidence: (ret.data.confidence || 90) / 100,
+        confidence: meanConf,
         wordCount: words.length,
-        lines: recognizedLines.length > 0 ? recognizedLines : fullText.split('\n'),
+        lines: recognizedLines.length > 0 ? recognizedLines : (fullText ? fullText.split('\n') : []),
         lineBlocks,
         imageWidth: imgWidth,
         imageHeight: imgHeight,
       };
     }
-  } catch {
-    // Fall back to system native CLI or built-in geometric OCR engine
+  } catch (err: any) {
+    if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
+      throw err;
+    }
+    // Fall back to system native CLI if Tesseract.js fails
   }
 
   // 3. Try System Native Tesseract CLI if available
@@ -113,63 +171,61 @@ export async function performOcr(
       if (fs.existsSync(outTxtPath)) {
         const cliText = fs.readFileSync(outTxtPath, 'utf-8').trim();
         fs.unlinkSync(outTxtPath);
-        if (cliText.length > 0) {
-          const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
-          const lines = cliText.split('\n').map((l) => l.trim()).filter(Boolean);
-          return {
-            text: cliText,
-            confidence: 0.95,
-            wordCount: cliText.split(/\s+/).filter(Boolean).length,
-            lines,
-            lineBlocks: [],
-            imageWidth: meta.width || 800,
-            imageHeight: meta.height || 600,
-          };
-        }
+        const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
+        const lines = cliText ? cliText.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+        return {
+          text: cliText,
+          confidence: null,
+          wordCount: cliText ? cliText.split(/\s+/).filter(Boolean).length : 0,
+          lines,
+          lineBlocks: [],
+          imageWidth: meta.width || 800,
+          imageHeight: meta.height || 600,
+        };
       }
-    } catch {} finally {
+    } catch (err: any) {
+      // CLI failed
+    } finally {
       try {
         if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn);
       } catch {}
     }
   }
 
-  // 2. If CJK script requested (ko, ja, zh), route through multi-script CJK OCR Pipeline
-  const langLower = language.toLowerCase();
-  const isCjk = ['ko', 'kor', 'korean', 'ja', 'jpn', 'japanese', 'zh', 'chi_sim', 'chi_tra', 'chinese', 'cjk'].includes(langLower);
-  if (isCjk) {
-    try {
-      const mappedLang = (langLower.startsWith('ko') ? 'ko' : langLower.startsWith('ja') ? 'ja' : 'zh') as "ko" | "ja" | "zh";
-      return await runOnnxCjkOcrPipeline(imageBuffer, { ocrLanguage: mappedLang });
-    } catch (err: any) {
-      if (err?.message?.includes('No optical text recognized')) {
-        throw err;
-      }
-      // Fallback
-    }
-  }
-
-  return performGeometricOcr(imageBuffer);
+  throw new OcrEngineUnavailableError(
+    `OCR engine (Tesseract) is unavailable or failed to execute for language '${language}'.`
+  );
 }
 
 /**
- * Geometric computer-vision based OCR fallback.
- * Uses horizontal/vertical projection profiles and connected component analysis.
+ * Synthesizes a true Searchable PDF by embedding invisible text matching
+ * word and line coordinates (3 Tr, Tz, Tm), enabling native text selection,
+ * copying, and Ctrl+F searching with 100% metadata preservation.
+ */
+export async function generateSearchablePdf(
+  scannedImageBuffer: Buffer,
+  ocrResult: OcrResult,
+  options: ConversionOptions = {},
+  title = 'Searchable Document'
+): Promise<Buffer> {
+  return createLosslessSandwichPdfFromImage(scannedImageBuffer, ocrResult, options, title);
+}
+
+/**
+ * Geometric OCR Engine (Topological Line and Character Decomposition)
  */
 export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResult> {
   try {
-    // 1. Image preprocessing with sharp: Grayscale -> High Contrast -> Thresholding (Binarization)
     const processed = await sharp(imageBuffer)
       .greyscale()
-      .linear(1.4, -20) // Enhance edge contrast
-      .threshold(140) // Crisp black text on white background
+      .linear(1.4, -20)
+      .threshold(140)
       .raw()
       .toBuffer({ resolveWithObject: true });
 
     const { data, info } = processed;
     const { width, height } = info;
 
-    // 2. Horizontal Projection Profile Analysis (detect text lines)
     const rowDensities: number[] = new Array(height).fill(0);
     for (let y = 0; y < height; y++) {
       let blackPixels = 0;
@@ -182,11 +238,10 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
       rowDensities[y] = blackPixels / width;
     }
 
-    // 3. Segment text bands (lines)
     const lineBands: { start: number; end: number }[] = [];
     let inLine = false;
     let lineStart = 0;
-    const thresholdDensity = 0.005; // 0.5% black pixel density minimum
+    const thresholdDensity = 0.005;
 
     for (let y = 0; y < height; y++) {
       if (!inLine && rowDensities[y] > thresholdDensity) {
@@ -195,7 +250,6 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
       } else if (inLine && rowDensities[y] <= thresholdDensity) {
         inLine = false;
         if (y - lineStart >= 6) {
-          // Minimum 6px height for valid text line
           lineBands.push({ start: lineStart, end: y });
         }
       }
@@ -204,7 +258,6 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
       lineBands.push({ start: lineStart, end: height });
     }
 
-    // 4. Extract text characters from lines using connected component & projection analysis
     const recognizedLines: string[] = [];
     const lineBlocks: OcrLineBlock[] = [];
 
@@ -212,7 +265,6 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
       const band = lineBands[i];
       const bandHeight = band.end - band.start;
 
-      // Vertical projection within band
       const colDensities: number[] = new Array(width).fill(0);
       for (let x = 0; x < width; x++) {
         let count = 0;
@@ -222,7 +274,6 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
         colDensities[x] = count;
       }
 
-      // Word/glyph separation with coordinates
       const wordsInLine: OcrWord[] = [];
       let currentWordChars: string[] = [];
       let currentWordStartX = -1;
@@ -259,7 +310,6 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
           inGlyph = false;
           const glyphWidth = x - glyphStart;
           if (glyphWidth >= 2) {
-            // Character classification based on geometric aspect ratio and density
             const char = classifyGlyph(data, width, glyphStart, x, band.start, band.end);
             currentWordChars.push(char);
             currentWordEndX = x;
@@ -272,7 +322,6 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
         }
       }
 
-      // Flush last word in line
       if (currentWordChars.length > 0 && currentWordStartX !== -1) {
         wordsInLine.push({
           text: currentWordChars.join(''),
@@ -316,7 +365,6 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
         glyphCount += w.text.length;
       }
     }
-    // Genuine confidence proportional to recognized glyph density and structure
     const confidence = Math.min(0.98, Math.max(0.90, 0.90 + Math.min(glyphCount, 20) * 0.004));
 
     return {
@@ -331,21 +379,6 @@ export async function performGeometricOcr(imageBuffer: Buffer): Promise<OcrResul
   } catch (err: any) {
     throw new Error(`Optical character recognition failed: ${err?.message || 'unknown error'}`);
   }
-}
-
-/**
- * Generates an authentic Lossless Searchable PDF ("Sandwich PDF") using pdf-lib.
- * Positions an invisible OCR text overlay layer directly on top matching exact
- * word and line coordinates (3 Tr, Tz, Tm), enabling native text selection,
- * copying, and Ctrl+F searching with 100% metadata preservation.
- */
-export async function generateSearchablePdf(
-  scannedImageBuffer: Buffer,
-  ocrResult: OcrResult,
-  options: ConversionOptions = {},
-  title = 'Searchable Document'
-): Promise<Buffer> {
-  return createLosslessSandwichPdfFromImage(scannedImageBuffer, ocrResult, options, title);
 }
 
 /**
@@ -365,12 +398,10 @@ export function classifyGlyph(
 
   const aspectRatio = w / Math.max(1, h);
 
-  // 1. Punctuation and single lines
   if (aspectRatio < 0.25) return 'I';
   if (aspectRatio > 2.0 && h < 6) return '-';
   if (w <= 4 && h <= 4) return '.';
 
-  // 2. Count black pixels and quadrant masses
   let topHalf = 0;
   let bottomHalf = 0;
   let leftHalf = 0;
@@ -394,7 +425,6 @@ export function classifyGlyph(
 
   const fillRatio = totalBlack / Math.max(1, w * h);
 
-  // 3. Count stroke crossings across scanlines at 25%, 50%, and 75% height
   const countHCrossings = (yRel: number): number => {
     const yTarget = Math.min(y1 - 1, Math.max(y0, y0 + Math.floor(h * yRel)));
     let crossings = 0;
@@ -415,11 +445,9 @@ export function classifyGlyph(
   const cMid = countHCrossings(0.5);
   const cBot = countHCrossings(0.75);
 
-  // 4. Closed loop (cavity) detection via boundary flood fill
   const visited = new Uint8Array(w * h);
   const queue: number[] = [];
 
-  // Seed boundary white pixels
   for (let x = 0; x < w; x++) {
     if (data[y0 * stride + (x0 + x)] >= 128) {
       visited[x] = 1;
@@ -444,7 +472,6 @@ export function classifyGlyph(
     }
   }
 
-  // BFS flood fill outer background
   let qHead = 0;
   while (qHead < queue.length) {
     const idx = queue[qHead++];
@@ -470,7 +497,6 @@ export function classifyGlyph(
     }
   }
 
-  // 4b. Identify distinct enclosed white cavities (holes) via Connected-Component BFS
   const cavityVisited = new Uint8Array(w * h);
   interface Cavity {
     pixelCount: number;
@@ -534,7 +560,6 @@ export function classifyGlyph(
     }
   }
 
-  // 5. Semantic classification based on topological invariants
   if (cavities.length >= 2) {
     return fillRatio > 0.55 ? 'B' : '8';
   }
@@ -554,7 +579,6 @@ export function classifyGlyph(
     return leftHalf > rightHalf ? 'D' : '0';
   }
 
-  // Hole-free glyphs
   if (aspectRatio < 0.45 && cMid === 1 && cTop <= 1 && cBot <= 1) {
     return 'I';
   }
@@ -587,8 +611,6 @@ export function classifyGlyph(
 
 /**
  * Multi-script CJK OCR Pipeline.
- * Formulates structured multi-script detection and CJK character tokenization
- * for high-accuracy local client/edge execution.
  */
 export async function runOnnxCjkOcrPipeline(
   imageBuffer: Buffer,
@@ -602,10 +624,8 @@ export async function runOnnxCjkOcrPipeline(
 
   const { width, height } = processed.info;
 
-  // Execute geometric line and block decomposition
   const geoResult = await performGeometricOcr(imageBuffer);
 
-  // If Korean, Japanese, or Chinese language requested, enhance confidence and line structure
   const lang = (options.ocrLanguage || 'auto').toLowerCase();
   const isCjk = ['ko', 'ja', 'zh'].includes(lang);
 
@@ -626,3 +646,4 @@ export async function runOnnxCjkOcrPipeline(
     imageHeight: height,
   };
 }
+

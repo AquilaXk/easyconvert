@@ -2,7 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { ConversionOptions, ConversionResult } from '../lib/types';
+import {
+  ConversionOptions,
+  ConversionResult,
+  ArchiveEncryptionUnavailableError,
+  UnsupportedOptionError,
+} from '../lib/types';
 import { convertFile } from '../lib/conversions';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -50,6 +55,7 @@ export interface WorkerConversionResult extends ConversionResult {
   filePath?: string;
   metadata?: Record<string, unknown>;
   fallbackReason?: string;
+  fallbackChain?: string[];
 }
 
 // Fixed standard locations for native CLI binaries (hardened against injection)
@@ -516,8 +522,13 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
+  const isTarFamily = tgt === 'tar' || tgt.startsWith('tar.') || isTarGz || isTarBz2 || isTarXz;
 
-    if (isTarGz || isTarBz2 || isTarXz) {
+  if (options?.password && isTarFamily) {
+    throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
+  }
+
+  if (isTarGz || isTarBz2 || isTarXz) {
     const tarPath = path.join(tempDir, 'archive.tar');
     await executeSandboxedBinary(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], {
       cwd: extractDir,
@@ -545,7 +556,14 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   const archiveType = get7zArchiveType(tgt);
   if (!archiveType) return false;
 
-  const pwArgs = options?.password && (tgt === 'zip' || tgt === '7z') ? ['-p'] : [];
+  const pwArgs: string[] = [];
+  if (options?.password) {
+    if (tgt === '7z') {
+      pwArgs.push('-mhe=on', '-p');
+    } else if (tgt === 'zip') {
+      pwArgs.push('-mem=AES256', '-p');
+    }
+  }
   const pwInput =
     options?.password && (tgt === 'zip' || tgt === '7z')
       ? Buffer.from(`${options.password}\n${options.password}\n`)
@@ -609,8 +627,23 @@ export async function convertWithNative7z(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
+
+  const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
+  const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
+  const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
+  const isTarFamily = tgt === 'tar' || tgt.startsWith('tar.') || isTarGz || isTarBz2 || isTarXz;
+
+  if (options.password && isTarFamily) {
+    throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
+  }
+
   const p7zBin = resolveBinary(BINARY_PATHS.p7zip, process.env.P7ZIP_PATH);
   if (!p7zBin) {
+    if (options.password) {
+      throw new ArchiveEncryptionUnavailableError(
+        'Archive encryption is unavailable: native 7z binary is required for encrypted archives.'
+      );
+    }
     if (options.throwOnUnavailable) {
       throw new EngineUnavailableError('7z', '7-Zip binary is not installed or not in PATH');
     }
@@ -881,13 +914,19 @@ export async function executeWorkerConversion(
   assertNotSpoofedFileVfs(input, src, originalFilename);
 
   let fallbackReason: string | undefined;
+  const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
 
   // 1. Native Headless Office
   if (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt))) {
     try {
       const officeRes = await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
-      if (officeRes) return officeRes;
+      if (officeRes) {
+        return {
+          ...officeRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
     } catch (err) {
       if (err instanceof EngineUnavailableError) {
         if (options.pdfStandard) {
@@ -895,6 +934,7 @@ export async function executeWorkerConversion(
             `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}', but engine is unavailable: ${err.reason}`
           );
         }
+        fallbackChain.push(`native-soffice: ${err.message}`);
         fallbackReason = err.message;
       } else {
         throw err;
@@ -906,9 +946,15 @@ export async function executeWorkerConversion(
   if (MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) {
     try {
       const ffmpegRes = await convertWithNativeFfmpeg(input, src, tgt, nativeOptions, originalFilename);
-      if (ffmpegRes) return ffmpegRes;
+      if (ffmpegRes) {
+        return {
+          ...ffmpegRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
     } catch (err) {
       if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`native-ffmpeg: ${err.message}`);
         fallbackReason = err.message;
       } else {
         throw err;
@@ -920,9 +966,15 @@ export async function executeWorkerConversion(
   if (src === 'pdf' && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'txt' || tgt === 'text')) {
     try {
       const popplerRes = await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename);
-      if (popplerRes) return popplerRes;
+      if (popplerRes) {
+        return {
+          ...popplerRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
     } catch (err) {
       if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`native-poppler: ${err.message}`);
         fallbackReason = err.message;
       } else {
         throw err;
@@ -934,9 +986,15 @@ export async function executeWorkerConversion(
   if (ARCHIVE_EXTRACT_FORMATS.has(src) && ARCHIVE_TARGET_FORMATS.has(tgt)) {
     try {
       const p7zRes = await convertWithNative7z(input, src, tgt, nativeOptions, originalFilename);
-      if (p7zRes) return p7zRes;
+      if (p7zRes) {
+        return {
+          ...p7zRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
     } catch (err) {
       if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`native-7z: ${err.message}`);
         fallbackReason = err.message;
       } else {
         throw err;
@@ -984,6 +1042,7 @@ export async function executeWorkerConversion(
       executionTimeMs: Date.now() - startTime,
       metadata: fallbackMetadata,
       fallbackReason,
+      fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
     };
   }
   return {
@@ -992,6 +1051,7 @@ export async function executeWorkerConversion(
     executionTimeMs: Date.now() - startTime,
     metadata: fallbackMetadata,
     fallbackReason,
+    fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
   };
 }
 

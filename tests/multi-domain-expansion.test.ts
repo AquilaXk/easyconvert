@@ -196,26 +196,18 @@ endsolid Cube`;
       const obj = `v 0 0 0\nv 10 0 0\nv 0 10 0\nf 1 2 3\n`;
       const buffer = Buffer.from(obj, 'utf-8');
 
-      const result = await convertFile(buffer, 'obj', 'step', {}, 'mesh.obj');
-      expect(result.mimeType).toBe('application/step');
-      expect(result.filename).toBe('mesh.step');
-
-      const step = result.buffer.toString('utf-8');
-      expect(step).toContain('ISO-10303-21;');
-      expect(step).toContain('CARTESIAN_POINT');
-      expect(step).toContain('END-ISO-10303-21;');
+      await expect(convertFile(buffer, 'obj', 'step', {}, 'mesh.obj')).rejects.toThrow(
+        /STEP encoder is not available/
+      );
     });
 
     it('converts 3D STL mesh to ANSI IGES format', async () => {
       const stl = `solid Model\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid Model`;
       const buffer = Buffer.from(stl, 'utf-8');
 
-      const result = await convertFile(buffer, 'stl', 'iges', {}, 'surface.stl');
-      expect(result.mimeType).toBe('application/iges');
-      expect(result.filename).toBe('surface.iges');
-
-      const iges = result.buffer.toString('utf-8');
-      expect(iges).toContain('EasyConvert IGES 3D Model');
+      await expect(convertFile(buffer, 'stl', 'iges', {}, 'surface.stl')).rejects.toThrow(
+        /IGES encoder is not available/
+      );
     });
   });
 
