@@ -95,7 +95,7 @@ export async function runClientEdgeOcr(
       // In constrained environments where pdfjs cannot load
     }
 
-    ocrText = pageTexts.join('\n\n') || `Processed ${pageCount} pages in client edge mode.`;
+    ocrText = pageTexts.join('\n\n');
   } else {
     // Image input: Run optical character recognition via Tesseract.js WebAssembly
     onProgress?.(35);
@@ -185,10 +185,10 @@ export async function runClientEdgeOcr(
     if (ocrResult.text) {
       injectInvisibleTextLayer(page, font, ocrResult, 1.0, 1.0);
       ocrText = ocrResult.text;
-      avgConfidence = ocrResult.confidence;
+      avgConfidence = ocrResult.confidence ?? 0;
     } else {
-      ocrText = fileName;
-      avgConfidence = 0.9;
+      ocrText = '';
+      avgConfidence = 0;
     }
   }
 

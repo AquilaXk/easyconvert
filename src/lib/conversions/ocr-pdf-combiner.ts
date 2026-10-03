@@ -56,7 +56,7 @@ export interface OcrLineBlock {
 
 export interface OcrResult {
   text: string;
-  confidence: number;
+  confidence: number | null;
   wordCount: number;
   lines: string[];
   lineBlocks?: OcrLineBlock[];

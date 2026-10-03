@@ -81,7 +81,7 @@ export async function convertDocument(
   if (src === 'pdf') {
     const structuredPdf = extractStructuredTextFromPdf(inputBuffer);
     let extractedText = structuredPdf.text;
-    let ocrInfo: { text?: string; confidence?: number } = {};
+    let ocrInfo: { text?: string; confidence?: number | null } = {};
     let lastOcrResult: OcrResult | null = null;
     const pageOcrResults = new Map<number, OcrResult>();
 
@@ -118,7 +118,10 @@ export async function convertDocument(
                 ...(existing.lineBlocks || []),
                 ...(ocr.lineBlocks || []),
               ];
-              const mergedConfidence = (existing.confidence + ocr.confidence) / 2;
+              const mergedConfidence =
+                existing.confidence !== null && ocr.confidence !== null
+                  ? (existing.confidence + ocr.confidence) / 2
+                  : (existing.confidence ?? ocr.confidence);
               const mergedWordCount = existing.wordCount + ocr.wordCount;
               pageOcrResults.set(img.pageNumber, {
                 text: mergedText,
@@ -131,8 +134,10 @@ export async function convertDocument(
               });
             }
             lastOcrResult = ocr;
-            totalConfidence += ocr.confidence;
-            count++;
+            if (ocr.confidence !== null) {
+              totalConfidence += ocr.confidence;
+              count++;
+            }
           }
         }
 
