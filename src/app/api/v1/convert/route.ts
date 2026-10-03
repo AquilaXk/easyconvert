@@ -176,8 +176,39 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const effectiveWebhookUrl = auth.apiKey?.webhookUrl;
-      const effectiveWebhookSecret = auth.apiKey?.webhookSecret;
+      const webhookUrlParam = ((formData.get('webhookUrl') as string) || '').trim() || undefined;
+      const webhookSecretParam = ((formData.get('webhookSecret') as string) || '').trim() || undefined;
+
+      if (webhookUrlParam && !webhookSecretParam) {
+        if (reservation.reservationId) {
+          await redisKeyStore.rollbackQuota(reservation.reservationId);
+        }
+        return createProblemDetailsResponse(
+          400,
+          'webhookSecret is required when webhookUrl is provided.',
+          instanceUri,
+          'Bad Request',
+          undefined,
+          rateLimitHeaders
+        );
+      }
+
+      const effectiveWebhookUrl = webhookUrlParam || auth.apiKey?.webhookUrl;
+      const effectiveWebhookSecret = webhookSecretParam || auth.apiKey?.webhookSecret;
+
+      if (effectiveWebhookUrl && !effectiveWebhookSecret) {
+        if (reservation.reservationId) {
+          await redisKeyStore.rollbackQuota(reservation.reservationId);
+        }
+        return createProblemDetailsResponse(
+          400,
+          'webhookSecret is required when webhookUrl is provided.',
+          instanceUri,
+          'Bad Request',
+          undefined,
+          rateLimitHeaders
+        );
+      }
 
       const job = await conversionQueue.add(
         'convert',

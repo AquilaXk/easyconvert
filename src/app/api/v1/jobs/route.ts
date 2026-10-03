@@ -219,6 +219,14 @@ export async function POST(req: NextRequest) {
     const effectiveWebhookUrl = webhookUrl || auth.apiKey?.webhookUrl;
     const effectiveWebhookSecret = webhookSecret || auth.apiKey?.webhookSecret;
 
+    if (webhookUrl && !webhookSecret) {
+      return await failWithRollback(400, 'webhookSecret is required when webhookUrl is provided.');
+    }
+
+    if (effectiveWebhookUrl && !effectiveWebhookSecret) {
+      return await failWithRollback(400, 'webhookSecret is required when webhookUrl is provided.');
+    }
+
     // Enqueue conversion job to BullMQ queue
     const job = await conversionQueue.add(
       'convert',

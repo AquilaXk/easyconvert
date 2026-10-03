@@ -192,16 +192,38 @@ export function attachJobLifecycleListeners(
 
       // Asynchronous Webhook Notification
       if (job.data?.webhookUrl) {
-        try {
-          await webhookDispatcher.dispatch(
-            job.data.webhookUrl,
-            'job.completed',
-            result,
-            job.data.webhookSecret || 'easyconvert-default-secret',
-            { ownerUserId: job.data.userId }
+        if (!job.data.webhookSecret) {
+          console.warn(
+            `[ConversionQueue] Skipping webhook dispatch for job ${job.id}: missing webhookSecret`
           );
-        } catch (err) {
-          console.error(`[ConversionQueue] Failed to dispatch completed webhook for job ${job.id}:`, err);
+          const deliveryId = `wh_missing_secret_${job.id}_${Date.now()}`;
+          await webhookDispatcher
+            .saveToDlq({
+              id: `dlq_${deliveryId}`,
+              originalDeliveryId: deliveryId,
+              targetUrl: job.data.webhookUrl,
+              event: 'job.completed',
+              payload: result as unknown as Record<string, unknown>,
+              secret: '',
+              failedAt: Date.now(),
+              errorMessage: 'missing_webhook_secret',
+              retryCount: 0,
+              status: 'failed',
+              ownerUserId: job.data.userId,
+            })
+            .catch(() => {});
+        } else {
+          try {
+            await webhookDispatcher.dispatch(
+              job.data.webhookUrl,
+              'job.completed',
+              result,
+              job.data.webhookSecret,
+              { ownerUserId: job.data.userId }
+            );
+          } catch (err) {
+            console.error(`[ConversionQueue] Failed to dispatch completed webhook for job ${job.id}:`, err);
+          }
         }
       }
     }
@@ -224,20 +246,46 @@ export function attachJobLifecycleListeners(
 
       // Asynchronous Webhook Failure Notification
       if (job.data?.webhookUrl) {
-        try {
-          await webhookDispatcher.dispatch(
-            job.data.webhookUrl,
-            'job.failed',
-            {
-              jobId: job.id,
-              error: err instanceof Error ? err.message : String(err),
-              originalFilename: job.data.originalFilename,
-            },
-            job.data.webhookSecret || 'easyconvert-default-secret',
-            { ownerUserId: job.data.userId }
+        if (!job.data.webhookSecret) {
+          console.warn(
+            `[ConversionQueue] Skipping webhook dispatch for job ${job.id}: missing webhookSecret`
           );
-        } catch (dispatchErr) {
-          console.error(`[ConversionQueue] Failed to dispatch failed webhook for job ${job.id}:`, dispatchErr);
+          const deliveryId = `wh_missing_secret_${job.id}_${Date.now()}`;
+          await webhookDispatcher
+            .saveToDlq({
+              id: `dlq_${deliveryId}`,
+              originalDeliveryId: deliveryId,
+              targetUrl: job.data.webhookUrl,
+              event: 'job.failed',
+              payload: {
+                jobId: job.id,
+                error: err instanceof Error ? err.message : String(err),
+                originalFilename: job.data.originalFilename,
+              },
+              secret: '',
+              failedAt: Date.now(),
+              errorMessage: 'missing_webhook_secret',
+              retryCount: 0,
+              status: 'failed',
+              ownerUserId: job.data.userId,
+            })
+            .catch(() => {});
+        } else {
+          try {
+            await webhookDispatcher.dispatch(
+              job.data.webhookUrl,
+              'job.failed',
+              {
+                jobId: job.id,
+                error: err instanceof Error ? err.message : String(err),
+                originalFilename: job.data.originalFilename,
+              },
+              job.data.webhookSecret,
+              { ownerUserId: job.data.userId }
+            );
+          } catch (dispatchErr) {
+            console.error(`[ConversionQueue] Failed to dispatch failed webhook for job ${job.id}:`, dispatchErr);
+          }
         }
       }
     }
