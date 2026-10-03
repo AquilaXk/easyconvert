@@ -79,13 +79,16 @@ describe('API key scope hardening (#242)', () => {
         [['convert:*'], 'convert:write'],
         [['convert:*'], 'convert:read'],
         [undefined, 'convert:write'],
-        [[], 'convert:write'],
       ];
       const denied = allowedCases
         .filter(([granted, required]) => !isScopeAllowed(granted, required))
         .map(([granted, required]) => `${String(granted)} -> ${required}`);
       expect(denied).toEqual([]);
 
+      // Explicit empty scopes grant NO permissions (least privilege)
+      expect(isScopeAllowed([], 'convert:write')).toBe(false);
+      expect(isScopeAllowed([], 'convert:read')).toBe(false);
+      expect(isScopeAllowed([], 'storage:download')).toBe(false);
       expect(isScopeAllowed(['storage:*'], 'convert:read')).toBe(false);
       expect(isScopeAllowed(['convert:*'], 'storage:download')).toBe(false);
     });

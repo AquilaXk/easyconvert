@@ -14,6 +14,8 @@ export interface ApiKey {
   name: string;
   prefix: string;
   keyHash: string;
+  previousKeyHash?: string;
+  graceExpiresAt?: number;
   createdAt: number;
   lastUsedAt?: number;
   expiresAt?: number;
@@ -31,6 +33,25 @@ export interface ApiKeyCreateOptions {
   webhookSecret?: string;
   scopes?: ApiKeyScope[];
   expiresAt?: number;
+}
+
+export interface ApiKeyUpdateOptions {
+  name?: string;
+  allowedIps?: string[];
+  webhookUrl?: string;
+  webhookSecret?: string;
+  scopes?: ApiKeyScope[];
+  expiresAt?: number;
+}
+
+export interface ApiKeyRotateOptions {
+  gracePeriodSeconds?: number;
+}
+
+export interface ApiKeyRotateResult {
+  key: ApiKey;
+  newSecretKey: string;
+  graceExpiresAt: number;
 }
 
 export interface ApiKeyCreateResult {
