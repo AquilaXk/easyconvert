@@ -78,6 +78,8 @@ export class RedisUserStore {
   private redisClient: Redis | null = null;
   private readonly distributedUsers: Map<string, UserRecord> = new Map();
   private readonly distributedEmails: Map<string, string> = new Map();
+  private readonly revokedJtis: Map<string, number> = new Map();
+  private readonly userSessionVersions: Map<string, number> = new Map();
 
   constructor(options: RedisUserStoreOptions = {}) {
     const rawPrefix = options.keyPrefix || 'easyconvert:{user}:';
@@ -341,6 +343,91 @@ export class RedisUserStore {
     }
   }
 
+  public async revokeJti(jti: string, ttlSeconds: number): Promise<void> {
+    if (!jti) return;
+    const safeTtl = Math.max(1, Math.floor(ttlSeconds));
+    const expiresAt = Date.now() + safeTtl * 1000;
+
+    if (this.redisClient) {
+      try {
+        const key = `${this.keyPrefix}revoked_jti:${jti}`;
+        await this.redisClient.setex(key, safeTtl, '1');
+      } catch {
+        // Fallback to in-memory
+      }
+    }
+
+    this.revokedJtis.set(jti, expiresAt);
+  }
+
+  public async isJtiRevoked(jti: string): Promise<boolean> {
+    if (!jti) return false;
+
+    if (this.redisClient) {
+      try {
+        const key = `${this.keyPrefix}revoked_jti:${jti}`;
+        const exists = await this.redisClient.exists(key);
+        if (exists === 1) return true;
+      } catch {
+        // Fallback to in-memory
+      }
+    }
+
+    const expiresAt = this.revokedJtis.get(jti);
+    if (!expiresAt) return false;
+    if (Date.now() > expiresAt) {
+      this.revokedJtis.delete(jti);
+      return false;
+    }
+    return true;
+  }
+
+  public async incrementSessionVersion(userId: string): Promise<number> {
+    if (!userId) return 1;
+
+    let nextVersion = 1;
+    if (this.redisClient) {
+      try {
+        const key = `${this.keyPrefix}session_version:${userId}`;
+        nextVersion = await this.redisClient.incr(key);
+      } catch {
+        // Fallback
+        nextVersion = (this.userSessionVersions.get(userId) || 1) + 1;
+      }
+    } else {
+      nextVersion = (this.userSessionVersions.get(userId) || 1) + 1;
+    }
+
+    this.userSessionVersions.set(userId, nextVersion);
+
+    // Sync user record if it exists
+    await this.updateUser(userId, { sessionVersion: nextVersion });
+    return nextVersion;
+  }
+
+  public async getSessionVersion(userId: string): Promise<number> {
+    if (!userId) return 1;
+
+    if (this.redisClient) {
+      try {
+        const key = `${this.keyPrefix}session_version:${userId}`;
+        const val = await this.redisClient.get(key);
+        if (val) {
+          return parseInt(val, 10) || 1;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    if (this.userSessionVersions.has(userId)) {
+      return this.userSessionVersions.get(userId)!;
+    }
+
+    const user = await this.findById(userId);
+    return user?.sessionVersion || 1;
+  }
+
   public async close(): Promise<void> {
     if (this.redisClient) {
       try {
@@ -356,6 +443,8 @@ export class RedisUserStore {
   public resetStore(): void {
     this.distributedUsers.clear();
     this.distributedEmails.clear();
+    this.revokedJtis.clear();
+    this.userSessionVersions.clear();
   }
 }
 

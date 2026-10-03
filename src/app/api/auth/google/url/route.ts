@@ -1,19 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getGoogleOAuthUrl } from '@/lib/auth/oauth';
+import {
+  getGoogleOAuthUrl,
+  createOAuthSession,
+  getAppOrigin,
+  OAUTH_STATE_COOKIE_NAME,
+  OAUTH_STATE_TTL_SECONDS,
+} from '@/lib/auth/oauth';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const host = req.headers.get('host') || 'localhost:3000';
-  const proto = req.headers.get('x-forwarded-proto') || 'http';
-  const redirectUri = `${proto}://${host}/api/auth/google/callback`;
+  const origin = getAppOrigin(req);
+  const redirectUri = `${origin}/api/auth/google/callback`;
 
   try {
-    const url = getGoogleOAuthUrl(redirectUri);
-    return NextResponse.json({
+    const session = await createOAuthSession();
+    const url = getGoogleOAuthUrl(redirectUri, session);
+
+    const res = NextResponse.json({
       success: true,
       url,
     });
+
+    const isProd = process.env.NODE_ENV === 'production';
+    const cookieParts = [
+      `${OAUTH_STATE_COOKIE_NAME}=${session.state}`,
+      'Path=/api/auth/google',
+      `Max-Age=${OAUTH_STATE_TTL_SECONDS}`,
+      'HttpOnly',
+      'SameSite=Lax',
+    ];
+    if (isProd) {
+      cookieParts.push('Secure');
+    }
+
+    res.headers.set('Set-Cookie', cookieParts.join('; '));
+    return res;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to generate OAuth URL';
     return NextResponse.json(
@@ -22,3 +44,4 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+

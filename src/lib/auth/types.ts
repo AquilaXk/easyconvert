@@ -10,6 +10,8 @@ export interface User {
   createdAt: number;
   updatedAt: number;
   conversionsCount?: number;
+  sessionVersion?: number;
+  emailVerified?: boolean;
 }
 
 export interface UserRecord extends User {
@@ -22,6 +24,10 @@ export interface SessionPayload {
   email: string;
   name: string;
   tier: UserTier;
+  jti?: string;
+  iss?: string;
+  aud?: string;
+  sessionVersion?: number;
   iat: number;
   exp: number;
 }
@@ -36,4 +42,5 @@ export interface GoogleUserInfo {
   email: string;
   name: string;
   picture?: string;
+  emailVerified: boolean;
 }
