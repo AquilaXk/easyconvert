@@ -6,13 +6,13 @@ import {
   getOpenFileDescriptorCount,
 } from '../src/lib/streaming/large-payload-streamer';
 import {
-  isOracleToolAvailable,
   verifyArchiveWithTar,
   verifyArchiveWithZstd,
   verifyArchiveWith7z,
   runDifferentialComparison,
   parsePdfToAst,
 } from './helpers/differential-oracle';
+import { oracleTest } from './helpers/oracle-test';
 import { synthesizeEnterprisePdf } from './helpers/golden-corpus-suite';
 import { createTarArchive } from '../src/lib/conversions/archive';
 import { compressZstd } from '../src/lib/conversions/zstd';
@@ -44,7 +44,7 @@ describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Test
       // Verify exact byte and chunk accounting
       expect(result.totalBytesProcessed).toBe(twoGigabytes);
       expect(result.totalChunks).toBe(twoGigabytes / chunkSize);
-      expect(result.sha256Digest).toHaveLength(64);
+      expect(result.sha256Digest).toBe('7cf06d0fa05f135c29dc6a9684870b016f495f97cfa1344600b1110aa52ba245');
       expect(result.throughputMbPerSec).toBeGreaterThan(50); // High throughput in Node.js streams
 
       // Heap usage MUST remain strictly bounded (O(1)), never buffering 2GB in memory
@@ -143,35 +143,31 @@ describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Test
       expect(hasDirectOrFlate3Tr).toBe(true);
     });
 
-    it('executes real system CLI tools for archive verification when available', () => {
-      // Test Tar verification using system tar binary if installed
-      if (isOracleToolAvailable('tar')) {
-        const sampleTar = createTarArchive([
-          { filename: 'document.txt', buffer: Buffer.from('Enterprise Tar Differential Data') },
-        ]).buffer;
-        const isTarValid = verifyArchiveWithTar(sampleTar);
-        expect(isTarValid).toBe(true);
+    oracleTest('executes real system tar CLI for archive verification', ['tar'], () => {
+      const sampleTar = createTarArchive([
+        { filename: 'document.txt', buffer: Buffer.from('Enterprise Tar Differential Data') },
+      ]).buffer;
+      const isTarValid = verifyArchiveWithTar(sampleTar);
+      expect(isTarValid).toBe(true);
 
-        const corruptedTar = Buffer.from(sampleTar);
-        corruptedTar[100] ^= 0xff;
-        const isCorruptTarValid = verifyArchiveWithTar(corruptedTar);
-        expect(isCorruptTarValid).toBe(false);
-      }
-
-      // Test Zstandard verification using system zstd binary if installed
-      if (isOracleToolAvailable('zstd')) {
-        const sampleZstd = compressZstd(Buffer.from('Zstandard Differential Oracle Grounding'));
-        const isZstdValid = verifyArchiveWithZstd(sampleZstd);
-        expect(isZstdValid).toBe(true);
-
-        const corruptedZstd = Buffer.from(sampleZstd);
-        corruptedZstd[corruptedZstd.length - 2] ^= 0xaa;
-        const isCorruptZstdValid = verifyArchiveWithZstd(corruptedZstd);
-        expect(isCorruptZstdValid).toBe(false);
-      }
+      const corruptedTar = Buffer.from(sampleTar);
+      corruptedTar[100] ^= 0xff;
+      const isCorruptTarValid = verifyArchiveWithTar(corruptedTar);
+      expect(isCorruptTarValid).toBe(false);
     });
 
-    it('runs differential comparison with external CLI oracle integration', async () => {
+    oracleTest('executes real system zstd CLI for archive verification', ['zstd'], () => {
+      const sampleZstd = compressZstd(Buffer.from('Zstandard Differential Oracle Grounding'));
+      const isZstdValid = verifyArchiveWithZstd(sampleZstd);
+      expect(isZstdValid).toBe(true);
+
+      const corruptedZstd = Buffer.from(sampleZstd);
+      corruptedZstd[corruptedZstd.length - 2] ^= 0xaa;
+      const isCorruptZstdValid = verifyArchiveWithZstd(corruptedZstd);
+      expect(isCorruptZstdValid).toBe(false);
+    });
+
+    oracleTest('runs differential comparison with external CLI oracle integration', ['tar'], async () => {
       const sampleTarA = createTarArchive([
         { filename: 'test.txt', buffer: Buffer.from('Differential Data A') },
       ]).buffer;
@@ -182,10 +178,7 @@ describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Test
       const report = await runDifferentialComparison(sampleTarA, sampleTarB, 'tar');
       expect(report.matched).toBe(true);
       expect(report.structuralScore).toBe(1.0);
-
-      if (isOracleToolAvailable('tar')) {
-        expect(report.oracleType).toBe('external_cli');
-      }
+      expect(report.oracleType).toBe('external_cli');
     });
 
     it('rejects corrupt and zero-byte archives in differential oracle verifiers', () => {

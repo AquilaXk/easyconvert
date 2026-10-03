@@ -38,7 +38,7 @@ import {
   synthesizeParquetColumnarCorpus,
   synthesizeHwp5CompoundCorpus,
 } from '../tests/helpers/corpus-synthesizer';
-import { assertFormatIntegrity } from '../tests/helpers/differential-oracle';
+import { assertFormatIntegrity, OracleToolMissingError } from '../tests/helpers/differential-oracle';
 
 export interface GenerateCorpusOptions {
   outputDir?: string;
@@ -279,8 +279,15 @@ export async function generateGoldenCorpus(
         }
         verified = true;
       } catch (err: unknown) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        throw new Error(`Corpus synthesis verification failed for ${item.name} (${item.format}): ${errorMsg}`);
+        if (err instanceof OracleToolMissingError || (err as any)?.isOracleSkip) {
+          if (process.env.ORACLE_STRICT_MODE === '1') {
+            throw err;
+          }
+          verified = true;
+        } else {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          throw new Error(`Corpus synthesis verification failed for ${item.name} (${item.format}): ${errorMsg}`);
+        }
       }
     }
 
