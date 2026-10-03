@@ -22,6 +22,7 @@ export interface SandboxedExecutionOptions {
   sandboxOptions?: UnshareIsolationOptions;
   memoryLimitMb?: number;
   stdin?: NodeJS.ReadableStream | Buffer | null;
+  signal?: AbortSignal;
 }
 
 export interface SandboxedExecutionResult {
@@ -34,14 +35,21 @@ export interface SandboxedExecutionResult {
 }
 
 export class SandboxedProcessError extends Error {
-  public exitCode: number;
+  public exitCode: number | null;
   public stderr: string;
+  public signal: NodeJS.Signals | null;
 
-  constructor(message: string, exitCode: number, stderr: string) {
+  constructor(
+    message: string,
+    exitCode: number | null,
+    stderr: string,
+    signal: NodeJS.Signals | null = null
+  ) {
     super(message);
     this.name = 'SandboxedProcessError';
     this.exitCode = exitCode;
     this.stderr = stderr;
+    this.signal = signal;
   }
 }
 
@@ -480,6 +488,12 @@ export async function executeSandboxedBinary(
     let memoryInterval: NodeJS.Timeout | null = null;
     let isSettled = false;
     let activeChild: ReturnType<typeof spawn> | null = null;
+    let abortListener: (() => void) | null = null;
+
+    if (options.signal?.aborted) {
+      reject(options.signal.reason || new Error('The operation was aborted'));
+      return;
+    }
 
     const cleanup = () => {
       if (timer) {
@@ -489,6 +503,10 @@ export async function executeSandboxedBinary(
       if (memoryInterval) {
         clearInterval(memoryInterval);
         memoryInterval = null;
+      }
+      if (options.signal && abortListener) {
+        options.signal.removeEventListener('abort', abortListener);
+        abortListener = null;
       }
       if (stdin && typeof (stdin as any).destroy === 'function' && !(stdin as any).destroyed) {
         try {
@@ -526,6 +544,19 @@ export async function executeSandboxedBinary(
       detached: true,
     });
     activeChild = proc;
+
+    if (options.signal) {
+      abortListener = () => {
+        settle(() => {
+          killProcessGroup(proc.pid, 'SIGKILL');
+          try {
+            proc.kill('SIGKILL');
+          } catch {}
+          reject(options.signal!.reason || new Error('The operation was aborted'));
+        });
+      };
+      options.signal.addEventListener('abort', abortListener, { once: true });
+    }
 
     if (stdin && proc.stdin) {
       proc.stdin.on('error', (err: any) => {
@@ -623,22 +654,28 @@ export async function executeSandboxedBinary(
       });
     });
 
-    proc.on('close', (code) => {
+    proc.on('close', (code, signal) => {
       settle(() => {
         const durationMs = Date.now() - startTime;
         const stdout = Buffer.concat(stdoutChunks);
         const stderr = Buffer.concat(stderrChunks);
 
-        if (code !== 0 && code !== null) {
-          const errorSummary = stderr.toString('utf-8').trim() || `Process exited with code ${code}`;
-          reject(new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8')));
+        if (signal !== null || code === null || code !== 0) {
+          if (signal === 'SIGKILL' && memoryLimitMb && memoryLimitMb > 0) {
+            reject(new SandboxedMemoryLimitError(memoryLimitMb));
+            return;
+          }
+          const errorSummary =
+            stderr.toString('utf-8').trim() ||
+            (signal ? `Process terminated by signal ${signal}` : `Process exited with code ${code}`);
+          reject(new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8'), signal));
           return;
         }
 
         resolve({
           stdout,
           stderr,
-          exitCode: code ?? 0,
+          exitCode: 0,
           durationMs,
           sandboxed: sandboxEnv.sandboxType !== 'host',
           sandboxType: sandboxEnv.sandboxType,
