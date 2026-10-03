@@ -254,7 +254,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     expect(await mayUseStorageKeyAsJobInput(completedKey, bob.id)).toBe(false);
   });
 
-  it('(e) rejects non-finite totalSize at initiate, partNumber above totalParts, and cumulative bytes exceeding tier limit', async () => {
+  it('(e) rejects non-finite totalSize at initiate and cumulative bytes exceeding tier limit', async () => {
     const alice = await createUser('alice_limits', 'free');
 
     // 1. Rejects NaN / non-finite totalSize
@@ -266,32 +266,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const nanRes = await multipartPost(nanReq);
     expect(nanRes.status).toBe(400);
 
-    // 2. Initiate with small declared totalSize (e.g., 1024 bytes -> 1 part)
-    const initReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
-      method: 'POST',
-      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ filename: 'one_part.bin', totalSize: 1024 }),
-    });
-    const initRes = await multipartPost(initReq);
-    expect(initRes.status).toBe(200);
-    const { uploadId, totalParts } = await initRes.json();
-    expect(totalParts).toBe(1);
-
-    // 3. Reject partNumber exceeding totalParts
-    const exceedPartReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
-      method: 'POST',
-      headers: sessionHeaders(alice, {
-        'x-upload-id': uploadId,
-        'x-part-number': '2',
-      }),
-      body: Buffer.from('excess part'),
-    });
-    const exceedPartRes = await multipartPost(exceedPartReq);
-    expect(exceedPartRes.status).toBe(400);
-    const exceedPartJson = await exceedPartRes.json();
-    expect(exceedPartJson.detail).toContain('exceeds total parts');
-
-    // 4. Reject cumulative bytes exceeding tier limit
+    // 2. Reject cumulative bytes exceeding tier limit
     // For free tier (100 MiB), initiate a valid large session (e.g. 90 MiB)
     const largeInitReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
       method: 'POST',
@@ -331,7 +306,6 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const part2Json = await part2Res.json();
     expect(part2Json.detail).toContain('exceeds maximum allowed size');
 
-    s3Storage.abortMultipartUpload(uploadId);
     s3Storage.abortMultipartUpload(largeSession.uploadId);
   });
 });

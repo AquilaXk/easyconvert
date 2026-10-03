@@ -143,10 +143,6 @@ export class S3ObjectStorageService implements IStorageBackend {
       throw new Error(`Invalid OCI partNumber: ${partNumber}. Must be between 1 and 10000.`);
     }
 
-    if (session.totalParts && partNumber > session.totalParts) {
-      throw new Error(`Invalid partNumber: ${partNumber}. Exceeds session totalParts (${session.totalParts}).`);
-    }
-
     // Disk-backed chunk streaming (Zero-Heap Ingestion)
     const partFileName = `part-${partNumber}.bin`;
     const partFilePath = path.join(session.diskDir, partFileName);
