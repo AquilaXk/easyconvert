@@ -2823,14 +2823,19 @@ export async function convertArchive(
     'txz',
     'tar.xz',
   ]);
+  function isValidEmptyArchive(format: string, buffer: Buffer): boolean {
+    if (format === 'zip') {
+      return buffer.length >= 22 && buffer[0] === 0x50 && buffer[1] === 0x4b;
+    }
+    if (format === 'tar') {
+      return buffer.length >= 512 && buffer.subarray(0, 512).every((b) => b === 0);
+    }
+    return false;
+  }
+
   if (files.length === 0) {
-    const hasZipMagic =
-      src === 'zip' &&
-      effectiveBuffer.length >= 22 &&
-      effectiveBuffer[0] === 0x50 &&
-      effectiveBuffer[1] === 0x4b;
-    if (hasZipMagic) {
-      // Valid empty zip archive: retain files = [] so empty target archive is generated
+    if (isValidEmptyArchive(src, effectiveBuffer)) {
+      // Valid empty archive: retain files = [] so empty target archive is generated
     } else if (ARCHIVE_CONTAINER_FORMATS.has(src)) {
       throw new ConversionFailedError(
         `Failed to extract any files from source archive '${effectiveFilename}' (corrupt or invalid archive format)`

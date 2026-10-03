@@ -131,6 +131,14 @@ describe('Archive Encryption Fail-Closed Verification', () => {
       ).rejects.toThrow(ConversionFailedError);
     });
 
+    it('convertArchive handles valid empty tar archive and creates empty target', async () => {
+      const emptyTar = createTarArchive([]).buffer;
+      const res = await convertArchive(emptyTar, 'tar', 'zip', {}, 'empty.tar');
+      expect(res.mimeType).toBe('application/zip');
+      expect(res.filename).toBe('empty.zip');
+      expect(res.buffer.length).toBe(22);
+    });
+
     it('convertArchive rejects non-zip container format starting with PK bytes fail-closed when empty', async () => {
       const fakeRarWithPk = Buffer.alloc(30);
       fakeRarWithPk[0] = 0x50;
