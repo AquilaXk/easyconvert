@@ -1,27 +1,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 
 /**
  * Automated Anti-Cheating & Integrity Guard
  *
- * Deterministically scans the entire codebase with whole-file multiline analysis to detect:
- * 1. Circular Mocking: Independent test oracles importing production conversion/engine modules.
- * 2. Silent Passes: Tests or oracles bypassing checks with return true / valid: true when CLI tools are missing.
- * 3. Production Hardcoded Cheats: Backdoors (NODE_ENV === 'test'), dummy text placeholders, arbitrary truncations.
- * 4. Hollow Assertions: Meaningless tautological assertions (expect(true).toBe(true), expect("a").toBe("a")).
+ * Deterministically scans the codebase using whole-file regex and TypeScript AST analysis:
+ * 1. Circular Mocking (G1, G1b): Independent test oracles importing production modules or self-validating inverse pairs.
+ * 2. Silent Passes & Positive Guards (G2, G2b): Bypasses on missing CLI tools or positive guards skipping verifications.
+ * 3. Production Hardcoded Cheats (G3, G3b, G3c): Dummy string placeholders, fixed truncations, and unreferenced inputs.
+ * 4. Hollow & Weak Assertions (G4, G4b): Tautologies and tests composed exclusively of weak assertions.
+ * 5. Ratchet Baseline: Baseline violation tracking with strict ratcheting down.
  */
 
-interface Violation {
+export interface Violation {
   file: string;
   line: number;
   rule: string;
   snippet: string;
   message: string;
+  symbol?: string;
+  severity?: 'error' | 'warning';
 }
 
-const violations: Violation[] = [];
+export interface BaselineEntry {
+  rule: string;
+  file: string;
+  symbol?: string;
+  reason: string;
+  owningWP: string;
+}
 
-const ROOT_DIR = path.resolve(__dirname, '..');
+const ROOT_DIR = process.env.GUARD_ROOT ? path.resolve(process.env.GUARD_ROOT) : path.resolve(__dirname, '..');
 const SRC_DIR = path.join(ROOT_DIR, 'src');
 const TESTS_DIR = path.join(ROOT_DIR, 'tests');
 
@@ -35,6 +45,7 @@ const EXCLUDED_DIRS = new Set([
   'out',
   'coverage',
   '.cache',
+  '.worktrees',
 ]);
 
 const SUPPORTED_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -72,19 +83,28 @@ function getLineAndSnippet(
   };
 }
 
+function getNodeSnippet(sourceFile: ts.SourceFile, node: ts.Node): { line: number; snippet: string } {
+  const start = node.getStart(sourceFile);
+  const { line } = sourceFile.getLineAndCharacterOfPosition(start);
+  const text = node.getText(sourceFile).replace(/\s+/g, ' ').trim();
+  return {
+    line: line + 1,
+    snippet: text.length > 120 ? text.slice(0, 117) + '...' : text,
+  };
+}
+
 // ============================================================================
-// Gate 1: Circular Mocking in Test Helpers / Independent Oracles
+// Gate 1: Circular Mocking (Regex G1 + AST G1b)
 // ============================================================================
-function checkCircularMocking() {
-  const scanDirs = [
-    path.join(TESTS_DIR, 'helpers'),
-    path.join(ROOT_DIR, 'scripts'),
-  ];
+function checkCircularMocking(targetDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const scanDirs = targetDir
+    ? [targetDir]
+    : [path.join(TESTS_DIR, 'helpers'), path.join(ROOT_DIR, 'scripts')];
   const oracleFiles = scanDirs
     .flatMap((dir) => scanDirectory(dir, SUPPORTED_EXTENSIONS))
-    .filter((f) => !f.endsWith('guard-anti-cheat.ts'));
+    .filter((f) => !f.endsWith('guard-anti-cheat.ts') && !f.endsWith('guard-anti-cheat-rules.test.ts'));
 
-  // Catch path aliases, relative paths, require, and dynamic import
   const circularPatterns = [
     {
       regex: /(?:import\s+[\s\S]*?\s+from|require\s*\(|import\s*\()\s*['"](@\/lib\/conversions|@\/worker\/engines|\.\.?\/[^'"]*(?:\/conversions|\/engines))(?:\/[^'"]*)?['"]/gs,
@@ -109,26 +129,83 @@ function checkCircularMocking() {
       }
     }
   }
+
+  // G1b AST: Circular mocking warning in tests (inverse pairs feeding into each other)
+  const testFiles = scanDirectory(targetDir || TESTS_DIR, SUPPORTED_EXTENSIONS)
+    .filter((f) => !f.endsWith('guard-anti-cheat-rules.test.ts'));
+
+  for (const file of testFiles) {
+    const code = fs.readFileSync(file, 'utf-8');
+    const sf = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
+
+    function checkG1b(node: ts.Node) {
+      if (ts.isCallExpression(node)) {
+        const fnName = node.expression.getText(sf);
+        if (['it', 'test', 'oracleTest'].includes(fnName)) {
+          let testTitle = 'unknown';
+          if (node.arguments.length > 0 && (ts.isStringLiteral(node.arguments[0]) || ts.isNoSubstitutionTemplateLiteral(node.arguments[0]))) {
+            testTitle = node.arguments[0].text;
+          }
+
+          // Look for inverse pairs: encodeX / parseX, createX / extractX, compressX / decompressX
+          const callsInTest: string[] = [];
+          function collectCalls(n: ts.Node) {
+            if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+              callsInTest.push(n.expression.text);
+            }
+            ts.forEachChild(n, collectCalls);
+          }
+          ts.forEachChild(node, collectCalls);
+
+          const hasEncode = callsInTest.some((c) => /^encode[A-Z0-9]/.test(c));
+          const hasParse = callsInTest.some((c) => /^(?:parse|decode)[A-Z0-9]/.test(c));
+          const hasCompress = callsInTest.some((c) => /^compress[A-Z0-9]/.test(c));
+          const hasDecompress = callsInTest.some((c) => /^decompress[A-Z0-9]/.test(c));
+
+          if ((hasEncode && hasParse) || (hasCompress && hasDecompress)) {
+            // Check if test has external oracle verification
+            const hasOracle = callsInTest.some((c) => /^(?:verify|assert)[A-Z0-9]/.test(c) || c.includes('Oracle'));
+            if (!hasOracle) {
+              const { line, snippet } = getNodeSnippet(sf, node);
+              violations.push({
+                file: path.relative(ROOT_DIR, file),
+                line,
+                rule: 'G1b-CIRCULAR-MOCKING-WARNING',
+                symbol: testTitle,
+                snippet,
+                message: `Test "${testTitle}" calls reciprocal production functions without an independent differential oracle verification.`,
+                severity: 'warning',
+              });
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, checkG1b);
+    }
+    checkG1b(sf);
+  }
+
+  return violations;
 }
 
 // ============================================================================
-// Gate 2: Silent Pass & Tool Absence Bypasses in Tests
+// Gate 2: Silent Pass & Positive Guards (Regex G2 + AST G2b)
 // ============================================================================
-function checkSilentPassBypasses() {
-  const testFiles = scanDirectory(TESTS_DIR, SUPPORTED_EXTENSIONS);
+function checkSilentPassBypasses(targetDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const testFiles = scanDirectory(targetDir || TESTS_DIR, SUPPORTED_EXTENSIONS)
+    .filter((f) => !f.endsWith('guard-anti-cheat-rules.test.ts'));
+
   const bypassPatterns = [
     {
-      // Missing tool variable check returning true or { valid: true } across multiline blocks
       regex: /if\s*\(\s*!(?:toolPath|tool|binPath|binary|executable|ffmpeg|ffprobe|soffice|tesseract|sox|hasTool|isAvailable)\b[\s\S]{0,80}?\)\s*(?:\{\s*return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\}|true\s*;)\s*;?\s*\}|return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\}|true\s*;)\s*;?)/gis,
       desc: 'Bypassing verification with "return true" or "valid: true" when tool is missing. Use test.skip() or fail closed.',
     },
     {
-      // Missing tool function call check returning true or { valid: true }
       regex: /if\s*\(\s*(?:!isOracleToolAvailable\s*\([^)]*\)|isOracleToolAvailable\s*\([^)]*\)\s*===?\s*false|!getOracleToolPath\s*\([^)]*\)|getOracleToolPath\s*\([^)]*\)\s*===?\s*null)[\s\S]{0,80}?\)\s*(?:\{\s*return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\}|true\s*;)\s*;?\s*\}|return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\}|true\s*;)\s*;?)/gis,
       desc: 'Bypassing verification with "return true" or "valid: true" on oracle tool check. Use test.skip() or fail closed.',
     },
     {
-      // catch block silently returning true or { valid: true }
       regex: /catch\s*(?:\([^)]*\))?\s*\{[\s\S]{0,60}?return\s+(?:true|1|\{\s*valid\s*:\s*true\s*\})\s*;?[\s\S]{0,20}?\}/gis,
       desc: 'Catching error and silently returning true or valid: true.',
     },
@@ -150,26 +227,94 @@ function checkSilentPassBypasses() {
         });
       }
     }
+
+    // G2b AST: Positive-guard skip in tests
+    const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
+
+    function checkG2b(node: ts.Node) {
+      if (ts.isIfStatement(node) && node.elseStatement === undefined) {
+        let isPositiveToolGuard = false;
+
+        function inspectCondition(condNode: ts.Node, isNegated: boolean = false) {
+          if (ts.isPrefixUnaryExpression(condNode) && condNode.operator === ts.SyntaxKind.ExclamationToken) {
+            inspectCondition(condNode.operand, !isNegated);
+            return;
+          }
+          if (ts.isCallExpression(condNode)) {
+            const callee = condNode.expression.getText(sf);
+            if (callee === 'isOracleToolAvailable' || callee === 'getOracleToolPath' || callee.endsWith('BinaryPath')) {
+              if (!isNegated) isPositiveToolGuard = true;
+            }
+          } else if (ts.isIdentifier(condNode)) {
+            const name = condNode.text;
+            if ((name.endsWith('Path') || name === 'hasTool' || name === 'isAvailable') && !isNegated) {
+              // Ensure it's not a parameter or local variable in non-tool context
+              if (name !== 'targetPath' && name !== 'filePath' && name !== 'outputPath' && name !== 'inputPath') {
+                isPositiveToolGuard = true;
+              }
+            }
+          } else if (ts.isBinaryExpression(condNode)) {
+            inspectCondition(condNode.left, isNegated);
+            inspectCondition(condNode.right, isNegated);
+          }
+        }
+
+        inspectCondition(node.expression);
+
+        if (isPositiveToolGuard) {
+          let hasAssertionOrVerification = false;
+          function inspectThen(thenNode: ts.Node) {
+            if (ts.isCallExpression(thenNode)) {
+              const callee = thenNode.expression.getText(sf);
+              if (
+                callee === 'expect' ||
+                /^(?:verify|check|assert)[A-Z0-9_]/.test(callee) ||
+                callee.includes('runDifferentialComparison')
+              ) {
+                hasAssertionOrVerification = true;
+              }
+            }
+            ts.forEachChild(thenNode, inspectThen);
+          }
+          inspectThen(node.thenStatement);
+
+          if (hasAssertionOrVerification) {
+            const { line, snippet } = getNodeSnippet(sf, node);
+            violations.push({
+              file: path.relative(ROOT_DIR, file),
+              line,
+              rule: 'G2b-POSITIVE-GUARD-SKIP',
+              snippet,
+              message:
+                'Positive-guard skip detected: positive tool check without else wraps assertions or verifications. Use oracleTest or ctx.skip() instead.',
+            });
+          }
+        }
+      }
+      ts.forEachChild(node, checkG2b);
+    }
+    checkG2b(sf);
   }
+
+  return violations;
 }
 
 // ============================================================================
-// Gate 3: Production Code Hardcoded Cheats & Backdoors
+// Gate 3: Production Code Cheats (Regex G3 + AST G3b + AST G3c)
 // ============================================================================
-function checkProductionCheats() {
-  const srcFiles = scanDirectory(SRC_DIR, SUPPORTED_EXTENSIONS);
+function checkProductionCheats(targetDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const srcFiles = scanDirectory(targetDir || SRC_DIR, SUPPORTED_EXTENSIONS);
   const cheatPatterns = [
     {
       regex: /\[(?:Text|Dummy|Placeholder|Extracted)\s*(?:content|chars)?\s*:\s*\$\{/gis,
       desc: 'Dummy "[Text: N chars]" string placeholder detected in production conversion code.',
     },
     {
-      // Frame cap truncation with arbitrary parameter ordering and whitespace
       regex: /Math\.min\s*\(\s*(?:60\s*,\s*totalFrames|totalFrames\s*,\s*60)\s*\)/gis,
       desc: 'Hardcoded audio frame truncation (1.39s cap) detected.',
     },
     {
-      // Audio truncation with parameter permutation and whitespace
       regex: /Math\.min\s*\(\s*(?:samples\.length\s*,\s*(?:sampleRate\s*\*\s*channels|channels\s*\*\s*sampleRate)\s*\*\s*60|(?:sampleRate\s*\*\s*channels|channels\s*\*\s*sampleRate)\s*\*\s*60\s*,\s*samples\.length)\s*\)/gis,
       desc: 'Hardcoded audio truncation (60s cap) detected.',
     },
@@ -178,12 +323,10 @@ function checkProductionCheats() {
       desc: 'Dummy OCR default fallback string detected. Fail-closed error must be thrown.',
     },
     {
-      // Test backdoor flag in production code
       regex: /process\.env\.NODE_ENV\s*===?\s*['"]test['"]/gs,
       desc: 'Test-specific backdoor branching (process.env.NODE_ENV === "test") detected in production bundle.',
     },
     {
-      // Test runner injection flag in production code
       regex: /process\.env\.VITEST\b/gs,
       desc: 'Test-specific runner flag (process.env.VITEST) detected in production bundle.',
     },
@@ -205,27 +348,120 @@ function checkProductionCheats() {
         });
       }
     }
+
+    // AST checks for G3b (Truncation) and G3c (Ignored input) in conversions and worker
+    const rel = path.relative(ROOT_DIR, file);
+    const isTargetModule = rel.includes('src/lib/conversions') || rel.includes('src/worker') || (targetDir && !rel.startsWith('tests'));
+
+    if (isTargetModule) {
+      const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
+
+      function checkFnAST(name: string, isExported: boolean, params: ts.NodeArray<ts.ParameterDeclaration>, body: ts.Node) {
+        if (!/^(?:encode|write|create|serialize)/i.test(name)) return;
+
+        // G3b Truncation check
+        function findTruncation(n: ts.Node) {
+          if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+            const prop = n.expression.name.text;
+            if (prop === 'slice' || prop === 'subarray') {
+              if (n.arguments.length >= 2) {
+                const arg0 = n.arguments[0];
+                const arg1 = n.arguments[1];
+                if (ts.isNumericLiteral(arg0) && arg0.text === '0' && ts.isNumericLiteral(arg1)) {
+                  const { line, snippet } = getNodeSnippet(sf, n);
+                  violations.push({
+                    file: path.relative(ROOT_DIR, file),
+                    line,
+                    rule: 'G3b-TRUNCATION',
+                    symbol: name,
+                    snippet,
+                    message: `Hardcoded numeric truncation "${n.getText(sf)}" inside generator/converter function "${name}".`,
+                  });
+                }
+              }
+            }
+          }
+          ts.forEachChild(n, findTruncation);
+        }
+        findTruncation(body);
+
+        // G3c Ignored input check (exported generator function)
+        if (isExported && params.length >= 1) {
+          const p0 = params[0];
+          if (ts.isIdentifier(p0.name)) {
+            const paramName = p0.name.text;
+            let refCount = 0;
+
+            function countRefs(n: ts.Node) {
+              if (ts.isIdentifier(n) && n.text === paramName && n !== p0.name) {
+                // Ensure it is not a property name in obj.prop
+                if (!(n.parent && ts.isPropertyAccessExpression(n.parent) && n.parent.name === n)) {
+                  // Ensure it is not an object literal key
+                  if (!(n.parent && ts.isPropertyAssignment(n.parent) && n.parent.name === n)) {
+                    refCount++;
+                  }
+                }
+              }
+              ts.forEachChild(n, countRefs);
+            }
+            countRefs(body);
+
+            if (refCount === 0) {
+              const { line, snippet } = getNodeSnippet(sf, p0);
+              violations.push({
+                file: path.relative(ROOT_DIR, file),
+                line,
+                rule: 'G3c-IGNORED-INPUT',
+                symbol: name,
+                snippet,
+                message: `Exported function "${name}" ignores its first parameter "${paramName}" entirely.`,
+              });
+            }
+          }
+        }
+      }
+
+      function inspectAST(n: ts.Node) {
+        if (ts.isFunctionDeclaration(n) && n.name && n.body) {
+          const isExported = Boolean(n.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword));
+          checkFnAST(n.name.text, isExported, n.parameters, n.body);
+        } else if (ts.isVariableStatement(n)) {
+          const isExported = Boolean(n.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword));
+          for (const decl of n.declarationList.declarations) {
+            if (decl.initializer && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) {
+              if (ts.isIdentifier(decl.name) && decl.initializer.body) {
+                checkFnAST(decl.name.text, isExported, decl.initializer.parameters, decl.initializer.body);
+              }
+            }
+          }
+        }
+        ts.forEachChild(n, inspectAST);
+      }
+      inspectAST(sf);
+    }
   }
+
+  return violations;
 }
 
 // ============================================================================
-// Gate 4: Hollow Assertions in Test Suites
+// Gate 4: Hollow Assertions & Weak-Only Assertions (Regex G4 + AST G4b)
 // ============================================================================
-function checkHollowAssertions() {
-  const testFiles = scanDirectory(TESTS_DIR, SUPPORTED_EXTENSIONS);
+function checkHollowAssertions(targetDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const testFiles = scanDirectory(targetDir || TESTS_DIR, SUPPORTED_EXTENSIONS)
+    .filter((f) => !f.endsWith('guard-anti-cheat-rules.test.ts'));
+
   const hollowPatterns = [
     {
-      // Boolean, numeric, and identifier tautologies: expect(true).toBe(true), expect(123).toBe(123), expect(x).toBe(x)
       regex: /expect\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*|\d+)\s*\)[\s\S]{0,40}?\.(?:toBe|toEqual)\s*\(\s*\1\s*\)/gis,
       desc: 'Hollow assertion tautology detected (e.g., expect(x).toBe(x) or expect(1).toBe(1)).',
     },
     {
-      // Literal string tautologies: expect("a").toBe("a")
       regex: /expect\s*\(\s*(['"][^'"]*['"])\s*\)[\s\S]{0,40}?\.(?:toBe|toEqual)\s*\(\s*\1\s*\)/gis,
       desc: 'Hollow assertion tautology with identical string literals detected.',
     },
     {
-      // Redundant boolean truthy/falsy assertions
       regex: /expect\s*\(\s*true\s*\)[\s\S]{0,40}?\.toBeTruthy\s*\(\s*\)/gis,
       desc: 'Hollow assertion expect(true).toBeTruthy() detected.',
     },
@@ -234,7 +470,6 @@ function checkHollowAssertions() {
       desc: 'Hollow assertion expect(false).toBeFalsy() detected.',
     },
     {
-      // Literal null/undefined/NaN tautologies
       regex: /expect\s*\(\s*(undefined\s*\)[\s\S]{0,40}?\.toBeUndefined|null\s*\)[\s\S]{0,40}?\.toBeNull|NaN\s*\)[\s\S]{0,40}?\.toBeNaN)/gis,
       desc: 'Hollow assertion on constant literal value detected (e.g., expect(null).toBeNull()).',
     },
@@ -256,29 +491,248 @@ function checkHollowAssertions() {
         });
       }
     }
+
+    // G4b AST: Weak-only assertions in test blocks
+    const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
+
+    function checkG4b(node: ts.Node) {
+      if (ts.isCallExpression(node)) {
+        const calleeText = node.expression.getText(sf);
+        if (
+          calleeText === 'it' ||
+          calleeText === 'test' ||
+          calleeText === 'oracleTest' ||
+          calleeText.startsWith('it.') ||
+          calleeText.startsWith('test.') ||
+          calleeText.startsWith('oracleTest.')
+        ) {
+          let testTitle = 'unknown';
+          if (node.arguments.length > 0 && (ts.isStringLiteral(node.arguments[0]) || ts.isNoSubstitutionTemplateLiteral(node.arguments[0]))) {
+            testTitle = node.arguments[0].text;
+          }
+
+          let totalAssertions = 0;
+          let weakAssertions = 0;
+
+          function findExpectCalls(n: ts.Node) {
+            if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+              let matcherName = n.expression.name.text;
+              let target = n.expression.expression;
+
+              if (ts.isPropertyAccessExpression(target)) {
+                // handle .not or .resolves or .rejects
+                target = target.expression;
+              }
+
+              if (ts.isCallExpression(target) && target.expression.getText(sf) === 'expect') {
+                totalAssertions++;
+                let isWeak = false;
+
+                if (['toBeDefined', 'toBeTruthy', 'toBeFalsy', 'toBeInstanceOf'].includes(matcherName)) {
+                  isWeak = true;
+                } else if (matcherName === 'toThrow') {
+                  if (n.arguments.length === 0) isWeak = true;
+                } else if (matcherName === 'toBeGreaterThan') {
+                  if (n.arguments.length === 1 && ts.isNumericLiteral(n.arguments[0]) && n.arguments[0].text === '0') {
+                    isWeak = true;
+                  }
+                } else if (matcherName === 'toContain') {
+                  if (
+                    n.arguments.length === 1 &&
+                    (ts.isStringLiteral(n.arguments[0]) || ts.isNoSubstitutionTemplateLiteral(n.arguments[0]))
+                  ) {
+                    isWeak = true;
+                  }
+                }
+
+                if (isWeak) weakAssertions++;
+              }
+            }
+            ts.forEachChild(n, findExpectCalls);
+          }
+
+          const fnArg = node.arguments.find((a) => ts.isFunctionExpression(a) || ts.isArrowFunction(a));
+          if (fnArg) {
+            findExpectCalls(fnArg);
+            if (totalAssertions > 0 && totalAssertions === weakAssertions) {
+              const { line, snippet } = getNodeSnippet(sf, node);
+              violations.push({
+                file: path.relative(ROOT_DIR, file),
+                line,
+                rule: 'G4b-WEAK-ONLY-ASSERTIONS',
+                symbol: testTitle,
+                snippet,
+                message: `Test block "${testTitle}" contains only weak assertions (${weakAssertions} weak matcher(s)). Must include at least one substantive check.`,
+              });
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, checkG4b);
+    }
+    checkG4b(sf);
   }
+
+  return violations;
 }
 
 // ============================================================================
-// Main Execution
+// Main Execution & Ratchet Baseline Engine
 // ============================================================================
-console.log('\n🔒 Running EasyConvert Anti-Cheating & Integrity Guard...\n');
+export function runAntiCheatGuard(options: {
+  targetDir?: string;
+  baselinePath?: string;
+  updateBaseline?: boolean;
+  strict?: boolean;
+} = {}): { violations: Violation[]; success: boolean } {
+  const allViolations: Violation[] = [
+    ...checkCircularMocking(options.targetDir),
+    ...checkSilentPassBypasses(options.targetDir),
+    ...checkProductionCheats(options.targetDir),
+    ...checkHollowAssertions(options.targetDir),
+  ];
 
-checkCircularMocking();
-checkSilentPassBypasses();
-checkProductionCheats();
-checkHollowAssertions();
+  const errors = allViolations.filter((v) => v.severity !== 'warning');
+  const warnings = allViolations.filter((v) => v.severity === 'warning');
 
-if (violations.length > 0) {
-  console.error(`\x1b[31m❌ [REJECTED] Found ${violations.length} Anti-Cheating & Test Integrity violation(s):\x1b[0m\n`);
-  for (const v of violations) {
-    console.error(`  \x1b[33m${v.file}:${v.line}\x1b[0m [\x1b[31m${v.rule}\x1b[0m]`);
-    console.error(`    Snippet : "${v.snippet}"`);
-    console.error(`    Reason  : ${v.message}\n`);
+  if (warnings.length > 0) {
+    console.warn(`\x1b[33m⚠️  [WARNING] Found ${warnings.length} non-blocking integrity notice(s):\x1b[0m`);
+    for (const w of warnings) {
+      console.warn(`  \x1b[33m${w.file}:${w.line}\x1b[0m [${w.rule}] (${w.symbol || 'n/a'}): ${w.message}`);
+    }
+    console.warn('');
   }
-  console.error('\x1b[31mIntegrity check FAILED. Please resolve all violations according to AGENTS.md.\x1b[0m\n');
-  process.exit(1);
-} else {
-  console.log('\x1b[32m✅ [PASS] Zero shortcuts, zero circular mocks, zero silent passes, zero hollow assertions detected.\x1b[0m\n');
-  process.exit(0);
+
+  const baselineFile = options.baselinePath || path.join(ROOT_DIR, 'scripts', 'anti-cheat-baseline.json');
+
+  if (options.updateBaseline) {
+    const defaultWpForFile = (v: Violation): string => {
+      if (v.file.includes('cad') || (v.symbol && /step|iges|emf|wmf|cgm/i.test(v.symbol))) return 'WP-46';
+      if (v.file.includes('font')) return 'WP-42';
+      if (v.file.includes('archive')) return 'WP-45';
+      if (v.file.includes('office') || v.file.includes('xlsx') || v.file.includes('ods')) return 'WP-43';
+      if (v.file.includes('media') || v.file.includes('audio') || v.file.includes('video')) return 'WP-44';
+      if (v.file.includes('raw') || v.file.includes('dng')) return 'WP-47';
+      if (v.file.includes('ocr')) return 'WP-48';
+      if (v.file.includes('pdf')) return 'WP-41';
+      return 'WP-03';
+    };
+
+    const newBaseline: BaselineEntry[] = errors.map((e) => ({
+      rule: e.rule,
+      file: e.file,
+      symbol: e.symbol,
+      reason: e.message,
+      owningWP: defaultWpForFile(e),
+    }));
+
+    fs.writeFileSync(baselineFile, JSON.stringify(newBaseline, null, 2) + '\n', 'utf-8');
+    console.log(`\x1b[32m✅ Successfully updated ratchet baseline with ${newBaseline.length} entries at ${baselineFile}\x1b[0m\n`);
+    return { violations: allViolations, success: true };
+  }
+
+  if (options.strict || !fs.existsSync(baselineFile)) {
+    if (errors.length > 0) {
+      console.error(`\x1b[31m❌ [REJECTED] Found ${errors.length} Anti-Cheating violation(s) (strict / no baseline):\x1b[0m\n`);
+      for (const e of errors) {
+        console.error(`  \x1b[33m${e.file}:${e.line}\x1b[0m [\x1b[31m${e.rule}\x1b[0m] (${e.symbol || 'n/a'})`);
+        console.error(`    Snippet : "${e.snippet}"`);
+        console.error(`    Reason  : ${e.message}\n`);
+      }
+      return { violations: allViolations, success: false };
+    }
+    console.log('\x1b[32m✅ [PASS] Zero shortcuts, zero circular mocks, zero silent passes, zero hollow assertions detected.\x1b[0m\n');
+    return { violations: allViolations, success: true };
+  }
+
+  // Ratchet Baseline Verification
+  const baseline: BaselineEntry[] = JSON.parse(fs.readFileSync(baselineFile, 'utf-8'));
+  const matchedBaselineIndices = new Set<number>();
+  const unbaselinedErrors: Violation[] = [];
+
+  for (const err of errors) {
+    let matched = false;
+    for (let i = 0; i < baseline.length; i++) {
+      if (matchedBaselineIndices.has(i)) continue;
+      const b = baseline[i];
+      if (b.rule === err.rule && b.file === err.file) {
+        if (!b.symbol || b.symbol === err.symbol) {
+          matchedBaselineIndices.add(i);
+          matched = true;
+          break;
+        }
+      }
+    }
+    if (!matched) {
+      unbaselinedErrors.push(err);
+    }
+  }
+
+  const staleBaselineEntries = baseline.filter((_, idx) => !matchedBaselineIndices.has(idx));
+
+  if (unbaselinedErrors.length > 0) {
+    console.error(`\x1b[31m❌ [REJECTED] Found ${unbaselinedErrors.length} NEW Anti-Cheating violation(s) NOT covered by ratchet baseline:\x1b[0m\n`);
+    for (const e of unbaselinedErrors) {
+      console.error(`  \x1b[33m${e.file}:${e.line}\x1b[0m [\x1b[31m${e.rule}\x1b[0m] (${e.symbol || 'n/a'})`);
+      console.error(`    Snippet : "${e.snippet}"`);
+      console.error(`    Reason  : ${e.message}\n`);
+    }
+    return { violations: allViolations, success: false };
+  }
+
+  if (staleBaselineEntries.length > 0) {
+    console.error(`\x1b[31m❌ [RATCHET VIOLATION] Found ${staleBaselineEntries.length} baseline entry/entries that are no longer violated!\x1b[0m`);
+    console.error('The baseline MUST ratchet down. Please remove resolved violations from scripts/anti-cheat-baseline.json:\n');
+    for (const s of staleBaselineEntries) {
+      console.error(`  - [${s.rule}] ${s.file} (${s.symbol || 'n/a'}) [owning: ${s.owningWP}]`);
+    }
+    console.error('');
+    return { violations: allViolations, success: false };
+  }
+
+  const wpCounts = baseline.reduce((acc, b) => {
+    acc[b.owningWP] = (acc[b.owningWP] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  const wpSummary = Object.entries(wpCounts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([wp, count]) => `${wp}: ${count}`)
+    .join(', ');
+
+  console.log(`\x1b[32m✅ [PASS] Zero un-baselined violations detected.\x1b[0m`);
+  console.log(`🔒 Active ratchet baseline: ${baseline.length} locked violations (${wpSummary})\n`);
+  return { violations: allViolations, success: true };
+}
+
+// CLI entry point
+if (require.main === module || process.argv[1]?.endsWith('guard-anti-cheat.ts')) {
+  console.log('\n🔒 Running EasyConvert Anti-Cheating & Integrity Guard...\n');
+
+  const args = process.argv.slice(2);
+  const updateBaseline = args.includes('--update-baseline');
+  const strict = args.includes('--strict');
+  let targetDir: string | undefined;
+  let baselinePath: string | undefined;
+
+  const targetIdx = args.findIndex((a) => a === '--target' || a === '-t');
+  if (targetIdx !== -1 && args[targetIdx + 1]) {
+    targetDir = path.resolve(args[targetIdx + 1]);
+  }
+
+  const baseIdx = args.indexOf('--baseline');
+  if (baseIdx !== -1 && args[baseIdx + 1]) {
+    baselinePath = path.resolve(args[baseIdx + 1]);
+  }
+
+  const { success } = runAntiCheatGuard({
+    targetDir,
+    baselinePath,
+    updateBaseline,
+    strict,
+  });
+
+  if (!success) {
+    process.exit(1);
+  }
 }

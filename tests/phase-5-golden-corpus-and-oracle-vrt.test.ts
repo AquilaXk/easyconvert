@@ -33,6 +33,7 @@ import {
   assertFormatIntegrity,
   getOracleToolDiagnostics,
 } from './helpers/differential-oracle';
+import { oracleTest } from './helpers/oracle-test';
 import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { convertFile } from '../src/lib/conversions';
 import { demosaicBayerCfa, decodeRawBayerSensor } from '../src/lib/conversions/image';
@@ -157,7 +158,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       expect(golden.text).toContain('CIRCLE');
     });
 
-    it('1.6 synthesizes ISO 32000-1 PDF 1.7 with compressed object streams and sandwich OCR text', async () => {
+    oracleTest('1.6 synthesizes ISO 32000-1 PDF 1.7 with compressed object streams and sandwich OCR text', ['pdfinfo'], async () => {
       const golden = await synthesizeEnterprisePdf();
 
       assertFormatIntegrity(golden.buffer, 'pdf');
@@ -200,7 +201,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       }
     });
 
-    it('1.8 synthesizes 7z multi-stream LZMA2 and Zstandard RFC 8878 golden archives', () => {
+    oracleTest('1.8 synthesizes 7z multi-stream LZMA2 and Zstandard RFC 8878 golden archives', ['7z'], () => {
       // 7z
       const golden7z = synthesizeEnterprise7z();
       assertFormatIntegrity(golden7z.buffer, '7z');
@@ -295,7 +296,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       }
     });
 
-    it('2.2 differential PDF comparison scores matching PDF documents and detects structural variance', async () => {
+    oracleTest('2.2 differential PDF comparison scores matching PDF documents and detects structural variance', ['pdfinfo', 'pdftotext'], async () => {
       const goldenPdf1 = await synthesizeEnterprisePdf();
       const goldenPdf2 = await synthesizeEnterprisePdf();
 
@@ -435,7 +436,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       expect(ast.files.map((f) => f.name)).toEqual(['hello.txt', 'data/info.json']);
     });
 
-    it('2.10 differential archive oracle parses 7z archives using AST and exact sizes', async () => {
+    oracleTest('2.10 differential archive oracle parses 7z archives using AST and exact sizes', ['7z'], async () => {
       const golden7z = synthesizeEnterprise7z();
       assertFormatIntegrity(golden7z.buffer, '7z');
 
@@ -465,7 +466,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       expect(ast.slides[2].shapes[0].text).toBe('Slide 10');
     });
 
-    it('2.12 assertFormatIntegrity validates full spectrum of supported formats', async () => {
+    oracleTest('2.12 assertFormatIntegrity validates full spectrum of supported formats', ['ffmpeg'], async () => {
       const zstd = synthesizeEnterpriseZstd();
       expect(() => assertFormatIntegrity(zstd.buffer, 'zstd')).not.toThrow();
 
@@ -734,7 +735,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       expect(Array.isArray(jsonData) || typeof jsonData === 'object').toBe(true);
     });
 
-    it('5.3 converts golden multi-slide PPTX to visual PDF with preserved slides', async () => {
+    oracleTest('5.3 converts golden multi-slide PPTX to visual PDF with preserved slides', ['pdfinfo'], async () => {
       const goldenPptx = await synthesizeEnterpriseMultiSlidePptx();
 
       const result = await convertOffice(goldenPptx.buffer, 'pptx', 'pdf');

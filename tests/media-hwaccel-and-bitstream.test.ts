@@ -16,6 +16,7 @@ import {
   verifyAudioBitstreamWithFfprobe,
   verifyVideoBitstreamWithFfprobe,
 } from './helpers/differential-oracle';
+import { oracleTest } from './helpers/oracle-test';
 
 describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Verification (#131)', () => {
   beforeEach(() => {
@@ -217,7 +218,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
   // 4. Differential Oracle Bitstream Verifiers
   // ==========================================================================
   describe('4. Differential Oracle Bitstream Verification', () => {
-    it('verifies audio bitstream integrity for WAV and AAC containers', () => {
+    oracleTest('verifies audio bitstream integrity for WAV and AAC containers', ['ffmpeg', 'ffprobe'], () => {
       const wav = createSyntheticWav(44100, 2, 0.2);
       const wavVerif = verifyAudioBitstreamWithFfprobe(wav, 'wav', 'pcm_s16le');
       expect(wavVerif.valid).toBe(true);
@@ -230,7 +231,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       });
     });
 
-    it('verifies video bitstream integrity and detects faststart layout', () => {
+    oracleTest('verifies video bitstream integrity and detects faststart layout', ['ffprobe'], () => {
       const wav = createSyntheticWav(44100, 2, 0.3);
       const pcm = new Int16Array(44100 * 0.3);
       const mp4 = encodePureH264Mp4(pcm, 44100, 1, { videoFps: 30, fastStart: true }, 'Fast Video');
