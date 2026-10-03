@@ -11,9 +11,9 @@ import {
   probeHardwareAcceleration,
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
-import { executeSandboxedBinary } from './sandbox';
+import { executeSandboxedBinary, SandboxedMemoryLimitError } from './sandbox';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
-import { LibreOfficePoolManager, resolveLibreOfficeFilter } from './libreoffice-pool';
+import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
 
 export interface WorkerVfsPayload {
   inputPath?: string;
@@ -326,8 +326,14 @@ export async function convertWithHeadlessOffice(
       if (poolResult) {
         return poolResult;
       }
-    } catch {
-      // Fall through cleanly to standalone sandbox execution
+    } catch (poolErr) {
+      if (options.signal?.aborted || poolErr instanceof SandboxedMemoryLimitError) {
+        throw poolErr;
+      }
+      if (options.throwOnUnavailable && !(poolErr instanceof LibreOfficePoolTimeoutError)) {
+        throw poolErr;
+      }
+      // Fall through cleanly to standalone sandbox execution if pool acquire timed out
     }
   }
 

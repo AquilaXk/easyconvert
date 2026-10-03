@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       const body = await req.json().catch(() => ({}));
       const { filename, mimeType, totalSize } = body;
 
-      if (!filename || typeof totalSize !== 'number') {
+      if (!filename || typeof totalSize !== 'number' || !Number.isFinite(totalSize)) {
         return createProblemDetailsResponse(
           400,
           'Missing "filename" or "totalSize" in initiation payload.',
@@ -93,8 +93,8 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const sessionOwner = s3Storage.getUploadOwner(uploadId);
-      if (!sessionOwner || sessionOwner !== currentUser.id) {
+      const session = s3Storage.getUploadSession(uploadId);
+      if (!session || !session.ownerUserId || session.ownerUserId !== currentUser.id) {
         return createProblemDetailsResponse(
           404,
           STORAGE_OBJECT_NOT_FOUND,
@@ -111,13 +111,41 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const contentLengthHeader = req.headers.get('content-length');
-      if (contentLengthHeader && parseInt(contentLengthHeader, 10) > MAX_PART_BYTES) {
+      if (session.totalParts && partNumber > session.totalParts) {
         return createProblemDetailsResponse(
-          413,
-          `Part size exceeds maximum allowed part size of ${MAX_PART_BYTES} bytes (64 MiB).`,
+          400,
+          `Part number ${partNumber} exceeds total parts (${session.totalParts}).`,
           instanceUri
         );
+      }
+
+      const maxAllowedBytes =
+        (currentUser.tier && TIER_MAX_MULTIPART_BYTES[currentUser.tier]) || MAX_MULTIPART_TOTAL_BYTES;
+
+      let currentSessionBytes = 0;
+      for (const [pNum, partInfo] of session.parts.entries()) {
+        if (pNum !== partNumber) {
+          currentSessionBytes += partInfo.size;
+        }
+      }
+
+      const contentLengthHeader = req.headers.get('content-length');
+      if (contentLengthHeader) {
+        const declaredLength = parseInt(contentLengthHeader, 10);
+        if (declaredLength > MAX_PART_BYTES) {
+          return createProblemDetailsResponse(
+            413,
+            `Part size exceeds maximum allowed part size of ${MAX_PART_BYTES} bytes (64 MiB).`,
+            instanceUri
+          );
+        }
+        if (currentSessionBytes + declaredLength > maxAllowedBytes) {
+          return createProblemDetailsResponse(
+            413,
+            `Total upload size exceeds maximum allowed size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
+            instanceUri
+          );
+        }
       }
 
       const arrayBuffer = await req.arrayBuffer();
@@ -139,6 +167,14 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      if (currentSessionBytes + chunkBuffer.length > maxAllowedBytes) {
+        return createProblemDetailsResponse(
+          413,
+          `Total upload size ${currentSessionBytes + chunkBuffer.length} bytes exceeds maximum allowed size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
+          instanceUri
+        );
+      }
+
       const partResult = s3Storage.uploadPart(uploadId, partNumber, chunkBuffer);
       return NextResponse.json({ success: true, ...partResult });
     }
@@ -156,11 +192,25 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const sessionOwner = s3Storage.getUploadOwner(uploadId);
-      if (!sessionOwner || sessionOwner !== currentUser.id) {
+      const session = s3Storage.getUploadSession(uploadId);
+      if (!session || !session.ownerUserId || session.ownerUserId !== currentUser.id) {
         return createProblemDetailsResponse(
           404,
           STORAGE_OBJECT_NOT_FOUND,
+          instanceUri
+        );
+      }
+
+      let totalPartBytes = 0;
+      for (const partInfo of session.parts.values()) {
+        totalPartBytes += partInfo.size;
+      }
+      const maxAllowedBytes =
+        (currentUser.tier && TIER_MAX_MULTIPART_BYTES[currentUser.tier]) || MAX_MULTIPART_TOTAL_BYTES;
+      if (totalPartBytes > maxAllowedBytes) {
+        return createProblemDetailsResponse(
+          413,
+          `Completed upload size ${totalPartBytes} bytes exceeds maximum allowed upload size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
           instanceUri
         );
       }

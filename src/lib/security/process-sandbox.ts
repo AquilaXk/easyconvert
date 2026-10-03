@@ -665,9 +665,15 @@ export async function executeSandboxedBinary(
             reject(new SandboxedMemoryLimitError(memoryLimitMb));
             return;
           }
-          const errorSummary =
-            stderr.toString('utf-8').trim() ||
-            (signal ? `Process terminated by signal ${signal}` : `Process exited with code ${code}`);
+          const stderrText = stderr.toString('utf-8').trim();
+          let errorSummary: string;
+          if (signal !== null) {
+            errorSummary = stderrText
+              ? `Process terminated by signal ${signal}: ${stderrText}`
+              : `Process terminated by signal ${signal}`;
+          } else {
+            errorSummary = stderrText || `Process exited with code ${code}`;
+          }
           reject(new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8'), signal));
           return;
         }

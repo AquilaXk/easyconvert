@@ -253,4 +253,85 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     expect(await mayUseStorageKeyAsJobInput(completedKey, alice.id)).toBe(true);
     expect(await mayUseStorageKeyAsJobInput(completedKey, bob.id)).toBe(false);
   });
+
+  it('(e) rejects non-finite totalSize at initiate, partNumber above totalParts, and cumulative bytes exceeding tier limit', async () => {
+    const alice = await createUser('alice_limits', 'free');
+
+    // 1. Rejects NaN / non-finite totalSize
+    const nanReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ filename: 'test.bin', totalSize: NaN }),
+    });
+    const nanRes = await multipartPost(nanReq);
+    expect(nanRes.status).toBe(400);
+
+    // 2. Initiate with small declared totalSize (e.g., 1024 bytes -> 1 part)
+    const initReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ filename: 'one_part.bin', totalSize: 1024 }),
+    });
+    const initRes = await multipartPost(initReq);
+    expect(initRes.status).toBe(200);
+    const { uploadId, totalParts } = await initRes.json();
+    expect(totalParts).toBe(1);
+
+    // 3. Reject partNumber exceeding totalParts
+    const exceedPartReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, {
+        'x-upload-id': uploadId,
+        'x-part-number': '2',
+      }),
+      body: Buffer.from('excess part'),
+    });
+    const exceedPartRes = await multipartPost(exceedPartReq);
+    expect(exceedPartRes.status).toBe(400);
+    const exceedPartJson = await exceedPartRes.json();
+    expect(exceedPartJson.detail).toContain('exceeds total parts');
+
+    // 4. Reject cumulative bytes exceeding tier limit
+    // For free tier (100 MiB), initiate a valid large session (e.g. 90 MiB)
+    const largeInitReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ filename: 'large_stream.bin', totalSize: 90 * 1024 * 1024 }),
+    });
+    const largeInitRes = await multipartPost(largeInitReq);
+    expect(largeInitRes.status).toBe(200);
+    const largeSession = await largeInitRes.json();
+
+    // Upload part 1: 60 MiB
+    const part1Buf = Buffer.alloc(60 * 1024 * 1024, 0xaa);
+    const part1Req = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, {
+        'x-upload-id': largeSession.uploadId,
+        'x-part-number': '1',
+      }),
+      body: part1Buf,
+    });
+    const part1Res = await multipartPost(part1Req);
+    expect(part1Res.status).toBe(200);
+
+    // Upload part 2: 50 MiB (60 + 50 = 110 MiB > 100 MiB free tier limit)
+    // Check via Content-Length header or body size
+    const part2Req = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
+      method: 'POST',
+      headers: sessionHeaders(alice, {
+        'x-upload-id': largeSession.uploadId,
+        'x-part-number': '2',
+        'content-length': String(50 * 1024 * 1024),
+      }),
+      body: Buffer.from('mock content length probe'),
+    });
+    const part2Res = await multipartPost(part2Req);
+    expect(part2Res.status).toBe(413);
+    const part2Json = await part2Res.json();
+    expect(part2Json.detail).toContain('exceeds maximum allowed size');
+
+    s3Storage.abortMultipartUpload(uploadId);
+    s3Storage.abortMultipartUpload(largeSession.uploadId);
+  });
 });

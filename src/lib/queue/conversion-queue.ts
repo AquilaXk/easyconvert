@@ -304,6 +304,12 @@ export function attachInputCleanupOnCompletion(
       removeJobInput(job.id, job.data.storageKey);
     }
   });
+  worker.on('failed', (job: Job<ConversionJobData, ConversionJobResult>) => {
+    const isFinalAttempt = !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
+    if (job.data?.storageKey && isFinalAttempt) {
+      removeJobInput(job.id, job.data.storageKey);
+    }
+  });
 }
 
 /**
