@@ -145,11 +145,17 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(epsStr).toContain('colorimage');
     expect(epsStr).not.toContain('\x89PNG');
 
-    // 3fr -> jpg
-    const res2 = await convertFile(pngBuffer, '3fr', 'jpg', {}, 'photo.3fr');
+    // 3fr -> jpg (with embedded preview)
+    const sampleJpeg = Buffer.from(
+      '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAAEAAQDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABgj/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABykX//Z',
+      'base64'
+    );
+    const raw3fr = Buffer.concat([Buffer.from([0x49, 0x49, 0x2a, 0x00]), Buffer.alloc(16, 0), sampleJpeg]);
+    const res2 = await convertFile(raw3fr, '3fr', 'jpg', { allowEmbeddedPreview: true }, 'photo.3fr');
     expect(res2.filename).toBe('photo.jpg');
     expect(res2.buffer[0]).toBe(0xff);
     expect(res2.buffer[1]).toBe(0xd8);
+    expect(res2.isEmbeddedPreview).toBe(true);
   });
 
   it('converts document, ebook, and spreadsheet formats (hwp, azw4, et, odg) without disguised PDFs', async () => {

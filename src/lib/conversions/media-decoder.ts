@@ -847,32 +847,7 @@ export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
           outSamples.push(aacDecoded[s]);
         }
       } else {
-        const pcmSampleCount = Math.floor(payloadLength / 2);
-        if (pcmSampleCount >= channels * 2) {
-          // Interleaved 16-bit PCM payload (for backwards compatibility with mock test buffers)
-          for (let s = 0; s < pcmSampleCount; s++) {
-            outSamples.push(buffer.readInt16LE(payloadOffset + s * 2));
-          }
-        } else {
-          // MDCT spectral reconstruction
-          const mdct = new Float64Array(1024);
-          for (let k = 0; k < 1024 && k < payloadLength; k++) {
-            const val = buffer[payloadOffset + (k % payloadLength)];
-            mdct[k] = ((val - 128) / 128.0) * 0.1;
-          }
-          for (let n = 0; n < 1024; n++) {
-            let sum = 0.0;
-            const win = Math.sin((Math.PI / 1024) * (n + 0.5));
-            for (let k = 0; k < 512; k++) {
-              const angle = (n + 0.5 + 512) * (k + 0.5) * (Math.PI / 1024);
-              sum += mdct[k] * Math.cos(angle);
-            }
-            const sampleVal = Math.max(-32768, Math.min(32767, Math.round(sum * win * 32768.0)));
-            for (let ch = 0; ch < channels; ch++) {
-              outSamples.push(sampleVal);
-            }
-          }
-        }
+        throw new Error('Failed to decode AAC frame payload: bitstream is corrupted or unsupported');
       }
     }
 

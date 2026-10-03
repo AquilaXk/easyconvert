@@ -54,6 +54,7 @@ export interface FormatOptionsSchema {
   // CAD / NURBS options
   uSamples?: boolean;
   vSamples?: boolean;
+  allowEmbeddedPreview?: boolean;
 }
 
 export interface FormatDefinition {
@@ -85,6 +86,7 @@ export interface ConversionOptions {
   useWebGpu?: boolean;
   gpuAcceleration?: boolean;
   falseColorSuppression?: boolean | number;
+  allowEmbeddedPreview?: boolean;
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;
@@ -97,7 +99,7 @@ export interface ConversionOptions {
   preserveFonts?: boolean;
   preserveTables?: boolean;
   ocrEnabled?: boolean;
-  ocrLanguage?: 'auto' | 'en' | 'ko' | 'de' | 'fr' | 'es' | 'ja' | 'zh';
+  ocrLanguage?: 'auto' | 'en' | 'ko';
   clientEdgeMode?: boolean;
   margin?: 'normal' | 'narrow' | 'wide';
   validateMagicBytes?: boolean;
@@ -168,6 +170,7 @@ export interface ConversionResult {
   size: number;
   ocrExtractedText?: string;
   ocrConfidence?: number | null;
+  isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
 }
 

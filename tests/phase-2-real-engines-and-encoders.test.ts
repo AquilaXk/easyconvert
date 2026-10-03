@@ -474,18 +474,32 @@ describe('Phase 2 Real Engines & Encoders Verification Testnet', () => {
     it('decodes raw Bayer sensor frames via decodeRawBayerSensor', () => {
       const width = 16;
       const height = 16;
-      // Synthetic RAW frame: 'RAW\x01' (10-byte header) + raw payload
-      const header = Buffer.alloc(10);
-      header.write('RAW\x01', 0);
-      header.writeUInt16LE(width, 4);
-      header.writeUInt16LE(height, 6);
-      header.writeUInt8(0, 8); // RGGB
-      header.writeUInt8(8, 9); // 8-bit
+      const bayer = Buffer.alloc(width * height * 2, 150);
+      const tiffHeader = Buffer.alloc(8);
+      tiffHeader.write('II', 0, 'ascii');
+      tiffHeader.writeUInt16LE(42, 2);
+      tiffHeader.writeUInt32LE(8, 4);
 
-      const payload = Buffer.alloc(width * height, 150);
-      const rawFrame = Buffer.concat([header, payload]);
+      const ifd = Buffer.alloc(2 + 6 * 12 + 4);
+      ifd.writeUInt16LE(6, 0);
+      const writeTag = (idx: number, tag: number, type: number, count: number, val: number) => {
+        const off = 2 + idx * 12;
+        ifd.writeUInt16LE(tag, off);
+        ifd.writeUInt16LE(type, off + 2);
+        ifd.writeUInt32LE(count, off + 4);
+        ifd.writeUInt32LE(val, off + 8);
+      };
+      const stripOffset = 8 + ifd.length;
+      writeTag(0, 256, 3, 1, width);
+      writeTag(1, 257, 3, 1, height);
+      writeTag(2, 258, 3, 1, 16);
+      writeTag(3, 273, 4, 1, stripOffset);
+      writeTag(4, 279, 4, 1, bayer.length);
+      writeTag(5, 33422, 1, 4, 0x02010100);
 
-      const decoded = decodeRawBayerSensor(rawFrame);
+      const rawFrame = Buffer.concat([tiffHeader, ifd, bayer]);
+
+      const decoded = decodeRawBayerSensor(rawFrame, 'dng');
       expect(decoded).not.toBeNull();
       expect(decoded!.width).toBe(width);
       expect(decoded!.height).toBe(height);
@@ -495,18 +509,33 @@ describe('Phase 2 Real Engines & Encoders Verification Testnet', () => {
     it('integrates with convertImage pipeline for RAW file conversion', async () => {
       const width = 16;
       const height = 16;
-      const header = Buffer.alloc(10);
-      header.write('RAW\x01', 0);
-      header.writeUInt16LE(width, 4);
-      header.writeUInt16LE(height, 6);
-      header.writeUInt8(0, 8); // RGGB
-      header.writeUInt8(8, 9); // 8-bit
+      const bayer = Buffer.alloc(width * height * 2, 180);
+      const tiffHeader = Buffer.alloc(8);
+      tiffHeader.write('II', 0, 'ascii');
+      tiffHeader.writeUInt16LE(42, 2);
+      tiffHeader.writeUInt32LE(8, 4);
 
-      const payload = Buffer.alloc(width * height, 180);
-      const rawFrame = Buffer.concat([header, payload]);
+      const ifd = Buffer.alloc(2 + 6 * 12 + 4);
+      ifd.writeUInt16LE(6, 0);
+      const writeTag = (idx: number, tag: number, type: number, count: number, val: number) => {
+        const off = 2 + idx * 12;
+        ifd.writeUInt16LE(tag, off);
+        ifd.writeUInt16LE(type, off + 2);
+        ifd.writeUInt32LE(count, off + 4);
+        ifd.writeUInt32LE(val, off + 8);
+      };
+      const stripOffset = 8 + ifd.length;
+      writeTag(0, 256, 3, 1, width);
+      writeTag(1, 257, 3, 1, height);
+      writeTag(2, 258, 3, 1, 16);
+      writeTag(3, 273, 4, 1, stripOffset);
+      writeTag(4, 279, 4, 1, bayer.length);
+      writeTag(5, 33422, 1, 4, 0x02010100);
+
+      const rawFrame = Buffer.concat([tiffHeader, ifd, bayer]);
 
       // Convert RAW frame to PNG
-      const pngResult = await convertImage(rawFrame, 'png', {}, 'sensor.raw', 'raw');
+      const pngResult = await convertImage(rawFrame, 'png', {}, 'sensor.dng', 'dng');
       expect(pngResult.mimeType).toBe('image/png');
       expect(pngResult.filename).toBe('sensor.png');
       expect(pngResult.buffer.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
