@@ -8,14 +8,44 @@ const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60; // 7 days
 /**
  * Creates an RFC 7519 JWT session token for an authenticated user.
  */
-export function createSessionToken(user: User): string {
+export function createSessionToken(
+  user: User,
+  options?: { jti?: string; expiresInSeconds?: number }
+): string {
   const payload: Omit<SessionPayload, 'iat' | 'exp'> = {
     sub: user.id,
     email: user.email,
     name: user.name,
     tier: user.tier,
+    sessionVersion: user.sessionVersion ?? 1,
   };
-  return signJwt(payload, undefined, SESSION_MAX_AGE_SECONDS);
+  return signJwt(payload, {
+    jti: options?.jti,
+    expiresInSeconds: options?.expiresInSeconds ?? SESSION_MAX_AGE_SECONDS,
+    sessionVersion: user.sessionVersion ?? 1,
+  });
+}
+
+/**
+ * Revokes a specific session by its JTI (JWT ID).
+ */
+export async function revokeSession(jti: string, remainingSeconds?: number): Promise<void> {
+  const ttl = remainingSeconds ?? SESSION_MAX_AGE_SECONDS;
+  await redisUserStore.revokeJti(jti, ttl);
+}
+
+/**
+ * Checks whether a session JTI is revoked.
+ */
+export async function isSessionRevoked(jti: string): Promise<boolean> {
+  return redisUserStore.isJtiRevoked(jti);
+}
+
+/**
+ * Revokes all active sessions for a user by incrementing their sessionVersion.
+ */
+export async function revokeAllUserSessions(userId: string): Promise<number> {
+  return redisUserStore.incrementSessionVersion(userId);
 }
 
 /**
@@ -94,10 +124,25 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
     return null;
   }
 
+  // Check if JTI is revoked
+  if (payload.jti && (await isSessionRevoked(payload.jti))) {
+    return null;
+  }
+
   const userRecord = await redisUserStore.findById(payload.sub);
   if (!userRecord) {
     return null;
   }
 
+  // Check user session version (reject if token sessionVersion is older than current)
+  if (
+    payload.sessionVersion !== undefined &&
+    userRecord.sessionVersion !== undefined &&
+    payload.sessionVersion < userRecord.sessionVersion
+  ) {
+    return null;
+  }
+
   return redisUserStore.sanitizeUser(userRecord);
 }
+
