@@ -1,0 +1,511 @@
+import { PIPELINE_OPERATIONS } from './enums';
+
+export const ConversionOptionsSchema = {
+  $id: 'https://easyconvert.local/schemas/conversion-options.json',
+  type: 'object',
+  properties: {
+    // Image & visual options
+    quality: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      description: 'Image/lossy output quality factor (1-100).',
+    },
+    width: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Target image width in pixels.',
+    },
+    height: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Target image height in pixels.',
+    },
+    dimensions: {
+      type: 'string',
+      pattern: '^\\d+x\\d+$',
+      description: 'Dimension string in WxH format (e.g. 800x600).',
+    },
+    fit: {
+      type: 'string',
+      enum: ['cover', 'contain', 'fill', 'inside', 'outside'],
+      description: 'Image resize fit strategy.',
+    },
+    stripMetadata: {
+      type: 'boolean',
+      description: 'Remove EXIF, XMP, and color profile metadata.',
+    },
+    dpi: {
+      type: 'integer',
+      minimum: 72,
+      maximum: 600,
+      description: 'Dots per inch resolution (72-600).',
+    },
+    colorDepth: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 32,
+      description: 'Color bit depth per channel or pixel.',
+    },
+    colors: {
+      type: 'integer',
+      minimum: 2,
+      maximum: 256,
+      description: 'Maximum palette color count for quantized outputs.',
+    },
+    palette: {
+      type: 'boolean',
+      description: 'Enable custom indexed palette generation.',
+    },
+    dither: {
+      type: 'boolean',
+      description: 'Enable dithering during color quantization.',
+    },
+    quantizer: {
+      type: 'string',
+      description: 'Color quantization algorithm identifier.',
+    },
+    ditherMethod: {
+      type: 'string',
+      description: 'Dithering algorithm identifier.',
+    },
+    useWebGpu: {
+      type: 'boolean',
+      description: 'Utilize WebGPU hardware compute pipelines when available.',
+    },
+    gpuAcceleration: {
+      type: 'boolean',
+      description: 'Enable GPU acceleration for transforms.',
+    },
+    falseColorSuppression: {
+      oneOf: [
+        { type: 'boolean' },
+        { type: 'number', minimum: 0, maximum: 10 },
+      ],
+      description: 'Suppression intensity for Bayer demosaicing artifacts.',
+    },
+    allowEmbeddedPreview: {
+      type: 'boolean',
+      description: 'Extract or include embedded thumbnail preview.',
+    },
+
+    // CAD & NURBS options
+    uSamples: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Evaluation sample grid density along U parametric coordinate.',
+    },
+    vSamples: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Evaluation sample grid density along V parametric coordinate.',
+    },
+
+    // Document & PDF options
+    pages: {
+      type: 'string',
+      pattern: '^[0-9,\\-\\s]+$',
+      description: 'Page range string for multi-page documents (planned).',
+      'x-easyconvert-status': 'planned',
+    },
+    pageCount: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Expected total page count.',
+    },
+    password: {
+      type: 'string',
+      description: 'Decryption or protection password.',
+    },
+    orientation: {
+      type: 'string',
+      enum: ['portrait', 'landscape'],
+      description: 'Page rendering orientation.',
+    },
+    preserveTables: {
+      type: 'boolean',
+      description: 'Maintain table structures during text or markup extraction.',
+    },
+    ocrEnabled: {
+      type: 'boolean',
+      description: 'Enable optical character recognition for raster inputs.',
+    },
+    ocrLanguage: {
+      type: 'string',
+      enum: ['auto', 'en', 'ko'],
+      description: 'Target OCR language model.',
+    },
+    clientEdgeMode: {
+      type: 'boolean',
+      description: 'Execute processing within client WebAssembly/WebGPU edge sandbox.',
+    },
+    margin: {
+      type: 'string',
+      enum: ['normal', 'narrow', 'wide'],
+      description: 'Document page margin preset.',
+    },
+    validateMagicBytes: {
+      type: 'boolean',
+      description: 'Enforce fail-closed file header validation.',
+    },
+
+    // Data & Spreadsheet options
+    delimiter: {
+      type: 'string',
+      maxLength: 5,
+      description: 'Delimiter character for delimited text tables.',
+    },
+    hasHeaders: {
+      type: 'boolean',
+      description: 'Treat first row of table data as column header names.',
+    },
+    sheetIndex: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Zero-based worksheet index to extract (planned).',
+      'x-easyconvert-status': 'planned',
+    },
+
+    // Archive options
+    compressionLevel: {
+      type: 'integer',
+      minimum: 0,
+      maximum: 9,
+      description: 'Archive compression level (0-9).',
+    },
+    archiveCoder: {
+      type: 'string',
+      enum: ['lzma', 'lzma2', 'deflate', 'copy'],
+      description: 'Archive compression algorithm.',
+    },
+    splitVolumeBytes: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Maximum volume part size in bytes for split multi-part archives.',
+    },
+    zstdDict: {
+      oneOf: [
+        { type: 'boolean' },
+        { type: 'string', enum: ['data', 'office'] },
+      ],
+      description: 'Zstandard pre-trained dictionary identifier or toggle.',
+    },
+    useNative7z: {
+      type: 'boolean',
+      description: 'Use native 7-Zip CLI engine when available.',
+    },
+    solid: {
+      type: 'boolean',
+      description: 'Enable solid archive mode for multi-file packaging.',
+    },
+
+    // Audio options
+    audioBitrate: {
+      type: 'string',
+      pattern: '^\\d+[kK]?$',
+      description: 'Audio bitrate string (e.g. 128k, 192k, 320k).',
+    },
+    audioChannels: {
+      type: 'string',
+      enum: ['mono', 'stereo', '5.1'],
+      description: 'Audio channel layout.',
+    },
+    audioSampleRate: {
+      type: 'integer',
+      enum: [16000, 22050, 32000, 44100, 48000],
+      description: 'Audio sample frequency in Hz.',
+    },
+    audioVolume: {
+      type: 'number',
+      minimum: 0,
+      maximum: 200,
+      description: 'Audio volume percentage adjustment (0-200).',
+    },
+
+    // Video options
+    videoResolution: {
+      type: 'string',
+      enum: ['original', '4k', '1080p', '720p', '480p', '360p'],
+      description: 'Target video resolution preset.',
+    },
+    videoFps: {
+      type: 'integer',
+      enum: [24, 30, 60],
+      description: 'Video frame rate in frames per second.',
+    },
+    videoCodec: {
+      type: 'string',
+      enum: ['h264', 'hevc', 'vp9', 'av1'],
+      description: 'Target video encoding codec.',
+    },
+    videoBitrate: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Target video bitrate in bits per second.',
+    },
+    duration: {
+      type: 'number',
+      minimum: 0,
+      description: 'Maximum duration in seconds to transcode (planned).',
+      'x-easyconvert-status': 'planned',
+    },
+    useFfmpeg: {
+      type: 'boolean',
+      description: 'Force FFmpeg processing pipeline.',
+    },
+    fastStart: {
+      type: 'boolean',
+      description: 'Relocate moov atom to beginning of MP4 container for web streaming (planned).',
+      'x-easyconvert-status': 'planned',
+    },
+    aspectRatio: {
+      type: 'string',
+      pattern: '^\\d+:\\d+$',
+      description: 'Video aspect ratio (e.g. 16:9, 4:3) (planned).',
+      'x-easyconvert-status': 'planned',
+    },
+    disableHwaccel: {
+      type: 'boolean',
+      description: 'Disable GPU hardware acceleration.',
+    },
+    disableNativeEngine: {
+      type: 'boolean',
+      description: 'Bypass native system engine binaries.',
+    },
+    allowPureLossyBitstream: {
+      type: 'boolean',
+      description: 'Permit pure software fallback when bitstream transcoding.',
+    },
+
+    // Office & PDF export options
+    pdfStandard: {
+      type: 'string',
+      enum: ['pdfa', 'pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
+      description: 'PDF archival standard conformance level.',
+    },
+    pdfVersion: {
+      type: 'string',
+      description: 'Target PDF specification version.',
+    },
+    libreOfficeFilter: {
+      type: 'string',
+      description: 'Explicit LibreOffice export filter name.',
+    },
+    losslessImageCompression: {
+      type: 'boolean',
+      description: 'Preserve lossless pixel compression during document export.',
+    },
+  },
+} as const;
+
+export const PipelineTaskSchema = {
+  $id: 'https://easyconvert.local/schemas/pipeline-task.json',
+  type: 'object',
+  required: ['operation'],
+  properties: {
+    name: {
+      type: 'string',
+      description: 'Task stage identifier or label.',
+    },
+    operation: {
+      type: 'string',
+      enum: PIPELINE_OPERATIONS,
+      description: 'Pipeline stage operation.',
+    },
+    targetFormat: {
+      type: 'string',
+      description: 'Target format extension for this stage.',
+    },
+    options: {
+      $ref: 'https://easyconvert.local/schemas/conversion-options.json',
+      description: 'Stage-specific transformation or conversion options.',
+    },
+  },
+} as const;
+
+export const JobCreateRequestSchema = {
+  $id: 'https://easyconvert.local/schemas/job-create-request.json',
+  type: 'object',
+  properties: {
+    filename: {
+      type: 'string',
+      description: 'Original filename.',
+    },
+    originalFilename: {
+      type: 'string',
+      description: 'Original filename alias.',
+    },
+    targetFormat: {
+      type: 'string',
+      description: 'Target format extension.',
+    },
+    sourceFormat: {
+      type: 'string',
+      description: 'Source format extension override.',
+    },
+    storageKey: {
+      type: 'string',
+      description: 'Key of an object from the multipart upload API or an output owned by the caller.',
+    },
+    inputBufferBase64: {
+      type: 'string',
+      description: 'Base64-encoded source payload.',
+    },
+    fileSize: {
+      type: 'number',
+      minimum: 0,
+      description: 'File size in bytes.',
+    },
+    options: {
+      $ref: 'https://easyconvert.local/schemas/conversion-options.json',
+      description: 'Conversion configuration options.',
+    },
+    tasks: {
+      type: 'array',
+      description: 'Array of sequential pipeline tasks for multi-stage conversion execution.',
+      items: {
+        $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
+      },
+    },
+    webhookUrl: {
+      type: 'string',
+      format: 'uri',
+      description: 'Destination URL for job lifecycle webhooks.',
+    },
+    webhookSecret: {
+      type: 'string',
+      description: 'Secret used for HMAC-SHA256 signature verification.',
+    },
+  },
+} as const;
+
+export const ProblemDetailsSchema = {
+  $id: 'https://easyconvert.local/schemas/problem-details.json',
+  type: 'object',
+  required: ['type', 'title', 'status', 'detail', 'instance'],
+  properties: {
+    type: {
+      type: 'string',
+      format: 'uri',
+      description: 'A URI reference identifying the problem type.',
+    },
+    title: {
+      type: 'string',
+      description: 'A short, human-readable summary of the problem type.',
+    },
+    status: {
+      type: 'integer',
+      description: 'The HTTP status code generated for this occurrence.',
+    },
+    detail: {
+      type: 'string',
+      description: 'A human-readable explanation specific to this occurrence.',
+    },
+    instance: {
+      type: 'string',
+      description: 'A URI reference identifying the specific occurrence.',
+    },
+    invalidParams: {
+      type: 'array',
+      description: 'List of invalid parameters for validation failures.',
+      items: {
+        type: 'object',
+        required: ['name', 'reason'],
+        properties: {
+          name: { type: 'string' },
+          reason: { type: 'string' },
+        },
+      },
+    },
+    success: {
+      type: 'boolean',
+      description: 'Legacy compatibility flag (always false).',
+    },
+    error: {
+      type: 'string',
+      description: 'Legacy compatibility error message mirroring detail.',
+    },
+  },
+} as const;
+
+export const JobResourceSchema = {
+  $id: 'https://easyconvert.local/schemas/job-resource.json',
+  type: 'object',
+  properties: {
+    success: {
+      type: 'boolean',
+      description: 'Job execution success indicator.',
+    },
+    jobId: {
+      type: 'string',
+      description: 'Unique job identifier.',
+    },
+    status: {
+      type: 'string',
+      enum: ['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled'],
+      description: 'Current lifecycle state of the job.',
+    },
+    progress: {
+      type: 'number',
+      minimum: 0,
+      maximum: 100,
+      description: 'Percentage completion (0-100).',
+    },
+    sourceFormat: {
+      type: 'string',
+      description: 'Source format identifier.',
+    },
+    targetFormat: {
+      type: 'string',
+      description: 'Target format identifier.',
+    },
+    originalFilename: {
+      type: 'string',
+      description: 'Original uploaded filename.',
+    },
+    fileSize: {
+      type: 'number',
+      minimum: 0,
+      description: 'File size in bytes.',
+    },
+    createdAt: {
+      type: 'number',
+      description: 'Timestamp of job creation in epoch milliseconds.',
+    },
+    processedOn: {
+      type: 'number',
+      description: 'Timestamp when processing started in epoch milliseconds.',
+    },
+    finishedOn: {
+      type: 'number',
+      description: 'Timestamp when processing completed or failed in epoch milliseconds.',
+    },
+    attemptsMade: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Number of execution attempts made.',
+    },
+    failedReason: {
+      type: 'string',
+      description: 'Reason for job failure if status is failed.',
+    },
+    result: {
+      type: 'object',
+      description: 'Job execution result metadata.',
+    },
+    tasks: {
+      type: 'array',
+      description: 'Pipeline task stages.',
+      items: {
+        $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
+      },
+    },
+    logs: {
+      type: 'array',
+      description: 'Execution logs.',
+      items: {
+        type: 'string',
+      },
+    },
+  },
+} as const;

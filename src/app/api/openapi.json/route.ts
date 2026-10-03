@@ -1,4 +1,11 @@
 import { NextResponse } from 'next/server';
+import {
+  ProblemDetailsSchema,
+  ConversionOptionsSchema,
+  PipelineTaskSchema,
+  JobCreateRequestSchema,
+  JobResourceSchema,
+} from '@/lib/api/contracts';
 
 export const dynamic = 'force-dynamic';
 
@@ -684,28 +691,14 @@ export async function GET() {
             error: { type: 'string', example: 'Detailed error description' },
           },
         },
-        ProblemDetails: {
-          type: 'object',
-          required: ['type', 'title', 'status', 'detail', 'instance'],
-          properties: {
-            type: { type: 'string', format: 'uri', example: 'https://api.easyconvert.io/problems/bad-request' },
-            title: { type: 'string', example: 'Bad Request' },
-            status: { type: 'integer', example: 400 },
-            detail: { type: 'string', example: 'Invalid parameter provided.' },
-            instance: { type: 'string', example: '/api/v1/jobs' },
-            invalidParams: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  name: { type: 'string' },
-                  reason: { type: 'string' },
-                },
-              },
-            },
-            success: { type: 'boolean', example: false },
-            error: { type: 'string', example: 'Invalid parameter provided.' },
-          },
+        ProblemDetails: ProblemDetailsSchema,
+        ConversionOptions: ConversionOptionsSchema,
+        PipelineTask: PipelineTaskSchema,
+        JobCreateRequest: JobCreateRequestSchema,
+        JobResource: JobResourceSchema,
+        JobDetails: {
+          ...JobResourceSchema,
+          $id: 'https://easyconvert.local/schemas/job-details.json',
         },
         ConversionResponse: {
           type: 'object',
@@ -736,44 +729,6 @@ export async function GET() {
             processedOn: { type: 'number' },
             finishedOn: { type: 'number' },
             failedReason: { type: 'string' },
-          },
-        },
-        JobDetails: {
-          type: 'object',
-          properties: {
-            success: { type: 'boolean', example: true },
-            jobId: { type: 'string' },
-            status: { type: 'string' },
-            progress: { type: 'number' },
-            sourceFormat: { type: 'string' },
-            targetFormat: { type: 'string' },
-            originalFilename: { type: 'string' },
-            fileSize: { type: 'number' },
-            createdAt: { type: 'number' },
-            processedOn: { type: 'number' },
-            finishedOn: { type: 'number' },
-            attemptsMade: { type: 'integer' },
-            failedReason: { type: 'string' },
-            result: { type: 'object' },
-            tasks: {
-              type: 'array',
-              items: { $ref: '#/components/schemas/PipelineTask' },
-            },
-            logs: { type: 'array', items: { type: 'string' } },
-          },
-        },
-        PipelineTask: {
-          type: 'object',
-          required: ['operation', 'targetFormat'],
-          properties: {
-            name: { type: 'string', description: 'Task stage identifier or label.' },
-            operation: {
-              type: 'string',
-              enum: ['convert', 'transform', 'optimize', 'watermark'],
-              description: 'Pipeline stage operation.',
-            },
-            targetFormat: { type: 'string', description: 'Target format extension for this stage.' },
-            options: { type: 'object', description: 'Stage-specific transformation or conversion options.' },
           },
         },
         ApiKey: {
