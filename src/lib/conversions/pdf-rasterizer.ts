@@ -1,5 +1,4 @@
 import sharp from 'sharp';
-import { extractEmbeddedImageFromPdf } from './pdf-utils';
 
 // Polyfill Promise.withResolvers for Node.js < 22 / 20.13 environments required by pdfjs-dist
 if (typeof (Promise as any).withResolvers === 'undefined') {
@@ -152,28 +151,6 @@ export async function extractRasterImagesFromPdf(
       throw new Error(`PDF OCR failed: Unsupported compression filter or invalid PDF stream: ${msg}`);
     }
     throw new Error(`PDF OCR failed: Unable to decode PDF raster images: ${msg}`);
-  }
-
-  // If pdfjs found no images, fallback to raw embedded image extractor
-  if (images.length === 0) {
-    const fallbackImg = extractEmbeddedImageFromPdf(pdfBuffer);
-    if (fallbackImg) {
-      try {
-        const meta = await sharp(fallbackImg).metadata();
-        const pngBuf = await sharp(fallbackImg)
-          .withMetadata({ density: targetDpi })
-          .png()
-          .toBuffer();
-        images.push({
-          pageNumber: 1,
-          buffer: pngBuf,
-          width: meta.width || 800,
-          height: meta.height || 600,
-        });
-      } catch {
-        // Fallback image unreadable
-      }
-    }
   }
 
   return images;

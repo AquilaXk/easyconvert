@@ -2671,12 +2671,9 @@ export async function convertArchive(
     try {
       files = await extractZipArchive(effectiveBuffer, options);
     } catch (err) {
-      if (hasZipMagic || (err instanceof Error && err.message.includes('Archive bomb detected'))) {
-        throw new ConversionFailedError(
-          `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-      files = [];
+      throw new ConversionFailedError(
+        `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   } else if (src === 'tar') {
     try {
@@ -2723,9 +2720,21 @@ export async function convertArchive(
       );
     }
   } else if (src === 'rar') {
-    files = extractRarArchive(effectiveBuffer, options);
+    try {
+      files = extractRarArchive(effectiveBuffer, options);
+    } catch (err: any) {
+      throw new ConversionFailedError(
+        `Failed to extract RAR archive '${effectiveFilename}': ${err?.message || String(err)}`
+      );
+    }
   } else if (src === '7z' || src === 'tar.7z') {
-    files = extract7zArchive(effectiveBuffer);
+    try {
+      files = extract7zArchive(effectiveBuffer);
+    } catch (err: any) {
+      throw new ConversionFailedError(
+        `Failed to extract 7z archive '${effectiveFilename}': ${err?.message || String(err)}`
+      );
+    }
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
     let uncompressed: Buffer;
     if (options.zstdDict) {
@@ -2814,21 +2823,23 @@ export async function convertArchive(
     'txz',
     'tar.xz',
   ]);
+  function isValidEmptyArchive(format: string, buffer: Buffer): boolean {
+    if (format === 'zip') {
+      return buffer.length >= 22 && buffer[0] === 0x50 && buffer[1] === 0x4b;
+    }
+    if (format === 'tar') {
+      return buffer.length >= 512 && buffer.subarray(0, 512).every((b) => b === 0);
+    }
+    return false;
+  }
+
   if (files.length === 0) {
-    const hasZipMagic =
-      src === 'zip' &&
-      effectiveBuffer.length >= 4 &&
-      effectiveBuffer[0] === 0x50 &&
-      effectiveBuffer[1] === 0x4b;
-    if (hasZipMagic) {
-      // Valid empty zip archive: retain files = [] so empty target archive is generated
+    if (isValidEmptyArchive(src, effectiveBuffer)) {
+      // Valid empty archive: retain files = [] so empty target archive is generated
     } else if (ARCHIVE_CONTAINER_FORMATS.has(src)) {
-      if (src !== 'zip') {
-        throw new ConversionFailedError(
-          `Failed to extract any files from source archive '${effectiveFilename}' (corrupt or invalid archive format)`
-        );
-      }
-      files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
+      throw new ConversionFailedError(
+        `Failed to extract any files from source archive '${effectiveFilename}' (corrupt or invalid archive format)`
+      );
     } else {
       files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
     }

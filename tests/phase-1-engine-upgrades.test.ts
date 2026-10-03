@@ -9,6 +9,7 @@ import {
 import { encodePureH264Mp4 } from '../src/lib/conversions/media-encoder';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { convertDocument } from '../src/lib/conversions/document';
+import { UnsupportedTargetError } from '../src/lib/types';
 import PDFDocument from 'pdfkit';
 
 describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
@@ -134,8 +135,8 @@ describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
     });
   });
 
-  describe('4. Full-Length PDF Rendering Without Truncation', () => {
-    it('renders multi-line PDF to SVG/PNG preserving all text lines without 45-line truncation', async () => {
+  describe('4. Fail-Closed PDF Vector Export Without Synthesized Text Frames', () => {
+    it('fails closed when converting PDF to SVG without a native vector graphics renderer', async () => {
       const chunks: Buffer[] = [];
       const doc = new PDFDocument();
       doc.on('data', (c) => chunks.push(c));
@@ -150,20 +151,9 @@ describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
       doc.end();
       const pdfBuf = await pdfPromise;
 
-      const svgRes = await convertDocument(pdfBuf, 'pdf', 'svg', {}, 'long_doc.pdf');
-      const svgStr = svgRes.buffer.toString('utf-8');
-
-      // Line 1 and line 60 must both be in the SVG
-      expect(svgStr).toContain('Line number 1 of the comprehensive test document.');
-      expect(svgStr).toContain('Line number 60 of the comprehensive test document.');
-
-      // Total viewBox height must expand beyond 842 to accommodate all 60 lines
-      expect(svgStr).toMatch(/viewBox="0 0 595 \d+"/);
-      const heightMatch = svgStr.match(/viewBox="0 0 595 (\d+)"/);
-      if (heightMatch) {
-        const heightVal = parseInt(heightMatch[1], 10);
-        expect(heightVal).toBeGreaterThanOrEqual(1000);
-      }
+      await expect(convertDocument(pdfBuf, 'pdf', 'svg', {}, 'long_doc.pdf')).rejects.toThrow(
+        UnsupportedTargetError
+      );
     });
   });
 });

@@ -346,6 +346,7 @@ export function recursiveXyCut(
  */
 export function extractStructuredTextFromPdf(pdfBuffer: Buffer): {
   text: string;
+  hasTextLayer: boolean;
   blocks: PdfTextBlock[];
   cmaps: Map<string, PdfToUnicodeCMap>;
 } {
@@ -499,7 +500,8 @@ export function extractStructuredTextFromPdf(pdfBuffer: Buffer): {
   const text = orderedBlocks.map((b) => b.text).join('\n').trim();
 
   return {
-    text: text || 'No extractable text found in PDF document.',
+    text: text || '',
+    hasTextLayer: Boolean(text && text.length > 0),
     blocks: orderedBlocks,
     cmaps,
   };

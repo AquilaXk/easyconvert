@@ -10,6 +10,7 @@ import {
   escapeH264Rbsp,
   checkFfmpeg,
 } from '../src/lib/conversions/index';
+import { ConversionFailedError } from '../src/lib/types';
 
 describe('Media Conversion Engine (Audio & Video)', () => {
   // Helper to generate a genuine RIFF WAV buffer
@@ -101,17 +102,22 @@ describe('Media Conversion Engine (Audio & Video)', () => {
     expect(result.buffer.toString('ascii', 4, 8)).toBe('ftyp');
   });
 
-  it('converts audio to WebM container with EBML header', async () => {
+  it('converts audio to WebM container with EBML header when FFmpeg available or fails closed', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'webm', {}, 'clip.wav');
-
-    expect(result.mimeType).toBe('video/webm');
-    expect(result.filename).toBe('clip.webm');
-    // WebM EBML marker [0x1A, 0x45, 0xDF, 0xA3]
-    expect(result.buffer[0]).toBe(0x1a);
-    expect(result.buffer[1]).toBe(0x45);
-    expect(result.buffer[2]).toBe(0xdf);
-    expect(result.buffer[3]).toBe(0xa3);
+    if (checkFfmpeg()) {
+      const result = await convertFile(wav, 'wav', 'webm', {}, 'clip.wav');
+      expect(result.mimeType).toBe('video/webm');
+      expect(result.filename).toBe('clip.webm');
+      // WebM EBML marker [0x1A, 0x45, 0xDF, 0xA3]
+      expect(result.buffer[0]).toBe(0x1a);
+      expect(result.buffer[1]).toBe(0x45);
+      expect(result.buffer[2]).toBe(0xdf);
+      expect(result.buffer[3]).toBe(0xa3);
+    } else {
+      await expect(convertFile(wav, 'wav', 'webm', {}, 'clip.wav')).rejects.toThrow(
+        ConversionFailedError
+      );
+    }
   });
 
   it('fails closed when converting MP4 video container to MP3 without decoder', async () => {

@@ -14,8 +14,10 @@ import {
   demosaicBayerCfa,
   decodeRawBayerSensor,
   convertImage,
+  checkFfmpeg,
   type BayerSensorData,
 } from '../src/lib/conversions/index';
+import { ConversionFailedError } from '../src/lib/types';
 
 describe('Phase 2 Real Engines & Encoders Verification Testnet', () => {
   // ==========================================================================
@@ -401,10 +403,16 @@ describe('Phase 2 Real Engines & Encoders Verification Testnet', () => {
       const pcmData = Buffer.alloc(dataSize);
       const wavBuffer = Buffer.concat([wavHeader, pcmData]);
 
-      const result = await convertMedia(wavBuffer, 'wav', 'webm', {}, 'test_audio.wav');
-      expect(result.mimeType).toBe('video/webm');
-      expect(result.filename).toBe('test_audio.webm');
-      expect(result.buffer.readUInt32BE(0)).toBe(0x1a45dfa3);
+      if (checkFfmpeg()) {
+        const result = await convertMedia(wavBuffer, 'wav', 'webm', {}, 'test_audio.wav');
+        expect(result.mimeType).toBe('video/webm');
+        expect(result.filename).toBe('test_audio.webm');
+        expect(result.buffer.readUInt32BE(0)).toBe(0x1a45dfa3);
+      } else {
+        await expect(convertMedia(wavBuffer, 'wav', 'webm', {}, 'test_audio.wav')).rejects.toThrow(
+          ConversionFailedError
+        );
+      }
     });
   });
 

@@ -157,63 +157,7 @@ export default function OptionsModal({
 
               {openSections.domain && (
                 <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-6">
-                  {/* Connect Hyphens */}
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">Connect Hyphens</label>
-                    <div className="flex items-center gap-4 text-xs text-ink-secondary dark:text-neutral-300">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="connectHyphens"
-                          checked={options.preserveLayout === false}
-                          onChange={() => setOptions({ ...options, preserveLayout: false })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
-                        />
-                        <span>Yes</span>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="connectHyphens"
-                          checked={options.preserveLayout !== false}
-                          onChange={() => setOptions({ ...options, preserveLayout: true })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
-                        />
-                        <span>No</span>
-                      </label>
-                    </div>
-                    <p className="text-xs text-ink-secondary dark:text-neutral-400">Specifies whether hyphens in the PDF should be connected.</p>
-                  </div>
 
-                  {/* Prioritize Visual Appearance */}
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">Prioritize Visual Appearance</label>
-                    <div className="flex items-center gap-4 text-xs text-ink-secondary dark:text-neutral-300">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="prioritizeVisual"
-                          checked={options.preserveFonts === false}
-                          onChange={() => setOptions({ ...options, preserveFonts: false })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
-                        />
-                        <span>Yes</span>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="prioritizeVisual"
-                          checked={options.preserveFonts !== false}
-                          onChange={() => setOptions({ ...options, preserveFonts: true })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
-                        />
-                        <span>No</span>
-                      </label>
-                    </div>
-                    <p className="text-xs text-ink-secondary dark:text-neutral-400">
-                      Specifies whether to prefer an exact visual replica of the PDF at the expense of preventing reflow of document paragraphs.
-                    </p>
-                  </div>
 
                   {/* OCR Images */}
                   <div className="space-y-2 sm:col-span-2">

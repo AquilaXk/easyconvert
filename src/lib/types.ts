@@ -36,12 +36,9 @@ export interface FormatOptionsSchema {
   videoFps?: boolean;
   videoCodec?: boolean;
   duration?: boolean;
-  aspectRatio?: boolean;
   // Document & Office options
   pages?: boolean;
   password?: boolean;
-  preserveLayout?: boolean;
-  preserveFonts?: boolean;
   preserveTables?: boolean;
   ocrEnabled?: boolean;
   ocrLanguage?: boolean;
@@ -95,8 +92,6 @@ export interface ConversionOptions {
   pageCount?: number;
   password?: string;
   orientation?: 'portrait' | 'landscape';
-  preserveLayout?: boolean;
-  preserveFonts?: boolean;
   preserveTables?: boolean;
   ocrEnabled?: boolean;
   ocrLanguage?: 'auto' | 'en' | 'ko';
@@ -123,10 +118,9 @@ export interface ConversionOptions {
   // Video options
   videoResolution?: 'original' | '4k' | '1080p' | '720p' | '480p' | '360p';
   videoFps?: 24 | 30 | 60;
-  videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores';
+  videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1';
   videoBitrate?: number;
   duration?: number;
-  aspectRatio?: 'original' | '16:9' | '4:3' | '1:1' | '9:16';
   useFfmpeg?: boolean;
   fastStart?: boolean;
   disableHwaccel?: boolean;
@@ -284,7 +278,7 @@ export class UnsupportedOptionError extends ConversionFailedError {
   }
 }
 
-export class OcrLanguageUnavailableError extends Error {
+export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
   readonly status = 400;
   constructor(message: string) {
     super(message);

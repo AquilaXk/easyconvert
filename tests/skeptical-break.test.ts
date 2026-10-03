@@ -4,7 +4,7 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions/index';
 import { POST as convertRoute } from '../src/app/api/convert/route';
-import { CadGeometryUnavailableError } from '../src/lib/types';
+import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedTargetError } from '../src/lib/types';
 
 describe('Skeptical Review: Breaking Prior Implementation', () => {
   it('1. stl -> dxf must generate standard DXF 3DFACE entities without throwing Unsupported target', async () => {
@@ -188,22 +188,22 @@ endsolid TestModel`;
     doc.end();
     const pdfBuf = await pdfPromise;
 
-    // PDF -> PNG
-    const pngRes = await convertFile(pdfBuf, 'pdf', 'png', {}, 'sample.pdf');
-    expect(pngRes.mimeType).toBe('image/png');
-    expect(pngRes.size).toBeGreaterThan(0);
+    // PDF -> PNG without raster images fails closed
+    await expect(convertFile(pdfBuf, 'pdf', 'png', {}, 'sample.pdf')).rejects.toThrow(
+      ConversionFailedError
+    );
 
-    // PDF -> SVG
-    const svgRes = await convertFile(pdfBuf, 'pdf', 'svg', {}, 'sample.pdf');
-    expect(svgRes.mimeType).toBe('image/svg+xml');
-    expect(svgRes.buffer.toString('utf-8')).toContain('<svg');
+    // PDF -> SVG without vector graphics renderer fails closed
+    await expect(convertFile(pdfBuf, 'pdf', 'svg', {}, 'sample.pdf')).rejects.toThrow(
+      UnsupportedTargetError
+    );
 
-    // PDF -> DXF
-    const dxfRes = await convertFile(pdfBuf, 'pdf', 'dxf', {}, 'sample.pdf');
-    expect(dxfRes.mimeType).toBe('image/vnd.dxf');
-    expect(dxfRes.buffer.toString('utf-8')).toContain('SECTION');
+    // PDF -> DXF without vector CAD geometry fails closed
+    await expect(convertFile(pdfBuf, 'pdf', 'dxf', {}, 'sample.pdf')).rejects.toThrow(
+      UnsupportedTargetError
+    );
 
-    // PDF -> RTF
+    // PDF -> RTF succeeds with authentic text escaping
     const rtfRes = await convertFile(pdfBuf, 'pdf', 'rtf', {}, 'sample.pdf');
     expect(rtfRes.mimeType).toBe('application/rtf');
     expect(rtfRes.buffer.toString('utf-8')).toContain('{\\rtf1');

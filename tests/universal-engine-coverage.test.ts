@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
 import { decompressBzip2 } from '../src/lib/conversions/bzip2';
-import { extractTarArchive, extractZipArchive, extractRarArchive } from '../src/lib/conversions/archive';
+import { extractTarArchive, extractZipArchive, extractRarArchive, createZipArchive } from '../src/lib/conversions/archive';
 
 describe('Universal Engine Conversion Coverage', () => {
   it('converts archive formats (tar.gz, tar.bz2, 7z, rar, etc.) with real binary validation', async () => {
-    const textData = Buffer.from('Archive test content for universal conversion', 'utf-8');
+    const rawContent = Buffer.from('Archive test content for universal conversion', 'utf-8');
+    const zipArchive = await createZipArchive([{ filename: 'test.txt', buffer: rawContent }]);
+    const textData = zipArchive.buffer;
 
     // zip -> tar.gz
     const res1 = await convertFile(textData, 'zip', 'tar.gz', {}, 'test.zip');

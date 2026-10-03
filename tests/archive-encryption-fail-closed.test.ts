@@ -14,6 +14,7 @@ import {
 import {
   ArchiveEncryptionUnavailableError,
   UnsupportedOptionError,
+  ConversionFailedError,
 } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
@@ -105,6 +106,46 @@ describe('Archive Encryption Fail-Closed Verification', () => {
           convertArchive(input, 'zip', tgt, { password: 'password' }, 'file.zip')
         ).rejects.toThrow(UnsupportedOptionError);
       }
+    });
+
+    it('convertArchive fails closed when extracting corrupt or invalid ZIP archive', async () => {
+      const corruptZip = Buffer.from('this is not a valid zip archive file', 'utf-8');
+      await expect(
+        convertArchive(corruptZip, 'zip', 'tar', {}, 'corrupt.zip')
+      ).rejects.toThrow(ConversionFailedError);
+    });
+
+    it('convertArchive handles valid empty zip archive and creates empty target', async () => {
+      const emptyZip = (await createZipArchive([])).buffer;
+      const res = await convertArchive(emptyZip, 'zip', 'tar', {}, 'empty.zip');
+      expect(res.mimeType).toBe('application/x-tar');
+      expect(res.filename).toBe('empty.tar');
+      expect(res.buffer.length).toBe(1024);
+      expect(res.buffer.every((b) => b === 0)).toBe(true);
+    });
+
+    it('convertArchive rejects truncated PK header with length < 22 fail-closed', async () => {
+      const truncated = Buffer.from('PK\x03\x04short');
+      await expect(
+        convertArchive(truncated, 'zip', 'tar', {}, 'truncated.zip')
+      ).rejects.toThrow(ConversionFailedError);
+    });
+
+    it('convertArchive handles valid empty tar archive and creates empty target', async () => {
+      const emptyTar = createTarArchive([]).buffer;
+      const res = await convertArchive(emptyTar, 'tar', 'zip', {}, 'empty.tar');
+      expect(res.mimeType).toBe('application/zip');
+      expect(res.filename).toBe('empty.zip');
+      expect(res.buffer.length).toBe(22);
+    });
+
+    it('convertArchive rejects non-zip container format starting with PK bytes fail-closed when empty', async () => {
+      const fakeRarWithPk = Buffer.alloc(30);
+      fakeRarWithPk[0] = 0x50;
+      fakeRarWithPk[1] = 0x4b;
+      await expect(
+        convertArchive(fakeRarWithPk, 'rar', 'zip', {}, 'corrupt.rar')
+      ).rejects.toThrow(ConversionFailedError);
     });
   });
 
