@@ -13,6 +13,7 @@ import {
   OracleToolMissingError,
   runDifferentialComparison,
 } from './helpers/differential-oracle';
+import { oracleTest } from './helpers/oracle-test';
 import {
   EnduranceSoakController,
   createDeterministicSyntheticStream,
@@ -216,7 +217,7 @@ describe('Phase 5: Differential Oracle & Endurance Soak Testnet (#236)', () => {
   // 2. Independent Third-Party Oracle Bitstream Verification
   // =========================================================================
   describe('2. Independent Third-Party Oracle Bitstream Verification', () => {
-    it('verifies valid multi-page PDF structure with independent pdf-lib oracle', async () => {
+    oracleTest('verifies valid multi-page PDF structure with independent pdf-lib oracle', ['pdfinfo'], async () => {
       const doc = await PDFDocument.create();
       const page1 = doc.addPage([612, 792]);
       page1.drawText('Differential Oracle Audit Page 1', { x: 50, y: 700, color: rgb(0.1, 0.1, 0.1) });

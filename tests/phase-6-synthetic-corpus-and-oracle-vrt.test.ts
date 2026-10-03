@@ -12,6 +12,7 @@ import {
   runDifferentialComparison,
   parseXlsxToAst,
 } from './helpers/differential-oracle';
+import { oracleTest } from './helpers/oracle-test';
 import { compareImages } from './helpers/vrt-engine';
 import { decodeParquet } from '../src/lib/conversions/parquet';
 import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
@@ -77,7 +78,7 @@ describe('Phase 6: Automated Synthetic Corpus Generator & Differential Oracle VR
       }
     });
 
-    it('1.3 validates format integrity across all synthesized files via assertFormatIntegrity', () => {
+    oracleTest('1.3 validates format integrity across all synthesized files via assertFormatIntegrity', ['pdfinfo', '7z', 'ffmpeg'], () => {
       for (const file of testManifest.files) {
         if (file.format === 'raw' || file.format === 'otf') {
           continue;
@@ -173,7 +174,7 @@ describe('Phase 6: Automated Synthetic Corpus Generator & Differential Oracle VR
       expect(res.mismatchedPixels).toBe(0);
     });
 
-    it('3.2 differential comparison catches structural mutation between golden and modified PDF', async () => {
+    oracleTest('3.2 differential comparison catches structural mutation between golden and modified PDF', ['pdfinfo', 'pdftotext'], async () => {
       const pdfFile = testManifest.files.find((f) => f.name === 'differential-layout.pdf');
       expect(pdfFile).toBeDefined();
 

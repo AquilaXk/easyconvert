@@ -16,6 +16,7 @@ import {
   assertFormatIntegrity,
   OracleToolMissingError,
 } from './helpers/differential-oracle';
+import { oracleTest } from './helpers/oracle-test';
 import {
   createDeterministicSyntheticStream,
   pipeStreamToStorageMultipart,
@@ -279,7 +280,7 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(() => assertFormatIntegrity(validAac, 'aac')).not.toThrow();
     });
 
-    it('validates authentic MPEG-1 Layer III frame sync and rejects corrupted frames', () => {
+    oracleTest('validates authentic MPEG-1 Layer III frame sync and rejects corrupted frames', ['ffmpeg'], () => {
       const validMp3 = createAuthenticMp3Buffer();
       expect(() => checkMp3Integrity(validMp3)).not.toThrow();
       expect(() => assertFormatIntegrity(validMp3, 'mp3')).not.toThrow();
