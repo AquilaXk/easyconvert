@@ -167,6 +167,10 @@ export const LOSSY_PSYCHOACOUSTIC_FORMATS = new Set([
   'mp4',
   'mov',
   'mp3',
+  'wma',
+  'webm',
+  'mkv',
+  'avi',
 ]);
 
 
@@ -227,6 +231,15 @@ function processMediaPure(
 ): ConversionResult {
   // 1. Extract PCM audio samples from source using pure audio decoder stack
   const decoded = decodeAudioBuffer(inputBuffer, src);
+  if (!Number.isFinite(decoded.sampleRate) || decoded.sampleRate < 4000 || decoded.sampleRate > 192000) {
+    throw new ConversionFailedError(`Invalid decoded source sample rate: ${decoded.sampleRate}`);
+  }
+  if (options.audioSampleRate !== undefined) {
+    if (!Number.isFinite(options.audioSampleRate) || options.audioSampleRate < 4000 || options.audioSampleRate > 192000) {
+      throw new ConversionFailedError(`Invalid or unsupported audio sample rate: ${options.audioSampleRate}`);
+    }
+  }
+
   let pcmData = decoded.samples;
   let sampleRate = options.audioSampleRate || decoded.sampleRate || 44100;
   let channels =
@@ -253,6 +266,10 @@ function processMediaPure(
         stereo[i * 2 + 1] = pcmData[i];
       }
       pcmData = stereo;
+    } else {
+      throw new ConversionFailedError(
+        `Unsupported channel configuration: cannot remap audio from ${decoded.channels} channels to ${channels} channels (Fail-Closed).`
+      );
     }
   }
 
@@ -302,26 +319,30 @@ function processMediaPure(
       break;
 
     case 'wma':
-      outputBuffer = encodeAsfWmaContainer(pcmData, sampleRate, channels);
-      break;
+      throw new ConversionFailedError(
+        'Authentic WMA bitstream encoder is required. Pure TypeScript cannot emit raw PCM in fake ASF container (Fail-Closed).'
+      );
 
-    // Video targets: build valid MP4, WebM, MKV, AVI multimedia container
+    // Video targets: build valid MP4 multimedia container with authentic H.264
     case 'mp4':
     case 'mov':
       outputBuffer = encodeMp4Container(pcmData, sampleRate, channels, options, baseName);
       break;
 
     case 'webm':
-      outputBuffer = encodeWebmContainer(pcmData, sampleRate, channels, options);
-      break;
+      throw new ConversionFailedError(
+        'Native FFmpeg is required to encode authentic WebM multimedia streams (Fail-Closed).'
+      );
 
     case 'mkv':
-      outputBuffer = encodeMkvContainer(pcmData, sampleRate, channels);
-      break;
+      throw new ConversionFailedError(
+        'Native FFmpeg is required to encode authentic Matroska MKV multimedia streams (Fail-Closed).'
+      );
 
     case 'avi':
-      outputBuffer = encodeAviContainer(pcmData, sampleRate, channels);
-      break;
+      throw new ConversionFailedError(
+        'Native FFmpeg is required to encode authentic AVI multimedia streams (Fail-Closed).'
+      );
 
     default:
       throw new ConversionFailedError(
@@ -745,23 +766,6 @@ function encodeFlacContainer(samples: Int16Array, sampleRate: number, channels: 
   return encodeFlacStream(samples, sampleRate, channels);
 }
 
-/**
- * Encodes Microsoft Advanced Systems Format (ASF/WMA) container
- */
-function encodeAsfWmaContainer(samples: Int16Array, sampleRate: number, channels: number): Buffer {
-  const header = Buffer.alloc(30);
-  // ASF Header Object GUID: 75B22630-668E-11CF-A6D9-00AA0062CE6C
-  header.set([0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c], 0);
-  header.writeBigUInt64LE(BigInt(30 + samples.length * 2), 16);
-  header.writeUInt32LE(1, 24); // Number of header objects
-
-  const payload = Buffer.alloc(samples.length * 2);
-  for (let i = 0; i < samples.length; i++) {
-    payload.writeInt16LE(samples[i], i * 2);
-  }
-
-  return Buffer.concat([header, payload]);
-}
 
 /**
  * Encodes ISO Base Media File Format (MP4 / MOV) container
@@ -1024,63 +1028,6 @@ export function encodeWebmContainer(
   return Buffer.concat([ebmlHeader, segmentElement]);
 }
 
-/**
- * Encodes Matroska MKV container
- */
-function encodeMkvContainer(samples: Int16Array, sampleRate: number, channels: number): Buffer {
-  const parts: Buffer[] = [];
-  // EBML Header with DocType "matroska"
-  const ebml = Buffer.from([
-    0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00, 0x00, 0x23, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01,
-    0x42, 0xf2, 0x81, 0x04, 0x42, 0xf3, 0x81, 0x08, 0x42, 0x82, 0x88, 0x6d, 0x61, 0x74, 0x72, 0x6f,
-    0x73, 0x6b, 0x61, // "matroska"
-    0x42, 0x87, 0x81, 0x04, 0x42, 0x85, 0x81, 0x02,
-  ]);
-  parts.push(ebml);
-
-  // Segment payload
-  const data = Buffer.alloc(samples.length * 2);
-  for (let i = 0; i < samples.length; i++) {
-    data.writeInt16LE(samples[i], i * 2);
-  }
-  parts.push(data);
-
-  return Buffer.concat(parts);
-}
-
-/**
- * Encodes Audio Video Interleave (AVI) RIFF container
- */
-function encodeAviContainer(samples: Int16Array, sampleRate: number, channels: number): Buffer {
-  const dataSize = samples.length * 2;
-  const avi = Buffer.alloc(56 + dataSize);
-
-  // RIFF AVI
-  avi.write('RIFF', 0);
-  avi.writeUInt32LE(48 + dataSize, 4);
-  avi.write('AVI ', 8);
-
-  // LIST hdrl
-  avi.write('LIST', 12);
-  avi.writeUInt32LE(24, 16);
-  avi.write('hdrl', 20);
-  avi.write('avih', 24);
-  avi.writeUInt32LE(16, 28);
-  avi.writeUInt32LE(33333, 32); // Microseconds per frame (30fps)
-  avi.writeUInt32LE(1, 36); // Streams count
-
-  // LIST movi
-  avi.write('LIST', 40);
-  avi.writeUInt32LE(dataSize + 4, 44);
-  avi.write('movi', 48);
-  avi.write('00wb', 52); // Audio chunk
-
-  for (let i = 0; i < samples.length; i++) {
-    avi.writeInt16LE(samples[i], 56 + i * 2);
-  }
-
-  return avi;
-}
 
 function getMimeTypeForMedia(ext: string): string {
   const map: Record<string, string> = {

@@ -309,7 +309,7 @@ export async function convertOffice(
   }
   if (tgt === 'rtf') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeHtml(textContent).replace(/\\r?\\n/g, '\\par ')}}\n`;
+    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeRtf(textContent)}}\n`;
     const buffer = Buffer.from(rtf, 'utf-8');
     return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
   }
@@ -335,7 +335,7 @@ export async function extractTextContentForOffice(
   if (src === 'pdf') {
     const structuredPdf = extractStructuredTextFromPdf(inputBuffer);
     let extracted = structuredPdf.text;
-    if (extracted === 'No extractable text found in PDF document.' || options.ocrEnabled) {
+    if (!extracted || extracted.trim() === '' || options.ocrEnabled) {
       const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
       if (embeddedImg) {
         const ocr = await performOcr(embeddedImg, options.ocrLanguage);
@@ -8238,6 +8238,28 @@ function escapeXml(str: string): string {
 }
 
 /**
+ * Escapes plain text for inclusion in RTF documents.
+ * Escapes special RTF characters (\, {, }), newlines (\par), tabs (\tab),
+ * and encodes non-ASCII characters using signed 16-bit \uN? notation.
+ */
+export function escapeRtf(text: string): string {
+  if (!text) return '';
+  return text.replace(/[\\{}]|[^\x20-\x7E\r\n\t]|\r?\n/g, (ch) => {
+    if (ch === '\\') return '\\\\';
+    if (ch === '{') return '\\{';
+    if (ch === '}') return '\\}';
+    if (ch === '\r\n' || ch === '\n') return '\\par\n';
+    if (ch === '\t') return '\\tab ';
+    const code = ch.charCodeAt(0);
+    if (code > 127) {
+      const signed = code > 32767 ? code - 65536 : code;
+      return `\\u${signed}?`;
+    }
+    return ch;
+  });
+}
+
+/**
  * OpenDocument Spreadsheet (ODS) Parser & Converter
  */
 export async function convertOdsSource(
@@ -9177,7 +9199,7 @@ async function convertGenericDocumentSource(
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
   if (tgt === 'rtf') {
-    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeHtml(text).replace(/\\r?\\n/g, '\\par ')}}\n`;
+    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeRtf(text)}}\n`;
     const buffer = Buffer.from(rtf, 'utf-8');
     return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
   }
@@ -9260,7 +9282,7 @@ async function convertGenericEbookSource(
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
   if (tgt === 'rtf') {
-    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeHtml(text).replace(/\\r?\\n/g, '\\par ')}}\n`;
+    const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeRtf(text)}}\n`;
     const buffer = Buffer.from(rtf, 'utf-8');
     return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
   }
@@ -9326,15 +9348,15 @@ async function renderTableToRaster(
   const rowHeight = 26;
   const colWidth = 140;
   const numCols = Math.max(1, ...rows.map((r) => r.length));
-  const width = Math.min(2400, Math.max(640, numCols * colWidth + 40));
-  const height = Math.min(2400, Math.max(200, rows.length * rowHeight + 80));
+  const width = Math.max(640, numCols * colWidth + 40);
+  const height = Math.max(200, rows.length * rowHeight + 80);
 
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <rect width="${width}" height="${height}" fill="#ffffff" />
     <text x="20" y="32" font-family="sans-serif" font-size="16" font-weight="bold" fill="#1e293b">${escapeXml(baseName)}</text>
   `;
 
-  rows.slice(0, 80).forEach((row, rIdx) => {
+  rows.forEach((row, rIdx) => {
     const y = 50 + rIdx * rowHeight;
     const isHeader = rIdx === 0;
     const bgFill = isHeader ? '#f1f5f9' : (rIdx % 2 === 0 ? '#ffffff' : '#f8fafc');
@@ -9342,7 +9364,7 @@ async function renderTableToRaster(
     row.forEach((cell, cIdx) => {
       const x = 25 + cIdx * colWidth;
       const fontWeight = isHeader ? 'bold' : 'normal';
-      svg += `<text x="${x}" y="${y + 18}" font-family="sans-serif" font-size="12" font-weight="${fontWeight}" fill="#334155">${escapeXml(cell.slice(0, 20))}</text>`;
+      svg += `<text x="${x}" y="${y + 18}" font-family="sans-serif" font-size="12" font-weight="${fontWeight}" fill="#334155">${escapeXml(cell)}</text>`;
     });
   });
 
@@ -9357,9 +9379,9 @@ async function renderTextToRaster(
   tgt: string,
   baseName: string
 ): Promise<{ buffer: Buffer; mimeType: string }> {
-  const lines = text.split(/\\r?\\n/).slice(0, 60);
+  const lines = text.split(/\r?\n/);
   const width = 800;
-  const height = Math.min(2400, Math.max(240, lines.length * 24 + 80));
+  const height = Math.max(240, lines.length * 24 + 80);
 
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <rect width="${width}" height="${height}" fill="#ffffff" />
@@ -9368,7 +9390,7 @@ async function renderTextToRaster(
 
   lines.forEach((line, idx) => {
     const y = 68 + idx * 24;
-    svg += `<text x="30" y="${y}" font-family="sans-serif" font-size="13" fill="#334155">${escapeXml(line.slice(0, 95))}</text>`;
+    svg += `<text x="30" y="${y}" font-family="sans-serif" font-size="13" fill="#334155">${escapeXml(line)}</text>`;
   });
 
   svg += `</svg>`;

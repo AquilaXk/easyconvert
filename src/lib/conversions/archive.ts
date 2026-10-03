@@ -2671,12 +2671,9 @@ export async function convertArchive(
     try {
       files = await extractZipArchive(effectiveBuffer, options);
     } catch (err) {
-      if (hasZipMagic || (err instanceof Error && err.message.includes('Archive bomb detected'))) {
-        throw new ConversionFailedError(
-          `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-      files = [];
+      throw new ConversionFailedError(
+        `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   } else if (src === 'tar') {
     try {
@@ -2817,18 +2814,15 @@ export async function convertArchive(
   if (files.length === 0) {
     const hasZipMagic =
       src === 'zip' &&
-      effectiveBuffer.length >= 4 &&
+      effectiveBuffer.length >= 22 &&
       effectiveBuffer[0] === 0x50 &&
       effectiveBuffer[1] === 0x4b;
     if (hasZipMagic) {
       // Valid empty zip archive: retain files = [] so empty target archive is generated
     } else if (ARCHIVE_CONTAINER_FORMATS.has(src)) {
-      if (src !== 'zip') {
-        throw new ConversionFailedError(
-          `Failed to extract any files from source archive '${effectiveFilename}' (corrupt or invalid archive format)`
-        );
-      }
-      files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
+      throw new ConversionFailedError(
+        `Failed to extract any files from source archive '${effectiveFilename}' (corrupt or invalid archive format)`
+      );
     } else {
       files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
     }

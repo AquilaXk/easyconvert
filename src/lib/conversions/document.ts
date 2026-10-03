@@ -1,7 +1,6 @@
 import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
-import sharp from 'sharp';
-import { ConversionOptions, ConversionResult } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
   convertOffice,
@@ -11,6 +10,7 @@ import {
   extractTextFromDoc,
   renderDrawingMlToSvg,
   parseDrawingMlShapes,
+  escapeRtf,
   DrawingMlShape,
   TableBorder,
 } from './office';
@@ -28,7 +28,6 @@ import {
 } from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
-import { svgToDxf } from './vector-cad';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
 
 export {
@@ -43,6 +42,7 @@ export {
   extractTextFromDoc,
   renderDrawingMlToSvg,
   parseDrawingMlShapes,
+  escapeRtf,
 };
 export type { DrawingMlShape, TableBorder, PdfTextBlock, PdfToUnicodeCMap, XyCutOptions, DlaBoundingBox, DlaBlock, DlaPageLayout };
 
@@ -86,7 +86,7 @@ export async function convertDocument(
     const pageOcrResults = new Map<number, OcrResult>();
 
     // If scanned document or OCR is requested
-    const isScanned = extractedText === 'No extractable text found in PDF document.';
+    const isScanned = !structuredPdf.hasTextLayer || !extractedText || extractedText.trim() === '';
     if (options.ocrEnabled || isScanned) {
       let rasterImages: ExtractedPdfImage[] = [];
       try {
@@ -150,20 +150,8 @@ export async function convertDocument(
         } else if (options.ocrEnabled) {
           throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
-      } else {
-        const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
-        if (embeddedImg) {
-          const ocr = await performOcr(embeddedImg, options.ocrLanguage);
-          if (ocr.text) {
-            extractedText = ocr.text;
-            ocrInfo = { text: ocr.text, confidence: ocr.confidence };
-            lastOcrResult = ocr;
-          } else if (options.ocrEnabled) {
-            throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
-          }
-        } else if (options.ocrEnabled) {
-          throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
-        }
+      } else if (options.ocrEnabled) {
+        throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
       }
     }
 
@@ -337,21 +325,9 @@ export async function convertDocument(
             ocrConfidence: ocrInfo.confidence,
           };
         } catch (pdfErr: any) {
-          if (lastOcrResult) {
-            const fallbackImg = extractEmbeddedImageFromPdf(inputBuffer);
-            if (fallbackImg) {
-              const searchablePdf = await generateSearchablePdf(fallbackImg, lastOcrResult, options, baseName);
-              return {
-                buffer: searchablePdf,
-                mimeType: 'application/pdf',
-                filename: `${baseName}.pdf`,
-                size: searchablePdf.length,
-                ocrExtractedText: ocrInfo.text,
-                ocrConfidence: ocrInfo.confidence,
-              };
-            }
-          }
-          throw new Error(`PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`);
+          throw new ConversionFailedError(
+            `PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`
+          );
         }
       }
       return {
@@ -364,18 +340,10 @@ export async function convertDocument(
 
     if (tgt === 'png') {
       const rasterImages = await extractRasterImagesFromPdf(inputBuffer, 300);
-      let pngBuffer: Buffer;
-      if (rasterImages.length > 0) {
-        pngBuffer = rasterImages[0].buffer;
-      } else {
-        const embedded = extractEmbeddedImageFromPdf(inputBuffer);
-        if (embedded) {
-          pngBuffer = await sharp(embedded).png().toBuffer();
-        } else {
-          const svg = renderTextPageSvg(extractedText, baseName);
-          pngBuffer = await sharp(Buffer.from(svg, 'utf-8')).png().toBuffer();
-        }
+      if (rasterImages.length === 0) {
+        throw new ConversionFailedError('PDF contains no renderable raster pages or images.');
       }
+      const pngBuffer = rasterImages[0].buffer;
       return {
         buffer: pngBuffer,
         mimeType: 'image/png',
@@ -387,32 +355,19 @@ export async function convertDocument(
     }
 
     if (tgt === 'svg') {
-      const svg = renderTextPageSvg(extractedText, baseName);
-      const buffer = Buffer.from(svg, 'utf-8');
-      return {
-        buffer,
-        mimeType: 'image/svg+xml',
-        filename: `${baseName}.svg`,
-        size: buffer.length,
-        ocrExtractedText: ocrInfo.text,
-        ocrConfidence: ocrInfo.confidence,
-      };
+      throw new UnsupportedTargetError(
+        `Direct PDF to ${tgt.toUpperCase()} conversion without vector graphics renderer is unsupported.`
+      );
     }
 
     if (tgt === 'dxf') {
-      const svg = renderTextPageSvg(extractedText, baseName);
-      const dxf = svgToDxf(svg);
-      const buffer = Buffer.from(dxf, 'utf-8');
-      return {
-        buffer,
-        mimeType: 'image/vnd.dxf',
-        filename: `${baseName}.dxf`,
-        size: buffer.length,
-      };
+      throw new UnsupportedTargetError(
+        `Direct PDF to ${tgt.toUpperCase()} conversion without vector CAD geometry is unsupported.`
+      );
     }
 
     if (tgt === 'rtf') {
-      const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeHtml(extractedText).replace(/\\r?\\n/g, '\\par ')}}\n`;
+      const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\fs24 ${escapeRtf(extractedText)}}\n`;
       const buffer = Buffer.from(rtf, 'utf-8');
       return {
         buffer,
@@ -751,28 +706,4 @@ function renderPdfTable(doc: any, rows: string[][]) {
   doc.moveDown(0.5);
 }
 
-function renderTextPageSvg(text: string, title: string): string {
-  const lines = text.split(/\r?\n/);
-  const lineHeight = 16;
-  const topMargin = 50;
-  const bottomMargin = 50;
-  const totalHeight = Math.max(842, topMargin + lines.length * lineHeight + bottomMargin);
 
-  const textElements = lines
-    .map(
-      (l, idx) =>
-        `<text x="40" y="${topMargin + idx * lineHeight}" fill="#1F2340" font-family="system-ui, -apple-system, sans-serif" font-size="11">${escapeHtml(
-          l
-        )}</text>`
-    )
-    .join('\n    ');
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="595" height="${totalHeight}" viewBox="0 0 595 ${totalHeight}">
-  <title>${escapeHtml(title)}</title>
-  <rect width="100%" height="100%" fill="#FFFFFF" />
-  <g>
-    ${textElements}
-  </g>
-</svg>`;
-}

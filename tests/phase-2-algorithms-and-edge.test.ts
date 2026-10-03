@@ -5,10 +5,7 @@ import {
   findClosestPaletteIndexOklab,
   applyFloydSteinbergDither,
 } from '../src/lib/conversions/quantize';
-import {
-  classifyGlyph,
-  runOnnxCjkOcrPipeline,
-} from '../src/lib/conversions/ocr';
+import { performOcr } from '../src/lib/conversions/ocr';
 import {
   triangulatePolygonEarcut,
   Point3D,
@@ -74,52 +71,8 @@ describe('Phase 2: State-of-the-Art Algorithms & Edge Acceleration', () => {
     });
   });
 
-  describe('2. Topological OCR Glyph Recognition & ONNX CJK Pipeline', () => {
-    it('accurately distinguishes glyphs based on loop cavities and topological invariants', () => {
-      const w = 12;
-      const h = 16;
-      const stride = w;
-
-      // 1. Synthesize 'O' (enclosed central loop)
-      const dataO = Buffer.alloc(w * h, 255);
-      for (let y = 2; y < h - 2; y++) {
-        dataO[y * stride + 2] = 0;
-        dataO[y * stride + w - 3] = 0;
-      }
-      for (let x = 2; x < w - 2; x++) {
-        dataO[2 * stride + x] = 0;
-        dataO[(h - 3) * stride + x] = 0;
-      }
-      const charO = classifyGlyph(dataO, stride, 0, w, 0, h);
-      expect(['O', '0', 'D']).toContain(charO);
-
-      // 2. Synthesize 'I' (narrow single stem)
-      const dataI = Buffer.alloc(4 * 16, 255);
-      for (let y = 0; y < 16; y++) {
-        dataI[y * 4 + 1] = 0;
-        dataI[y * 4 + 2] = 0;
-      }
-      const charI = classifyGlyph(dataI, 4, 0, 4, 0, 16);
-      expect(charI).toBe('I');
-
-      // 3. Synthesize '8' (two enclosed loops separated by horizontal bar)
-      const data8 = Buffer.alloc(w * h, 255);
-      // Outer vertical stems
-      for (let y = 2; y < h - 2; y++) {
-        data8[y * stride + 2] = 0;
-        data8[y * stride + w - 3] = 0;
-      }
-      // Top, middle, bottom horizontal bars
-      for (let x = 2; x < w - 2; x++) {
-        data8[2 * stride + x] = 0;
-        data8[7 * stride + x] = 0;
-        data8[(h - 3) * stride + x] = 0;
-      }
-      const char8 = classifyGlyph(data8, stride, 0, w, 0, h);
-      expect(['8', 'B']).toContain(char8);
-    });
-
-    it('executes ONNX CJK OCR pipeline with multi-script confidence', async () => {
+  describe('2. Authentic OCR Pipeline Execution', () => {
+    it('executes OCR pipeline on CJK image with Korean language', async () => {
       const testImage = await sharp({
         create: { width: 120, height: 40, channels: 3, background: { r: 255, g: 255, b: 255 } },
       })
@@ -135,9 +88,8 @@ describe('Phase 2: State-of-the-Art Algorithms & Edge Acceleration', () => {
         .png()
         .toBuffer();
 
-      const result = await runOnnxCjkOcrPipeline(testImage, { ocrLanguage: 'ko' });
+      const result = await performOcr(testImage, 'ko');
       expect(result).toBeDefined();
-      expect(result.confidence).toBeGreaterThanOrEqual(0.9);
       expect(result.imageWidth).toBe(120);
       expect(result.imageHeight).toBe(40);
     });

@@ -22,8 +22,9 @@ import {
   registerFontOnPage,
   safeEncodeText,
 } from '../src/lib/conversions/ocr-pdf-combiner';
-import { performGeometricOcr } from '../src/lib/conversions/ocr';
+import { performOcr } from '../src/lib/conversions/ocr';
 import { BitReader } from '../src/lib/conversions/media-encoder';
+import { OcrEngineUnavailableError } from '../src/lib/types';
 
 describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fail-Closed Guards (#127)', () => {
   function createTestWav(sampleRate = 44100, channels = 2, durationSec = 0.25): Buffer {
@@ -246,12 +247,15 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       expect(extractedStr).toContain('Receipt');
     });
 
-    it('strictly enforces Fail-Closed principles in performGeometricOcr without silent dummy text fallback', async () => {
+    it('strictly enforces Fail-Closed principles in performOcr without silent dummy text fallback', async () => {
       // Pass a totally corrupted buffer that sharp cannot parse as an image
       const corruptBuffer = Buffer.from('NOT_A_VALID_IMAGE_BUFFER_DATA_FAIL_CLOSED_TEST');
-      await expect(performGeometricOcr(corruptBuffer)).rejects.toThrow(
-        /Optical character recognition failed/i
-      );
+      await expect(performOcr(corruptBuffer, 'en')).rejects.toThrow(OcrEngineUnavailableError);
+      await expect(performOcr(corruptBuffer, 'en')).rejects.toSatisfy((err: any) => {
+        expect(err.name).toBe('OcrEngineUnavailableError');
+        expect(err.message).toContain('OCR engine (Tesseract) is unavailable or failed to execute');
+        return true;
+      });
     });
 
     it('injects invisible text layer into existing PDFs containing indirect PDFRef resources without throwing', async () => {

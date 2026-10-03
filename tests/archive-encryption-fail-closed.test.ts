@@ -14,6 +14,7 @@ import {
 import {
   ArchiveEncryptionUnavailableError,
   UnsupportedOptionError,
+  ConversionFailedError,
 } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
@@ -105,6 +106,13 @@ describe('Archive Encryption Fail-Closed Verification', () => {
           convertArchive(input, 'zip', tgt, { password: 'password' }, 'file.zip')
         ).rejects.toThrow(UnsupportedOptionError);
       }
+    });
+
+    it('convertArchive fails closed when extracting corrupt or invalid ZIP archive', async () => {
+      const corruptZip = Buffer.from('this is not a valid zip archive file', 'utf-8');
+      await expect(
+        convertArchive(corruptZip, 'zip', 'tar', {}, 'corrupt.zip')
+      ).rejects.toThrow(ConversionFailedError);
     });
   });
 
