@@ -141,9 +141,15 @@ attachInputCleanupOnCompletion(ociWorker);
 // Graceful shutdown
 function shutdown(signal: string) {
   console.log(`[EasyConvert OCI Worker] Received ${signal}. Shutting down cleanly...`);
-  ociWorker.close().then(() => {
-    process.exit(0);
-  });
+  void ociWorker
+    .close()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error(`[EasyConvert OCI Worker] Shutdown error:`, err);
+      process.exit(1);
+    });
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));

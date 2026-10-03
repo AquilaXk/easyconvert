@@ -684,6 +684,144 @@ export async function convertWithNative7z(
  */
 const POPPLER_IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'tiff', 'tif', 'ppm']);
 
+function buildPdftoppmArgs(tgt: string, options: WorkerEngineOptions, inputPath: string, prefix: string): string[] {
+  const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
+  const args: string[] = ['-r', String(dpi)];
+
+  if (tgt === 'png') {
+    args.push('-png');
+  } else if (tgt === 'jpg' || tgt === 'jpeg') {
+    args.push('-jpeg');
+  } else if (tgt === 'tiff' || tgt === 'tif') {
+    args.push('-tiff');
+  }
+
+  if (options.page && Number.isInteger(options.page) && options.page > 0) {
+    args.push('-f', String(options.page), '-l', String(options.page));
+  } else {
+    args.push('-f', '1', '-l', '1');
+  }
+
+  args.push(inputPath, prefix);
+  return args;
+}
+
+async function convertPdfToTextWithPoppler(
+  input: Buffer | WorkerVfsPayload,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  startTime: number,
+  timeout: number,
+  maxBuffer: number
+): Promise<WorkerConversionResult | null> {
+  const pdftotextBin = resolveBinary(BINARY_PATHS.pdftotext, process.env.PDFTOTEXT_PATH);
+  if (!pdftotextBin) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('pdftotext', 'pdftotext binary is not installed or not in PATH');
+    }
+    return null;
+  }
+
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  try {
+    return await withSandboxDir('easyconvert-poppler-txt-', async (tempDir) => {
+      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
+      const tempOutputPath = path.join(tempDir, 'output.txt');
+
+      await executeSandboxedBinary(
+        pdftotextBin,
+        ['-layout', inputPath, tempOutputPath],
+        {
+          cwd: tempDir,
+          timeoutMs: timeout,
+          maxBuffer,
+          networkIsolated: true,
+          signal: options.signal,
+        }
+      );
+
+      if (!fs.existsSync(tempOutputPath)) {
+        throw new Error(`pdftotext execution completed without producing expected output file "${tempOutputPath}"`);
+      }
+
+      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+      const persistedPath = preserveOutput(tempOutputPath, 'txt', options, vfsPayload);
+
+      return createConversionResult(
+        persistedPath,
+        'txt',
+        baseName,
+        'native-poppler',
+        Date.now() - startTime
+      );
+    });
+  } catch (err) {
+    if (options.throwOnUnavailable) {
+      throw err;
+    }
+    return null;
+  }
+}
+
+async function renderPdfToImageWithPoppler(
+  input: Buffer | WorkerVfsPayload,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  startTime: number,
+  timeout: number,
+  maxBuffer: number
+): Promise<WorkerConversionResult | null> {
+  const pdftoppmBin = resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH);
+  if (!pdftoppmBin) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('pdftoppm', 'pdftoppm binary is not installed or not in PATH');
+    }
+    return null;
+  }
+
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  try {
+    return await withSandboxDir('easyconvert-poppler-img-', async (tempDir) => {
+      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
+      const prefix = path.join(tempDir, 'page');
+      const args = buildPdftoppmArgs(tgt, options, inputPath, prefix);
+
+      await executeSandboxedBinary(pdftoppmBin, args, {
+        cwd: tempDir,
+        timeoutMs: timeout,
+        maxBuffer,
+        networkIsolated: true,
+        signal: options.signal,
+      });
+
+      const files = fs.readdirSync(tempDir).filter((f) => f.startsWith('page') && !f.endsWith('.pdf'));
+      if (files.length === 0) {
+        throw new Error('pdftoppm execution completed without producing any output images');
+      }
+
+      const selectedFile = files.sort()[0];
+      const tempOutputPath = path.join(tempDir, selectedFile);
+
+      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+      return createConversionResult(
+        persistedPath,
+        tgt,
+        baseName,
+        'native-poppler',
+        Date.now() - startTime
+      );
+    });
+  } catch (err) {
+    if (options.throwOnUnavailable) {
+      throw err;
+    }
+    return null;
+  }
+}
+
 /**
  * Converts PDF documents using native Poppler utilities (pdftoppm and pdftotext).
  */
@@ -698,128 +836,18 @@ export async function convertWithNativePoppler(
   const tgt = validateFormat(targetFormat);
   if (src !== 'pdf') return null;
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
   const timeout = Math.min(options.timeoutMs || 45000, 120000);
   const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
   // 1. Text extraction via pdftotext
   if (tgt === 'txt' || tgt === 'text') {
-    const pdftotextBin = resolveBinary(BINARY_PATHS.pdftotext, process.env.PDFTOTEXT_PATH);
-    if (!pdftotextBin) {
-      if (options.throwOnUnavailable) {
-        throw new EngineUnavailableError('pdftotext', 'pdftotext binary is not installed or not in PATH');
-      }
-      return null;
-    }
-
-    try {
-      return await withSandboxDir('easyconvert-poppler-txt-', async (tempDir) => {
-        const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
-        const tempOutputPath = path.join(tempDir, 'output.txt');
-
-        await executeSandboxedBinary(
-          pdftotextBin,
-          ['-layout', inputPath, tempOutputPath],
-          {
-            cwd: tempDir,
-            timeoutMs: timeout,
-            maxBuffer,
-            networkIsolated: true,
-            signal: options.signal,
-          }
-        );
-
-        if (!fs.existsSync(tempOutputPath)) {
-          throw new Error(`pdftotext execution completed without producing expected output file "${tempOutputPath}"`);
-        }
-
-        const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-        const persistedPath = preserveOutput(tempOutputPath, 'txt', options, vfsPayload);
-
-        return createConversionResult(
-          persistedPath,
-          'txt',
-          baseName,
-          'native-poppler',
-          Date.now() - startTime
-        );
-      });
-    } catch (err) {
-      if (options.throwOnUnavailable) {
-        throw err;
-      }
-      return null;
-    }
+    return convertPdfToTextWithPoppler(input, options, originalFilename, startTime, timeout, maxBuffer);
   }
 
   // 2. High-fidelity raster rendering via pdftoppm
   if (POPPLER_IMAGE_FORMATS.has(tgt)) {
-    const pdftoppmBin = resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH);
-    if (!pdftoppmBin) {
-      if (options.throwOnUnavailable) {
-        throw new EngineUnavailableError('pdftoppm', 'pdftoppm binary is not installed or not in PATH');
-      }
-      return null;
-    }
-
-    try {
-      return await withSandboxDir('easyconvert-poppler-img-', async (tempDir) => {
-        const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
-
-        const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
-        const args: string[] = ['-r', String(dpi)];
-
-        if (tgt === 'png') {
-          args.push('-png');
-        } else if (tgt === 'jpg' || tgt === 'jpeg') {
-          args.push('-jpeg');
-        } else if (tgt === 'tiff' || tgt === 'tif') {
-          args.push('-tiff');
-        }
-
-        if (options.page && Number.isInteger(options.page) && options.page > 0) {
-          args.push('-f', String(options.page), '-l', String(options.page));
-        } else {
-          args.push('-f', '1', '-l', '1');
-        }
-
-        const prefix = path.join(tempDir, 'page');
-        args.push(inputPath, prefix);
-
-        await executeSandboxedBinary(pdftoppmBin, args, {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-          signal: options.signal,
-        });
-
-        const files = fs.readdirSync(tempDir).filter((f) => f.startsWith('page') && !f.endsWith('.pdf'));
-        if (files.length === 0) {
-          throw new Error('pdftoppm execution completed without producing any output images');
-        }
-
-        const selectedFile = files.sort()[0];
-        const tempOutputPath = path.join(tempDir, selectedFile);
-
-        const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-        const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-        return createConversionResult(
-          persistedPath,
-          tgt,
-          baseName,
-          'native-poppler',
-          Date.now() - startTime
-        );
-      });
-    } catch (err) {
-      if (options.throwOnUnavailable) {
-        throw err;
-      }
-      return null;
-    }
+    return renderPdfToImageWithPoppler(input, tgt, options, originalFilename, startTime, timeout, maxBuffer);
   }
 
   return null;
