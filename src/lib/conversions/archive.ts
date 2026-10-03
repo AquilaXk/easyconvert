@@ -149,8 +149,8 @@ function createEncryptedArchiveVia7z(
     }
     const outPath = path.join(workDir, archiveName);
     const extraArgs = archiveType === '7z'
-      ? ['-t7z', '-p']
-      : ['-tzip', '-p'];
+      ? ['-t7z', '-mhe=on', '-p']
+      : ['-tzip', '-mem=AES256', '-p'];
     const resolved = resolveSandboxedCommand(p7z, ['a', '-y', ...extraArgs, outPath, '.'], {
       networkIsolated: true,
     });
@@ -1581,7 +1581,14 @@ export function convertWithNative7z(
     }
 
 
-    const pwCreateArgs = options.password && (tgt === 'zip' || tgt === '7z') ? ['-p'] : [];
+    const pwCreateArgs: string[] = [];
+    if (options.password) {
+      if (tgt === '7z') {
+        pwCreateArgs.push('-mhe=on', '-p');
+      } else if (tgt === 'zip') {
+        pwCreateArgs.push('-mem=AES256', '-p');
+      }
+    }
     const pwCreateInput =
       options.password && (tgt === 'zip' || tgt === '7z')
         ? Buffer.from(`${options.password}\n${options.password}\n`)

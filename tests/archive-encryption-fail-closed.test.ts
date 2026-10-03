@@ -88,5 +88,59 @@ describe('Archive Encryption Fail-Closed Verification', () => {
       ).toThrow(UnsupportedOptionError);
     });
   });
-});
 
+  describe('3. Native 7z header encryption and AES-256 inspection via Oracle CLI', () => {
+    oracleTest('7z archive created with password uses header encryption (-mhe=on)', ['7z'], async () => {
+      const p7z = getOracleToolPath('7z')!;
+      process.env.P7ZIP_PATH = p7z;
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'enc-7z-test-'));
+      try {
+        const files = [{ filename: 'sensitive.txt', buffer: Buffer.from('Classified Payload', 'utf-8') }];
+        const res = create7zArchive(files, { password: 'CorrectPassword456' }, 'encrypted.7z');
+
+        const archivePath = path.join(tmpDir, 'encrypted.7z');
+        fs.writeFileSync(archivePath, res.buffer);
+
+        // Attempting to list contents with wrong password or empty password MUST fail to read file list
+        let listFailedWithWrongPassword = false;
+        try {
+          execFileSync(p7z, ['l', '-pWrongPassword', archivePath], { stdio: 'pipe' });
+        } catch {
+          listFailedWithWrongPassword = true;
+        }
+        expect(listFailedWithWrongPassword).toBe(true);
+
+        // Listing with correct password succeeds and reveals the file name
+        const listOut = execFileSync(p7z, ['l', '-pCorrectPassword456', archivePath], {
+          encoding: 'utf-8',
+        });
+        expect(listOut).toContain('sensitive.txt');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    oracleTest('zip archive created with password uses AES-256 encryption (-mem=AES256)', ['7z'], async () => {
+      const p7z = getOracleToolPath('7z')!;
+      process.env.P7ZIP_PATH = p7z;
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'enc-zip-test-'));
+      try {
+        const files = [{ filename: 'document.txt', buffer: Buffer.from('Financial Report', 'utf-8') }];
+        const res = await createZipArchive(files, { password: 'ZipPassword789' }, 'secure.zip');
+
+        const archivePath = path.join(tmpDir, 'secure.zip');
+        fs.writeFileSync(archivePath, res.buffer);
+
+        // 7z technical listing: 7z l -slt -pZipPassword789 secure.zip
+        const sltOut = execFileSync(p7z, ['l', '-slt', '-pZipPassword789', archivePath], {
+          encoding: 'utf-8',
+        });
+        expect(sltOut).toMatch(/Method = (?:.*AES-256|AES256)/i);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+});
