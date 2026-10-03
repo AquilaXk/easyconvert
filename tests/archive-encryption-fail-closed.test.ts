@@ -7,6 +7,7 @@ import {
   createZipArchive,
   create7zArchive,
   createTarArchive,
+  createRarArchive,
   convertArchive,
   convertWithNative7z,
 } from '../src/lib/conversions/archive';
@@ -86,6 +87,24 @@ describe('Archive Encryption Fail-Closed Verification', () => {
       expect(() =>
         convertWithNative7z(input, 'zip', 'tar.gz', { password: 'password' }, 'file.zip')
       ).toThrow(UnsupportedOptionError);
+    });
+
+    it('createRarArchive throws UnsupportedOptionError when password is provided', () => {
+      const files = [{ filename: 'file.txt', buffer: Buffer.from('data', 'utf-8') }];
+      expect(() =>
+        createRarArchive(files, { password: 'password' }, 'archive.rar')
+      ).toThrow(UnsupportedOptionError);
+    });
+
+    it('convertArchive throws UnsupportedOptionError when password is provided for non-encryptable archive formats (rar, gz, bz2, xz, zst)', async () => {
+      const input = Buffer.from('content', 'utf-8');
+      const nonEncryptableTargets = ['rar', 'gz', 'bz2', 'xz', 'zst'];
+
+      for (const tgt of nonEncryptableTargets) {
+        await expect(
+          convertArchive(input, 'zip', tgt, { password: 'password' }, 'file.zip')
+        ).rejects.toThrow(UnsupportedOptionError);
+      }
     });
   });
 

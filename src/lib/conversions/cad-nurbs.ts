@@ -19,6 +19,7 @@ import {
   incircleExact,
   windingNumberPointInPolygon,
 } from './cad-predicates';
+import { CadGeometryUnavailableError } from '../types';
 
 export interface Point3D {
   x: number;
@@ -3898,28 +3899,6 @@ export function tessellateCadText(
       return tessellateCurvesToMesh(curves, modelName);
     }
 
-    // IGES Entity 116 points (point cloud geometry without fake triangles)
-    const pointList: Point3D[] = [];
-    const ptRegex = /116\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)/g;
-    let m: RegExpExecArray | null;
-    while ((m = ptRegex.exec(text)) !== null) {
-      pointList.push({
-        x: parseFloat(m[1]) || 0,
-        y: parseFloat(m[2]) || 0,
-        z: parseFloat(m[3]) || 0,
-      });
-    }
-
-    if (pointList.length >= 3) {
-      return buildTrianglesFromPoints(pointList, modelName);
-    } else if (pointList.length > 0) {
-      return {
-        name: modelName,
-        vertices: pointList.map((p) => [p.x, p.y, p.z]),
-        faces: [],
-        normals: [],
-      };
-    }
   } else {
     // STEP format
     const entityMap = parseStepEntities(text);
@@ -3939,29 +3918,11 @@ export function tessellateCadText(
     if (curves.length > 0) {
       return tessellateCurvesToMesh(curves, modelName);
     }
-
-    // STEP Cartesian points (point cloud geometry without fake triangles)
-    const pointList: Point3D[] = [];
-    for (const ent of entityMap.values()) {
-      if (ent.type.includes('CARTESIAN_POINT')) {
-        const pt = extractStepPoint(ent.id, entityMap);
-        if (pt) pointList.push(pt);
-      }
-    }
-
-    if (pointList.length >= 3) {
-      return buildTrianglesFromPoints(pointList, modelName);
-    } else if (pointList.length > 0) {
-      return {
-        name: modelName,
-        vertices: pointList.map((p) => [p.x, p.y, p.z]),
-        faces: [],
-        normals: [],
-      };
-    }
   }
 
-  throw new Error(`Failed to tessellate CAD geometry from ${format}: No valid B-spline surfaces, B-Rep topology, or curves found.`);
+  throw new CadGeometryUnavailableError(
+    `Failed to tessellate CAD geometry from ${format}: No valid B-spline surfaces, B-Rep topology, or curves found.`
+  );
 }
 
 /**

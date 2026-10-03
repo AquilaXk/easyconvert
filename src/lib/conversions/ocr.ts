@@ -82,7 +82,7 @@ export async function performOcr(
   }
 
   if (!localLangPath) {
-    throw new OcrEngineUnavailableError(
+    throw new OcrLanguageUnavailableError(
       `OCR language '${language}' (${tesseractLang}.traineddata) is not available locally.`
     );
   }

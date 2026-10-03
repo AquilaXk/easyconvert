@@ -4,6 +4,7 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions/index';
 import { POST as convertRoute } from '../src/app/api/convert/route';
+import { CadGeometryUnavailableError } from '../src/lib/types';
 
 describe('Skeptical Review: Breaking Prior Implementation', () => {
   it('1. stl -> dxf must generate standard DXF 3DFACE entities without throwing Unsupported target', async () => {
@@ -158,6 +159,23 @@ endsolid TestModel`;
     expect(json.success).toBe(false);
   });
 
+  it('10b. POST /api/convert with disabled placeholder target formats (emf, step) must fail closed with 400 Bad Request', async () => {
+    const formData = new FormData();
+    formData.append('file', new File(['<svg xmlns="http://www.w3.org/2000/svg"></svg>'], 'drawing.svg', { type: 'image/svg+xml' }));
+    formData.append('targetFormat', 'emf');
+
+    const req = new NextRequest('http://localhost/api/convert', {
+      method: 'POST',
+      body: formData,
+    });
+
+    const res = await convertRoute(req);
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toContain('Available targets');
+  });
+
   it('11. pdf -> png, svg, dxf, rtf must succeed without throwing Unsupported document conversion', async () => {
     // Create a minimal PDF buffer
     const chunks: Buffer[] = [];
@@ -191,7 +209,7 @@ endsolid TestModel`;
     expect(rtfRes.buffer.toString('utf-8')).toContain('{\\rtf1');
   });
 
-  it('12. iges with 116 points must be converted to Wavefront OBJ with real vertices', async () => {
+  it('12. iges with only points and no surface geometry fails closed', async () => {
     const iges = `S      1
 EasyConvert IGES 3D Model                                               G      1
 1H,,1H;,sample,,20260925.120000,1.0,1,1,1,,1.0,1,,,;                    G      2
@@ -206,11 +224,8 @@ EasyConvert IGES 3D Model                                               G      1
 116,70.0,80.0,90.0;                                                     1P      3
 S      1G      2D      6P      3                                        T      1
 `;
-    const res = await convertFile(Buffer.from(iges, 'utf-8'), 'iges', 'obj', {}, 'triangle.iges');
-    expect(res.mimeType).toBe('model/obj');
-    const objText = res.buffer.toString('utf-8');
-    expect(objText).toContain('v 10 20 30');
-    expect(objText).toContain('v 40 50 60');
-    expect(objText).toContain('v 70 80 90');
+    await expect(
+      convertFile(Buffer.from(iges, 'utf-8'), 'iges', 'obj', {}, 'triangle.iges')
+    ).rejects.toThrow(CadGeometryUnavailableError);
   });
 });

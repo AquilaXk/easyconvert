@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { executeWorkerConversion } from '@/worker/engines';
-import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import { ConversionOptions, ConversionFailedError } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -69,11 +69,12 @@ export async function POST(req: NextRequest) {
     }
 
     const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
-    if (!detectedDef.targetFormats.includes(tgt)) {
+    const availableTargets = getAvailableTargetFormats(detectedDef.extension).map((d) => d.extension);
+    if (!availableTargets.includes(tgt)) {
       return NextResponse.json(
         {
           success: false,
-          error: `Cannot convert from ${detectedDef.name} (.${detectedDef.extension}) to target format .${tgt}. Available targets: ${detectedDef.targetFormats.join(
+          error: `Cannot convert from ${detectedDef.name} (.${detectedDef.extension}) to target format .${tgt}. Available targets: ${availableTargets.join(
             ', '
           )}`,
         },
