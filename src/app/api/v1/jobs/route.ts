@@ -10,6 +10,12 @@ import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask } from '@/lib/types';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
+import {
+  validateOrProblem,
+  JobCreateRequestSchema,
+  ConversionOptionsSchema,
+  PipelineTaskSchema,
+} from '@/lib/api/contracts';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,22 +37,23 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 2. Phase 1: Atomically reserve quota unit BEFORE enqueueing
-  const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
-  if (!reservation.allowed) {
-    const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
+  const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
+  if (quota.remaining <= 0) {
+    const exhaustedQuota = { ...quota, remaining: 0 };
     return createProblemDetailsResponse(
       429,
       `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
       instanceUri,
-      'Too Many Requests',
-      undefined,
-      buildRateLimitHeaders({ ...quota, remaining: 0 })
+      'Daily Quota Exceeded',
+      'https://api.easyconvert.io/problems/quota-exceeded',
+      buildRateLimitHeaders(exhaustedQuota)
     );
   }
 
+  let reservation: { allowed: boolean; reservationId?: string } | null = null;
+
   const failWithRollback = async (status: number, message: string, title: string = 'Bad Request') => {
-    if (reservation.reservationId) {
+    if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
     return createProblemDetailsResponse(status, message, instanceUri, title);
@@ -84,7 +91,11 @@ export async function POST(req: NextRequest) {
             options = parsed;
           }
         } catch {
-          return await failWithRollback(400, 'Invalid JSON string provided in "options" parameter.');
+          return createProblemDetailsResponse(400, 'Invalid JSON string provided in "options" parameter.', instanceUri);
+        }
+        const optValidation = validateOrProblem(ConversionOptionsSchema, options, instanceUri);
+        if (!optValidation.ok) {
+          return optValidation.response;
         }
       }
 
@@ -94,15 +105,31 @@ export async function POST(req: NextRequest) {
           const parsedTasks = JSON.parse(tasksRaw);
           if (Array.isArray(parsedTasks)) {
             tasks = parsedTasks;
+          } else {
+            return createProblemDetailsResponse(
+              422,
+              'Request validation failed: tasks must be array',
+              instanceUri,
+              'Unprocessable Entity',
+              'https://api.easyconvert.io/problems/unprocessable-entity',
+              undefined,
+              [{ name: 'tasks', reason: 'must be array' }]
+            );
           }
         } catch {
-          return await failWithRollback(400, 'Invalid JSON string provided in "tasks" parameter.');
+          return createProblemDetailsResponse(400, 'Invalid JSON string provided in "tasks" parameter.', instanceUri);
+        }
+        for (let i = 0; i < tasks.length; i++) {
+          const taskValidation = validateOrProblem(PipelineTaskSchema, tasks[i], instanceUri);
+          if (!taskValidation.ok) {
+            return taskValidation.response;
+          }
         }
       }
 
       if (file && file instanceof Blob && file.size > 0) {
         if (file.size > MAX_JOB_PAYLOAD_SIZE) {
-          return await failWithRollback(400, 'File size exceeds the 500 MB asynchronous payload boundary.', 'Payload Too Large');
+          return createProblemDetailsResponse(400, 'File size exceeds the 500 MB asynchronous payload boundary.', instanceUri, 'Payload Too Large');
         }
 
         originalFilename = file.name;
@@ -119,6 +146,11 @@ export async function POST(req: NextRequest) {
     } else {
       // JSON body
       const body = await req.json().catch(() => ({}));
+      const bodyValidation = validateOrProblem(JobCreateRequestSchema, body, instanceUri);
+      if (!bodyValidation.ok) {
+        return bodyValidation.response;
+      }
+
       originalFilename = (body.filename || body.originalFilename || '').trim();
       targetFormat = (body.targetFormat || '').trim();
       sourceFormatParam = (body.sourceFormat || '').trim() || undefined;
@@ -230,6 +262,20 @@ export async function POST(req: NextRequest) {
 
     if (effectiveWebhookUrl && !effectiveWebhookSecret) {
       return await failWithRollback(400, 'webhookSecret is required when webhookUrl is provided.');
+    }
+
+    // Phase 1: Atomically reserve quota unit BEFORE enqueueing to BullMQ
+    reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
+    if (!reservation.allowed) {
+      const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
+      return createProblemDetailsResponse(
+        429,
+        `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+        instanceUri,
+        'Too Many Requests',
+        undefined,
+        buildRateLimitHeaders({ ...quota, remaining: 0 })
+      );
     }
 
     // Enqueue conversion job to BullMQ queue
