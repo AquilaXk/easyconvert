@@ -85,18 +85,17 @@ export async function POST(req: NextRequest) {
 
       const optionsRaw = formData.get('options') as string | null;
       if (optionsRaw) {
+        let parsed: unknown;
         try {
-          const parsed = JSON.parse(optionsRaw);
-          if (parsed && typeof parsed === 'object') {
-            options = parsed;
-          }
+          parsed = JSON.parse(optionsRaw);
         } catch {
           return createProblemDetailsResponse(400, 'Invalid JSON string provided in "options" parameter.', instanceUri);
         }
-        const optValidation = validateOrProblem(ConversionOptionsSchema, options, instanceUri);
+        const optValidation = validateOrProblem(ConversionOptionsSchema, parsed, instanceUri);
         if (!optValidation.ok) {
           return optValidation.response;
         }
+        options = (parsed && typeof parsed === 'object' ? parsed : {}) as ConversionOptions;
       }
 
       const tasksRaw = formData.get('tasks') as string | null;
@@ -145,24 +144,31 @@ export async function POST(req: NextRequest) {
       }
     } else {
       // JSON body
-      const body = await req.json().catch(() => ({}));
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return createProblemDetailsResponse(400, 'Invalid JSON body provided in request.', instanceUri);
+      }
+
       const bodyValidation = validateOrProblem(JobCreateRequestSchema, body, instanceUri);
       if (!bodyValidation.ok) {
         return bodyValidation.response;
       }
 
-      originalFilename = (body.filename || body.originalFilename || '').trim();
-      targetFormat = (body.targetFormat || '').trim();
-      sourceFormatParam = (body.sourceFormat || '').trim() || undefined;
-      options = body.options && typeof body.options === 'object' ? body.options : {};
-      if (body.tasks && Array.isArray(body.tasks)) {
-        tasks = body.tasks;
+      const validBody = (body && typeof body === 'object' ? body : {}) as Record<string, any>;
+      originalFilename = (validBody.filename || validBody.originalFilename || '').trim();
+      targetFormat = (validBody.targetFormat || '').trim();
+      sourceFormatParam = (validBody.sourceFormat || '').trim() || undefined;
+      options = validBody.options && typeof validBody.options === 'object' ? validBody.options : {};
+      if (validBody.tasks && Array.isArray(validBody.tasks)) {
+        tasks = validBody.tasks;
       }
-      storageKey = (body.storageKey || '').trim() || undefined;
-      inputBufferBase64 = body.inputBufferBase64;
-      fileSize = Number(body.fileSize) || 0;
-      webhookUrl = (body.webhookUrl || '').trim() || undefined;
-      webhookSecret = (body.webhookSecret || '').trim() || undefined;
+      storageKey = (validBody.storageKey || '').trim() || undefined;
+      inputBufferBase64 = validBody.inputBufferBase64;
+      fileSize = Number(validBody.fileSize) || 0;
+      webhookUrl = (validBody.webhookUrl || '').trim() || undefined;
+      webhookSecret = (validBody.webhookSecret || '').trim() || undefined;
     }
 
     if (tasks && tasks.length > 0 && !targetFormat) {

@@ -260,4 +260,172 @@ describe('API Request Schema Validation & Quota Conservation', () => {
     expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);
     expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
   });
+
+  it('rejects invalid non-object options in multipart POST /api/v1/jobs with 422 ProblemDetails and unchanged quota', async () => {
+    const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52]);
+
+    const formData = new FormData();
+    formData.append('file', new File([pngHeader], 'sample.png', { type: 'image/png' }));
+    formData.append('targetFormat', 'webp');
+    formData.append('options', '123'); // Primitive number, not a valid object
+
+    const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${writeKey.secretKey}`,
+      },
+      body: formData,
+    });
+
+    const res = await jobsPostHandler(req);
+    expect(res.status).toBe(422);
+
+    const problem = await res.json();
+    expect(problem.status).toBe(422);
+    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.invalidParams).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: 'must be object',
+        }),
+      ])
+    );
+
+    const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
+    expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);
+    expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
+  });
+
+  it('rejects planned options in multipart POST /api/v1/jobs with 422 option_not_supported and unchanged quota', async () => {
+    const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52]);
+
+    const formData = new FormData();
+    formData.append('file', new File([pngHeader], 'sample.png', { type: 'image/png' }));
+    formData.append('targetFormat', 'webp');
+    formData.append('options', JSON.stringify({ pages: '1-3' })); // Planned option
+
+    const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${writeKey.secretKey}`,
+      },
+      body: formData,
+    });
+
+    const res = await jobsPostHandler(req);
+    expect(res.status).toBe(422);
+
+    const problem = await res.json();
+    expect(problem.status).toBe(422);
+    expect(problem.type).toBe('https://api.easyconvert.io/problems/option-not-supported');
+    expect(problem.detail).toContain('option_not_supported');
+
+    const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
+    expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);
+    expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
+  });
+
+  it('rejects planned options inside multipart tasks in POST /api/v1/jobs with 422 option_not_supported and unchanged quota', async () => {
+    const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52]);
+
+    const formData = new FormData();
+    formData.append('file', new File([pngHeader], 'sample.png', { type: 'image/png' }));
+    formData.append('targetFormat', 'webp');
+    formData.append('tasks', JSON.stringify([
+      {
+        name: 'extract-pages',
+        operation: 'convert',
+        targetFormat: 'webp',
+        options: { pages: '1-5' },
+      },
+    ]));
+
+    const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${writeKey.secretKey}`,
+      },
+      body: formData,
+    });
+
+    const res = await jobsPostHandler(req);
+    expect(res.status).toBe(422);
+
+    const problem = await res.json();
+    expect(problem.status).toBe(422);
+    expect(problem.type).toBe('https://api.easyconvert.io/problems/option-not-supported');
+    expect(problem.detail).toContain('option_not_supported');
+
+    const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
+    expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);
+    expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
+  });
+
+  it('rejects malformed JSON body in POST /api/v1/jobs with 400 Bad Request without consuming quota', async () => {
+    const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
+
+    const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${writeKey.secretKey}`,
+      },
+      body: '{"targetFormat": "pdf", broken_json_payload',
+    });
+
+    const res = await jobsPostHandler(req);
+    expect(res.status).toBe(400);
+
+    const problem = await res.json();
+    expect(problem.status).toBe(400);
+    expect(problem.detail).toContain('Invalid JSON body provided in request.');
+
+    const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
+    expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);
+    expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
+  });
+
+  it('accurately resolves nested missingProperty fieldPath when task operation is omitted', async () => {
+    const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
+
+    const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${writeKey.secretKey}`,
+      },
+      body: JSON.stringify({
+        filename: 'input.docx',
+        targetFormat: 'pdf',
+        inputBufferBase64: Buffer.from('dummy content').toString('base64'),
+        tasks: [
+          {
+            name: 'stage-missing-operation',
+            targetFormat: 'pdf',
+          },
+        ],
+      }),
+    });
+
+    const res = await jobsPostHandler(req);
+    expect(res.status).toBe(422);
+
+    const problem = await res.json();
+    expect(problem.status).toBe(422);
+    expect(problem.invalidParams).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'tasks.0.operation',
+          reason: expect.stringContaining("must have required property 'operation'"),
+        }),
+      ])
+    );
+
+    const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
+    expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);
+    expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
+  });
 });

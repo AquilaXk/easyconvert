@@ -74,4 +74,14 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
     expect(ProblemDetailsSchema.$id).toBe('https://easyconvert.local/schemas/problem-details.json');
     expect(JobResourceSchema.$id).toBe('https://easyconvert.local/schemas/job-resource.json');
   });
+
+  it('guarantees /api/v1/jobs OpenAPI JSON request body is derived from JobCreateRequest contract', async () => {
+    const res = await getOpenApiSpec();
+    const openApiSpec = await res.json();
+    const jobsPost = openApiSpec.paths['/api/v1/jobs'].post;
+    const jsonReqSchema = jobsPost.requestBody.content['application/json'].schema;
+
+    expect(jsonReqSchema.properties.tasks).toEqual(JobCreateRequestSchema.properties.tasks);
+    expect(openApiSpec.components.schemas.JobCreateRequest).toEqual(JobCreateRequestSchema);
+  });
 });
