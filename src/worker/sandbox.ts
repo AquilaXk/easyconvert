@@ -11,6 +11,7 @@ export {
   SandboxedProcessError,
   SandboxedTimeoutError,
   SandboxedBufferLimitError,
+  SandboxedMemoryLimitError,
 } from '../lib/security/process-sandbox';
 
 export type {
@@ -42,6 +43,7 @@ export interface WorkerSandboxOptions {
   maxBuffer?: number;
   memoryLimitMb?: number;
   env?: Record<string, string>;
+  signal?: AbortSignal;
 }
 
 /**

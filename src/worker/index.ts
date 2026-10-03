@@ -1,9 +1,18 @@
 import fs from 'node:fs';
-import { conversionQueue, attachJobLifecycleListeners } from '../lib/queue/conversion-queue';
+import {
+  conversionQueue,
+  attachJobLifecycleListeners,
+  attachInputCleanupOnCompletion,
+} from '../lib/queue/conversion-queue';
 import { Worker, Job } from '../lib/queue/bullmq-engine';
 import { ConversionJobData, ConversionJobResult } from '../lib/types';
 import { storageProvider as ociStorage } from '../lib/storage';
-import { executeWorkerConversion, WorkerConversionResult, WorkerVfsPayload } from './engines';
+import {
+  executeWorkerConversion,
+  WorkerConversionResult,
+  WorkerVfsPayload,
+  WorkerEngineOptions,
+} from './engines';
 import { secureShredBuffer } from '../lib/security/memory-shredder';
 
 const CONCURRENCY = Number.parseInt(process.env.WORKER_CONCURRENCY || '3', 10);
@@ -31,6 +40,13 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
     const attemptSignal = job.signal;
     await job.log(`[OCI Worker] Picked up job ${job.id} for "${job.data.originalFilename}" (${job.data.sourceFormat} -> ${job.data.targetFormat})`);
     await job.updateProgress(10);
+
+    // Reject multi-stage pipeline tasks until Phase 3 DAG orchestration lands
+    if (job.data.tasks && job.data.tasks.length > 1) {
+      throw new Error(
+        `Multi-stage pipeline tasks (length ${job.data.tasks.length}) are not supported in worker until DAG orchestration (Phase 3); rejected to prevent silent chain omission`
+      );
+    }
 
     let inputPayload: Buffer | WorkerVfsPayload | undefined;
     let shouldShred = false;
@@ -60,11 +76,15 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
 
       // 2. Execute conversion (Native LibreOffice / FFmpeg or pure TS fallback)
       attemptSignal.throwIfAborted();
+      const conversionOptions: WorkerEngineOptions = {
+        ...job.data.options,
+        signal: attemptSignal,
+      };
       const result: WorkerConversionResult = await executeWorkerConversion(
         inputPayload,
         job.data.sourceFormat,
         job.data.targetFormat,
-        job.data.options,
+        conversionOptions,
         job.data.originalFilename
       );
 
@@ -114,15 +134,22 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
   { concurrency: CONCURRENCY }
 );
 
-// Attach 2-phase quota accounting and webhook dispatch listeners
+// Attach 2-phase quota accounting, webhook dispatch listeners, and input cleanup
 attachJobLifecycleListeners(ociWorker);
+attachInputCleanupOnCompletion(ociWorker);
 
 // Graceful shutdown
 function shutdown(signal: string) {
   console.log(`[EasyConvert OCI Worker] Received ${signal}. Shutting down cleanly...`);
-  ociWorker.close().then(() => {
-    process.exit(0);
-  });
+  void ociWorker
+    .close()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error(`[EasyConvert OCI Worker] Shutdown error:`, err);
+      process.exit(1);
+    });
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
