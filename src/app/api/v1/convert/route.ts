@@ -8,6 +8,7 @@ import { storageProvider } from '@/lib/storage';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
+import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -109,9 +110,7 @@ export async function POST(req: NextRequest) {
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   const rateLimitHeaders = buildRateLimitHeaders(quota);
 
-  // 2. Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion (prevents TOCTOU races)
-  const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
-  if (!reservation.allowed) {
+  if (quota.remaining <= 0) {
     const exhaustedQuota = { ...quota, remaining: 0 };
     return createProblemDetailsResponse(
       429,
@@ -123,13 +122,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  let reservation: { allowed: boolean; reservationId?: string } | null = null;
+
   try {
     const formData = await req.formData();
     const validation = parseConvertFormData(formData);
     if (validation.error || !validation.data) {
-      if (reservation.reservationId) {
-        await redisKeyStore.rollbackQuota(reservation.reservationId);
-      }
       return createProblemDetailsResponse(
         validation.status ?? 400,
         validation.error || 'Invalid request parameters.',
@@ -141,6 +139,56 @@ export async function POST(req: NextRequest) {
     }
 
     const { file, sourceDef, targetDef, options } = validation.data;
+
+    // Validate conversion options against SSOT JSON Schema contract BEFORE reserving quota
+    if (options && Object.keys(options).length > 0) {
+      const optionsValidation = validateOrProblem(ConversionOptionsSchema, options, instanceUri);
+      if (!optionsValidation.ok) {
+        return optionsValidation.response;
+      }
+    }
+
+    const webhookUrlParam = ((formData.get('webhookUrl') as string) || '').trim() || undefined;
+    const webhookSecretParam = ((formData.get('webhookSecret') as string) || '').trim() || undefined;
+
+    if (webhookUrlParam && !webhookSecretParam) {
+      return createProblemDetailsResponse(
+        400,
+        'webhookSecret is required when webhookUrl is provided.',
+        instanceUri,
+        'Bad Request',
+        undefined,
+        rateLimitHeaders
+      );
+    }
+
+    const effectiveWebhookUrl = webhookUrlParam || auth.apiKey?.webhookUrl;
+    const effectiveWebhookSecret = webhookSecretParam || auth.apiKey?.webhookSecret;
+
+    if (effectiveWebhookUrl && !effectiveWebhookSecret) {
+      return createProblemDetailsResponse(
+        400,
+        'webhookSecret is required when webhookUrl is provided.',
+        instanceUri,
+        'Bad Request',
+        undefined,
+        rateLimitHeaders
+      );
+    }
+
+    // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
+    reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
+    if (!reservation.allowed) {
+      const exhaustedQuota = { ...quota, remaining: 0 };
+      return createProblemDetailsResponse(
+        429,
+        `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+        instanceUri,
+        'Too Many Requests',
+        undefined,
+        buildRateLimitHeaders(exhaustedQuota)
+      );
+    }
 
     // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff BEFORE calling file.arrayBuffer()
     const preferHeader = req.headers.get('prefer') || '';
@@ -163,46 +211,12 @@ export async function POST(req: NextRequest) {
         });
         uploadedStorageKey = streamResult.storageKey;
       } catch (err: any) {
-        if (reservation.reservationId) {
+        if (reservation?.reservationId) {
           await redisKeyStore.rollbackQuota(reservation.reservationId);
         }
         return createProblemDetailsResponse(
           400,
           err.message || 'File upload or validation failed.',
-          instanceUri,
-          'Bad Request',
-          undefined,
-          rateLimitHeaders
-        );
-      }
-
-      const webhookUrlParam = ((formData.get('webhookUrl') as string) || '').trim() || undefined;
-      const webhookSecretParam = ((formData.get('webhookSecret') as string) || '').trim() || undefined;
-
-      if (webhookUrlParam && !webhookSecretParam) {
-        if (reservation.reservationId) {
-          await redisKeyStore.rollbackQuota(reservation.reservationId);
-        }
-        return createProblemDetailsResponse(
-          400,
-          'webhookSecret is required when webhookUrl is provided.',
-          instanceUri,
-          'Bad Request',
-          undefined,
-          rateLimitHeaders
-        );
-      }
-
-      const effectiveWebhookUrl = webhookUrlParam || auth.apiKey?.webhookUrl;
-      const effectiveWebhookSecret = webhookSecretParam || auth.apiKey?.webhookSecret;
-
-      if (effectiveWebhookUrl && !effectiveWebhookSecret) {
-        if (reservation.reservationId) {
-          await redisKeyStore.rollbackQuota(reservation.reservationId);
-        }
-        return createProblemDetailsResponse(
-          400,
-          'webhookSecret is required when webhookUrl is provided.',
           instanceUri,
           'Bad Request',
           undefined,
@@ -264,7 +278,7 @@ export async function POST(req: NextRequest) {
     try {
       assertNotSpoofedFile(inputBuffer, sourceDef.extension, file.name);
     } catch (err: any) {
-      if (reservation.reservationId) {
+      if (reservation?.reservationId) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
       return createProblemDetailsResponse(
@@ -287,7 +301,7 @@ export async function POST(req: NextRequest) {
     );
 
     // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion
-    if (reservation.reservationId) {
+    if (reservation?.reservationId) {
       await redisKeyStore.commitQuota(reservation.reservationId);
     }
 
@@ -353,7 +367,7 @@ export async function POST(req: NextRequest) {
       }
     );
   } catch (err: unknown) {
-    if (reservation.reservationId) {
+    if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
     const message = err instanceof Error ? err.message : 'Internal programmatic conversion error';
