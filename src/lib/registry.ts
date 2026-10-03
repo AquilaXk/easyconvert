@@ -246,7 +246,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'video',
     description: 'MPEG-4 Part 14 - Universal standard digital video container.',
     targetFormats: ['webm', 'mkv', 'avi', 'mov', 'mp3', 'wav', 'gif', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'wma', 'webp', 'flv', 'mp4', 'wmv'],
-    optionsSchema: { videoResolution: true, videoCodec: true, videoFps: true, aspectRatio: true, audioBitrate: true },
+    optionsSchema: { videoResolution: true, videoCodec: true, videoFps: true, audioBitrate: true },
   },
   webm: {
     id: 'webm',
@@ -256,7 +256,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'video',
     description: 'Royalty-free HTML5 video container format using VP8, VP9, or AV1.',
     targetFormats: ['mp4', 'mkv', 'avi', 'mov', 'mp3', 'wav', 'gif', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'wma', 'webp', 'flv', 'webm', 'wmv'],
-    optionsSchema: { videoResolution: true, videoCodec: true, videoFps: true, aspectRatio: true },
+    optionsSchema: { videoResolution: true, videoCodec: true, videoFps: true },
   },
   mkv: {
     id: 'mkv',
@@ -495,15 +495,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: 'Open, royalty-free video coding format for web video.',
     targetFormats: ['mp4', 'webm', 'mkv', 'zip'],
   },
-  prores: {
-    id: 'prores',
-    name: 'Apple ProRes',
-    extension: 'prores',
-    mimeType: 'video/prores',
-    category: 'video',
-    description: 'Apple ProRes high-quality post-production video codec.',
-    targetFormats: ['mp4', 'mov', 'mkv', 'zip'],
-  },
   webpvideo: {
     id: 'webpvideo',
     name: 'Animated WebP',
@@ -525,7 +516,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'Portable Document Format - Industry standard fixed-layout document.',
     targetFormats: ['doc', 'docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'dxf', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'ps', 'psd', 'tiff', 'webp', 'ppt', 'xls', 'emf', 'wmf'],
-    optionsSchema: { orientation: true, ocrEnabled: true, ocrLanguage: true, preserveLayout: true },
+    optionsSchema: { orientation: true, ocrEnabled: true, ocrLanguage: true },
   },
   docx: {
     id: 'docx',
@@ -535,7 +526,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'Microsoft Word OpenXML document format with complete styles and tables.',
     targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'pages', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
-    optionsSchema: { preserveLayout: true, preserveFonts: true, preserveTables: true, orientation: true },
+    optionsSchema: { orientation: true },
   },
   doc: {
     id: 'doc',
@@ -581,7 +572,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'Cross-platform document format with text formatting and font tables.',
     targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
-    optionsSchema: { preserveLayout: true },
   },
   odt: {
     id: 'odt',
@@ -591,7 +581,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'OASIS OpenDocument Text standard used in LibreOffice and OpenOffice.',
     targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
-    optionsSchema: { preserveLayout: true, preserveTables: true },
   },
   ott: {
     id: 'ott',
@@ -638,7 +627,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'Lightweight markup language with plain-text formatting syntax.',
     targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'doc', 'md', 'rst', 'rtf', 'tex', 'jpg', 'png', 'hwp', 'hwpx'],
-    optionsSchema: { orientation: true, preserveTables: true },
+    optionsSchema: { orientation: true },
   },
   html: {
     id: 'html',
@@ -648,7 +637,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'HyperText Markup Language - Standard document format for web pages.',
     targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
-    optionsSchema: { orientation: true, preserveLayout: true, preserveTables: true },
+    optionsSchema: { orientation: true },
   },
   htm: {
     id: 'htm',
@@ -852,7 +841,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'ebook',
     description: 'Official standard reflowable digital book format by IDPF.',
     targetFormats: ['pdf', 'mobi', 'docx', 'txt', 'html', 'azw3', 'zip', 'rtf', 'lrf', 'oeb', 'pdb'],
-    optionsSchema: { preserveFonts: true, preserveLayout: true },
   },
   mobi: {
     id: 'mobi',
@@ -1076,7 +1064,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'spreadsheet',
     description: 'Microsoft Excel OpenXML spreadsheet with complete grid, formulas, and cells.',
     targetFormats: ['csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'xls', 'xml', 'zip', 'jpg', 'png', 'xps', 'numbers'],
-    optionsSchema: { preserveTables: true, preserveLayout: true },
   },
   xls: {
     id: 'xls',
@@ -1271,7 +1258,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'presentation',
     description: 'Microsoft PowerPoint OpenXML slide presentation standard.',
     targetFormats: ['pdf', 'html', 'odp', 'ppt', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'key', 'emf', 'swf'],
-    optionsSchema: { preserveLayout: true, preserveFonts: true, orientation: true },
+    optionsSchema: { orientation: true },
   },
   ppt: {
     id: 'ppt',
@@ -1335,7 +1322,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'presentation',
     description: 'OASIS OpenDocument Presentation standard used in LibreOffice Impress.',
     targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'ppt', 'swf'],
-    optionsSchema: { preserveLayout: true },
   },
   otp: {
     id: 'otp',
@@ -1807,24 +1793,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: 'Microsoft DirectDraw Surface container for GPU texture maps.',
     targetFormats: ['png', 'jpg', 'tga', 'zip'],
   },
-  hdr: {
-    id: 'hdr',
-    name: 'Radiance High Dynamic Range',
-    extension: 'hdr',
-    mimeType: 'image/vnd.radiance',
-    category: 'image',
-    description: 'High Dynamic Range image format preserving 32-bit floating point colors.',
-    targetFormats: ['exr', 'tiff', 'png', 'zip'],
-  },
-  exr: {
-    id: 'exr',
-    name: 'OpenEXR Industrial Light',
-    extension: 'exr',
-    mimeType: 'image/x-exr',
-    category: 'image',
-    description: 'Industrial Light & Magic open standard visual effects HDR format.',
-    targetFormats: ['hdr', 'tiff', 'png', 'zip'],
-  },
 
   // ==========================================
   // 8. ARCHIVE (18 formats)
@@ -2135,6 +2103,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'cad',
     description: 'Standard for the Exchange of Product Model Data (ISO 10303-21).',
     targetFormats: ['stp', 'stl', 'obj', 'dxf', 'zip'],
+    available: false,
   },
   stp: {
     id: 'stp',
@@ -2144,6 +2113,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'cad',
     description: 'ISO-standard STEP 3D CAD solid model geometry interchange.',
     targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
+    available: false,
   },
   iges: {
     id: 'iges',
@@ -2153,6 +2123,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'cad',
     description: 'ANSI standard digital representation of CAD surface geometry.',
     targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
+    available: false,
   },
   igs: {
     id: 'igs',
@@ -2162,6 +2133,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'cad',
     description: 'IGES CAD file short extension.',
     targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
+    available: false,
   },
   stl: {
     id: 'stl',
@@ -2502,7 +2474,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'video',
     description: 'Digital Video stream recorded by camcorders using DCT compression.',
     targetFormats: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'gif', 'webp', 'avi', 'dv', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv'],
-    optionsSchema: {videoResolution:true,videoFps:true,aspectRatio:true},
+    optionsSchema: {videoResolution:true,videoFps:true},
   },
   dvr: {
     id: 'dvr',
@@ -2573,6 +2545,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: 'ISO standard 2D vector and raster graphics interchange format.',
     targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
     optionsSchema: {dimensions:true},
+    available: false,
   },
   dwf: {
     id: 'dwf',
@@ -2593,6 +2566,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: '32-bit Windows GDI vector graphic metafile format.',
     targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'emf', 'svg', 'wmf'],
     optionsSchema: {dimensions:true,dpi:true},
+    available: false,
   },
   ps: {
     id: 'ps',
@@ -2642,7 +2616,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'vector',
     description: 'Microsoft Visio technical diagrams and vector schematics format.',
     targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
-    optionsSchema: {pages:true,preserveLayout:true},
+    optionsSchema: {pages:true},
   },
   wmf: {
     id: 'wmf',
@@ -2653,6 +2627,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: '16-bit Windows GDI vector and bitmap graphic metafile.',
     targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
     optionsSchema: {dimensions:true},
+    available: false,
   },
   '3fr': {
     id: '3fr',
@@ -2742,7 +2717,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'Standard Korean word processor document format by Hancom.',
     targetFormats: ['hwpx', 'doc', 'docx', 'html', 'odt', 'pdf', 'rtf', 'txt', 'md', 'jpg', 'png', 'xps'],
-    optionsSchema: {pages:true,preserveLayout:true,preserveFonts:true},
+    optionsSchema: {pages:true},
   },
   hwpx: {
     id: 'hwpx',
@@ -2752,7 +2727,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'KS X 6101 Standard Open Packaging Convention XML-based Korean word processor document.',
     targetFormats: ['hwp', 'doc', 'docx', 'html', 'odt', 'pdf', 'rtf', 'txt', 'md', 'jpg', 'png', 'xps'],
-    optionsSchema: {pages:true,preserveLayout:true,preserveFonts:true},
+    optionsSchema: {pages:true},
   },
   lwp: {
     id: 'lwp',
@@ -2762,7 +2737,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'IBM Lotus SmartSuite Word Pro document file format.',
     targetFormats: ['doc', 'docx', 'html', 'md', 'odt', 'pdf', 'rtf', 'txt', 'jpg', 'png'],
-    optionsSchema: {pages:true,preserveLayout:true},
+    optionsSchema: {pages:true},
   },
   odd: {
     id: 'odd',
@@ -2772,7 +2747,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'OASIS OpenDocument XML-based vector drawing template.',
     targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
-    optionsSchema: {preserveLayout:true},
   },
   odg: {
     id: 'odg',
@@ -2782,7 +2756,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'OASIS standard vector drawing and graphics document format.',
     targetFormats: ['pdf', 'bmp', 'jpg', 'png'],
-    optionsSchema: {preserveLayout:true},
   },
   pub: {
     id: 'pub',
@@ -2792,7 +2765,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'Microsoft Publisher desktop publishing layout and document format.',
     targetFormats: ['pdf', 'bmp', 'jpg', 'png'],
-    optionsSchema: {pages:true,preserveLayout:true},
+    optionsSchema: {pages:true},
   },
   azw4: {
     id: 'azw4',
@@ -2802,7 +2775,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'ebook',
     description: 'Amazon Kindle Print Replica wrapped PDF electronic book.',
     targetFormats: ['pdf', 'rtf', 'txt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb'],
-    optionsSchema: {pages:true,preserveLayout:true},
+    optionsSchema: {pages:true},
   },
   cbc: {
     id: 'cbc',
@@ -2822,7 +2795,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'ebook',
     description: 'Zipped HTML document package containing images and stylesheets.',
     targetFormats: ['pdf', 'rtf', 'txt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb'],
-    optionsSchema: {preserveLayout:true,preserveFonts:true},
   },
   pml: {
     id: 'pml',
@@ -2832,7 +2804,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'ebook',
     description: 'Palm eReader formatted markup language digital book.',
     targetFormats: ['pdf', 'rtf', 'txt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb'],
-    optionsSchema: {preserveLayout:true},
   },
   txtz: {
     id: 'txtz',
@@ -2842,7 +2813,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'ebook',
     description: 'Zipped UTF-8 plain text ebook container with metadata.',
     targetFormats: ['pdf', 'rtf', 'txt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb'],
-    optionsSchema: {preserveFonts:true},
   },
   oeb: {
     id: 'oeb',
@@ -2852,7 +2822,6 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'ebook',
     description: 'Open eBook Publication Structure legacy digital ebook format.',
     targetFormats: ['epub', 'pdf', 'mobi'],
-    optionsSchema: {preserveLayout:true},
   },
   et: {
     id: 'et',
@@ -2903,12 +2872,15 @@ export function getFormatsByCategory(category: FormatCategory): FormatDefinition
   return getAllFormats().filter((f) => f.category === category);
 }
 
+export const DISABLED_TARGET_FORMATS = new Set(['emf', 'wmf', 'cgm', 'step', 'stp', 'iges', 'igs']);
+
 export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinition[] {
   const source = FORMAT_REGISTRY[sourceFormatId.toLowerCase()];
   if (!source) return [];
   return source.targetFormats
+    .filter((targetId) => !DISABLED_TARGET_FORMATS.has(targetId.toLowerCase()))
     .map((targetId) => FORMAT_REGISTRY[targetId])
-    .filter((def): def is FormatDefinition => Boolean(def));
+    .filter((def): def is FormatDefinition => Boolean(def) && def.available !== false);
 }
 
 /**
