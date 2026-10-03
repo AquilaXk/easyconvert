@@ -179,7 +179,8 @@ export async function POST(req: NextRequest) {
         }
         if (stored.filePath) {
           if (!fs.existsSync(stored.filePath)) {
-            return await failWithRollback(400, `Storage file missing on disk: "${stored.filePath}".`, 'Storage File Missing');
+            console.error(`Storage file missing on disk: "${stored.filePath}"`);
+            return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
           }
           assertNotSpoofedFilePath(stored.filePath, sourceDef.extension, originalFilename);
         } else if (stored.buffer && stored.buffer.length > 0) {
@@ -218,6 +219,14 @@ export async function POST(req: NextRequest) {
     // Fall back to API Key configured webhook URL/Secret if not overridden in request
     const effectiveWebhookUrl = webhookUrl || auth.apiKey?.webhookUrl;
     const effectiveWebhookSecret = webhookSecret || auth.apiKey?.webhookSecret;
+
+    if (webhookUrl && !webhookSecret) {
+      return await failWithRollback(400, 'webhookSecret is required when webhookUrl is provided.');
+    }
+
+    if (effectiveWebhookUrl && !effectiveWebhookSecret) {
+      return await failWithRollback(400, 'webhookSecret is required when webhookUrl is provided.');
+    }
 
     // Enqueue conversion job to BullMQ queue
     const job = await conversionQueue.add(

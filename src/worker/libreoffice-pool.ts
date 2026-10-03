@@ -182,9 +182,7 @@ export class LibreOfficePoolManager {
 
   public setSofficePath(path: string | null): void {
     this.sofficePath = path;
-    if (!path) {
-      this.enabled = false;
-    }
+    this.enabled = path !== null;
   }
 
   /**
@@ -264,9 +262,12 @@ export class LibreOfficePoolManager {
   /**
    * Acquires a ready worker from the pool or enqueues FIFO request.
    */
-  public async acquireWorker(timeoutMs = this.acquireTimeoutMs): Promise<LibreOfficeWorker> {
+  public async acquireWorker(timeoutMs = this.acquireTimeoutMs, signal?: AbortSignal): Promise<LibreOfficeWorker> {
     if (this.isShuttingDown) {
       throw new Error('LibreOfficePoolManager is shutting down.');
+    }
+    if (signal?.aborted) {
+      throw signal.reason || new Error('The operation was aborted');
     }
 
     // 1. Look for already READY worker
@@ -287,7 +288,15 @@ export class LibreOfficePoolManager {
 
     // 3. Enqueue FIFO request
     return new Promise<LibreOfficeWorker>((resolve, reject) => {
+      let onAbort: (() => void) | undefined;
+      const cleanup = () => {
+        if (signal && onAbort) {
+          signal.removeEventListener('abort', onAbort);
+        }
+      };
+
       const timer = setTimeout(() => {
+        cleanup();
         const idx = this.queue.findIndex((q) => q.resolve === resolve);
         if (idx !== -1) {
           this.queue.splice(idx, 1);
@@ -295,7 +304,30 @@ export class LibreOfficePoolManager {
         reject(new LibreOfficePoolTimeoutError());
       }, timeoutMs);
 
-      this.queue.push({ resolve, reject, timer });
+      if (signal) {
+        onAbort = () => {
+          clearTimeout(timer);
+          cleanup();
+          const idx = this.queue.findIndex((q) => q.resolve === resolve);
+          if (idx !== -1) {
+            this.queue.splice(idx, 1);
+          }
+          reject(signal.reason || new Error('The operation was aborted'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+
+      this.queue.push({
+        resolve: (w) => {
+          cleanup();
+          resolve(w);
+        },
+        reject: (err) => {
+          cleanup();
+          reject(err);
+        },
+        timer,
+      });
     });
   }
 
@@ -459,11 +491,15 @@ export class LibreOfficePoolManager {
     const src = validateFormat(sourceFormat);
     const tgt = validateFormat(targetFormat);
 
+    if (options.signal?.aborted) {
+      throw options.signal.reason || new Error('The operation was aborted');
+    }
+
     if (!this.sofficePath || (!fs.existsSync(this.sofficePath) && this.executor === executeSandboxedBinary)) {
       return null;
     }
 
-    const worker = await this.acquireWorker();
+    const worker = await this.acquireWorker(options.timeoutMs, options.signal);
     let hasError = false;
     const startTime = Date.now();
     const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
@@ -503,6 +539,7 @@ export class LibreOfficePoolManager {
           maxBuffer,
           env: { HOME: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
+          signal: options.signal,
         }
       );
 
@@ -511,7 +548,9 @@ export class LibreOfficePoolManager {
         .filter((f) => f.startsWith('input.') && !f.endsWith(`.${src}`));
       if (matches.length === 0) {
         hasError = true;
-        return null;
+        throw new Error(
+          `LibreOffice execution completed without producing expected output file for target format "${tgt}"`
+        );
       }
 
       return this.buildPersistedResult(

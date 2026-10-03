@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import {
   executeSandboxedBinary,
   SandboxedProcessError,
@@ -15,6 +16,8 @@ import {
 } from '../src/worker/engines';
 import { createZipArchive } from '../src/lib/conversions';
 import { ociWorker } from '../src/worker/index';
+import { attachInputCleanupOnCompletion } from '../src/lib/queue/conversion-queue';
+import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
@@ -48,6 +51,22 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
       expect(processError.signal).toBe('SIGSEGV');
       expect(processError.exitCode).toBeNull();
       expect(processError.message).toMatch(/signal SIGSEGV/i);
+    });
+
+    it('rejects with SandboxedProcessError retaining signal name even when stderr is non-empty', async () => {
+      let caughtError: unknown = null;
+      try {
+        await executeSandboxedBinary('/bin/sh', ['-c', 'echo "warning: missing resource" >&2; kill -11 $$']);
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeInstanceOf(SandboxedProcessError);
+      const processError = caughtError as SandboxedProcessError;
+      expect(processError.signal).toBe('SIGSEGV');
+      expect(processError.exitCode).toBeNull();
+      expect(processError.message).toContain('Process terminated by signal SIGSEGV');
+      expect(processError.message).toContain('warning: missing resource');
     });
 
     it('rejects with SandboxedMemoryLimitError when child receives SIGKILL under memory limit', async () => {
@@ -157,6 +176,32 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
         }
       }
     });
+
+    it('re-enables libreOfficePool dynamically when a valid path is passed to setSofficePath', () => {
+      libreOfficePool.setSofficePath(null);
+      expect(libreOfficePool.isEnabled()).toBe(false);
+
+      libreOfficePool.setSofficePath('/mock/bin/soffice');
+      expect(libreOfficePool.isEnabled()).toBe(true);
+
+      libreOfficePool.setSofficePath(null);
+      expect(libreOfficePool.isEnabled()).toBe(false);
+    });
+
+    it('aborts LibreOffice pool execution when AbortSignal triggers', async () => {
+      const controller = new AbortController();
+      controller.abort(new Error('Pool request cancelled by client'));
+
+      await expect(
+        libreOfficePool.convert(
+          Buffer.from('sample content'),
+          'docx',
+          'pdf',
+          { signal: controller.signal },
+          'test.docx'
+        )
+      ).rejects.toThrow('Pool request cancelled by client');
+    });
   });
 
   describe('3. OCI Worker Multi-Stage Task Rejection & Signal Propagation', () => {
@@ -208,6 +253,70 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
       const result = await (ociWorker as any).processor(mockJob);
       expect(result.status).toBe('completed');
       expect(result.filename).toBe('document.zip');
+    });
+
+    it('respects single-stage task targetFormat and options in ociWorker', async () => {
+      const mockJob = {
+        id: 'job-single-task-options',
+        data: {
+          jobId: 'job-single-task-options',
+          originalFilename: 'document.txt',
+          sourceFormat: 'txt',
+          targetFormat: 'zip',
+          fileSize: 20,
+          inputBufferBase64: Buffer.from('Testing single task options').toString('base64'),
+          options: {},
+          tasks: [
+            {
+              name: 'ocr-step',
+              operation: 'ocr',
+              targetFormat: 'zip',
+              options: { customDpi: 300 },
+            },
+          ],
+        },
+        signal: new AbortController().signal,
+        log: vi.fn().mockResolvedValue(undefined),
+        updateProgress: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Job<ConversionJobData, ConversionJobResult>;
+
+      const result = await (ociWorker as any).processor(mockJob);
+      expect(result.status).toBe('completed');
+      expect(result.filename).toBe('document.zip');
+    });
+
+    it('cleans up storageKey upload input when worker job permanently fails on final attempt', async () => {
+      const deletedKeys: string[] = [];
+      const originalDelete = s3Storage.deleteObject;
+      s3Storage.deleteObject = vi.fn((key: string) => {
+        deletedKeys.push(key);
+        return true;
+      });
+
+      const emitter = new EventEmitter();
+      attachInputCleanupOnCompletion(emitter as any);
+
+      try {
+        // Retry attempt 1 of 3: Should NOT clean up yet
+        emitter.emit('failed', {
+          id: 'job-retry',
+          data: { storageKey: 'uploads/job-retry/input.txt' },
+          opts: { attempts: 3 },
+          attemptsMade: 1,
+        });
+        expect(deletedKeys).toEqual([]);
+
+        // Final attempt 3 of 3: SHOULD clean up
+        emitter.emit('failed', {
+          id: 'job-retry',
+          data: { storageKey: 'uploads/job-retry/input.txt' },
+          opts: { attempts: 3 },
+          attemptsMade: 3,
+        });
+        expect(deletedKeys).toEqual(['uploads/job-retry/input.txt']);
+      } finally {
+        s3Storage.deleteObject = originalDelete;
+      }
     });
   });
 });

@@ -76,14 +76,20 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
 
       // 2. Execute conversion (Native LibreOffice / FFmpeg or pure TS fallback)
       attemptSignal.throwIfAborted();
+      const singleTask = job.data.tasks && job.data.tasks.length === 1 ? job.data.tasks[0] : undefined;
+      const effectiveTargetFormat = singleTask?.targetFormat || job.data.targetFormat;
       const conversionOptions: WorkerEngineOptions = {
         ...job.data.options,
+        ...(singleTask?.options || {}),
         signal: attemptSignal,
       };
+      if (singleTask?.operation === 'ocr') {
+        conversionOptions.ocrEnabled = true;
+      }
       const result: WorkerConversionResult = await executeWorkerConversion(
         inputPayload,
         job.data.sourceFormat,
-        job.data.targetFormat,
+        effectiveTargetFormat,
         conversionOptions,
         job.data.originalFilename
       );

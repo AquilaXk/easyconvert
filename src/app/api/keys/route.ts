@@ -73,6 +73,10 @@ function parseKeyCreationPayload(body: Record<string, unknown> | null | undefine
   const webhookUrl = typeof body?.webhookUrl === 'string' && body.webhookUrl.trim() ? body.webhookUrl.trim() : undefined;
   const webhookSecret = typeof body?.webhookSecret === 'string' && body.webhookSecret.trim() ? body.webhookSecret.trim() : undefined;
 
+  if (webhookUrl && !webhookSecret) {
+    return { keyName, error: 'webhookSecret is required when webhookUrl is provided.' };
+  }
+
   let expiresAt: number | undefined;
   if (typeof body?.expiresAt === 'number' && Number.isFinite(body.expiresAt)) {
     if (body.expiresAt <= Date.now()) {

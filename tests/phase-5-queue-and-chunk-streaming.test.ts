@@ -14,6 +14,9 @@ import {
   S3CompatibleStorageBackend,
   ociStorage,
 } from '../src/lib/storage/oci-storage';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import { userStore } from '../src/lib/auth/user-store';
+import { createSessionToken } from '../src/lib/auth/session';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { NextRequest } from 'next/server';
 
@@ -263,13 +266,29 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
 
   describe('6. Multipart Route Presigned Endpoint', () => {
     it('handles action=presign for chunk upload', async () => {
+      const user = await userStore.createUser({
+        name: 'Presign Tester',
+        email: `presign_${Date.now()}@test.com`,
+        tier: 'pro',
+      });
+      const init = s3Storage.initiateMultipartUpload(
+        'chunk_001.bin',
+        'application/octet-stream',
+        1024 * 1024,
+        user.id
+      );
+      const sessionToken = createSessionToken(user);
+
       const req = new NextRequest('http://localhost:3000/api/storage/multipart?action=presign', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `easyconvert_session=${sessionToken}`,
+        },
         body: JSON.stringify({
           type: 'upload',
-          key: 'n/test_ns/b/test_bucket/o/chunk_001.bin',
-          uploadId: 'up_test_999',
+          key: init.key,
+          uploadId: init.uploadId,
           partNumber: 1,
           expiresInSeconds: 600,
         }),
@@ -286,12 +305,22 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
     });
 
     it('handles action=presign for download', async () => {
+      const user = await userStore.createUser({
+        name: 'Presign Download Tester',
+        email: `presign_dl_${Date.now()}@test.com`,
+        tier: 'pro',
+      });
+      const sessionToken = createSessionToken(user);
+
       const req = new NextRequest('http://localhost:3000/api/storage/multipart?action=presign', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `easyconvert_session=${sessionToken}`,
+        },
         body: JSON.stringify({
           type: 'download',
-          key: 'n/test_ns/b/test_bucket/o/converted.pdf',
+          key: `conversions/${user.id}/converted.pdf`,
           expiresInSeconds: 1200,
         }),
       });
@@ -306,9 +335,19 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
     });
 
     it('rejects presign request with missing required parameters with HTTP 400', async () => {
+      const user = await userStore.createUser({
+        name: 'Presign Reject Tester',
+        email: `presign_rej_${Date.now()}@test.com`,
+        tier: 'pro',
+      });
+      const sessionToken = createSessionToken(user);
+
       const req = new NextRequest('http://localhost:3000/api/storage/multipart?action=presign', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `easyconvert_session=${sessionToken}`,
+        },
         body: JSON.stringify({
           type: 'upload',
           // Missing key, uploadId, and partNumber
