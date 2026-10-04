@@ -347,6 +347,10 @@ export const JobCreateRequestSchema = {
       type: 'string',
       description: 'Key of an object from the multipart upload API or an output owned by the caller.',
     },
+    uploadId: {
+      type: 'string',
+      description: 'Upload identifier from completed direct multipart or TUS resumable upload session.',
+    },
     inputBufferBase64: {
       type: 'string',
       description: 'Base64-encoded source payload.',
