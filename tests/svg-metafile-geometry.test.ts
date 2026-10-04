@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { encodeEmf, encodeWmf, encodeCgm } from '../src/lib/conversions/vector-metafile';
-import { CadGeometryUnavailableError } from '../src/lib/types';
+import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../src/lib/types';
+import { convertFile } from '../src/lib/conversions';
 import { parseEmfBinary, playbackEmf, playbackWmf, parseClearTextCgm, parseCgmPoints, type PlaybackShape } from './helpers/metafile-oracle';
 
 function svgDoc(body: string, rootAttrs = 'width="100" height="100" viewBox="0 0 100 100"'): Buffer {
@@ -163,6 +164,90 @@ describe('SVG document model for metafile encoders', () => {
         '<rect x="0" y="0" width="100" height="100" fill="#000"/>'
       );
       expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[0, 0], [200, 0], [200, 100], [0, 100]]);
+    });
+  });
+
+  describe('paint resolution', () => {
+    function brushOf(fill: string, extra = ''): (number | null)[] {
+      return emfShapes(`<rect x="10" y="10" width="20" height="20" fill="${fill}" ${extra}/>`)
+        .filter((s) => s.kind === 'polygon')
+        .map((s) => s.brush);
+    }
+
+    // Values from the CSS Color 4 named-colour table, authored independently of the encoder.
+    const namedSamples: [string, number][] = [
+      ['aliceblue', 0xf0f8ff],
+      ['cornflowerblue', 0x6495ed],
+      ['darkolivegreen', 0x556b2f],
+      ['gainsboro', 0xdcdcdc],
+      ['lightgoldenrodyellow', 0xfafad2],
+      ['mediumspringgreen', 0x00fa9a],
+      ['navajowhite', 0xffdead],
+      ['papayawhip', 0xffefd5],
+      ['rebeccapurple', 0x663399],
+      ['ReBeCcAPurple', 0x663399],
+      ['tomato', 0xff6347],
+      ['yellowgreen', 0x9acd32],
+    ];
+    for (const [name, rgb] of namedSamples) {
+      it(`resolves the named colour ${name}`, () => {
+        expect(brushOf(name)).toEqual([rgb]);
+      });
+    }
+
+    const functional: [string, number][] = [
+      ['#0f8', 0x00ff88],
+      ['#00FF88', 0x00ff88],
+      ['#0f8f', 0x00ff88],
+      ['rgb(10, 20, 30)', 0x0a141e],
+      ['rgb(10 20 30)', 0x0a141e],
+      ['rgb(100%, 0%, 50%)', 0xff0080],
+      ['rgba(255, 0, 0, 1)', 0xff0000],
+      ['hsl(120, 100%, 50%)', 0x00ff00],
+      ['hsl(240deg 100% 50%)', 0x0000ff],
+      ['hsl(0, 100%, 25%)', 0x800000],
+      ['hsl(0.5turn, 100%, 50%)', 0x00ffff],
+    ];
+    for (const [value, rgb] of functional) {
+      it(`resolves ${value}`, () => {
+        expect(brushOf(value)).toEqual([rgb]);
+      });
+    }
+
+    it('resolves currentColor from the inherited color property, initially black', () => {
+      const shapes = emfShapes(
+        '<g color="#ff8800"><rect x="0" y="0" width="10" height="10" fill="currentColor"/></g>' +
+          '<rect x="20" y="0" width="10" height="10" fill="currentColor"/>'
+      );
+      expect(filledShapes(shapes).map((s) => s.brush)).toEqual([0xff8800, 0x000000]);
+    });
+
+    it('rejects url() paint servers with a typed error naming the value', async () => {
+      const svg = svgDoc('<rect x="0" y="0" width="10" height="10" fill="url(#grad)"/>');
+      expect(() => encodeEmf(svg)).toThrow(UnsupportedOptionError);
+      expect(() => encodeWmf(svg)).toThrow(/url\(#grad\)/);
+      await expect(convertFile(svg, 'svg', 'cgm', {}, 'g.svg')).rejects.toBeInstanceOf(ConversionFailedError);
+    });
+
+    it('rejects semi-transparent colours instead of dropping the alpha', () => {
+      expect(() => encodeEmf(svgDoc('<rect x="0" y="0" width="10" height="10" fill="rgba(255,0,0,0.5)"/>'))).toThrow(
+        UnsupportedOptionError
+      );
+    });
+
+    it('treats an invalid fill as black and an invalid stroke as none', () => {
+      const shapes = emfShapes('<rect x="0" y="0" width="10" height="10" fill="notacolor" stroke="alsobad"/>');
+      expect(shapes.filter((s) => s.kind === 'polygon').map((s) => s.brush)).toEqual([0x000000]);
+      expect(shapes.every((s) => s.pen === null)).toBe(true);
+    });
+
+    it('treats transparent and none as no paint', () => {
+      const shapes = emfShapes(
+        '<rect x="0" y="0" width="10" height="10" fill="transparent" stroke="#ff0000"/>' +
+          '<rect x="20" y="0" width="10" height="10" fill="none" stroke="#00ff00"/>'
+      );
+      expect(shapes.every((s) => s.brush === null)).toBe(true);
+      expect(shapes.map((s) => s.pen?.color)).toEqual([0xff0000, 0x00ff00]);
     });
   });
 });
