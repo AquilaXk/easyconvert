@@ -36,6 +36,7 @@ interface EmfParsedHeader {
   bytes: number;
   records: number;
   handles: number;
+  reserved: number;
   device: { cx: number; cy: number };
   millimeters: { cx: number; cy: number };
 }
@@ -54,6 +55,8 @@ function parseEmfBinary(buffer: Buffer): {
   penColors: number[];
   brushColors: number[];
   pointCounts: number[];
+  maxObjectIndex: number;
+  eof: { nPalEntries: number; offPalEntries: number; nSizeLast: number; size: number } | null;
 } {
   expect(buffer.length).toBeGreaterThanOrEqual(88);
 
@@ -81,6 +84,7 @@ function parseEmfBinary(buffer: Buffer): {
     bytes: buffer.readUInt32LE(48),
     records: buffer.readUInt32LE(52),
     handles: buffer.readUInt16LE(56),
+    reserved: buffer.readUInt16LE(58),
     device: {
       cx: buffer.readUInt32LE(72),
       cy: buffer.readUInt32LE(76),
@@ -104,6 +108,9 @@ function parseEmfBinary(buffer: Buffer): {
   const penColors: number[] = [];
   const brushColors: number[] = [];
   const pointCounts: number[] = [];
+  let maxObjectIndex = 0;
+  let eof: { nPalEntries: number; offPalEntries: number; nSizeLast: number; size: number } | null = null;
+  const STOCK_OBJECT_FLAG = 0x80000000;
 
   while (offset + 8 <= buffer.length) {
     const recType = buffer.readUInt32LE(offset);
@@ -119,28 +126,47 @@ function parseEmfBinary(buffer: Buffer): {
     if (recType === 38) {
       // EMR_CREATEPEN
       hasCreatePen = true;
+      maxObjectIndex = Math.max(maxObjectIndex, buffer.readUInt32LE(offset + 8));
       penColors.push(buffer.readUInt32LE(offset + 24));
     }
     if (recType === 39) {
       // EMR_CREATEBRUSHINDIRECT
       hasCreateBrush = true;
+      maxObjectIndex = Math.max(maxObjectIndex, buffer.readUInt32LE(offset + 8));
       brushColors.push(buffer.readUInt32LE(offset + 16));
     }
     if (recType === 86) {
       // EMR_POLYGON16
       hasPolygon16 = true;
       const cpts = buffer.readUInt32LE(offset + 24);
+      expect(recSize).toBe(28 + 4 * cpts);
       pointCounts.push(cpts);
     }
     if (recType === 87) {
       // EMR_POLYLINE16
       hasPolyline16 = true;
       const cpts = buffer.readUInt32LE(offset + 24);
+      expect(recSize).toBe(28 + 4 * cpts);
       pointCounts.push(cpts);
     }
+    if (recType === 37 || recType === 40) {
+      // EMR_SELECTOBJECT / EMR_DELETEOBJECT: user handles must fit in nHandles
+      const ih = buffer.readUInt32LE(offset + 8);
+      if ((ih & STOCK_OBJECT_FLAG) === 0) {
+        expect(ih).toBeGreaterThan(0);
+        expect(ih).toBeLessThan(header.handles);
+      }
+    }
     if (recType === 14) {
-      // EMR_EOF
+      // EMR_EOF: last record, ends exactly at nBytes
       hasEof = true;
+      eof = {
+        nPalEntries: buffer.readUInt32LE(offset + 8),
+        offPalEntries: buffer.readUInt32LE(offset + 12),
+        nSizeLast: buffer.readUInt32LE(offset + recSize - 4),
+        size: recSize,
+      };
+      expect(offset + recSize).toBe(buffer.length);
       break;
     }
 
@@ -161,6 +187,8 @@ function parseEmfBinary(buffer: Buffer): {
     penColors,
     brushColors,
     pointCounts,
+    maxObjectIndex,
+    eof,
   };
 }
 
@@ -341,9 +369,16 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
 
       const parsed = parseEmfBinary(emfBuf);
 
-      // Signature and Version
-      expect(parsed.header.signature).toBe(0x28646d65); // ENHMETA_SIGNATURE
+      // MS-EMF 2.2.9: dSignature MUST be ENHMETA_SIGNATURE, the ASCII bytes " EMF"
+      expect(emfBuf.subarray(40, 44).toString('latin1')).toBe(' EMF');
+      expect(parsed.header.signature).toBe(0x464d4520);
       expect(parsed.header.version).toBe(0x00010000); // 1.0
+      expect(parsed.header.reserved).toBe(0);
+      // nHandles = highest object table index used + 1 (index 0 is reserved)
+      expect(parsed.header.handles).toBe(parsed.maxObjectIndex + 1);
+      // EMR_EOF: no palette, nSizeLast repeats the record size
+      expect(parsed.eof?.nPalEntries).toBe(0);
+      expect(parsed.eof?.nSizeLast).toBe(parsed.eof?.size);
 
       // Dimensions & Device bounds
       expect(parsed.header.bounds.right).toBe(400);

@@ -126,6 +126,9 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(resEmf.filename).toBe('drawing.emf');
     expect(resEmf.mimeType).toBe('image/emf');
     expect(resEmf.size).toBeGreaterThan(88);
+    expect(resEmf.buffer.readUInt32LE(0)).toBe(1); // EMR_HEADER
+    expect(resEmf.buffer.subarray(40, 44).toString('latin1')).toBe(' EMF');
+    expect(resEmf.buffer.readUInt32LE(48)).toBe(resEmf.size); // nBytes
   });
 
   it('converts image and raw formats (icns, eps, 3fr, crw, etc.) with real PostScript raster', async () => {

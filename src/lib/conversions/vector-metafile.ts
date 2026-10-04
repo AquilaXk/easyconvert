@@ -830,6 +830,9 @@ function encodeEmfElement(el: SvgGeometryElement, outRecords: Buffer[]) {
   }
 }
 
+/** MS-EMF 2.1.14 FormatSignature ENHMETA_SIGNATURE: the ASCII string " EMF" read as a little-endian UInt32. */
+const EMF_ENHMETA_SIGNATURE = 0x464d4520;
+
 function buildEmfHeader(width: number, height: number, totalFileSize: number, totalRecordCount: number): Buffer {
   const headerRec = Buffer.alloc(88);
   headerRec.writeUInt32LE(1, 0); // EMR_HEADER
@@ -842,7 +845,7 @@ function buildEmfHeader(width: number, height: number, totalFileSize: number, to
   headerRec.writeInt32LE(0, 28);
   headerRec.writeInt32LE(Math.round(width * 26.458333), 32);
   headerRec.writeInt32LE(Math.round(height * 26.458333), 36);
-  headerRec.writeUInt32LE(0x28646d65, 40); // ENHMETA_SIGNATURE
+  headerRec.writeUInt32LE(EMF_ENHMETA_SIGNATURE, 40);
   headerRec.writeUInt32LE(0x00010000, 44); // nVersion 1.0
   headerRec.writeUInt32LE(totalFileSize, 48);
   headerRec.writeUInt32LE(totalRecordCount, 52);
