@@ -14,6 +14,36 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
+interface RoundedBBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  w: number;
+  h: number;
+}
+
+function roundBBox(bbox: { x: number; y: number; width: number; height: number }): RoundedBBox {
+  const x0 = Math.round(bbox.x);
+  const y0 = Math.round(bbox.y);
+  const w = Math.max(1, Math.round(bbox.width));
+  const h = Math.max(1, Math.round(bbox.height));
+  return { x0, y0, x1: x0 + w, y1: y0 + h, w, h };
+}
+
+function computeWordConfidence(
+  wordConf?: number | null,
+  pageConf?: number | null
+): number {
+  if (typeof wordConf === 'number' && !isNaN(wordConf)) {
+    return wordConf > 1 ? wordConf / 100 : wordConf;
+  }
+  if (typeof pageConf === 'number' && !isNaN(pageConf)) {
+    return pageConf > 1 ? pageConf / 100 : pageConf;
+  }
+  return 0.9;
+}
+
 /**
  * Normalizes an OcrResult or OcrResult[] into an array of page structures.
  */
@@ -171,41 +201,26 @@ export function exportHocr(
     const blocks = page.lineBlocks || [];
     if (blocks.length > 0) {
       blocks.forEach((block, bIdx) => {
-        const b = block.bbox;
-        const bx0 = Math.round(b.x);
-        const by0 = Math.round(b.y);
-        const bx1 = Math.round(b.x + b.width);
-        const by1 = Math.round(b.y + b.height);
-
+        const bb = roundBBox(block.bbox);
         lines.push(
-          `    <div class="ocr_carea" id="block_${pNum}_${bIdx + 1}" title="bbox ${bx0} ${by0} ${bx1} ${by1}">`
+          `    <div class="ocr_carea" id="block_${pNum}_${bIdx + 1}" title="bbox ${bb.x0} ${bb.y0} ${bb.x1} ${bb.y1}">`
         );
         lines.push(
-          `      <p class="ocr_par" id="par_${pNum}_${bIdx + 1}" title="bbox ${bx0} ${by0} ${bx1} ${by1}">`
+          `      <p class="ocr_par" id="par_${pNum}_${bIdx + 1}" title="bbox ${bb.x0} ${bb.y0} ${bb.x1} ${bb.y1}">`
         );
 
         lines.push(
-          `        <span class="ocr_line" id="line_${pNum}_${bIdx + 1}" title="bbox ${bx0} ${by0} ${bx1} ${by1}; baseline 0 0">`
+          `        <span class="ocr_line" id="line_${pNum}_${bIdx + 1}" title="bbox ${bb.x0} ${bb.y0} ${bb.x1} ${bb.y1}; baseline 0 0">`
         );
 
         const words = ensureWordsForBlock(block, page.confidence);
         for (let wIdx = 0; wIdx < words.length; wIdx++) {
           const w = words[wIdx];
-          const wx0 = Math.round(w.bbox.x);
-          const wy0 = Math.round(w.bbox.y);
-          const wx1 = Math.round(w.bbox.x + w.bbox.width);
-          const wy1 = Math.round(w.bbox.y + w.bbox.height);
-
-          let wconf = 90;
-          if (w.confidence !== undefined && w.confidence !== null && !isNaN(w.confidence)) {
-            wconf = Math.round(w.confidence > 1 ? w.confidence : w.confidence * 100);
-          } else if (page.confidence !== null && page.confidence !== undefined && !isNaN(page.confidence)) {
-            wconf = Math.round(page.confidence > 1 ? page.confidence : page.confidence * 100);
-          }
-          wconf = Math.max(0, Math.min(100, wconf));
+          const wb = roundBBox(w.bbox);
+          const wconf = Math.max(0, Math.min(100, Math.round(computeWordConfidence(w.confidence, page.confidence) * 100)));
 
           lines.push(
-            `          <span class="ocrx_word" id="word_${pNum}_${bIdx + 1}_${wIdx + 1}" title="bbox ${wx0} ${wy0} ${wx1} ${wy1}; x_wconf ${wconf}">${escapeXml(w.text)}</span>`
+            `          <span class="ocrx_word" id="word_${pNum}_${bIdx + 1}_${wIdx + 1}" title="bbox ${wb.x0} ${wb.y0} ${wb.x1} ${wb.y1}; x_wconf ${wconf}">${escapeXml(w.text)}</span>`
           );
         }
 
@@ -275,46 +290,32 @@ export function exportAlto(
 
     const blocks = page.lineBlocks || [];
     blocks.forEach((block, bIdx) => {
-      const b = block.bbox;
-      const bx = Math.round(b.x);
-      const by = Math.round(b.y);
-      const bw = Math.max(1, Math.round(b.width));
-      const bh = Math.max(1, Math.round(b.height));
+      const bb = roundBBox(block.bbox);
 
       lines.push(
-        `        <TextBlock ID="TB_${pNum}_${bIdx + 1}" HPOS="${bx}" VPOS="${by}" WIDTH="${bw}" HEIGHT="${bh}">`
+        `        <TextBlock ID="TB_${pNum}_${bIdx + 1}" HPOS="${bb.x0}" VPOS="${bb.y0}" WIDTH="${bb.w}" HEIGHT="${bb.h}">`
       );
       lines.push(
-        `          <TextLine ID="TL_${pNum}_${bIdx + 1}" HPOS="${bx}" VPOS="${by}" WIDTH="${bw}" HEIGHT="${bh}">`
+        `          <TextLine ID="TL_${pNum}_${bIdx + 1}" HPOS="${bb.x0}" VPOS="${bb.y0}" WIDTH="${bb.w}" HEIGHT="${bb.h}">`
       );
 
       const words = ensureWordsForBlock(block, page.confidence);
       for (let wIdx = 0; wIdx < words.length; wIdx++) {
         const w = words[wIdx];
-        const wx = Math.round(w.bbox.x);
-        const wy = Math.round(w.bbox.y);
-        const ww = Math.max(1, Math.round(w.bbox.width));
-        const wh = Math.max(1, Math.round(w.bbox.height));
-
-        let wc = 0.9;
-        if (w.confidence !== undefined && w.confidence !== null && !isNaN(w.confidence)) {
-          wc = w.confidence > 1 ? w.confidence / 100 : w.confidence;
-        } else if (page.confidence !== null && page.confidence !== undefined && !isNaN(page.confidence)) {
-          wc = page.confidence > 1 ? page.confidence / 100 : page.confidence;
-        }
-        wc = Math.max(0, Math.min(1.0, wc));
+        const wb = roundBBox(w.bbox);
+        const wc = Math.max(0, Math.min(1.0, computeWordConfidence(w.confidence, page.confidence)));
 
         lines.push(
-          `            <String CONTENT="${escapeXml(w.text)}" HPOS="${wx}" VPOS="${wy}" WIDTH="${ww}" HEIGHT="${wh}" WC="${wc.toFixed(2)}" />`
+          `            <String CONTENT="${escapeXml(w.text)}" HPOS="${wb.x0}" VPOS="${wb.y0}" WIDTH="${wb.w}" HEIGHT="${wb.h}" WC="${wc.toFixed(2)}" />`
         );
 
         // Add standard <SP> whitespace delimiter between consecutive words in a line
         if (wIdx < words.length - 1) {
           const nextW = words[wIdx + 1];
-          const spX = wx + ww;
+          const spX = wb.x1;
           const spW = Math.max(1, Math.round(nextW.bbox.x - spX));
           lines.push(
-            `            <SP HPOS="${spX}" VPOS="${wy}" WIDTH="${spW}" />`
+            `            <SP HPOS="${spX}" VPOS="${wb.y0}" WIDTH="${spW}" />`
           );
         }
       }

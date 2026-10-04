@@ -22,6 +22,8 @@ import {
   exportHocr,
   exportAlto,
   inspectPdfPagesTextDensity,
+  evaluatePageOcrDecisions,
+  assembleCombinedOcrResult,
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import {
@@ -68,85 +70,6 @@ export function extractTextFromTex(tex: string): string {
     .trim();
 }
 
-function buildCombinedOcrResult(
-  pageOcrResults: Map<number, OcrResult>,
-  pageAnalyses: PdfPageAnalysis[],
-  fallbackText: string,
-  fallbackConfidence?: number | null
-): OcrResult {
-  if (pageAnalyses && pageAnalyses.length > 0) {
-    const pages: OcrPageResult[] = [];
-    const allTexts: string[] = [];
-    const allLines: string[] = [];
-    let totalConf = 0;
-    let confCount = 0;
-    let totalWords = 0;
-
-    for (const pa of pageAnalyses) {
-      const ocr = pageOcrResults.get(pa.pageNumber);
-      if (ocr) {
-        pages.push({
-          pageNumber: pa.pageNumber,
-          width: pa.width,
-          height: pa.height,
-          text: ocr.text,
-          confidence: ocr.confidence,
-          lineBlocks: ocr.lineBlocks || [],
-          lines: ocr.lines,
-        });
-        allTexts.push(ocr.text);
-        allLines.push(...ocr.lines);
-        if (ocr.confidence !== null) {
-          totalConf += ocr.confidence;
-          confCount++;
-        }
-        totalWords += ocr.wordCount;
-      } else {
-        const lines = pa.text ? pa.text.split('\n').filter(Boolean) : [];
-        pages.push({
-          pageNumber: pa.pageNumber,
-          width: pa.width,
-          height: pa.height,
-          text: pa.text,
-          confidence: 1.0,
-          lineBlocks: [],
-          lines,
-        });
-        allTexts.push(pa.text);
-        allLines.push(...lines);
-        totalConf += 1.0;
-        confCount++;
-        totalWords += pa.wordCount;
-      }
-    }
-
-    return {
-      text: allTexts.join('\n\n').trim(),
-      confidence: confCount > 0 ? totalConf / confCount : 1.0,
-      wordCount: totalWords,
-      lines: allLines,
-      lineBlocks: pages.flatMap((p) => p.lineBlocks),
-      imageWidth: pageAnalyses[0]?.width || 612,
-      imageHeight: pageAnalyses[0]?.height || 792,
-      pages,
-    };
-  }
-
-  const singleResult = pageOcrResults.values().next().value;
-  if (singleResult) return singleResult;
-
-  const lines = fallbackText ? fallbackText.split('\n').filter(Boolean) : [];
-  return {
-    text: fallbackText || '',
-    confidence: fallbackConfidence ?? 1.0,
-    wordCount: fallbackText ? fallbackText.split(/\s+/).filter(Boolean).length : 0,
-    lines,
-    lineBlocks: [],
-    imageWidth: 612,
-    imageHeight: 792,
-  };
-}
-
 export async function convertDocument(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -181,43 +104,7 @@ export async function convertDocument(
     ).catch(() => []);
 
     const ocrMode = options.ocrMode || 'skip_text';
-    const pagesNeedingOcr: number[] = [];
-    const pageDecisions: OcrPageDecision[] = [];
-
-    if (pageAnalyses.length > 0) {
-      for (const pa of pageAnalyses) {
-        if (ocrMode === 'force' || ocrMode === 'redo') {
-          pageDecisions.push({
-            pageNumber: pa.pageNumber,
-            skipped: false,
-            reason: 'forced',
-            textDensity: pa.charCount,
-            wordCount: pa.wordCount,
-          });
-          pagesNeedingOcr.push(pa.pageNumber);
-        } else {
-          // skip_text mode (default Smart OCR)
-          if (pa.hasTextLayer) {
-            pageDecisions.push({
-              pageNumber: pa.pageNumber,
-              skipped: true,
-              reason: 'has_text',
-              textDensity: pa.charCount,
-              wordCount: pa.wordCount,
-            });
-          } else {
-            pageDecisions.push({
-              pageNumber: pa.pageNumber,
-              skipped: false,
-              reason: 'no_text',
-              textDensity: pa.charCount,
-              wordCount: pa.wordCount,
-            });
-            pagesNeedingOcr.push(pa.pageNumber);
-          }
-        }
-      }
-    }
+    const { pageDecisions, pagesNeedingOcr } = evaluatePageOcrDecisions(pageAnalyses, ocrMode);
 
     // If scanned document or OCR is requested or target is hocr/alto
     const isScanned = !structuredPdf.hasTextLayer || !extractedText || extractedText.trim() === '';
@@ -499,43 +386,22 @@ export async function convertDocument(
       };
     }
 
-    if (tgt === 'hocr') {
-      const combinedResult: OcrResult = buildCombinedOcrResult(
+    if (tgt === 'hocr' || tgt === 'alto') {
+      const combinedResult = assembleCombinedOcrResult(
         pageOcrResults,
         pageAnalyses,
         extractedText,
         ocrInfo.confidence
       );
-      const hocrXml = exportHocr(combinedResult, {
-        documentTitle: baseName,
-        filename: originalFilename,
-      });
-      const buffer = Buffer.from(hocrXml, 'utf-8');
+      const isHocr = tgt === 'hocr';
+      const xml = isHocr
+        ? exportHocr(combinedResult, { documentTitle: baseName, filename: originalFilename })
+        : exportAlto(combinedResult, { filename: originalFilename });
+      const buffer = Buffer.from(xml, 'utf-8');
       return {
         buffer,
-        mimeType: 'application/xhtml+xml',
-        filename: `${baseName}.hocr`,
-        size: buffer.length,
-        ocrExtractedText: combinedResult.text,
-        ocrConfidence: combinedResult.confidence,
-      };
-    }
-
-    if (tgt === 'alto') {
-      const combinedResult: OcrResult = buildCombinedOcrResult(
-        pageOcrResults,
-        pageAnalyses,
-        extractedText,
-        ocrInfo.confidence
-      );
-      const altoXml = exportAlto(combinedResult, {
-        filename: originalFilename,
-      });
-      const buffer = Buffer.from(altoXml, 'utf-8');
-      return {
-        buffer,
-        mimeType: 'application/xml',
-        filename: `${baseName}.xml`,
+        mimeType: isHocr ? 'application/xhtml+xml' : 'application/xml',
+        filename: `${baseName}.${isHocr ? 'hocr' : 'xml'}`,
         size: buffer.length,
         ocrExtractedText: combinedResult.text,
         ocrConfidence: combinedResult.confidence,

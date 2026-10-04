@@ -2167,30 +2167,18 @@ export async function convertImage(
     return convertImageToPdf(inputBuffer, options, baseName, src);
   }
 
-  // Special case: Image to hOCR 1.2 XHTML
-  if (fmt === 'hocr') {
+  // Special case: Image to hOCR 1.2 XHTML or ALTO 4.x XML
+  if (fmt === 'hocr' || fmt === 'alto') {
     const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
-    const hocrXml = exportHocr(ocrResult, { documentTitle: baseName, filename: originalFilename });
-    const buffer = Buffer.from(hocrXml, 'utf-8');
+    const isHocr = fmt === 'hocr';
+    const xml = isHocr
+      ? exportHocr(ocrResult, { documentTitle: baseName, filename: originalFilename })
+      : exportAlto(ocrResult, { filename: originalFilename });
+    const buffer = Buffer.from(xml, 'utf-8');
     return {
       buffer,
-      mimeType: 'application/xhtml+xml',
-      filename: `${baseName}.hocr`,
-      size: buffer.length,
-      ocrExtractedText: ocrResult.text,
-      ocrConfidence: ocrResult.confidence,
-    };
-  }
-
-  // Special case: Image to ALTO 4.x XML
-  if (fmt === 'alto') {
-    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
-    const altoXml = exportAlto(ocrResult, { filename: originalFilename });
-    const buffer = Buffer.from(altoXml, 'utf-8');
-    return {
-      buffer,
-      mimeType: 'application/xml',
-      filename: `${baseName}.xml`,
+      mimeType: isHocr ? 'application/xhtml+xml' : 'application/xml',
+      filename: `${baseName}.${isHocr ? 'hocr' : 'xml'}`,
       size: buffer.length,
       ocrExtractedText: ocrResult.text,
       ocrConfidence: ocrResult.confidence,
