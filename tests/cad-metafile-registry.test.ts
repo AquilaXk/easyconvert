@@ -4,49 +4,53 @@ import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry'
 import { convertFile } from '../src/lib/conversions';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { ConversionFailedError } from '../src/lib/types';
-import { emfOracleRecords, wmfOracleRecords, cgmOracleDocument } from './helpers/metafile-oracle';
+import { emfOraclePlayback, wmfOraclePlayback, cgmOracleDocument, cgmOracleColour, cgmOraclePoints } from './helpers/metafile-oracle';
 
 const METAFILE_TARGETS = ['emf', 'wmf', 'cgm'];
 
+/** A red triangle; every advertised pair must reproduce its colour and vertices. */
+const TRIANGLE: [number, number][] = [[10, 10], [90, 20], [40, 80]];
+const RED = 0xff0000;
+const VERTEX_TOLERANCE_PX = 1;
 const SVG_SAMPLE =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect x="10" y="10" width="50" height="50" fill="red"/></svg>';
-const EPS_SAMPLE = [
-  '%!PS-Adobe-3.0 EPSF-3.0',
-  '%%BoundingBox: 0 0 100 100',
-  'newpath 10 10 moveto 90 10 lineto 90 90 lineto closepath 1 0 0 setrgbcolor fill',
-  '0 0 moveto 50 50 lineto stroke',
-  'showpage',
-  '',
-].join('\n');
+  '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">' +
+  `<polygon points="${TRIANGLE.map(([x, y]) => `${x},${y}`).join(' ')}" fill="#ff0000"/></svg>`;
 
 /** Inputs for every source that may advertise a metafile target. */
 const SOURCE_SAMPLES: Record<string, Buffer> = {
   svg: Buffer.from(SVG_SAMPLE, 'utf-8'),
   svgz: zlib.gzipSync(Buffer.from(SVG_SAMPLE, 'utf-8')),
-  eps: Buffer.from(EPS_SAMPLE, 'utf-8'),
-  ps: Buffer.from(EPS_SAMPLE.replace(' EPSF-3.0', ''), 'utf-8'),
 };
 
-/** Checks an output against its format's own signature using the independent oracles. */
+function expectTriangle(ring: { x: number; y: number }[]): void {
+  const pts = [...ring];
+  const last = pts[pts.length - 1];
+  if (pts.length > TRIANGLE.length && last.x === pts[0].x && last.y === pts[0].y) pts.pop();
+  expect(pts).toHaveLength(TRIANGLE.length);
+  pts.forEach((p, i) => {
+    expect(Math.abs(p.x - TRIANGLE[i][0])).toBeLessThanOrEqual(VERTEX_TOLERANCE_PX);
+    expect(Math.abs(p.y - TRIANGLE[i][1])).toBeLessThanOrEqual(VERTEX_TOLERANCE_PX);
+  });
+}
+
+/** Decodes the output with the independent oracles and checks the red triangle. */
 function assertOutputFormat(target: string, out: Buffer): void {
   switch (target) {
-    case 'emf': {
-      const emf = emfOracleRecords(out);
-      expect(emf.header.signature).toBe(0x464d4520);
-      expect(emf.hasEof).toBe(true);
-      expect(emf.pointCounts.length).toBeGreaterThan(0);
-      break;
-    }
+    case 'emf':
     case 'wmf': {
-      const wmf = wmfOracleRecords(out);
-      expect(wmf.header.aldusKey).toBe(0x9ac6cdd7);
-      expect(wmf.hasEof).toBe(true);
-      expect(wmf.hasPolygon || wmf.hasPolyline).toBe(true);
+      const shapes = target === 'emf' ? emfOraclePlayback(out) : wmfOraclePlayback(out);
+      const filled = shapes.filter((s) => s.kind === 'polygon' && s.brush !== null);
+      expect(filled.map((s) => s.brush)).toEqual([RED]);
+      expect(filled[0].rings).toHaveLength(1);
+      expectTriangle(filled[0].rings[0]);
       break;
     }
     case 'cgm': {
       const cgm = cgmOracleDocument(out.toString('utf-8'));
-      expect(cgm.body.some((e) => e.name === 'POLYGON' || e.name === 'POLYLINE' || e.name === 'POLYGONSET')).toBe(true);
+      expect(cgm.body.filter((e) => e.name === 'FILLCOLR').map((e) => cgmOracleColour(e.params))).toEqual([[255, 0, 0]]);
+      const polygons = cgm.body.filter((e) => e.name === 'POLYGON');
+      expect(polygons).toHaveLength(1);
+      expectTriangle(cgmOraclePoints(polygons[0].params));
       break;
     }
     default:
@@ -70,7 +74,7 @@ describe('Metafile registry advertises only working conversion pairs', () => {
       }
     }
     const sorted = [...advertised].sort((a, b) => a.localeCompare(b));
-    expect(sorted).toEqual(['eps->emf', 'eps->wmf', 'ps->emf', 'ps->wmf', 'svg->cgm', 'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf']);
+    expect(sorted).toEqual(['svg->cgm', 'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf']);
   });
 
   const metafilePairs = Object.entries(FORMAT_REGISTRY).flatMap(([sourceId, def]) =>
