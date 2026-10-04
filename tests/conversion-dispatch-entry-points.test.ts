@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 import { NextRequest } from 'next/server';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { POST as convertPost } from '../src/app/api/convert/route';
@@ -12,7 +15,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { EngineUnavailableError } from '../src/lib/types';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
-import { HAS_PDFTOTEXT, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
+import { HAS_PDFTOPPM, HAS_PDFTOTEXT, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 
 /**
@@ -114,7 +117,10 @@ async function expectEngineUnavailableProblem(res: Response): Promise<void> {
 
 let graphSeq = 0;
 
-function convertNodeJob(storageKey: string): Job<ConversionJobData, ConversionJobResult> {
+function convertNodeJob(
+  storageKey: string,
+  graphNode: Record<string, unknown> = { op: 'convert', targetFormat: 'pdf', options: { recalculate: true } }
+): Job<ConversionJobData, ConversionJobResult> {
   graphSeq += 1;
   const graphId = `g_dispatch_${Date.now()}_${graphSeq}`;
   return {
@@ -127,7 +133,7 @@ function convertNodeJob(storageKey: string): Job<ConversionJobData, ConversionJo
       options: {},
       graphId,
       graphNodeId: 'n1',
-      graphNode: { op: 'convert', targetFormat: 'pdf', options: { recalculate: true } },
+      graphNode,
       inputArtifacts: [storageKey],
     },
     opts: { attempts: 1 },
@@ -207,4 +213,59 @@ describe.skipIf(!HAS_SOFFICE || !HAS_PDFTOTEXT)('entry points convert through Li
     const tokens = text.split(/\s+/).filter(Boolean);
     expect(tokens).toEqual(expect.arrayContaining(['Units', 'Total', String(UNITS), String(UNITS * PRICE)]));
   }, 120_000);
+});
+
+const SAMPLE_DOCX = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** A portrait Letter or A4 page: height / width lies between 11/8.5 and 297/210. */
+const PORTRAIT_PAGE_MIN_RATIO = 1.25;
+const PORTRAIT_PAGE_MAX_RATIO = 1.45;
+
+function docxBlob(): Blob {
+  return new Blob([new Uint8Array(SAMPLE_DOCX)], { type: DOCX_MIME });
+}
+
+/** Asserts a rendered single-page PNG with the independent sharp decoder. */
+async function expectRenderedPagePng(png: Buffer): Promise<void> {
+  expect(png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)).toBe(true);
+  const meta = await sharp(png).metadata();
+  expect(meta.format).toBe('png');
+  const ratio = (meta.height ?? 0) / (meta.width ?? 1);
+  expect(ratio).toBeGreaterThan(PORTRAIT_PAGE_MIN_RATIO);
+  expect(ratio).toBeLessThan(PORTRAIT_PAGE_MAX_RATIO);
+  const { channels } = await sharp(png).stats();
+  // A rendered text page is not a blank canvas: some channel has dark pixels.
+  expect(Math.min(...channels.map((c) => c.min))).toBeLessThan(128);
+}
+
+describe('pairs only a native engine converts', () => {
+  it('POST /api/v1/convert (sync) answers docx->png with 503 when LibreOffice is missing', async () => {
+    const res = await withMissingBinary('SOFFICE_PATH', () =>
+      v1ConvertPost(multipart('http://localhost/api/v1/convert', { file: docxBlob(), targetFormat: 'png' }, 'sample.docx'))
+    );
+    await expectEngineUnavailableProblem(res);
+  });
+
+  describe.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM)('with LibreOffice and Poppler installed (needs soffice, pdftoppm)', () => {
+    it('POST /api/v1/convert (sync) renders docx->png', async () => {
+      const res = await v1ConvertPost(
+        multipart('http://localhost/api/v1/convert?raw=true', { file: docxBlob(), targetFormat: 'png' }, 'sample.docx')
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('image/png');
+      await expectRenderedPagePng(Buffer.from(await res.arrayBuffer()));
+    }, 120_000);
+
+    it('a graph convert node with the default engine renders docx->png', async () => {
+      const key = `tests/conversion-dispatch/${Date.now()}_${graphSeq}_sample.docx`;
+      s3Storage.saveObject(key, SAMPLE_DOCX, DOCX_MIME, 'sample.docx', ARTIFACT_TTL_MS);
+      const result = await processGraphNodeJob(convertNodeJob(key, { op: 'convert', targetFormat: 'png' }), undefined, s3Storage);
+      expect(result.resultKey).toMatch(/\/n1\/sample\.png$/);
+      const stored = s3Storage.getObject(result.resultKey);
+      if (!stored) throw new Error(`Output artifact "${result.resultKey}" missing from storage`);
+      expect(stored.mimeType).toBe('image/png');
+      await expectRenderedPagePng(stored.buffer);
+    }, 120_000);
+  });
 });
