@@ -208,6 +208,9 @@ export interface PipelineTask {
   operation: (typeof PIPELINE_OPERATIONS)[number];
   targetFormat?: string;
   options?: ConversionOptions;
+  credentialRef?: string;
+  remotePath?: string;
+  url?: string;
 }
 
 export interface ConversionJobData {

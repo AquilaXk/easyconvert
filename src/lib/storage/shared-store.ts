@@ -81,6 +81,7 @@ export class SharedObjectStore extends Map<string, StoredObject> {
           // ignore
         }
       }
+      }
     } catch {
       // Disk write failure must not crash in-memory fallback
     }
