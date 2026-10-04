@@ -8,7 +8,8 @@ import type {
   NodeCompletionResult,
   NodeFailureResult,
 } from './scheduler-types';
-import { conversionQueue } from '../conversion-queue';
+import { conversionQueue, getQueueForResourceClass } from '../conversion-queue';
+import { resolveNodeResourceClass } from '../resource-class';
 import { s3Storage } from '../../storage/s3-storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
@@ -341,8 +342,10 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
   ): Promise<void> {
     const inputNodeIds = getNodeInputs(node);
     const inputArtifacts = await this.getNodeOutputs(graphId, inputNodeIds);
+    const resClass = resolveNodeResourceClass(node);
+    const targetQueue = getQueueForResourceClass(resClass);
 
-    await conversionQueue.add(
+    await targetQueue.add(
       'graph-node',
       {
         jobId: `${graphId}:${nodeId}`,
@@ -357,6 +360,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
         graphNodeId: nodeId,
         graphNode: node,
         inputArtifacts,
+        resourceClass: resClass,
       },
       {
         jobId: `${graphId}:${nodeId}`,

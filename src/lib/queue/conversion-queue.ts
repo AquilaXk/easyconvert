@@ -1,14 +1,30 @@
 import { Queue, Worker, Job, createQueueEngine, IQueueEngine, WorkerOptions } from './bullmq-engine';
-import type { ConversionJobData, ConversionJobResult } from '../types';
+import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../types';
 import { s3Storage } from '../storage/s3-storage';
 import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { processNodeJob, tsEngine } from './node-processor';
+import { resolveResourceClass } from './resource-class';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
 export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResult> =
   createQueueEngine<ConversionJobData, ConversionJobResult>('easyconvert-jobs');
+
+export const resourceQueues: Record<ResourceClass, IQueueEngine<ConversionJobData, ConversionJobResult>> = {
+  light: createQueueEngine<ConversionJobData, ConversionJobResult>('easyconvert-jobs:light'),
+  cpu: createQueueEngine<ConversionJobData, ConversionJobResult>('easyconvert-jobs:cpu'),
+  memory: createQueueEngine<ConversionJobData, ConversionJobResult>('easyconvert-jobs:memory'),
+  gpu: createQueueEngine<ConversionJobData, ConversionJobResult>('easyconvert-jobs:gpu'),
+};
+
+export const allConversionQueues: readonly IQueueEngine<ConversionJobData, ConversionJobResult>[] = [
+  conversionQueue,
+  resourceQueues.light,
+  resourceQueues.cpu,
+  resourceQueues.memory,
+  resourceQueues.gpu,
+];
 
 /**
  * Standard Conversion Job Processor for in-process fallback / development workers.
@@ -204,18 +220,192 @@ export function attachJobCancellationListeners(
 }
 
 attachJobCancellationListeners(conversionQueue);
+for (const q of Object.values(resourceQueues)) {
+  attachJobCancellationListeners(q);
+}
+
+/**
+ * Returns queue engine designated for the given resource class.
+ */
+export function getQueueForResourceClass(
+  resourceClass: ResourceClass
+): IQueueEngine<ConversionJobData, ConversionJobResult> {
+  return resourceQueues[resourceClass] || conversionQueue;
+}
+
+/**
+ * Resolves the appropriate resource queue for a conversion job based on formats, size, and options.
+ */
+export function getQueueForJob(
+  jobData: Partial<ConversionJobData>
+): IQueueEngine<ConversionJobData, ConversionJobResult> {
+  if (jobData.resourceClass && resourceQueues[jobData.resourceClass]) {
+    return resourceQueues[jobData.resourceClass];
+  }
+  const resClass = resolveResourceClass(
+    jobData.sourceFormat || '',
+    jobData.targetFormat || '',
+    jobData.fileSize,
+    jobData.options
+  );
+  return resourceQueues[resClass] || conversionQueue;
+}
+
+/**
+ * Retrieves a job by ID across all resource queues and default queue.
+ */
+export async function getJobAcrossQueues(
+  jobId: string
+): Promise<Job<ConversionJobData, ConversionJobResult> | undefined> {
+  for (const q of allConversionQueues) {
+    const job = await q.getJob(jobId);
+    if (job) return job;
+  }
+  return undefined;
+}
+
+/**
+ * Cancels a job by ID across all resource queues and default queue.
+ */
+export async function cancelJobAcrossQueues(
+  jobId: string,
+  reason: string = 'Cancelled by user'
+): Promise<boolean> {
+  for (const q of allConversionQueues) {
+    const cancelled = await q.cancelJob(jobId, reason);
+    if (cancelled) return true;
+  }
+  return false;
+}
+
+// Transparent cross-queue lookup delegation on default conversionQueue
+const origConversionQueueGetJob = conversionQueue.getJob.bind(conversionQueue);
+conversionQueue.getJob = async (id: string) => {
+  const direct = await origConversionQueueGetJob(id);
+  if (direct) return direct;
+  for (const q of Object.values(resourceQueues)) {
+    const found = await q.getJob(id);
+    if (found) return found;
+  }
+  return undefined;
+};
+
+const origConversionQueueCancelJob = conversionQueue.cancelJob.bind(conversionQueue);
+conversionQueue.cancelJob = async (id: string, reason?: string) => {
+  const direct = await origConversionQueueCancelJob(id, reason);
+  if (direct) return true;
+  for (const q of Object.values(resourceQueues)) {
+    const cancelled = await q.cancelJob(id, reason);
+    if (cancelled) return true;
+  }
+  return false;
+};
+
+const origConversionQueueGetJobCounts = conversionQueue.getJobCounts.bind(conversionQueue);
+conversionQueue.getJobCounts = async () => {
+  const counts = await origConversionQueueGetJobCounts();
+  for (const q of Object.values(resourceQueues)) {
+    const qCounts = await q.getJobCounts();
+    for (const [state, count] of Object.entries(qCounts) as [import('./bullmq-engine').JobState, number][]) {
+      counts[state] = (counts[state] || 0) + count;
+    }
+  }
+  return counts;
+};
+
+const origConversionQueueGetJobs = conversionQueue.getJobs.bind(conversionQueue);
+conversionQueue.getJobs = async (types) => {
+  const direct = await origConversionQueueGetJobs(types);
+  const all = [...direct];
+  for (const q of Object.values(resourceQueues)) {
+    const qJobs = await q.getJobs(types);
+    all.push(...qJobs);
+  }
+  return all;
+};
+
+const origConversionQueuePopNextWaiting = conversionQueue._popNextWaiting?.bind(conversionQueue);
+conversionQueue._popNextWaiting = async () => {
+  const direct = await origConversionQueuePopNextWaiting?.();
+  if (direct) return direct;
+  for (const q of Object.values(resourceQueues)) {
+    if (q._popNextWaiting) {
+      const popped = await q._popNextWaiting();
+      if (popped) return popped;
+    }
+  }
+  return undefined;
+};
+
+const origConversionQueueOnJobCompleted = conversionQueue._onJobCompleted?.bind(conversionQueue);
+if (origConversionQueueOnJobCompleted) {
+  conversionQueue._onJobCompleted = async (job, result) => {
+    const direct = await origConversionQueueOnJobCompleted(job, result);
+    if (direct) return true;
+    for (const q of Object.values(resourceQueues)) {
+      if (q._onJobCompleted) {
+        const res = await q._onJobCompleted(job, result);
+        if (res) return true;
+      }
+    }
+    return false;
+  };
+}
+
+const origConversionQueueOnJobFailed = conversionQueue._onJobFailed?.bind(conversionQueue);
+if (origConversionQueueOnJobFailed) {
+  conversionQueue._onJobFailed = async (job, err) => {
+    const direct = await origConversionQueueOnJobFailed(job, err);
+    if (direct) return true;
+    for (const q of Object.values(resourceQueues)) {
+      if (q._onJobFailed) {
+        const res = await q._onJobFailed(job, err);
+        if (res) return true;
+      }
+    }
+    return false;
+  };
+}
+
+const origConversionQueueRequeue = conversionQueue._requeue?.bind(conversionQueue);
+if (origConversionQueueRequeue) {
+  conversionQueue._requeue = async (job, delayMs) => {
+    const direct = await origConversionQueueRequeue(job, delayMs);
+    if (direct) return true;
+    for (const q of Object.values(resourceQueues)) {
+      if (q._requeue) {
+        const res = await q._requeue(job, delayMs);
+        if (res) return true;
+      }
+    }
+    return false;
+  };
+}
+
+// Forward waiting events from resource queues to default conversionQueue
+for (const q of Object.values(resourceQueues)) {
+  q.on('waiting', (job) => {
+    conversionQueue.emit('waiting', job);
+  });
+}
 
 // 2. Worker Lifecycle Management (Producer/Consumer Decoupled)
 let workerInstance: Worker<ConversionJobData, ConversionJobResult> | null = null;
 
+export interface StartConversionWorkerOptions extends WorkerOptions {
+  queues?: IQueueEngine<ConversionJobData, ConversionJobResult>[];
+}
+
 export function startConversionWorker(
-  opts: WorkerOptions = {}
+  opts: StartConversionWorkerOptions = {}
 ): Worker<ConversionJobData, ConversionJobResult> {
   if (workerInstance) {
     return workerInstance;
   }
+  const queuesToSubscribe =
+    opts.queues || (allConversionQueues as IQueueEngine<ConversionJobData, ConversionJobResult>[]);
   const worker = new Worker<ConversionJobData, ConversionJobResult>(
-    conversionQueue,
+    queuesToSubscribe,
     processConversionJob,
     { concurrency: opts.concurrency || 5 }
   );

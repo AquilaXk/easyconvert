@@ -294,8 +294,19 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
   // Internal worker queue interface
   _popNextWaiting(): Job<T, R> | undefined {
-    const id = this.waitingIds.shift();
-    if (!id) return undefined;
+    if (this.waitingIds.length === 0) return undefined;
+    // Prioritized search: pick job with lowest opts.priority (e.g. 1 > 2 > 3), preserving FIFO on ties
+    let bestIdx = 0;
+    let bestPriority = this.jobs.get(this.waitingIds[0])?.opts.priority ?? Number.MAX_SAFE_INTEGER;
+    for (let i = 1; i < this.waitingIds.length; i++) {
+      const job = this.jobs.get(this.waitingIds[i]);
+      const prio = job?.opts.priority ?? Number.MAX_SAFE_INTEGER;
+      if (prio < bestPriority) {
+        bestPriority = prio;
+        bestIdx = i;
+      }
+    }
+    const [id] = this.waitingIds.splice(bestIdx, 1);
     return this.jobs.get(id);
   }
 
@@ -430,28 +441,45 @@ function isAttemptDiscarded(job: Job): boolean {
 
 export class Worker<T = any, R = any> extends EventEmitter implements IQueueWorker<T, R> {
   readonly name: string;
-  private queue: IQueueEngine<T, R>;
+  private queues: IQueueEngine<T, R>[];
   private processor: Processor<T, R>;
   private concurrency: number;
   private activeCount: number = 0;
   private isRunning: boolean = true;
   private pollingTimer?: NodeJS.Timeout;
   private stalledSweepTimer?: NodeJS.Timeout;
+  private waitingListeners: Map<IQueueEngine<T, R>, () => void> = new Map();
 
-  constructor(queue: IQueueEngine<T, R>, processor: Processor<T, R>, opts: WorkerOptions = {}) {
+  get queue(): IQueueEngine<T, R> {
+    return this.queues[0];
+  }
+
+  constructor(
+    queue: IQueueEngine<T, R> | IQueueEngine<T, R>[],
+    processor: Processor<T, R>,
+    opts: WorkerOptions = {}
+  ) {
     super();
-    this.queue = queue;
-    this.name = queue.name;
+    const queueList = Array.isArray(queue) ? queue : [queue];
+    if (queueList.length === 0) {
+      throw new Error('Worker requires at least one queue to subscribe to');
+    }
+    this.queues = queueList;
+    this.name = queueList[0].name;
     this.processor = processor;
     this.concurrency = opts.concurrency || 5;
 
-    // Listen for new jobs arriving in queue
-    this.queue.on('waiting', () => {
-      this.checkAndProcess();
-    });
+    // Listen for new jobs arriving in any of the subscribed queues
+    for (const q of this.queues) {
+      const listener = () => {
+        this.checkAndProcess();
+      };
+      q.on('waiting', listener);
+      this.waitingListeners.set(q, listener);
+    }
 
-    // Start background interval polling if queue is distributed across processes
-    if (this.queue.isDistributed) {
+    // Start background interval polling if any queue is distributed across processes
+    if (this.queues.some((q) => q.isDistributed)) {
       this.pollingTimer = setInterval(() => {
         this.checkAndProcess();
       }, 500);
@@ -461,7 +489,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     }
 
     // Recover jobs whose worker process died mid-attempt (distributed engines only)
-    if (this.queue.isDistributed && this.queue._recoverStalledJobs) {
+    if (this.queues.some((q) => q.isDistributed && Boolean(q._recoverStalledJobs))) {
       this.stalledSweepTimer = setInterval(() => {
         void this.recoverStalledJobs();
       }, STALLED_SWEEP_INTERVAL_MS);
@@ -489,16 +517,28 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
       do {
         this.hasPendingCheck = false;
         while (this.isRunning && this.activeCount < this.concurrency) {
-          let job: Job<T, R> | undefined;
-          try {
-            job = this.queue._popNextWaiting ? await this.queue._popNextWaiting() : undefined;
-          } catch {
-            break;
+          let poppedJob: Job<T, R> | undefined;
+          let sourceQueue: IQueueEngine<T, R> | undefined;
+
+          for (const q of this.queues) {
+            try {
+              if (q._popNextWaiting) {
+                const j = await q._popNextWaiting();
+                if (j) {
+                  poppedJob = j;
+                  sourceQueue = q;
+                  break;
+                }
+              }
+            } catch {
+              continue;
+            }
           }
-          if (!job) break;
+
+          if (!poppedJob || !sourceQueue) break;
 
           this.activeCount++;
-          this.executeJob(job).finally(() => {
+          this.executeJob(poppedJob, sourceQueue).finally(() => {
             this.activeCount--;
             this.checkAndProcess();
           });
@@ -513,7 +553,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     }
   }
 
-  private async executeJob(job: Job<T, R>): Promise<void> {
+  private async executeJob(job: Job<T, R>, queue: IQueueEngine<T, R>): Promise<void> {
     // A cancel can land between the pop and this call; a cancelled job never starts an attempt.
     if (job.state === 'cancelled') {
       return;
@@ -524,7 +564,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     job.attemptsMade++;
     this.emit('active', job);
 
-    const stopMonitoring = this.queue._monitorActiveJob ? this.queue._monitorActiveJob(job) : undefined;
+    const stopMonitoring = queue._monitorActiveJob ? queue._monitorActiveJob(job) : undefined;
     try {
       let result: R;
       try {
@@ -534,10 +574,10 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
         if (isAttemptDiscarded(job)) {
           return;
         }
-        await this.handleJobFailure(job, err);
+        await this.handleJobFailure(job, queue, err);
         return;
       }
-      await this.completeJob(job, result);
+      await this.completeJob(job, queue, result);
     } finally {
       stopMonitoring?.();
     }
@@ -568,13 +608,13 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     }
   }
 
-  private async completeJob(job: Job<T, R>, result: R): Promise<void> {
+  private async completeJob(job: Job<T, R>, queue: IQueueEngine<T, R>, result: R): Promise<void> {
     // A cancel (or a takeover) that landed while the processor ran wins: nothing is recorded or emitted.
     if (isAttemptDiscarded(job)) {
       return;
     }
-    if (this.queue._onJobCompleted) {
-      const committed = await this.queue._onJobCompleted(job, result);
+    if (queue._onJobCompleted) {
+      const committed = await queue._onJobCompleted(job, result);
       if (!committed) {
         return;
       }
@@ -591,20 +631,23 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   }
 
   private async recoverStalledJobs(): Promise<void> {
-    if (!this.isRunning || !this.queue._recoverStalledJobs) {
+    if (!this.isRunning) {
       return;
     }
-    try {
-      const failedJobs = await this.queue._recoverStalledJobs();
-      for (const job of failedJobs) {
-        this.emit('failed', job, new Error(STALLED_JOB_FAILURE_REASON));
+    for (const q of this.queues) {
+      if (!q.isDistributed || !q._recoverStalledJobs) continue;
+      try {
+        const failedJobs = await q._recoverStalledJobs();
+        for (const job of failedJobs) {
+          this.emit('failed', job, new Error(STALLED_JOB_FAILURE_REASON));
+        }
+      } catch (err) {
+        console.error(`[Worker:${this.name}] Stalled job sweep failed for queue ${q.name}:`, err);
       }
-    } catch (err) {
-      console.error(`[Worker:${this.name}] Stalled job sweep failed:`, err);
     }
   }
 
-  private async handleJobFailure(job: Job<T, R>, err: any): Promise<void> {
+  private async handleJobFailure(job: Job<T, R>, queue: IQueueEngine<T, R>, err: any): Promise<void> {
     const errorMessage = err instanceof Error ? err.message : String(err);
     job.failedReason = errorMessage;
     if (err instanceof Error && err.stack) {
@@ -621,14 +664,14 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
 
       await job.log(`Job attempt ${job.attemptsMade} failed. Retrying in ${delay}ms...`);
       // The engine refuses the requeue when the job stopped being active (for example, it was cancelled).
-      if (this.queue._requeue) {
-        await this.queue._requeue(job, delay);
+      if (queue._requeue) {
+        await queue._requeue(job, delay);
       }
       return;
     }
 
-    if (this.queue._onJobFailed) {
-      const committed = await this.queue._onJobFailed(job, err);
+    if (queue._onJobFailed) {
+      const committed = await queue._onJobFailed(job, err);
       if (!committed) {
         return;
       }
@@ -638,8 +681,8 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     }
     job.state = 'failed';
     job.finishedOn = Date.now();
-    if (this.queue.moveToDlq) {
-      await this.queue.moveToDlq(job, errorMessage);
+    if (queue.moveToDlq) {
+      await queue.moveToDlq(job, errorMessage);
     }
     this.emit('failed', job, err);
   }
@@ -654,6 +697,10 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
       clearInterval(this.stalledSweepTimer);
       this.stalledSweepTimer = undefined;
     }
+    for (const [q, listener] of this.waitingListeners.entries()) {
+      q.removeListener('waiting', listener);
+    }
+    this.waitingListeners.clear();
     this.removeAllListeners();
   }
 }

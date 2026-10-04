@@ -4,7 +4,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
-import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
+import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
@@ -501,8 +502,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Enqueue conversion job to BullMQ queue
-    const job = await conversionQueue.add(
+    // Resolve resource class and scheduling priority
+    const priority = tierToPriority(auth.user.tier);
+    const resClass = resolveResourceClass(sourceDef.id, targetDef.id, fileSize, options);
+    const targetQueue = getQueueForResourceClass(resClass);
+
+    // Enqueue conversion job to the appropriate resource-class queue
+    const job = await targetQueue.add(
       'convert',
       {
         jobId: '',
@@ -519,10 +525,12 @@ export async function POST(req: NextRequest) {
         reservationId: reservation.reservationId,
         tasks,
         graph,
+        resourceClass: resClass,
       },
       {
         attempts: 3,
         backoff: { type: 'exponential', delay: 1000 },
+        priority,
       }
     );
 
