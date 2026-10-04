@@ -86,7 +86,7 @@ async function runHealthcheck() {
   }
 
   // 2. Check Redis broker connectivity if configured
-  if (REDIS_HOST && REDIS_HOST !== 'localhost' && REDIS_HOST !== '127.0.0.1') {
+  if (REDIS_HOST && process.env.CHECK_REDIS !== 'false') {
     try {
       await checkRedisConnectivity(REDIS_HOST, REDIS_PORT);
     } catch (err) {
@@ -99,7 +99,11 @@ async function runHealthcheck() {
   process.exit(0);
 }
 
-runHealthcheck().catch((err) => {
-  console.error('[Healthcheck] Unexpected error:', err);
-  process.exit(1);
-});
+module.exports = { checkRedisConnectivity, runHealthcheck };
+
+if (require.main === module) {
+  runHealthcheck().catch((err) => {
+    console.error('[Healthcheck] Unexpected error:', err);
+    process.exit(1);
+  });
+}

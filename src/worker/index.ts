@@ -91,7 +91,9 @@ export function writeHeartbeatSync(
     rssMb,
   };
   try {
-    fs.writeFileSync(targetPath, JSON.stringify(payload, null, 2), { encoding: 'utf-8', mode: 0o644 });
+    const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), { encoding: 'utf-8', mode: 0o644 });
+    fs.renameSync(tmpPath, targetPath);
   } catch {
     // Non-fatal error in restricted test/local environments
   }
@@ -225,40 +227,45 @@ export async function drainWorker(
   );
   writeHeartbeatSync('draining');
 
-  // Stop polling for new jobs immediately
-  const closePromise = ociWorker.close();
+  // Stop polling for new jobs immediately while preserving lifecycle listeners
+  ociWorker.pause();
 
   if (activeJobs.size > 0) {
     let timer: NodeJS.Timeout | null = null;
+    let checkInterval: NodeJS.Timeout | null = null;
     const timeoutPromise = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), timeoutMs);
     });
 
     const drainPromise = new Promise<'drained'>((resolve) => {
-      const checkInterval = setInterval(() => {
+      checkInterval = setInterval(() => {
         if (activeJobs.size === 0) {
-          clearInterval(checkInterval);
+          if (checkInterval) clearInterval(checkInterval);
           resolve('drained');
         }
       }, 50);
     });
 
-    const outcome = await Promise.race([drainPromise, timeoutPromise]);
-    if (timer) clearTimeout(timer);
-
-    if (outcome === 'timeout' && activeJobs.size > 0) {
-      console.warn(
-        `[EasyConvert OCI Worker] Grace timeout (${timeoutMs}ms) expired with ${activeJobs.size} jobs still active. Forcing termination...`
-      );
-      for (const job of activeJobs) {
-        try {
-          job._abortAttempt(new JobCancelledError('Worker shutdown grace period expired'));
-        } catch {}
+    try {
+      const outcome = await Promise.race([drainPromise, timeoutPromise]);
+      if (outcome === 'timeout' && activeJobs.size > 0) {
+        console.warn(
+          `[EasyConvert OCI Worker] Grace timeout (${timeoutMs}ms) expired with ${activeJobs.size} jobs still active. Forcing termination...`
+        );
+        for (const job of activeJobs) {
+          try {
+            job._abortAttempt(new JobCancelledError('Worker shutdown grace period expired'));
+          } catch {}
+        }
       }
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (checkInterval) clearInterval(checkInterval);
     }
   }
 
-  await closePromise;
+  // Close worker queue subscriptions and clean up listeners after active jobs finish
+  await ociWorker.close();
 
   stopHeartbeat();
   console.log(`[EasyConvert OCI Worker] Worker daemon drain completed cleanly.`);
