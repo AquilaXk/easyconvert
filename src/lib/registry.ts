@@ -2142,8 +2142,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/step',
     category: 'cad',
     description: 'Standard for the Exchange of Product Model Data (ISO 10303-21).',
-    targetFormats: ['stp', 'stl', 'obj', 'dxf', 'zip'],
-    available: false,
+    targetFormats: ['stp', 'iges', 'igs', 'stl', 'obj', 'dxf', 'zip'],
+    available: true,
   },
   stp: {
     id: 'stp',
@@ -2152,8 +2152,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/step',
     category: 'cad',
     description: 'ISO-standard STEP 3D CAD solid model geometry interchange.',
-    targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
-    available: false,
+    targetFormats: ['step', 'iges', 'igs', 'stl', 'obj', 'dxf', 'zip'],
+    available: true,
   },
   iges: {
     id: 'iges',
@@ -2162,8 +2162,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/iges',
     category: 'cad',
     description: 'ANSI standard digital representation of CAD surface geometry.',
-    targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
-    available: false,
+    targetFormats: ['igs', 'step', 'stp', 'stl', 'obj', 'dxf', 'zip'],
+    available: true,
   },
   igs: {
     id: 'igs',
@@ -2172,8 +2172,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/iges',
     category: 'cad',
     description: 'IGES CAD file short extension.',
-    targetFormats: ['step', 'stl', 'obj', 'dxf', 'zip'],
-    available: false,
+    targetFormats: ['iges', 'step', 'stp', 'stl', 'obj', 'dxf', 'zip'],
+    available: true,
   },
   stl: {
     id: 'stl',
@@ -2182,7 +2182,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'model/stl',
     category: 'cad',
     description: 'Stereolithography triangular mesh geometry for 3D printing and CAD.',
-    targetFormats: ['obj', 'step', 'iges', 'dxf', 'zip'],
+    targetFormats: ['obj', 'step', 'stp', 'iges', 'igs', 'dxf', 'zip'],
   },
   obj: {
     id: 'obj',
@@ -2191,7 +2191,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'model/obj',
     category: 'cad',
     description: 'Wavefront 3D geometry format representing vertices, normals, and polygonal faces.',
-    targetFormats: ['stl', 'step', 'dxf', 'zip'],
+    targetFormats: ['stl', 'step', 'stp', 'iges', 'igs', 'dxf', 'zip'],
   },
   svgfont: {
     id: 'svgfont',
@@ -2912,7 +2912,7 @@ export function getFormatsByCategory(category: FormatCategory): FormatDefinition
   return getAllFormats().filter((f) => f.category === category);
 }
 
-export const DISABLED_TARGET_FORMATS = new Set(['emf', 'wmf', 'cgm', 'step', 'stp', 'iges', 'igs']);
+export const DISABLED_TARGET_FORMATS = new Set(['emf', 'wmf', 'cgm']);
 
 export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinition[] {
   const source = FORMAT_REGISTRY[sourceFormatId.toLowerCase()];
