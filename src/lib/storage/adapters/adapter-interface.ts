@@ -26,6 +26,14 @@ export class StorageAuthenticationError extends StorageAdapterError {
   }
 }
 
+/** The provider has no working network client yet; refusing beats writing to a local stand-in. */
+export class StorageProviderUnavailableError extends StorageAdapterError {
+  constructor(provider: string) {
+    super(`Storage provider "${provider}" is not available for customer storage.`, provider);
+    this.name = 'StorageProviderUnavailableError';
+  }
+}
+
 export class StorageSsrfError extends StorageAdapterError {
   constructor(hostOrUrl: string, provider: string) {
     super(`Blocked outbound connection to restricted host or IP: "${hostOrUrl}"`, provider);
