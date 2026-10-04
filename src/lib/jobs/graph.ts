@@ -945,3 +945,20 @@ export function linearTasksToJobGraph(
 }
 
 export const linearTasksToGraph = linearTasksToJobGraph;
+
+/**
+ * The output format of a validated linear graph: the format inferred for its last node in
+ * topological order, which carries the final task's output. Undefined when the graph is not
+ * valid or the format is only known at run time.
+ */
+export function linearGraphOutputFormat(result: GraphValidationResult): string | undefined {
+  const order = result.topologicalOrder;
+  if (!result.valid || !order || order.length === 0) {
+    return undefined;
+  }
+  const format = result.inferredOutputFormats?.[order[order.length - 1]];
+  if (!format || format === UNKNOWN_FORMAT || format === DYNAMIC_FORMAT) {
+    return undefined;
+  }
+  return format;
+}

@@ -866,7 +866,7 @@ export const JobCreateRequestSchema = {
     },
     targetFormat: {
       type: 'string',
-      description: 'Target format extension.',
+      description: 'Target format extension. With `tasks`, the final task determines the output format.',
     },
     sourceFormat: {
       type: 'string',

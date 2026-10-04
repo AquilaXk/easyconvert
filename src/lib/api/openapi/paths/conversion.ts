@@ -135,7 +135,10 @@ export const conversionPaths = {
                   format: 'binary',
                   description: 'Source input file binary (up to 500 MB).',
                 },
-                targetFormat: { type: 'string', description: 'Target format extension.' },
+                targetFormat: {
+                  type: 'string',
+                  description: 'Target format extension. With `tasks`, the final task determines the output format.',
+                },
                 sourceFormat: { type: 'string', description: 'Source format extension.' },
                 storageKey: {
                   type: 'string',
@@ -173,6 +176,13 @@ export const conversionPaths = {
                   statusUrl: { type: 'string', example: '/api/v1/jobs/job_1720000000000_abc123' },
                   createdAt: { type: 'number', example: 1720000000000 },
                   reservationId: { type: 'string' },
+                  sourceFormat: { type: 'string', example: 'pdf' },
+                  targetFormat: {
+                    type: 'string',
+                    example: 'jpg',
+                    description: 'Format of the job output. For a task pipeline, the output format of the final task.',
+                  },
+                  originalFilename: { type: 'string' },
                 },
               },
             },
