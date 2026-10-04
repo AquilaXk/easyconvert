@@ -9,6 +9,7 @@ import {
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageSsrfError,
+  type IStorageAdapter,
 } from './adapters/adapter-interface';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import type { ObjectReadStream, StoredObjectMetadata } from './object-storage';
@@ -202,10 +203,29 @@ export async function executeImportTask(params: ImportOperationParams): Promise<
   return executeAdapterImport(params, targetKey, filename);
 }
 
-async function executeUrlExport(
-  params: ExportOperationParams,
-  source: ObjectReadStream
-): Promise<ExportOperationResult> {
+/** An export destination, validated and resolved before the source object is opened. */
+type ExportDestination =
+  | { kind: 'url'; url: string; headers: Record<string, string> }
+  | { kind: 'adapter'; remotePath: string; adapter: IStorageAdapter };
+
+async function resolveCredentialHeaders(params: ExportOperationParams): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  if (!params.credentialRef) {
+    return headers;
+  }
+  const creds = await credentialsVault.get(params.credentialRef, params.userId);
+  if (creds?.type === 'http') {
+    if (creds.bearerToken) {
+      headers.Authorization = `Bearer ${creds.bearerToken}`;
+    }
+    if (creds.headers) {
+      Object.assign(headers, creds.headers);
+    }
+  }
+  return headers;
+}
+
+async function resolveUrlDestination(params: ExportOperationParams): Promise<ExportDestination> {
   if (!params.url) {
     throw new Error('[BYOS] "url" parameter is required for export/url operation');
   }
@@ -216,45 +236,10 @@ async function executeUrlExport(
     throw new StorageSsrfError(params.url, 'export/url');
   }
 
-  const headers: Record<string, string> = {
-    'Content-Type': params.contentType || source.metadata.mimeType || 'application/octet-stream',
-    'Content-Length': String(source.metadata.size),
-  };
-
-  if (params.credentialRef) {
-    const creds = await credentialsVault.get(params.credentialRef, params.userId);
-    if (creds?.type === 'http') {
-      if (creds.bearerToken) {
-        headers.Authorization = `Bearer ${creds.bearerToken}`;
-      }
-      if (creds.headers) {
-        Object.assign(headers, creds.headers);
-      }
-    }
-  }
-
-  const res = await request(params.url, {
-    method: 'POST',
-    headers,
-    body: source.stream as any,
-    dispatcher: createSsrfSafeAgent(),
-  });
-
-  if (res.statusCode < 200 || res.statusCode >= 300) {
-    throw new Error(`[BYOS] Remote webhook/URL export failed with HTTP ${res.statusCode}`);
-  }
-
-  return {
-    destination: params.url,
-    size: source.metadata.size,
-    success: true,
-  };
+  return { kind: 'url', url: params.url, headers: await resolveCredentialHeaders(params) };
 }
 
-async function executeAdapterExport(
-  params: ExportOperationParams,
-  source: ObjectReadStream
-): Promise<ExportOperationResult> {
+async function resolveAdapterDestination(params: ExportOperationParams): Promise<ExportDestination> {
   if (!params.remotePath) {
     throw new Error(`[BYOS] "remotePath" parameter is required for ${params.operation}`);
   }
@@ -274,32 +259,87 @@ async function executeAdapterExport(
   }
 
   const adapter = createStorageAdapter(creds as CustomerStorageCredentials);
-  const result = await adapter.uploadStream(params.remotePath, source.stream, {
+  return { kind: 'adapter', remotePath: params.remotePath, adapter };
+}
+
+async function uploadToUrl(
+  destination: Extract<ExportDestination, { kind: 'url' }>,
+  params: ExportOperationParams,
+  source: ObjectReadStream
+): Promise<ExportOperationResult> {
+  const headers: Record<string, string> = {
+    'Content-Type': params.contentType || source.metadata.mimeType || 'application/octet-stream',
+    'Content-Length': String(source.metadata.size),
+    ...destination.headers,
+  };
+
+  const res = await request(destination.url, {
+    method: 'POST',
+    headers,
+    body: source.stream as any,
+    dispatcher: createSsrfSafeAgent(),
+  });
+
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new Error(`[BYOS] Remote webhook/URL export failed with HTTP ${res.statusCode}`);
+  }
+
+  return {
+    destination: destination.url,
+    size: source.metadata.size,
+    success: true,
+  };
+}
+
+async function uploadToAdapter(
+  destination: Extract<ExportDestination, { kind: 'adapter' }>,
+  params: ExportOperationParams,
+  source: ObjectReadStream
+): Promise<ExportOperationResult> {
+  const result = await destination.adapter.uploadStream(destination.remotePath, source.stream, {
     contentType: params.contentType || source.metadata.mimeType,
     size: source.metadata.size,
   });
 
   return {
-    destination: params.remotePath,
+    destination: destination.remotePath,
     size: result.size,
     etag: result.etag,
     success: true,
   };
 }
 
+/** Closes a source stream that an upload did not consume to the end. */
+function releaseSource(source: ObjectReadStream): void {
+  const stream = source.stream as NodeJS.ReadableStream & { destroy?: () => void; destroyed?: boolean };
+  if (typeof stream.destroy === 'function' && !stream.destroyed) {
+    stream.destroy();
+  }
+}
+
 /**
  * Executes a streaming BYOS export task from object storage directly to customer storage or remote URL.
- * Guarantees zero Next.js heap buffering and socket-level SSRF verification.
+ * Guarantees zero Next.js heap buffering and socket-level SSRF verification. The destination is
+ * validated before the source object is opened, and the source is closed on every failure.
  */
 export async function executeExportTask(params: ExportOperationParams): Promise<ExportOperationResult> {
+  const destination =
+    params.operation === 'export/url'
+      ? await resolveUrlDestination(params)
+      : await resolveAdapterDestination(params);
+
   const source = await localFsStorage.getStream(params.sourceKey);
   if (!source) {
     throw new StorageNotFoundError(params.sourceKey, 'local-fs');
   }
 
-  if (params.operation === 'export/url') {
-    return executeUrlExport(params, source);
+  try {
+    if (destination.kind === 'url') {
+      return await uploadToUrl(destination, params, source);
+    }
+    return await uploadToAdapter(destination, params, source);
+  } catch (err) {
+    releaseSource(source);
+    throw err;
   }
-
-  return executeAdapterExport(params, source);
 }
