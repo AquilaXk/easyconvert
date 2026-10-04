@@ -121,7 +121,7 @@ function validateFormat(format: string): string {
 }
 
 function resolveBinary(candidates: string[], envOverride?: string): string | null {
-  if (envOverride !== undefined) {
+  if (envOverride !== undefined && envOverride !== '' && envOverride !== 'undefined') {
     if (path.isAbsolute(envOverride) && fs.existsSync(envOverride)) {
       return envOverride;
     }

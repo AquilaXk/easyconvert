@@ -137,7 +137,11 @@ describe('WP-42: Complex Text Layout (CTL) Script Detection & Fail-Closed Routin
           executeWorkerConversion(arabicInput, 'txt', 'pdf', {}, 'arabic.txt')
         ).rejects.toThrow(ComplexScriptRequiresNativeEngineError);
       } finally {
-        process.env.SOFFICE_PATH = prevSoffice;
+        if (prevSoffice === undefined) {
+          delete process.env.SOFFICE_PATH;
+        } else {
+          process.env.SOFFICE_PATH = prevSoffice;
+        }
       }
     });
   });
