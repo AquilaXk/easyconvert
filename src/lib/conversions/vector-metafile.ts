@@ -966,8 +966,16 @@ function encodeWmfBrush(fill: RgbColor | null, isClosed: boolean, outRecords: Bu
   return 7;
 }
 
+/** META_POLYGON / META_POLYLINE NumberOfPoints is a signed 16-bit field. */
+const WMF_MAX_POLY_POINTS = 32767;
+
 function encodeWmfDraw(subpath: { x: number; y: number }[], isClosed: boolean, outRecords: Buffer[]): number {
   const cpts = subpath.length;
+  if (cpts > WMF_MAX_POLY_POINTS) {
+    throw new CadGeometryUnavailableError(
+      `WMF encoding failed: sub-path has ${cpts} points, above the ${WMF_MAX_POLY_POINTS}-point record limit.`
+    );
+  }
   const fnCode = isClosed ? 0x0324 : 0x0325; // META_POLYGON or META_POLYLINE
   const recWords = 4 + cpts * 2;
   const drawRec = Buffer.alloc(recWords * 2);
@@ -992,22 +1000,16 @@ function deleteWmfObject(index: number): Buffer {
   return del;
 }
 
-function encodeWmfElement(el: SvgGeometryElement, outRecords: Buffer[]): number {
-  let maxWords = 0;
+function encodeWmfElement(el: SvgGeometryElement, outRecords: Buffer[]): void {
   for (const subpath of el.subpaths) {
     if (subpath.length < 2) continue;
 
-    const penWords = encodeWmfPen(el.stroke, el.strokeWidth, outRecords);
-    const brushWords = encodeWmfBrush(el.fill, el.isClosed, outRecords);
-    const drawWords = encodeWmfDraw(subpath, el.isClosed, outRecords);
+    encodeWmfPen(el.stroke, el.strokeWidth, outRecords);
+    encodeWmfBrush(el.fill, el.isClosed, outRecords);
+    encodeWmfDraw(subpath, el.isClosed, outRecords);
 
     outRecords.push(deleteWmfObject(0), deleteWmfObject(1));
-
-    if (penWords > maxWords) maxWords = penWords;
-    if (brushWords > maxWords) maxWords = brushWords;
-    if (drawWords > maxWords) maxWords = drawWords;
   }
-  return maxWords;
 }
 
 function buildAldusHeader(width: number, height: number): Buffer {
@@ -1038,7 +1040,6 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   const height = Math.max(1, Math.round(doc.height));
 
   const records: Buffer[] = [];
-  let maxRecordWords = 9;
 
   // Window Org & Ext
   const setOrg = Buffer.alloc(10);
@@ -1056,8 +1057,7 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   records.push(setOrg, setExt);
 
   for (const el of doc.elements) {
-    const elMax = encodeWmfElement(el, records);
-    if (elMax > maxRecordWords) maxRecordWords = elMax;
+    encodeWmfElement(el, records);
   }
 
   const eofRec = Buffer.alloc(6);
@@ -1066,7 +1066,12 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   records.push(eofRec);
 
   let stdBytes = 0;
-  for (const r of records) stdBytes += r.length;
+  let maxRecordWords = 0;
+  for (const r of records) {
+    stdBytes += r.length;
+    // META_HEADER.MaxRecord: size in WORDs of the largest record actually written
+    maxRecordWords = Math.max(maxRecordWords, r.readUInt32LE(0));
+  }
   const stdWords = Math.floor((18 + stdBytes) / 2);
 
   const stdHeader = Buffer.alloc(18);

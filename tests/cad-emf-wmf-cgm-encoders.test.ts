@@ -222,6 +222,9 @@ function parseWmfBinary(buffer: Buffer): {
   hasPolyline: boolean;
   hasEof: boolean;
   recordCount: number;
+  observedMaxRecordWords: number;
+  observedTotalWords: number;
+  maxObjectSlotsInUse: number;
 } {
   expect(buffer.length).toBeGreaterThanOrEqual(40); // 22 bytes Aldus + 18 bytes Standard
 
@@ -269,11 +272,48 @@ function parseWmfBinary(buffer: Buffer): {
   let hasPolygon = false;
   let hasPolyline = false;
   let hasEof = false;
+  let observedMaxRecordWords = 0;
+  const META_HEADER_WORDS = 9;
+  let observedTotalWords = META_HEADER_WORDS;
+  // WMF object table: create records take the lowest free slot, delete frees it
+  const slots: boolean[] = [];
+  let maxObjectSlotsInUse = 0;
 
   while (offset + 6 <= buffer.length) {
     const recWords = buffer.readUInt32LE(offset);
     const fnCode = buffer.readUInt16LE(offset + 4);
     recordCount++;
+    observedMaxRecordWords = Math.max(observedMaxRecordWords, recWords);
+    observedTotalWords += recWords;
+    // Fixed-size records: RecordSize in WORDs as defined by MS-WMF section 2.3
+    const fixedRecordWords: Record<number, number> = {
+      0x020b: 5, // META_SETWINDOWORG
+      0x020c: 5, // META_SETWINDOWEXT
+      0x02fa: 8, // META_CREATEPENINDIRECT
+      0x02fc: 7, // META_CREATEBRUSHINDIRECT
+      0x012d: 4, // META_SELECTOBJECT
+      0x01f0: 4, // META_DELETEOBJECT
+    };
+    if (fixedRecordWords[fnCode] !== undefined) {
+      expect(recWords).toBe(fixedRecordWords[fnCode]);
+    }
+    if (fnCode === 0x02fa || fnCode === 0x02fc) {
+      let free = slots.indexOf(false);
+      if (free === -1) free = slots.length;
+      slots[free] = true;
+      maxObjectSlotsInUse = Math.max(maxObjectSlotsInUse, slots.length);
+    }
+    if (fnCode === 0x012d) {
+      expect(slots[buffer.readUInt16LE(offset + 6)]).toBe(true);
+    }
+    if (fnCode === 0x01f0) {
+      const idx = buffer.readUInt16LE(offset + 6);
+      expect(slots[idx]).toBe(true);
+      slots[idx] = false;
+    }
+    if (fnCode === 0x0324 || fnCode === 0x0325) {
+      expect(recWords).toBe(4 + 2 * buffer.readInt16LE(offset + 6));
+    }
 
     if (fnCode === 0x020b) hasSetWindowOrg = true;
     if (fnCode === 0x020c) hasSetWindowExt = true;
@@ -282,6 +322,8 @@ function parseWmfBinary(buffer: Buffer): {
     if (fnCode === 0x0324) hasPolygon = true;
     if (fnCode === 0x0325) hasPolyline = true;
     if (fnCode === 0x0000) {
+      expect(recWords).toBe(3);
+      expect(offset + recWords * 2).toBe(buffer.length);
       hasEof = true;
       break;
     }
@@ -301,6 +343,9 @@ function parseWmfBinary(buffer: Buffer): {
     hasPolyline,
     hasEof,
     recordCount,
+    observedMaxRecordWords,
+    observedTotalWords,
+    maxObjectSlotsInUse,
   };
 }
 
@@ -435,6 +480,9 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       expect(parsed.header.headerSize).toBe(9); // 9 words = 18 bytes
       expect(parsed.header.version).toBe(0x0300);
       expect(parsed.header.fileSizeInWords).toBe((wmfBuf.length - 22) / 2);
+      expect(parsed.header.fileSizeInWords).toBe(parsed.observedTotalWords);
+      expect(parsed.header.maxRecordInWords).toBe(parsed.observedMaxRecordWords);
+      expect(parsed.header.numOfObjects).toBe(parsed.maxObjectSlotsInUse);
 
       // Records
       expect(parsed.hasSetWindowOrg).toBe(true);
@@ -449,6 +497,25 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
 
     it('rejects empty input buffer fail-closed', () => {
       expect(() => encodeWmf(Buffer.alloc(0))).toThrow(/empty/i);
+    });
+
+    it('rejects a sub-path whose point count exceeds the signed 16-bit WMF limit with a typed error', () => {
+      const WMF_MAX_POINTS = 32767;
+      const pts = Array.from({ length: WMF_MAX_POINTS + 1 }, (_, k) => `${k % 100},${Math.floor(k / 100)}`).join(' ');
+      const bigSvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="400"><polyline points="${pts}" stroke="#000" fill="none"/></svg>`, 'utf-8');
+      expect(() => encodeWmf(bigSvg)).toThrow(CadGeometryUnavailableError);
+    });
+
+    it('reports mtMaxRecord as the largest record actually written', () => {
+      const lineSvg = Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50"><line x1="0" y1="0" x2="40" y2="40" stroke="#000"/></svg>',
+        'utf-8'
+      );
+      const parsed = parseWmfBinary(encodeWmf(lineSvg));
+      // Largest record here is CREATEPENINDIRECT / two-point POLYLINE: 8 WORDs
+      expect(parsed.observedMaxRecordWords).toBe(8);
+      expect(parsed.header.maxRecordInWords).toBe(8);
+      expect(parsed.header.fileSizeInWords).toBe(parsed.observedTotalWords);
     });
   });
 
