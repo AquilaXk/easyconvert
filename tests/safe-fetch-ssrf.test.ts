@@ -24,7 +24,7 @@ vi.mock('../src/lib/security/ssrf', async (importOriginal) => {
       return connection.current.dispatch(opts, handler);
     }
   }
-  return { ...actual, createSsrfSafeAgent: () => new ForwardingDispatcher() };
+  return { ...actual, createSsrfSafeAgent: vi.fn(() => new ForwardingDispatcher()) };
 });
 
 /**
@@ -35,6 +35,8 @@ vi.mock('../src/lib/security/ssrf', async (importOriginal) => {
 
 const PUBLIC_IP = '93.184.215.14';
 const ORIGIN = 'https://files.example.org';
+const OTHER_ORIGIN = 'https://cdn.example.net';
+const SECRET_QUERY = 'token=s3cr3t';
 
 let agent: MockAgent;
 
@@ -92,6 +94,102 @@ describe('safeFetch', () => {
 
   it('rejects non-HTTP schemes', async () => {
     await expect(safeFetch('file:///etc/passwd', {}, { dispatcher: agent })).rejects.toThrow(OutboundRequestBlockedError);
+  });
+});
+
+describe('safeFetch redirect hardening', () => {
+  /** Lower-cased request headers as the dispatcher received them. */
+  function headerMap(raw: unknown): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (Array.isArray(raw)) {
+      for (let i = 0; i + 1 < raw.length; i += 2) out[String(raw[i]).toLowerCase()] = String(raw[i + 1]);
+    } else if (raw && typeof raw === 'object') {
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) out[k.toLowerCase()] = String(v);
+    }
+    return out;
+  }
+
+  const CREDENTIAL_HEADERS = {
+    AUTHORIZATION: 'Bearer abc',
+    cookie: 'sid=1',
+    'Proxy-Authorization': 'Basic xyz',
+    'X-Trace': 'keep-me',
+  };
+
+  it('drops credential headers when a redirect crosses origins', async () => {
+    let received: Record<string, string> = {};
+    agent.get(ORIGIN).intercept({ path: '/a', method: 'GET' }).reply(302, '', { headers: { location: `${OTHER_ORIGIN}/b` } });
+    agent.get(OTHER_ORIGIN).intercept({ path: '/b', method: 'GET' }).reply((opts) => {
+      received = headerMap(opts.headers);
+      return { statusCode: 200, data: 'ok' };
+    });
+    const res = await safeFetch(`${ORIGIN}/a`, { headers: CREDENTIAL_HEADERS }, { dispatcher: agent });
+    expect(await res.text()).toBe('ok');
+    expect(received['authorization']).toBeUndefined();
+    expect(received['cookie']).toBeUndefined();
+    expect(received['proxy-authorization']).toBeUndefined();
+    expect(received['x-trace']).toBe('keep-me');
+  });
+
+  it('keeps credential headers on a same-origin redirect', async () => {
+    let received: Record<string, string> = {};
+    agent.get(ORIGIN).intercept({ path: '/a', method: 'GET' }).reply(302, '', { headers: { location: '/b' } });
+    agent.get(ORIGIN).intercept({ path: '/b', method: 'GET' }).reply((opts) => {
+      received = headerMap(opts.headers);
+      return { statusCode: 200, data: 'ok' };
+    });
+    await (await safeFetch(`${ORIGIN}/a`, { headers: CREDENTIAL_HEADERS }, { dispatcher: agent })).text();
+    expect(received['authorization']).toBe('Bearer abc');
+    expect(received['cookie']).toBe('sid=1');
+    expect(received['proxy-authorization']).toBe('Basic xyz');
+  });
+
+  it('throws a typed error without the query string when a redirect has no Location', async () => {
+    agent.get(ORIGIN).intercept({ path: `/a?${SECRET_QUERY}`, method: 'GET' }).reply(302, '');
+    const err = await safeFetch(`${ORIGIN}/a?${SECRET_QUERY}`, {}, { dispatcher: agent }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OutboundRequestBlockedError);
+    expect((err as Error).message).toContain(`${ORIGIN}/a`);
+    expect((err as Error).message).not.toContain(SECRET_QUERY);
+  });
+
+  it('throws a typed error without the query string for a redirected upload', async () => {
+    agent.get(ORIGIN).intercept({ path: `/up?${SECRET_QUERY}`, method: 'PUT' }).reply(307, '', { headers: { location: '/x' } });
+    const err = await safeFetch(`${ORIGIN}/up?${SECRET_QUERY}`, { method: 'PUT', body: 'p' }, { dispatcher: agent }).catch(
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(OutboundRequestBlockedError);
+    expect((err as Error).message).not.toContain(SECRET_QUERY);
+  });
+
+  it('throws a typed error without the query string after too many redirects', async () => {
+    for (let i = 0; i < 5; i++) {
+      agent.get(ORIGIN).intercept({ path: `/h${i}?${SECRET_QUERY}`, method: 'GET' }).reply(302, '', {
+        headers: { location: `/h${i + 1}?${SECRET_QUERY}` },
+      });
+    }
+    const err = await safeFetch(`${ORIGIN}/h0?${SECRET_QUERY}`, {}, { dispatcher: agent }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OutboundRequestBlockedError);
+    expect((err as Error).message).toMatch(/redirect/i);
+    expect((err as Error).message).not.toContain(SECRET_QUERY);
+  });
+
+  it('keeps the query string out of a blocked-host error', async () => {
+    const err = await safeFetch(`http://127.0.0.1/a?${SECRET_QUERY}`, {}, { dispatcher: agent }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OutboundRequestBlockedError);
+    expect((err as Error).message).toContain('http://127.0.0.1/a');
+    expect((err as Error).message).not.toContain(SECRET_QUERY);
+  });
+
+  it('reuses one connection agent across calls without a dispatcher', async () => {
+    vi.resetModules();
+    const ssrf = await import('../src/lib/security/ssrf');
+    const fresh = await import('../src/lib/security/safe-fetch');
+    vi.mocked(ssrf.createSsrfSafeAgent).mockClear();
+    agent.get(ORIGIN).intercept({ path: '/one', method: 'GET' }).reply(200, '1');
+    agent.get(ORIGIN).intercept({ path: '/two', method: 'GET' }).reply(200, '2');
+    expect(await (await fresh.safeFetch(`${ORIGIN}/one`)).text()).toBe('1');
+    expect(await (await fresh.safeFetch(`${ORIGIN}/two`)).text()).toBe('2');
+    expect(ssrf.createSsrfSafeAgent).toHaveBeenCalledTimes(1);
   });
 });
 
