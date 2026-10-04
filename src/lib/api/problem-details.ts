@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import type { EngineUnavailableError } from '../types';
 
 /**
  * RFC 9457 Problem Details for HTTP APIs (supersedes RFC 7807).
@@ -87,6 +88,10 @@ const DEFAULT_PROBLEM_TYPES: Record<number, { type: string; title: string }> = {
   },
 };
 
+/** Problem type for a conversion whose native engine (for example LibreOffice) is not installed. */
+export const ENGINE_UNAVAILABLE_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
+const HTTP_SERVICE_UNAVAILABLE = 503;
+
 /** Problem type for a short-lived per-key burst rejection (retry after seconds), distinct from the daily quota. */
 export const RATE_LIMITED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/rate-limited';
 
@@ -125,4 +130,23 @@ export function createProblemDetailsResponse(
       ...extraHeaders,
     },
   });
+}
+
+/**
+ * Maps an EngineUnavailableError to HTTP 503: the pair is supported, but the native engine it
+ * needs is not installed on this deployment.
+ */
+export function createEngineUnavailableResponse(
+  error: EngineUnavailableError,
+  instance: string,
+  extraHeaders?: Record<string, string>
+): NextResponse {
+  return createProblemDetailsResponse(
+    HTTP_SERVICE_UNAVAILABLE,
+    error.message,
+    instance,
+    'Engine Unavailable',
+    ENGINE_UNAVAILABLE_PROBLEM_TYPE,
+    extraHeaders
+  );
 }

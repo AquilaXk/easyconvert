@@ -9,6 +9,7 @@ import {
   multipartBody,
   requireScope,
 } from '../shared';
+import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
 /**
  * Routes that serve the web application. They are documented for completeness and
@@ -16,6 +17,8 @@ import {
  */
 
 const INTERNAL = { 'x-internal': true };
+
+const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).`;
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
 
@@ -207,6 +210,7 @@ export const internalPaths = {
         '422': createErrorResponse('Page count exceeds the tier limit.'),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
+        '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
       },
     },
   },
@@ -228,6 +232,7 @@ export const internalPaths = {
         '401': createProblemResponse('Authentication required.'),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
+        '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
       },
     },
   },

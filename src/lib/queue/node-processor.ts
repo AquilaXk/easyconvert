@@ -10,16 +10,12 @@ import type {
 import type { IStorageBackend } from '../storage/oci-storage';
 import { s3Storage } from '../storage/s3-storage';
 import { convertFile } from '../conversions';
-import {
-  executeWorkerConversion,
-  WorkerConversionResult,
-  WorkerEngineOptions,
-} from '../../worker/engines';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { secureShredBuffer } from '../security/memory-shredder';
 import { isUploadKey } from '../storage/key-namespace';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
+import { dispatchEngine } from './dispatch-engine';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
 
@@ -75,48 +71,10 @@ export const tsEngine: ConversionEnginePort = {
 };
 
 /**
- * Dedicated native worker (LibreOffice / FFmpeg / 7z) conversion engine adapter.
+ * Conversion engine adapter for the OCI worker: the shared dispatcher, which runs the native
+ * engines (LibreOffice / FFmpeg / 7z / Poppler) and falls back in-process only where that is valid.
  */
-export const nativeEngine: ConversionEnginePort = {
-  name: 'native-engine',
-  async convert(
-    input: Buffer | VfsPayload,
-    sourceFormat: string,
-    targetFormat: string,
-    options: ConversionOptions & { signal?: AbortSignal; ocrEnabled?: boolean },
-    originalFilename: string
-  ): Promise<EngineResult> {
-    const workerOptions: WorkerEngineOptions = {
-      ...options,
-      signal: options.signal,
-    };
-    if (options.ocrEnabled) {
-      workerOptions.ocrEnabled = true;
-    }
-
-    const res: WorkerConversionResult = await executeWorkerConversion(
-      input,
-      sourceFormat,
-      targetFormat,
-      workerOptions,
-      originalFilename
-    );
-
-    return {
-      buffer: res.buffer,
-      size: res.size,
-      mimeType: res.mimeType,
-      filename: res.filename,
-      engineUsed: res.engineUsed,
-      executionTimeMs: res.executionTimeMs,
-      filePath: res.filePath,
-      metadata: res.metadata,
-      fallbackReason: res.fallbackReason,
-      fallbackChain: res.fallbackChain,
-      ocrExtractedText: res.ocrExtractedText,
-    };
-  },
-};
+export const nativeEngine: ConversionEnginePort = dispatchEngine;
 
 /** Discards the temporary output file an aborted attempt produced on disk. */
 function discardConversionOutput(jobId: string, result: EngineResult): void {
@@ -154,7 +112,7 @@ function removeJobInput(jobId: string, storageKey: string, storage: IStorageBack
  */
 export async function processNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
-  engine: ConversionEnginePort = tsEngine,
+  engine: ConversionEnginePort = dispatchEngine,
   storage: IStorageBackend = s3Storage
 ): Promise<ConversionJobResult> {
   // If this job is part of an orchestrated DAG JobGraph, route directly to the graph node executor
