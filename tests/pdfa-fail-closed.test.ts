@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { PDFDocument, PDFName, StandardFonts } from 'pdf-lib';
 import { oracleTest } from './helpers/oracle-test';
+import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { convertToPdfA, parseVerapdfReport } from '../src/lib/conversions/pdf-postprocess/pdfa';
 import { convertFile } from '../src/lib/conversions';
 import { PdfPostprocessError, UnsupportedOptionError } from '../src/lib/types';
@@ -13,6 +14,11 @@ import { PdfPostprocessError, UnsupportedOptionError } from '../src/lib/types';
  * PDF/A output must be a converted, PDF/A-identified file: a converter that writes nothing or
  * echoes its input, or a validator that reports non-compliance, has to fail the request.
  */
+
+/** `pdffonts` prints a column header line and a dashed rule before the font rows. */
+const FONT_TABLE_HEADER_LINES = 2;
+/** Position of the `emb` column counted from the end of a `pdffonts` row. */
+const EMB_COLUMN_FROM_END = 5;
 
 let workDir: string;
 const savedEnv: Record<string, string | undefined> = {};
@@ -85,12 +91,14 @@ describe('convertToPdfA fails closed', () => {
   });
 
   it('rejects output that is the unconverted input', async () => {
-    const input = await samplePdf('echoed');
+    // The input already carries the requested PDF/A-1B identification, so only the
+    // identical-output check can reject the echoed file.
+    const input = await pdfWithPdfAId(1, 'B');
     const inputCopy = path.join(workDir, 'echo-source.pdf');
     fs.writeFileSync(inputCopy, input);
     setEnv('SOFFICE_PATH', fakeConverterCopying(inputCopy));
     setEnv('VERAPDF_PATH', '');
-    await expect(convertToPdfA(input, { conformance: 'pdfa-1b' })).rejects.toThrow(/not converted|PDF\/A identification/);
+    await expect(convertToPdfA(input, { conformance: 'pdfa-1b' })).rejects.toThrow(/not converted/);
   });
 
   it('rejects output identified as a different PDF/A part than requested', async () => {
@@ -164,8 +172,21 @@ describe('PDF post-processing order', () => {
   });
 });
 
+/**
+ * PDF input reaches PDF/A through LibreOffice Draw's PDF import. A LibreOffice install without
+ * Draw has no such filter, so these tests skip (and fail under ORACLE_STRICT_MODE) there.
+ */
+function requireLibreOfficeDraw(): void {
+  const soffice = fs.realpathSync(getOracleToolPath('soffice') as string);
+  const drawRegistry = path.join(path.dirname(soffice), '..', 'share', 'registry', 'draw.xcd');
+  if (!fs.existsSync(drawRegistry)) {
+    throw new OracleToolMissingError('libreoffice-draw', `LibreOffice Draw is not installed (${drawRegistry} missing)`);
+  }
+}
+
 describe('real LibreOffice conversion', () => {
   oracleTest('identifies the converted file as the requested PDF/A part', ['soffice', 'pdfinfo'], async () => {
+    requireLibreOfficeDraw();
     const result = await convertToPdfA(await samplePdf('LibreOffice archival record'), { conformance: 'pdfa-2b' });
     const out = path.join(workDir, 'real-pdfa.pdf');
     fs.writeFileSync(out, result.buffer);
@@ -173,4 +194,39 @@ describe('real LibreOffice conversion', () => {
     expect(xmp).toMatch(/pdfaid:part(?:>|=")2/);
     expect(xmp).toMatch(/pdfaid:conformance(?:>|=")B/i);
   }, 120_000);
+});
+
+describe('watermark before PDF/A', () => {
+  oracleTest(
+    'keeps the watermark inside the PDF/A output with every font embedded',
+    ['soffice', 'pdftotext', 'pdffonts'],
+    async () => {
+      requireLibreOfficeDraw();
+      const watermark = 'CONFIDENTIAL DRAFT 7731';
+      const result = await convertFile(
+        Buffer.from('Quarterly archival record\n'),
+        'txt',
+        'pdf',
+        { watermark: { type: 'text', text: watermark }, pdfa: { conformance: 'pdfa-2b' } },
+        'record.txt'
+      );
+      const out = path.join(workDir, 'watermarked-pdfa.pdf');
+      fs.writeFileSync(out, result.buffer);
+
+      const text = execFileSync('pdftotext', [out, '-']).toString('utf-8').replace(/\s+/g, ' ');
+      expect(text).toContain(watermark);
+      // A watermark stamped after conversion uses a non-embedded standard font, which PDF/A forbids.
+      const fontRows = execFileSync('pdffonts', [out]).toString('utf-8').trim().split('\n').slice(FONT_TABLE_HEADER_LINES);
+      expect(fontRows.length).toBeGreaterThan(0);
+      for (const row of fontRows) {
+        const columns = row.trim().split(/\s+/);
+        // Columns end with: emb sub uni objectNum generation.
+        expect({ font: columns[0], embedded: columns[columns.length - EMB_COLUMN_FROM_END] }).toEqual({
+          font: columns[0],
+          embedded: 'yes',
+        });
+      }
+    },
+    120_000
+  );
 });
