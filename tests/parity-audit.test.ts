@@ -48,6 +48,11 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'ppt->emf', 'ppt->eps', 'ppt->md', 'ppt->xps',
   'pptm->emf', 'pptm->eps', 'pptm->html', 'pptm->jpg', 'pptm->md', 'pptm->odp', 'pptm->pdf', 'pptm->png', 'pptm->ppt', 'pptm->pptx', 'pptm->txt', 'pptm->xps',
   'pptx->emf', 'pptx->eps', 'pptx->key', 'pptx->md', 'pptx->xps',
+  'csv->jpg', 'csv->png',
+  'numbers->doc', 'numbers->jpg', 'numbers->pdf', 'numbers->png', 'numbers->ppt',
+  'xls->xps',
+  'xlsm->jpg', 'xlsm->png',
+  'xlsx->numbers', 'xlsx->xps',
 ]);
 
 describe('Universal Format Matrix & Parity Verification', () => {

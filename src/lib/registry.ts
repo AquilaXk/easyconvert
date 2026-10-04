@@ -1026,7 +1026,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/csv',
     category: 'data',
     description: 'Comma-Separated Values tabular structured spreadsheet format.',
-    targetFormats: ['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip', 'jpg', 'png'],
+    targetFormats: ['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true, preserveTables: true },
   },
   tsv: {
@@ -1056,7 +1056,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-yaml',
     category: 'data',
     description: 'Human-friendly data serialization standard.',
-    targetFormats: ['json', 'xml', 'txt', 'zip'],
+    targetFormats: ['json', 'txt', 'zip'],
   },
   yml: {
     id: 'yml',
@@ -1065,7 +1065,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-yaml',
     category: 'data',
     description: 'YAML configuration and data format short extension.',
-    targetFormats: ['json', 'xml', 'txt', 'zip'],
+    targetFormats: ['json', 'txt', 'zip'],
   },
   xml: {
     id: 'xml',
@@ -1083,7 +1083,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     category: 'spreadsheet',
     description: 'Microsoft Excel OpenXML spreadsheet with complete grid, formulas, and cells.',
-    targetFormats: ['csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'xls', 'xml', 'zip', 'jpg', 'png', 'xps', 'numbers'],
+    targetFormats: ['csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'xls', 'xml', 'zip', 'jpg', 'png'],
   },
   xls: {
     id: 'xls',
@@ -1092,7 +1092,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-excel',
     category: 'spreadsheet',
     description: 'Microsoft Excel 97-2003 legacy binary BIFF8 spreadsheet format.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'zip', 'jpg', 'png', 'xps'],
+    targetFormats: ['xlsx', 'csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'zip', 'jpg', 'png'],
   },
   xlsm: {
     id: 'xlsm',
@@ -1101,7 +1101,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-excel.sheet.macroEnabled.12',
     category: 'spreadsheet',
     description: 'Excel spreadsheet supporting embedded VBA macros.',
-    targetFormats: ['xlsx', 'csv', 'pdf', 'json', 'zip', 'html', 'jpg', 'png', 'xps', 'ods', 'xls'],
+    targetFormats: ['xlsx', 'csv', 'pdf', 'zip', 'html', 'xps', 'ods', 'xls'],
   },
   xltx: {
     id: 'xltx',
@@ -1147,7 +1147,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.spreadsheet-flat-xml',
     category: 'spreadsheet',
     description: 'Single uncompressed XML representation of OpenDocument Spreadsheet.',
-    targetFormats: ['ods', 'xlsx', 'csv', 'json', 'zip'],
+    targetFormats: ['ods', 'xlsx', 'csv', 'zip'],
   },
   numbers: {
     id: 'numbers',
@@ -1156,7 +1156,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-numbers-sffnumbers',
     category: 'spreadsheet',
     description: 'Apple iWork Numbers spreadsheet application file.',
-    targetFormats: ['xlsx', 'csv', 'pdf', 'tsv', 'zip', 'doc', 'jpg', 'png', 'ppt', 'xls'],
+    targetFormats: ['xlsx', 'csv', 'zip', 'xls'],
   },
   sdc: {
     id: 'sdc',
@@ -1174,7 +1174,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'spreadsheet',
     description: 'Data Interchange Format for importing tabular spreadsheets.',
-    targetFormats: ['csv', 'xlsx', 'json', 'tsv', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'zip'],
   },
   dbf: {
     id: 'dbf',
@@ -1183,7 +1183,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-dbf',
     category: 'spreadsheet',
     description: 'dBase relational database management system table format.',
-    targetFormats: ['csv', 'xlsx', 'json', 'tsv', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'zip'],
   },
   wk1: {
     id: 'wk1',
@@ -1192,7 +1192,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.lotus-1-2-3',
     category: 'spreadsheet',
     description: 'Lotus 1-2-3 historical standard spreadsheet workbook.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'zip'],
+    targetFormats: ['xlsx', 'csv', 'zip'],
   },
   wks: {
     id: 'wks',
@@ -1201,7 +1201,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.lotus-1-2-3',
     category: 'spreadsheet',
     description: 'Lotus 1-2-3 Release 1 worksheet format.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'zip'],
+    targetFormats: ['xlsx', 'csv', 'zip'],
   },
   slk: {
     id: 'slk',
@@ -1210,7 +1210,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/spreadsheet',
     category: 'spreadsheet',
     description: 'Microsoft Symbolic Link (SYLK) text format for spreadsheets.',
-    targetFormats: ['csv', 'xlsx', 'tsv', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'zip'],
   },
   qpw: {
     id: 'qpw',
@@ -1219,7 +1219,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-quattro-pro',
     category: 'spreadsheet',
     description: 'Corel Quattro Pro spreadsheet document.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'zip'],
+    targetFormats: ['xlsx', 'csv', 'zip'],
   },
   prn: {
     id: 'prn',
@@ -1228,7 +1228,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'spreadsheet',
     description: 'Space-formatted printable spreadsheet output text.',
-    targetFormats: ['csv', 'txt', 'tsv', 'zip'],
+    targetFormats: ['csv', 'txt', 'zip'],
   },
   ndjson: {
     id: 'ndjson',
