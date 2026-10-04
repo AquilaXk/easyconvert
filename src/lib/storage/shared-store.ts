@@ -59,7 +59,7 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       };
       fs.writeFileSync(metaPath, JSON.stringify(meta), 'utf-8');
 
-      if (value.buffer && Buffer.isBuffer(value.buffer)) {
+      if (value.buffer && Buffer.isBuffer(value.buffer) && (!value.filePath || value.buffer.length > 0)) {
         fs.writeFileSync(binPath, value.buffer);
       } else if (value.filePath && fs.existsSync(value.filePath) && value.filePath !== binPath) {
         fs.copyFileSync(value.filePath, binPath);

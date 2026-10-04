@@ -320,6 +320,20 @@ export const PipelineTaskSchema = {
       $ref: 'https://easyconvert.local/schemas/conversion-options.json',
       description: 'Stage-specific transformation or conversion options.',
     },
+    credentialRef: {
+      type: 'string',
+      pattern: '^cred_[a-f0-9]{32}$',
+      description: 'Opaque identifier reference to customer BYOS credentials stored in encrypted vault.',
+    },
+    remotePath: {
+      type: 'string',
+      description: 'Target remote object path or bucket prefix for import or export operations.',
+    },
+    url: {
+      type: 'string',
+      format: 'uri',
+      description: 'Source or destination URL for import/url or export/url operations.',
+    },
   },
 } as const;
 
