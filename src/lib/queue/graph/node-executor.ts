@@ -319,6 +319,9 @@ export async function processGraphNodeJob(
           if (inputExt !== targetFmt) {
             throw new ConversionFailedError(`Merge node "${nodeId}" received a "${inputExt}" input; expected "${targetFmt}"`);
           }
+          if (stored.buffer.length === 0) {
+            throw new ConversionFailedError(`Merge node "${nodeId}" input "${inputKey}" is empty`);
+          }
           return stored;
         });
         if (targetFmt === 'pdf') {

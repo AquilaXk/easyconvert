@@ -1,4 +1,4 @@
-import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError } from '../types';
 import {
   FORMAT_REGISTRY,
   assertNotSpoofedFile,
@@ -673,12 +673,17 @@ export async function convertFile(
 
   // 8. PDF Post-Processing: PDF/A, Watermark, and Protection
   if ((tgt === 'pdf' || res.filename?.endsWith('.pdf')) && Buffer.isBuffer(res.buffer)) {
+    if (options.pdfa && options.protect) {
+      // ISO 19005 forbids encryption in PDF/A files.
+      throw new UnsupportedOptionError('PDF/A output cannot be encrypted; remove either the pdfa or the protect option.');
+    }
+    // Watermark first: any edit after the PDF/A conversion would break conformance.
+    if (options.watermark) {
+      res.buffer = await applyPdfWatermark(res.buffer, options.watermark);
+    }
     if (options.pdfa) {
       const pdfaRes = await convertToPdfA(res.buffer, options.pdfa);
       res.buffer = pdfaRes.buffer;
-    }
-    if (options.watermark) {
-      res.buffer = await applyPdfWatermark(res.buffer, options.watermark);
     }
     if (options.protect) {
       res.buffer = await protectPdf(res.buffer, options.protect);

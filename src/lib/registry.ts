@@ -860,7 +860,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/epub+zip',
     category: 'ebook',
     description: 'Official standard reflowable digital book format by IDPF.',
-    targetFormats: ['pdf', 'mobi', 'docx', 'txt', 'html', 'azw3', 'zip', 'rtf', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['pdf', 'docx', 'txt', 'html', 'zip'],
   },
   mobi: {
     id: 'mobi',
@@ -1603,7 +1603,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/x-raw',
     category: 'image',
     description: 'Minimally processed sensor data from digital cameras.',
-    targetFormats: ['jpg', 'png', 'tiff', 'dng', 'zip', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'exr', 'ultrahdr'],
+    targetFormats: ['jpg', 'png', 'tiff', 'zip', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'exr', 'ultrahdr'],
     optionsSchema: { ocrEnabled: true, ocrLanguage: true },
   },
   cr2: {
