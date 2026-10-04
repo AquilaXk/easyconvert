@@ -96,6 +96,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'pptm->swf',
   'pptx->swf',
   'webp->aac', 'webp->aiff', 'webp->flac', 'webp->m4a', 'webp->mp3', 'webp->wav', 'webp->wma',
+  'cbz->azw3', 'cbz->epub', 'cbz->lrf', 'cbz->mobi', 'cbz->oeb', 'cbz->pdb', 'cbz->rtf', 'cbz->txt',
 ]);
 
 describe('Universal Format Matrix & Parity Verification', () => {

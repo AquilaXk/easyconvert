@@ -923,7 +923,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.comicbook+zip',
     category: 'ebook',
     description: 'Comic Book Archive packaged in standard ZIP compression.',
-    targetFormats: ['cbr', 'pdf', 'zip', 'rtf', 'txt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['pdf', 'zip'],
   },
   cb7: {
     id: 'cb7',
