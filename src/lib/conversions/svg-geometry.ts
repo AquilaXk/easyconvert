@@ -454,6 +454,32 @@ function closeSubpath(c: PathCursor, subpaths: Point3D[][]): void {
  * Parses SVG path 'd' data (SVG 1.1 section 8.3) into adaptive polyline
  * vertices, one array per sub-path.
  */
+/** Runs one non-Z command; returns the command that applies to following implicit arguments. */
+function runDrawingCommand(c: PathCursor, cmd: string, upper: string, subpaths: Point3D[][], d: string): string {
+  if (upper === 'M' && c.subpath.length > 0) {
+    subpaths.push(c.subpath);
+    c.subpath = [];
+  } else if (upper !== 'M' && c.subpath.length === 0) {
+    // A drawing command after Z continues from the closed sub-path's start point
+    emitPoint(c, currentPoint(c));
+  }
+  const handler = PATH_HANDLERS[upper === 'M' ? 'L' : upper];
+  if (!handler(c)) throw malformedPath(d, `missing or invalid arguments for ${cmd}`);
+  // Extra coordinate pairs after a moveto are implicit lineto commands
+  if (upper !== 'M') return cmd;
+  return c.isRel ? 'l' : 'L';
+}
+
+/** Consumes an explicit command letter, or keeps the current one for implicit repetition. */
+function nextCommand(c: PathCursor, tok: string, cmd: string, d: string): string {
+  if (PATH_COMMAND_PATTERN.test(tok)) {
+    c.tokens.next();
+    return tok;
+  }
+  if (!cmd) throw malformedPath(d, 'coordinates before the first command');
+  return cmd;
+}
+
 export function parseSvgPathToPoints(d: string, tolerance: number = 0.25, budget?: VertexBudget): Point3D[][] {
   const subpaths: Point3D[][] = [];
   const c: PathCursor = {
@@ -467,30 +493,14 @@ export function parseSvgPathToPoints(d: string, tolerance: number = 0.25, budget
   };
   let cmd = '';
   for (let tok = c.tokens.peek(); tok !== undefined; tok = c.tokens.peek()) {
-    if (PATH_COMMAND_PATTERN.test(tok)) {
-      cmd = tok;
-      c.tokens.next();
-    } else if (!cmd) {
-      throw malformedPath(d, 'coordinates before the first command');
-    }
+    cmd = nextCommand(c, tok, cmd, d);
     const upper = cmd.toUpperCase();
     c.isRel = cmd !== upper;
-
     if (upper === 'Z') {
       closeSubpath(c, subpaths);
       cmd = '';
     } else {
-      if (upper === 'M' && c.subpath.length > 0) {
-        subpaths.push(c.subpath);
-        c.subpath = [];
-      } else if (upper !== 'M' && c.subpath.length === 0) {
-        // A drawing command after Z continues from the closed sub-path's start point
-        emitPoint(c, currentPoint(c));
-      }
-      const handler = PATH_HANDLERS[upper === 'M' ? 'L' : upper];
-      if (!handler(c)) throw malformedPath(d, `missing or invalid arguments for ${cmd}`);
-      // Extra coordinate pairs after a moveto are implicit lineto commands
-      if (upper === 'M') cmd = c.isRel ? 'l' : 'L';
+      cmd = runDrawingCommand(c, cmd, upper, subpaths, d);
     }
     c.prevUpper = upper;
   }
@@ -530,31 +540,40 @@ function applyMatrix(m: AffineMatrix, x: number, y: number): { x: number; y: num
 const TRANSFORM_FUNCTION_PATTERN = /^\s*,?\s*(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^()]*)\)/;
 const TRANSFORM_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
 
+function rotationMatrix(args: number[]): AffineMatrix | null {
+  if (args.length !== 1 && args.length !== 3) return null;
+  const rad = args[0] * DEGREES_TO_RADIANS;
+  const rotation: AffineMatrix = [Math.cos(rad), Math.sin(rad), -Math.sin(rad), Math.cos(rad), 0, 0];
+  if (args.length === 1) return rotation;
+  const [, cx, cy] = args;
+  return multiplyMatrix(multiplyMatrix([1, 0, 0, 1, cx, cy], rotation), [1, 0, 0, 1, -cx, -cy]);
+}
+
+/** One- or two-argument functions where the second argument defaults from the first. */
+function pairArgs(args: number[], defaultSecond: (first: number) => number): [number, number] | null {
+  if (args.length === 1) return [args[0], defaultSecond(args[0])];
+  return args.length === 2 ? [args[0], args[1]] : null;
+}
+
+/** SVG 1.1 section 7.6 transform functions; each returns null for a wrong argument count. */
+const TRANSFORM_FUNCTIONS: Record<string, (args: number[]) => AffineMatrix | null> = {
+  matrix: (args) => (args.length === 6 ? (args as AffineMatrix) : null),
+  translate: (args) => {
+    const p = pairArgs(args, () => 0);
+    return p ? [1, 0, 0, 1, p[0], p[1]] : null;
+  },
+  scale: (args) => {
+    const p = pairArgs(args, (first) => first);
+    return p ? [p[0], 0, 0, p[1], 0, 0] : null;
+  },
+  rotate: rotationMatrix,
+  skewX: (args) => (args.length === 1 ? [1, 0, Math.tan(args[0] * DEGREES_TO_RADIANS), 1, 0, 0] : null),
+  skewY: (args) => (args.length === 1 ? [1, Math.tan(args[0] * DEGREES_TO_RADIANS), 0, 1, 0, 0] : null),
+};
+
 function transformFunctionMatrix(name: string, args: number[]): AffineMatrix | null {
-  switch (name) {
-    case 'matrix':
-      return args.length === 6 ? (args as AffineMatrix) : null;
-    case 'translate':
-      if (args.length === 1) return [1, 0, 0, 1, args[0], 0];
-      return args.length === 2 ? [1, 0, 0, 1, args[0], args[1]] : null;
-    case 'scale':
-      if (args.length === 1) return [args[0], 0, 0, args[0], 0, 0];
-      return args.length === 2 ? [args[0], 0, 0, args[1], 0, 0] : null;
-    case 'rotate': {
-      if (args.length !== 1 && args.length !== 3) return null;
-      const rad = args[0] * DEGREES_TO_RADIANS;
-      const rotation: AffineMatrix = [Math.cos(rad), Math.sin(rad), -Math.sin(rad), Math.cos(rad), 0, 0];
-      if (args.length === 1) return rotation;
-      const [, cx, cy] = args;
-      return multiplyMatrix(multiplyMatrix([1, 0, 0, 1, cx, cy], rotation), [1, 0, 0, 1, -cx, -cy]);
-    }
-    case 'skewX':
-      return args.length === 1 ? [1, 0, Math.tan(args[0] * DEGREES_TO_RADIANS), 1, 0, 0] : null;
-    case 'skewY':
-      return args.length === 1 ? [1, Math.tan(args[0] * DEGREES_TO_RADIANS), 0, 1, 0, 0] : null;
-    default:
-      return null;
-  }
+  const build = TRANSFORM_FUNCTIONS[name];
+  return build ? build(args) : null;
 }
 
 /**
