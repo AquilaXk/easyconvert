@@ -9,7 +9,8 @@ export const dynamic = 'force-dynamic';
 
 const MAX_PART_BYTES = 64 * 1024 * 1024; // 64 MiB
 
-const TIER_MAX_MULTIPART_BYTES: Record<UserTier, number> = {
+const TIER_MAX_MULTIPART_BYTES: Record<UserTier | 'anonymous', number> = {
+  anonymous: 50 * 1024 * 1024,
   free: 100 * 1024 * 1024,
   pro: 1024 * 1024 * 1024,
   enterprise: 5 * 1024 * 1024 * 1024,
@@ -23,7 +24,10 @@ export async function POST(req: NextRequest) {
   const action = searchParams.get('action') || 'initiate';
 
   // 1. Guard check: Authenticate and enforce 'convert:write' scope on all multipart actions
-  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
+  const auth = await validateApiAccess(req, {
+    requiredUnits: 0,
+    requiredScope: 'convert:write',
+  });
   if (!auth.authorized || !auth.user) {
     const headers = authErrorHeaders(auth);
     return createProblemDetailsResponse(
@@ -60,13 +64,14 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      const effectiveTier = currentUser.id.startsWith('anon:') ? 'anonymous' : currentUser.tier;
       const maxAllowedBytes =
-        (currentUser.tier && TIER_MAX_MULTIPART_BYTES[currentUser.tier]) || MAX_MULTIPART_TOTAL_BYTES;
+        (effectiveTier && TIER_MAX_MULTIPART_BYTES[effectiveTier]) || MAX_MULTIPART_TOTAL_BYTES;
 
       if (totalSize > maxAllowedBytes) {
         return createProblemDetailsResponse(
           413,
-          `Requested total size ${totalSize} bytes exceeds maximum allowed upload size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
+          `Requested total size ${totalSize} bytes exceeds maximum allowed upload size of ${maxAllowedBytes} bytes for tier '${effectiveTier}'.`,
           instanceUri
         );
       }

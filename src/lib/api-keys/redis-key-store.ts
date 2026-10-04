@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
 import type { UserTier } from '../auth/types';
-import { KeyStore, TIER_LIMITS, getUtcDateKey, apiKeyHashCandidates } from './key-store';
+import { KeyStore, TIER_LIMITS, ANONYMOUS_DAILY_LIMIT, getAnonymousDailyLimit, getUtcDateKey, getNextMidnightUtc, apiKeyHashCandidates } from './key-store';
 import type {
   ApiKey,
   ApiKeyCreateOptions,
@@ -81,6 +81,15 @@ export const COMMIT_QUOTA_LUA_SCRIPT = `
 return redis.call('DEL', KEYS[1])
 `;
 
+export const RENEW_RESERVATION_LUA_SCRIPT = `
+-- KEYS[1]: reservation key (e.g. easyconvert:res:{userId}:reservationId)
+-- ARGV[1]: new TTL in seconds
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+end
+return 0
+`;
+
 export const DEDUCT_QUOTA_LUA_SCRIPT = `
 -- KEYS[1]: usage key (e.g. easyconvert:usage:userId:YYYY-MM-DD)
 -- ARGV[1]: units requested
@@ -103,16 +112,23 @@ end
 
 export const TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT = `
 -- KEYS[1]: rate limit key (e.g. easyconvert:rate:keyId)
--- ARGV[1]: current timestamp in milliseconds
--- ARGV[2]: bucket capacity (max burst tokens)
--- ARGV[3]: refill rate (tokens added per second)
--- ARGV[4]: cost (tokens required for this request)
--- ARGV[5]: key TTL in seconds
-local now = tonumber(ARGV[1])
-local capacity = tonumber(ARGV[2])
-local refillRate = tonumber(ARGV[3])
-local cost = tonumber(ARGV[4] or '1')
-local ttl = tonumber(ARGV[5] or '3600')
+-- ARGV[1]: bucket capacity (max burst tokens)
+-- ARGV[2]: refill rate (tokens added per second)
+-- ARGV[3]: cost (tokens required for this request)
+-- ARGV[4]: key TTL in seconds
+-- ARGV[5]: fallback timestamp in milliseconds (if TIME fails in mock environments)
+local now = nil
+local ok, rtime = pcall(redis.call, 'TIME')
+if ok and rtime and type(rtime) == 'table' then
+  now = (tonumber(rtime[1]) * 1000) + math.floor(tonumber(rtime[2]) / 1000)
+else
+  now = tonumber(ARGV[5] or '0')
+end
+
+local capacity = tonumber(ARGV[1])
+local refillRate = tonumber(ARGV[2])
+local cost = tonumber(ARGV[3] or '1')
+local ttl = tonumber(ARGV[4] or '3600')
 
 local data = redis.call('HMGET', KEYS[1], 'tokens', 'lastRefill')
 local currentTokens = tonumber(data[1])
@@ -150,6 +166,8 @@ else
 end
 `;
 
+export const DEFAULT_RESERVATION_TTL_SECONDS = 900; // 15 minutes default for long-running conversions
+
 export interface TokenBucketOptions {
   capacity?: number;
   refillRate?: number;
@@ -161,6 +179,8 @@ export interface TokenBucketResult {
   allowed: boolean;
   remainingTokens: number;
   retryAfterMs: number;
+  serviceUnavailable?: boolean;
+  error?: string;
 }
 
 /**
@@ -287,6 +307,32 @@ export class RedisKeyStore extends KeyStore {
 
   public override async getQuotaUsage(userId: string) {
     this.cleanExpiredReservations();
+
+    if (this.redisClient) {
+      try {
+        const isAnonymous = userId.startsWith('anon:');
+        const user = isAnonymous ? null : await redisUserStore.findById(userId);
+        const tier: UserTier = user?.tier || 'free';
+        const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
+        const usageKey = `${this.keyPrefix}usage:{${userId}}:${getUtcDateKey()}`;
+        const val = await this.redisClient.get(usageKey);
+        const usedToday = val ? parseInt(val, 10) || 0 : 0;
+        const remaining = Math.max(0, dailyLimit - usedToday);
+        const resetAt = getNextMidnightUtc();
+
+        return {
+          tier,
+          dailyLimit,
+          usedToday,
+          remaining,
+          resetAt,
+        };
+      } catch (err) {
+        console.error('[RedisKeyStore] Redis getQuotaUsage failed:', err);
+        throw new Error('Distributed quota service is temporarily unavailable');
+      }
+    }
+
     return super.getQuotaUsage(userId);
   }
 
@@ -296,7 +342,7 @@ export class RedisKeyStore extends KeyStore {
   public async deductQuota(
     userId: string,
     units: number = 1
-  ): Promise<{ allowed: boolean; remaining: number }> {
+  ): Promise<{ allowed: boolean; remaining: number; error?: string; serviceUnavailable?: boolean }> {
     if (
       !userId ||
       typeof userId !== 'string' ||
@@ -308,9 +354,10 @@ export class RedisKeyStore extends KeyStore {
     }
     this.cleanExpiredReservations();
     this.ensureInitialized();
-    const user = await redisUserStore.findById(userId);
+    const isAnonymous = userId.startsWith('anon:');
+    const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
-    const dailyLimit = TIER_LIMITS[tier];
+    const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
 
     if (this.redisClient) {
       try {
@@ -332,8 +379,14 @@ export class RedisKeyStore extends KeyStore {
           allowed: Number(result[0]) === 1,
           remaining: Number(result[1]),
         };
-      } catch {
-        // Fallback to in-memory on redis connection failure
+      } catch (err) {
+        console.error('[RedisKeyStore] Redis deductQuota failed:', err);
+        return {
+          allowed: false,
+          remaining: 0,
+          error: 'Distributed quota service is temporarily unavailable',
+          serviceUnavailable: true,
+        };
       }
     }
 
@@ -362,7 +415,7 @@ export class RedisKeyStore extends KeyStore {
   public async reserveQuota(
     userId: string,
     units: number = 1
-  ): Promise<{ allowed: boolean; reservationId?: string; remaining: number }> {
+  ): Promise<{ allowed: boolean; reservationId?: string; remaining: number; error?: string; serviceUnavailable?: boolean }> {
     if (
       !userId ||
       typeof userId !== 'string' ||
@@ -375,16 +428,17 @@ export class RedisKeyStore extends KeyStore {
     this.cleanExpiredReservations();
     this.ensureInitialized();
 
-    const user = await redisUserStore.findById(userId);
+    const isAnonymous = userId.startsWith('anon:');
+    const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
-    const dailyLimit = TIER_LIMITS[tier];
+    const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
 
     if (this.redisClient) {
       try {
         const usageKey = `${this.keyPrefix}usage:{${userId}}:${getUtcDateKey()}`;
         const reservationId = `res_${encodeURIComponent(userId)}_${getUtcDateKey()}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
         const resKey = `${this.keyPrefix}res:{${userId}}:${reservationId}`;
-        const ttlSec = 300;
+        const ttlSec = DEFAULT_RESERVATION_TTL_SECONDS;
         const midnight = new Date();
         midnight.setUTCHours(24, 0, 0, 0);
         const expireAtMidnightSec = Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
@@ -417,8 +471,14 @@ export class RedisKeyStore extends KeyStore {
           return { allowed: true, reservationId, remaining };
         }
         return { allowed: false, remaining };
-      } catch {
-        // Fallback to in-memory on redis connection failure
+      } catch (err) {
+        console.error('[RedisKeyStore] Redis reserveQuota failed:', err);
+        return {
+          allowed: false,
+          remaining: 0,
+          error: 'Distributed quota service is temporarily unavailable',
+          serviceUnavailable: true,
+        };
       }
     }
 
@@ -448,7 +508,7 @@ export class RedisKeyStore extends KeyStore {
       units,
       dateKey,
       createdAt: Date.now(),
-      expiresAt: Date.now() + 5 * 60 * 1000, // 5-minute reservation timeout
+      expiresAt: Date.now() + DEFAULT_RESERVATION_TTL_SECONDS * 1000, // 15-minute reservation timeout
       status: 'reserved',
     };
     this.reservations.set(reservationId, reservation);
@@ -459,6 +519,45 @@ export class RedisKeyStore extends KeyStore {
       reservationId,
       remaining: Math.max(0, dailyLimit - (currentUsed + units)),
     };
+  }
+
+  /**
+   * Extends the TTL of an active reservation (heartbeat renewal for long-running async jobs).
+   */
+  public async renewReservation(
+    reservationId: string,
+    ttlSeconds: number = DEFAULT_RESERVATION_TTL_SECONDS
+  ): Promise<boolean> {
+    if (!reservationId || typeof reservationId !== 'string') return false;
+
+    if (this.redisClient) {
+      try {
+        const res = this.reservations.get(reservationId);
+        let userId = res?.userId;
+        if (!userId) {
+          const parts = reservationId.split('_');
+          if (parts.length >= 5 && parts[0] === 'res') {
+            userId = decodeURIComponent(parts[1]);
+          }
+        }
+        const finalUserId = userId || 'unknown';
+        const resKey = `${this.keyPrefix}res:{${finalUserId}}:${reservationId}`;
+        const renewed = await this.redisClient.eval(RENEW_RESERVATION_LUA_SCRIPT, 1, resKey, ttlSeconds);
+        const isSuccess = Number(renewed) > 0;
+        if (isSuccess && res) {
+          res.expiresAt = Date.now() + ttlSeconds * 1000;
+        }
+        return isSuccess;
+      } catch (err) {
+        console.error('[RedisKeyStore] Redis renewReservation failed:', err);
+        return false;
+      }
+    }
+
+    const res = this.reservations.get(reservationId);
+    if (!res || res.status !== 'reserved') return false;
+    res.expiresAt = Date.now() + ttlSeconds * 1000;
+    return true;
   }
 
   /**
@@ -857,11 +956,11 @@ export class RedisKeyStore extends KeyStore {
           TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT,
           1,
           key,
-          now.toString(),
           capacity.toString(),
           refillRate.toString(),
           cost.toString(),
-          ttl.toString()
+          ttl.toString(),
+          now.toString()
         )) as [number, number, number];
 
         return {
@@ -870,7 +969,14 @@ export class RedisKeyStore extends KeyStore {
           retryAfterMs: Number(res[2]),
         };
       } catch (err) {
-        console.warn('Redis rate limit Lua failed, falling back to local memory:', err);
+        console.error('[RedisKeyStore] Redis rate limit Lua failed:', err);
+        return {
+          allowed: false,
+          remainingTokens: 0,
+          retryAfterMs: 5000,
+          serviceUnavailable: true,
+          error: 'Distributed rate limit service is temporarily unavailable',
+        };
       }
     }
 
@@ -907,6 +1013,13 @@ export class RedisKeyStore extends KeyStore {
 }
 
 export const redisKeyStore = new RedisKeyStore();
+
+export async function renewReservation(
+  reservationId: string,
+  ttlSeconds?: number
+): Promise<boolean> {
+  return redisKeyStore.renewReservation(reservationId, ttlSeconds);
+}
 
 export async function checkTokenBucketRateLimit(
   identifier: string,

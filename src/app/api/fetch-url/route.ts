@@ -6,34 +6,59 @@ import {
   validateUrlForSsrf,
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
+import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  const instanceUri = req.nextUrl?.pathname || '/api/fetch-url';
+
+  // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+  const auth = await validateApiAccess(req, {
+    requiredUnits: 1,
+    requiredScope: 'convert:write',
+    allowAnonymous: true,
+  });
+
+  if (!auth.authorized || !auth.user) {
+    return createProblemDetailsResponse(
+      auth.status ?? 401,
+      auth.error ?? 'Unauthorized',
+      instanceUri,
+      undefined,
+      auth.problemType,
+      authErrorHeaders(auth)
+    );
+  }
+
+  const reservationId = auth.reservationId;
+
+  const failWithRollback = async (status: number, error: string) => {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return NextResponse.json({ success: false, error }, { status });
+  };
+
   const ssrfAgent = createSsrfSafeAgent();
   try {
     const body = await req.json();
     const { url } = body;
 
     if (!url || typeof url !== 'string') {
-      return NextResponse.json({ success: false, error: 'URL is required.' }, { status: 400 });
+      return await failWithRollback(400, 'URL is required.');
     }
 
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);
     } catch {
-      return NextResponse.json(
-        { success: false, error: 'Invalid URL format provided.' },
-        { status: 400 }
-      );
+      return await failWithRollback(400, 'Invalid URL format provided.');
     }
 
     if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      return NextResponse.json(
-        { success: false, error: 'Only HTTP and HTTPS URLs are permitted.' },
-        { status: 400 }
-      );
+      return await failWithRollback(400, 'Only HTTP and HTTPS URLs are permitted.');
     }
 
     let currentUrl = parsedUrl;
@@ -192,6 +217,10 @@ export async function POST(req: NextRequest) {
       else filename += '.bin';
     }
 
+    if (reservationId) {
+      await commitQuota(reservationId);
+    }
+
     return new NextResponse(new Uint8Array(buffer), {
       status: 200,
       headers: {
@@ -202,6 +231,9 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: unknown) {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
     const msg = err instanceof Error ? err.message : 'Failed to fetch remote URL';
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
   } finally {

@@ -93,6 +93,9 @@ export function clearSessionCookie(): string {
  * Supports HttpOnly session cookie and Authorization: Bearer <jwt> header.
  */
 export async function getSessionFromRequest(request: Request): Promise<User | null> {
+  if (!request?.headers || typeof request.headers.get !== 'function') {
+    return null;
+  }
   let token: string | null = null;
 
   // 1. Check Cookie header
