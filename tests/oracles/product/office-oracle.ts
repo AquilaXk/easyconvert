@@ -37,11 +37,25 @@ export async function renderOfficeDocumentWithSoffice(
   try {
     fs.writeFileSync(inputPath, docBuffer);
 
-    // Run headless LibreOffice conversion to PDF
     execFileSync(
       sofficePath,
-      ['--headless', '--convert-to', 'pdf', inputPath, '--outdir', tempDir],
-      { stdio: ['pipe', 'pipe', 'pipe'] }
+      [
+        '--headless',
+        '--norestore',
+        '--nofirststartwizard',
+        '--nologo',
+        `-env:UserInstallation=file://${tempDir}/user`,
+        '--convert-to',
+        'pdf',
+        inputPath,
+        '--outdir',
+        tempDir,
+      ],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+        timeout: 30000,
+      }
     );
 
     const pdfPath = path.join(tempDir, 'document.pdf');

@@ -48,6 +48,7 @@ jobs:
             libreoffice-calc \
             libreoffice-writer \
             libreoffice-impress \
+            libreoffice-draw \
             imagemagick \
             tesseract-ocr \
             tesseract-ocr-kor \

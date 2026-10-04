@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult, UnsupportedTargetError, CadGeometryUnavailableError, CadTopologyError } from '../types';
+import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
 import { encodeBmp, encodePostscript } from './image';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 
@@ -13,10 +13,10 @@ import {
   evaluateQuadraticBezier,
   cubicBezierToBSpline,
   tessellateSvgArc,
-  Point3D,
   verifyWatertightManifoldMesh,
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
+import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
 import { sanitizeSvgString } from '../security/svg-sanitizer';
 
 export {
@@ -52,55 +52,144 @@ export interface CadMesh3D {
   normals: [number, number, number][];
 }
 
-export function encodeEmf(svgBuffer: Buffer): Buffer {
-  void svgBuffer;
-  throw new UnsupportedTargetError('EMF encoder is not available');
-}
+import {
+  encodeEmf,
+  encodeWmf,
+  encodeCgm,
+  parseSvgGeometries,
+  parseCssColor,
+  type SvgGeometryElement,
+  type ParsedSvgVectorDocument,
+  parseSvgPathToPoints as parseSvgPathToBezierPoints,
+} from './vector-metafile';
 
-export function encodeWmf(svgBuffer: Buffer): Buffer {
-  void svgBuffer;
-  throw new UnsupportedTargetError('WMF encoder is not available');
-}
+export {
+  encodeEmf,
+  encodeWmf,
+  encodeCgm,
+  parseSvgGeometries,
+  parseCssColor,
+  type SvgGeometryElement,
+  type ParsedSvgVectorDocument,
+  parseSvgPathToBezierPoints,
+};
 
-export function encodeCgm(svgBuffer: Buffer, _baseName = 'drawing'): Buffer {
-  void svgBuffer;
-  throw new UnsupportedTargetError('CGM encoder is not available');
-}
-
-export function parseCgmToSvg(cgmText: string): string | null {
-  if (!cgmText.includes('BEGMF')) return null;
-
+function parseCgmDimensions(cgmText: string): { width: number; height: number } {
   let width = 800;
   let height = 600;
-  const vdcMatch = cgmText.match(/VDCEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i);
+  const vdcRegex = /VDCEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i;
+  const vdcMatch = vdcRegex.exec(cgmText);
   if (vdcMatch) {
-    const w = parseFloat(vdcMatch[3]) - parseFloat(vdcMatch[1]);
-    const h = parseFloat(vdcMatch[4]) - parseFloat(vdcMatch[2]);
+    // Either corner order is legal; a reversed y extent only flips the VDC axis.
+    const w = Math.abs(Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]));
+    const h = Math.abs(Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]));
     if (w > 0 && h > 0) {
       width = Math.round(w);
       height = Math.round(h);
     }
   }
+  return { width, height };
+}
 
+function parseCgmLines(cgmText: string): string[] {
   const elements: string[] = [];
-
-  // Parse LINE (x1,y1) (x2,y2)
-  const lineRegex = /LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
-  let lineMatch: RegExpExecArray | null;
-  while ((lineMatch = lineRegex.exec(cgmText)) !== null) {
+  const lineRegex = /(?<![A-Z])LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
+  for (const lineMatch of cgmText.matchAll(lineRegex)) {
     elements.push(
       `<line x1="${lineMatch[1]}" y1="${lineMatch[2]}" x2="${lineMatch[3]}" y2="${lineMatch[4]}" stroke="#111827" stroke-width="2" />`
     );
   }
+  return elements;
+}
 
-  // Parse TEXT (x,y) ... "content"
-  const textRegex = /TEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)[^"]*"([^"]+)"/gi;
-  let textMatch: RegExpExecArray | null;
-  while ((textMatch = textRegex.exec(cgmText)) !== null) {
-    elements.push(
-      `<text x="${textMatch[1]}" y="${textMatch[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeXml(textMatch[3])}</text>`
-    );
+const CGM_TEXT_HEAD_PATTERN = /TEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
+
+/**
+ * Reads TEXT (x, y) ... "string" elements. The quoted string is located with
+ * indexOf from the end of the head, so a missing quote ends the scan instead of
+ * being re-scanned from every later TEXT keyword.
+ */
+function parseCgmTextElements(cgmText: string): string[] {
+  const elements: string[] = [];
+  CGM_TEXT_HEAD_PATTERN.lastIndex = 0;
+  let head = CGM_TEXT_HEAD_PATTERN.exec(cgmText);
+  while (head) {
+    const open = cgmText.indexOf('"', CGM_TEXT_HEAD_PATTERN.lastIndex);
+    if (open < 0) break;
+    const close = cgmText.indexOf('"', open + 1);
+    if (close < 0) break;
+    if (close > open + 1) {
+      elements.push(
+        `<text x="${head[1]}" y="${head[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeXml(cgmText.substring(open + 1, close))}</text>`
+      );
+      CGM_TEXT_HEAD_PATTERN.lastIndex = close + 1;
+    }
+    head = CGM_TEXT_HEAD_PATTERN.exec(cgmText);
   }
+  return elements;
+}
+
+const CGM_POLYGON_KEYWORD = /POLYGON\s/gi;
+const CGM_POLYLINE_KEYWORD = /POLYLINE\s/gi;
+const CGM_STATEMENT_END = /[;\r\n]/g;
+const LEADING_WHITESPACE = /\s*/y;
+
+/**
+ * Argument text of each `KEYWORD args;` statement (arguments stay on one line).
+ * The statement end is cached between keywords so a run of keywords without a
+ * terminator costs one scan, not one per keyword.
+ */
+function cgmStatementArguments(cgmText: string, keyword: RegExp): string[] {
+  const statements: string[] = [];
+  keyword.lastIndex = 0;
+  CGM_STATEMENT_END.lastIndex = 0;
+  let endIndex = -1;
+  let consumedUpTo = 0;
+  for (let m = keyword.exec(cgmText); m; m = keyword.exec(cgmText)) {
+    if (m.index < consumedUpTo) continue;
+    LEADING_WHITESPACE.lastIndex = m.index + m[0].length;
+    LEADING_WHITESPACE.exec(cgmText);
+    const argsStart = LEADING_WHITESPACE.lastIndex;
+    if (endIndex < argsStart) {
+      CGM_STATEMENT_END.lastIndex = argsStart;
+      const end = CGM_STATEMENT_END.exec(cgmText);
+      if (!end) break;
+      endIndex = end.index;
+    }
+    if (cgmText.charAt(endIndex) !== ';' || endIndex === argsStart) continue;
+    statements.push(cgmText.substring(argsStart, endIndex));
+    consumedUpTo = endIndex + 1;
+  }
+  return statements;
+}
+
+function parseCgmPolyElements(cgmText: string, isPolygon: boolean): string[] {
+  const elements: string[] = [];
+  for (const args of cgmStatementArguments(cgmText, isPolygon ? CGM_POLYGON_KEYWORD : CGM_POLYLINE_KEYWORD)) {
+    const ptRegex = /\(\s*([-+]?[\d.]+)\s*,\s*([-+]?[\d.]+)\s*\)/g;
+    const pts = [...args.matchAll(ptRegex)].map((pm) => `${pm[1]},${pm[2]}`);
+    const minCount = isPolygon ? 2 : 1;
+    if (pts.length > minCount) {
+      if (isPolygon) {
+        elements.push(`<polygon points="${pts.join(' ')}" fill="#111827" stroke="#111827" stroke-width="2" />`);
+      } else {
+        elements.push(`<polyline points="${pts.join(' ')}" fill="none" stroke="#111827" stroke-width="2" />`);
+      }
+    }
+  }
+  return elements;
+}
+
+export function parseCgmToSvg(cgmText: string): string | null {
+  if (!cgmText.includes('BEGMF')) return null;
+
+  const { width, height } = parseCgmDimensions(cgmText);
+  const elements = [
+    ...parseCgmLines(cgmText),
+    ...parseCgmTextElements(cgmText),
+    ...parseCgmPolyElements(cgmText, false),
+    ...parseCgmPolyElements(cgmText, true),
+  ];
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
   ${elements.join('\n  ')}
@@ -112,6 +201,19 @@ export function parseCgmToSvg(cgmText: string): string | null {
  * Supports 2D Vector (SVG, EPS, PS, CDR, CGM, DWF, EMF, SK, SK1, SVGZ, VSD, WMF),
  * 2D CAD (DXF, DWG), and 3D CAD (STEP, STP, IGES, IGS, STL, OBJ).
  */
+/** Inflates an SVGZ payload; corrupt gzip and oversized output fail closed instead of falling back to raw bytes. */
+function gunzipSvgz(payload: Buffer): Buffer {
+  try {
+    return zlib.gunzipSync(payload, { maxOutputLength: MAX_SVG_INPUT_CHARS });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new CadGeometryUnavailableError(`SVGZ expands beyond the ${MAX_SVG_INPUT_CHARS}-byte limit.`);
+    }
+    throw new CadGeometryUnavailableError(`SVGZ payload is not valid gzip data (${(error as Error).message}).`);
+  }
+}
+
 export async function convertVectorCad(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -134,12 +236,7 @@ export async function convertVectorCad(
 
   // 2. SVGZ Source (Compressed SVG)
   if (src === 'svgz') {
-    let uncompressed: Buffer;
-    try {
-      uncompressed = zlib.gunzipSync(inputBuffer);
-    } catch {
-      uncompressed = inputBuffer;
-    }
+    const uncompressed = gunzipSvgz(inputBuffer);
     const cleanSvg = sanitizeSvgString(uncompressed.toString('utf-8'));
     return convertSvgSource(Buffer.from(cleanSvg, 'utf-8'), tgt, options, baseName);
   }
@@ -179,12 +276,12 @@ export async function convertVectorCad(
       if (parsedCgm) {
         svgStr = parsedCgm;
       } else {
-        throw new Error(
+        throw new CadGeometryUnavailableError(
           `Unsupported or unparseable .${src} vector format: fail-closed against dummy placeholder synthesis.`
         );
       }
     } else {
-      throw new Error(
+      throw new CadGeometryUnavailableError(
         `Unsupported or unparseable .${src} vector format: fail-closed against dummy placeholder synthesis.`
       );
     }
@@ -306,14 +403,23 @@ async function convertSvgSource(
       mimeType = 'image/svg+xml';
       break;
 
-    case 'emf':
-      throw new UnsupportedTargetError('EMF encoder is not available');
+    case 'emf': {
+      outputBuffer = encodeEmf(inputBuffer);
+      mimeType = 'image/emf';
+      break;
+    }
 
-    case 'wmf':
-      throw new UnsupportedTargetError('WMF encoder is not available');
+    case 'wmf': {
+      outputBuffer = encodeWmf(inputBuffer);
+      mimeType = 'image/wmf';
+      break;
+    }
 
-    case 'cgm':
-      throw new UnsupportedTargetError('CGM encoder is not available');
+    case 'cgm': {
+      outputBuffer = encodeCgm(inputBuffer, baseName);
+      mimeType = 'image/cgm';
+      break;
+    }
 
     case 'eps':
     case 'ps': {
@@ -522,198 +628,7 @@ async function convert3dCad(
   };
 }
 
-/**
- * Parses SVG path 'd' attribute commands and evaluates Cubic/Quadratic Bezier curves
- * into high-fidelity adaptive polyline vertices.
- */
-export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
-  const subpaths: Point3D[][] = [];
-  let currentSubpath: Point3D[] = [];
-  let currentX = 0;
-  let currentY = 0;
-  let lastCpX = 0;
-  let lastCpY = 0;
-  let lastCmd = '';
 
-  // Tokenize commands and signed/floating numbers
-  const regex = /([a-df-z])|([-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?)/gi;
-  let match: RegExpExecArray | null;
-  const tokens: string[] = [];
-  while ((match = regex.exec(d)) !== null) {
-    tokens.push(match[0]);
-  }
-
-  let i = 0;
-  while (i < tokens.length) {
-    const token = tokens[i];
-    if (/^[a-df-z]$/i.test(token)) {
-      lastCmd = token;
-      i++;
-    } else if (!lastCmd) {
-      i++;
-      continue;
-    }
-
-    const cmd = lastCmd;
-    const isRel = cmd === cmd.toLowerCase();
-    const upper = cmd.toUpperCase();
-
-    if (upper === 'M') {
-      if (i + 1 >= tokens.length) break;
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
-      currentX = isRel ? currentX + x : x;
-      currentY = isRel ? currentY + y : y;
-      if (currentSubpath.length > 0) {
-        subpaths.push(currentSubpath);
-        currentSubpath = [];
-      }
-      currentSubpath.push({ x: currentX, y: currentY, z: 0 });
-      lastCpX = currentX;
-      lastCpY = currentY;
-      lastCmd = isRel ? 'l' : 'L';
-    } else if (upper === 'L') {
-      if (i + 1 >= tokens.length) break;
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
-      currentX = isRel ? currentX + x : x;
-      currentY = isRel ? currentY + y : y;
-      currentSubpath.push({ x: currentX, y: currentY, z: 0 });
-      lastCpX = currentX;
-      lastCpY = currentY;
-    } else if (upper === 'H') {
-      if (i >= tokens.length) break;
-      const x = parseFloat(tokens[i++]);
-      currentX = isRel ? currentX + x : x;
-      currentSubpath.push({ x: currentX, y: currentY, z: 0 });
-      lastCpX = currentX;
-    } else if (upper === 'V') {
-      if (i >= tokens.length) break;
-      const y = parseFloat(tokens[i++]);
-      currentY = isRel ? currentY + y : y;
-      currentSubpath.push({ x: currentX, y: currentY, z: 0 });
-      lastCpY = currentY;
-    } else if (upper === 'C') {
-      if (i + 5 >= tokens.length) break;
-      const x1 = parseFloat(tokens[i++]);
-      const y1 = parseFloat(tokens[i++]);
-      const x2 = parseFloat(tokens[i++]);
-      const y2 = parseFloat(tokens[i++]);
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
-
-      const p0: Point3D = { x: currentX, y: currentY, z: 0 };
-      const p1: Point3D = { x: isRel ? currentX + x1 : x1, y: isRel ? currentY + y1 : y1, z: 0 };
-      const p2: Point3D = { x: isRel ? currentX + x2 : x2, y: isRel ? currentY + y2 : y2, z: 0 };
-      const p3: Point3D = { x: isRel ? currentX + x : x, y: isRel ? currentY + y : y, z: 0 };
-
-      const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, 0.5);
-      for (let k = 1; k < curvePts.length; k++) {
-        currentSubpath.push(curvePts[k]);
-      }
-
-      currentX = p3.x;
-      currentY = p3.y;
-      lastCpX = p2.x;
-      lastCpY = p2.y;
-    } else if (upper === 'S') {
-      if (i + 3 >= tokens.length) break;
-      const p1X = ['C', 'c', 'S', 's'].includes(cmd) ? 2 * currentX - lastCpX : currentX;
-      const p1Y = ['C', 'c', 'S', 's'].includes(cmd) ? 2 * currentY - lastCpY : currentY;
-      const x2 = parseFloat(tokens[i++]);
-      const y2 = parseFloat(tokens[i++]);
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
-
-      const p0: Point3D = { x: currentX, y: currentY, z: 0 };
-      const p1: Point3D = { x: p1X, y: p1Y, z: 0 };
-      const p2: Point3D = { x: isRel ? currentX + x2 : x2, y: isRel ? currentY + y2 : y2, z: 0 };
-      const p3: Point3D = { x: isRel ? currentX + x : x, y: isRel ? currentY + y : y, z: 0 };
-
-      const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, 0.5);
-      for (let k = 1; k < curvePts.length; k++) {
-        currentSubpath.push(curvePts[k]);
-      }
-
-      currentX = p3.x;
-      currentY = p3.y;
-      lastCpX = p2.x;
-      lastCpY = p2.y;
-    } else if (upper === 'Q') {
-      if (i + 3 >= tokens.length) break;
-      const x1 = parseFloat(tokens[i++]);
-      const y1 = parseFloat(tokens[i++]);
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
-
-      const p0: Point3D = { x: currentX, y: currentY, z: 0 };
-      const cp: Point3D = { x: isRel ? currentX + x1 : x1, y: isRel ? currentY + y1 : y1, z: 0 };
-      const p2: Point3D = { x: isRel ? currentX + x : x, y: isRel ? currentY + y : y, z: 0 };
-
-      const p1: Point3D = { x: p0.x + (2 / 3) * (cp.x - p0.x), y: p0.y + (2 / 3) * (cp.y - p0.y), z: 0 };
-      const pCubic2: Point3D = { x: p2.x + (2 / 3) * (cp.x - p2.x), y: p2.y + (2 / 3) * (cp.y - p2.y), z: 0 };
-
-      const curvePts = adaptiveTessellateCubicBezier(p0, p1, pCubic2, p2, 0.5);
-      for (let k = 1; k < curvePts.length; k++) {
-        currentSubpath.push(curvePts[k]);
-      }
-
-      currentX = p2.x;
-      currentY = p2.y;
-      lastCpX = cp.x;
-      lastCpY = cp.y;
-    } else if (upper === 'A') {
-      if (i + 6 >= tokens.length) break;
-      const rx = parseFloat(tokens[i++]);
-      const ry = parseFloat(tokens[i++]);
-      const rot = parseFloat(tokens[i++]);
-      const largeArc = parseFloat(tokens[i++]) !== 0;
-      const sweep = parseFloat(tokens[i++]) !== 0;
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
-      const targetX = isRel ? currentX + x : x;
-      const targetY = isRel ? currentY + y : y;
-
-      const arcPoints = tessellateSvgArc(
-        currentX,
-        currentY,
-        rx,
-        ry,
-        rot,
-        largeArc,
-        sweep,
-        targetX,
-        targetY
-      );
-
-      for (const pt of arcPoints) {
-        currentSubpath.push(pt);
-      }
-
-      currentX = targetX;
-      currentY = targetY;
-      lastCpX = currentX;
-      lastCpY = currentY;
-    } else if (upper === 'Z') {
-      if (currentSubpath.length > 1) {
-        const first = currentSubpath[0];
-        currentSubpath.push({ x: first.x, y: first.y, z: first.z });
-        currentX = first.x;
-        currentY = first.y;
-      }
-      subpaths.push(currentSubpath);
-      currentSubpath = [];
-    } else {
-      i++;
-    }
-  }
-
-  if (currentSubpath.length > 0) {
-    subpaths.push(currentSubpath);
-  }
-
-  return subpaths;
-}
 
 /**
  * Converts SVG XML path and geometry elements into AutoCAD DXF ASCII format

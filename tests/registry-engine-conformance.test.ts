@@ -10,7 +10,7 @@ import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { convertFile } from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertOffice } from '../src/lib/conversions/office';
-import { convertVectorCad } from '../src/lib/conversions/vector-cad';
+import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
@@ -152,6 +152,8 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   stl: () => STL_TEXT,
   obj: () => OBJ_TEXT,
   gz: () => gzipSync(PLAIN_TEXT),
+  // SVGZ is gzip-compressed SVG; plain SVG text is not a valid .svgz input.
+  svgz: () => gzipSync(SVG_TEXT),
   tgz: () => gzipSync(TAR_SEED),
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
@@ -357,7 +359,8 @@ describe('routing-error classifier', () => {
     expect((routing as Error).message).toMatch(/^Unsupported office conversion from pages to doc$/);
     expect(isRoutingError(routing)).toBe(true);
 
-    const encoder = await convertVectorCad(SVG_TEXT, 'svg', 'emf', {}, 'probe.svg').catch((e: unknown) => e);
+    const pdfSeed = FIXTURES.get('pdf')![0];
+    const encoder = await convertDocument(pdfSeed, 'pdf', 'svg', {}, 'probe.pdf').catch((e: unknown) => e);
     expect(encoder).toBeInstanceOf(UnsupportedTargetError);
     expect(isRoutingError(encoder)).toBe(true);
 
@@ -397,7 +400,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     cbt: ['cbz'],
     cbz: ['azw3', 'cbr', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf', 'txt'],
     cdr: ['emf', 'wmf'],
-    cgm: ['emf', 'wmf'],
+    cgm: ['dxf', 'emf', 'eps', 'pdf', 'png', 'ps', 'svg', 'wmf'],
     chm: ['azw3', 'epub', 'html', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     csv: ['jpg', 'png'],
     dbf: ['json', 'tsv'],
@@ -413,7 +416,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     dwf: ['cgm', 'dwg', 'wmf'],
     dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
-    emf: ['emf', 'ico', 'odd', 'psd', 'wmf'],
+    emf: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp', 'wmf'],
     eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
     fods: ['json'],
@@ -452,8 +455,8 @@ describe('withdrawn pairs stay withdrawn', () => {
     sk1: ['emf', 'wmf'],
     slk: ['tsv'],
     snb: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
-    svg: ['emf', 'ico', 'odd', 'psd', 'wmf'],
-    svgz: ['emf', 'ico', 'odd', 'psd', 'wmf'],
+    svg: ['ico', 'odd', 'psd'],
+    svgz: ['ico', 'odd', 'psd'],
     tcr: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     tif: ['svg'],
     tiff: ['svg'],
@@ -462,7 +465,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     webp: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'svg', 'wav', 'wma'],
     wk1: ['tsv'],
     wks: ['tsv'],
-    wmf: ['emf', 'wmf'],
+    wmf: ['dxf', 'emf', 'eps', 'pdf', 'png', 'ps', 'svg', 'wmf'],
     wpd: ['doc', 'jpg', 'png', 'rtf'],
     wps: ['doc', 'jpg', 'png', 'rtf'],
     xls: ['xps'],

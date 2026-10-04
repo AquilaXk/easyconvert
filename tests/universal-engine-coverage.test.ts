@@ -93,11 +93,10 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res2.filename).toBe('design.svg');
     expect(res2.buffer.toString('utf-8')).toContain('<svg');
 
-    // emf -> png
-    const res3 = await convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf');
-    expect(res3.filename).toBe('graphic.png');
-    // Real PNG signature
-    expect(res3.buffer.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    // emf -> png: no EMF decoder exists, so the pair is not advertised and is refused
+    await expect(convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf')).rejects.toThrow(
+      /Cannot convert from Enhanced Metafile \(EMF\) \(\.emf\) to target format \.png/
+    );
 
     // svg -> bmp (must NOT be disguised PNG)
     const resBmp = await convertFile(svgBuffer, 'svg', 'bmp', {}, 'drawing.svg');
@@ -114,17 +113,20 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(epsText).toContain('colorimage');
     expect(epsText).not.toContain('<svg');
 
-    // cgm -> svg
+    // cgm -> svg: the CGM reader drops polygon sets, colours and widths, so CGM is not a source
     const cgmContent = Buffer.from('BEGMF "sample"; ENDMF;', 'utf-8');
-    const resCgm = await convertFile(cgmContent, 'cgm', 'svg', {}, 'drawing.cgm');
-    expect(resCgm.filename).toBe('drawing.svg');
-    expect(resCgm.mimeType).toBe('image/svg+xml');
-    expect(resCgm.buffer.toString('utf-8')).toContain('<svg');
-
-    // svg -> emf has no encoder, so the registry no longer advertises it
-    await expect(convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg')).rejects.toThrow(
-      /^Cannot convert from SVG Vector Graphics \(\.svg\) to target format \.emf\./
+    await expect(convertFile(cgmContent, 'cgm', 'svg', {}, 'drawing.cgm')).rejects.toThrow(
+      /Cannot convert from .+ \(\.cgm\) to target format \.svg/
     );
+
+    // svg -> emf
+    const resEmf = await convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg');
+    expect(resEmf.filename).toBe('drawing.emf');
+    expect(resEmf.mimeType).toBe('image/emf');
+    expect(resEmf.size).toBeGreaterThan(88);
+    expect(resEmf.buffer.readUInt32LE(0)).toBe(1); // EMR_HEADER
+    expect(resEmf.buffer.subarray(40, 44).toString('latin1')).toBe(' EMF');
+    expect(resEmf.buffer.readUInt32LE(48)).toBe(resEmf.size); // nBytes
   });
 
   it('converts image and raw formats (icns, eps, 3fr, crw, etc.) with real PostScript raster', async () => {
