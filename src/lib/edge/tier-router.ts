@@ -702,13 +702,15 @@ export function resolveConversionTier(
     };
   }
 
-  // 7. Level 2: Wasm SIMD OCR & Image Filter Pipeline (fallback cascade from L1A)
-  if (options.ocrEnabled || src === 'pdf' || isWasmFilterRequested || isWebGpuRequested) {
+  // 7. Level 2: Wasm SIMD OCR & Image Filter Pipeline (fallback cascade from L1A).
+  // Edge OCR only produces a searchable PDF, so other OCR targets are not routed here.
+  const isEdgeOcrRequested = Boolean(options.ocrEnabled) && tgt === 'pdf';
+  if (isEdgeOcrRequested || src === 'pdf' || isWasmFilterRequested || isWebGpuRequested) {
     return {
       tier: 'L2',
       tierName: 'Edge L2 (SIMD Wasm)',
       isClientEdge: true,
-      reason: options.ocrEnabled || src === 'pdf'
+      reason: isEdgeOcrRequested || src === 'pdf'
         ? 'Client Wasm OCR and PDF memory vector processing'
         : 'Wasm SIMD vector image processing pipeline',
     };
