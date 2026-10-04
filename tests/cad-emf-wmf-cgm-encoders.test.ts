@@ -350,6 +350,131 @@ function parseWmfBinary(buffer: Buffer): {
 }
 
 // ============================================================================
+// Independent ISO/IEC 8632-4 Clear-Text CGM Oracle Parser
+// ============================================================================
+
+interface CgmElement {
+  name: string;
+  params: string;
+}
+
+/** Splits clear-text CGM into elements at ';' outside quoted strings (8632-4 clause 6). */
+function tokenizeClearTextCgm(text: string): CgmElement[] {
+  const elements: CgmElement[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote) {
+        // A doubled delimiter inside a string is a literal quote character
+        if (text[i + 1] === quote) {
+          current += text[++i];
+        } else {
+          quote = null;
+        }
+      }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+    } else if (ch === ';' || ch === '/') {
+      const trimmed = current.trim();
+      if (trimmed) {
+        const m = /^([A-Za-z]+)\s*([\s\S]*)$/.exec(trimmed);
+        expect(m, `malformed element: ${trimmed}`).not.toBeNull();
+        elements.push({ name: m![1].toUpperCase(), params: m![2].trim() });
+      }
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  expect(quote, 'unterminated string').toBeNull();
+  expect(current.trim(), 'trailing element without terminator').toBe('');
+  return elements;
+}
+
+/** Decodes one quoted clear-text string parameter, honouring doubled delimiters. */
+function decodeCgmString(param: string): string {
+  const delim = param[0];
+  expect(delim === '"' || delim === "'").toBe(true);
+  expect(param.endsWith(delim)).toBe(true);
+  const body = param.slice(1, -1);
+  expect(body.split(delim + delim).join('')).not.toContain(delim);
+  return body.split(delim + delim).join(delim);
+}
+
+function parseCgmPoints(params: string): { x: number; y: number }[] {
+  const pts: { x: number; y: number }[] = [];
+  const rest = params.replace(/\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/g, (_m, x, y) => {
+    pts.push({ x: Number(x), y: Number(y) });
+    return '';
+  });
+  expect(rest.trim(), `unparsed point data: ${rest}`).toBe('');
+  return pts;
+}
+
+function parseCgmDirectColour(params: string): [number, number, number] {
+  expect(params).toMatch(/^\d+\s+\d+\s+\d+$/);
+  const parts = params.split(/\s+/).map(Number);
+  for (const c of parts) {
+    expect(c).toBeGreaterThanOrEqual(0);
+    expect(c).toBeLessThanOrEqual(255);
+  }
+  return parts as [number, number, number];
+}
+
+// Element names from ISO/IEC 8632-4 Table 3, grouped by where they may appear
+const CGM_METAFILE_DESCRIPTOR = new Set(['MFVERSION', 'MFDESC', 'VDCTYPE', 'INTEGERPREC', 'REALPREC', 'INDEXPREC', 'COLRPREC', 'COLRINDEXPREC', 'MAXCOLRINDEX', 'COLRVALUEEXT', 'MFELEMLIST', 'BEGMFDEFAULTS', 'ENDMFDEFAULTS', 'FONTLIST', 'CHARSETLIST', 'CHARCODING']);
+const CGM_PICTURE_DESCRIPTOR = new Set(['SCALEMODE', 'COLRMODE', 'LINEWIDTHMODE', 'MARKERSIZEMODE', 'EDGEWIDTHMODE', 'VDCEXT', 'BACKCOLR']);
+const CGM_PICTURE_BODY = new Set(['POLYLINE', 'POLYGON', 'LINECOLR', 'LINEWIDTH', 'LINETYPE', 'FILLCOLR', 'INTSTYLE', 'EDGEVIS', 'EDGECOLR', 'EDGEWIDTH', 'TEXT', 'TEXTCOLR', 'CHARHEIGHT', 'CLIPRECT', 'CLIP']);
+
+interface CgmDocument {
+  elements: CgmElement[];
+  mfName: string;
+  vdcExtent: { x: number; y: number }[];
+  body: CgmElement[];
+}
+
+/** Validates metafile/picture structure per ISO/IEC 8632-1 clause 7 and returns its parts. */
+function parseClearTextCgm(text: string): CgmDocument {
+  const elements = tokenizeClearTextCgm(text);
+  expect(elements[0].name).toBe('BEGMF');
+  expect(elements[elements.length - 1].name).toBe('ENDMF');
+  expect(elements[1].name).toBe('MFVERSION');
+
+  let state: 'mfdesc' | 'picdesc' | 'body' | 'between' = 'mfdesc';
+  let vdcExtent: { x: number; y: number }[] = [];
+  const body: CgmElement[] = [];
+  for (const el of elements.slice(1, -1)) {
+    if (el.name === 'BEGPIC') {
+      expect(['mfdesc', 'between']).toContain(state);
+      decodeCgmString(el.params);
+      state = 'picdesc';
+    } else if (el.name === 'BEGPICBODY') {
+      expect(state).toBe('picdesc');
+      state = 'body';
+    } else if (el.name === 'ENDPIC') {
+      expect(state).toBe('body');
+      state = 'between';
+    } else if (state === 'mfdesc') {
+      expect(CGM_METAFILE_DESCRIPTOR.has(el.name), `${el.name} in metafile descriptor`).toBe(true);
+    } else if (state === 'picdesc') {
+      expect(CGM_PICTURE_DESCRIPTOR.has(el.name), `${el.name} in picture descriptor`).toBe(true);
+      if (el.name === 'VDCEXT') vdcExtent = parseCgmPoints(el.params);
+    } else if (state === 'body') {
+      expect(CGM_PICTURE_BODY.has(el.name), `${el.name} in picture body`).toBe(true);
+      body.push(el);
+    } else {
+      throw new Error(`element ${el.name} outside any picture`);
+    }
+  }
+  expect(state).toBe('between');
+  return { elements, mfName: decodeCgmString(elements[0].params), vdcExtent, body };
+}
+
+// ============================================================================
 // Test Suite
 // ============================================================================
 
@@ -520,35 +645,43 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
   });
 
   describe('CGM Encoder (ISO 8632 Clear-Text)', () => {
-    it('generates genuine ISO 8632 clear-text CGM format with escaped baseName', () => {
+    it('generates ISO 8632-4 clear-text CGM with valid element names, structure and syntax', () => {
       const cgmBuf = encodeCgm(svgBuffer, 'My "Engineering" Model');
-      expect(cgmBuf).toBeInstanceOf(Buffer);
-      expect(cgmBuf.length).toBeGreaterThan(100);
-      const cgmText = cgmBuf.toString('utf-8');
+      const doc = parseClearTextCgm(cgmBuf.toString('utf-8'));
 
-      // ISO 8632 Delimiters and Directives
-      expect(cgmText).toContain('BEGMF "My \\"Engineering\\" Model";');
-      expect(cgmText).toContain('MFVERSION 1;');
-      expect(cgmText).toContain('MFDESC "Generated by EasyConvert Vector Engine";');
-      expect(cgmText).toContain('MFELEMENTLIST "DRAWINGSET";');
-      expect(cgmText).toContain('BEGMFDEFAULTS;');
-      expect(cgmText).toContain('ENDMFDEFAULTS;');
-      expect(cgmText).toContain('BEGPIC "My \\"Engineering\\" Model";');
-      expect(cgmText).toContain('BEGPICBODY;');
-      expect(cgmText).toContain('VDCEXT (0,0) (400,300);');
-      expect(cgmText).toContain('COLRMODE DIRECT;');
-      expect(cgmText).toContain('BEGMDL "My \\"Engineering\\" Model";');
+      // Quoted strings round-trip through the clear-text doubled-delimiter rule
+      expect(doc.mfName).toBe('My "Engineering" Model');
+      expect(doc.elements.find((e) => e.name === 'MFVERSION')?.params).toBe('1');
+      expect(doc.elements.some((e) => e.name === 'MFELEMLIST')).toBe(true);
+      expect(doc.elements.find((e) => e.name === 'COLRMODE')?.params).toBe('DIRECT');
 
-      // Styling and Geometry
-      expect(cgmText).toContain('LINECOLR');
-      expect(cgmText).toContain('FILLCOLR');
-      expect(cgmText).toContain('POLYLINE');
-      expect(cgmText).toContain('POLYGON');
+      // VDC y axis points up; the extent's first corner is the SVG bottom-left so
+      // the picture is not mirrored vertically.
+      expect(doc.vdcExtent).toEqual([{ x: 0, y: 300 }, { x: 400, y: 0 }]);
 
-      // Delimiter terminations
-      expect(cgmText).toContain('ENDMDL;');
-      expect(cgmText).toContain('ENDPIC;');
-      expect(cgmText).toContain('ENDMF;');
+      // Fill colour only shows with a solid interior style, set before the first POLYGON
+      const firstPolygon = doc.body.findIndex((e) => e.name === 'POLYGON');
+      const solidIdx = doc.body.findIndex((e) => e.name === 'INTSTYLE' && e.params === 'SOLID');
+      expect(firstPolygon).toBeGreaterThan(-1);
+      expect(solidIdx).toBeGreaterThan(-1);
+      expect(solidIdx).toBeLessThan(firstPolygon);
+
+      // Direct colours: three integers without parentheses
+      const lineColours = doc.body.filter((e) => e.name === 'LINECOLR').map((e) => parseCgmDirectColour(e.params));
+      const fillColours = doc.body.filter((e) => e.name === 'FILLCOLR').map((e) => parseCgmDirectColour(e.params));
+      expect(lineColours).toContainEqual([255, 0, 0]); // rect stroke
+      expect(fillColours).toContainEqual([0, 0, 255]); // rect fill
+      expect(fillColours).toContainEqual([128, 0, 128]); // polygon fill
+
+      // Geometry: rect corners in VDC match the SVG coordinates
+      const polygons = doc.body.filter((e) => e.name === 'POLYGON').map((e) => parseCgmPoints(e.params));
+      const polylines = doc.body.filter((e) => e.name === 'POLYLINE').map((e) => parseCgmPoints(e.params));
+      for (const pg of polygons) expect(pg.length).toBeGreaterThanOrEqual(3);
+      for (const pl of polylines) expect(pl.length).toBeGreaterThanOrEqual(2);
+      expect(polygons).toContainEqual([
+        { x: 20, y: 20 }, { x: 140, y: 20 }, { x: 140, y: 100 }, { x: 20, y: 100 }, { x: 20, y: 20 },
+      ]);
+      expect(polylines).toContainEqual([{ x: 20, y: 150 }, { x: 70, y: 220 }, { x: 120, y: 160 }, { x: 170, y: 240 }]);
     });
 
     it('round-trips CGM clear text back to SVG elements via parseCgmToSvg', async () => {
@@ -561,8 +694,10 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
 
       expect(svgOut).toContain('<svg');
       expect(svgOut).toContain('viewBox="0 0 400 300"');
-      expect(svgOut).toContain('<polyline');
-      expect(svgOut).toContain('<polygon');
+      expect(svgOut).toContain('<polyline points="20,150 70,220 120,160 170,240"');
+      expect(svgOut).toContain('<polygon points="20,20 140,20 140,100 20,100 20,20"');
+      // POLYLINE elements must not also be decoded as LINE primitives
+      expect(svgOut).not.toContain('<line');
     });
 
     it('rejects empty input buffer fail-closed', () => {
@@ -632,7 +767,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       const res = await convertVectorCad(svgBuffer, 'svg', 'cgm', {}, 'diagram.svg');
       expect(res.mimeType).toBe('image/cgm');
       expect(res.filename).toBe('diagram.cgm');
-      expect(res.buffer.toString('utf-8')).toContain('BEGMF "diagram";');
+      expect(parseClearTextCgm(res.buffer.toString('utf-8')).mfName).toBe('diagram');
     });
   });
 

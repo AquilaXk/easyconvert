@@ -80,8 +80,9 @@ function parseCgmDimensions(cgmText: string): { width: number; height: number } 
   const vdcRegex = /VDCEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i;
   const vdcMatch = vdcRegex.exec(cgmText);
   if (vdcMatch) {
-    const w = Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]);
-    const h = Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]);
+    // Either corner order is legal; a reversed y extent only flips the VDC axis.
+    const w = Math.abs(Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]));
+    const h = Math.abs(Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]));
     if (w > 0 && h > 0) {
       width = Math.round(w);
       height = Math.round(h);
@@ -92,7 +93,7 @@ function parseCgmDimensions(cgmText: string): { width: number; height: number } 
 
 function parseCgmLines(cgmText: string): string[] {
   const elements: string[] = [];
-  const lineRegex = /LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
+  const lineRegex = /(?<![A-Z])LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
   let lineMatch: RegExpExecArray | null;
   while ((lineMatch = lineRegex.exec(cgmText)) !== null) {
     elements.push(
