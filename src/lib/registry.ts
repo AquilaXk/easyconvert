@@ -1534,7 +1534,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/svg+xml',
     category: 'vector',
     description: 'Scalable Vector Graphics - XML-based resolution-independent 2D vector format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'emf', 'svg', 'wmf'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'emf', 'svg', 'wmf', 'cgm'],
     optionsSchema: { dimensions: true },
   },
   ico: {
@@ -2585,7 +2585,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: 'ISO standard 2D vector and raster graphics interchange format.',
     targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
     optionsSchema: {dimensions:true},
-    available: false,
+    available: true,
   },
   dwf: {
     id: 'dwf',
@@ -2606,7 +2606,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: '32-bit Windows GDI vector graphic metafile format.',
     targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'emf', 'svg', 'wmf'],
     optionsSchema: {dimensions:true,dpi:true},
-    available: false,
+    available: true,
   },
   ps: {
     id: 'ps',
@@ -2667,7 +2667,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     description: '16-bit Windows GDI vector and bitmap graphic metafile.',
     targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
     optionsSchema: {dimensions:true},
-    available: false,
+    available: true,
   },
   '3fr': {
     id: '3fr',
@@ -2912,7 +2912,7 @@ export function getFormatsByCategory(category: FormatCategory): FormatDefinition
   return getAllFormats().filter((f) => f.category === category);
 }
 
-export const DISABLED_TARGET_FORMATS = new Set(['emf', 'wmf', 'cgm']);
+export const DISABLED_TARGET_FORMATS = new Set<string>();
 
 export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinition[] {
   const source = FORMAT_REGISTRY[sourceFormatId.toLowerCase()];

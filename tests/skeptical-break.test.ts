@@ -159,10 +159,10 @@ endsolid TestModel`;
     expect(json.success).toBe(false);
   });
 
-  it('10b. POST /api/convert with disabled placeholder target formats (emf, step) must fail closed with 400 Bad Request', async () => {
+  it('10b. POST /api/convert with incompatible target format (step for svg) must fail closed with 400 Bad Request', async () => {
     const formData = new FormData();
     formData.append('file', new File(['<svg xmlns="http://www.w3.org/2000/svg"></svg>'], 'drawing.svg', { type: 'image/svg+xml' }));
-    formData.append('targetFormat', 'emf');
+    formData.append('targetFormat', 'step');
 
     const req = new NextRequest('http://localhost/api/convert', {
       method: 'POST',

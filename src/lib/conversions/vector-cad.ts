@@ -52,20 +52,25 @@ export interface CadMesh3D {
   normals: [number, number, number][];
 }
 
-export function encodeEmf(svgBuffer: Buffer): Buffer {
-  void svgBuffer;
-  throw new UnsupportedTargetError('EMF encoder is not available');
-}
+import {
+  encodeEmf,
+  encodeWmf,
+  encodeCgm,
+  parseSvgGeometries,
+  parseCssColor,
+  type SvgGeometryElement,
+  type ParsedSvgVectorDocument,
+} from './vector-metafile';
 
-export function encodeWmf(svgBuffer: Buffer): Buffer {
-  void svgBuffer;
-  throw new UnsupportedTargetError('WMF encoder is not available');
-}
-
-export function encodeCgm(svgBuffer: Buffer, _baseName = 'drawing'): Buffer {
-  void svgBuffer;
-  throw new UnsupportedTargetError('CGM encoder is not available');
-}
+export {
+  encodeEmf,
+  encodeWmf,
+  encodeCgm,
+  parseSvgGeometries,
+  parseCssColor,
+  type SvgGeometryElement,
+  type ParsedSvgVectorDocument,
+};
 
 export function parseCgmToSvg(cgmText: string): string | null {
   if (!cgmText.includes('BEGMF')) return null;
@@ -74,8 +79,8 @@ export function parseCgmToSvg(cgmText: string): string | null {
   let height = 600;
   const vdcMatch = cgmText.match(/VDCEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i);
   if (vdcMatch) {
-    const w = parseFloat(vdcMatch[3]) - parseFloat(vdcMatch[1]);
-    const h = parseFloat(vdcMatch[4]) - parseFloat(vdcMatch[2]);
+    const w = Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]);
+    const h = Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]);
     if (w > 0 && h > 0) {
       width = Math.round(w);
       height = Math.round(h);
@@ -85,7 +90,7 @@ export function parseCgmToSvg(cgmText: string): string | null {
   const elements: string[] = [];
 
   // Parse LINE (x1,y1) (x2,y2)
-  const lineRegex = /LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
+  const lineRegex = /LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
   let lineMatch: RegExpExecArray | null;
   while ((lineMatch = lineRegex.exec(cgmText)) !== null) {
     elements.push(
@@ -100,6 +105,42 @@ export function parseCgmToSvg(cgmText: string): string | null {
     elements.push(
       `<text x="${textMatch[1]}" y="${textMatch[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeXml(textMatch[3])}</text>`
     );
+  }
+
+  // Parse POLYLINE
+  const polylineRegex = /POLYLINE\s*([^;]+);/gi;
+  let plMatch: RegExpExecArray | null;
+  while ((plMatch = polylineRegex.exec(cgmText)) !== null) {
+    const body = plMatch[1];
+    const ptRegex = /\(\s*([-+]?[\d.]+)\s*,\s*([-+]?[\d.]+)\s*\)/g;
+    let pm: RegExpExecArray | null;
+    const pts: string[] = [];
+    while ((pm = ptRegex.exec(body)) !== null) {
+      pts.push(`${pm[1]},${pm[2]}`);
+    }
+    if (pts.length > 1) {
+      elements.push(
+        `<polyline points="${pts.join(' ')}" fill="none" stroke="#111827" stroke-width="2" />`
+      );
+    }
+  }
+
+  // Parse POLYGON
+  const polygonRegex = /POLYGON\s*([^;]+);/gi;
+  let pgMatch: RegExpExecArray | null;
+  while ((pgMatch = polygonRegex.exec(cgmText)) !== null) {
+    const body = pgMatch[1];
+    const ptRegex = /\(\s*([-+]?[\d.]+)\s*,\s*([-+]?[\d.]+)\s*\)/g;
+    let pm: RegExpExecArray | null;
+    const pts: string[] = [];
+    while ((pm = ptRegex.exec(body)) !== null) {
+      pts.push(`${pm[1]},${pm[2]}`);
+    }
+    if (pts.length > 2) {
+      elements.push(
+        `<polygon points="${pts.join(' ')}" fill="#111827" stroke="#111827" stroke-width="2" />`
+      );
+    }
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
@@ -306,14 +347,23 @@ async function convertSvgSource(
       mimeType = 'image/svg+xml';
       break;
 
-    case 'emf':
-      throw new UnsupportedTargetError('EMF encoder is not available');
+    case 'emf': {
+      outputBuffer = encodeEmf(inputBuffer);
+      mimeType = 'image/emf';
+      break;
+    }
 
-    case 'wmf':
-      throw new UnsupportedTargetError('WMF encoder is not available');
+    case 'wmf': {
+      outputBuffer = encodeWmf(inputBuffer);
+      mimeType = 'image/wmf';
+      break;
+    }
 
-    case 'cgm':
-      throw new UnsupportedTargetError('CGM encoder is not available');
+    case 'cgm': {
+      outputBuffer = encodeCgm(inputBuffer, baseName);
+      mimeType = 'image/cgm';
+      break;
+    }
 
     case 'eps':
     case 'ps': {
@@ -526,7 +576,7 @@ async function convert3dCad(
  * Parses SVG path 'd' attribute commands and evaluates Cubic/Quadratic Bezier curves
  * into high-fidelity adaptive polyline vertices.
  */
-export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
+export function parseSvgPathToBezierPoints(d: string, tolerance: number = 0.25): Point3D[][] {
   const subpaths: Point3D[][] = [];
   let currentSubpath: Point3D[] = [];
   let currentX = 0;
@@ -560,8 +610,8 @@ export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
 
     if (upper === 'M') {
       if (i + 1 >= tokens.length) break;
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
+      const x = Number.parseFloat(tokens[i++]);
+      const y = Number.parseFloat(tokens[i++]);
       currentX = isRel ? currentX + x : x;
       currentY = isRel ? currentY + y : y;
       if (currentSubpath.length > 0) {
@@ -574,8 +624,8 @@ export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
       lastCmd = isRel ? 'l' : 'L';
     } else if (upper === 'L') {
       if (i + 1 >= tokens.length) break;
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
+      const x = Number.parseFloat(tokens[i++]);
+      const y = Number.parseFloat(tokens[i++]);
       currentX = isRel ? currentX + x : x;
       currentY = isRel ? currentY + y : y;
       currentSubpath.push({ x: currentX, y: currentY, z: 0 });
@@ -583,31 +633,31 @@ export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
       lastCpY = currentY;
     } else if (upper === 'H') {
       if (i >= tokens.length) break;
-      const x = parseFloat(tokens[i++]);
+      const x = Number.parseFloat(tokens[i++]);
       currentX = isRel ? currentX + x : x;
       currentSubpath.push({ x: currentX, y: currentY, z: 0 });
       lastCpX = currentX;
     } else if (upper === 'V') {
       if (i >= tokens.length) break;
-      const y = parseFloat(tokens[i++]);
+      const y = Number.parseFloat(tokens[i++]);
       currentY = isRel ? currentY + y : y;
       currentSubpath.push({ x: currentX, y: currentY, z: 0 });
       lastCpY = currentY;
     } else if (upper === 'C') {
       if (i + 5 >= tokens.length) break;
-      const x1 = parseFloat(tokens[i++]);
-      const y1 = parseFloat(tokens[i++]);
-      const x2 = parseFloat(tokens[i++]);
-      const y2 = parseFloat(tokens[i++]);
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
+      const x1 = Number.parseFloat(tokens[i++]);
+      const y1 = Number.parseFloat(tokens[i++]);
+      const x2 = Number.parseFloat(tokens[i++]);
+      const y2 = Number.parseFloat(tokens[i++]);
+      const x = Number.parseFloat(tokens[i++]);
+      const y = Number.parseFloat(tokens[i++]);
 
       const p0: Point3D = { x: currentX, y: currentY, z: 0 };
       const p1: Point3D = { x: isRel ? currentX + x1 : x1, y: isRel ? currentY + y1 : y1, z: 0 };
       const p2: Point3D = { x: isRel ? currentX + x2 : x2, y: isRel ? currentY + y2 : y2, z: 0 };
       const p3: Point3D = { x: isRel ? currentX + x : x, y: isRel ? currentY + y : y, z: 0 };
 
-      const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, 0.5);
+      const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, tolerance);
       for (let k = 1; k < curvePts.length; k++) {
         currentSubpath.push(curvePts[k]);
       }
@@ -620,17 +670,17 @@ export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
       if (i + 3 >= tokens.length) break;
       const p1X = ['C', 'c', 'S', 's'].includes(cmd) ? 2 * currentX - lastCpX : currentX;
       const p1Y = ['C', 'c', 'S', 's'].includes(cmd) ? 2 * currentY - lastCpY : currentY;
-      const x2 = parseFloat(tokens[i++]);
-      const y2 = parseFloat(tokens[i++]);
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
+      const x2 = Number.parseFloat(tokens[i++]);
+      const y2 = Number.parseFloat(tokens[i++]);
+      const x = Number.parseFloat(tokens[i++]);
+      const y = Number.parseFloat(tokens[i++]);
 
       const p0: Point3D = { x: currentX, y: currentY, z: 0 };
       const p1: Point3D = { x: p1X, y: p1Y, z: 0 };
       const p2: Point3D = { x: isRel ? currentX + x2 : x2, y: isRel ? currentY + y2 : y2, z: 0 };
       const p3: Point3D = { x: isRel ? currentX + x : x, y: isRel ? currentY + y : y, z: 0 };
 
-      const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, 0.5);
+      const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, tolerance);
       for (let k = 1; k < curvePts.length; k++) {
         currentSubpath.push(curvePts[k]);
       }
@@ -641,10 +691,10 @@ export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
       lastCpY = p2.y;
     } else if (upper === 'Q') {
       if (i + 3 >= tokens.length) break;
-      const x1 = parseFloat(tokens[i++]);
-      const y1 = parseFloat(tokens[i++]);
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
+      const x1 = Number.parseFloat(tokens[i++]);
+      const y1 = Number.parseFloat(tokens[i++]);
+      const x = Number.parseFloat(tokens[i++]);
+      const y = Number.parseFloat(tokens[i++]);
 
       const p0: Point3D = { x: currentX, y: currentY, z: 0 };
       const cp: Point3D = { x: isRel ? currentX + x1 : x1, y: isRel ? currentY + y1 : y1, z: 0 };
@@ -653,7 +703,7 @@ export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
       const p1: Point3D = { x: p0.x + (2 / 3) * (cp.x - p0.x), y: p0.y + (2 / 3) * (cp.y - p0.y), z: 0 };
       const pCubic2: Point3D = { x: p2.x + (2 / 3) * (cp.x - p2.x), y: p2.y + (2 / 3) * (cp.y - p2.y), z: 0 };
 
-      const curvePts = adaptiveTessellateCubicBezier(p0, p1, pCubic2, p2, 0.5);
+      const curvePts = adaptiveTessellateCubicBezier(p0, p1, pCubic2, p2, tolerance);
       for (let k = 1; k < curvePts.length; k++) {
         currentSubpath.push(curvePts[k]);
       }
@@ -664,13 +714,13 @@ export function parseSvgPathToBezierPoints(d: string): Point3D[][] {
       lastCpY = cp.y;
     } else if (upper === 'A') {
       if (i + 6 >= tokens.length) break;
-      const rx = parseFloat(tokens[i++]);
-      const ry = parseFloat(tokens[i++]);
-      const rot = parseFloat(tokens[i++]);
-      const largeArc = parseFloat(tokens[i++]) !== 0;
-      const sweep = parseFloat(tokens[i++]) !== 0;
-      const x = parseFloat(tokens[i++]);
-      const y = parseFloat(tokens[i++]);
+      const rx = Number.parseFloat(tokens[i++]);
+      const ry = Number.parseFloat(tokens[i++]);
+      const rot = Number.parseFloat(tokens[i++]);
+      const largeArc = Number.parseFloat(tokens[i++]) !== 0;
+      const sweep = Number.parseFloat(tokens[i++]) !== 0;
+      const x = Number.parseFloat(tokens[i++]);
+      const y = Number.parseFloat(tokens[i++]);
       const targetX = isRel ? currentX + x : x;
       const targetY = isRel ? currentY + y : y;
 

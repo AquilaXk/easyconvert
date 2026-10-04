@@ -122,9 +122,10 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(resCgm.buffer.toString('utf-8')).toContain('<svg');
 
     // svg -> emf
-    await expect(convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg')).rejects.toThrow(
-      /EMF encoder is not available/
-    );
+    const resEmf = await convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg');
+    expect(resEmf.filename).toBe('drawing.emf');
+    expect(resEmf.mimeType).toBe('image/emf');
+    expect(resEmf.size).toBeGreaterThan(88);
   });
 
   it('converts image and raw formats (icns, eps, 3fr, crw, etc.) with real PostScript raster', async () => {
