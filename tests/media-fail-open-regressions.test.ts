@@ -19,6 +19,8 @@ const PCM_BYTES_PER_SAMPLE = 2;
 const PCM_FULL_SCALE = 32768;
 /** RMS (relative to full scale) below which a channel counts as silent. */
 const SILENCE_RMS = 1e-4;
+/** RMS above which a channel clearly carries the generated tone (lavfi sine peaks at 1/8 full scale). */
+const AUDIBLE_RMS = 0.01;
 
 let workDir: string;
 
@@ -70,13 +72,23 @@ describe('media fail-open regressions', () => {
     );
 
     const zip = await JSZip.loadAsync(result.buffer);
-    const segments = Object.keys(zip.files).filter((f) => /\.(ts|m4s|mp4)$/.test(f) && !zip.files[f].dir);
-    expect(segments.length).toBeGreaterThan(0);
+    const files = Object.keys(zip.files).filter((f) => !zip.files[f].dir);
+    const segments = files.filter((f) => /\.(ts|m4s)$/.test(f)).sort();
+    const variantPlaylists = files.filter((f) => f.endsWith('.m3u8') && f !== 'master.m3u8');
+    expect(variantPlaylists).toHaveLength(1);
+    const playlist = await zip.file(variantPlaylists[0])!.async('string');
+    // Every media segment listed in the playlist is present in the bundle.
+    expect(playlist.match(/^#EXTINF:/gm)?.length).toBe(segments.length);
+
     const segmentPath = path.join(workDir, path.basename(segments[0]));
     fs.writeFileSync(segmentPath, await zip.file(segments[0])!.async('nodebuffer'));
-    const codecTypes = ffprobeJson(segmentPath).streams.map((s) => s.codec_type);
-    expect(codecTypes).toContain('audio');
-    expect(codecTypes).toContain('video');
+    const streams = ffprobeJson(segmentPath)
+      .streams.map((s) => `${s.codec_type}:${s.codec_name}`)
+      .sort();
+    expect(streams).toEqual(['audio:aac', 'video:h264']);
+    // The packaged audio carries the source tone rather than a silent track.
+    const [left] = stereoRms(segmentPath);
+    expect(left).toBeGreaterThan(AUDIBLE_RMS);
   }, 120_000);
 
   oracleTest('applies the 7.1 downmix matrix to an 8-channel input detected by probing', ['ffmpeg', 'ffprobe'], async () => {
