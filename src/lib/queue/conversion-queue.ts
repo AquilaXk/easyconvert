@@ -2,6 +2,7 @@ import { Queue, Worker, Job, createQueueEngine, IQueueEngine, WorkerOptions } fr
 import { ConversionJobData, ConversionJobResult, ConversionResult } from '../types';
 import { convertFile } from '../conversions';
 import { s3Storage } from '../storage/s3-storage';
+import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { webhookDispatcher } from '../api-keys/webhook-dispatcher';
@@ -35,8 +36,26 @@ export async function processConversionJob(
       if (!stored) {
         throw new Error(`S3 object not found for key: "${job.data.storageKey}"`);
       }
+      const stat = s3Storage.stat(job.data.storageKey);
+      const objectSize = stat?.size ?? stored.size;
+
+      // Pure TS engine in this queue worker requires an in-memory buffer:
+      // If object size exceeds MAX_IN_MEMORY_BYTES, fail with PayloadTooLargeForMemoryError
+      if (objectSize > getMaxInMemoryBytes()) {
+        throw new PayloadTooLargeForMemoryError(
+          `Payload size (${objectSize} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
+          { size: objectSize, limit: getMaxInMemoryBytes() }
+        );
+      }
       inputBuffer = stored.buffer;
     } else if (job.data.inputBufferBase64) {
+      const approxBytes = Math.ceil((job.data.inputBufferBase64.length * 3) / 4);
+      if (approxBytes > getMaxInMemoryBytes()) {
+        throw new PayloadTooLargeForMemoryError(
+          `Payload size (${approxBytes} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
+          { size: approxBytes, limit: getMaxInMemoryBytes() }
+        );
+      }
       inputBuffer = Buffer.from(job.data.inputBufferBase64, 'base64');
       shouldShredInput = true;
     } else {

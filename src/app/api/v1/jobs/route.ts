@@ -23,6 +23,12 @@ export const dynamic = 'force-dynamic';
 
 const MAX_INLINE_PAYLOAD_SIZE = 32 * 1024 * 1024; // 32 MiB ceiling for inline multipart and base64 payloads
 
+const STORAGE_TIER_PAYLOAD_LIMITS: Record<string, number> = {
+  free: 1024 * 1024 * 1024, // 1 GiB
+  pro: 5 * 1024 * 1024 * 1024, // 5 GiB
+  enterprise: 10 * 1024 * 1024 * 1024, // 10 GiB
+};
+
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
@@ -288,16 +294,37 @@ export async function POST(req: NextRequest) {
         if (!stored) {
           return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
         }
+        if (!fileSize) {
+          fileSize = stored.size;
+        }
+        const userTier = auth.user.tier || 'free';
+        const tierMaxBytes = STORAGE_TIER_PAYLOAD_LIMITS[userTier] || STORAGE_TIER_PAYLOAD_LIMITS.free;
+        if (fileSize > tierMaxBytes) {
+          return await failWithRollback(
+            413,
+            `Storage payload size (${fileSize} bytes) exceeds the ${tierMaxBytes} bytes limit for tier '${userTier}'.`,
+            'Payload Too Large'
+          );
+        }
         if (stored.filePath) {
           if (!fs.existsSync(stored.filePath)) {
             console.error(`Storage file missing on disk: "${stored.filePath}"`);
             return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
           }
           assertNotSpoofedFilePath(stored.filePath, sourceDef.extension, originalFilename);
-        } else if (stored.buffer && stored.buffer.length > 0) {
-          assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
         } else {
-          return await failWithRollback(400, `Storage object for key "${storageKey}" contains empty or unreadable file data.`, 'Empty Storage Object');
+          if (stored.size > 512 * 1024 * 1024) {
+            return await failWithRollback(
+              413,
+              `Storage object size (${stored.size} bytes) exceeds in-memory buffer limit without a backing file path.`,
+              'Payload Too Large'
+            );
+          }
+          if (stored.buffer && stored.buffer.length > 0) {
+            assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
+          } else {
+            return await failWithRollback(400, `Storage object for key "${storageKey}" contains empty or unreadable file data.`, 'Empty Storage Object');
+          }
         }
       }
     } catch (err: any) {

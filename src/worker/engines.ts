@@ -8,6 +8,7 @@ import {
   ArchiveEncryptionUnavailableError,
   UnsupportedOptionError,
 } from '../lib/types';
+import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile } from '../lib/conversions';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -1011,6 +1012,13 @@ export async function executeWorkerConversion(
   } else if (input.inputBuffer) {
     inputBuffer = input.inputBuffer;
   } else if (input.inputPath && fs.existsSync(input.inputPath)) {
+    const stat = fs.statSync(input.inputPath);
+    if (stat.size > getMaxInMemoryBytes()) {
+      throw new PayloadTooLargeForMemoryError(
+        `Payload size (${stat.size} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
+        { size: stat.size, limit: getMaxInMemoryBytes() }
+      );
+    }
     inputBuffer = fs.readFileSync(input.inputPath);
   } else {
     throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
