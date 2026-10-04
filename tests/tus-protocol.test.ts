@@ -9,7 +9,7 @@ import {
   DELETE as tusDeleteHandler,
 } from '../src/app/api/v1/uploads/[[...id]]/route';
 import { localFsStorage } from '../src/lib/storage';
-import { serializeTusMetadata } from '../src/lib/storage/tus-engine';
+import { serializeTusMetadata, SessionLockManager, tusEngine } from '../src/lib/storage/tus-engine';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -108,7 +108,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
     const postRes = await tusPostHandler(postReq);
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location');
-    expect(location).toBeDefined();
+    expect(location).toMatch(/^\/api\/v1\/uploads\/[a-zA-Z0-9_-]+$/);
     const sessionId = location!.split('/').pop()!;
 
     // 2. PATCH Chunk 1 (Offset 0)
@@ -484,7 +484,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
     expect(postRes.status).toBe(201);
     expect(postRes.headers.get('Upload-Offset')).toBe(String(payload.length));
     const storageKey = postRes.headers.get('EasyConvert-Storage-Key');
-    expect(storageKey).toBeDefined();
+    expect(storageKey).toMatch(new RegExp(`^conversions/${userA.id}/.+_single-shot\\.txt$`));
 
     // Verify stored content
     const stored = await localFsStorage.getStream(storageKey!);
@@ -839,6 +839,47 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
     const patchRes = await tusPatchHandler(patchReq, { params: { id: [sessionId] } });
     expect(patchRes.status).toBe(204);
     expect(patchRes.headers.get('Upload-Offset')).toBe(String(validPng.length));
-    expect(patchRes.headers.get('EasyConvert-Storage-Key')).toBeDefined();
+    const finalStorageKey = patchRes.headers.get('EasyConvert-Storage-Key');
+    expect(finalStorageKey).toBe(`conversions/${userA.id}/${sessionId}_avatar-image`);
+  });
+
+  describe('SessionLockManager', () => {
+    it('serializes operations and cleans up lock map entries without leaking memory', async () => {
+      const lockManager = new SessionLockManager();
+      const executionOrder: number[] = [];
+
+      const p1 = lockManager.runExclusive('session-leak-check', async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        executionOrder.push(1);
+        return 'first';
+      });
+
+      const p2 = lockManager.runExclusive('session-leak-check', async () => {
+        executionOrder.push(2);
+        return 'second';
+      });
+
+      expect(lockManager.activeLockCount).toBe(1);
+
+      const [res1, res2] = await Promise.all([p1, p2]);
+      expect(res1).toBe('first');
+      expect(res2).toBe('second');
+      expect(executionOrder).toEqual([1, 2]);
+
+      // Lock entry must be deleted after all chained tasks finish
+      expect(lockManager.activeLockCount).toBe(0);
+    });
+
+    it('cleans up lock map entries even when an exclusive task rejects', async () => {
+      const lockManager = new SessionLockManager();
+
+      await expect(
+        lockManager.runExclusive('session-err-check', async () => {
+          throw new Error('boom');
+        })
+      ).rejects.toThrow('boom');
+
+      expect(lockManager.activeLockCount).toBe(0);
+    });
   });
 });

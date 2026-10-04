@@ -234,8 +234,12 @@ export function serializeTusMetadata(meta: Record<string, string>): string {
 /**
  * In-process promise queue mutex ensuring deterministic serialization of concurrent TUS operations per session ID.
  */
-class SessionLockManager {
+export class SessionLockManager {
   private readonly locks = new Map<string, Promise<void>>();
+
+  get activeLockCount(): number {
+    return this.locks.size;
+  }
 
   async runExclusive<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.locks.get(sessionId) || Promise.resolve();
@@ -243,14 +247,18 @@ class SessionLockManager {
     const current = new Promise<void>((resolve) => {
       releaseLock = resolve;
     });
-    this.locks.set(sessionId, prev.then(() => current, () => current));
+    const chained = prev.then(
+      () => current,
+      () => current
+    );
+    this.locks.set(sessionId, chained);
 
     try {
       await prev;
       return await fn();
     } finally {
       releaseLock();
-      if (this.locks.get(sessionId) === current) {
+      if (this.locks.get(sessionId) === chained) {
         this.locks.delete(sessionId);
       }
     }
@@ -634,6 +642,10 @@ export class TusEngine {
       }
       return storeDeleted || fileDeleted;
     });
+  }
+
+  get activeLockCount(): number {
+    return this.lockManager.activeLockCount;
   }
 }
 
