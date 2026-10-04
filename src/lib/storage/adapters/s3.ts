@@ -45,7 +45,7 @@ const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
 
 /**
  * Comma-separated `host[:port]` list of endpoints that may be private or plain HTTP, for a local
- * S3-compatible server during development. Ignored when NODE_ENV is "production".
+ * S3-compatible server during development. Honoured only when NODE_ENV is exactly "development".
  */
 export const S3_DEV_ENDPOINT_ALLOWLIST_ENV = 'BYOS_S3_DEV_ENDPOINT_ALLOWLIST';
 
@@ -146,11 +146,19 @@ export function parseS3ErrorXml(xml: string): S3ErrorDocument {
   };
 }
 
+const DEVELOPMENT_ENV = 'development';
+let ignoredAllowlistWarned = false;
+
+/** Opt-in: the allowlist is honoured only when NODE_ENV is exactly "development". */
 function readDevAllowlist(): ReadonlySet<string> {
-  if (process.env.NODE_ENV === 'production') {
+  const raw = process.env[S3_DEV_ENDPOINT_ALLOWLIST_ENV] ?? '';
+  if (process.env.NODE_ENV !== DEVELOPMENT_ENV) {
+    if (raw.trim() && !ignoredAllowlistWarned) {
+      ignoredAllowlistWarned = true;
+      console.warn(`[S3StorageAdapter] ${S3_DEV_ENDPOINT_ALLOWLIST_ENV} is set but ignored because NODE_ENV is not "${DEVELOPMENT_ENV}".`);
+    }
     return new Set();
   }
-  const raw = process.env[S3_DEV_ENDPOINT_ALLOWLIST_ENV] ?? '';
   return new Set(
     raw
       .split(',')

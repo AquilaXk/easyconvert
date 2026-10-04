@@ -45,6 +45,7 @@ describe.skipIf(!MINIO_AVAILABLE)('S3StorageAdapter against MinIO', () => {
       env: { ...process.env, MINIO_ROOT_USER: ACCESS_KEY, MINIO_ROOT_PASSWORD: SECRET },
       stdio: 'ignore',
     });
+    vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, `127.0.0.1:${port}`);
 
     const deadline = Date.now() + READY_TIMEOUT_MS;

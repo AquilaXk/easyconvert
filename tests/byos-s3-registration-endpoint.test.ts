@@ -71,6 +71,7 @@ describe('s3 credential registration validates the endpoint', () => {
   });
 
   it('accepts a dev-allowlisted local endpoint', async () => {
+    vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, '127.0.0.1:9000');
     const res = await register({ endpoint: 'http://127.0.0.1:9000' });
     expect(res.status).toBe(201);

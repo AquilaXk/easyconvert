@@ -101,6 +101,7 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
   });
 
   beforeEach(() => {
+    vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, stub.host);
     stub.objects.clear();
     stub.uploads.clear();
@@ -325,13 +326,41 @@ describe('S3StorageAdapter endpoint policy', () => {
     expect(() => new S3StorageAdapter({ ...base, endpoint })).toThrow(StorageSsrfError);
   });
 
+  it.each([
+    ['unset', undefined],
+    ['test', 'test'],
+    ['staging', 'staging'],
+  ])('ignores the allowlist when NODE_ENV is %s and warns once', async (_label, nodeEnv) => {
+    const saved = process.env.NODE_ENV;
+    const env = process.env as Record<string, string | undefined>;
+    if (nodeEnv === undefined) delete env.NODE_ENV;
+    else env.NODE_ENV = nodeEnv;
+    vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, '127.0.0.1:9000');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      vi.resetModules();
+      const fresh = await import('../src/lib/storage/adapters/s3');
+      const ssrf = await import('../src/lib/storage/adapters/adapter-interface');
+      for (let i = 0; i < 2; i++) {
+        expect(() => new fresh.S3StorageAdapter({ ...base, endpoint: 'http://127.0.0.1:9000' })).toThrow(ssrf.StorageSsrfError);
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(S3_DEV_ENDPOINT_ALLOWLIST_ENV);
+      expect(String(warn.mock.calls[0][0])).not.toContain('127.0.0.1');
+    } finally {
+      env.NODE_ENV = saved;
+      warn.mockRestore();
+    }
+  });
+
   it('ignores the development allowlist in production', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, '127.0.0.1:9000');
     expect(() => new S3StorageAdapter({ ...base, endpoint: 'http://127.0.0.1:9000' })).toThrow(StorageSsrfError);
   });
 
-  it('allows only the exact allowlisted host and port', () => {
+  it('allows only the exact allowlisted host and port in development', () => {
+    vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, '127.0.0.1:9000');
     expect(new S3StorageAdapter({ ...base, endpoint: 'http://127.0.0.1:9000' }).providerName).toBe('s3');
     expect(() => new S3StorageAdapter({ ...base, endpoint: 'http://127.0.0.1:9001' })).toThrow(StorageSsrfError);

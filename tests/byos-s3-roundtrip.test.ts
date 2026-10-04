@@ -46,6 +46,7 @@ describe('s3 BYOS provider end-to-end', () => {
   });
 
   beforeEach(async () => {
+    vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, stub.host);
     stub.objects.clear();
     stub.requests.length = 0;

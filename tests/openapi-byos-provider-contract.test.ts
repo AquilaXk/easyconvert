@@ -41,6 +41,7 @@ describe('OpenAPI storage credentials contract', () => {
     const email = `byosdoc_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`;
     const user = await userStore.createUser({ email, name: 'byosdoc', tier: 'pro' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'byosdoc', { scopes: ['convert:write'] });
+    vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, LOCAL_ENDPOINT_HOST);
     const res = await credentialsPost(
       new NextRequest(`http://localhost:3000${CREDENTIALS_PATH}`, {
