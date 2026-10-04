@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
 
 const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([

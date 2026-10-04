@@ -11,8 +11,8 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
-import { validateJobGraph, linearTasksToJobGraph, normalizeGraphNodes } from '@/lib/jobs';
-import { validateGraph, graphScheduler } from '@/lib/queue/graph';
+import { validateJobGraph, linearTasksToJobGraph, normalizeGraphNodes, JobGraphValidationError } from '@/lib/jobs';
+import { graphScheduler } from '@/lib/queue/graph';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
@@ -336,14 +336,31 @@ export async function POST(req: NextRequest) {
         );
       }
     } else if (tasks && tasks.length > 0) {
-      graph = linearTasksToJobGraph(
-        {
-          storageKey,
-          sourceFormat: sourceFormatParam,
-          filename: originalFilename,
-        },
-        tasks
-      );
+      try {
+        graph = linearTasksToJobGraph(
+          {
+            storageKey,
+            sourceFormat: sourceFormatParam,
+            filename: originalFilename,
+          },
+          tasks
+        );
+      } catch (err) {
+        if (!(err instanceof JobGraphValidationError)) {
+          throw err;
+        }
+        return reply(
+          createProblemDetailsResponse(
+            422,
+            err.message,
+            instanceUri,
+            'Unprocessable Entity',
+            'https://api.easyconvert.io/problems/unprocessable-entity',
+            undefined,
+            err.errors.map((e) => ({ name: e.path, reason: e.message }))
+          )
+        );
+      }
       const graphValidation = validateJobGraph(graph, {
         userTier: auth.user.tier,
         sourceFormat: sourceFormatParam,
@@ -370,11 +387,11 @@ export async function POST(req: NextRequest) {
 
     if (graph && !targetFormat) {
       const graphNodes = normalizeGraphNodes(graph);
-      const convertNodes = Object.values(graphNodes).filter((n) => n.op === 'convert' || n.operation === 'convert') as { targetFormat?: string }[];
+      const convertNodes = Object.values(graphNodes).filter((n) => n.op === 'convert') as { targetFormat?: string }[];
       if (convertNodes.length > 0 && convertNodes[convertNodes.length - 1].targetFormat) {
         targetFormat = convertNodes[convertNodes.length - 1].targetFormat!;
       } else {
-        const archiveNodes = Object.values(graphNodes).filter((n) => n.op === 'archive.create' || n.operation === 'archive/create' || n.operation === 'archive.create') as { targetFormat?: string }[];
+        const archiveNodes = Object.values(graphNodes).filter((n) => n.op === 'archive.create') as { targetFormat?: string }[];
         if (archiveNodes.length > 0 && archiveNodes[0].targetFormat) {
           targetFormat = archiveNodes[0].targetFormat!;
         }
@@ -383,7 +400,7 @@ export async function POST(req: NextRequest) {
 
     if (!storageKey && graph && !inputBufferBase64 && !uploadedBuffer) {
       const graphNodes = normalizeGraphNodes(graph);
-      const uploadNode = Object.values(graphNodes).find((n) => n.op === 'import.upload' || n.operation === 'import.upload' || n.operation === 'import') as { storageKey?: string } | undefined;
+      const uploadNode = Object.values(graphNodes).find((n) => n.op === 'import.upload') as { storageKey?: string } | undefined;
       if (uploadNode?.storageKey && !uploadNode.storageKey.startsWith('inline')) {
         storageKey = uploadNode.storageKey;
       }
@@ -393,7 +410,7 @@ export async function POST(req: NextRequest) {
       originalFilename = storageKey.split('/').pop() || 'file';
     }
 
-    const hasImportUrl = graph && Object.values(normalizeGraphNodes(graph)).some((n) => n.op === 'import.url' || n.operation === 'import.url');
+    const hasImportUrl = graph && Object.values(normalizeGraphNodes(graph)).some((n) => n.op === 'import.url');
 
     if (!targetFormat) {
       return await failWithRollback(400, 'Missing required parameter: "targetFormat".');
@@ -417,7 +434,7 @@ export async function POST(req: NextRequest) {
 
     if (!sourceDef && hasImportUrl && graph) {
       const graphNodes = normalizeGraphNodes(graph);
-      const urlNode = Object.values(graphNodes).find((n) => n.op === 'import.url' || n.operation === 'import.url') as { url?: string } | undefined;
+      const urlNode = Object.values(graphNodes).find((n) => n.op === 'import.url') as { url?: string } | undefined;
       if (urlNode?.url) {
         try {
           const parsedUrl = new URL(urlNode.url);

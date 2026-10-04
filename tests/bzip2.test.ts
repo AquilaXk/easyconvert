@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { compressBzip2, decompressBzip2 } from '../src/lib/conversions/bzip2';
-import * as cp from 'child_process';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as cp from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 describe('Bzip2 Pure TypeScript Implementation', () => {
   it('compresses data that can be verified by system /usr/bin/bzip2', () => {

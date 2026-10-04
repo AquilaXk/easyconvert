@@ -1,5 +1,9 @@
 import type { PipelineTask } from '@/lib/types';
+import { assertValidLegacyTasks, JobGraphValidationError } from '@/lib/jobs/graph';
 import type { JobGraph, GraphNode, NodeId } from './types';
+
+/** Operations `linearTasksToGraph` translates. */
+const QUEUE_ADAPTER_OPERATIONS: ReadonlySet<string> = new Set(['convert', 'ocr', 'optimize', 'archive', 'export/url']);
 
 export interface LinearSourceOptions {
   storageKey?: string;
@@ -16,6 +20,7 @@ export function linearTasksToGraph(
   source: LinearSourceOptions,
   tasks: PipelineTask[]
 ): JobGraph {
+  assertValidLegacyTasks(tasks, QUEUE_ADAPTER_OPERATIONS);
   const nodes: Record<NodeId, GraphNode> = {};
 
   const importId: NodeId = 'import_source';
@@ -44,7 +49,7 @@ export function linearTasksToGraph(
         nodes[nodeId] = {
           op: 'convert',
           input: currentInput,
-          targetFormat: task.targetFormat || 'pdf',
+          targetFormat: task.targetFormat as string,
           options: task.options,
         };
         lastWasExport = false;
@@ -72,7 +77,7 @@ export function linearTasksToGraph(
         nodes[nodeId] = {
           op: 'archive.create',
           input: [currentInput],
-          targetFormat: (task.targetFormat as any) || 'zip',
+          targetFormat: task.targetFormat as 'zip',
           options: task.options,
         };
         lastWasExport = false;
@@ -82,36 +87,15 @@ export function linearTasksToGraph(
         nodes[nodeId] = {
           op: 'export.url',
           input: currentInput,
-          url: task.url || 'https://example.com',
+          url: task.url as string,
           method: 'PUT',
         };
         lastWasExport = true;
         break;
       }
-      case 'export/s3':
-      case 'export/gcs':
-      case 'export/azure':
-      case 'export/sftp':
-      case 'export/webdav': {
-        nodes[nodeId] = {
-          op: 'export.url',
-          input: currentInput,
-          url: task.url || 'https://storage.easyconvert.app/export',
-          method: 'PUT',
-        };
-        lastWasExport = true;
-        break;
-      }
-      default: {
-        nodes[nodeId] = {
-          op: 'convert',
-          input: currentInput,
-          targetFormat: task.targetFormat || 'pdf',
-          options: task.options,
-        };
-        lastWasExport = false;
-        break;
-      }
+      default:
+        // Unreachable: assertValidLegacyTasks rejects every other operation.
+        throw new JobGraphValidationError(`Unsupported pipeline operation "${task.operation}".`, []);
     }
 
     currentInput = nodeId;
