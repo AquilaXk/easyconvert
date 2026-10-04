@@ -274,7 +274,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
       });
 
       const assembledBuffer = Buffer.concat(receivedChunks);
-      expect(assembledBuffer.length).toBe(totalSize);
+      expect(assembledBuffer).toHaveLength(totalSize);
 
       const actualSha256 = crypto.createHash('sha256').update(assembledBuffer).digest('hex');
       expect(actualSha256).toBe(expectedSha256);

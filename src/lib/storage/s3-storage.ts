@@ -761,7 +761,17 @@ export class S3ObjectStorageService implements IStorageBackend {
       }
     } catch {}
 
-    // Also check SigV4 presigned query signature
+    return this.verifySigV4Fallback(method, key, expiresAt, signature, uploadId, partNumber);
+  }
+
+  private verifySigV4Fallback(
+    method: 'GET' | 'PUT',
+    key: string,
+    expiresAt: number,
+    signature: string,
+    uploadId?: string,
+    partNumber?: number
+  ): boolean {
     try {
       const region = process.env.AWS_REGION || process.env.S3_REGION || 'us-east-1';
       const accessKeyId = process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID || 'DEV_ACCESS_KEY_ID';

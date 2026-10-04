@@ -7,10 +7,12 @@ export interface SigV4Credentials {
   service?: string; // defaults to 's3'
 }
 
+export type QueryParamValue = string | number | boolean | undefined | null;
+
 export interface PresignQueryOptions {
   method: 'GET' | 'PUT' | 'POST' | 'DELETE' | 'HEAD';
   url: string;
-  queryParams?: Record<string, string | number | boolean | undefined | null>;
+  queryParams?: Record<string, QueryParamValue>;
   headers?: Record<string, string>;
   credentials: SigV4Credentials;
   expiresInSeconds?: number; // defaults to 900 (15 min)
@@ -52,7 +54,7 @@ export interface VerifySigV4Result {
 export function uriEncode(input: string, encodeSlash: boolean = true): string {
   const encoded = encodeURIComponent(input).replace(
     /[!'()*]/g,
-    (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase()
+    (c) => '%' + c.codePointAt(0)!.toString(16).toUpperCase()
   );
   if (!encodeSlash) {
     return encoded.replace(/%2F/gi, '/');
@@ -102,7 +104,9 @@ export function getCanonicalQueryString(
     if (ek1 !== ek2) return ek1 < ek2 ? -1 : 1;
     const ev1 = uriEncode(v1);
     const ev2 = uriEncode(v2);
-    return ev1 < ev2 ? -1 : ev1 > ev2 ? 1 : 0;
+    if (ev1 < ev2) return -1;
+    if (ev1 > ev2) return 1;
+    return 0;
   });
 
   return entries.map(([k, v]) => `${uriEncode(k)}=${uriEncode(v)}`).join('&');
@@ -125,7 +129,7 @@ export function getCanonicalHeaders(headers: Record<string, string | undefined>)
     lowerHeaderMap.set(lowerName, trimmedVal);
   }
 
-  const sortedKeys = Array.from(lowerHeaderMap.keys()).sort();
+  const sortedKeys = Array.from(lowerHeaderMap.keys()).sort((a, b) => a.localeCompare(b));
   const canonicalHeaders = sortedKeys
     .map((k) => `${k}:${lowerHeaderMap.get(k)}\n`)
     .join('');
@@ -250,11 +254,11 @@ export function presignSigV4QueryUrl(options: PresignQueryOptions): PresignQuery
 
   // Headers
   const hostValue = parsed.host;
-  const headersToSign: Record<string, string> = { host: hostValue, ...(options.headers || {}) };
+  const headersToSign: Record<string, string> = { host: hostValue, ...options.headers };
   const { canonicalHeaders, signedHeaders } = getCanonicalHeaders(headersToSign);
 
   // Query parameters: existing searchParams + options.queryParams + SigV4 query params
-  const queryEntries: Record<string, string | number | boolean | undefined | null> = {};
+  const queryEntries: Record<string, QueryParamValue> = {};
   for (const [k, v] of parsed.searchParams.entries()) {
     queryEntries[k] = v;
   }
@@ -320,7 +324,6 @@ export function verifySigV4QueryUrl(
   options: VerifySigV4Options
 ): VerifySigV4Result {
   try {
-    const isRelative = !urlStr.startsWith('http://') && !urlStr.startsWith('https://');
     const dummyBase = 'http://localhost';
     const parsed = new URL(urlStr, dummyBase);
 
@@ -383,7 +386,7 @@ export function verifySigV4QueryUrl(
     const signedHeaderNames = signedHeadersStr.split(';').map((s) => s.trim().toLowerCase());
     const headerSource: Record<string, string> = {
       host: parsed.host,
-      ...(options.headers || {}),
+      ...options.headers,
     };
 
     const headersToSign: Record<string, string> = {};
