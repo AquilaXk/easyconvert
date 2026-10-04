@@ -199,6 +199,11 @@ describe('media fail-open regressions', () => {
       const attempt = convertMedia(input, 'mp4', 'mp4', { useFfmpeg: true, disableHwaccel: true, video }, 'hdr-reject');
       await expect(attempt).rejects.toBeInstanceOf(InvalidMediaOptionError);
       await expect(attempt).rejects.toThrow(HDR_ERROR);
+
+      // The default native path keeps the option error type too, so the API answers 400.
+      const defaultAttempt = convertMedia(input, 'mp4', 'mp4', { disableHwaccel: true, video }, 'hdr-reject-default');
+      await expect(defaultAttempt).rejects.toBeInstanceOf(InvalidMediaOptionError);
+      await expect(defaultAttempt).rejects.toThrow(HDR_ERROR);
     }
   }, 120_000);
 
