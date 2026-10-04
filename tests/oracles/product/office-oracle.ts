@@ -56,17 +56,55 @@ export async function renderOfficeDocumentWithSoffice(
   }
 }
 
-/**
- * Extracts all plain text inside XML tags (e.g. `<w:t>`, `<a:t>`, `<t>`, `<v>`).
- */
-function extractXmlText(xmlContent: string): string {
-  const matches = xmlContent.match(/<[^:>]*:?t[^>]*>([^<]*)<\/[^:>]*:?t>/g) ||
-    xmlContent.match(/<v>([^<]*)<\/v>/g) || [];
-  return matches
-    .map((m) => m.replace(/<[^>]+>/g, ''))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+const XML_ENTITIES: Readonly<Record<string, string>> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+};
+
+function decodeXmlEntities(text: string): string {
+  return text.replace(/&(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);/g, (_, entity: string) => {
+    if (entity.startsWith('#x')) return String.fromCodePoint(parseInt(entity.slice(2), 16));
+    if (entity.startsWith('#')) return String.fromCodePoint(parseInt(entity.slice(1), 10));
+    return XML_ENTITIES[entity];
+  });
+}
+
+/** Text run elements per format: WordprocessingML `w:t`, DrawingML `a:t`, SpreadsheetML `t`. */
+const TEXT_RUN_PATTERNS: Readonly<Record<'docx' | 'xlsx' | 'pptx', RegExp>> = {
+  docx: /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g,
+  pptx: /<a:t(?:\s[^>]*)?>([^<]*)<\/a:t>/g,
+  xlsx: /<t(?:\s[^>]*)?>([^<]*)<\/t>/g,
+};
+
+function partNumber(name: string): number {
+  return Number(/(\d+)\.xml$/.exec(name)?.[1] ?? 0);
+}
+
+/** The parts that carry user-visible text, in reading order. */
+function textPartNames(files: string[], format: 'docx' | 'xlsx' | 'pptx'): string[] {
+  if (format === 'docx') {
+    return files.filter((f) => f === 'word/document.xml');
+  }
+  if (format === 'pptx') {
+    return files.filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f)).sort((a, b) => partNumber(a) - partNumber(b));
+  }
+  const sheets = files.filter((f) => /^xl\/worksheets\/sheet\d+\.xml$/.test(f)).sort((a, b) => partNumber(a) - partNumber(b));
+  // Shared strings hold most cell text; inline strings live in the sheets themselves.
+  return [...files.filter((f) => f === 'xl/sharedStrings.xml'), ...sheets];
+}
+
+async function extractDocumentText(zip: JSZip, format: 'docx' | 'xlsx' | 'pptx'): Promise<string> {
+  const runs: string[] = [];
+  for (const name of textPartNames(Object.keys(zip.files), format)) {
+    const xml = await zip.file(name)!.async('text');
+    for (const match of xml.matchAll(TEXT_RUN_PATTERNS[format])) {
+      runs.push(decodeXmlEntities(match[1]));
+    }
+  }
+  return runs.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -115,18 +153,17 @@ export async function compareOfficeDocumentStructure(
     structuralScore -= 0.4;
   }
 
-  // 3. Extract and compare text content
-  let actualText = '';
-  let refText = '';
+  // 3. Extract and compare the visible text from each format's text-bearing parts
+  const [actualText, refText] = await Promise.all([
+    extractDocumentText(actualZip, format),
+    extractDocumentText(refZip, format),
+  ]);
 
-  if (actualPrimary && refPrimary) {
-    actualText = extractXmlText(await actualPrimary.async('text'));
-    refText = extractXmlText(await refPrimary.async('text'));
-
-    if (refText.length > 0 && actualText.length === 0) {
-      discrepancies.push('Actual document contains zero extracted text while reference has content');
-      structuralScore -= 0.3;
-    }
+  if (actualText !== refText) {
+    discrepancies.push(
+      `Document text differs: actual has ${actualText.length} characters, reference has ${refText.length}`
+    );
+    structuralScore -= 0.3;
   }
 
   // 4. Multi-part inventory checks

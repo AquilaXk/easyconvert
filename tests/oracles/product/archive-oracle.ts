@@ -78,6 +78,30 @@ export function verifyArchiveWithNative7z(
   }
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const MONTH_NAME = /^[A-Z][a-z]{2}$/;
+
+function splitListing(output: string): string[] {
+  return output.split('\n').filter((line) => line.length > 0);
+}
+
+/**
+ * Parses one `tar -tv` line whose entry name is already known. The size is the integer column
+ * right before the modification date (`YYYY-MM-DD` in GNU tar, a month name in bsdtar).
+ */
+function parseVerboseTarLine(line: string, name: string): TarEntryInfo {
+  if (!line.endsWith(name)) {
+    throw new Error(`tar verbose line does not end with entry name "${name}": ${line}`);
+  }
+  const columns = line.slice(0, line.length - name.length).trim().split(/\s+/);
+  const dateIndex = columns.findIndex((col, i) => i > 0 && (ISO_DATE.test(col) || MONTH_NAME.test(col)));
+  const sizeColumn = dateIndex > 0 ? columns[dateIndex - 1] : '';
+  if (!/^\d+$/.test(sizeColumn)) {
+    throw new Error(`Cannot locate the size column in tar verbose line: ${line}`);
+  }
+  return { path: name, size: Number(sizeColumn), mode: columns[0] };
+}
+
 /**
  * Inspects TAR archive headers and table of contents using native system `tar -tvf` CLI.
  */
@@ -90,37 +114,18 @@ export function inspectTarWithNativeTar(
 
   try {
     fs.writeFileSync(tempFile, tarBuffer);
-    const output = execFileSync(tarPath, ['-tvf', tempFile], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    const entries: TarEntryInfo[] = [];
-    const lines = output.split('\n').filter((l) => l.trim().length > 0);
-
-    for (const line of lines) {
-      // Standard tar -tvf format:
-      // -rw-r--r--  0 user group 1234 Oct  5 00:00 filename.txt
-      const parts = line.trim().split(/\s+/);
-      if (parts.length >= 6) {
-        const mode = parts[0];
-        // Size is typically part index 4 or 2 depending on tar dialect
-        let size = 0;
-        let entryPath = parts[parts.length - 1];
-
-        for (let i = 1; i < parts.length - 1; i++) {
-          if (/^\d+$/.test(parts[i]) && parseInt(parts[i], 10) > 0) {
-            size = parseInt(parts[i], 10);
-          }
-        }
-
-        entries.push({
-          path: entryPath,
-          size,
-          mode,
-        });
-      }
+    const run = (flags: string) =>
+      execFileSync(tarPath, [flags, tempFile], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    // `-t` lists one exact name per line; `-tv` adds mode and size in the same order. Names are
+    // taken from the plain listing so spaces in names never shift the verbose columns.
+    const names = splitListing(run('-tf'));
+    const output = run('-tvf');
+    const verboseLines = splitListing(output);
+    if (verboseLines.length !== names.length) {
+      throw new Error(`tar listed ${names.length} names but ${verboseLines.length} verbose entries`);
     }
+
+    const entries: TarEntryInfo[] = names.map((name, i) => parseVerboseTarLine(verboseLines[i], name));
 
     return {
       passed: true,
