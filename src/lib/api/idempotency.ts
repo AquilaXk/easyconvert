@@ -40,15 +40,28 @@ export function canonicalJSON(val: unknown): string {
   if (val === null || typeof val !== 'object') {
     return JSON.stringify(val);
   }
+  if (typeof (val as any).toJSON === 'function') {
+    return canonicalJSON((val as any).toJSON());
+  }
   if (Array.isArray(val)) {
-    return '[' + val.map((item) => canonicalJSON(item)).join(',') + ']';
+    return (
+      '[' +
+      val
+        .map((item) =>
+          item === undefined || typeof item === 'symbol' || typeof item === 'function'
+            ? 'null'
+            : canonicalJSON(item)
+        )
+        .join(',') +
+      ']'
+    );
   }
   const obj = val as Record<string, unknown>;
-  const keys = Object.keys(obj).sort((a, b) => a.localeCompare(b));
+  const keys = Object.keys(obj).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const pairs: string[] = [];
   for (const k of keys) {
     const v = obj[k];
-    if (v !== undefined) {
+    if (v !== undefined && typeof v !== 'symbol' && typeof v !== 'function') {
       pairs.push(`${JSON.stringify(k)}:${canonicalJSON(v)}`);
     }
   }
@@ -103,8 +116,9 @@ export function computeFingerprint(
  * idem:{userId}:{route}:{key}
  */
 export function buildScopedKey(userId: string, route: string, idempotencyKey: string): string {
+  const sanitizedUserId = userId.replace(/[{}]/g, '_');
   const normalizedRoute = normalizeRoutePath(route);
-  return `idem:{${userId}}:${normalizedRoute}:${idempotencyKey}`;
+  return `idem:{${sanitizedUserId}}:${normalizedRoute}:${idempotencyKey}`;
 }
 
 /**
@@ -123,7 +137,10 @@ if not current then
   redis.call('SET', KEYS[1], cjson.encode(record), 'PX', tonumber(ARGV[2]))
   return { "ACQUIRED" }
 end
-local parsed = cjson.decode(current)
+local ok, parsed = pcall(cjson.decode, current)
+if not ok or not parsed or not parsed.fingerprint then
+  return { "MISMATCH" }
+end
 if parsed.fingerprint ~= ARGV[1] then
   return { "MISMATCH" }
 end
@@ -139,18 +156,12 @@ end
 export const COMPLETE_IDEMPOTENCY_LUA_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if current then
-  local parsed = cjson.decode(current)
-  if parsed.fingerprint ~= ARGV[1] then
+  local ok, parsed = pcall(cjson.decode, current)
+  if ok and parsed and parsed.fingerprint and parsed.fingerprint ~= ARGV[1] then
     return { "MISMATCH" }
   end
 end
-local record = {
-  status = "completed",
-  fingerprint = ARGV[1],
-  createdAt = tonumber(ARGV[4]),
-  response = cjson.decode(ARGV[2])
-}
-redis.call('SET', KEYS[1], cjson.encode(record), 'PX', tonumber(ARGV[3]))
+redis.call('SET', KEYS[1], ARGV[2], 'PX', tonumber(ARGV[3]))
 return { "OK" }
 `;
 
@@ -338,15 +349,20 @@ export class RedisIdempotencyStore implements IdempotencyStore {
     ttlMs: number = 86400000
   ): Promise<boolean> {
     const now = this.clock();
-    const serializedResponse = JSON.stringify(response);
+    const record: IdempotencyRecord = {
+      status: 'completed',
+      fingerprint,
+      createdAt: now,
+      response,
+    };
+    const serializedRecord = JSON.stringify(record);
     const res = (await this.redis.eval(
       COMPLETE_IDEMPOTENCY_LUA_SCRIPT,
       1,
       scopedKey,
       fingerprint,
-      serializedResponse,
-      ttlMs.toString(),
-      now.toString()
+      serializedRecord,
+      ttlMs.toString()
     )) as [string];
 
     return res[0] === 'OK';
@@ -380,7 +396,7 @@ export class RedisIdempotencyStore implements IdempotencyStore {
   public async reset(): Promise<void> {
     const keys = await this.redis.keys('idem:*');
     if (keys.length > 0) {
-      await this.redis.del(...keys);
+      await Promise.all(keys.map((k) => this.redis.del(k)));
     }
   }
 }

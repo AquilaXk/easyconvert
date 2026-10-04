@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import Redis from 'ioredis';
 import { POST as jobsPostHandler } from '../src/app/api/v1/jobs/route';
 import { POST as convertPostHandler } from '../src/app/api/v1/convert/route';
@@ -12,7 +12,9 @@ import {
   RedisIdempotencyStore,
   setIdempotencyStore,
   buildScopedKey,
+  canonicalJSON,
 } from '../src/lib/api/idempotency';
+import { withIdempotency } from '../src/lib/api/with-idempotency';
 
 describe.each([
   { name: 'InMemoryIdempotencyStore', isRedis: false },
@@ -352,5 +354,186 @@ describe.each([
     expect(res2.headers.get('idempotent-replayed')).toBe('true');
     const data2 = await res2.json();
     expect(data2.fileId).toBe(data1.fileId);
+  });
+
+  it('rejects reused key with 1-bit flipped multipart file payload with 422 Unprocessable Entity', async () => {
+    const idempotencyKey = `flip-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    const buf1 = Buffer.from('Exact Payload Content A');
+    const form1 = new FormData();
+    form1.append('targetFormat', 'pdf');
+    form1.append('file', new Blob([buf1], { type: 'text/plain' }), 'sample.txt');
+
+    const req1 = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey.secretKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: form1,
+    });
+
+    const res1 = await jobsPostHandler(req1);
+    expect(res1.status).toBe(202);
+
+    // Flip 1 bit in file payload
+    const buf2 = Buffer.from('Exact Payload Content B');
+    const form2 = new FormData();
+    form2.append('targetFormat', 'pdf');
+    form2.append('file', new Blob([buf2], { type: 'text/plain' }), 'sample.txt');
+
+    const req2 = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey.secretKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: form2,
+    });
+
+    const res2 = await jobsPostHandler(req2);
+    expect(res2.status).toBe(422);
+    const problem = await res2.json();
+    expect(problem.type).toBe('https://api.easyconvert.io/problems/idempotency-key-reused');
+  });
+
+  it('rejects reused key with different file name despite identical byte content with 422 Unprocessable Entity', async () => {
+    const idempotencyKey = `fname-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    const form1 = new FormData();
+    form1.append('targetFormat', 'pdf');
+    form1.append('file', new Blob(['identical bytes'], { type: 'text/plain' }), 'doc_alpha.txt');
+
+    const req1 = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey.secretKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: form1,
+    });
+
+    const res1 = await jobsPostHandler(req1);
+    expect(res1.status).toBe(202);
+
+    const form2 = new FormData();
+    form2.append('targetFormat', 'pdf');
+    form2.append('file', new Blob(['identical bytes'], { type: 'text/plain' }), 'doc_beta.txt');
+
+    const req2 = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey.secretKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: form2,
+    });
+
+    const res2 = await jobsPostHandler(req2);
+    expect(res2.status).toBe(422);
+    const problem = await res2.json();
+    expect(problem.type).toBe('https://api.easyconvert.io/problems/idempotency-key-reused');
+  });
+
+  it('stores and replays schema validation 422 errors and invalid JSON 400 errors without dangling locks', async () => {
+    const idempotencyKey422 = `schema-err-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    // Invalid schema: options.quality is negative
+    const req422_1 = createJobRequest(idempotencyKey422, { options: { quality: -10 } });
+    const res422_1 = await jobsPostHandler(req422_1);
+    expect(res422_1.status).toBe(422);
+
+    // Replay should return stored 422 with Idempotent-Replayed: true, NOT 409 Conflict
+    const req422_2 = createJobRequest(idempotencyKey422, { options: { quality: -10 } });
+    const res422_2 = await jobsPostHandler(req422_2);
+    expect(res422_2.status).toBe(422);
+    expect(res422_2.headers.get('idempotent-replayed')).toBe('true');
+
+    // Invalid JSON syntax: 400 Bad Request
+    const idempotencyKey400 = `json-err-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    const req400_1 = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey.secretKey}`,
+        'Idempotency-Key': idempotencyKey400,
+      },
+      body: '{ malformed json: true, ',
+    });
+
+    const res400_1 = await jobsPostHandler(req400_1);
+    expect(res400_1.status).toBe(400);
+
+    // Replay should return stored 400 with Idempotent-Replayed: true, NOT 409 Conflict
+    const req400_2 = new NextRequest('http://localhost:3000/api/v1/jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey.secretKey}`,
+        'Idempotency-Key': idempotencyKey400,
+      },
+      body: '{ malformed json: true, ',
+    });
+
+    const res400_2 = await jobsPostHandler(req400_2);
+    expect(res400_2.status).toBe(400);
+    expect(res400_2.headers.get('idempotent-replayed')).toBe('true');
+  });
+
+  it('replays null-body responses (204 No Content) safely without throwing TypeError', async () => {
+    const idempotencyKey = `null-body-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    const testHandler = withIdempotency(
+      async () => {
+        return new NextResponse(null, { status: 204 });
+      },
+      { store }
+    );
+
+    const req1 = new NextRequest('http://localhost:3000/api/v1/test-endpoint', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey.secretKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+    });
+
+    const res1 = await testHandler(req1);
+    expect(res1.status).toBe(204);
+
+    const req2 = new NextRequest('http://localhost:3000/api/v1/test-endpoint', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey.secretKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+    });
+
+    const res2 = await testHandler(req2);
+    expect(res2.status).toBe(204);
+    expect(res2.headers.get('idempotent-replayed')).toBe('true');
+  });
+});
+
+describe('WP-11 canonicalJSON RFC 8785 Verification', () => {
+  it('sorts keys strictly according to UTF-16 code units (independent of locale)', () => {
+    // In UTF-16 code units, uppercase "B" (66) precedes lowercase "a" (97).
+    // In localeCompare with English locale, "a" precedes "B".
+    const input = { a: 1, B: 2, z: 3, A: 4 };
+    const serialized = canonicalJSON(input);
+    expect(serialized).toBe('{"A":4,"B":2,"a":1,"z":3}');
+  });
+
+  it('pads undefined elements in arrays with null conforming to JSON grammar', () => {
+    const input = [undefined, 'foo', undefined, 42];
+    const serialized = canonicalJSON(input);
+    expect(serialized).toBe('[null,"foo",null,42]');
+  });
+
+  it('serializes objects with toJSON() methods such as Date', () => {
+    const date = new Date('2026-10-04T00:00:00.000Z');
+    const input = { timestamp: date, name: 'test' };
+    const serialized = canonicalJSON(input);
+    expect(serialized).toBe('{"name":"test","timestamp":"2026-10-04T00:00:00.000Z"}');
   });
 });

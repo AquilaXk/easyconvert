@@ -32,11 +32,20 @@ async function extractFormDataFingerprint(formData: FormData): Promise<{
   fileSha256: string;
 }> {
   const bodyWithoutFile: Record<string, unknown> = {};
-  let fileBlob: Blob | null = null;
+  const fileBlobs: { name?: string; type?: string; blob: Blob }[] = [];
 
   for (const [key, value] of formData.entries()) {
-    if (key === 'file' && typeof value === 'object' && value && 'stream' in value) {
-      fileBlob = value as Blob;
+    if (typeof value === 'object' && value && 'stream' in value) {
+      const blob = value as Blob;
+      const fileObj = value as any;
+      const name = typeof fileObj.name === 'string' ? fileObj.name : undefined;
+      const type = typeof blob.type === 'string' ? blob.type : undefined;
+      fileBlobs.push({ name, type, blob });
+      if (key === 'file') {
+        bodyWithoutFile._file = { name, type, size: blob.size };
+      } else {
+        bodyWithoutFile[key] = { _isBlob: true, name, type, size: blob.size };
+      }
     } else if (key in bodyWithoutFile) {
       const existing = bodyWithoutFile[key];
       if (Array.isArray(existing)) {
@@ -50,8 +59,16 @@ async function extractFormDataFingerprint(formData: FormData): Promise<{
   }
 
   let fileSha256 = '';
-  if (fileBlob && fileBlob.size > 0) {
-    fileSha256 = await hashStream(fileBlob.stream() as ReadableStream<Uint8Array>);
+  if (fileBlobs.length > 0) {
+    const hashes: string[] = [];
+    for (const f of fileBlobs) {
+      if (f.blob.size > 0) {
+        hashes.push(await hashStream(f.blob.stream() as ReadableStream<Uint8Array>));
+      } else {
+        hashes.push('');
+      }
+    }
+    fileSha256 = hashes.join(':');
   }
 
   return { bodyWithoutFile, fileSha256 };
@@ -133,9 +150,13 @@ export function handleAcquireOutcome(
     const stored = acquireResult.response;
     const headers = new Headers(stored.headers);
     headers.set('Idempotent-Replayed', 'true');
-    const responseBody = stored.isBase64
-      ? Buffer.from(stored.body, 'base64')
-      : stored.body;
+    const isNullBodyStatus =
+      stored.status === 204 || stored.status === 205 || stored.status === 304;
+    const responseBody = isNullBodyStatus
+      ? null
+      : stored.isBase64
+        ? Buffer.from(stored.body, 'base64')
+        : stored.body;
     return new NextResponse(responseBody, {
       status: stored.status,
       headers,
@@ -198,6 +219,7 @@ export interface IdempotencyContext {
   store: IdempotencyStore;
   complete: (res: NextResponse | Response) => Promise<void>;
   abort: () => Promise<void>;
+  renewLock?: (ttlMs?: number) => Promise<boolean>;
 }
 
 export interface AcquireIdempotencyResult {
@@ -252,6 +274,12 @@ export async function acquireIdempotency(
       },
       abort: async () => {
         await activeStore.delete(scopedKey);
+      },
+      renewLock: async (ttlMs: number = 60000) => {
+        if (activeStore.renewLock) {
+          return activeStore.renewLock(scopedKey, ttlMs);
+        }
+        return false;
       },
     },
   };
@@ -308,7 +336,11 @@ export function withIdempotency(
 
     const ctx = acquired.context!;
     try {
-      const res = await handler(req, auth);
+      const handlerContext =
+        context && typeof context === 'object' && 'params' in context
+          ? { ...context, auth }
+          : auth;
+      const res = await handler(req, handlerContext);
       await ctx.complete(res);
       return res;
     } catch (err) {

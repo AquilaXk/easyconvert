@@ -50,21 +50,30 @@ export async function POST(req: NextRequest) {
     idempotencyCtx = precheck.context;
   }
 
+  const reply = async (res: NextResponse | Response) => {
+    if (idempotencyCtx) {
+      if (res.status >= 500) {
+        await idempotencyCtx.abort();
+      } else {
+        await idempotencyCtx.complete(res);
+      }
+    }
+    return res;
+  };
+
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   if (quota.remaining <= 0) {
     const exhaustedQuota = { ...quota, remaining: 0 };
-    const quotaRes = createProblemDetailsResponse(
-      429,
-      `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
-      instanceUri,
-      'Daily Quota Exceeded',
-      'https://api.easyconvert.io/problems/quota-exceeded',
-      buildRateLimitHeaders(exhaustedQuota)
+    return reply(
+      createProblemDetailsResponse(
+        429,
+        `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+        instanceUri,
+        'Daily Quota Exceeded',
+        'https://api.easyconvert.io/problems/quota-exceeded',
+        buildRateLimitHeaders(exhaustedQuota)
+      )
     );
-    if (idempotencyCtx) {
-      await idempotencyCtx.complete(quotaRes);
-    }
-    return quotaRes;
   }
 
   let reservation: { allowed: boolean; reservationId?: string } | null = null;
@@ -73,15 +82,7 @@ export async function POST(req: NextRequest) {
     if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
-    const problem = createProblemDetailsResponse(status, message, instanceUri, title);
-    if (idempotencyCtx) {
-      if (status >= 500) {
-        await idempotencyCtx.abort();
-      } else {
-        await idempotencyCtx.complete(problem);
-      }
-    }
-    return problem;
+    return reply(createProblemDetailsResponse(status, message, instanceUri, title));
   };
 
   try {
@@ -114,11 +115,11 @@ export async function POST(req: NextRequest) {
         try {
           parsed = JSON.parse(optionsRaw);
         } catch {
-          return createProblemDetailsResponse(400, 'Invalid JSON string provided in "options" parameter.', instanceUri);
+          return reply(createProblemDetailsResponse(400, 'Invalid JSON string provided in "options" parameter.', instanceUri));
         }
         const optValidation = validateOrProblem(ConversionOptionsSchema, parsed, instanceUri);
         if (!optValidation.ok) {
-          return optValidation.response;
+          return reply(optValidation.response);
         }
         options = (parsed && typeof parsed === 'object' ? parsed : {}) as ConversionOptions;
       }
@@ -130,7 +131,7 @@ export async function POST(req: NextRequest) {
           if (Array.isArray(parsedTasks)) {
             tasks = parsedTasks;
           } else {
-            return createProblemDetailsResponse(
+            return reply(createProblemDetailsResponse(
               422,
               'Request validation failed: tasks must be array',
               instanceUri,
@@ -138,22 +139,22 @@ export async function POST(req: NextRequest) {
               'https://api.easyconvert.io/problems/unprocessable-entity',
               undefined,
               [{ name: 'tasks', reason: 'must be array' }]
-            );
+            ));
           }
         } catch {
-          return createProblemDetailsResponse(400, 'Invalid JSON string provided in "tasks" parameter.', instanceUri);
+          return reply(createProblemDetailsResponse(400, 'Invalid JSON string provided in "tasks" parameter.', instanceUri));
         }
         for (let i = 0; i < tasks.length; i++) {
           const taskValidation = validateOrProblem(PipelineTaskSchema, tasks[i], instanceUri);
           if (!taskValidation.ok) {
-            return taskValidation.response;
+            return reply(taskValidation.response);
           }
         }
       }
 
       if (file && file instanceof Blob && file.size > 0) {
         if (file.size > MAX_JOB_PAYLOAD_SIZE) {
-          return createProblemDetailsResponse(400, 'File size exceeds the 500 MB asynchronous payload boundary.', instanceUri, 'Payload Too Large');
+          return reply(createProblemDetailsResponse(400, 'File size exceeds the 500 MB asynchronous payload boundary.', instanceUri, 'Payload Too Large'));
         }
 
         originalFilename = file.name;
@@ -173,12 +174,12 @@ export async function POST(req: NextRequest) {
       try {
         body = await req.json();
       } catch {
-        return createProblemDetailsResponse(400, 'Invalid JSON body provided in request.', instanceUri);
+        return reply(createProblemDetailsResponse(400, 'Invalid JSON body provided in request.', instanceUri));
       }
 
       const bodyValidation = validateOrProblem(JobCreateRequestSchema, body, instanceUri);
       if (!bodyValidation.ok) {
-        return bodyValidation.response;
+        return reply(bodyValidation.response);
       }
 
       const validBody = (body && typeof body === 'object' ? body : {}) as Record<string, any>;
@@ -299,13 +300,15 @@ export async function POST(req: NextRequest) {
     reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
     if (!reservation.allowed) {
       const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
-      return createProblemDetailsResponse(
-        429,
-        `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
-        instanceUri,
-        'Too Many Requests',
-        undefined,
-        buildRateLimitHeaders({ ...quota, remaining: 0 })
+      return reply(
+        createProblemDetailsResponse(
+          429,
+          `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+          instanceUri,
+          'Too Many Requests',
+          undefined,
+          buildRateLimitHeaders({ ...quota, remaining: 0 })
+        )
       );
     }
 
@@ -347,10 +350,7 @@ export async function POST(req: NextRequest) {
       },
       { status: 202 }
     );
-    if (idempotencyCtx) {
-      await idempotencyCtx.complete(successRes);
-    }
-    return successRes;
+    return reply(successRes);
   } catch (error: unknown) {
     if (idempotencyCtx) {
       await idempotencyCtx.abort();
