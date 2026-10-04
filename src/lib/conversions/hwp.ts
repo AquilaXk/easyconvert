@@ -1,4 +1,4 @@
-import zlib from 'zlib';
+import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';

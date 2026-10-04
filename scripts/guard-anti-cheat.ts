@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { builtinModules } from 'node:module';
 import ts from 'typescript';
 
 /**
@@ -10,6 +11,7 @@ import ts from 'typescript';
  * 2. Silent Passes & Positive Guards (G2, G2b): Bypasses on missing CLI tools or positive guards skipping verifications.
  * 3. Production Hardcoded Cheats (G3, G3b, G3c): Dummy string placeholders, fixed truncations, and unreferenced inputs.
  * 4. Hollow & Weak Assertions (G4, G4b): Tautologies and tests composed exclusively of weak assertions.
+ * 5. Governance (G5, G6): Automation reaching external hosts and built-in imports without the node: prefix.
  * 5. Ratchet Baseline: Baseline violation tracking with strict ratcheting down.
  */
 
@@ -577,6 +579,99 @@ function checkHollowAssertions(targetDir?: string): Violation[] {
 }
 
 // ============================================================================
+// Gate 5: Governance (AST G5 external navigation + AST G6 built-in specifier)
+// ============================================================================
+
+/** Hosts a script or test may reach: the local app and documentation-reserved names. */
+const LOCAL_HOST_PATTERN = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|([a-z0-9-]+\.)*example\.(com|org|net))$/i;
+/** Calls that load a remote page or resource. */
+const NAVIGATION_CALLEES = new Set(['goto', 'fetch', 'newPage', 'navigate']);
+const NODE_BUILTINS: ReadonlySet<string> = new Set(builtinModules.filter((m) => !m.startsWith('_')));
+
+function stringLiteralText(node: ts.Node | undefined): string | undefined {
+  if (node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))) {
+    return node.text;
+  }
+  return undefined;
+}
+
+function checkGovernance(targetDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const scanDirs = targetDir ? [targetDir] : [SRC_DIR, TESTS_DIR, path.join(ROOT_DIR, 'scripts')];
+  const files = scanDirs
+    .flatMap((dir) => scanDirectory(dir, SUPPORTED_EXTENSIONS))
+    .filter((f) => !f.endsWith('guard-anti-cheat.ts') && !f.endsWith('guard-anti-cheat-rules.test.ts'));
+  const isAutomationFile = (file: string) => {
+    const rel = path.relative(ROOT_DIR, file).split(path.sep);
+    return rel[0] === 'scripts' || rel[0] === 'tests' || Boolean(targetDir);
+  };
+
+  for (const file of files) {
+    const sourceFile = ts.createSourceFile(file, fs.readFileSync(file, 'utf-8'), ts.ScriptTarget.Latest, true);
+    const relFile = path.relative(ROOT_DIR, file);
+    const automation = isAutomationFile(file);
+
+    const visit = (node: ts.Node) => {
+      // G6: built-in modules must be imported with the node: prefix.
+      let specifier: string | undefined;
+      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+        specifier = stringLiteralText(node.moduleSpecifier);
+      } else if (
+        ts.isCallExpression(node) &&
+        (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+          (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
+      ) {
+        specifier = stringLiteralText(node.arguments[0]);
+      }
+      if (specifier && NODE_BUILTINS.has(specifier)) {
+        const { line, snippet } = getNodeSnippet(sourceFile, node);
+        violations.push({
+          file: relFile,
+          line,
+          rule: 'G6-NODE-PREFIX',
+          snippet,
+          message: `Built-in module "${specifier}" must be imported as "node:${specifier}".`,
+          symbol: specifier,
+        });
+      }
+
+      // G5: automation must not navigate to or fetch a non-local site (e.g. scraping a third-party service).
+      if (automation && ts.isCallExpression(node)) {
+        let callee = '';
+        if (ts.isPropertyAccessExpression(node.expression)) {
+          callee = node.expression.name.text;
+        } else if (ts.isIdentifier(node.expression)) {
+          callee = node.expression.text;
+        }
+        const url = stringLiteralText(node.arguments[0]);
+        if (NAVIGATION_CALLEES.has(callee) && url && /^https?:\/\//i.test(url)) {
+          let host = '';
+          try {
+            host = new URL(url).hostname;
+          } catch {
+            host = '';
+          }
+          if (!LOCAL_HOST_PATTERN.test(host)) {
+            const { line, snippet } = getNodeSnippet(sourceFile, node);
+            violations.push({
+              file: relFile,
+              line,
+              rule: 'G5-EXTERNAL-NAVIGATION',
+              snippet,
+              message: `Script or test reaches the external host "${host}". Automation may only target the local app.`,
+              symbol: host,
+            });
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return violations;
+}
+
+// ============================================================================
 // Main Execution & Ratchet Baseline Engine
 // ============================================================================
 export function runAntiCheatGuard(options: {
@@ -590,6 +685,7 @@ export function runAntiCheatGuard(options: {
     ...checkSilentPassBypasses(options.targetDir),
     ...checkProductionCheats(options.targetDir),
     ...checkHollowAssertions(options.targetDir),
+    ...checkGovernance(options.targetDir),
   ];
 
   const errors = allViolations.filter((v) => v.severity !== 'warning');

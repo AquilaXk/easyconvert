@@ -307,4 +307,56 @@ export function encodeStep(model: any): Buffer {
       });
     });
   });
+  // =========================================================================
+  // G5 / G6: Governance rules
+  // =========================================================================
+  describe('Rules G5 and G6: external navigation and built-in import specifiers', () => {
+    function writeScript(dir: string, name: string, body: string) {
+      const scriptsDir = path.join(dir, 'scripts');
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      fs.writeFileSync(path.join(scriptsDir, name), body);
+    }
+
+    it('flags automation that navigates to an external host (positive case)', () => {
+      withTempDir((dir) => {
+        writeScript(dir, 'scrape.mjs', `await page.goto('https://third-party-service.test/pricing');\n`);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        expect(res.status).not.toBe(0);
+        expect(res.stderr + res.stdout).toContain('G5-EXTERNAL-NAVIGATION');
+        expect(res.stderr + res.stdout).toContain('third-party-service.test');
+      });
+    });
+
+    it('permits automation against the local app (negative case)', () => {
+      withTempDir((dir) => {
+        writeScript(
+          dir,
+          'capture.mjs',
+          `await page.goto('http://localhost:3000/');\nawait fetch('http://127.0.0.1:3000/api/health');\n`
+        );
+        const res = runGuardSubprocess(dir, ['--strict']);
+        expect(res.status).toBe(0);
+        expect(res.stderr + res.stdout).not.toContain('G5-EXTERNAL-NAVIGATION');
+      });
+    });
+
+    it('flags built-in imports without the node: prefix (positive case)', () => {
+      withTempDir((dir) => {
+        writeScript(dir, 'legacy.ts', `import fs from 'fs';\nconst cp = require('child_process');\nexport { fs, cp };\n`);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        expect(res.status).not.toBe(0);
+        const output = res.stderr + res.stdout;
+        expect(output.match(/G6-NODE-PREFIX/g)?.length).toBe(2);
+      });
+    });
+
+    it('permits node:-prefixed built-ins and package imports (negative case)', () => {
+      withTempDir((dir) => {
+        writeScript(dir, 'modern.ts', `import fs from 'node:fs';\nimport ts from 'typescript';\nexport { fs, ts };\n`);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        expect(res.status).toBe(0);
+        expect(res.stderr + res.stdout).not.toContain('G6-NODE-PREFIX');
+      });
+    });
+  });
 });
