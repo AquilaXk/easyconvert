@@ -193,224 +193,139 @@ interface PathState {
   lastCpY: number;
 }
 
-function handleMoveTo(tokens: string[], i: number, isRel: boolean, state: PathState, currentSubpath: Point3D[]): number {
-  if (i + 1 >= tokens.length) return i;
-  const x = Number.parseFloat(tokens[i]);
-  const y = Number.parseFloat(tokens[i + 1]);
-  state.currentX = isRel ? state.currentX + x : x;
-  state.currentY = isRel ? state.currentY + y : y;
-  state.lastCpX = state.currentX;
-  state.lastCpY = state.currentY;
-  currentSubpath.push({ x: state.currentX, y: state.currentY, z: 0 });
-  return i + 2;
+/** Parser position plus the drawing state shared by all path command handlers. */
+interface PathCursor {
+  tokens: string[];
+  i: number;
+  isRel: boolean;
+  prevUpper: string;
+  state: PathState;
+  subpath: Point3D[];
+  tolerance: number;
 }
 
-function handleLineTo(tokens: string[], i: number, isRel: boolean, state: PathState, currentSubpath: Point3D[]): number {
-  if (i + 1 >= tokens.length) return i;
-  const x = Number.parseFloat(tokens[i]);
-  const y = Number.parseFloat(tokens[i + 1]);
-  state.currentX = isRel ? state.currentX + x : x;
-  state.currentY = isRel ? state.currentY + y : y;
-  state.lastCpX = state.currentX;
-  state.lastCpY = state.currentY;
-  currentSubpath.push({ x: state.currentX, y: state.currentY, z: 0 });
-  return i + 2;
+/** Reads `count` numeric arguments, or returns null when the command is truncated or malformed. */
+function readArgs(c: PathCursor, count: number): number[] | null {
+  if (c.i + count > c.tokens.length) return null;
+  const args = c.tokens.slice(c.i, c.i + count);
+  if (!args.every((t) => PATH_NUMBER_PATTERN.test(t))) return null;
+  c.i += count;
+  return args.map(Number);
 }
 
-function handleHorizLine(tokens: string[], i: number, isRel: boolean, state: PathState, currentSubpath: Point3D[]): number {
-  if (i >= tokens.length) return i;
-  const x = Number.parseFloat(tokens[i]);
-  state.currentX = isRel ? state.currentX + x : x;
-  state.lastCpX = state.currentX;
-  currentSubpath.push({ x: state.currentX, y: state.currentY, z: 0 });
-  return i + 1;
+/** Resolves a coordinate pair, relative to the current point for lower-case commands. */
+function resolvePoint(c: PathCursor, x: number, y: number): Point3D {
+  return c.isRel ? { x: c.state.currentX + x, y: c.state.currentY + y, z: 0 } : { x, y, z: 0 };
 }
 
-function handleVertLine(tokens: string[], i: number, isRel: boolean, state: PathState, currentSubpath: Point3D[]): number {
-  if (i >= tokens.length) return i;
-  const y = Number.parseFloat(tokens[i]);
-  state.currentY = isRel ? state.currentY + y : y;
-  state.lastCpY = state.currentY;
-  currentSubpath.push({ x: state.currentX, y: state.currentY, z: 0 });
-  return i + 1;
+function currentPoint(c: PathCursor): Point3D {
+  return { x: c.state.currentX, y: c.state.currentY, z: 0 };
 }
 
-function handleCubicCurve(
-  tokens: string[],
-  i: number,
-  isRel: boolean,
-  state: PathState,
-  currentSubpath: Point3D[],
-  tolerance: number
-): number {
-  if (i + 5 >= tokens.length) return i;
-  const x1 = Number.parseFloat(tokens[i]);
-  const y1 = Number.parseFloat(tokens[i + 1]);
-  const x2 = Number.parseFloat(tokens[i + 2]);
-  const y2 = Number.parseFloat(tokens[i + 3]);
-  const x = Number.parseFloat(tokens[i + 4]);
-  const y = Number.parseFloat(tokens[i + 5]);
-
-  const p0: Point3D = { x: state.currentX, y: state.currentY, z: 0 };
-  const p1: Point3D = { x: isRel ? state.currentX + x1 : x1, y: isRel ? state.currentY + y1 : y1, z: 0 };
-  const p2: Point3D = { x: isRel ? state.currentX + x2 : x2, y: isRel ? state.currentY + y2 : y2, z: 0 };
-  const p3: Point3D = { x: isRel ? state.currentX + x : x, y: isRel ? state.currentY + y : y, z: 0 };
-
-  const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, tolerance);
-  for (let k = 1; k < curvePts.length; k++) {
-    currentSubpath.push(curvePts[k]);
-  }
-
-  state.currentX = p3.x;
-  state.currentY = p3.y;
-  state.lastCpX = p2.x;
-  state.lastCpY = p2.y;
-  return i + 6;
+/** Moves the current point; `controlPoint` is remembered for smooth S/T reflection. */
+function moveTo(c: PathCursor, p: Point3D, controlPoint: Point3D = p): void {
+  c.state.currentX = p.x;
+  c.state.currentY = p.y;
+  c.state.lastCpX = controlPoint.x;
+  c.state.lastCpY = controlPoint.y;
 }
 
-function handleSmoothCubic(
-  tokens: string[],
-  i: number,
-  isRel: boolean,
-  state: PathState,
-  currentSubpath: Point3D[],
-  prevUpper: string,
-  tolerance: number
-): number {
-  if (i + 3 >= tokens.length) return i;
-  const isPreviousCubic = prevUpper === 'C' || prevUpper === 'S';
-  const p1X = isPreviousCubic ? 2 * state.currentX - state.lastCpX : state.currentX;
-  const p1Y = isPreviousCubic ? 2 * state.currentY - state.lastCpY : state.currentY;
-  const x2 = Number.parseFloat(tokens[i]);
-  const y2 = Number.parseFloat(tokens[i + 1]);
-  const x = Number.parseFloat(tokens[i + 2]);
-  const y = Number.parseFloat(tokens[i + 3]);
-
-  const p0: Point3D = { x: state.currentX, y: state.currentY, z: 0 };
-  const p1: Point3D = { x: p1X, y: p1Y, z: 0 };
-  const p2: Point3D = { x: isRel ? state.currentX + x2 : x2, y: isRel ? state.currentY + y2 : y2, z: 0 };
-  const p3: Point3D = { x: isRel ? state.currentX + x : x, y: isRel ? state.currentY + y : y, z: 0 };
-
-  const curvePts = adaptiveTessellateCubicBezier(p0, p1, p2, p3, tolerance);
-  for (let k = 1; k < curvePts.length; k++) {
-    currentSubpath.push(curvePts[k]);
-  }
-
-  state.currentX = p3.x;
-  state.currentY = p3.y;
-  state.lastCpX = p2.x;
-  state.lastCpY = p2.y;
-  return i + 4;
+function reflectedControlPoint(c: PathCursor, previousCommands: ReadonlySet<string>): Point3D {
+  if (!previousCommands.has(c.prevUpper)) return currentPoint(c);
+  return { x: 2 * c.state.currentX - c.state.lastCpX, y: 2 * c.state.currentY - c.state.lastCpY, z: 0 };
 }
 
-function handleQuadCurve(
-  tokens: string[],
-  i: number,
-  isRel: boolean,
-  state: PathState,
-  currentSubpath: Point3D[],
-  tolerance: number
-): number {
-  if (i + 3 >= tokens.length) return i;
-  const x1 = Number.parseFloat(tokens[i]);
-  const y1 = Number.parseFloat(tokens[i + 1]);
-  const x = Number.parseFloat(tokens[i + 2]);
-  const y = Number.parseFloat(tokens[i + 3]);
-
-  const p0: Point3D = { x: state.currentX, y: state.currentY, z: 0 };
-  const cp: Point3D = { x: isRel ? state.currentX + x1 : x1, y: isRel ? state.currentY + y1 : y1, z: 0 };
-  const p2: Point3D = { x: isRel ? state.currentX + x : x, y: isRel ? state.currentY + y : y, z: 0 };
-
-  const p1: Point3D = { x: p0.x + (2 / 3) * (cp.x - p0.x), y: p0.y + (2 / 3) * (cp.y - p0.y), z: 0 };
-  const pCubic2: Point3D = { x: p2.x + (2 / 3) * (cp.x - p2.x), y: p2.y + (2 / 3) * (cp.y - p2.y), z: 0 };
-
-  const curvePts = adaptiveTessellateCubicBezier(p0, p1, pCubic2, p2, tolerance);
-  for (let k = 1; k < curvePts.length; k++) {
-    currentSubpath.push(curvePts[k]);
-  }
-
-  state.currentX = p2.x;
-  state.currentY = p2.y;
-  state.lastCpX = cp.x;
-  state.lastCpY = cp.y;
-  return i + 4;
+function pushCubic(c: PathCursor, p1: Point3D, p2: Point3D, p3: Point3D): void {
+  const curvePts = adaptiveTessellateCubicBezier(currentPoint(c), p1, p2, p3, c.tolerance);
+  for (let k = 1; k < curvePts.length; k++) c.subpath.push(curvePts[k]);
 }
 
-function handleSmoothQuad(
-  tokens: string[],
-  i: number,
-  isRel: boolean,
-  state: PathState,
-  currentSubpath: Point3D[],
-  prevUpper: string,
-  tolerance: number
-): number {
-  if (i + 1 >= tokens.length) return i;
-  const isPreviousQuad = prevUpper === 'Q' || prevUpper === 'T';
-  const cp: Point3D = {
-    x: isPreviousQuad ? 2 * state.currentX - state.lastCpX : state.currentX,
-    y: isPreviousQuad ? 2 * state.currentY - state.lastCpY : state.currentY,
-    z: 0,
-  };
-  const x = Number.parseFloat(tokens[i]);
-  const y = Number.parseFloat(tokens[i + 1]);
-  const p0: Point3D = { x: state.currentX, y: state.currentY, z: 0 };
-  const p2: Point3D = { x: isRel ? state.currentX + x : x, y: isRel ? state.currentY + y : y, z: 0 };
-  const p1: Point3D = { x: p0.x + (2 / 3) * (cp.x - p0.x), y: p0.y + (2 / 3) * (cp.y - p0.y), z: 0 };
-  const pCubic2: Point3D = { x: p2.x + (2 / 3) * (cp.x - p2.x), y: p2.y + (2 / 3) * (cp.y - p2.y), z: 0 };
-  const curvePts = adaptiveTessellateCubicBezier(p0, p1, pCubic2, p2, tolerance);
-  for (let k = 1; k < curvePts.length; k++) currentSubpath.push(curvePts[k]);
-  state.currentX = p2.x;
-  state.currentY = p2.y;
-  state.lastCpX = cp.x;
-  state.lastCpY = cp.y;
-  return i + 2;
+/** Degree elevation: the cubic control points equivalent to a quadratic segment. */
+function pushQuadratic(c: PathCursor, cp: Point3D, end: Point3D): void {
+  const p0 = currentPoint(c);
+  const twoThirds = 2 / 3;
+  const p1: Point3D = { x: p0.x + twoThirds * (cp.x - p0.x), y: p0.y + twoThirds * (cp.y - p0.y), z: 0 };
+  const p2: Point3D = { x: end.x + twoThirds * (cp.x - end.x), y: end.y + twoThirds * (cp.y - end.y), z: 0 };
+  pushCubic(c, p1, p2, end);
 }
 
-function handleArcCurve(
-  tokens: string[],
-  i: number,
-  isRel: boolean,
-  state: PathState,
-  currentSubpath: Point3D[]
-): number {
-  if (i + 6 >= tokens.length) return i;
-  const rx = Number.parseFloat(tokens[i]);
-  const ry = Number.parseFloat(tokens[i + 1]);
-  const rot = Number.parseFloat(tokens[i + 2]);
-  const largeArc = Number.parseFloat(tokens[i + 3]) !== 0;
-  const sweep = Number.parseFloat(tokens[i + 4]) !== 0;
-  const x = Number.parseFloat(tokens[i + 5]);
-  const y = Number.parseFloat(tokens[i + 6]);
-  const targetX = isRel ? state.currentX + x : x;
-  const targetY = isRel ? state.currentY + y : y;
+const CUBIC_COMMANDS: ReadonlySet<string> = new Set(['C', 'S']);
+const QUADRATIC_COMMANDS: ReadonlySet<string> = new Set(['Q', 'T']);
 
-  const arcPoints = tessellateSvgArc(
-    state.currentX,
-    state.currentY,
-    rx,
-    ry,
-    rot,
-    largeArc,
-    sweep,
-    targetX,
-    targetY
-  );
+/** Command handlers (upper-case letter); each returns false on missing or invalid arguments. */
+const PATH_HANDLERS: Record<string, (c: PathCursor) => boolean> = {
+  L: (c) => {
+    const a = readArgs(c, 2);
+    if (!a) return false;
+    const p = resolvePoint(c, a[0], a[1]);
+    c.subpath.push(p);
+    moveTo(c, p);
+    return true;
+  },
+  H: (c) => {
+    const a = readArgs(c, 1);
+    if (!a) return false;
+    const p: Point3D = { x: c.isRel ? c.state.currentX + a[0] : a[0], y: c.state.currentY, z: 0 };
+    c.subpath.push(p);
+    moveTo(c, p);
+    return true;
+  },
+  V: (c) => {
+    const a = readArgs(c, 1);
+    if (!a) return false;
+    const p: Point3D = { x: c.state.currentX, y: c.isRel ? c.state.currentY + a[0] : a[0], z: 0 };
+    c.subpath.push(p);
+    moveTo(c, p);
+    return true;
+  },
+  C: (c) => {
+    const a = readArgs(c, 6);
+    if (!a) return false;
+    const p2 = resolvePoint(c, a[2], a[3]);
+    const p3 = resolvePoint(c, a[4], a[5]);
+    pushCubic(c, resolvePoint(c, a[0], a[1]), p2, p3);
+    moveTo(c, p3, p2);
+    return true;
+  },
+  S: (c) => {
+    const a = readArgs(c, 4);
+    if (!a) return false;
+    const p1 = reflectedControlPoint(c, CUBIC_COMMANDS);
+    const p2 = resolvePoint(c, a[0], a[1]);
+    const p3 = resolvePoint(c, a[2], a[3]);
+    pushCubic(c, p1, p2, p3);
+    moveTo(c, p3, p2);
+    return true;
+  },
+  Q: (c) => {
+    const a = readArgs(c, 4);
+    if (!a) return false;
+    const cp = resolvePoint(c, a[0], a[1]);
+    const end = resolvePoint(c, a[2], a[3]);
+    pushQuadratic(c, cp, end);
+    moveTo(c, end, cp);
+    return true;
+  },
+  T: (c) => {
+    const a = readArgs(c, 2);
+    if (!a) return false;
+    const cp = reflectedControlPoint(c, QUADRATIC_COMMANDS);
+    const end = resolvePoint(c, a[0], a[1]);
+    pushQuadratic(c, cp, end);
+    moveTo(c, end, cp);
+    return true;
+  },
+  A: (c) => {
+    const a = readArgs(c, 7);
+    if (!a) return false;
+    const [rx, ry, rot, largeArc, sweep] = a;
+    const end = resolvePoint(c, a[5], a[6]);
+    c.subpath.push(...tessellateSvgArc(c.state.currentX, c.state.currentY, rx, ry, rot, largeArc !== 0, sweep !== 0, end.x, end.y));
+    moveTo(c, end);
+    return true;
+  },
+};
 
-  for (const pt of arcPoints) {
-    currentSubpath.push(pt);
-  }
-
-  state.currentX = targetX;
-  state.currentY = targetY;
-  state.lastCpX = state.currentX;
-  state.lastCpY = state.currentY;
-  return i + 7;
-}
-
-/**
- * Parses SVG path 'd' attribute commands into adaptive polyline vertices.
- */
 const PATH_TOKEN_PATTERN = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|./gy;
 const PATH_SEPARATOR_PATTERN = /^[\s,]+$/;
 const PATH_TOKEN_VALID = /^(?:[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$/;
@@ -431,81 +346,68 @@ function tokenizePathData(d: string): string[] {
 
 const PATH_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
 
+const PATH_COMMAND_PATTERN = /^[MmLlHhVvCcSsQqTtAaZz]$/;
+
+function malformedPath(d: string, reason: string): CadGeometryUnavailableError {
+  return new CadGeometryUnavailableError(`Malformed SVG path data "${d}": ${reason}.`);
+}
+
+/** Z: closes the sub-path back to its start point, which becomes the current point. */
+function closeSubpath(c: PathCursor, subpaths: Point3D[][]): void {
+  if (c.subpath.length > 1) {
+    const first = c.subpath[0];
+    c.subpath.push({ x: first.x, y: first.y, z: first.z });
+    c.state.currentX = first.x;
+    c.state.currentY = first.y;
+  }
+  subpaths.push(c.subpath);
+  c.subpath = [];
+}
+
+/**
+ * Parses SVG path 'd' data (SVG 1.1 section 8.3) into adaptive polyline
+ * vertices, one array per sub-path.
+ */
 export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point3D[][] {
   const subpaths: Point3D[][] = [];
-  let currentSubpath: Point3D[] = [];
-  const state: PathState = { currentX: 0, currentY: 0, lastCpX: 0, lastCpY: 0 };
-  let lastCmd = '';
-
-  const tokens = tokenizePathData(d);
-
-  let i = 0;
-  let prevUpper = '';
-  while (i < tokens.length) {
-    const token = tokens[i];
-    if (/^[MmLlHhVvCcSsQqTtAaZz]$/.test(token)) {
-      lastCmd = token;
-      i++;
-    } else if (!lastCmd) {
-      throw new CadGeometryUnavailableError(`Malformed SVG path data "${d}": coordinates before the first command.`);
+  const c: PathCursor = {
+    tokens: tokenizePathData(d),
+    i: 0,
+    isRel: false,
+    prevUpper: '',
+    state: { currentX: 0, currentY: 0, lastCpX: 0, lastCpY: 0 },
+    subpath: [],
+    tolerance,
+  };
+  let cmd = '';
+  while (c.i < c.tokens.length) {
+    if (PATH_COMMAND_PATTERN.test(c.tokens[c.i])) {
+      cmd = c.tokens[c.i++];
+    } else if (!cmd) {
+      throw malformedPath(d, 'coordinates before the first command');
     }
-
-    const cmd = lastCmd;
-    const isRel = cmd === cmd.toLowerCase();
     const upper = cmd.toUpperCase();
-    const start = i;
+    c.isRel = cmd !== upper;
 
-    if (upper !== 'M' && upper !== 'Z' && currentSubpath.length === 0) {
-      // A drawing command after Z continues from the closed sub-path's start point
-      currentSubpath.push({ x: state.currentX, y: state.currentY, z: 0 });
-    }
-
-    if (upper === 'M') {
-      if (currentSubpath.length > 0) {
-        subpaths.push(currentSubpath);
-        currentSubpath = [];
-      }
-      i = handleMoveTo(tokens, i, isRel, state, currentSubpath);
-      lastCmd = isRel ? 'l' : 'L';
-    } else if (upper === 'L') {
-      i = handleLineTo(tokens, i, isRel, state, currentSubpath);
-    } else if (upper === 'H') {
-      i = handleHorizLine(tokens, i, isRel, state, currentSubpath);
-    } else if (upper === 'V') {
-      i = handleVertLine(tokens, i, isRel, state, currentSubpath);
-    } else if (upper === 'C') {
-      i = handleCubicCurve(tokens, i, isRel, state, currentSubpath, tolerance);
-    } else if (upper === 'S') {
-      i = handleSmoothCubic(tokens, i, isRel, state, currentSubpath, prevUpper, tolerance);
-    } else if (upper === 'Q') {
-      i = handleQuadCurve(tokens, i, isRel, state, currentSubpath, tolerance);
-    } else if (upper === 'T') {
-      i = handleSmoothQuad(tokens, i, isRel, state, currentSubpath, prevUpper, tolerance);
-    } else if (upper === 'A') {
-      i = handleArcCurve(tokens, i, isRel, state, currentSubpath);
+    if (upper === 'Z') {
+      closeSubpath(c, subpaths);
+      cmd = '';
     } else {
-      // Z
-      if (currentSubpath.length > 1) {
-        const first = currentSubpath[0];
-        currentSubpath.push({ x: first.x, y: first.y, z: first.z });
-        state.currentX = first.x;
-        state.currentY = first.y;
+      if (upper === 'M' && c.subpath.length > 0) {
+        subpaths.push(c.subpath);
+        c.subpath = [];
+      } else if (upper !== 'M' && c.subpath.length === 0) {
+        // A drawing command after Z continues from the closed sub-path's start point
+        c.subpath.push(currentPoint(c));
       }
-      subpaths.push(currentSubpath);
-      currentSubpath = [];
-      lastCmd = '';
+      const handler = PATH_HANDLERS[upper === 'M' ? 'L' : upper];
+      if (!handler(c)) throw malformedPath(d, `missing or invalid arguments for ${cmd}`);
+      // Extra coordinate pairs after a moveto are implicit lineto commands
+      if (upper === 'M') cmd = c.isRel ? 'l' : 'L';
     }
-
-    if (upper !== 'Z' && (i === start || tokens.slice(start, i).some((t) => !PATH_NUMBER_PATTERN.test(t)))) {
-      throw new CadGeometryUnavailableError(`Malformed SVG path data "${d}": missing or invalid arguments for ${cmd}.`);
-    }
-    prevUpper = upper;
+    c.prevUpper = upper;
   }
-
-  if (currentSubpath.length > 0) {
-    subpaths.push(currentSubpath);
-  }
-
+  if (c.subpath.length > 0) subpaths.push(c.subpath);
   return subpaths;
 }
 
@@ -1330,26 +1232,34 @@ function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): vo
   state.depth--;
 }
 
-function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderState): void {
-  if (NON_RENDERED_ELEMENTS.has(node.name) || isForeignNamespaceElement(node.name)) return;
-  if (++state.renderedNodes > MAX_RENDERED_NODES) {
-    throw new CadGeometryUnavailableError(`SVG expands to more than ${MAX_RENDERED_NODES} rendered elements.`);
-  }
+type RenderedKind = 'shape' | 'use' | 'group';
+
+/** Classifies an element for rendering: null for non-rendering content, otherwise its kind; unsupported elements throw. */
+function classifyElement(node: SvgNode): RenderedKind | null {
+  if (NON_RENDERED_ELEMENTS.has(node.name) || isForeignNamespaceElement(node.name)) return null;
   if (node.name === 'svg') {
     throw new CadGeometryUnavailableError('Nested <svg> viewports are not supported by the metafile encoders.');
   }
-  const isShape = SHAPE_ELEMENTS.has(node.name);
-  const isUse = node.name === 'use';
-  if (!isShape && !isUse && !GROUP_ELEMENTS.has(node.name)) throw unsupportedElementError(node.name);
+  if (SHAPE_ELEMENTS.has(node.name)) return 'shape';
+  if (node.name === 'use') return 'use';
+  if (GROUP_ELEMENTS.has(node.name)) return 'group';
+  throw unsupportedElementError(node.name);
+}
 
+function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderState): void {
+  const kind = classifyElement(node);
+  if (kind === null) return;
+  if (++state.renderedNodes > MAX_RENDERED_NODES) {
+    throw new CadGeometryUnavailableError(`SVG expands to more than ${MAX_RENDERED_NODES} rendered elements.`);
+  }
   const declared = declaredProperties(node.attrs, node.name, state.sheet);
   assertNeutralPaintProperties(declared);
   if (declared.get('display') === 'none') return;
   assertNoUnsupportedReferences(node.attrs);
   const ctx = deriveContext(parent, node.attrs, declared);
-  if (isShape) {
+  if (kind === 'shape') {
     emitShape(node, ctx, state);
-  } else if (isUse) {
+  } else if (kind === 'use') {
     renderUse(node, ctx, state);
   } else {
     renderChildren(node, ctx, state);

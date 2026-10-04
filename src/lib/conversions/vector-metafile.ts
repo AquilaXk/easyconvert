@@ -142,10 +142,24 @@ function planDocument(doc: ParsedSvgVectorDocument): DrawOp[] {
   return doc.elements.flatMap((el) => planElement(el));
 }
 
-function emfPairRecord(type: number, x: number, y: number): Buffer {
-  const rec = Buffer.alloc(16);
+/** EMF record sizes in bytes; every record starts with Type and Size (MS-EMF 2.3.1). */
+const EMF_POLY16_HEADER_SIZE = 28; // Type, Size, Bounds (16), Count
+const EMF_POLYPOLY16_HEADER_SIZE = 32; // Type, Size, Bounds (16), NumberOfPolygons, Count
+const EMF_POINT16_SIZE = 4; // PointS
+const EMF_COUNT_SIZE = 4; // one 32-bit polygon point count
+const EMF_PAIR_RECORD_SIZE = 16; // Type, Size and two 32-bit fields
+const EMF_BRUSH_RECORD_SIZE = 24; // Type, Size, ihBrush, LogBrush32 (12)
+
+/** Allocates an EMF record with its Type and Size header written. */
+function emfRecord(type: number, size: number): Buffer {
+  const rec = Buffer.alloc(size);
   rec.writeUInt32LE(type, 0);
-  rec.writeUInt32LE(16, 4);
+  rec.writeUInt32LE(size, 4);
+  return rec;
+}
+
+function emfPairRecord(type: number, x: number, y: number): Buffer {
+  const rec = emfRecord(type, EMF_PAIR_RECORD_SIZE);
   rec.writeInt32LE(x, 8);
   rec.writeInt32LE(y, 12);
   return rec;
@@ -153,9 +167,7 @@ function emfPairRecord(type: number, x: number, y: number): Buffer {
 
 function createEmfStateRecords(space: LogicalSpace): Buffer[] {
   const scaled = space.scale !== 1;
-  const mapModeRec = Buffer.alloc(12);
-  mapModeRec.writeUInt32LE(EMR_SETMAPMODE, 0);
-  mapModeRec.writeUInt32LE(12, 4);
+  const mapModeRec = emfRecord(EMR_SETMAPMODE, EMF_SMALL_RECORD_SIZE);
   mapModeRec.writeUInt32LE(scaled ? EMF_MM_ANISOTROPIC : EMF_MM_TEXT, 8);
   // unitsPerInch logical units map onto 96 device pixels, isotropically
   const mapping = scaled
@@ -165,14 +177,10 @@ function createEmfStateRecords(space: LogicalSpace): Buffer[] {
       ]
     : [];
 
-  const bkModeRec = Buffer.alloc(12);
-  bkModeRec.writeUInt32LE(EMR_SETBKMODE, 0);
-  bkModeRec.writeUInt32LE(12, 4);
+  const bkModeRec = emfRecord(EMR_SETBKMODE, EMF_SMALL_RECORD_SIZE);
   bkModeRec.writeUInt32LE(EMF_BK_TRANSPARENT, 8);
 
-  const fillModeRec = Buffer.alloc(12);
-  fillModeRec.writeUInt32LE(EMR_SETPOLYFILLMODE, 0);
-  fillModeRec.writeUInt32LE(12, 4);
+  const fillModeRec = emfRecord(EMR_SETPOLYFILLMODE, EMF_SMALL_RECORD_SIZE);
   fillModeRec.writeUInt32LE(EMF_POLYFILL_WINDING, 8);
 
   return [mapModeRec, ...mapping, bkModeRec, fillModeRec];
@@ -209,9 +217,7 @@ function emfColorRef(c: RgbColor): number {
 }
 
 function emfSelect(handle: number): Buffer {
-  const rec = Buffer.alloc(12);
-  rec.writeUInt32LE(EMR_SELECTOBJECT, 0);
-  rec.writeUInt32LE(12, 4);
+  const rec = emfRecord(EMR_SELECTOBJECT, EMF_SMALL_RECORD_SIZE);
   rec.writeUInt32LE(handle, 8);
   return rec;
 }
@@ -232,9 +238,7 @@ function emitEmfPen(pen: PlanPen | null, out: Buffer[], state: EmfState): boolea
 
 /** EMR_EXTCREATEPEN (MS-EMF 2.3.7.9) with a solid geometric LogPenEx and no DIB pattern. */
 function emfExtCreatePen(pen: PlanPen): Buffer {
-  const rec = Buffer.alloc(EMF_EXTCREATEPEN_SIZE);
-  rec.writeUInt32LE(EMR_EXTCREATEPEN, 0);
-  rec.writeUInt32LE(EMF_EXTCREATEPEN_SIZE, 4);
+  const rec = emfRecord(EMR_EXTCREATEPEN, EMF_EXTCREATEPEN_SIZE);
   rec.writeUInt32LE(EMF_PEN_HANDLE, 8);
   // offBmi, cbBmi, offBits, cbBits stay 0: no pattern bitmap
   rec.writeUInt32LE(EMF_PS_GEOMETRIC | EMF_PS_SOLID | penCapJoinBits(pen), 28);
@@ -251,17 +255,13 @@ function emfMiterLimit(limit: number): Buffer {
   if (!Number.isInteger(limit)) {
     throw new UnsupportedOptionError(`SVG stroke-miterlimit "${limit}" is not an integer and cannot be stored in EMF.`);
   }
-  const rec = Buffer.alloc(EMF_SMALL_RECORD_SIZE);
-  rec.writeUInt32LE(EMR_SETMITERLIMIT, 0);
-  rec.writeUInt32LE(EMF_SMALL_RECORD_SIZE, 4);
+  const rec = emfRecord(EMR_SETMITERLIMIT, EMF_SMALL_RECORD_SIZE);
   rec.writeUInt32LE(limit, 8);
   return rec;
 }
 
 function emitEmfBrush(fill: RgbColor, out: Buffer[]): void {
-  const brushRec = Buffer.alloc(24);
-  brushRec.writeUInt32LE(EMR_CREATEBRUSHINDIRECT, 0);
-  brushRec.writeUInt32LE(24, 4);
+  const brushRec = emfRecord(EMR_CREATEBRUSHINDIRECT, EMF_BRUSH_RECORD_SIZE);
   brushRec.writeUInt32LE(EMF_BRUSH_HANDLE, 8);
   brushRec.writeUInt32LE(EMF_BS_SOLID, 12);
   brushRec.writeUInt32LE(emfColorRef(fill), 16);
@@ -287,10 +287,7 @@ function writePoints16(rec: Buffer, at: number, points: PlanPoint[]): void {
 
 /** EMR_POLYGON16 / EMR_POLYLINE16 (MS-EMF 2.3.5.35 / 2.3.5.37). */
 function emfPoly16(type: number, points: PlanPoint[], scale: number): Buffer {
-  const recSize = 28 + 4 * points.length;
-  const rec = Buffer.alloc(recSize);
-  rec.writeUInt32LE(type, 0);
-  rec.writeUInt32LE(recSize, 4);
+  const rec = emfRecord(type, EMF_POLY16_HEADER_SIZE + EMF_POINT16_SIZE * points.length);
   writeEmfBounds(rec, points, scale);
   rec.writeUInt32LE(points.length, 24);
   writePoints16(rec, 28, points);
@@ -300,10 +297,10 @@ function emfPoly16(type: number, points: PlanPoint[], scale: number): Buffer {
 /** EMR_POLYPOLYGON16 (MS-EMF 2.3.5.31): one fill area made of several rings. */
 function emfPolyPolygon16(rings: PlanPoint[][], scale: number): Buffer {
   const all = rings.flat();
-  const recSize = 32 + 4 * rings.length + 4 * all.length;
-  const rec = Buffer.alloc(recSize);
-  rec.writeUInt32LE(EMR_POLYPOLYGON16, 0);
-  rec.writeUInt32LE(recSize, 4);
+  const rec = emfRecord(
+    EMR_POLYPOLYGON16,
+    EMF_POLYPOLY16_HEADER_SIZE + EMF_COUNT_SIZE * rings.length + EMF_POINT16_SIZE * all.length
+  );
   writeEmfBounds(rec, all, scale);
   rec.writeUInt32LE(rings.length, 24);
   rec.writeUInt32LE(all.length, 28);
@@ -313,17 +310,13 @@ function emfPolyPolygon16(rings: PlanPoint[][], scale: number): Buffer {
 }
 
 function deleteEmfObject(handle: number): Buffer {
-  const delRec = Buffer.alloc(12);
-  delRec.writeUInt32LE(EMR_DELETEOBJECT, 0);
-  delRec.writeUInt32LE(12, 4);
+  const delRec = emfRecord(EMR_DELETEOBJECT, EMF_SMALL_RECORD_SIZE);
   delRec.writeUInt32LE(handle, 8);
   return delRec;
 }
 
 function emfPolyFillMode(mode: number): Buffer {
-  const rec = Buffer.alloc(12);
-  rec.writeUInt32LE(EMR_SETPOLYFILLMODE, 0);
-  rec.writeUInt32LE(12, 4);
+  const rec = emfRecord(EMR_SETPOLYFILLMODE, EMF_SMALL_RECORD_SIZE);
   rec.writeUInt32LE(mode, 8);
   return rec;
 }
@@ -401,9 +394,7 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
   for (const op of scaleOps(deviceOps, space.scale)) encodeEmfOp(op, state, records);
 
   // EMR_EOF
-  const eofRec = Buffer.alloc(EMF_EOF_SIZE);
-  eofRec.writeUInt32LE(EMR_EOF, 0);
-  eofRec.writeUInt32LE(EMF_EOF_SIZE, 4);
+  const eofRec = emfRecord(EMR_EOF, EMF_EOF_SIZE);
   eofRec.writeUInt32LE(0, 8);
   eofRec.writeUInt32LE(0, 12);
   eofRec.writeUInt32LE(EMF_EOF_SIZE, 16); // nSizeLast
@@ -448,10 +439,27 @@ const WMF_MEMORY_METAFILE = 1;
 const WMF_HEADER_WORDS = 9;
 const WMF_VERSION_3_0 = 0x0300;
 
+/** WMF record sizes in WORDs: RecordSize (2 words) + RecordFunction (1 word) + parameters. */
+const BYTES_PER_WORD = 2;
+const WMF_EOF_RECORD_WORDS = 3;
+const WMF_ONE_PARAM_RECORD_WORDS = 4;
+const WMF_TWO_PARAM_RECORD_WORDS = 5;
+const WMF_BRUSH_RECORD_WORDS = 7; // LogBrush: style, ColorRef (2), hatch
+const WMF_PEN_RECORD_WORDS = 8; // LogPen: style, PointS width (2), ColorRef (2)
+const WMF_POLY_HEADER_WORDS = 4; // header + point or polygon count
+const WMF_POINT_WORDS = 2;
+const WMF_PLACEABLE_HEADER_SIZE = 22;
+
+/** Allocates a WMF record with its RecordSize (in WORDs) and RecordFunction written. */
+function wmfRecord(fn: number, words: number): Buffer {
+  const rec = Buffer.alloc(words * BYTES_PER_WORD);
+  rec.writeUInt32LE(words, 0);
+  rec.writeUInt16LE(fn, 4);
+  return rec;
+}
+
 function emitWmfPen(pen: PlanPen | null, out: Buffer[]): void {
-  const penRec = Buffer.alloc(16);
-  penRec.writeUInt32LE(8, 0);
-  penRec.writeUInt16LE(META_CREATEPENINDIRECT, 4);
+  const penRec = wmfRecord(META_CREATEPENINDIRECT, WMF_PEN_RECORD_WORDS);
   if (pen) {
     penRec.writeUInt16LE(WMF_PS_SOLID | penCapJoinBits(pen), 6);
     penRec.writeUInt16LE(Math.max(1, Math.round(pen.width)), 8);
@@ -464,9 +472,7 @@ function emitWmfPen(pen: PlanPen | null, out: Buffer[]): void {
 }
 
 function emitWmfBrush(fill: RgbColor | null, out: Buffer[]): void {
-  const brushRec = Buffer.alloc(14);
-  brushRec.writeUInt32LE(7, 0);
-  brushRec.writeUInt16LE(META_CREATEBRUSHINDIRECT, 4);
+  const brushRec = wmfRecord(META_CREATEBRUSHINDIRECT, WMF_BRUSH_RECORD_WORDS);
   if (fill) {
     brushRec.writeUInt16LE(WMF_BS_SOLID, 6);
     brushRec.writeUInt32LE(emfColorRef(fill), 8);
@@ -477,9 +483,7 @@ function emitWmfBrush(fill: RgbColor | null, out: Buffer[]): void {
 }
 
 function wmfSelect(slot: number): Buffer {
-  const rec = Buffer.alloc(8);
-  rec.writeUInt32LE(4, 0);
-  rec.writeUInt16LE(META_SELECTOBJECT, 4);
+  const rec = wmfRecord(META_SELECTOBJECT, WMF_ONE_PARAM_RECORD_WORDS);
   rec.writeUInt16LE(slot, 6);
   return rec;
 }
@@ -497,10 +501,7 @@ function assertWmfPointCount(count: number): void {
 
 function wmfPoly(fnCode: number, points: PlanPoint[]): Buffer {
   assertWmfPointCount(points.length);
-  const recWords = 4 + points.length * 2;
-  const rec = Buffer.alloc(recWords * 2);
-  rec.writeUInt32LE(recWords, 0);
-  rec.writeUInt16LE(fnCode, 4);
+  const rec = wmfRecord(fnCode, WMF_POLY_HEADER_WORDS + WMF_POINT_WORDS * points.length);
   rec.writeInt16LE(points.length, 6);
   writePoints16(rec, 8, points);
   return rec;
@@ -510,10 +511,7 @@ function wmfPoly(fnCode: number, points: PlanPoint[]): Buffer {
 function wmfPolyPolygon(rings: PlanPoint[][]): Buffer {
   rings.forEach((r) => assertWmfPointCount(r.length));
   const all = rings.flat();
-  const recWords = 4 + rings.length + 2 * all.length;
-  const rec = Buffer.alloc(recWords * 2);
-  rec.writeUInt32LE(recWords, 0);
-  rec.writeUInt16LE(META_POLYPOLYGON, 4);
+  const rec = wmfRecord(META_POLYPOLYGON, WMF_POLY_HEADER_WORDS + rings.length + WMF_POINT_WORDS * all.length);
   rec.writeUInt16LE(rings.length, 6);
   rings.forEach((r, i) => rec.writeUInt16LE(r.length, 8 + i * 2));
   writePoints16(rec, 8 + 2 * rings.length, all);
@@ -521,17 +519,13 @@ function wmfPolyPolygon(rings: PlanPoint[][]): Buffer {
 }
 
 function wmfPolyFillMode(mode: number): Buffer {
-  const rec = Buffer.alloc(8);
-  rec.writeUInt32LE(4, 0);
-  rec.writeUInt16LE(META_SETPOLYFILLMODE, 4);
+  const rec = wmfRecord(META_SETPOLYFILLMODE, WMF_ONE_PARAM_RECORD_WORDS);
   rec.writeUInt16LE(mode, 6);
   return rec;
 }
 
 function deleteWmfObject(index: number): Buffer {
-  const del = Buffer.alloc(8);
-  del.writeUInt32LE(4, 0);
-  del.writeUInt16LE(META_DELETEOBJECT, 4);
+  const del = wmfRecord(META_DELETEOBJECT, WMF_ONE_PARAM_RECORD_WORDS);
   del.writeUInt16LE(index, 6);
   return del;
 }
@@ -580,7 +574,7 @@ function encodeWmfOp(op: DrawOp, state: WmfState, out: Buffer[]): void {
 }
 
 function buildAldusHeader(width: number, height: number, unitsPerInch: number): Buffer {
-  const aldusHeader = Buffer.alloc(22);
+  const aldusHeader = Buffer.alloc(WMF_PLACEABLE_HEADER_SIZE);
   aldusHeader.writeUInt32LE(WMF_PLACEABLE_KEY, 0);
   aldusHeader.writeUInt16LE(0, 4); // Handle
   aldusHeader.writeInt16LE(0, 6); // Left
@@ -615,15 +609,11 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   const records: Buffer[] = [];
 
   // Window Org & Ext
-  const setOrg = Buffer.alloc(10);
-  setOrg.writeUInt32LE(5, 0);
-  setOrg.writeUInt16LE(META_SETWINDOWORG, 4);
+  const setOrg = wmfRecord(META_SETWINDOWORG, WMF_TWO_PARAM_RECORD_WORDS);
   setOrg.writeInt16LE(0, 6);
   setOrg.writeInt16LE(0, 8);
 
-  const setExt = Buffer.alloc(10);
-  setExt.writeUInt32LE(5, 0);
-  setExt.writeUInt16LE(META_SETWINDOWEXT, 4);
+  const setExt = wmfRecord(META_SETWINDOWEXT, WMF_TWO_PARAM_RECORD_WORDS);
   setExt.writeInt16LE(toInt16(logicalHeight), 6);
   setExt.writeInt16LE(toInt16(logicalWidth), 8);
 
@@ -633,9 +623,7 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   const state: WmfState = { fillMode: WMF_POLYFILL_ALTERNATE };
   for (const op of logicalOps) encodeWmfOp(op, state, records);
 
-  const eofRec = Buffer.alloc(6);
-  eofRec.writeUInt32LE(3, 0);
-  eofRec.writeUInt16LE(META_EOF, 4);
+  const eofRec = wmfRecord(META_EOF, WMF_EOF_RECORD_WORDS);
   records.push(eofRec);
 
   let stdBytes = 0;
@@ -645,9 +633,9 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
     // META_HEADER.MaxRecord: size in WORDs of the largest record actually written
     maxRecordWords = Math.max(maxRecordWords, r.readUInt32LE(0));
   }
-  const stdWords = Math.floor((WMF_HEADER_WORDS * 2 + stdBytes) / 2);
+  const stdWords = Math.floor((WMF_HEADER_WORDS * BYTES_PER_WORD + stdBytes) / BYTES_PER_WORD);
 
-  const stdHeader = Buffer.alloc(WMF_HEADER_WORDS * 2);
+  const stdHeader = Buffer.alloc(WMF_HEADER_WORDS * BYTES_PER_WORD);
   stdHeader.writeUInt16LE(WMF_MEMORY_METAFILE, 0);
   stdHeader.writeUInt16LE(WMF_HEADER_WORDS, 2);
   stdHeader.writeUInt16LE(WMF_VERSION_3_0, 4);
