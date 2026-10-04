@@ -331,8 +331,9 @@ export interface PipelineTask {
   url?: string;
 }
 
-import type { JobGraph, GraphNode, NodeId } from './queue/graph/types';
-export type { JobGraph, GraphNode, NodeId };
+import type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy } from './jobs/graph';
+import type { GraphNode, NodeId } from './queue/graph/types';
+export type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy, GraphNode, NodeId };
 
 export interface ConversionJobData {
   jobId: string;
@@ -351,7 +352,7 @@ export interface ConversionJobData {
   graph?: JobGraph;
   graphId?: string;
   graphNodeId?: NodeId;
-  graphNode?: GraphNode;
+  graphNode?: GraphNode | TaskNode;
   inputArtifacts?: string[];
   resourceClass?: ResourceClass;
 }
