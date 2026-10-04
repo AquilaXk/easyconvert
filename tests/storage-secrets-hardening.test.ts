@@ -69,7 +69,7 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
       expect(credentialParam).toMatch(/^AKIA_CUSTOM_REAL_TENANT_KEY\/\d{8}\/ap-northeast-2\/s3\/aws4_request$/);
       expect(parsedUrl.searchParams.get('partNumber')).toBe('2');
       expect(parsedUrl.searchParams.get('uploadId')).toBe('upload_abc999');
-      expect(presigned.signature.length).toBe(64);
+      expect(presigned.signature).toHaveLength(64);
     });
 
     it('safely rejects presigned signatures with length mismatch without throwing TypeError', () => {
@@ -143,7 +143,7 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
       const parsedOciUrl = new URL(uploadUrl.url);
       expect(parsedOciUrl.searchParams.get('uploadId')).toBe('up_session_42');
       expect(parsedOciUrl.searchParams.get('partNumber')).toBe('1');
-      expect(uploadUrl.signature.length).toBe(64);
+      expect(uploadUrl.signature).toHaveLength(64);
 
       // Valid signature
       const isValid = service.verifyPresignedSignature(
