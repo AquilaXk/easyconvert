@@ -6,6 +6,7 @@ import {
   parseSvgGeometries,
   parseCssColor,
   convertVectorCad,
+  parseCgmToSvg,
 } from '../src/lib/conversions/vector-cad';
 import { getAvailableTargetFormats } from '../src/lib/registry';
 import { oracleTest } from './helpers/oracle-test';
@@ -230,19 +231,34 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       expect(polylines).toContainEqual([{ x: 20, y: 150 }, { x: 70, y: 220 }, { x: 120, y: 160 }, { x: 170, y: 240 }]);
     });
 
-    it('round-trips CGM clear text back to SVG elements via parseCgmToSvg', async () => {
-      const cgmBuf = encodeCgm(svgBuffer, 'roundtrip');
-      const res = await convertVectorCad(cgmBuf, 'cgm', 'svg', {}, 'roundtrip.cgm');
+    it('encodes every SVG shape as CGM geometry in SVG coordinates (independent parser)', () => {
+      const doc = parseClearTextCgm(encodeCgm(svgBuffer, 'shapes').toString('utf-8'));
+      const distinct = (pts: { x: number; y: number }[]) => {
+        const last = pts[pts.length - 1];
+        return pts.length > 1 && last.x === pts[0].x && last.y === pts[0].y ? pts.slice(0, -1) : pts;
+      };
+      const polygons = doc.body.filter((e) => e.name === 'POLYGON').map((e) => distinct(parseCgmPoints(e.params)));
+      const polylines = doc.body.filter((e) => e.name === 'POLYLINE').map((e) => parseCgmPoints(e.params));
 
-      expect(res.mimeType).toBe('image/svg+xml');
-      expect(res.filename).toBe('roundtrip.svg');
-      const svgOut = res.buffer.toString('utf-8');
+      // Picture extent covers the SVG viewport with a flipped y axis
+      expect(doc.vdcExtent).toEqual([{ x: 0, y: 300 }, { x: 400, y: 0 }]);
+      // rect, circle, polygon and path are filled areas
+      expect(polygons).toHaveLength(4);
+      expect(polygons).toContainEqual([{ x: 20, y: 20 }, { x: 140, y: 20 }, { x: 140, y: 100 }, { x: 20, y: 100 }]);
+      expect(polygons).toContainEqual([{ x: 220, y: 180 }, { x: 280, y: 180 }, { x: 300, y: 240 }, { x: 240, y: 260 }]);
+      const circle = polygons.find((p) => p.length > 20 && p.every((pt) => Math.hypot(pt.x - 250, pt.y - 80) <= 41));
+      expect(circle, 'circle approximated around (250,80) r=40').toBeDefined();
+      // polyline and line are open strokes
+      expect(polylines).toContainEqual([{ x: 20, y: 150 }, { x: 70, y: 220 }, { x: 120, y: 160 }, { x: 170, y: 240 }]);
+      expect(polylines).toContainEqual([{ x: 10, y: 280 }, { x: 390, y: 280 }]);
+    });
 
-      expect(svgOut).toContain('<svg');
-      expect(svgOut).toContain('viewBox="0 0 400 300"');
-      expect(svgOut).toContain('<polyline points="20,150 70,220 120,160 170,240"');
-      expect(svgOut).toContain('<polygon points="20,20 140,20 140,100 20,100 20,20"');
-      // POLYLINE elements must not also be decoded as LINE primitives
+    it('decodes CGM POLYLINE elements without also emitting LINE primitives', () => {
+      const svgOut = parseCgmToSvg(
+        'BEGMF "p";\nMFVERSION 1;\nBEGPIC "p";\nVDCEXT (0,100) (100,0);\nBEGPICBODY;\nPOLYLINE (0,0) (10,10) (20,0);\nENDPIC;\nENDMF;\n'
+      );
+      expect(svgOut).toContain('<polyline points="0,0 10,10 20,0"');
+      expect(svgOut).toContain('viewBox="0 0 100 100"');
       expect(svgOut).not.toContain('<line');
     });
 
