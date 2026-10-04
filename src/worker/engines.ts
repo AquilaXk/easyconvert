@@ -1317,6 +1317,19 @@ function checkInputContainsComplexScript(input: Buffer | WorkerVfsPayload, src: 
   return false;
 }
 
+/** Whether text output holds any character other than whitespace (form feeds from empty pages count as blank). */
+function hasNonWhitespaceText(buffer: Buffer): boolean {
+  return buffer.toString('utf-8').trim().length > 0;
+}
+
+/** Deletes an engine's temporary output file unless it is the destination the caller asked for. */
+function discardPersistedOutput(filePath: string | undefined, input: Buffer | WorkerVfsPayload, options: WorkerEngineOptions): void {
+  if (!filePath) return;
+  const requestedOutput = (Buffer.isBuffer(input) ? undefined : input.outputPath) || (options as { outputPath?: string }).outputPath;
+  if (filePath === requestedOutput) return;
+  fs.rmSync(filePath, { force: true });
+}
+
 export async function executeWorkerConversion(
   input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
@@ -1435,11 +1448,17 @@ export async function executeWorkerConversion(
     }
   }
 
-  // 3. Native Poppler (PDF -> Image, SVG, or Text)
-  if (src === 'pdf' && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg' || tgt === 'txt' || tgt === 'text')) {
+  // 3. Native Poppler (PDF -> Image, SVG, or Text). OCR requests skip the text-layer route.
+  const isPdfTextTarget = tgt === 'txt' || tgt === 'text';
+  const skipPopplerForOcr = isPdfTextTarget && Boolean(options.ocrEnabled);
+  if (src === 'pdf' && !skipPopplerForOcr && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg' || isPdfTextTarget)) {
     try {
       const popplerRes = await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename);
-      if (popplerRes) {
+      if (popplerRes && isPdfTextTarget && options.inProcessFallback !== false && !hasNonWhitespaceText(popplerRes.buffer)) {
+        // No text layer: scanned pages need the in-process engine's OCR. Drop the empty output first.
+        discardPersistedOutput(popplerRes.filePath, input, options);
+        fallbackChain.push('native-poppler: pdftotext found no text layer');
+      } else if (popplerRes) {
         return {
           ...popplerRes,
           fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
