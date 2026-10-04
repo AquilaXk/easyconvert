@@ -7,6 +7,7 @@ import Redis from 'ioredis';
 import { localFsStorage } from './index';
 import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
+import { FORMAT_REGISTRY } from '../registry';
 
 export class TusOffsetMismatchError extends Error {
   constructor(public readonly expectedOffset: number) {
@@ -19,6 +20,27 @@ export class TusChecksumMismatchError extends Error {
   constructor() {
     super('The checksum for the uploaded chunk did not match the provided Upload-Checksum');
     this.name = 'TusChecksumMismatchError';
+  }
+}
+
+export class TusInvalidChecksumHeaderError extends Error {
+  constructor(message: string = 'Invalid Upload-Checksum header format') {
+    super(message);
+    this.name = 'TusInvalidChecksumHeaderError';
+  }
+}
+
+export class TusUnsupportedChecksumAlgorithmError extends Error {
+  constructor(algo: string) {
+    super(`Unsupported checksum algorithm "${algo}". Only "sha256" is supported.`);
+    this.name = 'TusUnsupportedChecksumAlgorithmError';
+  }
+}
+
+export class TusUploadExceededLengthError extends Error {
+  constructor(exceededBytes: number, uploadLength: number) {
+    super(`Uploaded bytes (${exceededBytes}) exceed declared Upload-Length (${uploadLength})`);
+    this.name = 'TusUploadExceededLengthError';
   }
 }
 
@@ -209,12 +231,63 @@ export function serializeTusMetadata(meta: Record<string, string>): string {
   return pairs.join(',');
 }
 
+/**
+ * In-process promise queue mutex ensuring deterministic serialization of concurrent TUS operations per session ID.
+ */
+export class SessionLockManager {
+  private readonly locks = new Map<string, Promise<void>>();
+
+  get activeLockCount(): number {
+    return this.locks.size;
+  }
+
+  async runExclusive<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(sessionId) || Promise.resolve();
+    let releaseLock!: () => void;
+    const current = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const chained = prev.then(
+      () => current,
+      () => current
+    );
+    this.locks.set(sessionId, chained);
+
+    try {
+      await prev;
+      return await fn();
+    } finally {
+      releaseLock();
+      if (this.locks.get(sessionId) === chained) {
+        this.locks.delete(sessionId);
+      }
+    }
+  }
+}
+
 function parseChecksumHeader(header?: string | null): { algo: string; expectedDigest: string } | null {
-  if (!header || typeof header !== 'string') return null;
-  const spaceIdx = header.indexOf(' ');
-  if (spaceIdx === -1) return null;
-  const algo = header.slice(0, spaceIdx).trim().toLowerCase();
-  const expectedDigest = header.slice(spaceIdx + 1).trim();
+  if (header === undefined || header === null) return null;
+  if (typeof header !== 'string') {
+    throw new TusInvalidChecksumHeaderError('Upload-Checksum header must be a string');
+  }
+  const trimmed = header.trim();
+  if (trimmed === '') {
+    throw new TusInvalidChecksumHeaderError('Upload-Checksum header is empty');
+  }
+  const spaceIdx = trimmed.indexOf(' ');
+  if (spaceIdx === -1) {
+    throw new TusInvalidChecksumHeaderError(
+      'Upload-Checksum header must consist of algorithm and base64 digest separated by space'
+    );
+  }
+  const algo = trimmed.slice(0, spaceIdx).trim().toLowerCase();
+  const expectedDigest = trimmed.slice(spaceIdx + 1).trim();
+  if (!expectedDigest) {
+    throw new TusInvalidChecksumHeaderError('Missing checksum digest in Upload-Checksum header');
+  }
+  if (algo !== 'sha256') {
+    throw new TusUnsupportedChecksumAlgorithmError(algo);
+  }
   return { algo, expectedDigest };
 }
 
@@ -301,6 +374,7 @@ async function finalizeTusSession(session: TusSession, binPath: string): Promise
 export class TusEngine {
   private readonly tusDir: string;
   private readonly defaultTtlSeconds: number;
+  private readonly lockManager = new SessionLockManager();
   readonly maxUploadSize: number = 5 * 1024 * 1024 * 1024; // 5 GiB
 
   constructor(options?: { tusDir?: string; defaultTtlSeconds?: number }) {
@@ -361,7 +435,8 @@ export class TusEngine {
 
     // User namespace registration:
     // If ownerUserId is provided, register under user conversions namespace, otherwise uploads
-    const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const base = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '');
+    const sanitizedFilename = base.length > 0 ? base : `upload-${id}.bin`;
     const key = params.ownerUserId
       ? `conversions/${params.ownerUserId}/${id}_${sanitizedFilename}`
       : `uploads/${id}_${sanitizedFilename}`;
@@ -433,119 +508,144 @@ export class TusEngine {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     checksumHeader?: string | null
   ): Promise<AppendChunkResult> {
-    const session = await this.getSession(id);
-    if (!session) {
-      throw new TusNotFoundError(id);
-    }
+    return this.lockManager.runExclusive(id, async () => {
+      const session = await this.getSession(id);
+      if (!session) {
+        throw new TusNotFoundError(id);
+      }
 
-    if (session.completed) {
-      throw new Error(`Upload session "${id}" is already completed`);
-    }
+      if (session.completed) {
+        throw new Error(`Upload session "${id}" is already completed`);
+      }
 
-    if (session.uploadOffset !== clientOffset) {
-      throw new TusOffsetMismatchError(session.uploadOffset);
-    }
+      if (session.uploadOffset !== clientOffset) {
+        throw new TusOffsetMismatchError(session.uploadOffset);
+      }
 
-    const { infoPath, binPath } = this.getPaths(id);
-    const nodeReadable = this.toNodeReadable(stream);
+      const { infoPath, binPath } = this.getPaths(id);
+      const nodeReadable = this.toNodeReadable(stream);
 
-    const parsedChecksum = parseChecksumHeader(checksumHeader);
-    let checksumHasher: crypto.Hash | null = null;
-    if (parsedChecksum) {
-      try {
+      const parsedChecksum = parseChecksumHeader(checksumHeader);
+      let checksumHasher: crypto.Hash | null = null;
+      if (parsedChecksum) {
         checksumHasher = crypto.createHash(parsedChecksum.algo);
-      } catch {
-        throw new Error(`Unsupported checksum algorithm "${parsedChecksum.algo}"`);
       }
-    }
 
-    let chunkBytes = 0;
-    nodeReadable.on('data', (chunk: Buffer | string) => {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      chunkBytes += buf.length;
-      if (checksumHasher) {
-        checksumHasher.update(buf);
-      }
-    });
+      const passThrough = new PassThrough();
+      let chunkBytes = 0;
+      let limitExceeded = false;
 
-    const fileWriteStream = fs.createWriteStream(binPath, { flags: 'a' });
+      passThrough.on('data', (chunk: Buffer | string) => {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        chunkBytes += buf.length;
+        if (clientOffset + chunkBytes > session.uploadLength) {
+          limitExceeded = true;
+          passThrough.destroy(
+            new TusUploadExceededLengthError(clientOffset + chunkBytes, session.uploadLength)
+          );
+          return;
+        }
+        if (checksumHasher) {
+          checksumHasher.update(buf);
+        }
+      });
 
-    try {
-      await pipeline(nodeReadable, fileWriteStream);
-    } catch (err) {
-      rollbackChunk(binPath, clientOffset);
-      throw err;
-    }
+      const fileWriteStream = fs.createWriteStream(binPath, { flags: 'a' });
 
-    if (checksumHasher && parsedChecksum) {
-      const computedBase64 = checksumHasher.digest('base64');
-      if (computedBase64 !== parsedChecksum.expectedDigest) {
-        rollbackChunk(binPath, clientOffset);
-        throw new TusChecksumMismatchError();
-      }
-    }
-
-    const newOffset = clientOffset + chunkBytes;
-    if (newOffset > session.uploadLength) {
-      rollbackChunk(binPath, clientOffset);
-      throw new Error(`Uploaded bytes (${newOffset}) exceed declared Upload-Length (${session.uploadLength})`);
-    }
-
-    session.uploadOffset = newOffset;
-
-    let isComplete = false;
-    if (newOffset === session.uploadLength) {
-      isComplete = true;
-      session.completed = true;
-
-      // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath)
-      const ext = path.extname(session.filename);
-      const declaredFormat = ext ? ext.replace(/^\./, '') : session.mimeType || 'bin';
       try {
-        assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
-      } catch (err) {
-        session.completed = false;
+        await pipeline(nodeReadable, passThrough, fileWriteStream);
+      } catch (err: any) {
         rollbackChunk(binPath, clientOffset);
-        session.uploadOffset = clientOffset;
-        await this.sessionStore.saveSession(session);
-        await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+        if (limitExceeded) {
+          throw new TusUploadExceededLengthError(clientOffset + chunkBytes, session.uploadLength);
+        }
         throw err;
       }
 
-      await finalizeTusSession(session, binPath);
-    }
+      if (checksumHasher && parsedChecksum) {
+        const computedBase64 = checksumHasher.digest('base64');
+        if (computedBase64 !== parsedChecksum.expectedDigest) {
+          rollbackChunk(binPath, clientOffset);
+          throw new TusChecksumMismatchError();
+        }
+      }
 
-    await this.sessionStore.saveSession(session);
-    await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      const newOffset = clientOffset + chunkBytes;
+      session.uploadOffset = newOffset;
 
-    return {
-      newOffset,
-      isComplete,
-      session,
-    };
+      let isComplete = false;
+      if (newOffset === session.uploadLength) {
+        isComplete = true;
+        session.completed = true;
+
+        // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath)
+        const ext = path.extname(session.filename);
+        let declaredFormat = ext ? ext.replace(/^\./, '').toLowerCase().trim() : '';
+        if (!declaredFormat && session.mimeType) {
+          const found = Object.values(FORMAT_REGISTRY).find((f) => f.mimeType === session.mimeType);
+          if (found) {
+            declaredFormat = found.extension;
+          } else {
+            const sub = session.mimeType.split('/').pop()?.toLowerCase().trim();
+            declaredFormat = sub || 'bin';
+          }
+        }
+        if (!declaredFormat) {
+          declaredFormat = 'bin';
+        }
+
+        try {
+          assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
+        } catch (err) {
+          session.completed = false;
+          rollbackChunk(binPath, clientOffset);
+          session.uploadOffset = clientOffset;
+          await this.sessionStore.saveSession(session);
+          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+          throw err;
+        }
+
+        await finalizeTusSession(session, binPath);
+      }
+
+      await this.sessionStore.saveSession(session);
+      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+
+      return {
+        newOffset,
+        isComplete,
+        session,
+      };
+    });
   }
 
   async terminateSession(id: string): Promise<boolean> {
-    const { infoPath, binPath } = this.getPaths(id);
-    await this.sessionStore.deleteSession(id);
-    let deleted = false;
-    try {
-      if (fs.existsSync(infoPath)) {
-        await fs.promises.unlink(infoPath);
-        deleted = true;
+    return this.lockManager.runExclusive(id, async () => {
+      const { infoPath, binPath } = this.getPaths(id);
+      const storeDeleted = await this.sessionStore.deleteSession(id);
+      let fileDeleted = false;
+      try {
+        if (fs.existsSync(infoPath)) {
+          await fs.promises.unlink(infoPath);
+          fileDeleted = true;
+        }
+      } catch {
+        // In-flight deletion race
       }
-    } catch {
-      // In-flight deletion race
-    }
-    try {
-      if (fs.existsSync(binPath)) {
-        await fs.promises.unlink(binPath);
-        deleted = true;
+      try {
+        if (fs.existsSync(binPath)) {
+          await fs.promises.unlink(binPath);
+          fileDeleted = true;
+        }
+      } catch {
+        // In-flight deletion race
       }
-    } catch {
-      // In-flight deletion race
-    }
-    return deleted;
+      return storeDeleted || fileDeleted;
+    });
+  }
+
+  get activeLockCount(): number {
+    return this.lockManager.activeLockCount;
   }
 }
 

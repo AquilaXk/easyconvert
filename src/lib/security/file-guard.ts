@@ -1,9 +1,9 @@
 import fs from 'node:fs';
-import { assertNotSpoofedFile, FileExtensionSpoofError } from '../registry';
+import { assertNotSpoofedFile, FileExtensionSpoofError, FORMAT_REGISTRY } from '../registry';
 
 /**
  * Asserts fail-closed that initial magic bytes of a file on disk match the declared format.
- * Zero-heap: only reads up to 8192 header bytes without loading large files into memory.
+ * Zero-heap: only reads up to 64 KiB (65,536 bytes) header bytes without loading large files into memory.
  */
 export function assertNotSpoofedFilePath(
   filePath: string,
@@ -32,7 +32,18 @@ export function assertNotSpoofedFilePath(
     const headerBuf = Buffer.alloc(maxHeaderBytes);
     const bytesRead = fs.readSync(fd, headerBuf, 0, maxHeaderBytes, 0);
     const slice = bytesRead < maxHeaderBytes ? headerBuf.subarray(0, bytesRead) : headerBuf;
-    assertNotSpoofedFile(slice, declaredExtensionOrFormatId, filename);
+
+    let formatOrExt = declaredExtensionOrFormatId;
+    if (formatOrExt.includes('/')) {
+      const found = Object.values(FORMAT_REGISTRY).find((f) => f.mimeType === formatOrExt);
+      if (found) {
+        formatOrExt = found.extension;
+      } else {
+        const sub = formatOrExt.split('/').pop()?.toLowerCase().trim();
+        formatOrExt = sub || 'bin';
+      }
+    }
+    assertNotSpoofedFile(slice, formatOrExt, filename);
   } finally {
     fs.closeSync(fd);
   }
