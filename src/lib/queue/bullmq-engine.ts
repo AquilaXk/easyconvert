@@ -1811,13 +1811,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           if (typeof this.redisClient.zcard === 'function') {
             try {
               const count = await this.redisClient.zcard(this.waitingKey);
-              if (typeof count === 'number' && !isNaN(count)) return count;
+              if (typeof count === 'number' && !Number.isNaN(count)) return count;
             } catch {}
           }
           if (typeof this.redisClient.llen === 'function') {
             try {
               const count = await this.redisClient.llen(this.waitingKey);
-              if (typeof count === 'number' && !isNaN(count)) return count;
+              if (typeof count === 'number' && !Number.isNaN(count)) return count;
             } catch {}
           }
           return 0;
@@ -2113,69 +2113,47 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback._popNextWaiting();
   }
 
-  private async pruneCompletedJobs(maxToKeep: number): Promise<void> {
+  private async pruneStateJobs(stateKey: string, maxToKeep: number): Promise<void> {
     if (!this.redisClient || !this.redisConnected) return;
     try {
-      const ids = await this.redisClient.smembers(this.completedKey);
+      const ids = await this.redisClient.smembers(stateKey);
       if (ids.length <= maxToKeep) return;
       const jobsWithTime: { id: string; finishedOn: number; userId?: string }[] = [];
-      for (const id of ids) {
-        const raw = await this.redisClient.hmget(this.getJobKey(id), 'finishedOn', 'data');
-        let userId: string | undefined;
-        try {
-          if (raw[1]) {
-            const parsed = JSON.parse(raw[1]);
-            userId = parsed.userId;
-          }
-        } catch {}
-        jobsWithTime.push({
-          id,
-          finishedOn: Number(raw[0] || 0),
-          userId,
-        });
+      const records = await Promise.all(
+        ids.map(async (id) => {
+          if (!this.redisClient) return null;
+          const raw = await this.redisClient.hmget(this.getJobKey(id), 'finishedOn', 'data');
+          let userId: string | undefined;
+          try {
+            if (raw[1]) {
+              const parsed = JSON.parse(raw[1]);
+              userId = parsed.userId;
+            }
+          } catch {}
+          return {
+            id,
+            finishedOn: Number(raw[0] || 0),
+            userId,
+          };
+        })
+      );
+      for (const rec of records) {
+        if (rec) jobsWithTime.push(rec);
       }
       jobsWithTime.sort((a, b) => b.finishedOn - a.finishedOn);
       const toRemove = jobsWithTime.slice(maxToKeep);
-      for (const item of toRemove) {
-        await this.redisClient.srem(this.completedKey, item.id);
-        await this.redisClient.del(this.getJobKey(item.id));
-        if (item.userId) {
-          await this.redisClient.zrem(this.getUserJobsKey(item.userId), item.id);
-        }
-      }
-    } catch {}
-  }
-
-  private async pruneFailedJobs(maxToKeep: number): Promise<void> {
-    if (!this.redisClient || !this.redisConnected) return;
-    try {
-      const ids = await this.redisClient.smembers(this.failedKey);
-      if (ids.length <= maxToKeep) return;
-      const jobsWithTime: { id: string; finishedOn: number; userId?: string }[] = [];
-      for (const id of ids) {
-        const raw = await this.redisClient.hmget(this.getJobKey(id), 'finishedOn', 'data');
-        let userId: string | undefined;
-        try {
-          if (raw[1]) {
-            const parsed = JSON.parse(raw[1]);
-            userId = parsed.userId;
+      await Promise.all(
+        toRemove.map(async (item) => {
+          if (!this.redisClient) return;
+          await this.redisClient.srem(stateKey, item.id);
+          await this.redisClient.del(this.getJobKey(item.id));
+          if (item.userId) {
+            try {
+              await this.redisClient.zrem(this.getUserJobsKey(item.userId), item.id);
+            } catch {}
           }
-        } catch {}
-        jobsWithTime.push({
-          id,
-          finishedOn: Number(raw[0] || 0),
-          userId,
-        });
-      }
-      jobsWithTime.sort((a, b) => b.finishedOn - a.finishedOn);
-      const toRemove = jobsWithTime.slice(maxToKeep);
-      for (const item of toRemove) {
-        await this.redisClient.srem(this.failedKey, item.id);
-        await this.redisClient.del(this.getJobKey(item.id));
-        if (item.userId) {
-          await this.redisClient.zrem(this.getUserJobsKey(item.userId), item.id);
-        }
-      }
+        })
+      );
     } catch {}
   }
 
@@ -2265,7 +2243,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             } catch {}
           }
         } else if (typeof job.opts?.removeOnComplete === 'number') {
-          await this.pruneCompletedJobs(job.opts.removeOnComplete);
+          await this.pruneStateJobs(this.completedKey, job.opts.removeOnComplete);
         }
         return true;
       } catch (err) {
@@ -2316,7 +2294,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           } catch {}
         }
       } else if (typeof job.opts?.removeOnFail === 'number') {
-        await this.pruneFailedJobs(job.opts.removeOnFail);
+        await this.pruneStateJobs(this.failedKey, job.opts.removeOnFail);
       }
       return true;
     } catch (redisErr) {
