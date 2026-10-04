@@ -1262,5 +1262,57 @@ describe('Phase 4-F: Float32 Linear Color Pipeline, RCD Demosaicing & Ultra HDR/
       }
       expect(maxVal).toBeGreaterThan(1.5);
     });
+
+    it('preserves highlight headroom (> 1.0) in Float32 linear pipeline when demosaicing with AMaZE and AHD', () => {
+      const width = 8;
+      const height = 8;
+      const data = new Uint16Array(width * height);
+      for (let i = 0; i < width * height; i++) {
+        data[i] = 1023 + 500; // rawVal exceeds whiteLevel
+      }
+      const sensor: BayerSensorData = {
+        width,
+        height,
+        pattern: 'RGGB',
+        data,
+        blackLevel: 0,
+        whiteLevel: 1023,
+      };
+
+      const amazeRes = demosaicAmazeBayerCfa(sensor);
+      expect(amazeRes.floatData).toBeDefined();
+      expect(amazeRes.floatData![0]).toBeGreaterThan(1.0);
+
+      const ahdRes = demosaicAhdBayerCfa(sensor);
+      expect(ahdRes.floatData).toBeDefined();
+      expect(ahdRes.floatData![0]).toBeGreaterThan(1.0);
+
+      const pipeAmaze = processFloat32LinearPipeline(sensor, { demosaicMethod: 'amaze' });
+      expect(pipeAmaze.rgbFloat[0]).toBeGreaterThan(1.0);
+
+      const pipeAhd = processFloat32LinearPipeline(sensor, { demosaicMethod: 'ahd' });
+      expect(pipeAhd.rgbFloat[0]).toBeGreaterThan(1.0);
+    });
+
+    it('fails closed when converting corrupt or missing gain map Ultra HDR input with src === "ultrahdr"', async () => {
+      const dummyJpeg = await sharp({
+        create: {
+          width: 16,
+          height: 16,
+          channels: 3,
+          background: { r: 128, g: 128, b: 128 },
+        },
+      })
+        .jpeg()
+        .toBuffer();
+
+      await expect(
+        convertImage(dummyJpeg, 'png', {}, 'corrupt.jpg', 'ultrahdr')
+      ).rejects.toThrow('Invalid Ultra HDR JPEG: secondary gain map JPEG not detected.');
+
+      await expect(
+        convertImage(dummyJpeg, 'exr', {}, 'corrupt.jpg', 'ultrahdr')
+      ).rejects.toThrow('Invalid Ultra HDR JPEG: secondary gain map JPEG not detected.');
+    });
   });
 });

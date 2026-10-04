@@ -817,7 +817,7 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
         bLevel = blackLevelArr[blkIdx % blackLevelArr.length] ?? defaultBLevel;
       }
       const range = Math.max(1, wLevel - bLevel);
-      const clamped = Math.max(bLevel, Math.min(wLevel, rawVal));
+      const clamped = Math.max(bLevel, rawVal);
       norm[i] = ((clamped - bLevel) / range) * 255;
     }
   }
@@ -868,8 +868,8 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
         const gv =
           (getPixel(x, y - 1) + getPixel(x, y + 1)) / 2 +
           (2 * p - getPixel(x, y - 2) - getPixel(x, y + 2)) / 4;
-        ghEst[y * width + x] = Math.max(0, Math.min(255, gh));
-        gvEst[y * width + x] = Math.max(0, Math.min(255, gv));
+        ghEst[y * width + x] = Math.max(0, gh);
+        gvEst[y * width + x] = Math.max(0, gv);
       }
     }
   }
@@ -919,7 +919,7 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
         const sum = homH + homV;
         const wH = sum > 0 ? homH / sum : 0.5;
         const wV = sum > 0 ? homV / sum : 0.5;
-        green[y * width + x] = Math.max(0, Math.min(255, wH * gh + wV * gv));
+        green[y * width + x] = Math.max(0, wH * gh + wV * gv);
       }
     }
   }
@@ -1039,8 +1039,8 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 3;
       const g = green[y * width + x];
-      const r = Math.max(0, Math.min(255, g + finalRedDiff[y * width + x]));
-      const b = Math.max(0, Math.min(255, g + finalBlueDiff[y * width + x]));
+      const r = Math.max(0, g + finalRedDiff[y * width + x]);
+      const b = Math.max(0, g + finalBlueDiff[y * width + x]);
 
       // Store normalized linear demosaiced Float32 values [0.0, 1.0] before color transforms
       floatData[idx] = r / 255.0;
@@ -1139,7 +1139,7 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
       bLevel = blkArr[blkIdx];
     }
     const range = wLevel - bLevel;
-    const clamped = Math.max(bLevel, Math.min(wLevel, rawVal));
+    const clamped = Math.max(bLevel, rawVal);
     return ((clamped - bLevel) / range) * 255.0;
   };
 
@@ -1187,7 +1187,7 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
         const pLL = getPixel(x - 2, y);
         const pRR = getPixel(x + 2, y);
         const interpGH = (gL + gR) * 0.5 + (2.0 * p - pLL - pRR) * 0.25;
-        gH[idx] = Math.max(0, Math.min(255, interpGH));
+        gH[idx] = Math.max(0, interpGH);
 
         // Vertical interpolation: G_V = (G(y-1) + G(y+1))/2 + (2*p(y) - p(y-2) - p(y+2))/4
         const gT = getPixel(x, y - 1);
@@ -1195,7 +1195,7 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
         const pTT = getPixel(x, y - 2);
         const pBB = getPixel(x, y + 2);
         const interpGV = (gT + gB) * 0.5 + (2.0 * p - pTT - pBB) * 0.25;
-        gV[idx] = Math.max(0, Math.min(255, interpGV));
+        gV[idx] = Math.max(0, interpGV);
       }
     }
   }
@@ -1272,8 +1272,8 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
             diffRV = (vT + vB) * 0.5;
           }
         }
-        rH[idx] = Math.max(0, Math.min(255, gH[idx] + diffRH));
-        rV[idx] = Math.max(0, Math.min(255, gV[idx] + diffRV));
+        rH[idx] = Math.max(0, gH[idx] + diffRH);
+        rV[idx] = Math.max(0, gV[idx] + diffRV);
       }
 
       // Interpolate B
@@ -1316,8 +1316,8 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
             diffBV = (vT + vB) * 0.5;
           }
         }
-        bH[idx] = Math.max(0, Math.min(255, gH[idx] + diffBH));
-        bV[idx] = Math.max(0, Math.min(255, gV[idx] + diffBV));
+        bH[idx] = Math.max(0, gH[idx] + diffBH);
+        bV[idx] = Math.max(0, gV[idx] + diffBV);
       }
     }
   }
@@ -1473,8 +1473,8 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
   }
 
   for (let i = 0; i < width * height; i++) {
-    filteredR[i] = Math.max(0, Math.min(255, finalG[i] + finalDiffR[i]));
-    filteredB[i] = Math.max(0, Math.min(255, finalG[i] + finalDiffB[i]));
+    filteredR[i] = Math.max(0, finalG[i] + finalDiffR[i]);
+    filteredB[i] = Math.max(0, finalG[i] + finalDiffB[i]);
   }
 
   // Step 6: White Balance, Color Matrix, and sRGB Gamma Transfer Function
@@ -2426,25 +2426,21 @@ export async function convertImage(
         raw: { width: exrDecoded.width, height: exrDecoded.height, channels: 3 },
       });
     } else if (src === 'ultrahdr') {
-      try {
-        const uHdr = await reconstructUltraHdr(activeBuffer);
-        const rgb16 = new Uint16Array(uHdr.width * uHdr.height * 3);
-        for (let i = 0; i < uHdr.width * uHdr.height * 3; i++) {
-          rgb16[i] = Math.max(0, Math.min(65535, Math.round(applyIec61966SrgbGamma(uHdr.rgbFloat[i]) * 65535.0)));
-        }
-        rawDemosaiced = {
-          rgb: uHdr.sdrRgb,
-          rgbFloat: uHdr.rgbFloat,
-          rgb16,
-          width: uHdr.width,
-          height: uHdr.height,
-        };
-        pipeline = sharp(uHdr.sdrRgb, {
-          raw: { width: uHdr.width, height: uHdr.height, channels: 3 },
-        });
-      } catch {
-        pipeline = sharp(activeBuffer);
+      const uHdr = await reconstructUltraHdr(activeBuffer);
+      const rgb16 = new Uint16Array(uHdr.width * uHdr.height * 3);
+      for (let i = 0; i < uHdr.width * uHdr.height * 3; i++) {
+        rgb16[i] = Math.max(0, Math.min(65535, Math.round(applyIec61966SrgbGamma(uHdr.rgbFloat[i]) * 65535.0)));
       }
+      rawDemosaiced = {
+        rgb: uHdr.sdrRgb,
+        rgbFloat: uHdr.rgbFloat,
+        rgb16,
+        width: uHdr.width,
+        height: uHdr.height,
+      };
+      pipeline = sharp(uHdr.sdrRgb, {
+        raw: { width: uHdr.width, height: uHdr.height, channels: 3 },
+      });
     } else {
       pipeline = sharp(activeBuffer);
     }
@@ -2638,13 +2634,20 @@ export async function convertImage(
         let hdrFloat: Float32Array | null = null;
         let imgW = 0;
         let imgH = 0;
-        try {
+        if (src === 'ultrahdr') {
           const uHdr = await reconstructUltraHdr(activeBuffer);
           hdrFloat = uHdr.rgbFloat;
           imgW = uHdr.width;
           imgH = uHdr.height;
-        } catch {
-          // Standard non-UltraHDR image
+        } else {
+          try {
+            const uHdr = await reconstructUltraHdr(activeBuffer);
+            hdrFloat = uHdr.rgbFloat;
+            imgW = uHdr.width;
+            imgH = uHdr.height;
+          } catch {
+            // Standard non-UltraHDR image
+          }
         }
 
         if (hdrFloat && imgW > 0 && imgH > 0) {
