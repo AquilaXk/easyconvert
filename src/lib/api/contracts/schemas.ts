@@ -1,3 +1,5 @@
+import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
+
 import { PIPELINE_OPERATIONS } from './enums';
 
 export const PdfWatermarkOptionsSchema = {
@@ -792,17 +794,7 @@ export const JobGraphSchema = {
         properties: {
           op: {
             type: 'string',
-            enum: [
-              'import.upload',
-              'import.url',
-              'convert',
-              'ocr',
-              'optimize',
-              'archive.create',
-              'archive.extract',
-              'export.url',
-              'export.internal',
-            ],
+            enum: [...GRAPH_OPERATIONS],
             description: 'Operation type for this graph node.',
           },
           input: {
