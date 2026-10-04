@@ -736,7 +736,13 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
 
       it(`rejects geometry-less SVG through convertVectorCad -> ${target} with a typed error`, async () => {
         const input = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'utf-8');
-        await expect(convertVectorCad(input, 'svg', target, {}, 'blank.svg')).rejects.toBeInstanceOf(ConversionFailedError);
+        const err = await convertVectorCad(input, 'svg', target, {}, 'blank.svg').then(
+          () => null,
+          (e: unknown) => e
+        );
+        expect(err).toBeInstanceOf(ConversionFailedError);
+        expect((err as Error).name).toBe('CadGeometryUnavailableError');
+        expect((err as Error).message).toMatch(new RegExp(`^${target.toUpperCase()} encoding failed: SVG contains no drawable vector geometry`));
       });
     }
   });
@@ -852,9 +858,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
           const rendered = await renderMetafileWithSoffice(metafile, `sample.${target}`);
           const reference = await sharp(svgBuffer, { density: 192 }).png().toBuffer();
 
-          const vrtResult = await compareImages(await normalizeDrawing(rendered), await normalizeDrawing(reference), {
-            minSsim: MIN_SSIM,
-          });
+          const vrtResult = await compareImages(await normalizeDrawing(rendered), await normalizeDrawing(reference));
           expect(vrtResult.ssim).toBeGreaterThanOrEqual(MIN_SSIM);
         },
         SOFFICE_TIMEOUT_MS + 15000
