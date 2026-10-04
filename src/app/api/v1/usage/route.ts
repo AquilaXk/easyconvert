@@ -23,11 +23,12 @@ function parseLimitParam(raw: string | null): number {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await validateApiAccess(req, ['read:usage', 'read', 'admin']);
-  if (!auth.authenticated || !auth.user) {
+  const auth = await validateApiAccess(req, { requiredScope: 'read:usage', requiredUnits: 0 });
+  if (!auth.authorized || !auth.user) {
+    const status = auth.status || 401;
     return NextResponse.json(
-      { error: auth.error || 'Unauthorized', code: 'UNAUTHORIZED' },
-      { status: 401 }
+      { error: auth.error || 'Unauthorized', code: status === 403 ? 'FORBIDDEN' : 'UNAUTHORIZED' },
+      { status }
     );
   }
 

@@ -894,6 +894,15 @@ export async function GET() {
         UsageQueryResponse: {
           ...UsageQueryResponseSchema,
           $id: undefined,
+          properties: {
+            ...UsageQueryResponseSchema.properties,
+            items: {
+              type: 'array',
+              items: {
+                $ref: '#/components/schemas/UsageLedgerEntry',
+              },
+            },
+          },
         },
       },
     },
