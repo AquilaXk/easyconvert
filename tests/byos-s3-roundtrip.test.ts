@@ -15,6 +15,7 @@ import { StorageNotFoundError, StorageSsrfError } from '../src/lib/storage/adapt
 import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
+import testCredentials from './fixtures/sigv4/test-credentials.json';
 
 /**
  * Regression for the re-enabled s3 BYOS provider: registration, import/s3, and export/s3 run
@@ -24,8 +25,8 @@ import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
  */
 
 const BUCKET = 'customer-bucket';
-const ACCESS_KEY = 'AKIACUSTOMEREXAMPLE1';
-const SECRET = 'customer/Secret+EXAMPLEKEY000000000000';
+const ACCESS_KEY = testCredentials.roundtripStub.accessKeyId;
+const SECRET = testCredentials.roundtripStub.secretAccessKey;
 const MIB = 1024 * 1024;
 
 function sha256(buf: Buffer): string {

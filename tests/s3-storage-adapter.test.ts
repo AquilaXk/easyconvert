@@ -12,6 +12,7 @@ import {
 } from '../src/lib/storage/adapters/adapter-interface';
 import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
 import { verifySigV4Request } from './helpers/sigv4-verifier';
+import testCredentials from './fixtures/sigv4/test-credentials.json';
 
 /**
  * Oracle: a node:http S3 stub that authenticates every request with an independently written
@@ -21,8 +22,8 @@ import { verifySigV4Request } from './helpers/sigv4-verifier';
 
 const MIB = 1024 * 1024;
 const BUCKET = 'byos-bucket';
-const ACCESS_KEY = 'AKIASTUBEXAMPLE00001';
-const SECRET = 'stub/Secret+Key/EXAMPLEKEY0000000000000';
+const ACCESS_KEY = testCredentials.adapterStub.accessKeyId;
+const SECRET = testCredentials.adapterStub.secretAccessKey;
 const MIN_PART = 5 * MIB;
 
 function sha256(buf: Buffer): string {
@@ -42,8 +43,10 @@ function sliced(buf: Buffer, slice = 64 * 1024): Readable {
   return Readable.from(pieces);
 }
 
+const PUBLISHED = testCredentials.published;
+
 describe('independent SigV4 verifier', () => {
-  // Amazon S3 API Reference, header-based auth GET Object example (AKIAIOSFODNN7EXAMPLE).
+  // Amazon S3 API Reference, header-based auth GET Object example (documented example key).
   const published = {
     method: 'GET',
     rawUrl: '/test.txt',
@@ -53,10 +56,10 @@ describe('independent SigV4 verifier', () => {
       'x-amz-content-sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       'x-amz-date': '20130524T000000Z',
       authorization:
-        'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41',
+        `AWS4-HMAC-SHA256 Credential=${PUBLISHED.accessKeyId}/20130524/us-east-1/s3/aws4_request,SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41`,
     },
     body: Buffer.alloc(0),
-    secretFor: (id: string) => (id === 'AKIAIOSFODNN7EXAMPLE' ? 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' : undefined),
+    secretFor: (id: string) => (id === PUBLISHED.accessKeyId ? PUBLISHED.secretAccessKey : undefined),
   };
 
   it('accepts the published GET Object example', () => {

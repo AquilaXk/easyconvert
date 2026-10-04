@@ -13,7 +13,7 @@ import {
 /**
  * Oracle: published SigV4 vectors hand-copied into tests/fixtures/sigv4/s3-header-auth-vectors.json
  * Each vector carries a "source" naming the fetched file and commit: the 2015 AWS SigV4 test suite
- * (boto/botocore) and the S3 GET Object example with AKIAIOSFODNN7EXAMPLE (durch/rust-s3).
+ * (boto/botocore) and the S3 GET Object example with the documented example key (durch/rust-s3).
  * Nothing here is derived from src/.
  */
 
