@@ -1,7 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { ConversionOptions, InvalidMediaOptionError, AudioCodec } from '../types';
+import {
+  ConversionOptions,
+  InvalidMediaOptionError,
+  AudioCodec,
+  MediaLadderRung,
+  MediaPackagingOptions,
+  MediaPackagingFormat,
+} from '../types';
 
 export interface HardwareAccelerationCapabilities {
   nvenc: boolean;
@@ -740,4 +747,216 @@ export function buildFfmpegArguments(
 
   return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }
+
+export const DEFAULT_PACKAGING_LADDER: readonly MediaLadderRung[] = [
+  { height: 1080, bitrateK: 4500, audioBitrateK: 192 },
+  { height: 720, bitrateK: 2500, audioBitrateK: 128 },
+  { height: 480, bitrateK: 1000, audioBitrateK: 96 },
+] as const;
+
+export const PACKAGING_VIDEO_ENCODERS: Record<string, string> = {
+  h264: 'libx264',
+  hevc: 'libx265',
+  vp9: 'libvpx-vp9',
+  av1: 'libsvtav1',
+};
+
+export const PACKAGING_AUDIO_ENCODERS: Record<string, string> = {
+  aac: 'aac',
+  opus: 'libopus',
+};
+
+/**
+ * Builds FFmpeg command-line arguments for multi-bitrate ABR packaging (HLS and MPEG-DASH).
+ */
+export function buildHlsDashArguments(
+  inputPath: string,
+  outputDir: string,
+  packaging: MediaPackagingOptions,
+  ffmpegBin?: string | null
+): string[] {
+  if (!packaging || !packaging.format) {
+    throw new InvalidMediaOptionError('Packaging format is required ("hls" or "dash").');
+  }
+
+  const format = packaging.format.toLowerCase();
+  if (format !== 'hls' && format !== 'dash') {
+    throw new InvalidMediaOptionError(
+      `Unsupported packaging format "${packaging.format}". Allowed: "hls", "dash".`
+    );
+  }
+
+  // segmentSeconds validation (2..10, integer)
+  let segmentSeconds = 4;
+  if (packaging.segmentSeconds !== undefined) {
+    if (
+      typeof packaging.segmentSeconds !== 'number' ||
+      !Number.isInteger(packaging.segmentSeconds) ||
+      packaging.segmentSeconds < 2 ||
+      packaging.segmentSeconds > 10
+    ) {
+      throw new InvalidMediaOptionError(
+        `Invalid segmentSeconds: ${packaging.segmentSeconds}. Allowed range: 2 to 10 seconds integer.`
+      );
+    }
+    segmentSeconds = packaging.segmentSeconds;
+  }
+
+  // ladder validation
+  let ladder: MediaLadderRung[];
+  if (packaging.ladder !== undefined) {
+    if (!Array.isArray(packaging.ladder) || packaging.ladder.length === 0) {
+      throw new InvalidMediaOptionError('Packaging ladder must be a non-empty array of rungs.');
+    }
+    for (const rung of packaging.ladder) {
+      if (typeof rung.height !== 'number' || !Number.isInteger(rung.height) || rung.height < 144 || rung.height > 4320) {
+        throw new InvalidMediaOptionError(
+          `Invalid ladder rung height: ${rung.height}. Must be an integer between 144 and 4320.`
+        );
+      }
+      if (typeof rung.bitrateK !== 'number' || !Number.isInteger(rung.bitrateK) || rung.bitrateK < 50 || rung.bitrateK > 50000) {
+        throw new InvalidMediaOptionError(
+          `Invalid ladder rung bitrateK: ${rung.bitrateK}. Must be an integer between 50 and 50000.`
+        );
+      }
+      if (rung.fps !== undefined) {
+        if (typeof rung.fps !== 'number' || !Number.isFinite(rung.fps) || rung.fps <= 0 || rung.fps > 240) {
+          throw new InvalidMediaOptionError(
+            `Invalid ladder rung fps: ${rung.fps}. Must be a number between 1 and 240.`
+          );
+        }
+      }
+      if (rung.audioBitrateK !== undefined) {
+        if (
+          typeof rung.audioBitrateK !== 'number' ||
+          !Number.isInteger(rung.audioBitrateK) ||
+          rung.audioBitrateK < 16 ||
+          rung.audioBitrateK > 1024
+        ) {
+          throw new InvalidMediaOptionError(
+            `Invalid ladder rung audioBitrateK: ${rung.audioBitrateK}. Must be an integer between 16 and 1024.`
+          );
+        }
+      }
+    }
+    ladder = packaging.ladder;
+  } else {
+    ladder = [...DEFAULT_PACKAGING_LADDER];
+  }
+
+  // Video codec
+  const videoCodecKey = (packaging.videoCodec || 'h264').toLowerCase();
+  const vEncoder = PACKAGING_VIDEO_ENCODERS[videoCodecKey];
+  if (!vEncoder) {
+    throw new InvalidMediaOptionError(
+      `Unsupported video codec "${packaging.videoCodec}". Allowed: h264, hevc, vp9, av1.`
+    );
+  }
+
+  // Audio codec
+  const audioCodecKey = (packaging.audioCodec || 'aac').toLowerCase();
+  const aEncoder = PACKAGING_AUDIO_ENCODERS[audioCodecKey];
+  if (!aEncoder) {
+    throw new InvalidMediaOptionError(
+      `Unsupported audio codec "${packaging.audioCodec}". Allowed: aac, opus.`
+    );
+  }
+
+  const hasAudio = !fs.existsSync(inputPath) || probeAudioChannels(inputPath, ffmpegBin) > 0;
+
+  const globalArgs: string[] = ['-y', '-loglevel', 'error'];
+  const inputArgs: string[] = ['-i', inputPath];
+
+  // Construct filter_complex
+  const filterParts: string[] = [];
+
+  // Video split & scale
+  const vSplitOuts = ladder.map((_, i) => `[v_in${i}]`).join('');
+  filterParts.push(`[0:v]split=${ladder.length}${vSplitOuts}`);
+  for (let i = 0; i < ladder.length; i++) {
+    const rung = ladder[i];
+    const fpsFilter = rung.fps ? `,fps=${rung.fps}` : '';
+    filterParts.push(`[v_in${i}]scale=w=-2:h=${rung.height}${fpsFilter}[v_out${i}]`);
+  }
+
+  // Audio split
+  if (hasAudio) {
+    const aSplitOuts = ladder.map((_, i) => `[a_out${i}]`).join('');
+    filterParts.push(`[0:a]asplit=${ladder.length}${aSplitOuts}`);
+  }
+
+  const complexFilter = filterParts.join('; ');
+  const streamArgs: string[] = ['-filter_complex', complexFilter];
+
+  // Map each rung
+  for (let i = 0; i < ladder.length; i++) {
+    const rung = ladder[i];
+    streamArgs.push(
+      '-map', `[v_out${i}]`,
+      `-c:v:${i}`, vEncoder,
+      `-b:v:${i}`, `${rung.bitrateK}k`
+    );
+
+    // GOP / Keyframe alignment for smooth ABR switching
+    const fps = rung.fps || 30;
+    const gopSize = Math.round(fps * segmentSeconds);
+    streamArgs.push(
+      `-g:v:${i}`, String(gopSize),
+      `-keyint_min:v:${i}`, String(gopSize),
+      `-sc_threshold:v:${i}`, '0'
+    );
+
+    if (hasAudio) {
+      const audioBitrate = rung.audioBitrateK || (i === 0 ? 192 : i === 1 ? 128 : 96);
+      streamArgs.push(
+        '-map', `[a_out${i}]`,
+        `-c:a:${i}`, aEncoder,
+        `-b:a:${i}`, `${audioBitrate}k`
+      );
+    }
+  }
+
+  if (format === 'hls') {
+    const masterPlaylist = packaging.masterPlaylistName || 'master.m3u8';
+    const varStreamMap = ladder
+      .map((rung, i) => {
+        const streamName = `${rung.height}p`;
+        return hasAudio ? `v:${i},a:${i},name:${streamName}` : `v:${i},name:${streamName}`;
+      })
+      .join(' ');
+
+    const hlsArgs: string[] = [
+      '-f', 'hls',
+      '-hls_time', String(segmentSeconds),
+      '-hls_playlist_type', 'vod',
+      '-hls_flags', 'independent_segments',
+      '-master_pl_name', masterPlaylist,
+      '-hls_segment_filename', path.join(outputDir, 'stream_%v_%03d.ts'),
+      '-var_stream_map', varStreamMap,
+      path.join(outputDir, 'stream_%v.m3u8'),
+    ];
+
+    return [...globalArgs, ...inputArgs, ...streamArgs, ...hlsArgs];
+  } else {
+    // DASH
+    const manifestName = packaging.masterPlaylistName || 'manifest.mpd';
+    const adaptationSets = hasAudio
+      ? 'id=0,streams=v id=1,streams=a'
+      : 'id=0,streams=v';
+
+    const dashArgs: string[] = [
+      '-f', 'dash',
+      '-seg_duration', String(segmentSeconds),
+      '-use_template', '1',
+      '-use_timeline', '1',
+      '-init_seg_name', 'init_$RepresentationID$.m4s',
+      '-media_seg_name', 'chunk_$RepresentationID$_$Number%05d$.m4s',
+      '-adaptation_sets', adaptationSets,
+      path.join(outputDir, manifestName),
+    ];
+
+    return [...globalArgs, ...inputArgs, ...streamArgs, ...dashArgs];
+  }
+}
+
 
