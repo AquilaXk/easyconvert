@@ -28,6 +28,10 @@ export interface GraphMetadata {
   webhookSecret?: string;
   originalFilename?: string;
   sourceStorageKey?: string;
+  /** Submission formats and legacy linear tasks, echoed by the job status API. */
+  sourceFormat?: string;
+  targetFormat?: string;
+  tasks?: unknown[];
   createdAt?: number;
 }
 
@@ -39,6 +43,10 @@ export interface GraphExecutionState {
   reservationId?: string;
   webhookUrl?: string;
   webhookSecret?: string;
+  originalFilename?: string;
+  sourceFormat?: string;
+  targetFormat?: string;
+  tasks?: unknown[];
   createdAt: number;
   finishedAt?: number;
   failedReason?: string;

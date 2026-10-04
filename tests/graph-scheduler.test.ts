@@ -62,7 +62,6 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         return new RedisGraphScheduler({
           redisClient,
           keyPrefix: `test_sched_${Date.now()}_:`,
-          queueName: 'test-jobs',
         });
       },
     });
@@ -85,7 +84,6 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         scheduler = new RedisGraphScheduler({
           redisClient,
           keyPrefix: `test_bull_${Date.now()}_${Math.random().toString(36).substring(7)}:`,
-          queueName: 'test-jobs',
         });
       } else {
         scheduler = new InMemoryGraphScheduler();
