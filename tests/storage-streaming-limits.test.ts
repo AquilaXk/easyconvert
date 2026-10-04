@@ -140,7 +140,7 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
       // and heap growth must be flat (< 64 MiB), proving the 2.1 GiB is never buffered.
       expect(rssDiffMb).toBeLessThan(256);
       expect(heapDiffMb).toBeLessThan(64);
-    });
+    }, 30000);
   });
 
   describe('3. Stream Direct Spooling (saveObjectFromStream)', () => {

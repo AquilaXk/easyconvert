@@ -418,9 +418,308 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
       const unsignedRes = await directPartPutHandler(unsignedReq);
       expect(unsignedRes.status).toBe(403);
     });
+
+    it('rejects PUT request with future timestamp beyond clock skew with 403 Forbidden', async () => {
+      const auth = sessionHeaders(userA);
+
+      const initReq = new NextRequest(`${BASE_URL}/api/v1/uploads/direct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          filename: 'future_sample.bin',
+          totalSize: 1024,
+        }),
+      });
+
+      const initRes = await directPostHandler(initReq);
+      const initData = await initRes.json();
+      const session = s3Storage.getUploadSession(initData.uploadId)!;
+
+      // Presigned timestamp 2 hours in the future
+      const futureDate = new Date(Date.now() + 7200 * 1000);
+      const futurePresign = presignSigV4QueryUrl({
+        method: 'PUT',
+        url: `${BASE_URL}/api/v1/uploads/direct/part`,
+        queryParams: {
+          uploadId: session.uploadId,
+          partNumber: 1,
+          key: session.key,
+        },
+        credentials: {
+          accessKeyId: 'DEV_ACCESS_KEY_ID',
+          secretAccessKey: s3Storage.getSigningSecret(),
+          region: 'us-east-1',
+          service: 's3',
+        },
+        expiresInSeconds: 900,
+        timestamp: futureDate,
+      });
+
+      const testChunk = Buffer.from('FUTURE_DATA');
+      const futureReq = createStreamRequest(futurePresign.url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(testChunk);
+            controller.close();
+          },
+        }),
+      });
+
+      const futureRes = await directPartPutHandler(futureReq);
+      expect(futureRes.status).toBe(403);
+      const errJson = await futureRes.json();
+      expect(errJson.detail).toContain('in the future');
+    });
+
+    it('rejects PUT request when a signed header declared in X-Amz-SignedHeaders is missing with 403 Forbidden', async () => {
+      const auth = sessionHeaders(userA);
+
+      const initReq = new NextRequest(`${BASE_URL}/api/v1/uploads/direct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          filename: 'signed_headers_sample.bin',
+          totalSize: 1024,
+        }),
+      });
+
+      const initRes = await directPostHandler(initReq);
+      const initData = await initRes.json();
+      const session = s3Storage.getUploadSession(initData.uploadId)!;
+
+      // Presigned URL that signs both host and x-custom-token
+      const presigned = presignSigV4QueryUrl({
+        method: 'PUT',
+        url: `${BASE_URL}/api/v1/uploads/direct/part`,
+        queryParams: {
+          uploadId: session.uploadId,
+          partNumber: 1,
+          key: session.key,
+        },
+        headers: {
+          'x-custom-token': 'secret-token-value',
+        },
+        credentials: {
+          accessKeyId: 'DEV_ACCESS_KEY_ID',
+          secretAccessKey: s3Storage.getSigningSecret(),
+          region: 'us-east-1',
+          service: 's3',
+        },
+        expiresInSeconds: 900,
+      });
+
+      // Send PUT request WITHOUT the required 'x-custom-token' header
+      const testChunk = Buffer.from('MISSING_HEADER_DATA');
+      const missingHeaderReq = createStreamRequest(presigned.url, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          // Note: x-custom-token is omitted!
+        },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(testChunk);
+            controller.close();
+          },
+        }),
+      });
+
+      const missingHeaderRes = await directPartPutHandler(missingHeaderReq);
+      expect(missingHeaderRes.status).toBe(403);
+      const errJson = await missingHeaderRes.json();
+      expect(errJson.detail).toContain('Missing required signed header');
+    });
+
+    it('rejects PUT request when query param key mismatches upload session key with 403 Forbidden', async () => {
+      const auth = sessionHeaders(userA);
+
+      const initReq = new NextRequest(`${BASE_URL}/api/v1/uploads/direct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          filename: 'valid_sample.bin',
+          totalSize: 1024,
+        }),
+      });
+
+      const initRes = await directPostHandler(initReq);
+      const initData = await initRes.json();
+      const validPartUrl = initData.parts[0].uploadUrl;
+
+      // Tamper key query param to a different path
+      const url = new URL(validPartUrl);
+      url.searchParams.set('key', 'conversions/malicious/spoofed_key.bin');
+
+      const testChunk = Buffer.from('KEY_MISMATCH_DATA');
+      const tamperedKeyReq = createStreamRequest(url.toString(), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(testChunk);
+            controller.close();
+          },
+        }),
+      });
+
+      const tamperedKeyRes = await directPartPutHandler(tamperedKeyReq);
+      expect(tamperedKeyRes.status).toBe(403);
+      const errJson = await tamperedKeyRes.json();
+      expect(errJson.detail).toContain('Key mismatch');
+    });
+
+    it('rejects PUT request with X-Amz-Expires exceeding 7 days with 403 Forbidden', async () => {
+      const auth = sessionHeaders(userA);
+
+      const initReq = new NextRequest(`${BASE_URL}/api/v1/uploads/direct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          filename: 'huge_expiry.bin',
+          totalSize: 1024,
+        }),
+      });
+
+      const initRes = await directPostHandler(initReq);
+      const initData = await initRes.json();
+      const validPartUrl = initData.parts[0].uploadUrl;
+
+      const url = new URL(validPartUrl);
+      url.searchParams.set('X-Amz-Expires', '999999999');
+
+      const testChunk = Buffer.from('HUGE_EXPIRY_DATA');
+      const req = createStreamRequest(url.toString(), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(testChunk);
+            controller.close();
+          },
+        }),
+      });
+
+      const res = await directPartPutHandler(req);
+      expect(res.status).toBe(403);
+      const errJson = await res.json();
+      expect(errJson.detail).toContain('Invalid X-Amz-Expires');
+    });
   });
 
   describe('4. Fail-Closed Magic Bytes Spoofing Rejection (422 Unprocessable Entity)', () => {
+    it('completes multipart direct upload when mimeType is omitted (defaults to application/octet-stream) with valid PDF', async () => {
+      const auth = sessionHeaders(userA);
+
+      // Authentic PDF byte sequence
+      const validPdf = Buffer.from(
+        '%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n'
+      );
+
+      // 1. Initiate upload without mimeType
+      const initReq = new NextRequest(`${BASE_URL}/api/v1/uploads/direct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          filename: 'my_genuine_document.pdf',
+          totalSize: validPdf.length,
+          partSize: validPdf.length,
+        }),
+      });
+
+      const initRes = await directPostHandler(initReq);
+      expect(initRes.status).toBe(200);
+      const initData = await initRes.json();
+
+      // 2. Upload part
+      const partReq = createStreamRequest(initData.parts[0].uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(validPdf);
+            controller.close();
+          },
+        }),
+      });
+
+      const partRes = await directPartPutHandler(partReq);
+      expect(partRes.status).toBe(200);
+      const partJson = await partRes.json();
+
+      // 3. Complete assembly - should recognize .pdf extension from filename and succeed
+      const completeReq = new NextRequest(`${BASE_URL}/api/v1/uploads/direct/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          uploadId: initData.uploadId,
+          parts: [{ partNumber: 1, etag: partJson.etag }],
+        }),
+      });
+
+      const completeRes = await directCompletePostHandler(completeReq);
+      expect(completeRes.status).toBe(200);
+      const completeJson = await completeRes.json();
+      expect(completeJson.size).toBe(validPdf.length);
+      expect(completeJson.key).toBe(initData.key);
+
+      const storedObj = s3Storage.getObject(initData.key);
+      expect(storedObj).toBeDefined();
+    });
+
+    it('rejects spoofed payload when mimeType is omitted with 422 Unprocessable Entity', async () => {
+      const auth = sessionHeaders(userA);
+
+      // Plain text disguised as a PDF
+      const fakePdf = Buffer.from('JUST A RAW TEXT FILE NOT PDF AT ALL');
+
+      const initReq = new NextRequest(`${BASE_URL}/api/v1/uploads/direct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          filename: 'disguised_fake.pdf',
+          totalSize: fakePdf.length,
+          partSize: fakePdf.length,
+        }),
+      });
+
+      const initRes = await directPostHandler(initReq);
+      expect(initRes.status).toBe(200);
+      const initData = await initRes.json();
+
+      const partReq = createStreamRequest(initData.parts[0].uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(fakePdf);
+            controller.close();
+          },
+        }),
+      });
+
+      const partRes = await directPartPutHandler(partReq);
+      expect(partRes.status).toBe(200);
+      const partJson = await partRes.json();
+
+      const completeReq = new NextRequest(`${BASE_URL}/api/v1/uploads/direct/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          uploadId: initData.uploadId,
+          parts: [{ partNumber: 1, etag: partJson.etag }],
+        }),
+      });
+
+      const completeRes = await directCompletePostHandler(completeReq);
+      expect(completeRes.status).toBe(422);
+      const completeJson = await completeRes.json();
+      expect(completeJson.status).toBe(422);
+      expect(completeJson.detail).toContain('File spoofing rejected');
+      expect(completeJson.detail).toContain('.pdf');
+    });
+
     it('rejects multipart complete when file magic bytes do not match declared format and purges assembled file', async () => {
       const auth = sessionHeaders(userA);
 
@@ -704,6 +1003,43 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
       });
       const manyPartsRes = await directPostHandler(manyPartsReq);
       expect(manyPartsRes.status).toBe(400);
+    });
+
+    it('presigns and verifies URLs containing spaces and percent-encoded paths without double-encoding', () => {
+      const creds = {
+        accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+        secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+        region: 'us-east-1',
+        service: 's3',
+      };
+
+      const testUrl = 'https://storage.easyconvert.app/uploads/my%20presentation%20file.pdf';
+      const presigned = presignSigV4QueryUrl({
+        method: 'PUT',
+        url: testUrl,
+        queryParams: { partNumber: 1, uploadId: 'sess_123' },
+        credentials: creds,
+        expiresInSeconds: 900,
+        timestamp: new Date('2026-10-04T12:00:00.000Z'),
+      });
+
+      // Canonical request must have single-encoded /uploads/my%20presentation%20file.pdf
+      const pathLine = presigned.canonicalRequest.split('\n')[1];
+      expect(pathLine).toBe('/uploads/my%20presentation%20file.pdf');
+
+      // The presigned URL path must match the canonical request path exactly
+      const parsedUrl = new URL(presigned.url);
+      expect(parsedUrl.pathname).toBe('/uploads/my%20presentation%20file.pdf');
+
+      // Verify accepts the presigned URL
+      const verifyRes = verifySigV4QueryUrl(presigned.url, {
+        secretAccessKey: creds.secretAccessKey,
+        expectedMethod: 'PUT',
+        now: new Date('2026-10-04T12:05:00.000Z'),
+      });
+
+      expect(verifyRes.valid).toBe(true);
+      expect(verifyRes.accessKeyId).toBe(creds.accessKeyId);
     });
   });
 });

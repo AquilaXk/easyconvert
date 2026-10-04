@@ -62,15 +62,23 @@ export function uriEncode(input: string, encodeSlash: boolean = true): string {
   return encoded;
 }
 
+function safeDecode(str: string): string {
+  try {
+    return decodeURIComponent(str);
+  } catch {
+    return str;
+  }
+}
+
 /**
  * Builds the canonical URI for SigV4.
- * Consecutive slashes are normalized where applicable and each segment is percent-encoded.
+ * Normalized per RFC 3986 with exact single percent-encoding per segment.
  */
 export function getCanonicalUri(pathname: string): string {
   if (!pathname || pathname === '' || pathname === '/') {
     return '/';
   }
-  const segments = pathname.split('/').map((seg) => uriEncode(seg, true));
+  const segments = pathname.split('/').map((seg) => uriEncode(safeDecode(seg), true));
   const result = segments.join('/');
   return result.startsWith('/') ? result : '/' + result;
 }
@@ -83,33 +91,34 @@ export function getCanonicalUri(pathname: string): string {
 export function getCanonicalQueryString(
   params: Record<string, string | number | boolean | undefined | null> | URLSearchParams
 ): string {
-  const entries: [string, string][] = [];
+  const rawEntries: [string, string][] = [];
 
   if (params instanceof URLSearchParams) {
     for (const [key, value] of params.entries()) {
       if (key === 'X-Amz-Signature') continue;
-      entries.push([key, value]);
+      rawEntries.push([key, value]);
     }
   } else {
     for (const [key, value] of Object.entries(params)) {
       if (key === 'X-Amz-Signature' || value === undefined || value === null) continue;
-      entries.push([key, String(value)]);
+      rawEntries.push([key, String(value)]);
     }
   }
 
+  // Pre-encode key-value pairs per RFC 3986
+  const encodedEntries = rawEntries.map(([k, v]) => ({
+    key: uriEncode(k),
+    val: uriEncode(v),
+  }));
+
   // Sort by byte order of encoded key, then by byte order of encoded value
-  entries.sort(([k1, v1], [k2, v2]) => {
-    const ek1 = uriEncode(k1);
-    const ek2 = uriEncode(k2);
-    if (ek1 !== ek2) return ek1 < ek2 ? -1 : 1;
-    const ev1 = uriEncode(v1);
-    const ev2 = uriEncode(v2);
-    if (ev1 < ev2) return -1;
-    if (ev1 > ev2) return 1;
+  encodedEntries.sort((a, b) => {
+    if (a.key !== b.key) return a.key < b.key ? -1 : 1;
+    if (a.val !== b.val) return a.val < b.val ? -1 : 1;
     return 0;
   });
 
-  return entries.map(([k, v]) => `${uriEncode(k)}=${uriEncode(v)}`).join('&');
+  return encodedEntries.map(({ key, val }) => `${key}=${val}`).join('&');
 }
 
 /**
@@ -129,7 +138,7 @@ export function getCanonicalHeaders(headers: Record<string, string | undefined>)
     lowerHeaderMap.set(lowerName, trimmedVal);
   }
 
-  const sortedKeys = Array.from(lowerHeaderMap.keys()).sort((a, b) => a.localeCompare(b));
+  const sortedKeys = Array.from(lowerHeaderMap.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const canonicalHeaders = sortedKeys
     .map((k) => `${k}:${lowerHeaderMap.get(k)}\n`)
     .join('');
@@ -302,9 +311,9 @@ export function presignSigV4QueryUrl(options: PresignQueryOptions): PresignQuery
 
   let finalUrl: string;
   if (isRelative) {
-    finalUrl = `${parsed.pathname}?${finalQuery}`;
+    finalUrl = `${canonicalUri}?${finalQuery}`;
   } else {
-    finalUrl = `${parsed.origin}${parsed.pathname}?${finalQuery}`;
+    finalUrl = `${parsed.origin}${canonicalUri}?${finalQuery}`;
   }
 
   return {
@@ -338,13 +347,17 @@ export function verifySigV4QueryUrl(
       return { valid: false, reason: 'Missing required SigV4 query parameters' };
     }
 
+    if (!/^[0-9a-fA-F]{64}$/.test(signature)) {
+      return { valid: false, reason: 'Invalid X-Amz-Signature format: must be 64-character hex' };
+    }
+
     if (algorithm !== 'AWS4-HMAC-SHA256') {
       return { valid: false, reason: `Unsupported algorithm: ${algorithm}` };
     }
 
     const expiresInSeconds = Number.parseInt(expiresStr, 10);
-    if (!Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
-      return { valid: false, reason: `Invalid X-Amz-Expires: ${expiresStr}` };
+    if (!Number.isFinite(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > 604800) {
+      return { valid: false, reason: `Invalid X-Amz-Expires: ${expiresStr}. Must be between 1 and 604800 seconds.` };
     }
 
     // Parse ISO date string (YYYYMMDDTHHMMSSZ)
@@ -363,6 +376,10 @@ export function verifySigV4QueryUrl(
     const now = options.now || new Date();
     const expiresAt = reqTimestamp + expiresInSeconds * 1000;
     const clockSkewMs = (options.clockSkewSeconds ?? 60) * 1000;
+
+    if (now.getTime() < reqTimestamp - clockSkewMs) {
+      return { valid: false, reason: 'Request timestamp is in the future', expiresAt };
+    }
 
     if (now.getTime() > expiresAt + clockSkewMs) {
       return { valid: false, reason: 'Presigned URL has expired', expiresAt };
@@ -383,7 +400,11 @@ export function verifySigV4QueryUrl(
     const canonicalQueryString = getCanonicalQueryString(parsed.searchParams);
 
     // Reconstruct canonical headers for the signed headers
-    const signedHeaderNames = signedHeadersStr.split(';').map((s) => s.trim().toLowerCase());
+    const signedHeaderNames = signedHeadersStr
+      .split(';')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
     const headerSource: Record<string, string> = {
       host: parsed.host,
       ...options.headers,
@@ -391,12 +412,13 @@ export function verifySigV4QueryUrl(
 
     const headersToSign: Record<string, string> = {};
     for (const name of signedHeaderNames) {
-      const foundVal = Object.entries(headerSource).find(
+      const foundEntry = Object.entries(headerSource).find(
         ([k]) => k.toLowerCase() === name
-      )?.[1];
-      if (foundVal !== undefined) {
-        headersToSign[name] = foundVal;
+      );
+      if (foundEntry === undefined || foundEntry[1] === undefined) {
+        return { valid: false, reason: `Missing required signed header: "${name}"` };
       }
+      headersToSign[name] = foundEntry[1];
     }
 
     const { canonicalHeaders, signedHeaders } = getCanonicalHeaders(headersToSign);
