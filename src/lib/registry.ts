@@ -515,7 +515,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/pdf',
     category: 'document',
     description: 'Portable Document Format - Industry standard fixed-layout document.',
-    targetFormats: ['doc', 'docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'dxf', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'ps', 'psd', 'tiff', 'webp', 'ppt', 'xls', 'hocr', 'alto'],
+    targetFormats: ['docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'tiff', 'xls', 'hocr', 'alto'],
     optionsSchema: { orientation: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   docx: {
@@ -525,7 +525,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     category: 'document',
     description: 'Microsoft Word OpenXML document format with complete styles and tables.',
-    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'pages', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
+    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip'],
     optionsSchema: { orientation: true },
   },
   doc: {
@@ -535,7 +535,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/msword',
     category: 'document',
     description: 'Legacy binary Microsoft Word document format.',
-    targetFormats: ['docx', 'pdf', 'txt', 'html', 'md', 'zip', 'odt', 'rtf', 'jpg', 'png', 'xps'],
+    targetFormats: ['docx', 'pdf', 'txt', 'html', 'md', 'zip', 'odt', 'xps'],
   },
   docm: {
     id: 'docm',
@@ -544,7 +544,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-word.document.macroEnabled.12',
     category: 'document',
     description: 'Microsoft Word macro-enabled OpenXML document.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'zip', 'doc', 'md', 'odt', 'rtf', 'jpg', 'png', 'xps'],
+    targetFormats: ['pdf', 'html', 'txt', 'zip', 'md', 'xps'],
   },
   dotx: {
     id: 'dotx',
@@ -553,7 +553,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
     category: 'document',
     description: 'Word template file for pre-formatted document structures.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'zip', 'doc', 'odt', 'rtf', 'jpg', 'png', 'xps'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'zip', 'odt', 'xps'],
   },
   dot: {
     id: 'dot',
@@ -562,7 +562,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/msword',
     category: 'document',
     description: 'Legacy Word template file.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'doc', 'html', 'odt', 'rtf', 'jpg', 'png', 'xps'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'odt', 'xps'],
   },
   rtf: {
     id: 'rtf',
@@ -571,7 +571,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/rtf',
     category: 'document',
     description: 'Cross-platform document format with text formatting and font tables.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx'],
   },
   odt: {
     id: 'odt',
@@ -580,7 +580,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.text',
     category: 'document',
     description: 'OASIS OpenDocument Text standard used in LibreOffice and OpenOffice.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip'],
   },
   ott: {
     id: 'ott',
@@ -607,7 +607,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'document',
     description: 'Standard unformatted plain text document.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true },
   },
   text: {
@@ -626,7 +626,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/markdown',
     category: 'document',
     description: 'Lightweight markup language with plain-text formatting syntax.',
-    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'doc', 'md', 'rst', 'rtf', 'tex', 'jpg', 'png', 'hwp', 'hwpx'],
+    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'md', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true },
   },
   html: {
@@ -636,7 +636,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/html',
     category: 'document',
     description: 'HyperText Markup Language - Standard document format for web pages.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true },
   },
   htm: {
@@ -646,7 +646,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/html',
     category: 'document',
     description: 'Short extension HyperText Markup Language file.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   },
   xhtml: {
     id: 'xhtml',
@@ -664,7 +664,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-pages-sffpages',
     category: 'document',
     description: 'Apple iWork Pages word processing document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'html', 'zip', 'doc', 'epub', 'jpg', 'png', 'ppt', 'xls'],
+    targetFormats: ['zip', 'xls'],
   },
   wpd: {
     id: 'wpd',
@@ -673,7 +673,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.wordperfect',
     category: 'document',
     description: 'Corel WordPerfect legacy word processing document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'doc', 'html', 'md', 'odt', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'],
   },
   wps: {
     id: 'wps',
@@ -682,7 +682,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-works',
     category: 'document',
     description: 'Microsoft Works Word Processor document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'doc', 'html', 'md', 'odt', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'],
   },
   rst: {
     id: 'rst',
@@ -691,7 +691,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/x-rst',
     category: 'document',
     description: 'Python Sphinx and Docutils structured text formatting markup.',
-    targetFormats: ['html', 'md', 'pdf', 'docx', 'txt', 'zip', 'odt', 'rtf'],
+    targetFormats: ['html', 'md', 'pdf', 'docx', 'txt', 'zip', 'odt'],
   },
   tex: {
     id: 'tex',
@@ -718,7 +718,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.djvu',
     category: 'document',
     description: 'High-density compression format designed for scanned books and high-res text.',
-    targetFormats: ['pdf', 'txt', 'docx', 'zip'],
+    targetFormats: ['pdf', 'txt', 'zip'],
     optionsSchema: { ocrEnabled: true, ocrLanguage: true },
   },
   abw: {
@@ -728,7 +728,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-abiword',
     category: 'document',
     description: 'AbiWord open-source word processor XML file.',
-    targetFormats: ['docx', 'pdf', 'txt', 'html', 'zip', 'doc', 'md', 'odt', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'txt', 'html', 'zip', 'md', 'odt'],
   },
   zabw: {
     id: 'zabw',
@@ -737,7 +737,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-abiword',
     category: 'document',
     description: 'GZ-compressed AbiWord document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'doc', 'html', 'md', 'odt', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'],
   },
   sdw: {
     id: 'sdw',
@@ -764,7 +764,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.palm',
     category: 'document',
     description: 'Palm OS document database file format.',
-    targetFormats: ['txt', 'pdf', 'epub', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb'],
+    targetFormats: ['txt', 'pdf', 'epub', 'zip', 'azw3', 'lrf', 'mobi', 'oeb'],
   },
   pdfa: {
     id: 'pdfa',
@@ -782,7 +782,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-xpsdocument',
     category: 'document',
     description: 'Microsoft XML Paper Specification fixed document format.',
-    targetFormats: ['pdf', 'docx', 'txt', 'zip', 'html', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'svg'],
+    targetFormats: ['pdf', 'txt', 'zip', 'html'],
   },
   oxps: {
     id: 'oxps',
@@ -791,7 +791,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/oxps',
     category: 'document',
     description: 'Open XML Paper Specification standardized by ECMA-388.',
-    targetFormats: ['pdf', 'docx', 'txt', 'zip'],
+    targetFormats: ['pdf', 'txt', 'zip'],
   },
   eml: {
     id: 'eml',
@@ -809,7 +809,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-outlook',
     category: 'document',
     description: 'Microsoft Outlook binary compound file email message format.',
-    targetFormats: ['pdf', 'html', 'txt', 'eml', 'zip'],
+    targetFormats: ['pdf', 'html', 'txt', 'zip'],
   },
   log: {
     id: 'log',
@@ -869,7 +869,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-mobipocket-ebook',
     category: 'ebook',
     description: 'Amazon Kindle Mobipocket reflowable electronic book format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'azw3', 'docx', 'zip', 'rtf', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'txt', 'azw3', 'zip', 'lrf', 'oeb', 'pdb'],
   },
   azw: {
     id: 'azw',
@@ -878,7 +878,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.amazon.ebook',
     category: 'ebook',
     description: 'Amazon Kindle original proprietary ebook format.',
-    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'azw3', 'lrf', 'oeb', 'pdb'],
   },
   azw3: {
     id: 'azw3',
@@ -887,7 +887,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.amazon.mobi8-ebook',
     category: 'ebook',
     description: 'Kindle Format 8 supporting HTML5 and CSS3 styling.',
-    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'docx', 'zip', 'rtf', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'lrf', 'oeb', 'pdb'],
   },
   fb2: {
     id: 'fb2',
@@ -896,7 +896,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-fictionbook+xml',
     category: 'ebook',
     description: 'XML-based Russian open ebook format with structured semantic metadata.',
-    targetFormats: ['epub', 'mobi', 'pdf', 'txt', 'docx', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb', 'html', 'md'],
+    targetFormats: ['epub', 'pdf', 'txt', 'docx', 'zip', 'html', 'md'],
   },
   ibooks: {
     id: 'ibooks',
@@ -905,7 +905,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-ibooks+zip',
     category: 'ebook',
     description: 'Apple Books proprietary multi-touch interactive digital book format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'zip'],
+    targetFormats: ['zip'],
   },
   cbr: {
     id: 'cbr',
@@ -914,7 +914,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.comicbook-rar',
     category: 'ebook',
     description: 'Comic Book Archive packaged in RAR compression.',
-    targetFormats: ['cbz', 'pdf', 'zip', 'rtf', 'txt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   cbz: {
     id: 'cbz',
@@ -923,7 +923,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.comicbook+zip',
     category: 'ebook',
     description: 'Comic Book Archive packaged in standard ZIP compression.',
-    targetFormats: ['cbr', 'pdf', 'zip', 'rtf', 'txt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['pdf', 'zip'],
   },
   cb7: {
     id: 'cb7',
@@ -932,7 +932,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-cbr',
     category: 'ebook',
     description: 'Comic Book Archive packaged in 7-Zip LZMA format.',
-    targetFormats: ['cbz', 'pdf', 'zip'],
+    targetFormats: ['pdf', 'zip'],
   },
   cbt: {
     id: 'cbt',
@@ -941,7 +941,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-cbr',
     category: 'ebook',
     description: 'Comic Book Archive packaged in TAR format.',
-    targetFormats: ['cbz', 'pdf', 'zip'],
+    targetFormats: ['pdf', 'zip'],
   },
   lit: {
     id: 'lit',
@@ -950,7 +950,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-ms-reader',
     category: 'ebook',
     description: 'Microsoft Reader compressed ebook format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'mobi', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   lrf: {
     id: 'lrf',
@@ -968,7 +968,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-mobipocket-ebook',
     category: 'ebook',
     description: 'PalmOS Mobipocket compiled electronic book package.',
-    targetFormats: ['epub', 'mobi', 'pdf', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   rb: {
     id: 'rb',
@@ -986,7 +986,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-snb',
     category: 'ebook',
     description: 'Shanda Bambook electronic book archive format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   tcr: {
     id: 'tcr',
@@ -995,7 +995,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-tcr',
     category: 'ebook',
     description: 'Psion Series 3 palmtop computer compressed ebook format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   chm: {
     id: 'chm',
@@ -1004,7 +1004,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-htmlhelp',
     category: 'ebook',
     description: 'Microsoft Compiled HTML Help documentation and online book file.',
-    targetFormats: ['pdf', 'html', 'epub', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   djv: {
     id: 'djv',
@@ -1026,7 +1026,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/csv',
     category: 'data',
     description: 'Comma-Separated Values tabular structured spreadsheet format.',
-    targetFormats: ['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip', 'jpg', 'png'],
+    targetFormats: ['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip'],
     optionsSchema: { delimiter: true, preserveTables: true },
   },
   tsv: {
@@ -1056,7 +1056,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-yaml',
     category: 'data',
     description: 'Human-friendly data serialization standard.',
-    targetFormats: ['json', 'xml', 'txt', 'zip'],
+    targetFormats: ['json', 'txt', 'zip'],
   },
   yml: {
     id: 'yml',
@@ -1065,7 +1065,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-yaml',
     category: 'data',
     description: 'YAML configuration and data format short extension.',
-    targetFormats: ['json', 'xml', 'txt', 'zip'],
+    targetFormats: ['json', 'txt', 'zip'],
   },
   xml: {
     id: 'xml',
@@ -1083,7 +1083,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     category: 'spreadsheet',
     description: 'Microsoft Excel OpenXML spreadsheet with complete grid, formulas, and cells.',
-    targetFormats: ['csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'xls', 'xml', 'zip', 'jpg', 'png', 'xps', 'numbers'],
+    targetFormats: ['csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'xls', 'xml', 'zip'],
   },
   xls: {
     id: 'xls',
@@ -1092,7 +1092,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-excel',
     category: 'spreadsheet',
     description: 'Microsoft Excel 97-2003 legacy binary BIFF8 spreadsheet format.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'zip', 'jpg', 'png', 'xps'],
+    targetFormats: ['xlsx', 'csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'zip'],
   },
   xlsm: {
     id: 'xlsm',
@@ -1101,7 +1101,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-excel.sheet.macroEnabled.12',
     category: 'spreadsheet',
     description: 'Excel spreadsheet supporting embedded VBA macros.',
-    targetFormats: ['xlsx', 'csv', 'pdf', 'json', 'zip', 'html', 'jpg', 'png', 'xps', 'ods', 'xls'],
+    targetFormats: ['xlsx', 'csv', 'pdf', 'zip', 'html', 'xps', 'ods', 'xls'],
   },
   xltx: {
     id: 'xltx',
@@ -1128,7 +1128,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
     category: 'spreadsheet',
     description: 'OASIS OpenDocument Spreadsheet format used in LibreOffice Calc.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'pdf', 'json', 'html', 'xls', 'zip', 'jpg', 'png'],
+    targetFormats: ['xlsx', 'csv', 'tsv', 'pdf', 'json', 'html', 'xls', 'zip'],
     optionsSchema: { preserveTables: true },
   },
   ots: {
@@ -1147,7 +1147,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.spreadsheet-flat-xml',
     category: 'spreadsheet',
     description: 'Single uncompressed XML representation of OpenDocument Spreadsheet.',
-    targetFormats: ['ods', 'xlsx', 'csv', 'json', 'zip'],
+    targetFormats: ['ods', 'xlsx', 'csv', 'zip'],
   },
   numbers: {
     id: 'numbers',
@@ -1156,7 +1156,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-numbers-sffnumbers',
     category: 'spreadsheet',
     description: 'Apple iWork Numbers spreadsheet application file.',
-    targetFormats: ['xlsx', 'csv', 'pdf', 'tsv', 'zip', 'doc', 'jpg', 'png', 'ppt', 'xls'],
+    targetFormats: ['xlsx', 'csv', 'zip', 'xls'],
   },
   sdc: {
     id: 'sdc',
@@ -1174,7 +1174,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'spreadsheet',
     description: 'Data Interchange Format for importing tabular spreadsheets.',
-    targetFormats: ['csv', 'xlsx', 'json', 'tsv', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'zip'],
   },
   dbf: {
     id: 'dbf',
@@ -1183,7 +1183,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-dbf',
     category: 'spreadsheet',
     description: 'dBase relational database management system table format.',
-    targetFormats: ['csv', 'xlsx', 'json', 'tsv', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'zip'],
   },
   wk1: {
     id: 'wk1',
@@ -1192,7 +1192,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.lotus-1-2-3',
     category: 'spreadsheet',
     description: 'Lotus 1-2-3 historical standard spreadsheet workbook.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'zip'],
+    targetFormats: ['xlsx', 'csv', 'zip'],
   },
   wks: {
     id: 'wks',
@@ -1201,7 +1201,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.lotus-1-2-3',
     category: 'spreadsheet',
     description: 'Lotus 1-2-3 Release 1 worksheet format.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'zip'],
+    targetFormats: ['xlsx', 'csv', 'zip'],
   },
   slk: {
     id: 'slk',
@@ -1210,7 +1210,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/spreadsheet',
     category: 'spreadsheet',
     description: 'Microsoft Symbolic Link (SYLK) text format for spreadsheets.',
-    targetFormats: ['csv', 'xlsx', 'tsv', 'zip'],
+    targetFormats: ['csv', 'xlsx', 'zip'],
   },
   qpw: {
     id: 'qpw',
@@ -1219,7 +1219,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-quattro-pro',
     category: 'spreadsheet',
     description: 'Corel Quattro Pro spreadsheet document.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'zip'],
+    targetFormats: ['xlsx', 'csv', 'zip'],
   },
   prn: {
     id: 'prn',
@@ -1228,7 +1228,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'spreadsheet',
     description: 'Space-formatted printable spreadsheet output text.',
-    targetFormats: ['csv', 'txt', 'tsv', 'zip'],
+    targetFormats: ['csv', 'txt', 'zip'],
   },
   ndjson: {
     id: 'ndjson',
@@ -1277,7 +1277,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     category: 'presentation',
     description: 'Microsoft PowerPoint OpenXML slide presentation standard.',
-    targetFormats: ['pdf', 'html', 'odp', 'ppt', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'key', 'swf'],
+    targetFormats: ['pdf', 'html', 'odp', 'txt', 'zip'],
     optionsSchema: { orientation: true },
   },
   ppt: {
@@ -1287,7 +1287,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Microsoft PowerPoint legacy binary presentation format.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'odp', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip'],
   },
   pptm: {
     id: 'pptm',
@@ -1296,7 +1296,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
     category: 'presentation',
     description: 'Microsoft PowerPoint macro-enabled OpenXML slide presentation.',
-    targetFormats: ['pptx', 'pdf', 'html', 'zip', 'md', 'txt', 'eps', 'jpg', 'png', 'xps', 'odp', 'ppt', 'swf'],
+    targetFormats: ['zip'],
   },
   potx: {
     id: 'potx',
@@ -1305,7 +1305,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.template',
     category: 'presentation',
     description: 'PowerPoint OpenXML presentation template.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'jpg', 'png', 'xps', 'odp', 'ppt'],
+    targetFormats: ['pptx', 'pdf', 'zip'],
   },
   pot: {
     id: 'pot',
@@ -1314,7 +1314,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint presentation template.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'jpg', 'png', 'xps', 'odp', 'ppt'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'xps', 'odp'],
   },
   ppsx: {
     id: 'ppsx',
@@ -1323,7 +1323,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
     category: 'presentation',
     description: 'PowerPoint presentation designed to launch directly in full slideshow mode.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'md', 'txt', 'eps', 'jpg', 'png', 'odp', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp'],
   },
   pps: {
     id: 'pps',
@@ -1332,7 +1332,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint slideshow binary file.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'md', 'txt', 'eps', 'jpg', 'png', 'odp', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp'],
   },
   odp: {
     id: 'odp',
@@ -1341,7 +1341,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.presentation',
     category: 'presentation',
     description: 'OASIS OpenDocument Presentation standard used in LibreOffice Impress.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip'],
   },
   otp: {
     id: 'otp',
@@ -1368,7 +1368,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-keynote-sffkey',
     category: 'presentation',
     description: 'Apple iWork Keynote presentation slideshow file.',
-    targetFormats: ['pptx', 'pdf', 'html', 'zip', 'doc', 'jpg', 'png', 'ppt', 'xls'],
+    targetFormats: ['pptx', 'pdf', 'html', 'zip'],
   },
   keynotes: {
     id: 'keynotes',
@@ -1413,7 +1413,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'WPS Office Kingsoft Presentation slide deck.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'md', 'txt', 'eps', 'jpg', 'png', 'odp', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp'],
   },
   shw: {
     id: 'shw',
@@ -1444,7 +1444,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/png',
     category: 'image',
     description: 'Portable Network Graphics - Lossless raster format with alpha transparency support.',
-    targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'svg', 'xps', 'hocr', 'alto'],
+    targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpg: {
@@ -1454,7 +1454,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Joint Photographic Experts Group - Standard lossy image compression for photography.',
-    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg', 'xps', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpeg: {
@@ -1464,7 +1464,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Joint Photographic Experts Group standard image format.',
-    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg', 'xps', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   webp: {
@@ -1474,7 +1474,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/webp',
     category: 'image',
     description: 'Modern web image format providing superior lossless and lossy compression.',
-    targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'eps', 'odd', 'ps', 'psd', 'webp', 'svg', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   avif: {
@@ -1494,7 +1494,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/tiff',
     category: 'image',
     description: 'Tagged Image File Format - High-depth raster format favored in publishing and printing.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   tif: {
@@ -1504,7 +1504,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/tiff',
     category: 'image',
     description: 'Short extension for Tagged Image File Format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   gif: {
@@ -1514,7 +1514,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/gif',
     category: 'image',
     description: 'Graphics Interchange Format with animated frame and transparency support.',
-    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto'],
     optionsSchema: { dimensions: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   bmp: {
@@ -1524,7 +1524,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/bmp',
     category: 'image',
     description: 'Bitmap Image File - Uncompressed standard raster image.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
     optionsSchema: { dimensions: true, colorDepth: true, dither: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   svg: {
@@ -1534,7 +1534,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/svg+xml',
     category: 'vector',
     description: 'Scalable Vector Graphics - XML-based resolution-independent 2D vector format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'emf', 'svg', 'wmf', 'cgm'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'svg', 'emf', 'wmf', 'cgm'],
     optionsSchema: { dimensions: true },
   },
   ico: {
@@ -1703,7 +1703,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/illustrator',
     category: 'image',
     description: 'Adobe Illustrator vector graphics project format.',
-    targetFormats: ['svg', 'pdf', 'png', 'jpg', 'zip', 'dxf', 'eps', 'ps'],
+    targetFormats: ['pdf', 'png', 'jpg', 'zip', 'eps', 'ps'],
   },
   eps: {
     id: 'eps',
@@ -1712,7 +1712,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/postscript',
     category: 'image',
     description: 'PostScript vector file format commonly used in commercial print houses.',
-    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'webp', 'emf', 'wmf'],
+    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'webp', 'emf', 'wmf'],
   },
   tga: {
     id: 'tga',
@@ -1831,7 +1831,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd-ms.dds',
     category: 'image',
     description: 'Microsoft DirectDraw Surface container for GPU texture maps.',
-    targetFormats: ['png', 'jpg', 'tga', 'zip'],
+    targetFormats: ['png', 'jpg', 'zip'],
   },
 
   // ==========================================
@@ -2003,7 +2003,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-apple-diskimage',
     category: 'archive',
     description: 'macOS mountable disk image archive.',
-    targetFormats: ['zip', 'tar', 'iso', '7z', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz'],
   },
   jar: {
     id: 'jar',
@@ -2124,7 +2124,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.dwg',
     category: 'cad',
     description: 'Autodesk AutoCAD binary 2D and 3D computer-aided design format.',
-    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'dwg', 'bmp', 'eps', 'gif', 'jpg', 'tiff'],
+    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'jpg'],
   },
   dxf: {
     id: 'dxf',
@@ -2133,7 +2133,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.dxf',
     category: 'cad',
     description: 'AutoCAD ASCII vector drawing interchange format.',
-    targetFormats: ['dwg', 'pdf', 'svg', 'png', 'zip', 'bmp', 'eps', 'gif', 'jpg', 'tiff'],
+    targetFormats: ['pdf', 'svg', 'png', 'zip', 'jpg'],
   },
   step: {
     id: 'step',
@@ -2583,7 +2583,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/cgm',
     category: 'vector',
     description: 'ISO standard 2D vector and raster graphics interchange format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true},
     available: true,
   },
@@ -2594,7 +2594,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'drawing/x-dwf',
     category: 'cad',
     description: 'Autodesk compact vector format for distributing CAD engineering data.',
-    targetFormats: ['dwg', 'dxf', 'pdf', 'bmp', 'eps', 'gif', 'jpg', 'png', 'tiff', 'svg'],
+    targetFormats: ['dxf', 'pdf', 'bmp', 'eps', 'gif', 'jpg', 'png', 'tiff', 'svg'],
     optionsSchema: {dimensions:true},
   },
   emf: {
@@ -2615,7 +2615,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/postscript',
     category: 'vector',
     description: 'Adobe PostScript page description language vector format.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg', 'emf', 'wmf'],
     optionsSchema: {pages:true,dpi:true},
   },
   sk: {
@@ -2645,7 +2645,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/svg+xml-compressed',
     category: 'vector',
     description: 'Gzip compressed Scalable Vector Graphics document.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg', 'emf', 'wmf'],
     optionsSchema: {dimensions:true,quality:true},
   },
   vsd: {
