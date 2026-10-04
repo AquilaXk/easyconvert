@@ -196,15 +196,30 @@ export interface DlqEntry<T = any> {
   stacktrace: string[];
 }
 
+let lastPriorityTime = 0;
+let priorityTieCounter = 0;
+
+export function getMonotonicPriorityTimestamp(): number {
+  const now = Date.now();
+  if (now > lastPriorityTime) {
+    lastPriorityTime = now;
+    priorityTieCounter = 0;
+    return now;
+  }
+  priorityTieCounter++;
+  return lastPriorityTime + priorityTieCounter * 0.0001;
+}
+
 /**
  * Calculates priority score for waiting ZSET:
  * score = priorityRank * 1e12 + (timestamp % 1e12)
  * High priority jobs (priority 1 > 2 > 0/default 1000) have lower score and execute first.
  * Strict FIFO order is preserved within the same priority level.
  */
-export function calculateJobPriorityScore(priority?: number, timestamp: number = Date.now()): number {
+export function calculateJobPriorityScore(priority?: number, timestamp?: number): number {
+  const ts = typeof timestamp === 'number' ? timestamp : getMonotonicPriorityTimestamp();
   const priorityRank = typeof priority === 'number' && priority > 0 ? priority : 1000;
-  return priorityRank * 1e12 + (timestamp % 1e12);
+  return priorityRank * 1e12 + (ts % 1e12);
 }
 
 export interface IQueueEngine<T = any, R = any> extends EventEmitter {
@@ -280,7 +295,9 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     if (existing) {
       return existing;
     }
+    const timestamp = getMonotonicPriorityTimestamp();
     const job = new Job<T, R>(id, name, data, opts, this);
+    job.timestamp = timestamp;
     this.jobs.set(id, job);
 
     const userId = (data as any)?.userId;
@@ -438,7 +455,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
     for (const [id, job] of this.jobs.entries()) {
       if (removed.length >= limit) break;
-      if (job.state === type && job.finishedOn && job.finishedOn < threshold) {
+      if (job.state === type && job.finishedOn && job.finishedOn <= threshold) {
         this.jobs.delete(id);
         const userId = (job.data as any)?.userId;
         if (userId) {
@@ -1601,7 +1618,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       const id = opts.jobId || `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
       const userId = (data as any)?.userId ? String((data as any).userId) : '';
       const userJobsKey = userId ? this.getUserJobsKey(userId) : '';
-      const now = Date.now();
+      const now = getMonotonicPriorityTimestamp();
       const isDelayed = Boolean(opts.delay && opts.delay > 0);
       const delayUntil = isDelayed ? now + opts.delay! : 0;
       const priorityScore = calculateJobPriorityScore(opts.priority, now);
@@ -1887,7 +1904,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           if (removed.length >= limit) break;
           const raw = await this.redisClient.hgetall(this.getJobKey(id));
           const finishedOn = Number(raw?.finishedOn || 0);
-          if (finishedOn > 0 && finishedOn < threshold) {
+          if (finishedOn > 0 && finishedOn <= threshold) {
             await this.redisClient.srem(key, id);
             await this.redisClient.del(this.getJobKey(id));
             try {
