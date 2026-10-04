@@ -12,6 +12,13 @@ export interface SandboxEnvironment {
   platform: string;
 }
 
+export interface SandboxedRlimitsOptions {
+  asBytes?: number;
+  fsizeBytes?: number;
+  nproc?: number;
+  cpuSeconds?: number;
+}
+
 export interface SandboxedExecutionOptions {
   timeoutMs?: number;
   maxBuffer?: number;
@@ -21,6 +28,8 @@ export interface SandboxedExecutionOptions {
   strictIsolation?: boolean;
   sandboxOptions?: UnshareIsolationOptions;
   memoryLimitMb?: number;
+  maxFileSize?: number;
+  rlimits?: SandboxedRlimitsOptions;
   stdin?: NodeJS.ReadableStream | Buffer | null;
   signal?: AbortSignal;
 }
@@ -232,6 +241,64 @@ export function getProcessRssMb(pid: number): number | null {
   return null;
 }
 
+export interface PrlimitCapability {
+  available: boolean;
+  path: string;
+}
+
+let prlimitCapability: PrlimitCapability | null = null;
+
+export function resetPrlimitCapabilityCache(): void {
+  prlimitCapability = null;
+}
+
+/**
+ * Probes the operating system to determine whether Linux prlimit is available for per-child resource confinement.
+ */
+export function getPrlimitCapability(): PrlimitCapability {
+  if (prlimitCapability !== null) return prlimitCapability;
+  if (process.platform !== 'linux') {
+    prlimitCapability = { available: false, path: '' };
+    return prlimitCapability;
+  }
+
+  const knownPaths = ['/usr/bin/prlimit', '/bin/prlimit'];
+  for (const p of knownPaths) {
+    try {
+      if (fs.existsSync(p)) {
+        prlimitCapability = { available: true, path: p };
+        return prlimitCapability;
+      }
+    } catch {}
+  }
+
+  prlimitCapability = { available: false, path: '' };
+  return prlimitCapability;
+}
+
+/**
+ * Assembles Linux prlimit CLI arguments from requested resource limits.
+ */
+export function buildPrlimitArgs(
+  _cap: PrlimitCapability,
+  rlimits: SandboxedRlimitsOptions
+): string[] {
+  const args: string[] = [];
+  if (rlimits.asBytes !== undefined && rlimits.asBytes > 0) {
+    args.push(`--as=${Math.round(rlimits.asBytes)}`);
+  }
+  if (rlimits.fsizeBytes !== undefined && rlimits.fsizeBytes > 0) {
+    args.push(`--fsize=${Math.round(rlimits.fsizeBytes)}`);
+  }
+  if (rlimits.nproc !== undefined && rlimits.nproc > 0) {
+    args.push(`--nproc=${Math.round(rlimits.nproc)}`);
+  }
+  if (rlimits.cpuSeconds !== undefined && rlimits.cpuSeconds > 0) {
+    args.push(`--cpu=${Math.round(rlimits.cpuSeconds)}`);
+  }
+  return args;
+}
+
 export interface UnshareCapability {
   available: boolean;
   path: string;
@@ -389,11 +456,17 @@ export function resolveSandboxedCommand(
         networkIsolated?: boolean;
         sandboxOptions?: UnshareIsolationOptions;
         strictIsolation?: boolean;
+        memoryLimitMb?: number;
+        maxFileSize?: number;
+        rlimits?: SandboxedRlimitsOptions;
       }
 ): { binary: string; args: string[]; wrapped: boolean } {
   let networkIsolated = true;
   let sandboxOptions: UnshareIsolationOptions = {};
   let strictIsolation = process.env.STRICT_SANDBOX === 'true';
+  let memoryLimitMb: number | undefined;
+  let maxFileSize: number | undefined;
+  let rlimits: SandboxedRlimitsOptions | undefined;
 
   if (typeof networkIsolatedOrOptions === 'boolean') {
     networkIsolated = networkIsolatedOrOptions;
@@ -403,6 +476,41 @@ export function resolveSandboxedCommand(
     if (networkIsolatedOrOptions.strictIsolation !== undefined) {
       strictIsolation = networkIsolatedOrOptions.strictIsolation;
     }
+    memoryLimitMb = networkIsolatedOrOptions.memoryLimitMb;
+    maxFileSize = networkIsolatedOrOptions.maxFileSize;
+    rlimits = networkIsolatedOrOptions.rlimits;
+  }
+
+  // Construct effective rlimits from explicit options or memoryLimitMb / maxFileSize
+  const effectiveRlimits: SandboxedRlimitsOptions = {
+    ...(rlimits || {}),
+  };
+  if (!effectiveRlimits.asBytes && memoryLimitMb && memoryLimitMb > 0) {
+    effectiveRlimits.asBytes = memoryLimitMb * 1024 * 1024;
+  }
+  if (!effectiveRlimits.fsizeBytes && maxFileSize && maxFileSize > 0) {
+    effectiveRlimits.fsizeBytes = maxFileSize;
+  }
+
+  let finalBinary = binaryPath;
+  let finalArgs = [...args];
+  let isWrapped = false;
+
+  // Apply prlimit wrapping if available on Linux and rlimits are specified
+  const capPrlimit = getPrlimitCapability();
+  const hasRlimits =
+    effectiveRlimits.asBytes !== undefined ||
+    effectiveRlimits.fsizeBytes !== undefined ||
+    effectiveRlimits.nproc !== undefined ||
+    effectiveRlimits.cpuSeconds !== undefined;
+
+  if (process.platform === 'linux' && capPrlimit.available && hasRlimits) {
+    const prlimitArgs = buildPrlimitArgs(capPrlimit, effectiveRlimits);
+    if (prlimitArgs.length > 0) {
+      finalArgs = [...prlimitArgs, '--', finalBinary, ...finalArgs];
+      finalBinary = capPrlimit.path;
+      isWrapped = true;
+    }
   }
 
   if (process.platform === 'linux' && networkIsolated) {
@@ -411,7 +519,7 @@ export function resolveSandboxedCommand(
       const isolationArgs = buildUnshareIsolationArgs(cap, sandboxOptions);
       return {
         binary: cap.path,
-        args: [...isolationArgs, '--', binaryPath, ...args],
+        args: [...isolationArgs, '--', finalBinary, ...finalArgs],
         wrapped: true,
       };
     } else if (strictIsolation) {
@@ -429,7 +537,7 @@ export function resolveSandboxedCommand(
     );
   }
 
-  return { binary: binaryPath, args, wrapped: false };
+  return { binary: finalBinary, args: finalArgs, wrapped: isWrapped };
 }
 
 /**
@@ -437,7 +545,7 @@ export function resolveSandboxedCommand(
  * falling back to single-process termination. Prevents orphan/zombie child processes (e.g. soffice.bin).
  */
 export function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals = 'SIGKILL'): void {
-  if (!pid) return;
+  if (!pid || typeof pid !== 'number' || pid <= 0) return;
   try {
     process.kill(-pid, signal);
   } catch {
@@ -466,6 +574,8 @@ export async function executeSandboxedBinary(
     timeoutMs = 30000,
     maxBuffer = 50 * 1024 * 1024, // 50MB
     memoryLimitMb,
+    maxFileSize,
+    rlimits,
     env: customEnv = {},
     cwd = os.tmpdir(),
     networkIsolated = true,
@@ -527,11 +637,14 @@ export async function executeSandboxedBinary(
       action();
     };
 
-    // Resolve unshare network namespace wrapper if available
+    // Resolve unshare network namespace and prlimit wrapper if requested and available
     const resolvedCmd = resolveSandboxedCommand(binaryPath, args, {
       networkIsolated,
       sandboxOptions: options.sandboxOptions,
       strictIsolation: options.strictIsolation,
+      memoryLimitMb,
+      maxFileSize,
+      rlimits,
     });
 
     // Spawn directly without shell to prevent shell injection vulnerabilities.
@@ -663,6 +776,11 @@ export async function executeSandboxedBinary(
         if (signal !== null || code === null || code !== 0) {
           if (signal === 'SIGKILL' && memoryLimitMb && memoryLimitMb > 0) {
             reject(new SandboxedMemoryLimitError(memoryLimitMb));
+            return;
+          }
+          if (signal === 'SIGXFSZ') {
+            const limit = options.maxFileSize || options.rlimits?.fsizeBytes || maxBuffer;
+            reject(new SandboxedBufferLimitError(limit));
             return;
           }
           const stderrText = stderr.toString('utf-8').trim();
