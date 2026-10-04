@@ -14,7 +14,7 @@ import {
 import { StorageNotFoundError, StorageSsrfError } from '../src/lib/storage/adapters/adapter-interface';
 import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
+import { s3EtagMd5, startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
 import testCredentials from './fixtures/sigv4/test-credentials.json';
 
 /**
@@ -131,7 +131,7 @@ describe('s3 BYOS provider end-to-end', () => {
     });
 
     expect(result).toMatchObject({ success: true, destination: 'out/payload.txt', size: payload.length });
-    expect(result.etag).toBe(crypto.createHash('md5').update(payload).digest('hex'));
+    expect(result.etag).toBe(s3EtagMd5(payload).toString('hex'));
     const stored = stub.objects.get('out/payload.txt');
     expect(stored?.body.equals(payload)).toBe(true);
     expect(stored?.contentType).toBe('text/plain');

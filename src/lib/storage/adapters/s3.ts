@@ -317,6 +317,14 @@ function isAmbiguousCompletion(err: unknown): boolean {
 const PART_MD5_PATTERN = /^[0-9a-f]{32}$/i;
 
 /**
+ * MD5 digest for the S3 ETag. This computes an S3 protocol integrity checksum, not a security
+ * control: S3 defines object and multipart ETags as MD5, so no other hash can be compared.
+ */
+function s3EtagMd5(data: Buffer): Buffer {
+  return crypto.createHash('md5').update(data).digest(); // NOSONAR S4790: S3 protocol ETag checksum, not a security control
+}
+
+/**
  * The ETag S3 gives a completed multipart object: MD5 of the concatenated binary part MD5s, then
  * `-<part count>`. MD5 is S3's integrity checksum here, not a security control. Returns undefined
  * when a part ETag is not a plain MD5 (e.g. server-side encryption with KMS), in which case
@@ -329,7 +337,7 @@ function expectedMultipartEtag(partEtags: readonly string[]): string | undefined
     if (!PART_MD5_PATTERN.test(hex)) return undefined;
     digests.push(Buffer.from(hex, 'hex'));
   }
-  return `${crypto.createHash('md5').update(Buffer.concat(digests)).digest('hex')}-${partEtags.length}`;
+  return `${s3EtagMd5(Buffer.concat(digests)).toString('hex')}-${partEtags.length}`;
 }
 
 /** Wraps a failure of the caller's source stream; StorageAdapterErrors pass through unchanged. */

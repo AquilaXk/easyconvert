@@ -73,8 +73,16 @@ function errorXml(code: string, message: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>${code}</Code><Message>${message}</Message><RequestId>STUBREQ1</RequestId></Error>`;
 }
 
+/**
+ * MD5 digest for the S3 ETag. This computes an S3 protocol integrity checksum, not a security
+ * control: S3 defines object and multipart ETags as MD5, so the stub must produce the same value.
+ */
+export function s3EtagMd5(data: Buffer): Buffer {
+  return crypto.createHash('md5').update(data).digest(); // NOSONAR S4790: S3 protocol ETag checksum, not a security control
+}
+
 function md5Etag(body: Buffer): string {
-  return `"${crypto.createHash('md5').update(body).digest('hex')}"`;
+  return `"${s3EtagMd5(body).toString('hex')}"`;
 }
 
 function send(res: http.ServerResponse, status: number, body = '', headers: Record<string, string> = {}): void {
@@ -220,8 +228,8 @@ export async function startS3StubServer(options: {
         }
         const assembled = Buffer.concat(ordered);
         // S3 multipart ETag: MD5 of the concatenated binary part MD5s, then "-<part count>".
-        const partDigests = Buffer.concat(ordered.map((part) => crypto.createHash('md5').update(part).digest()));
-        const etag = `"${crypto.createHash('md5').update(partDigests).digest('hex')}-${ordered.length}"`;
+        const partDigests = Buffer.concat(ordered.map((part) => s3EtagMd5(part)));
+        const etag = `"${s3EtagMd5(partDigests).toString('hex')}-${ordered.length}"`;
         objects.set(key, { body: assembled, contentType: 'application/octet-stream', etag });
         uploads.delete(uploadId);
         complete.afterComplete?.(key);

@@ -10,7 +10,7 @@ import {
   StorageSsrfError,
   StorageTimeoutError,
 } from '../src/lib/storage/adapters/adapter-interface';
-import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
+import { s3EtagMd5, startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
 import { verifySigV4Request } from './helpers/sigv4-verifier';
 import testCredentials from './fixtures/sigv4/test-credentials.json';
 
@@ -156,7 +156,7 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     expect(putReq.rawUrl).toBe(`/${BUCKET}/reports/q3%20final.csv`);
     expect(putReq.auth).toMatchObject({ ok: true, region: 'eu-central-1', service: 's3', payloadHash: 'UNSIGNED-PAYLOAD' });
     expect(stub.objects.get('reports/q3 final.csv')?.body.equals(payload)).toBe(true);
-    expect(put.etag).toBe(crypto.createHash('md5').update(payload).digest('hex'));
+    expect(put.etag).toBe(s3EtagMd5(payload).toString('hex'));
     expect(put.size).toBe(payload.length);
 
     const downloaded = await collect(await s3.downloadStream('/reports/q3 final.csv'));
@@ -376,9 +376,9 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
   function multipartEtag(payload: Buffer, partSize: number): string {
     const digests: Buffer[] = [];
     for (let i = 0; i < payload.length; i += partSize) {
-      digests.push(crypto.createHash('md5').update(payload.subarray(i, i + partSize)).digest());
+      digests.push(s3EtagMd5(payload.subarray(i, i + partSize)));
     }
-    return `${crypto.createHash('md5').update(Buffer.concat(digests)).digest('hex')}-${digests.length}`;
+    return `${s3EtagMd5(Buffer.concat(digests)).toString('hex')}-${digests.length}`;
   }
 
   it('reports the exact multipart ETag after verifying an ambiguous Complete', async () => {
