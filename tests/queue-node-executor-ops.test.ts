@@ -132,10 +132,9 @@ describe('queue node executor operations', () => {
       expect([...thumb.subarray(0, JPEG_SOI.length)]).toEqual(JPEG_SOI);
       const meta = await sharp(thumb).metadata();
       expect(meta.format).toBe('jpeg');
-      expect(meta.width).toBeGreaterThan(0);
-      expect(meta.height).toBeGreaterThan(0);
-      expect(meta.width!).toBeLessThanOrEqual(THUMB_EDGE);
-      expect(meta.height!).toBeLessThanOrEqual(THUMB_EDGE);
+      // fit: inside keeps the 320x200 aspect ratio, so the long edge is 64 and the short edge 40.
+      expect(meta.width).toBe(THUMB_EDGE);
+      expect(meta.height).toBe(Math.round((THUMB_EDGE * SOURCE_HEIGHT) / SOURCE_WIDTH));
     });
 
     it('rejects a target format outside the thumbnail formats', async () => {
