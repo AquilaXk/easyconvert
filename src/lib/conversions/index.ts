@@ -52,6 +52,11 @@ import {
   convertHwpDocument,
 } from './hwp';
 import {
+  applyPdfWatermark,
+  protectPdf,
+  convertToPdfA,
+} from './pdf-postprocess';
+import {
   convertHwpx,
   parseHwpxDocument,
   buildHwpxContainer,
@@ -577,6 +582,7 @@ export async function convertFile(
   }
 
   // 6. Office, Ebook, Presentation, and Spreadsheet container routing
+  let res: ConversionResult;
   if (
     srcDef.category === 'ebook' ||
     srcDef.category === 'presentation' ||
@@ -619,22 +625,41 @@ export async function convertFile(
     ].includes(src) ||
     ['docx', 'xlsx', 'epub', 'pptx', 'odp', 'ods', 'odt', 'xls', 'key', 'numbers', 'pages', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx'].includes(tgt)
   ) {
-    return convertOffice(inputBuffer, src, tgt, options, originalFilename);
+    res = await convertOffice(inputBuffer, src, tgt, options, originalFilename);
+  } else {
+    // 7. Routing by source category
+    switch (srcDef.category) {
+      case 'image':
+        res = await convertImage(inputBuffer, tgt, options, originalFilename, src);
+        break;
+
+      case 'document':
+      default:
+        res = await convertDocument(inputBuffer, src, tgt, options, originalFilename);
+        break;
+    }
   }
 
-  // 7. Routing by source category
-  switch (srcDef.category) {
-    case 'image':
-      return convertImage(inputBuffer, tgt, options, originalFilename, src);
-
-    case 'document':
-      return convertDocument(inputBuffer, src, tgt, options, originalFilename);
-
-    default:
-      return convertDocument(inputBuffer, src, tgt, options, originalFilename);
+  // 8. PDF Post-Processing: PDF/A, Watermark, and Protection
+  if ((tgt === 'pdf' || res.filename?.endsWith('.pdf')) && Buffer.isBuffer(res.buffer)) {
+    if (options.pdfa) {
+      const pdfaRes = await convertToPdfA(res.buffer, options.pdfa);
+      res.buffer = pdfaRes.buffer;
+    }
+    if (options.watermark) {
+      res.buffer = await applyPdfWatermark(res.buffer, options.watermark);
+    }
+    if (options.protect) {
+      res.buffer = await protectPdf(res.buffer, options.protect);
+    }
+    res.size = res.buffer.length;
   }
+
+  return res;
 }
 
 export * from './page-range';
 export * from './ctl';
+export * from './pdf-postprocess';
+
 

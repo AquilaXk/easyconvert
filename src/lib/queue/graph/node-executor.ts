@@ -20,6 +20,8 @@ import {
   validateMultiVolumeSequence,
   stitchMultiVolumeArchive,
   isSplitArchive,
+  applyPdfWatermark,
+  protectPdf,
 } from '../../conversions';
 import { ConversionFailedError } from '../../types';
 
@@ -170,6 +172,51 @@ export async function processGraphNodeJob(
           effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
+        break;
+      }
+
+      case 'watermark':
+      case 'pdf.watermark': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        for (const inputKey of inputArtifacts) {
+          attemptSignal.throwIfAborted();
+          const stored = effectiveStorage.getObject(inputKey);
+          if (!stored) {
+            throw new Error(`Input artifact "${inputKey}" not found in storage`);
+          }
+          const watermarkOpts = (node.options?.watermark || node.options || {}) as any;
+          const watermarkedBuf = await applyPdfWatermark(stored.buffer, watermarkOpts);
+          const outFilename = stored.filename || path.basename(inputKey);
+          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          effectiveStorage.saveObject(outKey, watermarkedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+          outputKeys.push(outKey);
+        }
+        await job.log(`Node "${nodeId}" applied watermark to ${inputArtifacts.length} artifact(s)`);
+        break;
+      }
+
+      case 'pdf.protect': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        for (const inputKey of inputArtifacts) {
+          attemptSignal.throwIfAborted();
+          const stored = effectiveStorage.getObject(inputKey);
+          if (!stored) {
+            throw new Error(`Input artifact "${inputKey}" not found in storage`);
+          }
+          const protectOpts = (node.options?.protect || node.options || {}) as any;
+          const protectedBuf = await protectPdf(stored.buffer, protectOpts);
+          const outFilename = stored.filename || path.basename(inputKey);
+          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          effectiveStorage.saveObject(outKey, protectedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+          outputKeys.push(outKey);
+        }
+        await job.log(`Node "${nodeId}" applied protection to ${inputArtifacts.length} artifact(s)`);
         break;
       }
 

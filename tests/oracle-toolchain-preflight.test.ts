@@ -16,6 +16,7 @@ export const CI_REQUIRED_ORACLE_TOOLS: Array<{ name: string; resolve: () => stri
   { name: 'imagemagick (identify/magick)', resolve: () => getOracleToolPath('identify') || getOracleToolPath('magick') },
   { name: 'tesseract-ocr (tesseract)', resolve: () => getOracleToolPath('tesseract') },
   { name: 'unrar', resolve: () => getOracleToolPath('unrar') },
+  { name: 'qpdf', resolve: () => getOracleToolPath('qpdf') },
 ];
 
 describe('Oracle Toolchain Preflight Integrity Gate', () => {

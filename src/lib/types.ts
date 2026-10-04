@@ -153,6 +153,9 @@ export interface ConversionOptions {
   pdfVersion?: string;
   libreOfficeFilter?: string;
   losslessImageCompression?: boolean;
+  watermark?: PdfWatermarkOptions;
+  protect?: PdfProtectOptions;
+  pdfa?: PdfAOptions;
 }
 
 export interface VideoRateControlCrf {
@@ -514,6 +517,70 @@ export class ArchiveEncryptedHeaderError extends Error {
   }
 }
 
+export type PdfWatermarkPosition =
+  | 'tile'
+  | 'top-left'
+  | 'top-center'
+  | 'top-right'
+  | 'center-left'
+  | 'center'
+  | 'center-right'
+  | 'bottom-left'
+  | 'bottom-center'
+  | 'bottom-right';
 
+export type PdfWatermarkLayer = 'over' | 'under';
 
+export interface PdfWatermarkOptions {
+  type?: 'text' | 'image';
+  text?: string;
+  fontSize?: number;
+  fontColor?: string; // hex like '#ff0000' or rgb like 'rgb(1,0,0)'
+  fontFamily?: string;
+  image?: Buffer | string; // Buffer or Base64 string
+  imageType?: 'png' | 'jpeg';
+  opacity?: number; // 0.0 to 1.0 (default 0.3)
+  rotation?: number; // degrees (default -45 for diagonal text or 0)
+  position?: PdfWatermarkPosition; // default 'center'
+  pages?: string; // page range string (WP-40 syntax), e.g. "1-3,5", default all pages
+  layer?: PdfWatermarkLayer; // default 'over'
+  scale?: number; // scale factor
+}
 
+export type PdfPrintPermission = 'none' | 'low' | 'full';
+export type PdfModifyPermission = 'none' | 'assembly' | 'annotate' | 'form' | 'all';
+
+export interface PdfProtectPermissions {
+  print?: PdfPrintPermission;
+  modify?: PdfModifyPermission;
+  extract?: boolean;
+  annotate?: boolean;
+}
+
+export interface PdfProtectOptions {
+  userPassword?: string;
+  ownerPassword?: string;
+  keyLength?: 128 | 256;
+  permissions?: PdfProtectPermissions;
+}
+
+export type PdfAConformance = 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
+
+export interface PdfAOptions {
+  conformance?: PdfAConformance;
+  recalculate?: boolean;
+}
+
+export interface PdfAConversionResult {
+  buffer: Buffer;
+  pdfaValidated: boolean;
+  conformanceLevel: string;
+}
+
+export class PdfPostprocessError extends Error {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPostprocessError';
+  }
+}
