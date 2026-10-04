@@ -152,6 +152,8 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   stl: () => STL_TEXT,
   obj: () => OBJ_TEXT,
   gz: () => gzipSync(PLAIN_TEXT),
+  // SVGZ is gzip-compressed SVG; plain SVG text is not a valid .svgz input.
+  svgz: () => gzipSync(SVG_TEXT),
   tgz: () => gzipSync(TAR_SEED),
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
