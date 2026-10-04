@@ -78,6 +78,18 @@ const MM_PER_INCH = 25.4;
 const HUNDREDTHS_MM_PER_PX = (MM_PER_INCH * 100) / CSS_PX_PER_INCH;
 const INT16_MAX = 32767;
 
+const UINT16_MAX = 0xffff;
+const UINT32_MAX = 0xffffffff;
+
+/** Rounds to an unsigned integer within `max`, throwing the typed error instead of a RangeError. */
+function toUnsigned(value: number, max: number, what: string): number {
+  const v = Math.round(value);
+  if (!Number.isFinite(v) || v < 0 || v > max) {
+    throw new CadGeometryUnavailableError(`${what} ${value} does not fit the metafile's ${max}-limited field.`);
+  }
+  return v;
+}
+
 /** Rounds to a signed 16-bit value; the logical space is pre-scaled so this never clamps. */
 function toInt16(value: number): number {
   const v = Math.round(value);
@@ -252,7 +264,7 @@ function emfExtCreatePen(pen: PlanPen): Buffer {
   rec.writeUInt32LE(EMF_PEN_HANDLE, 8);
   // offBmi, cbBmi, offBits, cbBits stay 0: no pattern bitmap
   rec.writeUInt32LE(EMF_PS_GEOMETRIC | EMF_PS_SOLID | penCapJoinBits(pen), 28);
-  rec.writeUInt32LE(Math.max(1, Math.round(pen.width)), 32);
+  rec.writeUInt32LE(toUnsigned(Math.max(1, pen.width), UINT32_MAX, 'EMF pen width'), 32);
   rec.writeUInt32LE(EMF_BS_SOLID, 36);
   rec.writeUInt32LE(emfColorRef(pen.color), 40);
   rec.writeUInt32LE(0, 44); // BrushHatch, ignored for BS_SOLID
@@ -464,7 +476,7 @@ function emitWmfPen(pen: PlanPen | null, out: Buffer[]): void {
   const penRec = wmfRecord(META_CREATEPENINDIRECT, WMF_PEN_RECORD_WORDS);
   if (pen) {
     penRec.writeUInt16LE(WMF_PS_SOLID | penCapJoinBits(pen), 6);
-    penRec.writeUInt16LE(Math.max(1, Math.round(pen.width)), 8);
+    penRec.writeInt16LE(toInt16(Math.max(1, pen.width)), 8);
     penRec.writeUInt16LE(0, 10);
     penRec.writeUInt32LE(emfColorRef(pen.color), 12);
   } else {
@@ -514,7 +526,7 @@ function wmfPolyPolygon(rings: PlanPoint[][]): Buffer {
   rings.forEach((r) => assertWmfPointCount(r.length));
   const all = rings.flat();
   const rec = wmfRecord(META_POLYPOLYGON, WMF_POLY_HEADER_WORDS + rings.length + WMF_POINT_WORDS * all.length);
-  rec.writeUInt16LE(rings.length, 6);
+  rec.writeUInt16LE(toUnsigned(rings.length, UINT16_MAX, 'WMF polygon count'), 6);
   rings.forEach((r, i) => rec.writeUInt16LE(r.length, 8 + i * 2));
   writePoints16(rec, 8 + 2 * rings.length, all);
   return rec;
@@ -709,7 +721,7 @@ function formatCgmPen(pen: PlanPen, lines: string[]): void {
   if (pen.join !== 'miter') {
     throw new UnsupportedOptionError(`SVG stroke-linejoin "${pen.join}" is not supported by the CGM encoder.`);
   }
-  lines.push(`LINECOLR ${formatCgmColour(pen.color)};`, `LINEWIDTH ${Math.max(1, Math.round(pen.width))};`);
+  lines.push(`LINECOLR ${formatCgmColour(pen.color)};`, `LINEWIDTH ${toInt16(Math.max(1, pen.width))};`);
 }
 
 function formatCgmOp(op: DrawOp, lines: string[], meter: WorkMeter): void {

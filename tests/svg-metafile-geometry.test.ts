@@ -919,4 +919,43 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeCgm(svgDoc(spike(30)))).not.toThrow();
     });
   });
+
+  describe('integer range overflow', () => {
+    function errorOf(fn: () => unknown): unknown {
+      try {
+        fn();
+        return null;
+      } catch (e) {
+        return e;
+      }
+    }
+    const LINE = (attrs: string) => `<polyline points="10,10 50,50 90,10" fill="none" stroke="#000" ${attrs}/>`;
+
+    const cases: [string, (b: Buffer) => Buffer, string][] = [
+      ['a WMF pen wider than 16 bits', encodeWmf, LINE('stroke-width="70000"')],
+      ['an EMF pen wider than 32 bits', encodeEmf, LINE('stroke-width="1e300"')],
+      ['a CGM line width beyond the VDC integer range', encodeCgm, LINE('stroke-width="70000"')],
+    ];
+    for (const [label, encode, body] of cases) {
+      it(`rejects ${label} with a typed error instead of a RangeError`, () => {
+        const err = errorOf(() => encode(svgDoc(body)));
+        expect(err).toBeInstanceOf(ConversionFailedError);
+        expect(err).not.toBeInstanceOf(RangeError);
+      });
+    }
+
+    it('never turns a huge stroke-miterlimit into a RangeError', () => {
+      for (const encode of [encodeEmf, encodeWmf, encodeCgm]) {
+        const err = errorOf(() => encode(svgDoc(LINE('stroke-miterlimit="5000000000"'))));
+        expect(err === null || err instanceof ConversionFailedError, String(err)).toBe(true);
+      }
+    });
+
+    it('rejects a WMF poly-polygon with more rings than its 16-bit count allows', () => {
+      const RINGS = 65536;
+      const d = Array.from({ length: RINGS }, (_, k) => `M${k % 100} ${Math.floor(k / 100) % 100} h1 v1 z`).join('');
+      const err = errorOf(() => encodeWmf(svgDoc(`<path fill-rule="evenodd" fill="#000" d="${d}"/>`)));
+      expect(err).toBeInstanceOf(ConversionFailedError);
+    });
+  });
 });
