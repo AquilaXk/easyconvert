@@ -3128,104 +3128,113 @@ function inspectTarBuffer(buffer: Buffer, format = 'tar'): ArchiveInspectRespons
   };
 }
 
+async function inspectArchiveVia7zCli(
+  buffer: Buffer,
+  format: '7z' | 'rar',
+  p7z: string,
+  password?: string
+): Promise<ArchiveInspectResponse> {
+  const tmpDir = os.tmpdir();
+  const token = crypto.randomBytes(8).toString('hex');
+  const workDir = path.join(tmpDir, `easyconvert_${format}_inspect_${Date.now()}_${token}`);
+  fs.mkdirSync(workDir, { recursive: true });
+  try {
+    const archivePath = path.join(workDir, `archive.${format}`);
+    fs.writeFileSync(archivePath, buffer);
+
+    const pwArgs = password ? ['-p' + password] : ['-p-'];
+    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', ...pwArgs, archivePath], {
+      networkIsolated: true,
+    });
+
+    let stdoutStr = '';
+    try {
+      const out = execFileSync(resolved.binary, resolved.args, {
+        cwd: workDir,
+        env: getSanitizedEnvironment({}, true),
+        timeout: 30000,
+      });
+      stdoutStr = out.toString('utf-8');
+    } catch (err: any) {
+      const errMsg = (err?.message || '') + (err?.stderr?.toString() || '') + (err?.stdout?.toString() || '');
+      if (
+        errMsg.includes('Enter password') ||
+        errMsg.includes('Can not open encrypted') ||
+        errMsg.includes('Cannot open encrypted') ||
+        errMsg.includes('Data Error in encrypted archive') ||
+        errMsg.includes('Wrong password')
+      ) {
+        throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
+      }
+      throw new ConversionFailedError(`Failed to inspect ${format} archive: ${err.message}`);
+    }
+
+    if (stdoutStr.includes('Enter password (will not be echoed):')) {
+      throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
+    }
+
+    const entries: ArchiveEntryMetadata[] = [];
+    const blocks = stdoutStr.split(/\r?\n\r?\n/);
+    let isArchiveEncrypted = false;
+
+    for (const block of blocks) {
+      if (!block.includes('Path = ') || block.includes('Listing archive:')) continue;
+      const lines = block.split(/\r?\n/);
+      const record: Record<string, string> = {};
+      for (const line of lines) {
+        const eq = line.indexOf(' = ');
+        if (eq !== -1) {
+          record[line.slice(0, eq).trim()] = line.slice(eq + 3).trim();
+        }
+      }
+      if (!record.Path || record.Path === archivePath) continue;
+
+      const uncompSize = record.Size ? parseInt(record.Size, 10) : 0;
+      const compSize = record['Packed Size'] ? parseInt(record['Packed Size'], 10) : undefined;
+      const isEnc = record.Encrypted === '+';
+      if (isEnc) isArchiveEncrypted = true;
+      const isDir = record.Folder === '+' || (record.Attributes && record.Attributes.includes('D')) || record.Path.endsWith('/');
+      const modTime = record.Modified || undefined;
+      const crcHex = record.CRC || undefined;
+
+      entries.push({
+        name: sanitizeArchivePath(record.Path) || record.Path,
+        uncompressedSize: uncompSize,
+        compressedSize: compSize,
+        isEncrypted: isEnc,
+        isDirectory: Boolean(isDir),
+        modifiedAt: modTime,
+        crc32: crcHex ? crcHex.toLowerCase() : undefined,
+      });
+    }
+
+    let totalUncompressedBytes = 0;
+    let totalCompressedBytes = 0;
+    for (const e of entries) {
+      totalUncompressedBytes += e.uncompressedSize;
+      totalCompressedBytes += e.compressedSize || 0;
+    }
+
+    return {
+      format,
+      totalEntries: entries.length,
+      totalUncompressedBytes,
+      totalCompressedBytes,
+      isEncrypted: isArchiveEncrypted,
+      entries,
+    };
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 async function inspect7zBuffer(
   buffer: Buffer,
   password?: string
 ): Promise<ArchiveInspectResponse> {
   const p7z = get7zBinaryPath();
   if (p7z) {
-    const tmpDir = os.tmpdir();
-    const token = crypto.randomBytes(8).toString('hex');
-    const workDir = path.join(tmpDir, `easyconvert_7z_inspect_${Date.now()}_${token}`);
-    fs.mkdirSync(workDir, { recursive: true });
-    try {
-      const archivePath = path.join(workDir, 'archive.7z');
-      fs.writeFileSync(archivePath, buffer);
-
-      const pwArgs = password ? ['-p' + password] : ['-p-'];
-      const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', ...pwArgs, archivePath], {
-        networkIsolated: true,
-      });
-
-      let stdoutStr = '';
-      try {
-        const out = execFileSync(resolved.binary, resolved.args, {
-          cwd: workDir,
-          env: getSanitizedEnvironment({}, true),
-          timeout: 30000,
-        });
-        stdoutStr = out.toString('utf-8');
-      } catch (err: any) {
-        const errMsg = (err?.message || '') + (err?.stderr?.toString() || '') + (err?.stdout?.toString() || '');
-        if (
-          errMsg.includes('Enter password') ||
-          errMsg.includes('Can not open encrypted archive') ||
-          errMsg.includes('Cannot open encrypted archive') ||
-          errMsg.includes('Data Error in encrypted archive') ||
-          errMsg.includes('Wrong password')
-        ) {
-          throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
-        }
-        throw new ConversionFailedError(`Failed to inspect 7z archive: ${err.message}`);
-      }
-
-      if (stdoutStr.includes('Enter password (will not be echoed):')) {
-        throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
-      }
-
-      const entries: ArchiveEntryMetadata[] = [];
-      const blocks = stdoutStr.split(/\r?\n\r?\n/);
-      let isArchiveEncrypted = false;
-
-      for (const block of blocks) {
-        if (!block.includes('Path = ') || block.includes('Listing archive:')) continue;
-        const lines = block.split(/\r?\n/);
-        const record: Record<string, string> = {};
-        for (const line of lines) {
-          const eq = line.indexOf(' = ');
-          if (eq !== -1) {
-            record[line.slice(0, eq).trim()] = line.slice(eq + 3).trim();
-          }
-        }
-        if (!record.Path || record.Path === archivePath) continue;
-
-        const uncompSize = record.Size ? parseInt(record.Size, 10) : 0;
-        const compSize = record['Packed Size'] ? parseInt(record['Packed Size'], 10) : undefined;
-        const isEnc = record.Encrypted === '+';
-        if (isEnc) isArchiveEncrypted = true;
-        const isDir = record.Folder === '+' || (record.Attributes && record.Attributes.includes('D')) || record.Path.endsWith('/');
-        const modTime = record.Modified || undefined;
-        const crcHex = record.CRC || undefined;
-
-        entries.push({
-          name: sanitizeArchivePath(record.Path) || record.Path,
-          uncompressedSize: uncompSize,
-          compressedSize: compSize,
-          isEncrypted: isEnc,
-          isDirectory: Boolean(isDir),
-          modifiedAt: modTime,
-          crc32: crcHex ? crcHex.toLowerCase() : undefined,
-        });
-      }
-
-      let totalUncompressedBytes = 0;
-      let totalCompressedBytes = 0;
-      for (const e of entries) {
-        totalUncompressedBytes += e.uncompressedSize;
-        totalCompressedBytes += e.compressedSize || 0;
-      }
-
-      return {
-        format: '7z',
-        totalEntries: entries.length,
-        totalUncompressedBytes,
-        totalCompressedBytes,
-        isEncrypted: isArchiveEncrypted,
-        entries,
-      };
-    } finally {
-      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
-    }
+    return await inspectArchiveVia7zCli(buffer, '7z', p7z, password);
   }
 
   // Pure TS fallback for 7z inspection
@@ -3293,93 +3302,7 @@ async function inspectRarBuffer(
 
   const p7z = get7zBinaryPath();
   if (p7z) {
-    const tmpDir = os.tmpdir();
-    const token = crypto.randomBytes(8).toString('hex');
-    const workDir = path.join(tmpDir, `easyconvert_rar_inspect_${Date.now()}_${token}`);
-    fs.mkdirSync(workDir, { recursive: true });
-    try {
-      const archivePath = path.join(workDir, 'archive.rar');
-      fs.writeFileSync(archivePath, buffer);
-
-      const pwArgs = password ? ['-p' + password] : ['-p-'];
-      const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', ...pwArgs, archivePath], {
-        networkIsolated: true,
-      });
-
-      let stdoutStr = '';
-      try {
-        const out = execFileSync(resolved.binary, resolved.args, {
-          cwd: workDir,
-          env: getSanitizedEnvironment({}, true),
-          timeout: 30000,
-        });
-        stdoutStr = out.toString('utf-8');
-      } catch (err: any) {
-        const errMsg = (err?.message || '') + (err?.stderr?.toString() || '');
-        if (
-          errMsg.includes('Enter password') ||
-          errMsg.includes('Can not open encrypted') ||
-          errMsg.includes('Cannot open encrypted') ||
-          errMsg.includes('Wrong password')
-        ) {
-          throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
-        }
-        throw new ConversionFailedError(`Failed to inspect RAR archive: ${err.message}`);
-      }
-
-      if (stdoutStr.includes('Enter password (will not be echoed):')) {
-        throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
-      }
-
-      const entries: ArchiveEntryMetadata[] = [];
-      const blocks = stdoutStr.split(/\r?\n\r?\n/);
-      let isArchiveEncrypted = false;
-
-      for (const block of blocks) {
-        if (!block.includes('Path = ') || block.includes('Listing archive:')) continue;
-        const lines = block.split(/\r?\n/);
-        const record: Record<string, string> = {};
-        for (const line of lines) {
-          const eq = line.indexOf(' = ');
-          if (eq !== -1) {
-            record[line.slice(0, eq).trim()] = line.slice(eq + 3).trim();
-          }
-        }
-        if (!record.Path || record.Path === archivePath) continue;
-
-        const uncompSize = record.Size ? parseInt(record.Size, 10) : 0;
-        const compSize = record['Packed Size'] ? parseInt(record['Packed Size'], 10) : undefined;
-        const isEnc = record.Encrypted === '+';
-        if (isEnc) isArchiveEncrypted = true;
-        const isDir = record.Folder === '+' || (record.Attributes && record.Attributes.includes('D')) || record.Path.endsWith('/');
-        const modTime = record.Modified || undefined;
-        const crcHex = record.CRC || undefined;
-
-        entries.push({
-          name: sanitizeArchivePath(record.Path) || record.Path,
-          uncompressedSize: uncompSize,
-          compressedSize: compSize,
-          isEncrypted: isEnc,
-          isDirectory: Boolean(isDir),
-          modifiedAt: modTime,
-          crc32: crcHex ? crcHex.toLowerCase() : undefined,
-        });
-      }
-
-      const totalUncompressedBytes = entries.reduce((acc, e) => acc + e.uncompressedSize, 0);
-      const totalCompressedBytes = entries.reduce((acc, e) => acc + (e.compressedSize || 0), 0);
-
-      return {
-        format: 'rar',
-        totalEntries: entries.length,
-        totalUncompressedBytes,
-        totalCompressedBytes,
-        isEncrypted: isArchiveEncrypted,
-        entries,
-      };
-    } finally {
-      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
-    }
+    return await inspectArchiveVia7zCli(buffer, 'rar', p7z, password);
   }
 
   // Pure TS fallback for RAR inspection
