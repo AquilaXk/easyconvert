@@ -662,29 +662,151 @@ const NON_RENDERED_ELEMENTS = new Set([
 
 const SHAPE_ELEMENTS = new Set(['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon']);
 
-function parseStyleDeclarations(style: string | undefined): Map<string, string> {
-  const map = new Map<string, string>();
+/** Properties that reference clipping, masking, filter or marker resources. */
+const UNSUPPORTED_REFERENCE_PROPERTIES = ['clip-path', 'mask', 'filter', 'marker', 'marker-start', 'marker-mid', 'marker-end'];
+
+interface CssDeclaration {
+  value: string;
+  important: boolean;
+}
+
+const IMPORTANT_SUFFIX = /\s*!\s*important\s*$/i;
+
+function parseDeclarationList(style: string | undefined): Map<string, CssDeclaration> {
+  const map = new Map<string, CssDeclaration>();
   if (!style) return map;
   for (const decl of style.split(';')) {
     const colonIdx = decl.indexOf(':');
     if (colonIdx > 0) {
       const key = decl.substring(0, colonIdx).trim().toLowerCase();
-      const val = decl.substring(colonIdx + 1).replace(/!important\s*$/i, '').trim();
-      if (key && val) map.set(key, val);
+      const raw = decl.substring(colonIdx + 1);
+      const important = IMPORTANT_SUFFIX.test(raw);
+      const value = raw.replace(IMPORTANT_SUFFIX, '').trim();
+      if (key && value) map.set(key, { value, important });
     }
   }
   return map;
 }
 
-/** Collects the element's own declared properties; the style attribute wins over attributes. */
-function declaredProperties(attrs: Map<string, string>): Map<string, string> {
-  const declared = new Map<string, string>();
-  for (const name of [...Object.keys(INHERITED_PROPERTIES), 'display']) {
-    const v = attrs.get(name);
-    if (v !== undefined && v.trim() !== '') declared.set(name, v.trim());
+function parseStyleDeclarations(style: string | undefined): Map<string, string> {
+  return new Map([...parseDeclarationList(style)].map(([k, d]) => [k, d.value]));
+}
+
+// ============================================================================
+// Minimal <style> stylesheet: type/.class/#id compound selectors, comma lists
+// ============================================================================
+
+interface CompoundSelector {
+  type: string | null;
+  classes: string[];
+  id: string | null;
+  /** [ids, classes, types] per CSS Selectors 4 section 17. */
+  specificity: [number, number, number];
+}
+
+interface CssRule {
+  selector: CompoundSelector;
+  declarations: Map<string, CssDeclaration>;
+  order: number;
+}
+
+const COMPOUND_SELECTOR_PATTERN = /^(\*|[A-Za-z][\w-]*)?((?:[.#][A-Za-z_-][\w-]*)*)$/;
+
+function unsupportedRule(rule: string): UnsupportedOptionError {
+  return new UnsupportedOptionError(`SVG stylesheet rule "${rule.trim()}" is not supported by metafile encoders.`);
+}
+
+function parseCompoundSelector(text: string, rule: string): CompoundSelector {
+  const m = COMPOUND_SELECTOR_PATTERN.exec(text);
+  if (!m || text === '') throw unsupportedRule(rule);
+  const parts = m[2].match(/[.#][A-Za-z_-][\w-]*/g) ?? [];
+  const ids = parts.filter((p) => p.startsWith('#')).map((p) => p.slice(1));
+  if (ids.length > 1) throw unsupportedRule(rule);
+  const classes = parts.filter((p) => p.startsWith('.')).map((p) => p.slice(1));
+  const type = m[1] && m[1] !== '*' ? m[1] : null;
+  return { type, classes, id: ids[0] ?? null, specificity: [ids.length, classes.length, type ? 1 : 0] };
+}
+
+/** Parses <style> text; anything beyond the supported subset throws, naming the rule. */
+function parseStylesheet(css: string): CssRule[] {
+  const text = css
+    .replace(/<!\[CDATA\[|\]\]>/g, ' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/<!--|-->/g, ' ');
+  const rules: CssRule[] = [];
+  let rest = text.trim();
+  while (rest.length > 0) {
+    if (rest.startsWith('@')) {
+      const end = rest.search(/[;{]/);
+      throw unsupportedRule(end === -1 ? rest : rest.slice(0, end));
+    }
+    const open = rest.indexOf('{');
+    const close = rest.indexOf('}');
+    if (open === -1 || close === -1 || close < open) throw unsupportedRule(rest);
+    const prelude = rest.slice(0, open).trim();
+    const body = rest.slice(open + 1, close);
+    const ruleText = rest.slice(0, close + 1);
+    if (body.includes('{')) throw unsupportedRule(ruleText);
+    const declarations = parseDeclarationList(body);
+    for (const prop of [...UNSUPPORTED_REFERENCE_PROPERTIES, 'transform']) {
+      const d = declarations.get(prop);
+      if (d && d.value.toLowerCase() !== 'none') throw unsupportedRule(ruleText);
+    }
+    for (const sel of prelude.split(',')) {
+      rules.push({ selector: parseCompoundSelector(sel.trim(), ruleText), declarations, order: rules.length });
+    }
+    rest = rest.slice(close + 1).trim();
   }
-  for (const [k, v] of parseStyleDeclarations(attrs.get('style'))) {
-    declared.set(k, v);
+  return rules;
+}
+
+function extractStylesheets(svgContent: string): CssRule[] {
+  const rules: CssRule[] = [];
+  for (const m of svgContent.matchAll(/<style\b[^>]*?(?:\/>|>([\s\S]*?)<\/style\s*>)/gi)) {
+    for (const r of parseStylesheet(m[1] ?? '')) rules.push({ ...r, order: rules.length });
+  }
+  return rules;
+}
+
+function selectorMatches(sel: CompoundSelector, name: string, attrs: Map<string, string>): boolean {
+  if (sel.type !== null && sel.type !== name) return false;
+  if (sel.id !== null && attrs.get('id') !== sel.id) return false;
+  if (sel.classes.length === 0) return true;
+  const classList = new Set((attrs.get('class') ?? '').split(/\s+/).filter((c) => c));
+  return sel.classes.every((c) => classList.has(c));
+}
+
+function compareRules(a: CssRule, b: CssRule): number {
+  for (let k = 0; k < 3; k++) {
+    const diff = a.selector.specificity[k] - b.selector.specificity[k];
+    if (diff !== 0) return diff;
+  }
+  return a.order - b.order;
+}
+
+/**
+ * Collects the element's own declared properties in cascade order:
+ * presentation attributes < stylesheet < inline style < stylesheet !important
+ * < inline !important.
+ */
+function declaredProperties(attrs: Map<string, string>, name = '', sheet: CssRule[] = []): Map<string, string> {
+  const declared = new Map<string, string>();
+  for (const prop of [...Object.keys(INHERITED_PROPERTIES), 'display']) {
+    const v = attrs.get(prop);
+    if (v !== undefined && v.trim() !== '') declared.set(prop, v.trim());
+  }
+  const matching = sheet.filter((r) => selectorMatches(r.selector, name, attrs)).sort(compareRules);
+  const inline = parseDeclarationList(attrs.get('style'));
+  const layers: [Iterable<[string, CssDeclaration]>, boolean][] = [
+    ...matching.map((r) => [r.declarations, false] as [Iterable<[string, CssDeclaration]>, boolean]),
+    [inline, false],
+    ...matching.map((r) => [r.declarations, true] as [Iterable<[string, CssDeclaration]>, boolean]),
+    [inline, true],
+  ];
+  for (const [decls, importantLayer] of layers) {
+    for (const [k, d] of decls) {
+      if (d.important === importantLayer) declared.set(k, d.value);
+    }
   }
   if (declared.has('transform')) {
     throw new CadGeometryUnavailableError(`CSS transform property "${declared.get('transform')}" is not supported; use the transform attribute.`);
@@ -968,8 +1090,6 @@ function unsupportedElementError(name: string): UnsupportedOptionError {
   return new UnsupportedOptionError(`SVG element <${name}> is not supported by metafile encoders.`);
 }
 
-/** Properties that reference clipping, masking, filter or marker resources. */
-const UNSUPPORTED_REFERENCE_PROPERTIES = ['clip-path', 'mask', 'filter', 'marker', 'marker-start', 'marker-mid', 'marker-end'];
 
 function assertNoUnsupportedReferences(attrs: Map<string, string>): void {
   const style = parseStyleDeclarations(attrs.get('style'));
@@ -992,6 +1112,7 @@ interface RenderState {
   /** ids of the <use> targets currently being instantiated, for cycle detection. */
   useChain: string[];
   renderedNodes: number;
+  sheet: CssRule[];
 }
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
@@ -1071,7 +1192,7 @@ function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): vo
   const isUse = node.name === 'use';
   if (!isShape && !isUse && !GROUP_ELEMENTS.has(node.name)) throw unsupportedElementError(node.name);
 
-  const declared = declaredProperties(node.attrs);
+  const declared = declaredProperties(node.attrs, node.name, state.sheet);
   if (declared.get('display') === 'none') return;
   assertNoUnsupportedReferences(node.attrs);
   const ctx = deriveContext(parent, node.attrs, declared);
@@ -1096,10 +1217,11 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
     return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, elements: [] };
   }
   const viewport = resolveViewport(root.attrs);
-  const declared = declaredProperties(root.attrs);
+  const sheet = extractStylesheets(svgContent);
+  const declared = declaredProperties(root.attrs, root.name, sheet);
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
-  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0 };
+  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, sheet };
   indexIds(root, state.ids);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };

@@ -591,4 +591,48 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeEmf(svgDoc('<defs><linearGradient id="g"/></defs><use href="#g"/>'))).toThrow(UnsupportedOptionError);
     });
   });
+
+  describe('<style> stylesheets', () => {
+    function brushes(css: string, body: string): (number | null)[] {
+      return filledShapes(emfShapes(`<style>${css}</style>${body}`)).map((s) => s.brush);
+    }
+    const R = (attrs: string) => `<rect x="0" y="0" width="10" height="10" ${attrs}/>`;
+
+    it('applies type, class, id, compound and comma-list selectors', () => {
+      expect(brushes('rect { fill: #111111 }', R(''))).toEqual([0x111111]);
+      expect(brushes('.a { fill: #ff0000 }', R('class="b a"'))).toEqual([0xff0000]);
+      expect(brushes('#x { fill: #00ff00 }', R('id="x"'))).toEqual([0x00ff00]);
+      expect(brushes('rect.a#x { fill: #0000ff }', R('id="x" class="a"') + R('class="a"'))).toEqual([0x0000ff, 0x000000]);
+      expect(brushes('.p, .q { fill: #123456 }', R('class="p"') + R('class="q"'))).toEqual([0x123456, 0x123456]);
+    });
+
+    it('orders by specificity, then source order', () => {
+      expect(brushes('#x { fill: #00ff00 } .a { fill: #ff0000 } rect { fill: #0000ff }', R('id="x" class="a"'))).toEqual([0x00ff00]);
+      expect(brushes('.a { fill: #ff0000 } .b { fill: #0000ff }', R('class="a b"'))).toEqual([0x0000ff]);
+    });
+
+    it('sits above presentation attributes and below inline style, honouring !important', () => {
+      expect(brushes('.a { fill: #ff0000 }', R('class="a" fill="#0000ff"'))).toEqual([0xff0000]);
+      expect(brushes('.a { fill: #ff0000 }', R('class="a" style="fill: #0000ff"'))).toEqual([0x0000ff]);
+      expect(brushes('.a { fill: #ff0000 !important }', R('class="a" style="fill: #0000ff"'))).toEqual([0xff0000]);
+      expect(brushes('#x { fill: #00ff00 } .a { fill: #ff0000 !important }', R('id="x" class="a"'))).toEqual([0xff0000]);
+    });
+
+    it('inherits stylesheet values through groups and reads CDATA and comments', () => {
+      expect(brushes('<![CDATA[ /* theme */ .g { fill: #abcdef; stroke: none } ]]>', `<g class="g">${R('')}</g>`)).toEqual([0xabcdef]);
+      expect(brushes('', R('fill="#010203"'))).toEqual([0x010203]);
+    });
+
+    const rejected = ['g rect { fill: red }', 'g > rect { fill: red }', 'a + b { fill: red }', 'a ~ b { fill: red }', 'rect:hover { fill: red }',
+      'rect::before { fill: red }', '[fill] { fill: red }', '@media print { rect { fill: red } }', '@import url(x.css);', '@font-face { font-family: x }',
+      '.a { clip-path: url(#c) }'];
+    for (const css of rejected) {
+      it(`rejects the stylesheet rule "${css}" with a typed error naming it`, () => {
+        const svg = svgDoc(`<style>${css}</style>${R('class="a"')}`);
+        expect(() => encodeEmf(svg)).toThrow(UnsupportedOptionError);
+        const head = css.split('{')[0].trim().split(' ')[0];
+        expect(() => encodeEmf(svg)).toThrow(head);
+      });
+    }
+  });
 });
