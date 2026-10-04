@@ -40,7 +40,7 @@ export interface StubFault {
 
 export interface StubCompleteBehavior {
   /** Send 200 headers, then this many single spaces at this interval before the result XML. */
-  keepalive?: { count: number; intervalMs: number };
+  keepalive?: { count: number; intervalMs: number; chunk?: string };
   /** Complete the upload, then answer with this error instead of the result (once). */
   failAfterComplete?: { status: number; code: string };
 }
@@ -218,7 +218,7 @@ export async function startS3StubServer(options: {
           let sent = 0;
           const tick = setInterval(() => {
             if (sent < count) {
-              res.write(' ');
+              res.write(complete.keepalive?.chunk ?? ' ');
               sent += 1;
               return;
             }

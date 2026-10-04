@@ -99,6 +99,11 @@ const ERROR_ELEMENT_PATTERN = /<Error\b/;
 const DTD_DECLARATION_PATTERN = /<!(?:DOCTYPE|ENTITY)/i;
 const MALFORMED_XML_CODE = 'MalformedXML';
 const NO_SUCH_UPLOAD_CODE = 'NoSuchUpload';
+/** A 2xx Complete answer that does not prove the object was assembled. */
+const UNCONFIRMED_COMPLETION_CODE = 'UnconfirmedCompletion';
+const COMPLETE_RESULT_ELEMENT = '<CompleteMultipartUploadResult';
+/** XML whitespace (space, tab, LF, CR): S3 pads a slow Complete with it before the result. */
+const XML_WHITESPACE_BYTES: ReadonlySet<number> = new Set([0x20, 0x09, 0x0a, 0x0d]);
 
 export interface S3AdapterOptions {
   /** Multipart part size; at least 5 MiB. Grows automatically to stay within 10,000 parts. */
@@ -245,21 +250,37 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
 }
 
+/** Index of the first non-whitespace byte, or the length when the chunk is all whitespace. */
+function firstContentByte(chunk: Uint8Array): number {
+  let i = 0;
+  while (i < chunk.length && XML_WHITESPACE_BYTES.has(chunk[i])) i++;
+  return i;
+}
+
 /**
- * Reads at most MAX_ERROR_BODY_BYTES of a response body. `onBytes` runs for every chunk so the
- * caller can extend its deadline (S3 sends whitespace keepalives while completing an upload).
+ * Reads at most MAX_ERROR_BODY_BYTES of a response body, not counting leading whitespace, which
+ * S3 sends as keepalive while completing an upload. `onBytes` runs for every chunk so the caller
+ * can extend its inactivity deadline.
  */
 async function readLimitedText(res: Response, onBytes?: () => void): Promise<string> {
   if (!res.body) return '';
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let started = false;
   while (total < MAX_ERROR_BODY_BYTES) {
     const { done, value } = await reader.read();
     if (done) break;
     onBytes?.();
-    chunks.push(value);
-    total += value.length;
+    let content = value;
+    if (!started) {
+      content = value.subarray(firstContentByte(value));
+      started = content.length > 0;
+    }
+    if (content.length > 0) {
+      chunks.push(content);
+      total += content.length;
+    }
   }
   await reader.cancel().catch(() => undefined);
   return Buffer.concat(chunks).subarray(0, MAX_ERROR_BODY_BYTES).toString('utf-8');
@@ -278,7 +299,8 @@ function isRetryable(err: StorageAdapterError): boolean {
 function isAmbiguousCompletion(err: unknown): boolean {
   return (
     err instanceof StorageTimeoutError ||
-    (err instanceof StorageServiceError && (err.retryable || err.code === NO_SUCH_UPLOAD_CODE))
+    (err instanceof StorageServiceError &&
+      (err.retryable || err.code === NO_SUCH_UPLOAD_CODE || err.code === UNCONFIRMED_COMPLETION_CODE))
   );
 }
 
@@ -842,7 +864,7 @@ export class S3StorageAdapter implements IStorageAdapter {
     key: string,
     uploadId: string,
     parts: Array<{ partNumber: number; etag: string }>
-  ): Promise<string | undefined> {
+  ): Promise<string> {
     const xml =
       '<CompleteMultipartUpload>' +
       parts
@@ -860,7 +882,15 @@ export class S3StorageAdapter implements IStorageAdapter {
       replayable: true,
       readBody: true,
     });
-    return stripQuotes(text ? readXmlElement(text, 'ETag') : undefined);
+    const etag = text?.includes(COMPLETE_RESULT_ELEMENT) ? readXmlElement(text, 'ETag') : undefined;
+    if (!etag) {
+      throw new StorageServiceError(
+        'CompleteMultipartUpload answered without a result ETag; completion is unconfirmed',
+        PROVIDER,
+        { code: UNCONFIRMED_COMPLETION_CODE, retryable: false }
+      );
+    }
+    return etag.replace(/"/g, '');
   }
 
   private async abortMultipartUpload(key: string, uploadId: string): Promise<void> {

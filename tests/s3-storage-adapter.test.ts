@@ -295,9 +295,10 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
   const isAbort = (r: { method: string; query: URLSearchParams }) => r.method === 'DELETE' && r.query.has('uploadId');
 
   it('keeps a CompleteMultipartUpload alive while S3 streams whitespace past the request timeout', async () => {
-    stub.complete.keepalive = { count: 6, intervalMs: 40 };
+    // 15 ticks x 30 ms = 450 ms of keepalive: more than twice the 200 ms inactivity timeout.
+    stub.complete.keepalive = { count: 15, intervalMs: 30 };
     const payload = crypto.randomBytes(MIN_PART + 5);
-    const s3 = adapter({}, { partSizeBytes: MIN_PART, requestTimeoutMs: 100 });
+    const s3 = adapter({}, { partSizeBytes: MIN_PART, requestTimeoutMs: 200 });
 
     const result = await s3.uploadStream('slow/complete.bin', sliced(payload));
 
@@ -321,6 +322,53 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     expect(stub.requests.some((r) => r.method === 'HEAD' && r.key === 'ambiguous/ok.bin')).toBe(true);
     expect(stub.requests.filter(isAbort)).toHaveLength(0);
     expect(sha256(stub.objects.get('ambiguous/ok.bin')!.body)).toBe(sha256(payload));
+  });
+
+  const isListParts = (r: { method: string; query: URLSearchParams }) => r.method === 'GET' && r.query.has('uploadId');
+
+  it('does not take an empty 200 Complete as success without verifying the object', async () => {
+    stub.faults.push({ match: isComplete, status: 200, errorIn200: true, body: '', times: 1 });
+    const payload = crypto.randomBytes(MIN_PART + 3);
+    const s3 = adapter({}, { partSizeBytes: MIN_PART });
+
+    await expect(s3.uploadStream('empty/complete.bin', sliced(payload))).rejects.toThrow(StorageServiceError);
+    expect(stub.requests.some(isListParts)).toBe(true);
+    expect(stub.requests.filter(isAbort)).toHaveLength(1);
+    expect(stub.objects.has('empty/complete.bin')).toBe(false);
+  });
+
+  it('does not take a 2xx Complete body without a result element as success', async () => {
+    stub.faults.push({ match: isComplete, status: 200, errorIn200: true, body: '<Other>ok</Other>', times: Infinity });
+    await expect(
+      adapter({}, { partSizeBytes: MIN_PART }).uploadStream('odd/complete.bin', sliced(crypto.randomBytes(MIN_PART + 3)))
+    ).rejects.toThrow(StorageServiceError);
+    expect(stub.requests.some(isListParts)).toBe(true);
+    expect(stub.requests.filter(isAbort)).toHaveLength(1);
+  });
+
+  it('finds an <Error> that follows more than 64 KiB of keepalive whitespace', async () => {
+    stub.faults.push({
+      match: isComplete,
+      status: 200,
+      errorIn200: true,
+      body: `${' '.repeat(70 * 1024)}<Error><Code>InternalError</Code><Message>late</Message></Error>`,
+      times: 1,
+    });
+    const payload = crypto.randomBytes(MIN_PART + 3);
+    await adapter({}, { partSizeBytes: MIN_PART }).uploadStream('late/error.bin', sliced(payload));
+    expect(stub.requests.filter(isComplete)).toHaveLength(2);
+    expect(sha256(stub.objects.get('late/error.bin')!.body)).toBe(sha256(payload));
+  });
+
+  it('reads a Complete result after more than 64 KiB of keepalive whitespace without verification', async () => {
+    stub.complete.keepalive = { count: 70, intervalMs: 1, chunk: ' '.repeat(1024) };
+    const result = await adapter({}, { partSizeBytes: MIN_PART }).uploadStream(
+      'long/keepalive.bin',
+      sliced(crypto.randomBytes(MIN_PART + 3))
+    );
+    expect(result.etag).toMatch(/^[0-9a-f]{32}-2$/);
+    expect(stub.requests.filter(isComplete)).toHaveLength(1);
+    expect(stub.requests.some(isListParts)).toBe(false);
   });
 
   it('aborts after an ambiguous Complete failure when ListParts shows the upload still open', async () => {
