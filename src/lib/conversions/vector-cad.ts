@@ -226,12 +226,12 @@ export async function convertVectorCad(
       if (parsedCgm) {
         svgStr = parsedCgm;
       } else {
-        throw new Error(
+        throw new CadGeometryUnavailableError(
           `Unsupported or unparseable .${src} vector format: fail-closed against dummy placeholder synthesis.`
         );
       }
     } else {
-      throw new Error(
+      throw new CadGeometryUnavailableError(
         `Unsupported or unparseable .${src} vector format: fail-closed against dummy placeholder synthesis.`
       );
     }

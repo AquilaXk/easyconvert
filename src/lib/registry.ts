@@ -515,7 +515,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/pdf',
     category: 'document',
     description: 'Portable Document Format - Industry standard fixed-layout document.',
-    targetFormats: ['doc', 'docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'dxf', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'ps', 'psd', 'tiff', 'webp', 'ppt', 'xls', 'emf', 'wmf', 'hocr', 'alto'],
+    targetFormats: ['doc', 'docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'dxf', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'ps', 'psd', 'tiff', 'webp', 'ppt', 'xls', 'hocr', 'alto'],
     optionsSchema: { orientation: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   docx: {
@@ -1277,7 +1277,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     category: 'presentation',
     description: 'Microsoft PowerPoint OpenXML slide presentation standard.',
-    targetFormats: ['pdf', 'html', 'odp', 'ppt', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'key', 'emf', 'swf'],
+    targetFormats: ['pdf', 'html', 'odp', 'ppt', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'key', 'swf'],
     optionsSchema: { orientation: true },
   },
   ppt: {
@@ -1287,7 +1287,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Microsoft PowerPoint legacy binary presentation format.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'odp', 'emf', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'odp', 'swf'],
   },
   pptm: {
     id: 'pptm',
@@ -1296,7 +1296,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
     category: 'presentation',
     description: 'Microsoft PowerPoint macro-enabled OpenXML slide presentation.',
-    targetFormats: ['pptx', 'pdf', 'html', 'zip', 'md', 'txt', 'eps', 'jpg', 'png', 'xps', 'odp', 'ppt', 'emf', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'zip', 'md', 'txt', 'eps', 'jpg', 'png', 'xps', 'odp', 'ppt', 'swf'],
   },
   potx: {
     id: 'potx',
@@ -1305,7 +1305,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.template',
     category: 'presentation',
     description: 'PowerPoint OpenXML presentation template.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'jpg', 'png', 'xps', 'odp', 'ppt', 'emf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'jpg', 'png', 'xps', 'odp', 'ppt'],
   },
   pot: {
     id: 'pot',
@@ -1314,7 +1314,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint presentation template.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'jpg', 'png', 'xps', 'odp', 'ppt', 'emf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'jpg', 'png', 'xps', 'odp', 'ppt'],
   },
   ppsx: {
     id: 'ppsx',
@@ -1703,7 +1703,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/illustrator',
     category: 'image',
     description: 'Adobe Illustrator vector graphics project format.',
-    targetFormats: ['svg', 'pdf', 'png', 'jpg', 'zip', 'dxf', 'eps', 'ps', 'emf', 'wmf'],
+    targetFormats: ['svg', 'pdf', 'png', 'jpg', 'zip', 'dxf', 'eps', 'ps'],
   },
   eps: {
     id: 'eps',
@@ -2124,7 +2124,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.dwg',
     category: 'cad',
     description: 'Autodesk AutoCAD binary 2D and 3D computer-aided design format.',
-    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'dwg', 'bmp', 'eps', 'gif', 'jpg', 'tiff', 'cgm', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'dwg', 'bmp', 'eps', 'gif', 'jpg', 'tiff'],
   },
   dxf: {
     id: 'dxf',
@@ -2133,7 +2133,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.dxf',
     category: 'cad',
     description: 'AutoCAD ASCII vector drawing interchange format.',
-    targetFormats: ['dwg', 'pdf', 'svg', 'png', 'zip', 'bmp', 'eps', 'gif', 'jpg', 'tiff', 'cgm', 'wmf'],
+    targetFormats: ['dwg', 'pdf', 'svg', 'png', 'zip', 'bmp', 'eps', 'gif', 'jpg', 'tiff'],
   },
   step: {
     id: 'step',
@@ -2573,7 +2573,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.corel-draw',
     category: 'vector',
     description: 'CorelDRAW proprietary vector illustration and design file format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true,quality:true},
   },
   cgm: {
@@ -2594,7 +2594,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'drawing/x-dwf',
     category: 'cad',
     description: 'Autodesk compact vector format for distributing CAD engineering data.',
-    targetFormats: ['dwg', 'dxf', 'pdf', 'bmp', 'eps', 'gif', 'jpg', 'png', 'tiff', 'cgm', 'svg', 'wmf'],
+    targetFormats: ['dwg', 'dxf', 'pdf', 'bmp', 'eps', 'gif', 'jpg', 'png', 'tiff', 'svg'],
     optionsSchema: {dimensions:true},
   },
   emf: {
@@ -2604,7 +2604,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/emf',
     category: 'vector',
     description: '32-bit Windows GDI vector graphic metafile format.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'emf', 'svg', 'wmf'],
+    targetFormats: [],
     optionsSchema: {dimensions:true,dpi:true},
     available: true,
   },
@@ -2625,7 +2625,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-sketch',
     category: 'vector',
     description: 'Vector graphic document format used by Sketch and open vector tools.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true},
   },
   sk1: {
@@ -2635,7 +2635,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-sk1',
     category: 'vector',
     description: 'Open-source sK1 multi-page vector graphics illustration format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true},
   },
   svgz: {
@@ -2655,7 +2655,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.visio',
     category: 'vector',
     description: 'Microsoft Visio technical diagrams and vector schematics format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {pages:true},
   },
   wmf: {
@@ -2665,7 +2665,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/wmf',
     category: 'vector',
     description: '16-bit Windows GDI vector and bitmap graphic metafile.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: [],
     optionsSchema: {dimensions:true},
     available: true,
   },
@@ -2911,8 +2911,6 @@ export function getAllFormats(): FormatDefinition[] {
 export function getFormatsByCategory(category: FormatCategory): FormatDefinition[] {
   return getAllFormats().filter((f) => f.category === category);
 }
-
-export const DISABLED_TARGET_FORMATS = new Set<string>();
 
 export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinition[] {
   const source = FORMAT_REGISTRY[sourceFormatId.toLowerCase()];

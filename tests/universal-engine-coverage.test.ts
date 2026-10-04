@@ -93,11 +93,10 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res2.filename).toBe('design.svg');
     expect(res2.buffer.toString('utf-8')).toContain('<svg');
 
-    // emf -> png
-    const res3 = await convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf');
-    expect(res3.filename).toBe('graphic.png');
-    // Real PNG signature
-    expect(res3.buffer.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    // emf -> png: no EMF decoder exists, so the pair is not advertised and is refused
+    await expect(convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf')).rejects.toThrow(
+      /Cannot convert from Enhanced Metafile \(EMF\) \(\.emf\) to target format \.png/
+    );
 
     // svg -> bmp (must NOT be disguised PNG)
     const resBmp = await convertFile(svgBuffer, 'svg', 'bmp', {}, 'drawing.svg');
