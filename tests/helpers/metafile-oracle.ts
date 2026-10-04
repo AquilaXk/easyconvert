@@ -468,3 +468,334 @@ export function parseClearTextCgm(text: string): CgmDocument {
   return { elements, mfName: decodeCgmString(elements[0].params), vdcExtent, body };
 }
 
+
+// ============================================================================
+// Metafile playback: replays drawing records into device-space shapes
+// ============================================================================
+
+export interface PlaybackPoint {
+  x: number;
+  y: number;
+}
+
+export interface PlaybackShape {
+  /** 'polygon' covers POLYGON and POLYPOLYGON records; 'polyline' is stroke only. */
+  kind: 'polygon' | 'polyline';
+  /** One entry per polygon/polyline, in reference-device pixels (96 DPI). */
+  rings: PlaybackPoint[][];
+  /** Pen colour as 0xRRGGBB and width in device pixels, or null for a null pen. */
+  pen: { color: number; width: number } | null;
+  /** Brush colour as 0xRRGGBB, or null for a hollow/null brush. */
+  brush: number | null;
+  /** 1 = ALTERNATE (even-odd), 2 = WINDING (nonzero). */
+  fillMode: number;
+}
+
+interface GdiPen {
+  type: 'pen';
+  color: number | null;
+  width: number;
+}
+interface GdiBrush {
+  type: 'brush';
+  color: number | null;
+}
+type GdiObject = GdiPen | GdiBrush;
+
+function colorRefToRgb(colorRef: number): number {
+  const r = colorRef & 0xff;
+  const g = (colorRef >> 8) & 0xff;
+  const b = (colorRef >> 16) & 0xff;
+  return (r << 16) | (g << 8) | b;
+}
+
+interface MappingState {
+  mapMode: number;
+  windowOrg: PlaybackPoint;
+  windowExt: PlaybackPoint;
+  viewportOrg: PlaybackPoint;
+  viewportExt: PlaybackPoint;
+}
+
+const MM_TEXT = 1;
+const MM_ANISOTROPIC = 8;
+
+function mapEmfPoint(m: MappingState, x: number, y: number): PlaybackPoint {
+  if (m.mapMode === MM_ANISOTROPIC) {
+    return {
+      x: ((x - m.windowOrg.x) * m.viewportExt.x) / m.windowExt.x + m.viewportOrg.x,
+      y: ((y - m.windowOrg.y) * m.viewportExt.y) / m.windowExt.y + m.viewportOrg.y,
+    };
+  }
+  expect(m.mapMode).toBe(MM_TEXT);
+  return { x: x - m.windowOrg.x + m.viewportOrg.x, y: y - m.windowOrg.y + m.viewportOrg.y };
+}
+
+/** Logical-to-device scale for widths (geometric pen widths are in logical units). */
+function emfWidthScale(m: MappingState): number {
+  if (m.mapMode === MM_ANISOTROPIC) {
+    expect(Math.abs(m.viewportExt.x / m.windowExt.x)).toBeCloseTo(Math.abs(m.viewportExt.y / m.windowExt.y), 6);
+    return Math.abs(m.viewportExt.x / m.windowExt.x);
+  }
+  return 1;
+}
+
+/** Replays an EMF file (as written by MS-EMF 2.3) into device-space shapes. */
+export function playbackEmf(buffer: Buffer): PlaybackShape[] {
+  const nBytes = buffer.readUInt32LE(48);
+  expect(nBytes).toBe(buffer.length);
+  const objects = new Map<number, GdiObject>();
+  const STOCK_NULL_BRUSH = 0x80000005;
+  const STOCK_NULL_PEN = 0x80000008;
+  const STOCK_BLACK_PEN = 0x80000007;
+  const STOCK_WHITE_BRUSH = 0x80000000;
+  let pen: GdiPen = { type: 'pen', color: 0, width: 1 };
+  let brush: GdiBrush = { type: 'brush', color: 0xffffff };
+  let fillMode = 1;
+  const m: MappingState = {
+    mapMode: MM_TEXT,
+    windowOrg: { x: 0, y: 0 },
+    windowExt: { x: 1, y: 1 },
+    viewportOrg: { x: 0, y: 0 },
+    viewportExt: { x: 1, y: 1 },
+  };
+  const shapes: PlaybackShape[] = [];
+  const emit = (kind: PlaybackShape['kind'], rings: PlaybackPoint[][]) => {
+    const scale = emfWidthScale(m);
+    shapes.push({
+      kind,
+      rings,
+      pen: pen.color === null ? null : { color: pen.color, width: pen.width * scale },
+      brush: kind === 'polygon' ? brush.color : null,
+      fillMode,
+    });
+  };
+  const readPoints16 = (at: number, count: number): PlaybackPoint[] => {
+    const pts: PlaybackPoint[] = [];
+    for (let k = 0; k < count; k++) {
+      pts.push(mapEmfPoint(m, buffer.readInt16LE(at + k * 4), buffer.readInt16LE(at + k * 4 + 2)));
+    }
+    return pts;
+  };
+
+  let offset = buffer.readUInt32LE(4);
+  while (offset < buffer.length) {
+    const type = buffer.readUInt32LE(offset);
+    const size = buffer.readUInt32LE(offset + 4);
+    expect(size % 4).toBe(0);
+    expect(offset + size).toBeLessThanOrEqual(buffer.length);
+    switch (type) {
+      case 17: // EMR_SETMAPMODE
+        m.mapMode = buffer.readUInt32LE(offset + 8);
+        break;
+      case 9: // EMR_SETWINDOWEXTEX
+        expect(size).toBe(16);
+        m.windowExt = { x: buffer.readInt32LE(offset + 8), y: buffer.readInt32LE(offset + 12) };
+        break;
+      case 10: // EMR_SETWINDOWORGEX
+        expect(size).toBe(16);
+        m.windowOrg = { x: buffer.readInt32LE(offset + 8), y: buffer.readInt32LE(offset + 12) };
+        break;
+      case 11: // EMR_SETVIEWPORTEXTEX
+        expect(size).toBe(16);
+        m.viewportExt = { x: buffer.readInt32LE(offset + 8), y: buffer.readInt32LE(offset + 12) };
+        break;
+      case 12: // EMR_SETVIEWPORTORGEX
+        expect(size).toBe(16);
+        m.viewportOrg = { x: buffer.readInt32LE(offset + 8), y: buffer.readInt32LE(offset + 12) };
+        break;
+      case 19: {
+        // EMR_SETPOLYFILLMODE
+        fillMode = buffer.readUInt32LE(offset + 8);
+        expect([1, 2]).toContain(fillMode);
+        break;
+      }
+      case 38: {
+        // EMR_CREATEPEN: LogPen = PenStyle, Width (PointL), ColorRef
+        const style = buffer.readUInt32LE(offset + 12);
+        const PS_NULL = 5;
+        objects.set(buffer.readUInt32LE(offset + 8), {
+          type: 'pen',
+          color: (style & 0xf) === PS_NULL ? null : colorRefToRgb(buffer.readUInt32LE(offset + 24)),
+          width: buffer.readInt32LE(offset + 16),
+        });
+        break;
+      }
+      case 39: {
+        // EMR_CREATEBRUSHINDIRECT: LogBrush32 = BrushStyle, Color, BrushHatch
+        const style = buffer.readUInt32LE(offset + 12);
+        const BS_SOLID = 0;
+        const BS_NULL = 1;
+        expect([BS_SOLID, BS_NULL]).toContain(style);
+        objects.set(buffer.readUInt32LE(offset + 8), {
+          type: 'brush',
+          color: style === BS_NULL ? null : colorRefToRgb(buffer.readUInt32LE(offset + 16)),
+        });
+        break;
+      }
+      case 37: {
+        // EMR_SELECTOBJECT
+        const ih = buffer.readUInt32LE(offset + 8);
+        if (ih === STOCK_NULL_PEN) pen = { type: 'pen', color: null, width: 0 };
+        else if (ih === STOCK_BLACK_PEN) pen = { type: 'pen', color: 0, width: 1 };
+        else if (ih === STOCK_NULL_BRUSH) brush = { type: 'brush', color: null };
+        else if (ih === STOCK_WHITE_BRUSH) brush = { type: 'brush', color: 0xffffff };
+        else {
+          const obj = objects.get(ih);
+          expect(obj, `select of undefined object ${ih}`).toBeDefined();
+          if (obj!.type === 'pen') pen = obj as GdiPen;
+          else brush = obj as GdiBrush;
+        }
+        break;
+      }
+      case 40: {
+        // EMR_DELETEOBJECT
+        const ih = buffer.readUInt32LE(offset + 8);
+        expect(objects.has(ih)).toBe(true);
+        objects.delete(ih);
+        break;
+      }
+      case 86: // EMR_POLYGON16
+      case 87: {
+        // EMR_POLYLINE16: Bounds (16), Count, aPoints
+        const count = buffer.readUInt32LE(offset + 24);
+        expect(size).toBe(28 + 4 * count);
+        emit(type === 86 ? 'polygon' : 'polyline', [readPoints16(offset + 28, count)]);
+        break;
+      }
+      case 91: {
+        // EMR_POLYPOLYGON16: Bounds, NumberOfPolygons, Count, PolygonPointCount[], aPoints
+        const nPolys = buffer.readUInt32LE(offset + 24);
+        const total = buffer.readUInt32LE(offset + 28);
+        expect(size).toBe(32 + 4 * nPolys + 4 * total);
+        const counts: number[] = [];
+        for (let k = 0; k < nPolys; k++) counts.push(buffer.readUInt32LE(offset + 32 + k * 4));
+        expect(counts.reduce((a, b) => a + b, 0)).toBe(total);
+        let at = offset + 32 + 4 * nPolys;
+        const rings: PlaybackPoint[][] = [];
+        for (const c of counts) {
+          rings.push(readPoints16(at, c));
+          at += 4 * c;
+        }
+        emit('polygon', rings);
+        break;
+      }
+      case 14: // EMR_EOF
+        expect(offset + size).toBe(buffer.length);
+        return shapes;
+      default:
+        // State records this oracle does not interpret (SETBKMODE, etc.)
+        break;
+    }
+    offset += size;
+  }
+  throw new Error('EMF has no EMR_EOF record');
+}
+
+/** Replays a placeable WMF (MS-WMF 2.3) into shapes in 96-DPI device pixels. */
+export function playbackWmf(buffer: Buffer): PlaybackShape[] {
+  const bboxLeft = buffer.readInt16LE(6);
+  const bboxTop = buffer.readInt16LE(8);
+  const inch = buffer.readUInt16LE(14);
+  const CSS_DPI = 96;
+  const toPx = CSS_DPI / inch;
+  const objects: (GdiObject | null)[] = [];
+  let pen: GdiPen = { type: 'pen', color: 0, width: 1 };
+  let brush: GdiBrush = { type: 'brush', color: 0xffffff };
+  let fillMode = 1;
+  let windowOrg: PlaybackPoint = { x: bboxLeft, y: bboxTop };
+  const shapes: PlaybackShape[] = [];
+  const pt = (x: number, y: number): PlaybackPoint => ({ x: (x - windowOrg.x) * toPx, y: (y - windowOrg.y) * toPx });
+  const readPoints = (at: number, count: number): PlaybackPoint[] => {
+    const pts: PlaybackPoint[] = [];
+    for (let k = 0; k < count; k++) pts.push(pt(buffer.readInt16LE(at + k * 4), buffer.readInt16LE(at + k * 4 + 2)));
+    return pts;
+  };
+  const emit = (kind: PlaybackShape['kind'], rings: PlaybackPoint[][]) => {
+    shapes.push({
+      kind,
+      rings,
+      pen: pen.color === null ? null : { color: pen.color, width: pen.width * toPx },
+      brush: kind === 'polygon' ? brush.color : null,
+      fillMode,
+    });
+  };
+
+  let offset = 22 + 18;
+  while (offset + 6 <= buffer.length) {
+    const words = buffer.readUInt32LE(offset);
+    const fn = buffer.readUInt16LE(offset + 4);
+    switch (fn) {
+      case 0x020b: // META_SETWINDOWORG: Y, X
+        windowOrg = { x: buffer.readInt16LE(offset + 8), y: buffer.readInt16LE(offset + 6) };
+        break;
+      case 0x0106: {
+        // META_SETPOLYFILLMODE
+        fillMode = buffer.readUInt16LE(offset + 6);
+        expect([1, 2]).toContain(fillMode);
+        break;
+      }
+      case 0x02fa:
+      case 0x02fc: {
+        let slot = objects.indexOf(null);
+        if (slot === -1) slot = objects.length;
+        if (fn === 0x02fa) {
+          const PS_NULL = 5;
+          const style = buffer.readUInt16LE(offset + 6);
+          objects[slot] = {
+            type: 'pen',
+            color: (style & 0xf) === PS_NULL ? null : colorRefToRgb(buffer.readUInt32LE(offset + 12)),
+            width: buffer.readInt16LE(offset + 8),
+          };
+        } else {
+          const BS_NULL = 1;
+          const style = buffer.readUInt16LE(offset + 6);
+          objects[slot] = { type: 'brush', color: style === BS_NULL ? null : colorRefToRgb(buffer.readUInt32LE(offset + 8)) };
+        }
+        break;
+      }
+      case 0x012d: {
+        const obj = objects[buffer.readUInt16LE(offset + 6)];
+        expect(obj).toBeTruthy();
+        if (obj!.type === 'pen') pen = obj as GdiPen;
+        else brush = obj as GdiBrush;
+        break;
+      }
+      case 0x01f0: {
+        const idx = buffer.readUInt16LE(offset + 6);
+        expect(objects[idx]).toBeTruthy();
+        objects[idx] = null;
+        break;
+      }
+      case 0x0324:
+      case 0x0325: {
+        const count = buffer.readInt16LE(offset + 6);
+        expect(words).toBe(4 + 2 * count);
+        emit(fn === 0x0324 ? 'polygon' : 'polyline', [readPoints(offset + 8, count)]);
+        break;
+      }
+      case 0x0538: {
+        // META_POLYPOLYGON: NumberOfPolygons, aPointsPerPolygon[], aPoints
+        const nPolys = buffer.readUInt16LE(offset + 6);
+        const counts: number[] = [];
+        for (let k = 0; k < nPolys; k++) counts.push(buffer.readUInt16LE(offset + 8 + k * 2));
+        const total = counts.reduce((a, b) => a + b, 0);
+        expect(words).toBe(4 + nPolys + 2 * total);
+        let at = offset + 8 + 2 * nPolys;
+        const rings: PlaybackPoint[][] = [];
+        for (const c of counts) {
+          rings.push(readPoints(at, c));
+          at += 4 * c;
+        }
+        emit('polygon', rings);
+        break;
+      }
+      case 0x0000:
+        return shapes;
+      default:
+        break;
+    }
+    offset += words * 2;
+  }
+  throw new Error('WMF has no META_EOF record');
+}
