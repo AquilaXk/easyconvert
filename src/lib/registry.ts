@@ -2583,7 +2583,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/cgm',
     category: 'vector',
     description: 'ISO standard 2D vector and raster graphics interchange format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
+    targetFormats: [],
     optionsSchema: {dimensions:true},
     available: true,
   },

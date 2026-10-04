@@ -364,7 +364,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     cbt: ['cbz'],
     cbz: ['azw3', 'cbr', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf', 'txt'],
     cdr: ['emf', 'wmf'],
-    cgm: ['emf', 'wmf'],
+    cgm: ['dxf', 'emf', 'eps', 'pdf', 'png', 'ps', 'svg', 'wmf'],
     chm: ['azw3', 'epub', 'html', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     csv: ['jpg', 'png'],
     dbf: ['json', 'tsv'],

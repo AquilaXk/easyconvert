@@ -55,8 +55,8 @@ function assertOutputFormat(target: string, out: Buffer): void {
 }
 
 describe('Metafile registry advertises only working conversion pairs', () => {
-  it('never advertises EMF or WMF as conversion sources, since no decoder exists', () => {
-    for (const source of ['emf', 'wmf']) {
+  it('never advertises EMF, WMF or CGM as conversion sources, since no faithful decoder exists', () => {
+    for (const source of ['emf', 'wmf', 'cgm']) {
       expect(FORMAT_REGISTRY[source].targetFormats).toEqual([]);
       expect(getAvailableTargetFormats(source)).toEqual([]);
     }

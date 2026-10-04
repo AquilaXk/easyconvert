@@ -113,12 +113,11 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(epsText).toContain('colorimage');
     expect(epsText).not.toContain('<svg');
 
-    // cgm -> svg
+    // cgm -> svg: the CGM reader drops polygon sets, colours and widths, so CGM is not a source
     const cgmContent = Buffer.from('BEGMF "sample"; ENDMF;', 'utf-8');
-    const resCgm = await convertFile(cgmContent, 'cgm', 'svg', {}, 'drawing.cgm');
-    expect(resCgm.filename).toBe('drawing.svg');
-    expect(resCgm.mimeType).toBe('image/svg+xml');
-    expect(resCgm.buffer.toString('utf-8')).toContain('<svg');
+    await expect(convertFile(cgmContent, 'cgm', 'svg', {}, 'drawing.cgm')).rejects.toThrow(
+      /Cannot convert from .+ \(\.cgm\) to target format \.svg/
+    );
 
     // svg -> emf
     const resEmf = await convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg');
