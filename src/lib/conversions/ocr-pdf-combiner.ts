@@ -18,6 +18,7 @@ import {
   PDFHexString,
   PDFName,
   PDFArray,
+  PDFString,
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
 
@@ -1339,9 +1340,10 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
     Type: 'Font',
     Subtype: 'CIDFontType2',
     BaseFont: 'EasyConvert-ToUnicode',
+    // ISO 32000-1 §9.7.3: Registry and Ordering are text strings, not names.
     CIDSystemInfo: {
-      Registry: 'Adobe',
-      Ordering: 'Identity',
+      Registry: PDFString.of('Adobe'),
+      Ordering: PDFString.of('Identity'),
       Supplement: 0,
     },
     FontDescriptor: fontDescRef,

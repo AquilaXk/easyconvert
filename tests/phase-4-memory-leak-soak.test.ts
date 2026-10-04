@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'fs';
+import fs from 'node:fs';
 import sharp from 'sharp';
 import { encodeParquet, decodeParquet } from '../src/lib/conversions/parquet';
 import { compressZstd, decompressZstd } from '../src/lib/conversions/zstd';

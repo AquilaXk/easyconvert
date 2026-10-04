@@ -26,6 +26,7 @@ import {
 } from '../../conversions';
 import { ConversionFailedError, GraphExportError } from '../../types';
 import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
+import { ARCHIVE_CREATE_FORMATS, MERGE_FORMATS, THUMBNAIL_FORMATS, requestedTargetFormat } from '../../jobs/graph-operations';
 
 async function processIntermediatePdfArtifacts(
   graphId: string,
@@ -49,6 +50,26 @@ async function processIntermediatePdfArtifacts(
       return outKey;
     })
   );
+}
+
+const DEFAULT_THUMBNAIL_EDGE_PX = 256;
+
+/** Extension of a stored artifact; artifacts without one cannot be routed to a converter. */
+function artifactExtension(filename: string | undefined, key: string): string {
+  const ext = path.extname(filename || key).replace(/^\./, '').toLowerCase();
+  if (!ext) {
+    throw new ConversionFailedError(`Artifact "${key}" has no file extension, so its format is unknown`);
+  }
+  return ext;
+}
+
+/** The node's requested output format. Validation guarantees one; a missing value is a defect. */
+function requireTargetFormat(node: { op?: string; targetFormat?: unknown; options?: any }, nodeId: string): string {
+  const target = requestedTargetFormat(node);
+  if (!target) {
+    throw new ConversionFailedError(`Node "${nodeId}" (${node.op}) has no targetFormat`);
+  }
+  return target;
 }
 
 export async function processGraphNodeJob(
@@ -138,7 +159,7 @@ export async function processGraphNodeJob(
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
 
-          const srcExt = path.extname(stored.filename || inputKey).replace(/^\./, '') || 'bin';
+          const srcExt = artifactExtension(stored.filename, inputKey);
           const convRes = await effectiveEngine.convert(
             stored.buffer,
             srcExt,
@@ -163,7 +184,7 @@ export async function processGraphNodeJob(
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
-          const srcExt = path.extname(stored.filename || inputKey).replace(/^\./, '') || 'png';
+          const srcExt = artifactExtension(stored.filename, inputKey);
           const convRes = await effectiveEngine.convert(
             stored.buffer,
             srcExt,
@@ -186,7 +207,7 @@ export async function processGraphNodeJob(
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
-          const srcExt = path.extname(stored.filename || inputKey).replace(/^\./, '') || 'bin';
+          const srcExt = artifactExtension(stored.filename, inputKey);
           const convRes = await effectiveEngine.convert(
             stored.buffer,
             srcExt,
@@ -212,14 +233,17 @@ export async function processGraphNodeJob(
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
-          const srcExt = path.extname(stored.filename || inputKey).replace(/^\./, '').toLowerCase() || 'jpg';
-          const targetFormat = ((node as any).targetFormat || (node as any).options?.thumbnail?.format || 'jpg').toLowerCase().replace(/^\./, '');
-          const width = (node as any).options?.thumbnail?.width || 256;
-          const height = (node as any).options?.thumbnail?.height || 256;
+          const srcExt = artifactExtension(stored.filename, inputKey);
+          const targetFormat = requireTargetFormat(node, nodeId);
+          if (!THUMBNAIL_FORMATS.has(targetFormat)) {
+            throw new ConversionFailedError(`Thumbnail node "${nodeId}" cannot produce "${targetFormat}"`);
+          }
+          const width = node.options?.thumbnail?.width ?? DEFAULT_THUMBNAIL_EDGE_PX;
+          const height = node.options?.thumbnail?.height ?? DEFAULT_THUMBNAIL_EDGE_PX;
           const convRes = await effectiveEngine.convert(
             stored.buffer,
             srcExt,
-            targetFormat === 'png' ? 'png' : 'jpg',
+            targetFormat,
             {
               ...((node as any).options || {}),
               thumbnail: undefined,
@@ -281,26 +305,32 @@ export async function processGraphNodeJob(
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
-        const targetFmt = ((node as any).targetFormat || 'pdf').toLowerCase().replace(/^\./, '');
-        if (targetFmt === 'pdf') {
-          const pdfBuffers: Buffer[] = [];
-          for (const inputKey of inputArtifacts) {
-            const stored = effectiveStorage.getObject(inputKey);
-            if (stored) pdfBuffers.push(stored.buffer);
+        const targetFmt = requireTargetFormat(node, nodeId);
+        if (!MERGE_FORMATS.has(targetFmt)) {
+          throw new ConversionFailedError(`Merge node "${nodeId}" cannot produce "${targetFmt}"`);
+        }
+        // Every input must exist and already be in the merged format; nothing is skipped.
+        const inputs = inputArtifacts.map((inputKey) => {
+          const stored = effectiveStorage.getObject(inputKey);
+          if (!stored) {
+            throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
+          const inputExt = artifactExtension(stored.filename, inputKey);
+          if (inputExt !== targetFmt) {
+            throw new ConversionFailedError(`Merge node "${nodeId}" received a "${inputExt}" input; expected "${targetFmt}"`);
+          }
+          return stored;
+        });
+        if (targetFmt === 'pdf') {
+          const pdfBuffers = inputs.map((stored) => stored.buffer);
           const mergedBuf = await mergePdfBuffers(pdfBuffers);
           const outFilename = 'merged.pdf';
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
           effectiveStorage.saveObject(outKey, mergedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         } else {
-          const textParts: string[] = [];
-          for (const inputKey of inputArtifacts) {
-            const stored = effectiveStorage.getObject(inputKey);
-            if (stored) textParts.push(stored.buffer.toString('utf-8'));
-          }
-          const mergedBuf = Buffer.from(textParts.join('\n\n'), 'utf-8');
-          const outFilename = `merged.${targetFmt || 'txt'}`;
+          const mergedBuf = Buffer.from(inputs.map((stored) => stored.buffer.toString('utf-8')).join('\n\n'), 'utf-8');
+          const outFilename = `merged.${targetFmt}`;
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
           effectiveStorage.saveObject(outKey, mergedBuf, 'text/plain', outFilename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
@@ -331,14 +361,13 @@ export async function processGraphNodeJob(
         break;
       }
 
-      case 'archive.create':
-      case 'archive/create': {
+      case 'archive.create': {
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`archive.create node "${nodeId}" has no input artifacts to bundle`);
         }
 
-        const targetFmt = (node.targetFormat || 'zip').toLowerCase().replace(/^\./, '');
+        const targetFmt = requireTargetFormat(node, nodeId);
         if (targetFmt === 'rar') {
           throw new ConversionFailedError(
             "Target archive format 'rar' creation is not supported. RAR archive creation has been removed per D8; please use ZIP, 7z, or TAR."
@@ -374,9 +403,9 @@ export async function processGraphNodeJob(
           archiveBuf = sevenZipRes.buffer;
           archiveMime = 'application/x-7z-compressed';
         } else {
-          const zipRes = await createZipArchive(filesToArchive, node.options || {}, `bundle.${targetFmt}`);
-          archiveBuf = zipRes.buffer;
-          archiveMime = 'application/zip';
+          throw new ConversionFailedError(
+            `archive.create node "${nodeId}" cannot produce "${targetFmt}"; supported: ${[...ARCHIVE_CREATE_FORMATS].join(', ')}`
+          );
         }
 
         const outKey = `intermediate/${graphId}/${nodeId}/bundle.${targetFmt}`;
