@@ -528,4 +528,67 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeEmf(svgDoc('<g><rect width="5" height="5"/></rect></g>'))).toThrow(CadGeometryUnavailableError);
     });
   });
+
+  describe('<use> references', () => {
+    const SQUARE_DEF = '<defs><rect id="sq" x="0" y="0" width="10" height="10"/></defs>';
+
+    it('instantiates a referenced shape with x/y translation and inherited style', () => {
+      for (const shapes of [
+        emfShapes(SQUARE_DEF + '<use href="#sq" x="20" y="30" fill="#ff0000"/>'),
+        wmfShapes(SQUARE_DEF + '<use xlink:href="#sq" x="20" y="30" fill="#ff0000"/>', 'xmlns:xlink="http://www.w3.org/1999/xlink" width="100" height="100"'),
+      ]) {
+        const filled = filledShapes(shapes);
+        expect(filled.map((s) => s.brush)).toEqual([0xff0000]);
+        expect(corners(filled[0].rings[0])).toEqual([[20, 30], [30, 30], [30, 40], [20, 40]]);
+      }
+    });
+
+    it('applies the use transform before x/y and the referenced element transform', () => {
+      const shapes = emfShapes(
+        '<defs><rect id="r" x="0" y="0" width="10" height="5" transform="scale(2)"/></defs>' +
+          '<use href="#r" x="5" y="0" transform="translate(10 10)"/>'
+      );
+      expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[15, 10], [35, 10], [35, 20], [15, 20]]);
+    });
+
+    it('instantiates groups, nested uses and forward references, keeping the referenced element styles', () => {
+      const shapes = emfShapes(
+        '<use href="#pair" x="50" y="0"/>' +
+          '<defs><g id="pair" fill="#0000ff"><rect x="0" y="0" width="5" height="5"/><use href="#dot" x="10"/></g>' +
+          '<rect id="dot" x="0" y="0" width="5" height="5" fill="#00ff00"/></defs>'
+      );
+      const filled = filledShapes(shapes);
+      expect(filled.map((s) => s.brush)).toEqual([0x0000ff, 0x00ff00]);
+      expect(filled.map((s) => corners(s.rings[0])[0])).toEqual([[50, 0], [60, 0]]);
+    });
+
+    it('renders a referenced element that is itself visible in the tree twice', () => {
+      const shapes = emfShapes('<rect id="a" x="0" y="0" width="5" height="5" fill="#000"/><use href="#a" x="10"/>');
+      expect(filledShapes(shapes).map((s) => corners(s.rings[0])[0])).toEqual([[0, 0], [10, 0]]);
+    });
+
+    const failures: [string, string, RegExp][] = [
+      ['a self reference', '<g id="loop"><use href="#loop"/></g>', /cycle/i],
+      ['a reference cycle', '<defs><g id="a"><use href="#b"/></g><g id="b"><use href="#a"/></g></defs><use href="#a"/>', /cycle/i],
+      ['a missing target', '<use href="#nope"/>', /#nope/],
+      ['an external reference', '<use href="other.svg#shape"/>', /other\.svg#shape/],
+      ['a use without href', '<use x="5"/>', /href/],
+    ];
+    for (const [label, body, message] of failures) {
+      it(`fails closed with a typed error on ${label}`, () => {
+        expect(() => encodeEmf(svgDoc(body))).toThrow(ConversionFailedError);
+        expect(() => encodeEmf(svgDoc(body))).toThrow(message);
+      });
+    }
+
+    it('caps exponential <use> expansion with a typed error', () => {
+      let defs = '<rect id="l0" width="1" height="1"/>';
+      for (let k = 1; k <= 20; k++) defs += `<g id="l${k}"><use href="#l${k - 1}"/><use href="#l${k - 1}"/></g>`;
+      expect(() => encodeEmf(svgDoc(`<defs>${defs}</defs><use href="#l20"/>`))).toThrow(CadGeometryUnavailableError);
+    });
+
+    it('rejects references to non-rendering resources', () => {
+      expect(() => encodeEmf(svgDoc('<defs><linearGradient id="g"/></defs><use href="#g"/>'))).toThrow(UnsupportedOptionError);
+    });
+  });
 });

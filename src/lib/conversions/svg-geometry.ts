@@ -988,6 +988,59 @@ function isForeignNamespaceElement(name: string): boolean {
 
 interface RenderState {
   elements: SvgGeometryElement[];
+  ids: Map<string, SvgNode>;
+  /** ids of the <use> targets currently being instantiated, for cycle detection. */
+  useChain: string[];
+  renderedNodes: number;
+}
+
+/** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
+const MAX_RENDERED_NODES = 100000;
+
+function indexIds(node: SvgNode, ids: Map<string, SvgNode>): void {
+  const id = node.attrs.get('id');
+  if (id !== undefined && !ids.has(id)) ids.set(id, node);
+  for (const child of node.children) indexIds(child, ids);
+}
+
+/**
+ * Instantiates a <use> reference (SVG 1.1 section 5.6): the target renders as
+ * a child of the use element, under transform(use) * translate(x, y).
+ */
+function renderUse(node: SvgNode, ctx: StyleContext, state: RenderState): void {
+  const href = (node.attrs.get('href') ?? node.attrs.get('xlink:href') ?? '').trim();
+  if (href === '') {
+    throw new CadGeometryUnavailableError('SVG <use> element has no href reference.');
+  }
+  if (!href.startsWith('#')) {
+    throw new UnsupportedOptionError(`External SVG <use> reference "${href}" is not supported by metafile encoders.`);
+  }
+  const id = href.slice(1);
+  const target = state.ids.get(id);
+  if (!target) {
+    throw new CadGeometryUnavailableError(`SVG <use> reference "${href}" does not match any element.`);
+  }
+  if (state.useChain.includes(id)) {
+    throw new CadGeometryUnavailableError(`SVG <use> reference cycle: ${[...state.useChain, id].map((x) => `#${x}`).join(' -> ')}.`);
+  }
+  const offset: AffineMatrix = [1, 0, 0, 1, numberAttr(node.attrs, 'x'), numberAttr(node.attrs, 'y')];
+  const useCtx: StyleContext = { ...ctx, ctm: multiplyMatrix(ctx.ctm, offset) };
+  state.useChain.push(id);
+  if (target.name === 'symbol') {
+    if (target.attrs.has('viewBox')) {
+      throw new UnsupportedOptionError('SVG <symbol> with a viewBox is not supported by metafile encoders.');
+    }
+    renderChildren(target, useCtx, state);
+  } else if (NON_RENDERED_ELEMENTS.has(target.name)) {
+    throw new UnsupportedOptionError(`SVG <use> of non-rendering element <${target.name}> is not supported by metafile encoders.`);
+  } else {
+    renderNode(target, useCtx, state);
+  }
+  state.useChain.pop();
+}
+
+function renderChildren(node: SvgNode, ctx: StyleContext, state: RenderState): void {
+  for (const child of node.children) renderNode(child, ctx, state);
 }
 
 function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
@@ -1008,11 +1061,15 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
 
 function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): void {
   if (NON_RENDERED_ELEMENTS.has(node.name) || isForeignNamespaceElement(node.name)) return;
+  if (++state.renderedNodes > MAX_RENDERED_NODES) {
+    throw new CadGeometryUnavailableError(`SVG expands to more than ${MAX_RENDERED_NODES} rendered elements.`);
+  }
   if (node.name === 'svg') {
     throw new CadGeometryUnavailableError('Nested <svg> viewports are not supported by the metafile encoders.');
   }
   const isShape = SHAPE_ELEMENTS.has(node.name);
-  if (!isShape && !GROUP_ELEMENTS.has(node.name)) throw unsupportedElementError(node.name);
+  const isUse = node.name === 'use';
+  if (!isShape && !isUse && !GROUP_ELEMENTS.has(node.name)) throw unsupportedElementError(node.name);
 
   const declared = declaredProperties(node.attrs);
   if (declared.get('display') === 'none') return;
@@ -1020,9 +1077,11 @@ function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): vo
   const ctx = deriveContext(parent, node.attrs, declared);
   if (isShape) {
     emitShape(node, ctx, state);
-    return;
+  } else if (isUse) {
+    renderUse(node, ctx, state);
+  } else {
+    renderChildren(node, ctx, state);
   }
-  for (const child of node.children) renderNode(child, ctx, state);
 }
 
 /**
@@ -1040,9 +1099,8 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   const declared = declaredProperties(root.attrs);
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
-  const state: RenderState = { elements: [] };
-  if (declared.get('display') !== 'none') {
-    for (const child of root.children) renderNode(child, rootCtx, state);
-  }
+  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0 };
+  indexIds(root, state.ids);
+  if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };
 }
