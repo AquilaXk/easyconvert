@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { PassThrough, Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 import { Agent, fetch as undiciFetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici';
 import type { S3Credentials } from '../credentials-vault';
@@ -106,6 +106,7 @@ const ERROR_ELEMENT_PATTERN = /<Error\b/;
 const DTD_DECLARATION_PATTERN = /<!(?:DOCTYPE|ENTITY)/i;
 const MALFORMED_XML_CODE = 'MalformedXML';
 const NO_SUCH_UPLOAD_CODE = 'NoSuchUpload';
+const BODY_LENGTH_MISMATCH_CODE = 'BodyLengthMismatch';
 /** A 2xx Complete answer that does not prove the object was assembled. */
 const UNCONFIRMED_COMPLETION_CODE = 'UnconfirmedCompletion';
 const COMPLETE_RESULT_ELEMENT = '<CompleteMultipartUploadResult';
@@ -348,13 +349,27 @@ interface S3Request {
   replayable: boolean;
   /** Return a 404 response to the caller instead of throwing. */
   allowNotFound?: boolean;
+  /** Keep the deadlines running after a successful response so the caller can bound the body. */
+  streamBody?: boolean;
   /** Treat an `<Error>` document in a 2xx body as a failure (CompleteMultipartUpload) and return the body text. */
   readBody?: boolean;
+}
+
+/** The request's deadlines, handed to the caller when the response body is streamed onward. */
+interface RequestDeadlines {
+  /** Extends the inactivity deadline; call on every received chunk. */
+  touch: () => void;
+  clear: () => void;
+  /** Aborted when either deadline fires; it is the fetch's signal, so undici releases the socket. */
+  signal: AbortSignal;
+  timedOutAfterMs: () => number | undefined;
 }
 
 interface S3Response {
   res: Response;
   text?: string;
+  /** Present only for `streamBody` requests: the deadlines keep running for the body. */
+  deadlines?: RequestDeadlines;
 }
 
 /**
@@ -615,16 +630,27 @@ export class S3StorageAdapter implements IStorageAdapter {
         throw lastError;
       }
 
+      let handedOver = false;
       try {
         const outcome = await this.readOutcome(res, request, touch);
         if ('ok' in outcome) {
+          if (request.streamBody && outcome.ok.res.ok) {
+            handedOver = true;
+            const deadlines: RequestDeadlines = {
+              touch,
+              clear: clearDeadlines,
+              signal: controller.signal,
+              timedOutAfterMs: () => timedOutAfterMs,
+            };
+            return { ...outcome.ok, deadlines };
+          }
           return outcome.ok;
         }
         lastError = outcome.error;
       } catch (err) {
         lastError = this.mapBodyError(err, timedOutAfterMs);
       } finally {
-        clearDeadlines();
+        if (!handedOver) clearDeadlines();
       }
 
       if (!(isRetryable(lastError) && request.replayable)) {
@@ -668,14 +694,65 @@ export class S3StorageAdapter implements IStorageAdapter {
 
   async downloadStream(remotePath: string): Promise<NodeJS.ReadableStream> {
     const key = this.toKey(remotePath);
-    const { res } = await this.send({ method: 'GET', key, payloadHash: EMPTY_PAYLOAD_SHA256, replayable: true });
-    if (!res.body) {
+    const { res, deadlines } = await this.send({
+      method: 'GET',
+      key,
+      payloadHash: EMPTY_PAYLOAD_SHA256,
+      replayable: true,
+      streamBody: true,
+    });
+    if (!res.body || !deadlines) {
+      deadlines?.clear();
       return Readable.from([]);
     }
+    return this.boundedBody(res, deadlines);
+  }
+
+  /**
+   * Streams a response body under the request's deadlines: every chunk extends the inactivity
+   * timeout, the absolute ceiling keeps counting from the request start, and Content-Length, when
+   * present, must match exactly. Any failure destroys the stream with a typed storage error.
+   */
+  private boundedBody(res: Response, deadlines: RequestDeadlines): Readable {
+    const lengthHeader = res.headers.get('content-length');
+    const declared = lengthHeader === null ? undefined : Number.parseInt(lengthHeader, 10);
     const source = Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>);
-    const output = new PassThrough();
-    source.on('error', (err) => output.destroy(this.mapBodyError(err)));
-    output.on('close', () => source.destroy());
+    let received = 0;
+    const lengthError = () =>
+      new StorageServiceError(
+        `Response body length ${received} does not match Content-Length ${declared}`,
+        PROVIDER,
+        { code: BODY_LENGTH_MISMATCH_CODE, retryable: false }
+      );
+
+    const output = new Transform({
+      transform: (chunk: Buffer, _encoding, callback) => {
+        deadlines.touch();
+        received += chunk.length;
+        if (declared !== undefined && received > declared) {
+          callback(lengthError());
+          return;
+        }
+        callback(null, chunk);
+      },
+      flush: (callback) => {
+        deadlines.clear();
+        callback(declared !== undefined && received !== declared ? lengthError() : null);
+      },
+    });
+
+    const fail = (err: unknown) => {
+      deadlines.clear();
+      if (!output.destroyed) output.destroy(this.mapBodyError(err, deadlines.timedOutAfterMs()));
+    };
+    const onAbort = () => fail(new StorageTimeoutError(deadlines.timedOutAfterMs() ?? this.requestTimeoutMs, PROVIDER));
+    deadlines.signal.addEventListener('abort', onAbort, { once: true });
+    source.on('error', fail);
+    output.on('close', () => {
+      deadlines.clear();
+      deadlines.signal.removeEventListener('abort', onAbort);
+      source.destroy();
+    });
     source.pipe(output);
     return output;
   }

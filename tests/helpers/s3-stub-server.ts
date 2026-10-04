@@ -38,6 +38,8 @@ export interface StubFault {
   truncateBody?: boolean;
   /** Send the status line, then one space every `dripMs` until the client goes away (slow-loris). */
   dripMs?: number;
+  /** Set by the stub when the client closed a stalled or dripping response's connection. */
+  clientClosed?: boolean;
 }
 
 export interface StubCompleteBehavior {
@@ -126,6 +128,11 @@ export async function startS3StubServer(options: {
       }
       fault.times -= 1;
       const fail = () => {
+        if (fault.stallBody || fault.dripMs) {
+          res.on('close', () => {
+            fault.clientClosed = true;
+          });
+        }
         if (fault.stallBody) {
           res.writeHead(fault.status, { 'content-type': 'application/xml' });
           res.write('<Error><Code>');

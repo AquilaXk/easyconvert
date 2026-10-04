@@ -462,6 +462,53 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     expect(stub.requests.filter(isAbort)).toHaveLength(1);
   });
 
+  async function waitFor(check: () => boolean, ms = 1_000): Promise<boolean> {
+    const until = Date.now() + ms;
+    while (!check() && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+    return check();
+  }
+
+  it('times out a download body that trickles past the absolute ceiling and releases the socket', async () => {
+    const fault = { match: (r: { method: string }) => r.method === 'GET', status: 200, dripMs: 20, times: 1 };
+    stub.faults.push(fault);
+    const started = Date.now();
+    const stream = await adapter({}, { requestTimeoutMs: 100, maxRequestDurationMs: 400, maxAttempts: 1 }).downloadStream(
+      'trickle.bin'
+    );
+    const err = await collect(stream).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageTimeoutError);
+    expect((err as Error).message).toContain('400 ms');
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(await waitFor(() => (fault as { clientClosed?: boolean }).clientClosed === true)).toBe(true);
+  }, 5_000);
+
+  it('times out a download body that stalls after the headers', async () => {
+    const fault = { match: (r: { method: string }) => r.method === 'GET', status: 200, stallBody: true, times: 1 };
+    stub.faults.push(fault);
+    const started = Date.now();
+    const stream = await adapter({}, { requestTimeoutMs: 100, maxAttempts: 1 }).downloadStream('stalled.bin');
+    const err = await collect(stream).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageTimeoutError);
+    expect((err as Error).message).toContain('100 ms');
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(await waitFor(() => (fault as { clientClosed?: boolean }).clientClosed === true)).toBe(true);
+  }, 5_000);
+
+  it('streams a normal download in chunks without buffering it whole', async () => {
+    const payload = crypto.randomBytes(3 * MIB + 17);
+    stub.objects.set('big/stream.bin', { body: payload, contentType: 'application/octet-stream', etag: '"e"' });
+    const stream = await adapter({}, { requestTimeoutMs: 100 }).downloadStream('big/stream.bin');
+    const sizes: number[] = [];
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      sizes.push((chunk as Buffer).length);
+      chunks.push(chunk as Buffer);
+    }
+    expect(sizes.length).toBeGreaterThan(1);
+    expect(Math.max(...sizes)).toBeLessThan(payload.length);
+    expect(sha256(Buffer.concat(chunks))).toBe(sha256(payload));
+  });
+
   it('types a download body that is cut off mid-stream', async () => {
     stub.faults.push({ match: (r) => r.method === 'GET', status: 200, truncateBody: true, times: 1 });
     const stream = await adapter().downloadStream('cut.bin');
