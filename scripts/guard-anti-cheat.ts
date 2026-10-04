@@ -598,11 +598,31 @@ const BASE_URL_OPTION_CALLEES: ReadonlySet<string> = new Set(['newPage', 'newCon
 const BASE_URL_PROPERTIES: readonly string[] = ['baseURL'];
 /** Properties of a request config object (`axios({ url })`) that name the target. */
 const REQUEST_CONFIG_URL_PROPERTIES: readonly string[] = ['url', 'baseURL'];
+/** Constructors whose first argument is the URL to open (`new WebSocket(url)`). */
+const URL_ARGUMENT_CONSTRUCTORS: ReadonlySet<string> = new Set(['WebSocket']);
+/** `node:http` / `node:https` clients whose first argument is the URL to request. */
+const NODE_HTTP_RECEIVERS: ReadonlySet<string> = new Set(['http', 'https']);
+const NODE_HTTP_METHODS: ReadonlySet<string> = new Set(['get', 'request']);
+/** Receivers whose `use(options)` sets test-wide options that may carry a `baseURL`. */
+const TEST_OPTION_RECEIVERS: ReadonlySet<string> = new Set(['test']);
+const TEST_OPTION_METHOD = 'use';
+const AXIOS_RECEIVER = 'axios';
+const AXIOS_CREATE_METHOD = 'create';
+/** Index of the config argument of axios verb helpers: `get(url, config)`, `post(url, data, config)`. */
+const AXIOS_CONFIG_ARGUMENT_INDEX: ReadonlyMap<string, number> = new Map([
+  ['get', 1],
+  ['delete', 1],
+  ['head', 1],
+  ['options', 1],
+  ['post', 2],
+  ['put', 2],
+  ['patch', 2],
+]);
 /** Receivers whose HTTP-verb methods issue a request (`page.request.get`, `request.post`, `axios.get`). */
 const REQUEST_RECEIVERS: ReadonlySet<string> = new Set(['request', 'axios']);
 const REQUEST_METHODS: ReadonlySet<string> = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'fetch', 'request']);
-/** Scheme of an http(s) URL, captured without the `//`. */
-const HTTP_SCHEME_PREFIX = /^(https?:)\/\//i;
+/** Scheme of an http(s) or ws(s) URL, captured without the `//`. */
+const HTTP_SCHEME_PREFIX = /^((?:http|ws)s?:)\/\//i;
 /** Characters that end the authority (`userinfo@host:port`) of a URL. */
 const AUTHORITY_TERMINATOR = /[/?#]/;
 /** A URL input that carries its own scheme and therefore ignores the base passed to `new URL`. */
@@ -697,8 +717,15 @@ function staticText(node: ts.Expression, resolver: ConstantResolver): StaticText
     }
     return acc;
   }
-  if (ts.isNewExpression(expr)) return urlConstructorText(expr, resolver);
+  if (ts.isNewExpression(expr)) return newExpressionText(expr, resolver);
   return UNKNOWN_TEXT;
+}
+
+/** Text of `new URL(...)` or of the URL wrapped by `new Request(url, init)`. */
+function newExpressionText(node: ts.NewExpression, resolver: ConstantResolver): StaticText {
+  const [input] = node.arguments ?? [];
+  if (input && ts.isIdentifier(node.expression) && node.expression.text === 'Request') return staticText(input, resolver);
+  return urlConstructorText(node, resolver);
 }
 
 /** `new URL(input, base)`: the resolved href, or the base origin when the relative input is unknown. */
@@ -800,26 +827,57 @@ function isRequestCall(callee: ts.Expression): boolean {
   return ts.isPropertyAccessExpression(receiver) && REQUEST_RECEIVERS.has(receiver.name.text);
 }
 
-/** The argument expressions of a call that sit in a URL position for that API; bodies and headers are excluded. */
-function urlPositionExpressions(node: ts.CallExpression, resolver: ConstantResolver): ts.Expression[] {
-  const callee = node.expression;
-  const first = node.arguments[0];
-  if (!first) return [];
-  let calleeName: string | undefined;
-  if (ts.isIdentifier(callee)) calleeName = callee.text;
-  else if (ts.isPropertyAccessExpression(callee)) calleeName = callee.name.text;
-  if (calleeName === undefined) return [];
+/** Name of the object a method is called on: `axios` in `axios.get`, `request` in `page.request.get`. */
+function receiverName(callee: ts.PropertyAccessExpression): string | undefined {
+  const receiver = callee.expression;
+  if (ts.isIdentifier(receiver)) return receiver.text;
+  return ts.isPropertyAccessExpression(receiver) ? receiver.name.text : undefined;
+}
 
-  if (BASE_URL_OPTION_CALLEES.has(calleeName)) {
-    const options = objectLiteralOf(first, resolver);
-    return options ? propertyValues(options, BASE_URL_PROPERTIES) : [];
+function optionValues(node: ts.Expression | undefined, names: readonly string[], resolver: ConstantResolver): ts.Expression[] {
+  const options = node ? objectLiteralOf(node, resolver) : undefined;
+  return options ? propertyValues(options, names) : [];
+}
+
+/** URL positions of a method call `receiver.method(...)`. */
+function methodUrlExpressions(node: ts.CallExpression, callee: ts.PropertyAccessExpression, resolver: ConstantResolver) {
+  const method = callee.name.text;
+  const receiver = receiverName(callee);
+  const [first] = node.arguments;
+  if (BASE_URL_OPTION_CALLEES.has(method)) return optionValues(first, BASE_URL_PROPERTIES, resolver);
+  if (method === TEST_OPTION_METHOD) {
+    return receiver && TEST_OPTION_RECEIVERS.has(receiver) ? optionValues(first, BASE_URL_PROPERTIES, resolver) : [];
   }
-  const isRequest = (ts.isIdentifier(callee) && REQUEST_RECEIVERS.has(calleeName)) || isRequestCall(callee);
-  if (isRequest) {
+  if (receiver === AXIOS_RECEIVER && method === AXIOS_CREATE_METHOD) {
+    return optionValues(first, BASE_URL_PROPERTIES, resolver);
+  }
+  if (receiver && NODE_HTTP_RECEIVERS.has(receiver) && NODE_HTTP_METHODS.has(method)) return [first];
+  if (isRequestCall(callee)) {
+    const config = objectLiteralOf(first, resolver);
+    if (config) return propertyValues(config, REQUEST_CONFIG_URL_PROPERTIES);
+    const configIndex = receiver === AXIOS_RECEIVER ? AXIOS_CONFIG_ARGUMENT_INDEX.get(method) : undefined;
+    const baseUrls = configIndex === undefined ? [] : optionValues(node.arguments[configIndex], BASE_URL_PROPERTIES, resolver);
+    return [first, ...baseUrls];
+  }
+  return URL_ARGUMENT_CALLEES.has(method) ? [first] : [];
+}
+
+/** The argument expressions of a call or constructor that sit in a URL position for that API; bodies and headers are excluded. */
+function urlPositionExpressions(node: ts.CallExpression | ts.NewExpression, resolver: ConstantResolver): ts.Expression[] {
+  const callee = node.expression;
+  const first = node.arguments?.[0];
+  if (!first) return [];
+  if (ts.isNewExpression(node)) {
+    return ts.isIdentifier(callee) && URL_ARGUMENT_CONSTRUCTORS.has(callee.text) ? [first] : [];
+  }
+  if (ts.isPropertyAccessExpression(callee)) return methodUrlExpressions(node, callee, resolver);
+  if (!ts.isIdentifier(callee)) return [];
+  if (REQUEST_RECEIVERS.has(callee.text)) {
     const config = objectLiteralOf(first, resolver);
     return config ? propertyValues(config, REQUEST_CONFIG_URL_PROPERTIES) : [first];
   }
-  return URL_ARGUMENT_CALLEES.has(calleeName) ? [first] : [];
+  if (BASE_URL_OPTION_CALLEES.has(callee.text)) return optionValues(first, BASE_URL_PROPERTIES, resolver);
+  return URL_ARGUMENT_CALLEES.has(callee.text) ? [first] : [];
 }
 
 /** One program over the automation files so identifiers resolve through real scopes; no lib or module resolution. */
@@ -887,7 +945,7 @@ function checkGovernance(targetDir?: string): Violation[] {
       }
 
       // G5: automation must not navigate to or fetch a non-local site (e.g. scraping a third-party service).
-      if (automation && ts.isCallExpression(node)) {
+      if (automation && (ts.isCallExpression(node) || ts.isNewExpression(node))) {
         for (const target of urlPositionExpressions(node, resolver)) {
           const host = externalUrlHost(staticText(target, resolver));
           if (host === undefined || isLocalHost(host)) continue;

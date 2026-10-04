@@ -566,6 +566,36 @@ export function encodeStep(model: any): Buffer {
       });
     });
 
+    it('flags node http clients, WebSocket, Request, and axios/test baseURL options (positive case)', () => {
+      expectAllFlagged(
+        {
+          'https-get.mjs': `import https from 'node:https';\nhttps.get('https://third-party.dev/feed', (res) => res.resume());\n`,
+          'http-get.mjs': `import http from 'node:http';\nhttp.get('http://third-party.dev/feed');\n`,
+          'http-request.mjs': `import http from 'node:http';\nhttp.request('http://third-party.dev/feed', { method: 'POST' }).end();\n`,
+          'websocket.mjs': `const socket = new WebSocket('wss://third-party.dev/stream');\n`,
+          'websocket-const.mjs': "const BASE = 'third-party.dev';\nconst socket = new WebSocket(`wss://${BASE}/stream`);\n",
+          'fetch-request.mjs': `await fetch(new Request('https://third-party.dev/api'));\n`,
+          'axios-create.mjs': `const client = axios.create({ baseURL: 'https://third-party.dev' });\n`,
+          'axios-get-base.mjs': `await axios.get('/api', { baseURL: 'https://third-party.dev' });\n`,
+          'axios-post-base.mjs': `await axios.post('/api', { name: 'x' }, { baseURL: 'https://third-party.dev' });\n`,
+          'test-use.ts': `import { test } from '@playwright/test';\ntest.use({ baseURL: 'https://third-party.dev' });\n`,
+        },
+        'third-party.dev'
+      );
+    });
+
+    it('ignores non-URL arguments of node http clients, WebSocket, and axios (negative case)', () => {
+      expectNoneFlagged({
+        'http-local.mjs': `import http from 'node:http';\nhttp.get('http://localhost:3000/health', { headers: { Referer: 'https://third-party.dev/' } });\n`,
+        'websocket-local.mjs': `const socket = new WebSocket('ws://localhost:3000/ws', 'https://third-party.dev/protocol');\n`,
+        'request-init.mjs': `await fetch(new Request('/api', { body: 'https://third-party.dev/file.pdf', method: 'POST' }));\n`,
+        'axios-post-data.mjs': `await axios.post('/api', { baseURL: 'https://third-party.dev' });\n`,
+        'axios-create-headers.mjs': `axios.create({ baseURL: 'http://localhost:3000', headers: { Origin: 'https://third-party.dev' } });\n`,
+        'test-use-local.ts': `import { test } from '@playwright/test';\ntest.use({ baseURL: 'http://localhost:3000', extraHTTPHeaders: { Referer: 'https://third-party.dev/' } });\n`,
+        'map-get.mjs': `const cache = new Map();\ncache.get('https://third-party.dev/key');\n`,
+      });
+    });
+
     it('treats tagged templates like template literals', () => {
       expectAllFlagged(
         {
