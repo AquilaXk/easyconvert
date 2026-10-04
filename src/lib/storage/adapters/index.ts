@@ -1,17 +1,21 @@
 export * from './adapter-interface';
-export * from './s3';
 export * from './gcs';
 export * from './azure-blob';
 export * from './webdav';
 export * from './sftp';
 
 import type { CustomerStorageCredentials } from '../credentials-vault';
-import type { IStorageAdapter } from './adapter-interface';
-import { S3StorageAdapter } from './s3';
+import { StorageProviderUnavailableError, type IStorageAdapter } from './adapter-interface';
 import { GcsStorageAdapter } from './gcs';
 import { AzureBlobStorageAdapter } from './azure-blob';
 import { WebDavStorageAdapter } from './webdav';
 import { SftpStorageAdapter } from './sftp';
+
+/**
+ * Providers whose adapter has no network client yet. Registration and every import/export
+ * through them fail closed until a real client exists.
+ */
+export const UNAVAILABLE_STORAGE_PROVIDERS: ReadonlySet<string> = new Set(['s3']);
 
 /**
  * Instantiates the appropriate storage adapter for given customer BYOS credentials.
@@ -19,7 +23,7 @@ import { SftpStorageAdapter } from './sftp';
 export function createStorageAdapter(credentials: CustomerStorageCredentials): IStorageAdapter {
   switch (credentials.type) {
     case 's3':
-      return new S3StorageAdapter(credentials);
+      throw new StorageProviderUnavailableError(credentials.type);
     case 'gcs':
       return new GcsStorageAdapter(credentials);
     case 'azure-blob':
