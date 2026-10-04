@@ -6,6 +6,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/e
 import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { webhookDispatcher } from '../api-keys/webhook-dispatcher';
+import { processGraphNodeJob } from './graph/node-executor';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
 export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResult> =
@@ -18,6 +19,9 @@ export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResul
 export async function processConversionJob(
   job: Job<ConversionJobData, ConversionJobResult>
 ): Promise<ConversionJobResult> {
+  if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
+    return processGraphNodeJob(job);
+  }
   const startTime = Date.now();
   // Capture this attempt's signal before the first await: a retry gets a fresh one, and a stale
   // attempt that outlived its timeout must still see its own aborted signal.

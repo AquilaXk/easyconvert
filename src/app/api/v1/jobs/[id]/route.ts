@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { graphScheduler } from '@/lib/queue/graph';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
@@ -55,10 +56,20 @@ export async function GET(req: NextRequest, context: RouteContext) {
     );
   }
 
+  const graphState = await graphScheduler.getGraphState(jobId);
+  const nodesResponse = graphState
+    ? Object.fromEntries(
+        Object.entries(graphState.nodes).map(([nid, ns]) => [
+          nid,
+          { status: ns.status, outputs: ns.outputs || [], error: ns.error },
+        ])
+      )
+    : undefined;
+
   return NextResponse.json({
     success: true,
     jobId: job.id,
-    status: job.state,
+    status: graphState ? graphState.status : job.state,
     progress: job.progress,
     sourceFormat: job.data?.sourceFormat,
     targetFormat: job.data?.targetFormat,
@@ -68,9 +79,11 @@ export async function GET(req: NextRequest, context: RouteContext) {
     processedOn: job.processedOn,
     finishedOn: job.finishedOn,
     attemptsMade: job.attemptsMade,
-    failedReason: job.failedReason,
+    failedReason: graphState?.failedReason || job.failedReason,
     result: job.returnvalue,
     tasks: job.data?.tasks,
+    graph: graphState?.graph || job.data?.graph,
+    nodes: nodesResponse,
     logs: job.logs,
   });
 }
@@ -130,6 +143,9 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       'Conflict'
     );
   }
+
+  // Also cancel graph if this was a graph execution
+  await graphScheduler.cancelGraph(jobId, 'Cancelled by user').catch(() => {});
 
   // The queue's cancellation listener refunds the reserved quota unit exactly once.
   const cancelled = await conversionQueue.cancelJob(jobId, 'Cancelled by user');

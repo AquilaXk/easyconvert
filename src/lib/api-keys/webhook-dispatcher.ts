@@ -18,6 +18,8 @@ export type WebhookEvent =
   | 'job.active'
   | 'job.completed'
   | 'job.failed'
+  | 'graph.completed'
+  | 'graph.failed'
   | 'quota.warning'
   | 'key.expiring_soon';
 

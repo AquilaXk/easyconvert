@@ -9,7 +9,7 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
-import { validateGraph, linearTasksToGraph } from '@/lib/queue/graph';
+import { validateGraph, linearTasksToGraph, graphScheduler } from '@/lib/queue/graph';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import {
@@ -526,6 +526,28 @@ export async function POST(req: NextRequest) {
       }
     );
 
+    let scheduledGraphState;
+    if (graph) {
+      scheduledGraphState = await graphScheduler.initGraph(job.id, graph, {
+        ownerUserId: auth.user.id,
+        reservationId: reservation.reservationId,
+        webhookUrl: effectiveWebhookUrl,
+        webhookSecret: effectiveWebhookSecret,
+        originalFilename,
+        sourceStorageKey: storageKey,
+      });
+    }
+
+    const nodesResponse: Record<string, { status: string; outputs: string[] }> = {};
+    if (scheduledGraphState) {
+      for (const [nid, ns] of Object.entries(scheduledGraphState.nodes)) {
+        nodesResponse[nid] = {
+          status: ns.status,
+          outputs: ns.outputs || [],
+        };
+      }
+    }
+
     const successRes = NextResponse.json(
       {
         success: true,
@@ -538,6 +560,7 @@ export async function POST(req: NextRequest) {
         targetFormat: targetDef.id,
         originalFilename,
         graph: job.data.graph,
+        nodes: scheduledGraphState ? nodesResponse : undefined,
       },
       { status: 202 }
     );

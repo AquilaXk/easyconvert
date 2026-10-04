@@ -231,6 +231,10 @@ export interface ConversionJobData {
   reservationId?: string;
   tasks?: PipelineTask[];
   graph?: JobGraph;
+  graphId?: string;
+  graphNodeId?: NodeId;
+  graphNode?: GraphNode;
+  inputArtifacts?: string[];
 }
 
 export interface ConversionJobResult {
