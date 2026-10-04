@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { encodeEmf, encodeWmf, encodeCgm } from '../src/lib/conversions/vector-metafile';
 import { CadGeometryUnavailableError } from '../src/lib/types';
-import { playbackEmf, playbackWmf, parseClearTextCgm, parseCgmPoints, type PlaybackShape } from './helpers/metafile-oracle';
+import { parseEmfBinary, playbackEmf, playbackWmf, parseClearTextCgm, parseCgmPoints, type PlaybackShape } from './helpers/metafile-oracle';
 
 function svgDoc(body: string, rootAttrs = 'width="100" height="100" viewBox="0 0 100 100"'): Buffer {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" ${rootAttrs}>${body}</svg>`, 'utf-8');
@@ -116,6 +116,53 @@ describe('SVG document model for metafile encoders', () => {
       const bad = svgDoc('<rect x="0" y="0" width="10" height="10" transform="translate(10"/>');
       expect(() => encodeEmf(bad)).toThrow(CadGeometryUnavailableError);
       expect(() => encodeEmf(bad)).toThrow(/translate\(10/);
+    });
+  });
+
+  describe('viewport', () => {
+    function emfFor(rootAttrs: string, body: string) {
+      const buf = encodeEmf(svgDoc(body, rootAttrs));
+      return { header: parseEmfBinary(buf).header, shapes: playbackEmf(buf) };
+    }
+
+    it('derives the viewBox from width/height when none is given', () => {
+      const { header, shapes } = emfFor('width="200" height="100"', '<rect x="150" y="50" width="40" height="40" fill="#000"/>');
+      expect([header.bounds.right, header.bounds.bottom]).toEqual([200, 100]);
+      expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[150, 50], [190, 50], [190, 90], [150, 90]]);
+    });
+
+    it('converts absolute length units to CSS pixels (96 per inch)', () => {
+      const { header, shapes } = emfFor('width="2in" height="25.4mm"', '<rect x="0" y="0" width="192" height="96" fill="#000"/>');
+      expect([header.bounds.right, header.bounds.bottom]).toEqual([192, 96]);
+      // 2in x 25.4mm = 50.8mm x 25.4mm frame, in 0.01 mm
+      expect([header.frame.right, header.frame.bottom]).toEqual([5080, 2540]);
+      expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[0, 0], [192, 0], [192, 96], [0, 96]]);
+    });
+
+    it('uses the viewBox size when width/height are absent or relative', () => {
+      for (const attrs of ['viewBox="0 0 300 150"', 'viewBox="0 0 300 150" width="100%" height="100%"']) {
+        const { header } = emfFor(attrs, '<rect x="0" y="0" width="10" height="10" fill="#000"/>');
+        expect([header.bounds.right, header.bounds.bottom]).toEqual([300, 150]);
+      }
+    });
+
+    it('falls back to 800x600 only when neither viewBox nor width/height is given', () => {
+      const { header, shapes } = emfFor('', '<rect x="700" y="500" width="50" height="50" fill="#000"/>');
+      expect([header.bounds.right, header.bounds.bottom]).toEqual([800, 600]);
+      expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[700, 500], [750, 500], [750, 550], [700, 550]]);
+    });
+
+    it('fits a viewBox of different aspect ratio with uniform scale, centred (xMidYMid meet)', () => {
+      const { shapes } = emfFor('width="200" height="100" viewBox="0 0 100 100"', '<rect x="0" y="0" width="100" height="100" fill="#000"/>');
+      expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[50, 0], [150, 0], [150, 100], [50, 100]]);
+    });
+
+    it('stretches non-uniformly when preserveAspectRatio="none"', () => {
+      const { shapes } = emfFor(
+        'width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="none"',
+        '<rect x="0" y="0" width="100" height="100" fill="#000"/>'
+      );
+      expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[0, 0], [200, 0], [200, 100], [0, 100]]);
     });
   });
 });

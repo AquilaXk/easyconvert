@@ -692,24 +692,82 @@ function parseViewBox(value: string | undefined): [number, number, number, numbe
   return null;
 }
 
-function resolveViewport(attrs: Map<string, string>): Viewport {
-  let width = DEFAULT_VIEWPORT_WIDTH;
-  let height = DEFAULT_VIEWPORT_HEIGHT;
-  let [minX, minY, vbWidth, vbHeight] = [0, 0, DEFAULT_VIEWPORT_WIDTH, DEFAULT_VIEWPORT_HEIGHT];
-  const vb = parseViewBox(attrs.get('viewBox'));
-  if (vb) {
-    [minX, minY, vbWidth, vbHeight] = vb;
-    width = vbWidth;
-    height = vbHeight;
-  }
-  const parsedW = Number.parseFloat(attrs.get('width') ?? '');
-  if (parsedW > 0) width = parsedW;
-  const parsedH = Number.parseFloat(attrs.get('height') ?? '');
-  if (parsedH > 0) height = parsedH;
+/** CSS absolute length units in CSS pixels (CSS Values 4: 1in = 96px). */
+const CSS_PX_PER_INCH = 96;
+const ABSOLUTE_LENGTH_UNITS: Record<string, number> = {
+  '': 1,
+  px: 1,
+  in: CSS_PX_PER_INCH,
+  cm: CSS_PX_PER_INCH / 2.54,
+  mm: CSS_PX_PER_INCH / 25.4,
+  q: CSS_PX_PER_INCH / 101.6,
+  pt: CSS_PX_PER_INCH / 72,
+  pc: CSS_PX_PER_INCH / 6,
+};
+const LENGTH_PATTERN = /^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$/;
 
-  const sx = width / vbWidth;
-  const sy = height / vbHeight;
-  return { width, height, matrix: [sx, 0, 0, sy, -minX * sx, -minY * sy] };
+/** Parses an absolute length to CSS px; relative units (%, em, ...) yield null. */
+function parseAbsoluteLength(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const m = LENGTH_PATTERN.exec(value);
+  if (!m) return null;
+  const factor = ABSOLUTE_LENGTH_UNITS[m[2].toLowerCase()];
+  if (factor === undefined) return null;
+  const px = Number.parseFloat(m[1]) * factor;
+  return px > 0 ? px : null;
+}
+
+const ALIGN_FACTORS: Record<string, number> = { min: 0, mid: 0.5, max: 1 };
+
+/** Viewbox-to-viewport matrix per SVG 1.1 section 7.8 (preserveAspectRatio). */
+function viewBoxMatrix(
+  vb: [number, number, number, number],
+  width: number,
+  height: number,
+  preserveAspectRatio: string | undefined
+): AffineMatrix {
+  const [minX, minY, vbWidth, vbHeight] = vb;
+  let sx = width / vbWidth;
+  let sy = height / vbHeight;
+  const par = (preserveAspectRatio ?? 'xMidYMid meet').trim().split(/\s+/);
+  const align = par[0] ?? 'xMidYMid';
+  if (align === 'none') {
+    return [sx, 0, 0, sy, -minX * sx, -minY * sy];
+  }
+  const alignMatch = /^x(Min|Mid|Max)Y(Min|Mid|Max)$/.exec(align);
+  if (!alignMatch) {
+    throw new CadGeometryUnavailableError(`Unsupported SVG preserveAspectRatio "${preserveAspectRatio}".`);
+  }
+  const uniform = par[1] === 'slice' ? Math.max(sx, sy) : Math.min(sx, sy);
+  sx = uniform;
+  sy = uniform;
+  const tx = (width - vbWidth * uniform) * ALIGN_FACTORS[alignMatch[1].toLowerCase()];
+  const ty = (height - vbHeight * uniform) * ALIGN_FACTORS[alignMatch[2].toLowerCase()];
+  return [sx, 0, 0, sy, tx - minX * sx, ty - minY * sy];
+}
+
+/**
+ * Resolves the outermost viewport. Without a viewBox the user space equals the
+ * viewport (viewBox "0 0 width height"); 800x600 is used only when neither a
+ * viewBox nor absolute width/height is present.
+ */
+function resolveViewport(attrs: Map<string, string>): Viewport {
+  const vb = parseViewBox(attrs.get('viewBox'));
+  const lengthW = parseAbsoluteLength(attrs.get('width'));
+  const lengthH = parseAbsoluteLength(attrs.get('height'));
+
+  if (!vb) {
+    const width = lengthW ?? DEFAULT_VIEWPORT_WIDTH;
+    const height = lengthH ?? DEFAULT_VIEWPORT_HEIGHT;
+    return { width, height, matrix: IDENTITY_MATRIX };
+  }
+
+  const vbAspect = vb[2] / vb[3];
+  let width = lengthW ?? vb[2];
+  let height = lengthH ?? vb[3];
+  if (lengthW !== null && lengthH === null) height = lengthW / vbAspect;
+  if (lengthH !== null && lengthW === null) width = lengthH * vbAspect;
+  return { width, height, matrix: viewBoxMatrix(vb, width, height, attrs.get('preserveAspectRatio')) };
 }
 
 // ============================================================================
