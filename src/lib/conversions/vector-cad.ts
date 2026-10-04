@@ -16,6 +16,7 @@ import {
   verifyWatertightManifoldMesh,
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
+import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
 import { sanitizeSvgString } from '../security/svg-sanitizer';
 
 export {
@@ -200,6 +201,19 @@ export function parseCgmToSvg(cgmText: string): string | null {
  * Supports 2D Vector (SVG, EPS, PS, CDR, CGM, DWF, EMF, SK, SK1, SVGZ, VSD, WMF),
  * 2D CAD (DXF, DWG), and 3D CAD (STEP, STP, IGES, IGS, STL, OBJ).
  */
+/** Inflates an SVGZ payload; corrupt gzip and oversized output fail closed instead of falling back to raw bytes. */
+function gunzipSvgz(payload: Buffer): Buffer {
+  try {
+    return zlib.gunzipSync(payload, { maxOutputLength: MAX_SVG_INPUT_CHARS });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new CadGeometryUnavailableError(`SVGZ expands beyond the ${MAX_SVG_INPUT_CHARS}-byte limit.`);
+    }
+    throw new CadGeometryUnavailableError(`SVGZ payload is not valid gzip data (${(error as Error).message}).`);
+  }
+}
+
 export async function convertVectorCad(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -222,12 +236,7 @@ export async function convertVectorCad(
 
   // 2. SVGZ Source (Compressed SVG)
   if (src === 'svgz') {
-    let uncompressed: Buffer;
-    try {
-      uncompressed = zlib.gunzipSync(inputBuffer);
-    } catch {
-      uncompressed = inputBuffer;
-    }
+    const uncompressed = gunzipSvgz(inputBuffer);
     const cleanSvg = sanitizeSvgString(uncompressed.toString('utf-8'));
     return convertSvgSource(Buffer.from(cleanSvg, 'utf-8'), tgt, options, baseName);
   }
