@@ -2181,13 +2181,11 @@ export function create7zArchive(
     nameBufs.push(Buffer.from(f.filename + '\0', 'utf16le'));
   }
   const allNames = Buffer.concat(nameBufs);
-  // Per 7z spec, array of names in kName is terminated by an extra 16-bit zero
-  const namesWithTerminator = Buffer.concat([allNames, Buffer.from([0x00, 0x00])]);
-  write7zVarint(nh, namesWithTerminator.length + 1);
+  write7zVarint(nh, allNames.length + 1);
   nh.push(0x00); // external = 0
 
   const nhPrefix = Buffer.from(nh);
-  const nhBuffer = Buffer.concat([nhPrefix, namesWithTerminator, Buffer.from([0x00, 0x00])]);
+  const nhBuffer = Buffer.concat([nhPrefix, allNames, Buffer.from([0x00, 0x00])]);
 
   const nextHeaderOffset = packData.length;
   const nextHeaderSize = nhBuffer.length;
@@ -3162,8 +3160,8 @@ async function inspect7zBuffer(
         if (
           errMsg.includes('Enter password') ||
           errMsg.includes('Can not open encrypted archive') ||
+          errMsg.includes('Cannot open encrypted archive') ||
           errMsg.includes('Data Error in encrypted archive') ||
-          errMsg.includes('Headers Error') ||
           errMsg.includes('Wrong password')
         ) {
           throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
@@ -3171,10 +3169,7 @@ async function inspect7zBuffer(
         throw new ConversionFailedError(`Failed to inspect 7z archive: ${err.message}`);
       }
 
-      if (
-        stdoutStr.includes('Enter password (will not be echoed):') ||
-        stdoutStr.includes('Headers Error')
-      ) {
+      if (stdoutStr.includes('Enter password (will not be echoed):')) {
         throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
       }
 
@@ -3275,6 +3270,27 @@ async function inspectRarBuffer(
   buffer: Buffer,
   password?: string
 ): Promise<ArchiveInspectResponse> {
+  // Fast byte-level inspection for RAR header encryption (MHD_PASSWORD flag)
+  if (buffer.length >= 14) {
+    const isRar4 =
+      buffer[0] === 0x52 &&
+      buffer[1] === 0x61 &&
+      buffer[2] === 0x72 &&
+      buffer[3] === 0x21 &&
+      buffer[4] === 0x1a &&
+      buffer[5] === 0x07 &&
+      buffer[6] === 0x00;
+    if (isRar4) {
+      const headType = buffer[9];
+      const headFlags = buffer.readUInt16LE(10);
+      if (headType === 0x73 && (headFlags & 0x0080) !== 0 && !password) {
+        throw new ArchiveEncryptedHeaderError(
+          'Archive header is encrypted and requires a password to inspect entries.'
+        );
+      }
+    }
+  }
+
   const p7z = get7zBinaryPath();
   if (p7z) {
     const tmpDir = os.tmpdir();
@@ -3303,7 +3319,8 @@ async function inspectRarBuffer(
         if (
           errMsg.includes('Enter password') ||
           errMsg.includes('Can not open encrypted') ||
-          errMsg.includes('Headers Error')
+          errMsg.includes('Cannot open encrypted') ||
+          errMsg.includes('Wrong password')
         ) {
           throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
         }
