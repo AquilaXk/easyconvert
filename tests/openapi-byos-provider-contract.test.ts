@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET as getOpenApiSpec } from '../src/app/api/openapi.json/route';
 import { POST as credentialsPost } from '../src/app/api/v1/storage/credentials/route';
 import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { S3_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage';
 
 /**
  * The OpenAPI document must advertise exactly the providers the credentials endpoint accepts.
@@ -19,7 +20,14 @@ async function registerOperation() {
   return spec.paths[CREDENTIALS_PATH].post;
 }
 
+/** A dev-allowlisted local endpoint keeps registration free of real DNS lookups. */
+const LOCAL_ENDPOINT_HOST = '127.0.0.1:9000';
+
 describe('OpenAPI storage credentials contract', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('advertises only providers that can be registered', async () => {
     const schema = (await registerOperation()).requestBody.content['application/json'].schema;
     expect([...schema.properties.providerType.enum].sort()).toEqual([...REGISTRABLE_PROVIDERS].sort());
@@ -32,13 +40,20 @@ describe('OpenAPI storage credentials contract', () => {
     const email = `byosdoc_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`;
     const user = await userStore.createUser({ email, name: 'byosdoc', tier: 'pro' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'byosdoc', { scopes: ['convert:write'] });
+    vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, LOCAL_ENDPOINT_HOST);
     const res = await credentialsPost(
       new NextRequest(`http://localhost:3000${CREDENTIALS_PATH}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secretKey}` },
         body: JSON.stringify({
           providerType: 's3',
-          credentials: { type: 's3', bucket: 'b-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'S' },
+          credentials: {
+            type: 's3',
+            bucket: 'b-bucket',
+            accessKeyId: 'AKIA_X',
+            secretAccessKey: 'S',
+            endpoint: `http://${LOCAL_ENDPOINT_HOST}`,
+          },
         }),
       })
     );

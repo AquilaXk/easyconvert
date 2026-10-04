@@ -20,6 +20,16 @@ import { S3StorageAdapter } from './s3';
 export const UNAVAILABLE_STORAGE_PROVIDERS: ReadonlySet<string> = new Set<string>();
 
 /**
+ * Validates customer credentials before they are stored: an s3 endpoint must be a valid,
+ * TLS, publicly resolving host unless it is dev-allowlisted. Throws a StorageAdapterError.
+ */
+export async function validateStorageCredentials(credentials: CustomerStorageCredentials): Promise<void> {
+  if (credentials.type === 's3') {
+    await new S3StorageAdapter(credentials).verifyEndpoint();
+  }
+}
+
+/**
  * Instantiates the appropriate storage adapter for given customer BYOS credentials.
  */
 export function createStorageAdapter(credentials: CustomerStorageCredentials): IStorageAdapter {

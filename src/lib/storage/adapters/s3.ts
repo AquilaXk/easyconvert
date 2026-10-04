@@ -23,7 +23,7 @@ import {
   signS3Request,
 } from '../s3-sigv4';
 import { OutboundRequestBlockedError, safeFetch } from '../../security/safe-fetch';
-import { isPrivateOrRestrictedHost } from '../../security/ssrf';
+import { isPrivateOrRestrictedHost, validateUrlForSsrf } from '../../security/ssrf';
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -253,6 +253,7 @@ export class S3StorageAdapter implements IStorageAdapter {
   private readonly endpoint?: string;
   private readonly forcePathStyle?: boolean;
   private readonly devAllowlisted: boolean;
+  private readonly origin: URL;
   private readonly partSizeBytes: number;
   private readonly maxAttempts: number;
   private readonly retryBaseDelayMs: number;
@@ -282,9 +283,21 @@ export class S3StorageAdapter implements IStorageAdapter {
     this.retryBaseDelayMs = Math.max(0, options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS);
     this.requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
 
-    const origin = new URL(this.address('').origin);
-    this.devAllowlisted = isDevAllowlisted(origin);
-    this.assertEndpointPolicy(origin);
+    this.origin = new URL(this.address('').origin);
+    this.devAllowlisted = isDevAllowlisted(this.origin);
+    this.assertEndpointPolicy(this.origin);
+  }
+
+  /**
+   * Resolves the endpoint host and refuses it when any address is private, loopback, or
+   * link-local. Used when credentials are registered; every request is checked again at
+   * connect time because DNS can change.
+   */
+  async verifyEndpoint(): Promise<void> {
+    if (this.devAllowlisted) return;
+    if (!(await validateUrlForSsrf(this.origin))) {
+      throw new StorageSsrfError(this.origin.host, PROVIDER);
+    }
   }
 
   /** Static checks before any request: TLS and no private or metadata host, unless dev-allowlisted. */
