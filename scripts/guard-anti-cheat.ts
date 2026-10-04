@@ -582,15 +582,33 @@ function checkHollowAssertions(targetDir?: string): Violation[] {
 // Gate 5: Governance (AST G5 external navigation + AST G6 built-in specifier)
 // ============================================================================
 
-/** Hosts a script or test may reach: the local app and documentation-reserved names. */
-const LOCAL_HOST_PATTERN = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|([a-z0-9-]+\.)*example\.(com|org|net))$/i;
-/** Calls that load a remote page or resource. */
-const NAVIGATION_CALLEES = new Set(['goto', 'fetch', 'newPage', 'navigate']);
+/** Exact hosts a script or test may reach: loopback, the docker host gateway, and the unspecified address. */
+const LOCAL_HOST_NAMES: ReadonlySet<string> = new Set(['localhost', '0.0.0.0', '[::1]', 'host.docker.internal']);
+/** The whole 127.0.0.0/8 loopback range. */
+const LOOPBACK_IPV4_PATTERN = /^127(\.\d{1,3}){3}$/;
+/** RFC 6761 / RFC 2606 reserved names that never resolve to a public site. */
+const RESERVED_LOCAL_SUFFIX_PATTERN = /\.(localhost|test|example|invalid)$/i;
+const DOCUMENTATION_DOMAIN_PATTERN = /^([a-z0-9-]+\.)*example\.(com|org|net)$/i;
+/** A dotless name such as a docker compose service (`redis`, `worker`); IPv4 has dots and IPv6 has brackets. */
+const SINGLE_LABEL_HOST_PATTERN = /^[a-z0-9-]+$/i;
+/** Calls whose first argument is the URL to load. */
+const URL_ARGUMENT_CALLEES: ReadonlySet<string> = new Set(['goto', 'fetch', 'navigate']);
+/** Calls whose first argument is an options object that may carry a `baseURL`. */
+const BASE_URL_OPTION_CALLEES: ReadonlySet<string> = new Set(['newPage', 'newContext']);
+const BASE_URL_PROPERTIES: readonly string[] = ['baseURL'];
+/** Properties of a request config object (`axios({ url })`) that name the target. */
+const REQUEST_CONFIG_URL_PROPERTIES: readonly string[] = ['url', 'baseURL'];
 /** Receivers whose HTTP-verb methods issue a request (`page.request.get`, `request.post`, `axios.get`). */
-const REQUEST_RECEIVERS = new Set(['request', 'axios']);
-const REQUEST_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'fetch', 'request']);
+const REQUEST_RECEIVERS: ReadonlySet<string> = new Set(['request', 'axios']);
+const REQUEST_METHODS: ReadonlySet<string> = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'fetch', 'request']);
 /** Scheme plus a host that is already terminated, so a partially known URL still names its full host. */
 const URL_WITH_COMPLETE_HOST = /^https?:\/\/[^/?#:]+[/?#:]/i;
+/** Scheme and terminated host of a partially known URL. */
+const URL_ORIGIN_PREFIX = /^https?:\/\/[^/?#:]+/i;
+/** A URL input that carries its own scheme and therefore ignores the base passed to `new URL`. */
+const ABSOLUTE_URL_INPUT = /^[a-z][a-z0-9+.-]*:/i;
+/** Bound on chained constant lookups (`const A = B; const B = ...`) so cyclic references terminate. */
+const MAX_CONSTANT_RESOLUTION_DEPTH = 16;
 const NODE_BUILTINS: ReadonlySet<string> = new Set(builtinModules.filter((m) => !m.startsWith('_')));
 
 function stringLiteralText(node: ts.Node | undefined): string | undefined {
@@ -606,23 +624,68 @@ interface StaticText {
   complete: boolean;
 }
 
-function staticText(node: ts.Expression, constants: ReadonlyMap<string, StaticText>): StaticText | undefined {
-  const literal = stringLiteralText(node);
-  if (literal !== undefined) return { text: literal, complete: true };
-  if (ts.isParenthesizedExpression(node)) return staticText(node.expression, constants);
-  if (ts.isIdentifier(node)) return constants.get(node.text);
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    return joinStatic(staticText(node.left, constants), () => staticText(node.right, constants));
+/** Scope-aware resolver: the checker binds each identifier to the declaration actually in scope. */
+interface ConstantResolver {
+  checker?: ts.TypeChecker;
+  depth: number;
+}
+
+function deeper(resolver: ConstantResolver): ConstantResolver {
+  return { checker: resolver.checker, depth: resolver.depth + 1 };
+}
+
+/** Strips parentheses and type-only wrappers (`as const`, `satisfies`, `<T>`, `!`). */
+function unwrapExpression(node: ts.Expression): ts.Expression {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
   }
-  if (ts.isTemplateExpression(node)) {
-    let acc: StaticText = { text: node.head.text, complete: true };
-    for (const span of node.templateSpans) {
-      const joined = joinStatic(acc, () => staticText(span.expression, constants));
+  return current;
+}
+
+/** Initializer of the in-scope `const` an identifier refers to; undefined for parameters, `let`, imports, or shadowed names. */
+function constInitializer(identifier: ts.Identifier, resolver: ConstantResolver): ts.Expression | undefined {
+  const { checker } = resolver;
+  if (!checker || resolver.depth > MAX_CONSTANT_RESOLUTION_DEPTH) return undefined;
+  const parent = identifier.parent;
+  const symbol =
+    parent && ts.isShorthandPropertyAssignment(parent) && parent.name === identifier
+      ? checker.getShorthandAssignmentValueSymbol(parent)
+      : checker.getSymbolAtLocation(identifier);
+  const declaration = symbol?.valueDeclaration;
+  if (!declaration || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) return undefined;
+  if (!(ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const)) return undefined;
+  return declaration.initializer;
+}
+
+function staticText(node: ts.Expression, resolver: ConstantResolver): StaticText | undefined {
+  const expr = unwrapExpression(node);
+  const literal = stringLiteralText(expr);
+  if (literal !== undefined) return { text: literal, complete: true };
+  if (ts.isIdentifier(expr)) {
+    const initializer = constInitializer(expr, resolver);
+    return initializer ? staticText(initializer, deeper(resolver)) : undefined;
+  }
+  if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    return joinStatic(staticText(expr.left, resolver), () => staticText(expr.right, resolver));
+  }
+  if (ts.isTaggedTemplateExpression(expr)) return staticText(expr.template, resolver);
+  if (ts.isTemplateExpression(expr)) {
+    let acc: StaticText = { text: expr.head.text, complete: true };
+    for (const span of expr.templateSpans) {
+      const joined = joinStatic(acc, () => staticText(span.expression, resolver));
       if (!joined || !joined.complete) return joined;
       acc = { text: joined.text + span.literal.text, complete: true };
     }
     return acc;
   }
+  if (ts.isNewExpression(expr)) return urlConstructorText(expr, resolver);
   return undefined;
 }
 
@@ -634,19 +697,24 @@ function joinStatic(left: StaticText | undefined, right: () => StaticText | unde
   return { text: left.text + rhs.text, complete: rhs.complete };
 }
 
-/** Top-level `const NAME = <string expression>` bindings of a file, resolved in declaration order. */
-function collectStringConstants(sourceFile: ts.SourceFile): Map<string, StaticText> {
-  const constants = new Map<string, StaticText>();
-  for (const statement of sourceFile.statements) {
-    if (!ts.isVariableStatement(statement)) continue;
-    if (!(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
-    for (const decl of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
-      const value = staticText(decl.initializer, constants);
-      if (value) constants.set(decl.name.text, value);
+/** `new URL(input, base)`: the resolved href, or the base origin when the relative input is unknown. */
+function urlConstructorText(node: ts.NewExpression, resolver: ConstantResolver): StaticText | undefined {
+  const args = node.arguments ?? [];
+  if (!ts.isIdentifier(node.expression) || node.expression.text !== 'URL' || args.length === 0) return undefined;
+  const input = staticText(args[0], resolver);
+  if (args.length === 1) return input;
+  if (input && ABSOLUTE_URL_INPUT.test(input.text)) return input;
+  const base = staticText(args[1], resolver);
+  if (!base || externalUrlHost(base) === undefined) return undefined;
+  if (input?.complete && base.complete) {
+    try {
+      return { text: new URL(input.text, base.text).href, complete: true };
+    } catch {
+      return undefined;
     }
   }
-  return constants;
+  const origin = URL_ORIGIN_PREFIX.exec(base.text)?.[0];
+  return origin ? { text: `${origin}/`, complete: false } : undefined;
 }
 
 /** Host of an http(s) URL whose host part is statically known, or undefined when it is not a URL. */
@@ -661,6 +729,43 @@ function externalUrlHost(value: StaticText): string | undefined {
   }
 }
 
+function isLocalHost(host: string): boolean {
+  const name = host.toLowerCase();
+  return (
+    LOCAL_HOST_NAMES.has(name) ||
+    LOOPBACK_IPV4_PATTERN.test(name) ||
+    RESERVED_LOCAL_SUFFIX_PATTERN.test(name) ||
+    DOCUMENTATION_DOMAIN_PATTERN.test(name) ||
+    SINGLE_LABEL_HOST_PATTERN.test(name)
+  );
+}
+
+/** Object literal an expression evaluates to, following in-scope `const` bindings. */
+function objectLiteralOf(node: ts.Expression, resolver: ConstantResolver): ts.ObjectLiteralExpression | undefined {
+  const expr = unwrapExpression(node);
+  if (ts.isObjectLiteralExpression(expr)) return expr;
+  if (!ts.isIdentifier(expr)) return undefined;
+  const initializer = constInitializer(expr, resolver);
+  return initializer ? objectLiteralOf(initializer, deeper(resolver)) : undefined;
+}
+
+/** Values of the named properties of an object literal (`{ url: X }` or shorthand `{ url }`). */
+function propertyValues(object: ts.ObjectLiteralExpression, names: readonly string[]): ts.Expression[] {
+  const values: ts.Expression[] = [];
+  for (const property of object.properties) {
+    if (ts.isShorthandPropertyAssignment(property) && names.includes(property.name.text)) {
+      values.push(property.name);
+    } else if (
+      ts.isPropertyAssignment(property) &&
+      (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+      names.includes(property.name.text)
+    ) {
+      values.push(property.initializer);
+    }
+  }
+  return values;
+}
+
 function isRequestCall(callee: ts.Expression): boolean {
   if (!ts.isPropertyAccessExpression(callee) || !REQUEST_METHODS.has(callee.name.text)) return false;
   const receiver = callee.expression;
@@ -668,11 +773,43 @@ function isRequestCall(callee: ts.Expression): boolean {
   return ts.isPropertyAccessExpression(receiver) && REQUEST_RECEIVERS.has(receiver.name.text);
 }
 
-function isNavigationCall(node: ts.CallExpression): boolean {
+/** The argument expressions of a call that sit in a URL position for that API; bodies and headers are excluded. */
+function urlPositionExpressions(node: ts.CallExpression, resolver: ConstantResolver): ts.Expression[] {
   const callee = node.expression;
-  if (ts.isIdentifier(callee)) return NAVIGATION_CALLEES.has(callee.text) || REQUEST_RECEIVERS.has(callee.text);
-  if (ts.isPropertyAccessExpression(callee) && NAVIGATION_CALLEES.has(callee.name.text)) return true;
-  return isRequestCall(callee);
+  const first = node.arguments[0];
+  if (!first) return [];
+  let calleeName: string | undefined;
+  if (ts.isIdentifier(callee)) calleeName = callee.text;
+  else if (ts.isPropertyAccessExpression(callee)) calleeName = callee.name.text;
+  if (calleeName === undefined) return [];
+
+  if (BASE_URL_OPTION_CALLEES.has(calleeName)) {
+    const options = objectLiteralOf(first, resolver);
+    return options ? propertyValues(options, BASE_URL_PROPERTIES) : [];
+  }
+  const isRequest = (ts.isIdentifier(callee) && REQUEST_RECEIVERS.has(calleeName)) || isRequestCall(callee);
+  if (isRequest) {
+    const config = objectLiteralOf(first, resolver);
+    return config ? propertyValues(config, REQUEST_CONFIG_URL_PROPERTIES) : [first];
+  }
+  return URL_ARGUMENT_CALLEES.has(calleeName) ? [first] : [];
+}
+
+/** One program over the automation files so identifiers resolve through real scopes; no lib or module resolution. */
+function createAutomationChecker(files: string[]): { program: ts.Program; checker: ts.TypeChecker } | undefined {
+  if (files.length === 0) return undefined;
+  const program = ts.createProgram(files, {
+    allowJs: true,
+    noLib: true,
+    noResolve: true,
+    noEmit: true,
+    types: [],
+    target: ts.ScriptTarget.Latest,
+    jsx: ts.JsxEmit.Preserve,
+    // Each file is its own module so same-named top-level constants in different files never merge.
+    moduleDetection: ts.ModuleDetectionKind.Force,
+  });
+  return { program, checker: program.getTypeChecker() };
 }
 
 function checkGovernance(targetDir?: string): Violation[] {
@@ -686,11 +823,15 @@ function checkGovernance(targetDir?: string): Violation[] {
     return rel[0] === 'scripts' || rel[0] === 'tests' || Boolean(targetDir);
   };
 
+  const automationProgram = createAutomationChecker(files.filter(isAutomationFile));
+
   for (const file of files) {
-    const sourceFile = ts.createSourceFile(file, fs.readFileSync(file, 'utf-8'), ts.ScriptTarget.Latest, true);
     const relFile = path.relative(ROOT_DIR, file);
     const automation = isAutomationFile(file);
-    const constants = automation ? collectStringConstants(sourceFile) : new Map<string, StaticText>();
+    const programFile = automation ? automationProgram?.program.getSourceFile(file) : undefined;
+    const sourceFile =
+      programFile ?? ts.createSourceFile(file, fs.readFileSync(file, 'utf-8'), ts.ScriptTarget.Latest, true);
+    const resolver: ConstantResolver = { checker: programFile ? automationProgram?.checker : undefined, depth: 0 };
 
     const visit = (node: ts.Node) => {
       // G6: built-in modules must be imported with the node: prefix.
@@ -719,11 +860,11 @@ function checkGovernance(targetDir?: string): Violation[] {
       }
 
       // G5: automation must not navigate to or fetch a non-local site (e.g. scraping a third-party service).
-      if (automation && ts.isCallExpression(node) && isNavigationCall(node)) {
-        for (const arg of node.arguments) {
-          const value = staticText(arg, constants);
+      if (automation && ts.isCallExpression(node)) {
+        for (const target of urlPositionExpressions(node, resolver)) {
+          const value = staticText(target, resolver);
           const host = value ? externalUrlHost(value) : undefined;
-          if (host === undefined || LOCAL_HOST_PATTERN.test(host)) continue;
+          if (host === undefined || isLocalHost(host)) continue;
           const { line, snippet } = getNodeSnippet(sourceFile, node);
           violations.push({
             file: relFile,

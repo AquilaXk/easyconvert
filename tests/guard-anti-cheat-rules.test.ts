@@ -319,11 +319,11 @@ export function encodeStep(model: any): Buffer {
 
     it('flags automation that navigates to an external host (positive case)', () => {
       withTempDir((dir) => {
-        writeScript(dir, 'scrape.mjs', `await page.goto('https://third-party-service.test/pricing');\n`);
+        writeScript(dir, 'scrape.mjs', `await page.goto('https://third-party-service.dev/pricing');\n`);
         const res = runGuardSubprocess(dir, ['--strict']);
         expect(res.status).not.toBe(0);
         expect(res.stderr + res.stdout).toContain('G5-EXTERNAL-NAVIGATION');
-        expect(res.stderr + res.stdout).toContain('third-party-service.test');
+        expect(res.stderr + res.stdout).toContain('third-party-service.dev');
       });
     });
 
@@ -351,14 +351,13 @@ export function encodeStep(model: any): Buffer {
     it('flags external hosts reached through constants, templates, and request helpers (positive case)', () => {
       withTempDir((dir) => {
         const cases: Record<string, string> = {
-          'concat.mjs': `const BASE = 'https://third-party.test';\nawait page.goto(BASE + '/pricing');\n`,
-          'template-ident.mjs': "const BASE = 'https://third-party.test';\nawait page.goto(`${BASE}/pricing`);\n",
+          'concat.mjs': `const BASE = 'https://third-party.dev';\nawait page.goto(BASE + '/pricing');\n`,
+          'template-ident.mjs': "const BASE = 'https://third-party.dev';\nawait page.goto(`${BASE}/pricing`);\n",
           'template-host.mjs': 'await page.goto(`https://third.party/items/${id}`);\n',
-          'const-ident.mjs': `const API = 'https://third-party.test/api';\nawait fetch(API);\n`,
-          'page-request.mjs': `await page.request.get('https://third-party.test/api');\n`,
-          'request-post.mjs': `await request.post('https://third-party.test/api', { data: 1 });\n`,
-          'axios-get.mjs': `await axios.get('https://third-party.test/api');\n`,
-          'second-arg.mjs': `await context.newPage();\nawait page.goto(url, 'https://third-party.test/ref');\n`,
+          'const-ident.mjs': `const API = 'https://third-party.dev/api';\nawait fetch(API);\n`,
+          'page-request.mjs': `await page.request.get('https://third-party.dev/api');\n`,
+          'request-post.mjs': `await request.post('https://third-party.dev/api', { data: 1 });\n`,
+          'axios-get.mjs': `await axios.get('https://third-party.dev/api');\n`,
         };
         for (const [name, body] of Object.entries(cases)) writeScript(dir, name, body);
         const res = runGuardSubprocess(dir, ['--strict']);
@@ -367,8 +366,8 @@ export function encodeStep(model: any): Buffer {
         const flagged = new Map(hits.map((h) => [h.file, h.symbol]));
         expect([...flagged.keys()].sort()).toEqual(Object.keys(cases).sort());
         expect(flagged.get('template-host.mjs')).toBe('third.party');
-        expect(flagged.get('concat.mjs')).toBe('third-party.test');
-        expect(flagged.get('template-ident.mjs')).toBe('third-party.test');
+        expect(flagged.get('concat.mjs')).toBe('third-party.dev');
+        expect(flagged.get('template-ident.mjs')).toBe('third-party.dev');
       });
     });
 
@@ -379,9 +378,9 @@ export function encodeStep(model: any): Buffer {
           'local.mjs',
           [
             `const BASE = 'http://localhost:3000';`,
-            `const DOCS = 'https://third-party.test/docs';`,
-            `// await page.goto('https://third-party.test/commented');`,
-            `/* axios.get('https://third-party.test/block'); */`,
+            `const DOCS = 'https://third-party.dev/docs';`,
+            `// await page.goto('https://third-party.dev/commented');`,
+            `/* axios.get('https://third-party.dev/block'); */`,
             `await page.goto(BASE + '/convert');`,
             'await page.goto(`${BASE}/convert`);',
             'await page.goto(`${process.env.BASE_URL}/convert`);',
@@ -395,6 +394,205 @@ export function encodeStep(model: any): Buffer {
         const res = runGuardSubprocess(dir, ['--strict']);
         expect(ruleHits(res.stderr + res.stdout, 'G5-EXTERNAL-NAVIGATION')).toEqual([]);
         expect(res.status).toBe(0);
+      });
+    });
+
+    /** Writes one script per case and returns the G5 `file -> host` hits plus the exit status. */
+    function runG5Cases(cases: Record<string, string>): { status: number; flagged: Map<string, string> } {
+      let result = { status: 0, flagged: new Map<string, string>() };
+      withTempDir((dir) => {
+        for (const [name, body] of Object.entries(cases)) writeScript(dir, name, body);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        const hits = ruleHits(res.stderr + res.stdout, 'G5-EXTERNAL-NAVIGATION');
+        result = { status: res.status, flagged: new Map(hits.map((h) => [h.file, h.symbol])) };
+      });
+      return result;
+    }
+
+    function expectAllFlagged(cases: Record<string, string>, host: string) {
+      const { status, flagged } = runG5Cases(cases);
+      expect(status).not.toBe(0);
+      expect([...flagged.keys()].sort()).toEqual(Object.keys(cases).sort());
+      expect([...new Set(flagged.values())]).toEqual([host]);
+    }
+
+    function expectNoneFlagged(cases: Record<string, string>) {
+      const { status, flagged } = runG5Cases(cases);
+      expect([...flagged.entries()]).toEqual([]);
+      expect(status).toBe(0);
+    }
+
+    it('resolves in-scope constants through as const, satisfies, and nested scopes (positive case)', () => {
+      expectAllFlagged(
+        {
+          'as-const.ts': `const API = 'https://third-party.dev/api' as const;\nawait fetch(API);\n`,
+          'satisfies.ts': `const API = 'https://third-party.dev/api' satisfies string;\nawait fetch(API);\n`,
+          'nested-const.ts': [
+            `const BASE = 'https://third-party.dev';`,
+            'export async function load(page: { goto(u: string): Promise<void> }) {',
+            '  const TARGET = `${BASE}/pricing`;',
+            '  await page.goto(TARGET);',
+            '}',
+          ].join('\n'),
+          'block-const.mjs': `{\n  const API = 'https://third-party.dev/v1';\n  await fetch(API);\n}\n`,
+        },
+        'third-party.dev'
+      );
+    });
+
+    it('does not resolve a shadowing parameter or local to the outer constant (negative case)', () => {
+      expectNoneFlagged({
+        'shadow-param.ts': [
+          `const BASE = 'https://third-party.dev';`,
+          'export async function open(page: { goto(u: string): Promise<void> }, BASE: string) {',
+          `  await page.goto(BASE + '/convert');`,
+          '}',
+          'console.log(BASE);',
+        ].join('\n'),
+        'shadow-local.mjs': [
+          `const BASE = 'https://third-party.dev';`,
+          `{`,
+          `  const BASE = 'http://localhost:3000';`,
+          `  await page.goto(BASE + '/convert');`,
+          `}`,
+          `console.log(BASE);`,
+        ].join('\n'),
+        'shadow-arrow.mjs': [
+          `const API = 'https://third-party.dev/api';`,
+          `const call = (API) => fetch(API);`,
+          `console.log(API, call);`,
+        ].join('\n'),
+        'out-of-scope.mjs': [
+          `function a() { const HIDDEN = 'https://third-party.dev'; return HIDDEN; }`,
+          `function b() { return fetch(HIDDEN); }`,
+          `console.log(a, b);`,
+        ].join('\n'),
+      });
+    });
+
+    it('flags URL-position arguments and axios url/baseURL properties (positive case)', () => {
+      expectAllFlagged(
+        {
+          'axios-config.mjs': `await axios({ url: 'https://third-party.dev/api', method: 'post' });\n`,
+          'axios-base.mjs': `const BASE = 'https://third-party.dev';\nawait axios({ baseURL: BASE, url: '/api' });\n`,
+          'axios-shorthand.mjs': `const url = 'https://third-party.dev/api';\nawait axios({ url });\n`,
+          'axios-request.mjs': `await axios.request({ url: 'https://third-party.dev/api' });\n`,
+          'axios-call-url.mjs': `await axios('https://third-party.dev/api', { method: 'get' });\n`,
+        },
+        'third-party.dev'
+      );
+    });
+
+    it('ignores external strings in bodies, headers, and other non-URL arguments (negative case)', () => {
+      expectNoneFlagged({
+        'request-body.mjs': `await request.post('/api/convert', { data: { source: 'https://third-party.dev/file.pdf' } });\n`,
+        'fetch-init.mjs': [
+          `await fetch('/api/convert', {`,
+          `  method: 'POST',`,
+          `  body: JSON.stringify({ url: 'https://third-party.dev/file.pdf' }),`,
+          `  headers: { Referer: 'https://third-party.dev/' },`,
+          `});`,
+        ].join('\n'),
+        'goto-second-arg.mjs': `await context.newPage();\nawait page.goto(url, 'https://third-party.dev/ref');\n`,
+        'axios-post-body.mjs': `await axios.post('/api/import', 'https://third-party.dev/file.pdf');\n`,
+        'axios-config-data.mjs': `await axios({ url: '/api', data: { link: 'https://third-party.dev/x' } });\n`,
+        'page-request-data.mjs': `await page.request.put('/api/x', { data: 'https://third-party.dev/y' });\n`,
+      });
+    });
+
+    it('flags a known external host followed by an unknown path (positive case)', () => {
+      expectAllFlagged(
+        {
+          'tpl-path.mjs': 'await page.goto(`https://third-party.dev/${path}`);\n',
+          'concat-path.mjs': `await fetch('https://third-party.dev/' + path);\n`,
+          'concat-chain.mjs': `const BASE = 'https://third-party.dev';\nawait fetch(BASE + '/' + id + '/raw');\n`,
+          'tpl-port.mjs': 'await page.goto(`https://third-party.dev:${port}/x`);\n',
+          'tpl-query.mjs': 'await fetch(`https://third-party.dev?q=${encodeURIComponent(q)}`);\n',
+        },
+        'third-party.dev'
+      );
+    });
+
+    it('does not flag a prefix whose host is incomplete (negative case)', () => {
+      expectNoneFlagged({
+        'tpl-host.mjs': 'await page.goto(`https://${host}`);\n',
+        'concat-host.mjs': `await fetch('https://' + host);\n`,
+        'tpl-tld.mjs': 'await fetch(`https://third-party${tld}/x`);\n',
+        'concat-suffix.mjs': `await fetch('https://third-party.dev' + suffix);\n`,
+      });
+    });
+
+    it('resolves new URL bases, URL objects, and baseURL options (positive case)', () => {
+      expectAllFlagged(
+        {
+          'new-url-base.mjs': `const BASE = 'https://third-party.dev';\nawait page.goto(new URL('/pricing', BASE));\n`,
+          'new-url-unknown-path.mjs': `const BASE = 'https://third-party.dev';\nawait fetch(new URL(path, BASE));\n`,
+          'url-object.mjs': `const TARGET = new URL('https://third-party.dev/api');\nawait fetch(TARGET);\n`,
+          'url-object-base.mjs': `const TARGET = new URL('/api', 'https://third-party.dev');\nawait page.goto(TARGET);\n`,
+          'new-context.mjs': `const ctx = await request.newContext({ baseURL: 'https://third-party.dev' });\n`,
+          'new-context-const.mjs': `const OPTIONS = { baseURL: 'https://third-party.dev/' };\nawait browser.newContext(OPTIONS);\n`,
+        },
+        'third-party.dev'
+      );
+    });
+
+    it('permits new URL with a local base or an absolute local path (negative case)', () => {
+      expectNoneFlagged({
+        'new-url-local.mjs': `await page.goto(new URL('/convert', 'http://localhost:3000'));\n`,
+        'new-url-override.mjs': `const BASE = 'https://third-party.dev';\nawait fetch(new URL('http://localhost:3000/api', BASE));\n`,
+        'new-context-env.mjs': [
+          `await request.newContext({`,
+          `  baseURL: process.env.BASE_URL,`,
+          `  extraHTTPHeaders: { Referer: 'https://third-party.dev/' },`,
+          `});`,
+        ].join('\n'),
+      });
+    });
+
+    it('treats tagged templates like template literals', () => {
+      expectAllFlagged(
+        {
+          'tagged-raw.mjs': 'await fetch(String.raw`https://third-party.dev/a`);\n',
+          'tagged-path.mjs': 'await page.goto(url`https://third-party.dev/${path}`);\n',
+        },
+        'third-party.dev'
+      );
+      expectNoneFlagged({ 'tagged-local.mjs': 'await page.goto(String.raw`http://localhost:3000/`);\n' });
+    });
+
+    it('treats loopback, docker, and reserved names as local (negative case)', () => {
+      const hosts = [
+        'http://127.0.0.2:3000/',
+        'http://127.255.255.254/',
+        'http://0.0.0.0:3000/',
+        'http://[::1]:3000/',
+        'http://app.localhost:3000/',
+        'http://host.docker.internal:3000/',
+        'http://redis:6379/',
+        'http://worker:3000/health',
+        'https://svc.test/',
+        'https://site.example/',
+        'https://nowhere.invalid/',
+        'https://api.example.com/',
+      ];
+      expectNoneFlagged({ 'local-hosts.mjs': hosts.map((h) => `await fetch('${h}');`).join('\n') });
+    });
+
+    it('keeps public hosts that resemble local names flagged (positive case)', () => {
+      const { status, flagged } = runG5Cases({
+        'ip-128.mjs': `await fetch('http://128.0.0.1/');\n`,
+        'localhost-prefix.mjs': `await fetch('https://localhost.third-party.dev/');\n`,
+        'test-label.mjs': `await fetch('https://test.third-party.dev/');\n`,
+        'docker-lookalike.mjs': `await fetch('https://host.docker.internal.third-party.dev/');\n`,
+        'example-tld.mjs': `await fetch('https://example.dev/');\n`,
+      });
+      expect(status).not.toBe(0);
+      expect(Object.fromEntries(flagged)).toEqual({
+        'ip-128.mjs': '128.0.0.1',
+        'localhost-prefix.mjs': 'localhost.third-party.dev',
+        'test-label.mjs': 'test.third-party.dev',
+        'docker-lookalike.mjs': 'host.docker.internal.third-party.dev',
+        'example-tld.mjs': 'example.dev',
       });
     });
 
