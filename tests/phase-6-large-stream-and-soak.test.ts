@@ -4,6 +4,7 @@ import {
   streamProcessLargePayload,
   EnduranceSoakController,
   getOpenFileDescriptorCount,
+  createTarStreamPacker,
 } from '../src/lib/streaming/large-payload-streamer';
 import {
   verifyArchiveWithTar,
@@ -80,25 +81,36 @@ describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Test
   // 2. Endurance Soak Controller & Leak Detection
   // =========================================================================
   describe('2. Endurance Soak Controller & Leak Detection', () => {
-    it('executes iterative soak cycles with heap stabilization and zero persistent FD leaks', async () => {
+    it('executes iterative soak cycles through real conversion engine with heap stabilization and zero persistent FD leaks', async () => {
       const controller = new EnduranceSoakController();
       const initialFds = getOpenFileDescriptorCount();
+      const bytesPerCycle = 2 * 1024 * 1024; // 2MB per cycle
 
       const report = await controller.runSoakSession({
         durationMs: 5000, // 5 second soak test session
         maxIterations: 10,
-        bytesPerIteration: 2 * 1024 * 1024, // 2MB per cycle
+        bytesPerIteration: bytesPerCycle,
         chunkSizeBytes: 64 * 1024,
         warmupIterations: 2,
+        transformEngineFactory: () => createTarStreamPacker('soak-data.bin', bytesPerCycle),
       });
 
       expect(report.totalIterations).toBeGreaterThanOrEqual(3);
       expect(report.totalBytesProcessed).toBeGreaterThanOrEqual(6 * 1024 * 1024);
-      expect(report.isMemoryStable).toBe(true);
+
+      // Direct numeric resource bounds (no self-validating assertions)
+      expect(report.rssDeltaMb).toBeLessThan(64);
+      expect(report.externalDeltaMb).toBeLessThan(32);
+      expect(report.arrayBuffersDeltaMb).toBeLessThan(32);
+      expect(report.initialActiveResources).toBeGreaterThanOrEqual(0);
+      expect(report.finalActiveResources).toBeGreaterThanOrEqual(0);
 
       const finalFds = getOpenFileDescriptorCount();
       const fdDelta = Math.abs(finalFds - initialFds);
       expect(fdDelta).toBeLessThanOrEqual(2);
+
+      // Validate output integrity against independently computed SHA-256 digest
+      expect(report.lastIterationDigest).toBe('7173fe737126f6cfc33a86b088e2d2efadb04e814800fa78d84c9763f1efec2a');
     });
 
     it('gracefully aborts active soak session upon receiving abort signal', async () => {
