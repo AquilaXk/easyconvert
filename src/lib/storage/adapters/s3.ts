@@ -36,8 +36,15 @@ const DEFAULT_REGION = 'us-east-1';
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
 const MAX_RETRY_DELAY_MS = 5_000;
-/** Time allowed until response headers arrive; body streaming is bounded by the agent's idle body timeout. */
+/** Inactivity timeout: reset whenever response bytes arrive (S3 keepalive whitespace counts). */
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+/**
+ * Absolute ceiling for one request, however steadily bytes trickle in, so a slow peer cannot hold
+ * a connection open indefinitely. CompleteMultipartUpload of a large object can keep the response
+ * open with whitespace for several minutes; 15 minutes leaves a wide margin above that and still
+ * bounds a slow-loris peer. A downloaded body handed to the caller is not covered by this ceiling.
+ */
+export const S3_REQUEST_MAX_DURATION_MS = 15 * 60_000;
 /** Error documents are small; a larger body is truncated so a hostile endpoint cannot exhaust memory. */
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const PROVIDER = 's3';
@@ -111,6 +118,8 @@ export interface S3AdapterOptions {
   maxAttempts?: number;
   retryBaseDelayMs?: number;
   requestTimeoutMs?: number;
+  /** Absolute per-request ceiling; defaults to S3_REQUEST_MAX_DURATION_MS. */
+  maxRequestDurationMs?: number;
 }
 
 export interface S3ErrorDocument {
@@ -352,6 +361,7 @@ export class S3StorageAdapter implements IStorageAdapter {
   private readonly maxAttempts: number;
   private readonly retryBaseDelayMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly maxRequestDurationMs: number;
 
   constructor(credentials: S3Credentials, options: S3AdapterOptions = {}) {
     if (!credentials.bucket || !credentials.accessKeyId || !credentials.secretAccessKey) {
@@ -376,6 +386,7 @@ export class S3StorageAdapter implements IStorageAdapter {
     this.maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
     this.retryBaseDelayMs = Math.max(0, options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS);
     this.requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+    this.maxRequestDurationMs = Math.max(1, options.maxRequestDurationMs ?? S3_REQUEST_MAX_DURATION_MS);
 
     this.origin = this.parseOrigin(this.address('').origin);
     const devEntry = findDevAllowlistEntry(this.origin);
@@ -517,10 +528,14 @@ export class S3StorageAdapter implements IStorageAdapter {
     return new StorageServiceError(`S3 request failed: ${message}`, PROVIDER, { retryable: true }, err);
   }
 
-  /** Types a failure while a response body is read: the deadline firing, or the connection dropping. */
-  private mapBodyError(err: unknown, timedOut: boolean): StorageAdapterError {
+  /**
+   * Types a failure while a request or body is in flight: a deadline firing (`timedOutAfterMs`
+   * names which one), or the connection dropping.
+   */
+  private mapBodyError(err: unknown, timedOutAfterMs?: number): StorageAdapterError {
     if (err instanceof StorageAdapterError) return err;
-    if (timedOut || isAbortError(err)) return new StorageTimeoutError(this.requestTimeoutMs, PROVIDER);
+    if (timedOutAfterMs !== undefined) return new StorageTimeoutError(timedOutAfterMs, PROVIDER);
+    if (isAbortError(err)) return new StorageTimeoutError(this.requestTimeoutMs, PROVIDER);
     return this.mapTransportError(err);
   }
 
@@ -548,12 +563,23 @@ export class S3StorageAdapter implements IStorageAdapter {
       });
 
       const controller = new AbortController();
-      const abort = () => controller.abort();
-      let timer = setTimeout(abort, this.requestTimeoutMs);
-      // Received bytes extend the deadline, so whitespace keepalives keep a Complete alive.
+      let timedOutAfterMs: number | undefined;
+      const abortAfter = (ms: number) => () => {
+        timedOutAfterMs ??= ms;
+        controller.abort();
+      };
+      const onInactive = abortAfter(this.requestTimeoutMs);
+      let timer = setTimeout(onInactive, this.requestTimeoutMs);
+      const ceiling = setTimeout(abortAfter(this.maxRequestDurationMs), this.maxRequestDurationMs);
+      // Received bytes extend the inactivity deadline (whitespace keepalives keep a Complete
+      // alive); the absolute ceiling never moves.
       const touch = () => {
         clearTimeout(timer);
-        timer = setTimeout(abort, this.requestTimeoutMs);
+        timer = setTimeout(onInactive, this.requestTimeoutMs);
+      };
+      const clearDeadlines = () => {
+        clearTimeout(timer);
+        clearTimeout(ceiling);
       };
       let res: Response;
       try {
@@ -565,8 +591,8 @@ export class S3StorageAdapter implements IStorageAdapter {
           signal: controller.signal,
         } as UndiciRequestInit);
       } catch (err) {
-        clearTimeout(timer);
-        lastError = this.mapBodyError(err, controller.signal.aborted);
+        clearDeadlines();
+        lastError = this.mapBodyError(err, timedOutAfterMs);
         if (isRetryable(lastError) && request.replayable) continue;
         throw lastError;
       }
@@ -578,9 +604,9 @@ export class S3StorageAdapter implements IStorageAdapter {
         }
         lastError = outcome.error;
       } catch (err) {
-        lastError = this.mapBodyError(err, controller.signal.aborted);
+        lastError = this.mapBodyError(err, timedOutAfterMs);
       } finally {
-        clearTimeout(timer);
+        clearDeadlines();
       }
 
       if (!(isRetryable(lastError) && request.replayable)) {
@@ -630,7 +656,7 @@ export class S3StorageAdapter implements IStorageAdapter {
     }
     const source = Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>);
     const output = new PassThrough();
-    source.on('error', (err) => output.destroy(this.mapBodyError(err, false)));
+    source.on('error', (err) => output.destroy(this.mapBodyError(err)));
     output.on('close', () => source.destroy());
     source.pipe(output);
     return output;

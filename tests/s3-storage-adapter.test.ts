@@ -394,6 +394,17 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     expect(stub.requests.filter((r) => r.query.has('partNumber'))).toHaveLength(0);
   });
 
+  it('stops a peer that keeps a response alive with a byte at a time past the absolute ceiling', async () => {
+    stub.faults.push({ match: (r) => r.method === 'GET', status: 500, dripMs: 20, times: 1 });
+    const started = Date.now();
+    const err = await adapter({}, { requestTimeoutMs: 100, maxRequestDurationMs: 400, maxAttempts: 1 })
+      .downloadStream('drip.txt')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageTimeoutError);
+    expect((err as Error).message).toContain('400 ms');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  }, 5_000);
+
   it('types a timeout that fires while an error body is still arriving', async () => {
     stub.faults.push({ match: (r) => r.method === 'GET', status: 500, stallBody: true, times: 1 });
     await expect(adapter({}, { requestTimeoutMs: 80, maxAttempts: 1 }).downloadStream('stall.txt')).rejects.toThrow(

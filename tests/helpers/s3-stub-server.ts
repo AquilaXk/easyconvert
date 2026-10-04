@@ -36,6 +36,8 @@ export interface StubFault {
   stallBody?: boolean;
   /** Promise a 1000-byte body, send a few bytes, then reset the connection. */
   truncateBody?: boolean;
+  /** Send the status line, then one space every `dripMs` until the client goes away (slow-loris). */
+  dripMs?: number;
 }
 
 export interface StubCompleteBehavior {
@@ -125,6 +127,12 @@ export async function startS3StubServer(options: {
         if (fault.stallBody) {
           res.writeHead(fault.status, { 'content-type': 'application/xml' });
           res.write('<Error><Code>');
+          return;
+        }
+        if (fault.dripMs) {
+          res.writeHead(fault.status, { 'content-type': 'application/xml' });
+          const drip = setInterval(() => res.write(' '), fault.dripMs);
+          res.on('close', () => clearInterval(drip));
           return;
         }
         if (fault.truncateBody) {
