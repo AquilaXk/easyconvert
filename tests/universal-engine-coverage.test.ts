@@ -121,9 +121,9 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(resCgm.mimeType).toBe('image/svg+xml');
     expect(resCgm.buffer.toString('utf-8')).toContain('<svg');
 
-    // svg -> emf
+    // svg -> emf has no encoder, so the registry no longer advertises it
     await expect(convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg')).rejects.toThrow(
-      /EMF encoder is not available/
+      /^Cannot convert from SVG Vector Graphics \(\.svg\) to target format \.emf\./
     );
   });
 
