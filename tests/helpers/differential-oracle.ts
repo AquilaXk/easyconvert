@@ -27,7 +27,8 @@ export type ExternalOracleTool =
   | 'zstd'
   | 'magick'
   | 'identify'
-  | 'unrar';
+  | 'unrar'
+  | 'qpdf';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;

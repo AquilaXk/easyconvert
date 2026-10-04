@@ -62,6 +62,24 @@ export interface ExportUrlNode {
   headers?: Record<string, string>;
 }
 
+export interface WatermarkNode {
+  op: 'watermark';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+export interface PdfWatermarkNode {
+  op: 'pdf.watermark';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+export interface PdfProtectNode {
+  op: 'pdf.protect';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
 export interface ExportInternalNode {
   op: 'export.internal';
   input: NodeId | NodeId[];
@@ -73,6 +91,9 @@ export type GraphNode =
   | ConvertNode
   | OcrNode
   | OptimizeNode
+  | WatermarkNode
+  | PdfWatermarkNode
+  | PdfProtectNode
   | ArchiveCreateNode
   | ArchiveExtractNode
   | ExportUrlNode

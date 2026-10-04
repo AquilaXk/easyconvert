@@ -12,6 +12,9 @@ import {
   UsageLedgerEntrySchema,
   UsageQueryResponseSchema,
   ArchiveInspectResponseSchema,
+  PdfWatermarkOptionsSchema,
+  PdfProtectOptionsSchema,
+  PdfAOptionsSchema,
 } from '@/lib/api/contracts';
 
 export const dynamic = 'force-dynamic';
@@ -980,6 +983,18 @@ export async function GET() {
         },
         ArchiveInspectResponse: {
           ...ArchiveInspectResponseSchema,
+          $id: undefined,
+        },
+        PdfWatermarkOptions: {
+          ...PdfWatermarkOptionsSchema,
+          $id: undefined,
+        },
+        PdfProtectOptions: {
+          ...PdfProtectOptionsSchema,
+          $id: undefined,
+        },
+        PdfAOptions: {
+          ...PdfAOptionsSchema,
           $id: undefined,
         },
       },
