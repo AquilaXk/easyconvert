@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { ConversionOptions } from '../types';
+import { ConversionOptions, InvalidMediaOptionError } from '../types';
 
 export interface HardwareAccelerationCapabilities {
   nvenc: boolean;
@@ -11,6 +11,14 @@ export interface HardwareAccelerationCapabilities {
   supportedEncoders: Set<string>;
   probedAt: number;
 }
+
+export const H264_ALLOWED_PROFILES = new Set(['baseline', 'main', 'high', 'high10']);
+export const H264_ALLOWED_LEVELS = new Set([
+  '3.0', '3.1', '3.2', '4.0', '4.1', '4.2', '5.0', '5.1', '5.2',
+  '30', '31', '32', '40', '41', '42', '50', '51', '52',
+]);
+export const HEVC_ALLOWED_PROFILES = new Set(['main', 'main10']);
+export const AV1_ALLOWED_PROFILES = new Set(['main', '0']);
 
 let cachedHwCapabilities: HardwareAccelerationCapabilities | null = null;
 let lastProbeTime = 0;
@@ -86,7 +94,7 @@ export function probeHardwareAcceleration(ffmpegPath?: string | null): HardwareA
 
 /**
  * Builds optimized, compliant FFmpeg argument array with hardware acceleration,
- * faststart atom layout, and explicit codec mappings.
+ * strict filter graph ordering, rate control, and profile/level validation.
  */
 export function buildFfmpegArguments(
   inputPath: string,
@@ -97,8 +105,17 @@ export function buildFfmpegArguments(
   ffmpegBin?: string | null
 ): string[] {
   const globalArgs: string[] = ['-y'];
-  const inputArgs: string[] = ['-i', inputPath];
+  const inputArgs: string[] = [];
   const outputArgs: string[] = [];
+
+  // Trim parameters (start seek and stop timestamp before input for speed and precision)
+  if (options.trim?.start) {
+    inputArgs.push('-ss', options.trim.start);
+  }
+  if (options.trim?.end) {
+    inputArgs.push('-to', options.trim.end);
+  }
+  inputArgs.push('-i', inputPath);
 
   const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(tgt);
   const isAudioOnly = ['mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma'].includes(tgt);
@@ -112,36 +129,271 @@ export function buildFfmpegArguments(
       ? '/dev/dri/card0'
       : null;
 
-    if (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv') {
-      const codec = options.videoCodec || 'h264';
-      if (codec === 'h264') {
-        if (!disableHw && hw.nvenc && hw.supportedEncoders.has('h264_nvenc')) {
-          outputArgs.push('-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23');
-        } else if (!disableHw && hw.vaapi && driDev && hw.supportedEncoders.has('h264_vaapi')) {
-          globalArgs.push('-vaapi_device', driDev);
-          outputArgs.push('-filter_hw_device', driDev, '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-qp', '24');
-        } else if (!disableHw && hw.videotoolbox && hw.supportedEncoders.has('h264_videotoolbox')) {
-          outputArgs.push('-c:v', 'h264_videotoolbox', '-q:v', '65');
-        } else if (!disableHw && hw.qsv && hw.supportedEncoders.has('h264_qsv')) {
-          outputArgs.push('-c:v', 'h264_qsv', '-global_quality', '23');
-        } else {
-          outputArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
+    const videoOpts = options.video;
+    const codec = videoOpts?.codec || options.videoCodec || (tgt === 'webm' ? 'vp9' : 'h264');
+
+    // 1. Container Compatibility Gate
+    if (tgt === 'webm' && codec !== 'vp9' && codec !== 'av1') {
+      throw new InvalidMediaOptionError(
+        `WebM container only supports 'vp9' or 'av1' video codecs, but '${codec}' was requested.`
+      );
+    }
+    if (codec === 'prores' && tgt !== 'mov') {
+      throw new InvalidMediaOptionError(
+        `ProRes video codec is only supported in 'mov' container, but '${tgt}' was requested.`
+      );
+    }
+
+    // 2. Profile and Level Validation Gate
+    if (codec === 'h264') {
+      if (videoOpts?.profile && !H264_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
+        throw new InvalidMediaOptionError(
+          `Invalid H.264 profile '${videoOpts.profile}'. Allowed profiles: ${Array.from(H264_ALLOWED_PROFILES).join(', ')}.`
+        );
+      }
+      if (videoOpts?.level && !H264_ALLOWED_LEVELS.has(videoOpts.level.toLowerCase())) {
+        throw new InvalidMediaOptionError(
+          `Invalid H.264 level '${videoOpts.level}'. Allowed levels: 3.0 to 5.2.`
+        );
+      }
+    } else if (codec === 'hevc') {
+      if (videoOpts?.profile && !HEVC_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
+        throw new InvalidMediaOptionError(
+          `Invalid HEVC profile '${videoOpts.profile}'. Allowed profiles: ${Array.from(HEVC_ALLOWED_PROFILES).join(', ')}.`
+        );
+      }
+    } else if (codec === 'av1') {
+      if (videoOpts?.profile && !AV1_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
+        throw new InvalidMediaOptionError(
+          `Invalid AV1 profile '${videoOpts.profile}'. Allowed profiles: main.`
+        );
+      }
+    }
+
+    // 3. Rate Control Validation Gate
+    const rateControl = videoOpts?.rateControl;
+    if (rateControl?.mode === 'crf') {
+      const crf = rateControl.crf;
+      if (codec === 'h264' || codec === 'hevc') {
+        if (typeof crf !== 'number' || !Number.isFinite(crf) || crf < 0 || crf > 51) {
+          throw new InvalidMediaOptionError(
+            `CRF for ${codec.toUpperCase()} must be between 0 and 51, received ${crf}.`
+          );
         }
+      } else if (codec === 'vp9' || codec === 'av1') {
+        if (typeof crf !== 'number' || !Number.isFinite(crf) || crf < 0 || crf > 63) {
+          throw new InvalidMediaOptionError(
+            `CRF for ${codec.toUpperCase()} must be between 0 and 63, received ${crf}.`
+          );
+        }
+      } else if (codec === 'prores') {
+        throw new InvalidMediaOptionError('CRF rate control is not supported for ProRes codec.');
+      }
+    }
+
+    // 4. Determine Hardware Acceleration Usage
+    let isVaapi = false;
+    let isNvenc = false;
+    let isVideotoolbox = false;
+    let isQsv = false;
+
+    if (!disableHw && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
+      if (codec === 'h264') {
+        if (hw.nvenc && hw.supportedEncoders.has('h264_nvenc')) isNvenc = true;
+        else if (hw.vaapi && driDev && hw.supportedEncoders.has('h264_vaapi')) isVaapi = true;
+        else if (hw.videotoolbox && hw.supportedEncoders.has('h264_videotoolbox')) isVideotoolbox = true;
+        else if (hw.qsv && hw.supportedEncoders.has('h264_qsv')) isQsv = true;
       } else if (codec === 'hevc') {
-        if (!disableHw && hw.nvenc && hw.supportedEncoders.has('hevc_nvenc')) {
-          outputArgs.push('-c:v', 'hevc_nvenc', '-preset', 'p4', '-cq', '26');
-        } else if (!disableHw && hw.vaapi && driDev && hw.supportedEncoders.has('hevc_vaapi')) {
+        if (hw.nvenc && hw.supportedEncoders.has('hevc_nvenc')) isNvenc = true;
+        else if (hw.vaapi && driDev && hw.supportedEncoders.has('hevc_vaapi')) isVaapi = true;
+        else if (hw.videotoolbox && hw.supportedEncoders.has('hevc_videotoolbox')) isVideotoolbox = true;
+      }
+    }
+
+    // 2-pass on hardware acceleration rejection
+    if (rateControl?.mode === 'vbr' && rateControl.twoPass && (isVaapi || isNvenc || isVideotoolbox || isQsv)) {
+      throw new InvalidMediaOptionError('Hardware accelerated video encoders do not support 2-pass encoding.');
+    }
+
+    // 5. Strict Filter Graph Construction
+    // Sequence: yadif -> crop -> transpose -> scale -> fps -> even parity correction -> format
+    const videoFilters: string[] = [];
+
+    // Stage 1: yadif (deinterlace)
+    if (videoOpts?.deinterlace) {
+      videoFilters.push('yadif');
+    }
+
+    // Stage 2: crop
+    if (videoOpts?.crop) {
+      const { w, h, x, y } = videoOpts.crop;
+      videoFilters.push(`crop=${w}:${h}:${x}:${y}`);
+    }
+
+    // Stage 3: transpose (rotation)
+    if (typeof videoOpts?.rotate === 'number') {
+      const rot = videoOpts.rotate;
+      if (rot === 90) {
+        videoFilters.push('transpose=1');
+      } else if (rot === 180) {
+        videoFilters.push('transpose=2,transpose=2');
+      } else if (rot === 270) {
+        videoFilters.push('transpose=2');
+      } else if (rot !== 0) {
+        throw new InvalidMediaOptionError(`Invalid rotate angle ${rot}. Allowed values: 0, 90, 180, 270.`);
+      }
+    }
+
+    // Stage 4: scale
+    if (videoOpts?.scale) {
+      const { width, height, fit } = videoOpts.scale;
+      const w = width && width > 0 ? width : -1;
+      const h = height && height > 0 ? height : -1;
+      if (fit === 'cover' && width && height) {
+        videoFilters.push(`scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${width}:${height}`);
+      } else if (fit === 'stretch') {
+        videoFilters.push(`scale=${w}:${h}`);
+      } else {
+        videoFilters.push(`scale=${w}:${h}:force_original_aspect_ratio=decrease`);
+      }
+    } else if (options.videoResolution && options.videoResolution !== 'original') {
+      const resMap: Record<string, string> = {
+        '4k': '3840:2160',
+        '1080p': '1920:1080',
+        '720p': '1280:720',
+        '480p': '854:480',
+        '360p': '640:360',
+      };
+      if (resMap[options.videoResolution]) {
+        videoFilters.push(`scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`);
+      }
+    }
+
+    // Stage 5: fps
+    if (typeof videoOpts?.fps === 'number' && Number.isFinite(videoOpts.fps) && videoOpts.fps > 0 && videoOpts.fps <= 240) {
+      videoFilters.push(`fps=${videoOpts.fps}`);
+    }
+
+    // Stage 6: Even dimension normalization (ALWAYS LAST filter before format)
+    videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+
+    // Stage 7: Format upload (for VAAPI)
+    if (isVaapi) {
+      videoFilters.push('format=nv12,hwupload');
+    }
+
+    if (videoFilters.length > 0) {
+      outputArgs.push('-vf', videoFilters.join(','));
+    }
+
+    // Software pixel format (exclude VAAPI which uses hwupload, and ProRes which has custom 10-bit format)
+    if (!isVaapi && codec !== 'prores') {
+      outputArgs.push('-pix_fmt', 'yuv420p');
+    }
+
+    // 6. Video Encoder Selection and Arguments
+    if (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv') {
+      if (codec === 'h264' || codec === 'hevc') {
+        const isH264 = codec === 'h264';
+        const defaultCrf = isH264 ? '23' : '26';
+        const defaultVaapiQp = isH264 ? '24' : '26';
+        const swLib = isH264 ? 'libx264' : 'libx265';
+        const crfVal = rateControl?.mode === 'crf' ? String(rateControl.crf) : defaultCrf;
+
+        if (isNvenc) {
+          outputArgs.push('-c:v', `${codec}_nvenc`, '-preset', videoOpts?.preset || 'p4');
+          if (rateControl?.mode === 'crf' || !rateControl) {
+            outputArgs.push('-cq', crfVal);
+          }
+        } else if (isVaapi && driDev) {
           globalArgs.push('-vaapi_device', driDev);
-          outputArgs.push('-filter_hw_device', driDev, '-vf', 'format=nv12,hwupload', '-c:v', 'hevc_vaapi', '-qp', '26');
-        } else if (!disableHw && hw.videotoolbox && hw.supportedEncoders.has('hevc_videotoolbox')) {
-          outputArgs.push('-c:v', 'hevc_videotoolbox', '-q:v', '65');
+          outputArgs.push('-filter_hw_device', driDev, '-c:v', `${codec}_vaapi`);
+          if (rateControl?.mode === 'crf') {
+            outputArgs.push('-qp', String(rateControl.crf));
+          } else if (!rateControl) {
+            outputArgs.push('-qp', defaultVaapiQp);
+          }
+        } else if (isVideotoolbox) {
+          outputArgs.push('-c:v', `${codec}_videotoolbox`);
+          if (rateControl?.mode === 'crf') {
+            outputArgs.push('-q:v', String(Math.max(1, Math.min(100, Math.round(100 - rateControl.crf * 1.5)))));
+          } else if (!rateControl) {
+            outputArgs.push('-q:v', '65');
+          }
+        } else if (isH264 && isQsv) {
+          outputArgs.push('-c:v', 'h264_qsv');
+          if (rateControl?.mode === 'crf' || !rateControl) {
+            outputArgs.push('-global_quality', crfVal);
+          }
         } else {
-          outputArgs.push('-c:v', 'libx265', '-preset', 'fast', '-crf', '26');
+          outputArgs.push('-c:v', swLib, '-preset', videoOpts?.preset || 'fast');
+          if (rateControl?.mode === 'crf' || !rateControl) {
+            outputArgs.push('-crf', crfVal);
+          }
+          if (videoOpts?.profile) {
+            outputArgs.push('-profile:v', videoOpts.profile.toLowerCase());
+          }
+          if (isH264 && videoOpts?.level) {
+            outputArgs.push('-level', videoOpts.level);
+          }
         }
       } else if (codec === 'vp9') {
-        outputArgs.push('-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0');
+        outputArgs.push('-c:v', 'libvpx-vp9');
+        if (rateControl?.mode === 'crf') {
+          outputArgs.push('-crf', String(rateControl.crf), '-b:v', '0');
+        } else if (!rateControl) {
+          outputArgs.push('-crf', '30', '-b:v', '0');
+        }
       } else if (codec === 'av1') {
-        outputArgs.push('-c:v', 'libaom-av1', '-crf', '32', '-b:v', '0');
+        outputArgs.push('-c:v', 'libaom-av1');
+        if (rateControl?.mode === 'crf') {
+          outputArgs.push('-crf', String(rateControl.crf), '-b:v', '0');
+        } else if (!rateControl) {
+          outputArgs.push('-crf', '32', '-b:v', '0');
+        }
+        if (videoOpts?.profile) {
+          outputArgs.push('-profile:v', '0');
+        }
+      } else if (codec === 'prores') {
+        outputArgs.push('-c:v', 'prores_ks');
+        const proresProfileMap: Record<string, string> = {
+          proxy: '0',
+          '0': '0',
+          lt: '1',
+          '1': '1',
+          standard: '2',
+          '2': '2',
+          hq: '3',
+          '3': '3',
+          '4444': '4',
+          '4': '4',
+        };
+        const p = videoOpts?.profile?.toLowerCase();
+        const prof = p && proresProfileMap[p] ? proresProfileMap[p] : '3';
+        outputArgs.push(
+          '-profile:v', prof,
+          '-pix_fmt', prof === '4' ? 'yuva444p10le' : 'yuv422p10le'
+        );
+      }
+
+      // Bitrate rate control (VBR / CBR / legacy)
+      if (rateControl?.mode === 'vbr') {
+        outputArgs.push('-b:v', `${rateControl.bitrateK}k`);
+        if (rateControl.maxrateK) outputArgs.push('-maxrate', `${rateControl.maxrateK}k`);
+        if (rateControl.bufsizeK) outputArgs.push('-bufsize', `${rateControl.bufsizeK}k`);
+      } else if (rateControl?.mode === 'cbr') {
+        outputArgs.push(
+          '-b:v', `${rateControl.bitrateK}k`,
+          '-minrate', `${rateControl.bitrateK}k`,
+          '-maxrate', `${rateControl.bitrateK}k`,
+          '-bufsize', `${rateControl.bitrateK}k`
+        );
+      } else if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0) {
+        outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
+      }
+
+      if (typeof options.videoFps === 'number' && Number.isFinite(options.videoFps) && options.videoFps > 0 && options.videoFps <= 240) {
+        outputArgs.push('-r', options.videoFps.toString());
       }
 
       if (tgt === 'mp4' || tgt === 'mov') {
@@ -155,7 +407,29 @@ export function buildFfmpegArguments(
         outputArgs.push('-b:a', '192k');
       }
     } else if (tgt === 'webm') {
-      outputArgs.push('-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0');
+      if (codec === 'av1') {
+        outputArgs.push('-c:v', 'libaom-av1');
+        if (rateControl?.mode === 'crf') {
+          outputArgs.push('-crf', String(rateControl.crf), '-b:v', '0');
+        } else {
+          outputArgs.push('-crf', '32', '-b:v', '0');
+        }
+      } else {
+        outputArgs.push('-c:v', 'libvpx-vp9');
+        if (rateControl?.mode === 'crf') {
+          outputArgs.push('-crf', String(rateControl.crf), '-b:v', '0');
+        } else {
+          outputArgs.push('-crf', '30', '-b:v', '0');
+        }
+      }
+      if (rateControl?.mode === 'vbr') {
+        outputArgs.push('-b:v', `${rateControl.bitrateK}k`);
+      } else if (rateControl?.mode === 'cbr') {
+        outputArgs.push('-b:v', `${rateControl.bitrateK}k`, '-minrate', `${rateControl.bitrateK}k`, '-maxrate', `${rateControl.bitrateK}k`);
+      } else if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0) {
+        outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
+      }
+
       outputArgs.push('-c:a', 'libopus', '-b:a', '128k');
     } else if (tgt === 'avi') {
       outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID');
@@ -205,49 +479,6 @@ export function buildFfmpegArguments(
     outputArgs.push('-filter:a', `volume=${vol}`);
   }
 
-  // Video resolution
-  if (options.videoResolution && options.videoResolution !== 'original') {
-    const resMap: Record<string, string> = {
-      '4k': '3840:2160',
-      '1080p': '1920:1080',
-      '720p': '1280:720',
-      '480p': '854:480',
-      '360p': '640:360',
-    };
-    if (resMap[options.videoResolution]) {
-      const scaleFilter = `scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`;
-      const existingVfIdx = outputArgs.indexOf('-vf');
-      if (existingVfIdx !== -1 && existingVfIdx + 1 < outputArgs.length) {
-        outputArgs[existingVfIdx + 1] = `${scaleFilter},${outputArgs[existingVfIdx + 1]}`;
-      } else {
-        outputArgs.push('-vf', scaleFilter);
-      }
-    }
-  }
-
-  // Video frame rate
-  if (typeof options.videoFps === 'number' && Number.isFinite(options.videoFps) && options.videoFps > 0 && options.videoFps <= 240) {
-    outputArgs.push('-r', options.videoFps.toString());
-  }
-
-  // Video bitrate override
-  if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0) {
-    outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
-  }
-
-  // Ensure odd video dimensions are normalized for H.264/HEVC/yuv420p to avoid encoder crashes
-  if (isVideo && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
-    const codec = options.videoCodec || 'h264';
-    if (codec === 'h264' || codec === 'hevc') {
-      const vfIdx = outputArgs.indexOf('-vf');
-      if (vfIdx === -1) {
-        outputArgs.push('-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2');
-      }
-      if (!outputArgs.includes('-pix_fmt')) {
-        outputArgs.push('-pix_fmt', 'yuv420p');
-      }
-    }
-  }
-
   return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }
+

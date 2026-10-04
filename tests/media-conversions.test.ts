@@ -164,7 +164,9 @@ describe('Media Conversion Engine (Audio & Video)', () => {
       writer.writeUe(3); // v=4 -> len 3 -> 00 100
       writer.writeSe(-1); // mapped to 2*1 = 2 -> v=3 -> len 2 -> 0 11
       const buf = writer.toBuffer();
-      expect(buf.length).toBeGreaterThan(0);
+      expect(buf).toHaveLength(2);
+      expect(buf[0]).toBe(0b10111000);
+      expect(buf[1]).toBe(0b10001100);
     });
 
     it('generates standard H.264 SPS, PPS, and IDR slice NAL units', () => {

@@ -254,6 +254,104 @@ export const ConversionOptionsSchema = {
     },
 
     // Video options
+    video: {
+      type: 'object',
+      description: 'Structured video encoding and filter graph options.',
+      properties: {
+        codec: {
+          type: 'string',
+          enum: ['h264', 'hevc', 'vp9', 'av1', 'prores'],
+          description: 'Video compression codec standard.',
+        },
+        profile: {
+          type: 'string',
+          description: 'Codec conformance profile (e.g. baseline, main, high).',
+        },
+        level: {
+          type: 'string',
+          description: 'Codec conformance level (e.g. 3.0, 4.1, 5.1).',
+        },
+        rateControl: {
+          oneOf: [
+            {
+              type: 'object',
+              required: ['mode', 'crf'],
+              properties: {
+                mode: { const: 'crf' },
+                crf: { type: 'number', minimum: 0, maximum: 63 },
+              },
+            },
+            {
+              type: 'object',
+              required: ['mode', 'bitrateK'],
+              properties: {
+                mode: { const: 'vbr' },
+                bitrateK: { type: 'number', minimum: 1 },
+                maxrateK: { type: 'number', minimum: 1 },
+                bufsizeK: { type: 'number', minimum: 1 },
+                twoPass: { type: 'boolean' },
+              },
+            },
+            {
+              type: 'object',
+              required: ['mode', 'bitrateK'],
+              properties: {
+                mode: { const: 'cbr' },
+                bitrateK: { type: 'number', minimum: 1 },
+              },
+            },
+          ],
+          description: 'Video bitrate and quality rate control mode.',
+        },
+        preset: {
+          type: 'string',
+          description: 'Encoding speed-to-compression ratio preset.',
+        },
+        fps: {
+          type: 'number',
+          minimum: 1,
+          maximum: 240,
+          description: 'Output video frame rate in frames per second.',
+        },
+        crop: {
+          type: 'object',
+          required: ['w', 'h', 'x', 'y'],
+          properties: {
+            w: { type: 'integer', minimum: 1, description: 'Cropped width in pixels.' },
+            h: { type: 'integer', minimum: 1, description: 'Cropped height in pixels.' },
+            x: { type: 'integer', minimum: 0, description: 'Horizontal coordinate offset.' },
+            y: { type: 'integer', minimum: 0, description: 'Vertical coordinate offset.' },
+          },
+          description: 'Rectangular region crop bounding box.',
+        },
+        rotate: {
+          type: 'integer',
+          enum: [0, 90, 180, 270],
+          description: 'Clockwise rotation angle in degrees.',
+        },
+        deinterlace: {
+          type: 'boolean',
+          description: 'Apply yadif deinterlacing filter.',
+        },
+        scale: {
+          type: 'object',
+          properties: {
+            width: { type: 'integer', minimum: 1 },
+            height: { type: 'integer', minimum: 1 },
+            fit: { type: 'string', enum: ['contain', 'cover', 'stretch'] },
+          },
+          description: 'Scaling dimension and aspect fit behavior.',
+        },
+      },
+    },
+    trim: {
+      type: 'object',
+      properties: {
+        start: { type: 'string', description: 'Start time offset (HH:MM:SS.mmm or seconds).' },
+        end: { type: 'string', description: 'End time offset (HH:MM:SS.mmm or seconds).' },
+      },
+      description: 'Temporal clipping boundaries.',
+    },
     videoResolution: {
       type: 'string',
       enum: ['original', '4k', '1080p', '720p', '480p', '360p'],
