@@ -42,14 +42,28 @@ export async function PUT(req: NextRequest) {
     );
   }
 
+  if (searchParams.has('key') && searchParams.get('key') !== session.key) {
+    return createProblemDetailsResponse(
+      403,
+      'Key mismatch for this upload session.',
+      instanceUri,
+      'Forbidden'
+    );
+  }
+
   const key = searchParams.get('key') || session.key;
 
   // 2. Presigned Signature Verification (SigV4 query parameters or HMAC token)
   const hasSigV4 = searchParams.has('X-Amz-Signature');
   if (hasSigV4) {
+    const headersRecord: Record<string, string> = {};
+    req.headers.forEach((val, keyName) => {
+      headersRecord[keyName] = val;
+    });
     const sigv4 = verifySigV4QueryUrl(req.url, {
       secretAccessKey: s3Storage.getSigningSecret(),
       expectedMethod: 'PUT',
+      headers: headersRecord,
     });
     if (!sigv4.valid) {
       return createProblemDetailsResponse(

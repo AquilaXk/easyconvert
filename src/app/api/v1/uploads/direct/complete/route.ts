@@ -4,7 +4,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { s3Storage } from '@/lib/storage/s3-storage';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
-import { FileExtensionSpoofError } from '@/lib/registry';
+import { FileExtensionSpoofError, FORMAT_REGISTRY } from '@/lib/registry';
 
 export const dynamic = 'force-dynamic';
 
@@ -89,31 +89,46 @@ export async function POST(req: NextRequest) {
 
   // 5. Verify magic bytes on assembled file using assertNotSpoofedFilePath on first 64 KiB
   const stored = s3Storage.getObject(completedObject.key);
-  if (stored?.filePath) {
-    try {
-      const declaredExtOrMime =
-        sessionMimeType ||
-        (sessionFilename ? path.extname(sessionFilename).replace(/^\./, '') : 'bin');
-      assertNotSpoofedFilePath(stored.filePath, declaredExtOrMime, sessionFilename);
-    } catch (err: any) {
-      // Purge spoofed file immediately
-      s3Storage.deleteObject(completedObject.key);
+  if (!stored?.filePath) {
+    s3Storage.deleteObject(completedObject.key);
+    return createProblemDetailsResponse(
+      500,
+      'Assembled file not found in storage. Operation failed closed.',
+      instanceUri,
+      'Internal Server Error'
+    );
+  }
 
-      if (err instanceof FileExtensionSpoofError) {
-        return createProblemDetailsResponse(
-          422,
-          err.message,
-          instanceUri,
-          'Unprocessable Entity'
-        );
+  try {
+    const ext = sessionFilename
+      ? path.extname(sessionFilename).replace(/^\./, '').toLowerCase().trim()
+      : '';
+    let declaredFormat = ext;
+    if (!declaredFormat && sessionMimeType && sessionMimeType !== 'application/octet-stream') {
+      const found = Object.values(FORMAT_REGISTRY).find((f) => f.mimeType === sessionMimeType);
+      if (found) {
+        declaredFormat = found.extension;
+      } else {
+        const subtype = sessionMimeType.split('/').pop()?.toLowerCase().trim();
+        declaredFormat = subtype || 'bin';
       }
-      return createProblemDetailsResponse(
-        422,
-        err?.message || 'File content magic bytes mismatch.',
-        instanceUri,
-        'Unprocessable Entity'
-      );
     }
+    if (!declaredFormat) {
+      declaredFormat = 'bin';
+    }
+
+    assertNotSpoofedFilePath(stored.filePath, declaredFormat, sessionFilename);
+  } catch (err: unknown) {
+    // Purge spoofed file immediately
+    s3Storage.deleteObject(completedObject.key);
+
+    const errorMessage = err instanceof Error ? err.message : 'File content magic bytes mismatch.';
+    return createProblemDetailsResponse(
+      422,
+      errorMessage,
+      instanceUri,
+      'Unprocessable Entity'
+    );
   }
 
   return NextResponse.json(
