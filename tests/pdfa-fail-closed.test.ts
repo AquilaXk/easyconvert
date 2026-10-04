@@ -202,12 +202,13 @@ describe('watermark before PDF/A', () => {
     ['soffice', 'pdftotext', 'pdffonts'],
     async () => {
       requireLibreOfficeDraw();
+      // Horizontal so pdftotext reads the stamp in order; the default is diagonal.
       const watermark = 'CONFIDENTIAL DRAFT 7731';
       const result = await convertFile(
         Buffer.from('Quarterly archival record\n'),
         'txt',
         'pdf',
-        { watermark: { type: 'text', text: watermark }, pdfa: { conformance: 'pdfa-2b' } },
+        { watermark: { type: 'text', text: watermark, rotation: 0 }, pdfa: { conformance: 'pdfa-2b' } },
         'record.txt'
       );
       const out = path.join(workDir, 'watermarked-pdfa.pdf');
