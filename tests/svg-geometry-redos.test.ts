@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { MAX_SVG_INPUT_CHARS, parseCssColor, parseSvgGeometries, parseSvgTransform } from '../src/lib/conversions/svg-geometry';
-import { CadGeometryUnavailableError } from '../src/lib/types';
+import { encodeEmf } from '../src/lib/conversions/vector-metafile';
+import { emfOraclePlayback } from './helpers/metafile-oracle';
+import { CadGeometryUnavailableError, UnsupportedOptionError } from '../src/lib/types';
 
 const TIME_BOUND_MS = 1000;
 const REPS = 20_000;
@@ -41,8 +43,8 @@ describe('SVG parser stays linear on adversarial input', () => {
 
   it('still honours !important with surrounding whitespace', () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="5" height="5" fill="blue" style="fill : red  !  IMPORTANT  "/></svg>';
-    const doc = parseSvgGeometries(svg);
-    expect(JSON.stringify(doc)).toContain('"r":255');
+    const filled = emfOraclePlayback(encodeEmf(Buffer.from(svg, 'utf-8'))).filter((shape) => shape.kind === 'polygon' && shape.brush !== null);
+    expect(filled.map((shape) => shape.brush)).toEqual([0xff0000]);
   });
 
   it('rejects SVG text above the size cap before parsing', () => {
@@ -60,7 +62,7 @@ describe('SVG parser stays linear on adversarial input', () => {
   it('rejects a long digit run in stroke-miterlimit quickly', () => {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="1" height="1" stroke="#000" stroke-miterlimit="${'1'.repeat(60_000)}x"/></svg>`;
     const { ms, error } = timed(() => parseSvgGeometries(svg));
-    expect(error).toBeDefined();
+    expect(error).toBeInstanceOf(UnsupportedOptionError);
     expect(ms).toBeLessThan(TIME_BOUND_MS);
   });
 
@@ -82,7 +84,7 @@ describe('SVG parser stays linear on adversarial input', () => {
 
   it('applies <style> rules from CDATA and ignores commented-out styles', () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><!-- <style>rect{fill:#00ff00}</style> --><style><![CDATA[rect{fill:#ff0000}]]></style><rect width="5" height="5"/></svg>';
-    const doc = parseSvgGeometries(svg);
-    expect(JSON.stringify(doc.elements)).toContain('"r":255,"g":0,"b":0');
+    const filled = emfOraclePlayback(encodeEmf(Buffer.from(svg, 'utf-8'))).filter((shape) => shape.kind === 'polygon' && shape.brush !== null);
+    expect(filled.map((shape) => shape.brush)).toEqual([0xff0000]);
   });
 });
