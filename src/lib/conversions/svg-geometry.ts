@@ -792,10 +792,8 @@ function parseCompoundSelector(text: string, rule: string): CompoundSelector {
 
 /** Parses <style> text; anything beyond the supported subset throws, naming the rule. */
 function parseStylesheet(css: string): CssRule[] {
-  const text = css
-    .replace(/<!\[CDATA\[|\]\]>/g, ' ')
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/<!--|-->/g, ' ');
+  // CSS comments are dropped; CDO/CDC tokens (<!-- -->) are ignorable in a stylesheet.
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/<!--|-->/g, ' ');
   const rules: CssRule[] = [];
   let rest = text.trim();
   while (rest.length > 0) {
@@ -823,10 +821,24 @@ function parseStylesheet(css: string): CssRule[] {
   return rules;
 }
 
+/**
+ * Scans markup in document order: XML comments and CDATA sections outside
+ * <style> are consumed and ignored, so only real <style> elements count.
+ */
+const STYLE_SCAN_PATTERN =
+  /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<style\b[^>]*?(?:\/>|>((?:<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|[\s\S])*?)<\/style\s*>)/gi;
+const STYLE_CONTENT_PATTERN = /<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->/g;
+
+/** Style element text content: CDATA sections unwrap, XML comments are dropped. */
+function styleTextContent(raw: string): string {
+  return raw.replace(STYLE_CONTENT_PATTERN, (_m, cdata: string | undefined) => cdata ?? ' ');
+}
+
 function extractStylesheets(svgContent: string): CssRule[] {
   const rules: CssRule[] = [];
-  for (const m of svgContent.matchAll(/<style\b[^>]*?(?:\/>|>([\s\S]*?)<\/style\s*>)/gi)) {
-    for (const r of parseStylesheet(m[1] ?? '')) rules.push({ ...r, order: rules.length });
+  for (const m of svgContent.matchAll(STYLE_SCAN_PATTERN)) {
+    if (!m[0].toLowerCase().startsWith('<style')) continue;
+    for (const r of parseStylesheet(styleTextContent(m[1] ?? ''))) rules.push({ ...r, order: rules.length });
   }
   return rules;
 }

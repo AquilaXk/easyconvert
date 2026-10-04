@@ -618,6 +618,13 @@ describe('SVG document model for metafile encoders', () => {
       expect(brushes('#x { fill: #00ff00 } .a { fill: #ff0000 !important }', R('id="x" class="a"'))).toEqual([0xff0000]);
     });
 
+    it('ignores <style> markup that sits inside XML comments or foreign CDATA', () => {
+      const R0 = '<rect x="0" y="0" width="10" height="10" class="a" fill="#010203"/>';
+      expect(brushes('', '<!-- <style>.a { fill: #ff0000 }</style> -->' + R0)).toEqual([0x010203]);
+      expect(brushes('<!-- .a { fill: #ff0000 } -->', R0)).toEqual([0x010203]);
+      expect(brushes('', '<desc><![CDATA[ <style>.a { fill: #ff0000 }</style> ]]></desc>' + R0)).toEqual([0x010203]);
+    });
+
     it('inherits stylesheet values through groups and reads CDATA and comments', () => {
       expect(brushes('<![CDATA[ /* theme */ .g { fill: #abcdef; stroke: none } ]]>', `<g class="g">${R('')}</g>`)).toEqual([0xabcdef]);
       expect(brushes('', R('fill="#010203"'))).toEqual([0x010203]);
