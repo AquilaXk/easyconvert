@@ -11,7 +11,13 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
-import { validateJobGraph, linearTasksToJobGraph, normalizeGraphNodes, JobGraphValidationError } from '@/lib/jobs';
+import {
+  validateJobGraph,
+  linearTasksToJobGraph,
+  linearGraphOutputFormat,
+  normalizeGraphNodes,
+  JobGraphValidationError,
+} from '@/lib/jobs';
 import { graphScheduler } from '@/lib/queue/graph';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -378,6 +384,11 @@ export async function POST(req: NextRequest) {
             graphValidation.errors.map((e) => ({ name: e.path, reason: e.message }))
           )
         );
+      }
+      // The job produces the final task's output, which overrides the top-level targetFormat.
+      const finalOutputFormat = linearGraphOutputFormat(graphValidation);
+      if (finalOutputFormat) {
+        targetFormat = finalOutputFormat;
       }
     }
 

@@ -22,6 +22,9 @@ function codes(g: JobGraph, options: Parameters<typeof validateJobGraph>[1] = {}
 
 const upload = { op: 'import.upload', storageKey: 'uploads/u1/report.docx' };
 const exportOf = (input: string) => ({ op: 'export.internal', input });
+/** A second upload, so merge nodes have the two inputs they need. */
+const pdfUpload = { op: 'import.upload', storageKey: 'uploads/u1/appendix.pdf' };
+const MERGE_INPUTS = ['src', 'src2'];
 
 describe('graph validator is the single source of truth', () => {
   it('serves the queue entry point from the same validator', () => {
@@ -63,8 +66,13 @@ describe('operation normalization', () => {
 
 describe('no invented output formats', () => {
   it.each(['convert', 'merge', 'archive.create', 'thumbnail'])('rejects %s without a target format', (op) => {
-    const input = op === 'merge' || op === 'archive.create' ? ['src'] : 'src';
-    expect(codes(graph({ src: upload, step: { op, input }, out: exportOf('step') }))).toEqual(['MISSING_TARGET_FORMAT']);
+    let input: string | string[] = 'src';
+    if (op === 'merge') {
+      input = MERGE_INPUTS;
+    } else if (op === 'archive.create') {
+      input = ['src'];
+    }
+    expect(codes(graph({ src: upload, src2: pdfUpload, step: { op, input }, out: exportOf('step') }))).toEqual(['MISSING_TARGET_FORMAT']);
   });
 
   it('rejects an OCR output format the executor does not produce', () => {
@@ -119,21 +127,30 @@ describe('legacy task translation', () => {
 describe('restricted output formats', () => {
   it.each([
     ['thumbnail', 'src', 'webp'],
-    ['merge', ['src'], 'docx'],
+    ['merge', MERGE_INPUTS, 'docx'],
     ['archive.create', ['src'], 'tar.zst'],
   ])('rejects %s producing a format it cannot write', (op, input, targetFormat) => {
-    expect(codes(graph({ src: upload, step: { op, input, targetFormat }, out: exportOf('step') }))).toEqual(['UNSUPPORTED_OUTPUT_FORMAT']);
+    expect(codes(graph({ src: upload, src2: pdfUpload, step: { op, input, targetFormat }, out: exportOf('step') }))).toEqual([
+      'UNSUPPORTED_OUTPUT_FORMAT',
+    ]);
   });
 
   it('rejects merging inputs that are not already in the merged format', () => {
     expect(
-      codes(graph({ src: upload, step: { op: 'merge', input: ['src'], targetFormat: 'pdf' }, out: exportOf('step') }))
+      codes(graph({ src: upload, src2: pdfUpload, step: { op: 'merge', input: MERGE_INPUTS, targetFormat: 'pdf' }, out: exportOf('step') }))
     ).toEqual(['INCOMPATIBLE_MERGE_INPUT']);
   });
 
   it('reports a merge input whose uploaded format cannot be determined as unknown, not incompatible', () => {
     expect(
-      codes(graph({ src: { op: 'import.upload', storageKey: 'uploads/u1/blob' }, step: { op: 'merge', input: ['src'], targetFormat: 'pdf' }, out: exportOf('step') }))
+      codes(
+        graph({
+          src: { op: 'import.upload', storageKey: 'uploads/u1/blob' },
+          src2: pdfUpload,
+          step: { op: 'merge', input: MERGE_INPUTS, targetFormat: 'pdf' },
+          out: exportOf('step'),
+        })
+      )
     ).toEqual(['SOURCE_FORMAT_UNKNOWN']);
   });
 
@@ -141,8 +158,9 @@ describe('restricted output formats', () => {
     const result = validateJobGraph(
       graph({
         src: upload,
+        src2: pdfUpload,
         pdf: { op: 'convert', input: 'src', targetFormat: 'pdf' },
-        step: { op: 'merge', input: ['pdf'], targetFormat: 'pdf' },
+        step: { op: 'merge', input: ['pdf', 'src2'], targetFormat: 'pdf' },
         out: exportOf('step'),
       })
     );
