@@ -129,6 +129,14 @@ function parseEmfBinary(buffer: Buffer): {
       // EMR_CREATEPEN
       hasCreatePen = true;
       maxObjectIndex = Math.max(maxObjectIndex, buffer.readUInt32LE(offset + 8));
+      // MS-EMF 2.2.19 LogPen: a cosmetic pen (PS_COSMETIC) MUST have width 1;
+      // wider strokes require PS_GEOMETRIC (0x00010000) with a logical-unit width.
+      const PEN_TYPE_MASK = 0x000f0000;
+      const penStyle = buffer.readUInt32LE(offset + 12);
+      const penWidth = buffer.readInt32LE(offset + 16);
+      if ((penStyle & PEN_TYPE_MASK) === 0) {
+        expect(penWidth).toBe(1);
+      }
       penColors.push(buffer.readUInt32LE(offset + 24));
     }
     if (recType === 39) {

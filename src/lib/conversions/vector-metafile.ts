@@ -754,13 +754,17 @@ function computeBounds(pts: { x: number; y: number }[]): { minX: number; minY: n
   return { minX, minY, maxX, maxY };
 }
 
+/** MS-EMF 2.1.25 PenStyle: geometric pen type, required for widths other than 1 (LogPen 2.2.19). */
+const EMF_PS_GEOMETRIC = 0x00010000;
+const EMF_PS_SOLID = 0x00000000;
+
 function encodeEmfPenRecords(stroke: RgbColor | null, strokeWidth: number, outRecords: Buffer[]): boolean {
   if (stroke) {
     const penRec = Buffer.alloc(28);
     penRec.writeUInt32LE(38, 0); // EMR_CREATEPEN
     penRec.writeUInt32LE(28, 4);
     penRec.writeUInt32LE(1, 8); // ihPen = 1
-    penRec.writeUInt32LE(0, 12); // PS_SOLID
+    penRec.writeUInt32LE(EMF_PS_GEOMETRIC | EMF_PS_SOLID, 12);
     penRec.writeUInt32LE(Math.max(1, Math.round(strokeWidth)), 16);
     penRec.writeUInt32LE(0, 20);
     penRec.writeUInt32LE((stroke.b << 16) | (stroke.g << 8) | stroke.r, 24);
