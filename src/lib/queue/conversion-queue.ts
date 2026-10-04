@@ -303,9 +303,11 @@ conversionQueue.cancelJob = async (id: string, reason?: string) => {
 
 const origConversionQueueGetJobCounts = conversionQueue.getJobCounts.bind(conversionQueue);
 conversionQueue.getJobCounts = async () => {
-  const counts = await origConversionQueueGetJobCounts();
-  for (const q of Object.values(resourceQueues)) {
-    const qCounts = await q.getJobCounts();
+  const [counts, ...queueCounts] = await Promise.all([
+    origConversionQueueGetJobCounts(),
+    ...Object.values(resourceQueues).map((q) => q.getJobCounts()),
+  ]);
+  for (const qCounts of queueCounts) {
     for (const [state, count] of Object.entries(qCounts) as [import('./bullmq-engine').JobState, number][]) {
       counts[state] = (counts[state] || 0) + count;
     }
@@ -315,13 +317,11 @@ conversionQueue.getJobCounts = async () => {
 
 const origConversionQueueGetJobs = conversionQueue.getJobs.bind(conversionQueue);
 conversionQueue.getJobs = async (types) => {
-  const direct = await origConversionQueueGetJobs(types);
-  const all = [...direct];
-  for (const q of Object.values(resourceQueues)) {
-    const qJobs = await q.getJobs(types);
-    all.push(...qJobs);
-  }
-  return all;
+  const [direct, ...otherLists] = await Promise.all([
+    origConversionQueueGetJobs(types),
+    ...Object.values(resourceQueues).map((q) => q.getJobs(types)),
+  ]);
+  return direct.concat(...otherLists);
 };
 
 const origConversionQueuePopNextWaiting = conversionQueue._popNextWaiting?.bind(conversionQueue);

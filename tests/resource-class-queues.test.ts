@@ -118,7 +118,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       const cpuDuration = cpuCompletionTimestamp - startTime;
 
       // Assert: All 50 light jobs finished
-      expect(lightCompletionTimestamps.length).toBe(50);
+      expect(lightCompletionTimestamps).toHaveLength(50);
 
       // Assert: Zero HOL Blocking! Light jobs p95 finished strictly BEFORE the CPU job finished
       expect(p95Duration).toBeLessThan(cpuDuration);
@@ -298,7 +298,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
         }, 10);
       });
 
-      expect(processedOrigins.length).toBe(2);
+      expect(processedOrigins).toHaveLength(2);
       expect(processedOrigins.sort()).toEqual(['A', 'B']);
     });
 
@@ -348,7 +348,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
 
         delete process.env.WORKER_QUEUES;
         const qDefault = resolveSubscribedQueues();
-        expect(qDefault.length).toBe(5); // default + light, cpu, memory, gpu
+        expect(qDefault).toHaveLength(5); // default + light, cpu, memory, gpu
       } finally {
         if (prev !== undefined) {
           process.env.WORKER_QUEUES = prev;

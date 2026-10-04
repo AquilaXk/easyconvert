@@ -190,7 +190,7 @@ export function tierToPriority(tier?: string): number {
  * Resolves the resource class for a graph node ('light' | 'cpu' | 'memory' | 'gpu').
  */
 export function resolveNodeResourceClass(node: any): ResourceClass {
-  if (!node || !node.op) return 'light';
+  if (!node?.op) return 'light';
   switch (node.op) {
     case 'import.upload':
     case 'import.url':

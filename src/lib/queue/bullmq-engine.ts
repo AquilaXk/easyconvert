@@ -538,10 +538,14 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
           if (!poppedJob || !sourceQueue) break;
 
           this.activeCount++;
-          this.executeJob(poppedJob, sourceQueue).finally(() => {
-            this.activeCount--;
-            this.checkAndProcess();
-          });
+          void this.executeJob(poppedJob, sourceQueue)
+            .catch((err) => {
+              console.error(`[Worker:${this.name}] Unhandled executeJob error:`, err);
+            })
+            .finally(() => {
+              this.activeCount--;
+              this.checkAndProcess();
+            });
         }
       } while (this.hasPendingCheck && this.isRunning && this.activeCount < this.concurrency);
     } finally {
@@ -634,17 +638,19 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     if (!this.isRunning) {
       return;
     }
-    for (const q of this.queues) {
-      if (!q.isDistributed || !q._recoverStalledJobs) continue;
-      try {
-        const failedJobs = await q._recoverStalledJobs();
-        for (const job of failedJobs) {
-          this.emit('failed', job, new Error(STALLED_JOB_FAILURE_REASON));
+    const distributedQueues = this.queues.filter((q) => q.isDistributed && q._recoverStalledJobs);
+    await Promise.all(
+      distributedQueues.map(async (q) => {
+        try {
+          const failedJobs = await q._recoverStalledJobs!();
+          for (const job of failedJobs) {
+            this.emit('failed', job, new Error(STALLED_JOB_FAILURE_REASON));
+          }
+        } catch (err) {
+          console.error(`[Worker:${this.name}] Stalled job sweep failed for queue ${q.name}:`, err);
         }
-      } catch (err) {
-        console.error(`[Worker:${this.name}] Stalled job sweep failed for queue ${q.name}:`, err);
-      }
-    }
+      })
+    );
   }
 
   private async handleJobFailure(job: Job<T, R>, queue: IQueueEngine<T, R>, err: any): Promise<void> {
