@@ -224,11 +224,11 @@ export class LocalFsStorage implements IObjectStorage {
       const raw = fs.readFileSync(metaPath, 'utf-8');
       const parsed: StoredMetaFile = JSON.parse(raw);
       if (parsed.expiresAt && Date.now() > parsed.expiresAt) {
-        this.delete(key);
+        await this.delete(key);
         return null;
       }
       if (!fs.existsSync(binPath)) {
-        this.delete(key);
+        await this.delete(key);
         return null;
       }
       return parsed;
@@ -257,7 +257,7 @@ export class LocalFsStorage implements IObjectStorage {
     this.ensureDirectories();
     const uploadId = `up_${Date.now()}_${crypto.randomBytes(12).toString('hex')}`;
     const sessionDir = path.join(this.partsDir, uploadId);
-    fs.mkdirSync(sessionDir, { recursive: true });
+    await fs.promises.mkdir(sessionDir, { recursive: true });
 
     const now = Date.now();
     const session: MultipartSession = {
@@ -269,7 +269,7 @@ export class LocalFsStorage implements IObjectStorage {
       metadata,
     };
 
-    fs.writeFileSync(path.join(sessionDir, 'session.json'), JSON.stringify(session), 'utf-8');
+    await fs.promises.writeFile(path.join(sessionDir, 'session.json'), JSON.stringify(session), 'utf-8');
     return session;
   }
 
@@ -315,7 +315,7 @@ export class LocalFsStorage implements IObjectStorage {
     }
   }
 
-  async presignPart(
+  presignPart(
     key: string,
     uploadId: string,
     partNumber: number,
@@ -329,12 +329,47 @@ export class LocalFsStorage implements IObjectStorage {
       .digest('hex');
 
     const url = `/api/storage/multipart?key=${encodeURIComponent(key)}&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&expiresAt=${expiresAt}&signature=${signature}`;
-    return {
+    return Promise.resolve({
       url,
       expiresAt,
       signature,
       method: 'PUT',
-    };
+    });
+  }
+
+  private validateContiguousParts(parts: CompletedPart[]): CompletedPart[] {
+    if (!Array.isArray(parts) || parts.length === 0) {
+      throw new Error('Multipart completion requires at least one part');
+    }
+
+    const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].partNumber !== i + 1) {
+        throw new Error(
+          `Multipart parts must be strictly contiguous and 1-indexed. Missing part ${i + 1}, found ${sorted[i].partNumber}`
+        );
+      }
+    }
+    return sorted;
+  }
+
+  private appendPartStream(
+    partFile: string,
+    writeCombined: fs.WriteStream,
+    overallHasher: crypto.Hash
+  ): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      let partBytes = 0;
+      const readPart = fs.createReadStream(partFile);
+      readPart.on('data', (chunk: Buffer | string) => {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        overallHasher.update(buf);
+        partBytes += buf.length;
+      });
+      readPart.on('end', () => resolve(partBytes));
+      readPart.on('error', reject);
+      readPart.pipe(writeCombined, { end: false });
+    });
   }
 
   async completeMultipart(
@@ -354,19 +389,7 @@ export class LocalFsStorage implements IObjectStorage {
       throw new Error(`Session key "${session.key}" does not match requested key "${key}"`);
     }
 
-    if (!Array.isArray(parts) || parts.length === 0) {
-      throw new Error('Multipart completion requires at least one part');
-    }
-
-    // Sort parts and verify contiguous sequencing (1, 2, 3...)
-    const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
-    for (let i = 0; i < sorted.length; i++) {
-      if (sorted[i].partNumber !== i + 1) {
-        throw new Error(
-          `Multipart parts must be strictly contiguous and 1-indexed. Missing part ${i + 1}, found ${sorted[i].partNumber}`
-        );
-      }
-    }
+    const sorted = this.validateContiguousParts(parts);
 
     const { metaPath, binPath } = this.getPathsForKey(key);
     const tempCombined = `${binPath}.comb.${Date.now()}`;
@@ -374,37 +397,29 @@ export class LocalFsStorage implements IObjectStorage {
     const overallHasher = crypto.createHash('sha256');
     let totalBytes = 0;
 
-    for (const part of sorted) {
-      const partFile = path.join(sessionDir, `part-${part.partNumber}.bin`);
-      if (!fs.existsSync(partFile)) {
-        writeCombined.destroy();
-        if (fs.existsSync(tempCombined)) fs.unlinkSync(tempCombined);
-        throw new Error(`Part file "${part.partNumber}" missing on disk`);
+    try {
+      for (const part of sorted) {
+        const partFile = path.join(sessionDir, `part-${part.partNumber}.bin`);
+        if (!fs.existsSync(partFile)) {
+          throw new Error(`Part file "${part.partNumber}" missing on disk`);
+        }
+        totalBytes += await this.appendPartStream(partFile, writeCombined, overallHasher);
       }
 
       await new Promise<void>((resolve, reject) => {
-        const readPart = fs.createReadStream(partFile);
-        readPart.on('data', (chunk: Buffer | string) => {
-          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          overallHasher.update(buf);
-          totalBytes += buf.length;
+        writeCombined.end((err?: Error | null) => {
+          if (err) reject(err);
+          else resolve();
         });
-        readPart.on('end', resolve);
-        readPart.on('error', reject);
-        readPart.pipe(writeCombined, { end: false });
       });
-    }
 
-    await new Promise<void>((resolve, reject) => {
-      writeCombined.end((err?: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-
-    if (expectedSize !== undefined && totalBytes !== expectedSize) {
+      if (expectedSize !== undefined && totalBytes !== expectedSize) {
+        throw new Error(`Assembled multipart size ${totalBytes} does not match expected size ${expectedSize}`);
+      }
+    } catch (err) {
+      writeCombined.destroy();
       if (fs.existsSync(tempCombined)) fs.unlinkSync(tempCombined);
-      throw new Error(`Assembled multipart size ${totalBytes} does not match expected size ${expectedSize}`);
+      throw err;
     }
 
     fs.renameSync(tempCombined, binPath);
@@ -426,7 +441,7 @@ export class LocalFsStorage implements IObjectStorage {
 
     // Clean up session directory
     try {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
+      await fs.promises.rm(sessionDir, { recursive: true, force: true });
     } catch {}
 
     return storedMeta;
@@ -437,14 +452,14 @@ export class LocalFsStorage implements IObjectStorage {
     if (!fs.existsSync(sessionDir)) return false;
 
     try {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
+      await fs.promises.rm(sessionDir, { recursive: true, force: true });
       return true;
     } catch {
       return false;
     }
   }
 
-  async presignGet(key: string, expiresInSeconds: number = 3600): Promise<StoragePresignedUrlResult> {
+  presignGet(key: string, expiresInSeconds: number = 3600): Promise<StoragePresignedUrlResult> {
     const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const stringToSign = `GET\n${key}\n${expiresAt}`;
     const signature = crypto
@@ -453,12 +468,12 @@ export class LocalFsStorage implements IObjectStorage {
       .digest('hex');
 
     const url = `/api/storage/file/${encodeURIComponent(key)}?expiresAt=${expiresAt}&signature=${signature}`;
-    return {
+    return Promise.resolve({
       url,
       expiresAt,
       signature,
       method: 'GET',
-    };
+    });
   }
 
   verifyPresignedSignature(
@@ -492,27 +507,38 @@ export class LocalFsStorage implements IObjectStorage {
     }
   }
 
+  private sweepFileIfExpired(file: string, now: number): boolean {
+    if (!file.endsWith('.meta.json')) return false;
+
+    const metaPath = path.join(this.storageDir, file);
+    const binPath = path.join(this.storageDir, file.replace(/\.meta\.json$/, '.bin'));
+    try {
+      const raw = fs.readFileSync(metaPath, 'utf-8');
+      const meta = JSON.parse(raw);
+      if (!meta.expiresAt || now <= meta.expiresAt) {
+        return false;
+      }
+      if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+      if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   public sweepExpiredObjects(now: number = Date.now()): number {
-    let swept = 0;
     try {
       if (!fs.existsSync(this.storageDir)) return 0;
       const files = fs.readdirSync(this.storageDir);
+      let swept = 0;
       for (const file of files) {
-        if (file.endsWith('.meta.json')) {
-          const metaPath = path.join(this.storageDir, file);
-          const binPath = path.join(this.storageDir, file.replace(/\.meta\.json$/, '.bin'));
-          try {
-            const raw = fs.readFileSync(metaPath, 'utf-8');
-            const meta = JSON.parse(raw);
-            if (meta.expiresAt && now > meta.expiresAt) {
-              if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
-              if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
-              swept++;
-            }
-          } catch {}
+        if (this.sweepFileIfExpired(file, now)) {
+          swept++;
         }
       }
-    } catch {}
-    return swept;
+      return swept;
+    } catch {
+      return 0;
+    }
   }
 }

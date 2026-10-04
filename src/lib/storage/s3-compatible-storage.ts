@@ -123,7 +123,7 @@ export class S3CompatibleStorage implements IObjectStorage {
     return this.spoolStorage.createMultipart(key, metadata);
   }
 
-  async presignPart(
+  presignPart(
     key: string,
     uploadId: string,
     partNumber: number,
@@ -151,12 +151,12 @@ export class S3CompatibleStorage implements IObjectStorage {
       `X-Amz-SignedHeaders=host&` +
       `X-Amz-Signature=${signature}`;
 
-    return {
+    return Promise.resolve({
       url,
       expiresAt,
       signature,
       method: 'PUT',
-    };
+    });
   }
 
   async completeMultipart(
@@ -172,7 +172,7 @@ export class S3CompatibleStorage implements IObjectStorage {
     return this.spoolStorage.abortMultipart(key, uploadId);
   }
 
-  async presignGet(key: string, expiresInSeconds: number = 3600): Promise<StoragePresignedUrlResult> {
+  presignGet(key: string, expiresInSeconds: number = 3600): Promise<StoragePresignedUrlResult> {
     const expiresAt = Date.now() + expiresInSeconds * 1000;
     const nowIso = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
     const dateStamp = nowIso.slice(0, 8);
@@ -193,12 +193,12 @@ export class S3CompatibleStorage implements IObjectStorage {
       `X-Amz-SignedHeaders=host&` +
       `X-Amz-Signature=${signature}`;
 
-    return {
+    return Promise.resolve({
       url,
       expiresAt,
       signature,
       method: 'GET',
-    };
+    });
   }
 
   verifyPresignedSignature(

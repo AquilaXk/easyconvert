@@ -81,13 +81,11 @@ export async function GET(
     );
   }
 
-  const nodeStream =
-    typeof s3Storage.getObjectStream === 'function'
-      ? s3Storage.getObjectStream(
-          resolvedKey,
-          range.kind === 'partial' ? { start: range.start, end: range.end } : undefined
-        )
-      : null;
+  const byteRange = range.kind === 'partial' ? { start: range.start, end: range.end } : undefined;
+  let nodeStream: import('node:stream').Readable | null = null;
+  if (typeof s3Storage.getObjectStream === 'function') {
+    nodeStream = s3Storage.getObjectStream(resolvedKey, byteRange);
+  }
 
   if (nodeStream) {
     const { Readable } = await import('node:stream');
