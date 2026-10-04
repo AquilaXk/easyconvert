@@ -79,27 +79,79 @@ export function verifyArchiveWithNative7z(
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const CLOCK_TIME = /^\d{1,2}:\d{2}(?::\d{2})?$/;
 const MONTH_NAME = /^[A-Z][a-z]{2}$/;
+const DAY_OF_MONTH = /^\d{1,2}$/;
+const YEAR = /^\d{4}$/;
+const SIZE = /^\d+$/;
+const SYMLINK_MODE = 'l';
+const HARDLINK_MODE = 'h';
+const SYMLINK_SEPARATOR = ' -> ';
+const HARDLINK_SEPARATOR = ' link to ';
 
 function splitListing(output: string): string[] {
   return output.split('\n').filter((line) => line.length > 0);
 }
 
 /**
- * Parses one `tar -tv` line whose entry name is already known. The size is the integer column
- * right before the modification date (`YYYY-MM-DD` in GNU tar, a month name in bsdtar).
+ * Finds the size in the metadata columns before the entry name, anchored on the date columns
+ * that end them: GNU tar prints `owner/group size YYYY-MM-DD HH:MM`, bsdtar prints
+ * `links owner group size Mon DD HH:MM|YYYY`. Anchoring from the right keeps an owner or group
+ * that looks like a month name from being taken for the date.
  */
-function parseVerboseTarLine(line: string, name: string): TarEntryInfo {
-  if (!line.endsWith(name)) {
+function sizeFromColumns(columns: string[]): string | undefined {
+  const n = columns.length;
+  if (ISO_DATE.test(columns[n - 2] ?? '') && CLOCK_TIME.test(columns[n - 1] ?? '')) {
+    return columns[n - 3];
+  }
+  const timeOrYear = columns[n - 1] ?? '';
+  const isBsdDate =
+    MONTH_NAME.test(columns[n - 3] ?? '') &&
+    DAY_OF_MONTH.test(columns[n - 2] ?? '') &&
+    (CLOCK_TIME.test(timeOrYear) || YEAR.test(timeOrYear));
+  if (isBsdDate) {
+    return columns[n - 4];
+  }
+  return undefined;
+}
+
+/** Splits `<metadata> <name><separator><target>` at the first name occurrence whose metadata parses. */
+function linkMetadataColumns(line: string, name: string, separator: string): string[] | undefined {
+  const marker = ` ${name}${separator}`;
+  for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+    const columns = line.slice(0, at).trim().split(/\s+/);
+    if (sizeFromColumns(columns) !== undefined) return columns;
+  }
+  return undefined;
+}
+
+function metadataColumns(line: string, name: string, mode: string): string[] {
+  if (mode.startsWith(SYMLINK_MODE) || mode.startsWith(HARDLINK_MODE)) {
+    const separator = mode.startsWith(SYMLINK_MODE) ? SYMLINK_SEPARATOR : HARDLINK_SEPARATOR;
+    const columns = linkMetadataColumns(line, name, separator);
+    if (!columns) {
+      throw new Error(`Cannot locate the size column in tar verbose line for link "${name}": ${line}`);
+    }
+    return columns;
+  }
+  if (!line.endsWith(` ${name}`)) {
     throw new Error(`tar verbose line does not end with entry name "${name}": ${line}`);
   }
-  const columns = line.slice(0, line.length - name.length).trim().split(/\s+/);
-  const dateIndex = columns.findIndex((col, i) => i > 0 && (ISO_DATE.test(col) || MONTH_NAME.test(col)));
-  const sizeColumn = dateIndex > 0 ? columns[dateIndex - 1] : '';
-  if (!/^\d+$/.test(sizeColumn)) {
+  return line.slice(0, line.length - name.length).trim().split(/\s+/);
+}
+
+/**
+ * Parses one `tar -tv` line whose entry name is already known from `tar -t`. Link entries carry
+ * their target after the name (` -> target` for symlinks, ` link to target` for hard links).
+ * Exported for the parser's own regression tests.
+ */
+export function parseVerboseTarLine(line: string, name: string): TarEntryInfo {
+  const mode = line.trimStart().split(/\s+/)[0] ?? '';
+  const sizeColumn = sizeFromColumns(metadataColumns(line, name, mode));
+  if (sizeColumn === undefined || !SIZE.test(sizeColumn)) {
     throw new Error(`Cannot locate the size column in tar verbose line: ${line}`);
   }
-  return { path: name, size: Number(sizeColumn), mode: columns[0] };
+  return { path: name, size: Number(sizeColumn), mode };
 }
 
 /**
