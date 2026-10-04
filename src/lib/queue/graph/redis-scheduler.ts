@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import type { JobGraph, NodeId } from './types';
+import type { GraphNode, JobGraph, NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
@@ -16,127 +16,109 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
+import { cancelGraphNodeJob, enqueueGraphNodeJob } from './node-jobs';
+import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { s3Storage } from '../../storage/s3-storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
-import { resolveNodeResourceClass } from '../resource-class';
 
 export interface RedisGraphSchedulerOptions {
   redisClient: Redis;
+  /** Defaults to the queue engine prefix so graph and queue keys share one namespace. */
   keyPrefix?: string;
-  queueName?: string;
+  /** Moves a ready node onto a queue. Defaults to the node's resource-class queue. */
+  enqueueNode?: typeof enqueueGraphNodeJob;
+  /** Cancels a node's queue job. Defaults to the node's resource-class queue. */
+  cancelNode?: typeof cancelGraphNodeJob;
+}
+
+/** Graph hash fields that hold the submission metadata needed to enqueue nodes later. */
+const META_FIELDS = ['owner', 'reservationId', 'webhookUrl', 'webhookSecret', 'originalFilename', 'sourceStorageKey'] as const;
+
+function toArray<T>(value: unknown): T[] {
+  // cjson encodes an empty table as `{}`; treat it as an empty list.
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function parseJsonArray<T>(raw: unknown): T[] {
+  try {
+    return toArray<T>(JSON.parse(String(raw ?? '[]')));
+  } catch {
+    return [];
+  }
 }
 
 export class RedisGraphScheduler implements IGraphScheduler {
   private readonly redisClient: Redis;
   private readonly keyPrefix: string;
-  private readonly queueName: string;
+  private readonly enqueueNode: typeof enqueueGraphNodeJob;
+  private readonly cancelNode: typeof cancelGraphNodeJob;
 
   constructor(options: RedisGraphSchedulerOptions) {
     this.redisClient = options.redisClient;
-    this.keyPrefix = options.keyPrefix || 'bull:';
-    this.queueName = options.queueName || 'easyconvert-jobs';
+    this.keyPrefix = options.keyPrefix ?? DEFAULT_QUEUE_KEY_PREFIX;
+    this.enqueueNode = options.enqueueNode ?? enqueueGraphNodeJob;
+    this.cancelNode = options.cancelNode ?? cancelGraphNodeJob;
   }
 
-  private graphKey(gid: string): string {
-    return `${this.keyPrefix}graph:{${gid}}`;
+  /** Keys of one graph; all carry the `{gid}` hash tag so a script stays in one cluster slot. */
+  graphKeys(gid: string) {
+    const base = `${this.keyPrefix}graph:{${gid}}`;
+    return {
+      graph: base,
+      deps: `${base}:deps`,
+      children: `${base}:children`,
+      nodes: `${base}:nodes`,
+      outputs: `${base}:outputs`,
+      outbox: `${base}:outbox`,
+    };
   }
 
-  private depsKey(gid: string): string {
-    return `${this.keyPrefix}graph:{${gid}}:deps`;
-  }
-
-  private childrenKey(gid: string): string {
-    return `${this.keyPrefix}graph:{${gid}}:children`;
-  }
-
-  private nodesKey(gid: string): string {
-    return `${this.keyPrefix}graph:{${gid}}:nodes`;
-  }
-
-  private outputsKey(gid: string): string {
-    return `${this.keyPrefix}graph:{${gid}}:outputs`;
-  }
-
-  private get waitingKey(): string {
-    return `${this.keyPrefix}{${this.queueName}}:waiting`;
-  }
-
-  private get jobKeyPrefix(): string {
-    return `${this.keyPrefix}{${this.queueName}}:job:`;
-  }
-
-  async initGraph(
-    graphId: string,
-    graph: JobGraph,
-    meta: GraphMetadata = {}
-  ): Promise<GraphExecutionState> {
-    const nodeEntries = Object.entries(graph.nodes);
-    const totalNodes = nodeEntries.length;
-    const policy = graph.failurePolicy || 'fail_fast';
-    const createdAt = meta.createdAt || Date.now();
-
-    const childrenMap = new Map<NodeId, NodeId[]>();
-    for (const [nodeId] of nodeEntries) {
-      childrenMap.set(nodeId, []);
+  async initGraph(graphId: string, graph: JobGraph, meta: GraphMetadata = {}): Promise<GraphExecutionState> {
+    const k = this.graphKeys(graphId);
+    const entries = Object.entries(graph.nodes);
+    const children = new Map<NodeId, NodeId[]>(entries.map(([id]) => [id, []]));
+    for (const [id, node] of entries) {
+      for (const input of getNodeInputs(node)) children.get(input)?.push(id);
     }
-    for (const [nodeId, node] of nodeEntries) {
-      const inputs = getNodeInputs(node);
-      for (const inputNodeId of inputs) {
-        childrenMap.get(inputNodeId)?.push(nodeId);
-      }
-    }
-
-    const nodesPayload = nodeEntries.map(([nodeId, node]) => {
-      const inputs = getNodeInputs(node);
-      const inDegree = inputs.length;
-      const children = childrenMap.get(nodeId) || [];
-
-      const resClass = resolveNodeResourceClass(node);
-      const jobData = {
-        jobId: `${graphId}:${nodeId}`,
-        originalFilename: meta.originalFilename || `${nodeId}.bin`,
-        sourceFormat: 'bin',
-        targetFormat: (node as any).targetFormat || 'bin',
-        fileSize: 0,
-        options: (node as any).options || {},
-        userId: meta.ownerUserId,
-        reservationId: meta.reservationId,
-        graphId,
-        graphNodeId: nodeId,
-        graphNode: node,
-        inputArtifacts: [] as string[],
-        resourceClass: resClass,
-      };
-
-      return {
-        id: nodeId,
-        op: node.op,
-        inDegree,
-        children,
-        jobData: JSON.stringify(jobData),
-      };
-    });
+    const nodes = entries.map(([id, node]) => ({
+      id,
+      op: node.op,
+      inDegree: getNodeInputs(node).length,
+      children: children.get(id) ?? [],
+    }));
+    const createdAt = meta.createdAt ?? Date.now();
+    const fields: Record<string, string> = {
+      policy: graph.failurePolicy || 'fail_fast',
+      owner: meta.ownerUserId || '',
+      reservationId: meta.reservationId || '',
+      webhookUrl: meta.webhookUrl || '',
+      webhookSecret: meta.webhookSecret || '',
+      originalFilename: meta.originalFilename || '',
+      sourceStorageKey: meta.sourceStorageKey || '',
+      sourceFormat: meta.sourceFormat || '',
+      targetFormat: meta.targetFormat || '',
+      tasks: meta.tasks ? JSON.stringify(meta.tasks) : '',
+      createdAt: String(createdAt),
+      totalNodes: String(entries.length),
+      graph: JSON.stringify(graph),
+    };
 
     await this.redisClient.eval(
       INIT_GRAPH_LUA_SCRIPT,
-      7,
-      this.graphKey(graphId),
-      this.depsKey(graphId),
-      this.childrenKey(graphId),
-      this.nodesKey(graphId),
-      this.outputsKey(graphId),
-      this.waitingKey,
-      this.jobKeyPrefix,
+      6,
+      k.graph,
+      k.deps,
+      k.children,
+      k.nodes,
+      k.outputs,
+      k.outbox,
       graphId,
-      policy,
-      meta.ownerUserId || 'anonymous',
-      String(createdAt),
-      String(totalNodes),
-      JSON.stringify(nodesPayload),
-      meta.reservationId || '',
-      JSON.stringify(graph)
+      JSON.stringify(fields),
+      JSON.stringify(nodes),
+      String(createdAt)
     );
+    await this.drainOutbox(graphId);
 
     const state = await this.getGraphState(graphId);
     if (!state) {
@@ -145,15 +127,43 @@ export class RedisGraphScheduler implements IGraphScheduler {
     return state;
   }
 
+  /**
+   * Moves ready nodes from the graph outbox onto their queues. An entry leaves the outbox only
+   * after its enqueue succeeded; enqueue is idempotent by job ID, so a replay after a crash is safe.
+   */
+  async drainOutbox(graphId: string): Promise<number> {
+    const k = this.graphKeys(graphId);
+    const ready = await this.redisClient.lrange(k.outbox, 0, -1);
+    if (ready.length === 0) {
+      return 0;
+    }
+    const [graphJson, ...metaValues] = await this.redisClient.hmget(k.graph, 'graph', ...META_FIELDS);
+    const graph = JSON.parse(graphJson || '{"nodes":{}}') as JobGraph;
+    const meta = Object.fromEntries(META_FIELDS.map((f, i) => [f, metaValues[i] || undefined])) as Record<
+      (typeof META_FIELDS)[number],
+      string | undefined
+    >;
+    const graphMeta: GraphMetadata = {
+      ownerUserId: meta.owner,
+      reservationId: meta.reservationId,
+      originalFilename: meta.originalFilename,
+      sourceStorageKey: meta.sourceStorageKey,
+    };
+
+    for (const nodeId of ready) {
+      const node = graph.nodes[nodeId];
+      if (node) {
+        const inputArtifacts = await this.getNodeOutputs(graphId, getNodeInputs(node));
+        await this.enqueueNode(graphId, nodeId, node, graphMeta, inputArtifacts);
+      }
+      await this.redisClient.lrem(k.outbox, 1, nodeId);
+    }
+    return ready.length;
+  }
+
   async onNodeStarted(graphId: string, nodeId: NodeId): Promise<void> {
-    await this.redisClient.eval(
-      NODE_STARTED_LUA_SCRIPT,
-      2,
-      this.graphKey(graphId),
-      this.nodesKey(graphId),
-      nodeId,
-      String(Date.now())
-    );
+    const k = this.graphKeys(graphId);
+    await this.redisClient.eval(NODE_STARTED_LUA_SCRIPT, 2, k.graph, k.nodes, nodeId, String(Date.now()));
   }
 
   async onNodeCompleted(
@@ -162,104 +172,81 @@ export class RedisGraphScheduler implements IGraphScheduler {
     outputs: string[],
     actualUnits: number = 1
   ): Promise<NodeCompletionResult> {
-    const rawResult = (await this.redisClient.eval(
+    const k = this.graphKeys(graphId);
+    const raw = (await this.redisClient.eval(
       NODE_COMPLETED_LUA_SCRIPT,
-      7,
-      this.graphKey(graphId),
-      this.depsKey(graphId),
-      this.childrenKey(graphId),
-      this.nodesKey(graphId),
-      this.outputsKey(graphId),
-      this.waitingKey,
-      this.jobKeyPrefix,
-      graphId,
+      6,
+      k.graph,
+      k.deps,
+      k.children,
+      k.nodes,
+      k.outputs,
+      k.outbox,
       nodeId,
       JSON.stringify(outputs),
       String(Date.now()),
       String(actualUnits)
     )) as [number, string, string, string];
 
-    const isOk = Number(rawResult[0]) === 1;
-    const finalGraphStatus = (rawResult[1] || 'running') as GraphExecutionState['status'];
-    let readyNodeIds: NodeId[] = [];
-    try {
-      const parsed = JSON.parse(rawResult[2] || '[]');
-      readyNodeIds = Array.isArray(parsed) ? parsed : [];
-    } catch {}
+    const applied = Number(raw[0]) === 1;
+    const graphStatus = (raw[1] || 'running') as GraphExecutionState['status'];
+    const readyNodeIds = parseJsonArray<NodeId>(raw[2]);
+    await this.drainOutbox(graphId);
 
-    const totalUnits = Number(rawResult[3] || actualUnits);
-    const graphCompleted = isOk && finalGraphStatus === 'completed';
-
+    const graphCompleted = applied && graphStatus === 'completed';
     if (graphCompleted) {
       await this.cleanupIntermediates(graphId);
       const state = await this.getGraphState(graphId);
-      if (state) {
-        if (state.reservationId) {
-          await redisKeyStore.settleQuota(state.reservationId, totalUnits).catch(() => {});
-        }
-        if (state.webhookUrl && state.webhookSecret) {
-          await webhookDispatcher
-            .dispatch(
-              state.webhookUrl,
-              'graph.completed',
-              { jobId: graphId, status: 'completed', graphId, nodes: state.nodes },
-              state.webhookSecret,
-              { ownerUserId: state.ownerUserId }
-            )
-            .catch(() => {});
-        }
+      if (state?.reservationId) {
+        await redisKeyStore.settleQuota(state.reservationId, Number(raw[3] || actualUnits)).catch(() => {});
+      }
+      if (state?.webhookUrl && state.webhookSecret) {
+        await webhookDispatcher
+          .dispatch(
+            state.webhookUrl,
+            'graph.completed',
+            { jobId: graphId, status: 'completed', graphId, nodes: state.nodes },
+            state.webhookSecret,
+            { ownerUserId: state.ownerUserId }
+          )
+          .catch(() => {});
       }
     }
 
-    return {
-      graphCompleted,
-      graphStatus: finalGraphStatus,
-      readyNodeIds,
-    };
+    return { graphCompleted, graphStatus, readyNodeIds };
   }
 
-  async onNodeFailed(
-    graphId: string,
-    nodeId: NodeId,
-    error: string
-  ): Promise<NodeFailureResult> {
-    const rawResult = (await this.redisClient.eval(
+  async onNodeFailed(graphId: string, nodeId: NodeId, error: string): Promise<NodeFailureResult> {
+    const k = this.graphKeys(graphId);
+    const raw = (await this.redisClient.eval(
       NODE_FAILED_LUA_SCRIPT,
-      7,
-      this.graphKey(graphId),
-      this.depsKey(graphId),
-      this.childrenKey(graphId),
-      this.nodesKey(graphId),
-      this.outputsKey(graphId),
-      this.waitingKey,
-      this.jobKeyPrefix,
-      graphId,
+      4,
+      k.graph,
+      k.children,
+      k.nodes,
+      k.outbox,
       nodeId,
       error,
       String(Date.now())
     )) as [number, string, string, string];
 
-    const finalStatus = (rawResult[1] || 'failed') as GraphExecutionState['status'];
-    let cancelledJobIds: string[] = [];
-    let skippedNodeIds: NodeId[] = [];
-    try {
-      const parsed = JSON.parse(rawResult[2] || '[]');
-      cancelledJobIds = Array.isArray(parsed) ? parsed : [];
-    } catch {}
-    try {
-      const parsed = JSON.parse(rawResult[3] || '[]');
-      skippedNodeIds = Array.isArray(parsed) ? parsed : [];
-    } catch {}
+    const applied = Number(raw[0]) === 1;
+    const graphStatus = (raw[1] || 'failed') as GraphExecutionState['status'];
+    const cancelledNodeIds = parseJsonArray<NodeId>(raw[2]);
+    const skippedNodeIds = parseJsonArray<NodeId>(raw[3]);
+    const state = await this.getGraphState(graphId);
+    const reason = `Graph failed due to node ${nodeId}`;
+    for (const nid of [...cancelledNodeIds, ...skippedNodeIds]) {
+      await this.cancelNode(graphId, nid, state?.graph.nodes[nid], reason).catch(() => false);
+    }
 
-    const graphFailed = finalStatus === 'failed';
-
+    const graphFailed = applied && graphStatus === 'failed';
     if (graphFailed) {
       await this.cleanupIntermediates(graphId);
-      const state = await this.getGraphState(graphId);
       if (state?.reservationId) {
         await redisKeyStore.rollbackQuota(state.reservationId).catch(() => {});
       }
-      if (state?.webhookUrl && state?.webhookSecret) {
+      if (state?.webhookUrl && state.webhookSecret) {
         await webhookDispatcher
           .dispatch(
             state.webhookUrl,
@@ -274,93 +261,80 @@ export class RedisGraphScheduler implements IGraphScheduler {
 
     return {
       graphFailed,
-      graphStatus: finalStatus,
-      cancelledJobIds,
+      graphStatus,
+      cancelledJobIds: cancelledNodeIds.map((nid) => `${graphId}:${nid}`),
       skippedNodeIds,
     };
   }
 
   async getGraphState(graphId: string): Promise<GraphExecutionState | undefined> {
-    const rawGraph = await this.redisClient.hgetall(this.graphKey(graphId));
+    const k = this.graphKeys(graphId);
+    const rawGraph = await this.redisClient.hgetall(k.graph);
     if (!rawGraph || Object.keys(rawGraph).length === 0) {
       return undefined;
     }
 
-    const rawNodes = await this.redisClient.hgetall(this.nodesKey(graphId));
-    const nodesRecord: Record<NodeId, GraphNodeState> = {};
-    for (const [nid, jsonStr] of Object.entries(rawNodes)) {
-      try {
-        nodesRecord[nid] = JSON.parse(jsonStr);
-      } catch {}
-    }
-
-    let parsedGraph: JobGraph = { nodes: {} };
-    if (rawGraph.graph) {
-      try {
-        parsedGraph = JSON.parse(rawGraph.graph);
-      } catch {}
+    const rawNodes = await this.redisClient.hgetall(k.nodes);
+    const nodes: Record<NodeId, GraphNodeState> = {};
+    for (const [nid, json] of Object.entries(rawNodes)) {
+      const parsed = JSON.parse(json) as GraphNodeState;
+      nodes[nid] = { ...parsed, outputs: toArray<string>(parsed.outputs) };
     }
 
     return {
       graphId: rawGraph.graphId || graphId,
-      status: (rawGraph.status || 'running') as any,
-      policy: (rawGraph.policy || 'fail_fast') as any,
+      status: (rawGraph.status || 'running') as GraphExecutionState['status'],
+      policy: (rawGraph.policy || 'fail_fast') as GraphExecutionState['policy'],
       ownerUserId: rawGraph.owner || undefined,
       reservationId: rawGraph.reservationId || undefined,
-      createdAt: Number(rawGraph.createdAt || Date.now()),
+      webhookUrl: rawGraph.webhookUrl || undefined,
+      webhookSecret: rawGraph.webhookSecret || undefined,
+      originalFilename: rawGraph.originalFilename || undefined,
+      sourceFormat: rawGraph.sourceFormat || undefined,
+      targetFormat: rawGraph.targetFormat || undefined,
+      tasks: rawGraph.tasks ? (JSON.parse(rawGraph.tasks) as unknown[]) : undefined,
+      createdAt: Number(rawGraph.createdAt || 0),
       finishedAt: rawGraph.finishedOn ? Number(rawGraph.finishedOn) : undefined,
       failedReason: rawGraph.failedReason || undefined,
       totalNodes: Number(rawGraph.totalNodes || 0),
       completedNodes: Number(rawGraph.completedNodes || 0),
       failedNodes: Number(rawGraph.failedNodes || 0),
-      nodes: nodesRecord,
-      graph: parsedGraph,
+      nodes,
+      graph: JSON.parse(rawGraph.graph || '{"nodes":{}}') as JobGraph,
     };
   }
 
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
-    const rawResult = (await this.redisClient.eval(
+    const k = this.graphKeys(graphId);
+    const raw = (await this.redisClient.eval(
       CANCEL_GRAPH_LUA_SCRIPT,
-      4,
-      this.graphKey(graphId),
-      this.nodesKey(graphId),
-      this.waitingKey,
-      this.jobKeyPrefix,
-      graphId,
+      3,
+      k.graph,
+      k.nodes,
+      k.outbox,
       reason,
       String(Date.now())
     )) as [number, string, string];
 
-    const isCancelled = Number(rawResult[0]) === 1;
-    if (isCancelled) {
-      await this.cleanupIntermediates(graphId);
-      const state = await this.getGraphState(graphId);
-      if (state?.reservationId) {
-        await redisKeyStore.rollbackQuota(state.reservationId).catch(() => {});
-      }
+    if (Number(raw[0]) !== 1) {
+      return false;
     }
-    return isCancelled;
+    const state = await this.getGraphState(graphId);
+    for (const nid of parseJsonArray<NodeId>(raw[2])) {
+      await this.cancelNode(graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason).catch(() => false);
+    }
+    await this.cleanupIntermediates(graphId);
+    if (state?.reservationId) {
+      await redisKeyStore.rollbackQuota(state.reservationId).catch(() => {});
+    }
+    return true;
   }
 
   async getNodeOutputs(graphId: string, nodeIds: NodeId | NodeId[]): Promise<string[]> {
     const targetIds = Array.isArray(nodeIds) ? nodeIds : [nodeIds];
     if (targetIds.length === 0) return [];
-
-    const outputs: string[] = [];
-    const rawValues = await this.redisClient.hmget(this.outputsKey(graphId), ...targetIds);
-
-    for (const val of rawValues) {
-      if (val) {
-        try {
-          const parsed = JSON.parse(val);
-          if (Array.isArray(parsed)) {
-            outputs.push(...parsed);
-          }
-        } catch {}
-      }
-    }
-
-    return outputs;
+    const values = await this.redisClient.hmget(this.graphKeys(graphId).outputs, ...targetIds);
+    return values.flatMap((v) => (v ? parseJsonArray<string>(v) : []));
   }
 
   async cleanupIntermediates(graphId: string): Promise<number> {

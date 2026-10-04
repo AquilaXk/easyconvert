@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
@@ -23,7 +24,7 @@ import {
   applyPdfWatermark,
   protectPdf,
 } from '../../conversions';
-import { ConversionFailedError } from '../../types';
+import { ConversionFailedError, GraphExportError } from '../../types';
 import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
 
 async function processIntermediatePdfArtifacts(
@@ -445,16 +446,7 @@ export async function processGraphNodeJob(
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
-          if (!stored) continue;
-          await fetch(node.url, {
-            method: node.method || 'PUT',
-            body: new Uint8Array(stored.buffer),
-            headers: {
-              'Content-Type': stored.mimeType || 'application/octet-stream',
-            },
-            signal: attemptSignal,
-          });
+          await exportArtifactToUrl(effectiveStorage, inputKey, node.url, node.method || 'PUT', attemptSignal);
         }
         outputKeys = inputArtifacts;
         break;
@@ -503,9 +495,46 @@ export async function processGraphNodeJob(
       durationMs,
     };
   } catch (err: any) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    await graphScheduler.onNodeFailed(graphId, nodeId, errorMsg);
+    // A retry may still succeed, and a cancelled attempt is not a failure: only the last
+    // failed attempt fails the node (and, under fail_fast, the graph).
+    if (!attemptSignal.aborted && job.attemptsMade >= (job.opts?.attempts ?? 1)) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await graphScheduler.onNodeFailed(graphId, nodeId, errorMsg);
+    }
     throw err;
+  }
+}
+
+/** Streams one stored artifact to the destination URL and fails unless it answers 2xx. */
+async function exportArtifactToUrl(
+  storage: IStorageBackend,
+  inputKey: string,
+  url: string,
+  method: string,
+  signal: AbortSignal
+): Promise<void> {
+  const stat = storage.stat(inputKey);
+  const stream = stat ? storage.openReadStream(inputKey) : null;
+  if (!stat || !stream) {
+    throw new GraphExportError(`Input artifact "${inputKey}" not found in storage`);
+  }
+  const response = await fetch(url, {
+    method,
+    body: Readable.toWeb(Readable.from(stream)) as ReadableStream,
+    duplex: 'half',
+    headers: {
+      'Content-Type': stat.mimeType || 'application/octet-stream',
+      'Content-Length': String(stat.size),
+    },
+    signal,
+  } as RequestInit);
+  // Drain the body so the connection can be reused; the payload itself is not needed.
+  await response.arrayBuffer().catch(() => undefined);
+  if (!response.ok) {
+    throw new GraphExportError(
+      `Export of "${inputKey}" failed: destination answered HTTP ${response.status}`,
+      response.status
+    );
   }
 }
 

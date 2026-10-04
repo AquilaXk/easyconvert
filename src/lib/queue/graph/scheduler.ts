@@ -12,7 +12,6 @@ export function createGraphScheduler(options?: {
   distributed?: boolean;
   redisClient?: Redis;
   keyPrefix?: string;
-  queueName?: string;
 }): IGraphScheduler {
   const shouldUseDistributed =
     options?.distributed ??
@@ -28,7 +27,6 @@ export function createGraphScheduler(options?: {
     return new RedisGraphScheduler({
       redisClient: client,
       keyPrefix: options?.keyPrefix,
-      queueName: options?.queueName,
     });
   }
 
