@@ -644,13 +644,13 @@ export async function GET(req: NextRequest) {
     ? (statusParam.split(',').map((s) => s.trim()) as JobStatus[]).filter((s) => validStates.includes(s))
     : validStates;
 
-  const allJobs = await conversionQueue.getJobs(requestedStates.length > 0 ? requestedStates : validStates);
-
-  // Filter jobs strictly belonging to the authenticated user (Tenant Boundary Isolation)
-  const userJobs = allJobs
-    .filter((j) => j.data?.userId === auth.user?.id)
-    .sort((a, b) => b.timestamp - a.timestamp)
-    .slice(0, limit);
+  // Query indexed jobs strictly belonging to the authenticated user (Tenant Boundary Isolation)
+  const userJobs = await conversionQueue.getJobsByUser(
+    auth.user.id,
+    requestedStates.length > 0 ? requestedStates : validStates,
+    limit,
+    0
+  );
 
   return NextResponse.json({
     success: true,

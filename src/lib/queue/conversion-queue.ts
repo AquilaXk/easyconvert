@@ -382,10 +382,50 @@ if (origConversionQueueRequeue) {
   };
 }
 
-// Forward waiting events from resource queues to default conversionQueue
+const origConversionQueueClean = conversionQueue.clean.bind(conversionQueue);
+conversionQueue.clean = async (grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled') => {
+  const [direct, ...otherLists] = await Promise.all([
+    origConversionQueueClean(grace, limit, type),
+    ...Object.values(resourceQueues).map((q) => q.clean(grace, limit, type)),
+  ]);
+  return direct.concat(...otherLists).slice(0, limit);
+};
+
+const origConversionQueueGetJobsByUser = conversionQueue.getJobsByUser.bind(conversionQueue);
+conversionQueue.getJobsByUser = async (userId: string, states?: import('./bullmq-engine').JobState[], limit: number = 50, offset: number = 0) => {
+  const [direct, ...otherLists] = await Promise.all([
+    origConversionQueueGetJobsByUser(userId, states, limit + offset, 0),
+    ...Object.values(resourceQueues).map((q) => q.getJobsByUser(userId, states, limit + offset, 0)),
+  ]);
+  const flattened = direct.concat(...otherLists);
+  flattened.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  const seen = new Set<string>();
+  const unique: Job<ConversionJobData, ConversionJobResult>[] = [];
+  for (const job of flattened) {
+    if (!seen.has(job.id)) {
+      seen.add(job.id);
+      unique.push(job);
+    }
+  }
+  return unique.slice(offset, offset + limit);
+};
+
+// Forward lifecycle events from resource queues to default conversionQueue
 for (const q of Object.values(resourceQueues)) {
   q.on('waiting', (job) => {
     conversionQueue.emit('waiting', job);
+  });
+  q.on('progress', (job, progress) => {
+    conversionQueue.emit('progress', job, progress);
+  });
+  q.on('completed', (job, result) => {
+    conversionQueue.emit('completed', job, result);
+  });
+  q.on('failed', (job, err) => {
+    conversionQueue.emit('failed', job, err);
+  });
+  q.on('cancelled', (job) => {
+    conversionQueue.emit('cancelled', job);
   });
 }
 
