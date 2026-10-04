@@ -1,5 +1,68 @@
 import { PIPELINE_OPERATIONS } from './enums';
 
+export const PdfWatermarkOptionsSchema = {
+  $id: 'https://easyconvert.local/schemas/pdf-watermark-options.json',
+  type: 'object',
+  properties: {
+    type: { type: 'string', enum: ['text', 'image'] },
+    text: { type: 'string', description: 'Watermark text.' },
+    fontSize: { type: 'number', minimum: 6, maximum: 200, description: 'Font size in points.' },
+    fontColor: { type: 'string', description: 'Hex or RGB color string.' },
+    fontFamily: { type: 'string', description: 'Font family name.' },
+    image: { type: 'string', description: 'Base64 image data or URI.' },
+    imageType: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format type.' },
+    opacity: { type: 'number', minimum: 0, maximum: 1, description: 'Watermark opacity (0.0 - 1.0).' },
+    rotation: { type: 'number', description: 'Rotation in degrees.' },
+    position: {
+      type: 'string',
+      enum: [
+        'tile',
+        'top-left',
+        'top-center',
+        'top-right',
+        'center-left',
+        'center',
+        'center-right',
+        'bottom-left',
+        'bottom-center',
+        'bottom-right',
+      ],
+      description: 'Position on page or tile across entire page.',
+    },
+    pages: { type: 'string', description: 'Page ranges to watermark (e.g. 1-3,5).' },
+    layer: { type: 'string', enum: ['over', 'under'], description: 'Draw on top of or beneath page content.' },
+    scale: { type: 'number', minimum: 0.01, maximum: 10, description: 'Scaling factor.' },
+  },
+} as const;
+
+export const PdfProtectOptionsSchema = {
+  $id: 'https://easyconvert.local/schemas/pdf-protect-options.json',
+  type: 'object',
+  properties: {
+    userPassword: { type: 'string', description: 'Password required to open the PDF.' },
+    ownerPassword: { type: 'string', description: 'Master password required to modify permissions.' },
+    keyLength: { type: 'integer', enum: [128, 256], description: 'Encryption key bit length (default 256).' },
+    permissions: {
+      type: 'object',
+      properties: {
+        print: { type: 'string', enum: ['none', 'low', 'full'], description: 'Allowed printing quality.' },
+        modify: { type: 'string', enum: ['none', 'assembly', 'annotate', 'form', 'all'], description: 'Allowed modifications.' },
+        extract: { type: 'boolean', description: 'Allow text and graphic extraction.' },
+        annotate: { type: 'boolean', description: 'Allow comments and form filling.' },
+      },
+    },
+  },
+} as const;
+
+export const PdfAOptionsSchema = {
+  $id: 'https://easyconvert.local/schemas/pdfa-options.json',
+  type: 'object',
+  properties: {
+    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level.' },
+    recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
+  },
+} as const;
+
 export const ConversionOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/conversion-options.json',
   type: 'object',
@@ -587,62 +650,17 @@ export const ConversionOptionsSchema = {
     watermark: {
       type: 'object',
       description: 'PDF text or image watermarking options.',
-      properties: {
-        type: { type: 'string', enum: ['text', 'image'] },
-        text: { type: 'string', description: 'Watermark text.' },
-        fontSize: { type: 'number', minimum: 6, maximum: 200, description: 'Font size in points.' },
-        fontColor: { type: 'string', description: 'Hex or RGB color string.' },
-        fontFamily: { type: 'string', description: 'Font family name.' },
-        image: { type: 'string', description: 'Base64 image data or URI.' },
-        imageType: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format type.' },
-        opacity: { type: 'number', minimum: 0, maximum: 1, description: 'Watermark opacity (0.0 - 1.0).' },
-        rotation: { type: 'number', description: 'Rotation in degrees.' },
-        position: {
-          type: 'string',
-          enum: [
-            'tile',
-            'top-left',
-            'top-center',
-            'top-right',
-            'center-left',
-            'center',
-            'center-right',
-            'bottom-left',
-            'bottom-center',
-            'bottom-right',
-          ],
-          description: 'Position on page or tile across entire page.',
-        },
-        pages: { type: 'string', description: 'Page ranges to watermark (e.g. 1-3,5).' },
-        layer: { type: 'string', enum: ['over', 'under'], description: 'Draw on top of or beneath page content.' },
-        scale: { type: 'number', minimum: 0.01, maximum: 10, description: 'Scaling factor.' },
-      },
+      properties: PdfWatermarkOptionsSchema.properties,
     },
     protect: {
       type: 'object',
       description: 'PDF AES-256 encryption and permission restriction options.',
-      properties: {
-        userPassword: { type: 'string', description: 'Password required to open the PDF.' },
-        ownerPassword: { type: 'string', description: 'Master password required to modify permissions.' },
-        keyLength: { type: 'integer', enum: [128, 256], description: 'Encryption key bit length (default 256).' },
-        permissions: {
-          type: 'object',
-          properties: {
-            print: { type: 'string', enum: ['none', 'low', 'full'], description: 'Allowed printing quality.' },
-            modify: { type: 'string', enum: ['none', 'assembly', 'annotate', 'form', 'all'], description: 'Allowed modifications.' },
-            extract: { type: 'boolean', description: 'Allow text and graphic extraction.' },
-            annotate: { type: 'boolean', description: 'Allow comments and form filling.' },
-          },
-        },
-      },
+      properties: PdfProtectOptionsSchema.properties,
     },
     pdfa: {
       type: 'object',
       description: 'PDF/A archival conversion options.',
-      properties: {
-        conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level.' },
-        recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
-      },
+      properties: PdfAOptionsSchema.properties,
     },
   },
 } as const;
@@ -1145,65 +1163,4 @@ export const ArchiveInspectResponseSchema = {
 
 
 
-export const PdfWatermarkOptionsSchema = {
-  $id: 'https://easyconvert.local/schemas/pdf-watermark-options.json',
-  type: 'object',
-  properties: {
-    type: { type: 'string', enum: ['text', 'image'] },
-    text: { type: 'string', description: 'Watermark text.' },
-    fontSize: { type: 'number', minimum: 6, maximum: 200, description: 'Font size in points.' },
-    fontColor: { type: 'string', description: 'Hex or RGB color string.' },
-    fontFamily: { type: 'string', description: 'Font family name.' },
-    image: { type: 'string', description: 'Base64 image data or URI.' },
-    imageType: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format type.' },
-    opacity: { type: 'number', minimum: 0, maximum: 1, description: 'Watermark opacity (0.0 - 1.0).' },
-    rotation: { type: 'number', description: 'Rotation in degrees.' },
-    position: {
-      type: 'string',
-      enum: [
-        'tile',
-        'top-left',
-        'top-center',
-        'top-right',
-        'center-left',
-        'center',
-        'center-right',
-        'bottom-left',
-        'bottom-center',
-        'bottom-right',
-      ],
-      description: 'Position on page or tile across entire page.',
-    },
-    pages: { type: 'string', description: 'Page ranges to watermark (e.g. 1-3,5).' },
-    layer: { type: 'string', enum: ['over', 'under'], description: 'Draw on top of or beneath page content.' },
-    scale: { type: 'number', minimum: 0.01, maximum: 10, description: 'Scaling factor.' },
-  },
-} as const;
 
-export const PdfProtectOptionsSchema = {
-  $id: 'https://easyconvert.local/schemas/pdf-protect-options.json',
-  type: 'object',
-  properties: {
-    userPassword: { type: 'string', description: 'Password required to open the PDF.' },
-    ownerPassword: { type: 'string', description: 'Master password required to modify permissions.' },
-    keyLength: { type: 'integer', enum: [128, 256], description: 'Encryption key bit length (default 256).' },
-    permissions: {
-      type: 'object',
-      properties: {
-        print: { type: 'string', enum: ['none', 'low', 'full'], description: 'Allowed printing quality.' },
-        modify: { type: 'string', enum: ['none', 'assembly', 'annotate', 'form', 'all'], description: 'Allowed modifications.' },
-        extract: { type: 'boolean', description: 'Allow text and graphic extraction.' },
-        annotate: { type: 'boolean', description: 'Allow comments and form filling.' },
-      },
-    },
-  },
-} as const;
-
-export const PdfAOptionsSchema = {
-  $id: 'https://easyconvert.local/schemas/pdfa-options.json',
-  type: 'object',
-  properties: {
-    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level.' },
-    recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
-  },
-} as const;

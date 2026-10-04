@@ -22,7 +22,12 @@ function parseRgbColor(colorStr?: string) {
   const str = colorStr.trim().toLowerCase();
   if (str.startsWith('#')) {
     const hex = str.slice(1);
-    const step = hex.length === 3 ? 1 : hex.length === 6 ? 2 : 0;
+    let step = 0;
+    if (hex.length === 3) {
+      step = 1;
+    } else if (hex.length === 6) {
+      step = 2;
+    }
     if (step > 0) {
       const getVal = (idx: number) => {
         const seg = step === 1 ? hex[idx] + hex[idx] : hex.slice(idx * 2, idx * 2 + 2);

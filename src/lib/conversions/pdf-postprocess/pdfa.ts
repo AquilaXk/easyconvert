@@ -51,6 +51,7 @@ export async function convertToPdfA(
   pdfBuffer: Buffer,
   options: PdfAOptions = {}
 ): Promise<PdfAConversionResult> {
+  await Promise.resolve();
   if (!pdfBuffer || pdfBuffer.length === 0) {
     throw new PdfPostprocessError('PDF buffer is empty.');
   }

@@ -36,6 +36,7 @@ export async function protectPdf(
   pdfBuffer: Buffer,
   options: PdfProtectOptions = {}
 ): Promise<Buffer> {
+  await Promise.resolve();
   if (!pdfBuffer || pdfBuffer.length === 0) {
     throw new PdfPostprocessError('PDF buffer is empty.');
   }
