@@ -129,7 +129,8 @@ export const storagePaths = {
           required: ['type'],
           additionalProperties: true,
           properties: { type: { type: 'string', enum: STORAGE_PROVIDER_TYPES } },
-          description: 'Provider-specific credentials; `type` must equal `providerType`.',
+          description:
+            'Provider-specific credentials; `type` must equal `providerType`. `s3` takes `bucket`, `accessKeyId`, `secretAccessKey`, and optional `region`, `sessionToken`, `endpoint` (HTTPS, public host), and `forcePathStyle` (defaults to true with a custom `endpoint`); requests are signed with AWS Signature Version 4.',
         },
         name: { type: 'string' },
         ttlSeconds: { type: 'integer', minimum: 1 },
