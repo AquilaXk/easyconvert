@@ -1230,9 +1230,10 @@ export async function executeWorkerConversion(
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
   const isComplexText = tgt === 'pdf' && checkInputContainsComplexScript(input, src);
+  const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
   // 1. Native Headless Office
-  if (isComplexText || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
+  if (isComplexText || isRecalculate || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {
       const officeRes = await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
       if (officeRes) {
@@ -1246,6 +1247,12 @@ export async function executeWorkerConversion(
         if (isComplexText) {
           throw new ComplexScriptRequiresNativeEngineError(
             `Rendering complex text script (${src} to pdf) requires the native LibreOffice engine: ${err.message}`
+          );
+        }
+        if (isRecalculate) {
+          throw new EngineUnavailableError(
+            'soffice',
+            `Spreadsheet formula recalculation requires native LibreOffice engine: ${err.message}`
           );
         }
         if (options.pdfStandard) {

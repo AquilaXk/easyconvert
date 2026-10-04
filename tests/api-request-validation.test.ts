@@ -146,9 +146,8 @@ describe('API Request Schema Validation & Quota Conservation', () => {
     expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
   });
 
-  it('rejects planned options (sheetIndex, aspectRatio, fastStart, duration) with 422 option_not_supported and unchanged quota', async () => {
+  it('rejects planned options (aspectRatio, fastStart, duration) with 422 option_not_supported and unchanged quota', async () => {
     const plannedOptionCases: Array<{ name: string; optionPayload: Record<string, any> }> = [
-      { name: 'sheetIndex', optionPayload: { sheetIndex: 2 } },
       { name: 'aspectRatio', optionPayload: { aspectRatio: '16:9' } },
       { name: 'fastStart', optionPayload: { fastStart: true } },
       { name: 'duration', optionPayload: { duration: 45 } },
@@ -237,7 +236,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
     const formData = new FormData();
     formData.append('file', new File(['document text'], 'document.pdf', { type: 'application/pdf' }));
     formData.append('targetFormat', 'txt');
-    formData.append('options', JSON.stringify({ sheetIndex: 2 })); // Planned option
+    formData.append('options', JSON.stringify({ aspectRatio: '16:9' })); // Planned option
 
     const req = new NextRequest('http://localhost:3000/api/v1/convert', {
       method: 'POST',
@@ -303,7 +302,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
     const formData = new FormData();
     formData.append('file', new File([pngHeader], 'sample.png', { type: 'image/png' }));
     formData.append('targetFormat', 'webp');
-    formData.append('options', JSON.stringify({ sheetIndex: 2 })); // Planned option
+    formData.append('options', JSON.stringify({ aspectRatio: '16:9' })); // Planned option
 
     const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
       method: 'POST',
@@ -338,7 +337,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
         name: 'extract-sheet',
         operation: 'convert',
         targetFormat: 'webp',
-        options: { sheetIndex: 2 },
+        options: { aspectRatio: '16:9' },
       },
     ]));
 
