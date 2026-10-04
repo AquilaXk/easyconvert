@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   getOracleToolPath,
   requireOracleTool,
@@ -35,6 +35,11 @@ export interface MediaProbeResult {
   audioStreams: MediaProbeStream[];
 }
 
+const LAVFI_MIN_SSIM = 0.98;
+const LAVFI_MIN_PSNR_DB = 35.0;
+const PCM16_BYTES = 2;
+const PCM16_FULL_SCALE = 32768.0;
+
 export interface LavfiFidelityResult {
   ssim: number;
   psnr: number;
@@ -48,6 +53,8 @@ export interface AudioSnrResult {
   sampleCount: number;
   maxAbsoluteError: number;
   meanSquaredError: number;
+  /** Why the comparison failed when the samples alone do not explain it (e.g. truncation). */
+  failureReason?: string;
 }
 
 export interface AudioDownmixResult {
@@ -124,51 +131,38 @@ export async function computeFfmpegLavfiSsimPsnr(
     fs.writeFileSync(actualPath, actualMedia);
     fs.writeFileSync(refPath, referenceMedia);
 
-    // Calculate SSIM and PSNR using libavfilter
+    // Each input feeds two filters, so both are split; each filter output is mapped to its own
+    // null sink. ssim and psnr print their whole-stream summary to stderr when the run ends.
     const args = [
-      '-i',
-      actualPath,
-      '-i',
-      refPath,
+      '-hide_banner',
+      '-i', actualPath,
+      '-i', refPath,
       '-filter_complex',
-      '[0:v][1:v]ssim=stats_file=-[ssim_out];[0:v][1:v]psnr=stats_file=-[psnr_out]',
-      '-map',
-      '[ssim_out]',
-      '-f',
-      'null',
-      '-',
+      '[0:v]split=2[actual_ssim][actual_psnr];[1:v]split=2[ref_ssim][ref_psnr];' +
+        '[actual_ssim][ref_ssim]ssim[ssim_out];[actual_psnr][ref_psnr]psnr[psnr_out]',
+      '-map', '[ssim_out]', '-f', 'null', '-',
+      '-map', '[psnr_out]', '-f', 'null', '-',
     ];
 
-    let output = '';
-    try {
-      output = execFileSync(ffmpegPath, args, {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } catch (err: any) {
-      // FFmpeg often writes filter logs to stderr
-      output = (err?.stderr || '') + (err?.stdout || '');
+    const run = spawnSync(ffmpegPath, args, { encoding: 'utf-8' });
+    const output = `${run.stderr ?? ''}${run.stdout ?? ''}`;
+    if (run.status !== 0) {
+      throw new Error(`ffmpeg exited with status ${run.status} while computing SSIM/PSNR: ${output.slice(-1000)}`);
     }
 
-    // Parse SSIM: "All:0.998234 (27.528492)" or "ssim: 0.998"
-    const ssimMatch = output.match(/All:([0-9.]+)/i) || output.match(/ssim\s*[:=]\s*([0-9.]+)/i);
-
-    // Parse PSNR: "average:45.32" or "psnr: 45.32"
-    const psnrMatch = output.match(/average:([0-9.]+)/i) || output.match(/psnr\s*[:=]\s*([0-9.]+)/i);
-
+    const ssimMatch = output.match(/SSIM .*All:([0-9.]+)/);
+    const psnrMatch = output.match(/PSNR .*average:(inf|[0-9.]+)/);
     if (!ssimMatch || !psnrMatch) {
-      throw new Error(
-        `Failed to compute SSIM/PSNR via FFmpeg lavfi: ${output.slice(0, 1000) || 'no output produced'}`
-      );
+      throw new Error(`ffmpeg produced no SSIM/PSNR summary: ${output.slice(-1000)}`);
     }
 
     const ssim = parseFloat(ssimMatch[1]);
-    const psnr = parseFloat(psnrMatch[1]);
+    const psnr = psnrMatch[1] === 'inf' ? Infinity : parseFloat(psnrMatch[1]);
 
     return {
       ssim,
       psnr,
-      passed: ssim >= 0.98 && psnr >= 35.0,
+      passed: ssim >= LAVFI_MIN_SSIM && psnr >= LAVFI_MIN_PSNR_DB,
       rawOutput: output,
     };
   } finally {
@@ -240,16 +234,17 @@ export function computeAudioSnr(
   reference: Float64Array | number[],
   minSnrDbThreshold: number = 40.0
 ): AudioSnrResult {
-  const len = Math.min(actual.length, reference.length);
-  if (len === 0) {
-    return {
-      snrDb: Infinity,
-      passed: true,
-      sampleCount: 0,
-      maxAbsoluteError: 0,
-      meanSquaredError: 0,
-    };
+  if (actual.length === 0 || reference.length === 0) {
+    throw new Error(
+      `Cannot compute audio SNR on empty input: actual has ${actual.length} samples, reference has ${reference.length}`
+    );
   }
+  const len = Math.min(actual.length, reference.length);
+  // Missing or extra samples are a defect even when the overlapping samples match.
+  const failureReason =
+    actual.length === reference.length
+      ? undefined
+      : `Actual signal has ${actual.length} samples; expected ${reference.length} (${len} of ${reference.length} overlap)`;
 
   let refPower = 0;
   let noisePower = 0;
@@ -274,10 +269,11 @@ export function computeAudioSnr(
   if (noisePower <= 1e-15) {
     return {
       snrDb: 120.0, // Cap at pristine 120dB
-      passed: true,
+      passed: !failureReason,
       sampleCount: len,
       maxAbsoluteError: 0,
       meanSquaredError: 0,
+      failureReason,
     };
   }
 
@@ -285,10 +281,11 @@ export function computeAudioSnr(
     // Both or reference is silent
     return {
       snrDb: noisePower <= 1e-15 ? 120.0 : 0.0,
-      passed: noisePower <= 1e-15,
+      passed: !failureReason && noisePower <= 1e-15,
       sampleCount: len,
       maxAbsoluteError: maxAbsErr,
       meanSquaredError: mse,
+      failureReason,
     };
   }
 
@@ -296,10 +293,11 @@ export function computeAudioSnr(
 
   return {
     snrDb: snr,
-    passed: snr >= minSnrDbThreshold,
+    passed: !failureReason && snr >= minSnrDbThreshold,
     sampleCount: len,
     maxAbsoluteError: maxAbsErr,
     meanSquaredError: mse,
+    failureReason,
   };
 }
 
@@ -312,14 +310,8 @@ export function verifyAudioDownmixSnr(
   referencePcm16: Buffer,
   minSnrDb: number = 40.0
 ): AudioSnrResult {
-  const sampleCount = Math.floor(Math.min(actualPcm16.length, referencePcm16.length) / 2);
-  const actualSamples = new Float64Array(sampleCount);
-  const refSamples = new Float64Array(sampleCount);
-
-  for (let i = 0; i < sampleCount; i++) {
-    actualSamples[i] = actualPcm16.readInt16LE(i * 2) / 32768.0;
-    refSamples[i] = referencePcm16.readInt16LE(i * 2) / 32768.0;
-  }
-
-  return computeAudioSnr(actualSamples, refSamples, minSnrDb);
+  const decode = (pcm: Buffer) =>
+    Float64Array.from({ length: Math.floor(pcm.length / PCM16_BYTES) }, (_, i) => pcm.readInt16LE(i * PCM16_BYTES) / PCM16_FULL_SCALE);
+  // Decode each buffer whole so a truncated output is compared against the full reference.
+  return computeAudioSnr(decode(actualPcm16), decode(referencePcm16), minSnrDb);
 }
