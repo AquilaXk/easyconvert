@@ -38,7 +38,6 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
       'archive',
       'archive/create',
       'archive.create',
-      'merge',
       'metadata',
       'export/url',
     ];

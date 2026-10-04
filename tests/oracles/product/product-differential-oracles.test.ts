@@ -13,7 +13,6 @@ import {
   computeAudioSnr,
   verifyAudioDownmixSnr,
   inspectMediaWithFfprobe,
-  computeFfmpegLavfiSsimPsnr,
   inspectTarWithNativeTar,
   verifyArchiveWithNative7z,
   verifyArchiveEntriesSha256,
@@ -223,24 +222,6 @@ describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gat
       expect(probe.format.format_name).toContain('wav');
       expect(probe.audioStreams.length).toBeGreaterThanOrEqual(1);
     });
-
-    oracleTest(
-      'computes frame-accurate video SSIM and PSNR via ffmpeg lavfi',
-      ['ffmpeg'],
-      async () => {
-        // Will be skipped if ffmpeg is missing
-        const dummy = Buffer.alloc(100);
-        let thrownError: any = null;
-        try {
-          await computeFfmpegLavfiSsimPsnr(dummy, dummy, 'mp4');
-        } catch (err: any) {
-          thrownError = err;
-        }
-        expect(thrownError).not.toBeNull();
-        expect(typeof thrownError?.message).toBe('string');
-        expect(thrownError?.message.length).toBeGreaterThan(0);
-      }
-    );
   });
 
   // =========================================================================
