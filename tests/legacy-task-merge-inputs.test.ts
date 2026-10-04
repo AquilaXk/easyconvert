@@ -66,6 +66,18 @@ describe('graph validator merge inputs', () => {
     expect(result.errors.map((e) => e.code)).toEqual(['MERGE_INPUTS_INSUFFICIENT']);
   });
 
+  it('counts only the inputs the merge receives, not repeated or extra dependencies', () => {
+    const result = validateJobGraph(
+      graph({
+        a: pdfUpload('a'),
+        b: pdfUpload('b'),
+        join: { op: 'merge', input: 'a', dependencies: ['a', 'a', 'b'], targetFormat: 'pdf' },
+        out: { op: 'export.internal', input: 'join' },
+      })
+    );
+    expect(result.errors.map((e) => e.code)).toEqual(['MERGE_INPUTS_INSUFFICIENT']);
+  });
+
   it('accepts a merge node with two PDF inputs', () => {
     const result = validateJobGraph(
       graph({
@@ -107,7 +119,7 @@ describe('POST /api/v1/jobs with a single-input merge graph', () => {
 
     expect(res.status).toBe(422);
     const body = await res.json();
-    expect(body.invalidParams).toEqual([{ name: 'nodes.join.input', reason: expect.stringMatching(/at least 2 inputs/) }]);
+    expect(body.invalidParams).toEqual([{ name: 'nodes.join.input', reason: expect.stringMatching(/at least 2 distinct inputs/) }]);
     expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(usedBefore);
   });
 });

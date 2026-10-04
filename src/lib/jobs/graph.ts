@@ -157,6 +157,15 @@ export function normalizeGraphNodes(graph: JobGraph): Record<string, TaskNode> {
 }
 
 /**
+ * The distinct node IDs named in `input`: the artifacts an executor actually receives.
+ * Ordering-only `dependencies` are excluded.
+ */
+function distinctNodeInputs(node: TaskNode): Set<string> {
+  const raw = Array.isArray(node.input) ? node.input : [node.input];
+  return new Set(raw.filter((inp): inp is string => typeof inp === 'string'));
+}
+
+/**
  * Extracts normalized dependency IDs for a given TaskNode.
  */
 export function getTaskDependencies(node: TaskNode): string[] {
@@ -551,10 +560,11 @@ export function validateJobGraph(
         code: 'UNSUPPORTED_OUTPUT_FORMAT',
       });
     }
-    if (op === 'merge' && getTaskDependencies(node).length < MIN_MERGE_INPUTS) {
+    const mergeInputCount = op === 'merge' ? distinctNodeInputs(node).size : 0;
+    if (op === 'merge' && mergeInputCount < MIN_MERGE_INPUTS) {
       errors.push({
         path: `nodes.${nodeId}.input`,
-        message: `Merge node "${nodeId}" needs at least ${MIN_MERGE_INPUTS} inputs; found ${getTaskDependencies(node).length}.`,
+        message: `Merge node "${nodeId}" needs at least ${MIN_MERGE_INPUTS} distinct inputs; found ${mergeInputCount}.`,
         code: 'MERGE_INPUTS_INSUFFICIENT',
       });
     }
