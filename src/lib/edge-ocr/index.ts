@@ -70,6 +70,9 @@ async function recognizeImage(
   try {
     const Tesseract = await import('tesseract.js');
     const worker = await Tesseract.createWorker(resolveTesseractLanguage(options.ocrLanguage), 1, {
+      // Failures already reject the pending job; without a handler the worker also rethrows
+      // them from its message listener as an uncaught exception.
+      errorHandler: () => undefined,
       logger: (m) => {
         if (m.status === 'recognizing text' && typeof m.progress === 'number') {
           onProgress?.(Math.round(35 + m.progress * 45));

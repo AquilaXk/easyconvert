@@ -119,10 +119,12 @@ export async function performOcr(
     );
   }
 
-  // Validate that imageBuffer is a decodable image before sending to Tesseract worker
+  // Decode with sharp and re-encode as PNG: the OCR reader opens fewer formats (no AVIF, HEIF,
+  // SVG or many TIFF variants) than the decoder, so it only ever receives a lossless PNG.
+  let ocrInput: Buffer;
   try {
-    await sharp(imageBuffer).metadata();
-  } catch (imgErr) {
+    ocrInput = await sharp(imageBuffer).png().toBuffer();
+  } catch {
     throw new OcrEngineUnavailableError(
       `OCR engine (Tesseract) is unavailable or failed to execute for language '${language}': invalid image buffer.`
     );
@@ -135,13 +137,20 @@ export async function performOcr(
       langPath: localLangPath,
       cacheMethod: 'none',
       gzip: isGzip,
+      // Worker failures already reject the pending job; without a handler the worker also
+      // rethrows them from its message listener as an uncaught exception.
+      errorHandler: () => undefined,
     });
-    const ret = await worker.recognize(imageBuffer, {}, { blocks: true });
-    await worker.terminate();
+    let ret: Awaited<ReturnType<typeof worker.recognize>>;
+    try {
+      ret = await worker.recognize(ocrInput, {}, { blocks: true });
+    } finally {
+      await worker.terminate();
+    }
 
     if (ret && ret.data) {
       const fullText = (ret.data.text || '').trim();
-      const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
+      const meta = await sharp(ocrInput).metadata().catch(() => ({ width: 800, height: 600 }));
       const imgWidth = meta.width || 800;
       const imgHeight = meta.height || 600;
       const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight);
@@ -203,7 +212,7 @@ export async function performOcr(
     const tmpIn = path.join(os.tmpdir(), `ocr_cli_in_${crypto.randomUUID()}.png`);
     const tmpOutBase = path.join(os.tmpdir(), `ocr_cli_out_${crypto.randomUUID()}`);
     try {
-      fs.writeFileSync(tmpIn, imageBuffer);
+      fs.writeFileSync(tmpIn, ocrInput);
       const cliArgs = ['--tessdata-dir', localLangPath, tmpIn, tmpOutBase, '-l', tesseractLang];
       execFileSync(tesseractCli, cliArgs, {
         stdio: ['ignore', 'ignore', 'pipe'],
@@ -213,7 +222,7 @@ export async function performOcr(
       if (fs.existsSync(outTxtPath)) {
         const cliText = fs.readFileSync(outTxtPath, 'utf-8').trim();
         fs.unlinkSync(outTxtPath);
-        const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
+        const meta = await sharp(ocrInput).metadata().catch(() => ({ width: 800, height: 600 }));
         const lines = cliText ? cliText.split('\n').map((l) => l.trim()).filter(Boolean) : [];
         return {
           text: cliText,
