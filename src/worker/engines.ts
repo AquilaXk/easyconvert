@@ -573,13 +573,13 @@ export async function convertWithNativeFfmpeg(
 /**
  * Archive extraction and re-packaging formats supported by 7-Zip CLI.
  */
-const ARCHIVE_EXTRACT_FORMATS = new Set([
+export const ARCHIVE_EXTRACT_FORMATS = new Set([
   'zip', '7z', 'rar', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
   'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
   'iso', 'deb', 'rpm', 'cab', 'wim', 'arj', 'cpio', 'lzh', 'zstd', 'zst',
 ]);
 
-const ARCHIVE_TARGET_FORMATS = new Set([
+export const ARCHIVE_TARGET_FORMATS = new Set([
   'zip', '7z', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
   'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
 ]);
@@ -825,7 +825,7 @@ export async function convertWithNative7z(
 /**
  * Image formats supported by Poppler pdftoppm.
  */
-const POPPLER_IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'tiff', 'tif', 'ppm']);
+export const POPPLER_IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'tiff', 'tif', 'ppm']);
 
 export async function getPdfPageCount(
   inputPath: string,
@@ -1280,8 +1280,8 @@ export async function convertWithNativePoppler(
  * Universal Worker Conversion Orchestrator.
  * Dispatches to native container engines first, with fail-closed security and pure TS fallback.
  */
-const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
-const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
+export const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
+export const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
 const COMPLEX_TEXT_FORMATS = new Set(['txt', 'html', 'htm', 'md']);
 
 function checkInputContainsComplexScript(input: Buffer | WorkerVfsPayload, src: string): boolean {
