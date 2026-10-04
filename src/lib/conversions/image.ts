@@ -22,7 +22,7 @@ import {
   rgbToOklab,
   oklabToRgb,
 } from './color-quantizer';
-import { performOcr, generateSearchablePdf } from './ocr';
+import { performOcr, generateSearchablePdf, exportHocr, exportAlto } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 
 export {
@@ -2165,6 +2165,36 @@ export async function convertImage(
   // Special case: Image to PDF
   if (fmt === 'pdf') {
     return convertImageToPdf(inputBuffer, options, baseName, src);
+  }
+
+  // Special case: Image to hOCR 1.2 XHTML
+  if (fmt === 'hocr') {
+    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
+    const hocrXml = exportHocr(ocrResult, { documentTitle: baseName, filename: originalFilename });
+    const buffer = Buffer.from(hocrXml, 'utf-8');
+    return {
+      buffer,
+      mimeType: 'application/xhtml+xml',
+      filename: `${baseName}.hocr`,
+      size: buffer.length,
+      ocrExtractedText: ocrResult.text,
+      ocrConfidence: ocrResult.confidence,
+    };
+  }
+
+  // Special case: Image to ALTO 4.x XML
+  if (fmt === 'alto') {
+    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
+    const altoXml = exportAlto(ocrResult, { filename: originalFilename });
+    const buffer = Buffer.from(altoXml, 'utf-8');
+    return {
+      buffer,
+      mimeType: 'application/xml',
+      filename: `${baseName}.xml`,
+      size: buffer.length,
+      ocrExtractedText: ocrResult.text,
+      ocrConfidence: ocrResult.confidence,
+    };
   }
 
   // Sanitize SVG inputs against Stored XSS

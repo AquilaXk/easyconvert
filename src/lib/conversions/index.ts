@@ -182,7 +182,15 @@ import {
 } from './archive';
 
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
-import { performOcr, generateSearchablePdf } from './ocr';
+import {
+  performOcr,
+  generateSearchablePdf,
+  exportHocr,
+  exportAlto,
+  inspectPdfPagesTextDensity,
+  performSmartMultiPagePdfOcr,
+  createLosslessSandwichPdfFromPdf,
+} from './ocr';
 import {
   generateFb2FromText,
   generateHwpFromText,
@@ -275,6 +283,11 @@ export {
   encodeBmp8,
   performOcr,
   generateSearchablePdf,
+  exportHocr,
+  exportAlto,
+  inspectPdfPagesTextDensity,
+  performSmartMultiPagePdfOcr,
+  createLosslessSandwichPdfFromPdf,
   generateFb2FromText,
   generateHwpFromText,
   SpreadsheetFormulaEvaluator,

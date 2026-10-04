@@ -14,7 +14,16 @@ import {
   DrawingMlShape,
   TableBorder,
 } from './office';
-import { performOcr, generateSearchablePdf, OcrResult } from './ocr';
+import {
+  performOcr,
+  generateSearchablePdf,
+  OcrResult,
+  OcrPageResult,
+  exportHocr,
+  exportAlto,
+  inspectPdfPagesTextDensity,
+} from './ocr';
+import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import {
   extractTextFromPdf,
   extractEmbeddedImageFromPdf,
@@ -59,6 +68,85 @@ export function extractTextFromTex(tex: string): string {
     .trim();
 }
 
+function buildCombinedOcrResult(
+  pageOcrResults: Map<number, OcrResult>,
+  pageAnalyses: PdfPageAnalysis[],
+  fallbackText: string,
+  fallbackConfidence?: number | null
+): OcrResult {
+  if (pageAnalyses && pageAnalyses.length > 0) {
+    const pages: OcrPageResult[] = [];
+    const allTexts: string[] = [];
+    const allLines: string[] = [];
+    let totalConf = 0;
+    let confCount = 0;
+    let totalWords = 0;
+
+    for (const pa of pageAnalyses) {
+      const ocr = pageOcrResults.get(pa.pageNumber);
+      if (ocr) {
+        pages.push({
+          pageNumber: pa.pageNumber,
+          width: pa.width,
+          height: pa.height,
+          text: ocr.text,
+          confidence: ocr.confidence,
+          lineBlocks: ocr.lineBlocks || [],
+          lines: ocr.lines,
+        });
+        allTexts.push(ocr.text);
+        allLines.push(...ocr.lines);
+        if (ocr.confidence !== null) {
+          totalConf += ocr.confidence;
+          confCount++;
+        }
+        totalWords += ocr.wordCount;
+      } else {
+        const lines = pa.text ? pa.text.split('\n').filter(Boolean) : [];
+        pages.push({
+          pageNumber: pa.pageNumber,
+          width: pa.width,
+          height: pa.height,
+          text: pa.text,
+          confidence: 1.0,
+          lineBlocks: [],
+          lines,
+        });
+        allTexts.push(pa.text);
+        allLines.push(...lines);
+        totalConf += 1.0;
+        confCount++;
+        totalWords += pa.wordCount;
+      }
+    }
+
+    return {
+      text: allTexts.join('\n\n').trim(),
+      confidence: confCount > 0 ? totalConf / confCount : 1.0,
+      wordCount: totalWords,
+      lines: allLines,
+      lineBlocks: pages.flatMap((p) => p.lineBlocks),
+      imageWidth: pageAnalyses[0]?.width || 612,
+      imageHeight: pageAnalyses[0]?.height || 792,
+      pages,
+    };
+  }
+
+  const singleResult = pageOcrResults.values().next().value;
+  if (singleResult) return singleResult;
+
+  const lines = fallbackText ? fallbackText.split('\n').filter(Boolean) : [];
+  return {
+    text: fallbackText || '',
+    confidence: fallbackConfidence ?? 1.0,
+    wordCount: fallbackText ? fallbackText.split(/\s+/).filter(Boolean).length : 0,
+    lines,
+    lineBlocks: [],
+    imageWidth: 612,
+    imageHeight: 792,
+  };
+}
+
 export async function convertDocument(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -86,12 +174,63 @@ export async function convertDocument(
     let lastOcrResult: OcrResult | null = null;
     const pageOcrResults = new Map<number, OcrResult>();
 
-    // If scanned document or OCR is requested
+    // Inspect each page for existing text layer density to enable Smart Multi-Page OCR
+    const pageAnalyses = await inspectPdfPagesTextDensity(
+      inputBuffer,
+      options.ocrDensityThreshold || 15
+    ).catch(() => []);
+
+    const ocrMode = options.ocrMode || 'skip_text';
+    const pagesNeedingOcr: number[] = [];
+    const pageDecisions: OcrPageDecision[] = [];
+
+    if (pageAnalyses.length > 0) {
+      for (const pa of pageAnalyses) {
+        if (ocrMode === 'force' || ocrMode === 'redo') {
+          pageDecisions.push({
+            pageNumber: pa.pageNumber,
+            skipped: false,
+            reason: 'forced',
+            textDensity: pa.charCount,
+            wordCount: pa.wordCount,
+          });
+          pagesNeedingOcr.push(pa.pageNumber);
+        } else {
+          // skip_text mode (default Smart OCR)
+          if (pa.hasTextLayer) {
+            pageDecisions.push({
+              pageNumber: pa.pageNumber,
+              skipped: true,
+              reason: 'has_text',
+              textDensity: pa.charCount,
+              wordCount: pa.wordCount,
+            });
+          } else {
+            pageDecisions.push({
+              pageNumber: pa.pageNumber,
+              skipped: false,
+              reason: 'no_text',
+              textDensity: pa.charCount,
+              wordCount: pa.wordCount,
+            });
+            pagesNeedingOcr.push(pa.pageNumber);
+          }
+        }
+      }
+    }
+
+    // If scanned document or OCR is requested or target is hocr/alto
     const isScanned = !structuredPdf.hasTextLayer || !extractedText || extractedText.trim() === '';
-    if (options.ocrEnabled || isScanned) {
+    const shouldRunOcr = options.ocrEnabled || isScanned || tgt === 'hocr' || tgt === 'alto';
+
+    if (shouldRunOcr && (pagesNeedingOcr.length > 0 || (pageAnalyses.length === 0 && (options.ocrEnabled || isScanned)))) {
       let rasterImages: ExtractedPdfImage[] = [];
       try {
-        rasterImages = await extractRasterImagesFromPdf(inputBuffer, options.dpi || 300);
+        rasterImages = await extractRasterImagesFromPdf(
+          inputBuffer,
+          options.dpi || 300,
+          pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined
+        );
       } catch (err: any) {
         if (options.ocrEnabled) {
           const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
@@ -100,7 +239,7 @@ export async function convertDocument(
         }
       }
 
-      if (rasterImages.length === 0 && options.ocrEnabled) {
+      if (rasterImages.length === 0 && options.ocrEnabled && pagesNeedingOcr.length > 0) {
         throw new ConversionFailedError('PDF OCR failed: PDF contains no renderable raster pages or images. Page rasterization requires the native worker.');
       }
 
@@ -147,15 +286,28 @@ export async function convertDocument(
         }
 
         if (ocrTexts.length > 0) {
-          extractedText = ocrTexts.join('\n\n');
+          const allTextParts: string[] = [];
+          if (pageAnalyses.length > 0) {
+            for (const pa of pageAnalyses) {
+              const ocr = pageOcrResults.get(pa.pageNumber);
+              if (ocr) {
+                allTextParts.push(ocr.text);
+              } else if (pa.text) {
+                allTextParts.push(pa.text);
+              }
+            }
+          } else {
+            allTextParts.push(...ocrTexts);
+          }
+          extractedText = allTextParts.join('\n\n').trim();
           ocrInfo = {
             text: extractedText,
             confidence: count > 0 ? totalConfidence / count : 0.9,
           };
-        } else if (options.ocrEnabled) {
+        } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
           throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
-      } else if (options.ocrEnabled) {
+      } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
         throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
       }
     }
@@ -315,24 +467,26 @@ export async function convertDocument(
 
     if (tgt === 'pdf') {
       if (options.ocrEnabled || isScanned) {
-        if (pageOcrResults.size === 0 && !lastOcrResult) {
+        if (pageOcrResults.size === 0 && !lastOcrResult && pagesNeedingOcr.length > 0) {
           throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
         }
 
-        try {
-          const searchablePdf = await createLosslessSandwichPdfFromPdf(inputBuffer, pageOcrResults);
-          return {
-            buffer: searchablePdf,
-            mimeType: 'application/pdf',
-            filename: `${baseName}.pdf`,
-            size: searchablePdf.length,
-            ocrExtractedText: ocrInfo.text,
-            ocrConfidence: ocrInfo.confidence,
-          };
-        } catch (pdfErr: any) {
-          throw new ConversionFailedError(
-            `PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`
-          );
+        if (pageOcrResults.size > 0) {
+          try {
+            const searchablePdf = await createLosslessSandwichPdfFromPdf(inputBuffer, pageOcrResults);
+            return {
+              buffer: searchablePdf,
+              mimeType: 'application/pdf',
+              filename: `${baseName}.pdf`,
+              size: searchablePdf.length,
+              ocrExtractedText: ocrInfo.text,
+              ocrConfidence: ocrInfo.confidence,
+            };
+          } catch (pdfErr: any) {
+            throw new ConversionFailedError(
+              `PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`
+            );
+          }
         }
       }
       return {
@@ -340,6 +494,51 @@ export async function convertDocument(
         mimeType: 'application/pdf',
         filename: `${baseName}.pdf`,
         size: inputBuffer.length,
+        ocrExtractedText: ocrInfo.text,
+        ocrConfidence: ocrInfo.confidence,
+      };
+    }
+
+    if (tgt === 'hocr') {
+      const combinedResult: OcrResult = buildCombinedOcrResult(
+        pageOcrResults,
+        pageAnalyses,
+        extractedText,
+        ocrInfo.confidence
+      );
+      const hocrXml = exportHocr(combinedResult, {
+        documentTitle: baseName,
+        filename: originalFilename,
+      });
+      const buffer = Buffer.from(hocrXml, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'application/xhtml+xml',
+        filename: `${baseName}.hocr`,
+        size: buffer.length,
+        ocrExtractedText: combinedResult.text,
+        ocrConfidence: combinedResult.confidence,
+      };
+    }
+
+    if (tgt === 'alto') {
+      const combinedResult: OcrResult = buildCombinedOcrResult(
+        pageOcrResults,
+        pageAnalyses,
+        extractedText,
+        ocrInfo.confidence
+      );
+      const altoXml = exportAlto(combinedResult, {
+        filename: originalFilename,
+      });
+      const buffer = Buffer.from(altoXml, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'application/xml',
+        filename: `${baseName}.xml`,
+        size: buffer.length,
+        ocrExtractedText: combinedResult.text,
+        ocrConfidence: combinedResult.confidence,
       };
     }
 

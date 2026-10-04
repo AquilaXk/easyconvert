@@ -4,9 +4,18 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import sharp from 'sharp';
-import { ConversionOptions, OcrLanguageUnavailableError, OcrEngineUnavailableError } from '../types';
+import {
+  ConversionOptions,
+  OcrLanguageUnavailableError,
+  OcrEngineUnavailableError,
+  HocrExportOptions,
+  AltoExportOptions,
+  OcrPageDecision,
+  PdfPageAnalysis,
+} from '../types';
 import {
   createLosslessSandwichPdfFromImage,
+  createLosslessSandwichPdfFromPdf,
   parseTesseractBlocks,
   sortLineBlocksTopological,
   detectColumnGutters,
@@ -15,10 +24,19 @@ import {
   OcrWord,
   OcrLineBlock,
   OcrResult,
+  OcrPageResult,
 } from './ocr-pdf-combiner';
+import { exportHocr, exportAlto } from './ocr-export';
+import { extractRasterImagesFromPdf } from './pdf-rasterizer';
 
-export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult };
-export { sortLineBlocksTopological, detectColumnGutters };
+export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
+export {
+  sortLineBlocksTopological,
+  detectColumnGutters,
+  exportHocr,
+  exportAlto,
+  createLosslessSandwichPdfFromPdf,
+};
 
 /**
  * Optical Character Recognition (OCR) Engine
@@ -43,8 +61,17 @@ export async function performOcr(
     spa: 'spa',
     ja: 'jpn',
     jpn: 'jpn',
+    jpn_vert: 'jpn_vert',
+    ja_vert: 'jpn_vert',
     zh: 'chi_sim',
     chi_sim: 'chi_sim',
+    chi_sim_vert: 'chi_sim_vert',
+    zh_vert: 'chi_sim_vert',
+    zh_sim_vert: 'chi_sim_vert',
+    chi_tra: 'chi_tra',
+    zh_tra: 'chi_tra',
+    chi_tra_vert: 'chi_tra_vert',
+    zh_tra_vert: 'chi_tra_vert',
   };
   const tesseractLang = langMap[language.toLowerCase()];
   if (!tesseractLang) {
@@ -219,3 +246,209 @@ export async function generateSearchablePdf(
 ): Promise<Buffer> {
   return createLosslessSandwichPdfFromImage(scannedImageBuffer, ocrResult, options, title);
 }
+
+/**
+ * Inspects each page of a PDF document for existing digital text layer density.
+ */
+export async function inspectPdfPagesTextDensity(
+  pdfBuffer: Buffer,
+  densityThreshold: number = 15
+): Promise<PdfPageAnalysis[]> {
+  const analyses: PdfPageAnalysis[] = [];
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(pdfBuffer),
+    useSystemFonts: true,
+    disableFontFace: true,
+    verbosity: 0,
+  });
+
+  const doc = await loadingTask.promise;
+  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    const page = await doc.getPage(pageNum);
+    const view = page.view || [0, 0, 612, 792];
+    const width = Math.abs(view[2] - view[0]);
+    const height = Math.abs(view[3] - view[1]);
+
+    const textContent = await page.getTextContent();
+    const strings = (textContent.items || []).map((it: any) => it.str || '');
+    const pageText = strings.join(' ').trim();
+    const charCount = pageText.replace(/\s+/g, '').length;
+    const wordCount = pageText.split(/\s+/).filter(Boolean).length;
+    const hasTextLayer = charCount >= densityThreshold;
+
+    analyses.push({
+      pageNumber: pageNum,
+      width,
+      height,
+      charCount,
+      wordCount,
+      hasTextLayer,
+      text: pageText,
+    });
+  }
+
+  return analyses;
+}
+
+/**
+ * Smart Multi-Page OCR Engine with selective page skipping:
+ * - In 'skip_text' mode (default): skips OCR on pages that already contain extractable
+ *   digital text; OCRs only scanned/raster pages.
+ * - In 'force' / 'redo' mode: rasterizes and OCRs all pages unconditionally.
+ * - Assembles a lossless searchable PDF preserving original digital vector pages
+ *   while injecting sandwich invisible text layers only for the OCR'd scanned pages.
+ */
+export async function performSmartMultiPagePdfOcr(
+  pdfBuffer: Buffer,
+  options: ConversionOptions = {}
+): Promise<{
+  buffer: Buffer;
+  pageDecisions: OcrPageDecision[];
+  ocrResults: Map<number, OcrResult>;
+  combinedOcrResult: OcrResult;
+}> {
+  const ocrMode = options.ocrMode || 'skip_text';
+  const densityThreshold = options.ocrDensityThreshold || 15;
+  const pageAnalyses = await inspectPdfPagesTextDensity(pdfBuffer, densityThreshold);
+
+  const pageDecisions: OcrPageDecision[] = [];
+  const pagesNeedingOcr: number[] = [];
+
+  for (const pa of pageAnalyses) {
+    if (ocrMode === 'force' || ocrMode === 'redo') {
+      pageDecisions.push({
+        pageNumber: pa.pageNumber,
+        skipped: false,
+        reason: 'forced',
+        textDensity: pa.charCount,
+        wordCount: pa.wordCount,
+      });
+      pagesNeedingOcr.push(pa.pageNumber);
+    } else {
+      if (pa.hasTextLayer) {
+        pageDecisions.push({
+          pageNumber: pa.pageNumber,
+          skipped: true,
+          reason: 'has_text',
+          textDensity: pa.charCount,
+          wordCount: pa.wordCount,
+        });
+      } else {
+        pageDecisions.push({
+          pageNumber: pa.pageNumber,
+          skipped: false,
+          reason: 'no_text',
+          textDensity: pa.charCount,
+          wordCount: pa.wordCount,
+        });
+        pagesNeedingOcr.push(pa.pageNumber);
+      }
+    }
+  }
+
+  const pageOcrResults = new Map<number, OcrResult>();
+  if (pagesNeedingOcr.length > 0) {
+    const rasterImages = await extractRasterImagesFromPdf(
+      pdfBuffer,
+      options.dpi || 300,
+      new Set(pagesNeedingOcr)
+    );
+
+    for (const img of rasterImages) {
+      const ocr = await performOcr(img.buffer, options.ocrLanguage);
+      if (ocr) {
+        const existing = pageOcrResults.get(img.pageNumber);
+        if (!existing) {
+          pageOcrResults.set(img.pageNumber, ocr);
+        } else {
+          // Merge multiple images on the same page
+          pageOcrResults.set(img.pageNumber, {
+            text: `${existing.text}\n\n${ocr.text}`.trim(),
+            confidence:
+              existing.confidence !== null && ocr.confidence !== null
+                ? (existing.confidence + ocr.confidence) / 2
+                : (existing.confidence ?? ocr.confidence),
+            wordCount: existing.wordCount + ocr.wordCount,
+            lines: [...existing.lines, ...ocr.lines],
+            lineBlocks: [...(existing.lineBlocks || []), ...(ocr.lineBlocks || [])],
+            imageWidth: Math.max(existing.imageWidth || 0, img.width),
+            imageHeight: (existing.imageHeight || 0) + img.height,
+          });
+        }
+      }
+    }
+  }
+
+  // Generate lossless searchable PDF with injected sandwich text layer only on OCR'd pages
+  const finalPdfBuffer =
+    pageOcrResults.size > 0
+      ? await createLosslessSandwichPdfFromPdf(pdfBuffer, pageOcrResults)
+      : pdfBuffer;
+
+  // Build combined OcrResult with pages array
+  const combinedPages: OcrPageResult[] = [];
+  const allTexts: string[] = [];
+  const allLines: string[] = [];
+  let totalConfidence = 0;
+  let confCount = 0;
+  let totalWordCount = 0;
+
+  for (const pa of pageAnalyses) {
+    const ocr = pageOcrResults.get(pa.pageNumber);
+    if (ocr) {
+      combinedPages.push({
+        pageNumber: pa.pageNumber,
+        width: pa.width,
+        height: pa.height,
+        text: ocr.text,
+        confidence: ocr.confidence,
+        lineBlocks: ocr.lineBlocks || [],
+        lines: ocr.lines,
+      });
+      allTexts.push(ocr.text);
+      allLines.push(...ocr.lines);
+      if (ocr.confidence !== null) {
+        totalConfidence += ocr.confidence;
+        confCount++;
+      }
+      totalWordCount += ocr.wordCount;
+    } else {
+      // Digital page that was skipped
+      const lines = pa.text ? pa.text.split('\n').filter(Boolean) : [];
+      combinedPages.push({
+        pageNumber: pa.pageNumber,
+        width: pa.width,
+        height: pa.height,
+        text: pa.text,
+        confidence: 1.0,
+        lineBlocks: [],
+        lines,
+      });
+      allTexts.push(pa.text);
+      allLines.push(...lines);
+      totalConfidence += 1.0;
+      confCount++;
+      totalWordCount += pa.wordCount;
+    }
+  }
+
+  const combinedOcrResult: OcrResult = {
+    text: allTexts.join('\n\n').trim(),
+    confidence: confCount > 0 ? totalConfidence / confCount : null,
+    wordCount: totalWordCount,
+    lines: allLines,
+    lineBlocks: combinedPages.flatMap((p) => p.lineBlocks),
+    imageWidth: pageAnalyses[0]?.width || 612,
+    imageHeight: pageAnalyses[0]?.height || 792,
+    pages: combinedPages,
+  };
+
+  return {
+    buffer: finalPdfBuffer,
+    pageDecisions,
+    ocrResults: pageOcrResults,
+    combinedOcrResult,
+  };
+}
+
