@@ -121,7 +121,7 @@ describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gat
 
         // Render pages with pdftoppm
         const renderedPages = await renderPdfPagesWithPdftoppm(pdfBytes, { dpi: 72 });
-        expect(renderedPages.length).toBe(2);
+        expect(renderedPages).toHaveLength(2);
 
         // Verify dimensions and validity of rendered PNG
         const meta1 = await sharp(renderedPages[0]).metadata();
@@ -146,7 +146,7 @@ describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gat
         expect(oracleResult.pageCount).toBe(2);
         expect(oracleResult.meanMssim).toBeCloseTo(1.0, 3);
         expect(oracleResult.cerScore).toBe(0.0);
-        expect(oracleResult.discrepancies.length).toBe(0);
+        expect(oracleResult.discrepancies).toHaveLength(0);
       }
     );
   });
@@ -169,8 +169,8 @@ describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gat
       // Ro = FR + 0.7071 * FC + 0.7071 * BR = 0.0 + 0.7071*0.5 + 0.0 = 0.35355339
       const downmixed = downmixPcmToStereoItuRBs775([FL, FR, FC, LFE, BL, BR], false);
 
-      expect(downmixed.left.length).toBe(sampleCount);
-      expect(downmixed.right.length).toBe(sampleCount);
+      expect(downmixed.left).toHaveLength(sampleCount);
+      expect(downmixed.right).toHaveLength(sampleCount);
       expect(downmixed.left[0]).toBeCloseTo(1.0 + 0.5 * Math.SQRT2, 4);
       expect(downmixed.right[0]).toBeCloseTo(0.25 * Math.SQRT2, 4);
     });
@@ -287,7 +287,7 @@ describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gat
 
       const inspectResult = inspectTarWithNativeTar(tarBuffer);
       expect(inspectResult.passed).toBe(true);
-      expect(inspectResult.entries.length).toBe(2);
+      expect(inspectResult.entries).toHaveLength(2);
 
       const paths = inspectResult.entries.map((e) => e.path);
       expect(paths).toContain('alpha.txt');
@@ -319,7 +319,7 @@ describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gat
         );
 
         expect(digestResult.matched).toBe(true);
-        expect(digestResult.discrepancies.length).toBe(0);
+        expect(digestResult.discrepancies).toHaveLength(0);
         expect(digestResult.computedDigests['file_a.txt']).toBe(expectedHashA);
         expect(digestResult.computedDigests['nested/file_b.txt']).toBe(expectedHashB);
 
@@ -394,7 +394,7 @@ describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gat
       const comparison = await compareOfficeDocumentStructure(docxA, docxB, 'docx');
       expect(comparison.matched).toBe(true);
       expect(comparison.structuralScore).toBe(1.0);
-      expect(comparison.discrepancies.length).toBe(0);
+      expect(comparison.discrepancies).toHaveLength(0);
 
       // Create corrupted docx without [Content_Types].xml
       const zip = new JSZip();

@@ -226,7 +226,7 @@ export async function computeWang2004Mssim(
       const num = (2 * mXY + C1) * (2 * sigmaXY + C2);
       const den = (mX2 + mY2 + C1) * (sigmaX2 + sigmaY2 + C2);
 
-      const localSsim = den !== 0 ? num / den : 1.0;
+      const localSsim = Math.abs(den) > 1e-12 ? num / den : 1.0;
       ssimSum += localSsim;
       sampleCount++;
     }
