@@ -11,6 +11,7 @@ import {
   WebhookSecretRotateResponseSchema,
   UsageLedgerEntrySchema,
   UsageQueryResponseSchema,
+  ArchiveInspectResponseSchema,
 } from '@/lib/api/contracts';
 
 export const dynamic = 'force-dynamic';
@@ -51,6 +52,77 @@ export async function GET() {
       { BearerAuth: [] },
     ],
     paths: {
+      '/api/v1/archives/inspect': {
+        post: {
+          summary: 'Inspect Archive Metadata',
+          description:
+            'Inspects archive structure, entry metadata, and encryption status without extracting uncompressed contents. Supports ZIP, 7z, TAR, RAR, and compressed TAR variants.',
+          operationId: 'inspectArchiveV1',
+          security: [
+            { ApiKeyAuth: ['convert:write'] },
+            { BearerAuth: ['convert:write'] },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'multipart/form-data': {
+                schema: {
+                  type: 'object',
+                  required: ['file'],
+                  properties: {
+                    file: {
+                      type: 'string',
+                      format: 'binary',
+                      description: 'Archive file binary to inspect.',
+                    },
+                    password: {
+                      type: 'string',
+                      description: 'Optional password for encrypted headers or entries.',
+                    },
+                  },
+                },
+              },
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['storageKey'],
+                  properties: {
+                    storageKey: {
+                      type: 'string',
+                      description: 'Storage key of previously uploaded archive.',
+                    },
+                    filename: {
+                      type: 'string',
+                      description: 'Optional filename hint.',
+                    },
+                    password: {
+                      type: 'string',
+                      description: 'Optional password for encrypted headers.',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Archive successfully inspected.',
+              content: {
+                'application/json': {
+                  schema: {
+                    $ref: '#/components/schemas/ArchiveInspectResponse',
+                  },
+                },
+              },
+            },
+            '400': createProblemResponse('Bad request or missing required parameters.'),
+            '401': createProblemResponse('Unauthorized: API key or session required.'),
+            '403': createProblemResponse('Forbidden: Insufficient scope or quota exhausted.'),
+            '422': createProblemResponse('Unprocessable Entity: Header encrypted, missing volume, or invalid archive.'),
+            '500': createProblemResponse('Internal server error.'),
+          },
+        },
+      },
       '/api/v1/convert': {
         post: {
           summary: 'Synchronous File Conversion',
@@ -905,6 +977,10 @@ export async function GET() {
               },
             },
           },
+        },
+        ArchiveInspectResponse: {
+          ...ArchiveInspectResponseSchema,
+          $id: undefined,
         },
       },
     },

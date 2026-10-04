@@ -168,6 +168,12 @@ import {
   convertWithNative7z,
   getXzBinaryPath,
   get7zBinaryPath,
+  inspectArchive,
+  repairZipArchive,
+  resolveArchiveEntryCollisions,
+  matchArchiveGlob,
+  buildSyntheticStoredRarBuffer,
+  validateMultiVolumeSequence,
 } from './archive';
 
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
@@ -325,6 +331,12 @@ export {
   convertWithNative7z,
   getXzBinaryPath,
   get7zBinaryPath,
+  inspectArchive,
+  repairZipArchive,
+  resolveArchiveEntryCollisions,
+  matchArchiveGlob,
+  buildSyntheticStoredRarBuffer,
+  validateMultiVolumeSequence,
   detectFfmpegEnvironment,
   type FfmpegEnvironmentInfo,
   BitReader,

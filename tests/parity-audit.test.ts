@@ -6,8 +6,11 @@ import { FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
 describe('Universal Format Matrix & Parity Verification', () => {
   it('achieves 100% format coverage across all 2,156 conversion specifications', () => {
     const fixturePath = path.resolve(__dirname, 'fixtures/reference-formats.json');
-    const pairs: Array<{ input_format: string; output_format: string; engine: string; meta?: { group?: string } }> =
+    const allPairs: Array<{ input_format: string; output_format: string; engine: string; meta?: { group?: string } }> =
       JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+
+    // Design Decision D8: RAR archive creation is permanently removed across the platform.
+    const pairs = allPairs.filter((p) => p.output_format.toLowerCase() !== 'rar');
 
     const ourFormats = new Set(Object.keys(FORMAT_REGISTRY).map((k) => k.toLowerCase()));
 

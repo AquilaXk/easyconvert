@@ -22,6 +22,7 @@ import {
   extract7zArchive,
   createRarArchive,
   extractRarArchive,
+  buildSyntheticStoredRarBuffer,
   convertWithNative7z,
   getXzBinaryPath,
   get7zBinaryPath,
@@ -368,14 +369,17 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
     });
 
     it('authentically creates and extracts RAR archives with valid block headers and CRC32', () => {
-      const rarRes = createRarArchive(testFiles, {}, 'dataset.rar');
+      // D8 Enforcement: Production RAR creation is permanently disabled
+      expect(() => createRarArchive(testFiles, {}, 'dataset.rar')).toThrow(ConversionFailedError);
+
+      const rarBuffer = buildSyntheticStoredRarBuffer(testFiles);
 
       // Verify RAR4 signature: 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00
-      expect(rarRes.buffer.subarray(0, 7)).toEqual(
+      expect(rarBuffer.subarray(0, 7)).toEqual(
         Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00])
       );
 
-      const extracted = extractRarArchive(rarRes.buffer);
+      const extracted = extractRarArchive(rarBuffer);
       expect(extracted.length).toBe(testFiles.length);
 
       for (const expected of testFiles) {
