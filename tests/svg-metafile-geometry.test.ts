@@ -993,11 +993,19 @@ describe('SVG document model for metafile encoders', () => {
       });
     }
 
-    it('never turns a huge stroke-miterlimit into a RangeError', () => {
-      for (const encode of [encodeEmf, encodeWmf, encodeCgm]) {
-        const err = errorOf(() => encode(svgDoc(LINE('stroke-miterlimit="5000000000"'))));
-        expect(err === null || err instanceof ConversionFailedError, String(err)).toBe(true);
+    it('encodes a huge stroke-miterlimit (no record holds it; the 90-degree corner mitres either way)', () => {
+      const svg = svgDoc(LINE('stroke-miterlimit="5000000000"'));
+      const PS_JOIN_MITER = 0x2000;
+      const JOIN_MASK = 0xf000;
+      for (const shapes of [emfOraclePlayback(encodeEmf(svg)), wmfOraclePlayback(encodeWmf(svg))]) {
+        const stroked = shapes.filter((sh) => sh.pen !== null);
+        expect(stroked).toHaveLength(1);
+        expect(stroked[0].pen!.style & JOIN_MASK).toBe(PS_JOIN_MITER);
+        expect(corners(stroked[0].rings[0])).toEqual([[10, 10], [50, 50], [90, 10]]);
       }
+      const cgm = cgmOracleDocument(encodeCgm(svg).toString('utf-8'));
+      const polylines = cgm.body.filter((e) => e.name === 'POLYLINE').map((e) => cgmOraclePoints(e.params));
+      expect(polylines).toEqual([[{ x: 10, y: 10 }, { x: 50, y: 50 }, { x: 90, y: 10 }]]);
     });
 
     it('rejects a WMF poly-polygon with more rings than its 16-bit count allows', () => {
