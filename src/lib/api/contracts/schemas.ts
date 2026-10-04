@@ -337,6 +337,97 @@ export const PipelineTaskSchema = {
   },
 } as const;
 
+export const JobGraphSchema = {
+  $id: 'https://easyconvert.local/schemas/job-graph.json',
+  type: 'object',
+  required: ['nodes'],
+  properties: {
+    failurePolicy: {
+      type: 'string',
+      enum: ['fail_fast', 'continue'],
+      default: 'fail_fast',
+      description: 'Failure handling policy across parallel execution branches.',
+    },
+    nodes: {
+      type: 'object',
+      minProperties: 1,
+      propertyNames: {
+        pattern: '^[a-z][a-z0-9_-]{0,63}$',
+      },
+      additionalProperties: {
+        type: 'object',
+        required: ['op'],
+        properties: {
+          op: {
+            type: 'string',
+            enum: [
+              'import.upload',
+              'import.url',
+              'convert',
+              'ocr',
+              'optimize',
+              'archive.create',
+              'archive.extract',
+              'export.url',
+              'export.internal',
+            ],
+            description: 'Operation type for this graph node.',
+          },
+          input: {
+            description: 'Single upstream NodeId or array of upstream NodeIds.',
+            oneOf: [
+              {
+                type: 'string',
+                pattern: '^[a-z][a-z0-9_-]{0,63}$',
+              },
+              {
+                type: 'array',
+                items: {
+                  type: 'string',
+                  pattern: '^[a-z][a-z0-9_-]{0,63}$',
+                },
+                minItems: 1,
+              },
+            ],
+          },
+          storageKey: {
+            type: 'string',
+            description: 'Storage key for import.upload node.',
+          },
+          url: {
+            type: 'string',
+            format: 'uri',
+            description: 'URL for import.url or export.url node.',
+          },
+          headers: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+            description: 'Optional HTTP headers for URL operations.',
+          },
+          method: {
+            type: 'string',
+            enum: ['PUT', 'POST'],
+            description: 'HTTP method for export.url node.',
+          },
+          targetFormat: {
+            type: 'string',
+            description: 'Target format extension for convert or archive.create.',
+          },
+          options: {
+            $ref: 'https://easyconvert.local/schemas/conversion-options.json',
+            description: 'Transformation options for convert, ocr, optimize, or archive.create.',
+          },
+          entries: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Glob patterns for archive.extract entries.',
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 export const JobCreateRequestSchema = {
   $id: 'https://easyconvert.local/schemas/job-create-request.json',
   type: 'object',
@@ -384,6 +475,10 @@ export const JobCreateRequestSchema = {
       items: {
         $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
       },
+    },
+    graph: {
+      $ref: 'https://easyconvert.local/schemas/job-graph.json',
+      description: 'Directed acyclic graph (DAG) specifying multi-stage fan-out and fan-in conversion workflow.',
     },
     webhookUrl: {
       type: 'string',

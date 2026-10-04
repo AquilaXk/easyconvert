@@ -5,6 +5,7 @@ import { createProblemDetailsResponse, ProblemDetails } from '../problem-details
 import {
   ConversionOptionsSchema,
   PipelineTaskSchema,
+  JobGraphSchema,
   JobCreateRequestSchema,
   ProblemDetailsSchema,
   JobResourceSchema,
@@ -42,6 +43,7 @@ ajv.addKeyword({
 // Register SSOT schemas with Ajv
 ajv.addSchema(ConversionOptionsSchema);
 ajv.addSchema(PipelineTaskSchema);
+ajv.addSchema(JobGraphSchema);
 ajv.addSchema(JobCreateRequestSchema);
 ajv.addSchema(ProblemDetailsSchema);
 ajv.addSchema(JobResourceSchema);
