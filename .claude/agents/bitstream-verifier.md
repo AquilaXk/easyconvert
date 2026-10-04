@@ -2,6 +2,7 @@
 name: bitstream-verifier
 description: Read-only verifier that proves conversion outputs are genuine by running independent standard toolchains (ffprobe/ffmpeg, pdfinfo/pdftotext, 7z, zstd, ImageMagick identify/magick, tesseract, soffice) against produced files. Use proactively after changing anything under src/lib/conversions, src/lib/edge, or src/worker, or when a PR claims spec compliance. Never edits source files.
 tools: Read, Grep, Glob, Bash
+model: haiku
 effort: high
 color: yellow
 ---
