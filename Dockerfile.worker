@@ -36,33 +36,39 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
 # 1. Install Tini Init, util-linux (prlimit), Native Conversion Engines, and CJK Font Packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tini \
-    util-linux \
-    ca-certificates \
-    curl \
-    ffmpeg \
-    libva-drm2 \
-    mesa-va-drivers \
-    intel-media-va-driver \
-    vainfo \
-    fonts-dejavu-core \
-    fonts-freefont-ttf \
-    fonts-noto-cjk \
-    fonts-noto-core \
-    fonts-noto-ui-core \
-    fonts-noto-color-emoji \
-    libreoffice-calc \
-    libreoffice-impress \
-    libreoffice-nogpu \
-    libreoffice-writer \
-    p7zip-full \
-    p7zip-rar \
-    poppler-utils \
-    tesseract-ocr \
-    tesseract-ocr-eng \
-    tesseract-ocr-kor \
-    qpdf \
+RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+    && apt-get update \
+    && EXTRA_PKGS="" \
+    && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+        EXTRA_PKGS="intel-media-va-driver"; \
+    fi \
+    && apt-get install -y --no-install-recommends \
+        tini \
+        util-linux \
+        ca-certificates \
+        curl \
+        ffmpeg \
+        libva-drm2 \
+        mesa-va-drivers \
+        $EXTRA_PKGS \
+        vainfo \
+        fonts-dejavu-core \
+        fonts-freefont-ttf \
+        fonts-noto-cjk \
+        fonts-noto-core \
+        fonts-noto-ui-core \
+        fonts-noto-color-emoji \
+        libreoffice-calc \
+        libreoffice-impress \
+        libreoffice-nogpu \
+        libreoffice-writer \
+        p7zip-full \
+        p7zip-rar \
+        poppler-utils \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-kor \
+        qpdf \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -f video && groupadd -r -f render \
@@ -90,7 +96,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD node scripts/worker-healthcheck.js || exit 1
 
 # Process init wrapper for signal forwarding (SIGTERM/SIGINT) and zombie reaping (/usr/bin/tini -g)
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
 
 # Start the compiled OCI worker daemon directly with Node (no npm, no tsx)
 CMD ["node", "dist/worker.js"]

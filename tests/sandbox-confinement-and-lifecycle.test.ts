@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFile } from 'node:child_process';
 import yaml from 'js-yaml';
 
 import {
@@ -13,7 +13,11 @@ import {
   killProcessGroup,
   SandboxedTimeoutError,
   SandboxedMemoryLimitError,
+  SandboxedBufferLimitError,
 } from '../src/lib/security/process-sandbox';
+import { withWorkerSandbox, runInWorkerSandbox } from '../src/worker/sandbox';
+import net from 'node:net';
+import { checkRedisConnectivity } from '../scripts/worker-healthcheck.js';
 import {
   checkRecycleNeeded,
   writeHeartbeatSync,
@@ -125,8 +129,13 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       expect(dockerfile).toContain('useradd -u 10001 -r -g easyconvert');
       expect(dockerfile).toContain('USER easyconvert:easyconvert');
 
-      // Tini init with process group forwarding
-      expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "--"]');
+      // Multi-arch handling: enable non-free for p7zip-rar and conditionally install intel-media-va-driver on amd64
+      expect(dockerfile).toContain('Components: main contrib non-free');
+      expect(dockerfile).toContain('if [ "$(dpkg --print-architecture)" = "amd64" ]; then');
+      expect(dockerfile).toContain('EXTRA_PKGS="intel-media-va-driver"');
+
+      // Tini init with process group forwarding (-g)
+      expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "-g", "--"]');
 
       // Direct node execution (no npm or tsx runtime in runner)
       expect(dockerfile).toContain('CMD ["node", "dist/worker.js"]');
@@ -242,6 +251,50 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       const memError = caughtError as SandboxedMemoryLimitError;
       expect(memError.limitMb).toBe(48);
     });
+
+    it('translates SIGXFSZ signal termination into SandboxedBufferLimitError', async () => {
+      let caughtError: unknown = null;
+      try {
+        await executeSandboxedBinary('/bin/sh', ['-c', 'kill -s XFSZ $$'], {
+          maxFileSize: 2048,
+        });
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeInstanceOf(SandboxedBufferLimitError);
+      const bufError = caughtError as SandboxedBufferLimitError;
+      expect(bufError.limitBytes).toBe(2048);
+      expect(bufError.message).toContain('2048 bytes');
+    });
+
+    it('forwards AbortSignal through withWorkerSandbox and runInWorkerSandbox', async () => {
+      const controller = new AbortController();
+      const start = Date.now();
+
+      const runPromise = runInWorkerSandbox(
+        process.execPath,
+        ['-e', 'setInterval(() => {}, 1000)'],
+        { signal: controller.signal, timeoutMs: 5000 }
+      );
+
+      setTimeout(() => {
+        controller.abort(new Error('Sandbox signal abortion'));
+      }, 80);
+
+      await expect(runPromise).rejects.toThrow('Sandbox signal abortion');
+      expect(Date.now() - start).toBeLessThan(1500);
+    });
+
+    it('buildPrlimitArgs rejects non-finite numbers (NaN, Infinity)', () => {
+      const cap = { available: true, path: '/usr/bin/prlimit' };
+      const args = buildPrlimitArgs(cap, {
+        asBytes: Infinity,
+        fsizeBytes: NaN,
+        nproc: -Infinity,
+      });
+      expect(args).toEqual([]);
+    });
   });
 
   // ============================================================================
@@ -329,6 +382,33 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       expect(isDraining).toBe(true);
       expect(fakeJob.signal.aborted).toBe(true);
     });
+
+    it('ociWorker.pause() stops polling queues while preserving event listeners', () => {
+      let completedCalled = false;
+      const listener = () => {
+        completedCalled = true;
+      };
+      ociWorker.on('completed', listener);
+
+      ociWorker.pause();
+      ociWorker.emit('completed', {} as any, {} as any);
+      expect(completedCalled).toBe(true);
+
+      ociWorker.removeListener('completed', listener);
+    });
+
+    it('writeHeartbeatSync creates file atomically with zero orphan temporary files', () => {
+      writeHeartbeatSync('healthy', testHeartbeatPath);
+      expect(fs.existsSync(testHeartbeatPath)).toBe(true);
+
+      const parsed = JSON.parse(fs.readFileSync(testHeartbeatPath, 'utf-8'));
+      expect(parsed.pid).toBe(process.pid);
+      expect(parsed.status).toBe('healthy');
+
+      const files = fs.readdirSync(tmpDir);
+      const orphanTmpFiles = files.filter((f) => f.startsWith(path.basename(testHeartbeatPath) + '.tmp.'));
+      expect(orphanTmpFiles.length).toBe(0);
+    });
   });
 
   // ============================================================================
@@ -391,6 +471,88 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
 
       expect(res.status).toBe(1);
       expect(res.stderr).toContain('Heartbeat is stale');
+    });
+
+    it('checkRedisConnectivity succeeds against a mock TCP server responding with PONG', async () => {
+      const server = net.createServer((socket) => {
+        socket.on('data', () => {
+          socket.write('+PONG\r\n');
+        });
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as net.AddressInfo).port;
+
+      try {
+        const result = await checkRedisConnectivity('127.0.0.1', port, 2000);
+        expect(result).toBe(true);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('checkRedisConnectivity rejects when Redis responds with an unexpected error', async () => {
+      const server = net.createServer((socket) => {
+        socket.on('data', () => {
+          socket.write('-ERR unknown command\r\n');
+        });
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as net.AddressInfo).port;
+
+      try {
+        await expect(checkRedisConnectivity('127.0.0.1', port, 2000)).rejects.toThrow(
+          'Unexpected Redis response'
+        );
+      } finally {
+        server.close();
+      }
+    });
+
+    it('healthcheck exits with 0 when live Redis mock connection succeeds', async () => {
+      const server = net.createServer((socket) => {
+        socket.on('data', () => {
+          socket.write('+PONG\r\n');
+        });
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as net.AddressInfo).port;
+
+      writeHeartbeatSync('healthy', testHeartbeatPath);
+
+      try {
+        const outcome = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
+          (resolve) => {
+            const child = execFile(
+              process.execPath,
+              [healthcheckScript],
+              {
+                env: {
+                  ...process.env,
+                  WORKER_HEARTBEAT_FILE: testHeartbeatPath,
+                  REDIS_HOST: '127.0.0.1',
+                  REDIS_PORT: String(port),
+                },
+                encoding: 'utf-8',
+              },
+              (err, stdout, stderr) => {
+                resolve({
+                  code: child.exitCode ?? (err ? 1 : 0),
+                  stdout: stdout || '',
+                  stderr: stderr || '',
+                });
+              }
+            );
+          }
+        );
+
+        expect(outcome.code).toBe(0);
+        expect(outcome.stdout).toContain('[Healthcheck] Healthy');
+      } finally {
+        server.close();
+      }
     });
   });
 });

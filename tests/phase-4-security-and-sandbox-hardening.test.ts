@@ -202,7 +202,7 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
       expect(dockerfileContent).toContain('AS builder');
       expect(dockerfileContent).toContain('AS runner');
       expect(dockerfileContent).toContain('tini');
-      expect(dockerfileContent).toContain('ENTRYPOINT ["/usr/bin/tini", "--"]');
+      expect(dockerfileContent).toContain('ENTRYPOINT ["/usr/bin/tini", "-g", "--"]');
       expect(dockerfileContent).toContain('groupadd -g 10001 -r easyconvert');
       expect(dockerfileContent).toContain('useradd -u 10001 -r -g easyconvert');
       expect(dockerfileContent).toContain('USER easyconvert:easyconvert');

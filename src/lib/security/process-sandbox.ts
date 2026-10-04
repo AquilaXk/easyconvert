@@ -284,16 +284,16 @@ export function buildPrlimitArgs(
   rlimits: SandboxedRlimitsOptions
 ): string[] {
   const args: string[] = [];
-  if (rlimits.asBytes && rlimits.asBytes > 0) {
+  if (rlimits.asBytes && Number.isFinite(rlimits.asBytes) && rlimits.asBytes > 0) {
     args.push(`--as=${Math.round(rlimits.asBytes)}`);
   }
-  if (rlimits.fsizeBytes && rlimits.fsizeBytes > 0) {
+  if (rlimits.fsizeBytes && Number.isFinite(rlimits.fsizeBytes) && rlimits.fsizeBytes > 0) {
     args.push(`--fsize=${Math.round(rlimits.fsizeBytes)}`);
   }
-  if (rlimits.nproc && rlimits.nproc > 0) {
+  if (rlimits.nproc && Number.isFinite(rlimits.nproc) && rlimits.nproc > 0) {
     args.push(`--nproc=${Math.round(rlimits.nproc)}`);
   }
-  if (rlimits.cpuSeconds && rlimits.cpuSeconds > 0) {
+  if (rlimits.cpuSeconds && Number.isFinite(rlimits.cpuSeconds) && rlimits.cpuSeconds > 0) {
     args.push(`--cpu=${Math.round(rlimits.cpuSeconds)}`);
   }
   return args;
@@ -669,6 +669,10 @@ export async function executeSandboxedBinary(
         });
       };
       options.signal.addEventListener('abort', abortListener, { once: true });
+      if (options.signal.aborted) {
+        abortListener();
+        return;
+      }
     }
 
     if (stdin && proc.stdin) {
@@ -709,17 +713,23 @@ export async function executeSandboxedBinary(
       });
     }, timeoutMs);
 
-    if (memoryLimitMb && memoryLimitMb > 0) {
+    const effectiveMemoryLimitMb =
+      memoryLimitMb ||
+      (options.rlimits?.asBytes && Number.isFinite(options.rlimits.asBytes) && options.rlimits.asBytes > 0
+        ? Math.round(options.rlimits.asBytes / (1024 * 1024))
+        : undefined);
+
+    if (effectiveMemoryLimitMb && effectiveMemoryLimitMb > 0) {
       memoryInterval = setInterval(() => {
         if (!proc.pid || isSettled) return;
         const rssMb = getProcessRssMb(proc.pid);
-        if (rssMb !== null && rssMb > memoryLimitMb) {
+        if (rssMb !== null && rssMb > effectiveMemoryLimitMb) {
           settle(() => {
             killProcessGroup(proc.pid, 'SIGKILL');
             try {
               proc.kill('SIGKILL');
             } catch {}
-            reject(new SandboxedMemoryLimitError(memoryLimitMb));
+            reject(new SandboxedMemoryLimitError(effectiveMemoryLimitMb));
           });
         }
       }, 50);
@@ -763,6 +773,10 @@ export async function executeSandboxedBinary(
 
     proc.on('error', (err) => {
       settle(() => {
+        killProcessGroup(proc.pid, 'SIGKILL');
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
         reject(err);
       });
     });

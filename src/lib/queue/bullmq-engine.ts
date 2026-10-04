@@ -254,6 +254,7 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
 
 export interface IQueueWorker<T = any, R = any> extends EventEmitter {
   readonly name: string;
+  pause(): void;
   close(): Promise<void>;
 }
 
@@ -844,7 +845,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     this.emit('failed', job, err);
   }
 
-  async close(): Promise<void> {
+  pause(): void {
     this.isRunning = false;
     if (this.pollingTimer) {
       clearInterval(this.pollingTimer);
@@ -858,6 +859,10 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
       q.removeListener('waiting', listener);
     }
     this.waitingListeners.clear();
+  }
+
+  async close(): Promise<void> {
+    this.pause();
     this.removeAllListeners();
   }
 }

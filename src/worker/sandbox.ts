@@ -139,6 +139,7 @@ export async function withWorkerSandbox<T>(
         memoryLimitMb: execOpts.memoryLimitMb ?? options.memoryLimitMb,
         maxFileSize: execOpts.maxFileSize ?? options.maxFileSize,
         rlimits: execOpts.rlimits ?? options.rlimits,
+        signal: execOpts.signal ?? options.signal,
       });
     },
   };
@@ -173,6 +174,7 @@ export async function runInWorkerSandbox(
       maxFileSize: options.maxFileSize,
       rlimits: options.rlimits,
       env: options.env,
+      signal: options.signal,
     });
   }
 
