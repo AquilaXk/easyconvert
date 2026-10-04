@@ -749,12 +749,21 @@ function shapeGeometry(name: string, attrs: Map<string, string>): UserShape | nu
 
 /** Flattening tolerance for curves, in user units. */
 const PATH_TOLERANCE = 0.25;
-const MIN_STROKE_WIDTH = 0.5;
 const DEFAULT_STROKE_WIDTH = 1;
 
+/**
+ * Resolves stroke-width in user units: invalid values use the initial value 1;
+ * zero or negative widths disable the stroke (returns 0).
+ */
 function resolveStrokeWidth(value: string): number {
   const n = Number.parseFloat(value);
-  return Math.max(MIN_STROKE_WIDTH, n || DEFAULT_STROKE_WIDTH);
+  if (!Number.isFinite(n)) return DEFAULT_STROKE_WIDTH;
+  return Math.max(0, n);
+}
+
+/** Uniform length scale of a transform: the square root of its determinant's magnitude. */
+function matrixLengthScale(m: AffineMatrix): number {
+  return Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
 }
 
 // ============================================================================
@@ -903,6 +912,7 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
 
     if (SHAPE_ELEMENTS.has(tag.name) && ctx.visibility === 'visible') {
       const shape = shapeGeometry(tag.name, tag.attrs);
+      const strokeWidth = resolveStrokeWidth(ctx.strokeWidth);
       if (shape && shape.subpaths.length > 0) {
         elements.push({
           subpaths: shape.subpaths.map((sub) => sub.map((p) => applyMatrix(ctx.ctm, p.x, p.y))),
@@ -910,8 +920,8 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
           fillable: tag.name !== 'line',
           fill: resolvePaint(ctx.fill, ctx.color, 'fill'),
           fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
-          stroke: resolvePaint(ctx.stroke, ctx.color, 'stroke'),
-          strokeWidth: resolveStrokeWidth(ctx.strokeWidth),
+          stroke: strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null,
+          strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
         });
       }
     }

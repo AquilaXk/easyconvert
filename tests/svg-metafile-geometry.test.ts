@@ -335,4 +335,28 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeEmf(svgDoc('<line x1="0" y1="0" x2="10" y2="10"/>'))).toThrow(CadGeometryUnavailableError);
     });
   });
+
+  describe('stroke width', () => {
+    function penWidths(body: string, rootAttrs?: string): number[] {
+      return [emfShapes(body, rootAttrs), wmfShapes(body, rootAttrs)].map((shapes) => {
+        const pens = shapes.filter((s) => s.pen !== null).map((s) => s.pen!.width);
+        expect(new Set(pens).size).toBe(1);
+        return pens[0];
+      });
+    }
+
+    it('scales stroke widths by the viewBox-to-device scale', () => {
+      expect(penWidths('<line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="1"/>', 'width="100" height="100" viewBox="0 0 10 10"')).toEqual([10, 10]);
+    });
+
+    it('scales stroke widths by element transforms', () => {
+      expect(penWidths('<g transform="scale(2)"><line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="3"/></g>')).toEqual([6, 6]);
+    });
+
+    it('treats stroke-width 0 as no stroke', () => {
+      expect(() => encodeEmf(svgDoc('<line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="0"/>'))).toThrow(
+        CadGeometryUnavailableError
+      );
+    });
+  });
 });
