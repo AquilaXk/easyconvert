@@ -4,6 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { MultipartUploadInit, UploadedPart, MultipartUploadComplete } from '../types';
 import { secureShredBuffer } from '../security/memory-shredder';
+import {
+  ObjectStat,
+  PayloadTooLargeForMemoryError,
+  StoredObjectMissingError,
+  getMaxInMemoryBytes,
+} from './errors';
+
+export * from './errors';
 
 export interface OciStorageConfig {
   namespace: string;
@@ -58,7 +66,15 @@ export interface IStorageBackend {
   abortMultipartUpload(uploadId: string): boolean;
   saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): StoredObject;
   saveObjectFromFile?(key: string, filePath: string, mimeType: string, filename: string, ttlMs?: number): StoredObject;
+  saveObjectFromStream(
+    key: string,
+    stream: NodeJS.ReadableStream,
+    meta: { filename: string; mimeType: string; size?: number },
+    ttlMs?: number
+  ): Promise<StoredObject>;
   getObject(key: string): StoredObject | undefined;
+  stat(key: string): ObjectStat | null;
+  openReadStream(key: string, range?: { start: number; end: number }): NodeJS.ReadableStream | null;
   getObjectStream?(key: string, range?: { start: number; end: number }): fs.ReadStream | null;
   deleteObject(key: string): boolean;
   getActiveSessionsCount(): number;
@@ -315,12 +331,18 @@ export class OciObjectStorageService implements IStorageBackend {
       expiresAt: now + 60 * 60 * 1000, // 1-hour TTL
       filePath: finalFilePath,
       get buffer(): Buffer {
+        if (totalSize > getMaxInMemoryBytes()) {
+          throw new PayloadTooLargeForMemoryError(undefined, {
+            size: totalSize,
+            limit: getMaxInMemoryBytes(),
+          });
+        }
         if (cachedBuffer) return cachedBuffer;
         if (fs.existsSync(finalFilePath)) {
           cachedBuffer = fs.readFileSync(finalFilePath);
           return cachedBuffer;
         }
-        return Buffer.alloc(0);
+        throw new StoredObjectMissingError(undefined, { key: session.key, filePath: finalFilePath });
       },
     };
 
@@ -420,12 +442,18 @@ export class OciObjectStorageService implements IStorageBackend {
       expiresAt: now + ttlMs,
       filePath,
       get buffer(): Buffer {
+        if (stat.size > getMaxInMemoryBytes()) {
+          throw new PayloadTooLargeForMemoryError(undefined, {
+            size: stat.size,
+            limit: getMaxInMemoryBytes(),
+          });
+        }
         if (cachedBuffer) return cachedBuffer;
         if (fs.existsSync(filePath)) {
           cachedBuffer = fs.readFileSync(filePath);
           return cachedBuffer;
         }
-        return Buffer.alloc(0);
+        throw new StoredObjectMissingError(undefined, { key: ociKey, filePath });
       },
       set buffer(b: Buffer) {
         cachedBuffer = b;
@@ -505,7 +533,11 @@ export class OciObjectStorageService implements IStorageBackend {
               fs.rmSync(obj.filePath, { force: true });
             } catch {}
           }
-          this.shredBuffer(obj.buffer);
+          if (obj.size <= getMaxInMemoryBytes()) {
+            try {
+              this.shredBuffer(obj.buffer);
+            } catch {}
+          }
           shreddedObjects.add(obj);
           count++;
         }
@@ -517,15 +549,130 @@ export class OciObjectStorageService implements IStorageBackend {
   }
 
   /**
-   * Retrieves streaming reader for stored object with optional byte range support
+   * Returns metadata and stats for stored object without loading it into heap
+   */
+  stat(key: string): ObjectStat | null {
+    const obj = this.getObject(key);
+    if (!obj) return null;
+    return {
+      size: obj.size,
+      etag: obj.etag,
+      mimeType: obj.mimeType,
+      filename: obj.filename,
+      filePath: obj.filePath,
+    };
+  }
+
+  /**
+   * Retrieves streaming reader for stored object (standard IStorageBackend interface)
+   */
+  openReadStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
+    return this.getObjectStream(key, range);
+  }
+
+  /**
+   * Retrieves streaming reader for stored object with optional byte range support (alias)
    */
   getObjectStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
     const obj = this.getObject(key);
     if (!obj) return null;
+    const streamOpts: { start?: number; end?: number; highWaterMark: number } = {
+      highWaterMark: 64 * 1024,
+    };
+    if (range) {
+      if (typeof range.start === 'number') streamOpts.start = range.start;
+      if (typeof range.end === 'number') streamOpts.end = range.end;
+    }
     if (obj.filePath && fs.existsSync(obj.filePath)) {
-      return fs.createReadStream(obj.filePath, range ? { start: range.start, end: range.end } : undefined);
+      return fs.createReadStream(obj.filePath, streamOpts);
     }
     return globalSharedObjects.getStream(key, range);
+  }
+
+  /**
+   * Streams data directly into a temporary file on disk, fsyncs, renames atomically, and indexes
+   */
+  async saveObjectFromStream(
+    key: string,
+    stream: NodeJS.ReadableStream,
+    meta: { filename: string; mimeType: string; size?: number },
+    ttlMs: number = 60 * 60 * 1000
+  ): Promise<OciStoredObject> {
+    const objectsDir = path.join(os.tmpdir(), 'easyconvert_oci_objects');
+    if (!fs.existsSync(objectsDir)) {
+      try {
+        fs.mkdirSync(objectsDir, { recursive: true });
+      } catch {}
+    }
+    const tempFilePath = path.join(objectsDir, `stream-${crypto.randomUUID()}.tmp`);
+    const finalFilePath = path.join(objectsDir, `oci-${crypto.randomUUID()}-${path.basename(meta.filename)}`);
+
+    const outFd = fs.openSync(tempFilePath, 'w');
+    const hasher = crypto.createHash('md5');
+    let totalBytes = 0;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        stream.on('data', (chunk: Buffer | string) => {
+          try {
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            fs.writeSync(outFd, buf, 0, buf.length, null);
+            hasher.update(buf);
+            totalBytes += buf.length;
+          } catch (err) {
+            reject(err);
+          }
+        });
+        stream.on('end', () => resolve());
+        stream.on('error', (err) => reject(err));
+      });
+      fs.fsyncSync(outFd);
+    } finally {
+      fs.closeSync(outFd);
+    }
+
+    fs.renameSync(tempFilePath, finalFilePath);
+
+    const etag = `"${hasher.digest('hex')}"`;
+    const ociKey = key.startsWith('n/') ? key : `n/${this.config.namespace}/b/${this.config.bucketName}/o/${key}`;
+    const now = Date.now();
+    let cachedBuffer: Buffer | null = null;
+
+    const stored: OciStoredObject = {
+      key: ociKey,
+      filename: meta.filename,
+      mimeType: meta.mimeType,
+      size: totalBytes,
+      etag,
+      namespace: this.config.namespace,
+      bucket: this.config.bucketName,
+      uploadedAt: now,
+      expiresAt: now + ttlMs,
+      filePath: finalFilePath,
+      get buffer(): Buffer {
+        if (totalBytes > getMaxInMemoryBytes()) {
+          throw new PayloadTooLargeForMemoryError(undefined, {
+            size: totalBytes,
+            limit: getMaxInMemoryBytes(),
+          });
+        }
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(finalFilePath)) {
+          cachedBuffer = fs.readFileSync(finalFilePath);
+          return cachedBuffer;
+        }
+        throw new StoredObjectMissingError(undefined, { key: ociKey, filePath: finalFilePath });
+      },
+    };
+
+    this.objects.set(ociKey, stored);
+    globalSharedObjects.set(ociKey, stored);
+    if (key !== ociKey) {
+      this.objects.set(key, stored);
+      globalSharedObjects.set(key, stored);
+    }
+
+    return stored;
   }
 
   getActiveSessionsCount(): number {
@@ -630,8 +777,25 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
     return this.backend.saveObject(key, buffer, mimeType, filename, ttlMs);
   }
 
+  saveObjectFromStream(
+    key: string,
+    stream: NodeJS.ReadableStream,
+    meta: { filename: string; mimeType: string; size?: number },
+    ttlMs?: number
+  ): Promise<StoredObject> {
+    return this.backend.saveObjectFromStream(key, stream, meta, ttlMs);
+  }
+
   getObject(key: string): StoredObject | undefined {
     return this.backend.getObject(key);
+  }
+
+  stat(key: string): ObjectStat | null {
+    return this.backend.stat(key);
+  }
+
+  openReadStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
+    return this.backend.openReadStream(key, range);
   }
 
   getObjectStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {

@@ -2,6 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { StoredObject } from './oci-storage';
+import {
+  ObjectStat,
+  PayloadTooLargeForMemoryError,
+  StoredObjectMissingError,
+  getMaxInMemoryBytes,
+} from './errors';
 
 /**
  * Enterprise Shared Object Store with Disk Spool Persistence.
@@ -55,14 +61,25 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         etag: value.etag,
         uploadedAt: value.uploadedAt,
         expiresAt: value.expiresAt,
+        filePath: value.filePath,
         metadata: value.metadata,
       };
       fs.writeFileSync(metaPath, JSON.stringify(meta), 'utf-8');
 
-      if (value.buffer && Buffer.isBuffer(value.buffer)) {
-        fs.writeFileSync(binPath, value.buffer);
-      } else if (value.filePath && fs.existsSync(value.filePath) && value.filePath !== binPath) {
-        fs.copyFileSync(value.filePath, binPath);
+      if (value.filePath && fs.existsSync(value.filePath)) {
+        if (value.filePath !== binPath && value.size <= 64 * 1024 * 1024) {
+          try {
+            fs.copyFileSync(value.filePath, binPath);
+          } catch {}
+        }
+      } else {
+        try {
+          if (value.size <= getMaxInMemoryBytes() && value.buffer && Buffer.isBuffer(value.buffer)) {
+            fs.writeFileSync(binPath, value.buffer);
+          }
+        } catch {
+          // ignore
+        }
       }
     } catch {
       // Disk write failure must not crash in-memory fallback
@@ -103,6 +120,12 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         return undefined;
       }
 
+      const resolvedPath = fs.existsSync(binPath)
+        ? binPath
+        : meta.filePath && fs.existsSync(meta.filePath)
+        ? meta.filePath
+        : undefined;
+
       const reconstructed: StoredObject = {
         key: meta.key,
         filename: meta.filename,
@@ -111,13 +134,19 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         etag: meta.etag,
         uploadedAt: meta.uploadedAt,
         expiresAt: meta.expiresAt,
-        filePath: fs.existsSync(binPath) ? binPath : undefined,
+        filePath: resolvedPath,
         metadata: meta.metadata,
         get buffer(): Buffer {
-          if (fs.existsSync(binPath)) {
-            return fs.readFileSync(binPath);
+          if (meta.size > getMaxInMemoryBytes()) {
+            throw new PayloadTooLargeForMemoryError(undefined, {
+              size: meta.size,
+              limit: getMaxInMemoryBytes(),
+            });
           }
-          return Buffer.alloc(0);
+          if (resolvedPath && fs.existsSync(resolvedPath)) {
+            return fs.readFileSync(resolvedPath);
+          }
+          throw new StoredObjectMissingError(undefined, { key: meta.key, filePath: resolvedPath || binPath });
         },
         set buffer(b: Buffer) {
           try {
@@ -133,9 +162,97 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     }
   }
 
+  public stat(key: string): ObjectStat | null {
+    const obj = this.get(key);
+    if (!obj) return null;
+    return {
+      size: obj.size,
+      etag: obj.etag,
+      mimeType: obj.mimeType,
+      filename: obj.filename,
+      filePath: obj.filePath,
+    };
+  }
+
+  public openReadStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
+    return this.getStream(key, range);
+  }
+
+  public async saveStream(
+    key: string,
+    stream: NodeJS.ReadableStream,
+    meta: { filename: string; mimeType: string; size?: number },
+    ttlMs: number = 24 * 60 * 60 * 1000
+  ): Promise<StoredObject> {
+    this.ensureDirectory();
+    const { metaPath, binPath } = this.getPathsForKey(key);
+    const tempPath = `${binPath}.tmp.${crypto.randomUUID()}`;
+    const outFd = fs.openSync(tempPath, 'w');
+    const hasher = crypto.createHash('sha256');
+    let totalBytes = 0;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        stream.on('data', (chunk: Buffer | string) => {
+          try {
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            fs.writeSync(outFd, buf, 0, buf.length, null);
+            hasher.update(buf);
+            totalBytes += buf.length;
+          } catch (err) {
+            reject(err);
+          }
+        });
+        stream.on('end', () => resolve());
+        stream.on('error', (err) => reject(err));
+      });
+      fs.fsyncSync(outFd);
+    } finally {
+      fs.closeSync(outFd);
+    }
+
+    fs.renameSync(tempPath, binPath);
+
+    const etag = `"${hasher.digest('hex').slice(0, 32)}"`;
+    const now = Date.now();
+    const storedMeta = {
+      key,
+      filename: meta.filename,
+      mimeType: meta.mimeType,
+      size: totalBytes,
+      etag,
+      uploadedAt: now,
+      expiresAt: now + ttlMs,
+    };
+    fs.writeFileSync(metaPath, JSON.stringify(storedMeta), 'utf-8');
+
+    let cachedBuffer: Buffer | null = null;
+    const stored: StoredObject = {
+      ...storedMeta,
+      filePath: binPath,
+      get buffer(): Buffer {
+        if (totalBytes > getMaxInMemoryBytes()) {
+          throw new PayloadTooLargeForMemoryError(undefined, {
+            size: totalBytes,
+            limit: getMaxInMemoryBytes(),
+          });
+        }
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(binPath)) {
+          cachedBuffer = fs.readFileSync(binPath);
+          return cachedBuffer;
+        }
+        throw new StoredObjectMissingError(undefined, { key, filePath: binPath });
+      },
+    };
+
+    super.set(key, stored);
+    return stored;
+  }
+
   public getStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
     const { metaPath, binPath } = this.getPathsForKey(key);
-    if (!fs.existsSync(metaPath) || !fs.existsSync(binPath)) {
+    if (!fs.existsSync(metaPath)) {
       return null;
     }
     try {
@@ -145,10 +262,22 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         this.delete(key);
         return null;
       }
+      const targetPath = fs.existsSync(binPath)
+        ? binPath
+        : meta.filePath && fs.existsSync(meta.filePath)
+        ? meta.filePath
+        : undefined;
+
+      if (!targetPath) return null;
+
+      const streamOpts: { start?: number; end?: number; highWaterMark: number } = {
+        highWaterMark: 64 * 1024,
+      };
       if (range) {
-        return fs.createReadStream(binPath, { start: range.start, end: range.end });
+        if (typeof range.start === 'number') streamOpts.start = range.start;
+        if (typeof range.end === 'number') streamOpts.end = range.end;
       }
-      return fs.createReadStream(binPath);
+      return fs.createReadStream(targetPath, streamOpts);
     } catch {
       return null;
     }

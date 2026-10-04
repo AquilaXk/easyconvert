@@ -11,6 +11,10 @@ import {
   IStorageBackend,
   StoredObject,
   PresignedUrlResult,
+  ObjectStat,
+  PayloadTooLargeForMemoryError,
+  StoredObjectMissingError,
+  getMaxInMemoryBytes,
 } from './oci-storage';
 
 export * from './oci-storage';
@@ -268,12 +272,18 @@ export class S3ObjectStorageService implements IStorageBackend {
       expiresAt: Date.now() + 24 * 60 * 60 * 1000,
       filePath: finalFilePath,
       get buffer(): Buffer {
+        if (totalSize > getMaxInMemoryBytes()) {
+          throw new PayloadTooLargeForMemoryError(undefined, {
+            size: totalSize,
+            limit: getMaxInMemoryBytes(),
+          });
+        }
         if (cachedBuffer) return cachedBuffer;
         if (fs.existsSync(finalFilePath)) {
           cachedBuffer = fs.readFileSync(finalFilePath);
           return cachedBuffer;
         }
-        return Buffer.alloc(0);
+        throw new StoredObjectMissingError(undefined, { key: session.key, filePath: finalFilePath });
       },
     };
 
@@ -354,12 +364,18 @@ export class S3ObjectStorageService implements IStorageBackend {
       expiresAt: Date.now() + ttlMs,
       filePath,
       get buffer(): Buffer {
+        if (stat.size > getMaxInMemoryBytes()) {
+          throw new PayloadTooLargeForMemoryError(undefined, {
+            size: stat.size,
+            limit: getMaxInMemoryBytes(),
+          });
+        }
         if (cachedBuffer) return cachedBuffer;
         if (fs.existsSync(filePath)) {
           cachedBuffer = fs.readFileSync(filePath);
           return cachedBuffer;
         }
-        return Buffer.alloc(0);
+        throw new StoredObjectMissingError(undefined, { key, filePath });
       },
       set buffer(b: Buffer) {
         cachedBuffer = b;
@@ -368,6 +384,22 @@ export class S3ObjectStorageService implements IStorageBackend {
     this.objects.set(key, obj);
     globalSharedObjects.set(key, obj);
     return obj;
+  }
+
+  stat(key: string): ObjectStat | null {
+    const obj = this.getObject(key);
+    if (!obj) return null;
+    return {
+      size: obj.size,
+      etag: obj.etag,
+      mimeType: obj.mimeType,
+      filename: obj.filename,
+      filePath: obj.filePath,
+    };
+  }
+
+  openReadStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
+    return this.getObjectStream(key, range);
   }
 
   getObject(key: string): StoredObject | undefined {
@@ -388,10 +420,92 @@ export class S3ObjectStorageService implements IStorageBackend {
   getObjectStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
     const obj = this.getObject(key);
     if (!obj) return null;
-    if (obj.filePath && fs.existsSync(obj.filePath)) {
-      return fs.createReadStream(obj.filePath, range ? { start: range.start, end: range.end } : undefined);
+    const streamOpts: { start?: number; end?: number; highWaterMark: number } = {
+      highWaterMark: 64 * 1024,
+    };
+    if (range) {
+      if (typeof range.start === 'number') streamOpts.start = range.start;
+      if (typeof range.end === 'number') streamOpts.end = range.end;
     }
-    return null;
+    if (obj.filePath && fs.existsSync(obj.filePath)) {
+      return fs.createReadStream(obj.filePath, streamOpts);
+    }
+    return globalSharedObjects.getStream(key, range);
+  }
+
+  async saveObjectFromStream(
+    key: string,
+    stream: NodeJS.ReadableStream,
+    meta: { filename: string; mimeType: string; size?: number },
+    ttlMs: number = 24 * 60 * 60 * 1000
+  ): Promise<StoredObject> {
+    const objectsDir = path.join(this.baseUploadDir, 'objects');
+    if (!fs.existsSync(objectsDir)) {
+      try {
+        fs.mkdirSync(objectsDir, { recursive: true });
+      } catch {}
+    }
+    const tempFilePath = path.join(objectsDir, `stream-${crypto.randomUUID()}.tmp`);
+    const finalFilePath = path.join(objectsDir, `s3-${crypto.randomUUID()}-${path.basename(meta.filename)}`);
+
+    const outFd = fs.openSync(tempFilePath, 'w');
+    const hasher = crypto.createHash('sha256');
+    let totalBytes = 0;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        stream.on('data', (chunk: Buffer | string) => {
+          try {
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            fs.writeSync(outFd, buf, 0, buf.length, null);
+            hasher.update(buf);
+            totalBytes += buf.length;
+          } catch (err) {
+            reject(err);
+          }
+        });
+        stream.on('end', () => resolve());
+        stream.on('error', (err) => reject(err));
+      });
+      fs.fsyncSync(outFd);
+    } finally {
+      fs.closeSync(outFd);
+    }
+
+    fs.renameSync(tempFilePath, finalFilePath);
+
+    const etag = `"${hasher.digest('hex').slice(0, 32)}"`;
+    const now = Date.now();
+    let cachedBuffer: Buffer | null = null;
+
+    const stored: StoredObject = {
+      key,
+      filename: meta.filename,
+      mimeType: meta.mimeType,
+      size: totalBytes,
+      etag,
+      uploadedAt: now,
+      expiresAt: now + ttlMs,
+      filePath: finalFilePath,
+      get buffer(): Buffer {
+        if (totalBytes > getMaxInMemoryBytes()) {
+          throw new PayloadTooLargeForMemoryError(undefined, {
+            size: totalBytes,
+            limit: getMaxInMemoryBytes(),
+          });
+        }
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(finalFilePath)) {
+          cachedBuffer = fs.readFileSync(finalFilePath);
+          return cachedBuffer;
+        }
+        throw new StoredObjectMissingError(undefined, { key, filePath: finalFilePath });
+      },
+    };
+
+    this.objects.set(key, stored);
+    globalSharedObjects.set(key, stored);
+    return stored;
   }
 
   getActiveSessionsCount(): number {
