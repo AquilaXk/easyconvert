@@ -12,7 +12,7 @@ import ts from 'typescript';
  * 3. Production Hardcoded Cheats (G3, G3b, G3c): Dummy string placeholders, fixed truncations, and unreferenced inputs.
  * 4. Hollow & Weak Assertions (G4, G4b): Tautologies and tests composed exclusively of weak assertions.
  * 5. Governance (G5, G6): Automation reaching external hosts and built-in imports without the node: prefix.
- * 5. Ratchet Baseline: Baseline violation tracking with strict ratcheting down.
+ * 6. Ratchet Baseline: Baseline violation tracking with strict ratcheting down.
  */
 
 export interface Violation {
@@ -586,6 +586,11 @@ function checkHollowAssertions(targetDir?: string): Violation[] {
 const LOCAL_HOST_PATTERN = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|([a-z0-9-]+\.)*example\.(com|org|net))$/i;
 /** Calls that load a remote page or resource. */
 const NAVIGATION_CALLEES = new Set(['goto', 'fetch', 'newPage', 'navigate']);
+/** Receivers whose HTTP-verb methods issue a request (`page.request.get`, `request.post`, `axios.get`). */
+const REQUEST_RECEIVERS = new Set(['request', 'axios']);
+const REQUEST_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'fetch', 'request']);
+/** Scheme plus a host that is already terminated, so a partially known URL still names its full host. */
+const URL_WITH_COMPLETE_HOST = /^https?:\/\/[^/?#:]+[/?#:]/i;
 const NODE_BUILTINS: ReadonlySet<string> = new Set(builtinModules.filter((m) => !m.startsWith('_')));
 
 function stringLiteralText(node: ts.Node | undefined): string | undefined {
@@ -593,6 +598,81 @@ function stringLiteralText(node: ts.Node | undefined): string | undefined {
     return node.text;
   }
   return undefined;
+}
+
+/** Statically known leading text of a string expression; `complete` is false when a suffix is unknown. */
+interface StaticText {
+  text: string;
+  complete: boolean;
+}
+
+function staticText(node: ts.Expression, constants: ReadonlyMap<string, StaticText>): StaticText | undefined {
+  const literal = stringLiteralText(node);
+  if (literal !== undefined) return { text: literal, complete: true };
+  if (ts.isParenthesizedExpression(node)) return staticText(node.expression, constants);
+  if (ts.isIdentifier(node)) return constants.get(node.text);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    return joinStatic(staticText(node.left, constants), () => staticText(node.right, constants));
+  }
+  if (ts.isTemplateExpression(node)) {
+    let acc: StaticText = { text: node.head.text, complete: true };
+    for (const span of node.templateSpans) {
+      const joined = joinStatic(acc, () => staticText(span.expression, constants));
+      if (!joined || !joined.complete) return joined;
+      acc = { text: joined.text + span.literal.text, complete: true };
+    }
+    return acc;
+  }
+  return undefined;
+}
+
+function joinStatic(left: StaticText | undefined, right: () => StaticText | undefined): StaticText | undefined {
+  if (!left) return undefined;
+  if (!left.complete) return left;
+  const rhs = right();
+  if (!rhs) return left.text ? { text: left.text, complete: false } : undefined;
+  return { text: left.text + rhs.text, complete: rhs.complete };
+}
+
+/** Top-level `const NAME = <string expression>` bindings of a file, resolved in declaration order. */
+function collectStringConstants(sourceFile: ts.SourceFile): Map<string, StaticText> {
+  const constants = new Map<string, StaticText>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    if (!(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+    for (const decl of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
+      const value = staticText(decl.initializer, constants);
+      if (value) constants.set(decl.name.text, value);
+    }
+  }
+  return constants;
+}
+
+/** Host of an http(s) URL whose host part is statically known, or undefined when it is not a URL. */
+function externalUrlHost(value: StaticText): string | undefined {
+  if (!/^https?:\/\//i.test(value.text)) return undefined;
+  if (!value.complete && !URL_WITH_COMPLETE_HOST.test(value.text)) return undefined;
+  try {
+    return new URL(value.text).hostname;
+  } catch {
+    // A complete literal that fails to parse is still an attempt to reach a site: fail closed.
+    return value.complete ? '' : undefined;
+  }
+}
+
+function isRequestCall(callee: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(callee) || !REQUEST_METHODS.has(callee.name.text)) return false;
+  const receiver = callee.expression;
+  if (ts.isIdentifier(receiver)) return REQUEST_RECEIVERS.has(receiver.text);
+  return ts.isPropertyAccessExpression(receiver) && REQUEST_RECEIVERS.has(receiver.name.text);
+}
+
+function isNavigationCall(node: ts.CallExpression): boolean {
+  const callee = node.expression;
+  if (ts.isIdentifier(callee)) return NAVIGATION_CALLEES.has(callee.text) || REQUEST_RECEIVERS.has(callee.text);
+  if (ts.isPropertyAccessExpression(callee) && NAVIGATION_CALLEES.has(callee.name.text)) return true;
+  return isRequestCall(callee);
 }
 
 function checkGovernance(targetDir?: string): Violation[] {
@@ -610,12 +690,15 @@ function checkGovernance(targetDir?: string): Violation[] {
     const sourceFile = ts.createSourceFile(file, fs.readFileSync(file, 'utf-8'), ts.ScriptTarget.Latest, true);
     const relFile = path.relative(ROOT_DIR, file);
     const automation = isAutomationFile(file);
+    const constants = automation ? collectStringConstants(sourceFile) : new Map<string, StaticText>();
 
     const visit = (node: ts.Node) => {
       // G6: built-in modules must be imported with the node: prefix.
       let specifier: string | undefined;
       if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
         specifier = stringLiteralText(node.moduleSpecifier);
+      } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+        specifier = stringLiteralText(node.moduleReference.expression);
       } else if (
         ts.isCallExpression(node) &&
         (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
@@ -636,32 +719,21 @@ function checkGovernance(targetDir?: string): Violation[] {
       }
 
       // G5: automation must not navigate to or fetch a non-local site (e.g. scraping a third-party service).
-      if (automation && ts.isCallExpression(node)) {
-        let callee = '';
-        if (ts.isPropertyAccessExpression(node.expression)) {
-          callee = node.expression.name.text;
-        } else if (ts.isIdentifier(node.expression)) {
-          callee = node.expression.text;
-        }
-        const url = stringLiteralText(node.arguments[0]);
-        if (NAVIGATION_CALLEES.has(callee) && url && /^https?:\/\//i.test(url)) {
-          let host = '';
-          try {
-            host = new URL(url).hostname;
-          } catch {
-            host = '';
-          }
-          if (!LOCAL_HOST_PATTERN.test(host)) {
-            const { line, snippet } = getNodeSnippet(sourceFile, node);
-            violations.push({
-              file: relFile,
-              line,
-              rule: 'G5-EXTERNAL-NAVIGATION',
-              snippet,
-              message: `Script or test reaches the external host "${host}". Automation may only target the local app.`,
-              symbol: host,
-            });
-          }
+      if (automation && ts.isCallExpression(node) && isNavigationCall(node)) {
+        for (const arg of node.arguments) {
+          const value = staticText(arg, constants);
+          const host = value ? externalUrlHost(value) : undefined;
+          if (host === undefined || LOCAL_HOST_PATTERN.test(host)) continue;
+          const { line, snippet } = getNodeSnippet(sourceFile, node);
+          violations.push({
+            file: relFile,
+            line,
+            rule: 'G5-EXTERNAL-NAVIGATION',
+            snippet,
+            message: `Script or test reaches the external host "${host}". Automation may only target the local app.`,
+            symbol: host,
+          });
+          break;
         }
       }
       ts.forEachChild(node, visit);
