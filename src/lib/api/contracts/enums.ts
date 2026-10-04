@@ -1,25 +1,9 @@
-export const PIPELINE_OPERATIONS = [
-  'convert',
-  'ocr',
-  'archive',
-  'optimize',
-  'watermark',
-  'pdf.watermark',
-  'pdf.protect',
-  'media.thumbnail',
-  'media.package',
-  'import/url',
-  'import/s3',
-  'import/gcs',
-  'import/azure',
-  'import/sftp',
-  'import/webdav',
-  'export/url',
-  'export/s3',
-  'export/gcs',
-  'export/azure',
-  'export/sftp',
-  'export/webdav',
-] as const;
+import { LEGACY_TASK_OPERATIONS } from '@/lib/jobs/graph';
+
+/**
+ * Pipeline task operations the API accepts: exactly the operations the legacy-task adapter
+ * translates into a job graph, so the schema never advertises a stage that cannot run.
+ */
+export const PIPELINE_OPERATIONS: readonly string[] = Object.freeze(Array.from(LEGACY_TASK_OPERATIONS));
 
 export type PipelineOperation = (typeof PIPELINE_OPERATIONS)[number];
