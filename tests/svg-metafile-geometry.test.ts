@@ -782,6 +782,38 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeCgm(many)).toThrow(/too complex/);
     });
 
+    it('stops flattening a multi-megabyte path of cubics and arcs as soon as the vertex cap is crossed', () => {
+      const SEGMENTS = 250_000;
+      const parts = ['M0 0'];
+      for (let k = 0; k < SEGMENTS; k++) {
+        parts.push(k % 2 === 0 ? 'c 40 -90 -40 90 1 0' : 'a 30 30 0 1 1 1 0');
+      }
+      const d = parts.join(' ');
+      expect(d.length).toBeGreaterThan(4_000_000);
+      const svg = svgDoc(`<path fill="none" stroke="#000" d="${d}"/>`, 'width="100" height="100" viewBox="0 -100 100000 200"');
+      const rssBefore = process.memoryUsage().rss;
+      const start = performance.now();
+      let err: unknown = null;
+      try {
+        encodeEmf(svg);
+      } catch (e) {
+        err = e;
+      }
+      const elapsed = performance.now() - start;
+      const RSS_GROWTH_LIMIT = 400 * 1024 * 1024;
+      expect(elapsed).toBeLessThan(1000);
+      expect(process.memoryUsage().rss - rssBefore).toBeLessThan(RSS_GROWTH_LIMIT);
+      expect(err).toBeInstanceOf(CadGeometryUnavailableError);
+      expect((err as Error).message).toMatch(/too complex/);
+    });
+
+    it('charges polygon point lists against the vertex cap while parsing', () => {
+      const pts = Array.from({ length: 2_000_000 }, (_, k) => `${k % 100},${(k * 7) % 100}`).join(' ');
+      const start = performance.now();
+      expect(() => encodeWmf(svgDoc(`<polygon fill="#000" points="${pts}"/>`))).toThrow(/too complex/);
+      expect(performance.now() - start).toBeLessThan(1000);
+    });
+
     it('rejects documents that expand past the vertex cap fast (2000 copies of a 2230-vertex polygon)', () => {
       const VERTICES = 2230;
       const pts = Array.from({ length: VERTICES }, (_, k) => {

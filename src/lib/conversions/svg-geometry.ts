@@ -189,6 +189,31 @@ export function resolvePaint(value: string, currentColor: string, property: 'fil
   return parsed.rgb ? { ...parsed.rgb } : null;
 }
 
+/**
+ * Upper bound on device vertices per document (all shapes and <use> copies).
+ * At 4 bytes per EMF/WMF point and about 12 characters per CGM point this
+ * keeps outputs within a few megabytes (strokes may double that) and keeps
+ * parsing and encoding well under a second, while leaving ample room for
+ * detailed technical drawings.
+ */
+const MAX_DOCUMENT_VERTICES = 500_000;
+
+/** Counts every emitted vertex of a document and fails as soon as the cap is crossed. */
+export class VertexBudget {
+  private used = 0;
+
+  constructor(private readonly limit: number = MAX_DOCUMENT_VERTICES) {}
+
+  charge(count = 1): void {
+    this.used += count;
+    if (this.used > this.limit) {
+      throw new CadGeometryUnavailableError(
+        `SVG expands to more than ${this.limit} vertices; the drawing is too complex to encode.`
+      );
+    }
+  }
+}
+
 interface PathState {
   currentX: number;
   currentY: number;
@@ -198,22 +223,31 @@ interface PathState {
 
 /** Parser position plus the drawing state shared by all path command handlers. */
 interface PathCursor {
-  tokens: string[];
-  i: number;
+  tokens: PathTokenStream;
   isRel: boolean;
   prevUpper: string;
   state: PathState;
   subpath: Point3D[];
   tolerance: number;
+  budget: VertexBudget | undefined;
+}
+
+/** Appends one flattened vertex, charging the document's vertex budget first. */
+function emitPoint(c: PathCursor, p: Point3D): void {
+  c.budget?.charge();
+  c.subpath.push(p);
 }
 
 /** Reads `count` numeric arguments, or returns null when the command is truncated or malformed. */
 function readArgs(c: PathCursor, count: number): number[] | null {
-  if (c.i + count > c.tokens.length) return null;
-  const args = c.tokens.slice(c.i, c.i + count);
-  if (!args.every((t) => PATH_NUMBER_PATTERN.test(t))) return null;
-  c.i += count;
-  return args.map(Number);
+  const args: number[] = [];
+  for (let k = 0; k < count; k++) {
+    const t = c.tokens.peek();
+    if (t === undefined || !PATH_NUMBER_PATTERN.test(t)) return null;
+    c.tokens.next();
+    args.push(Number(t));
+  }
+  return args;
 }
 
 /** Resolves a coordinate pair, relative to the current point for lower-case commands. */
@@ -240,7 +274,7 @@ function reflectedControlPoint(c: PathCursor, previousCommands: ReadonlySet<stri
 
 function pushCubic(c: PathCursor, p1: Point3D, p2: Point3D, p3: Point3D): void {
   const curvePts = adaptiveTessellateCubicBezier(currentPoint(c), p1, p2, p3, c.tolerance);
-  for (let k = 1; k < curvePts.length; k++) c.subpath.push(curvePts[k]);
+  for (let k = 1; k < curvePts.length; k++) emitPoint(c, curvePts[k]);
 }
 
 /** Degree elevation: the cubic control points equivalent to a quadratic segment. */
@@ -261,7 +295,7 @@ const PATH_HANDLERS: Record<string, (c: PathCursor) => boolean> = {
     const a = readArgs(c, 2);
     if (!a) return false;
     const p = resolvePoint(c, a[0], a[1]);
-    c.subpath.push(p);
+    emitPoint(c, p);
     moveTo(c, p);
     return true;
   },
@@ -269,7 +303,7 @@ const PATH_HANDLERS: Record<string, (c: PathCursor) => boolean> = {
     const a = readArgs(c, 1);
     if (!a) return false;
     const p: Point3D = { x: c.isRel ? c.state.currentX + a[0] : a[0], y: c.state.currentY, z: 0 };
-    c.subpath.push(p);
+    emitPoint(c, p);
     moveTo(c, p);
     return true;
   },
@@ -277,7 +311,7 @@ const PATH_HANDLERS: Record<string, (c: PathCursor) => boolean> = {
     const a = readArgs(c, 1);
     if (!a) return false;
     const p: Point3D = { x: c.state.currentX, y: c.isRel ? c.state.currentY + a[0] : a[0], z: 0 };
-    c.subpath.push(p);
+    emitPoint(c, p);
     moveTo(c, p);
     return true;
   },
@@ -323,7 +357,9 @@ const PATH_HANDLERS: Record<string, (c: PathCursor) => boolean> = {
     if (!a) return false;
     const [rx, ry, rot, largeArc, sweep] = a;
     const end = resolvePoint(c, a[5], a[6]);
-    c.subpath.push(...tessellateSvgArc(c.state.currentX, c.state.currentY, rx, ry, rot, largeArc !== 0, sweep !== 0, end.x, end.y));
+    for (const p of tessellateSvgArc(c.state.currentX, c.state.currentY, rx, ry, rot, largeArc !== 0, sweep !== 0, end.x, end.y)) {
+      emitPoint(c, p);
+    }
     moveTo(c, end);
     return true;
   },
@@ -333,33 +369,58 @@ const PATH_TOKEN_PATTERN = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[e
 const PATH_SEPARATOR_PATTERN = /^[\s,]+$/;
 const PATH_TOKEN_VALID = /^(?:[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$/;
 
-/** Splits path data into commands and numbers; any other character fails closed. */
-function tokenizePathData(d: string): string[] {
-  const tokens: string[] = [];
-  for (const m of d.matchAll(PATH_TOKEN_PATTERN)) {
-    const tok = m[0];
-    if (PATH_SEPARATOR_PATTERN.test(tok)) continue;
-    if (!PATH_TOKEN_VALID.test(tok)) {
-      throw new CadGeometryUnavailableError(`Malformed SVG path data "${d}": unexpected character "${tok}".`);
-    }
-    tokens.push(tok);
+/**
+ * Lazily splits path data into commands and numbers, so a huge path is only
+ * tokenized as far as it is parsed; any other character fails closed.
+ */
+class PathTokenStream {
+  private readonly matches: IterableIterator<RegExpMatchArray>;
+  private lookahead: string | undefined;
+
+  constructor(private readonly d: string) {
+    this.matches = d.matchAll(PATH_TOKEN_PATTERN);
+    this.lookahead = this.pull();
   }
-  return tokens;
+
+  private pull(): string | undefined {
+    for (let r = this.matches.next(); !r.done; r = this.matches.next()) {
+      const tok = r.value[0];
+      if (PATH_SEPARATOR_PATTERN.test(tok)) continue;
+      if (!PATH_TOKEN_VALID.test(tok)) {
+        throw new CadGeometryUnavailableError(`Malformed SVG path data: unexpected character "${tok}".`);
+      }
+      return tok;
+    }
+    return undefined;
+  }
+
+  peek(): string | undefined {
+    return this.lookahead;
+  }
+
+  next(): string | undefined {
+    const tok = this.lookahead;
+    this.lookahead = this.pull();
+    return tok;
+  }
 }
 
 const PATH_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
 
 const PATH_COMMAND_PATTERN = /^[MmLlHhVvCcSsQqTtAaZz]$/;
 
+const PATH_EXCERPT_LENGTH = 80;
+
 function malformedPath(d: string, reason: string): CadGeometryUnavailableError {
-  return new CadGeometryUnavailableError(`Malformed SVG path data "${d}": ${reason}.`);
+  const excerpt = d.length > PATH_EXCERPT_LENGTH ? `${d.slice(0, PATH_EXCERPT_LENGTH)}...` : d;
+  return new CadGeometryUnavailableError(`Malformed SVG path data "${excerpt}": ${reason}.`);
 }
 
 /** Z: closes the sub-path back to its start point, which becomes the current point. */
 function closeSubpath(c: PathCursor, subpaths: Point3D[][]): void {
   if (c.subpath.length > 1) {
     const first = c.subpath[0];
-    c.subpath.push({ x: first.x, y: first.y, z: first.z });
+    emitPoint(c, { x: first.x, y: first.y, z: first.z });
     c.state.currentX = first.x;
     c.state.currentY = first.y;
   }
@@ -371,21 +432,22 @@ function closeSubpath(c: PathCursor, subpaths: Point3D[][]): void {
  * Parses SVG path 'd' data (SVG 1.1 section 8.3) into adaptive polyline
  * vertices, one array per sub-path.
  */
-export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point3D[][] {
+export function parseSvgPathToPoints(d: string, tolerance: number = 0.25, budget?: VertexBudget): Point3D[][] {
   const subpaths: Point3D[][] = [];
   const c: PathCursor = {
-    tokens: tokenizePathData(d),
-    i: 0,
+    tokens: new PathTokenStream(d),
     isRel: false,
     prevUpper: '',
     state: { currentX: 0, currentY: 0, lastCpX: 0, lastCpY: 0 },
     subpath: [],
     tolerance,
+    budget,
   };
   let cmd = '';
-  while (c.i < c.tokens.length) {
-    if (PATH_COMMAND_PATTERN.test(c.tokens[c.i])) {
-      cmd = c.tokens[c.i++];
+  for (let tok = c.tokens.peek(); tok !== undefined; tok = c.tokens.peek()) {
+    if (PATH_COMMAND_PATTERN.test(tok)) {
+      cmd = tok;
+      c.tokens.next();
     } else if (!cmd) {
       throw malformedPath(d, 'coordinates before the first command');
     }
@@ -401,7 +463,7 @@ export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point
         c.subpath = [];
       } else if (upper !== 'M' && c.subpath.length === 0) {
         // A drawing command after Z continues from the closed sub-path's start point
-        c.subpath.push(currentPoint(c));
+        emitPoint(c, currentPoint(c));
       }
       const handler = PATH_HANDLERS[upper === 'M' ? 'L' : upper];
       if (!handler(c)) throw malformedPath(d, `missing or invalid arguments for ${cmd}`);
@@ -870,12 +932,20 @@ function ellipsePoints(cx: number, cy: number, rx: number, ry: number): { x: num
   return pts;
 }
 
-function parsePointList(value: string | undefined): { x: number; y: number }[] {
+function parsePointList(value: string | undefined, budget: VertexBudget | undefined): { x: number; y: number }[] {
   if (!value) return [];
-  const coords = parseNumberList(value, 'points value');
   const pts: { x: number; y: number }[] = [];
-  for (let k = 0; k + 1 < coords.length; k += 2) {
-    pts.push({ x: coords[k], y: coords[k + 1] });
+  let pendingX: number | null = null;
+  for (const m of value.matchAll(NUMBER_LIST_TOKEN_PATTERN)) {
+    if (LIST_SEPARATOR_PATTERN.test(m[0])) continue;
+    const n = parseSvgNumber(m[0], 'points value');
+    if (pendingX === null) {
+      pendingX = n;
+    } else {
+      budget?.charge();
+      pts.push({ x: pendingX, y: n });
+      pendingX = null;
+    }
   }
   return pts;
 }
@@ -894,12 +964,23 @@ function resolveRectRadii(attrs: Map<string, string>, w: number, h: number): { r
   return { rx: Math.min(rx, w / 2), ry: Math.min(ry, h / 2) };
 }
 
-function shapeGeometry(name: string, attrs: Map<string, string>): UserShape | null {
+/** Shapes whose parsers charge the vertex budget themselves, point by point. */
+const SELF_CHARGING_SHAPES = new Set(['path', 'polyline', 'polygon']);
+
+function shapeGeometry(name: string, attrs: Map<string, string>, budget?: VertexBudget): UserShape | null {
+  const shape = buildShapeGeometry(name, attrs, budget);
+  if (shape && budget && !SELF_CHARGING_SHAPES.has(name)) {
+    budget.charge(shape.subpaths.reduce((n, sub) => n + sub.length, 0));
+  }
+  return shape;
+}
+
+function buildShapeGeometry(name: string, attrs: Map<string, string>, budget?: VertexBudget): UserShape | null {
   switch (name) {
     case 'path': {
       const d = attrs.get('d');
       if (!d) return null;
-      const subpaths = parseSvgPathToPoints(d, PATH_TOLERANCE).filter((s) => s.length >= 2);
+      const subpaths = parseSvgPathToPoints(d, PATH_TOLERANCE, budget).filter((s) => s.length >= 2);
       return { subpaths, isClosed: /[zZ]/.test(d) };
     }
     case 'rect': {
@@ -941,7 +1022,7 @@ function shapeGeometry(name: string, attrs: Map<string, string>): UserShape | nu
       };
     case 'polyline':
     case 'polygon': {
-      const pts = parsePointList(attrs.get('points'));
+      const pts = parsePointList(attrs.get('points'), budget);
       if (pts.length < 2) return null;
       if (name === 'polygon') pts.push({ ...pts[0] });
       return { subpaths: [pts], isClosed: name === 'polygon' };
@@ -1169,21 +1250,12 @@ interface RenderState {
   /** ids of the <use> targets currently being instantiated, for cycle detection. */
   useChain: string[];
   renderedNodes: number;
-  vertices: number;
+  vertices: VertexBudget;
   /** User-space geometry per element, reused by every <use> copy. */
   shapeCache: Map<SvgNode, UserShape | null>;
   sheet: CssRule[];
   depth: number;
 }
-
-/**
- * Upper bound on device vertices per document (all shapes and <use> copies).
- * At 4 bytes per EMF/WMF point and about 12 characters per CGM point this
- * keeps outputs within a few megabytes (strokes may double that) and keeps
- * parsing and encoding well under a second, while leaving ample room for
- * detailed technical drawings.
- */
-const MAX_DOCUMENT_VERTICES = 500_000;
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
 const MAX_RENDERED_NODES = 100000;
@@ -1238,17 +1310,15 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
   if (ctx.visibility !== 'visible') return;
   let shape = state.shapeCache.get(node);
   if (shape === undefined) {
-    shape = shapeGeometry(node.name, node.attrs);
+    // Path and point-list parsing charge the budget per emitted vertex.
+    shape = shapeGeometry(node.name, node.attrs, state.vertices);
     state.shapeCache.set(node, shape);
+  } else if (shape) {
+    // A <use> copy re-emits every cached vertex.
+    state.vertices.charge(shape.subpaths.reduce((n, sub) => n + sub.length, 0));
   }
   const strokeWidth = resolveStrokeWidth(ctx.strokeWidth);
   if (!shape || shape.subpaths.length === 0) return;
-  state.vertices += shape.subpaths.reduce((n, sub) => n + sub.length, 0);
-  if (state.vertices > MAX_DOCUMENT_VERTICES) {
-    throw new CadGeometryUnavailableError(
-      `SVG expands to more than ${MAX_DOCUMENT_VERTICES} vertices; the drawing is too complex to encode.`
-    );
-  }
   const deviceSubpaths = shape.subpaths.map((sub) =>
     sub.map((p) => {
       const d = applyMatrix(ctx.ctm, p.x, p.y);
@@ -1335,7 +1405,7 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   assertNeutralPaintProperties(declared);
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
-  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, vertices: 0, shapeCache: new Map(), sheet, depth: 0 };
+  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, vertices: new VertexBudget(), shapeCache: new Map(), sheet, depth: 0 };
   indexIds(root, state.ids);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };
