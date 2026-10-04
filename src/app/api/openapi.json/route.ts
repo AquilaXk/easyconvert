@@ -8,6 +8,8 @@ import {
   IdempotencyKeyHeaderSchema,
   WebhookSecretRotateRequestSchema,
   WebhookSecretRotateResponseSchema,
+  UsageLedgerEntrySchema,
+  UsageQueryResponseSchema,
 } from '@/lib/api/contracts';
 
 export const dynamic = 'force-dynamic';
@@ -716,6 +718,55 @@ export async function GET() {
           },
         },
       },
+      '/api/v1/usage': {
+        get: {
+          summary: 'Query Metered Resource Usage Ledger',
+          description:
+            'Queries append-only metered resource usage events recorded for the authenticated user.',
+          operationId: 'getUsageLedgerV1',
+          security: [
+            { ApiKeyAuth: ['read:usage'] },
+            { BearerAuth: ['read:usage'] },
+          ],
+          parameters: [
+            {
+              name: 'from',
+              in: 'query',
+              required: false,
+              description: 'Start of time window (epoch ms timestamp or ISO 8601 string).',
+              schema: { type: 'string' },
+            },
+            {
+              name: 'to',
+              in: 'query',
+              required: false,
+              description: 'End of time window (epoch ms timestamp or ISO 8601 string).',
+              schema: { type: 'string' },
+            },
+            {
+              name: 'limit',
+              in: 'query',
+              required: false,
+              description: 'Maximum number of ledger records to return (1-200, default 50).',
+              schema: { type: 'integer', default: 50, minimum: 1, maximum: 200 },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Metered usage entries retrieved successfully.',
+              content: {
+                'application/json': {
+                  schema: {
+                    $ref: '#/components/schemas/UsageQueryResponse',
+                  },
+                },
+              },
+            },
+            '400': createProblemResponse('Invalid query parameter'),
+            '401': createProblemResponse('Unauthorized'),
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -834,6 +885,14 @@ export async function GET() {
         },
         WebhookSecretRotateResponse: {
           ...WebhookSecretRotateResponseSchema,
+          $id: undefined,
+        },
+        UsageLedgerEntry: {
+          ...UsageLedgerEntrySchema,
+          $id: undefined,
+        },
+        UsageQueryResponse: {
+          ...UsageQueryResponseSchema,
           $id: undefined,
         },
       },
