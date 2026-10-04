@@ -459,6 +459,47 @@ describe('Phase 4-F: Float32 Linear Color Pipeline, RCD Demosaicing & Ultra HDR/
         expect(reconstructedCyan[idx]).toBeGreaterThan(1.0);
       }
     });
+
+    it('applies highlight reconstruction by default in processFloat32LinearPipeline and honors options.highlightReconstruction = false', () => {
+      const width = 4;
+      const height = 4;
+      const cfa = new Uint16Array(width * height);
+      // Red at 500 with wbR = 2.0 gives post-WB 1.0 (clipped)
+      // Green and Blue at 800 with wbG=wbB=1.0 give post-WB 0.8 (unclipped)
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = y * width + x;
+          const ry = y & 1;
+          const rx = x & 1;
+          if (ry === 0 && rx === 0) cfa[idx] = 500; // R
+          else if (ry === 1 && rx === 1) cfa[idx] = 800; // B
+          else cfa[idx] = 800; // G
+        }
+      }
+
+      const sensor: BayerSensorData = {
+        width,
+        height,
+        pattern: 'RGGB',
+        data: cfa,
+        bitsPerSample: 12,
+        whiteLevel: 1000,
+        whiteBalance: [2.0, 1.0, 1.0],
+      };
+
+      // 1. With highlight reconstruction enabled (default)
+      const resWithRecovery = processFloat32LinearPipeline(sensor, { targetColorSpace: 'linear' });
+
+      // 2. With highlight reconstruction disabled
+      const resWithoutRecovery = processFloat32LinearPipeline(sensor, {
+        targetColorSpace: 'linear',
+        highlightReconstruction: false,
+      });
+
+      // The red channel in resWithRecovery should be reconstructed from green/blue radiance (0.8 * 2.0 = 1.6 > 1.0)
+      const centerIdx = ((2 * width + 2) * 3); // Red channel at (2, 2)
+      expect(resWithRecovery.rgbFloat[centerIdx]).toBeGreaterThan(resWithoutRecovery.rgbFloat[centerIdx]);
+    });
   });
 
   describe('2. Ratio-Corrected Demosaicing (RCD) vs AMaZE vs AHD', () => {
