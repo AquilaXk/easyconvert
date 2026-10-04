@@ -15,6 +15,8 @@ import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
+const INTERNAL_ERROR_DETAIL = 'Internal conversion error';
+
 const ASYNC_THRESHOLD_BYTES = 10 * 1024 * 1024; // 10 MB auto-handoff threshold
 const MAX_PROGRAMMATIC_FILE_SIZE = 500 * 1024 * 1024; // 500 MB max payload for async handoff
 
@@ -404,10 +406,11 @@ export async function POST(req: NextRequest) {
       // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.
       return createProblemDetailsResponse(400, err.message, instanceUri, 'Bad Request', undefined, rateLimitHeaders);
     }
-    const message = err instanceof Error ? err.message : 'Internal programmatic conversion error';
+    // Internal errors can carry sandbox paths: log the real error, answer with a generic detail.
+    console.error('[v1/convert] Conversion failed with an internal error:', err);
     return createProblemDetailsResponse(
       500,
-      message,
+      INTERNAL_ERROR_DETAIL,
       instanceUri,
       'Internal Server Error',
       undefined,

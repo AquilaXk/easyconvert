@@ -1375,8 +1375,9 @@ export async function executeWorkerConversion(
           );
         }
         if (options.pdfStandard) {
-          throw new Error(
-            `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}', but engine is unavailable: ${err.reason}`
+          throw new EngineUnavailableError(
+            'soffice',
+            `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}': ${err.reason}`
           );
         }
         fallbackChain.push(`native-soffice: ${err.message}`);
@@ -1508,7 +1509,7 @@ export async function executeWorkerConversion(
     throw new UnsupportedTargetError(`No native engine route converts ${src} to ${tgt}`);
   }
   if (options.pdfStandard) {
-    throw new Error(
+    throw new UnsupportedOptionError(
       `Fallback to pure TypeScript engine is forbidden when pdfStandard ('${options.pdfStandard}') is specified`
     );
   }

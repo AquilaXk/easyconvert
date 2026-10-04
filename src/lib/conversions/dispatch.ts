@@ -1,6 +1,12 @@
 import fs from 'node:fs';
 import { FORMAT_REGISTRY } from '../registry';
-import { UnsupportedTargetError } from '../types';
+import {
+  ComplexScriptRequiresNativeEngineError,
+  EngineUnavailableError,
+  OcrEngineUnavailableError,
+  OcrLanguageUnavailableError,
+  UnsupportedTargetError,
+} from '../types';
 import { applyPdfPostProcessing, assertPdfPostProcessOptions } from './index';
 import {
   executeWorkerConversion,
@@ -66,6 +72,21 @@ function assertAdvertised(src: string, tgt: string, options: WorkerEngineOptions
   throw new UnsupportedTargetError(`Unsupported conversion from .${src} to .${tgt}: the pair is not offered`);
 }
 
+/**
+ * Engine-missing conditions that engines raise as other typed errors surface as
+ * EngineUnavailableError (HTTP 503): complex-script rendering needs LibreOffice, OCR needs
+ * Tesseract. A missing OCR language stays a client error.
+ */
+function toEngineUnavailable(err: unknown): unknown {
+  if (err instanceof ComplexScriptRequiresNativeEngineError) {
+    return new EngineUnavailableError('soffice', err.message);
+  }
+  if (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError)) {
+    return new EngineUnavailableError('tesseract', err.message);
+  }
+  return err;
+}
+
 /** Reads a native engine's temporary output into memory and deletes the file. */
 function materialize(result: WorkerConversionResult): WorkerConversionResult {
   const filePath = result.filePath;
@@ -122,7 +143,12 @@ export async function dispatchConversion(
   const workerOptions: WorkerEngineOptions = requiresNativeEngine(src, tgt)
     ? { ...options, inProcessFallback: false }
     : options;
-  const converted = await executeWorkerConversion(input, src, tgt, workerOptions, originalFilename);
+  let converted: WorkerConversionResult;
+  try {
+    converted = await executeWorkerConversion(input, src, tgt, workerOptions, originalFilename);
+  } catch (err) {
+    throw toEngineUnavailable(err);
+  }
   const result = await postProcessNativePdf(converted, tgt, options);
 
   const keepOnDisk = !Buffer.isBuffer(input) || Boolean(options.zeroHeap) || Boolean((options as { outputPath?: string }).outputPath);
