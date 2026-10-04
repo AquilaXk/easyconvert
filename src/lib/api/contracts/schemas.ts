@@ -522,3 +522,61 @@ export const IdempotencyKeyHeaderSchema = {
   pattern: String.raw`^[\x21-\x7E]{1,255}$`,
   description: 'Unique 1-255 character printable ASCII idempotency key for safe client retries.',
 } as const;
+
+export const WebhookSecretRotateRequestSchema = {
+  $id: 'https://easyconvert.local/schemas/webhook-secret-rotate-request.json',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    endpointId: {
+      type: 'string',
+      maxLength: 255,
+      description: 'Optional webhook endpoint identifier to rotate.',
+    },
+    apiKeyId: {
+      type: 'string',
+      maxLength: 255,
+      description: 'Optional API key identifier associated with the webhook.',
+    },
+    graceSeconds: {
+      type: 'integer',
+      minimum: 60,
+      maximum: 604800,
+      description:
+        'Grace period in seconds (60-604800, default 86400) during which both old and new signatures are valid.',
+    },
+  },
+} as const;
+
+export const WebhookSecretRotateResponseSchema = {
+  $id: 'https://easyconvert.local/schemas/webhook-secret-rotate-response.json',
+  type: 'object',
+  required: ['success', 'secret', 'expiresAt', 'graceSeconds'],
+  additionalProperties: false,
+  properties: {
+    success: {
+      type: 'boolean',
+      const: true,
+      description: 'Indicates the secret rotation completed successfully.',
+    },
+    secret: {
+      type: 'string',
+      pattern: '^whsec_[a-f0-9]{64}$',
+      description: 'Newly generated primary webhook secret. Store securely; returned only once.',
+    },
+    expiresAt: {
+      type: 'number',
+      description: 'Expiration timestamp (epoch ms) of the grace period for dual-signature acceptance.',
+    },
+    graceSeconds: {
+      type: 'integer',
+      minimum: 60,
+      maximum: 604800,
+      description: 'Active grace period in seconds.',
+    },
+    previousExpiresAt: {
+      type: 'number',
+      description: 'Expiration timestamp (epoch ms) of the previous secret.',
+    },
+  },
+} as const;

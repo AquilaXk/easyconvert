@@ -6,6 +6,8 @@ import {
   JobCreateRequestSchema,
   JobResourceSchema,
   IdempotencyKeyHeaderSchema,
+  WebhookSecretRotateRequestSchema,
+  WebhookSecretRotateResponseSchema,
 } from '@/lib/api/contracts';
 
 export const dynamic = 'force-dynamic';
@@ -677,6 +679,43 @@ export async function GET() {
           },
         },
       },
+      '/api/v1/webhooks/secrets/rotate': {
+        post: {
+          summary: 'Rotate Webhook Signing Secret',
+          description:
+            'Programmatically rotates a webhook signing secret with dual-signature grace period support. Requires "convert:write" scope.',
+          operationId: 'rotateWebhookSecretV1',
+          security: [
+            { ApiKeyAuth: ['convert:write'] },
+            { BearerAuth: ['convert:write'] },
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/WebhookSecretRotateRequest',
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Secret successfully rotated with dual-signature grace period active.',
+              content: {
+                'application/json': {
+                  schema: {
+                    $ref: '#/components/schemas/WebhookSecretRotateResponse',
+                  },
+                },
+              },
+            },
+            '400': createProblemResponse('Malformed JSON payload'),
+            '401': createProblemResponse('Unauthorized'),
+            '422': createProblemResponse('Unprocessable Entity (schema validation failure)'),
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -788,6 +827,14 @@ export async function GET() {
             remaining: { type: 'integer', example: 458 },
             resetAt: { type: 'number', description: 'Unix timestamp in milliseconds for midnight UTC reset.' },
           },
+        },
+        WebhookSecretRotateRequest: {
+          ...WebhookSecretRotateRequestSchema,
+          $id: undefined,
+        },
+        WebhookSecretRotateResponse: {
+          ...WebhookSecretRotateResponseSchema,
+          $id: undefined,
         },
       },
     },
