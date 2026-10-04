@@ -882,24 +882,28 @@ describe('SVG document model for metafile encoders', () => {
       return `<polyline points="${a.x},${a.y} ${tip.x},${tip.y} ${b.x},${b.y}" fill="none" stroke="#000" stroke-width="2" ${extra}/>`;
     };
 
-    it('creates EMF pens with EMR_EXTCREATEPEN and sets the SVG miter limit', () => {
-      for (const [extra, limit] of [['', 4], ['stroke-miterlimit="7"', 7]] as const) {
+    it('creates EMF pens with EMR_EXTCREATEPEN and never writes the ambiguous EMR_SETMITERLIMIT', () => {
+      for (const extra of ['', 'stroke-miterlimit="7"', 'stroke-miterlimit="4.5"']) {
         const buf = encodeEmf(svgDoc(spike(90, extra)));
         const types: number[] = [];
         for (let off = buf.readUInt32LE(4); off < buf.length; off += buf.readUInt32LE(off + 4)) types.push(buf.readUInt32LE(off));
         expect(types).not.toContain(38); // no EMR_CREATEPEN
+        expect(types).not.toContain(58); // no EMR_SETMITERLIMIT: readers disagree on UInt32 vs FLOAT
         expect(types).toContain(95);
-        expect(types.indexOf(58)).toBeLessThan(types.indexOf(87)); // limit set before drawing
         const stroked = emfShapes(spike(90, extra)).filter((s) => s.pen !== null);
-        expect(stroked.map((s) => s.miterLimit)).toEqual([limit]);
+        expect(stroked.map((s) => s.miterLimit)).toEqual([null]);
         const PS_GEOMETRIC = 0x00010000;
         expect(stroked[0].pen!.style & PS_GEOMETRIC).toBe(PS_GEOMETRIC);
         expect(stroked[0].pen!.width).toBe(2);
       }
     });
 
-    it('rejects a fractional miter limit EMF cannot store', () => {
-      expect(() => encodeEmf(svgDoc(spike(90, 'stroke-miterlimit="4.5"')))).toThrow(UnsupportedOptionError);
+    it('rejects EMF miter corners where SVG and the GDI default miter limit of 10 disagree', () => {
+      expect(() => encodeEmf(svgDoc(spike(20)))).toThrow(/miter/); // 5.76: SVG bevels at 4, GDI miters at 10
+      expect(() => encodeEmf(svgDoc(spike(8, 'stroke-miterlimit="20"')))).toThrow(/miter/); // 14.3
+      expect(emfShapes(spike(30)).filter((s) => s.pen !== null)).toHaveLength(1);
+      expect(emfShapes(spike(8)).filter((s) => s.pen !== null)).toHaveLength(1);
+      expect(emfShapes(spike(20, 'stroke-miterlimit="6"')).filter((s) => s.pen !== null)).toHaveLength(1);
     });
 
     it('rejects WMF miter corners where SVG and the fixed GDI miter limit of 10 disagree', () => {

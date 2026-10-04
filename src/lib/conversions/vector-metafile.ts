@@ -50,7 +50,6 @@ const EMR_DELETEOBJECT = 40;
 const EMR_POLYGON16 = 86;
 const EMR_POLYLINE16 = 87;
 const EMR_POLYPOLYGON16 = 91;
-const EMR_SETMITERLIMIT = 58;
 const EMR_EXTCREATEPEN = 95;
 /** Type, Size, ihPen, offBmi, cbBmi, offBits, cbBits + LogPenEx (6 fields, no style entries). */
 const EMF_EXTCREATEPEN_SIZE = 52;
@@ -238,14 +237,10 @@ function emfSelect(handle: number): Buffer {
 }
 
 /** Creates and selects a geometric pen, or selects the stock NULL_PEN; returns whether one was created. */
-function emitEmfPen(pen: PlanPen | null, out: Buffer[], state: EmfState): boolean {
+function emitEmfPen(pen: PlanPen | null, out: Buffer[]): boolean {
   if (!pen) {
     out.push(emfSelect(EMF_STOCK_NULL_PEN));
     return false;
-  }
-  if (pen.join === 'miter' && pen.miterLimit !== state.miterLimit) {
-    out.push(emfMiterLimit(pen.miterLimit));
-    state.miterLimit = pen.miterLimit;
   }
   out.push(emfExtCreatePen(pen), emfSelect(EMF_PEN_HANDLE));
   return true;
@@ -262,16 +257,6 @@ function emfExtCreatePen(pen: PlanPen): Buffer {
   rec.writeUInt32LE(emfColorRef(pen.color), 40);
   rec.writeUInt32LE(0, 44); // BrushHatch, ignored for BS_SOLID
   rec.writeUInt32LE(0, 48); // NumStyleEntries
-  return rec;
-}
-
-/** EMR_SETMITERLIMIT (MS-EMF 2.3.11.21); MiterLimit is an unsigned integer. */
-function emfMiterLimit(limit: number): Buffer {
-  if (!Number.isInteger(limit)) {
-    throw new UnsupportedOptionError(`SVG stroke-miterlimit "${limit}" is not an integer and cannot be stored in EMF.`);
-  }
-  const rec = emfRecord(EMR_SETMITERLIMIT, EMF_SMALL_RECORD_SIZE);
-  rec.writeUInt32LE(limit, 8);
   return rec;
 }
 
@@ -339,12 +324,14 @@ function emfPolyFillMode(mode: number): Buffer {
 interface EmfState {
   fillMode: number;
   scale: number;
-  miterLimit: number | null;
 }
 
 function encodeEmfOp(op: DrawOp, state: EmfState, out: Buffer[]): void {
+  // EMR_SETMITERLIMIT is read as UInt32 by some readers and FLOAT by GDI, so it is
+  // never written; corners must agree with GDI's default limit instead.
+  assertMiterCorners(op, 'EMF', GDI_DEFAULT_MITER_LIMIT);
   if (op.kind === 'stroke') {
-    emitEmfPen(op.pen, out, state);
+    emitEmfPen(op.pen, out);
     out.push(emfSelect(EMF_STOCK_NULL_BRUSH));
     for (const line of op.lines) out.push(emfPoly16(EMR_POLYLINE16, line, state.scale));
     out.push(deleteEmfObject(EMF_PEN_HANDLE));
@@ -355,7 +342,7 @@ function encodeEmfOp(op: DrawOp, state: EmfState, out: Buffer[]): void {
     out.push(emfPolyFillMode(mode));
     state.fillMode = mode;
   }
-  const createdPen = emitEmfPen(op.pen, out, state);
+  const createdPen = emitEmfPen(op.pen, out);
   emitEmfBrush(op.fill, out);
   out.push(op.rings.length === 1 ? emfPoly16(EMR_POLYGON16, op.rings[0], state.scale) : emfPolyPolygon16(op.rings, state.scale));
   if (createdPen) out.push(deleteEmfObject(EMF_PEN_HANDLE));
@@ -405,7 +392,7 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
   const space = computeLogicalSpace(deviceOps, width, height);
   const records: Buffer[] = [...createEmfStateRecords(space)];
 
-  const state: EmfState = { fillMode: EMF_POLYFILL_WINDING, scale: space.scale, miterLimit: null };
+  const state: EmfState = { fillMode: EMF_POLYFILL_WINDING, scale: space.scale };
   for (const op of scaleOps(deviceOps, space.scale)) encodeEmfOp(op, state, records);
 
   // EMR_EOF
@@ -549,7 +536,7 @@ interface WmfState {
   fillMode: number;
 }
 
-/** GDI's default miter limit, which WMF cannot change (no SETMITERLIMIT record). */
+/** GDI's default miter limit; WMF has no record to change it and EMF's is ambiguous, so neither sets it. */
 const GDI_DEFAULT_MITER_LIMIT = 10;
 
 /** Rejects miter corners where SVG and a fixed device limit would choose different joins. */
