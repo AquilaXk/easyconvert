@@ -28,6 +28,16 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'wps->doc', 'wps->jpg', 'wps->png', 'wps->rtf',
   'xps->avif', 'xps->bmp', 'xps->eps', 'xps->gif', 'xps->ico', 'xps->jpg', 'xps->odd', 'xps->png', 'xps->ps', 'xps->psd', 'xps->svg', 'xps->tiff', 'xps->webp',
   'zabw->doc', 'zabw->jpg', 'zabw->png', 'zabw->rtf',
+  'azw->rtf',
+  'azw3->rtf',
+  'cbr->azw3', 'cbr->epub', 'cbr->lrf', 'cbr->mobi', 'cbr->oeb', 'cbr->pdb', 'cbr->pdf', 'cbr->rtf', 'cbr->txt',
+  'chm->azw3', 'chm->epub', 'chm->lrf', 'chm->mobi', 'chm->oeb', 'chm->pdb', 'chm->pdf', 'chm->rtf', 'chm->txt',
+  'fb2->azw3', 'fb2->lrf', 'fb2->mobi', 'fb2->oeb', 'fb2->pdb', 'fb2->rtf',
+  'lit->azw3', 'lit->epub', 'lit->lrf', 'lit->mobi', 'lit->oeb', 'lit->pdb', 'lit->pdf', 'lit->rtf', 'lit->txt',
+  'mobi->rtf',
+  'prc->azw3', 'prc->epub', 'prc->lrf', 'prc->mobi', 'prc->oeb', 'prc->pdb', 'prc->pdf', 'prc->rtf', 'prc->txt',
+  'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
+  'tcr->azw3', 'tcr->epub', 'tcr->lrf', 'tcr->mobi', 'tcr->oeb', 'tcr->pdb', 'tcr->pdf', 'tcr->rtf', 'tcr->txt',
 ]);
 
 describe('Universal Format Matrix & Parity Verification', () => {

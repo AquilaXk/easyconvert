@@ -869,7 +869,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-mobipocket-ebook',
     category: 'ebook',
     description: 'Amazon Kindle Mobipocket reflowable electronic book format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'azw3', 'docx', 'zip', 'rtf', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'txt', 'azw3', 'zip', 'lrf', 'oeb', 'pdb'],
   },
   azw: {
     id: 'azw',
@@ -878,7 +878,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.amazon.ebook',
     category: 'ebook',
     description: 'Amazon Kindle original proprietary ebook format.',
-    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'azw3', 'lrf', 'oeb', 'pdb'],
   },
   azw3: {
     id: 'azw3',
@@ -887,7 +887,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.amazon.mobi8-ebook',
     category: 'ebook',
     description: 'Kindle Format 8 supporting HTML5 and CSS3 styling.',
-    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'docx', 'zip', 'rtf', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'lrf', 'oeb', 'pdb'],
   },
   fb2: {
     id: 'fb2',
@@ -896,7 +896,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-fictionbook+xml',
     category: 'ebook',
     description: 'XML-based Russian open ebook format with structured semantic metadata.',
-    targetFormats: ['epub', 'mobi', 'pdf', 'txt', 'docx', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb', 'html', 'md'],
+    targetFormats: ['epub', 'pdf', 'txt', 'docx', 'zip', 'html', 'md'],
   },
   ibooks: {
     id: 'ibooks',
@@ -905,7 +905,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-ibooks+zip',
     category: 'ebook',
     description: 'Apple Books proprietary multi-touch interactive digital book format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'zip'],
+    targetFormats: ['zip'],
   },
   cbr: {
     id: 'cbr',
@@ -914,7 +914,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.comicbook-rar',
     category: 'ebook',
     description: 'Comic Book Archive packaged in RAR compression.',
-    targetFormats: ['cbz', 'pdf', 'zip', 'rtf', 'txt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   cbz: {
     id: 'cbz',
@@ -932,7 +932,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-cbr',
     category: 'ebook',
     description: 'Comic Book Archive packaged in 7-Zip LZMA format.',
-    targetFormats: ['cbz', 'pdf', 'zip'],
+    targetFormats: ['pdf', 'zip'],
   },
   cbt: {
     id: 'cbt',
@@ -941,7 +941,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-cbr',
     category: 'ebook',
     description: 'Comic Book Archive packaged in TAR format.',
-    targetFormats: ['cbz', 'pdf', 'zip'],
+    targetFormats: ['pdf', 'zip'],
   },
   lit: {
     id: 'lit',
@@ -950,7 +950,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-ms-reader',
     category: 'ebook',
     description: 'Microsoft Reader compressed ebook format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'mobi', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   lrf: {
     id: 'lrf',
@@ -968,7 +968,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-mobipocket-ebook',
     category: 'ebook',
     description: 'PalmOS Mobipocket compiled electronic book package.',
-    targetFormats: ['epub', 'mobi', 'pdf', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   rb: {
     id: 'rb',
@@ -986,7 +986,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-snb',
     category: 'ebook',
     description: 'Shanda Bambook electronic book archive format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   tcr: {
     id: 'tcr',
@@ -995,7 +995,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-tcr',
     category: 'ebook',
     description: 'Psion Series 3 palmtop computer compressed ebook format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   chm: {
     id: 'chm',
@@ -1004,7 +1004,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-htmlhelp',
     category: 'ebook',
     description: 'Microsoft Compiled HTML Help documentation and online book file.',
-    targetFormats: ['pdf', 'html', 'epub', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['zip'],
   },
   djv: {
     id: 'djv',
