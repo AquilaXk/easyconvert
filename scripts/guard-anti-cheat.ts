@@ -627,6 +627,8 @@ const HTTP_SCHEME_PREFIX = /^((?:http|ws)s?:)\/\//i;
 const AUTHORITY_TERMINATOR = /[/?#]/;
 /** A URL input that carries its own scheme and therefore ignores the base passed to `new URL`. */
 const ABSOLUTE_URL_INPUT = /^[a-z][a-z0-9+.-]*:/i;
+/** Reported host when a URL reaches a host that cannot be known statically but might be external. */
+const UNKNOWN_HOST = '<unknown host>';
 /** Bound on chained constant lookups (`const A = B; const B = ...`) so cyclic references terminate. */
 const MAX_CONSTANT_RESOLUTION_DEPTH = 16;
 const NODE_BUILTINS: ReadonlySet<string> = new Set(builtinModules.filter((m) => !m.startsWith('_')));
@@ -773,25 +775,50 @@ function externalUrlHost(value: StaticText): string | undefined {
   }
   const lastChunk = authority[authority.length - 1];
   const at = lastChunk.lastIndexOf('@');
-  if (authority.length > 1 && at === -1) return undefined;
-  const hostPort = lastChunk.slice(at + 1);
+  if (authority.length === 1 || at !== -1) return parseHost(scheme[1], lastChunk.slice(at + 1));
+  return hostBeforeUnknownAuthority(scheme[1], authority);
+}
+
+function parseHost(scheme: string, hostPort: string): string | undefined {
   if (!hostPort) return undefined;
   try {
-    return new URL(`${scheme[1]}//${hostPort}/`).hostname;
+    return new URL(`${scheme}//${hostPort}/`).hostname;
   } catch {
     return undefined;
   }
 }
 
-function isLocalHost(host: string): boolean {
+/**
+ * Host of an authority that continues into an unknown value with no literal `@` after it. The literal text before
+ * the first `:` is the host, unless it is a single label that may be a username (`api:${key}`) or a literal `@`
+ * already hands the host to an unknown value: then the host is unknown and reported conservatively.
+ * Without a `:` the host itself is incomplete (`https://${host}`) and nothing is reported.
+ */
+function hostBeforeUnknownAuthority(scheme: string, authority: string[]): string | undefined {
+  const [first, ...rest] = authority;
+  const hostSection = first.slice(first.lastIndexOf('@') + 1);
+  const colon = hostSection.indexOf(':');
+  if (colon <= 0) return undefined;
+  if (rest.some((chunk) => chunk.includes('@'))) return UNKNOWN_HOST;
+  const host = parseHost(scheme, hostSection.slice(0, colon));
+  if (host === undefined) return undefined;
+  const mayBeUsername = !first.includes('@') && SINGLE_LABEL_HOST_PATTERN.test(host) && !isReservedLocalHost(host);
+  return mayBeUsername ? UNKNOWN_HOST : host;
+}
+
+/** Loopback, docker gateway, and reserved names; excludes bare single labels, which may also be usernames. */
+function isReservedLocalHost(host: string): boolean {
   const name = host.toLowerCase();
   return (
     LOCAL_HOST_NAMES.has(name) ||
     LOOPBACK_IPV4_PATTERN.test(name) ||
     RESERVED_LOCAL_SUFFIX_PATTERN.test(name) ||
-    DOCUMENTATION_DOMAIN_PATTERN.test(name) ||
-    SINGLE_LABEL_HOST_PATTERN.test(name)
+    DOCUMENTATION_DOMAIN_PATTERN.test(name)
   );
+}
+
+function isLocalHost(host: string): boolean {
+  return isReservedLocalHost(host) || SINGLE_LABEL_HOST_PATTERN.test(host);
 }
 
 /** Object literal an expression evaluates to, following in-scope `const` bindings. */

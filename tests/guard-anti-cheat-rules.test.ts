@@ -507,6 +507,7 @@ export function encodeStep(model: any): Buffer {
           'concat-path.mjs': `await fetch('https://third-party.dev/' + path);\n`,
           'concat-chain.mjs': `const BASE = 'https://third-party.dev';\nawait fetch(BASE + '/' + id + '/raw');\n`,
           'tpl-port.mjs': 'await page.goto(`https://third-party.dev:8443/${path}`);\n',
+          'tpl-unknown-port.mjs': 'await page.goto(`https://third-party.dev:${port}/x`);\n',
           'tpl-query.mjs': 'await fetch(`https://third-party.dev?q=${encodeURIComponent(q)}`);\n',
         },
         'third-party.dev'
@@ -525,17 +526,33 @@ export function encodeStep(model: any): Buffer {
       );
     });
 
+    it('flags conservatively when a single label before ":" may be userinfo for an unknown host (positive case)', () => {
+      const { status, flagged } = runG5Cases({
+        'unknown-password.mjs': 'await fetch(`https://api:${process.env.KEY}`);\n',
+        'userinfo-unknown-host.mjs': `await fetch('https://api:' + key + '@' + host);\n`,
+        'userinfo-hole.mjs': 'await fetch(`https://api:${key}@${host}/v3`);\n',
+        'ws-unknown-host.mjs': `const socket = new WebSocket('wss://deploy:' + token);\n`,
+      });
+      expect(status).not.toBe(0);
+      expect([...flagged.keys()].sort()).toEqual([
+        'unknown-password.mjs',
+        'userinfo-hole.mjs',
+        'userinfo-unknown-host.mjs',
+        'ws-unknown-host.mjs',
+      ]);
+      expect([...new Set(flagged.values())]).toEqual(['<unknown host>']);
+    });
+
     it('does not flag a prefix whose host is incomplete (negative case)', () => {
       expectNoneFlagged({
         'tpl-host.mjs': 'await page.goto(`https://${host}`);\n',
         'concat-host.mjs': `await fetch('https://' + host);\n`,
         'tpl-tld.mjs': 'await fetch(`https://third-party${tld}/x`);\n',
         'concat-suffix.mjs': `await fetch('https://third-party.dev' + suffix);\n`,
-        // An authority cut off before '/', '?', or '#' may still continue with userinfo ('user:pass@other-host').
-        'tpl-unknown-port.mjs': 'await page.goto(`https://third-party.dev:${port}/x`);\n',
-        'tpl-unknown-password.mjs': 'await fetch(`https://api:${process.env.KEY}`);\n',
-        'tpl-userinfo-hole.mjs': 'await fetch(`https://api:${key}@${host}/v3`);\n',
         'userinfo-local.mjs': 'await fetch(`https://api:${process.env.KEY}@localhost:3000/v3`);\n',
+        'local-unknown-port.mjs': 'await page.goto(`http://localhost:${port}/convert`);\n',
+        'loopback-unknown-port.mjs': `await fetch('http://127.0.0.1:' + port + '/api');\n`,
+        'env-host-port.mjs': 'await fetch(`http://${process.env.HOST}:${process.env.PORT}/api`);\n',
       });
     });
 
