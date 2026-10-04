@@ -1,5 +1,5 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect, beforeAll } from 'vitest';
 import sharp from 'sharp';
 import JSZip from 'jszip';

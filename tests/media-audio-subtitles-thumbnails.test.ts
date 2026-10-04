@@ -8,6 +8,7 @@ import {
   AUDIO_CODEC_MAP,
   escapeFfmpegFilterPath,
   probeAudioChannels,
+  type FfprobePath,
 } from '../src/lib/conversions/media-ffmpeg-args';
 import {
   convertMedia,
@@ -437,7 +438,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
         ], { stdio: 'ignore' });
 
         // Verify input is authentic 5.1 (6 channels)
-        expect(probeAudioChannels(inputPath, ffprobe)).toBe(6);
+        expect(probeAudioChannels(inputPath, ffprobe as FfprobePath)).toBe(6);
 
         // Transcode to MP4 with ITU-R BS.775 downmix
         const inputBuf = fs.readFileSync(inputPath);

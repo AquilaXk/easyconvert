@@ -1,4 +1,4 @@
-import zlib from 'zlib';
+import zlib from 'node:zlib';
 
 /**
  * PDF ToUnicode CMap structure per ISO 32000-1 Section 9.10
