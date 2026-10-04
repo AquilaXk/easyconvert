@@ -55,6 +55,12 @@ export interface FormatOptionsSchema {
   uSamples?: boolean;
   vSamples?: boolean;
   allowEmbeddedPreview?: boolean;
+  // RAW & HDR pipeline options
+  outputDepth?: boolean;
+  gainMap?: boolean;
+  demosaicMethod?: boolean;
+  targetColorSpace?: boolean;
+  highlightReconstruction?: boolean;
 }
 
 export type ResourceClass = 'light' | 'cpu' | 'memory' | 'gpu';
@@ -90,6 +96,14 @@ export interface ConversionOptions {
   gpuAcceleration?: boolean;
   falseColorSuppression?: boolean | number;
   allowEmbeddedPreview?: boolean;
+  // RAW & HDR pipeline options
+  demosaicMethod?: 'amaze' | 'rcd' | 'ahd';
+  kelvin?: number;
+  tint?: number;
+  highlightReconstruction?: boolean | 'clip' | 'blend' | 'reconstruct';
+  targetColorSpace?: 'sRGB' | 'display-p3' | 'rec2020' | 'linear';
+  outputDepth?: 8 | 16 | 32;
+  gainMap?: boolean;
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;
@@ -500,6 +514,13 @@ export class InvalidSheetIndexError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidSheetIndexError';
+  }
+}
+
+export class UnsupportedRawCompressionError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedRawCompressionError';
   }
 }
 
