@@ -15,6 +15,8 @@ import path from 'node:path';
 import os from 'node:os';
 import sharp from 'sharp';
 import { compareImages } from './helpers/vrt-engine';
+import { renderPdfPagesWithPdftoppm } from './oracles/product/pdf-oracle';
+import { renderOfficeDocumentWithSoffice } from './oracles/product/office-oracle';
 
 // ============================================================================
 // Independent EMF Binary Oracle Parser
@@ -507,7 +509,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
   describe('Differential Visual Oracle (LibreOffice soffice)', () => {
     oracleTest(
       'renders EMF and WMF via LibreOffice soffice to PNG and verifies visual similarity',
-      ['soffice'],
+      ['soffice', 'pdftoppm'],
       async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cad-oracle-'));
         try {
@@ -525,17 +527,34 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
           const refPng = await sharp(svgBuffer).resize(400, 300).png().toBuffer();
           fs.writeFileSync(refSvgPngPath, refPng);
 
-          // Convert EMF to PNG using LibreOffice
+          // Convert EMF to PDF using LibreOffice with isolated profile
           execFileSync(
             'soffice',
-            ['--headless', '--convert-to', 'png', emfPath, '--outdir', tempDir],
-            { timeout: 30000 }
+            [
+              '--headless',
+              '--norestore',
+              '--nofirststartwizard',
+              '--nologo',
+              `-env:UserInstallation=file://${tempDir}/user`,
+              '--convert-to',
+              'pdf',
+              emfPath,
+              '--outdir',
+              tempDir,
+            ],
+            {
+              timeout: 30000,
+              stdio: ['pipe', 'pipe', 'pipe'],
+              env: { ...process.env, HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+            }
           );
-          const emfPngPath = path.join(tempDir, 'sample.png');
-          expect(fs.existsSync(emfPngPath)).toBe(true);
+          const emfPdfPath = path.join(tempDir, 'sample.pdf');
+          expect(fs.existsSync(emfPdfPath)).toBe(true);
 
-          const emfPng = fs.readFileSync(emfPngPath);
-          const emfResized = await sharp(emfPng).resize(400, 300).png().toBuffer();
+          const pdfBuf = fs.readFileSync(emfPdfPath);
+          const pages = await renderPdfPagesWithPdftoppm(pdfBuf);
+          expect(pages.length).toBeGreaterThanOrEqual(1);
+          const emfResized = await sharp(pages[0]).resize(400, 300).png().toBuffer();
           const vrtResult = await compareImages(emfResized, refPng, { minSsim: 0.85 });
 
           expect(vrtResult.ssim).toBeGreaterThanOrEqual(0.85);
