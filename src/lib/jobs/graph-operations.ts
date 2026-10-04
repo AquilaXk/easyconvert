@@ -52,6 +52,9 @@ export const TARGET_FORMAT_REQUIRED_OPERATIONS: ReadonlySet<GraphOperation> = ne
 /** Formats a thumbnail node can produce. */
 export const THUMBNAIL_FORMATS: ReadonlySet<string> = new Set(['jpg', 'png']);
 
+/** Fewest distinct inputs a merge node needs; with one input there is nothing to merge. */
+export const MIN_MERGE_INPUTS = 2;
+
 /** Formats a merge node can produce; every input must already be in that format. */
 export const MERGE_FORMATS: ReadonlySet<string> = new Set(['pdf', 'txt']);
 

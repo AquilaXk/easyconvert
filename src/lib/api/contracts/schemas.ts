@@ -798,7 +798,7 @@ export const JobGraphSchema = {
             description: 'Operation type for this graph node.',
           },
           input: {
-            description: 'Single upstream NodeId or array of upstream NodeIds.',
+            description: 'Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs.',
             oneOf: [
               {
                 type: 'string',
@@ -866,7 +866,7 @@ export const JobCreateRequestSchema = {
     },
     targetFormat: {
       type: 'string',
-      description: 'Target format extension.',
+      description: 'Target format extension. With `tasks`, the final task determines the output format.',
     },
     sourceFormat: {
       type: 'string',

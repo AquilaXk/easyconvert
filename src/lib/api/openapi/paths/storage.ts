@@ -5,8 +5,50 @@ import {
   jsonBody,
   requireScope,
 } from '../shared';
+import type { StorageProviderType } from '@/lib/storage/credentials-vault';
+import { UNAVAILABLE_STORAGE_PROVIDERS } from '@/lib/storage/adapters';
 
-const STORAGE_PROVIDER_TYPES = ['s3', 'gcs', 'azure-blob', 'sftp', 'webdav', 'http'];
+/** Every credential provider type; the Record type makes the compiler flag a missing one. */
+const ALL_STORAGE_PROVIDER_TYPES: Record<StorageProviderType, true> = {
+  s3: true,
+  gcs: true,
+  'azure-blob': true,
+  sftp: true,
+  webdav: true,
+  http: true,
+};
+
+/** Provider types that can be registered: unavailable providers are refused by the route. */
+const STORAGE_PROVIDER_TYPES = Object.keys(ALL_STORAGE_PROVIDER_TYPES).filter(
+  (type) => !UNAVAILABLE_STORAGE_PROVIDERS.has(type)
+);
+
+const BYOS_PROVIDER_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/byos-provider-unavailable';
+const HTTP_BAD_REQUEST = 400;
+
+const providerUnavailableExample = {
+  summary: 'Storage provider unavailable',
+  value: {
+    type: BYOS_PROVIDER_UNAVAILABLE_TYPE,
+    title: 'Storage Provider Unavailable',
+    status: HTTP_BAD_REQUEST,
+    detail: 'Storage provider "<providerType>" is not available for customer storage yet.',
+    instance: '/api/v1/storage/credentials',
+  },
+};
+
+const providerUnavailableContent = {
+  schema: { $ref: '#/components/schemas/ProblemDetails' },
+  examples: { providerUnavailable: providerUnavailableExample },
+};
+
+const registerBadRequestResponse = {
+  description: `Invalid JSON, missing fields, or provider type mismatch. A provider type without a working adapter is refused with problem type \`${BYOS_PROVIDER_UNAVAILABLE_TYPE}\`.`,
+  content: {
+    'application/problem+json': providerUnavailableContent,
+    'application/json': providerUnavailableContent,
+  },
+};
 
 /** Stored object download and upload operations. */
 export const storagePaths = {
@@ -100,7 +142,7 @@ export const storagePaths = {
           name: { type: 'string' },
           expiresAt: { type: 'number' },
         }),
-        '400': createProblemResponse('Invalid JSON, missing fields, or provider type mismatch.'),
+        '400': registerBadRequestResponse,
         '401': createProblemResponse('Authentication required.'),
         '500': createProblemResponse('Credentials could not be stored.'),
       },
