@@ -8,7 +8,6 @@ import {
   createQueueEngine,
   Worker,
   type IQueueEngine,
-  type IQueueWorker,
   type Job,
 } from '../queue/bullmq-engine';
 
@@ -93,6 +92,21 @@ export const WEBHOOK_RETRY_SCHEDULE_MS = [
 
 export type WebhookStatusAction = 'success' | 'deactivate' | 'dlq_immediate' | 'retry';
 
+function classifyStatusCode(code: number): WebhookStatusAction {
+  if (code >= 200 && code < 300) return 'success';
+  if (code === 410) return 'deactivate';
+  if (code === 408 || code === 429 || code >= 500) return 'retry';
+  if (code >= 400 && code < 500) return 'dlq_immediate';
+  return 'retry';
+}
+
+function classifyErrorMessage(err: string): WebhookStatusAction {
+  if (err.includes('SSRF blocked') || err.includes('restricted')) {
+    return 'dlq_immediate';
+  }
+  return 'retry';
+}
+
 /**
  * Classifies HTTP response status codes and network errors:
  * - 2xx: Success
@@ -102,31 +116,38 @@ export type WebhookStatusAction = 'success' | 'deactivate' | 'dlq_immediate' | '
  */
 export function classifyWebhookStatus(statusCode?: number, error?: string): WebhookStatusAction {
   if (statusCode !== undefined) {
-    if (statusCode >= 200 && statusCode < 300) {
-      return 'success';
-    }
-    if (statusCode === 410) {
-      return 'deactivate';
-    }
-    if (statusCode === 408 || statusCode === 429) {
-      return 'retry';
-    }
-    if (statusCode >= 400 && statusCode < 500) {
-      return 'dlq_immediate';
-    }
-    if (statusCode >= 500) {
-      return 'retry';
-    }
+    return classifyStatusCode(statusCode);
   }
-
   if (error) {
-    if (error.includes('SSRF blocked') || error.includes('restricted')) {
-      return 'dlq_immediate';
-    }
-    return 'retry';
+    return classifyErrorMessage(error);
   }
-
   return 'retry';
+}
+
+function extractRetryAfterHeader(
+  headers: Headers | Record<string, string | string[] | undefined>
+): string | null {
+  if (typeof (headers as Headers).get === 'function') {
+    return (headers as Headers).get('retry-after');
+  }
+  const rec = headers as Record<string, string | string[] | undefined>;
+  const raw = rec['retry-after'] ?? rec['Retry-After'];
+  if (Array.isArray(raw)) return raw[0] ?? null;
+  return typeof raw === 'string' ? raw : null;
+}
+
+function parseRetryAfterDelayMs(headerValue: string): number | null {
+  const trimmed = headerValue.trim();
+  const seconds = Number.parseInt(trimmed, 10);
+  if (!Number.isNaN(seconds) && String(seconds) === trimmed) {
+    return Math.min(86_400_000, Math.max(1000, seconds * 1000));
+  }
+  const dateParsed = Date.parse(trimmed);
+  if (!Number.isNaN(dateParsed)) {
+    const diff = dateParsed - Date.now();
+    return Math.min(86_400_000, Math.max(1000, diff));
+  }
+  return null;
 }
 
 /**
@@ -138,30 +159,14 @@ export function computeRetryDelay(
   overrideSchedule?: readonly number[]
 ): number {
   if (responseHeaders) {
-    let retryAfterVal: string | null = null;
-    if (typeof (responseHeaders as any).get === 'function') {
-      retryAfterVal = (responseHeaders as Headers).get('retry-after');
-    } else {
-      const rec = responseHeaders as Record<string, string | string[] | undefined>;
-      const raw = rec['retry-after'] || rec['Retry-After'];
-      if (Array.isArray(raw)) retryAfterVal = raw[0];
-      else if (typeof raw === 'string') retryAfterVal = raw;
-    }
-    if (retryAfterVal) {
-      const trimmed = retryAfterVal.trim();
-      const seconds = parseInt(trimmed, 10);
-      if (!isNaN(seconds) && String(seconds) === trimmed) {
-        return Math.min(86_400_000, Math.max(1000, seconds * 1000));
-      }
-      const dateParsed = Date.parse(trimmed);
-      if (!isNaN(dateParsed)) {
-        const diff = dateParsed - Date.now();
-        return Math.min(86_400_000, Math.max(1000, diff));
-      }
+    const rawVal = extractRetryAfterHeader(responseHeaders);
+    if (rawVal) {
+      const parsed = parseRetryAfterDelayMs(rawVal);
+      if (parsed !== null) return parsed;
     }
   }
 
-  const schedule = overrideSchedule || WEBHOOK_RETRY_SCHEDULE_MS;
+  const schedule = overrideSchedule ?? WEBHOOK_RETRY_SCHEDULE_MS;
   const index = Math.min(Math.max(0, attemptNumber - 1), schedule.length - 1);
   const baseIntervalMs = schedule[index];
   if (baseIntervalMs <= 1000) return baseIntervalMs;
@@ -518,7 +523,6 @@ export class WebhookDispatcher {
       const attemptStart = Date.now();
       const controller = new AbortController();
       let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
-      let responseHeaders: Headers | undefined;
 
       try {
         const fetchFn = (globalThis.fetch || undiciFetch) as unknown as typeof undiciFetch;
@@ -542,7 +546,6 @@ export class WebhookDispatcher {
         } as any)) as unknown as Response;
 
         finalStatusCode = response.status;
-        responseHeaders = response.headers;
         const attemptDuration = Date.now() - attemptStart;
 
         attempts.push({
@@ -560,13 +563,11 @@ export class WebhookDispatcher {
 
         if (statusAction === 'deactivate') {
           // 410 Gone: permanently stop retrying and do not store in DLQ
-          success = false;
           break;
         }
 
         if (statusAction === 'dlq_immediate') {
           // 4xx client errors (except 408/429): fast-fail immediately to DLQ
-          success = false;
           break;
         }
       } catch (err: unknown) {
@@ -593,8 +594,9 @@ export class WebhookDispatcher {
 
       if (attempt < maxRetries) {
         const baseDelay = options.initialDelayMs ?? 200;
-        const exponential = baseDelay * Math.pow(2, attempt - 1);
-        const backoffMs = Math.max(1, Math.floor(Math.random() * exponential) + 1);
+        const exponential = Math.floor(baseDelay * Math.pow(2, attempt - 1));
+        const maxRange = Math.max(2, exponential + 1);
+        const backoffMs = crypto.randomInt(1, maxRange);
         await new Promise((resolve) => setTimeout(resolve, backoffMs));
       }
     }
@@ -795,21 +797,16 @@ export class WebhookDispatcher {
   private queueWorker: Worker<WebhookJobData, WebhookDispatchResult> | null = null;
 
   public getQueue(): IQueueEngine<WebhookJobData, WebhookDispatchResult> {
-    if (!this.queueEngine) {
-      this.queueEngine = createQueueEngine<WebhookJobData, WebhookDispatchResult>('easyconvert-webhooks');
-    }
+    this.queueEngine ??= createQueueEngine<WebhookJobData, WebhookDispatchResult>('easyconvert-webhooks');
     return this.queueEngine;
   }
 
   public getWorker(): Worker<WebhookJobData, WebhookDispatchResult> {
-    if (!this.queueWorker) {
-      const queue = this.getQueue();
-      this.queueWorker = new Worker<WebhookJobData, WebhookDispatchResult>(
-        queue,
-        async (job) => this.processQueuedJob(job),
-        { concurrency: 10 }
-      );
-    }
+    this.queueWorker ??= new Worker<WebhookJobData, WebhookDispatchResult>(
+      this.getQueue(),
+      async (job) => this.processQueuedJob(job),
+      { concurrency: 10 }
+    );
     return this.queueWorker;
   }
 

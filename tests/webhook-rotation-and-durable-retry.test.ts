@@ -116,9 +116,9 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
 
       expect(cipherText.startsWith('enc:wh:v1:')).toBe(true);
       const parts = cipherText.replace('enc:wh:v1:', '').split(':');
-      expect(parts.length).toBe(3); // iv, tag, ciphertext
-      expect(Buffer.from(parts[0], 'base64').length).toBe(12); // 96-bit IV
-      expect(Buffer.from(parts[1], 'base64').length).toBe(16); // 128-bit GCM Auth Tag
+      expect(parts).toHaveLength(3); // iv, tag, ciphertext
+      expect(Buffer.from(parts[0], 'base64')).toHaveLength(12); // 96-bit IV
+      expect(Buffer.from(parts[1], 'base64')).toHaveLength(16); // 128-bit GCM Auth Tag
     });
 
     it('accurately decrypts encrypted secret and fails closed upon tampering with ciphertext or auth tag', () => {
@@ -163,7 +163,7 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
 
       expect(result.success).toBe(true);
       expect(result.totalAttempts).toBe(1);
-      expect(receivedRequests.length).toBe(1);
+      expect(receivedRequests).toHaveLength(1);
 
       const req = receivedRequests[0];
       const deliveryId = req.headers['webhook-id'] as string;
@@ -241,7 +241,7 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
       });
 
       expect(result.success).toBe(true);
-      expect(receivedRequests.length).toBe(1);
+      expect(receivedRequests).toHaveLength(1);
 
       const req = receivedRequests[0];
       const deliveryId = req.headers['webhook-id'] as string;
@@ -296,7 +296,7 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
         previousExpiresAt: Date.now() - 5000, // Expired 5 seconds ago
       });
 
-      expect(receivedRequests.length).toBe(1);
+      expect(receivedRequests).toHaveLength(1);
       const expiredReq = receivedRequests[0];
       const expiredSigHeader = expiredReq.headers['webhook-signature'] as string;
 
@@ -346,7 +346,7 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
 
       // Must NOT save to DLQ when permanently deactivated
       const dlqEntries = await webhookDispatcher.getDlqEntries(testUser.id);
-      expect(dlqEntries.length).toBe(0);
+      expect(dlqEntries).toHaveLength(0);
     });
 
     it('immediately transfers to DLQ without wasteful retries on HTTP 400 Bad Request', async () => {
@@ -370,7 +370,7 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
 
       // Immediately stored in DLQ
       const dlqEntries = await webhookDispatcher.getDlqEntries(testUser.id);
-      expect(dlqEntries.length).toBe(1);
+      expect(dlqEntries).toHaveLength(1);
       expect(dlqEntries[0].finalStatusCode).toBe(400);
       expect(dlqEntries[0].status).toBe('failed');
       expect(dlqEntries[0].originalDeliveryId).toBe(result.id);
@@ -421,7 +421,7 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
 
       expect(initialResult.success).toBe(false);
       const dlqEntries = await webhookDispatcher.getDlqEntries(testUser.id);
-      expect(dlqEntries.length).toBe(1);
+      expect(dlqEntries).toHaveLength(1);
       const dlqItem = dlqEntries[0];
 
       // Replay the DLQ entry
@@ -430,7 +430,7 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
       expect(replayResult!.success).toBe(true);
 
       // Check the HTTP requests received by server: both must share the EXACT SAME Webhook-Id
-      expect(receivedRequests.length).toBe(2);
+      expect(receivedRequests).toHaveLength(2);
       const firstWebhookId = receivedRequests[0].headers['webhook-id'];
       const secondWebhookId = receivedRequests[1].headers['webhook-id'];
 

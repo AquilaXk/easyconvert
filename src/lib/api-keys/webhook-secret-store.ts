@@ -121,13 +121,13 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
     this.clock = options?.clock || (() => Date.now());
   }
 
-  public async getSecretRecord(
+  public getSecretRecord(
     ownerUserId: string,
     targetId: string
   ): Promise<WebhookSecretRecord | null> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
     const stored = this.store.get(key);
-    if (!stored) return null;
+    if (!stored) return Promise.resolve(null);
 
     const primary = decryptWebhookSecret(stored.primaryEncrypted);
     let previous: string | undefined;
@@ -135,16 +135,16 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
       previous = decryptWebhookSecret(stored.previousEncrypted);
     }
 
-    return {
+    return Promise.resolve({
       primary,
       previous,
       previousExpiresAt: stored.previousExpiresAt,
       createdAt: stored.createdAt,
       rotatedAt: stored.rotatedAt,
-    };
+    });
   }
 
-  public async setPrimarySecret(
+  public setPrimarySecret(
     ownerUserId: string,
     targetId: string,
     secret: string
@@ -159,9 +159,10 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
       createdAt: existing?.createdAt || now,
       rotatedAt: existing?.rotatedAt,
     });
+    return Promise.resolve();
   }
 
-  public async rotateSecret(
+  public rotateSecret(
     ownerUserId: string,
     targetId: string,
     graceSeconds: number = 86400
@@ -183,21 +184,22 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
       rotatedAt: now,
     });
 
-    return {
+    return Promise.resolve({
       newSecret,
       expiresAt,
       graceSeconds: clampedGrace,
       previousExpiresAt: existing ? expiresAt : undefined,
-    };
+    });
   }
 
-  public async deleteSecretRecord(ownerUserId: string, targetId: string): Promise<boolean> {
+  public deleteSecretRecord(ownerUserId: string, targetId: string): Promise<boolean> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
-    return this.store.delete(key);
+    return Promise.resolve(this.store.delete(key));
   }
 
-  public async reset(): Promise<void> {
+  public reset(): Promise<void> {
     this.store.clear();
+    return Promise.resolve();
   }
 }
 
