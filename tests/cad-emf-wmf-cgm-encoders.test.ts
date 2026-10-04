@@ -256,9 +256,10 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       const svgOut = parseCgmToSvg(
         'BEGMF "p";\nMFVERSION 1;\nBEGPIC "p";\nVDCEXT (0,100) (100,0);\nBEGPICBODY;\nPOLYLINE (0,0) (10,10) (20,0);\nENDPIC;\nENDMF;\n'
       );
-      expect(svgOut).toContain('<polyline points="0,0 10,10 20,0"');
-      expect(svgOut).toContain('viewBox="0 0 100 100"');
-      expect(svgOut).not.toContain('<line');
+      const polylines = [...(svgOut ?? '').matchAll(/<polyline points="([^"]*)"/g)].map((m) => m[1]);
+      expect(polylines).toEqual(['0,0 10,10 20,0']);
+      expect((svgOut ?? '').match(/<line\b/g)).toBeNull();
+      expect(/viewBox="([^"]*)"/.exec(svgOut ?? '')?.[1]).toBe('0 0 100 100');
     });
 
     it('rejects empty input buffer fail-closed', () => {
