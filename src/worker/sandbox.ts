@@ -8,6 +8,9 @@ export {
   detectSandboxEnvironment,
   getSanitizedEnvironment,
   killProcessGroup,
+  getPrlimitCapability,
+  buildPrlimitArgs,
+  resetPrlimitCapabilityCache,
   SandboxedProcessError,
   SandboxedTimeoutError,
   SandboxedBufferLimitError,
@@ -18,6 +21,8 @@ export type {
   SandboxedExecutionOptions,
   SandboxedExecutionResult,
   SandboxEnvironment,
+  SandboxedRlimitsOptions,
+  PrlimitCapability,
 } from '../lib/security/process-sandbox';
 
 import {
@@ -25,6 +30,7 @@ import {
   getSanitizedEnvironment,
   SandboxedExecutionOptions,
   SandboxedExecutionResult,
+  SandboxedRlimitsOptions,
 } from '../lib/security/process-sandbox';
 
 export interface WorkerSandboxContext {
@@ -42,6 +48,8 @@ export interface WorkerSandboxOptions {
   timeoutMs?: number;
   maxBuffer?: number;
   memoryLimitMb?: number;
+  maxFileSize?: number;
+  rlimits?: SandboxedRlimitsOptions;
   env?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -129,6 +137,8 @@ export async function withWorkerSandbox<T>(
         timeoutMs: execOpts.timeoutMs ?? options.timeoutMs,
         maxBuffer: execOpts.maxBuffer ?? options.maxBuffer,
         memoryLimitMb: execOpts.memoryLimitMb ?? options.memoryLimitMb,
+        maxFileSize: execOpts.maxFileSize ?? options.maxFileSize,
+        rlimits: execOpts.rlimits ?? options.rlimits,
       });
     },
   };
@@ -160,6 +170,8 @@ export async function runInWorkerSandbox(
       timeoutMs: options.timeoutMs,
       maxBuffer: options.maxBuffer,
       memoryLimitMb: options.memoryLimitMb,
+      maxFileSize: options.maxFileSize,
+      rlimits: options.rlimits,
       env: options.env,
     });
   }

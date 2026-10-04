@@ -21,6 +21,12 @@ RUN npm ci --include=dev --ignore-scripts
 COPY tsconfig.json ./
 COPY src/ ./src/
 
+# Compile worker bundle to dist/worker.js
+RUN npm run build:worker
+
+# Prune devDependencies to ship production dependencies only
+RUN npm prune --omit=dev --ignore-scripts
+
 # ==============================================================================
 # Stage 2: Hardened Runtime Container
 # ==============================================================================
@@ -29,9 +35,10 @@ FROM node:20-bookworm-slim AS runner
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
-# 1. Install Tini Init, Native Conversion Engines, and CJK Font Packages
+# 1. Install Tini Init, util-linux (prlimit), Native Conversion Engines, and CJK Font Packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
+    util-linux \
     ca-certificates \
     curl \
     ffmpeg \
@@ -64,26 +71,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 2. Copy artifacts from builder with explicit non-root ownership
+# 2. Copy artifacts from builder with explicit non-root ownership (production dependencies only)
 COPY --from=builder --chown=easyconvert:easyconvert /app/node_modules ./node_modules
 COPY --from=builder --chown=easyconvert:easyconvert /app/package*.json ./
-COPY --from=builder --chown=easyconvert:easyconvert /app/tsconfig.json ./
-COPY --from=builder --chown=easyconvert:easyconvert /app/src ./src
+COPY --from=builder --chown=easyconvert:easyconvert /app/dist ./dist
+COPY --chown=easyconvert:easyconvert scripts/worker-healthcheck.js ./scripts/worker-healthcheck.js
 
 # 3. Create strictly permissioned scratch directories
-RUN mkdir -p /shared/storage /tmp \
-    && chown -R easyconvert:easyconvert /app /shared/storage /tmp \
-    && chmod 0750 /tmp /shared/storage
+RUN mkdir -p /shared/storage /tmp /home/easyconvert \
+    && chown -R easyconvert:easyconvert /app /shared/storage /tmp /home/easyconvert \
+    && chmod 0750 /tmp /shared/storage /home/easyconvert
 
 # 4. Drop to unprivileged non-root user (UID:GID 10001:10001)
 USER easyconvert:easyconvert
 
-# Healthcheck to verify native tools and daemon vitality
+# Healthcheck to verify Redis connectivity and worker heartbeat vitality
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD node -e "require('child_process').execSync('soffice --version && ffmpeg -version')" || exit 1
+    CMD node scripts/worker-healthcheck.js || exit 1
 
-# Process init wrapper for signal forwarding (SIGTERM/SIGINT) and zombie reaping
+# Process init wrapper for signal forwarding (SIGTERM/SIGINT) and zombie reaping (/usr/bin/tini -g)
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# Start the OCI worker daemon
-CMD ["npm", "run", "worker"]
+# Start the compiled OCI worker daemon directly with Node (no npm, no tsx)
+CMD ["node", "dist/worker.js"]
