@@ -91,6 +91,12 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
     return `${keyPrefix}{${queueName}}:${suffix}`;
   }
 
+  async function getWaitingIds(queueName: string): Promise<string[]> {
+    const key = keyOf(queueName, 'waiting');
+    const t = await admin.type(key);
+    return t === 'zset' ? admin.zrange(key, 0, -1) : admin.lrange(key, 0, -1);
+  }
+
   beforeEach(() => {
     keyPrefix = `lifecycle-test-${crypto.randomBytes(6).toString('hex')}:`;
     admin = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
@@ -186,7 +192,7 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
       expect(await api.cancelJob(delayed.id, 'drop delayed')).toBe(true);
       expect(await api.cancelJob(waiting.id, 'again')).toBe(false);
 
-      expect(await admin.lrange(keyOf('cancel-queued', 'waiting'), 0, -1)).toEqual([]);
+      expect(await getWaitingIds('cancel-queued')).toEqual([]);
       expect(await admin.zrange(keyOf('cancel-queued', 'delayed'), 0, '-1')).toEqual([]);
       expect((await admin.smembers(keyOf('cancel-queued', 'cancelled'))).sort()).toEqual(
         [waiting.id, delayed.id].sort()
@@ -287,7 +293,7 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
       expect(requeued?.state).toBe('waiting');
       expect(requeued?.attemptsMade).toBe(1);
       expect(requeued?.failedReason).toBe(STALLED_REASON);
-      expect(await admin.lrange(keyOf('stalled', 'waiting'), 0, -1)).toEqual([job.id]);
+      expect(await getWaitingIds('stalled')).toEqual([job.id]);
       expect(await admin.sismember(keyOf('stalled', 'active'), job.id)).toBe(0);
 
       const secondAttempt = await queue._popNextWaiting();
@@ -380,7 +386,7 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
 
       expect(await admin.hgetall(jobKey)).toEqual(hashBefore);
       expect(await admin.get(heartbeatKey)).toBe(heartbeatBefore);
-      expect(await admin.lrange(keyOf('fencing', 'waiting'), 0, -1)).toEqual([]);
+      expect(await getWaitingIds('fencing')).toEqual([]);
       expect(await admin.zrange(keyOf('fencing', 'delayed'), 0, '-1')).toEqual([]);
       expect(await freshSide.getDlqEntries()).toEqual([]);
       expect(await freshSide.getJobCounts()).toMatchObject({ active: 1, completed: 0, failed: 0 });

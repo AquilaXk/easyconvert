@@ -172,8 +172,8 @@ export async function GET(req: NextRequest) {
     states = [statusFilter];
   }
 
-  const ownJobs = (await conversionQueue.getJobs(states)).filter((j) => j.data?.userId === callerId);
-  const jobSummaries = ownJobs.slice(0, MAX_LISTED_JOBS).map((j) => ({
+  const ownJobs = await conversionQueue.getJobsByUser(callerId, states, MAX_LISTED_JOBS, 0);
+  const jobSummaries = ownJobs.map((j) => ({
     id: j.id,
     name: j.name,
     state: j.state,
