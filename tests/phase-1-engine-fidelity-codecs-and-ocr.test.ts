@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import zlib from 'zlib';
+import zlib from 'node:zlib';
 import sharp from 'sharp';
 import { PDFDocument, PDFName } from 'pdf-lib';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';

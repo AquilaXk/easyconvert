@@ -2,6 +2,9 @@
   "name": "easyconvert",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,7 +13,7 @@
     "guard:anti-cheat": "tsx scripts/guard-anti-cheat.ts",
     "pretest": "npm run guard:anti-cheat",
     "test": "vitest run",
-    "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",
+    "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/job-graph-redis-e2e.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",
     "bench:zstd": "PERF_BENCH=1 vitest run tests/zstd-streaming-dict.test.ts",
     "worker": "tsx src/worker/index.ts",
     "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external",

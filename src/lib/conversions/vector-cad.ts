@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
-import zlib from 'zlib';
+import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
 import { encodeBmp, encodePostscript } from './image';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';

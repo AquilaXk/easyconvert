@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { credentialsVault, CustomerStorageCredentials, StorageProviderType } from '@/lib/storage';
+import {
+  credentialsVault,
+  CustomerStorageCredentials,
+  StorageProviderType,
+  UNAVAILABLE_STORAGE_PROVIDERS,
+} from '@/lib/storage';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
+
+const BYOS_PROVIDER_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/byos-provider-unavailable';
 
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/storage/credentials';
@@ -39,6 +46,16 @@ export async function POST(req: NextRequest) {
       400,
       'Missing "providerType" or "credentials" in payload.',
       instanceUri
+    );
+  }
+
+  if (UNAVAILABLE_STORAGE_PROVIDERS.has(providerType)) {
+    return createProblemDetailsResponse(
+      400,
+      `Storage provider "${providerType}" is not available for customer storage yet.`,
+      instanceUri,
+      'Storage Provider Unavailable',
+      BYOS_PROVIDER_UNAVAILABLE_TYPE
     );
   }
 

@@ -18,6 +18,7 @@ import {
   PDFHexString,
   PDFName,
   PDFArray,
+  PDFString,
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
 
@@ -1339,9 +1340,10 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
     Type: 'Font',
     Subtype: 'CIDFontType2',
     BaseFont: 'EasyConvert-ToUnicode',
+    // ISO 32000-1 §9.7.3: Registry and Ordering are text strings, not names.
     CIDSystemInfo: {
-      Registry: 'Adobe',
-      Ordering: 'Identity',
+      Registry: PDFString.of('Adobe'),
+      Ordering: PDFString.of('Identity'),
       Supplement: 0,
     },
     FontDescriptor: fontDescRef,
@@ -1644,8 +1646,23 @@ export function buildTJArrayWithKerning(
   return { tjArray, wordSpacing, activeFontName };
 }
 
+/**
+ * Returns the page's /Resources /Font key for an embedded font, registering the font on the page
+ * once. Tf must name this key, not the font's BaseFont name, or readers cannot select the font.
+ */
+function resolveFontResourceKey(page: PDFPage, font: PDFFont): string {
+  const { Font } = page.node.normalizedEntries();
+  for (const [key, value] of Font.entries()) {
+    if (value === font.ref) {
+      return key.decodeText();
+    }
+  }
+  return page.node.newFontDictionary(font.name, font.ref).decodeText();
+}
+
 function emitInvisibleTextOperators(
   page: PDFPage,
+  font: PDFFont,
   matrix: [number, number, number, number, number, number],
   activeFontName: string,
   fontSize: number,
@@ -1653,6 +1670,9 @@ function emitInvisibleTextOperators(
   tz: number,
   showTextOp: any
 ): void {
+  // The standard font is selected by its page resource key; the Unicode font registers itself
+  // under its own name through registerFontOnPage.
+  const fontResourceName = activeFontName === font.name ? resolveFontResourceKey(page, font) : activeFontName;
   const [a, b, c, d, e, f] = matrix;
   page.pushOperators(
     pushGraphicsState(),
@@ -1666,7 +1686,7 @@ function emitInvisibleTextOperators(
     ]),
     setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
     beginText(),
-    setFontAndSize(activeFontName, fontSize),
+    setFontAndSize(fontResourceName, fontSize),
     PDFOperator.of(PDFOperatorNames.SetWordSpacing, [PDFNumber.of(Number(wordSpacing.toFixed(3)))]), // Tw
     PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]), // Tz
     setTextMatrix(1, 0, 0, 1, 0, 0), // 1 0 0 1 0 0 Tm
@@ -1753,6 +1773,7 @@ export function renderLineBlockWithSpacing(
 
   emitInvisibleTextOperators(
     page,
+    font,
     matrix,
     activeFontName,
     fontSize,
@@ -1856,6 +1877,7 @@ export function renderTextItem(
 
   emitInvisibleTextOperators(
     page,
+    font,
     matrix,
     activeFontName,
     fontSize,

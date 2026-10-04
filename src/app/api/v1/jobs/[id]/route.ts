@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
-import { graphScheduler } from '@/lib/queue/graph';
+import { graphScheduler, type GraphExecutionState, type NodeExecutionStatus } from '@/lib/queue/graph';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
+
+const PERCENT = 100;
+const TERMINAL_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExecutionStatus>([
+  'completed',
+  'failed',
+  'cancelled',
+  'skipped',
+]);
 
 interface RouteContext {
   params: Promise<{ id: string }> | { id: string };
@@ -37,7 +45,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
   }
 
   const job = await conversionQueue.getJob(jobId);
-  if (!job) {
+  const graphState = await graphScheduler.getGraphState(jobId);
+  if (!job && !graphState) {
     return createProblemDetailsResponse(
       404,
       `Job with ID "${jobId}" not found.`,
@@ -47,7 +56,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
   }
 
   // Enforce tenant boundary: user can only inspect their own jobs
-  if (!job.data?.userId || job.data.userId !== auth.user.id) {
+  const ownerId = job ? job.data?.userId : graphState?.ownerUserId;
+  if (!ownerId || ownerId !== auth.user.id) {
     return createProblemDetailsResponse(
       403,
       'Access denied to this conversion job.',
@@ -56,7 +66,6 @@ export async function GET(req: NextRequest, context: RouteContext) {
     );
   }
 
-  const graphState = await graphScheduler.getGraphState(jobId);
   const nodesResponse = graphState
     ? Object.fromEntries(
         Object.entries(graphState.nodes).map(([nid, ns]) => [
@@ -65,6 +74,26 @@ export async function GET(req: NextRequest, context: RouteContext) {
         ])
       )
     : undefined;
+
+  if (!job) {
+    // A graph job has no queue job of its own; the 404 check above guarantees its state.
+    const state = graphState as GraphExecutionState;
+    return NextResponse.json({
+      success: true,
+      jobId,
+      status: state.status,
+      progress: graphProgress(state),
+      sourceFormat: state.sourceFormat,
+      targetFormat: state.targetFormat,
+      originalFilename: state.originalFilename,
+      createdAt: state.createdAt,
+      finishedOn: state.finishedAt,
+      failedReason: state.failedReason,
+      tasks: state.tasks,
+      graph: state.graph,
+      nodes: nodesResponse,
+    });
+  }
 
   return NextResponse.json({
     success: true,
@@ -117,12 +146,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
   const job = await conversionQueue.getJob(jobId);
   if (!job) {
-    return createProblemDetailsResponse(
-      404,
-      `Job with ID "${jobId}" not found.`,
-      instanceUri,
-      'Not Found'
-    );
+    return cancelGraphJob(jobId, auth.user.id, instanceUri);
   }
 
   // Enforce tenant boundary: user can only cancel their own jobs
@@ -167,3 +191,39 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   });
 }
 
+
+/** Percentage of graph nodes that reached a terminal state. */
+function graphProgress(state: GraphExecutionState): number {
+  if (state.totalNodes === 0) {
+    return 0;
+  }
+  const finished = Object.values(state.nodes).filter((n) => TERMINAL_NODE_STATUSES.has(n.status)).length;
+  return Math.round((finished / state.totalNodes) * PERCENT);
+}
+
+/** Cancels a graph job, which has no queue job of its own. */
+async function cancelGraphJob(jobId: string, userId: string, instanceUri: string) {
+  const state = await graphScheduler.getGraphState(jobId);
+  if (!state) {
+    return createProblemDetailsResponse(404, `Job with ID "${jobId}" not found.`, instanceUri, 'Not Found');
+  }
+  if (state.ownerUserId !== userId) {
+    return createProblemDetailsResponse(403, 'Access denied to cancel this conversion job.', instanceUri, 'Forbidden');
+  }
+  // cancelGraph cancels every node job and refunds the graph's quota reservation.
+  if (state.status !== 'running' || !(await graphScheduler.cancelGraph(jobId, 'Cancelled by user'))) {
+    return createProblemDetailsResponse(
+      409,
+      `Unable to cancel job in state "${state.status}".`,
+      instanceUri,
+      'Conflict'
+    );
+  }
+  return NextResponse.json({
+    success: true,
+    jobId,
+    status: 'cancelled',
+    cancelled: true,
+    message: 'Job was successfully cancelled and quota reservation was refunded.',
+  });
+}

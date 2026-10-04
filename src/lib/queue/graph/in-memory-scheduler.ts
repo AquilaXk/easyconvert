@@ -6,13 +6,16 @@ import type {
   GraphNodeState,
   IGraphScheduler,
   NodeCompletionResult,
+  NodeExecutionStatus,
   NodeFailureResult,
 } from './scheduler-types';
-import { conversionQueue, getQueueForResourceClass } from '../conversion-queue';
-import { resolveNodeResourceClass } from '../resource-class';
+import { cancelGraphNodeJob, enqueueGraphNodeJob } from './node-jobs';
 import { s3Storage } from '../../storage/s3-storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
+
+/** Node states from which a node can still complete or fail. */
+const RUNNABLE_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExecutionStatus>(['waiting', 'active']);
 
 interface InternalGraphData {
   state: GraphExecutionState;
@@ -72,6 +75,10 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
       reservationId: meta.reservationId,
       webhookUrl: meta.webhookUrl,
       webhookSecret: meta.webhookSecret,
+      originalFilename: meta.originalFilename,
+      sourceFormat: meta.sourceFormat,
+      targetFormat: meta.targetFormat,
+      tasks: meta.tasks,
       createdAt,
       totalNodes,
       completedNodes: 0,
@@ -119,7 +126,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     }
 
     const nodeState = data.state.nodes[nodeId];
-    if (!nodeState || nodeState.status === 'completed') {
+    // A node completes once: a repeated completion leaves counters and child in-degrees unchanged.
+    if (!nodeState || !RUNNABLE_NODE_STATUSES.has(nodeState.status)) {
       return {
         graphCompleted: false,
         graphStatus: data.state.status,
@@ -181,21 +189,19 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     error: string
   ): Promise<NodeFailureResult> {
     const data = this.graphs.get(graphId);
-    if (!data) {
+    const nodeState = data?.state.nodes[nodeId];
+    if (!data || data.state.status !== 'running' || !nodeState || !RUNNABLE_NODE_STATUSES.has(nodeState.status)) {
       return {
-        graphFailed: true,
-        graphStatus: 'failed',
+        graphFailed: false,
+        graphStatus: data?.state.status || 'failed',
         cancelledJobIds: [],
         skippedNodeIds: [],
       };
     }
 
-    const nodeState = data.state.nodes[nodeId];
-    if (nodeState) {
-      nodeState.status = 'failed';
-      nodeState.error = error;
-      nodeState.finishedAt = Date.now();
-    }
+    nodeState.status = 'failed';
+    nodeState.error = error;
+    nodeState.finishedAt = Date.now();
     data.state.failedNodes++;
 
     if (data.state.policy === 'fail_fast') {
@@ -208,7 +214,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
         if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'cancelled') {
           ns.status = 'cancelled';
           const jid = `${graphId}:${nid}`;
-          await conversionQueue.cancelJob(jid, `Graph failed due to node ${nodeId}`);
+          await cancelGraphNodeJob(graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`);
           cancelledJobIds.push(jid);
         }
       }
@@ -245,8 +251,10 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
             ) {
               childState.status = 'skipped';
               skippedNodeIds.push(childId);
-              await conversionQueue.cancelJob(
-                `${graphId}:${childId}`,
+              await cancelGraphNodeJob(
+                graphId,
+                childId,
+                data.state.graph.nodes[childId],
                 `Skipped because upstream node ${nodeId} failed`
               );
             }
@@ -299,7 +307,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     for (const [nid, ns] of Object.entries(data.state.nodes)) {
       if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'skipped') {
         ns.status = 'cancelled';
-        await conversionQueue.cancelJob(`${graphId}:${nid}`, reason);
+        await cancelGraphNodeJob(graphId, nid, data.state.graph.nodes[nid], reason);
       }
     }
 
@@ -340,33 +348,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     node: any,
     meta: GraphMetadata
   ): Promise<void> {
-    const inputNodeIds = getNodeInputs(node);
-    const inputArtifacts = await this.getNodeOutputs(graphId, inputNodeIds);
-    const resClass = resolveNodeResourceClass(node);
-    const targetQueue = getQueueForResourceClass(resClass);
-
-    await targetQueue.add(
-      'graph-node',
-      {
-        jobId: `${graphId}:${nodeId}`,
-        originalFilename: meta.originalFilename || `${nodeId}.bin`,
-        sourceFormat: 'bin',
-        targetFormat: node.targetFormat || 'bin',
-        fileSize: 0,
-        options: node.options || {},
-        userId: meta.ownerUserId,
-        reservationId: meta.reservationId,
-        graphId,
-        graphNodeId: nodeId,
-        graphNode: node,
-        inputArtifacts,
-        resourceClass: resClass,
-      },
-      {
-        jobId: `${graphId}:${nodeId}`,
-        attempts: 3,
-      }
-    );
+    const inputArtifacts = await this.getNodeOutputs(graphId, getNodeInputs(node));
+    await enqueueGraphNodeJob(graphId, nodeId, node, meta, inputArtifacts);
   }
 
   private async handleGraphCompletionSideEffects(

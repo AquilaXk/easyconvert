@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import path from 'path';
-import zlib from 'zlib';
+import path from 'node:path';
+import zlib from 'node:zlib';
 import {
   detectSandboxEnvironment,
   getSanitizedEnvironment,
