@@ -41,16 +41,27 @@ export class S3ObjectStorageService implements IStorageBackend {
   private readonly sessions = new Map<string, S3MultipartSession>();
   private readonly objects = new Map<string, StoredObject>();
   private gcTimer: NodeJS.Timeout | null = null;
-  private readonly signingSecret: string =
-    process.env.S3_SIGNING_SECRET ||
-    process.env.STORAGE_SIGNING_SECRET ||
-    'easyconvert-s3-secure-signing-secret';
+  private readonly signingSecret: string;
 
   readonly DEFAULT_PART_SIZE = 5 * 1024 * 1024; // 5 MB S3 minimum part size
   private readonly baseUploadDir: string;
 
-  constructor() {
-    this.baseUploadDir = path.join(os.tmpdir(), 'easyconvert_s3_uploads');
+  constructor(options?: { signingSecret?: string; baseUploadDir?: string }) {
+    const secret =
+      options?.signingSecret ||
+      process.env.S3_SIGNING_SECRET ||
+      process.env.STORAGE_SIGNING_SECRET;
+
+    if (!secret) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('Missing required S3_SIGNING_SECRET or STORAGE_SIGNING_SECRET environment variable in production');
+      }
+      this.signingSecret = crypto.randomBytes(32).toString('hex');
+    } else {
+      this.signingSecret = secret;
+    }
+
+    this.baseUploadDir = options?.baseUploadDir || path.join(os.tmpdir(), 'easyconvert_s3_uploads');
     try {
       if (!fs.existsSync(this.baseUploadDir)) {
         fs.mkdirSync(this.baseUploadDir, { recursive: true });
@@ -400,8 +411,14 @@ export class S3ObjectStorageService implements IStorageBackend {
     const expiresAt = Date.now() + expiresInSeconds * 1000;
     const nowIso = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
     const dateStamp = nowIso.slice(0, 8);
-    const region = 'us-east-1';
-    const credential = `AKIAIOSFODNN7EXAMPLE/${dateStamp}/${region}/s3/aws4_request`;
+    const region = process.env.AWS_REGION || process.env.S3_REGION || 'us-east-1';
+    const accessKeyId = process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID;
+
+    if (!accessKeyId && process.env.NODE_ENV === 'production') {
+      throw new Error('Missing required AWS_ACCESS_KEY_ID or S3_ACCESS_KEY_ID environment variable in production');
+    }
+    const resolvedKeyId = accessKeyId || 'DEV_ACCESS_KEY_ID';
+    const credential = `${resolvedKeyId}/${dateStamp}/${region}/s3/aws4_request`;
 
     const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
     const signature = crypto
@@ -409,7 +426,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       .update(stringToSign)
       .digest('hex');
 
-    const endpoint = 'https://storage.easyconvert.app';
+    const endpoint = process.env.S3_ENDPOINT || 'https://storage.easyconvert.app';
     const url =
       `${endpoint}/${key}?` +
       `X-Amz-Algorithm=AWS4-HMAC-SHA256&` +
@@ -435,8 +452,14 @@ export class S3ObjectStorageService implements IStorageBackend {
     const expiresAt = Date.now() + expiresInSeconds * 1000;
     const nowIso = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
     const dateStamp = nowIso.slice(0, 8);
-    const region = 'us-east-1';
-    const credential = `AKIAIOSFODNN7EXAMPLE/${dateStamp}/${region}/s3/aws4_request`;
+    const region = process.env.AWS_REGION || process.env.S3_REGION || 'us-east-1';
+    const accessKeyId = process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID;
+
+    if (!accessKeyId && process.env.NODE_ENV === 'production') {
+      throw new Error('Missing required AWS_ACCESS_KEY_ID or S3_ACCESS_KEY_ID environment variable in production');
+    }
+    const resolvedKeyId = accessKeyId || 'DEV_ACCESS_KEY_ID';
+    const credential = `${resolvedKeyId}/${dateStamp}/${region}/s3/aws4_request`;
 
     const stringToSign = `GET\n${key}\n${expiresAt}`;
     const signature = crypto
@@ -444,7 +467,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       .update(stringToSign)
       .digest('hex');
 
-    const endpoint = 'https://storage.easyconvert.app';
+    const endpoint = process.env.S3_ENDPOINT || 'https://storage.easyconvert.app';
     const url =
       `${endpoint}/${key}?` +
       `X-Amz-Algorithm=AWS4-HMAC-SHA256&` +

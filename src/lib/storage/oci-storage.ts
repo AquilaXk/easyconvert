@@ -86,20 +86,48 @@ export class OciObjectStorageService implements IStorageBackend {
   readonly providerName: string = 'oci';
   private sessions = new Map<string, OciMultipartSession>();
   private objects = new Map<string, OciStoredObject>();
-
-  readonly config: OciStorageConfig = {
-    namespace: process.env.OCI_NAMESPACE || 'axvym6vk8g7i',
-    bucketName: process.env.OCI_BUCKET_NAME || 'easyconvert-transcode-bucket',
-    region: process.env.OCI_REGION || 'ap-seoul-1',
-    endpoint: process.env.OCI_ENDPOINT || 'https://axvym6vk8g7i.compat.objectstorage.ap-seoul-1.oraclecloud.com',
-  };
+  readonly config: OciStorageConfig;
+  private readonly signingSecret: string;
 
   // OCI Object Storage recommended minimum part size: 5MB
   readonly DEFAULT_PART_SIZE = 5 * 1024 * 1024; // 5 MB
 
   private gcTimer: NodeJS.Timeout | null = null;
 
-  constructor() {
+  constructor(customConfig?: Partial<OciStorageConfig>, options?: { signingSecret?: string }) {
+    const namespace = customConfig?.namespace || process.env.OCI_NAMESPACE;
+    if (!namespace && process.env.NODE_ENV === 'production') {
+      throw new Error('Missing required OCI_NAMESPACE environment variable in production');
+    }
+    const resolvedNamespace = namespace || 'default';
+    const region = customConfig?.region || process.env.OCI_REGION || 'ap-seoul-1';
+    const bucketName = customConfig?.bucketName || process.env.OCI_BUCKET_NAME || 'easyconvert-transcode-bucket';
+    const endpoint =
+      customConfig?.endpoint ||
+      process.env.OCI_ENDPOINT ||
+      `https://${resolvedNamespace}.compat.objectstorage.${region}.oraclecloud.com`;
+
+    this.config = {
+      namespace: resolvedNamespace,
+      bucketName,
+      region,
+      endpoint,
+    };
+
+    const secret =
+      options?.signingSecret ||
+      process.env.STORAGE_SIGNING_SECRET ||
+      process.env.OCI_SIGNING_SECRET;
+
+    if (!secret) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('Missing required STORAGE_SIGNING_SECRET or OCI_SIGNING_SECRET environment variable in production');
+      }
+      this.signingSecret = crypto.randomBytes(32).toString('hex');
+    } else {
+      this.signingSecret = secret;
+    }
+
     this.gcTimer = setInterval(() => {
       this.sweepExpiredObjects();
     }, 60000);
@@ -518,8 +546,7 @@ export class OciObjectStorageService implements IStorageBackend {
   ): PresignedUrlResult {
     const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
-    const secret = process.env.STORAGE_SIGNING_SECRET || 'easyconvert-secure-storage-secret';
-    const signature = crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
+    const signature = crypto.createHmac('sha256', this.signingSecret).update(stringToSign).digest('hex');
     const endpoint = this.config.endpoint || 'https://storage.easyconvert.app';
     const url = `${endpoint}/${key}?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&expires=${expiresAt}&signature=${signature}`;
     return { url, expiresAt, signature };
@@ -534,8 +561,7 @@ export class OciObjectStorageService implements IStorageBackend {
   ): PresignedUrlResult {
     const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const stringToSign = `GET\n${key}\n${expiresAt}`;
-    const secret = process.env.STORAGE_SIGNING_SECRET || 'easyconvert-secure-storage-secret';
-    const signature = crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
+    const signature = crypto.createHmac('sha256', this.signingSecret).update(stringToSign).digest('hex');
     const endpoint = this.config.endpoint || 'https://storage.easyconvert.app';
     const url = `${endpoint}/${key}?expires=${expiresAt}&signature=${signature}`;
     return { url, expiresAt, signature };
@@ -557,9 +583,15 @@ export class OciObjectStorageService implements IStorageBackend {
       method === 'PUT'
         ? `PUT\n${key}\n${uploadId || ''}\n${partNumber ?? ''}\n${expiresAt}`
         : `GET\n${key}\n${expiresAt}`;
-    const secret = process.env.STORAGE_SIGNING_SECRET || 'easyconvert-secure-storage-secret';
-    const expectedSig = crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
-    return crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSig, 'hex'));
+    const expectedSig = crypto.createHmac('sha256', this.signingSecret).update(stringToSign).digest('hex');
+    try {
+      const sigBuf = Buffer.from(signature, 'hex');
+      const expectedBuf = Buffer.from(expectedSig, 'hex');
+      if (sigBuf.length !== expectedBuf.length) return false;
+      return crypto.timingSafeEqual(sigBuf, expectedBuf);
+    } catch {
+      return false;
+    }
   }
 }
 
