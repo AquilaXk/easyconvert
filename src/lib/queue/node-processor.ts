@@ -143,7 +143,10 @@ export async function processNodeJob(
       const stat = typeof storage.stat === 'function' ? storage.stat(job.data.storageKey) : undefined;
       const objectSize = stat?.size ?? stored.size;
 
-      if (engine.name === 'ts-engine' && objectSize > getMaxInMemoryBytes()) {
+      // Objects streamed from disk bypass the limit for engines that read the file path; an object
+      // held in memory, or any object given to the in-process engine, is bound by it.
+      const streamsFromDisk = Boolean(stored.filePath && fs.existsSync(stored.filePath));
+      if ((engine.name === 'ts-engine' || !streamsFromDisk) && objectSize > getMaxInMemoryBytes()) {
         throw new PayloadTooLargeForMemoryError(
           `Payload size (${objectSize} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
           { size: objectSize, limit: getMaxInMemoryBytes() }
@@ -158,7 +161,7 @@ export async function processNodeJob(
       }
     } else if (job.data.inputBufferBase64) {
       const approxBytes = Math.ceil((job.data.inputBufferBase64.length * 3) / 4);
-      if (engine.name === 'ts-engine' && approxBytes > getMaxInMemoryBytes()) {
+      if (approxBytes > getMaxInMemoryBytes()) {
         throw new PayloadTooLargeForMemoryError(
           `Payload size (${approxBytes} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
           { size: approxBytes, limit: getMaxInMemoryBytes() }
