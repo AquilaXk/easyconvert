@@ -2,6 +2,7 @@
 name: test-integrity-reviewer
 description: Read-only adversarial reviewer for test and oracle integrity. Use proactively after changing tests, tests/helpers oracles, conversion engines, or before opening a PR that touches src/lib/conversions, src/worker, or tests. Returns findings only; never edits files.
 tools: Read, Grep, Glob, Bash
+model: sonnet
 effort: high
 memory: project
 color: red

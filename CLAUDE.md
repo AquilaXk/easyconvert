@@ -67,6 +67,7 @@ The lead session owns scope, design decisions, integration, commits, and PR gate
 | Pre-PR multi-lens review with adversarial verification | `/pre-pr-review [base, default origin/main]` (saved workflow) |
 
 - Give delegates a brief with goal, allowed/forbidden paths, acceptance criteria, and the verification to run. Never delegate a decision the lead has not made.
+- Keep token use low: run at most one subagent at a time, and pick its model explicitly — `sonnet` for code review and implementation, `haiku` for simple search and verification. Do small fixes, CI checks, pushes, and labels in the lead session.
 - Parallel writers must each have their own worktree and non-overlapping files; the lead reviews every delegate's diff and re-runs `/verify` after integrating.
 - Worktrees branch from `origin/main` (`worktree.baseRef: fresh`) so unpushed work from another agent never leaks in; `node_modules` is symlinked from the main checkout.
 
