@@ -13,6 +13,7 @@ import {
   InvalidPageRangeError,
   ComplexScriptRequiresNativeEngineError,
   MediaPackagingOptions,
+  UnsupportedTargetError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile } from '../lib/conversions';
@@ -48,6 +49,12 @@ export interface WorkerEngineOptions extends ConversionOptions {
   zeroHeap?: boolean;
   signal?: AbortSignal;
   throwOnUnavailable?: boolean;
+  /**
+   * When false, a pair that no available native engine converted fails instead of falling back
+   * to the in-process engine: the last EngineUnavailableError is rethrown, or an
+   * UnsupportedTargetError when no native route handles the pair at all.
+   */
+  inProcessFallback?: boolean;
 }
 
 export interface WorkerConversionResult extends ConversionResult {
@@ -1310,6 +1317,19 @@ function checkInputContainsComplexScript(input: Buffer | WorkerVfsPayload, src: 
   return false;
 }
 
+/** Whether text output holds any character other than whitespace (form feeds from empty pages count as blank). */
+function hasNonWhitespaceText(buffer: Buffer): boolean {
+  return buffer.toString('utf-8').trim().length > 0;
+}
+
+/** Deletes an engine's temporary output file unless it is the destination the caller asked for. */
+function discardPersistedOutput(filePath: string | undefined, input: Buffer | WorkerVfsPayload, options: WorkerEngineOptions): void {
+  if (!filePath) return;
+  const requestedOutput = (Buffer.isBuffer(input) ? undefined : input.outputPath) || (options as { outputPath?: string }).outputPath;
+  if (filePath === requestedOutput) return;
+  fs.rmSync(filePath, { force: true });
+}
+
 export async function executeWorkerConversion(
   input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
@@ -1325,6 +1345,7 @@ export async function executeWorkerConversion(
   assertNotSpoofedFileVfs(input, src, originalFilename);
 
   let fallbackReason: string | undefined;
+  let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
   const isComplexText = tgt === 'pdf' && checkInputContainsComplexScript(input, src);
@@ -1354,12 +1375,14 @@ export async function executeWorkerConversion(
           );
         }
         if (options.pdfStandard) {
-          throw new Error(
-            `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}', but engine is unavailable: ${err.reason}`
+          throw new EngineUnavailableError(
+            'soffice',
+            `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}': ${err.reason}`
           );
         }
         fallbackChain.push(`native-soffice: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
@@ -1368,8 +1391,9 @@ export async function executeWorkerConversion(
 
   // 1b. Office Documents -> Raster / Vector Image Chaining via LibreOffice + Poppler
   if (OFFICE_FORMATS.has(src) && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg')) {
+    let intermediatePdf: WorkerConversionResult | null = null;
     try {
-      const intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);
+      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);
       if (intermediatePdf) {
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
@@ -1392,9 +1416,13 @@ export async function executeWorkerConversion(
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`office-poppler-chain: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
+    } finally {
+      // The intermediate PDF is an implementation detail of this chain: never leave it on disk.
+      discardPersistedOutput(intermediatePdf?.filePath, input, options);
     }
   }
 
@@ -1418,17 +1446,24 @@ export async function executeWorkerConversion(
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-ffmpeg: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
     }
   }
 
-  // 3. Native Poppler (PDF -> Image, SVG, or Text)
-  if (src === 'pdf' && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg' || tgt === 'txt' || tgt === 'text')) {
+  // 3. Native Poppler (PDF -> Image, SVG, or Text). OCR requests skip the text-layer route.
+  const isPdfTextTarget = tgt === 'txt' || tgt === 'text';
+  const skipPopplerForOcr = isPdfTextTarget && Boolean(options.ocrEnabled);
+  if (src === 'pdf' && !skipPopplerForOcr && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg' || isPdfTextTarget)) {
     try {
       const popplerRes = await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename);
-      if (popplerRes) {
+      if (popplerRes && isPdfTextTarget && options.inProcessFallback !== false && !hasNonWhitespaceText(popplerRes.buffer)) {
+        // No text layer: scanned pages need the in-process engine's OCR. Drop the empty output first.
+        discardPersistedOutput(popplerRes.filePath, input, options);
+        fallbackChain.push('native-poppler: pdftotext found no text layer');
+      } else if (popplerRes) {
         return {
           ...popplerRes,
           fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
@@ -1438,6 +1473,7 @@ export async function executeWorkerConversion(
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-poppler: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
@@ -1458,6 +1494,7 @@ export async function executeWorkerConversion(
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-7z: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
@@ -1465,8 +1502,14 @@ export async function executeWorkerConversion(
   }
 
   // 5. In-Repo Pure TS Fallback
+  if (options.inProcessFallback === false) {
+    if (lastUnavailable) {
+      throw lastUnavailable;
+    }
+    throw new UnsupportedTargetError(`No native engine route converts ${src} to ${tgt}`);
+  }
   if (options.pdfStandard) {
-    throw new Error(
+    throw new UnsupportedOptionError(
       `Fallback to pure TypeScript engine is forbidden when pdfStandard ('${options.pdfStandard}') is specified`
     );
   }

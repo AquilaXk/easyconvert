@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import {
   ConversionOptions,
   OcrLanguageUnavailableError,
+  ConversionFailedError,
   OcrEngineUnavailableError,
   HocrExportOptions,
   AltoExportOptions,
@@ -126,9 +127,7 @@ export async function performOcr(
   try {
     ocrInput = await sharp(imageBuffer).rotate().png().toBuffer();
   } catch {
-    throw new OcrEngineUnavailableError(
-      `OCR engine (Tesseract) is unavailable or failed to execute for language '${language}': invalid image buffer.`
-    );
+    throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)

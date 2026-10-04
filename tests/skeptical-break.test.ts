@@ -193,9 +193,9 @@ endsolid TestModel`;
       ConversionFailedError
     );
 
-    // PDF -> SVG has no in-process engine path, so the registry no longer advertises it
+    // PDF -> SVG has no in-process engine path; only the native Poppler route converts it
     await expect(convertFile(pdfBuf, 'pdf', 'svg', {}, 'sample.pdf')).rejects.toThrow(
-      /^Cannot convert from PDF Document \(\.pdf\) to target format \.svg\./
+      UnsupportedTargetError
     );
 
     // PDF -> DXF has no engine path, so the registry no longer advertises it
