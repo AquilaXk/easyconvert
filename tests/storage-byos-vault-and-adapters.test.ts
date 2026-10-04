@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import crypto from 'node:crypto';
+import dns from 'node:dns';
 import http from 'node:http';
 import { Readable } from 'node:stream';
 import {
@@ -179,6 +180,18 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
       await expect(adapter.downloadStream('data.csv')).rejects.toThrow(StorageSsrfError);
       await expect(adapter.head('data.csv')).rejects.toThrow(StorageSsrfError);
       await expect(adapter.delete('data.csv')).rejects.toThrow(StorageSsrfError);
+    });
+
+    it('blocks SFTP adapter when DNS lookup returns no addresses', async () => {
+      const lookupSpy = vi.spyOn(dns.promises, 'lookup').mockResolvedValueOnce([] as any);
+      const adapter = new SftpStorageAdapter({
+        type: 'sftp',
+        host: 'sftp.external-customer.com',
+        username: 'sftpuser',
+      });
+
+      await expect(adapter.downloadStream('data.csv')).rejects.toThrow(StorageSsrfError);
+      lookupSpy.mockRestore();
     });
 
     it('blocks WebDAV adapter from connecting to cloud metadata hostname', async () => {
