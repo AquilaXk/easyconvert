@@ -3,6 +3,15 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
 
+const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
+  'epub->azw3',
+  'epub->lrf',
+  'epub->mobi',
+  'epub->oeb',
+  'epub->pdb',
+  'epub->rtf',
+]);
+
 describe('Universal Format Matrix & Parity Verification', () => {
   it('achieves 100% format coverage across all 2,156 conversion specifications', () => {
     const fixturePath = path.resolve(__dirname, 'fixtures/reference-formats.json');
@@ -10,7 +19,18 @@ describe('Universal Format Matrix & Parity Verification', () => {
       JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
 
     // Design Decision D8: RAR archive creation is permanently removed across the platform.
-    const pairs = allPairs.filter((p) => p.output_format.toLowerCase() !== 'rar');
+    // Pairs without a conversion engine are withdrawn rather than advertised (#369) and must stay
+    // unadvertised until an engine produces them.
+    const isWithdrawn = (p: { input_format: string; output_format: string }) =>
+      WITHDRAWN_PAIRS.has(`${p.input_format.toLowerCase()}->${p.output_format.toLowerCase()}`);
+    const pairs = allPairs.filter((p) => p.output_format.toLowerCase() !== 'rar' && !isWithdrawn(p));
+
+    const withdrawnInReference = allPairs.filter(isWithdrawn).map((p) => `${p.input_format}->${p.output_format}`.toLowerCase());
+    expect(new Set(withdrawnInReference)).toEqual(WITHDRAWN_PAIRS);
+    for (const pair of WITHDRAWN_PAIRS) {
+      const [src, tgt] = pair.split('->');
+      expect(FORMAT_REGISTRY[src].targetFormats).not.toContain(tgt);
+    }
 
     const ourFormats = new Set(Object.keys(FORMAT_REGISTRY).map((k) => k.toLowerCase()));
 

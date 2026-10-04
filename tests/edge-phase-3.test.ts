@@ -206,8 +206,9 @@ describe('Phase 3: Zero-COOP Single-Threaded SIMD Wasm & Module Caching (L2)', (
   });
 
   describe('6. Tier Router Level 2 Routing', () => {
-    it('routes OCR-enabled tasks to Level 2 (Edge L2 SIMD Wasm)', () => {
-      const res = resolveConversionTier('png', 'txt', 500_000, { ocrEnabled: true });
+    it('routes OCR-enabled tasks with a PDF target to Level 2 (Edge L2 SIMD Wasm)', () => {
+      // Edge OCR only writes searchable PDF; other OCR targets go to the cloud tier.
+      const res = resolveConversionTier('png', 'pdf', 500_000, { ocrEnabled: true });
       expect(res.tier).toBe('L2');
       expect(res.tierName).toBe('Edge L2 (SIMD Wasm)');
       expect(res.isClientEdge).toBe(true);

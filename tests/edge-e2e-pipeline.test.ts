@@ -41,7 +41,7 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
       { src: 'wav', tgt: 'mp3', size: 200_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'png', tgt: 'webp', size: 100_000, opts: {}, caps: { hasCanvas: true }, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'mp4', tgt: 'webm', size: 10_000_000, opts: {}, caps: { hasWebCodecsVideo: true }, expectedTier: 'L1', expectedName: 'Edge L1 (Hardware VPU)', clientEdge: true },
-      { src: 'png', tgt: 'txt', size: 500_000, opts: { ocrEnabled: true }, caps: {}, expectedTier: 'L2', expectedName: 'Edge L2 (SIMD Wasm)', clientEdge: true },
+      { src: 'png', tgt: 'pdf', size: 500_000, opts: { ocrEnabled: true }, caps: {}, expectedTier: 'L2', expectedName: 'Edge L2 (SIMD Wasm)', clientEdge: true },
       { src: 'csv', tgt: 'tsv', size: 150 * 1024 * 1024, opts: {}, caps: { hasOpfsSyncAccess: true }, expectedTier: 'L3', expectedName: 'Edge L3 (OPFS Stream)', clientEdge: true },
       { src: 'mkv', tgt: 'avi', size: 5_000_000, opts: {}, caps: { hasWebCodecsVideo: false, hasWebCodecsAudio: false }, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
       { src: 'csv', tgt: 'json', size: 1024, opts: { clientEdgeMode: false }, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
