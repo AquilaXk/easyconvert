@@ -19,6 +19,7 @@ import {
 import { s3Storage } from '../../storage/s3-storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
+import { resolveNodeResourceClass } from '../resource-class';
 
 export interface RedisGraphSchedulerOptions {
   redisClient: Redis;
@@ -91,6 +92,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
       const inDegree = inputs.length;
       const children = childrenMap.get(nodeId) || [];
 
+      const resClass = resolveNodeResourceClass(node);
       const jobData = {
         jobId: `${graphId}:${nodeId}`,
         originalFilename: meta.originalFilename || `${nodeId}.bin`,
@@ -104,6 +106,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
         graphNodeId: nodeId,
         graphNode: node,
         inputArtifacts: [] as string[],
+        resourceClass: resClass,
       };
 
       return {

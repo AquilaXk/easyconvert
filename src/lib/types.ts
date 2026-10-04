@@ -56,6 +56,8 @@ export interface FormatOptionsSchema {
   allowEmbeddedPreview?: boolean;
 }
 
+export type ResourceClass = 'light' | 'cpu' | 'memory' | 'gpu';
+
 export interface FormatDefinition {
   id: string;
   name: string;
@@ -66,6 +68,7 @@ export interface FormatDefinition {
   targetFormats: string[];
   optionsSchema?: FormatOptionsSchema;
   available?: boolean;
+  resourceClass?: ResourceClass;
 }
 
 export interface ConversionOptions {
@@ -235,6 +238,7 @@ export interface ConversionJobData {
   graphNodeId?: NodeId;
   graphNode?: GraphNode;
   inputArtifacts?: string[];
+  resourceClass?: ResourceClass;
 }
 
 export interface ConversionJobResult {
