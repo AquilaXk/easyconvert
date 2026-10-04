@@ -103,7 +103,6 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         return undefined;
       }
 
-      let cachedBuffer: Buffer | null = null;
       const reconstructed: StoredObject = {
         key: meta.key,
         filename: meta.filename,
@@ -115,15 +114,15 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         filePath: fs.existsSync(binPath) ? binPath : undefined,
         metadata: meta.metadata,
         get buffer(): Buffer {
-          if (cachedBuffer) return cachedBuffer;
           if (fs.existsSync(binPath)) {
-            cachedBuffer = fs.readFileSync(binPath);
-            return cachedBuffer;
+            return fs.readFileSync(binPath);
           }
           return Buffer.alloc(0);
         },
         set buffer(b: Buffer) {
-          cachedBuffer = b;
+          try {
+            fs.writeFileSync(binPath, b);
+          } catch {}
         },
       };
 
@@ -131,6 +130,27 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       return reconstructed;
     } catch {
       return undefined;
+    }
+  }
+
+  public getStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
+    const { metaPath, binPath } = this.getPathsForKey(key);
+    if (!fs.existsSync(metaPath) || !fs.existsSync(binPath)) {
+      return null;
+    }
+    try {
+      const rawMeta = fs.readFileSync(metaPath, 'utf-8');
+      const meta = JSON.parse(rawMeta);
+      if (meta.expiresAt && Date.now() > meta.expiresAt) {
+        this.delete(key);
+        return null;
+      }
+      if (range) {
+        return fs.createReadStream(binPath, { start: range.start, end: range.end });
+      }
+      return fs.createReadStream(binPath);
+    } catch {
+      return null;
     }
   }
 
