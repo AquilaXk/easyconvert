@@ -672,26 +672,46 @@ export async function convertFile(
   }
 
   // 8. PDF Post-Processing: PDF/A, Watermark, and Protection
-  if ((tgt === 'pdf' || res.filename?.endsWith('.pdf')) && Buffer.isBuffer(res.buffer)) {
-    if (options.pdfa && options.protect) {
-      // ISO 19005 forbids encryption in PDF/A files.
-      throw new UnsupportedOptionError('PDF/A output cannot be encrypted; remove either the pdfa or the protect option.');
-    }
-    // Watermark first: any edit after the PDF/A conversion would break conformance.
-    if (options.watermark) {
-      res.buffer = await applyPdfWatermark(res.buffer, options.watermark);
-    }
-    if (options.pdfa) {
-      const pdfaRes = await convertToPdfA(res.buffer, options.pdfa);
-      res.buffer = pdfaRes.buffer;
-    }
-    if (options.protect) {
-      res.buffer = await protectPdf(res.buffer, options.protect);
-    }
-    res.size = res.buffer.length;
+  if (tgt === 'pdf' || res.filename?.endsWith('.pdf')) {
+    await applyPdfPostProcessing(res, options);
   }
 
   return res;
+}
+
+/**
+ * Rejects PDF output option combinations that cannot be honoured together. Callers run it before
+ * converting so an incompatible request fails without spending conversion work.
+ */
+export function assertPdfPostProcessOptions(options: ConversionOptions): void {
+  if (options.pdfa && options.protect) {
+    // ISO 19005 forbids encryption in PDF/A files.
+    throw new UnsupportedOptionError('PDF/A output cannot be encrypted; remove either the pdfa or the protect option.');
+  }
+}
+
+/**
+ * PDF post-processing shared by every conversion route: watermark, PDF/A, then protection.
+ * Updates `result.buffer` and `result.size` in place; a result without a buffer is left untouched.
+ */
+export async function applyPdfPostProcessing(result: ConversionResult, options: ConversionOptions): Promise<void> {
+  if (!Buffer.isBuffer(result.buffer)) return;
+  assertPdfPostProcessOptions(options);
+  if (!options.watermark && !options.pdfa && !options.protect) return;
+  let pdf = result.buffer;
+  // Watermark first: any edit after the PDF/A conversion would break conformance.
+  if (options.watermark) {
+    pdf = await applyPdfWatermark(pdf, options.watermark);
+  }
+  if (options.pdfa) {
+    const pdfaRes = await convertToPdfA(pdf, options.pdfa);
+    pdf = pdfaRes.buffer;
+  }
+  if (options.protect) {
+    pdf = await protectPdf(pdf, options.protect);
+  }
+  result.buffer = pdf;
+  result.size = pdf.length;
 }
 
 export * from './page-range';

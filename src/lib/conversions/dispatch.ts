@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { FORMAT_REGISTRY } from '../registry';
 import { UnsupportedTargetError } from '../types';
+import { applyPdfPostProcessing, assertPdfPostProcessOptions } from './index';
 import {
   executeWorkerConversion,
   type WorkerConversionResult,
@@ -28,6 +29,9 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'xlsx->jpg', 'xlsx->png',
 ]);
 
+const PDF_FORMAT = 'pdf';
+const IN_PROCESS_ENGINE: WorkerConversionResult['engineUsed'] = 'internal-fallback';
+
 function normalizeFormat(format: string): string {
   return format.toLowerCase().replace(/^\./, '').trim();
 }
@@ -54,6 +58,25 @@ function materialize(result: WorkerConversionResult): WorkerConversionResult {
 }
 
 /**
+ * Applies watermark, PDF/A and protection to PDF output a native engine produced. The in-process
+ * engine already applies them inside convertFile, so its output is never processed twice.
+ */
+async function postProcessNativePdf(
+  result: WorkerConversionResult,
+  tgt: string,
+  options: WorkerEngineOptions
+): Promise<WorkerConversionResult> {
+  const needsPostProcessing = Boolean(options.watermark || options.pdfa || options.protect);
+  if (tgt !== PDF_FORMAT || result.engineUsed === IN_PROCESS_ENGINE || !needsPostProcessing) return result;
+  const processed: WorkerConversionResult = { ...result, buffer: result.buffer };
+  await applyPdfPostProcessing(processed, options);
+  if (processed.filePath) {
+    fs.writeFileSync(processed.filePath, processed.buffer);
+  }
+  return processed;
+}
+
+/**
  * Single conversion dispatcher for every entry point (sync and batch APIs, graph executor,
  * queue workers).
  *
@@ -74,11 +97,15 @@ export async function dispatchConversion(
   const src = normalizeFormat(sourceFormat);
   const tgt = normalizeFormat(targetFormat);
   assertAdvertised(src, tgt);
+  if (tgt === PDF_FORMAT) {
+    assertPdfPostProcessOptions(options);
+  }
 
   const workerOptions: WorkerEngineOptions = requiresNativeEngine(src, tgt)
     ? { ...options, inProcessFallback: false }
     : options;
-  const result = await executeWorkerConversion(input, src, tgt, workerOptions, originalFilename);
+  const converted = await executeWorkerConversion(input, src, tgt, workerOptions, originalFilename);
+  const result = await postProcessNativePdf(converted, tgt, options);
 
   const keepOnDisk = !Buffer.isBuffer(input) || Boolean(options.zeroHeap) || Boolean((options as { outputPath?: string }).outputPath);
   return keepOnDisk ? result : materialize(result);
