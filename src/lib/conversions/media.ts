@@ -250,6 +250,10 @@ export async function convertMedia(
     try {
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch (err) {
+      // Invalid options are the caller's error (HTTP 400); keep their type.
+      if (err instanceof InvalidMediaOptionError) {
+        throw err;
+      }
       throw new ConversionFailedError(
         `Native FFmpeg transcoding failed for ${src} -> ${tgt}: ${err instanceof Error ? err.message : String(err)}`
       );
