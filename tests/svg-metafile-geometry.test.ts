@@ -741,4 +741,21 @@ describe('SVG document model for metafile encoders', () => {
       });
     }
   });
+
+  describe('fill-rule analysis budget', () => {
+    it('fails fast with a typed error when a nonzero CGM fill is too complex to verify (300 strips)', () => {
+      const STRIPS = 150;
+      const parts: string[] = [];
+      for (let k = 0; k < STRIPS; k++) {
+        const t = 2 * k + 1;
+        parts.push(`M0 ${t} L300 ${t + 97.3} V${t + 97.8} L0 ${t + 0.5} Z`, `M${t} 0 V400 H${t + 0.5} V0 Z`);
+      }
+      // Alternate orientation so overlapping strips cancel (winding 0), forcing a full analysis.
+      const svg = svgDoc(`<path fill="#000" d="${parts.join(' ')}"/>`, 'width="300" height="400"');
+      const start = performance.now();
+      expect(() => encodeCgm(svg)).toThrow(CadGeometryUnavailableError);
+      expect(() => encodeCgm(svg)).toThrow(/too complex/);
+      expect(performance.now() - start).toBeLessThan(1000);
+    });
+  });
 });

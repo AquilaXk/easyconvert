@@ -1,3 +1,4 @@
+import { CadGeometryUnavailableError } from '../types';
 import type { RgbColor, SvgFillRule, SvgGeometryElement, SvgLinecap, SvgLinejoin } from './svg-geometry';
 
 export interface PlanPoint {
@@ -93,8 +94,28 @@ interface Edge {
   maxY: number;
 }
 
-/** Upper bound on edges analysed, keeping the quadratic scan bounded. */
-const MAX_FILL_RULE_EDGES = 20000;
+/**
+ * Work budget for the fill-rule analysis, in edge-pair tests plus
+ * scanline x edge evaluations. Beyond it the shape is rejected as too
+ * complex to verify rather than analysed in super-quadratic time.
+ */
+export const FILL_RULE_WORK_BUDGET = 5_000_000;
+
+function fillRuleTooComplex(): CadGeometryUnavailableError {
+  return new CadGeometryUnavailableError(
+    `Fill-rule analysis is too complex to verify within ${FILL_RULE_WORK_BUDGET} steps; simplify the shape or use fill-rule evenodd.`
+  );
+}
+
+/** Tracks analysis work against FILL_RULE_WORK_BUDGET. */
+class WorkMeter {
+  private used = 0;
+
+  spend(units: number): void {
+    this.used += units;
+    if (this.used > FILL_RULE_WORK_BUDGET) throw fillRuleTooComplex();
+  }
+}
 
 function cross(o: PlanPoint, a: PlanPoint, b: PlanPoint): number {
   return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
@@ -112,7 +133,7 @@ function buildEdges(rings: PlanPoint[][]): Edge[] {
 }
 
 /** y coordinates of every vertex and every proper edge crossing. */
-function eventYs(edges: Edge[]): number[] {
+function eventYs(edges: Edge[], meter: WorkMeter): number[] {
   const ys = new Set<number>();
   for (const e of edges) {
     ys.add(e.a.y);
@@ -122,6 +143,7 @@ function eventYs(edges: Edge[]): number[] {
   for (let i = 0; i < byX.length; i++) {
     const s = byX[i];
     for (let j = i + 1; j < byX.length && byX[j].minX <= s.maxX; j++) {
+      meter.spend(1);
       const t = byX[j];
       if (t.maxY < s.minY || t.minY > s.maxY) continue;
       const d1 = cross(t.a, t.b, s.a);
@@ -145,10 +167,13 @@ function eventYs(edges: Edge[]): number[] {
  * middle of each band visits every face.
  */
 export function nonzeroDiffersFromEvenOdd(rings: PlanPoint[][]): boolean {
+  const meter = new WorkMeter();
   const edges = buildEdges(rings);
-  if (edges.length > MAX_FILL_RULE_EDGES) return true;
+  meter.spend(edges.length);
   const sloped = edges.filter((e) => e.a.y !== e.b.y);
-  const ys = eventYs(edges);
+  const ys = eventYs(edges, meter);
+  // Charge the whole scan up front so an oversized arrangement fails before any scanning.
+  meter.spend(Math.max(0, ys.length - 1) * sloped.length);
   for (let k = 0; k + 1 < ys.length; k++) {
     const ym = (ys[k] + ys[k + 1]) / 2;
     const crossings: { x: number; dir: number }[] = [];
