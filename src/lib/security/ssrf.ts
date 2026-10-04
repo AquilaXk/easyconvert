@@ -1,4 +1,4 @@
-import dns from 'node:dns';
+import dns, { type LookupAddress } from 'node:dns';
 import net from 'node:net';
 import { Agent } from 'undici';
 
@@ -260,40 +260,58 @@ export async function validateUrlForSsrf(targetUrl: URL): Promise<boolean> {
   return true;
 }
 
+const IP_FAMILIES: ReadonlySet<number> = new Set([4, 6]);
+
+function ssrfBlockedError(message: string): NodeJS.ErrnoException {
+  const err: NodeJS.ErrnoException = new Error(`SSRF blocked: ${message}`);
+  err.code = 'ESSRFBLOCKED';
+  return err;
+}
+
+/**
+ * Connect-time DNS lookup that refuses restricted hosts and every resolution containing a
+ * restricted IP. Implements the full `net.LookupFunction` contract: with `options.all` (used by
+ * autoSelectFamily) it returns the validated address list, otherwise a single address and family.
+ */
+export const ssrfSafeLookup: net.LookupFunction = (hostname, options, callback) => {
+  const rawHost = hostname.toLowerCase();
+  const cleanHost = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
+  const family = IP_FAMILIES.has(Number(options.family)) ? Number(options.family) : 0;
+
+  if (isPrivateOrRestrictedHost(cleanHost)) {
+    callback(ssrfBlockedError(`host ${hostname} is restricted`), '', family);
+    return;
+  }
+
+  dns.lookup(cleanHost, { all: true, family, hints: options.hints }, (err, resolved: LookupAddress[]) => {
+    if (err) {
+      callback(err, '', family);
+      return;
+    }
+    for (const addr of resolved ?? []) {
+      if (isBlockedIp(addr.address)) {
+        callback(ssrfBlockedError(`resolved IP ${addr.address} is restricted`), '', family);
+        return;
+      }
+    }
+    const addresses = (resolved ?? []).filter((addr) => family === 0 || addr.family === family);
+    if (addresses.length === 0) {
+      callback(ssrfBlockedError(`could not resolve host ${hostname}`), '', family);
+      return;
+    }
+    if (options.all) {
+      callback(null, addresses.map(({ address, family: addrFamily }) => ({ address, family: addrFamily })));
+      return;
+    }
+    callback(null, addresses[0].address, addresses[0].family);
+  });
+};
+
 /**
  * Creates an Undici Agent that enforces socket-level IP pinning on every connection.
  * This eliminates Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding vulnerabilities
  * by verifying the resolved destination IP address inside the connection lookup hook.
  */
 export function createSsrfSafeAgent(): Agent {
-  return new Agent({
-    connect: {
-      lookup: (hostname, _options, callback) => {
-        const rawHost = hostname.toLowerCase();
-        const cleanHost = rawHost.startsWith('[') && rawHost.endsWith(']')
-          ? rawHost.slice(1, -1)
-          : rawHost;
-
-        if (isPrivateOrRestrictedHost(cleanHost)) {
-          return callback(new Error(`SSRF blocked: host ${hostname} is restricted`), '', 4);
-        }
-
-        dns.lookup(cleanHost, { all: true }, (err, addresses) => {
-          if (err) {
-            return callback(err, '', 4);
-          }
-          if (!addresses || addresses.length === 0) {
-            return callback(new Error(`SSRF blocked: could not resolve host ${hostname}`), '', 4);
-          }
-          for (const addr of addresses) {
-            if (isBlockedIp(addr.address)) {
-              return callback(new Error(`SSRF blocked: resolved IP ${addr.address} is restricted`), '', 4);
-            }
-          }
-          const chosen = addresses[0];
-          callback(null, chosen.address, chosen.family);
-        });
-      },
-    },
-  });
+  return new Agent({ connect: { lookup: ssrfSafeLookup } });
 }
