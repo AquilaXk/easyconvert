@@ -12,34 +12,19 @@ import {
   resolveSandboxedCommand,
   getSanitizedEnvironment,
 } from '../../security/process-sandbox';
+import { resolveBinaryPath } from './utils';
 
 /**
  * Locate the qpdf binary on the system or return null if unavailable.
  */
 export function getQpdfBinaryPath(): string | null {
-  const custom = process.env.QPDF_PATH;
-  if (custom !== undefined) {
-    return custom && fs.existsSync(custom) ? custom : null;
-  }
   const candidates = [
     '/usr/bin/qpdf',
     '/usr/local/bin/qpdf',
     '/opt/homebrew/bin/qpdf',
     '/opt/homebrew/opt/qpdf/bin/qpdf',
   ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) {
-      return c;
-    }
-  }
-  try {
-    const whichOut = execFileSync('which', ['qpdf'], { encoding: 'utf-8', timeout: 2000 }).trim();
-    if (whichOut && fs.existsSync(whichOut)) {
-      return whichOut;
-    }
-  } catch {}
-
-  return null;
+  return resolveBinaryPath('QPDF_PATH', candidates, 'qpdf');
 }
 
 /**
@@ -61,10 +46,7 @@ export async function protectPdf(
   }
 
   const userPassword = options.userPassword ?? '';
-  let ownerPassword = options.ownerPassword;
-  if (!ownerPassword) {
-    ownerPassword = userPassword ? userPassword : crypto.randomBytes(16).toString('hex');
-  }
+  const ownerPassword = options.ownerPassword || userPassword || crypto.randomBytes(16).toString('hex');
 
   const keyLength = options.keyLength ?? 256;
   if (keyLength !== 128 && keyLength !== 256) {

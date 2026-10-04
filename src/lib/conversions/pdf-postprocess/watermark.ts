@@ -22,25 +22,21 @@ function parseRgbColor(colorStr?: string) {
   const str = colorStr.trim().toLowerCase();
   if (str.startsWith('#')) {
     const hex = str.slice(1);
-    if (hex.length === 3) {
-      const r = parseInt(hex[0] + hex[0], 16) / 255;
-      const g = parseInt(hex[1] + hex[1], 16) / 255;
-      const b = parseInt(hex[2] + hex[2], 16) / 255;
-      return rgb(r, g, b);
-    }
-    if (hex.length === 6) {
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      return rgb(r, g, b);
+    const step = hex.length === 3 ? 1 : hex.length === 6 ? 2 : 0;
+    if (step > 0) {
+      const getVal = (idx: number) => {
+        const seg = step === 1 ? hex[idx] + hex[idx] : hex.slice(idx * 2, idx * 2 + 2);
+        return Number.parseInt(seg, 16) / 255;
+      };
+      return rgb(getVal(0), getVal(1), getVal(2));
     }
   }
-  const rgbMatch = str.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  const rgbMatch = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(str);
   if (rgbMatch) {
     return rgb(
-      parseInt(rgbMatch[1], 10) / 255,
-      parseInt(rgbMatch[2], 10) / 255,
-      parseInt(rgbMatch[3], 10) / 255
+      Number.parseInt(rgbMatch[1], 10) / 255,
+      Number.parseInt(rgbMatch[2], 10) / 255,
+      Number.parseInt(rgbMatch[3], 10) / 255
     );
   }
   return rgb(0.5, 0.5, 0.5);
@@ -114,6 +110,22 @@ function reorderContentStreamUnder(page: PDFPage): void {
   }
 }
 
+function renderTiled(
+  pageWidth: number,
+  pageHeight: number,
+  stepX: number,
+  stepY: number,
+  startX: number,
+  startY: number,
+  drawAt: (x: number, y: number) => void
+): void {
+  for (let x = startX; x < pageWidth; x += stepX) {
+    for (let y = startY; y < pageHeight; y += stepY) {
+      drawAt(x, y);
+    }
+  }
+}
+
 interface RenderImageWatermarkParams {
   page: PDFPage;
   image: PDFImage;
@@ -136,10 +148,14 @@ function renderImageWatermarkOnPage({
   const imgHeight = image.height * scale;
 
   if (position === 'tile') {
-    const stepX = Math.max(imgWidth + 60, 150);
-    const stepY = Math.max(imgHeight + 60, 150);
-    for (let x = 30; x < pageWidth; x += stepX) {
-      for (let y = 30; y < pageHeight; y += stepY) {
+    renderTiled(
+      pageWidth,
+      pageHeight,
+      Math.max(imgWidth + 60, 150),
+      Math.max(imgHeight + 60, 150),
+      30,
+      30,
+      (x, y) => {
         page.drawImage(image, {
           x,
           y,
@@ -149,7 +165,7 @@ function renderImageWatermarkOnPage({
           rotate: degrees(rotationDegrees),
         });
       }
-    }
+    );
     return;
   }
 
@@ -207,10 +223,14 @@ function renderTextWatermarkOnPage({
   const textHeight = font.heightAtSize(fontSize);
 
   if (position === 'tile') {
-    const stepX = Math.max(textWidth + 80, 200);
-    const stepY = Math.max(textHeight + 100, 200);
-    for (let x = 40; x < pageWidth; x += stepX) {
-      for (let y = 40; y < pageHeight; y += stepY) {
+    renderTiled(
+      pageWidth,
+      pageHeight,
+      Math.max(textWidth + 80, 200),
+      Math.max(textHeight + 100, 200),
+      40,
+      40,
+      (x, y) => {
         page.drawText(text, {
           x,
           y,
@@ -221,7 +241,7 @@ function renderTextWatermarkOnPage({
           rotate: degrees(rotationDegrees),
         });
       }
-    }
+    );
     return;
   }
 
@@ -245,6 +265,53 @@ function renderTextWatermarkOnPage({
   });
 }
 
+async function loadAndPrepareDocument(
+  pdfBuffer: Buffer
+): Promise<{ doc: PDFDocument; pageCount: number }> {
+  if (!pdfBuffer || pdfBuffer.length === 0) {
+    throw new PdfPostprocessError('PDF buffer is empty.');
+  }
+  try {
+    const doc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+    const pageCount = doc.getPageCount();
+    if (pageCount === 0) {
+      throw new PdfPostprocessError('PDF document contains 0 pages.');
+    }
+    return { doc, pageCount };
+  } catch (err: any) {
+    if (err instanceof PdfPostprocessError) {
+      throw err;
+    }
+    throw new PdfPostprocessError(`Failed to parse PDF document for watermarking: ${err.message}`);
+  }
+}
+
+interface PreparedWatermarkAsset {
+  isImage: boolean;
+  image: PDFImage | null;
+  font: PDFFont | null;
+  text: string;
+}
+
+async function prepareWatermarkAsset(
+  doc: PDFDocument,
+  options: PdfWatermarkOptions
+): Promise<PreparedWatermarkAsset> {
+  const isImage = Boolean(options.image || options.type === 'image');
+  if (isImage) {
+    if (!options.image) {
+      throw new PdfPostprocessError('Watermark image source is missing for image watermark.');
+    }
+    const { buffer: imgBuf, format } = parseImageBuffer(options.image);
+    const image = format === 'png' ? await doc.embedPng(imgBuf) : await doc.embedJpg(imgBuf);
+    return { isImage: true, image, font: null, text: '' };
+  }
+
+  const font = await doc.embedFont(StandardFonts.HelveticaBold);
+  const text = options.text || 'CONFIDENTIAL';
+  return { isImage: false, image: null, font, text };
+}
+
 /**
  * Apply text or image watermarking to a PDF document with configurable positioning,
  * rotation, opacity, page range selection, and over/under layering.
@@ -253,79 +320,42 @@ export async function applyPdfWatermark(
   pdfBuffer: Buffer,
   options: PdfWatermarkOptions = {}
 ): Promise<Buffer> {
-  if (!pdfBuffer || pdfBuffer.length === 0) {
-    throw new PdfPostprocessError('PDF buffer is empty.');
-  }
+  const { doc, pageCount } = await loadAndPrepareDocument(pdfBuffer);
 
-  let doc: PDFDocument;
-  try {
-    doc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-  } catch (err: any) {
-    throw new PdfPostprocessError(`Failed to parse PDF document for watermarking: ${err.message}`);
-  }
-
-  const pageCount = doc.getPageCount();
-  if (pageCount === 0) {
-    throw new PdfPostprocessError('PDF document contains 0 pages.');
-  }
-
-  // Resolve target 1-based page indices
-  let targetPages: number[];
-  if (options.pages) {
-    targetPages = parsePageRanges(options.pages, pageCount);
-  } else {
-    targetPages = Array.from({ length: pageCount }, (_, i) => i + 1);
-  }
-
+  const targetPages = options.pages
+    ? parsePageRanges(options.pages, pageCount)
+    : Array.from({ length: pageCount }, (_, i) => i + 1);
   const targetSet = new Set(targetPages);
+
   const opacity = Math.min(Math.max(options.opacity ?? 0.3, 0), 1);
   const rotationDegrees = options.rotation ?? (options.image ? 0 : -45);
   const position: PdfWatermarkPosition = options.position ?? 'center';
   const layer: PdfWatermarkLayer = options.layer ?? 'over';
 
-  let embeddedFont: PDFFont | null = null;
-  let embeddedImage: PDFImage | null = null;
-  const isImageWatermark = Boolean(options.image || options.type === 'image');
-
-  if (isImageWatermark) {
-    if (!options.image) {
-      throw new PdfPostprocessError('Watermark image source is missing for image watermark.');
-    }
-    const { buffer: imgBuf, format } = parseImageBuffer(options.image);
-    embeddedImage = format === 'png' ? await doc.embedPng(imgBuf) : await doc.embedJpg(imgBuf);
-  } else {
-    embeddedFont = await doc.embedFont(StandardFonts.HelveticaBold);
-  }
-
-  const watermarkText = options.text || (isImageWatermark ? '' : 'CONFIDENTIAL');
+  const asset = await prepareWatermarkAsset(doc, options);
   const textColor = parseRgbColor(options.fontColor);
   const fontSize = options.fontSize ?? 48;
   const scale = options.scale ?? 1.0;
 
-  const pages = doc.getPages();
-
-  for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
-    const pageNum = pageIdx + 1;
-    if (!targetSet.has(pageNum)) {
+  for (const [idx, page] of doc.getPages().entries()) {
+    if (!targetSet.has(idx + 1)) {
       continue;
     }
 
-    const page = pages[pageIdx];
-
-    if (isImageWatermark && embeddedImage) {
+    if (asset.isImage && asset.image) {
       renderImageWatermarkOnPage({
         page,
-        image: embeddedImage,
+        image: asset.image,
         position,
         scale,
         opacity,
         rotationDegrees,
       });
-    } else if (embeddedFont && watermarkText) {
+    } else if (asset.font && asset.text) {
       renderTextWatermarkOnPage({
         page,
-        text: watermarkText,
-        font: embeddedFont,
+        text: asset.text,
+        font: asset.font,
         fontSize,
         textColor,
         position,

@@ -25,6 +25,30 @@ import {
 } from '../../conversions';
 import { ConversionFailedError } from '../../types';
 
+async function processIntermediatePdfArtifacts(
+  graphId: string,
+  nodeId: string,
+  inputKeys: string[],
+  storage: IStorageBackend,
+  attemptSignal: AbortSignal,
+  transformFn: (buf: Buffer) => Promise<Buffer>
+): Promise<string[]> {
+  return Promise.all(
+    inputKeys.map(async (inputKey) => {
+      attemptSignal.throwIfAborted();
+      const stored = storage.getObject(inputKey);
+      if (!stored) {
+        throw new Error(`Input artifact "${inputKey}" not found in storage`);
+      }
+      const transformedBuf = await transformFn(stored.buffer);
+      const outFilename = stored.filename || path.basename(inputKey);
+      const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+      storage.saveObject(outKey, transformedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+      return outKey;
+    })
+  );
+}
+
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   engine?: ConversionEnginePort,
@@ -182,19 +206,13 @@ export async function processGraphNodeJob(
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
         const watermarkOpts = (node.options?.watermark || node.options || {}) as any;
-        const processedKeys = await Promise.all(
-          inputArtifacts.map(async (inputKey) => {
-            attemptSignal.throwIfAborted();
-            const stored = effectiveStorage.getObject(inputKey);
-            if (!stored) {
-              throw new Error(`Input artifact "${inputKey}" not found in storage`);
-            }
-            const watermarkedBuf = await applyPdfWatermark(stored.buffer, watermarkOpts);
-            const outFilename = stored.filename || path.basename(inputKey);
-            const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-            effectiveStorage.saveObject(outKey, watermarkedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
-            return outKey;
-          })
+        const processedKeys = await processIntermediatePdfArtifacts(
+          graphId,
+          nodeId,
+          inputArtifacts,
+          effectiveStorage,
+          attemptSignal,
+          (buf) => applyPdfWatermark(buf, watermarkOpts)
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied watermark to ${inputArtifacts.length} artifact(s)`);
@@ -207,19 +225,13 @@ export async function processGraphNodeJob(
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
         const protectOpts = (node.options?.protect || node.options || {}) as any;
-        const processedKeys = await Promise.all(
-          inputArtifacts.map(async (inputKey) => {
-            attemptSignal.throwIfAborted();
-            const stored = effectiveStorage.getObject(inputKey);
-            if (!stored) {
-              throw new Error(`Input artifact "${inputKey}" not found in storage`);
-            }
-            const protectedBuf = await protectPdf(stored.buffer, protectOpts);
-            const outFilename = stored.filename || path.basename(inputKey);
-            const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-            effectiveStorage.saveObject(outKey, protectedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
-            return outKey;
-          })
+        const processedKeys = await processIntermediatePdfArtifacts(
+          graphId,
+          nodeId,
+          inputArtifacts,
+          effectiveStorage,
+          attemptSignal,
+          (buf) => protectPdf(buf, protectOpts)
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied protection to ${inputArtifacts.length} artifact(s)`);

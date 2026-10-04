@@ -13,62 +13,31 @@ import {
   resolveSandboxedCommand,
   getSanitizedEnvironment,
 } from '../../security/process-sandbox';
+import { resolveBinaryPath } from './utils';
 
 /**
  * Locate LibreOffice binary on the host or in container.
  */
 export function getLibreOfficeBinaryPath(): string | null {
-  const custom = process.env.SOFFICE_PATH;
-  if (custom !== undefined) {
-    return custom && fs.existsSync(custom) ? custom : null;
-  }
   const candidates = [
     '/usr/bin/soffice',
     '/usr/local/bin/soffice',
     '/opt/homebrew/bin/soffice',
     '/Applications/LibreOffice.app/Contents/MacOS/soffice',
   ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) {
-      return c;
-    }
-  }
-  try {
-    const whichOut = execFileSync('which', ['soffice'], { encoding: 'utf-8', timeout: 2000 }).trim();
-    if (whichOut && fs.existsSync(whichOut)) {
-      return whichOut;
-    }
-  } catch {}
-
-  return null;
+  return resolveBinaryPath('SOFFICE_PATH', candidates, 'soffice');
 }
 
 /**
  * Locate veraPDF binary for PDF/A validation, if installed.
  */
 export function getVerapdfBinaryPath(): string | null {
-  const custom = process.env.VERAPDF_PATH;
-  if (custom !== undefined) {
-    return custom && fs.existsSync(custom) ? custom : null;
-  }
   const candidates = [
     '/usr/bin/verapdf',
     '/usr/local/bin/verapdf',
     '/opt/homebrew/bin/verapdf',
   ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) {
-      return c;
-    }
-  }
-  try {
-    const whichOut = execFileSync('which', ['verapdf'], { encoding: 'utf-8', timeout: 2000 }).trim();
-    if (whichOut && fs.existsSync(whichOut)) {
-      return whichOut;
-    }
-  } catch {}
-
-  return null;
+  return resolveBinaryPath('VERAPDF_PATH', candidates, 'verapdf');
 }
 
 /**
