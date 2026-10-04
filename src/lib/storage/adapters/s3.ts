@@ -122,9 +122,29 @@ function escapeXmlText(text: string): string {
   return text.replace(/[&<>"']/g, (ch) => XML_ESCAPES.get(ch) ?? ch);
 }
 
-function readXmlElement(xml: string, name: string): string | undefined {
-  const match = new RegExp(`<${name}>([^<]*)</${name}>`).exec(xml);
-  return match ? decodeXmlText(match[1]) : undefined;
+/** The only S3 response elements the adapter reads. */
+type S3XmlElement = 'Code' | 'Message' | 'RequestId' | 'UploadId' | 'ETag';
+
+/**
+ * Returns the decoded text of the first `<name>text</name>` whose content has no markup, using
+ * plain string search (no pattern is built from input).
+ */
+function readXmlElement(xml: string, name: S3XmlElement): string | undefined {
+  const open = `<${name}>`;
+  const close = `</${name}>`;
+  let from = xml.indexOf(open);
+  while (from !== -1) {
+    const start = from + open.length;
+    const nextTag = xml.indexOf('<', start);
+    if (nextTag === -1) {
+      return undefined;
+    }
+    if (xml.startsWith(close, nextTag)) {
+      return decodeXmlText(xml.slice(start, nextTag));
+    }
+    from = xml.indexOf(open, start);
+  }
+  return undefined;
 }
 
 function declaresDtd(xml: string): boolean {

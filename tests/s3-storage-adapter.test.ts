@@ -83,6 +83,14 @@ describe('S3 XML handling refuses DTDs', () => {
     expect(parseS3ErrorXml('<!ENTITY a "b"><Error><Code>AccessDenied</Code></Error>')).toEqual({});
   });
 
+  it('reads the first text-only occurrence of each element', () => {
+    expect(
+      parseS3ErrorXml('<Error><Code><Nested/></Code><Code>SlowDown</Code><Code>Later</Code><Message></Message></Error>')
+    ).toEqual({ code: 'SlowDown', message: '', requestId: undefined });
+    expect(parseS3ErrorXml('<Error><Code>Unclosed')).toEqual({ code: undefined, message: undefined, requestId: undefined });
+    expect(parseS3ErrorXml('<Error><CodeX>no</CodeX><Code>A&lt;B</Code></Error>').code).toBe('A<B');
+  });
+
   it('still reads a plain error document and leaves unknown entities literal', () => {
     expect(parseS3ErrorXml('<Error><Code>SlowDown</Code><Message>a &amp; &foo;</Message></Error>')).toEqual({
       code: 'SlowDown',
