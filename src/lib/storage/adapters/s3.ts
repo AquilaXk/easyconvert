@@ -580,6 +580,87 @@ export class S3StorageAdapter implements IStorageAdapter {
     return this.mapTransportError(err);
   }
 
+  /**
+   * Starts both deadlines for one attempt: the inactivity timeout, which received bytes reset
+   * (whitespace keepalives keep a Complete alive), and the absolute ceiling, which never moves.
+   */
+  private startDeadlines(): RequestDeadlines {
+    const controller = new AbortController();
+    let timedOutAfterMs: number | undefined;
+    const abortAfter = (ms: number) => () => {
+      timedOutAfterMs ??= ms;
+      controller.abort();
+    };
+    const onInactive = abortAfter(this.requestTimeoutMs);
+    let timer = setTimeout(onInactive, this.requestTimeoutMs);
+    const ceiling = setTimeout(abortAfter(this.maxRequestDurationMs), this.maxRequestDurationMs);
+    return {
+      touch: () => {
+        clearTimeout(timer);
+        timer = setTimeout(onInactive, this.requestTimeoutMs);
+      },
+      clear: () => {
+        clearTimeout(timer);
+        clearTimeout(ceiling);
+      },
+      signal: controller.signal,
+      timedOutAfterMs: () => timedOutAfterMs,
+    };
+  }
+
+  private sign(request: S3Request, address: { origin: string; path: string }) {
+    return signS3Request({
+      method: request.method,
+      origin: address.origin,
+      path: address.path,
+      query: request.query,
+      headers: request.headers,
+      payloadHash: request.payloadHash,
+      credentials: {
+        accessKeyId: this.#accessKeyId,
+        secretAccessKey: this.#secretAccessKey,
+        sessionToken: this.#sessionToken,
+      },
+      region: this.region,
+    });
+  }
+
+  /** One signed attempt under fresh deadlines; `streamBody` successes keep the deadlines running. */
+  private async attemptOnce(
+    request: S3Request,
+    address: { origin: string; path: string }
+  ): Promise<{ ok: S3Response } | { error: StorageAdapterError }> {
+    const signed = this.sign(request, address);
+    const deadlines = this.startDeadlines();
+    let res: Response;
+    try {
+      res = await this.fetchOnce(signed.url, {
+        method: request.method,
+        headers: signed.headers,
+        body: request.body,
+        duplex: request.body instanceof Readable ? 'half' : undefined,
+        signal: deadlines.signal,
+      } as UndiciRequestInit);
+    } catch (err) {
+      deadlines.clear();
+      return { error: this.mapBodyError(err, deadlines.timedOutAfterMs()) };
+    }
+
+    let handedOver = false;
+    try {
+      const outcome = await this.readOutcome(res, request, deadlines.touch);
+      if ('ok' in outcome && request.streamBody && outcome.ok.res.ok) {
+        handedOver = true;
+        return { ok: { ...outcome.ok, deadlines } };
+      }
+      return outcome;
+    } catch (err) {
+      return { error: this.mapBodyError(err, deadlines.timedOutAfterMs()) };
+    } finally {
+      if (!handedOver) deadlines.clear();
+    }
+  }
+
   private async send(request: S3Request): Promise<S3Response> {
     const address = this.address(request.key);
     let lastError: StorageAdapterError | null = null;
@@ -588,79 +669,11 @@ export class S3StorageAdapter implements IStorageAdapter {
       if (attempt > 1) {
         await sleep(this.retryDelay(attempt - 1));
       }
-      const signed = signS3Request({
-        method: request.method,
-        origin: address.origin,
-        path: address.path,
-        query: request.query,
-        headers: request.headers,
-        payloadHash: request.payloadHash,
-        credentials: {
-          accessKeyId: this.#accessKeyId,
-          secretAccessKey: this.#secretAccessKey,
-          sessionToken: this.#sessionToken,
-        },
-        region: this.region,
-      });
-
-      const controller = new AbortController();
-      let timedOutAfterMs: number | undefined;
-      const abortAfter = (ms: number) => () => {
-        timedOutAfterMs ??= ms;
-        controller.abort();
-      };
-      const onInactive = abortAfter(this.requestTimeoutMs);
-      let timer = setTimeout(onInactive, this.requestTimeoutMs);
-      const ceiling = setTimeout(abortAfter(this.maxRequestDurationMs), this.maxRequestDurationMs);
-      // Received bytes extend the inactivity deadline (whitespace keepalives keep a Complete
-      // alive); the absolute ceiling never moves.
-      const touch = () => {
-        clearTimeout(timer);
-        timer = setTimeout(onInactive, this.requestTimeoutMs);
-      };
-      const clearDeadlines = () => {
-        clearTimeout(timer);
-        clearTimeout(ceiling);
-      };
-      let res: Response;
-      try {
-        res = await this.fetchOnce(signed.url, {
-          method: request.method,
-          headers: signed.headers,
-          body: request.body,
-          duplex: request.body instanceof Readable ? 'half' : undefined,
-          signal: controller.signal,
-        } as UndiciRequestInit);
-      } catch (err) {
-        clearDeadlines();
-        lastError = this.mapBodyError(err, timedOutAfterMs);
-        if (isRetryable(lastError) && request.replayable) continue;
-        throw lastError;
+      const outcome = await this.attemptOnce(request, address);
+      if ('ok' in outcome) {
+        return outcome.ok;
       }
-
-      let handedOver = false;
-      try {
-        const outcome = await this.readOutcome(res, request, touch);
-        if ('ok' in outcome) {
-          if (request.streamBody && outcome.ok.res.ok) {
-            handedOver = true;
-            const deadlines: RequestDeadlines = {
-              touch,
-              clear: clearDeadlines,
-              signal: controller.signal,
-              timedOutAfterMs: () => timedOutAfterMs,
-            };
-            return { ...outcome.ok, deadlines };
-          }
-          return outcome.ok;
-        }
-        lastError = outcome.error;
-      } catch (err) {
-        lastError = this.mapBodyError(err, timedOutAfterMs);
-      } finally {
-        if (!handedOver) clearDeadlines();
-      }
-
+      lastError = outcome.error;
       if (!(isRetryable(lastError) && request.replayable)) {
         throw lastError;
       }

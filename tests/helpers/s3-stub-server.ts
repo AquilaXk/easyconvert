@@ -175,91 +175,128 @@ export async function startS3StubServer(options: {
   });
 
   function handle(record: StubRequestRecord, body: Buffer, bucket: string, res: http.ServerResponse): void {
+    const noBody = record.method === 'HEAD';
     if (!record.auth.ok) {
-      send(res, 403, record.method === 'HEAD' ? '' : errorXml('SignatureDoesNotMatch', 'The request signature we calculated does not match the signature you provided.'));
+      send(res, 403, noBody ? '' : errorXml('SignatureDoesNotMatch', 'The request signature we calculated does not match the signature you provided.'));
       return;
     }
     if (bucket !== options.bucket) {
-      send(res, 404, record.method === 'HEAD' ? '' : errorXml('NoSuchBucket', 'The specified bucket does not exist'));
+      send(res, 404, noBody ? '' : errorXml('NoSuchBucket', 'The specified bucket does not exist'));
       return;
     }
-    const { method, key, query } = record;
-    const uploadId = query.get('uploadId');
-
-    if (method === 'POST' && query.has('uploads')) {
+    if (record.method === 'POST' && record.query.has('uploads')) {
       uploadCounter += 1;
       const id = `stub-upload-${uploadCounter}`;
       uploads.set(id, new Map());
-      send(res, 200, `<InitiateMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${key}</Key><UploadId>${id}</UploadId></InitiateMultipartUploadResult>`);
+      send(res, 200, `<InitiateMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${record.key}</Key><UploadId>${id}</UploadId></InitiateMultipartUploadResult>`);
       return;
     }
+    const uploadId = record.query.get('uploadId');
     if (uploadId !== null) {
-      const parts = uploads.get(uploadId);
-      if (!parts) {
-        send(res, 404, errorXml('NoSuchUpload', 'The specified upload does not exist'));
-        return;
-      }
-      if (method === 'PUT') {
-        const partNumber = Number(query.get('partNumber'));
-        parts.set(partNumber, body);
+      handleUpload(record, body, bucket, uploadId, res);
+      return;
+    }
+    handleObject(record, body, res);
+  }
+
+  /** UploadPart, ListParts, AbortMultipartUpload, and CompleteMultipartUpload for one upload id. */
+  function handleUpload(record: StubRequestRecord, body: Buffer, bucket: string, uploadId: string, res: http.ServerResponse): void {
+    const parts = uploads.get(uploadId);
+    if (!parts) {
+      send(res, 404, errorXml('NoSuchUpload', 'The specified upload does not exist'));
+      return;
+    }
+    switch (record.method) {
+      case 'PUT':
+        parts.set(Number(record.query.get('partNumber')), body);
         send(res, 200, '', { etag: md5Etag(body) });
         return;
-      }
-      if (method === 'GET') {
+      case 'GET': {
         const listed = [...parts.keys()].sort((a, b) => a - b).map((n) => `<Part><PartNumber>${n}</PartNumber></Part>`);
         send(res, 200, `<ListPartsResult><UploadId>${uploadId}</UploadId>${listed.join('')}</ListPartsResult>`);
         return;
       }
-      if (method === 'DELETE') {
+      case 'DELETE':
         uploads.delete(uploadId);
         send(res, 204);
         return;
+      case 'POST':
+        handleComplete(record.key, body, bucket, uploadId, parts, res);
+        return;
+      default:
+        send(res, 405, errorXml('MethodNotAllowed', 'Method not allowed'));
+    }
+  }
+
+  /** Parts named in the Complete body, in order, or null when one is missing or its ETag differs. */
+  function orderedParts(body: Buffer, parts: Map<number, Buffer>): Buffer[] | null {
+    const listed = [...body.toString('utf-8').matchAll(/<PartNumber>(\d+)<\/PartNumber><ETag>([^<]*)<\/ETag>/g)];
+    const ordered: Buffer[] = [];
+    for (const [, num, etag] of listed) {
+      const part = parts.get(Number(num));
+      if (!part || etag.replace(/&quot;/g, '"') !== md5Etag(part)) {
+        return null;
       }
-      if (method === 'POST') {
-        const listed = [...body.toString('utf-8').matchAll(/<PartNumber>(\d+)<\/PartNumber><ETag>([^<]*)<\/ETag>/g)];
-        const ordered: Buffer[] = [];
-        for (const [, num, etag] of listed) {
-          const part = parts.get(Number(num));
-          if (!part || etag.replace(/&quot;/g, '"') !== md5Etag(part)) {
-            send(res, 400, errorXml('InvalidPart', 'One or more of the specified parts could not be found'));
-            return;
-          }
-          ordered.push(part);
-        }
-        const assembled = Buffer.concat(ordered);
-        // S3 multipart ETag: MD5 of the concatenated binary part MD5s, then "-<part count>".
-        const partDigests = Buffer.concat(ordered.map((part) => s3EtagMd5(part)));
-        const etag = `"${s3EtagMd5(partDigests).toString('hex')}-${ordered.length}"`;
-        objects.set(key, { body: assembled, contentType: 'application/octet-stream', etag });
-        uploads.delete(uploadId);
-        complete.afterComplete?.(key);
-        if (complete.failAfterComplete) {
-          const { status, code } = complete.failAfterComplete;
-          complete.failAfterComplete = undefined;
-          send(res, status, errorXml(code, 'Injected failure after completion'));
-          return;
-        }
-        const resultXml = `<CompleteMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${key}</Key><ETag>${etag.replace(/"/g, '&quot;')}</ETag></CompleteMultipartUploadResult>`;
-        if (complete.keepalive) {
-          const { count, intervalMs } = complete.keepalive;
-          res.writeHead(200, { 'content-type': 'application/xml' });
-          let sent = 0;
-          const tick = setInterval(() => {
-            if (sent < count) {
-              res.write(complete.keepalive?.chunk ?? ' ');
-              sent += 1;
-              return;
-            }
-            clearInterval(tick);
-            res.end(resultXml);
-          }, intervalMs);
-          return;
-        }
-        send(res, 200, resultXml);
+      ordered.push(part);
+    }
+    return ordered;
+  }
+
+  function handleComplete(
+    key: string,
+    body: Buffer,
+    bucket: string,
+    uploadId: string,
+    parts: Map<number, Buffer>,
+    res: http.ServerResponse
+  ): void {
+    const ordered = orderedParts(body, parts);
+    if (!ordered) {
+      send(res, 400, errorXml('InvalidPart', 'One or more of the specified parts could not be found'));
+      return;
+    }
+    // S3 multipart ETag: MD5 of the concatenated binary part MD5s, then "-<part count>".
+    const partDigests = Buffer.concat(ordered.map((part) => s3EtagMd5(part)));
+    const etag = `"${s3EtagMd5(partDigests).toString('hex')}-${ordered.length}"`;
+    objects.set(key, { body: Buffer.concat(ordered), contentType: 'application/octet-stream', etag });
+    uploads.delete(uploadId);
+    complete.afterComplete?.(key);
+    if (complete.failAfterComplete) {
+      const { status, code } = complete.failAfterComplete;
+      complete.failAfterComplete = undefined;
+      send(res, status, errorXml(code, 'Injected failure after completion'));
+      return;
+    }
+    const resultXml = `<CompleteMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${key}</Key><ETag>${etag.replace(/"/g, '&quot;')}</ETag></CompleteMultipartUploadResult>`;
+    if (complete.keepalive) {
+      sendWithKeepalive(res, resultXml, complete.keepalive);
+      return;
+    }
+    send(res, 200, resultXml);
+  }
+
+  /** 200 headers, then `count` whitespace chunks at `intervalMs`, then the result XML. */
+  function sendWithKeepalive(
+    res: http.ServerResponse,
+    resultXml: string,
+    keepalive: NonNullable<StubCompleteBehavior['keepalive']>
+  ): void {
+    res.writeHead(200, { 'content-type': 'application/xml' });
+    let sent = 0;
+    const tick = setInterval(() => {
+      if (sent < keepalive.count) {
+        res.write(keepalive.chunk ?? ' ');
+        sent += 1;
         return;
       }
-    }
+      clearInterval(tick);
+      res.end(resultXml);
+    }, keepalive.intervalMs);
+  }
 
+  /** PutObject, GetObject, HeadObject, and DeleteObject. */
+  function handleObject(record: StubRequestRecord, body: Buffer, res: http.ServerResponse): void {
+    const { method, key } = record;
     const object = objects.get(key);
     switch (method) {
       case 'PUT': {
