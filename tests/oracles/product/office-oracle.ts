@@ -72,39 +72,128 @@ function decodeXmlEntities(text: string): string {
   });
 }
 
-/** Text run elements per format: WordprocessingML `w:t`, DrawingML `a:t`, SpreadsheetML `t`. */
-const TEXT_RUN_PATTERNS: Readonly<Record<'docx' | 'xlsx' | 'pptx', RegExp>> = {
-  docx: /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g,
-  pptx: /<a:t(?:\s[^>]*)?>([^<]*)<\/a:t>/g,
-  xlsx: /<t(?:\s[^>]*)?>([^<]*)<\/t>/g,
+type OfficeFormat = 'docx' | 'xlsx' | 'pptx';
+
+/** Separates paragraphs, string items, cells, and sheets in the extracted text. */
+const ITEM_SEPARATOR = ' ';
+
+/**
+ * Matches a text run or the end of the paragraph/string item that contains it. Runs inside one
+ * item are concatenated as-is (run boundaries are formatting, not text); items are separated.
+ * WordprocessingML: `w:t` in `w:p`; DrawingML: `a:t` in `a:p`; SpreadsheetML: `t` in `si`/`is`.
+ */
+const PARAGRAPH_RUN_PATTERNS: Readonly<Record<'docx' | 'pptx' | 'spreadsheet', RegExp>> = {
+  docx: /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<\/w:p>/g,
+  pptx: /<a:t(?:\s[^>]*)?>([^<]*)<\/a:t>|<\/a:p>/g,
+  spreadsheet: /<t(?:\s[^>]*)?>([^<]*)<\/t>/g,
 };
+
+/** Phonetic guide runs (`rPh`) annotate a string item; they are not part of its value. */
+const PHONETIC_RUN = /<rPh\b[\s\S]*?<\/rPh>/g;
+const SHARED_STRING_ITEM = /<si(?:\s[^>]*)?>([\s\S]*?)<\/si>|<si(?:\s[^>]*)?\/>/g;
+const SHEET_CELL = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+const CELL_VALUE = /<v(?:\s[^>]*)?>([^<]*)<\/v>/;
+const INLINE_STRING = /<is(?:\s[^>]*)?>([\s\S]*?)<\/is>/;
+const SHARED_STRING_TYPE = 's';
+const INLINE_STRING_TYPE = 'inlineStr';
 
 function partNumber(name: string): number {
   return Number(/(\d+)\.xml$/.exec(name)?.[1] ?? 0);
 }
 
-/** The parts that carry user-visible text, in reading order. */
-function textPartNames(files: string[], format: 'docx' | 'xlsx' | 'pptx'): string[] {
-  if (format === 'docx') {
-    return files.filter((f) => f === 'word/document.xml');
-  }
-  if (format === 'pptx') {
-    return files.filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f)).sort((a, b) => partNumber(a) - partNumber(b));
-  }
-  const sheets = files.filter((f) => /^xl\/worksheets\/sheet\d+\.xml$/.test(f)).sort((a, b) => partNumber(a) - partNumber(b));
-  // Shared strings hold most cell text; inline strings live in the sheets themselves.
-  return [...files.filter((f) => f === 'xl/sharedStrings.xml'), ...sheets];
+function numberedParts(files: string[], pattern: RegExp): string[] {
+  return files.filter((f) => pattern.test(f)).sort((a, b) => partNumber(a) - partNumber(b));
 }
 
-async function extractDocumentText(zip: JSZip, format: 'docx' | 'xlsx' | 'pptx'): Promise<string> {
-  const runs: string[] = [];
-  for (const name of textPartNames(Object.keys(zip.files), format)) {
-    const xml = await zip.file(name)!.async('text');
-    for (const match of xml.matchAll(TEXT_RUN_PATTERNS[format])) {
-      runs.push(decodeXmlEntities(match[1]));
+function normalizeText(items: string[]): string {
+  return items.join(ITEM_SEPARATOR).replace(/\s+/g, ' ').trim();
+}
+
+/** Splits WordprocessingML or DrawingML into paragraphs, each the concatenation of its runs. */
+function extractParagraphs(xml: string, pattern: RegExp): string[] {
+  const paragraphs: string[] = [];
+  let current = '';
+  for (const match of xml.matchAll(pattern)) {
+    if (match[1] === undefined) {
+      paragraphs.push(current);
+      current = '';
+    } else {
+      current += decodeXmlEntities(match[1]);
     }
   }
-  return runs.join(' ').replace(/\s+/g, ' ').trim();
+  paragraphs.push(current);
+  return paragraphs.filter((paragraph) => paragraph.length > 0);
+}
+
+/** The value of one `si` or `is` string item: its plain or rich-text runs joined without gaps. */
+function stringItemText(itemXml: string): string {
+  let text = '';
+  for (const match of itemXml.replace(PHONETIC_RUN, '').matchAll(PARAGRAPH_RUN_PATTERNS.spreadsheet)) {
+    text += decodeXmlEntities(match[1]);
+  }
+  return text;
+}
+
+function attribute(attributes: string, name: string): string | undefined {
+  return new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attributes)?.[1];
+}
+
+/** Resolves one cell to `ref=value`, or undefined when the cell carries no value. */
+function resolveCell(attributes: string, body: string, sharedStrings: string[]): string | undefined {
+  const ref = attribute(attributes, 'r') ?? '';
+  const type = attribute(attributes, 't');
+  if (type === INLINE_STRING_TYPE) {
+    const inline = INLINE_STRING.exec(body);
+    if (!inline) throw new Error(`Inline-string cell ${ref} has no <is> element`);
+    return `${ref}=${stringItemText(inline[1])}`;
+  }
+  const value = CELL_VALUE.exec(body)?.[1];
+  if (value === undefined) {
+    if (type === SHARED_STRING_TYPE) throw new Error(`Shared-string cell ${ref} has no <v> index`);
+    return undefined;
+  }
+  if (type !== SHARED_STRING_TYPE) return `${ref}=${decodeXmlEntities(value)}`;
+  const index = Number(value);
+  if (!Number.isInteger(index) || index < 0 || index >= sharedStrings.length) {
+    throw new Error(`Cell ${ref} references shared string ${value}, but the table has ${sharedStrings.length} items`);
+  }
+  return `${ref}=${sharedStrings[index]}`;
+}
+
+/** Every sheet's cells resolved to their values, sheet by sheet and in document (reference) order. */
+async function extractWorkbookCells(zip: JSZip, files: string[]): Promise<string[]> {
+  const sharedStringsXml = files.includes('xl/sharedStrings.xml')
+    ? await zip.file('xl/sharedStrings.xml')!.async('text')
+    : '';
+  const sharedStrings = [...sharedStringsXml.matchAll(SHARED_STRING_ITEM)].map((m) => stringItemText(m[1] ?? ''));
+
+  const cells: string[] = [];
+  const sheets = numberedParts(files, /^xl\/worksheets\/sheet\d+\.xml$/);
+  for (const [sheetIndex, name] of sheets.entries()) {
+    const xml = await zip.file(name)!.async('text');
+    for (const match of xml.matchAll(SHEET_CELL)) {
+      const cell = resolveCell(match[1], match[2] ?? '', sharedStrings);
+      if (cell !== undefined) cells.push(`${sheetIndex + 1}!${cell}`);
+    }
+  }
+  return cells;
+}
+
+async function extractDocumentText(zip: JSZip, format: OfficeFormat): Promise<string> {
+  const files = Object.keys(zip.files);
+  if (format === 'xlsx') {
+    return normalizeText(await extractWorkbookCells(zip, files));
+  }
+  const parts =
+    format === 'docx'
+      ? files.filter((f) => f === 'word/document.xml')
+      : numberedParts(files, /^ppt\/slides\/slide\d+\.xml$/);
+  const paragraphs: string[] = [];
+  for (const name of parts) {
+    const xml = await zip.file(name)!.async('text');
+    paragraphs.push(...extractParagraphs(xml, PARAGRAPH_RUN_PATTERNS[format]));
+  }
+  return normalizeText(paragraphs);
 }
 
 /**
@@ -114,7 +203,7 @@ async function extractDocumentText(zip: JSZip, format: 'docx' | 'xlsx' | 'pptx')
 export async function compareOfficeDocumentStructure(
   actualBuffer: Buffer,
   referenceBuffer: Buffer,
-  format: 'docx' | 'xlsx' | 'pptx'
+  format: OfficeFormat
 ): Promise<OfficeStructureComparisonResult> {
   const discrepancies: string[] = [];
   let structuralScore = 1.0;
