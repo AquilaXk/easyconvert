@@ -1444,7 +1444,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/png',
     category: 'image',
     description: 'Portable Network Graphics - Lossless raster format with alpha transparency support.',
-    targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'svg', 'xps', 'hocr', 'alto'],
+    targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpg: {
@@ -1454,7 +1454,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Joint Photographic Experts Group - Standard lossy image compression for photography.',
-    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg', 'xps', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpeg: {
@@ -1464,7 +1464,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Joint Photographic Experts Group standard image format.',
-    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'svg', 'xps', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   webp: {
@@ -1474,7 +1474,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/webp',
     category: 'image',
     description: 'Modern web image format providing superior lossless and lossy compression.',
-    targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'eps', 'odd', 'ps', 'psd', 'webp', 'svg', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   avif: {
@@ -1494,7 +1494,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/tiff',
     category: 'image',
     description: 'Tagged Image File Format - High-depth raster format favored in publishing and printing.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   tif: {
@@ -1504,7 +1504,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/tiff',
     category: 'image',
     description: 'Short extension for Tagged Image File Format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   gif: {
@@ -1514,7 +1514,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/gif',
     category: 'image',
     description: 'Graphics Interchange Format with animated frame and transparency support.',
-    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto'],
     optionsSchema: { dimensions: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   bmp: {
@@ -1524,7 +1524,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/bmp',
     category: 'image',
     description: 'Bitmap Image File - Uncompressed standard raster image.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
     optionsSchema: { dimensions: true, colorDepth: true, dither: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   svg: {
@@ -1534,7 +1534,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/svg+xml',
     category: 'vector',
     description: 'Scalable Vector Graphics - XML-based resolution-independent 2D vector format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'emf', 'svg', 'wmf'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'svg'],
     optionsSchema: { dimensions: true },
   },
   ico: {
@@ -1703,7 +1703,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/illustrator',
     category: 'image',
     description: 'Adobe Illustrator vector graphics project format.',
-    targetFormats: ['svg', 'pdf', 'png', 'jpg', 'zip', 'dxf', 'eps', 'ps', 'emf', 'wmf'],
+    targetFormats: ['pdf', 'png', 'jpg', 'zip', 'eps', 'ps'],
   },
   eps: {
     id: 'eps',
@@ -1712,7 +1712,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/postscript',
     category: 'image',
     description: 'PostScript vector file format commonly used in commercial print houses.',
-    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'webp', 'emf', 'wmf'],
+    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'webp'],
   },
   tga: {
     id: 'tga',
@@ -1831,7 +1831,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd-ms.dds',
     category: 'image',
     description: 'Microsoft DirectDraw Surface container for GPU texture maps.',
-    targetFormats: ['png', 'jpg', 'tga', 'zip'],
+    targetFormats: ['png', 'jpg', 'zip'],
   },
 
   // ==========================================
@@ -2003,7 +2003,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-apple-diskimage',
     category: 'archive',
     description: 'macOS mountable disk image archive.',
-    targetFormats: ['zip', 'tar', 'iso', '7z', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz'],
   },
   jar: {
     id: 'jar',
@@ -2124,7 +2124,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.dwg',
     category: 'cad',
     description: 'Autodesk AutoCAD binary 2D and 3D computer-aided design format.',
-    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'dwg', 'bmp', 'eps', 'gif', 'jpg', 'tiff', 'cgm', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'jpg'],
   },
   dxf: {
     id: 'dxf',
@@ -2133,7 +2133,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.dxf',
     category: 'cad',
     description: 'AutoCAD ASCII vector drawing interchange format.',
-    targetFormats: ['dwg', 'pdf', 'svg', 'png', 'zip', 'bmp', 'eps', 'gif', 'jpg', 'tiff', 'cgm', 'wmf'],
+    targetFormats: ['pdf', 'svg', 'png', 'zip', 'jpg'],
   },
   step: {
     id: 'step',
@@ -2573,7 +2573,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.corel-draw',
     category: 'vector',
     description: 'CorelDRAW proprietary vector illustration and design file format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true,quality:true},
   },
   cgm: {
@@ -2583,7 +2583,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/cgm',
     category: 'vector',
     description: 'ISO standard 2D vector and raster graphics interchange format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true},
     available: false,
   },
@@ -2594,7 +2594,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'drawing/x-dwf',
     category: 'cad',
     description: 'Autodesk compact vector format for distributing CAD engineering data.',
-    targetFormats: ['dwg', 'dxf', 'pdf', 'bmp', 'eps', 'gif', 'jpg', 'png', 'tiff', 'cgm', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'bmp', 'eps', 'gif', 'jpg', 'png', 'tiff', 'svg'],
     optionsSchema: {dimensions:true},
   },
   emf: {
@@ -2604,7 +2604,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/emf',
     category: 'vector',
     description: '32-bit Windows GDI vector graphic metafile format.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg'],
     optionsSchema: {dimensions:true,dpi:true},
     available: false,
   },
@@ -2615,7 +2615,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/postscript',
     category: 'vector',
     description: 'Adobe PostScript page description language vector format.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg'],
     optionsSchema: {pages:true,dpi:true},
   },
   sk: {
@@ -2625,7 +2625,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-sketch',
     category: 'vector',
     description: 'Vector graphic document format used by Sketch and open vector tools.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true},
   },
   sk1: {
@@ -2635,7 +2635,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-sk1',
     category: 'vector',
     description: 'Open-source sK1 multi-page vector graphics illustration format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true},
   },
   svgz: {
@@ -2645,7 +2645,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/svg+xml-compressed',
     category: 'vector',
     description: 'Gzip compressed Scalable Vector Graphics document.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg'],
     optionsSchema: {dimensions:true,quality:true},
   },
   vsd: {
@@ -2655,7 +2655,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.visio',
     category: 'vector',
     description: 'Microsoft Visio technical diagrams and vector schematics format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {pages:true},
   },
   wmf: {
@@ -2665,7 +2665,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/wmf',
     category: 'vector',
     description: '16-bit Windows GDI vector and bitmap graphic metafile.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'emf', 'svg', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true},
     available: false,
   },
