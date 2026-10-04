@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { convertFile, createZipArchive } from '@/lib/conversions';
+import { createZipArchive } from '@/lib/conversions';
+import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { detectFormatFromFilename } from '@/lib/registry';
-import { ConversionOptions } from '@/lib/types';
+import { ConversionOptions, ConversionFailedError, EngineUnavailableError } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
-import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
 
@@ -113,7 +114,7 @@ export async function POST(req: NextRequest) {
       const arrayBuffer = await file.arrayBuffer();
       const inputBuffer = Buffer.from(arrayBuffer);
 
-      const result = await convertFile(
+      const result = await dispatchConversion(
         inputBuffer,
         detected.extension,
         targetFormat,
@@ -166,6 +167,13 @@ export async function POST(req: NextRequest) {
   } catch (error: unknown) {
     if (reservationId) {
       await rollbackQuota(reservationId);
+    }
+    if (error instanceof EngineUnavailableError) {
+      return createEngineUnavailableResponse(error, instanceUri);
+    }
+    if (error instanceof ConversionFailedError) {
+      // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.
+      return createProblemDetailsResponse(400, error.message, instanceUri);
     }
     const message = error instanceof Error ? error.message : 'Batch conversion failed';
     return NextResponse.json({ success: false, error: message }, { status: 500 });

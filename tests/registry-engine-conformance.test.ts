@@ -1,15 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { convertFile } from '../src/lib/conversions';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
-import { UnsupportedTargetError } from '../src/lib/types';
+import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
+import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 
 /**
  * Registry/engine conformance gate.
@@ -19,8 +23,11 @@ import { UnsupportedTargetError } from '../src/lib/types';
  * the engine rejects it with a routing error ("no code path for this pair"). Parse errors,
  * missing native tools, and other input-dependent failures do not count either way.
  *
- * The sync convert API, batch API and graph executor call convertFile in-process, so a native
- * route that exists only in the OCI worker does not make a pair routable.
+ * Every entry point converts through the shared dispatcher, which tries a native engine route
+ * (LibreOffice, Poppler) before the in-process engine. A pair listed in NATIVE_ENGINE_PAIRS has
+ * no in-process path: it counts as routed only because the dedicated suite below proves that the
+ * dispatcher converts it with the native tool installed, and fails with EngineUnavailableError
+ * (never a routing error) without it. Without the tool, that suite records an explicit skip.
  *
  * The routing-error classifier below is authored by hand from the engines' fail-closed
  * messages; it is not derived from the registry or the dispatcher, so the expected outcome
@@ -215,9 +222,35 @@ async function probeInputs(source: string): Promise<Buffer[]> {
   return inputs;
 }
 
-type PairOutcome = 'routed' | 'unrouted' | 'inconclusive';
+/**
+ * Pairs with no in-process path that the dispatcher must route to a native engine: LibreOffice
+ * for Office-to-Office targets, LibreOffice chained with Poppler pdftoppm for raster targets,
+ * and Poppler pdftocairo for pdf->svg. Authored by hand from the native tools' capabilities.
+ */
+const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
+  doc: ['jpg', 'png', 'rtf'],
+  docx: ['doc', 'jpg', 'png', 'rtf'],
+  odp: ['jpg', 'png', 'ppt'],
+  ods: ['jpg', 'png'],
+  odt: ['doc', 'jpg', 'png', 'rtf'],
+  pdf: ['svg'],
+  ppt: ['jpg', 'odp', 'png'],
+  pptx: ['jpg', 'png', 'ppt'],
+  rtf: ['doc', 'jpg', 'png'],
+  xls: ['jpg', 'png'],
+  xlsx: ['jpg', 'png'],
+};
+
+function isNativeEnginePair(source: string, target: string): boolean {
+  return NATIVE_ENGINE_PAIRS[source]?.includes(target) ?? false;
+}
+
+type PairOutcome = 'routed' | 'unrouted' | 'inconclusive' | 'native';
 
 async function probePair(source: string, target: string): Promise<{ outcome: PairOutcome; detail: string }> {
+  if (isNativeEnginePair(source, target)) {
+    return { outcome: 'native', detail: 'proven by the native-engine pair suite' };
+  }
   if (isMediaTranscoderMisroute(source, target)) {
     return { outcome: 'unrouted', detail: 'non-media source routed to the media transcoder' };
   }
@@ -353,6 +386,7 @@ describe('withdrawn pairs stay withdrawn', () => {
   // Recorded list of pairs whose dispatch ended in an engine routing error when this gate was
   // introduced. Kept separately from the live probe so a
   // re-advertised pair fails here even if its probe input stops reaching the routing step.
+  // Pairs that the dispatcher routes to a native engine moved to NATIVE_ENGINE_PAIRS.
   const WITHDRAWN: Readonly<Record<string, readonly string[]>> = {
     abw: ['doc', 'jpg', 'png', 'rtf'],
     ai: ['dxf', 'emf', 'svg', 'wmf'],
@@ -372,9 +406,8 @@ describe('withdrawn pairs stay withdrawn', () => {
     dif: ['json', 'tsv'],
     djvu: ['docx'],
     dmg: ['iso'],
-    doc: ['jpg', 'png', 'rtf'],
     docm: ['doc', 'docx', 'jpg', 'odt', 'png', 'rtf'],
-    docx: ['azw3', 'doc', 'hwp', 'hwpx', 'jpg', 'lrf', 'mobi', 'oeb', 'pages', 'pdb', 'png', 'rtf', 'xps'],
+    docx: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pages', 'pdb', 'xps'],
     dot: ['doc', 'jpg', 'png', 'rtf'],
     dotx: ['doc', 'jpg', 'png', 'rtf'],
     dps: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
@@ -397,27 +430,25 @@ describe('withdrawn pairs stay withdrawn', () => {
     mobi: ['docx', 'rtf'],
     msg: ['eml'],
     numbers: ['doc', 'jpg', 'pdf', 'png', 'ppt', 'tsv'],
-    odp: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
-    ods: ['jpg', 'png'],
-    odt: ['azw3', 'doc', 'hwp', 'hwpx', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf', 'xps'],
+    odp: ['eps', 'md', 'swf'],
+    odt: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
     oxps: ['docx'],
     pages: ['doc', 'docx', 'epub', 'html', 'jpg', 'pdf', 'png', 'ppt', 'txt'],
     pdb: ['rtf'],
-    pdf: ['avif', 'bmp', 'doc', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ppt', 'ps', 'psd', 'svg', 'webp', 'wmf'],
+    pdf: ['avif', 'bmp', 'doc', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ppt', 'ps', 'psd', 'webp', 'wmf'],
     png: ['svg'],
     pot: ['emf', 'jpg', 'png', 'ppt'],
     potx: ['emf', 'jpg', 'odp', 'png', 'ppt', 'xps'],
     pps: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
     ppsx: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
-    ppt: ['emf', 'eps', 'jpg', 'md', 'odp', 'png', 'swf', 'xps'],
+    ppt: ['emf', 'eps', 'md', 'swf', 'xps'],
     pptm: ['emf', 'eps', 'html', 'jpg', 'md', 'odp', 'pdf', 'png', 'ppt', 'pptx', 'swf', 'txt', 'xps'],
-    pptx: ['emf', 'eps', 'jpg', 'key', 'md', 'png', 'ppt', 'swf', 'xps'],
+    pptx: ['emf', 'eps', 'key', 'md', 'swf', 'xps'],
     prc: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     prn: ['tsv'],
     ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     qpw: ['tsv'],
     rst: ['rtf'],
-    rtf: ['doc', 'jpg', 'png'],
     sk: ['emf', 'wmf'],
     sk1: ['emf', 'wmf'],
     slk: ['tsv'],
@@ -435,9 +466,9 @@ describe('withdrawn pairs stay withdrawn', () => {
     wmf: ['dxf', 'emf', 'eps', 'pdf', 'png', 'ps', 'svg', 'wmf'],
     wpd: ['doc', 'jpg', 'png', 'rtf'],
     wps: ['doc', 'jpg', 'png', 'rtf'],
-    xls: ['jpg', 'png', 'xps'],
+    xls: ['xps'],
     xlsm: ['jpg', 'json', 'png'],
-    xlsx: ['jpg', 'numbers', 'png', 'xps'],
+    xlsx: ['numbers', 'xps'],
     xps: ['avif', 'bmp', 'docx', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
     yaml: ['xml'],
     yml: ['xml'],
@@ -491,4 +522,150 @@ describe('inconclusive pairs ratchet', () => {
     expect(inconclusive.filter((pair) => !allowed.has(pair))).toEqual([]);
     expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => !current.has(pair))).toEqual([]);
   }, CATEGORY_TIMEOUT_MS);
+});
+
+describe('native-engine pairs route through the dispatcher', () => {
+  const NATIVE_TIMEOUT_MS = 120_000;
+  const OFFICE_DOC_TEXT = 'deterministic regression fixture text';
+  const OLE_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+  const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const JPEG_SOI = Buffer.from([0xff, 0xd8, 0xff]);
+  const OLE_SECTOR_BYTES = 512;
+  const DARK_CHANNEL_MAX = 128;
+  /** The CFB stream that holds the main body of a Word or PowerPoint binary file. */
+  const OLE_BODY_STREAM: Readonly<Record<string, string>> = { doc: 'WordDocument', ppt: 'PowerPoint Document' };
+  const ODF_MIMETYPE: Readonly<Record<string, string>> = { odp: 'application/vnd.oasis.opendocument.presentation' };
+  const IMAGE_TARGETS = new Set(['jpg', 'png']);
+  const POPPLER_SVG_SOURCE = 'pdf';
+
+  const pairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
+    targets.map((target) => [source, target] as [string, string])
+  );
+  const officeToOffice = pairs.filter(([source, target]) => source !== POPPLER_SVG_SOURCE && !IMAGE_TARGETS.has(target));
+  const officeToImage = pairs.filter(([source, target]) => source !== POPPLER_SVG_SOURCE && IMAGE_TARGETS.has(target));
+  const pdfToSvg = pairs.filter(([source]) => source === POPPLER_SVG_SOURCE);
+
+  const fixture = (rel: string) => readFileSync(path.join(FIXTURE_ROOT, rel));
+  const SEEDS: Readonly<Record<string, string>> = {
+    docx: 'sample.docx',
+    xlsx: 'golden/office/multi-sheet-enterprise.xlsx',
+    ods: 'golden/office/multi-sheet-enterprise.ods',
+    pptx: 'golden/office/drawingml-shapes-presentation.pptx',
+    pdf: 'sample.pdf',
+  };
+  /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
+  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', odp: 'pptx' };
+
+  /** Converts with the soffice CLI directly, outside the engines under test. */
+  function sofficeConvert(input: Buffer, from: string, to: string): Buffer {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'native-pair-seed-'));
+    try {
+      writeFileSync(path.join(dir, `seed.${from}`), input);
+      execFileSync('soffice', ['--headless', `-env:UserInstallation=file://${dir}/profile`, '--convert-to', to, '--outdir', dir, path.join(dir, `seed.${from}`)], {
+        stdio: 'ignore',
+        env: { ...process.env, HOME: dir },
+        timeout: NATIVE_TIMEOUT_MS,
+      });
+      return readFileSync(path.join(dir, `seed.${to}`));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const realInputs = new Map<string, Buffer>();
+  function realInput(source: string): Buffer {
+    let input = realInputs.get(source);
+    if (!input) {
+      const from = DERIVED_FROM[source];
+      input = from ? sofficeConvert(fixture(SEEDS[from]), from, source) : fixture(SEEDS[source]);
+      realInputs.set(source, input);
+    }
+    return input;
+  }
+
+  async function headerOnlyOdf(mimetype: string): Promise<Buffer> {
+    const zip = new JSZip();
+    zip.file('mimetype', mimetype, { compression: 'STORE' });
+    zip.file('content.xml', '<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>');
+    return zip.generateAsync({ type: 'nodebuffer' });
+  }
+
+  /** Input that passes the magic-byte check; the missing engine rejects it before any parsing. */
+  async function missingEngineInput(source: string): Promise<Buffer> {
+    if (SEEDS[source]) return fixture(SEEDS[source]);
+    if (source === 'rtf') return Buffer.from('{\\rtf1\\ansi Probe paragraph.\\par}', 'latin1');
+    if (source === 'odt') return headerOnlyOdf('application/vnd.oasis.opendocument.text');
+    if (source === 'odp') return headerOnlyOdf(ODF_MIMETYPE.odp);
+    return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
+  }
+
+  async function expectPageImage(buffer: Buffer, target: string): Promise<void> {
+    const signature = target === 'png' ? PNG_SIGNATURE : JPEG_SOI;
+    expect(buffer.subarray(0, signature.length).equals(signature)).toBe(true);
+    const meta = await sharp(buffer).metadata();
+    expect(meta.format).toBe(target === 'png' ? 'png' : 'jpeg');
+    const { channels } = await sharp(buffer).stats();
+    expect(Math.min(...channels.map((c) => c.min))).toBeLessThan(DARK_CHANNEL_MAX);
+  }
+
+  async function expectOfficeDocument(buffer: Buffer, target: string): Promise<void> {
+    if (target === 'rtf') {
+      expect(buffer.subarray(0, 6).toString('latin1')).toBe('{\\rtf1');
+      expect(buffer.toString('latin1').replace(/\s+/g, ' ')).toContain(OFFICE_DOC_TEXT);
+      return;
+    }
+    if (OLE_BODY_STREAM[target]) {
+      expect(buffer.subarray(0, OLE_SIGNATURE.length).equals(OLE_SIGNATURE)).toBe(true);
+      expect(buffer.includes(Buffer.from(OLE_BODY_STREAM[target], 'utf16le'))).toBe(true);
+      return;
+    }
+    const zip = await JSZip.loadAsync(buffer);
+    expect(await zip.file('mimetype')?.async('string')).toBe(ODF_MIMETYPE[target]);
+    expect(zip.file('content.xml')).not.toBeNull();
+  }
+
+  it('lists only pairs the registry advertises', () => {
+    expect(pairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
+  });
+
+  it.each(pairs)('%s -> %s fails with EngineUnavailableError when its engine is missing', async (source, target) => {
+    const envVar = source === POPPLER_SVG_SOURCE ? 'PDFTOCAIRO_PATH' : 'SOFFICE_PATH';
+    const engineName = source === POPPLER_SVG_SOURCE ? 'pdftocairo' : 'soffice';
+    const input = await missingEngineInput(source);
+    const run = withMissingBinary(envVar, () => dispatchConversion(input, source, target, {}, `probe.${source}`));
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toMatchObject({ engineName });
+  });
+
+  it.skipIf(!HAS_SOFFICE).each(officeToOffice)(
+    '%s -> %s converts with LibreOffice (needs soffice)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
+      expect(result.engineUsed).toMatch(/^native-soffice/);
+      await expectOfficeDocument(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM).each(officeToImage)(
+    '%s -> %s renders with LibreOffice and Poppler (needs soffice, pdftoppm)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageImage(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(!HAS_PDFTOCAIRO).each(pdfToSvg)(
+    '%s -> %s renders with Poppler (needs pdftocairo)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      const svg = result.buffer.toString('utf-8');
+      expect(svg).toMatch(/<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+      expect(svg.trimEnd().endsWith('</svg>')).toBe(true);
+    },
+    NATIVE_TIMEOUT_MS
+  );
 });

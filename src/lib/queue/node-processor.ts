@@ -10,16 +10,12 @@ import type {
 import type { IStorageBackend } from '../storage/oci-storage';
 import { s3Storage } from '../storage/s3-storage';
 import { convertFile } from '../conversions';
-import {
-  executeWorkerConversion,
-  WorkerConversionResult,
-  WorkerEngineOptions,
-} from '../../worker/engines';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { secureShredBuffer } from '../security/memory-shredder';
 import { isUploadKey } from '../storage/key-namespace';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
+import { dispatchEngine } from './dispatch-engine';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
 
@@ -75,48 +71,10 @@ export const tsEngine: ConversionEnginePort = {
 };
 
 /**
- * Dedicated native worker (LibreOffice / FFmpeg / 7z) conversion engine adapter.
+ * Conversion engine adapter for the OCI worker: the shared dispatcher, which runs the native
+ * engines (LibreOffice / FFmpeg / 7z / Poppler) and falls back in-process only where that is valid.
  */
-export const nativeEngine: ConversionEnginePort = {
-  name: 'native-engine',
-  async convert(
-    input: Buffer | VfsPayload,
-    sourceFormat: string,
-    targetFormat: string,
-    options: ConversionOptions & { signal?: AbortSignal; ocrEnabled?: boolean },
-    originalFilename: string
-  ): Promise<EngineResult> {
-    const workerOptions: WorkerEngineOptions = {
-      ...options,
-      signal: options.signal,
-    };
-    if (options.ocrEnabled) {
-      workerOptions.ocrEnabled = true;
-    }
-
-    const res: WorkerConversionResult = await executeWorkerConversion(
-      input,
-      sourceFormat,
-      targetFormat,
-      workerOptions,
-      originalFilename
-    );
-
-    return {
-      buffer: res.buffer,
-      size: res.size,
-      mimeType: res.mimeType,
-      filename: res.filename,
-      engineUsed: res.engineUsed,
-      executionTimeMs: res.executionTimeMs,
-      filePath: res.filePath,
-      metadata: res.metadata,
-      fallbackReason: res.fallbackReason,
-      fallbackChain: res.fallbackChain,
-      ocrExtractedText: res.ocrExtractedText,
-    };
-  },
-};
+export const nativeEngine: ConversionEnginePort = dispatchEngine;
 
 /** Discards the temporary output file an aborted attempt produced on disk. */
 function discardConversionOutput(jobId: string, result: EngineResult): void {
@@ -154,7 +112,7 @@ function removeJobInput(jobId: string, storageKey: string, storage: IStorageBack
  */
 export async function processNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
-  engine: ConversionEnginePort = tsEngine,
+  engine: ConversionEnginePort = dispatchEngine,
   storage: IStorageBackend = s3Storage
 ): Promise<ConversionJobResult> {
   // If this job is part of an orchestrated DAG JobGraph, route directly to the graph node executor
@@ -185,7 +143,10 @@ export async function processNodeJob(
       const stat = typeof storage.stat === 'function' ? storage.stat(job.data.storageKey) : undefined;
       const objectSize = stat?.size ?? stored.size;
 
-      if (engine.name === 'ts-engine' && objectSize > getMaxInMemoryBytes()) {
+      // Objects streamed from disk bypass the limit for engines that read the file path; an object
+      // held in memory, or any object given to the in-process engine, is bound by it.
+      const streamsFromDisk = Boolean(stored.filePath && fs.existsSync(stored.filePath));
+      if ((engine.name === 'ts-engine' || !streamsFromDisk) && objectSize > getMaxInMemoryBytes()) {
         throw new PayloadTooLargeForMemoryError(
           `Payload size (${objectSize} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
           { size: objectSize, limit: getMaxInMemoryBytes() }
@@ -200,7 +161,7 @@ export async function processNodeJob(
       }
     } else if (job.data.inputBufferBase64) {
       const approxBytes = Math.ceil((job.data.inputBufferBase64.length * 3) / 4);
-      if (engine.name === 'ts-engine' && approxBytes > getMaxInMemoryBytes()) {
+      if (approxBytes > getMaxInMemoryBytes()) {
         throw new PayloadTooLargeForMemoryError(
           `Payload size (${approxBytes} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
           { size: approxBytes, limit: getMaxInMemoryBytes() }

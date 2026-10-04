@@ -24,7 +24,7 @@ import {
 } from '../src/lib/conversions/ocr-pdf-combiner';
 import { performOcr } from '../src/lib/conversions/ocr';
 import { BitReader } from '../src/lib/conversions/media-encoder';
-import { OcrEngineUnavailableError } from '../src/lib/types';
+import { ConversionFailedError, OcrEngineUnavailableError } from '../src/lib/types';
 import { escapeRtf } from '../src/lib/conversions/office';
 
 describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fail-Closed Guards (#127)', () => {
@@ -251,10 +251,11 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
     it('strictly enforces Fail-Closed principles in performOcr without silent dummy text fallback', async () => {
       // Pass a totally corrupted buffer that sharp cannot parse as an image
       const corruptBuffer = Buffer.from('NOT_A_VALID_IMAGE_BUFFER_DATA_FAIL_CLOSED_TEST');
-      await expect(performOcr(corruptBuffer, 'en')).rejects.toThrow(OcrEngineUnavailableError);
+      // Undecodable input is a client error (HTTP 400), not a missing engine (HTTP 503).
       await expect(performOcr(corruptBuffer, 'en')).rejects.toSatisfy((err: any) => {
-        expect(err.name).toBe('OcrEngineUnavailableError');
-        expect(err.message).toContain('OCR engine (Tesseract) is unavailable or failed to execute');
+        expect(err).toBeInstanceOf(ConversionFailedError);
+        expect(err).not.toBeInstanceOf(OcrEngineUnavailableError);
+        expect(err.message).toContain('could not be decoded');
         return true;
       });
     });

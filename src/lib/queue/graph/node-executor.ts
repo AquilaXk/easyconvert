@@ -1,14 +1,13 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
-import { convertFile } from '../../conversions';
 import { s3Storage } from '../../storage/s3-storage';
 import type { IStorageBackend } from '../../storage/oci-storage';
 import type { ConversionEnginePort } from '../engine-port';
+import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { safeFetch } from '../../security/safe-fetch';
 import {
@@ -84,29 +83,7 @@ export async function processGraphNodeJob(
   const nodeId = job.data.graphNodeId!;
   const node = job.data.graphNode as any;
   const effectiveStorage: IStorageBackend = storage || s3Storage;
-  const effectiveEngine: ConversionEnginePort = engine || {
-    name: 'ts-engine',
-    async convert(input, src, tgt, options, filename) {
-      let buf: Buffer;
-      if (Buffer.isBuffer(input)) {
-        buf = input;
-      } else if (input && input.inputBuffer) {
-        buf = input.inputBuffer;
-      } else if (input && input.inputPath) {
-        buf = fs.readFileSync(input.inputPath);
-      } else {
-        throw new Error('Invalid input payload');
-      }
-      const res = await convertFile(buf, src, tgt, options, filename);
-      return {
-        buffer: res.buffer,
-        size: res.size,
-        mimeType: res.mimeType,
-        filename: res.filename,
-        engineUsed: 'ts-engine',
-      };
-    },
-  };
+  const effectiveEngine: ConversionEnginePort = engine || dispatchEngine;
 
   await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
   await job.updateProgress(10);

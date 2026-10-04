@@ -2,17 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
-import { convertFile } from '@/lib/conversions';
+import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
-import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { ConversionFailedError, EngineUnavailableError } from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+
+const INTERNAL_ERROR_DETAIL = 'Internal conversion error';
 
 const ASYNC_THRESHOLD_BYTES = 10 * 1024 * 1024; // 10 MB auto-handoff threshold
 const MAX_PROGRAMMATIC_FILE_SIZE = 500 * 1024 * 1024; // 500 MB max payload for async handoff
@@ -314,8 +317,8 @@ export async function POST(req: NextRequest) {
       ));
     }
 
-    // Convert
-    const conversionResult = await convertFile(
+    // Convert through the shared dispatcher (native engines first, in-process where valid)
+    const conversionResult = await dispatchConversion(
       inputBuffer,
       sourceDef.id,
       targetDef.id,
@@ -396,10 +399,18 @@ export async function POST(req: NextRequest) {
     if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
-    const message = err instanceof Error ? err.message : 'Internal programmatic conversion error';
+    if (err instanceof EngineUnavailableError) {
+      return createEngineUnavailableResponse(err, instanceUri, rateLimitHeaders);
+    }
+    if (err instanceof ConversionFailedError) {
+      // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.
+      return createProblemDetailsResponse(400, err.message, instanceUri, 'Bad Request', undefined, rateLimitHeaders);
+    }
+    // Internal errors can carry sandbox paths: log the real error, answer with a generic detail.
+    console.error('[v1/convert] Conversion failed with an internal error:', err);
     return createProblemDetailsResponse(
       500,
-      message,
+      INTERNAL_ERROR_DETAIL,
       instanceUri,
       'Internal Server Error',
       undefined,
