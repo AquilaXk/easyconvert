@@ -1,6 +1,6 @@
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { parseSvgGeometries, type ParsedSvgVectorDocument, type RgbColor, type SvgLinecap, type SvgLinejoin } from './svg-geometry';
-import { planElement, nonzeroDiffersFromEvenOdd, miterRatios, strokedLines, type DrawOp, type FillOp, type PlanPen, type PlanPoint } from './metafile-draw-plan';
+import { planElement, nonzeroDiffersFromEvenOdd, WorkMeter, miterRatios, strokedLines, type DrawOp, type FillOp, type PlanPen, type PlanPoint } from './metafile-draw-plan';
 
 export {
   parseCssColor,
@@ -136,6 +136,21 @@ function scaleOps(ops: DrawOp[], s: number): DrawOp[] {
     }
     return { ...op, rings: op.rings.map((r) => scalePoints(r, s)), pen: op.pen ? { ...op.pen, width: op.pen.width * s } : null };
   });
+}
+
+/** Largest metafile the encoders will produce; beyond it the drawing is rejected as too complex. */
+const MAX_METAFILE_OUTPUT_BYTES = 50 * 1024 * 1024;
+
+function assertOutputSize(bytes: number, format: string): void {
+  if (bytes > MAX_METAFILE_OUTPUT_BYTES) {
+    throw new CadGeometryUnavailableError(
+      `${format} output would exceed ${MAX_METAFILE_OUTPUT_BYTES} bytes; the drawing is too complex to encode.`
+    );
+  }
+}
+
+function totalLength(records: Buffer[]): number {
+  return records.reduce((sum, r) => sum + r.length, 0);
 }
 
 function planDocument(doc: ParsedSvgVectorDocument): DrawOp[] {
@@ -400,8 +415,8 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
   eofRec.writeUInt32LE(EMF_EOF_SIZE, 16); // nSizeLast
   records.push(eofRec);
 
-  let bodySize = 0;
-  for (const r of records) bodySize += r.length;
+  const bodySize = totalLength(records);
+  assertOutputSize(EMF_HEADER_SIZE + bodySize, 'EMF');
   const headerRec = buildEmfHeader(width, height, EMF_HEADER_SIZE + bodySize, records.length + 1);
 
   return Buffer.concat([headerRec, ...records]);
@@ -644,6 +659,7 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   stdHeader.writeUInt32LE(maxRecordWords, 12);
   stdHeader.writeUInt16LE(0, 16);
 
+  assertOutputSize(WMF_PLACEABLE_HEADER_SIZE + WMF_HEADER_WORDS * BYTES_PER_WORD + stdBytes, 'WMF');
   const aldusHeader = buildAldusHeader(logicalWidth, logicalHeight, space.unitsPerInch);
   return Buffer.concat([aldusHeader, stdHeader, ...records]);
 }
@@ -690,8 +706,8 @@ function formatCgmPolygonSet(rings: PlanPoint[][]): string {
  * use the even-odd rule. A nonzero fill is encoded only when even-odd gives
  * the same area; otherwise it is rejected rather than drawn differently.
  */
-function assertCgmFillRule(op: FillOp): void {
-  if (op.fillRule === 'nonzero' && nonzeroDiffersFromEvenOdd(op.rings)) {
+function assertCgmFillRule(op: FillOp, meter: WorkMeter): void {
+  if (op.fillRule === 'nonzero' && nonzeroDiffersFromEvenOdd(op.rings, meter)) {
     throw new CadGeometryUnavailableError(
       'CGM encoding failed: CGM fills with the even-odd rule and this shape uses fill-rule nonzero with overlapping or same-direction nested contours.'
     );
@@ -709,7 +725,7 @@ function formatCgmPen(pen: PlanPen, lines: string[]): void {
   lines.push(`LINECOLR ${formatCgmColour(pen.color)};`, `LINEWIDTH ${Math.max(1, Math.round(pen.width))};`);
 }
 
-function formatCgmOp(op: DrawOp, lines: string[]): void {
+function formatCgmOp(op: DrawOp, lines: string[], meter: WorkMeter): void {
   // CGM has no join control: any corner SVG would bevel cannot be expressed.
   assertMiterCorners(op, 'CGM', null);
   if (op.kind === 'stroke') {
@@ -717,7 +733,7 @@ function formatCgmOp(op: DrawOp, lines: string[]): void {
     for (const line of op.lines) lines.push(`POLYLINE ${formatCgmPoints(line)};`);
     return;
   }
-  assertCgmFillRule(op);
+  assertCgmFillRule(op, meter);
   lines.push(`FILLCOLR ${formatCgmColour(op.fill)};`);
   lines.push(op.rings.length === 1 ? `POLYGON ${formatCgmPoints(op.rings[0])};` : formatCgmPolygonSet(op.rings));
   if (op.pen) {
@@ -757,7 +773,14 @@ export function encodeCgm(svgBuffer: Buffer, baseName: string = 'drawing'): Buff
     'INTSTYLE SOLID;',
   ];
 
-  for (const op of scaleOps(deviceOps, space.scale)) formatCgmOp(op, lines);
+  const meter = new WorkMeter();
+  let outputChars = 0;
+  for (const op of scaleOps(deviceOps, space.scale)) {
+    const before = lines.length;
+    formatCgmOp(op, lines, meter);
+    for (let k = before; k < lines.length; k++) outputChars += lines[k].length + 1;
+    assertOutputSize(outputChars, 'CGM');
+  }
 
   lines.push('ENDPIC;', 'ENDMF;', '');
   return Buffer.from(lines.join('\n'), 'utf-8');

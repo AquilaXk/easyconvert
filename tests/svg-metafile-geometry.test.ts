@@ -764,6 +764,45 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeCgm(svg)).toThrow(/too complex/);
       expect(performance.now() - start).toBeLessThan(1000);
     });
+
+    function strips(count: number): string {
+      const parts: string[] = [];
+      for (let k = 0; k < count; k++) {
+        const t = 2 * k + 1;
+        parts.push(`M0 ${t} L300 ${t + 97.3} V${t + 97.8} L0 ${t + 0.5} Z`, `M${t} 0 V400 H${t + 0.5} V0 Z`);
+      }
+      return parts.join(' ');
+    }
+
+    it('shares one fill-rule budget across all shapes of a document, including <use> copies', () => {
+      const one = svgDoc(`<path fill="#000" d="${strips(40)}"/>`, 'width="300" height="400"');
+      expect(() => encodeCgm(one)).not.toThrow();
+      const copies = Array.from({ length: 12 }, () => '<use href="#s"/>').join('');
+      const many = svgDoc(`<defs><path id="s" fill="#000" d="${strips(40)}"/></defs>${copies}`, 'width="300" height="400"');
+      expect(() => encodeCgm(many)).toThrow(/too complex/);
+    });
+
+    it('rejects documents that expand past the vertex cap fast (2000 copies of a 2230-vertex polygon)', () => {
+      const VERTICES = 2230;
+      const pts = Array.from({ length: VERTICES }, (_, k) => {
+        const a = (k / VERTICES) * 2 * Math.PI;
+        return `${(50 + 40 * Math.cos(a)).toFixed(3)},${(50 + 40 * Math.sin(a)).toFixed(3)}`;
+      }).join(' ');
+      const uses = Array.from({ length: 2000 }, () => '<use href="#p"/>').join('');
+      const svg = svgDoc(`<defs><polygon id="p" fill="#000" points="${pts}"/></defs>${uses}`);
+      for (const encode of [encodeEmf, encodeWmf, encodeCgm]) {
+        const start = performance.now();
+        let err: unknown = null;
+        try {
+          encode(svg);
+        } catch (e) {
+          err = e;
+        }
+        expect(performance.now() - start).toBeLessThan(1000);
+        expect(err).toBeInstanceOf(CadGeometryUnavailableError);
+        expect((err as Error).message).toMatch(/too complex/);
+      }
+    });
   });
 
   describe('strict input parsing', () => {

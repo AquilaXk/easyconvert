@@ -1138,9 +1138,21 @@ interface RenderState {
   /** ids of the <use> targets currently being instantiated, for cycle detection. */
   useChain: string[];
   renderedNodes: number;
+  vertices: number;
+  /** User-space geometry per element, reused by every <use> copy. */
+  shapeCache: Map<SvgNode, UserShape | null>;
   sheet: CssRule[];
   depth: number;
 }
+
+/**
+ * Upper bound on device vertices per document (all shapes and <use> copies).
+ * At 4 bytes per EMF/WMF point and about 12 characters per CGM point this
+ * keeps outputs within a few megabytes (strokes may double that) and keeps
+ * parsing and encoding well under a second, while leaving ample room for
+ * detailed technical drawings.
+ */
+const MAX_DOCUMENT_VERTICES = 500_000;
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
 const MAX_RENDERED_NODES = 100000;
@@ -1193,9 +1205,19 @@ function renderChildren(node: SvgNode, ctx: StyleContext, state: RenderState): v
 
 function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
   if (ctx.visibility !== 'visible') return;
-  const shape = shapeGeometry(node.name, node.attrs);
+  let shape = state.shapeCache.get(node);
+  if (shape === undefined) {
+    shape = shapeGeometry(node.name, node.attrs);
+    state.shapeCache.set(node, shape);
+  }
   const strokeWidth = resolveStrokeWidth(ctx.strokeWidth);
   if (!shape || shape.subpaths.length === 0) return;
+  state.vertices += shape.subpaths.reduce((n, sub) => n + sub.length, 0);
+  if (state.vertices > MAX_DOCUMENT_VERTICES) {
+    throw new CadGeometryUnavailableError(
+      `SVG expands to more than ${MAX_DOCUMENT_VERTICES} vertices; the drawing is too complex to encode.`
+    );
+  }
   const deviceSubpaths = shape.subpaths.map((sub) =>
     sub.map((p) => {
       const d = applyMatrix(ctx.ctm, p.x, p.y);
@@ -1282,7 +1304,7 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   assertNeutralPaintProperties(declared);
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
-  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, sheet, depth: 0 };
+  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, vertices: 0, shapeCache: new Map(), sheet, depth: 0 };
   indexIds(root, state.ids);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };

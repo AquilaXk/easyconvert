@@ -139,9 +139,10 @@ interface Edge {
 }
 
 /**
- * Work budget for the fill-rule analysis, in edge-pair tests plus
- * scanline x edge evaluations. Beyond it the shape is rejected as too
- * complex to verify rather than analysed in super-quadratic time.
+ * Work budget for the fill-rule analysis of one whole document (every shape
+ * and <use> copy together), in edge-pair tests plus scanline x edge
+ * evaluations. Beyond it the document is rejected as too complex to verify
+ * rather than analysed in super-quadratic time.
  */
 export const FILL_RULE_WORK_BUDGET = 5_000_000;
 
@@ -151,8 +152,8 @@ function fillRuleTooComplex(): CadGeometryUnavailableError {
   );
 }
 
-/** Tracks analysis work against FILL_RULE_WORK_BUDGET. */
-class WorkMeter {
+/** Tracks fill-rule analysis work for one document against FILL_RULE_WORK_BUDGET. */
+export class WorkMeter {
   private used = 0;
 
   spend(units: number): void {
@@ -210,8 +211,7 @@ function eventYs(edges: Edge[], meter: WorkMeter): number[] {
  * band between two consecutive vertex/crossing y values, so scanning the
  * middle of each band visits every face.
  */
-export function nonzeroDiffersFromEvenOdd(rings: PlanPoint[][]): boolean {
-  const meter = new WorkMeter();
+export function nonzeroDiffersFromEvenOdd(rings: PlanPoint[][], meter: WorkMeter): boolean {
   const edges = buildEdges(rings);
   meter.spend(edges.length);
   const sloped = edges.filter((e) => e.a.y !== e.b.y);
