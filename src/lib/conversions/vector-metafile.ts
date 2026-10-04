@@ -1,5 +1,6 @@
 import { CadGeometryUnavailableError } from '../types';
-import { parseSvgGeometries, type ParsedSvgVectorDocument, type RgbColor, type SvgGeometryElement } from './svg-geometry';
+import { parseSvgGeometries, type ParsedSvgVectorDocument, type RgbColor } from './svg-geometry';
+import { planElement, nonzeroDiffersFromEvenOdd, type DrawOp, type FillOp, type PlanPen, type PlanPoint } from './metafile-draw-plan';
 
 export {
   parseCssColor,
@@ -26,7 +27,7 @@ function parseDrawableSvg(svgBuffer: Buffer, targetLabel: string): ParsedSvgVect
     throw new CadGeometryUnavailableError(`${targetLabel} encoding failed: input is not an SVG document.`);
   }
   const doc = parseSvgGeometries(svgText);
-  const hasDrawable = doc.elements.some((el) => el.subpaths.some((sub) => sub.length >= 2));
+  const hasDrawable = doc.elements.some((el) => planElement(el).length > 0);
   if (!hasDrawable) {
     throw new CadGeometryUnavailableError(`${targetLabel} encoding failed: SVG contains no drawable vector geometry.`);
   }
@@ -49,6 +50,9 @@ const EMR_CREATEBRUSHINDIRECT = 39;
 const EMR_DELETEOBJECT = 40;
 const EMR_POLYGON16 = 86;
 const EMR_POLYLINE16 = 87;
+const EMR_POLYPOLYGON16 = 91;
+const EMF_BS_SOLID = 0;
+const EMF_POLYFILL_ALTERNATE = 1;
 const EMF_MM_TEXT = 1;
 const EMF_BK_TRANSPARENT = 1;
 const EMF_POLYFILL_WINDING = 2;
@@ -108,81 +112,87 @@ function computeBounds(pts: { x: number; y: number }[]): { minX: number; minY: n
 const EMF_PS_GEOMETRIC = 0x00010000;
 const EMF_PS_SOLID = 0x00000000;
 
-function encodeEmfPenRecords(stroke: RgbColor | null, strokeWidth: number, outRecords: Buffer[]): boolean {
-  if (stroke) {
-    const penRec = Buffer.alloc(28);
-    penRec.writeUInt32LE(EMR_CREATEPEN, 0);
-    penRec.writeUInt32LE(28, 4);
-    penRec.writeUInt32LE(EMF_PEN_HANDLE, 8);
-    penRec.writeUInt32LE(EMF_PS_GEOMETRIC | EMF_PS_SOLID, 12);
-    penRec.writeUInt32LE(Math.max(1, Math.round(strokeWidth)), 16);
-    penRec.writeUInt32LE(0, 20);
-    penRec.writeUInt32LE((stroke.b << 16) | (stroke.g << 8) | stroke.r, 24);
-    outRecords.push(penRec);
-
-    const selPenRec = Buffer.alloc(12);
-    selPenRec.writeUInt32LE(EMR_SELECTOBJECT, 0);
-    selPenRec.writeUInt32LE(12, 4);
-    selPenRec.writeUInt32LE(EMF_PEN_HANDLE, 8);
-    outRecords.push(selPenRec);
-    return true;
-  }
-
-  const selNullPen = Buffer.alloc(12);
-  selNullPen.writeUInt32LE(EMR_SELECTOBJECT, 0);
-  selNullPen.writeUInt32LE(12, 4);
-  selNullPen.writeUInt32LE(EMF_STOCK_NULL_PEN, 8);
-  outRecords.push(selNullPen);
-  return false;
+function emfColorRef(c: RgbColor): number {
+  return (c.b << 16) | (c.g << 8) | c.r;
 }
 
-function encodeEmfBrushRecords(fill: RgbColor | null, isClosed: boolean, outRecords: Buffer[]): boolean {
-  if (fill && isClosed) {
-    const brushRec = Buffer.alloc(24);
-    brushRec.writeUInt32LE(EMR_CREATEBRUSHINDIRECT, 0);
-    brushRec.writeUInt32LE(24, 4);
-    brushRec.writeUInt32LE(EMF_BRUSH_HANDLE, 8);
-    brushRec.writeUInt32LE(0, 12); // BS_SOLID
-    brushRec.writeUInt32LE((fill.b << 16) | (fill.g << 8) | fill.r, 16);
-    brushRec.writeUInt32LE(0, 20); // BrushHatch = 0
-    outRecords.push(brushRec);
-
-    const selBrushRec = Buffer.alloc(12);
-    selBrushRec.writeUInt32LE(EMR_SELECTOBJECT, 0);
-    selBrushRec.writeUInt32LE(12, 4);
-    selBrushRec.writeUInt32LE(EMF_BRUSH_HANDLE, 8);
-    outRecords.push(selBrushRec);
-    return true;
-  }
-
-  const selNullBrush = Buffer.alloc(12);
-  selNullBrush.writeUInt32LE(EMR_SELECTOBJECT, 0);
-  selNullBrush.writeUInt32LE(12, 4);
-  selNullBrush.writeUInt32LE(EMF_STOCK_NULL_BRUSH, 8);
-  outRecords.push(selNullBrush);
-  return false;
+function emfSelect(handle: number): Buffer {
+  const rec = Buffer.alloc(12);
+  rec.writeUInt32LE(EMR_SELECTOBJECT, 0);
+  rec.writeUInt32LE(12, 4);
+  rec.writeUInt32LE(handle, 8);
+  return rec;
 }
 
-function encodeEmfDrawRecord(subpath: { x: number; y: number }[], isClosed: boolean): Buffer {
-  const bounds = computeBounds(subpath);
-  const cpts = subpath.length;
-  const recType = isClosed ? EMR_POLYGON16 : EMR_POLYLINE16;
-  const recSize = 28 + 4 * cpts;
-  const drawRec = Buffer.alloc(recSize);
-  drawRec.writeUInt32LE(recType, 0);
-  drawRec.writeUInt32LE(recSize, 4);
-  drawRec.writeInt32LE(Math.round(bounds.minX), 8);
-  drawRec.writeInt32LE(Math.round(bounds.minY), 12);
-  drawRec.writeInt32LE(Math.round(bounds.maxX), 16);
-  drawRec.writeInt32LE(Math.round(bounds.maxY), 20);
-  drawRec.writeUInt32LE(cpts, 24);
-
-  for (let pIdx = 0; pIdx < cpts; pIdx++) {
-    const pt = subpath[pIdx];
-    drawRec.writeInt16LE(clampInt16(pt.x), 28 + pIdx * 4);
-    drawRec.writeInt16LE(clampInt16(pt.y), 28 + pIdx * 4 + 2);
+/** Creates and selects a geometric pen, or selects the stock NULL_PEN; returns whether one was created. */
+function emitEmfPen(pen: PlanPen | null, out: Buffer[]): boolean {
+  if (!pen) {
+    out.push(emfSelect(EMF_STOCK_NULL_PEN));
+    return false;
   }
-  return drawRec;
+  const penRec = Buffer.alloc(28);
+  penRec.writeUInt32LE(EMR_CREATEPEN, 0);
+  penRec.writeUInt32LE(28, 4);
+  penRec.writeUInt32LE(EMF_PEN_HANDLE, 8);
+  penRec.writeUInt32LE(EMF_PS_GEOMETRIC | EMF_PS_SOLID, 12);
+  penRec.writeUInt32LE(Math.max(1, Math.round(pen.width)), 16);
+  penRec.writeUInt32LE(0, 20);
+  penRec.writeUInt32LE(emfColorRef(pen.color), 24);
+  out.push(penRec, emfSelect(EMF_PEN_HANDLE));
+  return true;
+}
+
+function emitEmfBrush(fill: RgbColor, out: Buffer[]): void {
+  const brushRec = Buffer.alloc(24);
+  brushRec.writeUInt32LE(EMR_CREATEBRUSHINDIRECT, 0);
+  brushRec.writeUInt32LE(24, 4);
+  brushRec.writeUInt32LE(EMF_BRUSH_HANDLE, 8);
+  brushRec.writeUInt32LE(EMF_BS_SOLID, 12);
+  brushRec.writeUInt32LE(emfColorRef(fill), 16);
+  brushRec.writeUInt32LE(0, 20); // BrushHatch, ignored for BS_SOLID
+  out.push(brushRec, emfSelect(EMF_BRUSH_HANDLE));
+}
+
+function writeEmfBounds(rec: Buffer, points: PlanPoint[]): void {
+  const bounds = computeBounds(points);
+  rec.writeInt32LE(Math.round(bounds.minX), 8);
+  rec.writeInt32LE(Math.round(bounds.minY), 12);
+  rec.writeInt32LE(Math.round(bounds.maxX), 16);
+  rec.writeInt32LE(Math.round(bounds.maxY), 20);
+}
+
+function writePoints16(rec: Buffer, at: number, points: PlanPoint[]): void {
+  points.forEach((pt, i) => {
+    rec.writeInt16LE(clampInt16(pt.x), at + i * 4);
+    rec.writeInt16LE(clampInt16(pt.y), at + i * 4 + 2);
+  });
+}
+
+/** EMR_POLYGON16 / EMR_POLYLINE16 (MS-EMF 2.3.5.35 / 2.3.5.37). */
+function emfPoly16(type: number, points: PlanPoint[]): Buffer {
+  const recSize = 28 + 4 * points.length;
+  const rec = Buffer.alloc(recSize);
+  rec.writeUInt32LE(type, 0);
+  rec.writeUInt32LE(recSize, 4);
+  writeEmfBounds(rec, points);
+  rec.writeUInt32LE(points.length, 24);
+  writePoints16(rec, 28, points);
+  return rec;
+}
+
+/** EMR_POLYPOLYGON16 (MS-EMF 2.3.5.31): one fill area made of several rings. */
+function emfPolyPolygon16(rings: PlanPoint[][]): Buffer {
+  const all = rings.flat();
+  const recSize = 32 + 4 * rings.length + 4 * all.length;
+  const rec = Buffer.alloc(recSize);
+  rec.writeUInt32LE(EMR_POLYPOLYGON16, 0);
+  rec.writeUInt32LE(recSize, 4);
+  writeEmfBounds(rec, all);
+  rec.writeUInt32LE(rings.length, 24);
+  rec.writeUInt32LE(all.length, 28);
+  rings.forEach((r, i) => rec.writeUInt32LE(r.length, 32 + i * 4));
+  writePoints16(rec, 32 + 4 * rings.length, all);
+  return rec;
 }
 
 function deleteEmfObject(handle: number): Buffer {
@@ -193,18 +203,36 @@ function deleteEmfObject(handle: number): Buffer {
   return delRec;
 }
 
-function encodeEmfElement(el: SvgGeometryElement, outRecords: Buffer[]) {
-  for (const subpath of el.subpaths) {
-    if (subpath.length < 2) continue;
+function emfPolyFillMode(mode: number): Buffer {
+  const rec = Buffer.alloc(12);
+  rec.writeUInt32LE(EMR_SETPOLYFILLMODE, 0);
+  rec.writeUInt32LE(12, 4);
+  rec.writeUInt32LE(mode, 8);
+  return rec;
+}
 
-    const createdPen = encodeEmfPenRecords(el.stroke, el.strokeWidth, outRecords);
-    const createdBrush = encodeEmfBrushRecords(el.fill, el.isClosed, outRecords);
+interface EmfState {
+  fillMode: number;
+}
 
-    outRecords.push(encodeEmfDrawRecord(subpath, el.isClosed));
-
-    if (createdPen) outRecords.push(deleteEmfObject(EMF_PEN_HANDLE));
-    if (createdBrush) outRecords.push(deleteEmfObject(EMF_BRUSH_HANDLE));
+function encodeEmfOp(op: DrawOp, state: EmfState, out: Buffer[]): void {
+  if (op.kind === 'stroke') {
+    emitEmfPen(op.pen, out);
+    out.push(emfSelect(EMF_STOCK_NULL_BRUSH));
+    for (const line of op.lines) out.push(emfPoly16(EMR_POLYLINE16, line));
+    out.push(deleteEmfObject(EMF_PEN_HANDLE));
+    return;
   }
+  const mode = op.fillRule === 'evenodd' ? EMF_POLYFILL_ALTERNATE : EMF_POLYFILL_WINDING;
+  if (mode !== state.fillMode) {
+    out.push(emfPolyFillMode(mode));
+    state.fillMode = mode;
+  }
+  const createdPen = emitEmfPen(op.pen, out);
+  emitEmfBrush(op.fill, out);
+  out.push(op.rings.length === 1 ? emfPoly16(EMR_POLYGON16, op.rings[0]) : emfPolyPolygon16(op.rings));
+  if (createdPen) out.push(deleteEmfObject(EMF_PEN_HANDLE));
+  out.push(deleteEmfObject(EMF_BRUSH_HANDLE));
 }
 
 /** MS-EMF 2.1.14 FormatSignature ENHMETA_SIGNATURE: the ASCII string " EMF" read as a little-endian UInt32. */
@@ -248,8 +276,9 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
 
   const records: Buffer[] = [...createEmfStateRecords()];
 
+  const state: EmfState = { fillMode: EMF_POLYFILL_WINDING };
   for (const el of doc.elements) {
-    encodeEmfElement(el, records);
+    for (const op of planElement(el)) encodeEmfOp(op, state, records);
   }
 
   // EMR_EOF
@@ -282,6 +311,10 @@ const META_CREATEPENINDIRECT = 0x02fa;
 const META_CREATEBRUSHINDIRECT = 0x02fc;
 const META_POLYGON = 0x0324;
 const META_POLYLINE = 0x0325;
+const META_POLYPOLYGON = 0x0538;
+const META_SETPOLYFILLMODE = 0x0106;
+const WMF_POLYFILL_ALTERNATE = 1;
+const WMF_POLYFILL_WINDING = 2;
 const WMF_PS_SOLID = 0;
 const WMF_PS_NULL = 5;
 const WMF_BS_SOLID = 0;
@@ -296,78 +329,84 @@ const WMF_MEMORY_METAFILE = 1;
 const WMF_HEADER_WORDS = 9;
 const WMF_VERSION_3_0 = 0x0300;
 
-function encodeWmfPen(stroke: RgbColor | null, strokeWidth: number, outRecords: Buffer[]): number {
+function emitWmfPen(pen: PlanPen | null, out: Buffer[]): void {
   const penRec = Buffer.alloc(16);
   penRec.writeUInt32LE(8, 0);
   penRec.writeUInt16LE(META_CREATEPENINDIRECT, 4);
-  if (stroke) {
+  if (pen) {
     penRec.writeUInt16LE(WMF_PS_SOLID, 6);
-    penRec.writeUInt16LE(Math.max(1, Math.round(strokeWidth)), 8);
+    penRec.writeUInt16LE(Math.max(1, Math.round(pen.width)), 8);
     penRec.writeUInt16LE(0, 10);
-    penRec.writeUInt32LE((stroke.b << 16) | (stroke.g << 8) | stroke.r, 12);
+    penRec.writeUInt32LE(emfColorRef(pen.color), 12);
   } else {
     penRec.writeUInt16LE(WMF_PS_NULL, 6);
-    penRec.writeUInt16LE(0, 8);
-    penRec.writeUInt16LE(0, 10);
-    penRec.writeUInt32LE(0, 12);
   }
-  outRecords.push(penRec);
-
-  const selPen = Buffer.alloc(8);
-  selPen.writeUInt32LE(4, 0);
-  selPen.writeUInt16LE(META_SELECTOBJECT, 4);
-  selPen.writeUInt16LE(WMF_PEN_SLOT, 6);
-  outRecords.push(selPen);
-  return 8;
+  out.push(penRec, wmfSelect(WMF_PEN_SLOT));
 }
 
-function encodeWmfBrush(fill: RgbColor | null, isClosed: boolean, outRecords: Buffer[]): number {
+function emitWmfBrush(fill: RgbColor | null, out: Buffer[]): void {
   const brushRec = Buffer.alloc(14);
   brushRec.writeUInt32LE(7, 0);
   brushRec.writeUInt16LE(META_CREATEBRUSHINDIRECT, 4);
-  if (fill && isClosed) {
+  if (fill) {
     brushRec.writeUInt16LE(WMF_BS_SOLID, 6);
-    brushRec.writeUInt32LE((fill.b << 16) | (fill.g << 8) | fill.r, 8);
-    brushRec.writeUInt16LE(0, 12);
+    brushRec.writeUInt32LE(emfColorRef(fill), 8);
   } else {
     brushRec.writeUInt16LE(WMF_BS_HOLLOW, 6);
-    brushRec.writeUInt32LE(0, 8);
-    brushRec.writeUInt16LE(0, 12);
   }
-  outRecords.push(brushRec);
+  out.push(brushRec, wmfSelect(WMF_BRUSH_SLOT));
+}
 
-  const selBrush = Buffer.alloc(8);
-  selBrush.writeUInt32LE(4, 0);
-  selBrush.writeUInt16LE(META_SELECTOBJECT, 4);
-  selBrush.writeUInt16LE(WMF_BRUSH_SLOT, 6);
-  outRecords.push(selBrush);
-  return 7;
+function wmfSelect(slot: number): Buffer {
+  const rec = Buffer.alloc(8);
+  rec.writeUInt32LE(4, 0);
+  rec.writeUInt16LE(META_SELECTOBJECT, 4);
+  rec.writeUInt16LE(slot, 6);
+  return rec;
 }
 
 /** META_POLYGON / META_POLYLINE NumberOfPoints is a signed 16-bit field. */
 const WMF_MAX_POLY_POINTS = INT16_MAX;
 
-function encodeWmfDraw(subpath: { x: number; y: number }[], isClosed: boolean, outRecords: Buffer[]): number {
-  const cpts = subpath.length;
-  if (cpts > WMF_MAX_POLY_POINTS) {
+function assertWmfPointCount(count: number): void {
+  if (count > WMF_MAX_POLY_POINTS) {
     throw new CadGeometryUnavailableError(
-      `WMF encoding failed: sub-path has ${cpts} points, above the ${WMF_MAX_POLY_POINTS}-point record limit.`
+      `WMF encoding failed: sub-path has ${count} points, above the ${WMF_MAX_POLY_POINTS}-point record limit.`
     );
   }
-  const fnCode = isClosed ? META_POLYGON : META_POLYLINE;
-  const recWords = 4 + cpts * 2;
-  const drawRec = Buffer.alloc(recWords * 2);
-  drawRec.writeUInt32LE(recWords, 0);
-  drawRec.writeUInt16LE(fnCode, 4);
-  drawRec.writeInt16LE(cpts, 6);
+}
 
-  for (let pIdx = 0; pIdx < cpts; pIdx++) {
-    const pt = subpath[pIdx];
-    drawRec.writeInt16LE(clampInt16(pt.x), 8 + pIdx * 4);
-    drawRec.writeInt16LE(clampInt16(pt.y), 8 + pIdx * 4 + 2);
-  }
-  outRecords.push(drawRec);
-  return recWords;
+function wmfPoly(fnCode: number, points: PlanPoint[]): Buffer {
+  assertWmfPointCount(points.length);
+  const recWords = 4 + points.length * 2;
+  const rec = Buffer.alloc(recWords * 2);
+  rec.writeUInt32LE(recWords, 0);
+  rec.writeUInt16LE(fnCode, 4);
+  rec.writeInt16LE(points.length, 6);
+  writePoints16(rec, 8, points);
+  return rec;
+}
+
+/** META_POLYPOLYGON (MS-WMF 2.3.3.16): one fill area made of several rings. */
+function wmfPolyPolygon(rings: PlanPoint[][]): Buffer {
+  rings.forEach((r) => assertWmfPointCount(r.length));
+  const all = rings.flat();
+  const recWords = 4 + rings.length + 2 * all.length;
+  const rec = Buffer.alloc(recWords * 2);
+  rec.writeUInt32LE(recWords, 0);
+  rec.writeUInt16LE(META_POLYPOLYGON, 4);
+  rec.writeUInt16LE(rings.length, 6);
+  rings.forEach((r, i) => rec.writeUInt16LE(r.length, 8 + i * 2));
+  writePoints16(rec, 8 + 2 * rings.length, all);
+  return rec;
+}
+
+function wmfPolyFillMode(mode: number): Buffer {
+  const rec = Buffer.alloc(8);
+  rec.writeUInt32LE(4, 0);
+  rec.writeUInt16LE(META_SETPOLYFILLMODE, 4);
+  rec.writeUInt16LE(mode, 6);
+  return rec;
 }
 
 function deleteWmfObject(index: number): Buffer {
@@ -378,16 +417,26 @@ function deleteWmfObject(index: number): Buffer {
   return del;
 }
 
-function encodeWmfElement(el: SvgGeometryElement, outRecords: Buffer[]): void {
-  for (const subpath of el.subpaths) {
-    if (subpath.length < 2) continue;
+interface WmfState {
+  fillMode: number;
+}
 
-    encodeWmfPen(el.stroke, el.strokeWidth, outRecords);
-    encodeWmfBrush(el.fill, el.isClosed, outRecords);
-    encodeWmfDraw(subpath, el.isClosed, outRecords);
-
-    outRecords.push(deleteWmfObject(WMF_PEN_SLOT), deleteWmfObject(WMF_BRUSH_SLOT));
+function encodeWmfOp(op: DrawOp, state: WmfState, out: Buffer[]): void {
+  if (op.kind === 'stroke') {
+    emitWmfPen(op.pen, out);
+    emitWmfBrush(null, out);
+    for (const line of op.lines) out.push(wmfPoly(META_POLYLINE, line));
+  } else {
+    const mode = op.fillRule === 'evenodd' ? WMF_POLYFILL_ALTERNATE : WMF_POLYFILL_WINDING;
+    if (mode !== state.fillMode) {
+      out.push(wmfPolyFillMode(mode));
+      state.fillMode = mode;
+    }
+    emitWmfPen(op.pen, out);
+    emitWmfBrush(op.fill, out);
+    out.push(op.rings.length === 1 ? wmfPoly(META_POLYGON, op.rings[0]) : wmfPolyPolygon(op.rings));
   }
+  out.push(deleteWmfObject(WMF_PEN_SLOT), deleteWmfObject(WMF_BRUSH_SLOT));
 }
 
 function buildAldusHeader(width: number, height: number): Buffer {
@@ -434,8 +483,10 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
 
   records.push(setOrg, setExt);
 
+  // GDI starts with ALTERNATE; META_SETPOLYFILLMODE is written before the first shape that needs WINDING.
+  const state: WmfState = { fillMode: WMF_POLYFILL_ALTERNATE };
   for (const el of doc.elements) {
-    encodeWmfElement(el, records);
+    for (const op of planElement(el)) encodeWmfOp(op, state, records);
   }
 
   const eofRec = Buffer.alloc(6);
@@ -487,31 +538,50 @@ function formatCgmColour(c: RgbColor): string {
   return `${c.r} ${c.g} ${c.b}`;
 }
 
-function formatCgmElement(el: SvgGeometryElement, lines: string[]) {
-  if (el.stroke) {
-    lines.push(
-      `LINECOLR ${formatCgmColour(el.stroke)};`,
-      `LINEWIDTH ${Math.max(1, Math.round(el.strokeWidth))};`
+function cgmClosingPolyline(ring: PlanPoint[]): string {
+  return `POLYLINE ${formatCgmPoints([...ring, ring[0]])};`;
+}
+
+/**
+ * POLYGONSET (ISO/IEC 8632-1 7.6.7): each vertex carries an edge-out flag;
+ * CLOSEVIS ends a ring. The set is one area, so inner rings form holes.
+ */
+function formatCgmPolygonSet(rings: PlanPoint[][]): string {
+  const parts = rings.flatMap((ring) =>
+    ring.map((p, i) => `(${Math.round(p.x)},${Math.round(p.y)}) ${i === ring.length - 1 ? 'CLOSEVIS' : 'VIS'}`)
+  );
+  return `POLYGONSET ${parts.join(' ')};`;
+}
+
+/**
+ * CGM clear text has no fill-rule control: POLYGON and POLYGONSET interiors
+ * use the even-odd rule. A nonzero fill is encoded only when even-odd gives
+ * the same area; otherwise it is rejected rather than drawn differently.
+ */
+function assertCgmFillRule(op: FillOp): void {
+  if (op.fillRule === 'nonzero' && nonzeroDiffersFromEvenOdd(op.rings)) {
+    throw new CadGeometryUnavailableError(
+      'CGM encoding failed: CGM fills with the even-odd rule and this shape uses fill-rule nonzero with overlapping or same-direction nested contours.'
     );
   }
+}
 
-  const isFilled = el.isClosed && el.fill !== null;
-  if (isFilled && el.fill) {
-    lines.push(`FILLCOLR ${formatCgmColour(el.fill)};`);
+function formatCgmPen(pen: PlanPen, lines: string[]): void {
+  lines.push(`LINECOLR ${formatCgmColour(pen.color)};`, `LINEWIDTH ${Math.max(1, Math.round(pen.width))};`);
+}
+
+function formatCgmOp(op: DrawOp, lines: string[]): void {
+  if (op.kind === 'stroke') {
+    formatCgmPen(op.pen, lines);
+    for (const line of op.lines) lines.push(`POLYLINE ${formatCgmPoints(line)};`);
+    return;
   }
-
-  for (const sub of el.subpaths) {
-    if (sub.length < 2) continue;
-    const ptStr = formatCgmPoints(sub);
-
-    if (isFilled) {
-      lines.push(`POLYGON ${ptStr};`);
-      if (el.stroke) {
-        lines.push(`POLYLINE ${ptStr} (${Math.round(sub[0].x)},${Math.round(sub[0].y)});`);
-      }
-    } else if (el.stroke) {
-      lines.push(`POLYLINE ${ptStr};`);
-    }
+  assertCgmFillRule(op);
+  lines.push(`FILLCOLR ${formatCgmColour(op.fill)};`);
+  lines.push(op.rings.length === 1 ? `POLYGON ${formatCgmPoints(op.rings[0])};` : formatCgmPolygonSet(op.rings));
+  if (op.pen) {
+    formatCgmPen(op.pen, lines);
+    for (const ring of op.rings) lines.push(cgmClosingPolyline(ring));
   }
 }
 
@@ -539,7 +609,7 @@ export function encodeCgm(svgBuffer: Buffer, baseName: string = 'drawing'): Buff
   ];
 
   for (const el of doc.elements) {
-    formatCgmElement(el, lines);
+    for (const op of planElement(el)) formatCgmOp(op, lines);
   }
 
   lines.push('ENDPIC;', 'ENDMF;', '');

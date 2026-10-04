@@ -225,9 +225,8 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       const polylines = doc.body.filter((e) => e.name === 'POLYLINE').map((e) => parseCgmPoints(e.params));
       for (const pg of polygons) expect(pg.length).toBeGreaterThanOrEqual(3);
       for (const pl of polylines) expect(pl.length).toBeGreaterThanOrEqual(2);
-      expect(polygons).toContainEqual([
-        { x: 20, y: 20 }, { x: 140, y: 20 }, { x: 140, y: 100 }, { x: 20, y: 100 }, { x: 20, y: 20 },
-      ]);
+      // Filled rings are closed implicitly, so the closing vertex is not repeated
+      expect(polygons).toContainEqual([{ x: 20, y: 20 }, { x: 140, y: 20 }, { x: 140, y: 100 }, { x: 20, y: 100 }]);
       expect(polylines).toContainEqual([{ x: 20, y: 150 }, { x: 70, y: 220 }, { x: 120, y: 160 }, { x: 170, y: 240 }]);
     });
 
@@ -402,6 +401,32 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
     }
 
     for (const target of ['emf', 'wmf'] as const) {
+      oracleTest(
+        `keeps the hole of an even-odd ring path open when LibreOffice renders ${target.toUpperCase()}`,
+        ['soffice', 'pdftoppm'],
+        async () => {
+          requireSofficeDrawModule();
+          const donut = Buffer.from(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">' +
+              '<path fill-rule="evenodd" fill="#0000ff" d="M0 0 H200 V200 H0 Z M50 50 H150 V150 H50 Z"/></svg>',
+            'utf-8'
+          );
+          const metafile = target === 'emf' ? encodeEmf(donut) : encodeWmf(donut);
+          const page = await renderMetafileWithSoffice(metafile, `donut.${target}`);
+          const drawing = await normalizeDrawing(page);
+          const { data, info } = await sharp(drawing).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+          const pixel = (fx: number, fy: number) => {
+            const idx = (Math.round(fy * (info.height - 1)) * info.width + Math.round(fx * (info.width - 1))) * 3;
+            return [data[idx], data[idx + 1], data[idx + 2]];
+          };
+          const isBlue = ([r, g, b]: number[]) => b > 200 && r < 60 && g < 60;
+          const isWhite = ([r, g, b]: number[]) => r > 230 && g > 230 && b > 230;
+          expect(isBlue(pixel(0.125, 0.5)), 'ring is filled').toBe(true);
+          expect(isWhite(pixel(0.5, 0.5)), 'hole stays open').toBe(true);
+        },
+        SOFFICE_TIMEOUT_MS + 15000
+      );
+
       oracleTest(
         `renders ${target.toUpperCase()} via LibreOffice and matches the SVG reference raster`,
         ['soffice', 'pdftoppm'],

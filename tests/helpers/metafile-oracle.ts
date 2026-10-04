@@ -422,7 +422,7 @@ export function parseCgmDirectColour(params: string): [number, number, number] {
 // Element names from ISO/IEC 8632-4 Table 3, grouped by where they may appear
 export const CGM_METAFILE_DESCRIPTOR = new Set(['MFVERSION', 'MFDESC', 'VDCTYPE', 'INTEGERPREC', 'REALPREC', 'INDEXPREC', 'COLRPREC', 'COLRINDEXPREC', 'MAXCOLRINDEX', 'COLRVALUEEXT', 'MFELEMLIST', 'BEGMFDEFAULTS', 'ENDMFDEFAULTS', 'FONTLIST', 'CHARSETLIST', 'CHARCODING']);
 export const CGM_PICTURE_DESCRIPTOR = new Set(['SCALEMODE', 'COLRMODE', 'LINEWIDTHMODE', 'MARKERSIZEMODE', 'EDGEWIDTHMODE', 'VDCEXT', 'BACKCOLR']);
-export const CGM_PICTURE_BODY = new Set(['POLYLINE', 'POLYGON', 'LINECOLR', 'LINEWIDTH', 'LINETYPE', 'FILLCOLR', 'INTSTYLE', 'EDGEVIS', 'EDGECOLR', 'EDGEWIDTH', 'TEXT', 'TEXTCOLR', 'CHARHEIGHT', 'CLIPRECT', 'CLIP']);
+export const CGM_PICTURE_BODY = new Set(['POLYLINE', 'POLYGON', 'POLYGONSET', 'LINEWIDTHMODE', 'LINECOLR', 'LINEWIDTH', 'LINETYPE', 'FILLCOLR', 'INTSTYLE', 'EDGEVIS', 'EDGECOLR', 'EDGEWIDTH', 'TEXT', 'TEXTCOLR', 'CHARHEIGHT', 'CLIPRECT', 'CLIP']);
 
 export interface CgmDocument {
   elements: CgmElement[];
@@ -798,4 +798,25 @@ export function playbackWmf(buffer: Buffer): PlaybackShape[] {
     offset += words * 2;
   }
   throw new Error('WMF has no META_EOF record');
+}
+
+/**
+ * Parses POLYGONSET parameters, (x,y) followed by an edge-out flag
+ * (INVIS | VIS | CLOSEINVIS | CLOSEVIS), into closed rings (ISO/IEC 8632-4).
+ */
+export function parseCgmPolygonSet(params: string): { x: number; y: number }[][] {
+  const rings: { x: number; y: number }[][] = [];
+  let current: { x: number; y: number }[] = [];
+  const pairPattern = /\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)\s*(INVIS|VIS|CLOSEINVIS|CLOSEVIS)\b/gi;
+  const rest = params.replace(pairPattern, (_m, x, y, flag: string) => {
+    current.push({ x: Number(x), y: Number(y) });
+    if (flag.toUpperCase().startsWith('CLOSE')) {
+      rings.push(current);
+      current = [];
+    }
+    return '';
+  });
+  expect(rest.trim(), `unparsed POLYGONSET data: ${rest}`).toBe('');
+  expect(current, 'POLYGONSET must end with a CLOSE flag').toEqual([]);
+  return rings;
 }

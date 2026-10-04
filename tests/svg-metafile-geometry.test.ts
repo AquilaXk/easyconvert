@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { encodeEmf, encodeWmf, encodeCgm } from '../src/lib/conversions/vector-metafile';
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../src/lib/types';
 import { convertFile } from '../src/lib/conversions';
-import { parseEmfBinary, playbackEmf, playbackWmf, parseClearTextCgm, parseCgmPoints, type PlaybackShape } from './helpers/metafile-oracle';
+import { parseEmfBinary, playbackEmf, playbackWmf, parseClearTextCgm, parseCgmPoints, parseCgmPolygonSet, type PlaybackShape } from './helpers/metafile-oracle';
 
 function svgDoc(body: string, rootAttrs = 'width="100" height="100" viewBox="0 0 100 100"'): Buffer {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" ${rootAttrs}>${body}</svg>`, 'utf-8');
@@ -248,6 +248,91 @@ describe('SVG document model for metafile encoders', () => {
       );
       expect(shapes.every((s) => s.brush === null)).toBe(true);
       expect(shapes.map((s) => s.pen?.color)).toEqual([0xff0000, 0x00ff00]);
+    });
+  });
+
+  describe('fill geometry', () => {
+    const OUTER = 'M0 0 H100 V100 H0 Z';
+    const INNER_REVERSED = 'M25 25 V75 H75 V25 Z';
+    const INNER_SAME = 'M25 25 H75 V75 H25 Z';
+
+    function cgmBody(body: string) {
+      return parseClearTextCgm(encodeCgm(svgDoc(body)).toString('utf-8')).body;
+    }
+
+    it('fills open sub-paths, closing them implicitly', () => {
+      for (const body of ['<path d="M10 10 L50 10 L50 50" fill="#ff0000"/>', '<polyline points="10,10 50,10 50,50" fill="#ff0000"/>']) {
+        for (const shapes of [emfShapes(body), wmfShapes(body)]) {
+          const filled = filledShapes(shapes);
+          expect(filled.map((s) => s.brush)).toEqual([0xff0000]);
+          expect(corners(filled[0].rings[0])).toEqual([[10, 10], [50, 10], [50, 50]]);
+        }
+        const polygons = cgmBody(body).filter((e) => e.name === 'POLYGON').map((e) => corners(parseCgmPoints(e.params)));
+        expect(polygons).toEqual([[[10, 10], [50, 10], [50, 50]]]);
+      }
+    });
+
+    it('emits a multi-ring path as one even-odd shape so holes stay holes', () => {
+      const body = `<path fill-rule="evenodd" d="${OUTER} ${INNER_SAME}" fill="#0000ff"/>`;
+      for (const shapes of [emfShapes(body), wmfShapes(body)]) {
+        const filled = filledShapes(shapes);
+        expect(filled).toHaveLength(1);
+        expect(filled[0].fillMode).toBe(1); // ALTERNATE
+        expect(filled[0].rings.map(corners)).toEqual([
+          [[0, 0], [100, 0], [100, 100], [0, 100]],
+          [[25, 25], [75, 25], [75, 75], [25, 75]],
+        ]);
+      }
+      const sets = cgmBody(body).filter((e) => e.name === 'POLYGONSET');
+      expect(sets).toHaveLength(1);
+      expect(parseCgmPolygonSet(sets[0].params).map(corners)).toEqual([
+        [[0, 0], [100, 0], [100, 100], [0, 100]],
+        [[25, 25], [75, 25], [75, 75], [25, 75]],
+      ]);
+    });
+
+    it('uses WINDING for fill-rule nonzero, inherited from a group', () => {
+      const body = `<g fill-rule="nonzero"><path d="${OUTER} ${INNER_SAME}" fill="#0000ff"/></g>`;
+      for (const shapes of [emfShapes(body), wmfShapes(body)]) {
+        const filled = filledShapes(shapes);
+        expect(filled).toHaveLength(1);
+        expect(filled[0].fillMode).toBe(2);
+        expect(filled[0].rings).toHaveLength(2);
+      }
+    });
+
+    it('switches the polygon fill mode between shapes with different fill rules', () => {
+      const body =
+        `<path fill-rule="evenodd" d="${OUTER}" fill="#0000ff"/>` + `<path d="${OUTER}" fill="#00ff00"/>`;
+      for (const shapes of [emfShapes(body), wmfShapes(body)]) {
+        expect(filledShapes(shapes).map((s) => s.fillMode)).toEqual([1, 2]);
+      }
+    });
+
+    it('accepts nonzero in CGM when even-odd gives the same result (opposite inner orientation)', () => {
+      const sets = cgmBody(`<path d="${OUTER} ${INNER_REVERSED}" fill="#0000ff"/>`).filter((e) => e.name === 'POLYGONSET');
+      expect(sets).toHaveLength(1);
+      expect(parseCgmPolygonSet(sets[0].params)).toHaveLength(2);
+    });
+
+    it('rejects nonzero in CGM when even-odd would open a hole that nonzero fills', () => {
+      const same = svgDoc(`<path d="${OUTER} ${INNER_SAME}" fill="#0000ff"/>`);
+      expect(() => encodeCgm(same)).toThrow(CadGeometryUnavailableError);
+      expect(() => encodeCgm(same)).toThrow(/nonzero/);
+      const star = svgDoc('<polygon points="50,0 79,90 2,35 98,35 21,90" fill="#000"/>');
+      expect(() => encodeCgm(star)).toThrow(/nonzero/);
+      expect(() => encodeCgm(svgDoc('<polygon fill-rule="evenodd" points="50,0 79,90 2,35 98,35 21,90" fill="#000"/>'))).not.toThrow();
+    });
+
+    it('strokes every sub-path of a filled multi-ring path', () => {
+      const shapes = emfShapes(`<path fill-rule="evenodd" d="${OUTER} ${INNER_SAME}" fill="#0000ff" stroke="#ff0000"/>`);
+      const stroked = shapes.filter((s) => s.pen?.color === 0xff0000);
+      const strokedRings = stroked.flatMap((s) => s.rings);
+      expect(strokedRings).toHaveLength(2);
+    });
+
+    it('treats a shape with neither visible fill nor stroke as no drawable geometry', () => {
+      expect(() => encodeEmf(svgDoc('<line x1="0" y1="0" x2="10" y2="10"/>'))).toThrow(CadGeometryUnavailableError);
     });
   });
 });

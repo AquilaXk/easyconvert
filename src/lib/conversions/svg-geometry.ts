@@ -8,10 +8,15 @@ export interface RgbColor {
   b: number;
 }
 
+export type SvgFillRule = 'nonzero' | 'evenodd';
+
 export interface SvgGeometryElement {
   subpaths: { x: number; y: number }[][];
   isClosed: boolean;
+  /** False for shapes without an interior (line). */
+  fillable: boolean;
   fill: RgbColor | null;
+  fillRule: SvgFillRule;
   stroke: RgbColor | null;
   strokeWidth: number;
 }
@@ -902,7 +907,9 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
         elements.push({
           subpaths: shape.subpaths.map((sub) => sub.map((p) => applyMatrix(ctx.ctm, p.x, p.y))),
           isClosed: shape.isClosed,
+          fillable: tag.name !== 'line',
           fill: resolvePaint(ctx.fill, ctx.color, 'fill'),
+          fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
           stroke: resolvePaint(ctx.stroke, ctx.color, 'stroke'),
           strokeWidth: resolveStrokeWidth(ctx.strokeWidth),
         });
