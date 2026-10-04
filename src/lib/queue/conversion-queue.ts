@@ -1,177 +1,23 @@
 import { Queue, Worker, Job, createQueueEngine, IQueueEngine, WorkerOptions } from './bullmq-engine';
-import { ConversionJobData, ConversionJobResult, ConversionResult } from '../types';
-import { convertFile } from '../conversions';
+import type { ConversionJobData, ConversionJobResult } from '../types';
 import { s3Storage } from '../storage/s3-storage';
-import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { webhookDispatcher } from '../api-keys/webhook-dispatcher';
-import { processGraphNodeJob } from './graph/node-executor';
+import { processNodeJob, tsEngine } from './node-processor';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
 export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResult> =
   createQueueEngine<ConversionJobData, ConversionJobResult>('easyconvert-jobs');
 
-
 /**
  * Standard Conversion Job Processor for in-process fallback / development workers.
+ * Delegates to canonical shared node processor with the TypeScript engine.
  */
 export async function processConversionJob(
   job: Job<ConversionJobData, ConversionJobResult>
 ): Promise<ConversionJobResult> {
-  if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
-    return processGraphNodeJob(job);
-  }
-  const startTime = Date.now();
-  // Capture this attempt's signal before the first await: a retry gets a fresh one, and a stale
-  // attempt that outlived its timeout must still see its own aborted signal.
-  const attemptSignal = job.signal;
-  await job.log(`Worker picked up conversion job for file: ${job.data.originalFilename}`);
-  await job.updateProgress(10);
-
-  // 1. Obtain input buffer from Storage Key or Base64 payload
-  let inputBuffer: Buffer | undefined;
-  let shouldShredInput = false;
-
-  let conversionSucceeded = false;
-  try {
-    if (job.data.storageKey) {
-      const stored = s3Storage.getObject(job.data.storageKey);
-      if (!stored) {
-        throw new Error(`S3 object not found for key: "${job.data.storageKey}"`);
-      }
-      const stat = s3Storage.stat(job.data.storageKey);
-      const objectSize = stat?.size ?? stored.size;
-
-      // Pure TS engine in this queue worker requires an in-memory buffer:
-      // If object size exceeds MAX_IN_MEMORY_BYTES, fail with PayloadTooLargeForMemoryError
-      if (objectSize > getMaxInMemoryBytes()) {
-        throw new PayloadTooLargeForMemoryError(
-          `Payload size (${objectSize} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
-          { size: objectSize, limit: getMaxInMemoryBytes() }
-        );
-      }
-      inputBuffer = stored.buffer;
-    } else if (job.data.inputBufferBase64) {
-      const approxBytes = Math.ceil((job.data.inputBufferBase64.length * 3) / 4);
-      if (approxBytes > getMaxInMemoryBytes()) {
-        throw new PayloadTooLargeForMemoryError(
-          `Payload size (${approxBytes} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
-          { size: approxBytes, limit: getMaxInMemoryBytes() }
-        );
-      }
-      inputBuffer = Buffer.from(job.data.inputBufferBase64, 'base64');
-      shouldShredInput = true;
-    } else {
-      throw new Error('Missing input file data. Neither storageKey nor inputBufferBase64 was provided.');
-    }
-
-    await job.log(
-      `Input payload loaded (${inputBuffer.length} bytes). Transcoding ${job.data.sourceFormat} -> ${job.data.targetFormat}...`
-    );
-    await job.updateProgress(35);
-
-    // 2. Execute conversion engine or multi-task pipeline chaining
-    let conversionResult: ConversionResult;
-    if (job.data.tasks && job.data.tasks.length > 0) {
-      await job.log(`Executing ${job.data.tasks.length}-stage pipeline chaining...`);
-      let currentBuffer = inputBuffer;
-      let currentSourceFormat = job.data.sourceFormat;
-      let currentFilename = job.data.originalFilename;
-      let lastResult: ConversionResult | undefined;
-
-      for (let i = 0; i < job.data.tasks.length; i++) {
-        attemptSignal.throwIfAborted();
-        const task = job.data.tasks[i];
-        const taskProgress = Math.round(20 + ((i + 1) / job.data.tasks.length) * 60);
-        const stageTarget = task.targetFormat || (task.operation === 'ocr' ? 'pdf' : job.data.targetFormat);
-        await job.log(
-          `[Stage ${i + 1}/${job.data.tasks.length}] Task "${task.name}" (${task.operation}): ${currentSourceFormat} -> ${stageTarget}`
-        );
-
-        const mergedOptions = { ...job.data.options, ...(task.options || {}) };
-        if (task.operation === 'ocr') {
-          mergedOptions.ocrEnabled = true;
-        }
-
-        lastResult = await convertFile(
-          currentBuffer,
-          currentSourceFormat,
-          stageTarget,
-          mergedOptions,
-          currentFilename
-        );
-
-        currentBuffer = lastResult.buffer;
-        currentSourceFormat = stageTarget;
-        currentFilename = lastResult.filename;
-        await job.updateProgress(taskProgress);
-      }
-
-      if (!lastResult) {
-        throw new Error('Pipeline task chain execution did not produce an output result.');
-      }
-      conversionResult = lastResult;
-    } else {
-      attemptSignal.throwIfAborted();
-      conversionResult = await convertFile(
-        inputBuffer,
-        job.data.sourceFormat,
-        job.data.targetFormat,
-        job.data.options,
-        job.data.originalFilename
-      );
-    }
-
-    await job.updateProgress(80);
-    await job.log(`Conversion completed (${conversionResult.size} bytes). Uploading result to S3 storage...`);
-
-    // 3. Save output artifact to storage with 1-hour TTL (never for a cancelled or timed-out attempt)
-    attemptSignal.throwIfAborted();
-    const resultKey = `results/${job.id}/${conversionResult.filename}`;
-    s3Storage.saveObject(
-      resultKey,
-      conversionResult.buffer,
-      conversionResult.mimeType,
-      conversionResult.filename,
-      60 * 60 * 1000
-    );
-
-    conversionSucceeded = true;
-    const durationMs = Date.now() - startTime;
-    await job.updateProgress(100);
-    await job.log(
-      `Result persisted. Available at: /api/storage/file/${encodeURIComponent(resultKey)} (took ${durationMs}ms)`
-    );
-
-    return {
-      jobId: job.id,
-      status: 'completed',
-      resultKey,
-      downloadUrl: `/api/storage/file/${encodeURIComponent(resultKey)}`,
-      filename: conversionResult.filename,
-      mimeType: conversionResult.mimeType,
-      size: conversionResult.size,
-      durationMs,
-      ocrExtracted: Boolean(conversionResult.ocrExtractedText),
-    };
-  } finally {
-    // Cryptographically shred ephemeral memory buffer
-    if (shouldShredInput && inputBuffer) {
-      try {
-        inputBuffer.fill(0);
-      } catch {
-        // Ignore if detached
-      }
-    }
-    // Delete the uploaded input once retry attempts are exhausted. After a success the input is kept
-    // until the completion is recorded (attachInputCleanupOnCompletion): if recording fails, the
-    // stalled sweep runs the job again and it needs the input to convert again.
-    const isFinalAttempt = !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
-    if (job.data.storageKey && !conversionSucceeded && isFinalAttempt) {
-      removeJobInput(job.id, job.data.storageKey);
-    }
-  }
+  return processNodeJob(job, tsEngine, s3Storage);
 }
 
 /**
