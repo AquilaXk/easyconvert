@@ -3,7 +3,7 @@ import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../t
 import { s3Storage } from '../storage/s3-storage';
 import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
-import { webhookDispatcher } from '../api-keys/webhook-dispatcher';
+import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { processNodeJob, tsEngine } from './node-processor';
 import { resolveResourceClass } from './resource-class';
 
@@ -91,7 +91,7 @@ export function attachJobLifecycleListeners(
               payload: result as unknown as Record<string, unknown>,
               secret: '',
               failedAt: Date.now(),
-              errorMessage: 'missing_webhook_secret',
+              errorMessage: MISSING_WEBHOOK_SECRET_REASON,
               retryCount: 0,
               status: 'failed',
               ownerUserId: job.data.userId,
@@ -149,7 +149,7 @@ export function attachJobLifecycleListeners(
               },
               secret: '',
               failedAt: Date.now(),
-              errorMessage: 'missing_webhook_secret',
+              errorMessage: MISSING_WEBHOOK_SECRET_REASON,
               retryCount: 0,
               status: 'failed',
               ownerUserId: job.data.userId,

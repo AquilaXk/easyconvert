@@ -6,11 +6,12 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
+import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
-import { validateJobGraph, linearTasksToJobGraph, normalizeGraphNodes } from '@/lib/jobs';
+import { validateJobGraph, linearTasksToJobGraph, normalizeGraphNodes, JobGraphValidationError } from '@/lib/jobs';
 import { validateGraph, graphScheduler } from '@/lib/queue/graph';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -335,14 +336,31 @@ export async function POST(req: NextRequest) {
         );
       }
     } else if (tasks && tasks.length > 0) {
-      graph = linearTasksToJobGraph(
-        {
-          storageKey,
-          sourceFormat: sourceFormatParam,
-          filename: originalFilename,
-        },
-        tasks
-      );
+      try {
+        graph = linearTasksToJobGraph(
+          {
+            storageKey,
+            sourceFormat: sourceFormatParam,
+            filename: originalFilename,
+          },
+          tasks
+        );
+      } catch (err) {
+        if (!(err instanceof JobGraphValidationError)) {
+          throw err;
+        }
+        return reply(
+          createProblemDetailsResponse(
+            422,
+            err.message,
+            instanceUri,
+            'Unprocessable Entity',
+            'https://api.easyconvert.io/problems/unprocessable-entity',
+            undefined,
+            err.errors.map((e) => ({ name: e.path, reason: e.message }))
+          )
+        );
+      }
       const graphValidation = validateJobGraph(graph, {
         userTier: auth.user.tier,
         sourceFormat: sourceFormatParam,
@@ -376,8 +394,6 @@ export async function POST(req: NextRequest) {
         const archiveNodes = Object.values(graphNodes).filter((n) => n.op === 'archive.create' || n.operation === 'archive/create' || n.operation === 'archive.create') as { targetFormat?: string }[];
         if (archiveNodes.length > 0 && archiveNodes[0].targetFormat) {
           targetFormat = archiveNodes[0].targetFormat!;
-        } else {
-          targetFormat = 'pdf';
         }
       }
     }
@@ -548,6 +564,45 @@ export async function POST(req: NextRequest) {
     const resClass = resolveResourceClass(sourceDef.id, targetDef.id, fileSize, options);
     const targetQueue = getQueueForResourceClass(resClass);
 
+    // A graph (including legacy linear tasks) runs only through the graph scheduler, which
+    // enqueues each node; a separate conversion job would run the pipeline a second time.
+    if (graph) {
+      graph.nodes = normalizeGraphNodes(graph);
+      const graphId = generateJobId();
+      const graphState = await graphScheduler.initGraph(graphId, graph as any, {
+        ownerUserId: auth.user.id,
+        reservationId: reservation.reservationId,
+        webhookUrl: effectiveWebhookUrl,
+        webhookSecret: effectiveWebhookSecret,
+        originalFilename,
+        sourceStorageKey: storageKey,
+        sourceFormat: sourceDef.id,
+        targetFormat: targetDef.id,
+        tasks,
+      });
+      const nodesResponse = Object.fromEntries(
+        Object.entries(graphState.nodes).map(([nid, ns]) => [nid, { status: ns.status, outputs: ns.outputs || [] }])
+      );
+      return reply(
+        NextResponse.json(
+          {
+            success: true,
+            jobId: graphId,
+            status: graphState.status,
+            statusUrl: `/api/v1/jobs/${graphId}`,
+            createdAt: graphState.createdAt,
+            reservationId: reservation.reservationId,
+            sourceFormat: sourceDef.id,
+            targetFormat: targetDef.id,
+            originalFilename,
+            graph: graphState.graph,
+            nodes: nodesResponse,
+          },
+          { status: 202 }
+        )
+      );
+    }
+
     // Enqueue conversion job to the appropriate resource-class queue
     const job = await targetQueue.add(
       'convert',
@@ -564,8 +619,6 @@ export async function POST(req: NextRequest) {
         webhookSecret: effectiveWebhookSecret,
         userId: auth.user.id,
         reservationId: reservation.reservationId,
-        tasks,
-        graph,
         resourceClass: resClass,
       },
       {
@@ -574,30 +627,6 @@ export async function POST(req: NextRequest) {
         priority,
       }
     );
-
-    let scheduledGraphState;
-    if (graph) {
-      const normalizedNodes = normalizeGraphNodes(graph);
-      graph.nodes = normalizedNodes;
-      scheduledGraphState = await graphScheduler.initGraph(job.id, graph as any, {
-        ownerUserId: auth.user.id,
-        reservationId: reservation.reservationId,
-        webhookUrl: effectiveWebhookUrl,
-        webhookSecret: effectiveWebhookSecret,
-        originalFilename,
-        sourceStorageKey: storageKey,
-      });
-    }
-
-    const nodesResponse: Record<string, { status: string; outputs: string[] }> = {};
-    if (scheduledGraphState) {
-      for (const [nid, ns] of Object.entries(scheduledGraphState.nodes)) {
-        nodesResponse[nid] = {
-          status: ns.status,
-          outputs: ns.outputs || [],
-        };
-      }
-    }
 
     const successRes = NextResponse.json(
       {
@@ -610,8 +639,6 @@ export async function POST(req: NextRequest) {
         sourceFormat: sourceDef.id,
         targetFormat: targetDef.id,
         originalFilename,
-        graph: job.data.graph,
-        nodes: scheduledGraphState ? nodesResponse : undefined,
       },
       { status: 202 }
     );
