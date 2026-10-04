@@ -608,7 +608,7 @@ export class OciObjectStorageService implements IStorageBackend {
     const finalFilePath = path.join(objectsDir, `oci-${crypto.randomUUID()}-${path.basename(meta.filename)}`);
 
     const outFd = fs.openSync(tempFilePath, 'w');
-    const hasher = crypto.createHash('md5');
+    const hasher = crypto.createHash('sha256');
     let totalBytes = 0;
 
     try {
@@ -633,7 +633,7 @@ export class OciObjectStorageService implements IStorageBackend {
 
     fs.renameSync(tempFilePath, finalFilePath);
 
-    const etag = `"${hasher.digest('hex')}"`;
+    const etag = `"${hasher.digest('hex').slice(0, 32)}"`;
     const ociKey = key.startsWith('n/') ? key : `n/${this.config.namespace}/b/${this.config.bucketName}/o/${key}`;
     const now = Date.now();
     let cachedBuffer: Buffer | null = null;

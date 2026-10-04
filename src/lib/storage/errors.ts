@@ -8,7 +8,7 @@ export const DEFAULT_MAX_IN_MEMORY_BYTES = 512 * 1024 * 1024; // 512 MiB
 export function getMaxInMemoryBytes(): number {
   const envVal = process.env.MAX_IN_MEMORY_BYTES;
   if (envVal) {
-    const parsed = parseInt(envVal, 10);
+    const parsed = Number.parseInt(envVal, 10);
     if (!Number.isNaN(parsed) && parsed > 0) {
       return parsed;
     }

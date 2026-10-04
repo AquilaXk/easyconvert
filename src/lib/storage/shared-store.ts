@@ -120,11 +120,12 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         return undefined;
       }
 
-      const resolvedPath = fs.existsSync(binPath)
-        ? binPath
-        : meta.filePath && fs.existsSync(meta.filePath)
-        ? meta.filePath
-        : undefined;
+      let resolvedPath: string | undefined;
+      if (fs.existsSync(binPath)) {
+        resolvedPath = binPath;
+      } else if (meta.filePath && fs.existsSync(meta.filePath)) {
+        resolvedPath = meta.filePath;
+      }
 
       const reconstructed: StoredObject = {
         key: meta.key,
@@ -262,11 +263,12 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         this.delete(key);
         return null;
       }
-      const targetPath = fs.existsSync(binPath)
-        ? binPath
-        : meta.filePath && fs.existsSync(meta.filePath)
-        ? meta.filePath
-        : undefined;
+      let targetPath: string | undefined;
+      if (fs.existsSync(binPath)) {
+        targetPath = binPath;
+      } else if (meta.filePath && fs.existsSync(meta.filePath)) {
+        targetPath = meta.filePath;
+      }
 
       if (!targetPath) return null;
 
