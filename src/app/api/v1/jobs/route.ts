@@ -11,7 +11,7 @@ import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, F
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
 import { validateJobGraph, linearTasksToJobGraph, normalizeGraphNodes } from '@/lib/jobs';
-import { validateGraph, linearTasksToGraph, graphScheduler } from '@/lib/queue/graph';
+import { validateGraph, graphScheduler } from '@/lib/queue/graph';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';

@@ -94,54 +94,33 @@ function extractExtension(target: string | undefined): string | undefined {
  * Normalizes any variation of JobGraph (nodes record, tasks record, or tasks array)
  * into a canonical Record<string, TaskNode>.
  */
+function normalizeNodeEntry(id: string, raw: any): TaskNode {
+  const op = raw.operation || raw.op || 'convert';
+  return { ...raw, id, operation: op, op };
+}
+
 export function normalizeGraphNodes(graph: JobGraph): Record<string, TaskNode> {
   const result: Record<string, TaskNode> = {};
-  if (!graph || typeof graph !== 'object') {
-    return result;
-  }
+  if (!graph || typeof graph !== 'object') return result;
 
-  if (graph.nodes && typeof graph.nodes === 'object') {
-    for (const [id, rawNode] of Object.entries(graph.nodes)) {
+  const rawMap = graph.nodes || (!Array.isArray(graph.tasks) ? graph.tasks : undefined);
+  if (rawMap && typeof rawMap === 'object') {
+    for (const [id, rawNode] of Object.entries(rawMap)) {
       if (rawNode && typeof rawNode === 'object') {
-        const op = (rawNode as any).op || (rawNode as any).operation || 'convert';
-        result[id] = {
-          id,
-          operation: op,
-          op,
-          ...(rawNode as any),
-        };
+        result[id] = normalizeNodeEntry(id, rawNode);
       }
     }
     return result;
   }
 
   if (Array.isArray(graph.tasks)) {
-    for (let i = 0; i < graph.tasks.length; i++) {
-      const taskItem = graph.tasks[i] as TaskNode;
-      const id = taskItem.id || `task_${i + 1}`;
-      const op = taskItem.operation || (taskItem as any).op || 'convert';
-      result[id] = {
-        ...taskItem,
-        id,
-        operation: op,
-        op,
-      };
-    }
-    return result;
-  }
-
-  if (graph.tasks && typeof graph.tasks === 'object') {
-    for (const [id, rawNode] of Object.entries(graph.tasks)) {
-      if (rawNode && typeof rawNode === 'object') {
-        const op = (rawNode as any).operation || (rawNode as any).op || 'convert';
-        result[id] = {
-          id,
-          operation: op,
-          op,
-          ...(rawNode as any),
-        };
+    graph.tasks.forEach((task, i) => {
+      if (task && typeof task === 'object') {
+        const id = task.id || `task_${i + 1}`;
+        result[id] = normalizeNodeEntry(id, task);
       }
-    }
+    });
+    return result;
   }
 
   return result;
@@ -651,19 +630,6 @@ export function linearTasksToJobGraph(
     const nodeId = `task_${i + 1}_${cleanOpName}`;
 
     switch (task.operation as any) {
-      case 'convert': {
-        nodes[nodeId] = {
-          id: nodeId,
-          operation: 'convert',
-          op: 'convert',
-          input: currentInput,
-          dependencies: [currentInput],
-          targetFormat: task.targetFormat || 'pdf',
-          options: task.options,
-        };
-        lastWasExport = false;
-        break;
-      }
       case 'ocr': {
         nodes[nodeId] = {
           id: nodeId,
@@ -772,6 +738,7 @@ export function linearTasksToJobGraph(
         lastWasExport = true;
         break;
       }
+      case 'convert':
       default: {
         nodes[nodeId] = {
           id: nodeId,

@@ -88,6 +88,38 @@ export interface IJobGraphExecutor {
   cancelGraph(jobId: string, reason?: string): Promise<boolean>;
 }
 
+export async function runExecutorTask(
+  executor: IJobGraphExecutor,
+  storage: IStorageBackend,
+  jobId: string,
+  task: TaskNode,
+  inputArtifactKeys: string[] = []
+): Promise<TaskExecutionResult> {
+  const startTime = Date.now();
+  await executor.onTaskStarted(jobId, task.id);
+
+  try {
+    const outputKeys = await runTaskOperation(jobId, task, inputArtifactKeys, storage);
+    await executor.onTaskCompleted(jobId, task.id, outputKeys);
+    return {
+      taskId: task.id,
+      status: 'completed',
+      outputKeys,
+      executionTimeMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    await executor.onTaskFailed(jobId, task.id, errorMsg);
+    return {
+      taskId: task.id,
+      status: 'failed',
+      outputKeys: [],
+      error: errorMsg,
+      executionTimeMs: Date.now() - startTime,
+    };
+  }
+}
+
 /**
  * Extracts metadata from file buffer in a safe, deterministic manner.
  */
@@ -583,34 +615,12 @@ export class RedisGraphExecutor implements IJobGraphExecutor {
     return { graphStatus, cancelledTasks, skippedTasks };
   }
 
-  async executeTask(
+  executeTask(
     jobId: string,
     task: TaskNode,
     inputArtifactKeys: string[] = []
   ): Promise<TaskExecutionResult> {
-    const startTime = Date.now();
-    await this.onTaskStarted(jobId, task.id);
-
-    try {
-      const outputKeys = await runTaskOperation(jobId, task, inputArtifactKeys, this.storage);
-      await this.onTaskCompleted(jobId, task.id, outputKeys);
-      return {
-        taskId: task.id,
-        status: 'completed',
-        outputKeys,
-        executionTimeMs: Date.now() - startTime,
-      };
-    } catch (err: any) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      await this.onTaskFailed(jobId, task.id, errorMsg);
-      return {
-        taskId: task.id,
-        status: 'failed',
-        outputKeys: [],
-        error: errorMsg,
-        executionTimeMs: Date.now() - startTime,
-      };
-    }
+    return runExecutorTask(this, this.storage, jobId, task, inputArtifactKeys);
   }
 
   async getGraphState(jobId: string): Promise<GraphExecutionState | null> {
@@ -902,34 +912,12 @@ export class InMemoryGraphExecutor implements IJobGraphExecutor {
     return { graphStatus: state.status, cancelledTasks, skippedTasks };
   }
 
-  async executeTask(
+  executeTask(
     jobId: string,
     task: TaskNode,
     inputArtifactKeys: string[] = []
   ): Promise<TaskExecutionResult> {
-    const startTime = Date.now();
-    await this.onTaskStarted(jobId, task.id);
-
-    try {
-      const outputKeys = await runTaskOperation(jobId, task, inputArtifactKeys, this.storage);
-      await this.onTaskCompleted(jobId, task.id, outputKeys);
-      return {
-        taskId: task.id,
-        status: 'completed',
-        outputKeys,
-        executionTimeMs: Date.now() - startTime,
-      };
-    } catch (err: any) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      await this.onTaskFailed(jobId, task.id, errorMsg);
-      return {
-        taskId: task.id,
-        status: 'failed',
-        outputKeys: [],
-        error: errorMsg,
-        executionTimeMs: Date.now() - startTime,
-      };
-    }
+    return runExecutorTask(this, this.storage, jobId, task, inputArtifactKeys);
   }
 
   async getGraphState(jobId: string): Promise<GraphExecutionState | null> {
