@@ -931,69 +931,118 @@ function resolveViewport(attrs: Map<string, string>): Viewport {
 // Document walk
 // ============================================================================
 
+interface SvgNode {
+  name: string;
+  attrs: Map<string, string>;
+  children: SvgNode[];
+}
+
+/** Builds the element tree; mismatched or unclosed tags fail closed. */
+function buildSvgTree(svgContent: string): SvgNode | null {
+  const rootHolder: SvgNode = { name: '#document', attrs: new Map(), children: [] };
+  const stack: SvgNode[] = [rootHolder];
+  for (const tag of scanXmlTags(svgContent)) {
+    if (tag.closing) {
+      const open = stack[stack.length - 1];
+      if (stack.length === 1 || open.name !== tag.name) {
+        throw new CadGeometryUnavailableError(`Malformed SVG: unexpected closing tag </${tag.name}>.`);
+      }
+      stack.pop();
+      continue;
+    }
+    const node: SvgNode = { name: tag.name, attrs: tag.attrs, children: [] };
+    stack[stack.length - 1].children.push(node);
+    if (!tag.selfClosing) stack.push(node);
+  }
+  if (stack.length !== 1) {
+    throw new CadGeometryUnavailableError(`Malformed SVG: <${stack[stack.length - 1].name}> is never closed.`);
+  }
+  return rootHolder.children.find((n) => n.name === 'svg') ?? null;
+}
+
+/** Containers rendered as groups. */
+const GROUP_ELEMENTS = new Set(['g', 'a']);
+
+/** Rendered SVG content the metafile encoders cannot represent. */
+function unsupportedElementError(name: string): UnsupportedOptionError {
+  return new UnsupportedOptionError(`SVG element <${name}> is not supported by metafile encoders.`);
+}
+
+/** Properties that reference clipping, masking, filter or marker resources. */
+const UNSUPPORTED_REFERENCE_PROPERTIES = ['clip-path', 'mask', 'filter', 'marker', 'marker-start', 'marker-mid', 'marker-end'];
+
+function assertNoUnsupportedReferences(attrs: Map<string, string>): void {
+  const style = parseStyleDeclarations(attrs.get('style'));
+  for (const prop of UNSUPPORTED_REFERENCE_PROPERTIES) {
+    const value = style.get(prop) ?? attrs.get(prop);
+    if (value !== undefined && value.trim() !== '' && value.trim().toLowerCase() !== 'none') {
+      throw new UnsupportedOptionError(`SVG ${prop} "${value.trim()}" is not supported by metafile encoders.`);
+    }
+  }
+}
+
+/** Elements in a foreign (editor) namespace, e.g. sodipodi:namedview, which SVG renderers ignore. */
+function isForeignNamespaceElement(name: string): boolean {
+  return name.includes(':');
+}
+
+interface RenderState {
+  elements: SvgGeometryElement[];
+}
+
+function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
+  if (ctx.visibility !== 'visible') return;
+  const shape = shapeGeometry(node.name, node.attrs);
+  const strokeWidth = resolveStrokeWidth(ctx.strokeWidth);
+  if (!shape || shape.subpaths.length === 0) return;
+  state.elements.push({
+    subpaths: shape.subpaths.map((sub) => sub.map((p) => applyMatrix(ctx.ctm, p.x, p.y))),
+    isClosed: shape.isClosed,
+    fillable: node.name !== 'line',
+    fill: resolvePaint(ctx.fill, ctx.color, 'fill'),
+    fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
+    stroke: strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null,
+    strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
+  });
+}
+
+function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): void {
+  if (NON_RENDERED_ELEMENTS.has(node.name) || isForeignNamespaceElement(node.name)) return;
+  if (node.name === 'svg') {
+    throw new CadGeometryUnavailableError('Nested <svg> viewports are not supported by the metafile encoders.');
+  }
+  const isShape = SHAPE_ELEMENTS.has(node.name);
+  if (!isShape && !GROUP_ELEMENTS.has(node.name)) throw unsupportedElementError(node.name);
+
+  const declared = declaredProperties(node.attrs);
+  if (declared.get('display') === 'none') return;
+  assertNoUnsupportedReferences(node.attrs);
+  const ctx = deriveContext(parent, node.attrs, declared);
+  if (isShape) {
+    emitShape(node, ctx, state);
+    return;
+  }
+  for (const child of node.children) renderNode(child, ctx, state);
+}
+
 /**
  * Parses SVG XML into geometry elements with flattened polylines in device
  * (viewport) coordinates, honouring the style cascade, inheritance from
- * container elements and transforms.
+ * container elements and transforms. Rendered content that cannot be
+ * represented (text, images, clipping, ...) throws instead of being dropped.
  */
 export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument {
-  const elements: SvgGeometryElement[] = [];
-  const stack: { name: string; ctx: StyleContext }[] = [];
-  let viewport: Viewport | null = null;
-  let skipDepth = 0;
-
-  for (const tag of scanXmlTags(svgContent)) {
-    if (tag.closing) {
-      if (skipDepth > 0) {
-        skipDepth--;
-      } else {
-        const idx = stack.map((s) => s.name).lastIndexOf(tag.name);
-        if (idx >= 0) stack.length = idx;
-      }
-      continue;
-    }
-    if (skipDepth > 0) {
-      if (!tag.selfClosing) skipDepth++;
-      continue;
-    }
-
-    if (tag.name === 'svg' && viewport !== null) {
-      throw new CadGeometryUnavailableError('Nested <svg> viewports are not supported by the metafile encoders.');
-    }
-    if (tag.name === 'svg') {
-      viewport = resolveViewport(tag.attrs);
-    }
-    if (viewport === null) continue;
-
-    const parent = stack.length > 0 ? stack[stack.length - 1].ctx : { ...INITIAL_STYLE, ctm: viewport.matrix };
-    const declared = declaredProperties(tag.attrs);
-    if (NON_RENDERED_ELEMENTS.has(tag.name) || declared.get('display') === 'none') {
-      if (!tag.selfClosing) skipDepth = 1;
-      continue;
-    }
-    const ctx = deriveContext(parent, tag.attrs, declared);
-
-    if (SHAPE_ELEMENTS.has(tag.name) && ctx.visibility === 'visible') {
-      const shape = shapeGeometry(tag.name, tag.attrs);
-      const strokeWidth = resolveStrokeWidth(ctx.strokeWidth);
-      if (shape && shape.subpaths.length > 0) {
-        elements.push({
-          subpaths: shape.subpaths.map((sub) => sub.map((p) => applyMatrix(ctx.ctm, p.x, p.y))),
-          isClosed: shape.isClosed,
-          fillable: tag.name !== 'line',
-          fill: resolvePaint(ctx.fill, ctx.color, 'fill'),
-          fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
-          stroke: strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null,
-          strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
-        });
-      }
-    }
-
-    if (!tag.selfClosing) stack.push({ name: tag.name, ctx });
+  const root = buildSvgTree(svgContent);
+  if (!root) {
+    return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, elements: [] };
   }
-
-  if (viewport === null) {
-    return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, elements };
+  const viewport = resolveViewport(root.attrs);
+  const declared = declaredProperties(root.attrs);
+  assertNoUnsupportedReferences(root.attrs);
+  const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
+  const state: RenderState = { elements: [] };
+  if (declared.get('display') !== 'none') {
+    for (const child of root.children) renderNode(child, rootCtx, state);
   }
-  return { width: viewport.width, height: viewport.height, elements };
+  return { width: viewport.width, height: viewport.height, elements: state.elements };
 }

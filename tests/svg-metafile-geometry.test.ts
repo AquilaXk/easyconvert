@@ -469,4 +469,63 @@ describe('SVG document model for metafile encoders', () => {
       }
     });
   });
+
+  describe('unsupported content fails closed', () => {
+    const RECT = '<rect x="0" y="0" width="10" height="10" fill="#000"/>';
+    const unsupportedElements: [string, string][] = [
+      ['text', '<text x="10" y="10">label</text>'],
+      ['tspan', '<g><tspan>label</tspan></g>'],
+      ['textPath', '<textPath href="#p">label</textPath>'],
+      ['image', '<image href="data:image/png;base64,AAAA" width="10" height="10"/>'],
+      ['foreignObject', '<foreignObject width="10" height="10"></foreignObject>'],
+      ['switch', '<switch><rect width="5" height="5"/></switch>'],
+      ['unknownElement', '<unknownElement/>'],
+    ];
+    for (const [name, markup] of unsupportedElements) {
+      it(`rejects <${name}> with a typed error naming the element`, () => {
+        for (const encode of [encodeEmf, encodeWmf, encodeCgm]) {
+          const err = (() => {
+            try {
+              encode(svgDoc(RECT + markup));
+              return null;
+            } catch (e) {
+              return e;
+            }
+          })();
+          expect(err).toBeInstanceOf(UnsupportedOptionError);
+          expect((err as Error).message).toContain(`<${name}>`);
+        }
+      });
+    }
+
+    const unsupportedReferences: [string, string][] = [
+      ['clip-path', '<rect x="0" y="0" width="10" height="10" clip-path="url(#c)"/>'],
+      ['mask', '<g mask="url(#m)">' + RECT + '</g>'],
+      ['filter', '<rect x="0" y="0" width="10" height="10" style="filter: url(#f)"/>'],
+      ['marker-end', '<line x1="0" y1="0" x2="10" y2="10" stroke="#000" marker-end="url(#a)"/>'],
+    ];
+    for (const [property, markup] of unsupportedReferences) {
+      it(`rejects ${property} references with a typed error naming the property`, async () => {
+        const svg = svgDoc(markup);
+        expect(() => encodeEmf(svg)).toThrow(UnsupportedOptionError);
+        expect(() => encodeEmf(svg)).toThrow(new RegExp(property));
+        await expect(convertFile(svg, 'svg', 'wmf', {}, 'r.svg')).rejects.toBeInstanceOf(ConversionFailedError);
+      });
+    }
+
+    it('accepts non-rendering defs, title, desc, metadata, style and editor namespaces', () => {
+      const shapes = emfShapes(
+        '<title>t</title><desc>d</desc><metadata><x/></metadata><style></style>' +
+          '<defs><clipPath id="c"><rect width="1" height="1"/></clipPath><linearGradient id="g"><stop offset="0"/></linearGradient>' +
+          '<filter id="f"><feGaussianBlur stdDeviation="1"/></filter><pattern id="p" width="1" height="1"><text>x</text></pattern></defs>' +
+          '<sodipodi:namedview id="nv"/>' +
+          '<rect x="10" y="10" width="20" height="20" fill="#00ff00"/>'
+      );
+      expect(filledShapes(shapes).map((s) => s.brush)).toEqual([0x00ff00]);
+    });
+
+    it('rejects mismatched closing tags instead of guessing the tree', () => {
+      expect(() => encodeEmf(svgDoc('<g><rect width="5" height="5"/></rect></g>'))).toThrow(CadGeometryUnavailableError);
+    });
+  });
 });
