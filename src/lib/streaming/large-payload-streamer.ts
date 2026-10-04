@@ -25,6 +25,8 @@ export interface LargePayloadStreamConfig {
   maxHeapDeltaMb?: number;
   /** Optional AbortSignal to terminate stream processing early */
   signal?: AbortSignal;
+  /** Optional transform engine stream or factory to route payload through real conversion (e.g. tar/zstd/gzip) */
+  transformEngine?: NodeJS.ReadWriteStream | (() => NodeJS.ReadWriteStream);
 }
 
 export interface StreamProcessingResult {
@@ -43,6 +45,9 @@ export interface SoakIterationStats {
   throughputMbPerSec: number;
   heapUsedMb: number;
   rssMb: number;
+  externalMb?: number;
+  arrayBuffersMb?: number;
+  activeResourcesCount?: number;
   openFds: number;
 }
 
@@ -54,9 +59,23 @@ export interface SoakSessionReport {
   initialHeapMb: number;
   finalHeapMb: number;
   peakHeapMb: number;
+  initialRssMb: number;
+  finalRssMb: number;
+  peakRssMb: number;
+  rssDeltaMb: number;
+  initialExternalMb: number;
+  finalExternalMb: number;
+  externalDeltaMb: number;
+  initialArrayBuffersMb: number;
+  finalArrayBuffersMb: number;
+  arrayBuffersDeltaMb: number;
+  initialActiveResources: number;
+  finalActiveResources: number;
   initialFds: number;
   finalFds: number;
+  fdDelta: number;
   isMemoryStable: boolean;
+  lastIterationDigest: string;
   history: SoakIterationStats[];
 }
 
@@ -133,6 +152,64 @@ export function createDeterministicSyntheticStream(
 }
 
 /**
+ * Streams raw binary payload into an authentic POSIX ustar TAR archive container stream.
+ */
+export class TarStreamingPacker extends Transform {
+  private readonly filename: string;
+  private readonly totalSize: number;
+  private headerPushed: boolean = false;
+  private bytesWritten: number = 0;
+
+  constructor(filename: string = 'payload.bin', totalSize: number = 0, highWaterMark?: number) {
+    super({ highWaterMark: highWaterMark ?? 64 * 1024 });
+    this.filename = filename;
+    this.totalSize = totalSize;
+  }
+
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
+    if (!this.headerPushed) {
+      const header = Buffer.alloc(512);
+      header.write(this.filename.slice(0, 100), 0, 100, 'ascii');
+      header.write('0000644\0', 100, 8, 'ascii');
+      header.write('0000000\0', 108, 8, 'ascii');
+      header.write('0000000\0', 116, 8, 'ascii');
+      header.write(this.totalSize.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+      header.write('00000000000\0', 136, 12, 'ascii');
+      header.write('        ', 148, 8, 'ascii');
+      header.write('0', 156, 1, 'ascii');
+      header.write('ustar\0', 257, 6, 'ascii');
+      header.write('00', 263, 2, 'ascii');
+      let chksum = 0;
+      for (let i = 0; i < 512; i++) chksum += header[i];
+      header.write(chksum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+      this.push(header);
+      this.headerPushed = true;
+    }
+    this.bytesWritten += chunk.length;
+    this.push(chunk);
+    callback();
+  }
+
+  override _flush(callback: TransformCallback): void {
+    const pad = (512 - (this.bytesWritten % 512)) % 512;
+    if (pad > 0) {
+      this.push(Buffer.alloc(pad));
+    }
+    // POSIX ustar requires two 512-byte zero blocks at end of archive
+    this.push(Buffer.alloc(1024));
+    callback();
+  }
+}
+
+export function createTarStreamPacker(
+  filename: string = 'payload.bin',
+  totalSize: number = 0,
+  highWaterMark?: number
+): TarStreamingPacker {
+  return new TarStreamingPacker(filename, totalSize, highWaterMark);
+}
+
+/**
  * Stream transform calculating SHA-256 digest and byte telemetry without buffering full stream.
  */
 export class StreamingHashAndMetricsTransform extends Transform {
@@ -206,7 +283,15 @@ export async function streamProcessLargePayload(
       },
     });
 
-    pipeline(inputStream, metricsTransform, sink, (err) => {
+    const engineStream = typeof config.transformEngine === 'function'
+      ? config.transformEngine()
+      : config.transformEngine;
+
+    const pipelineStreams: any[] = engineStream
+      ? [inputStream, engineStream, metricsTransform, sink]
+      : [inputStream, metricsTransform, sink];
+
+    (pipeline as any)(...pipelineStreams, (err: any) => {
       if (isSettled) return;
       cleanup();
 
@@ -266,6 +351,7 @@ export class EnduranceSoakController {
     bytesPerIteration?: number;
     chunkSizeBytes?: number;
     warmupIterations?: number;
+    transformEngineFactory?: () => NodeJS.ReadWriteStream;
     onProgress?: (stats: SoakIterationStats) => void;
   }): Promise<SoakSessionReport> {
     this.abortController = new AbortController();
@@ -277,6 +363,7 @@ export class EnduranceSoakController {
       bytesPerIteration = 10 * 1024 * 1024, // 10MB per iteration default
       chunkSizeBytes = 64 * 1024,
       warmupIterations = 3,
+      transformEngineFactory,
       onProgress,
     } = options;
 
@@ -284,15 +371,28 @@ export class EnduranceSoakController {
       global.gc();
     }
 
+    const initialMem = process.memoryUsage();
     const initialFds = getOpenFileDescriptorCount();
-    const initialHeapMb = process.memoryUsage().heapUsed / (1024 * 1024);
+    const initialHeapMb = initialMem.heapUsed / (1024 * 1024);
+    const initialRssMb = initialMem.rss / (1024 * 1024);
+    const initialExternalMb = (initialMem.external || 0) / (1024 * 1024);
+    const initialArrayBuffersMb = (initialMem.arrayBuffers || 0) / (1024 * 1024);
+    const initialActiveResources = typeof (process as any).getActiveResourcesInfo === 'function'
+      ? (process as any).getActiveResourcesInfo().length
+      : 0;
+
     let peakHeapMb = initialHeapMb;
+    let peakRssMb = initialRssMb;
     let postWarmupHeapMb = initialHeapMb;
+    let postWarmupRssMb = initialRssMb;
+    let postWarmupExternalMb = initialExternalMb;
+    let postWarmupArrayBuffersMb = initialArrayBuffersMb;
 
     const history: SoakIterationStats[] = [];
     const sessionStartTime = Date.now();
     let iteration = 0;
     let totalBytes = 0;
+    let lastIterationDigest = '';
 
     try {
       while (
@@ -306,24 +406,38 @@ export class EnduranceSoakController {
         const result = await streamProcessLargePayload(iterStream, {
           chunkSizeBytes,
           signal: this.abortController.signal,
+          transformEngine: transformEngineFactory ? transformEngineFactory() : undefined,
         });
 
         totalBytes += result.totalBytesProcessed;
+        lastIterationDigest = result.sha256Digest;
 
         const currentMem = process.memoryUsage();
         const currentHeapMb = currentMem.heapUsed / (1024 * 1024);
         const currentRssMb = currentMem.rss / (1024 * 1024);
+        const currentExternalMb = (currentMem.external || 0) / (1024 * 1024);
+        const currentArrayBuffersMb = (currentMem.arrayBuffers || 0) / (1024 * 1024);
+        const currentActiveResources = typeof (process as any).getActiveResourcesInfo === 'function'
+          ? (process as any).getActiveResourcesInfo().length
+          : 0;
         const currentFds = getOpenFileDescriptorCount();
 
         if (currentHeapMb > peakHeapMb) {
           peakHeapMb = currentHeapMb;
+        }
+        if (currentRssMb > peakRssMb) {
+          peakRssMb = currentRssMb;
         }
 
         if (iteration === warmupIterations) {
           if (typeof global.gc === 'function') {
             global.gc();
           }
-          postWarmupHeapMb = process.memoryUsage().heapUsed / (1024 * 1024);
+          const warmupMem = process.memoryUsage();
+          postWarmupHeapMb = warmupMem.heapUsed / (1024 * 1024);
+          postWarmupRssMb = warmupMem.rss / (1024 * 1024);
+          postWarmupExternalMb = (warmupMem.external || 0) / (1024 * 1024);
+          postWarmupArrayBuffersMb = (warmupMem.arrayBuffers || 0) / (1024 * 1024);
         }
 
         const stats: SoakIterationStats = {
@@ -333,6 +447,9 @@ export class EnduranceSoakController {
           throughputMbPerSec: result.throughputMbPerSec,
           heapUsedMb: currentHeapMb,
           rssMb: currentRssMb,
+          externalMb: currentExternalMb,
+          arrayBuffersMb: currentArrayBuffersMb,
+          activeResourcesCount: currentActiveResources,
           openFds: currentFds,
         };
 
@@ -350,12 +467,21 @@ export class EnduranceSoakController {
 
     const finalMem = process.memoryUsage();
     const finalHeapMb = finalMem.heapUsed / (1024 * 1024);
+    const finalRssMb = finalMem.rss / (1024 * 1024);
+    const finalExternalMb = (finalMem.external || 0) / (1024 * 1024);
+    const finalArrayBuffersMb = (finalMem.arrayBuffers || 0) / (1024 * 1024);
+    const finalActiveResources = typeof (process as any).getActiveResourcesInfo === 'function'
+      ? (process as any).getActiveResourcesInfo().length
+      : 0;
     const finalFds = getOpenFileDescriptorCount();
     const totalDurationMs = Math.max(1, Date.now() - sessionStartTime);
     const averageThroughputMbPerSec = (totalBytes / (1024 * 1024)) / (totalDurationMs / 1000);
 
     // Memory is considered stable if heap growth post-warmup is bounded under 35MB
     const heapGrowthPostWarmupMb = Math.max(0, finalHeapMb - postWarmupHeapMb);
+    const rssDeltaMb = Math.max(0, finalRssMb - postWarmupRssMb);
+    const externalDeltaMb = Math.max(0, finalExternalMb - postWarmupExternalMb);
+    const arrayBuffersDeltaMb = Math.max(0, finalArrayBuffersMb - postWarmupArrayBuffersMb);
     const fdDelta = Math.abs(finalFds - initialFds);
     const isMemoryStable = heapGrowthPostWarmupMb < 35 && fdDelta <= 3;
 
@@ -367,9 +493,23 @@ export class EnduranceSoakController {
       initialHeapMb,
       finalHeapMb,
       peakHeapMb,
+      initialRssMb,
+      finalRssMb,
+      peakRssMb,
+      rssDeltaMb,
+      initialExternalMb,
+      finalExternalMb,
+      externalDeltaMb,
+      initialArrayBuffersMb,
+      finalArrayBuffersMb,
+      arrayBuffersDeltaMb,
+      initialActiveResources,
+      finalActiveResources,
       initialFds,
       finalFds,
+      fdDelta,
       isMemoryStable,
+      lastIterationDigest,
       history,
     };
   }
