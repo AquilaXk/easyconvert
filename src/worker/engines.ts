@@ -13,6 +13,7 @@ import {
   InvalidPageRangeError,
   ComplexScriptRequiresNativeEngineError,
   MediaPackagingOptions,
+  UnsupportedTargetError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile } from '../lib/conversions';
@@ -48,6 +49,12 @@ export interface WorkerEngineOptions extends ConversionOptions {
   zeroHeap?: boolean;
   signal?: AbortSignal;
   throwOnUnavailable?: boolean;
+  /**
+   * When false, a pair that no available native engine converted fails instead of falling back
+   * to the in-process engine: the last EngineUnavailableError is rethrown, or an
+   * UnsupportedTargetError when no native route handles the pair at all.
+   */
+  inProcessFallback?: boolean;
 }
 
 export interface WorkerConversionResult extends ConversionResult {
@@ -1325,6 +1332,7 @@ export async function executeWorkerConversion(
   assertNotSpoofedFileVfs(input, src, originalFilename);
 
   let fallbackReason: string | undefined;
+  let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
   const isComplexText = tgt === 'pdf' && checkInputContainsComplexScript(input, src);
@@ -1360,6 +1368,7 @@ export async function executeWorkerConversion(
         }
         fallbackChain.push(`native-soffice: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
@@ -1392,6 +1401,7 @@ export async function executeWorkerConversion(
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`office-poppler-chain: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
@@ -1418,6 +1428,7 @@ export async function executeWorkerConversion(
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-ffmpeg: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
@@ -1438,6 +1449,7 @@ export async function executeWorkerConversion(
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-poppler: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
@@ -1458,6 +1470,7 @@ export async function executeWorkerConversion(
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-7z: ${err.message}`);
         fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }
@@ -1465,6 +1478,12 @@ export async function executeWorkerConversion(
   }
 
   // 5. In-Repo Pure TS Fallback
+  if (options.inProcessFallback === false) {
+    if (lastUnavailable) {
+      throw lastUnavailable;
+    }
+    throw new UnsupportedTargetError(`No native engine route converts ${src} to ${tgt}`);
+  }
   if (options.pdfStandard) {
     throw new Error(
       `Fallback to pure TypeScript engine is forbidden when pdfStandard ('${options.pdfStandard}') is specified`
