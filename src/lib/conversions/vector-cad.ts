@@ -101,23 +101,72 @@ function parseCgmLines(cgmText: string): string[] {
   return elements;
 }
 
+const CGM_TEXT_HEAD_PATTERN = /TEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
+
+/**
+ * Reads TEXT (x, y) ... "string" elements. The quoted string is located with
+ * indexOf from the end of the head, so a missing quote ends the scan instead of
+ * being re-scanned from every later TEXT keyword.
+ */
 function parseCgmTextElements(cgmText: string): string[] {
   const elements: string[] = [];
-  const textRegex = /TEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)[^"]*"([^"]+)"/gi;
-  for (const textMatch of cgmText.matchAll(textRegex)) {
-    elements.push(
-      `<text x="${textMatch[1]}" y="${textMatch[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeXml(textMatch[3])}</text>`
-    );
+  CGM_TEXT_HEAD_PATTERN.lastIndex = 0;
+  let head = CGM_TEXT_HEAD_PATTERN.exec(cgmText);
+  while (head) {
+    const open = cgmText.indexOf('"', CGM_TEXT_HEAD_PATTERN.lastIndex);
+    if (open < 0) break;
+    const close = cgmText.indexOf('"', open + 1);
+    if (close < 0) break;
+    if (close > open + 1) {
+      elements.push(
+        `<text x="${head[1]}" y="${head[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeXml(cgmText.substring(open + 1, close))}</text>`
+      );
+      CGM_TEXT_HEAD_PATTERN.lastIndex = close + 1;
+    }
+    head = CGM_TEXT_HEAD_PATTERN.exec(cgmText);
   }
   return elements;
 }
 
+const CGM_POLYGON_KEYWORD = /POLYGON\s/gi;
+const CGM_POLYLINE_KEYWORD = /POLYLINE\s/gi;
+const CGM_STATEMENT_END = /[;\r\n]/g;
+const LEADING_WHITESPACE = /\s*/y;
+
+/**
+ * Argument text of each `KEYWORD args;` statement (arguments stay on one line).
+ * The statement end is cached between keywords so a run of keywords without a
+ * terminator costs one scan, not one per keyword.
+ */
+function cgmStatementArguments(cgmText: string, keyword: RegExp): string[] {
+  const statements: string[] = [];
+  keyword.lastIndex = 0;
+  CGM_STATEMENT_END.lastIndex = 0;
+  let endIndex = -1;
+  let consumedUpTo = 0;
+  for (let m = keyword.exec(cgmText); m; m = keyword.exec(cgmText)) {
+    if (m.index < consumedUpTo) continue;
+    LEADING_WHITESPACE.lastIndex = m.index + m[0].length;
+    LEADING_WHITESPACE.exec(cgmText);
+    const argsStart = LEADING_WHITESPACE.lastIndex;
+    if (endIndex < argsStart) {
+      CGM_STATEMENT_END.lastIndex = argsStart;
+      const end = CGM_STATEMENT_END.exec(cgmText);
+      if (!end) break;
+      endIndex = end.index;
+    }
+    if (cgmText.charAt(endIndex) !== ';' || endIndex === argsStart) continue;
+    statements.push(cgmText.substring(argsStart, endIndex));
+    consumedUpTo = endIndex + 1;
+  }
+  return statements;
+}
+
 function parseCgmPolyElements(cgmText: string, isPolygon: boolean): string[] {
   const elements: string[] = [];
-  const polyRegex = isPolygon ? /POLYGON\s+([^;\r\n]+);/gi : /POLYLINE\s+([^;\r\n]+);/gi;
-  for (const match of cgmText.matchAll(polyRegex)) {
+  for (const args of cgmStatementArguments(cgmText, isPolygon ? CGM_POLYGON_KEYWORD : CGM_POLYLINE_KEYWORD)) {
     const ptRegex = /\(\s*([-+]?[\d.]+)\s*,\s*([-+]?[\d.]+)\s*\)/g;
-    const pts = [...match[1].matchAll(ptRegex)].map((pm) => `${pm[1]},${pm[2]}`);
+    const pts = [...args.matchAll(ptRegex)].map((pm) => `${pm[1]},${pm[2]}`);
     const minCount = isPolygon ? 2 : 1;
     if (pts.length > minCount) {
       if (isPolygon) {
