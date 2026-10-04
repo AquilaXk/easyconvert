@@ -1015,6 +1015,18 @@ function resolveStrokeWidth(value: string): number {
   return Math.max(0, parseLength(value, 'stroke-width'));
 }
 
+/** Relative tolerance when deciding whether a transform scales uniformly. */
+const UNIFORM_SCALE_TOLERANCE = 1e-9;
+
+/** True when the linear part is a rotation/reflection times one uniform scale (no skew). */
+function isUniformScale(m: AffineMatrix): boolean {
+  const lenX = m[0] * m[0] + m[1] * m[1];
+  const lenY = m[2] * m[2] + m[3] * m[3];
+  const dot = m[0] * m[2] + m[1] * m[3];
+  const tol = UNIFORM_SCALE_TOLERANCE * Math.max(lenX, lenY);
+  return Math.abs(lenX - lenY) <= tol && Math.abs(dot) <= tol;
+}
+
 /** Uniform length scale of a transform: the square root of its determinant's magnitude. */
 function matrixLengthScale(m: AffineMatrix): number {
   return Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
@@ -1265,13 +1277,19 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     })
   );
   requireFinite(strokeWidth * matrixLengthScale(ctx.ctm), `<${node.name}> device stroke width`);
+  const stroke = strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null;
+  if (stroke && !isUniformScale(ctx.ctm)) {
+    throw new UnsupportedOptionError(
+      `Stroked SVG <${node.name}> under a non-uniform scale or skew is not supported: a metafile pen has one width.`
+    );
+  }
   state.elements.push({
     subpaths: deviceSubpaths,
     isClosed: shape.isClosed,
     fillable: node.name !== 'line',
     fill: resolvePaint(ctx.fill, ctx.color, 'fill'),
     fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
-    stroke: strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null,
+    stroke,
     strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
     strokeLinecap: ctx.strokeLinecap.trim() as SvgLinecap,
     strokeLinejoin: ctx.strokeLinejoin.trim() as SvgLinejoin,

@@ -760,6 +760,23 @@ describe('SVG document model for metafile encoders', () => {
   });
 
   describe('strict input parsing', () => {
+    it('rejects non-uniform scale or skew on stroked shapes, which a pen width cannot represent', () => {
+      for (const t of ['scale(2 1)', 'skewX(20)', 'matrix(1 0.5 0 1 0 0)']) {
+        const body = `<rect width="10" height="10" fill="#000" stroke="#f00" transform="${t}"/>`;
+        for (const encode of [encodeEmf, encodeWmf, encodeCgm]) {
+          expect(() => encode(svgDoc(body)), t).toThrow(UnsupportedOptionError);
+        }
+      }
+      expect(() =>
+        encodeEmf(svgDoc('<rect width="10" height="10" stroke="#f00"/>', 'width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="none"'))
+      ).toThrow(/non-uniform/);
+    });
+
+    it('keeps uniform scale and rotation on stroked shapes, and any transform on unstroked fills', () => {
+      expect(filledShapes(emfShapes('<rect width="10" height="10" fill="#000" stroke="#f00" transform="rotate(30) scale(3)"/>'))).toHaveLength(1);
+      expect(filledShapes(emfShapes('<rect width="10" height="10" fill="#000" transform="scale(2 1) skewX(20)"/>'))).toHaveLength(1);
+    });
+
     it('converts absolute units on shape attributes and stroke widths to user units', () => {
       const shapes = emfShapes('<rect x="1in" y="0.5in" width="10mm" height="12pt" fill="#000" stroke="#f00" stroke-width="0.25in"/>', 'width="300" height="300"');
       const filled = filledShapes(shapes)[0];
