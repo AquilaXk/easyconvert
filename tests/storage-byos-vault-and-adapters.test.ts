@@ -20,7 +20,6 @@ import {
   StorageSsrfError,
   StorageNotFoundError,
   StorageAuthenticationError,
-  StorageProviderUnavailableError,
 } from '../src/lib/storage/adapters/adapter-interface';
 import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -186,10 +185,9 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
 
   describe('3. Cloud Storage Adapters & Factory Dispatch', () => {
     it('instantiates matching storage adapter for each credential provider type', () => {
-      // s3 has no network client yet and fails closed (tests/byos-s3-fail-closed.test.ts).
-      expect(() =>
-        createStorageAdapter({ type: 's3', bucket: 'b', accessKeyId: 'k', secretAccessKey: 's' })
-      ).toThrow(StorageProviderUnavailableError);
+      // s3 is covered end-to-end in tests/byos-s3-roundtrip.test.ts.
+      const s3Adapter = createStorageAdapter({ type: 's3', bucket: 'b-bucket', accessKeyId: 'k', secretAccessKey: 's' });
+      expect(s3Adapter.providerName).toBe('s3');
 
       const gcsAdapter = createStorageAdapter({
         type: 'gcs',

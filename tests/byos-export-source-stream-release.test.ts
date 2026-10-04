@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import type { ReadStream } from 'node:fs';
 import { credentialsVault, executeExportTask, localFsStorage } from '../src/lib/storage';
-import { StorageProviderUnavailableError, StorageSsrfError } from '../src/lib/storage/adapters/adapter-interface';
+import { StorageSsrfError } from '../src/lib/storage/adapters/adapter-interface';
 
 /**
  * executeExportTask opened the source file before the destination could be refused, so every
@@ -56,17 +56,18 @@ describe('BYOS export releases the source stream on refusal', () => {
     }
   }
 
-  it('does not leave the source open when the provider is unavailable', async () => {
+  it('does not leave the source open when the s3 endpoint is a restricted host', async () => {
     const credentialRef = await credentialsVault.store('fd-user', {
       type: 's3',
       bucket: 'customer-bucket',
       accessKeyId: 'AKIA_CUSTOMER',
       secretAccessKey: 'CUSTOMER_SECRET',
+      endpoint: 'https://169.254.169.254',
     });
 
     await expect(
       executeExportTask({ operation: 'export/s3', sourceKey, remotePath: 'out/p.txt', credentialRef, userId: 'fd-user' })
-    ).rejects.toThrow(StorageProviderUnavailableError);
+    ).rejects.toThrow(StorageSsrfError);
     await expectAllSourceStreamsClosed();
   });
 
