@@ -12,6 +12,7 @@ import {
   executeSandboxedBinary,
   killProcessGroup,
   SandboxedTimeoutError,
+  SandboxedMemoryLimitError,
 } from '../src/lib/security/process-sandbox';
 import {
   checkRecycleNeeded,
@@ -225,6 +226,21 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
         threw = true;
       }
       expect(threw).toBe(false);
+    });
+
+    it('translates SIGSEGV signal termination under memory limits into SandboxedMemoryLimitError', async () => {
+      let caughtError: unknown = null;
+      try {
+        await executeSandboxedBinary('/bin/sh', ['-c', 'kill -11 $$'], {
+          memoryLimitMb: 48,
+        });
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeInstanceOf(SandboxedMemoryLimitError);
+      const memError = caughtError as SandboxedMemoryLimitError;
+      expect(memError.limitMb).toBe(48);
     });
   });
 

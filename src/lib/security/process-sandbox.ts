@@ -774,8 +774,11 @@ export async function executeSandboxedBinary(
         const stderr = Buffer.concat(stderrChunks);
 
         if (signal !== null || code === null || code !== 0) {
-          if (signal === 'SIGKILL' && memoryLimitMb && memoryLimitMb > 0) {
-            reject(new SandboxedMemoryLimitError(memoryLimitMb));
+          const effectiveMemLimit =
+            memoryLimitMb ||
+            (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / (1024 * 1024)) : undefined);
+          if ((signal === 'SIGKILL' || signal === 'SIGSEGV') && effectiveMemLimit && effectiveMemLimit > 0) {
+            reject(new SandboxedMemoryLimitError(effectiveMemLimit));
             return;
           }
           if (signal === 'SIGXFSZ') {
