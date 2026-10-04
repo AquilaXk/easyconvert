@@ -594,3 +594,79 @@ export const WebhookSecretRotateResponseSchema = {
     },
   },
 } as const;
+
+export const UsageQueryRequestSchema = {
+  $id: 'https://easyconvert.local/schemas/usage-query-request.json',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    from: {
+      type: ['number', 'string'],
+      description: 'Start of time window (epoch ms timestamp or ISO 8601 string).',
+    },
+    to: {
+      type: ['number', 'string'],
+      description: 'End of time window (epoch ms timestamp or ISO 8601 string).',
+    },
+    limit: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 200,
+      default: 50,
+      description: 'Maximum number of ledger records to return.',
+    },
+  },
+} as const;
+
+export const UsageLedgerEntrySchema = {
+  $id: 'https://easyconvert.local/schemas/usage-ledger-entry.json',
+  type: 'object',
+  required: [
+    'jobId',
+    'nodeId',
+    'units',
+    'resourceClass',
+    'bytesIn',
+    'bytesOut',
+    'durationMs',
+    'timestamp',
+    'status',
+  ],
+  additionalProperties: false,
+  properties: {
+    jobId: { type: 'string', description: 'Unique job identifier.' },
+    nodeId: { type: 'string', description: 'Task graph node identifier.' },
+    units: { type: 'integer', minimum: 0, description: 'Billed resource units (0 on rollback/failure).' },
+    resourceClass: {
+      type: 'string',
+      enum: ['light', 'cpu', 'memory', 'gpu'],
+      description: 'Resource tier multiplier applied to the task.',
+    },
+    bytesIn: { type: 'integer', minimum: 0, description: 'Input payload size in bytes.' },
+    bytesOut: { type: 'integer', minimum: 0, description: 'Output result size in bytes.' },
+    durationMs: { type: 'integer', minimum: 0, description: 'Execution wall time in milliseconds.' },
+    timestamp: { type: 'integer', description: 'Epoch ms timestamp when recorded.' },
+    status: {
+      type: 'string',
+      enum: ['completed', 'failed', 'cancelled'],
+      description: 'Terminal status of the task execution.',
+    },
+  },
+} as const;
+
+export const UsageQueryResponseSchema = {
+  $id: 'https://easyconvert.local/schemas/usage-query-response.json',
+  type: 'object',
+  required: ['success', 'items', 'totalUnits', 'count'],
+  additionalProperties: false,
+  properties: {
+    success: { type: 'boolean', const: true },
+    items: {
+      type: 'array',
+      items: { $ref: 'https://easyconvert.local/schemas/usage-ledger-entry.json' },
+    },
+    totalUnits: { type: 'integer', minimum: 0, description: 'Sum of units across returned items.' },
+    count: { type: 'integer', minimum: 0, description: 'Number of returned ledger items.' },
+  },
+} as const;
+

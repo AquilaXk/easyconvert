@@ -458,3 +458,13 @@ export async function commitQuota(reservationId: string): Promise<boolean> {
 export async function rollbackQuota(reservationId: string): Promise<boolean> {
   return redisKeyStore.rollbackQuota(reservationId);
 }
+
+/**
+ * Settles a previously reserved quota transaction against actual consumed units.
+ */
+export async function settleQuota(
+  reservationId: string,
+  actualUnits: number
+): Promise<{ success: boolean; difference: number }> {
+  return redisKeyStore.settleQuota(reservationId, actualUnits);
+}
