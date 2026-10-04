@@ -27,6 +27,10 @@ import { runClientEdgeOcr, EdgeOcrError } from '../src/lib/edge-ocr';
 import { executeItemConversion } from '../src/lib/client-converter';
 import { resolveConversionTier } from '../src/lib/edge/tier-router';
 
+const { resolveConversionTier: routeByRules } = await vi.importActual<
+  typeof import('../src/lib/edge/tier-router')
+>('../src/lib/edge/tier-router');
+
 const RECOGNIZED_TEXT = 'INVOICE 2026 TOTAL 42';
 const RECOGNIZED_CONFIDENCE_PERCENT = 87;
 
@@ -146,6 +150,50 @@ describe('runClientEdgeOcr', () => {
     expect(createWorker).not.toHaveBeenCalled();
   });
 
+  it('rejects non-PNG/JPEG input before running the engine or embedding it', async () => {
+    const webp = await sharp({ create: { width: SCAN_WIDTH, height: SCAN_HEIGHT, channels: 3, background: '#ffffff' } })
+      .webp()
+      .toBuffer();
+    // RIFF....WEBP: confirms the fixture really is WebP, not a PNG under another name.
+    expect(webp.subarray(0, 4).toString('latin1')).toBe('RIFF');
+    expect(webp.subarray(8, 12).toString('latin1')).toBe('WEBP');
+    const file = new File([new Uint8Array(webp)], 'scan.webp', { type: 'image/webp' });
+
+    const attempt = runClientEdgeOcr(file, { ocrEnabled: true });
+
+    await expect(attempt).rejects.toBeInstanceOf(EdgeOcrError);
+    await expect(attempt).rejects.toThrow(/PNG or JPEG/);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
+  it('rejects WebP bytes mislabeled as JPEG instead of handing them to the JPEG embedder', async () => {
+    const webp = await sharp({ create: { width: SCAN_WIDTH, height: SCAN_HEIGHT, channels: 3, background: '#ffffff' } })
+      .webp()
+      .toBuffer();
+    const file = new File([new Uint8Array(webp)], 'scan.jpg', { type: 'image/jpeg' });
+
+    await expect(runClientEdgeOcr(file, { ocrEnabled: true })).rejects.toBeInstanceOf(EdgeOcrError);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
+  it('terminates the engine worker when recognition throws', async () => {
+    const worker = {
+      recognize: vi.fn(async () => {
+        throw new Error('wasm memory exhausted');
+      }),
+      terminate: vi.fn(async () => undefined),
+    };
+    createWorker.mockResolvedValue(worker);
+    const file = new File([await scanPng()], 'scan.png', { type: 'image/png' });
+
+    const attempt = runClientEdgeOcr(file, { ocrEnabled: true });
+
+    await expect(attempt).rejects.toBeInstanceOf(EdgeOcrError);
+    await expect(attempt).rejects.toThrow(/wasm memory exhausted/);
+    expect(worker.recognize).toHaveBeenCalledTimes(1);
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+  });
+
   it('reports the confidence the engine measured', async () => {
     createWorker.mockResolvedValue(
       workerReturning({ text: RECOGNIZED_TEXT, confidence: RECOGNIZED_CONFIDENCE_PERCENT, blocks: RECOGNIZED_BLOCKS })
@@ -233,5 +281,61 @@ describe('edge OCR failure escalates to the cloud tier', () => {
     expect(onSuccess).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0][0]).toMatch(/client-only edge mode/);
+    // The specific edge OCR failure is reported, not only the generic client-only message.
+    expect(onError.mock.calls[0][0]).toMatch(/L2/);
+    expect(onError.mock.calls[0][0]).toMatch(/language data fetch failed: 403/);
+  });
+});
+
+describe('edge OCR only produces searchable PDFs', () => {
+  const cloudBody = new Blob(['INVOICE 2026 TOTAL 42'], { type: 'text/plain' });
+
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis);
+    createWorker.mockResolvedValue(
+      workerReturning({ text: RECOGNIZED_TEXT, confidence: RECOGNIZED_CONFIDENCE_PERCENT, blocks: RECOGNIZED_BLOCKS })
+    );
+  });
+
+  it('does not route a non-PDF OCR target to the edge OCR tier', () => {
+    expect(routeByRules('png', 'txt', SCAN_WIDTH, { ocrEnabled: true }).tier).toBe('L4');
+    expect(routeByRules('png', 'docx', SCAN_WIDTH, { ocrEnabled: true }).tier).toBe('L4');
+    expect(routeByRules('png', 'pdf', SCAN_WIDTH, { ocrEnabled: true }).tier).toBe('L2');
+  });
+
+  it.each([
+    ['routed by the tier rules', () => vi.mocked(resolveConversionTier).mockImplementation(routeByRules)],
+    [
+      'even when routed to L2',
+      () =>
+        vi.mocked(resolveConversionTier).mockReturnValue({
+          tier: 'L2',
+          tierName: 'Edge L2 (SIMD Wasm)',
+          isClientEdge: true,
+          reason: 'routed by test',
+        }),
+    ],
+  ])('sends png to txt OCR to the cloud without running edge OCR, %s', async (_label, route) => {
+    route();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      blob: async () => cloudBody,
+    } as Response);
+    const onSuccess = vi.fn();
+    const onError = vi.fn();
+    const item = { ...(await scanItem()), targetFormat: 'txt' };
+
+    await executeItemConversion(item, { onProgress: () => undefined, onSuccess, onError });
+
+    expect(createWorker).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/convert');
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    const [, size, edgeProcessed, tierName, fallback] = onSuccess.mock.calls[0];
+    expect(size).toBe(cloudBody.size);
+    expect(edgeProcessed).toBe(false);
+    expect(tierName).toBe('Cloud (Zero-Retention)');
+    expect(fallback).toBeUndefined();
   });
 });

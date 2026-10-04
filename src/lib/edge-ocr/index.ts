@@ -33,8 +33,10 @@ const OCR_LANGUAGE_CODES: Readonly<Record<string, string>> = {
 };
 const DEFAULT_OCR_LANGUAGE = 'eng';
 const CONFIDENCE_PERCENT_SCALE = 100;
-const JPEG_EXTENSIONS: ReadonlySet<string> = new Set(['jpg', 'jpeg']);
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47];
+const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
+/** Edge OCR only produces a searchable PDF; other OCR targets go through the normal flow. */
+const EDGE_OCR_TARGET_FORMAT = 'pdf';
 
 /**
  * Returns true if the client environment supports in-browser WebAssembly & Web Worker execution.
@@ -54,8 +56,8 @@ function resolveTesseractLanguage(language: string | undefined): string {
   return OCR_LANGUAGE_CODES[language.toLowerCase()] ?? language;
 }
 
-function isPng(bytes: Uint8Array): boolean {
-  return PNG_SIGNATURE.every((byte, i) => bytes[i] === byte);
+function hasSignature(bytes: Uint8Array, signature: readonly number[]): boolean {
+  return signature.every((byte, i) => bytes[i] === byte);
 }
 
 async function recognizeImage(
@@ -129,6 +131,12 @@ export async function runClientEdgeOcr(
   const fileBytes = new Uint8Array(arrayBuffer);
   const fileName = file.name.replace(/\.[^/.]+$/, '');
 
+  // Check the bytes, not the name or MIME type, before spending time on recognition.
+  const isJpg = hasSignature(fileBytes, JPEG_SIGNATURE);
+  if (!isJpg && !hasSignature(fileBytes, PNG_SIGNATURE)) {
+    throw new EdgeOcrError(`Edge OCR can only embed PNG or JPEG images, not "${ext || file.type}"`);
+  }
+
   onProgress?.(35);
   const ocrResult = await recognizeImage(file, arrayBuffer, options, onProgress);
   onProgress?.(80);
@@ -138,10 +146,6 @@ export async function runClientEdgeOcr(
   doc.setCreator('EasyConvert Client-Side Edge OCR');
   const font = await doc.embedFont(StandardFonts.Helvetica);
 
-  const isJpg = JPEG_EXTENSIONS.has(ext) || file.type === 'image/jpeg';
-  if (!isJpg && !isPng(fileBytes)) {
-    throw new EdgeOcrError(`Edge OCR can only embed PNG or JPEG images, not "${ext || file.type}"`);
-  }
   const embeddedImage = isJpg ? await doc.embedJpg(fileBytes) : await doc.embedPng(fileBytes);
   const { width, height } = embeddedImage;
   ocrResult.imageWidth = width;
@@ -165,8 +169,9 @@ export async function runClientEdgeOcr(
 }
 
 /**
- * Executes client-side Edge OCR for a queue item when edge OCR is enabled.
- * Returns null when edge OCR does not apply; throws {@link EdgeOcrError} when it applies but fails,
+ * Executes client-side Edge OCR for a queue item when edge OCR is enabled and the target is PDF.
+ * Returns null when edge OCR does not apply (including non-PDF targets, which the normal flow
+ * handles); throws {@link EdgeOcrError} when it applies but fails,
  * so the caller can escalate to the cloud tier and record why.
  */
 export async function tryProcessClientEdgeOcr(
@@ -174,6 +179,9 @@ export async function tryProcessClientEdgeOcr(
   onProgress?: (percent: number) => void
 ): Promise<{ resultUrl: string; resultSize: number } | null> {
   if (item.options.clientEdgeMode === false || !item.options.ocrEnabled || typeof window === 'undefined') {
+    return null;
+  }
+  if (item.targetFormat.toLowerCase() !== EDGE_OCR_TARGET_FORMAT) {
     return null;
   }
 
