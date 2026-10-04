@@ -506,8 +506,20 @@ export function encodeStep(model: any): Buffer {
           'tpl-path.mjs': 'await page.goto(`https://third-party.dev/${path}`);\n',
           'concat-path.mjs': `await fetch('https://third-party.dev/' + path);\n`,
           'concat-chain.mjs': `const BASE = 'https://third-party.dev';\nawait fetch(BASE + '/' + id + '/raw');\n`,
-          'tpl-port.mjs': 'await page.goto(`https://third-party.dev:${port}/x`);\n',
+          'tpl-port.mjs': 'await page.goto(`https://third-party.dev:8443/${path}`);\n',
           'tpl-query.mjs': 'await fetch(`https://third-party.dev?q=${encodeURIComponent(q)}`);\n',
+        },
+        'third-party.dev'
+      );
+    });
+
+    it('flags the host after userinfo even when the credentials are unknown (positive case)', () => {
+      expectAllFlagged(
+        {
+          'userinfo-template.mjs': 'await fetch(`https://api:${process.env.KEY}@third-party.dev/v3`);\n',
+          'userinfo-concat.mjs': `await fetch('https://deploy:' + token + '@third-party.dev');\n`,
+          'userinfo-new-url.mjs': `await fetch(new URL(path, 'https://api:' + key + '@third-party.dev'));\n`,
+          'userinfo-literal.mjs': `await fetch('https://api:secret@third-party.dev/v3');\n`,
         },
         'third-party.dev'
       );
@@ -519,6 +531,11 @@ export function encodeStep(model: any): Buffer {
         'concat-host.mjs': `await fetch('https://' + host);\n`,
         'tpl-tld.mjs': 'await fetch(`https://third-party${tld}/x`);\n',
         'concat-suffix.mjs': `await fetch('https://third-party.dev' + suffix);\n`,
+        // An authority cut off before '/', '?', or '#' may still continue with userinfo ('user:pass@other-host').
+        'tpl-unknown-port.mjs': 'await page.goto(`https://third-party.dev:${port}/x`);\n',
+        'tpl-unknown-password.mjs': 'await fetch(`https://api:${process.env.KEY}`);\n',
+        'tpl-userinfo-hole.mjs': 'await fetch(`https://api:${key}@${host}/v3`);\n',
+        'userinfo-local.mjs': 'await fetch(`https://api:${process.env.KEY}@localhost:3000/v3`);\n',
       });
     });
 

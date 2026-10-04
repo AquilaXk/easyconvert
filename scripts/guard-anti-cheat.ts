@@ -601,10 +601,10 @@ const REQUEST_CONFIG_URL_PROPERTIES: readonly string[] = ['url', 'baseURL'];
 /** Receivers whose HTTP-verb methods issue a request (`page.request.get`, `request.post`, `axios.get`). */
 const REQUEST_RECEIVERS: ReadonlySet<string> = new Set(['request', 'axios']);
 const REQUEST_METHODS: ReadonlySet<string> = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'fetch', 'request']);
-/** Scheme plus a host that is already terminated, so a partially known URL still names its full host. */
-const URL_WITH_COMPLETE_HOST = /^https?:\/\/[^/?#:]+[/?#:]/i;
-/** Scheme and terminated host of a partially known URL. */
-const URL_ORIGIN_PREFIX = /^https?:\/\/[^/?#:]+/i;
+/** Scheme of an http(s) URL, captured without the `//`. */
+const HTTP_SCHEME_PREFIX = /^(https?:)\/\//i;
+/** Characters that end the authority (`userinfo@host:port`) of a URL. */
+const AUTHORITY_TERMINATOR = /[/?#]/;
 /** A URL input that carries its own scheme and therefore ignores the base passed to `new URL`. */
 const ABSOLUTE_URL_INPUT = /^[a-z][a-z0-9+.-]*:/i;
 /** Bound on chained constant lookups (`const A = B; const B = ...`) so cyclic references terminate. */
@@ -618,10 +618,24 @@ function stringLiteralText(node: ts.Node | undefined): string | undefined {
   return undefined;
 }
 
-/** Statically known leading text of a string expression; `complete` is false when a suffix is unknown. */
+/**
+ * Statically known chunks of a string expression with an unknown value between each pair.
+ * A single chunk means the whole value is known; `['', '']` means nothing is known.
+ */
 interface StaticText {
-  text: string;
-  complete: boolean;
+  parts: string[];
+}
+
+const UNKNOWN_TEXT: StaticText = { parts: ['', ''] };
+
+function knownText(text: string): StaticText {
+  return { parts: [text] };
+}
+
+function concatStatic(left: StaticText, right: StaticText): StaticText {
+  const head = left.parts.slice(0, -1);
+  const joint = left.parts[left.parts.length - 1] + right.parts[0];
+  return { parts: [...head, joint, ...right.parts.slice(1)] };
 }
 
 /** Scope-aware resolver: the checker binds each identifier to the declaration actually in scope. */
@@ -664,68 +678,81 @@ function constInitializer(identifier: ts.Identifier, resolver: ConstantResolver)
   return declaration.initializer;
 }
 
-function staticText(node: ts.Expression, resolver: ConstantResolver): StaticText | undefined {
+function staticText(node: ts.Expression, resolver: ConstantResolver): StaticText {
   const expr = unwrapExpression(node);
   const literal = stringLiteralText(expr);
-  if (literal !== undefined) return { text: literal, complete: true };
+  if (literal !== undefined) return knownText(literal);
   if (ts.isIdentifier(expr)) {
     const initializer = constInitializer(expr, resolver);
-    return initializer ? staticText(initializer, deeper(resolver)) : undefined;
+    return initializer ? staticText(initializer, deeper(resolver)) : UNKNOWN_TEXT;
   }
   if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    return joinStatic(staticText(expr.left, resolver), () => staticText(expr.right, resolver));
+    return concatStatic(staticText(expr.left, resolver), staticText(expr.right, resolver));
   }
   if (ts.isTaggedTemplateExpression(expr)) return staticText(expr.template, resolver);
   if (ts.isTemplateExpression(expr)) {
-    let acc: StaticText = { text: expr.head.text, complete: true };
+    let acc = knownText(expr.head.text);
     for (const span of expr.templateSpans) {
-      const joined = joinStatic(acc, () => staticText(span.expression, resolver));
-      if (!joined || !joined.complete) return joined;
-      acc = { text: joined.text + span.literal.text, complete: true };
+      acc = concatStatic(concatStatic(acc, staticText(span.expression, resolver)), knownText(span.literal.text));
     }
     return acc;
   }
   if (ts.isNewExpression(expr)) return urlConstructorText(expr, resolver);
-  return undefined;
-}
-
-function joinStatic(left: StaticText | undefined, right: () => StaticText | undefined): StaticText | undefined {
-  if (!left) return undefined;
-  if (!left.complete) return left;
-  const rhs = right();
-  if (!rhs) return left.text ? { text: left.text, complete: false } : undefined;
-  return { text: left.text + rhs.text, complete: rhs.complete };
+  return UNKNOWN_TEXT;
 }
 
 /** `new URL(input, base)`: the resolved href, or the base origin when the relative input is unknown. */
-function urlConstructorText(node: ts.NewExpression, resolver: ConstantResolver): StaticText | undefined {
+function urlConstructorText(node: ts.NewExpression, resolver: ConstantResolver): StaticText {
   const args = node.arguments ?? [];
-  if (!ts.isIdentifier(node.expression) || node.expression.text !== 'URL' || args.length === 0) return undefined;
+  if (!ts.isIdentifier(node.expression) || node.expression.text !== 'URL' || args.length === 0) return UNKNOWN_TEXT;
   const input = staticText(args[0], resolver);
-  if (args.length === 1) return input;
-  if (input && ABSOLUTE_URL_INPUT.test(input.text)) return input;
+  if (args.length === 1 || ABSOLUTE_URL_INPUT.test(input.parts[0])) return input;
   const base = staticText(args[1], resolver);
-  if (!base || externalUrlHost(base) === undefined) return undefined;
-  if (input?.complete && base.complete) {
+  if (input.parts.length === 1 && base.parts.length === 1) {
     try {
-      return { text: new URL(input.text, base.text).href, complete: true };
+      return knownText(new URL(input.parts[0], base.parts[0]).href);
     } catch {
-      return undefined;
+      return UNKNOWN_TEXT;
     }
   }
-  const origin = URL_ORIGIN_PREFIX.exec(base.text)?.[0];
-  return origin ? { text: `${origin}/`, complete: false } : undefined;
+  const scheme = HTTP_SCHEME_PREFIX.exec(base.parts[0]);
+  const host = externalUrlHost(base);
+  if (!scheme || !host) return UNKNOWN_TEXT;
+  return concatStatic(knownText(`${scheme[1]}//${host}/`), UNKNOWN_TEXT);
 }
 
-/** Host of an http(s) URL whose host part is statically known, or undefined when it is not a URL. */
+/**
+ * Host of an http(s) URL whose host part is statically known, or undefined when it is not a URL or the host is unknown.
+ * The authority of a partially known URL is only trusted when the host follows the last unknown chunk inside it after a
+ * literal `@`, or when the authority is fully known: an unknown chunk could otherwise still hold `user:pass@other-host`.
+ */
 function externalUrlHost(value: StaticText): string | undefined {
-  if (!/^https?:\/\//i.test(value.text)) return undefined;
-  if (!value.complete && !URL_WITH_COMPLETE_HOST.test(value.text)) return undefined;
+  const scheme = HTTP_SCHEME_PREFIX.exec(value.parts[0]);
+  if (!scheme) return undefined;
+  if (value.parts.length === 1) {
+    try {
+      return new URL(value.parts[0]).hostname;
+    } catch {
+      // A complete literal that fails to parse is still an attempt to reach a site: fail closed.
+      return '';
+    }
+  }
+  const authority: string[] = [];
+  const chunks = [value.parts[0].slice(scheme[0].length), ...value.parts.slice(1)];
+  for (const chunk of chunks) {
+    const end = chunk.search(AUTHORITY_TERMINATOR);
+    authority.push(end === -1 ? chunk : chunk.slice(0, end));
+    if (end !== -1) break;
+  }
+  const lastChunk = authority[authority.length - 1];
+  const at = lastChunk.lastIndexOf('@');
+  if (authority.length > 1 && at === -1) return undefined;
+  const hostPort = lastChunk.slice(at + 1);
+  if (!hostPort) return undefined;
   try {
-    return new URL(value.text).hostname;
+    return new URL(`${scheme[1]}//${hostPort}/`).hostname;
   } catch {
-    // A complete literal that fails to parse is still an attempt to reach a site: fail closed.
-    return value.complete ? '' : undefined;
+    return undefined;
   }
 }
 
@@ -862,8 +889,7 @@ function checkGovernance(targetDir?: string): Violation[] {
       // G5: automation must not navigate to or fetch a non-local site (e.g. scraping a third-party service).
       if (automation && ts.isCallExpression(node)) {
         for (const target of urlPositionExpressions(node, resolver)) {
-          const value = staticText(target, resolver);
-          const host = value ? externalUrlHost(value) : undefined;
+          const host = externalUrlHost(staticText(target, resolver));
           if (host === undefined || isLocalHost(host)) continue;
           const { line, snippet } = getNodeSnippet(sourceFile, node);
           violations.push({
