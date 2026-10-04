@@ -1514,8 +1514,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/gif',
     category: 'image',
     description: 'Graphics Interchange Format with animated frame and transparency support.',
-    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv'],
-    optionsSchema: { dimensions: true, ocrEnabled: true, ocrLanguage: true },
+    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto'],
+    optionsSchema: { dimensions: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   bmp: {
     id: 'bmp',

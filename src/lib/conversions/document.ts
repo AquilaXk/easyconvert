@@ -21,6 +21,8 @@ import {
   OcrPageResult,
   exportHocr,
   exportAlto,
+  parseHocr,
+  parseAlto,
   inspectPdfPagesTextDensity,
   evaluatePageOcrDecisions,
   assembleCombinedOcrResult,
@@ -55,6 +57,8 @@ export {
   renderDrawingMlToSvg,
   parseDrawingMlShapes,
   escapeRtf,
+  parseHocr,
+  parseAlto,
 };
 export type { DrawingMlShape, TableBorder, PdfTextBlock, PdfToUnicodeCMap, XyCutOptions, DlaBoundingBox, DlaBlock, DlaPageLayout };
 
@@ -87,6 +91,83 @@ export async function convertDocument(
     ['docx', 'xlsx', 'epub', 'pptx', 'ods', 'odp', 'odt', 'xls'].includes(tgt)
   ) {
     return convertOffice(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // hOCR 1.2 XHTML and ALTO 4.x XML as source formats
+  if (src === 'hocr' || src === 'alto') {
+    const content = inputBuffer.toString('utf-8');
+    const ocrResult = src === 'hocr' ? parseHocr(content) : parseAlto(content);
+
+    // hOCR / ALTO to ALTO XML
+    if (tgt === 'alto') {
+      const xml = src === 'alto' ? content : exportAlto(ocrResult, { filename: originalFilename });
+      const buffer = Buffer.from(xml, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'application/xml',
+        filename: `${baseName}.xml`,
+        size: buffer.length,
+        ocrExtractedText: ocrResult.text,
+        ocrConfidence: ocrResult.confidence,
+      };
+    }
+
+    // hOCR / ALTO to hOCR XHTML
+    if (tgt === 'hocr') {
+      const html =
+        src === 'hocr'
+          ? content
+          : exportHocr(ocrResult, { documentTitle: baseName, filename: originalFilename });
+      const buffer = Buffer.from(html, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'application/xhtml+xml',
+        filename: `${baseName}.hocr`,
+        size: buffer.length,
+        ocrExtractedText: ocrResult.text,
+        ocrConfidence: ocrResult.confidence,
+      };
+    }
+
+    // hOCR / ALTO to Plain Text (semantic extraction without HTML/XML markup)
+    if (tgt === 'txt') {
+      const buffer = Buffer.from(ocrResult.text, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'text/plain',
+        filename: `${baseName}.txt`,
+        size: buffer.length,
+        ocrExtractedText: ocrResult.text,
+        ocrConfidence: ocrResult.confidence,
+      };
+    }
+
+    // hOCR / ALTO to HTML
+    if (tgt === 'html') {
+      const html =
+        src === 'hocr'
+          ? content
+          : exportHocr(ocrResult, { documentTitle: baseName, filename: originalFilename });
+      const buffer = Buffer.from(html, 'utf-8');
+      return {
+        buffer,
+        mimeType: 'text/html',
+        filename: `${baseName}.html`,
+        size: buffer.length,
+        ocrExtractedText: ocrResult.text,
+        ocrConfidence: ocrResult.confidence,
+      };
+    }
+
+    // hOCR / ALTO to PDF: render structured PDF with page dimensions
+    if (tgt === 'pdf') {
+      const res = await generatePdfFromText(ocrResult.text, src, options, baseName);
+      return {
+        ...res,
+        ocrExtractedText: ocrResult.text,
+        ocrConfidence: ocrResult.confidence,
+      };
+    }
   }
 
   // PDF as source format

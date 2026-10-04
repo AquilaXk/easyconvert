@@ -5,6 +5,8 @@ import {
   performOcr,
   exportHocr,
   exportAlto,
+  parseHocr,
+  parseAlto,
   inspectPdfPagesTextDensity,
   performSmartMultiPagePdfOcr,
   convertFile,
@@ -432,6 +434,41 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       }
     });
 
+    it('supports hyphenated vertical model aliases jpn-vert, chi-sim-vert, chi-tra-vert and fails closed when traineddata is unavailable', async () => {
+      await expect(
+        performOcr(dummyImage, 'jpn-vert')
+      ).rejects.toThrow(OcrLanguageUnavailableError);
+
+      try {
+        await performOcr(dummyImage, 'jpn-vert');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
+        expect(err.message).toContain('jpn_vert.traineddata');
+      }
+
+      await expect(
+        performOcr(dummyImage, 'chi-sim-vert')
+      ).rejects.toThrow(OcrLanguageUnavailableError);
+
+      try {
+        await performOcr(dummyImage, 'chi-sim-vert');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
+        expect(err.message).toContain('chi_sim_vert.traineddata');
+      }
+
+      await expect(
+        performOcr(dummyImage, 'chi-tra-vert')
+      ).rejects.toThrow(OcrLanguageUnavailableError);
+
+      try {
+        await performOcr(dummyImage, 'chi-tra-vert');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
+        expect(err.message).toContain('chi_tra_vert.traineddata');
+      }
+    });
+
     it('rejects unsupported languages and lists supported languages including vertical models', async () => {
       let thrownError: any = null;
       try {
@@ -448,4 +485,181 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       expect(thrownError.message).toContain('chi_tra_vert');
     });
   });
+
+  // -------------------------------------------------------------
+  // 5. Bidirectional hOCR 1.2 and ALTO 4.x Cross-Conversion & Clean Text Extraction
+  // -------------------------------------------------------------
+  describe('Bidirectional hOCR / ALTO Cross-Conversion & Clean Text Extraction', () => {
+    const sampleHocr = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head><title>Test HOCR</title></head>
+<body>
+  <div class="ocr_page" id="page_1" title="image 'test.png'; bbox 0 0 800 600; ppageno 1">
+    <div class="ocr_carea" id="block_1_1" title="bbox 40 80 400 120">
+      <p class="ocr_par" id="par_1_1">
+        <span class="ocr_line" id="line_1_1" title="bbox 40 80 400 120">
+          <span class="ocrx_word" id="w_1" title="bbox 40 80 140 120; x_wconf 95">EASYCONVERT</span>
+          <span class="ocrx_word" id="w_2" title="bbox 160 80 260 120; x_wconf 92">PRECISION</span>
+        </span>
+      </p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    const sampleAlto = `<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"
+      xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v4# http://www.loc.gov/standards/alto/v4/alto-4-2.xsd">
+  <Description>
+    <MeasurementUnit>pixel</MeasurementUnit>
+    <sourceImageInformation><fileName>test.png</fileName></sourceImageInformation>
+  </Description>
+  <Layout>
+    <Page ID="PAGE_1" PHYSICAL_IMG_NR="1" WIDTH="800" HEIGHT="600">
+      <PrintSpace HPOS="0" VPOS="0" WIDTH="800" HEIGHT="600">
+        <TextBlock ID="TB_1" HPOS="40" VPOS="80" WIDTH="360" HEIGHT="40">
+          <TextLine ID="TL_1" HPOS="40" VPOS="80" WIDTH="360" HEIGHT="40">
+            <String CONTENT="EASYCONVERT" HPOS="40" VPOS="80" WIDTH="100" HEIGHT="40" WC="0.95" />
+            <SP HPOS="140" VPOS="80" WIDTH="20" />
+            <String CONTENT="PRECISION" HPOS="160" VPOS="80" WIDTH="100" HEIGHT="40" WC="0.92" />
+          </TextLine>
+        </TextBlock>
+      </PrintSpace>
+    </Page>
+  </Layout>
+</alto>`;
+
+    it('parses hOCR markup accurately into OcrResult', () => {
+      const parsed = parseHocr(sampleHocr);
+      expect(parsed.text).toBe('EASYCONVERT PRECISION');
+      expect(parsed.wordCount).toBe(2);
+      expect(parsed.pages?.length).toBe(1);
+      expect(parsed.pages?.[0].width).toBe(800);
+      expect(parsed.pages?.[0].height).toBe(600);
+      expect(parsed.lineBlocks?.[0].words.length).toBe(2);
+      expect(parsed.lineBlocks?.[0].words[0].text).toBe('EASYCONVERT');
+      expect(parsed.lineBlocks?.[0].words[0].bbox.x).toBe(40);
+      expect(parsed.lineBlocks?.[0].words[1].text).toBe('PRECISION');
+    });
+
+    it('parses ALTO XML markup accurately into OcrResult', () => {
+      const parsed = parseAlto(sampleAlto);
+      expect(parsed.text).toBe('EASYCONVERT PRECISION');
+      expect(parsed.wordCount).toBe(2);
+      expect(parsed.pages?.length).toBe(1);
+      expect(parsed.pages?.[0].width).toBe(800);
+      expect(parsed.pages?.[0].height).toBe(600);
+      expect(parsed.lineBlocks?.[0].words.length).toBe(2);
+      expect(parsed.lineBlocks?.[0].words[0].text).toBe('EASYCONVERT');
+      expect(parsed.lineBlocks?.[0].words[0].bbox.width).toBe(100);
+    });
+
+    it('converts hocr to alto format via convertFile', async () => {
+      const result = await convertFile(Buffer.from(sampleHocr), 'hocr', 'alto', {}, 'input.hocr');
+      expect(result.mimeType).toBe('application/xml');
+      expect(result.filename).toBe('input.xml');
+      const xml = result.buffer.toString('utf-8');
+      expect(xml).toContain('<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"');
+      expect(xml).toContain('CONTENT="EASYCONVERT"');
+      expect(xml).toContain('CONTENT="PRECISION"');
+      expect(xml).toContain('WC=');
+    });
+
+    it('converts alto to hocr format via convertFile', async () => {
+      const result = await convertFile(Buffer.from(sampleAlto), 'alto', 'hocr', {}, 'input.xml');
+      expect(result.mimeType).toBe('application/xhtml+xml');
+      expect(result.filename).toBe('input.hocr');
+      const hocr = result.buffer.toString('utf-8');
+      expect(hocr).toContain('class="ocr_page"');
+      expect(hocr).toContain('class="ocrx_word"');
+      expect(hocr).toContain('EASYCONVERT');
+      expect(hocr).toContain('PRECISION');
+    });
+
+    it('extracts clean plain text from hocr without leaking any HTML or XML markup', async () => {
+      const result = await convertFile(Buffer.from(sampleHocr), 'hocr', 'txt', {}, 'input.hocr');
+      expect(result.mimeType).toBe('text/plain');
+      const txt = result.buffer.toString('utf-8').trim();
+      expect(txt).toBe('EASYCONVERT PRECISION');
+      expect(txt).not.toContain('<');
+      expect(txt).not.toContain('>');
+      expect(txt).not.toContain('ocr_page');
+    });
+
+    it('extracts clean plain text from alto without leaking any XML markup', async () => {
+      const result = await convertFile(Buffer.from(sampleAlto), 'alto', 'txt', {}, 'input.xml');
+      expect(result.mimeType).toBe('text/plain');
+      const txt = result.buffer.toString('utf-8').trim();
+      expect(txt).toBe('EASYCONVERT PRECISION');
+      expect(txt).not.toContain('<');
+      expect(txt).not.toContain('>');
+      expect(txt).not.toContain('alto');
+    });
+
+    it('converts hocr to structured PDF preserving page dimensions without dumping raw markup', async () => {
+      const result = await convertFile(Buffer.from(sampleHocr), 'hocr', 'pdf', {}, 'input.hocr');
+      expect(result.mimeType).toBe('application/pdf');
+      expect(result.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
+
+      const pdfText = result.ocrExtractedText || '';
+      expect(pdfText).toContain('EASYCONVERT');
+      expect(pdfText).not.toContain('<div class="ocr_page"');
+    });
+  });
+
+  // -------------------------------------------------------------
+  // 6. Mixed-Orientation Multi-Page PDF Coordinate Parity
+  // -------------------------------------------------------------
+  describe('Mixed-Orientation Multi-Page Viewport Parity', () => {
+    it('synthesizes line blocks spanning actual page width for landscape digital pages', async () => {
+      const doc = await PDFDocument.create();
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+
+      // Page 1: Landscape (1000 x 500)
+      const page1 = doc.addPage([1000, 500]);
+      page1.drawText('Wide landscape legal banner text with significant horizontal width across the entire layout', {
+        x: 50,
+        y: 400,
+        size: 18,
+        font,
+      });
+
+      // Page 2: Portrait (500 x 800)
+      const page2 = doc.addPage([500, 800]);
+      page2.drawText('Standard vertical portrait document text', {
+        x: 50,
+        y: 700,
+        size: 14,
+        font,
+      });
+
+      const pdfBuffer = Buffer.from(await doc.save());
+
+      // Smart OCR with skip_text (both pages have native text and are skipped)
+      const hocrResult = await convertFile(pdfBuffer, 'pdf', 'hocr', {
+        ocrEnabled: true,
+        ocrMode: 'skip_text',
+      }, 'mixed.pdf');
+
+      const hocrText = hocrResult.buffer.toString('utf-8');
+      // Page 1 should reflect 1000 x 500
+      expect(hocrText).toContain('bbox 0 0 1000 500');
+      // Page 2 should reflect 500 x 800
+      expect(hocrText).toContain('bbox 0 0 500 800');
+
+      // Synthesized blocks on page 1 should extend beyond 612 default width
+      const altoResult = await convertFile(pdfBuffer, 'pdf', 'alto', {
+        ocrEnabled: true,
+        ocrMode: 'skip_text',
+      }, 'mixed.pdf');
+
+      const altoText = altoResult.buffer.toString('utf-8');
+      expect(altoText).toContain('WIDTH="1000" HEIGHT="500"');
+      expect(altoText).toContain('WIDTH="500" HEIGHT="800"');
+      // Verify that page 1 has a TextBlock spanning width greater than 612
+      expect(altoText).toMatch(/WIDTH="(?:9\d\d|1000)"/);
+    });
+  });
 });
+

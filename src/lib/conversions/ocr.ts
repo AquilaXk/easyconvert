@@ -26,17 +26,21 @@ import {
   OcrResult,
   OcrPageResult,
 } from './ocr-pdf-combiner';
-import { exportHocr, exportAlto } from './ocr-export';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
 export {
   sortLineBlocksTopological,
   detectColumnGutters,
-  exportHocr,
-  exportAlto,
   createLosslessSandwichPdfFromPdf,
 };
+export {
+  exportHocr,
+  exportAlto,
+  parseHocr,
+  parseAlto,
+  unescapeXml,
+} from './ocr-export';
 
 /**
  * Optical Character Recognition (OCR) Engine
@@ -73,7 +77,8 @@ export async function performOcr(
     chi_tra_vert: 'chi_tra_vert',
     zh_tra_vert: 'chi_tra_vert',
   };
-  const tesseractLang = langMap[language.toLowerCase()];
+  const normalizedLang = (language || 'auto').toLowerCase().replace(/-/g, '_');
+  const tesseractLang = langMap[normalizedLang];
   if (!tesseractLang) {
     throw new OcrLanguageUnavailableError(
       `Unsupported or unrecognized OCR language: '${language}'. Supported languages: ${Object.keys(langMap).join(', ')}.`
@@ -199,7 +204,8 @@ export async function performOcr(
     const tmpOutBase = path.join(os.tmpdir(), `ocr_cli_out_${crypto.randomUUID()}`);
     try {
       fs.writeFileSync(tmpIn, imageBuffer);
-      execFileSync(tesseractCli, [tmpIn, tmpOutBase, '-l', tesseractLang], {
+      const cliArgs = ['--tessdata-dir', localLangPath, tmpIn, tmpOutBase, '-l', tesseractLang];
+      execFileSync(tesseractCli, cliArgs, {
         stdio: ['ignore', 'ignore', 'pipe'],
         timeout: 15000,
       });
@@ -371,8 +377,8 @@ export function assembleCombinedOcrResult(
     if (ocr) {
       combinedPages.push({
         pageNumber: pa.pageNumber,
-        width: pa.width,
-        height: pa.height,
+        width: ocr.imageWidth || pa.width,
+        height: ocr.imageHeight || pa.height,
         text: ocr.text,
         confidence: ocr.confidence,
         lineBlocks: ocr.lineBlocks || [],
