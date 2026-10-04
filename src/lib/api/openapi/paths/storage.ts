@@ -23,30 +23,30 @@ const STORAGE_PROVIDER_TYPES = Object.keys(ALL_STORAGE_PROVIDER_TYPES).filter(
   (type) => !UNAVAILABLE_STORAGE_PROVIDERS.has(type)
 );
 
-const BYOS_PROVIDER_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/byos-provider-unavailable';
+const BYOS_INVALID_ENDPOINT_TYPE = 'https://api.easyconvert.io/problems/byos-invalid-endpoint';
 const HTTP_BAD_REQUEST = 400;
 
-const providerUnavailableExample = {
-  summary: 'Storage provider unavailable',
+const invalidEndpointExample = {
+  summary: 'Storage endpoint refused',
   value: {
-    type: BYOS_PROVIDER_UNAVAILABLE_TYPE,
-    title: 'Storage Provider Unavailable',
+    type: BYOS_INVALID_ENDPOINT_TYPE,
+    title: 'Invalid Storage Endpoint',
     status: HTTP_BAD_REQUEST,
-    detail: 'Storage provider "<providerType>" is not available for customer storage yet.',
+    detail: 'Blocked outbound connection to restricted host or IP: "169.254.169.254"',
     instance: '/api/v1/storage/credentials',
   },
 };
 
-const providerUnavailableContent = {
+const invalidEndpointContent = {
   schema: { $ref: '#/components/schemas/ProblemDetails' },
-  examples: { providerUnavailable: providerUnavailableExample },
+  examples: { invalidEndpoint: invalidEndpointExample },
 };
 
 const registerBadRequestResponse = {
-  description: `Invalid JSON, missing fields, or provider type mismatch. A provider type without a working adapter is refused with problem type \`${BYOS_PROVIDER_UNAVAILABLE_TYPE}\`.`,
+  description: `Invalid JSON, missing fields, or provider type mismatch. s3 credentials whose bucket or endpoint is invalid, private, a metadata host, not HTTPS, or resolving to a private address are refused with problem type \`${BYOS_INVALID_ENDPOINT_TYPE}\`.`,
   content: {
-    'application/problem+json': providerUnavailableContent,
-    'application/json': providerUnavailableContent,
+    'application/problem+json': invalidEndpointContent,
+    'application/json': invalidEndpointContent,
   },
 };
 

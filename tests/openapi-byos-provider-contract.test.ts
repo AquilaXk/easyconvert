@@ -7,9 +7,10 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { S3_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage';
 
 /**
- * The OpenAPI document must advertise exactly the providers the credentials endpoint accepts.
- * The oracle is the live route's response and a separately authored list of providers that
- * have a working adapter (s3 has a SigV4 client since WP-77).
+ * The OpenAPI document must advertise exactly the providers the credentials endpoint accepts and
+ * document only problem types the route can return. The oracle is the live route's response and a
+ * separately authored list of providers that have a working adapter (s3 has a SigV4 client since
+ * WP-77, so no provider can return byos-provider-unavailable any more).
  */
 
 const REGISTRABLE_PROVIDERS = ['s3', 'gcs', 'azure-blob', 'sftp', 'webdav', 'http'];
@@ -66,5 +67,31 @@ describe('OpenAPI storage credentials contract', () => {
     );
     expect(body).toMatchObject({ success: true, providerType: 's3' });
     expect(body.credentialRef).toMatch(new RegExp(created.properties.credentialRef.pattern));
+  });
+
+  it('documents the invalid-endpoint problem the route returns and no unreachable problem type', async () => {
+    const email = `byosdoc_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`;
+    const user = await userStore.createUser({ email, name: 'byosdoc', tier: 'pro' });
+    const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'byosdoc', { scopes: ['convert:write'] });
+    const res = await credentialsPost(
+      new NextRequest(`http://localhost:3000${CREDENTIALS_PATH}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secretKey}` },
+        body: JSON.stringify({
+          providerType: 's3',
+          credentials: { type: 's3', bucket: 'b-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'S', endpoint: 'https://169.254.169.254' },
+        }),
+      })
+    );
+    expect(res.status).toBe(400);
+    const routeProblem = await res.json();
+
+    const badRequest = (await registerOperation()).responses['400'];
+    const examples = Object.values(badRequest.content['application/problem+json'].examples ?? {}) as Array<{
+      value: { type: string; status: number; title: string };
+    }>;
+    expect(examples.map((example) => example.value.type)).toEqual([routeProblem.type]);
+    expect(examples[0].value).toMatchObject({ type: routeProblem.type, status: 400, title: routeProblem.title });
+    expect(JSON.stringify(badRequest)).not.toContain('byos-provider-unavailable');
   });
 });

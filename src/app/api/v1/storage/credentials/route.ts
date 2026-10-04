@@ -5,14 +5,13 @@ import {
   CustomerStorageCredentials,
   StorageProviderType,
   StorageAdapterError,
-  UNAVAILABLE_STORAGE_PROVIDERS,
   validateStorageCredentials,
 } from '@/lib/storage';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { refuseUnavailableStorageProvider } from '@/lib/api/byos-provider-guard';
 
 export const dynamic = 'force-dynamic';
 
-const BYOS_PROVIDER_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/byos-provider-unavailable';
 const BYOS_INVALID_ENDPOINT_TYPE = 'https://api.easyconvert.io/problems/byos-invalid-endpoint';
 
 export async function POST(req: NextRequest) {
@@ -52,14 +51,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (UNAVAILABLE_STORAGE_PROVIDERS.has(providerType)) {
-    return createProblemDetailsResponse(
-      400,
-      `Storage provider "${providerType}" is not available for customer storage yet.`,
-      instanceUri,
-      'Storage Provider Unavailable',
-      BYOS_PROVIDER_UNAVAILABLE_TYPE
-    );
+  const unavailable = refuseUnavailableStorageProvider(providerType, instanceUri);
+  if (unavailable) {
+    return unavailable;
   }
 
   if (credentials.type !== providerType) {
