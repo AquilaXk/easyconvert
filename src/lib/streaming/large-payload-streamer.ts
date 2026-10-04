@@ -155,6 +155,8 @@ export function createDeterministicSyntheticStream(
 const TAR_BLOCK_SIZE = 512;
 const TAR_NAME_FIELD_LENGTH = 100;
 const TAR_END_OF_ARCHIVE_BLOCKS = 2;
+/** Largest size the 11-digit octal ustar size field can hold. */
+const TAR_MAX_ENTRY_SIZE = 0o77777777777;
 
 /**
  * Streams raw binary payload into an authentic POSIX ustar TAR archive container stream.
@@ -166,8 +168,11 @@ export class TarStreamingPacker extends Transform {
   private headerPushed: boolean = false;
   private bytesWritten: number = 0;
 
-  constructor(filename: string = 'payload.bin', totalSize: number = 0, highWaterMark?: number) {
+  constructor(filename: string, totalSize: number, highWaterMark?: number) {
     super({ highWaterMark: highWaterMark ?? 64 * 1024 });
+    if (!Number.isSafeInteger(totalSize) || totalSize < 0 || totalSize > TAR_MAX_ENTRY_SIZE) {
+      throw new Error(`TAR entry size must be an integer from 0 to ${TAR_MAX_ENTRY_SIZE} bytes, got ${totalSize}`);
+    }
     if (Buffer.byteLength(filename, 'ascii') > TAR_NAME_FIELD_LENGTH || /[^\x20-\x7e]/.test(filename)) {
       throw new Error(`TAR entry name must be at most ${TAR_NAME_FIELD_LENGTH} printable ASCII characters: "${filename}"`);
     }
@@ -227,8 +232,8 @@ export class TarStreamingPacker extends Transform {
 }
 
 export function createTarStreamPacker(
-  filename: string = 'payload.bin',
-  totalSize: number = 0,
+  filename: string,
+  totalSize: number,
   highWaterMark?: number
 ): TarStreamingPacker {
   return new TarStreamingPacker(filename, totalSize, highWaterMark);
