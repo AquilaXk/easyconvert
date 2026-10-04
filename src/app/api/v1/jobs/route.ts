@@ -10,7 +10,7 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
-import { validateJobGraph, linearTasksToJobGraph, normalizeGraphNodes } from '@/lib/jobs';
+import { validateJobGraph, linearTasksToJobGraph, normalizeGraphNodes, JobGraphValidationError } from '@/lib/jobs';
 import { validateGraph, graphScheduler } from '@/lib/queue/graph';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -335,14 +335,31 @@ export async function POST(req: NextRequest) {
         );
       }
     } else if (tasks && tasks.length > 0) {
-      graph = linearTasksToJobGraph(
-        {
-          storageKey,
-          sourceFormat: sourceFormatParam,
-          filename: originalFilename,
-        },
-        tasks
-      );
+      try {
+        graph = linearTasksToJobGraph(
+          {
+            storageKey,
+            sourceFormat: sourceFormatParam,
+            filename: originalFilename,
+          },
+          tasks
+        );
+      } catch (err) {
+        if (!(err instanceof JobGraphValidationError)) {
+          throw err;
+        }
+        return reply(
+          createProblemDetailsResponse(
+            422,
+            err.message,
+            instanceUri,
+            'Unprocessable Entity',
+            'https://api.easyconvert.io/problems/unprocessable-entity',
+            undefined,
+            err.errors.map((e) => ({ name: e.path, reason: e.message }))
+          )
+        );
+      }
       const graphValidation = validateJobGraph(graph, {
         userTier: auth.user.tier,
         sourceFormat: sourceFormatParam,
