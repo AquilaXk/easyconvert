@@ -34,6 +34,7 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
       'ocr',
       'archive',
       'optimize',
+      'media.thumbnail',
       'import/url',
       'import/s3',
       'import/gcs',
@@ -95,9 +96,22 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
 
     // WP-44a added 'video' and 'trim' as fully active, supported conversion options
     expect(properties.video).toBeDefined();
+    expect(properties.video.type).toBe('object');
     expect(properties.video['x-easyconvert-status']).toBeUndefined();
     expect(properties.trim).toBeDefined();
+    expect(properties.trim.type).toBe('object');
     expect(properties.trim['x-easyconvert-status']).toBeUndefined();
+
+    // WP-44b added 'audio', 'subtitles', and 'thumbnail' as fully active, supported conversion options
+    expect(properties.audio).toBeDefined();
+    expect(properties.audio.type).toBe('object');
+    expect(properties.audio['x-easyconvert-status']).toBeUndefined();
+    expect(properties.subtitles).toBeDefined();
+    expect(properties.subtitles.type).toBe('object');
+    expect(properties.subtitles['x-easyconvert-status']).toBeUndefined();
+    expect(properties.thumbnail).toBeDefined();
+    expect(properties.thumbnail.type).toBe('object');
+    expect(properties.thumbnail['x-easyconvert-status']).toBeUndefined();
   });
 
   it('enforces canonical $id URIs across all contract schemas', () => {

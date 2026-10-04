@@ -444,6 +444,41 @@ export async function convertWithNativeFfmpeg(
       const durationSeconds = probeMediaDuration(inputPath, options);
       const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || 180000);
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
+      if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
+        const parts: { filename: string; buffer: Buffer }[] = [];
+        for (let i = 0; i < options.thumbnail.at.length; i++) {
+          const ts = options.thumbnail.at[i];
+          const partOut = path.join(tempDir, `output_${i}.${tgt}`);
+          const partArgs = buildFfmpegArguments(inputPath, partOut, src, tgt, options, ffmpegBin, ts);
+          await executeSandboxedBinary(ffmpegBin, partArgs, {
+            cwd: tempDir,
+            timeoutMs: timeout,
+            maxBuffer,
+            networkIsolated: true,
+            signal: options.signal,
+          });
+          if (fs.existsSync(partOut)) {
+            parts.push({
+              filename: `${baseName}_thumb_${i + 1}.${tgt}`,
+              buffer: fs.readFileSync(partOut),
+            });
+          }
+        }
+        if (parts.length > 0) {
+          const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+          const firstPersisted = preserveOutput(path.join(tempDir, `output_0.${tgt}`), tgt, options, vfsPayload);
+          const res = createConversionResult(
+            firstPersisted,
+            tgt,
+            baseName,
+            'native-ffmpeg',
+            Date.now() - startTime
+          );
+          res.parts = parts;
+          return res;
+        }
+      }
+
       const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
 
       await executeSandboxedBinary(ffmpegBin, args, {
@@ -1303,7 +1338,9 @@ export async function executeWorkerConversion(
   }
 
   // 2. Native FFmpeg
-  if (MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) {
+  const isThumbnailTarget = (tgt === 'jpg' || tgt === 'jpeg' || tgt === 'png') && Boolean(nativeOptions.thumbnail);
+  const isSubtitleExtractTarget = (tgt === 'srt' || tgt === 'vtt' || tgt === 'ass') && nativeOptions.subtitles?.mode === 'extract';
+  if ((MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) || (MEDIA_FORMATS.has(src) && (isThumbnailTarget || isSubtitleExtractTarget))) {
     try {
       const ffmpegRes = await convertWithNativeFfmpeg(input, src, tgt, nativeOptions, originalFilename);
       if (ffmpegRes) {

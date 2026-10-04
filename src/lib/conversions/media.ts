@@ -195,6 +195,24 @@ export async function convertMedia(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
+  // Thumbnail extraction routing
+  const isThumbnail = Boolean(options.thumbnail) || (['jpg', 'jpeg', 'png'].includes(tgt) && Boolean(options.thumbnail));
+  if (isThumbnail) {
+    if (!checkFfmpeg()) {
+      throw new ConversionFailedError('Native FFmpeg engine is required for thumbnail extraction.');
+    }
+    return await executeFfmpegThumbnails(inputBuffer, src, tgt, options, baseName);
+  }
+
+  // Subtitle extraction routing
+  const isSubtitleExtract = options.subtitles?.mode === 'extract' || ['srt', 'vtt', 'ass'].includes(tgt);
+  if (isSubtitleExtract && options.subtitles?.mode === 'extract') {
+    if (!checkFfmpeg()) {
+      throw new ConversionFailedError('Native FFmpeg engine is required for subtitle extraction.');
+    }
+    return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
+  }
+
   // If FFmpeg is explicitly requested, fail-closed if not available or if execution fails
   if (options.useFfmpeg) {
     if (!checkFfmpeg()) {
@@ -296,6 +314,72 @@ async function executeFfmpegTranscode(
   } finally {
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+  }
+}
+
+/**
+ * Extracts one or more frame thumbnails from video media via native FFmpeg.
+ */
+async function executeFfmpegThumbnails(
+  inputBuffer: Buffer,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  const tmpDir = os.tmpdir();
+  const token = crypto.randomBytes(8).toString('hex');
+  const inputPath = path.join(tmpDir, `easyconvert_in_${Date.now()}_${token}.${src}`);
+  fs.writeFileSync(inputPath, inputBuffer);
+
+  const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
+  const timestamps = options.thumbnail?.at && options.thumbnail.at.length > 0
+    ? options.thumbnail.at
+    : ['00:00:01.000'];
+  const actualTgt = options.thumbnail?.format || (tgt === 'png' ? 'png' : 'jpg');
+  const parts: { filename: string; buffer: Buffer }[] = [];
+  const createdFiles: string[] = [inputPath];
+
+  try {
+    for (let i = 0; i < timestamps.length; i++) {
+      const ts = timestamps[i];
+      const outputPath = path.join(tmpDir, `easyconvert_thumb_${Date.now()}_${token}_${i}.${actualTgt}`);
+      createdFiles.push(outputPath);
+
+      const args = buildFfmpegArguments(inputPath, outputPath, src, actualTgt, options, ffmpegBin, ts);
+      await executeSandboxedBinary(ffmpegBin, args, {
+        timeoutMs: 30000,
+        maxBuffer: 50 * 1024 * 1024,
+        networkIsolated: true,
+      });
+
+      if (!fs.existsSync(outputPath)) {
+        throw new Error(`FFmpeg thumbnail output missing for timestamp ${ts}`);
+      }
+      const partBuf = fs.readFileSync(outputPath);
+      if (partBuf.length === 0) {
+        throw new Error(`FFmpeg thumbnail output is 0 bytes for timestamp ${ts}`);
+      }
+      const partName = timestamps.length === 1 ? `${baseName}.${actualTgt}` : `${baseName}_thumb_${i + 1}.${actualTgt}`;
+      parts.push({
+        filename: partName,
+        buffer: partBuf,
+      });
+    }
+
+    return {
+      buffer: parts[0].buffer,
+      mimeType: getMimeTypeForMedia(actualTgt),
+      filename: parts[0].filename,
+      size: parts[0].buffer.length,
+      parts: parts.length > 1 ? parts : undefined,
+    };
+  } finally {
+    for (const p of createdFiles) {
+      if (fs.existsSync(p)) {
+        try { fs.unlinkSync(p); } catch {}
+      }
+    }
   }
 }
 
@@ -1131,6 +1215,13 @@ function getMimeTypeForMedia(ext: string): string {
     flv: 'video/x-flv',
     '3gp': 'video/3gpp',
     gif: 'image/gif',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    srt: 'application/x-subrip',
+    vtt: 'text/vtt',
+    ass: 'text/x-ssa',
   };
   return map[ext.toLowerCase()] || 'application/octet-stream';
 }
