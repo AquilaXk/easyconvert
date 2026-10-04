@@ -203,7 +203,7 @@ export async function executeImportTask(params: ImportOperationParams): Promise<
   return executeAdapterImport(params, targetKey, filename);
 }
 
-/** A refused destination resolved before the source object is opened. */
+/** An export destination, validated and resolved before the source object is opened. */
 type ExportDestination =
   | { kind: 'url'; url: string; headers: Record<string, string> }
   | { kind: 'adapter'; remotePath: string; adapter: IStorageAdapter };

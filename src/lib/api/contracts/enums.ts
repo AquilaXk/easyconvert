@@ -6,4 +6,3 @@ import { LEGACY_TASK_OPERATIONS } from '@/lib/jobs/graph';
  */
 export const PIPELINE_OPERATIONS: readonly string[] = Object.freeze(Array.from(LEGACY_TASK_OPERATIONS));
 
-export type PipelineOperation = (typeof PIPELINE_OPERATIONS)[number];
