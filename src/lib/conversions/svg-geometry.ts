@@ -50,19 +50,21 @@ const CSS_NUMBER = String.raw`[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?`;
 const COLOR_FUNCTION_PATTERN = /^(rgba?|hsla?)\(\s*([^()]*)\)$/;
 const NUMBER_WITH_UNIT_PATTERN = new RegExp(`^(${CSS_NUMBER})([a-z%]*)$`);
 
-/** A parsed colour: an opaque RGB value, fully transparent, or invalid. */
-type ParsedColor = RgbColor | 'transparent' | undefined;
+/** A parsed colour: `rgb` is null for fully transparent; undefined means invalid. */
+type ParsedColor = { rgb: RgbColor | null } | undefined;
+
+const TRANSPARENT: ParsedColor = { rgb: null };
 
 function clampChannel(v: number): number {
   return Math.max(0, Math.min(RGB_MAX, Math.round(v)));
 }
 
 function fromAlpha(rgb: RgbColor, alpha: number, source: string): ParsedColor {
-  if (alpha <= 0) return 'transparent';
+  if (alpha <= 0) return TRANSPARENT;
   if (alpha < 1) {
     throw new UnsupportedOptionError(`Semi-transparent SVG colour "${source}" is not supported by metafile encoders.`);
   }
-  return rgb;
+  return { rgb };
 }
 
 function parseHexColor(hex: string, source: string): ParsedColor {
@@ -82,13 +84,16 @@ function parseHexColor(hex: string, source: string): ParsedColor {
 
 /** Splits functional-notation arguments (legacy commas or modern spaces with "/ alpha"). */
 function splitColorArgs(body: string): { channels: string[]; alpha: string | undefined } | undefined {
-  const [main, alphaPart, ...extra] = body.split('/');
-  if (extra.length > 0) return undefined;
+  const parts = body.split('/');
+  if (parts.length > 2) return undefined;
+  const main = parts[0];
   const channels = main.includes(',')
     ? main.split(',').map((p) => p.trim())
     : main.trim().split(/\s+/);
-  let alpha: string | undefined = alphaPart?.trim();
-  if (main.includes(',') && channels.length === 4 && alpha === undefined) {
+  let alpha: string | undefined;
+  if (parts.length === 2) {
+    alpha = parts[1].trim();
+  } else if (main.includes(',') && channels.length === 4) {
     alpha = channels.pop();
   }
   if (channels.length !== 3 || channels.some((c) => c === '')) return undefined;
@@ -140,10 +145,10 @@ function parseHslFunction(channels: string[]): RgbColor | undefined {
 
 function parseColorValue(raw: string): ParsedColor {
   const s = raw.trim().toLowerCase();
-  if (s === 'transparent') return 'transparent';
+  if (s === 'transparent') return TRANSPARENT;
   const named = CSS_NAMED_COLORS.get(s);
   if (named !== undefined) {
-    return { r: (named >> 16) & RGB_MAX, g: (named >> 8) & RGB_MAX, b: named & RGB_MAX };
+    return { rgb: { r: (named >> 16) & RGB_MAX, g: (named >> 8) & RGB_MAX, b: named & RGB_MAX } };
   }
   if (s.startsWith('#')) return parseHexColor(s.substring(1), raw);
   const fn = COLOR_FUNCTION_PATTERN.exec(s);
@@ -162,8 +167,7 @@ function parseColorValue(raw: string): ParsedColor {
  */
 export function parseCssColor(colorStr: string | null | undefined): RgbColor | null {
   if (!colorStr || colorStr.trim().toLowerCase() === 'none') return null;
-  const parsed = parseColorValue(colorStr);
-  return typeof parsed === 'object' ? parsed : null;
+  return parseColorValue(colorStr)?.rgb ?? null;
 }
 
 const BLACK: RgbColor = { r: 0, g: 0, b: 0 };
@@ -180,10 +184,9 @@ export function resolvePaint(value: string, currentColor: string, property: 'fil
   if (lower.startsWith('url(')) {
     throw new UnsupportedOptionError(`SVG ${property} paint server "${v}" is not supported by metafile encoders.`);
   }
-  const parsed = lower === 'currentcolor' ? parseColorValue(currentColor) ?? BLACK : parseColorValue(v);
-  if (parsed === 'transparent') return null;
+  const parsed = lower === 'currentcolor' ? parseColorValue(currentColor) ?? { rgb: BLACK } : parseColorValue(v);
   if (parsed === undefined) return property === 'fill' ? { ...BLACK } : null;
-  return parsed;
+  return parsed.rgb ? { ...parsed.rgb } : null;
 }
 
 interface PathState {
@@ -326,7 +329,7 @@ const PATH_HANDLERS: Record<string, (c: PathCursor) => boolean> = {
   },
 };
 
-const PATH_TOKEN_PATTERN = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|./gy;
+const PATH_TOKEN_PATTERN = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
 const PATH_SEPARATOR_PATTERN = /^[\s,]+$/;
 const PATH_TOKEN_VALID = /^(?:[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$/;
 
@@ -517,14 +520,10 @@ function decodeXmlEntities(value: string): string {
 }
 
 function* scanXmlTags(xml: string): Generator<XmlTag> {
-  XML_TOKEN_PATTERN.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = XML_TOKEN_PATTERN.exec(xml)) !== null) {
-    if (m[2] === undefined) continue; // comment, CDATA, doctype, processing instruction
+  for (const m of xml.matchAll(XML_TOKEN_PATTERN)) {
+    if (!m[2]) continue; // comment, CDATA, doctype, processing instruction
     const attrs = new Map<string, string>();
-    XML_ATTR_PATTERN.lastIndex = 0;
-    let a: RegExpExecArray | null;
-    while ((a = XML_ATTR_PATTERN.exec(m[3])) !== null) {
+    for (const a of m[3].matchAll(XML_ATTR_PATTERN)) {
       attrs.set(a[1], decodeXmlEntities(a[2] ?? a[3] ?? ''));
     }
     yield { name: m[2].replace(/^svg:/, ''), attrs, closing: m[1] === '/', selfClosing: m[4] === '/' };

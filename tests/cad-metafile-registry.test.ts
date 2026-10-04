@@ -69,9 +69,8 @@ describe('Metafile registry advertises only working conversion pairs', () => {
         if (METAFILE_TARGETS.includes(target)) advertised.push(`${sourceId}->${target}`);
       }
     }
-    expect(advertised.sort()).toEqual(
-      ['eps->emf', 'eps->wmf', 'ps->emf', 'ps->wmf', 'svg->cgm', 'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf'].sort()
-    );
+    const sorted = [...advertised].sort((a, b) => a.localeCompare(b));
+    expect(sorted).toEqual(['eps->emf', 'eps->wmf', 'ps->emf', 'ps->wmf', 'svg->cgm', 'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf']);
   });
 
   const metafilePairs = Object.entries(FORMAT_REGISTRY).flatMap(([sourceId, def]) =>

@@ -117,7 +117,7 @@ function computeLogicalSpace(ops: DrawOp[], width: number, height: number): Logi
     );
   }
   const scale = unitsPerInch / CSS_PX_PER_INCH;
-  if (!(scale > 0)) {
+  if (scale <= 0) {
     throw new CadGeometryUnavailableError('Logical coordinate scale must be positive.');
   }
   return { unitsPerInch, scale };

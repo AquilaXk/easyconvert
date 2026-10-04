@@ -13,7 +13,6 @@ import {
   evaluateQuadraticBezier,
   cubicBezierToBSpline,
   tessellateSvgArc,
-  Point3D,
   verifyWatertightManifoldMesh,
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
@@ -94,8 +93,7 @@ function parseCgmDimensions(cgmText: string): { width: number; height: number } 
 function parseCgmLines(cgmText: string): string[] {
   const elements: string[] = [];
   const lineRegex = /(?<![A-Z])LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
-  let lineMatch: RegExpExecArray | null;
-  while ((lineMatch = lineRegex.exec(cgmText)) !== null) {
+  for (const lineMatch of cgmText.matchAll(lineRegex)) {
     elements.push(
       `<line x1="${lineMatch[1]}" y1="${lineMatch[2]}" x2="${lineMatch[3]}" y2="${lineMatch[4]}" stroke="#111827" stroke-width="2" />`
     );
@@ -106,8 +104,7 @@ function parseCgmLines(cgmText: string): string[] {
 function parseCgmTextElements(cgmText: string): string[] {
   const elements: string[] = [];
   const textRegex = /TEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)[^"]*"([^"]+)"/gi;
-  let textMatch: RegExpExecArray | null;
-  while ((textMatch = textRegex.exec(cgmText)) !== null) {
+  for (const textMatch of cgmText.matchAll(textRegex)) {
     elements.push(
       `<text x="${textMatch[1]}" y="${textMatch[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeXml(textMatch[3])}</text>`
     );
@@ -118,14 +115,9 @@ function parseCgmTextElements(cgmText: string): string[] {
 function parseCgmPolyElements(cgmText: string, isPolygon: boolean): string[] {
   const elements: string[] = [];
   const polyRegex = isPolygon ? /POLYGON\s+([^;\r\n]+);/gi : /POLYLINE\s+([^;\r\n]+);/gi;
-  let match: RegExpExecArray | null;
-  while ((match = polyRegex.exec(cgmText)) !== null) {
+  for (const match of cgmText.matchAll(polyRegex)) {
     const ptRegex = /\(\s*([-+]?[\d.]+)\s*,\s*([-+]?[\d.]+)\s*\)/g;
-    let pm: RegExpExecArray | null;
-    const pts: string[] = [];
-    while ((pm = ptRegex.exec(match[1])) !== null) {
-      pts.push(`${pm[1]},${pm[2]}`);
-    }
+    const pts = [...match[1].matchAll(ptRegex)].map((pm) => `${pm[1]},${pm[2]}`);
     const minCount = isPolygon ? 2 : 1;
     if (pts.length > minCount) {
       if (isPolygon) {

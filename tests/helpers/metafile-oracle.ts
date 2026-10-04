@@ -296,7 +296,7 @@ export function wmfOracleRecords(buffer: Buffer): {
       0x012d: 4, // META_SELECTOBJECT
       0x01f0: 4, // META_DELETEOBJECT
     };
-    if (fixedRecordWords[fnCode] !== undefined) {
+    if (fnCode in fixedRecordWords) {
       expect(recWords).toBe(fixedRecordWords[fnCode]);
     }
     if (fnCode === 0x02fa || fnCode === 0x02fc) {
