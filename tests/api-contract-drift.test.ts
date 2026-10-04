@@ -35,6 +35,7 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
       'archive',
       'optimize',
       'media.thumbnail',
+      'media.package',
       'import/url',
       'import/s3',
       'import/gcs',
@@ -112,6 +113,11 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
     expect(properties.thumbnail).toBeDefined();
     expect(properties.thumbnail.type).toBe('object');
     expect(properties.thumbnail['x-easyconvert-status']).toBeUndefined();
+
+    // WP-44c added 'packaging' as a fully active, supported conversion option
+    expect(properties.packaging).toBeDefined();
+    expect(properties.packaging.type).toBe('object');
+    expect(properties.packaging['x-easyconvert-status']).toBeUndefined();
   });
 
   it('enforces canonical $id URIs across all contract schemas', () => {

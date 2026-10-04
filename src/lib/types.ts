@@ -132,12 +132,14 @@ export interface ConversionOptions {
   trim?: MediaTrimOptions;
   subtitles?: SubtitleOptions;
   thumbnail?: ThumbnailOptions;
+  packaging?: MediaPackagingOptions;
   videoResolution?: 'original' | '4k' | '1080p' | '720p' | '480p' | '360p';
   videoFps?: 24 | 30 | 60;
   videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1';
   videoBitrate?: number;
   duration?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   useFfmpeg?: boolean;
   fastStart?: boolean;
   disableHwaccel?: boolean;
@@ -228,6 +230,24 @@ export interface ThumbnailOptions {
   format?: 'jpg' | 'png';
   width?: number;
   accurate?: boolean;
+}
+
+export interface MediaLadderRung {
+  height: number;
+  bitrateK: number;
+  fps?: number;
+  audioBitrateK?: number;
+}
+
+export type MediaPackagingFormat = 'hls' | 'dash';
+
+export interface MediaPackagingOptions {
+  format: MediaPackagingFormat;
+  segmentSeconds?: number;
+  ladder?: MediaLadderRung[];
+  masterPlaylistName?: string;
+  audioCodec?: 'aac' | 'opus';
+  videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1';
 }
 
 export type QueueItemStatus =

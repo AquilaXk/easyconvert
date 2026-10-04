@@ -4,6 +4,7 @@ export const PIPELINE_OPERATIONS = [
   'archive',
   'optimize',
   'media.thumbnail',
+  'media.package',
   'import/url',
   'import/s3',
   'import/gcs',

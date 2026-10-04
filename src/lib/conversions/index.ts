@@ -16,6 +16,7 @@ import { convertDocument, extractTextFromPdf } from './document';
 import { convertData } from './data';
 import {
   convertMedia,
+  packageHlsDashMedia,
   resampleAudioSinc,
   encodeWebmContainer,
   encodeOpusContainer,
@@ -192,6 +193,7 @@ export {
   convertArchive,
   convertToArchive,
   convertMedia,
+  packageHlsDashMedia,
   convertOffice,
   parseBiff8Workbook,
   decodeRk,
@@ -511,7 +513,9 @@ export async function convertFile(
       'dvr',
     ].includes(tgt) ||
     (Boolean(options.thumbnail) && ['jpg', 'jpeg', 'png'].includes(tgt)) ||
-    (options.subtitles?.mode === 'extract' && ['srt', 'vtt', 'ass'].includes(tgt))
+    (options.subtitles?.mode === 'extract' && ['srt', 'vtt', 'ass'].includes(tgt)) ||
+    Boolean(options.packaging) ||
+    ['hls', 'dash'].includes(tgt)
   ) {
     return convertMedia(inputBuffer, src, tgt, options, originalFilename);
   }

@@ -3,10 +3,17 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
+import JSZip from 'jszip';
+import {
+  ConversionOptions,
+  ConversionResult,
+  ConversionFailedError,
+  InvalidMediaOptionError,
+  MediaPackagingOptions,
+} from '../types';
 export { ConversionFailedError };
 import { executeSandboxedBinary } from '../security/process-sandbox';
-import { buildFfmpegArguments } from './media-ffmpeg-args';
+import { buildFfmpegArguments, buildHlsDashArguments } from './media-ffmpeg-args';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream, encodeAacLcFramePayload } from './media-encoder';
 import {
   decodeAudioBuffer,
@@ -213,6 +220,18 @@ export async function convertMedia(
     return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
   }
 
+  // Packaging routing (HLS & MPEG-DASH)
+  const isPackaging = Boolean(options.packaging) || tgt === 'hls' || tgt === 'dash';
+  if (isPackaging) {
+    if (!checkFfmpeg()) {
+      throw new ConversionFailedError('Native FFmpeg engine is required for ABR media packaging.');
+    }
+    const resolvedPackaging: MediaPackagingOptions = options.packaging || {
+      format: (tgt === 'dash' ? 'dash' : 'hls'),
+    };
+    return await packageHlsDashMedia(inputBuffer, src, { ...options, packaging: resolvedPackaging }, baseName);
+  }
+
   // If FFmpeg is explicitly requested, fail-closed if not available or if execution fails
   if (options.useFfmpeg) {
     if (!checkFfmpeg()) {
@@ -382,6 +401,100 @@ async function executeFfmpegThumbnails(
     }
   }
 }
+
+/**
+ * Packages video and audio media into adaptive bitrate (ABR) HLS or MPEG-DASH streaming bundle.
+ * Outputs a structured ZIP archive containing master playlist / MPD manifest and all segment chunks.
+ */
+export async function packageHlsDashMedia(
+  inputBuffer: Buffer,
+  src: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  const packaging = options.packaging;
+  if (!packaging) {
+    throw new InvalidMediaOptionError('Packaging options are required for media packaging.');
+  }
+
+  const ffmpegBin = getFfmpegPath();
+  if (!ffmpegBin) {
+    throw new ConversionFailedError('Native FFmpeg engine is required for ABR media packaging.');
+  }
+
+  const tmpDir = os.tmpdir();
+  const token = crypto.randomBytes(8).toString('hex');
+  const sessionDir = path.join(tmpDir, `easyconvert_pkg_${Date.now()}_${token}`);
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const inputPath = path.join(sessionDir, `input_${token}.${src}`);
+  fs.writeFileSync(inputPath, inputBuffer);
+
+  const outputDir = path.join(sessionDir, 'output');
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  try {
+    const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin);
+    await executeSandboxedBinary(ffmpegBin, args, {
+      cwd: outputDir,
+      timeoutMs: options.timeoutMs || 120000,
+      maxBuffer: 100 * 1024 * 1024,
+      networkIsolated: true,
+      signal: options.signal,
+    });
+
+    const outputFiles = fs.readdirSync(outputDir);
+    if (outputFiles.length === 0) {
+      throw new ConversionFailedError(`Packaging failed: no output files were generated in ${packaging.format} mode.`);
+    }
+
+    const expectedManifest = packaging.format === 'hls'
+      ? (packaging.masterPlaylistName || 'master.m3u8')
+      : (packaging.masterPlaylistName || 'manifest.mpd');
+
+    if (!outputFiles.includes(expectedManifest)) {
+      throw new ConversionFailedError(`Packaging failed: expected manifest "${expectedManifest}" was not produced.`);
+    }
+
+    const zip = new JSZip();
+    const parts: { filename: string; buffer: Buffer }[] = [];
+
+    // Sort files deterministically with manifest first
+    outputFiles.sort((a, b) => {
+      if (a === expectedManifest) return -1;
+      if (b === expectedManifest) return 1;
+      return a.localeCompare(b);
+    });
+
+    for (const file of outputFiles) {
+      const filePath = path.join(outputDir, file);
+      if (fs.statSync(filePath).isFile()) {
+        const fileBuf = fs.readFileSync(filePath);
+        zip.file(file, fileBuf);
+        parts.push({ filename: file, buffer: fileBuf });
+      }
+    }
+
+    const zipBuffer = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+    });
+
+    return {
+      buffer: zipBuffer,
+      mimeType: 'application/zip',
+      filename: `${baseName}-${packaging.format}.zip`,
+      size: zipBuffer.length,
+      parts,
+    };
+  } finally {
+    try {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
 
 /**
  * Pure TypeScript Media Processing:

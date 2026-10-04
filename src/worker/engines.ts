@@ -12,6 +12,7 @@ import {
   EngineUnavailableError,
   InvalidPageRangeError,
   ComplexScriptRequiresNativeEngineError,
+  MediaPackagingOptions,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile } from '../lib/conversions';
@@ -21,6 +22,7 @@ import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
+  buildHlsDashArguments,
   probeHardwareAcceleration,
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
@@ -477,6 +479,62 @@ export async function convertWithNativeFfmpeg(
           res.parts = parts;
           return res;
         }
+      }
+
+      const isPackaging = Boolean(options.packaging) || tgt === 'hls' || tgt === 'dash';
+      if (isPackaging) {
+        const packaging: MediaPackagingOptions = options.packaging || {
+          format: (tgt === 'dash' ? 'dash' : 'hls'),
+        };
+        const outputDir = path.join(tempDir, 'packaged');
+        fs.mkdirSync(outputDir, { recursive: true });
+
+        const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin);
+        await executeSandboxedBinary(ffmpegBin, args, {
+          cwd: outputDir,
+          timeoutMs: timeout,
+          maxBuffer,
+          networkIsolated: true,
+          signal: options.signal,
+        });
+
+        const outputFiles = fs.readdirSync(outputDir);
+        if (outputFiles.length === 0) {
+          throw new Error(`FFmpeg packaging failed: no files produced in ${outputDir}`);
+        }
+
+        const zip = new JSZip();
+        const parts: { filename: string; buffer: Buffer }[] = [];
+        for (const f of outputFiles) {
+          const p = path.join(outputDir, f);
+          if (fs.statSync(p).isFile()) {
+            const buf = fs.readFileSync(p);
+            zip.file(f, buf);
+            parts.push({ filename: f, buffer: buf });
+          }
+        }
+
+        const zipBuffer = await zip.generateAsync({
+          type: 'nodebuffer',
+          compression: 'DEFLATE',
+          compressionOptions: { level: 6 },
+        });
+
+        const tempZipPath = path.join(tempDir, `${baseName}-${packaging.format}.zip`);
+        fs.writeFileSync(tempZipPath, zipBuffer);
+
+        const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+        const persistedPath = preserveOutput(tempZipPath, 'zip', options, vfsPayload);
+
+        const res = createConversionResult(
+          persistedPath,
+          'zip',
+          `${baseName}-${packaging.format}`,
+          'native-ffmpeg',
+          Date.now() - startTime
+        );
+        res.parts = parts;
+        return res;
       }
 
       const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
@@ -1340,7 +1398,11 @@ export async function executeWorkerConversion(
   // 2. Native FFmpeg
   const isThumbnailTarget = (tgt === 'jpg' || tgt === 'jpeg' || tgt === 'png') && Boolean(nativeOptions.thumbnail);
   const isSubtitleExtractTarget = (tgt === 'srt' || tgt === 'vtt' || tgt === 'ass') && nativeOptions.subtitles?.mode === 'extract';
-  if ((MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) || (MEDIA_FORMATS.has(src) && (isThumbnailTarget || isSubtitleExtractTarget))) {
+  const isPackagingTarget = Boolean(nativeOptions.packaging) || tgt === 'hls' || tgt === 'dash';
+  if (
+    (MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) ||
+    (MEDIA_FORMATS.has(src) && (isThumbnailTarget || isSubtitleExtractTarget || isPackagingTarget))
+  ) {
     try {
       const ffmpegRes = await convertWithNativeFfmpeg(input, src, tgt, nativeOptions, originalFilename);
       if (ffmpegRes) {

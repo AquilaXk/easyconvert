@@ -450,6 +450,53 @@ export const ConversionOptionsSchema = {
         },
       },
     },
+    packaging: {
+      type: 'object',
+      required: ['format'],
+      description: 'Adaptive bitrate (ABR) packaging options for HLS and MPEG-DASH.',
+      properties: {
+        format: {
+          type: 'string',
+          enum: ['hls', 'dash'],
+          description: 'Streaming delivery packaging format standard.',
+        },
+        segmentSeconds: {
+          type: 'integer',
+          minimum: 2,
+          maximum: 10,
+          default: 4,
+          description: 'Segment duration target in seconds (2..10).',
+        },
+        ladder: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['height', 'bitrateK'],
+            properties: {
+              height: { type: 'integer', minimum: 144, maximum: 4320, description: 'Rung vertical resolution in pixels.' },
+              bitrateK: { type: 'integer', minimum: 50, maximum: 50000, description: 'Video bitrate target in kbps.' },
+              fps: { type: 'number', minimum: 1, maximum: 240, description: 'Video frame rate for this rung.' },
+              audioBitrateK: { type: 'integer', minimum: 16, maximum: 1024, description: 'Audio bitrate target in kbps.' },
+            },
+          },
+          description: 'Multi-bitrate encoding ladder rungs. Defaults to 1080p, 720p, 480p if omitted.',
+        },
+        masterPlaylistName: {
+          type: 'string',
+          description: 'Custom master playlist filename (e.g. master.m3u8 or manifest.mpd).',
+        },
+        audioCodec: {
+          type: 'string',
+          enum: ['aac', 'opus'],
+          description: 'Audio codec for packaged streams.',
+        },
+        videoCodec: {
+          type: 'string',
+          enum: ['h264', 'hevc', 'vp9', 'av1'],
+          description: 'Video codec for packaged streams.',
+        },
+      },
+    },
     videoResolution: {
       type: 'string',
       enum: ['original', '4k', '1080p', '720p', '480p', '360p'],
