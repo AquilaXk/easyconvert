@@ -93,7 +93,9 @@ export interface ConversionOptions {
   uSamples?: number;
   vSamples?: number;
   // Document & PDF options
+  page?: number;
   pages?: string;
+  multiPageOutput?: 'zip' | 'first';
   pageCount?: number;
   password?: string;
   orientation?: 'portrait' | 'landscape';
@@ -307,6 +309,26 @@ export class CadGeometryUnavailableError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'CadGeometryUnavailableError';
+  }
+}
+
+export class EngineUnavailableError extends ConversionFailedError {
+  public readonly engineName: string;
+  public readonly reason: string;
+
+  constructor(engineName: string, reason?: string) {
+    const msg = reason ? `Engine '${engineName}' is unavailable: ${reason}` : `Engine '${engineName}' is unavailable`;
+    super(msg);
+    this.name = 'EngineUnavailableError';
+    this.engineName = engineName;
+    this.reason = reason || msg;
+  }
+}
+
+export class InvalidPageRangeError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidPageRangeError';
   }
 }
 

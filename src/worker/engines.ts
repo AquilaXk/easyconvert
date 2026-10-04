@@ -2,16 +2,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import JSZip from 'jszip';
+import { PDFDocument } from 'pdf-lib';
 import {
   ConversionOptions,
   ConversionResult,
   ArchiveEncryptionUnavailableError,
   UnsupportedOptionError,
+  EngineUnavailableError,
+  InvalidPageRangeError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile } from '../lib/conversions';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
+import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   probeHardwareAcceleration,
@@ -21,24 +26,14 @@ import { executeSandboxedBinary, SandboxedMemoryLimitError } from './sandbox';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
 
+export { EngineUnavailableError, InvalidPageRangeError };
+
 export interface WorkerVfsPayload {
   inputPath?: string;
   outputPath?: string;
   inputBuffer?: Buffer;
 }
 
-export class EngineUnavailableError extends Error {
-  public readonly engineName: string;
-  public readonly reason: string;
-
-  constructor(engineName: string, reason?: string) {
-    const msg = reason ? `Engine '${engineName}' is unavailable: ${reason}` : `Engine '${engineName}' is unavailable`;
-    super(msg);
-    this.name = 'EngineUnavailableError';
-    this.engineName = engineName;
-    this.reason = reason || msg;
-  }
-}
 
 export interface WorkerEngineOptions extends ConversionOptions {
   timeoutMs?: number;
@@ -81,11 +76,23 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/7z',
     '/opt/homebrew/bin/7z',
   ],
+  pdfinfo: [
+    ...(process.env.PDFINFO_PATH ? [process.env.PDFINFO_PATH] : []),
+    '/usr/bin/pdfinfo',
+    '/usr/local/bin/pdfinfo',
+    '/opt/homebrew/bin/pdfinfo',
+  ],
   pdftoppm: [
     ...(process.env.PDFTOPPM_PATH ? [process.env.PDFTOPPM_PATH] : []),
     '/usr/bin/pdftoppm',
     '/usr/local/bin/pdftoppm',
     '/opt/homebrew/bin/pdftoppm',
+  ],
+  pdftocairo: [
+    ...(process.env.PDFTOCAIRO_PATH ? [process.env.PDFTOCAIRO_PATH] : []),
+    '/usr/bin/pdftocairo',
+    '/usr/local/bin/pdftocairo',
+    '/opt/homebrew/bin/pdftocairo',
   ],
   pdftotext: [
     ...(process.env.PDFTOTEXT_PATH ? [process.env.PDFTOTEXT_PATH] : []),
@@ -720,7 +727,55 @@ export async function convertWithNative7z(
  */
 const POPPLER_IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'tiff', 'tif', 'ppm']);
 
-function buildPdftoppmArgs(tgt: string, options: WorkerEngineOptions, inputPath: string, prefix: string): string[] {
+export async function getPdfPageCount(
+  inputPath: string,
+  tempDir: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  inputBuffer?: Buffer,
+  password?: string
+): Promise<number> {
+  const pdfinfoBin = resolveBinary(BINARY_PATHS.pdfinfo, process.env.PDFINFO_PATH);
+  if (pdfinfoBin) {
+    try {
+      const pwArgs = password ? ['-upw', password] : [];
+      const res = await executeSandboxedBinary(pdfinfoBin, [...pwArgs, inputPath], {
+        cwd: tempDir,
+        timeoutMs,
+        maxBuffer: 10 * 1024 * 1024,
+        networkIsolated: true,
+        signal,
+      });
+      const match = res.stdout.toString('utf-8').match(/Pages:\s+(\d+)/i);
+      if (match) {
+        const pages = Number.parseInt(match[1], 10);
+        if (pages > 0) return pages;
+      }
+    } catch {
+      // Fall back to pdf-lib parsing if pdfinfo fails
+    }
+  }
+
+  // Fallback via pdf-lib
+  const buf = inputBuffer ?? fs.readFileSync(inputPath);
+  try {
+    const pdfDoc = await PDFDocument.load(buf, { ignoreEncryption: true });
+    const count = pdfDoc.getPageCount();
+    if (count > 0) return count;
+  } catch {
+    // Fall-through to error
+  }
+  throw new Error('Unable to determine PDF page count: invalid or corrupted PDF structure.');
+}
+
+function buildPdftoppmArgs(
+  tgt: string,
+  options: WorkerEngineOptions,
+  startPage: number,
+  endPage: number,
+  inputPath: string,
+  prefix: string
+): string[] {
   const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
   const args: string[] = ['-r', String(dpi)];
 
@@ -732,13 +787,11 @@ function buildPdftoppmArgs(tgt: string, options: WorkerEngineOptions, inputPath:
     args.push('-tiff');
   }
 
-  if (options.page && Number.isInteger(options.page) && options.page > 0) {
-    args.push('-f', String(options.page), '-l', String(options.page));
-  } else {
-    args.push('-f', '1', '-l', '1');
+  if (options.password) {
+    args.push('-upw', options.password);
   }
 
-  args.push(inputPath, prefix);
+  args.push('-f', String(startPage), '-l', String(endPage), inputPath, prefix);
   return args;
 }
 
@@ -799,6 +852,196 @@ async function convertPdfToTextWithPoppler(
   }
 }
 
+function resolveRequestedPages(options: WorkerEngineOptions, pageCount: number): number[] {
+  let requestedPages: number[];
+  if (options.pages) {
+    requestedPages = parsePageRanges(options.pages, pageCount);
+  } else if (typeof options.page === 'number') {
+    if (!Number.isInteger(options.page) || options.page < 1 || options.page > pageCount) {
+      throw new InvalidPageRangeError(
+        `Page number ${options.page} is out of bounds (1-${pageCount})`
+      );
+    }
+    requestedPages = [options.page];
+  } else {
+    requestedPages = Array.from({ length: pageCount }, (_, i) => i + 1);
+  }
+
+  if (requestedPages.length === 0) {
+    throw new InvalidPageRangeError('No pages selected for rendering');
+  }
+
+  return requestedPages;
+}
+
+function matchOutputPageFiles(
+  files: string[],
+  requestedPages: number[]
+): Array<{ file: string; pageNum: number }> {
+  const pageRegex = /-(\d+)\.[^.]+$/;
+  const parsedFiles = files
+    .map((f) => {
+      const m = pageRegex.exec(f);
+      let pageNum = 0;
+      if (m) {
+        pageNum = Number.parseInt(m[1], 10);
+      } else if (files.length === 1 && requestedPages.length === 1) {
+        pageNum = requestedPages[0];
+      }
+      return { file: f, pageNum };
+    })
+    .filter((item) => requestedPages.includes(item.pageNum))
+    .sort((a, b) => a.pageNum - b.pageNum);
+
+  return parsedFiles.length > 0
+    ? parsedFiles
+    : [...files]
+        .sort((a, b) => a.localeCompare(b))
+        .map((f, i) => ({ file: f, pageNum: requestedPages[i] ?? i + 1 }));
+}
+
+interface FinalizeMultiPageParams {
+  tempDir: string;
+  resolvedFiles: Array<{ file: string; pageNum: number }>;
+  requestedPages: number[];
+  tgt: string;
+  baseName: string;
+  options: WorkerEngineOptions;
+  input: Buffer | WorkerVfsPayload;
+  startTime: number;
+}
+
+async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise<WorkerConversionResult> {
+  const {
+    tempDir,
+    resolvedFiles,
+    requestedPages,
+    tgt,
+    baseName,
+    options,
+    input,
+    startTime,
+  } = params;
+
+  const isSingleOutput = requestedPages.length === 1 || options.multiPageOutput === 'first';
+  const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+
+  if (isSingleOutput) {
+    const selected = resolvedFiles[0];
+    const tempOutputPath = path.join(tempDir, selected.file);
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+    return createConversionResult(
+      persistedPath,
+      tgt,
+      baseName,
+      'native-poppler',
+      Date.now() - startTime
+    );
+  }
+
+  // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
+  const zip = new JSZip();
+  const maxPage = requestedPages.at(-1) ?? 1;
+  const padLen = Math.max(3, String(maxPage).length);
+
+  for (const item of resolvedFiles) {
+    const entryName = `${baseName}-p${String(item.pageNum).padStart(padLen, '0')}.${tgt}`;
+    const fileBytes = fs.readFileSync(path.join(tempDir, item.file));
+    zip.file(entryName, fileBytes);
+  }
+
+  const zipBuffer = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  });
+
+  const zipOutputPath = path.join(tempDir, `${baseName}.zip`);
+  fs.writeFileSync(zipOutputPath, zipBuffer);
+
+  const persistedPath = preserveOutput(zipOutputPath, 'zip', options, vfsPayload);
+
+  return createConversionResult(
+    persistedPath,
+    'zip',
+    baseName,
+    'native-poppler',
+    Date.now() - startTime
+  );
+}
+
+interface PopplerRenderParams {
+  sandboxPrefix: string;
+  tgt: string;
+  input: Buffer | WorkerVfsPayload;
+  options: WorkerEngineOptions;
+  originalFilename: string;
+  startTime: number;
+  timeout: number;
+  filterOutputFile: (fileName: string) => boolean;
+  missingOutputError: string;
+  renderPages: (tempDir: string, inputPath: string, requestedPages: number[]) => Promise<void>;
+}
+
+async function executePopplerRender(params: PopplerRenderParams): Promise<WorkerConversionResult | null> {
+  const {
+    sandboxPrefix,
+    tgt,
+    input,
+    options,
+    originalFilename,
+    startTime,
+    timeout,
+    filterOutputFile,
+    missingOutputError,
+    renderPages,
+  } = params;
+
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  try {
+    return await withSandboxDir(sandboxPrefix, async (tempDir) => {
+      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
+      const inputBuffer = Buffer.isBuffer(input)
+        ? input
+        : (input.inputBuffer ?? (input.inputPath ? fs.readFileSync(input.inputPath) : undefined));
+      const pageCount = await getPdfPageCount(
+        inputPath,
+        tempDir,
+        timeout,
+        options.signal,
+        inputBuffer,
+        options.password
+      );
+
+      const requestedPages = resolveRequestedPages(options, pageCount);
+      await renderPages(tempDir, inputPath, requestedPages);
+
+      const files = fs.readdirSync(tempDir).filter(filterOutputFile);
+      if (files.length === 0) {
+        throw new Error(missingOutputError);
+      }
+
+      const resolvedFiles = matchOutputPageFiles(files, requestedPages);
+      return finalizeMultiPageOutput({
+        tempDir,
+        resolvedFiles,
+        requestedPages,
+        tgt,
+        baseName,
+        options,
+        input,
+        startTime,
+      });
+    });
+  } catch (err) {
+    if (options.throwOnUnavailable) {
+      throw err;
+    }
+    return null;
+  }
+}
+
 async function renderPdfToImageWithPoppler(
   input: Buffer | WorkerVfsPayload,
   tgt: string,
@@ -816,50 +1059,89 @@ async function renderPdfToImageWithPoppler(
     return null;
   }
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
-  try {
-    return await withSandboxDir('easyconvert-poppler-img-', async (tempDir) => {
-      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
+  return executePopplerRender({
+    sandboxPrefix: 'easyconvert-poppler-img-',
+    tgt,
+    input,
+    options,
+    originalFilename,
+    startTime,
+    timeout,
+    filterOutputFile: (f) => f.startsWith('page') && !f.endsWith('.pdf'),
+    missingOutputError: 'pdftoppm execution completed without producing any output images',
+    renderPages: async (tempDir, inputPath, requestedPages) => {
+      const intervals = groupConsecutiveRanges(requestedPages);
       const prefix = path.join(tempDir, 'page');
-      const args = buildPdftoppmArgs(tgt, options, inputPath, prefix);
-
-      await executeSandboxedBinary(pdftoppmBin, args, {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer,
-        networkIsolated: true,
-        signal: options.signal,
-      });
-
-      const files = fs.readdirSync(tempDir).filter((f) => f.startsWith('page') && !f.endsWith('.pdf'));
-      if (files.length === 0) {
-        throw new Error('pdftoppm execution completed without producing any output images');
+      let step: Promise<any> = Promise.resolve();
+      for (const interval of intervals) {
+        step = step.then(() => {
+          const args = buildPdftoppmArgs(tgt, options, interval.start, interval.end, inputPath, prefix);
+          return executeSandboxedBinary(pdftoppmBin, args, {
+            cwd: tempDir,
+            timeoutMs: timeout,
+            maxBuffer,
+            networkIsolated: true,
+            signal: options.signal,
+          });
+        });
       }
+      await step;
+    },
+  });
+}
 
-      const selectedFile = files.sort()[0];
-      const tempOutputPath = path.join(tempDir, selectedFile);
-
-      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-      return createConversionResult(
-        persistedPath,
-        tgt,
-        baseName,
-        'native-poppler',
-        Date.now() - startTime
-      );
-    });
-  } catch (err) {
+async function renderPdfToSvgWithPoppler(
+  input: Buffer | WorkerVfsPayload,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  startTime: number,
+  timeout: number,
+  maxBuffer: number
+): Promise<WorkerConversionResult | null> {
+  const pdftocairoBin = resolveBinary(BINARY_PATHS.pdftocairo, process.env.PDFTOCAIRO_PATH);
+  if (!pdftocairoBin) {
     if (options.throwOnUnavailable) {
-      throw err;
+      throw new EngineUnavailableError('pdftocairo', 'pdftocairo binary is not installed or not in PATH');
     }
     return null;
   }
+
+  return executePopplerRender({
+    sandboxPrefix: 'easyconvert-poppler-svg-',
+    tgt: 'svg',
+    input,
+    options,
+    originalFilename,
+    startTime,
+    timeout,
+    filterOutputFile: (f) => f.endsWith('.svg'),
+    missingOutputError: 'pdftocairo execution completed without producing any output SVG files',
+    renderPages: async (tempDir, inputPath, requestedPages) => {
+      let step: Promise<any> = Promise.resolve();
+      for (const p of requestedPages) {
+        step = step.then(() => {
+          const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
+          const args = ['-svg', '-f', String(p), '-l', String(p)];
+          if (options.password) {
+            args.push('-upw', options.password);
+          }
+          args.push(inputPath, pageSvgPath);
+          return executeSandboxedBinary(pdftocairoBin, args, {
+            cwd: tempDir,
+            timeoutMs: timeout,
+            maxBuffer,
+            networkIsolated: true,
+            signal: options.signal,
+          });
+        });
+      }
+      await step;
+    },
+  });
 }
 
 /**
- * Converts PDF documents using native Poppler utilities (pdftoppm and pdftotext).
+ * Converts PDF documents using native Poppler utilities (pdftoppm, pdftocairo, and pdftotext).
  */
 export async function convertWithNativePoppler(
   input: Buffer | WorkerVfsPayload,
@@ -884,6 +1166,11 @@ export async function convertWithNativePoppler(
   // 2. High-fidelity raster rendering via pdftoppm
   if (POPPLER_IMAGE_FORMATS.has(tgt)) {
     return renderPdfToImageWithPoppler(input, tgt, options, originalFilename, startTime, timeout, maxBuffer);
+  }
+
+  // 3. Vector SVG rendering via pdftocairo
+  if (tgt === 'svg') {
+    return renderPdfToSvgWithPoppler(input, options, originalFilename, startTime, timeout, maxBuffer);
   }
 
   return null;
@@ -939,6 +1226,38 @@ export async function executeWorkerConversion(
     }
   }
 
+  // 1b. Office Documents -> Raster / Vector Image Chaining via LibreOffice + Poppler
+  if (OFFICE_FORMATS.has(src) && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg')) {
+    try {
+      const intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);
+      if (intermediatePdf) {
+        const popplerInput = intermediatePdf.filePath
+          ? { inputPath: intermediatePdf.filePath }
+          : intermediatePdf.buffer;
+        const popplerRes = await convertWithNativePoppler(
+          popplerInput,
+          'pdf',
+          tgt,
+          nativeOptions,
+          originalFilename
+        );
+        if (popplerRes) {
+          return {
+            ...popplerRes,
+            fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+          };
+        }
+      }
+    } catch (err) {
+      if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`office-poppler-chain: ${err.message}`);
+        fallbackReason = err.message;
+      } else {
+        throw err;
+      }
+    }
+  }
+
   // 2. Native FFmpeg
   if (MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) {
     try {
@@ -959,8 +1278,8 @@ export async function executeWorkerConversion(
     }
   }
 
-  // 3. Native Poppler (PDF -> Image or Text)
-  if (src === 'pdf' && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'txt' || tgt === 'text')) {
+  // 3. Native Poppler (PDF -> Image, SVG, or Text)
+  if (src === 'pdf' && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg' || tgt === 'txt' || tgt === 'text')) {
     try {
       const popplerRes = await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename);
       if (popplerRes) {
@@ -1087,6 +1406,7 @@ function getMimeType(format: string): string {
     jpeg: 'image/jpeg',
     tiff: 'image/tiff',
     ppm: 'image/x-portable-pixmap',
+    svg: 'image/svg+xml',
     txt: 'text/plain',
   };
   return map[cleanFormat] || 'application/octet-stream';

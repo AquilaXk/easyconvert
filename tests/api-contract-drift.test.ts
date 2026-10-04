@@ -75,13 +75,17 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
   });
 
   it('marks all unread planned options with x-easyconvert-status: planned', () => {
-    const plannedKeys = ['pages', 'sheetIndex', 'aspectRatio', 'fastStart', 'duration'];
+    const plannedKeys = ['sheetIndex', 'aspectRatio', 'fastStart', 'duration'];
     const properties = ConversionOptionsSchema.properties as Record<string, any>;
 
     for (const plannedKey of plannedKeys) {
       expect(properties[plannedKey]).toBeDefined();
       expect(properties[plannedKey]['x-easyconvert-status']).toBe('planned');
     }
+
+    // WP-40 promoted 'pages' to a fully active, supported conversion option
+    expect(properties.pages).toBeDefined();
+    expect(properties.pages['x-easyconvert-status']).toBeUndefined();
   });
 
   it('enforces canonical $id URIs across all contract schemas', () => {

@@ -616,3 +616,6 @@ export async function convertFile(
       return convertDocument(inputBuffer, src, tgt, options, originalFilename);
   }
 }
+
+export * from './page-range';
+
