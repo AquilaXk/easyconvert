@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
@@ -10,6 +10,7 @@ import { s3Storage } from '../../storage/s3-storage';
 import type { IStorageBackend } from '../../storage/oci-storage';
 import type { ConversionEnginePort } from '../engine-port';
 import { graphScheduler } from './scheduler';
+import { safeFetch } from '../../security/safe-fetch';
 import {
   createTarArchive,
   extractTarArchive,
@@ -103,25 +104,8 @@ export async function processGraphNodeJob(
       }
 
       case 'import.url': {
-        const response = await fetch(node.url, {
-          headers: node.headers,
-          signal: attemptSignal,
-        });
-        if (!response.ok) {
-          throw new Error(`Failed to fetch URL ${node.url}: HTTP ${response.status} ${response.statusText}`);
-        }
-        const arrayBuf = await response.arrayBuffer();
-        const buf = Buffer.from(arrayBuf);
-
-        let urlFilename = path.basename(new URL(node.url).pathname);
-        if (!urlFilename || urlFilename === '/') {
-          urlFilename = `${nodeId}.bin`;
-        }
-        const key = `intermediate/${graphId}/${nodeId}/${urlFilename}`;
-        const mimeType = response.headers.get('content-type') || 'application/octet-stream';
-        effectiveStorage.saveObject(key, buf, mimeType, urlFilename, 24 * 60 * 60 * 1000);
-        outputKeys = [key];
-        await job.log(`Node "${nodeId}" imported from URL: ${key}`);
+        outputKeys = [await importUrlArtifact(effectiveStorage, graphId, nodeId, node.url, node.headers, attemptSignal)];
+        await job.log(`Node "${nodeId}" imported from URL: ${outputKeys[0]}`);
         break;
       }
 
@@ -505,6 +489,58 @@ export async function processGraphNodeJob(
   }
 }
 
+/** Largest body an import.url node accepts; override with GRAPH_URL_IMPORT_MAX_BYTES. */
+const DEFAULT_URL_IMPORT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function urlImportMaxBytes(): number {
+  const configured = Number(process.env.GRAPH_URL_IMPORT_MAX_BYTES);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_URL_IMPORT_MAX_BYTES;
+}
+
+/** Streams a public URL into intermediate storage, refusing internal targets and oversized bodies. */
+async function importUrlArtifact(
+  storage: IStorageBackend,
+  graphId: string,
+  nodeId: string,
+  url: string,
+  headers: Record<string, string> | undefined,
+  signal: AbortSignal
+): Promise<string> {
+  const response = await safeFetch(url, { headers, signal });
+  if (!response.ok || !response.body) {
+    await response.body?.cancel();
+    throw new ConversionFailedError(`Failed to fetch URL ${url}: HTTP ${response.status}`);
+  }
+  const maxBytes = urlImportMaxBytes();
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body.cancel();
+    throw new ConversionFailedError(`Remote file at ${url} is ${declared} bytes, above the ${maxBytes}-byte import limit`);
+  }
+
+  let received = 0;
+  const limited = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream).pipe(
+    new Transform({
+      transform(chunk: Buffer, _enc, done) {
+        received += chunk.length;
+        if (received > maxBytes) {
+          done(new ConversionFailedError(`Remote file at ${url} exceeds the ${maxBytes}-byte import limit`));
+          return;
+        }
+        done(null, chunk);
+      },
+    })
+  );
+
+  const urlName = path.basename(new URL(url).pathname);
+  const filename = urlName && urlName !== '/' ? urlName : `${nodeId}.bin`;
+  const key = `intermediate/${graphId}/${nodeId}/${filename}`;
+  const mimeType = response.headers.get('content-type') || 'application/octet-stream';
+  await storage.saveObjectFromStream(key, limited, { filename, mimeType }, INTERMEDIATE_TTL_MS);
+  return key;
+}
+
 /** Streams one stored artifact to the destination URL and fails unless it answers 2xx. */
 async function exportArtifactToUrl(
   storage: IStorageBackend,
@@ -518,16 +554,16 @@ async function exportArtifactToUrl(
   if (!stat || !stream) {
     throw new GraphExportError(`Input artifact "${inputKey}" not found in storage`);
   }
-  const response = await fetch(url, {
+  const response = await safeFetch(url, {
     method,
-    body: Readable.toWeb(Readable.from(stream)) as ReadableStream,
+    body: Readable.from(stream),
     duplex: 'half',
     headers: {
       'Content-Type': stat.mimeType || 'application/octet-stream',
       'Content-Length': String(stat.size),
     },
     signal,
-  } as RequestInit);
+  });
   // Drain the body so the connection can be reused; the payload itself is not needed.
   await response.arrayBuffer().catch(() => undefined);
   if (!response.ok) {
