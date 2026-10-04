@@ -94,6 +94,8 @@ function collectFixtures(dir: string, out: Map<string, Buffer[]>): void {
 const FIXTURES = new Map<string, Buffer[]>();
 collectFixtures(FIXTURE_ROOT, FIXTURES);
 const PNG_SEED = FIXTURES.get('png')![0];
+const DXF_SEED = FIXTURES.get('dxf')![0];
+const VECTOR_PROBE_CATEGORIES = new Set(['image', 'vector', 'cad']);
 
 /** Seed formats used to derive a structurally valid probe input for a source format. */
 const DERIVATION_SEEDS: readonly { format: string; buffer: Buffer }[] = [
@@ -137,7 +139,10 @@ async function probeInputs(source: string): Promise<Buffer[]> {
   const inputs: Buffer[] = [...(FIXTURES.get(source) ?? [])];
   const derived = await deriveProbeInput(source);
   if (derived) inputs.push(derived);
-  if (FORMAT_REGISTRY[source].category === 'image') inputs.push(PNG_SEED);
+  const category = FORMAT_REGISTRY[source].category;
+  if (category === 'image') inputs.push(PNG_SEED);
+  // Vector and CAD readers without a native decoder accept embedded SVG or ASCII DXF entities.
+  if (VECTOR_PROBE_CATEGORIES.has(category)) inputs.push(SVG_TEXT, DXF_SEED);
   inputs.push(PLAIN_TEXT);
   return inputs;
 }
@@ -238,6 +243,8 @@ describe('withdrawn pairs stay withdrawn', () => {
     cb7: ['cbz'],
     cbr: ['azw3', 'cbz', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     cbt: ['cbz'],
+    cdr: ['emf', 'wmf'],
+    cgm: ['emf', 'wmf'],
     chm: ['azw3', 'epub', 'html', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     csv: ['jpg', 'png'],
     dbf: ['json', 'tsv'],
@@ -250,7 +257,10 @@ describe('withdrawn pairs stay withdrawn', () => {
     dot: ['doc', 'jpg', 'png', 'rtf'],
     dotx: ['doc', 'jpg', 'png', 'rtf'],
     dps: ['eps', 'jpg', 'md', 'png', 'ppt'],
+    dwf: ['cgm', 'dwg', 'wmf'],
+    dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
+    emf: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
     fods: ['json'],
@@ -285,6 +295,8 @@ describe('withdrawn pairs stay withdrawn', () => {
     ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     qpw: ['tsv'],
     rst: ['rtf'],
+    sk: ['emf', 'wmf'],
+    sk1: ['emf', 'wmf'],
     slk: ['tsv'],
     snb: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     svg: ['emf', 'ico', 'odd', 'psd', 'wmf'],
@@ -293,9 +305,11 @@ describe('withdrawn pairs stay withdrawn', () => {
     tif: ['svg'],
     tiff: ['svg'],
     txt: ['doc', 'jpg', 'png', 'rtf', 'tex'],
+    vsd: ['emf', 'wmf'],
     webp: ['svg'],
     wk1: ['tsv'],
     wks: ['tsv'],
+    wmf: ['emf', 'wmf'],
     wpd: ['doc', 'jpg', 'png', 'rtf'],
     wps: ['doc', 'jpg', 'png', 'rtf'],
     xls: ['xps'],
