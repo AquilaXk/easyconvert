@@ -3,6 +3,14 @@ import { fetch as undiciFetch, Agent } from 'undici';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import type { WebhookDlqEntry } from './types';
 import { redisKeyStore } from './redis-key-store';
+import { getWebhookSecretStore } from './webhook-secret-store';
+import {
+  createQueueEngine,
+  Worker,
+  type IQueueEngine,
+  type IQueueWorker,
+  type Job,
+} from '../queue/bullmq-engine';
 
 export type WebhookEvent =
   | 'conversion.completed'
@@ -32,6 +40,10 @@ export interface WebhookDispatchOptions {
   /** Owner recorded on the DLQ entry if delivery fails; required to see or manage the entry later. */
   ownerUserId?: string;
   ownerKeyId?: string;
+  targetId?: string;
+  previousSecret?: string;
+  previousExpiresAt?: number;
+  durable?: boolean;
 }
 
 export interface WebhookDeliveryAttempt {
@@ -52,6 +64,108 @@ export interface WebhookDispatchResult {
   finalStatusCode?: number;
   durationMs: number;
   attempts: WebhookDeliveryAttempt[];
+}
+
+export interface WebhookJobData<T = Record<string, unknown>> {
+  deliveryId: string;
+  targetUrl: string;
+  event: WebhookEvent;
+  data: T;
+  secret: string;
+  options?: WebhookDispatchOptions;
+  attemptNumber: number;
+  attempts: WebhookDeliveryAttempt[];
+  createdAt: number;
+}
+
+/**
+ * Standard enterprise webhook exponential retry intervals (in ms):
+ * 30s, 2m, 10m, 1h, 6h, 24h
+ */
+export const WEBHOOK_RETRY_SCHEDULE_MS = [
+  30_000,
+  120_000,
+  600_000,
+  3_600_000,
+  21_600_000,
+  86_400_000,
+] as const;
+
+export type WebhookStatusAction = 'success' | 'deactivate' | 'dlq_immediate' | 'retry';
+
+/**
+ * Classifies HTTP response status codes and network errors:
+ * - 2xx: Success
+ * - 410: Permanent deactivation (no retries, no DLQ)
+ * - 4xx (except 408, 429): Non-retryable client error (immediate DLQ transfer)
+ * - 5xx, 408, 429, timeouts: Retryable
+ */
+export function classifyWebhookStatus(statusCode?: number, error?: string): WebhookStatusAction {
+  if (statusCode !== undefined) {
+    if (statusCode >= 200 && statusCode < 300) {
+      return 'success';
+    }
+    if (statusCode === 410) {
+      return 'deactivate';
+    }
+    if (statusCode === 408 || statusCode === 429) {
+      return 'retry';
+    }
+    if (statusCode >= 400 && statusCode < 500) {
+      return 'dlq_immediate';
+    }
+    if (statusCode >= 500) {
+      return 'retry';
+    }
+  }
+
+  if (error) {
+    if (error.includes('SSRF blocked') || error.includes('restricted')) {
+      return 'dlq_immediate';
+    }
+    return 'retry';
+  }
+
+  return 'retry';
+}
+
+/**
+ * Computes retry delay honoring HTTP Retry-After header with fallback to exponential schedule and full jitter.
+ */
+export function computeRetryDelay(
+  attemptNumber: number,
+  responseHeaders?: Headers | Record<string, string | string[] | undefined> | null,
+  overrideSchedule?: readonly number[]
+): number {
+  if (responseHeaders) {
+    let retryAfterVal: string | null = null;
+    if (typeof (responseHeaders as any).get === 'function') {
+      retryAfterVal = (responseHeaders as Headers).get('retry-after');
+    } else {
+      const rec = responseHeaders as Record<string, string | string[] | undefined>;
+      const raw = rec['retry-after'] || rec['Retry-After'];
+      if (Array.isArray(raw)) retryAfterVal = raw[0];
+      else if (typeof raw === 'string') retryAfterVal = raw;
+    }
+    if (retryAfterVal) {
+      const trimmed = retryAfterVal.trim();
+      const seconds = parseInt(trimmed, 10);
+      if (!isNaN(seconds) && String(seconds) === trimmed) {
+        return Math.min(86_400_000, Math.max(1000, seconds * 1000));
+      }
+      const dateParsed = Date.parse(trimmed);
+      if (!isNaN(dateParsed)) {
+        const diff = dateParsed - Date.now();
+        return Math.min(86_400_000, Math.max(1000, diff));
+      }
+    }
+  }
+
+  const schedule = overrideSchedule || WEBHOOK_RETRY_SCHEDULE_MS;
+  const index = Math.min(Math.max(0, attemptNumber - 1), schedule.length - 1);
+  const baseIntervalMs = schedule[index];
+  if (baseIntervalMs <= 1000) return baseIntervalMs;
+  return crypto.randomInt(1000, baseIntervalMs + 1);
 }
 
 function isDlqEntryOwnedBy(entry: WebhookDlqEntry, ownerUserId: string): boolean {
@@ -76,6 +190,14 @@ export class WebhookDispatcher {
 
   public async close(): Promise<void> {
     await this.ssrfAgent.close().catch(() => {});
+    if (this.queueWorker) {
+      await this.queueWorker.close().catch(() => {});
+      this.queueWorker = null;
+    }
+    if (this.queueEngine) {
+      await this.queueEngine.close().catch(() => {});
+      this.queueEngine = null;
+    }
   }
 
   /**
@@ -84,6 +206,21 @@ export class WebhookDispatcher {
   public static signPayload(bodyString: string, secret: string, timestamp: number): string {
     const stringToSign = `${timestamp}.${bodyString}`;
     return crypto.createHmac('sha256', secret).update(stringToSign).digest('hex');
+  }
+
+  /**
+   * Generates standard Svix / Standard Webhook v1 signature:
+   * v1,<base64(HMAC-SHA256(secret, `${deliveryId}.${timestamp}.${bodyString}`))>
+   */
+  public static signStandardPayload(
+    deliveryId: string,
+    timestamp: number,
+    bodyString: string,
+    secret: string
+  ): string {
+    const stringToSign = `${deliveryId}.${timestamp}.${bodyString}`;
+    const hmacB64 = crypto.createHmac('sha256', secret).update(stringToSign).digest('base64');
+    return `v1,${hmacB64}`;
   }
 
   /**
@@ -138,6 +275,74 @@ export class WebhookDispatcher {
     }
     if (secondarySecret && secondarySecret.trim().length > 0) {
       return this.verifySignature(bodyString, signatureHeader, timestamp, secondarySecret, toleranceSeconds);
+    }
+    return false;
+  }
+
+  /**
+   * Verifies an incoming standard multi-signature header (Webhook-Signature) against the expected secret.
+   * Handles space-separated signatures ("v1,sig1 v1,sig2").
+   */
+  public static verifyStandardSignature(
+    deliveryId: string,
+    timestamp: number,
+    bodyString: string,
+    signatureHeader: string,
+    secret: string,
+    toleranceSeconds: number = 300
+  ): boolean {
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - timestamp) > toleranceSeconds) {
+      return false; // Replay attack prevention
+    }
+
+    const expectedSig = WebhookDispatcher.signStandardPayload(deliveryId, timestamp, bodyString, secret);
+    const expectedBuf = Buffer.from(expectedSig, 'utf8');
+
+    const items = signatureHeader.trim().split(/\s+/);
+    for (const item of items) {
+      if (!item.startsWith('v1,')) continue;
+      const itemBuf = Buffer.from(item, 'utf8');
+      if (itemBuf.length === expectedBuf.length && crypto.timingSafeEqual(itemBuf, expectedBuf)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Verifies an incoming standard multi-signature header with dual secret support (primary and optional secondary).
+   */
+  public static verifyStandardSignatureWithDualSecrets(
+    deliveryId: string,
+    timestamp: number,
+    bodyString: string,
+    signatureHeader: string,
+    primarySecret: string,
+    secondarySecret?: string,
+    toleranceSeconds: number = 300
+  ): boolean {
+    if (
+      WebhookDispatcher.verifyStandardSignature(
+        deliveryId,
+        timestamp,
+        bodyString,
+        signatureHeader,
+        primarySecret,
+        toleranceSeconds
+      )
+    ) {
+      return true;
+    }
+    if (secondarySecret && secondarySecret.trim().length > 0) {
+      return WebhookDispatcher.verifyStandardSignature(
+        deliveryId,
+        timestamp,
+        bodyString,
+        signatureHeader,
+        secondarySecret,
+        toleranceSeconds
+      );
     }
     return false;
   }
@@ -250,6 +455,33 @@ export class WebhookDispatcher {
       return result;
     }
 
+    let primarySecret = secret;
+    let previousSecret = options.previousSecret;
+    let previousExpiresAt = options.previousExpiresAt;
+
+    if (options.ownerUserId) {
+      try {
+        const targetId = options.targetId || options.ownerKeyId || 'default';
+        const record = await getWebhookSecretStore().getSecretRecord(options.ownerUserId, targetId);
+        if (record) {
+          if (!primarySecret || primarySecret === record.primary) {
+            primarySecret = record.primary;
+          }
+          if (
+            !previousSecret &&
+            record.previous &&
+            record.previousExpiresAt &&
+            record.previousExpiresAt > Date.now()
+          ) {
+            previousSecret = record.previous;
+            previousExpiresAt = record.previousExpiresAt;
+          }
+        }
+      } catch {
+        // Fall back to provided secret
+      }
+    }
+
     const payload: WebhookPayload<T> = {
       id: deliveryId,
       event,
@@ -258,9 +490,27 @@ export class WebhookDispatcher {
     };
 
     const bodyString = JSON.stringify(payload);
-    const signature = this.generateSignature(bodyString, secret, timestamp);
-    const attempts: WebhookDeliveryAttempt[] = [];
+    const legacySignature = this.generateSignature(bodyString, primarySecret, timestamp);
+    const primaryStandardSig = WebhookDispatcher.signStandardPayload(
+      deliveryId,
+      timestamp,
+      bodyString,
+      primarySecret
+    );
+    let webhookSignatureHeader = primaryStandardSig;
 
+    const nowMs = Date.now();
+    if (previousSecret && (previousExpiresAt === undefined || previousExpiresAt > nowMs)) {
+      const prevStandardSig = WebhookDispatcher.signStandardPayload(
+        deliveryId,
+        timestamp,
+        bodyString,
+        previousSecret
+      );
+      webhookSignatureHeader = `${primaryStandardSig} ${prevStandardSig}`;
+    }
+
+    const attempts: WebhookDeliveryAttempt[] = [];
     let success = false;
     let finalStatusCode: number | undefined;
 
@@ -268,6 +518,7 @@ export class WebhookDispatcher {
       const attemptStart = Date.now();
       const controller = new AbortController();
       let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
+      let responseHeaders: Headers | undefined;
 
       try {
         const fetchFn = (globalThis.fetch || undiciFetch) as unknown as typeof undiciFetch;
@@ -276,10 +527,14 @@ export class WebhookDispatcher {
           headers: {
             'Content-Type': 'application/json',
             'User-Agent': 'EasyConvert-Webhook/1.0',
+            'Webhook-Id': deliveryId,
+            'Webhook-Timestamp': timestamp.toString(),
+            'Webhook-Signature': webhookSignatureHeader,
             'X-EasyConvert-Delivery': deliveryId,
             'X-EasyConvert-Event': event,
             'X-EasyConvert-Timestamp': timestamp.toString(),
-            'X-EasyConvert-Signature': `sha256=${signature}`,
+            'X-EasyConvert-Signature': `sha256=${legacySignature}`,
+            'X-Signature-SHA256': legacySignature,
           },
           body: bodyString,
           dispatcher: this.ssrfAgent,
@@ -287,6 +542,7 @@ export class WebhookDispatcher {
         } as any)) as unknown as Response;
 
         finalStatusCode = response.status;
+        responseHeaders = response.headers;
         const attemptDuration = Date.now() - attemptStart;
 
         attempts.push({
@@ -296,13 +552,21 @@ export class WebhookDispatcher {
           durationMs: attemptDuration,
         });
 
-        if (response.ok) {
+        const statusAction = classifyWebhookStatus(response.status);
+        if (statusAction === 'success') {
           success = true;
           break;
         }
 
-        // Retry only on server errors (5xx)
-        if (response.status < 500) {
+        if (statusAction === 'deactivate') {
+          // 410 Gone: permanently stop retrying and do not store in DLQ
+          success = false;
+          break;
+        }
+
+        if (statusAction === 'dlq_immediate') {
+          // 4xx client errors (except 408/429): fast-fail immediately to DLQ
+          success = false;
           break;
         }
       } catch (err: unknown) {
@@ -315,8 +579,8 @@ export class WebhookDispatcher {
           durationMs: attemptDuration,
         });
 
-        // Fast-fail if blocked by SSRF agent during connection lookup
-        if (errMsg.includes('SSRF blocked') || errMsg.includes('restricted')) {
+        const statusAction = classifyWebhookStatus(undefined, errMsg);
+        if (statusAction === 'dlq_immediate') {
           finalStatusCode = 403;
           break;
         }
@@ -328,7 +592,9 @@ export class WebhookDispatcher {
       }
 
       if (attempt < maxRetries) {
-        const backoffMs = initialDelayMs * Math.pow(2, attempt - 1);
+        const baseDelay = options.initialDelayMs ?? 200;
+        const exponential = baseDelay * Math.pow(2, attempt - 1);
+        const backoffMs = Math.max(1, Math.floor(Math.random() * exponential) + 1);
         await new Promise((resolve) => setTimeout(resolve, backoffMs));
       }
     }
@@ -346,8 +612,8 @@ export class WebhookDispatcher {
 
     this.recordHistory(result);
 
-    // Preserve failed webhooks in Dead Letter Queue (DLQ)
-    if (!success && !options.skipDlq) {
+    // Preserve failed webhooks in Dead Letter Queue (DLQ) unless permanently deactivated (410 Gone)
+    if (!success && !options.skipDlq && finalStatusCode !== 410) {
       const lastError = attempts.at(-1)?.error;
       const dlqEntry: WebhookDlqEntry = {
         id: `dlq_${deliveryId}`,
@@ -355,7 +621,7 @@ export class WebhookDispatcher {
         targetUrl,
         event,
         payload: payload as unknown as Record<string, unknown>,
-        secret,
+        secret: primarySecret,
         failedAt: Date.now(),
         finalStatusCode,
         errorMessage: lastError,
@@ -502,7 +768,13 @@ export class WebhookDispatcher {
       entry.event as WebhookEvent,
       payloadData,
       entry.secret,
-      { maxRetries: 3, skipDlq: true }
+      {
+        maxRetries: 3,
+        skipDlq: true,
+        deliveryId: entry.originalDeliveryId || entry.id,
+        ownerUserId: entry.ownerUserId,
+        ownerKeyId: entry.ownerKeyId,
+      }
     );
 
     entry.retryCount += result.totalAttempts;
@@ -517,6 +789,124 @@ export class WebhookDispatcher {
     await this.saveToDlq(entry);
 
     return result;
+  }
+
+  private queueEngine: IQueueEngine<WebhookJobData, WebhookDispatchResult> | null = null;
+  private queueWorker: Worker<WebhookJobData, WebhookDispatchResult> | null = null;
+
+  public getQueue(): IQueueEngine<WebhookJobData, WebhookDispatchResult> {
+    if (!this.queueEngine) {
+      this.queueEngine = createQueueEngine<WebhookJobData, WebhookDispatchResult>('easyconvert-webhooks');
+    }
+    return this.queueEngine;
+  }
+
+  public getWorker(): Worker<WebhookJobData, WebhookDispatchResult> {
+    if (!this.queueWorker) {
+      const queue = this.getQueue();
+      this.queueWorker = new Worker<WebhookJobData, WebhookDispatchResult>(
+        queue,
+        async (job) => this.processQueuedJob(job),
+        { concurrency: 10 }
+      );
+    }
+    return this.queueWorker;
+  }
+
+  public async enqueueDelivery<T = Record<string, unknown>>(
+    targetUrl: string,
+    event: WebhookEvent,
+    data: T,
+    secret: string,
+    options: WebhookDispatchOptions = {}
+  ): Promise<Job<WebhookJobData, WebhookDispatchResult>> {
+    const deliveryId = options.deliveryId || `wh_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    const queue = this.getQueue();
+    this.getWorker();
+
+    const jobData: WebhookJobData<T> = {
+      deliveryId,
+      targetUrl,
+      event,
+      data,
+      secret,
+      options,
+      attemptNumber: 1,
+      attempts: [],
+      createdAt: Date.now(),
+    };
+
+    return queue.add('webhook:delivery', jobData as any);
+  }
+
+  private async processQueuedJob(
+    job: Job<WebhookJobData, WebhookDispatchResult>
+  ): Promise<WebhookDispatchResult> {
+    const { targetUrl, event, data, secret, options = {} } = job.data;
+    const attemptResult = await this.dispatch(targetUrl, event, data, secret, {
+      ...options,
+      maxRetries: 1,
+      deliveryId: job.data.deliveryId,
+      skipDlq: true,
+    });
+
+    job.data.attempts.push(...attemptResult.attempts);
+    job.data.attemptNumber += 1;
+
+    if (attemptResult.success) {
+      return attemptResult;
+    }
+
+    if (attemptResult.finalStatusCode === 410) {
+      // 410 Gone: permanently deactivated, stop retrying, do not save to DLQ
+      return attemptResult;
+    }
+
+    const action = classifyWebhookStatus(
+      attemptResult.finalStatusCode,
+      attemptResult.attempts.at(-1)?.error
+    );
+    const maxRetries = options.maxRetries || 6;
+
+    if (action === 'dlq_immediate' || job.data.attempts.length >= maxRetries) {
+      if (!options.skipDlq) {
+        const lastError = job.data.attempts.at(-1)?.error;
+        const dlqEntry: WebhookDlqEntry = {
+          id: `dlq_${job.data.deliveryId}`,
+          originalDeliveryId: job.data.deliveryId,
+          targetUrl,
+          event,
+          payload: {
+            id: job.data.deliveryId,
+            event,
+            timestamp: Math.floor(Date.now() / 1000),
+            data,
+          },
+          secret,
+          failedAt: Date.now(),
+          finalStatusCode: attemptResult.finalStatusCode,
+          errorMessage: lastError,
+          retryCount: job.data.attempts.length,
+          status: 'failed',
+          ownerUserId: options.ownerUserId,
+          ownerKeyId: options.ownerKeyId,
+        };
+        await this.saveToDlq(dlqEntry).catch(() => {});
+      }
+      return {
+        ...attemptResult,
+        totalAttempts: job.data.attempts.length,
+        attempts: job.data.attempts,
+      };
+    }
+
+    const delayMs = computeRetryDelay(job.data.attempts.length);
+    await this.getQueue().add('webhook:delivery', job.data, { delay: delayMs });
+    return {
+      ...attemptResult,
+      totalAttempts: job.data.attempts.length,
+      attempts: job.data.attempts,
+    };
   }
 
   /**
@@ -569,4 +959,42 @@ export function shouldDispatchEvent(
   subscribedEvents?: string[]
 ): boolean {
   return webhookDispatcher.shouldDispatchEvent(event, subscribedEvents);
+}
+
+export function verifyStandardSignature(
+  deliveryId: string,
+  timestamp: number,
+  bodyString: string,
+  signatureHeader: string,
+  secret: string,
+  toleranceSeconds: number = 300
+): boolean {
+  return WebhookDispatcher.verifyStandardSignature(
+    deliveryId,
+    timestamp,
+    bodyString,
+    signatureHeader,
+    secret,
+    toleranceSeconds
+  );
+}
+
+export function verifyStandardSignatureWithDualSecrets(
+  deliveryId: string,
+  timestamp: number,
+  bodyString: string,
+  signatureHeader: string,
+  primarySecret: string,
+  secondarySecret?: string,
+  toleranceSeconds: number = 300
+): boolean {
+  return WebhookDispatcher.verifyStandardSignatureWithDualSecrets(
+    deliveryId,
+    timestamp,
+    bodyString,
+    signatureHeader,
+    primarySecret,
+    secondarySecret,
+    toleranceSeconds
+  );
 }
