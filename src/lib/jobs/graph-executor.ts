@@ -12,6 +12,7 @@ import {
 import { getFormatByExtension } from '@/lib/registry';
 import {
   type TaskNode,
+  type TaskDependency,
   type JobGraph,
   type GraphFailurePolicy,
   normalizeGraphNodes,
@@ -77,6 +78,10 @@ export interface IJobGraphExecutor {
     error: string
   ): Promise<{ graphStatus: string; cancelledTasks: string[]; skippedTasks: string[] }>;
 
+  getTaskOutputs(jobId: string, taskId: string): Promise<string[]>;
+
+  resolveTaskInputs(jobId: string, task: TaskNode): Promise<string[]>;
+
   executeTask(
     jobId: string,
     task: TaskNode,
@@ -86,6 +91,8 @@ export interface IJobGraphExecutor {
   getGraphState(jobId: string): Promise<GraphExecutionState | null>;
 
   cancelGraph(jobId: string, reason?: string): Promise<boolean>;
+
+  cleanupGraph(jobId: string): Promise<void>;
 }
 
 export async function runExecutorTask(
@@ -93,13 +100,18 @@ export async function runExecutorTask(
   storage: IStorageBackend,
   jobId: string,
   task: TaskNode,
-  inputArtifactKeys: string[] = []
+  inputArtifactKeys?: string[]
 ): Promise<TaskExecutionResult> {
   const startTime = Date.now();
   await executor.onTaskStarted(jobId, task.id);
 
   try {
-    const outputKeys = await runTaskOperation(jobId, task, inputArtifactKeys, storage);
+    const effectiveInputs =
+      inputArtifactKeys && inputArtifactKeys.length > 0
+        ? inputArtifactKeys
+        : await executor.resolveTaskInputs(jobId, task);
+
+    const outputKeys = await runTaskOperation(jobId, task, effectiveInputs, storage);
     await executor.onTaskCompleted(jobId, task.id, outputKeys);
     return {
       taskId: task.id,
@@ -231,7 +243,12 @@ for _, t in ipairs(tasks) do
 
   if t.inDegree == 0 then
     local fullJobId = ARGV[1] .. ':' .. tid
-    redis.call('RPUSH', KEYS[3], fullJobId)
+    local qType = redis.call('TYPE', KEYS[3]).ok
+    if qType == 'zset' then
+      redis.call('ZADD', KEYS[3], tonumber(ARGV[4]) or 0, fullJobId)
+    else
+      redis.call('RPUSH', KEYS[3], fullJobId)
+    end
     table.insert(readyTasks, tid)
   end
 end
@@ -312,7 +329,12 @@ if rawChildren then
         redis.call('HSET', KEYS[2], childId, cjson.encode(childState))
 
         local fullChildJobId = ARGV[1] .. ':' .. childId
-        redis.call('RPUSH', KEYS[3], fullChildJobId)
+        local qType = redis.call('TYPE', KEYS[3]).ok
+        if qType == 'zset' then
+          redis.call('ZADD', KEYS[3], tonumber(ARGV[4]) or 0, fullChildJobId)
+        else
+          redis.call('RPUSH', KEYS[3], fullChildJobId)
+        end
         table.insert(readyTasks, childId)
       end
     end
@@ -384,7 +406,12 @@ if policy == 'fail_job' then
       tState.status = 'cancelled'
       redis.call('HSET', KEYS[2], tid, cjson.encode(tState))
       local fullJobId = ARGV[1] .. ':' .. tid
-      redis.call('LREM', KEYS[3], 0, fullJobId)
+      local qType = redis.call('TYPE', KEYS[3]).ok
+      if qType == 'zset' then
+        redis.call('ZREM', KEYS[3], fullJobId)
+      else
+        redis.call('LREM', KEYS[3], 0, fullJobId)
+      end
       table.insert(cancelledTasks, tid)
     end
   end
@@ -419,7 +446,12 @@ else
       cState.status = 'skipped'
       redis.call('HSET', KEYS[2], tid, cjson.encode(cState))
       local fullJobId = ARGV[1] .. ':' .. tid
-      redis.call('LREM', KEYS[3], 0, fullJobId)
+      local qType = redis.call('TYPE', KEYS[3]).ok
+      if qType == 'zset' then
+        redis.call('ZREM', KEYS[3], fullJobId)
+      else
+        redis.call('LREM', KEYS[3], 0, fullJobId)
+      end
       table.insert(skippedTasks, tid)
     end
   end
@@ -615,10 +647,56 @@ export class RedisGraphExecutor implements IJobGraphExecutor {
     return { graphStatus, cancelledTasks, skippedTasks };
   }
 
+  async getTaskOutputs(jobId: string, taskId: string): Promise<string[]> {
+    const outputsKey = `{job}:${jobId}:outputs:${taskId}`;
+    const raw = await this.redis.get(outputsKey);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async resolveTaskInputs(jobId: string, task: TaskNode): Promise<string[]> {
+    const op = task.operation || task.op || 'convert';
+    if (op === 'import.upload' || op === 'import.url' || op === 'import') {
+      if (task.storageKey) return [task.storageKey];
+      return [];
+    }
+
+    const deps = getTaskDependencies(task);
+    const resolved: string[] = [];
+
+    const structuredDeps = Array.isArray(task.dependencies) ? task.dependencies : [];
+    const depMap = new Map<string, TaskDependency | undefined>();
+    for (const d of structuredDeps) {
+      if (typeof d === 'object' && d !== null && d.taskId) {
+        depMap.set(d.taskId, d);
+      }
+    }
+
+    for (const depId of deps) {
+      const outputs = await this.getTaskOutputs(jobId, depId);
+      const struct = depMap.get(depId);
+      if (struct && typeof struct.outputIndex === 'number') {
+        const item = outputs[struct.outputIndex];
+        if (item) {
+          resolved.push(item);
+        }
+      } else {
+        resolved.push(...outputs);
+      }
+    }
+
+    return resolved;
+  }
+
   executeTask(
     jobId: string,
     task: TaskNode,
-    inputArtifactKeys: string[] = []
+    inputArtifactKeys?: string[]
   ): Promise<TaskExecutionResult> {
     return runExecutorTask(this, this.storage, jobId, task, inputArtifactKeys);
   }
@@ -682,6 +760,8 @@ export class RedisGraphExecutor implements IJobGraphExecutor {
     );
 
     const allTasks = await this.redis.hgetall(tasksKey);
+    const qType = await this.redis.type(waitingKey);
+
     for (const [tid, rawJson] of Object.entries(allTasks)) {
       try {
         const state: TaskExecutionState = JSON.parse(rawJson);
@@ -689,7 +769,11 @@ export class RedisGraphExecutor implements IJobGraphExecutor {
           state.status = 'cancelled';
           state.error = reason;
           await this.redis.hset(tasksKey, tid, JSON.stringify(state));
-          await this.redis.lrem(waitingKey, 0, `${jobId}:${tid}`);
+          if (qType === 'zset') {
+            await this.redis.zrem(waitingKey, `${jobId}:${tid}`);
+          } else {
+            await this.redis.lrem(waitingKey, 0, `${jobId}:${tid}`);
+          }
         }
       } catch {
         // ignore
@@ -697,6 +781,20 @@ export class RedisGraphExecutor implements IJobGraphExecutor {
     }
 
     return true;
+  }
+
+  async cleanupGraph(jobId: string): Promise<void> {
+    const keys = await this.redis.keys(`*{job}:${jobId}*`);
+    if (keys.length > 0) {
+      await this.redis.del(...keys);
+    }
+    const prefix = `tasks/${jobId}/`;
+    const anyStorage = this.storage as any;
+    if (typeof anyStorage?.deleteByPrefix === 'function') {
+      anyStorage.deleteByPrefix(prefix);
+    } else if (typeof anyStorage?.deleteDirectory === 'function') {
+      await anyStorage.deleteDirectory(prefix);
+    }
   }
 }
 
@@ -912,10 +1010,48 @@ export class InMemoryGraphExecutor implements IJobGraphExecutor {
     return { graphStatus: state.status, cancelledTasks, skippedTasks };
   }
 
+  async getTaskOutputs(jobId: string, taskId: string): Promise<string[]> {
+    return this.taskOutputs.get(jobId)?.get(taskId) || [];
+  }
+
+  async resolveTaskInputs(jobId: string, task: TaskNode): Promise<string[]> {
+    const op = task.operation || task.op || 'convert';
+    if (op === 'import.upload' || op === 'import.url' || op === 'import') {
+      if (task.storageKey) return [task.storageKey];
+      return [];
+    }
+
+    const deps = getTaskDependencies(task);
+    const resolved: string[] = [];
+
+    const structuredDeps = Array.isArray(task.dependencies) ? task.dependencies : [];
+    const depMap = new Map<string, TaskDependency | undefined>();
+    for (const d of structuredDeps) {
+      if (typeof d === 'object' && d !== null && d.taskId) {
+        depMap.set(d.taskId, d);
+      }
+    }
+
+    for (const depId of deps) {
+      const outputs = await this.getTaskOutputs(jobId, depId);
+      const struct = depMap.get(depId);
+      if (struct && typeof struct.outputIndex === 'number') {
+        const item = outputs[struct.outputIndex];
+        if (item) {
+          resolved.push(item);
+        }
+      } else {
+        resolved.push(...outputs);
+      }
+    }
+
+    return resolved;
+  }
+
   executeTask(
     jobId: string,
     task: TaskNode,
-    inputArtifactKeys: string[] = []
+    inputArtifactKeys?: string[]
   ): Promise<TaskExecutionResult> {
     return runExecutorTask(this, this.storage, jobId, task, inputArtifactKeys);
   }
@@ -942,6 +1078,20 @@ export class InMemoryGraphExecutor implements IJobGraphExecutor {
     }
 
     return true;
+  }
+
+  async cleanupGraph(jobId: string): Promise<void> {
+    this.states.delete(jobId);
+    this.taskDependencies.delete(jobId);
+    this.taskChildren.delete(jobId);
+    this.taskOutputs.delete(jobId);
+    const prefix = `tasks/${jobId}/`;
+    const anyStorage = this.storage as any;
+    if (typeof anyStorage?.deleteByPrefix === 'function') {
+      anyStorage.deleteByPrefix(prefix);
+    } else if (typeof anyStorage?.deleteDirectory === 'function') {
+      await anyStorage.deleteDirectory(prefix);
+    }
   }
 }
 
@@ -1110,9 +1260,16 @@ export async function runTaskOperation(
         const pdfBuffers: Buffer[] = [];
         for (const inputKey of inputArtifactKeys) {
           const stored = storage.getObject(inputKey);
-          if (stored) {
-            pdfBuffers.push(stored.buffer);
+          if (!stored) {
+            throw new Error(`Artifact "${inputKey}" not found in storage for merge`);
           }
+          if (!stored.buffer || stored.buffer.length === 0) {
+            throw new Error(`Artifact "${inputKey}" has zero bytes and cannot be merged`);
+          }
+          pdfBuffers.push(stored.buffer);
+        }
+        if (pdfBuffers.length === 0) {
+          throw new Error(`merge task "${task.id}" has no valid PDF buffers to merge`);
         }
         const mergedBuf = await mergePdfBuffers(pdfBuffers);
         const outFilename = 'merged.pdf';
@@ -1123,9 +1280,10 @@ export async function runTaskOperation(
         const textParts: string[] = [];
         for (const inputKey of inputArtifactKeys) {
           const stored = storage.getObject(inputKey);
-          if (stored) {
-            textParts.push(stored.buffer.toString('utf-8'));
+          if (!stored) {
+            throw new Error(`Artifact "${inputKey}" not found in storage for merge`);
           }
+          textParts.push(stored.buffer.toString('utf-8'));
         }
         const mergedBuf = Buffer.from(textParts.join('\n\n'), 'utf-8');
         const outFilename = `merged.${targetFmt || 'txt'}`;
@@ -1202,36 +1360,48 @@ export async function runTaskOperation(
 
     case 'export.url': {
       const urlStr = task.url || '';
+      if (!urlStr) {
+        throw new Error(`export.url task "${task.id}" is missing target URL`);
+      }
       for (const inputKey of inputArtifactKeys) {
         const stored = storage.getObject(inputKey);
-        if (stored) {
-          await fetch(urlStr, {
-            method: task.method || 'PUT',
-            body: new Uint8Array(stored.buffer),
-            headers: {
-              'Content-Type': stored.mimeType,
-              ...(task.headers || {}),
-            },
-          });
+        if (!stored) {
+          throw new Error(`Artifact "${inputKey}" not found in storage for export`);
+        }
+        const resp = await fetch(urlStr, {
+          method: task.method || 'PUT',
+          body: new Uint8Array(stored.buffer),
+          headers: {
+            'Content-Type': stored.mimeType || 'application/octet-stream',
+            ...(task.headers || {}),
+          },
+        });
+        if (!resp.ok) {
+          throw new Error(`Failed to export artifact "${inputKey}" to URL ${urlStr}: HTTP ${resp.status} ${resp.statusText}`);
         }
         outputKeys.push(inputKey);
       }
       break;
     }
 
-    case 'export.internal':
-    default: {
+    case 'export.internal': {
+      if (inputArtifactKeys.length === 0) {
+        throw new Error(`export.internal task "${task.id}" has no input artifacts`);
+      }
       for (const inputKey of inputArtifactKeys) {
         const stored = storage.getObject(inputKey);
-        if (stored) {
-          const resKey = `results/${jobId}/${stored.filename || path.basename(inputKey)}`;
-          storage.saveObject(resKey, stored.buffer, stored.mimeType, stored.filename, 86400000);
-          outputKeys.push(resKey);
-        } else {
-          outputKeys.push(inputKey);
+        if (!stored) {
+          throw new Error(`Artifact "${inputKey}" not found in storage for export`);
         }
+        const resKey = `results/${jobId}/${stored.filename || path.basename(inputKey)}`;
+        storage.saveObject(resKey, stored.buffer, stored.mimeType, stored.filename, 86400000);
+        outputKeys.push(resKey);
       }
       break;
+    }
+
+    default: {
+      throw new Error(`Unsupported graph task operation: "${op}" in task "${task.id}"`);
     }
   }
 

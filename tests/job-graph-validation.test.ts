@@ -267,4 +267,38 @@ describe('WP-30 / Phase 3-B: Job Graph Specification & Kahn Topological Validati
       ]);
     });
   });
+
+  describe('6. Strict Operation & Target Format Whitelist Validation', () => {
+    it('rejects unsupported task operations with UNSUPPORTED_OPERATION', () => {
+      const graph: JobGraph = {
+        nodes: {
+          src: { id: 'src', operation: 'import.upload', storageKey: 'uploads/doc.pdf' },
+          bad_step: { id: 'bad_step', operation: 'arbitrary_unsupported_op', dependencies: ['src'] },
+          out: { id: 'out', operation: 'export.internal', dependencies: ['bad_step'] },
+        },
+      };
+
+      const result = validateJobGraph(graph);
+      expect(result.valid).toBe(false);
+      const opError = result.errors.find((e) => e.code === 'UNSUPPORTED_OPERATION');
+      expect(opError).toBeDefined();
+      expect(opError?.message).toContain('Unsupported task operation "arbitrary_unsupported_op"');
+    });
+
+    it('rejects unknown target format in convert node with UNKNOWN_TARGET_FORMAT', () => {
+      const graph: JobGraph = {
+        nodes: {
+          src: { id: 'src', operation: 'import.upload', storageKey: 'uploads/doc.pdf' },
+          convert_step: { id: 'convert_step', operation: 'convert', dependencies: ['src'], targetFormat: 'nonexistent_xyz_format' },
+          out: { id: 'out', operation: 'export.internal', dependencies: ['convert_step'] },
+        },
+      };
+
+      const result = validateJobGraph(graph, { sourceFilename: 'doc.pdf' });
+      expect(result.valid).toBe(false);
+      const targetError = result.errors.find((e) => e.code === 'UNKNOWN_TARGET_FORMAT');
+      expect(targetError).toBeDefined();
+      expect(targetError?.message).toContain('Unknown or unsupported target format "nonexistent_xyz_format"');
+    });
+  });
 });
