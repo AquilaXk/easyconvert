@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import crypto from 'crypto';
-import zlib from 'zlib';
+import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import {
   create7zArchive,
   extract7zArchive,

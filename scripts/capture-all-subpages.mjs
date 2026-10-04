@@ -1,4 +1,4 @@
-import fs from 'fs';
+import fs from 'node:fs';
 
 async function captureAllSubpages() {
   const tabs = await fetch('http://localhost:9222/json/list').then((r) => r.json());
