@@ -172,6 +172,28 @@ export function parseCssColor(colorStr: string | null | undefined): RgbColor | n
 
 const BLACK: RgbColor = { r: 0, g: 0, b: 0 };
 
+const PAINT_KEYWORDS = new Set(['none', 'currentcolor', 'inherit']);
+const COLOR_KEYWORDS = new Set(['currentcolor', 'inherit']);
+
+function invalidPaint(property: string, value: string): UnsupportedOptionError {
+  return new UnsupportedOptionError(`SVG ${property} value "${value}" is not a valid colour or paint.`);
+}
+
+/**
+ * Rejects unparseable fill, stroke and color declarations wherever they come
+ * from (attribute, inline style or stylesheet) instead of silently ignoring them.
+ */
+function assertValidPaintDeclarations(declared: Map<string, string>): void {
+  for (const property of ['fill', 'stroke', 'color']) {
+    const raw = declared.get(property);
+    if (raw === undefined) continue;
+    const v = raw.trim().toLowerCase();
+    const keywords = property === 'color' ? COLOR_KEYWORDS : PAINT_KEYWORDS;
+    if (keywords.has(v) || (property !== 'color' && v.startsWith('url('))) continue;
+    if (parseColorValue(v) === undefined) throw invalidPaint(property, raw.trim());
+  }
+}
+
 /**
  * Resolves an SVG paint value (SVG 1.1 section 11.2). Paint servers throw a
  * typed error; an invalid fill falls back to its initial value (black) and an
@@ -185,7 +207,7 @@ export function resolvePaint(value: string, currentColor: string, property: 'fil
     throw new UnsupportedOptionError(`SVG ${property} paint server "${v}" is not supported by metafile encoders.`);
   }
   const parsed = lower === 'currentcolor' ? parseColorValue(currentColor) ?? { rgb: BLACK } : parseColorValue(v);
-  if (parsed === undefined) return property === 'fill' ? { ...BLACK } : null;
+  if (parsed === undefined) throw invalidPaint(property, v);
   return parsed.rgb ? { ...parsed.rgb } : null;
 }
 
@@ -1376,6 +1398,7 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   }
   const declared = declaredProperties(node.attrs, node.name, state.sheet);
   assertNeutralPaintProperties(declared);
+  assertValidPaintDeclarations(declared);
   if (declared.get('display') === 'none') return;
   assertNoUnsupportedReferences(node.attrs);
   const ctx = deriveContext(parent, node.attrs, declared);
@@ -1403,6 +1426,7 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   const sheet = extractStylesheets(svgContent);
   const declared = declaredProperties(root.attrs, root.name, sheet);
   assertNeutralPaintProperties(declared);
+  assertValidPaintDeclarations(declared);
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
   const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, vertices: new VertexBudget(), shapeCache: new Map(), sheet, depth: 0 };

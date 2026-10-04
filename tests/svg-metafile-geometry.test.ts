@@ -235,11 +235,22 @@ describe('SVG document model for metafile encoders', () => {
       );
     });
 
-    it('treats an invalid fill as black and an invalid stroke as none', () => {
-      const shapes = emfShapes('<rect x="0" y="0" width="10" height="10" fill="notacolor" stroke="alsobad"/>');
-      expect(shapes.filter((s) => s.kind === 'polygon').map((s) => s.brush)).toEqual([0x000000]);
-      expect(shapes.every((s) => s.pen === null)).toBe(true);
-    });
+    const invalidPaints = ['bogus', 'rgb(0x10,0,0)', 'rgb(10px,0,0)', 'hsl(0x1, 50%, 50%)', '#12', 'rgb(1e,0,0)'];
+    for (const value of invalidPaints) {
+      for (const property of ['fill', 'stroke', 'color']) {
+        it(`rejects ${property}="${value}" from attributes, inline style and stylesheets`, () => {
+          for (const body of [
+            `<rect width="10" height="10" ${property}="${value}"/>`,
+            `<rect width="10" height="10" style="${property}: ${value}"/>`,
+            `<style>.a { ${property}: ${value} }</style><rect class="a" width="10" height="10"/>`,
+            `<g ${property}="${value}"><rect width="10" height="10" fill="#000"/></g>`,
+          ]) {
+            expect(() => encodeEmf(svgDoc(body)), body).toThrow(UnsupportedOptionError);
+            expect(() => encodeEmf(svgDoc(body)), body).toThrow(property);
+          }
+        });
+      }
+    }
 
     it('treats transparent and none as no paint', () => {
       const shapes = emfShapes(
