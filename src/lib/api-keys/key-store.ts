@@ -21,6 +21,16 @@ export const TIER_LIMITS: Record<UserTier, number> = {
   enterprise: 10000,
 };
 
+export function getAnonymousDailyLimit(): number {
+  if (process.env.ANONYMOUS_DAILY_LIMIT) {
+    const parsed = parseInt(process.env.ANONYMOUS_DAILY_LIMIT, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return 10;
+}
+
+export const ANONYMOUS_DAILY_LIMIT = getAnonymousDailyLimit();
+
 const KEY_HASH_PEPPER_ENV = 'KEY_HASH_PEPPER';
 let pepperWarningEmitted = false;
 
@@ -455,9 +465,10 @@ export class KeyStore {
   public async getQuotaUsage(userId: string): Promise<QuotaUsage> {
     this.ensureInitialized();
 
-    const user = await redisUserStore.findById(userId);
+    const isAnonymous = userId.startsWith('anon:');
+    const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier || 'free';
-    const dailyLimit = TIER_LIMITS[tier];
+    const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
 
     const dateKey = `${userId}:${getUtcDateKey()}`;
     const usedToday = this.dailyUsage.get(dateKey) || 0;
@@ -476,9 +487,10 @@ export class KeyStore {
   public async recordUsage(userId: string, units: number = 1): Promise<{ allowed: boolean; remaining: number }> {
     this.ensureInitialized();
 
-    const user = await redisUserStore.findById(userId);
+    const isAnonymous = userId.startsWith('anon:');
+    const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
-    const dailyLimit = TIER_LIMITS[tier];
+    const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
 
     const dateKey = `${userId}:${getUtcDateKey()}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;

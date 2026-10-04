@@ -3,13 +3,36 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { s3Storage } from '@/lib/storage/s3-storage';
-import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+  const auth = await validateApiAccess(req, {
+    requiredUnits: 1,
+    requiredScope: 'convert:write',
+    allowAnonymous: true,
+  });
+
+  if (!auth.authorized || !auth.user) {
+    return NextResponse.json(
+      { success: false, error: auth.error ?? 'Unauthorized' },
+      { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
+    );
+  }
+
+  const reservationId = auth.reservationId;
+
+  const failWithRollback = async (status: number, error: string) => {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return NextResponse.json({ success: false, error }, { status });
+  };
+
   try {
     const contentType = req.headers.get('content-type') || '';
 
@@ -56,12 +79,12 @@ export async function POST(req: NextRequest) {
       fileSize = body.fileSize || 0;
     }
 
-    // This route creates anonymous jobs, so a supplied key must be an upload.
+    // Authorize caller against storage key
     if (
       storageKey &&
-      (typeof storageKey !== 'string' || !(await mayUseStorageKeyAsJobInput(storageKey, undefined)))
+      (typeof storageKey !== 'string' || !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id)))
     ) {
-      return NextResponse.json({ success: false, error: STORAGE_OBJECT_NOT_FOUND }, { status: 404 });
+      return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND);
     }
 
     if (!originalFilename && storageKey) {
@@ -69,10 +92,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!targetFormat) {
-      return NextResponse.json(
-        { success: false, error: 'Missing required parameter: "targetFormat"' },
-        { status: 400 }
-      );
+      return await failWithRollback(400, 'Missing required parameter: "targetFormat"');
     }
 
     const detected = detectFormatFromFilename(originalFilename);
@@ -90,6 +110,8 @@ export async function POST(req: NextRequest) {
         storageKey,
         inputBufferBase64,
         options,
+        userId: auth.user.id,
+        reservationId,
       },
       {
         attempts: 2,
@@ -106,6 +128,9 @@ export async function POST(req: NextRequest) {
       queue: conversionQueue.name,
     });
   } catch (error: any) {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Job enqueue error' },
       { status: 500 }

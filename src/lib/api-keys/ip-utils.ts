@@ -187,8 +187,13 @@ export function extractClientIp(
   trustedProxies?: string[],
   peerIp?: string
 ): string {
+  const directPeer = peerIp ?? (request as any)?.ip ?? (request as any)?.socket?.remoteAddress;
+
+  if (!request?.headers || typeof request.headers.get !== 'function') {
+    return directPeer ? normalizeIp(directPeer) : '127.0.0.1';
+  }
+
   const proxies = trustedProxies || getTrustedProxies();
-  const directPeer = peerIp ?? (request as any).ip ?? (request as any).socket?.remoteAddress;
 
   // If immediate connecting peer is known and is NOT in trusted proxies list,
   // reject any forwarded/proxy headers (CF-Connecting-IP, X-Real-IP, X-Forwarded-For)

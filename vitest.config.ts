@@ -11,6 +11,11 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    env: {
+      ANONYMOUS_DAILY_LIMIT: '10000',
+      ANONYMOUS_BURST_CAPACITY: '10000',
+      ANONYMOUS_BURST_REFILL_RATE: '10000',
+    },
     include: ['tests/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/.worktrees/**', '**/.claude/worktrees/**'],
   },
