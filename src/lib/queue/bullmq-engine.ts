@@ -197,17 +197,15 @@ export interface DlqEntry<T = any> {
 }
 
 let lastPriorityTime = 0;
-let priorityTieCounter = 0;
 
 export function getMonotonicPriorityTimestamp(): number {
   const now = Date.now();
   if (now > lastPriorityTime) {
     lastPriorityTime = now;
-    priorityTieCounter = 0;
     return now;
   }
-  priorityTieCounter++;
-  return lastPriorityTime + priorityTieCounter * 0.0001;
+  lastPriorityTime += 1;
+  return lastPriorityTime;
 }
 
 /**
@@ -350,6 +348,19 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     return result;
   }
 
+  private removeUserJob(id: string, userId?: string): void {
+    if (!userId) return;
+    const userList = this.userJobs.get(userId);
+    if (userList) {
+      const next = userList.filter((jid) => jid !== id);
+      if (next.length === 0) {
+        this.userJobs.delete(userId);
+      } else {
+        this.userJobs.set(userId, next);
+      }
+    }
+  }
+
   async getJobsByUser(
     userId: string,
     states?: JobState[],
@@ -362,10 +373,24 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     }
     const validStates = states && states.length > 0 ? new Set(states) : null;
     const matching: Job<T, R>[] = [];
+    const staleIds: string[] = [];
     for (let i = ids.length - 1; i >= 0; i--) {
       const job = this.jobs.get(ids[i]);
-      if (job && (!validStates || validStates.has(job.state))) {
+      if (!job) {
+        staleIds.push(ids[i]);
+        continue;
+      }
+      if (!validStates || validStates.has(job.state)) {
         matching.push(job);
+      }
+    }
+    if (staleIds.length > 0) {
+      const staleSet = new Set(staleIds);
+      const remaining = ids.filter((id) => !staleSet.has(id));
+      if (remaining.length === 0) {
+        this.userJobs.delete(userId);
+      } else {
+        this.userJobs.set(userId, remaining);
       }
     }
     matching.sort((a, b) => b.timestamp - a.timestamp);
@@ -422,6 +447,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   _onJobCompleted(job: Job<T, R>, _result: R): boolean {
     if (job.opts?.removeOnComplete === true) {
       this.jobs.delete(job.id);
+      this.removeUserJob(job.id, (job.data as any)?.userId);
     } else if (typeof job.opts?.removeOnComplete === 'number') {
       const maxToKeep = job.opts.removeOnComplete;
       const completed = Array.from(this.jobs.values())
@@ -429,6 +455,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
         .sort((a, b) => (b.finishedOn || 0) - (a.finishedOn || 0));
       for (let i = maxToKeep; i < completed.length; i++) {
         this.jobs.delete(completed[i].id);
+        this.removeUserJob(completed[i].id, (completed[i].data as any)?.userId);
       }
     }
     return true;
@@ -437,6 +464,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   _onJobFailed(job: Job<T, R>, _err: any): boolean {
     if (job.opts?.removeOnFail === true) {
       this.jobs.delete(job.id);
+      this.removeUserJob(job.id, (job.data as any)?.userId);
     } else if (typeof job.opts?.removeOnFail === 'number') {
       const maxToKeep = job.opts.removeOnFail;
       const failed = Array.from(this.jobs.values())
@@ -444,6 +472,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
         .sort((a, b) => (b.finishedOn || 0) - (a.finishedOn || 0));
       for (let i = maxToKeep; i < failed.length; i++) {
         this.jobs.delete(failed[i].id);
+        this.removeUserJob(failed[i].id, (failed[i].data as any)?.userId);
       }
     }
     return true;
@@ -874,8 +903,8 @@ else
   if typeName == 'list' then
     local items = redis.call('LRANGE', KEYS[2], 0, -1)
     redis.call('DEL', KEYS[2])
-    for _, itemId in ipairs(items) do
-      redis.call('ZADD', KEYS[2], 1000000000000000, itemId)
+    for idx, itemId in ipairs(items) do
+      redis.call('ZADD', KEYS[2], 1000000000000000 + idx, itemId)
     end
   end
   redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), ARGV[1])
@@ -1064,8 +1093,8 @@ else
   if typeName == 'list' then
     local items = redis.call('LRANGE', KEYS[3], 0, -1)
     redis.call('DEL', KEYS[3])
-    for _, itemId in ipairs(items) do
-      redis.call('ZADD', KEYS[3], 1000000000000000, itemId)
+    for idx, itemId in ipairs(items) do
+      redis.call('ZADD', KEYS[3], 1000000000000000 + idx, itemId)
     end
   end
   local score = tonumber(ARGV[7]) or 1000000000000000
@@ -1716,11 +1745,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             await this.redisClient.zadd(this.delayedKey, delayUntil, id);
           }
         } else {
-          if (typeof this.redisClient.rpush === 'function') {
-            await this.redisClient.rpush(this.waitingKey, id);
-          }
           if (typeof this.redisClient.zadd === 'function') {
             await this.redisClient.zadd(this.waitingKey, priorityScore, id);
+          } else if (typeof this.redisClient.rpush === 'function') {
+            await this.redisClient.rpush(this.waitingKey, id);
           }
           await this.publishEvent({ event: 'waiting', jobId: id });
         }
@@ -1862,15 +1890,23 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
         const matchedJobs: Job<T, R>[] = [];
         const staleJobIds: string[] = [];
+        const batchSize = Math.max(50, limit + offset);
 
-        for (const jobId of allJobIds) {
-          const job = await this.getJob(jobId);
-          if (!job) {
-            staleJobIds.push(jobId);
-            continue;
+        for (let i = 0; i < allJobIds.length; i += batchSize) {
+          const chunk = allJobIds.slice(i, i + batchSize);
+          const chunkJobs = await Promise.all(chunk.map((id) => this.getJob(id)));
+          for (let j = 0; j < chunk.length; j++) {
+            const job = chunkJobs[j];
+            if (!job) {
+              staleJobIds.push(chunk[j]);
+              continue;
+            }
+            if (!states || states.length === 0 || states.includes(job.state)) {
+              matchedJobs.push(job);
+            }
           }
-          if (!states || states.length === 0 || states.includes(job.state)) {
-            matchedJobs.push(job);
+          if (matchedJobs.length >= offset + limit && (!states || states.length === 0)) {
+            break;
           }
         }
 
@@ -2198,8 +2234,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   async _onJobCompleted(job: Job<T, R>, result: R): Promise<boolean> {
     const client = this.redisClient;
     if (!client || !this.redisConnected) {
-      // In-process fallback: the worker guards the shared job object itself.
-      return true;
+      return this.memoryFallback._onJobCompleted(job, result);
     }
     const finishedOn = String(job.finishedOn || Date.now());
     const returnValue = result === undefined ? '' : JSON.stringify(result);
@@ -2260,8 +2295,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async _onJobFailed(job: Job<T, R>, err: any): Promise<boolean> {
     if (!this.redisClient || !this.redisConnected) {
-      // In-process fallback: the worker guards the shared job object itself.
-      return true;
+      return this.memoryFallback._onJobFailed(job, err);
     }
     try {
       const committed = await this.redisClient.eval(
@@ -2399,6 +2433,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       }
       await this.moveToDlq(job, STALLED_JOB_FAILURE_REASON);
       failedJobs.push(job);
+      await this.publishEvent({ event: 'failed', jobId: job.id, error: STALLED_JOB_FAILURE_REASON });
     }
     if (failedJobs.length > 0) {
       console.warn(

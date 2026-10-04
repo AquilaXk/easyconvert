@@ -252,9 +252,11 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
         filename: 'report.docx',
       });
 
-      // Verify waiting list
-      const waitingList = await mockRedis.lrange('testqueue:{transcode-cluster}:waiting', 0, -1);
-      expect(waitingList).toContain(job.id);
+      // Verify waiting entries (supports priority ZSET and legacy list)
+      const waitingMembers = (await mockRedis.zrange('testqueue:{transcode-cluster}:waiting', 0, -1)).concat(
+        await mockRedis.lrange('testqueue:{transcode-cluster}:waiting', 0, -1)
+      );
+      expect(waitingMembers).toContain(job.id);
 
       // Verify pub/sub publish event
       expect(mockRedis.publishedMessages.length).toBeGreaterThan(0);

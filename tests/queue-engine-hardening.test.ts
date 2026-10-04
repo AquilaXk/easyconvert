@@ -358,6 +358,60 @@ describe('Phase 3-A: Queue Engine Hardening (Priority ZSET, Atomic Lua Add, Pub/
       client.emit('end');
       expect(adapter.isConnected).toBe(false);
     });
+
+    it('guarantees strict FIFO ordering on concurrent same-tick additions with identical priority in Redis', async () => {
+      const adapter = connect('redis-fifo-concurrent-ties');
+
+      // Add jobs concurrently without awaiting in between, with IDs that would sort in reverse if tied
+      const p1 = adapter.add('c', { seq: 1 }, { jobId: 'zzz-job-tie-1', priority: 1000 });
+      const p2 = adapter.add('c', { seq: 2 }, { jobId: 'aaa-job-tie-2', priority: 1000 });
+      await Promise.all([p1, p2]);
+
+      const popped1 = await adapter._popNextWaiting();
+      const popped2 = await adapter._popNextWaiting();
+
+      expect(popped1?.id).toBe('zzz-job-tie-1');
+      expect(popped2?.id).toBe('aaa-job-tie-2');
+    });
+
+    it('enforces removeOnComplete and removeOnFail in fallback in-memory mode without Redis', async () => {
+      const fallbackAdapter = new DistributedBullMQAdapter('fallback-retention-test');
+      const userId = 'usr_fallback_retention';
+
+      const jobCompleted = await fallbackAdapter.add('c', { userId }, { removeOnComplete: true });
+      jobCompleted.state = 'completed';
+      jobCompleted.finishedOn = Date.now();
+      const completedOk = await fallbackAdapter._onJobCompleted(jobCompleted, { ok: 1 });
+      expect(completedOk).toBe(true);
+      expect(await fallbackAdapter.getJob(jobCompleted.id)).toBeUndefined();
+      expect(await fallbackAdapter.getJobsByUser(userId)).toEqual([]);
+
+      const jobFailed = await fallbackAdapter.add('c', { userId }, { removeOnFail: true });
+      jobFailed.state = 'failed';
+      jobFailed.finishedOn = Date.now();
+      const failedOk = await fallbackAdapter._onJobFailed(jobFailed, new Error('boom'));
+      expect(failedOk).toBe(true);
+      expect(await fallbackAdapter.getJob(jobFailed.id)).toBeUndefined();
+      expect(await fallbackAdapter.getJobsByUser(userId)).toEqual([]);
+    });
+
+    it('preserves list sequence order during legacy LIST to ZSET migration', async () => {
+      const adapter = connect('legacy-seq-migrate');
+      const waitingKey = `${keyPrefix}{legacy-seq-migrate}:waiting`;
+
+      // Seed 3 items in reverse alphabetical order: zzz, mmm, aaa
+      await admin.del(waitingKey);
+      await admin.rpush(waitingKey, 'zzz-seq', 'mmm-seq', 'aaa-seq');
+      expect(await admin.type(waitingKey)).toBe('list');
+
+      // Add a job to trigger ADD_JOB_LUA_SCRIPT migration
+      await adapter.add('trigger', { val: 1 });
+
+      expect(await admin.type(waitingKey)).toBe('zset');
+      const zsetItems = await admin.zrange(waitingKey, 0, -1);
+      // Verify sequence is preserved: zzz-seq, mmm-seq, aaa-seq (followed by trigger)
+      expect(zsetItems.slice(0, 3)).toEqual(['zzz-seq', 'mmm-seq', 'aaa-seq']);
+    });
   });
 
   describe('3. Unified ConversionQueue Delegation and Telemetry', () => {
