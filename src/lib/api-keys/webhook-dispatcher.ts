@@ -11,6 +11,9 @@ import {
   type Job,
 } from '../queue/bullmq-engine';
 
+/** DLQ reason for events that were not sent because no signing secret is configured. */
+export const MISSING_WEBHOOK_SECRET_REASON = 'missing_webhook_secret';
+
 export type WebhookEvent =
   | 'conversion.completed'
   | 'conversion.failed'
@@ -487,6 +490,37 @@ export class WebhookDispatcher {
       } catch {
         // Fall back to provided secret
       }
+    }
+
+    // An HMAC with an empty key is forgeable by anyone: never send an unsigned event.
+    if (!primarySecret) {
+      const result: WebhookDispatchResult = {
+        id: deliveryId,
+        url: targetUrl,
+        event,
+        success: false,
+        totalAttempts: 0,
+        durationMs: Date.now() - startTime,
+        attempts: [],
+      };
+      this.recordHistory(result);
+      if (!options.skipDlq) {
+        await this.saveToDlq({
+          id: `dlq_${deliveryId}`,
+          originalDeliveryId: deliveryId,
+          targetUrl,
+          event,
+          payload: data as Record<string, unknown>,
+          secret: '',
+          failedAt: Date.now(),
+          errorMessage: MISSING_WEBHOOK_SECRET_REASON,
+          retryCount: 0,
+          status: 'failed',
+          ownerUserId: options.ownerUserId,
+          ownerKeyId: options.ownerKeyId,
+        }).catch(() => {});
+      }
+      return result;
     }
 
     const payload: WebhookPayload<T> = {
