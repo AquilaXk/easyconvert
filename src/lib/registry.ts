@@ -1277,7 +1277,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     category: 'presentation',
     description: 'Microsoft PowerPoint OpenXML slide presentation standard.',
-    targetFormats: ['pdf', 'html', 'odp', 'txt', 'zip', 'swf'],
+    targetFormats: ['pdf', 'html', 'odp', 'txt', 'zip'],
     optionsSchema: { orientation: true },
   },
   ppt: {
@@ -1287,7 +1287,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Microsoft PowerPoint legacy binary presentation format.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip'],
   },
   pptm: {
     id: 'pptm',
@@ -1296,7 +1296,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
     category: 'presentation',
     description: 'Microsoft PowerPoint macro-enabled OpenXML slide presentation.',
-    targetFormats: ['zip', 'swf'],
+    targetFormats: ['zip'],
   },
   potx: {
     id: 'potx',
@@ -1323,7 +1323,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
     category: 'presentation',
     description: 'PowerPoint presentation designed to launch directly in full slideshow mode.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp'],
   },
   pps: {
     id: 'pps',
@@ -1332,7 +1332,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint slideshow binary file.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp'],
   },
   odp: {
     id: 'odp',
@@ -1341,7 +1341,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.presentation',
     category: 'presentation',
     description: 'OASIS OpenDocument Presentation standard used in LibreOffice Impress.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip'],
   },
   otp: {
     id: 'otp',
@@ -1413,7 +1413,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'WPS Office Kingsoft Presentation slide deck.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp'],
   },
   shw: {
     id: 'shw',
@@ -1474,7 +1474,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/webp',
     category: 'image',
     description: 'Modern web image format providing superior lossless and lossy compression.',
-    targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto'],
     optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   avif: {
@@ -1514,7 +1514,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/gif',
     category: 'image',
     description: 'Graphics Interchange Format with animated frame and transparency support.',
-    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto'],
     optionsSchema: { dimensions: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   bmp: {

@@ -87,6 +87,15 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'rtf->doc', 'rtf->jpg', 'rtf->png',
   'xls->jpg', 'xls->png',
   'xlsx->jpg', 'xlsx->png',
+  'dps->swf',
+  'gif->aac', 'gif->aiff', 'gif->flac', 'gif->m4a', 'gif->mp3', 'gif->wav', 'gif->wma',
+  'odp->swf',
+  'pps->swf',
+  'ppsx->swf',
+  'ppt->swf',
+  'pptm->swf',
+  'pptx->swf',
+  'webp->aac', 'webp->aiff', 'webp->flac', 'webp->m4a', 'webp->mp3', 'webp->wav', 'webp->wma',
 ]);
 
 describe('Universal Format Matrix & Parity Verification', () => {

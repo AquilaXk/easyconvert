@@ -42,6 +42,20 @@ function isRoutingError(err: unknown): boolean {
   return ROUTING_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
+/**
+ * The dispatcher sends any pair with an audio or video target to the media transcoder. A
+ * document, office or archive source has no stream it could demux, and an image has no audio
+ * stream, so such pairs reach FFmpeg with nothing to transcode. Judged from registry
+ * categories alone, before any probe runs.
+ */
+function isMediaTranscoderMisroute(source: string, target: string): boolean {
+  const sourceCategory = FORMAT_REGISTRY[source].category;
+  const targetCategory = FORMAT_REGISTRY[target].category;
+  if (MEDIA_CATEGORIES.has(sourceCategory)) return false;
+  if (targetCategory === 'audio') return true;
+  return targetCategory === 'video' && sourceCategory !== 'image';
+}
+
 const PROBE_TIMEOUT_MS = 20_000;
 const CATEGORY_TIMEOUT_MS = 600_000;
 const MEDIA_CATEGORIES = new Set(['audio', 'video']);
@@ -132,6 +146,9 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 type PairOutcome = 'routed' | 'unrouted' | 'inconclusive';
 
 async function probePair(source: string, target: string): Promise<{ outcome: PairOutcome; detail: string }> {
+  if (isMediaTranscoderMisroute(source, target)) {
+    return { outcome: 'unrouted', detail: 'non-media source routed to the media transcoder' };
+  }
   let lastError = '';
   for (const input of await probeInputs(source)) {
     try {
@@ -197,6 +214,14 @@ describe('routing-error classifier', () => {
     expect(isRoutingError(parse)).toBe(false);
   });
 
+  it('flags non-media sources that the dispatcher would send to the media transcoder', () => {
+    expect(isMediaTranscoderMisroute('pptx', 'swf')).toBe(true);
+    expect(isMediaTranscoderMisroute('gif', 'mp3')).toBe(true);
+    expect(isMediaTranscoderMisroute('gif', 'webm')).toBe(false);
+    expect(isMediaTranscoderMisroute('mp4', 'mp3')).toBe(false);
+    expect(isMediaTranscoderMisroute('mp3', 'zip')).toBe(false);
+  });
+
   it('rejects pairs the registry does not advertise before any engine runs', async () => {
     await expect(convertFile(PLAIN_TEXT, 'txt', 'dwg', {}, 'probe.txt')).rejects.toThrow(
       /^Cannot convert from .+ \(\.txt\) to target format \.dwg\. Available targets: /
@@ -231,7 +256,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     docx: ['azw3', 'doc', 'hwp', 'hwpx', 'jpg', 'lrf', 'mobi', 'oeb', 'pages', 'pdb', 'png', 'rtf', 'xps'],
     dot: ['doc', 'jpg', 'png', 'rtf'],
     dotx: ['doc', 'jpg', 'png', 'rtf'],
-    dps: ['eps', 'jpg', 'md', 'png', 'ppt'],
+    dps: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
     dwf: ['cgm', 'dwg', 'wmf'],
     dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
@@ -239,7 +264,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
     fods: ['json'],
-    gif: ['svg'],
+    gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'svg', 'wav', 'wma'],
     htm: ['doc', 'jpg', 'png', 'rtf'],
     html: ['doc', 'jpg', 'png', 'rtf', 'tex'],
     ibooks: ['epub', 'pdf', 'txt'],
@@ -251,7 +276,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     mobi: ['docx', 'rtf'],
     msg: ['eml'],
     numbers: ['doc', 'jpg', 'pdf', 'png', 'ppt', 'tsv'],
-    odp: ['eps', 'jpg', 'md', 'png', 'ppt'],
+    odp: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
     ods: ['jpg', 'png'],
     odt: ['azw3', 'doc', 'hwp', 'hwpx', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf', 'xps'],
     oxps: ['docx'],
@@ -261,11 +286,11 @@ describe('withdrawn pairs stay withdrawn', () => {
     png: ['svg'],
     pot: ['emf', 'jpg', 'png', 'ppt'],
     potx: ['emf', 'jpg', 'odp', 'png', 'ppt', 'xps'],
-    pps: ['eps', 'jpg', 'md', 'png', 'ppt'],
-    ppsx: ['eps', 'jpg', 'md', 'png', 'ppt'],
-    ppt: ['emf', 'eps', 'jpg', 'md', 'odp', 'png', 'xps'],
-    pptm: ['emf', 'eps', 'html', 'jpg', 'md', 'odp', 'pdf', 'png', 'ppt', 'pptx', 'txt', 'xps'],
-    pptx: ['emf', 'eps', 'jpg', 'key', 'md', 'png', 'ppt', 'xps'],
+    pps: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
+    ppsx: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
+    ppt: ['emf', 'eps', 'jpg', 'md', 'odp', 'png', 'swf', 'xps'],
+    pptm: ['emf', 'eps', 'html', 'jpg', 'md', 'odp', 'pdf', 'png', 'ppt', 'pptx', 'swf', 'txt', 'xps'],
+    pptx: ['emf', 'eps', 'jpg', 'key', 'md', 'png', 'ppt', 'swf', 'xps'],
     prc: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     prn: ['tsv'],
     ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
@@ -283,7 +308,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     tiff: ['svg'],
     txt: ['doc', 'jpg', 'png', 'rtf', 'tex'],
     vsd: ['emf', 'wmf'],
-    webp: ['svg'],
+    webp: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'svg', 'wav', 'wma'],
     wk1: ['tsv'],
     wks: ['tsv'],
     wmf: ['emf', 'wmf'],
