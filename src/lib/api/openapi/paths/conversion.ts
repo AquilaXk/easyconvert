@@ -135,7 +135,10 @@ export const conversionPaths = {
                   format: 'binary',
                   description: 'Source input file binary (up to 500 MB).',
                 },
-                targetFormat: { type: 'string', description: 'Target format extension.' },
+                targetFormat: {
+                  type: 'string',
+                  description: 'Target format extension. With `tasks`, the final task determines the output format.',
+                },
                 sourceFormat: { type: 'string', description: 'Source format extension.' },
                 storageKey: {
                   type: 'string',
@@ -173,6 +176,13 @@ export const conversionPaths = {
                   statusUrl: { type: 'string', example: '/api/v1/jobs/job_1720000000000_abc123' },
                   createdAt: { type: 'number', example: 1720000000000 },
                   reservationId: { type: 'string' },
+                  sourceFormat: { type: 'string', example: 'pdf' },
+                  targetFormat: {
+                    type: 'string',
+                    example: 'jpg',
+                    description: 'Format of the job output. For a task pipeline, the output format of the final task.',
+                  },
+                  originalFilename: { type: 'string' },
                 },
               },
             },
@@ -183,7 +193,9 @@ export const conversionPaths = {
         '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
         '404': createProblemResponse('Storage object not found, or not usable by the caller as an input.'),
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
-        '422': createProblemResponse('An idempotency key was reused with a different request payload or parameters.'),
+        '422': createProblemResponse(
+          'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), or an idempotency key was reused with a different request payload.'
+        ),
         '429': createProblemResponse('Daily conversion quota exhausted.'),
         '500': createProblemResponse('Job enqueue failure.'),
       },

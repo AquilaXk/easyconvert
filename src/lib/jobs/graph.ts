@@ -8,6 +8,7 @@ import {
   TARGET_FORMAT_REQUIRED_OPERATIONS,
   RESTRICTED_OUTPUT_FORMATS,
   MERGE_FORMATS,
+  MIN_MERGE_INPUTS,
   FIXED_OUTPUT_FORMATS,
   canonicalGraphOperation,
   requestedTargetFormat,
@@ -153,6 +154,15 @@ export function normalizeGraphNodes(graph: JobGraph): Record<string, TaskNode> {
     result[id] = normalizeNodeEntry(id, rawNode);
   }
   return result;
+}
+
+/**
+ * The distinct node IDs named in `input`: the artifacts an executor actually receives.
+ * Ordering-only `dependencies` are excluded.
+ */
+function distinctNodeInputs(node: TaskNode): Set<string> {
+  const raw = Array.isArray(node.input) ? node.input : [node.input];
+  return new Set(raw.filter((inp): inp is string => typeof inp === 'string'));
 }
 
 /**
@@ -550,6 +560,14 @@ export function validateJobGraph(
         code: 'UNSUPPORTED_OUTPUT_FORMAT',
       });
     }
+    const mergeInputCount = op === 'merge' ? distinctNodeInputs(node).size : 0;
+    if (op === 'merge' && mergeInputCount < MIN_MERGE_INPUTS) {
+      errors.push({
+        path: `nodes.${nodeId}.input`,
+        message: `Merge node "${nodeId}" needs at least ${MIN_MERGE_INPUTS} distinct inputs; found ${mergeInputCount}.`,
+        code: 'MERGE_INPUTS_INSUFFICIENT',
+      });
+    }
     if (op === 'merge' && target && MERGE_FORMATS.has(target)) {
       for (const inputId of getTaskDependencies(node)) {
         const inputFormat = inferredFormats[inputId];
@@ -731,7 +749,6 @@ const LEGACY_TARGET_REQUIRED: ReadonlySet<string> = new Set([
   'archive.create',
   'thumbnail',
   'media.thumbnail',
-  'merge',
 ]);
 
 /** Operations `linearTasksToJobGraph` translates. */
@@ -744,7 +761,6 @@ export const LEGACY_TASK_OPERATIONS: ReadonlySet<string> = new Set([
   'archive',
   'archive/create',
   'archive.create',
-  'merge',
   'metadata',
   'export/url',
 ]);
@@ -763,6 +779,12 @@ export function assertValidLegacyTasks(tasks: PipelineTask[], supported: Readonl
         path,
         code: 'BYOS_OPERATION_UNSUPPORTED',
         message: `Operation "${op}" cannot run in a pipeline; use export/url with a signed destination URL.`,
+      });
+    } else if (op === 'merge') {
+      errors.push({
+        path,
+        code: 'LEGACY_TASK_MERGE_SINGLE_INPUT',
+        message: `A merge task receives only the previous stage, and merge needs at least ${MIN_MERGE_INPUTS} inputs; submit a graph whose merge node names every input.`,
       });
     } else if (!supported.has(op)) {
       errors.push({ path, code: 'UNSUPPORTED_OPERATION', message: `Unsupported pipeline operation "${op}".` });
@@ -867,19 +889,6 @@ export function linearTasksToJobGraph(
         lastWasExport = false;
         break;
       }
-      case 'merge': {
-        nodes[nodeId] = {
-          id: nodeId,
-          operation: 'merge',
-          op: 'merge',
-          input: [currentInput],
-          dependencies: [currentInput],
-          targetFormat: task.targetFormat as string,
-          options: task.options,
-        };
-        lastWasExport = false;
-        break;
-      }
       case 'metadata': {
         nodes[nodeId] = {
           id: nodeId,
@@ -945,3 +954,20 @@ export function linearTasksToJobGraph(
 }
 
 export const linearTasksToGraph = linearTasksToJobGraph;
+
+/**
+ * The output format of a validated linear graph: the format inferred for its last node in
+ * topological order, which carries the final task's output. Undefined when the graph is not
+ * valid or the format is only known at run time.
+ */
+export function linearGraphOutputFormat(result: GraphValidationResult): string | undefined {
+  const order = result.topologicalOrder;
+  if (!result.valid || !order || order.length === 0) {
+    return undefined;
+  }
+  const format = result.inferredOutputFormats?.[order[order.length - 1]];
+  if (!format || format === UNKNOWN_FORMAT || format === DYNAMIC_FORMAT) {
+    return undefined;
+  }
+  return format;
+}
