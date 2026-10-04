@@ -290,82 +290,48 @@ export function buildFfmpegArguments(
 
     // 6. Video Encoder Selection and Arguments
     if (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv') {
-      if (codec === 'h264') {
+      if (codec === 'h264' || codec === 'hevc') {
+        const isH264 = codec === 'h264';
+        const defaultCrf = isH264 ? '23' : '26';
+        const defaultVaapiQp = isH264 ? '24' : '26';
+        const swLib = isH264 ? 'libx264' : 'libx265';
+        const crfVal = rateControl?.mode === 'crf' ? String(rateControl.crf) : defaultCrf;
+
         if (isNvenc) {
-          outputArgs.push('-c:v', 'h264_nvenc', '-preset', videoOpts?.preset || 'p4');
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-cq', String(rateControl.crf));
-          } else if (!rateControl) {
-            outputArgs.push('-cq', '23');
+          outputArgs.push('-c:v', `${codec}_nvenc`, '-preset', videoOpts?.preset || 'p4');
+          if (rateControl?.mode === 'crf' || !rateControl) {
+            outputArgs.push('-cq', crfVal);
           }
         } else if (isVaapi && driDev) {
           globalArgs.push('-vaapi_device', driDev);
-          outputArgs.push('-filter_hw_device', driDev, '-c:v', 'h264_vaapi');
+          outputArgs.push('-filter_hw_device', driDev, '-c:v', `${codec}_vaapi`);
           if (rateControl?.mode === 'crf') {
             outputArgs.push('-qp', String(rateControl.crf));
           } else if (!rateControl) {
-            outputArgs.push('-qp', '24');
+            outputArgs.push('-qp', defaultVaapiQp);
           }
         } else if (isVideotoolbox) {
-          outputArgs.push('-c:v', 'h264_videotoolbox');
+          outputArgs.push('-c:v', `${codec}_videotoolbox`);
           if (rateControl?.mode === 'crf') {
             outputArgs.push('-q:v', String(Math.max(1, Math.min(100, Math.round(100 - rateControl.crf * 1.5)))));
           } else if (!rateControl) {
             outputArgs.push('-q:v', '65');
           }
-        } else if (isQsv) {
+        } else if (isH264 && isQsv) {
           outputArgs.push('-c:v', 'h264_qsv');
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-global_quality', String(rateControl.crf));
-          } else if (!rateControl) {
-            outputArgs.push('-global_quality', '23');
+          if (rateControl?.mode === 'crf' || !rateControl) {
+            outputArgs.push('-global_quality', crfVal);
           }
         } else {
-          outputArgs.push('-c:v', 'libx264', '-preset', videoOpts?.preset || 'fast');
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-crf', String(rateControl.crf));
-          } else if (!rateControl) {
-            outputArgs.push('-crf', '23');
+          outputArgs.push('-c:v', swLib, '-preset', videoOpts?.preset || 'fast');
+          if (rateControl?.mode === 'crf' || !rateControl) {
+            outputArgs.push('-crf', crfVal);
           }
           if (videoOpts?.profile) {
             outputArgs.push('-profile:v', videoOpts.profile.toLowerCase());
           }
-          if (videoOpts?.level) {
+          if (isH264 && videoOpts?.level) {
             outputArgs.push('-level', videoOpts.level);
-          }
-        }
-      } else if (codec === 'hevc') {
-        if (isNvenc) {
-          outputArgs.push('-c:v', 'hevc_nvenc', '-preset', videoOpts?.preset || 'p4');
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-cq', String(rateControl.crf));
-          } else if (!rateControl) {
-            outputArgs.push('-cq', '26');
-          }
-        } else if (isVaapi && driDev) {
-          globalArgs.push('-vaapi_device', driDev);
-          outputArgs.push('-filter_hw_device', driDev, '-c:v', 'hevc_vaapi');
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-qp', String(rateControl.crf));
-          } else if (!rateControl) {
-            outputArgs.push('-qp', '26');
-          }
-        } else if (isVideotoolbox) {
-          outputArgs.push('-c:v', 'hevc_videotoolbox');
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-q:v', String(Math.max(1, Math.min(100, Math.round(100 - rateControl.crf * 1.5)))));
-          } else if (!rateControl) {
-            outputArgs.push('-q:v', '65');
-          }
-        } else {
-          outputArgs.push('-c:v', 'libx265', '-preset', videoOpts?.preset || 'fast');
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-crf', String(rateControl.crf));
-          } else if (!rateControl) {
-            outputArgs.push('-crf', '26');
-          }
-          if (videoOpts?.profile) {
-            outputArgs.push('-profile:v', videoOpts.profile.toLowerCase());
           }
         }
       } else if (codec === 'vp9') {
