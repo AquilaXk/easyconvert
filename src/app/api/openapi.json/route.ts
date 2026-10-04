@@ -5,6 +5,7 @@ import {
   PipelineTaskSchema,
   JobCreateRequestSchema,
   JobResourceSchema,
+  IdempotencyKeyHeaderSchema,
 } from '@/lib/api/contracts';
 
 export const dynamic = 'force-dynamic';
@@ -54,6 +55,17 @@ export async function GET() {
           security: [
             { ApiKeyAuth: ['convert:write'] },
             { BearerAuth: ['convert:write'] },
+          ],
+          parameters: [
+            {
+              name: 'Idempotency-Key',
+              in: 'header',
+              required: false,
+              description: 'Optional 1-255 character printable ASCII idempotency key for safe retries.',
+              schema: {
+                $ref: '#/components/schemas/IdempotencyKeyHeader',
+              },
+            },
           ],
           requestBody: {
             required: true,
@@ -105,6 +117,8 @@ export async function GET() {
             '400': createProblemResponse('Invalid input format, missing parameter, or unsupported conversion pair.'),
             '401': createProblemResponse('Missing, expired, or invalid API key.'),
             '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing "convert:write" scope.'),
+            '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
+            '422': createProblemResponse('An idempotency key was reused with a different request payload or parameters.'),
             '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
             '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
           },
@@ -119,6 +133,17 @@ export async function GET() {
           security: [
             { ApiKeyAuth: ['convert:write'] },
             { BearerAuth: ['convert:write'] },
+          ],
+          parameters: [
+            {
+              name: 'Idempotency-Key',
+              in: 'header',
+              required: false,
+              description: 'Optional 1-255 character printable ASCII idempotency key for safe retries.',
+              schema: {
+                $ref: '#/components/schemas/IdempotencyKeyHeader',
+              },
+            },
           ],
           requestBody: {
             required: true,
@@ -180,6 +205,8 @@ export async function GET() {
             '401': createProblemResponse('Missing, expired, or invalid API key.'),
             '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
             '404': createProblemResponse('Storage object not found, or not usable by the caller as an input.'),
+            '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
+            '422': createProblemResponse('An idempotency key was reused with a different request payload or parameters.'),
             '429': createProblemResponse('Daily conversion quota exhausted.'),
             '500': createProblemResponse('Job enqueue failure.'),
           },
@@ -678,6 +705,7 @@ export async function GET() {
         PipelineTask: PipelineTaskSchema,
         JobCreateRequest: JobCreateRequestSchema,
         JobResource: JobResourceSchema,
+        IdempotencyKeyHeader: IdempotencyKeyHeaderSchema,
         JobDetails: {
           ...JobResourceSchema,
           $id: 'https://easyconvert.local/schemas/job-details.json',
