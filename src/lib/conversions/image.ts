@@ -1,7 +1,8 @@
+import zlib from 'node:zlib';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
@@ -24,6 +25,30 @@ import {
 } from './color-quantizer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
+import {
+  demosaicRcdBayerCfa,
+  processFloat32LinearPipeline,
+  applyHighlightReconstruction,
+  calculatePlanckianWhiteBalance,
+  kelvinAndTintToXy,
+  applyRec2020Oetf,
+  BRADFORD_D50_TO_D65_MATRIX,
+  XYZ_D65_TO_SRGB_MATRIX,
+  XYZ_D65_TO_DISPLAY_P3_MATRIX,
+  XYZ_D65_TO_REC2020_MATRIX,
+  encodeOpenExr,
+  decodeOpenExr,
+  encodeUltraHdrJpeg,
+  decodeUltraHdrJpeg,
+  encode16BitTiff,
+  encode16BitPng,
+  createMinimalRgbIcc,
+  DISPLAY_P3_ICC,
+  REC2020_ICC,
+  unpackRawSensorBits,
+  float32ToFloat16,
+  float16ToFloat32,
+} from './raw-hdr';
 
 export {
   quantizeMedianCut,
@@ -40,6 +65,29 @@ export {
   applyFloydSteinbergDither,
   performOcr,
   generateSearchablePdf,
+  UnsupportedRawCompressionError,
+  demosaicRcdBayerCfa,
+  processFloat32LinearPipeline,
+  applyHighlightReconstruction,
+  calculatePlanckianWhiteBalance,
+  kelvinAndTintToXy,
+  applyRec2020Oetf,
+  BRADFORD_D50_TO_D65_MATRIX,
+  XYZ_D65_TO_SRGB_MATRIX,
+  XYZ_D65_TO_DISPLAY_P3_MATRIX,
+  XYZ_D65_TO_REC2020_MATRIX,
+  encodeOpenExr,
+  decodeOpenExr,
+  encodeUltraHdrJpeg,
+  decodeUltraHdrJpeg,
+  encode16BitTiff,
+  encode16BitPng,
+  createMinimalRgbIcc,
+  DISPLAY_P3_ICC,
+  REC2020_ICC,
+  unpackRawSensorBits,
+  float32ToFloat16,
+  float16ToFloat32,
 };
 
 export type BayerPattern = 'RGGB' | 'BGGR' | 'GRBG' | 'GBRG';
@@ -48,7 +96,7 @@ export interface BayerSensorData {
   width: number;
   height: number;
   pattern: BayerPattern;
-  data: Uint8Array | Uint16Array;
+  data: Uint8Array | Uint16Array | Float32Array;
   bitsPerSample?: number;
   whiteBalance?: [number, number, number]; // [rScale, gScale, bScale]
   asShotNeutral?: [number, number, number];
@@ -63,8 +111,14 @@ export interface BayerSensorData {
   defaultCropOrigin?: [number, number]; // [x, y]
   defaultCropSize?: [number, number]; // [width, height]
   cctKelvin?: number; // Scene correlated color temperature in Kelvin
+  tint?: number;
   applySrgbGamma?: boolean;
   falseColorSuppression?: boolean | number;
+  demosaicMethod?: 'amaze' | 'rcd' | 'ahd';
+  highlightReconstruction?: boolean | 'clip' | 'blend' | 'reconstruct';
+  targetColorSpace?: 'sRGB' | 'display-p3' | 'rec2020' | 'linear';
+  outputDepth?: 8 | 16 | 32;
+  gainMap?: boolean;
 }
 
 export function encodeBmp(raw: Buffer, width: number, height: number, channels: number): Buffer {
@@ -1471,6 +1525,12 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
   width: number;
   height: number;
 } {
+  if (sensor.demosaicMethod === 'ahd') {
+    return demosaicAhdBayerCfa(sensor);
+  }
+  if (sensor.demosaicMethod === 'rcd') {
+    return demosaicRcdBayerCfa(sensor);
+  }
   return demosaicAmazeBayerCfa(sensor);
 }
 
@@ -1659,7 +1719,7 @@ export function decodeRawBayerSensor(
   buffer: Buffer,
   formatHint?: string,
   options?: ConversionOptions
-): { rgb: Buffer; width: number; height: number } | null {
+): { rgb: Buffer; rgbFloat?: Float32Array; rgb16?: Uint16Array; width: number; height: number } | null {
   if (!buffer || buffer.length < 16) {
     return null;
   }
@@ -1793,11 +1853,23 @@ export function decodeRawBayerSensor(
             case 325: data.tileByteCounts = getNumberArray(type, count, valOff); break;
             case 330: data.subIfds = getNumberArray(type, count, valOff); break;
             case 33422: {
-              const p = buffer.subarray(valOff, valOff + 4);
+              let p = buffer.subarray(valOff, valOff + 4);
+              const isBayer = (b: Uint8Array) =>
+                (b[0] === 0 && b[1] === 1 && b[2] === 1 && b[3] === 2) ||
+                (b[0] === 2 && b[1] === 1 && b[2] === 1 && b[3] === 0) ||
+                (b[0] === 1 && b[1] === 0 && b[2] === 2 && b[3] === 1) ||
+                (b[0] === 1 && b[1] === 2 && b[2] === 0 && b[3] === 1);
+              if (!isBayer(p)) {
+                const ptr = read32(valOff);
+                if (ptr > 0 && ptr + 4 <= buffer.length) {
+                  p = buffer.subarray(ptr, ptr + 4);
+                }
+              }
               if (p[0] === 0 && p[1] === 1 && p[2] === 1 && p[3] === 2) data.cfaPattern = 'RGGB';
               else if (p[0] === 2 && p[1] === 1 && p[2] === 1 && p[3] === 0) data.cfaPattern = 'BGGR';
               else if (p[0] === 1 && p[1] === 0 && p[2] === 2 && p[3] === 1) data.cfaPattern = 'GRBG';
               else if (p[0] === 1 && p[1] === 2 && p[2] === 0 && p[3] === 1) data.cfaPattern = 'GBRG';
+              else data.cfaPattern = 'UNKNOWN' as any;
               break;
             }
             case 50710: { // DNG ActiveArea [top, left, bottom, right]
@@ -1934,10 +2006,16 @@ export function decodeRawBayerSensor(
           chosen.compression !== undefined &&
           chosen.compression !== 1 &&
           chosen.compression !== 7 &&
+          chosen.compression !== 8 &&
           chosen.compression !== 34892
         ) {
-          throw new ConversionFailedError(
-            `Unsupported RAW/DNG compression format (tag 259 = ${chosen.compression}). Only uncompressed (1), JPEG (7), and Lossless JPEG (34892) are supported.`
+          throw new UnsupportedRawCompressionError(
+            `Unsupported RAW/DNG compression format (tag 259 = ${chosen.compression}). Only uncompressed (1), JPEG (7), Deflate (8), and Lossless JPEG (34892) are supported.`
+          );
+        }
+        if (chosen.cfaPattern && !['RGGB', 'BGGR', 'GRBG', 'GBRG'].includes(chosen.cfaPattern)) {
+          throw new UnsupportedRawCompressionError(
+            `Unsupported sensor pattern '${chosen.cfaPattern}': non-Bayer sensors (such as Fuji X-Trans or Foveon) are not supported.`
           );
         }
         const { width, height } = chosen;
@@ -1946,21 +2024,33 @@ export function decodeRawBayerSensor(
         const bytesPerPixel = bpp > 8 ? 2 : 1;
 
         const decodeSensorChunk = (chunk: Buffer, expW?: number, expH?: number) => {
-          if (chunk.length >= 4 && chunk[0] === 0xff && chunk[1] === 0xd8) {
-            const lj92 = decodeLosslessJpegStrip(chunk);
+          let activeChunk = chunk;
+          if (chosen.compression === 8) {
+            activeChunk = zlib.inflateSync(chunk);
+          } else if (activeChunk.length >= 4 && activeChunk[0] === 0xff && activeChunk[1] === 0xd8) {
+            const lj92 = decodeLosslessJpegStrip(activeChunk);
             if (lj92) {
               return { data: lj92.data, width: lj92.width, height: lj92.height, bpp: lj92.bpp };
             }
           }
-          const maxPixels = expW && expH ? expW * expH : Math.floor(chunk.length / bytesPerPixel);
+
+          const targetW = expW || width;
+          const targetH = expH || height;
+
+          if (bpp > 8 && [10, 12, 14].includes(bpp) && activeChunk.length < targetW * targetH * 2) {
+            const unpacked = unpackRawSensorBits(activeChunk, targetW, targetH, bpp, isLE);
+            return { data: unpacked, width: targetW, height: targetH, bpp };
+          }
+
+          const maxPixels = expW && expH ? expW * expH : Math.floor(activeChunk.length / bytesPerPixel);
           const data =
             bpp > 8
               ? new Uint16Array(
-                  chunk.buffer,
-                  chunk.byteOffset,
-                  Math.min(maxPixels, Math.floor(chunk.length / 2))
+                  activeChunk.buffer,
+                  activeChunk.byteOffset,
+                  Math.min(maxPixels, Math.floor(activeChunk.length / 2))
                 )
-              : new Uint8Array(chunk.buffer, chunk.byteOffset, Math.min(maxPixels, chunk.length));
+              : new Uint8Array(activeChunk.buffer, activeChunk.byteOffset, Math.min(maxPixels, activeChunk.length));
           return { data, width: expW, height: expH, bpp };
         };
 
@@ -2085,29 +2175,85 @@ export function decodeRawBayerSensor(
           resolvedColorMatrix = multiply3x3(XYZ_D50_TO_SRGB_MATRIX, inv);
         }
 
-        const result = demosaicBayerCfa({
-          width: sensorWidth,
-          height: sensorHeight,
-          pattern,
-          data: sensorData,
-          bitsPerSample: sensorBpp,
-          blackLevel: chosen.blackLevel,
-          whiteLevel: chosen.whiteLevel,
-          asShotNeutral: chosen.asShotNeutral,
-          whiteBalance,
-          colorMatrix: resolvedColorMatrix,
-          colorMatrix1: chosen.colorMatrix1,
-          colorMatrix2: chosen.colorMatrix2,
-          forwardMatrix1: chosen.forwardMatrix1,
-          forwardMatrix2: chosen.forwardMatrix2,
-          activeArea: chosen.activeArea,
-          defaultCropOrigin: chosen.defaultCropOrigin,
-          defaultCropSize: chosen.defaultCropSize,
-          applySrgbGamma: true,
-          falseColorSuppression: options?.falseColorSuppression,
-        });
+        const linearRes = processFloat32LinearPipeline(
+          {
+            width: sensorWidth,
+            height: sensorHeight,
+            pattern,
+            data: sensorData,
+            bitsPerSample: sensorBpp,
+            blackLevel: chosen.blackLevel,
+            whiteLevel: chosen.whiteLevel,
+            asShotNeutral: chosen.asShotNeutral,
+            whiteBalance,
+            colorMatrix: resolvedColorMatrix,
+            colorMatrix1: chosen.colorMatrix1,
+            colorMatrix2: chosen.colorMatrix2,
+            forwardMatrix1: chosen.forwardMatrix1,
+            forwardMatrix2: chosen.forwardMatrix2,
+            activeArea: chosen.activeArea,
+            defaultCropOrigin: chosen.defaultCropOrigin,
+            defaultCropSize: chosen.defaultCropSize,
+            cctKelvin: options?.kelvin || chosen.cctKelvin,
+            tint: options?.tint,
+            applySrgbGamma: options?.targetColorSpace !== 'linear',
+            falseColorSuppression: options?.falseColorSuppression,
+            demosaicMethod: options?.demosaicMethod,
+            highlightReconstruction: options?.highlightReconstruction,
+            targetColorSpace: options?.targetColorSpace,
+          },
+          options
+        );
 
-        let outRgb = result.data;
+        let outRgb =
+          options?.demosaicMethod === 'ahd'
+            ? demosaicAhdBayerCfa({
+                width: sensorWidth,
+                height: sensorHeight,
+                pattern,
+                data: sensorData,
+                bitsPerSample: sensorBpp,
+                blackLevel: chosen.blackLevel,
+                whiteLevel: chosen.whiteLevel,
+                asShotNeutral: chosen.asShotNeutral,
+                whiteBalance,
+                colorMatrix: resolvedColorMatrix,
+                colorMatrix1: chosen.colorMatrix1,
+                colorMatrix2: chosen.colorMatrix2,
+                forwardMatrix1: chosen.forwardMatrix1,
+                forwardMatrix2: chosen.forwardMatrix2,
+                activeArea: chosen.activeArea,
+                defaultCropOrigin: chosen.defaultCropOrigin,
+                defaultCropSize: chosen.defaultCropSize,
+                applySrgbGamma: true,
+                falseColorSuppression: options?.falseColorSuppression,
+              }).data
+            : options?.demosaicMethod === 'amaze'
+            ? demosaicAmazeBayerCfa({
+                width: sensorWidth,
+                height: sensorHeight,
+                pattern,
+                data: sensorData,
+                bitsPerSample: sensorBpp,
+                blackLevel: chosen.blackLevel,
+                whiteLevel: chosen.whiteLevel,
+                asShotNeutral: chosen.asShotNeutral,
+                whiteBalance,
+                colorMatrix: resolvedColorMatrix,
+                colorMatrix1: chosen.colorMatrix1,
+                colorMatrix2: chosen.colorMatrix2,
+                forwardMatrix1: chosen.forwardMatrix1,
+                forwardMatrix2: chosen.forwardMatrix2,
+                activeArea: chosen.activeArea,
+                defaultCropOrigin: chosen.defaultCropOrigin,
+                defaultCropSize: chosen.defaultCropSize,
+                applySrgbGamma: true,
+                falseColorSuppression: options?.falseColorSuppression,
+              }).data
+            : linearRes.rgb8;
+
+        let outFloat = linearRes.rgbFloat;
+        let out16 = linearRes.rgb16;
         let outW = sensorWidth;
         let outH = sensorHeight;
 
@@ -2132,17 +2278,25 @@ export function decodeRawBayerSensor(
 
         if (cropX > 0 || cropY > 0 || cropW < outW || cropH < outH) {
           const croppedBuffer = Buffer.alloc(cropW * cropH * 3);
+          const croppedFloat = new Float32Array(cropW * cropH * 3);
+          const cropped16 = new Uint16Array(cropW * cropH * 3);
           for (let row = 0; row < cropH; row++) {
             const srcOff = ((cropY + row) * outW + cropX) * 3;
             const dstOff = row * cropW * 3;
             outRgb.copy(croppedBuffer, dstOff, srcOff, srcOff + cropW * 3);
+            for (let c = 0; c < cropW * 3; c++) {
+              croppedFloat[dstOff + c] = outFloat[srcOff + c];
+              cropped16[dstOff + c] = out16[srcOff + c];
+            }
           }
           outRgb = croppedBuffer;
+          outFloat = croppedFloat;
+          out16 = cropped16;
           outW = cropW;
           outH = cropH;
         }
 
-        return { rgb: outRgb, width: outW, height: outH };
+        return { rgb: outRgb, rgbFloat: outFloat, rgb16: out16, width: outW, height: outH };
       }
     }
   }
@@ -2318,11 +2472,41 @@ export async function convertImage(
   switch (fmt) {
     case 'jpg':
     case 'jpeg':
-      outputBuffer = await pipeline.jpeg({ quality, mozjpeg: true }).toBuffer();
+      if (options.gainMap && rawDemosaiced && rawDemosaiced.rgbFloat) {
+        outputBuffer = await encodeUltraHdrJpeg(
+          rawDemosaiced.rgb,
+          rawDemosaiced.rgbFloat,
+          rawDemosaiced.width,
+          rawDemosaiced.height,
+          { quality }
+        );
+      } else {
+        outputBuffer = await pipeline.jpeg({ quality, mozjpeg: true }).toBuffer();
+      }
       mimeType = 'image/jpeg';
       break;
 
     case 'png': {
+      if (
+        (options.outputDepth === 16 || options.colorDepth === 16) &&
+        rawDemosaiced &&
+        rawDemosaiced.rgb16
+      ) {
+        const icc =
+          options.targetColorSpace === 'display-p3'
+            ? DISPLAY_P3_ICC
+            : options.targetColorSpace === 'rec2020'
+            ? REC2020_ICC
+            : undefined;
+        outputBuffer = encode16BitPng(
+          rawDemosaiced.width,
+          rawDemosaiced.height,
+          rawDemosaiced.rgb16,
+          icc
+        );
+        mimeType = 'image/png';
+        break;
+      }
       if (options.colorDepth === 8 || options.palette || options.quantizer === 'oklab') {
         const colours = Math.min(256, Math.max(2, options.colors || 256));
         if (
@@ -2398,10 +2582,77 @@ export async function convertImage(
       mimeType = 'image/avif';
       break;
 
-    case 'tiff':
-      outputBuffer = await pipeline.tiff({ quality }).toBuffer();
+    case 'tiff': {
+      if (
+        (options.outputDepth === 16 || options.colorDepth === 16) &&
+        rawDemosaiced &&
+        rawDemosaiced.rgb16
+      ) {
+        const icc =
+          options.targetColorSpace === 'display-p3'
+            ? DISPLAY_P3_ICC
+            : options.targetColorSpace === 'rec2020'
+            ? REC2020_ICC
+            : undefined;
+        outputBuffer = encode16BitTiff(
+          rawDemosaiced.width,
+          rawDemosaiced.height,
+          rawDemosaiced.rgb16,
+          icc
+        );
+      } else {
+        outputBuffer = await pipeline.tiff({ quality }).toBuffer();
+      }
       mimeType = 'image/tiff';
       break;
+    }
+
+    case 'exr': {
+      if (rawDemosaiced && rawDemosaiced.rgbFloat) {
+        outputBuffer = encodeOpenExr(
+          rawDemosaiced.rgbFloat,
+          rawDemosaiced.width,
+          rawDemosaiced.height,
+          options.outputDepth !== 32
+        );
+      } else {
+        const { data, info } = await pipeline
+          .removeAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        const floatPix = new Float32Array(info.width * info.height * 3);
+        for (let i = 0; i < data.length; i++) {
+          floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
+        }
+        outputBuffer = encodeOpenExr(floatPix, info.width, info.height, options.outputDepth !== 32);
+      }
+      mimeType = 'image/x-exr';
+      break;
+    }
+
+    case 'ultrahdr': {
+      if (rawDemosaiced && rawDemosaiced.rgbFloat) {
+        outputBuffer = await encodeUltraHdrJpeg(
+          rawDemosaiced.rgb,
+          rawDemosaiced.rgbFloat,
+          rawDemosaiced.width,
+          rawDemosaiced.height,
+          { quality }
+        );
+      } else {
+        const { data, info } = await pipeline
+          .removeAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        const floatPix = new Float32Array(info.width * info.height * 3);
+        for (let i = 0; i < data.length; i++) {
+          floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
+        }
+        outputBuffer = await encodeUltraHdrJpeg(data, floatPix, info.width, info.height, { quality });
+      }
+      mimeType = 'image/jpeg';
+      break;
+    }
 
     case 'gif': {
       const colours = Math.min(256, Math.max(2, options.colors || 256));
@@ -2641,10 +2892,11 @@ export async function convertImage(
       throw new Error(`Unsupported image target format: ${targetFormat}`);
   }
 
+  const outExt = fmt === 'ultrahdr' ? 'jpg' : fmt;
   return {
     buffer: outputBuffer,
     mimeType,
-    filename: `${baseName}.${fmt}`,
+    filename: `${baseName}.${outExt}`,
     size: outputBuffer.length,
     isEmbeddedPreview: isEmbeddedPreview || undefined,
   };

@@ -152,6 +152,46 @@ export const ConversionOptionsSchema = {
       description: 'Extract or include embedded thumbnail preview.',
     },
 
+    // RAW & HDR pipeline options
+    demosaicMethod: {
+      type: 'string',
+      enum: ['amaze', 'rcd', 'ahd'],
+      description: 'Bayer demosaicing algorithm.',
+    },
+    kelvin: {
+      type: 'number',
+      minimum: 1000,
+      maximum: 25000,
+      description: 'Correlated Color Temperature (CCT) in Kelvin.',
+    },
+    tint: {
+      type: 'number',
+      minimum: -150,
+      maximum: 150,
+      description: 'Green-Magenta tint offset along the Planckian locus.',
+    },
+    highlightReconstruction: {
+      oneOf: [
+        { type: 'boolean' },
+        { type: 'string', enum: ['clip', 'blend', 'reconstruct'] },
+      ],
+      description: 'Recover clipped highlights using adjacent channel ratios.',
+    },
+    targetColorSpace: {
+      type: 'string',
+      enum: ['sRGB', 'display-p3', 'rec2020', 'linear'],
+      description: 'Target output color space.',
+    },
+    outputDepth: {
+      type: 'integer',
+      enum: [8, 16, 32],
+      description: 'Output bit depth per channel (8, 16, or 32-bit float).',
+    },
+    gainMap: {
+      type: 'boolean',
+      description: 'Embed ISO 21496-1 HDR gain map metadata.',
+    },
+
     // CAD & NURBS options
     uSamples: {
       type: 'integer',

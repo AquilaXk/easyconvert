@@ -1603,7 +1603,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/x-raw',
     category: 'image',
     description: 'Minimally processed sensor data from digital cameras.',
-    targetFormats: ['jpg', 'png', 'tiff', 'dng', 'zip', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
+    targetFormats: ['jpg', 'png', 'tiff', 'dng', 'zip', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'exr', 'ultrahdr'],
     optionsSchema: { ocrEnabled: true, ocrLanguage: true },
   },
   cr2: {
@@ -1613,7 +1613,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/x-canon-cr2',
     category: 'image',
     description: 'Canon digital camera RAW image format Version 2.',
-    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
+    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'exr', 'ultrahdr'],
   },
   cr3: {
     id: 'cr3',
@@ -1622,7 +1622,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/x-canon-cr3',
     category: 'image',
     description: 'Canon digital camera RAW image format Version 3.',
-    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
+    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'exr', 'ultrahdr'],
   },
   nef: {
     id: 'nef',
@@ -1631,7 +1631,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/x-nikon-nef',
     category: 'image',
     description: 'Nikon digital SLR camera RAW image format.',
-    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
+    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'exr', 'ultrahdr'],
   },
   arw: {
     id: 'arw',
@@ -1640,7 +1640,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/x-sony-arw',
     category: 'image',
     description: 'Sony Alpha digital camera RAW image format.',
-    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
+    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'exr', 'ultrahdr'],
   },
   dng: {
     id: 'dng',
@@ -1649,7 +1649,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/x-adobe-dng',
     category: 'image',
     description: 'Adobe open standard digital negative RAW archival format.',
-    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
+    targetFormats: ['jpg', 'png', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'exr', 'ultrahdr'],
   },
   orf: {
     id: 'orf',
@@ -1776,6 +1776,26 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Wireless Application Protocol monochrome bitmap format.',
     targetFormats: ['png', 'jpg', 'gif', 'zip'],
+  },
+  exr: {
+    id: 'exr',
+    name: 'OpenEXR',
+    extension: 'exr',
+    mimeType: 'image/x-exr',
+    category: 'image',
+    description: 'Industrial Light & Magic high dynamic range raster format.',
+    targetFormats: ['png', 'jpg', 'webp', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'exr', 'ultrahdr'],
+    optionsSchema: { quality: true, dimensions: true, outputDepth: true },
+  },
+  ultrahdr: {
+    id: 'ultrahdr',
+    name: 'Ultra HDR JPEG',
+    extension: 'jpg',
+    mimeType: 'image/jpeg',
+    category: 'image',
+    description: 'High dynamic range image with ISO 21496-1 gain map metadata.',
+    targetFormats: ['jpg', 'png', 'webp', 'tiff', 'pdf', 'zip', 'exr'],
+    optionsSchema: { quality: true, dimensions: true, gainMap: true },
   },
   jfif: {
     id: 'jfif',
