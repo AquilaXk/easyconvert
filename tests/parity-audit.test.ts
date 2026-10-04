@@ -100,7 +100,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
 ]);
 
 describe('Universal Format Matrix & Parity Verification', () => {
-  it('achieves 100% format coverage across all 2,156 conversion specifications', () => {
+  it('advertises every reference conversion pair that has not been withdrawn', () => {
     const fixturePath = path.resolve(__dirname, 'fixtures/reference-formats.json');
     const allPairs: Array<{ input_format: string; output_format: string; engine: string; meta?: { group?: string } }> =
       JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
@@ -166,7 +166,7 @@ describe('Universal Format Matrix & Parity Verification', () => {
     const allDefs = getAllFormats();
     expect(allDefs.length).toBeGreaterThanOrEqual(292);
 
-    // Verify all 2,156 transformation pairs are valid in registry
+    // Verify every remaining reference pair is advertised by the registry
     let verifiedPairsCount = 0;
     for (const p of pairs) {
       const src = p.input_format.toLowerCase();
