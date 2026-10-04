@@ -17,10 +17,11 @@ import {
   PipelineTaskSchema,
 } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { tusEngine } from '@/lib/storage/tus-engine';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_JOB_PAYLOAD_SIZE = 500 * 1024 * 1024; // 500 MB for asynchronous processing
+const MAX_INLINE_PAYLOAD_SIZE = 32 * 1024 * 1024; // 32 MiB ceiling for inline multipart and base64 payloads
 
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
@@ -93,6 +94,7 @@ export async function POST(req: NextRequest) {
     let options: ConversionOptions = {};
     let tasks: PipelineTask[] | undefined;
     let storageKey: string | undefined;
+    let uploadId: string | undefined;
     let inputBufferBase64: string | undefined;
     let fileSize = 0;
     let webhookUrl: string | undefined;
@@ -106,6 +108,7 @@ export async function POST(req: NextRequest) {
       targetFormat = ((formData.get('targetFormat') as string) || '').trim();
       sourceFormatParam = ((formData.get('sourceFormat') as string) || '').trim() || undefined;
       storageKey = ((formData.get('storageKey') as string) || '').trim() || undefined;
+      uploadId = ((formData.get('uploadId') as string) || '').trim() || undefined;
       webhookUrl = ((formData.get('webhookUrl') as string) || '').trim() || undefined;
       webhookSecret = ((formData.get('webhookSecret') as string) || '').trim() || undefined;
 
@@ -153,8 +156,15 @@ export async function POST(req: NextRequest) {
       }
 
       if (file && file instanceof Blob && file.size > 0) {
-        if (file.size > MAX_JOB_PAYLOAD_SIZE) {
-          return reply(createProblemDetailsResponse(400, 'File size exceeds the 500 MB asynchronous payload boundary.', instanceUri, 'Payload Too Large'));
+        if (file.size > MAX_INLINE_PAYLOAD_SIZE) {
+          return reply(
+            createProblemDetailsResponse(
+              413,
+              'File size exceeds the 32 MiB inline payload boundary. For files larger than 32 MiB, use /api/v1/uploads direct multipart or /api/v1/uploads/tus resumable upload.',
+              instanceUri,
+              'Payload Too Large'
+            )
+          );
         }
 
         originalFilename = file.name;
@@ -191,10 +201,47 @@ export async function POST(req: NextRequest) {
         tasks = validBody.tasks;
       }
       storageKey = (validBody.storageKey || '').trim() || undefined;
+      uploadId = (validBody.uploadId || '').trim() || undefined;
       inputBufferBase64 = validBody.inputBufferBase64;
       fileSize = Number(validBody.fileSize) || 0;
       webhookUrl = (validBody.webhookUrl || '').trim() || undefined;
       webhookSecret = (validBody.webhookSecret || '').trim() || undefined;
+
+      if (inputBufferBase64) {
+        const approxBytes = Math.floor((inputBufferBase64.length * 3) / 4);
+        if (approxBytes > MAX_INLINE_PAYLOAD_SIZE) {
+          return reply(
+            createProblemDetailsResponse(
+              413,
+              'Base64 payload exceeds the 32 MiB inline boundary. For files larger than 32 MiB, use /api/v1/uploads direct multipart or /api/v1/uploads/tus resumable upload.',
+              instanceUri,
+              'Payload Too Large'
+            )
+          );
+        }
+      }
+    }
+
+    // Resolve uploadId if provided
+    if (uploadId && !storageKey) {
+      const tusSession = await tusEngine.getSession(uploadId);
+      if (tusSession) {
+        if (!tusSession.completed) {
+          return await failWithRollback(400, `Upload session "${uploadId}" is not completed yet.`);
+        }
+        if (tusSession.ownerUserId && tusSession.ownerUserId !== auth.user.id) {
+          return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
+        }
+        storageKey = tusSession.key;
+        if (!originalFilename) {
+          originalFilename = tusSession.filename;
+        }
+        if (!fileSize) {
+          fileSize = tusSession.uploadLength;
+        }
+      } else {
+        return await failWithRollback(404, `Upload session "${uploadId}" not found or expired.`, 'Not Found');
+      }
     }
 
     if (tasks && tasks.length > 0 && !targetFormat) {
@@ -212,7 +259,7 @@ export async function POST(req: NextRequest) {
     if (!storageKey && !inputBufferBase64 && !uploadedBuffer) {
       return await failWithRollback(
         400,
-        'Missing input file data. Please upload a "file" or provide "storageKey" / "inputBufferBase64".'
+        'Missing input file data. Please upload a "file" or provide "uploadId" / "storageKey" / "inputBufferBase64".'
       );
     }
 
