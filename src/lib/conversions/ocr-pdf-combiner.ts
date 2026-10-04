@@ -45,6 +45,7 @@ export interface OcrBBox {
 export interface OcrWord {
   text: string;
   bbox: OcrBBox;
+  confidence?: number;
 }
 
 export interface OcrLineBlock {
@@ -52,6 +53,16 @@ export interface OcrLineBlock {
   bbox: OcrBBox;
   words: OcrWord[];
   tableId?: string | number;
+}
+
+export interface OcrPageResult {
+  pageNumber: number;
+  width: number;
+  height: number;
+  text: string;
+  confidence: number | null;
+  lineBlocks: OcrLineBlock[];
+  lines?: string[];
 }
 
 export interface OcrResult {
@@ -62,6 +73,7 @@ export interface OcrResult {
   lineBlocks?: OcrLineBlock[];
   imageWidth?: number;
   imageHeight?: number;
+  pages?: OcrPageResult[];
 }
 
 export interface ColumnGutter {
@@ -879,6 +891,7 @@ export function parseTesseractBlocks(
             if (!wText) continue;
             words.push({
               text: wText,
+              confidence: typeof w.confidence === 'number' && !isNaN(w.confidence) ? w.confidence : undefined,
               bbox: {
                 x: w.bbox.x0,
                 y: w.bbox.y0,

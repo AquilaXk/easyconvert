@@ -44,6 +44,7 @@ export interface FormatOptionsSchema {
   preserveTables?: boolean;
   ocrEnabled?: boolean;
   ocrLanguage?: boolean;
+  ocrMode?: boolean;
   margin?: boolean;
   // Color quantization options
   colorDepth?: boolean;
@@ -104,7 +105,34 @@ export interface ConversionOptions {
   orientation?: 'portrait' | 'landscape';
   preserveTables?: boolean;
   ocrEnabled?: boolean;
-  ocrLanguage?: 'auto' | 'en' | 'ko';
+  ocrLanguage?:
+    | 'auto'
+    | 'en'
+    | 'eng'
+    | 'ko'
+    | 'kor'
+    | 'de'
+    | 'deu'
+    | 'fr'
+    | 'fra'
+    | 'es'
+    | 'spa'
+    | 'ja'
+    | 'jpn'
+    | 'jpn_vert'
+    | 'ja_vert'
+    | 'zh'
+    | 'chi_sim'
+    | 'chi_sim_vert'
+    | 'zh_vert'
+    | 'zh_sim_vert'
+    | 'chi_tra'
+    | 'zh_tra'
+    | 'chi_tra_vert'
+    | 'zh_tra_vert'
+    | string;
+  ocrMode?: 'skip_text' | 'skip-text' | 'force' | 'redo';
+  ocrDensityThreshold?: number;
   clientEdgeMode?: boolean;
   margin?: 'normal' | 'narrow' | 'wide';
   validateMagicBytes?: boolean;
@@ -595,3 +623,34 @@ export class PdfPostprocessError extends Error {
     this.name = 'PdfPostprocessError';
   }
 }
+
+export interface HocrExportOptions {
+  documentTitle?: string;
+  filename?: string;
+  pretty?: boolean;
+}
+
+export interface AltoExportOptions {
+  filename?: string;
+  pretty?: boolean;
+  measurementUnit?: string;
+}
+
+export interface OcrPageDecision {
+  pageNumber: number;
+  skipped: boolean;
+  reason: 'has_text' | 'forced' | 'no_text';
+  textDensity: number;
+  wordCount: number;
+}
+
+export interface PdfPageAnalysis {
+  pageNumber: number;
+  width: number;
+  height: number;
+  charCount: number;
+  wordCount: number;
+  hasTextLayer: boolean;
+  text: string;
+}
+

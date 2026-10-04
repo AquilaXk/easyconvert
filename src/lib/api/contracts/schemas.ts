@@ -222,6 +222,16 @@ export const ConversionOptionsSchema = {
       enum: ['auto', 'en', 'ko'],
       description: 'Target OCR language model.',
     },
+    ocrMode: {
+      type: 'string',
+      enum: ['skip_text', 'skip-text', 'force', 'redo'],
+      description: 'OCR multi-page processing strategy: skip digital text pages or force full OCR.',
+    },
+    ocrDensityThreshold: {
+      type: 'number',
+      minimum: 0,
+      description: 'Minimum characters per page required to consider a digital text layer present.',
+    },
     clientEdgeMode: {
       type: 'boolean',
       description: 'Execute processing within client WebAssembly/WebGPU edge sandbox.',

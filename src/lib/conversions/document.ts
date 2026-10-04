@@ -14,7 +14,18 @@ import {
   DrawingMlShape,
   TableBorder,
 } from './office';
-import { performOcr, generateSearchablePdf, OcrResult } from './ocr';
+import {
+  performOcr,
+  generateSearchablePdf,
+  OcrResult,
+  OcrPageResult,
+  exportHocr,
+  exportAlto,
+  inspectPdfPagesTextDensity,
+  evaluatePageOcrDecisions,
+  assembleCombinedOcrResult,
+} from './ocr';
+import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import {
   extractTextFromPdf,
   extractEmbeddedImageFromPdf,
@@ -86,12 +97,27 @@ export async function convertDocument(
     let lastOcrResult: OcrResult | null = null;
     const pageOcrResults = new Map<number, OcrResult>();
 
-    // If scanned document or OCR is requested
+    // Inspect each page for existing text layer density to enable Smart Multi-Page OCR
+    const pageAnalyses = await inspectPdfPagesTextDensity(
+      inputBuffer,
+      options.ocrDensityThreshold || 15
+    ).catch(() => []);
+
+    const ocrMode = options.ocrMode || 'skip_text';
+    const { pageDecisions, pagesNeedingOcr } = evaluatePageOcrDecisions(pageAnalyses, ocrMode);
+
+    // If scanned document or OCR is requested or target is hocr/alto
     const isScanned = !structuredPdf.hasTextLayer || !extractedText || extractedText.trim() === '';
-    if (options.ocrEnabled || isScanned) {
+    const shouldRunOcr = options.ocrEnabled || isScanned || tgt === 'hocr' || tgt === 'alto';
+
+    if (shouldRunOcr && (pagesNeedingOcr.length > 0 || (pageAnalyses.length === 0 && (options.ocrEnabled || isScanned)))) {
       let rasterImages: ExtractedPdfImage[] = [];
       try {
-        rasterImages = await extractRasterImagesFromPdf(inputBuffer, options.dpi || 300);
+        rasterImages = await extractRasterImagesFromPdf(
+          inputBuffer,
+          options.dpi || 300,
+          pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined
+        );
       } catch (err: any) {
         if (options.ocrEnabled) {
           const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
@@ -100,7 +126,7 @@ export async function convertDocument(
         }
       }
 
-      if (rasterImages.length === 0 && options.ocrEnabled) {
+      if (rasterImages.length === 0 && options.ocrEnabled && pagesNeedingOcr.length > 0) {
         throw new ConversionFailedError('PDF OCR failed: PDF contains no renderable raster pages or images. Page rasterization requires the native worker.');
       }
 
@@ -147,15 +173,28 @@ export async function convertDocument(
         }
 
         if (ocrTexts.length > 0) {
-          extractedText = ocrTexts.join('\n\n');
+          const allTextParts: string[] = [];
+          if (pageAnalyses.length > 0) {
+            for (const pa of pageAnalyses) {
+              const ocr = pageOcrResults.get(pa.pageNumber);
+              if (ocr) {
+                allTextParts.push(ocr.text);
+              } else if (pa.text) {
+                allTextParts.push(pa.text);
+              }
+            }
+          } else {
+            allTextParts.push(...ocrTexts);
+          }
+          extractedText = allTextParts.join('\n\n').trim();
           ocrInfo = {
             text: extractedText,
             confidence: count > 0 ? totalConfidence / count : 0.9,
           };
-        } else if (options.ocrEnabled) {
+        } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
           throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
-      } else if (options.ocrEnabled) {
+      } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
         throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
       }
     }
@@ -315,24 +354,26 @@ export async function convertDocument(
 
     if (tgt === 'pdf') {
       if (options.ocrEnabled || isScanned) {
-        if (pageOcrResults.size === 0 && !lastOcrResult) {
+        if (pageOcrResults.size === 0 && !lastOcrResult && pagesNeedingOcr.length > 0) {
           throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
         }
 
-        try {
-          const searchablePdf = await createLosslessSandwichPdfFromPdf(inputBuffer, pageOcrResults);
-          return {
-            buffer: searchablePdf,
-            mimeType: 'application/pdf',
-            filename: `${baseName}.pdf`,
-            size: searchablePdf.length,
-            ocrExtractedText: ocrInfo.text,
-            ocrConfidence: ocrInfo.confidence,
-          };
-        } catch (pdfErr: any) {
-          throw new ConversionFailedError(
-            `PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`
-          );
+        if (pageOcrResults.size > 0) {
+          try {
+            const searchablePdf = await createLosslessSandwichPdfFromPdf(inputBuffer, pageOcrResults);
+            return {
+              buffer: searchablePdf,
+              mimeType: 'application/pdf',
+              filename: `${baseName}.pdf`,
+              size: searchablePdf.length,
+              ocrExtractedText: ocrInfo.text,
+              ocrConfidence: ocrInfo.confidence,
+            };
+          } catch (pdfErr: any) {
+            throw new ConversionFailedError(
+              `PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`
+            );
+          }
         }
       }
       return {
@@ -340,6 +381,30 @@ export async function convertDocument(
         mimeType: 'application/pdf',
         filename: `${baseName}.pdf`,
         size: inputBuffer.length,
+        ocrExtractedText: ocrInfo.text,
+        ocrConfidence: ocrInfo.confidence,
+      };
+    }
+
+    if (tgt === 'hocr' || tgt === 'alto') {
+      const combinedResult = assembleCombinedOcrResult(
+        pageOcrResults,
+        pageAnalyses,
+        extractedText,
+        ocrInfo.confidence
+      );
+      const isHocr = tgt === 'hocr';
+      const xml = isHocr
+        ? exportHocr(combinedResult, { documentTitle: baseName, filename: originalFilename })
+        : exportAlto(combinedResult, { filename: originalFilename });
+      const buffer = Buffer.from(xml, 'utf-8');
+      return {
+        buffer,
+        mimeType: isHocr ? 'application/xhtml+xml' : 'application/xml',
+        filename: `${baseName}.${isHocr ? 'hocr' : 'xml'}`,
+        size: buffer.length,
+        ocrExtractedText: combinedResult.text,
+        ocrConfidence: combinedResult.confidence,
       };
     }
 
