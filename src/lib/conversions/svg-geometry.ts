@@ -409,6 +409,24 @@ function handleArcCurve(
 /**
  * Parses SVG path 'd' attribute commands into adaptive polyline vertices.
  */
+const PATH_TOKEN_PATTERN = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|./gy;
+const PATH_SEPARATOR_PATTERN = /^[\s,]+$/;
+const PATH_TOKEN_VALID = /^(?:[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$/;
+
+/** Splits path data into commands and numbers; any other character fails closed. */
+function tokenizePathData(d: string): string[] {
+  const tokens: string[] = [];
+  for (const m of d.matchAll(PATH_TOKEN_PATTERN)) {
+    const tok = m[0];
+    if (PATH_SEPARATOR_PATTERN.test(tok)) continue;
+    if (!PATH_TOKEN_VALID.test(tok)) {
+      throw new CadGeometryUnavailableError(`Malformed SVG path data "${d}": unexpected character "${tok}".`);
+    }
+    tokens.push(tok);
+  }
+  return tokens;
+}
+
 const PATH_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
 
 export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point3D[][] {
@@ -417,12 +435,7 @@ export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point
   const state: PathState = { currentX: 0, currentY: 0, lastCpX: 0, lastCpY: 0 };
   let lastCmd = '';
 
-  const regex = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g;
-  let match: RegExpExecArray | null;
-  const tokens: string[] = [];
-  while ((match = regex.exec(d)) !== null) {
-    tokens.push(match[0]);
-  }
+  const tokens = tokenizePathData(d);
 
   let i = 0;
   let prevUpper = '';

@@ -758,4 +758,12 @@ describe('SVG document model for metafile encoders', () => {
       expect(performance.now() - start).toBeLessThan(1000);
     });
   });
+
+  describe('strict input parsing', () => {
+    it('rejects unexpected characters in path data', () => {
+      for (const d of ['M0 0 L10 10 X 5 5 Z', 'M0 0 L10$10 L0 10 Z', 'M0 0 L10 10 L0 10 Z;', 'M0 0 L Infinity 10 L0 10 Z']) {
+        expect(() => encodeEmf(svgDoc(`<path d="${d}" fill="#000"/>`)), d).toThrow(CadGeometryUnavailableError);
+      }
+    });
+  });
 });
