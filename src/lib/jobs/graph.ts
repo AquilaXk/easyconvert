@@ -70,6 +70,29 @@ export class JobGraphValidationError extends Error {
 // Backwards compatibility alias
 export { JobGraphValidationError as GraphValidationError };
 
+export const SUPPORTED_GRAPH_OPERATIONS = new Set<string>([
+  'import.upload',
+  'import.url',
+  'import',
+  'convert',
+  'ocr',
+  'optimize',
+  'thumbnail',
+  'media.thumbnail',
+  'archive.create',
+  'archive/create',
+  'archive',
+  'archive.extract',
+  'archive/extract',
+  'merge',
+  'metadata',
+  'watermark',
+  'pdf.watermark',
+  'pdf.protect',
+  'export.url',
+  'export.internal',
+]);
+
 const NODE_ID_REGEX = /^[a-z][a-z0-9_-]{0,63}$/;
 
 const TIER_NODE_LIMITS: Record<string, number> = {
@@ -280,6 +303,14 @@ export function validateJobGraph(
     incoming.set(nodeId, []);
 
     const op = node.operation || node.op || '';
+    if (!SUPPORTED_GRAPH_OPERATIONS.has(op)) {
+      errors.push({
+        path: `nodes.${nodeId}`,
+        message: `Unsupported task operation "${op}" in node "${nodeId}".`,
+        code: 'UNSUPPORTED_OPERATION',
+      });
+    }
+
     if (op === 'import.upload' || op === 'import.url' || op === 'import') {
       importCount++;
       const deps = getTaskDependencies(node);
@@ -489,6 +520,15 @@ export function validateJobGraph(
       case 'convert': {
         const cleanTarget = (node.targetFormat || 'pdf').toLowerCase().trim().replace(/^\./, '');
         inferredFormats[nodeId] = cleanTarget;
+
+        const targetDef = FORMAT_REGISTRY[cleanTarget] || getFormatByExtension(cleanTarget);
+        if (!targetDef) {
+          errors.push({
+            path: `nodes.${nodeId}`,
+            message: `Unknown or unsupported target format "${cleanTarget}" in convert node "${nodeId}".`,
+            code: 'UNKNOWN_TARGET_FORMAT',
+          });
+        }
 
         const deps = getTaskDependencies(node);
         const inputId = deps[0];

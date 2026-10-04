@@ -45,11 +45,12 @@ describe('Phase 3-B: Job Graph Model Redis Atomic DAG Orchestration', () => {
 
   afterEach(async () => {
     if (redisClient) {
-      // Clean up test keys with {job} hash tag
+      // Clean up test keys with {job} hash tag and bull:{job}:waiting
       const keys = await redisClient.keys('*test_dag_*');
       if (keys.length > 0) {
         await redisClient.del(...keys);
       }
+      await redisClient.del('bull:{job}:waiting').catch(() => {});
       await redisClient.quit().catch(() => {});
       redisClient = null;
     }
@@ -373,6 +374,161 @@ describe('Phase 3-B: Job Graph Model Redis Atomic DAG Orchestration', () => {
       expect(thumbObj).toBeDefined();
       expect(thumbObj!.size).toBeGreaterThan(0);
       expect(thumbObj!.mimeType).toBe('image/png');
+    });
+  });
+
+  describe('4. Automatic Upstream Input Resolution & Reference Retrieval', () => {
+    it('automatically resolves and passes input artifacts from upstream dependency outputs without explicit input keys', async (ctx) => {
+      if (!redisAvailable || !redisClient) {
+        ctx.skip();
+        return;
+      }
+
+      const jobId = `test_dag_auto_res_${Date.now()}`;
+      const executor = new RedisGraphExecutor(redisClient, storage);
+
+      const samplePngBuf = createSamplePng();
+      const seedKey = `tasks/${jobId}/import_source/photo.png`;
+      storage.saveObject(seedKey, samplePngBuf, 'image/png', 'photo.png', 86400000);
+
+      const graph: JobGraph = {
+        failurePolicy: 'fail_job',
+        nodes: {
+          import_source: {
+            id: 'import_source',
+            operation: 'import.upload',
+            storageKey: seedKey,
+          },
+          task_thumb: {
+            id: 'task_thumb',
+            operation: 'thumbnail',
+            dependencies: ['import_source'],
+            targetFormat: 'png',
+            options: { thumbnail: { width: 48, height: 48, format: 'png' } },
+          },
+          task_archive: {
+            id: 'task_archive',
+            operation: 'archive/create',
+            dependencies: ['task_thumb'],
+            targetFormat: 'zip',
+          },
+        },
+      };
+
+      await executor.initGraph(jobId, graph, {
+        ownerUserId: 'auto_res_user',
+        sourceStorageKey: seedKey,
+      });
+
+      // Execute import_source
+      const importRes = await executor.executeTask(jobId, graph.nodes!['import_source']);
+      expect(importRes.status).toBe('completed');
+
+      // Verify getTaskOutputs returns the recorded output
+      const importOutputs = await executor.getTaskOutputs(jobId, 'import_source');
+      expect(importOutputs).toContain(seedKey);
+
+      // Execute task_thumb WITHOUT passing inputArtifactKeys: it must resolve from import_source
+      const thumbRes = await executor.executeTask(jobId, graph.nodes!['task_thumb']);
+      expect(thumbRes.status).toBe('completed');
+      expect(thumbRes.outputKeys.length).toBeGreaterThan(0);
+
+      const thumbOutputs = await executor.getTaskOutputs(jobId, 'task_thumb');
+      expect(thumbOutputs).toEqual(thumbRes.outputKeys);
+
+      // Execute task_archive WITHOUT passing inputArtifactKeys: it must resolve from task_thumb
+      const archiveRes = await executor.executeTask(jobId, graph.nodes!['task_archive']);
+      expect(archiveRes.status).toBe('completed');
+
+      const archiveObj = storage.getObject(archiveRes.outputKeys[0]);
+      expect(archiveObj).toBeDefined();
+      const zip = await JSZip.loadAsync(archiveObj!.buffer);
+      expect(Object.keys(zip.files).length).toBeGreaterThan(0);
+
+      // Verify cleanupGraph purges intermediate artifacts
+      await executor.cleanupGraph(jobId);
+      const cleanedThumb = storage.getObject(thumbRes.outputKeys[0]);
+      expect(cleanedThumb).toBeUndefined();
+    });
+  });
+
+  describe('5. Fail-Closed Boundaries & Error Handling', () => {
+    it('fails-closed and throws error when an unsupported task operation is executed', async () => {
+      const jobId = `test_unsupported_op_${Date.now()}`;
+      const executor = new InMemoryGraphExecutor(storage);
+
+      const badTask = {
+        id: 'bad_task',
+        operation: 'dangerous_unsupported_operation',
+      };
+
+      const result = await executor.executeTask(jobId, badTask, ['dummy.key']);
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('Unsupported graph task operation: "dangerous_unsupported_operation"');
+    });
+
+    it('fails-closed when merge is attempted with a missing or zero-byte artifact', async () => {
+      const jobId = `test_merge_fail_${Date.now()}`;
+      const executor = new InMemoryGraphExecutor(storage);
+
+      const mergeTask = {
+        id: 'merge_step',
+        operation: 'merge',
+        targetFormat: 'pdf',
+      };
+
+      // 1. Missing artifact
+      const missingResult = await executor.executeTask(jobId, mergeTask, ['non_existent_key.pdf']);
+      expect(missingResult.status).toBe('failed');
+      expect(missingResult.error).toContain('not found in storage for merge');
+
+      // 2. Zero-byte artifact
+      const zeroKey = `tasks/${jobId}/zero.pdf`;
+      storage.saveObject(zeroKey, Buffer.from(''), 'application/pdf', 'zero.pdf', 86400000);
+      const zeroResult = await executor.executeTask(jobId, mergeTask, [zeroKey]);
+      expect(zeroResult.status).toBe('failed');
+      expect(zeroResult.error).toContain('has zero bytes and cannot be merged');
+    });
+
+    it('handles waiting queue gracefully when waitingKey is a priority ZSET without WRONGTYPE error', async (ctx) => {
+      if (!redisAvailable || !redisClient) {
+        ctx.skip();
+        return;
+      }
+
+      const jobId = `test_zset_compat_${Date.now()}`;
+      const waitingKey = `bull:{job}:waiting`;
+
+      // Pre-create waitingKey as a ZSET
+      await redisClient.zadd(waitingKey, 100, 'existing_zset_item');
+
+      const executor = new RedisGraphExecutor(redisClient, storage);
+      const samplePngBuf = createSamplePng();
+      const seedKey = `tasks/${jobId}/src.png`;
+      storage.saveObject(seedKey, samplePngBuf, 'image/png', 'src.png', 86400000);
+
+      const graph: JobGraph = {
+        failurePolicy: 'fail_job',
+        nodes: {
+          src: { id: 'src', operation: 'import.upload', storageKey: seedKey },
+          out: { id: 'out', operation: 'export.internal', dependencies: ['src'] },
+        },
+      };
+
+      // Initializing graph must push ready task to ZSET via ZADD without throwing WRONGTYPE
+      const initState = await executor.initGraph(jobId, graph, { sourceStorageKey: seedKey });
+      expect(initState.status).toBe('running');
+
+      const isMember = await redisClient.zscore(waitingKey, `${jobId}:src`);
+      expect(isMember).not.toBeNull();
+
+      // Completing task src must push child task out to ZSET via ZADD
+      await executor.executeTask(jobId, graph.nodes!['src']);
+      const isOutMember = await redisClient.zscore(waitingKey, `${jobId}:out`);
+      expect(isOutMember).not.toBeNull();
+
+      // Clean up test ZSET
+      await redisClient.del(waitingKey);
     });
   });
 });
