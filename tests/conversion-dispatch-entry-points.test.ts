@@ -269,3 +269,36 @@ describe('pairs only a native engine converts', () => {
     }, 120_000);
   });
 });
+
+describe('entry points answer typed input errors from the dispatcher with 400', () => {
+  const BAD_REQUEST_TYPE = 'https://api.easyconvert.io/problems/bad-request';
+  const HTTP_BAD_REQUEST = 400;
+  /** DOS/PE executable header: the magic bytes of a Windows binary, not a ZIP-based DOCX. */
+  const PE_HEADER = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);
+  const SAMPLE_PDF = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.pdf'));
+
+  async function expectBadRequestProblem(res: Response, detail: RegExp): Promise<void> {
+    expect(res.status).toBe(HTTP_BAD_REQUEST);
+    expect(res.headers.get('content-type')).toContain('application/problem+json');
+    const problem = await res.json();
+    expect(problem.type).toBe(BAD_REQUEST_TYPE);
+    expect(problem.status).toBe(HTTP_BAD_REQUEST);
+    expect(problem.detail).toMatch(detail);
+  }
+
+  it('POST /api/convert/batch rejects a spoofed file with a 400 problem', async () => {
+    const spoofed = new Blob([new Uint8Array(PE_HEADER)], { type: DOCX_MIME });
+    const res = await batchPost(
+      multipart('http://localhost/api/convert/batch', { files: spoofed, targetFormats: JSON.stringify({ default: 'pdf' }) }, 'fake.docx')
+    );
+    await expectBadRequestProblem(res, /^File spoofing rejected for file "fake\.docx": /);
+  });
+
+  it.skipIf(!HAS_PDFTOPPM)('POST /api/v1/convert (sync) rejects an out-of-range page selection with a 400 problem (needs pdftoppm)', async () => {
+    const pdf = new Blob([new Uint8Array(SAMPLE_PDF)], { type: 'application/pdf' });
+    const res = await v1ConvertPost(
+      multipart('http://localhost/api/v1/convert', { file: pdf, targetFormat: 'png', options: JSON.stringify({ pages: '50-60' }) }, 'sample.pdf')
+    );
+    await expectBadRequestProblem(res, /^Range 50-60 exceeds document page count of 1\.$/);
+  }, 60_000);
+});

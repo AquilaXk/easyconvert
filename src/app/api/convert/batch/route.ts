@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { detectFormatFromFilename } from '@/lib/registry';
-import { ConversionOptions, EngineUnavailableError } from '@/lib/types';
+import { ConversionOptions, ConversionFailedError, EngineUnavailableError } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
 
@@ -170,6 +170,10 @@ export async function POST(req: NextRequest) {
     }
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
+    }
+    if (error instanceof ConversionFailedError) {
+      // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.
+      return createProblemDetailsResponse(400, error.message, instanceUri);
     }
     const message = error instanceof Error ? error.message : 'Batch conversion failed';
     return NextResponse.json({ success: false, error: message }, { status: 500 });

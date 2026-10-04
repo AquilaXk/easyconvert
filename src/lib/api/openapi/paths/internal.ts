@@ -228,7 +228,14 @@ export const internalPaths = {
       }, ['files']),
       responses: {
         '200': binaryResponse('ZIP archive of converted files.', 'application/zip'),
-        '400': createErrorResponse('No files, invalid input, or nothing could be converted.'),
+        '400': {
+          description:
+            'No files, invalid input, or nothing could be converted. A file the dispatcher rejects (spoofed signature, malformed input) returns a problem document.',
+          content: {
+            ...createErrorResponse('').content,
+            'application/problem+json': createProblemResponse('').content['application/problem+json'],
+          },
+        },
         '401': createProblemResponse('Authentication required.'),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),

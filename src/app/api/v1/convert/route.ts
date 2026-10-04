@@ -10,7 +10,7 @@ import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
-import { EngineUnavailableError } from '@/lib/types';
+import { ConversionFailedError, EngineUnavailableError } from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -399,6 +399,10 @@ export async function POST(req: NextRequest) {
     }
     if (err instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(err, instanceUri, rateLimitHeaders);
+    }
+    if (err instanceof ConversionFailedError) {
+      // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.
+      return createProblemDetailsResponse(400, err.message, instanceUri, 'Bad Request', undefined, rateLimitHeaders);
     }
     const message = err instanceof Error ? err.message : 'Internal programmatic conversion error';
     return createProblemDetailsResponse(
