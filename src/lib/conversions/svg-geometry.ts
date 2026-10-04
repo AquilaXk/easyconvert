@@ -267,11 +267,11 @@ function handleSmoothCubic(
   isRel: boolean,
   state: PathState,
   currentSubpath: Point3D[],
-  cmd: string,
+  prevUpper: string,
   tolerance: number
 ): number {
   if (i + 3 >= tokens.length) return i;
-  const isPreviousCubic = ['C', 'c', 'S', 's'].includes(cmd);
+  const isPreviousCubic = prevUpper === 'C' || prevUpper === 'S';
   const p1X = isPreviousCubic ? 2 * state.currentX - state.lastCpX : state.currentX;
   const p1Y = isPreviousCubic ? 2 * state.currentY - state.lastCpY : state.currentY;
   const x2 = Number.parseFloat(tokens[i]);
@@ -329,6 +329,37 @@ function handleQuadCurve(
   return i + 4;
 }
 
+function handleSmoothQuad(
+  tokens: string[],
+  i: number,
+  isRel: boolean,
+  state: PathState,
+  currentSubpath: Point3D[],
+  prevUpper: string,
+  tolerance: number
+): number {
+  if (i + 1 >= tokens.length) return i;
+  const isPreviousQuad = prevUpper === 'Q' || prevUpper === 'T';
+  const cp: Point3D = {
+    x: isPreviousQuad ? 2 * state.currentX - state.lastCpX : state.currentX,
+    y: isPreviousQuad ? 2 * state.currentY - state.lastCpY : state.currentY,
+    z: 0,
+  };
+  const x = Number.parseFloat(tokens[i]);
+  const y = Number.parseFloat(tokens[i + 1]);
+  const p0: Point3D = { x: state.currentX, y: state.currentY, z: 0 };
+  const p2: Point3D = { x: isRel ? state.currentX + x : x, y: isRel ? state.currentY + y : y, z: 0 };
+  const p1: Point3D = { x: p0.x + (2 / 3) * (cp.x - p0.x), y: p0.y + (2 / 3) * (cp.y - p0.y), z: 0 };
+  const pCubic2: Point3D = { x: p2.x + (2 / 3) * (cp.x - p2.x), y: p2.y + (2 / 3) * (cp.y - p2.y), z: 0 };
+  const curvePts = adaptiveTessellateCubicBezier(p0, p1, pCubic2, p2, tolerance);
+  for (let k = 1; k < curvePts.length; k++) currentSubpath.push(curvePts[k]);
+  state.currentX = p2.x;
+  state.currentY = p2.y;
+  state.lastCpX = cp.x;
+  state.lastCpY = cp.y;
+  return i + 2;
+}
+
 function handleArcCurve(
   tokens: string[],
   i: number,
@@ -373,6 +404,8 @@ function handleArcCurve(
 /**
  * Parses SVG path 'd' attribute commands into adaptive polyline vertices.
  */
+const PATH_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
+
 export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point3D[][] {
   const subpaths: Point3D[][] = [];
   let currentSubpath: Point3D[] = [];
@@ -387,19 +420,25 @@ export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point
   }
 
   let i = 0;
+  let prevUpper = '';
   while (i < tokens.length) {
     const token = tokens[i];
     if (/^[MmLlHhVvCcSsQqTtAaZz]$/.test(token)) {
       lastCmd = token;
       i++;
     } else if (!lastCmd) {
-      i++;
-      continue;
+      throw new CadGeometryUnavailableError(`Malformed SVG path data "${d}": coordinates before the first command.`);
     }
 
     const cmd = lastCmd;
     const isRel = cmd === cmd.toLowerCase();
     const upper = cmd.toUpperCase();
+    const start = i;
+
+    if (upper !== 'M' && upper !== 'Z' && currentSubpath.length === 0) {
+      // A drawing command after Z continues from the closed sub-path's start point
+      currentSubpath.push({ x: state.currentX, y: state.currentY, z: 0 });
+    }
 
     if (upper === 'M') {
       if (currentSubpath.length > 0) {
@@ -417,12 +456,15 @@ export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point
     } else if (upper === 'C') {
       i = handleCubicCurve(tokens, i, isRel, state, currentSubpath, tolerance);
     } else if (upper === 'S') {
-      i = handleSmoothCubic(tokens, i, isRel, state, currentSubpath, cmd, tolerance);
+      i = handleSmoothCubic(tokens, i, isRel, state, currentSubpath, prevUpper, tolerance);
     } else if (upper === 'Q') {
       i = handleQuadCurve(tokens, i, isRel, state, currentSubpath, tolerance);
+    } else if (upper === 'T') {
+      i = handleSmoothQuad(tokens, i, isRel, state, currentSubpath, prevUpper, tolerance);
     } else if (upper === 'A') {
       i = handleArcCurve(tokens, i, isRel, state, currentSubpath);
-    } else if (upper === 'Z') {
+    } else {
+      // Z
       if (currentSubpath.length > 1) {
         const first = currentSubpath[0];
         currentSubpath.push({ x: first.x, y: first.y, z: first.z });
@@ -431,9 +473,13 @@ export function parseSvgPathToPoints(d: string, tolerance: number = 0.25): Point
       }
       subpaths.push(currentSubpath);
       currentSubpath = [];
-    } else {
-      i++;
+      lastCmd = '';
     }
+
+    if (upper !== 'Z' && (i === start || tokens.slice(start, i).some((t) => !PATH_NUMBER_PATTERN.test(t)))) {
+      throw new CadGeometryUnavailableError(`Malformed SVG path data "${d}": missing or invalid arguments for ${cmd}.`);
+    }
+    prevUpper = upper;
   }
 
   if (currentSubpath.length > 0) {
@@ -698,6 +744,15 @@ interface UserShape {
   isClosed: boolean;
 }
 
+/** Rounded-corner radii per SVG 1.1 section 9.2: a missing radius copies the other, clamped to half the side. */
+function resolveRectRadii(attrs: Map<string, string>, w: number, h: number): { rx: number; ry: number } {
+  const rxAttr = attrs.has('rx') ? numberAttr(attrs, 'rx') : undefined;
+  const ryAttr = attrs.has('ry') ? numberAttr(attrs, 'ry') : undefined;
+  const rx = Math.max(0, rxAttr ?? ryAttr ?? 0);
+  const ry = Math.max(0, ryAttr ?? rxAttr ?? 0);
+  return { rx: Math.min(rx, w / 2), ry: Math.min(ry, h / 2) };
+}
+
 function shapeGeometry(name: string, attrs: Map<string, string>): UserShape | null {
   switch (name) {
     case 'path': {
@@ -712,6 +767,14 @@ function shapeGeometry(name: string, attrs: Map<string, string>): UserShape | nu
       const w = numberAttr(attrs, 'width');
       const h = numberAttr(attrs, 'height');
       if (w <= 0 || h <= 0) return null;
+      const { rx, ry } = resolveRectRadii(attrs, w, h);
+      if (rx > 0 && ry > 0) {
+        const d =
+          `M${x + rx},${y} H${x + w - rx} A${rx},${ry} 0 0 1 ${x + w},${y + ry} V${y + h - ry} ` +
+          `A${rx},${ry} 0 0 1 ${x + w - rx},${y + h} H${x + rx} A${rx},${ry} 0 0 1 ${x},${y + h - ry} ` +
+          `V${y + ry} A${rx},${ry} 0 0 1 ${x + rx},${y} Z`;
+        return { subpaths: parseSvgPathToPoints(d, PATH_TOLERANCE), isClosed: true };
+      }
       return { subpaths: [[{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }, { x, y }]], isClosed: true };
     }
     case 'circle': {

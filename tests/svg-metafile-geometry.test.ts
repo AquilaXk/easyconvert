@@ -425,4 +425,48 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeWmf(svgDoc('<rect x="0" y="0" width="1e9" height="10" fill="#000"/>'))).toThrow(CadGeometryUnavailableError);
     });
   });
+
+  describe('path and shape fidelity', () => {
+    it('rejects malformed path data with a typed error instead of looping or dropping it', () => {
+      for (const d of ['M 10', 'M 10 10 L 20', '10 10 L 20 20', 'M 0 0 L 10 x']) {
+        expect(() => encodeEmf(svgDoc(`<path d="${d}" stroke="#000"/>`)), d).toThrow(CadGeometryUnavailableError);
+      }
+    });
+
+    it('continues from the sub-path start after Z without a new moveto', () => {
+      const ring = filledShapes(emfShapes('<path d="M10 10 H50 V50 Z L 10 90 H 30 Z" fill="#000"/>'))[0].rings;
+      expect(ring.map(corners)).toEqual([
+        [[10, 10], [50, 10], [50, 50]],
+        [[10, 10], [10, 90], [30, 90]],
+      ]);
+    });
+
+    function strokePoints(body: string): { x: number; y: number }[] {
+      return emfShapes(body).filter((s) => s.pen !== null).flatMap((s) => s.rings.flat());
+    }
+
+    it('draws smooth quadratic T segments instead of dropping them', () => {
+      const pts = strokePoints('<path d="M10 10 Q 30 0 50 10 T 90 10" fill="none" stroke="#000"/>');
+      expect(pts[pts.length - 1]).toEqual({ x: 90, y: 10 });
+      // T reflects the control point (30,0) to (70,20): the second arc bulges downwards
+      expect(Math.max(...pts.filter((p) => p.x > 60 && p.x < 80).map((p) => p.y))).toBeGreaterThan(12);
+    });
+
+    it('reflects the S control point only after a cubic segment', () => {
+      // After Q the first S control point equals the current point (10,50); curve midpoint is (21.25, 31.25)
+      const pts = strokePoints('<path d="M0 50 Q 5 0 10 50 S 30 0 40 50" fill="none" stroke="#000"/>');
+      const nearest = Math.min(...pts.map((p) => Math.hypot(p.x - 21.25, p.y - 31.25)));
+      expect(nearest).toBeLessThan(1.5);
+    });
+
+    it('rounds rect corners given rx/ry', () => {
+      const ring = filledShapes(emfShapes('<rect x="0" y="0" width="40" height="40" rx="10" fill="#000"/>'))[0].rings[0];
+      expect(ring.length).toBeGreaterThan(8);
+      expect(ring.some((p) => p.x === 0 && p.y === 0)).toBe(false);
+      // Straight edges start and end one radius away from each corner
+      for (const [x, y] of [[10, 0], [30, 0], [40, 10], [40, 30], [30, 40], [10, 40], [0, 30], [0, 10]]) {
+        expect(ring.some((p) => p.x === x && p.y === y), `vertex (${x},${y})`).toBe(true);
+      }
+    });
+  });
 });
