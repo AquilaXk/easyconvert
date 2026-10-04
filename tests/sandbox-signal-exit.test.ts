@@ -205,20 +205,20 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
   });
 
   describe('3. OCI Worker Multi-Stage Task Rejection & Signal Propagation', () => {
-    it('rejects multi-stage pipeline tasks until Phase 3 DAG orchestration lands', async () => {
+    it('executes multi-stage pipeline tasks now that Phase 3 DAG orchestration has landed', async () => {
       const mockJob = {
         id: 'job-multi-task-123',
         data: {
           jobId: 'job-multi-task-123',
-          originalFilename: 'document.docx',
-          sourceFormat: 'docx',
-          targetFormat: 'txt',
+          originalFilename: 'data.csv',
+          sourceFormat: 'csv',
+          targetFormat: 'yaml',
           fileSize: 1024,
-          inputBufferBase64: Buffer.from('test data').toString('base64'),
+          inputBufferBase64: Buffer.from('name,score\nAlice,100\nBob,95\n').toString('base64'),
           options: {},
           tasks: [
-            { name: 'step1', operation: 'convert', targetFormat: 'pdf' },
-            { name: 'step2', operation: 'ocr', targetFormat: 'txt' },
+            { name: 'step1', operation: 'convert', targetFormat: 'json' },
+            { name: 'step2', operation: 'convert', targetFormat: 'yaml' },
           ],
         },
         signal: new AbortController().signal,
@@ -227,9 +227,9 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
       } as unknown as Job<ConversionJobData, ConversionJobResult>;
 
       // Execute worker job processor
-      await expect(
-        (ociWorker as any).processor(mockJob)
-      ).rejects.toThrow(/Multi-stage pipeline tasks \(length 2\) are not supported in worker until DAG orchestration/);
+      const res = await (ociWorker as any).processor(mockJob);
+      expect(res.status).toBe('completed');
+      expect(res.filename).toMatch(/\.yaml$/i);
     });
 
     it('allows single-stage jobs through worker and cleans up on completion', async () => {

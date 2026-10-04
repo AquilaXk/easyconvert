@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
@@ -5,17 +6,45 @@ import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
 import { convertFile } from '../../conversions';
 import { s3Storage } from '../../storage/s3-storage';
+import type { IStorageBackend } from '../../storage/oci-storage';
+import type { ConversionEnginePort } from '../engine-port';
 import { graphScheduler } from './scheduler';
 import { createTarArchive, extractTarArchive, create7zArchive, extract7zArchive } from '../../conversions/archive';
 
 export async function processGraphNodeJob(
-  job: Job<ConversionJobData, ConversionJobResult>
+  job: Job<ConversionJobData, ConversionJobResult>,
+  engine?: ConversionEnginePort,
+  storage?: IStorageBackend
 ): Promise<ConversionJobResult> {
   const startTime = Date.now();
   const attemptSignal = job.signal;
   const graphId = job.data.graphId!;
   const nodeId = job.data.graphNodeId!;
   const node = job.data.graphNode!;
+  const effectiveStorage: IStorageBackend = storage || s3Storage;
+  const effectiveEngine: ConversionEnginePort = engine || {
+    name: 'ts-engine',
+    async convert(input, src, tgt, options, filename) {
+      let buf: Buffer;
+      if (Buffer.isBuffer(input)) {
+        buf = input;
+      } else if (input && input.inputBuffer) {
+        buf = input.inputBuffer;
+      } else if (input && input.inputPath) {
+        buf = fs.readFileSync(input.inputPath);
+      } else {
+        throw new Error('Invalid input payload');
+      }
+      const res = await convertFile(buf, src, tgt, options, filename);
+      return {
+        buffer: res.buffer,
+        size: res.size,
+        mimeType: res.mimeType,
+        filename: res.filename,
+        engineUsed: 'ts-engine',
+      };
+    },
+  };
 
   await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
   await job.updateProgress(10);
@@ -50,7 +79,7 @@ export async function processGraphNodeJob(
         }
         const key = `intermediate/${graphId}/${nodeId}/${urlFilename}`;
         const mimeType = response.headers.get('content-type') || 'application/octet-stream';
-        s3Storage.saveObject(key, buf, mimeType, urlFilename, 24 * 60 * 60 * 1000);
+        effectiveStorage.saveObject(key, buf, mimeType, urlFilename, 24 * 60 * 60 * 1000);
         outputKeys = [key];
         await job.log(`Node "${nodeId}" imported from URL: ${key}`);
         break;
@@ -64,13 +93,13 @@ export async function processGraphNodeJob(
 
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = s3Storage.getObject(inputKey);
+          const stored = effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
 
           const srcExt = path.extname(stored.filename || inputKey).replace(/^\./, '') || 'bin';
-          const convRes = await convertFile(
+          const convRes = await effectiveEngine.convert(
             stored.buffer,
             srcExt,
             node.targetFormat,
@@ -79,7 +108,7 @@ export async function processGraphNodeJob(
           );
 
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          s3Storage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
         await job.log(`Node "${nodeId}" converted ${inputArtifacts.length} artifact(s) to ${node.targetFormat}`);
@@ -90,12 +119,12 @@ export async function processGraphNodeJob(
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = s3Storage.getObject(inputKey);
+          const stored = effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
           const srcExt = path.extname(stored.filename || inputKey).replace(/^\./, '') || 'png';
-          const convRes = await convertFile(
+          const convRes = await effectiveEngine.convert(
             stored.buffer,
             srcExt,
             'pdf',
@@ -103,7 +132,7 @@ export async function processGraphNodeJob(
             stored.filename
           );
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          s3Storage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
         break;
@@ -113,12 +142,12 @@ export async function processGraphNodeJob(
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = s3Storage.getObject(inputKey);
+          const stored = effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
           const srcExt = path.extname(stored.filename || inputKey).replace(/^\./, '') || 'bin';
-          const convRes = await convertFile(
+          const convRes = await effectiveEngine.convert(
             stored.buffer,
             srcExt,
             srcExt,
@@ -126,7 +155,7 @@ export async function processGraphNodeJob(
             stored.filename
           );
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          s3Storage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
         break;
@@ -141,7 +170,7 @@ export async function processGraphNodeJob(
         const filesToArchive: { filename: string; buffer: Buffer }[] = [];
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = s3Storage.getObject(inputKey);
+          const stored = effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Artifact "${inputKey}" not found in storage`);
           }
@@ -180,7 +209,7 @@ export async function processGraphNodeJob(
         }
 
         const outKey = `intermediate/${graphId}/${nodeId}/bundle.${targetFmt}`;
-        s3Storage.saveObject(outKey, archiveBuf, archiveMime, `bundle.${targetFmt}`, 24 * 60 * 60 * 1000);
+        effectiveStorage.saveObject(outKey, archiveBuf, archiveMime, `bundle.${targetFmt}`, 24 * 60 * 60 * 1000);
         outputKeys = [outKey];
         await job.log(`Created archive with ${filesToArchive.length} file(s): ${outKey}`);
         break;
@@ -193,7 +222,7 @@ export async function processGraphNodeJob(
         }
 
         const archiveKey = inputArtifacts[0];
-        const stored = s3Storage.getObject(archiveKey);
+        const stored = effectiveStorage.getObject(archiveKey);
         if (!stored) {
           throw new Error(`Archive artifact "${archiveKey}" not found`);
         }
@@ -222,7 +251,7 @@ export async function processGraphNodeJob(
 
         for (const f of extracted) {
           const outKey = `intermediate/${graphId}/${nodeId}/${path.basename(f.filename)}`;
-          s3Storage.saveObject(outKey, f.buffer, 'application/octet-stream', path.basename(f.filename), 24 * 60 * 60 * 1000);
+          effectiveStorage.saveObject(outKey, f.buffer, 'application/octet-stream', path.basename(f.filename), 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
 
@@ -234,7 +263,7 @@ export async function processGraphNodeJob(
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = s3Storage.getObject(inputKey);
+          const stored = effectiveStorage.getObject(inputKey);
           if (!stored) continue;
           await fetch(node.url, {
             method: node.method || 'PUT',
@@ -253,11 +282,11 @@ export async function processGraphNodeJob(
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = s3Storage.getObject(inputKey);
+          const stored = effectiveStorage.getObject(inputKey);
           if (!stored) continue;
 
           const promotedKey = `results/${graphId}/${stored.filename || path.basename(inputKey)}`;
-          s3Storage.saveObject(
+          effectiveStorage.saveObject(
             promotedKey,
             stored.buffer,
             stored.mimeType,
