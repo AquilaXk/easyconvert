@@ -43,7 +43,8 @@ function unpack1bpp(packed: Uint8Array, width: number, height: number, inverse: 
  */
 export async function extractRasterImagesFromPdf(
   pdfBuffer: Buffer,
-  targetDpi: number = 300
+  targetDpi: number = 300,
+  targetPageNumbers?: Set<number> | number[]
 ): Promise<ExtractedPdfImage[]> {
   const images: ExtractedPdfImage[] = [];
 
@@ -57,8 +58,14 @@ export async function extractRasterImagesFromPdf(
     });
 
     const doc = await loadingTask.promise;
+    const pageFilter = targetPageNumbers
+      ? (targetPageNumbers instanceof Set ? targetPageNumbers : new Set(targetPageNumbers))
+      : null;
 
     for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+      if (pageFilter && !pageFilter.has(pageNum)) {
+        continue;
+      }
       const page = await doc.getPage(pageNum);
       const opList = await page.getOperatorList();
 

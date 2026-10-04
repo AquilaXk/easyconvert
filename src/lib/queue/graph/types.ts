@@ -27,7 +27,7 @@ export interface OcrNode {
   input: NodeId;
   options?: ConversionOptions & {
     language?: string;
-    ocrMode?: 'skip-text' | 'force' | 'redo';
+    ocrMode?: 'skip-text' | 'skip_text' | 'force' | 'redo';
     ocrFormat?: 'pdf' | 'txt' | 'hocr' | 'alto' | 'tsv';
   };
 }

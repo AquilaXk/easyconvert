@@ -22,7 +22,7 @@ import {
   rgbToOklab,
   oklabToRgb,
 } from './color-quantizer';
-import { performOcr, generateSearchablePdf } from './ocr';
+import { performOcr, generateSearchablePdf, exportHocr, exportAlto } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 
 export {
@@ -2165,6 +2165,24 @@ export async function convertImage(
   // Special case: Image to PDF
   if (fmt === 'pdf') {
     return convertImageToPdf(inputBuffer, options, baseName, src);
+  }
+
+  // Special case: Image to hOCR 1.2 XHTML or ALTO 4.x XML
+  if (fmt === 'hocr' || fmt === 'alto') {
+    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
+    const isHocr = fmt === 'hocr';
+    const xml = isHocr
+      ? exportHocr(ocrResult, { documentTitle: baseName, filename: originalFilename })
+      : exportAlto(ocrResult, { filename: originalFilename });
+    const buffer = Buffer.from(xml, 'utf-8');
+    return {
+      buffer,
+      mimeType: isHocr ? 'application/xhtml+xml' : 'application/xml',
+      filename: `${baseName}.${isHocr ? 'hocr' : 'xml'}`,
+      size: buffer.length,
+      ocrExtractedText: ocrResult.text,
+      ocrConfidence: ocrResult.confidence,
+    };
   }
 
   // Sanitize SVG inputs against Stored XSS
