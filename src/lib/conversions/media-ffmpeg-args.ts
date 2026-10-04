@@ -387,15 +387,24 @@ export function buildFfmpegArguments(
         }
       } else if (codec === 'prores') {
         outputArgs.push('-c:v', 'prores_ks');
-        let prof = '3';
+        const proresProfileMap: Record<string, string> = {
+          proxy: '0',
+          '0': '0',
+          lt: '1',
+          '1': '1',
+          standard: '2',
+          '2': '2',
+          hq: '3',
+          '3': '3',
+          '4444': '4',
+          '4': '4',
+        };
         const p = videoOpts?.profile?.toLowerCase();
-        if (p === 'proxy' || p === '0') prof = '0';
-        else if (p === 'lt' || p === '1') prof = '1';
-        else if (p === 'standard' || p === '2') prof = '2';
-        else if (p === 'hq' || p === '3') prof = '3';
-        else if (p === '4444' || p === '4') prof = '4';
-        outputArgs.push('-profile:v', prof);
-        outputArgs.push('-pix_fmt', prof === '4' ? 'yuva444p10le' : 'yuv422p10le');
+        const prof = p && proresProfileMap[p] ? proresProfileMap[p] : '3';
+        outputArgs.push(
+          '-profile:v', prof,
+          '-pix_fmt', prof === '4' ? 'yuva444p10le' : 'yuv422p10le'
+        );
       }
 
       // Bitrate rate control (VBR / CBR / legacy)
