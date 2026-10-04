@@ -25,7 +25,11 @@ export type GraphOperation = (typeof GRAPH_OPERATIONS)[number];
 
 export const GRAPH_OPERATION_SET: ReadonlySet<string> = new Set(GRAPH_OPERATIONS);
 
-/** Legacy spellings accepted in submitted graphs; nodes are stored and executed under the canonical name. */
+/**
+ * Legacy spellings normalized for internal callers (the legacy-task adapter and typed scheduler
+ * graphs); nodes are stored and executed under the canonical name. The public API schema
+ * requires the canonical `op`, so these spellings are rejected there.
+ */
 export const LEGACY_GRAPH_OPERATION_ALIASES: Readonly<Record<string, GraphOperation>> = {
   import: 'import.upload',
   archive: 'archive.create',
