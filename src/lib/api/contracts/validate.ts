@@ -9,6 +9,8 @@ import {
   ProblemDetailsSchema,
   JobResourceSchema,
   IdempotencyKeyHeaderSchema,
+  WebhookSecretRotateRequestSchema,
+  WebhookSecretRotateResponseSchema,
 } from './schemas';
 
 export const ajv = new Ajv2020({
@@ -41,6 +43,8 @@ ajv.addSchema(JobCreateRequestSchema);
 ajv.addSchema(ProblemDetailsSchema);
 ajv.addSchema(JobResourceSchema);
 ajv.addSchema(IdempotencyKeyHeaderSchema);
+ajv.addSchema(WebhookSecretRotateRequestSchema);
+ajv.addSchema(WebhookSecretRotateResponseSchema);
 
 export type ValidateResult<T> =
   | { ok: true; data: T; problem?: never; response?: never }
