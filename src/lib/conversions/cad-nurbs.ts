@@ -3257,6 +3257,138 @@ export function parseIgesBSplineCurves(content: string): BSplineCurve[] {
   return curves;
 }
 
+/**
+ * Extracts B-Rep solid boundary topology from IGES 5.3 entity records (Entities 502, 504, 508, 510, 514, 186)
+ * and tessellates into watertight 3D triangle mesh.
+ */
+export function parseIgesBRepMesh(
+  content: string,
+  modelName = 'iges_brep'
+): TessellatedMesh | null {
+  if (!content) return null;
+  const lines = content.split(/\r?\n/);
+
+  // Group P lines by Directory Entry (DE) pointer
+  const pDataByDe = new Map<number, string[]>();
+  const pAllData: string[] = [];
+
+  for (const rawLine of lines) {
+    if (rawLine.length < 73) continue;
+    const section = rawLine[72];
+    if (section === 'P') {
+      const deStr = rawLine.substring(64, 72).trim();
+      const dePtr = Number.parseInt(deStr, 10);
+      const text64 = rawLine.substring(0, 64);
+      pAllData.push(text64);
+      if (!Number.isNaN(dePtr)) {
+        let arr = pDataByDe.get(dePtr);
+        if (!arr) {
+          arr = [];
+          pDataByDe.set(dePtr, arr);
+        }
+        arr.push(text64);
+      }
+    }
+  }
+
+  const fullPJoined = pAllData.join('');
+  if (!fullPJoined.includes('502,') && !fullPJoined.includes('504,')) {
+    return null;
+  }
+
+  // Parse all records from P section (split by ';')
+  const rawRecords = fullPJoined.split(';').map((r) => r.trim()).filter(Boolean);
+
+  let vertices: [number, number, number][] = [];
+  const edges: [number, number][] = [];
+  const loops: [number, number, number][] = [];
+
+  for (const rec of rawRecords) {
+    const tokens = rec.split(',').map((t) => t.trim());
+    const entityType = Number.parseInt(tokens[0], 10);
+
+    if (entityType === 502) {
+      // Entity 502: Vertex List (502, N, X1, Y1, Z1, X2, Y2, Z2, ...)
+      const nV = Number.parseInt(tokens[1], 10);
+      if (!Number.isNaN(nV) && nV > 0) {
+        vertices = [];
+        for (let i = 0; i < nV; i++) {
+          const x = Number.parseFloat(tokens[2 + 3 * i]) || 0;
+          const y = Number.parseFloat(tokens[3 + 3 * i]) || 0;
+          const z = Number.parseFloat(tokens[4 + 3 * i]) || 0;
+          vertices.push([x, y, z]);
+        }
+      }
+    } else if (entityType === 504) {
+      // Entity 504: Edge List (504, N, CRV1, V1_START, V1_END, ...)
+      const nE = Number.parseInt(tokens[1], 10);
+      if (!Number.isNaN(nE) && nE > 0) {
+        for (let i = 0; i < nE; i++) {
+          const base = 2 + 3 * i;
+          const vStart = Number.parseInt(tokens[base + 1], 10) - 1;
+          const vEnd = Number.parseInt(tokens[base + 2], 10) - 1;
+          edges.push([vStart, vEnd]);
+        }
+      }
+    } else if (entityType === 508) {
+      // Entity 508: Loop (508, TYPE, N, EDGE1_TYPE, EDGE1_INDEX, EDGE1_ORIENTATION, EDGE1_ISO, ...)
+      const nEdgesInLoop = Number.parseInt(tokens[2], 10);
+      if (nEdgesInLoop >= 3) {
+        const loopV: number[] = [];
+        for (let k = 0; k < nEdgesInLoop; k++) {
+          const base = 3 + 4 * k;
+          const eIdx = Number.parseInt(tokens[base + 1], 10) - 1;
+          const dir = Number.parseInt(tokens[base + 2], 10);
+          if (eIdx >= 0 && eIdx < edges.length) {
+            const edge = edges[eIdx];
+            const startV = dir === 1 ? edge[0] : edge[1];
+            loopV.push(startV);
+          }
+        }
+        if (loopV.length === 3) {
+          loops.push([loopV[0], loopV[1], loopV[2]]);
+        } else if (loopV.length > 3) {
+          for (let k = 1; k < loopV.length - 1; k++) {
+            loops.push([loopV[0], loopV[k], loopV[k + 1]]);
+          }
+        }
+      }
+    }
+  }
+
+  if (vertices.length === 0 || loops.length === 0) {
+    return null;
+  }
+
+  const normals: [number, number, number][] = [];
+  for (const [i0, i1, i2] of loops) {
+    const p0 = vertices[i0] || [0, 0, 0];
+    const p1 = vertices[i1] || [0, 0, 0];
+    const p2 = vertices[i2] || [0, 0, 0];
+    const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+    const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+    let nx = uy * vz - uz * vy;
+    let ny = uz * vx - ux * vz;
+    let nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len > 1e-12) {
+      nx /= len; ny /= len; nz /= len;
+    } else {
+      nx = 0; ny = 0; nz = 1;
+    }
+    normals.push([nx, ny, nz]);
+  }
+
+  const rawMesh: TessellatedMesh = {
+    name: modelName,
+    vertices,
+    faces: loops,
+    normals,
+  };
+
+  return glueBRepTopologicalEdges(rawMesh, { epsilon: 1e-6, enforceOrientedManifold: true });
+}
+
 // ============================================================================
 // 7. STEP B-Rep Topology Extractor & High-Level 3D Model Tessellator
 // ============================================================================
@@ -3483,6 +3615,27 @@ export function extractStepBRepMesh(
       if (!loopId) continue;
       const loopEnt = entityMap.get(loopId);
       if (!loopEnt) continue;
+
+      if (loopEnt.type.includes('POLY_LOOP')) {
+        let ptIds: number[] = [];
+        if (Array.isArray(loopEnt.args[1])) {
+          ptIds = loopEnt.args[1].filter((x: any): x is number => typeof x === 'number');
+        } else if (Array.isArray(loopEnt.args[0])) {
+          ptIds = loopEnt.args[0].filter((x: any): x is number => typeof x === 'number');
+        }
+        const pts: Point3D[] = [];
+        for (const pid of ptIds) {
+          const pt = extractStepPoint(pid, entityMap);
+          if (pt) pts.push(pt);
+        }
+        if (pts.length >= 3) {
+          extractedBounds.push({
+            isOuter: boundEnt.type.includes('FACE_OUTER_BOUND') || boundEnt.type.includes('OUTER'),
+            points: pts,
+          });
+        }
+        continue;
+      }
 
       let edgeIds: number[] = [];
       if (Array.isArray(loopEnt.args[1])) {
@@ -4241,9 +4394,14 @@ export function tessellateCadText(
     if (surfaces.length > 0) {
       mesh = mergeTessellatedSurfaces(surfaces, modelName);
     } else {
-      const curves = parseIgesBSplineCurves(text);
-      if (curves.length > 0) {
-        mesh = tessellateCurvesToMesh(curves, modelName);
+      const brepMesh = parseIgesBRepMesh(text, modelName);
+      if (brepMesh && brepMesh.faces.length > 0) {
+        mesh = brepMesh;
+      } else {
+        const curves = parseIgesBSplineCurves(text);
+        if (curves.length > 0) {
+          mesh = tessellateCurvesToMesh(curves, modelName);
+        }
       }
     }
   } else {

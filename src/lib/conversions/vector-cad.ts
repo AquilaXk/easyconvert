@@ -14,6 +14,7 @@ import {
   cubicBezierToBSpline,
   tessellateSvgArc,
   Point3D,
+  verifyWatertightManifoldMesh,
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { sanitizeSvgString } from '../security/svg-sanitizer';
@@ -494,11 +495,15 @@ async function convert3dCad(
 
     case 'step':
     case 'stp':
-      throw new UnsupportedTargetError('STEP encoder is not available');
+      outputBuffer = Buffer.from(encodeStep(mesh), 'utf-8');
+      mimeType = 'model/step';
+      break;
 
     case 'iges':
     case 'igs':
-      throw new UnsupportedTargetError('IGES encoder is not available');
+      outputBuffer = Buffer.from(encodeIges(mesh), 'utf-8');
+      mimeType = 'model/iges';
+      break;
 
     case 'dxf':
       outputBuffer = Buffer.from(encode3dCadToDxf(mesh), 'utf-8');
@@ -1301,11 +1306,142 @@ export function encodeObj(mesh: CadMesh3D): string {
 }
 
 /**
- * Encodes 3D Mesh to ISO 10303-21 STEP format
+ * Encodes 3D Mesh to ISO 10303-21 STEP AP214 format with genuine B-Rep topology.
  */
 export function encodeStep(mesh: CadMesh3D): string {
-  void mesh;
-  throw new UnsupportedTargetError('STEP encoder is not available');
+  if (!mesh || !mesh.vertices || !mesh.faces || mesh.vertices.length === 0 || mesh.faces.length === 0) {
+    throw new CadGeometryUnavailableError('Cannot export 3D CAD mesh to STEP: Mesh contains no faces or vertices.');
+  }
+
+  const cleanName = (mesh.name || 'cad_model').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const now = new Date();
+  const timestamp = now.toISOString().replace(/\.\d{3}Z$/, '');
+
+  const topology = verifyWatertightManifoldMesh(mesh.vertices, mesh.faces);
+  const isClosed = topology.isWatertight;
+
+  function fmtReal(n: number): string {
+    if (Object.is(n, -0) || Math.abs(n) < 1e-12) return '0.0';
+    const s = n.toFixed(6).replace(/\.?0+$/, '');
+    return s.includes('.') ? s : `${s}.0`;
+  }
+
+  const lines: string[] = [
+    'ISO-10303-21;',
+    'HEADER;',
+    "FILE_DESCRIPTION(('EasyConvert CAD STEP AP214 B-Rep Model'), '2;1');",
+    `FILE_NAME('${cleanName}.step', '${timestamp}', ('EasyConvert Core'), ('EasyConvert Engine'), 'Processor 2.0', 'EasyConvert', 'Authorization');`,
+    "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));",
+    'ENDSEC;',
+    'DATA;',
+    "#1 = APPLICATION_CONTEXT('core data for automotive mechanical design processes');",
+    "#2 = APPLICATION_PROTOCOL_DEFINITION('international standard', 'automotive_design', 1994, #1);",
+    "#3 = PRODUCT_CONTEXT('', #1, 'mechanical');",
+    `#4 = PRODUCT('${cleanName}', '${cleanName}', '', (#3));`,
+    "#5 = PRODUCT_DEFINITION_FORMATION('', '', #4);",
+    "#6 = PRODUCT_DEFINITION_CONTEXT('part definition', #1, 'design');",
+    "#7 = PRODUCT_DEFINITION('design', '', #5, #6);",
+    "#8 = PRODUCT_DEFINITION_SHAPE('', '', #7);",
+    '#9 = SHAPE_DEFINITION_REPRESENTATION(#8, #10);',
+    '#11 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI., .METRE.) );',
+    '#12 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($, .RADIAN.) );',
+    '#13 = ( NAMED_UNIT(*) SI_UNIT($, .STERADIAN.) SOLID_ANGLE_UNIT() );',
+    "#14 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07), #11, 'distance_accuracy_value', 'confusion accuracy');",
+    "#15 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#14)) GLOBAL_UNIT_ASSIGNED_CONTEXT((#11, #12, #13)) REPRESENTATION_CONTEXT('Context #1', '3D Context with UNIT and UNCERTAINTY') );",
+    "#16 = CARTESIAN_POINT('ORIGIN', (0.0, 0.0, 0.0));",
+    "#17 = DIRECTION('DIR_Z', (0.0, 0.0, 1.0));",
+    "#18 = DIRECTION('DIR_X', (1.0, 0.0, 0.0));",
+    "#19 = AXIS2_PLACEMENT_3D('AXIS', #16, #17, #18);",
+  ];
+
+  let nextId = 20;
+
+  // 1. Emit all vertices as CARTESIAN_POINT
+  const vertexPointIds: number[] = new Array(mesh.vertices.length);
+  for (let i = 0; i < mesh.vertices.length; i++) {
+    const v = mesh.vertices[i];
+    const pid = nextId++;
+    vertexPointIds[i] = pid;
+    lines.push(`#${pid} = CARTESIAN_POINT('', (${fmtReal(v[0])}, ${fmtReal(v[1])}, ${fmtReal(v[2])}));`);
+  }
+
+  // 2. Emit all triangular faces with POLY_LOOP, FACE_OUTER_BOUND, PLANE, and FACE_SURFACE
+  const faceIds: number[] = [];
+  for (let f = 0; f < mesh.faces.length; f++) {
+    const [v0, v1, v2] = mesh.faces[f];
+    const p0 = mesh.vertices[v0] || [0, 0, 0];
+    const p1 = mesh.vertices[v1] || [0, 0, 0];
+    const p2 = mesh.vertices[v2] || [0, 0, 0];
+    const id0 = vertexPointIds[v0];
+    const id1 = vertexPointIds[v1];
+    const id2 = vertexPointIds[v2];
+
+    const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+    const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+    let nx = uy * vz - uz * vy;
+    let ny = uz * vx - ux * vz;
+    let nz = ux * vy - uy * vx;
+    const nLen = Math.hypot(nx, ny, nz);
+    if (nLen > 1e-12) {
+      nx /= nLen; ny /= nLen; nz /= nLen;
+    } else {
+      nx = 0; ny = 0; nz = 1;
+    }
+
+    let rx = 1, ry = 0, rz = 0;
+    if (Math.abs(nx) >= 0.9 && Math.abs(ny) < 0.9) {
+      rx = 0; ry = 1; rz = 0;
+    } else if (Math.abs(nx) >= 0.9 && Math.abs(nz) < 0.9) {
+      rx = 0; ry = 0; rz = 1;
+    }
+    const dot = rx * nx + ry * ny + rz * nz;
+    rx -= dot * nx; ry -= dot * ny; rz -= dot * nz;
+    const rLen = Math.hypot(rx, ry, rz) || 1;
+    rx /= rLen; ry /= rLen; rz /= rLen;
+
+    const loopId = nextId++;
+    lines.push(`#${loopId} = POLY_LOOP('', (#${id0}, #${id1}, #${id2}));`);
+
+    const boundId = nextId++;
+    lines.push(`#${boundId} = FACE_OUTER_BOUND('', #${loopId}, .T.);`);
+
+    const dirNormId = nextId++;
+    lines.push(`#${dirNormId} = DIRECTION('', (${fmtReal(nx)}, ${fmtReal(ny)}, ${fmtReal(nz)}));`);
+
+    const dirRefId = nextId++;
+    lines.push(`#${dirRefId} = DIRECTION('', (${fmtReal(rx)}, ${fmtReal(ry)}, ${fmtReal(rz)}));`);
+
+    const axisId = nextId++;
+    lines.push(`#${axisId} = AXIS2_PLACEMENT_3D('', #${id0}, #${dirNormId}, #${dirRefId});`);
+
+    const planeId = nextId++;
+    lines.push(`#${planeId} = PLANE('', #${axisId});`);
+
+    const faceId = nextId++;
+    lines.push(`#${faceId} = FACE_SURFACE('', (#${boundId}), #${planeId}, .T.);`);
+    faceIds.push(faceId);
+  }
+
+  // 3. Emit topological shell & solid representation
+  if (isClosed) {
+    const shellId = nextId++;
+    lines.push(`#${shellId} = CLOSED_SHELL('', (${faceIds.map((id) => '#' + id).join(', ')}));`);
+    const solidId = nextId++;
+    lines.push(`#${solidId} = FACETED_BREP('${cleanName}', #${shellId});`);
+    lines.push(`#10 = FACETED_BREP_SHAPE_REPRESENTATION('${cleanName}', (#${solidId}, #19), #15);`);
+  } else {
+    const shellId = nextId++;
+    lines.push(`#${shellId} = OPEN_SHELL('', (${faceIds.map((id) => '#' + id).join(', ')}));`);
+    const modelId = nextId++;
+    lines.push(`#${modelId} = SHELL_BASED_SURFACE_MODEL('${cleanName}', (#${shellId}));`);
+    lines.push(`#10 = SHAPE_REPRESENTATION('${cleanName}', (#${modelId}, #19), #15);`);
+  }
+
+  lines.push('ENDSEC;');
+  lines.push('END-ISO-10303-21;');
+  lines.push('');
+
+  return lines.join('\n');
 }
 
 /**
@@ -1331,11 +1467,335 @@ export function encode3dCadToDxf(mesh: CadMesh3D): string {
 }
 
 /**
- * Encodes 3D Mesh to ANSI Initial Graphics Exchange Specification (IGES)
+ * Encodes 3D Mesh to ANSI/USPRO IGES 5.3 format with genuine B-Rep topology (Entities 502, 504, 508, 510, 190, 514, 186).
  */
 export function encodeIges(mesh: CadMesh3D): string {
-  void mesh;
-  throw new UnsupportedTargetError('IGES encoder is not available');
+  if (!mesh || !mesh.vertices || !mesh.faces || mesh.vertices.length === 0 || mesh.faces.length === 0) {
+    throw new CadGeometryUnavailableError('Cannot export 3D CAD mesh to IGES: Mesh contains no faces or vertices.');
+  }
+
+  const cleanName = (mesh.name || 'cad_model').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hour = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const sec = String(now.getSeconds()).padStart(2, '0');
+  const igesTimestamp = `${year}${month}${day}.${hour}${min}${sec}`;
+
+  const topology = verifyWatertightManifoldMesh(mesh.vertices, mesh.faces);
+  const isClosed = topology.isWatertight;
+
+  function padField(val: string | number, width: number): string {
+    const s = String(val);
+    return s.padStart(width, ' ');
+  }
+
+  function makeLine(content72: string, section: 'S' | 'G' | 'D' | 'P' | 'T', seqNum: number): string {
+    const padded = content72.length >= 72 ? content72.substring(0, 72) : content72.padEnd(72, ' ');
+    const seq = padField(seqNum, 7);
+    return `${padded}${section}${seq}\n`;
+  }
+
+  function fmtReal(n: number): string {
+    if (Object.is(n, -0) || Math.abs(n) < 1e-12) return '0.0';
+    const s = n.toFixed(6).replace(/\.?0+$/, '');
+    return s.includes('.') ? s : `${s}.0`;
+  }
+
+  // 1. S (Start) Section
+  const sLine = makeLine(`EasyConvert IGES 5.3 Solid/Surface B-Rep Model: ${cleanName}`, 'S', 1);
+
+  // 2. G (Global) Section
+  const gParams = [
+    '1H,',
+    '1H;',
+    '11HEasyConvert',
+    `${cleanName.length}H${cleanName}.igs`,
+    '11HEasyConvert',
+    '10HCoreEngine',
+    '32',
+    '38',
+    '6',
+    '308',
+    '15',
+    '11HEasyConvert',
+    '1.0',
+    '2',
+    '2HMM',
+    '1',
+    '1.0',
+    `15H${igesTimestamp}`,
+    '0.0001',
+    '1000.0',
+    '10HAquilaCore',
+    '11HEasyConvert',
+    '11',
+    '0',
+    `15H${igesTimestamp};`,
+  ].join(',');
+
+  const gLines: string[] = [];
+  const gTokens = gParams.split(',');
+  let currentG = '';
+  for (let i = 0; i < gTokens.length; i++) {
+    const isLast = i === gTokens.length - 1;
+    const token = gTokens[i] + (isLast ? '' : ',');
+    if (currentG.length + token.length > 70) {
+      gLines.push(currentG);
+      currentG = token;
+    } else {
+      currentG += token;
+    }
+  }
+  if (currentG.length > 0) gLines.push(currentG);
+  const formattedGLines = gLines.map((line, idx) => makeLine(line, 'G', idx + 1));
+
+  // Build Topological B-Rep Data Structures:
+  // Entity 502: Vertex List
+  // Entity 504: Edge List
+  // For each face: Entity 190 (Plane), Entity 508 (Loop), Entity 510 (Face)
+  // Entity 514: Shell
+  // (Optional) Entity 186: Manifold Solid B-Rep (if isClosed)
+
+  // Collect unique undirected edges
+  const edgeMap = new Map<string, { edgeIdx: number; vStart: number; vEnd: number }>();
+  const edgeList: { vStart: number; vEnd: number }[] = [];
+
+  function getOrAddEdge(a: number, b: number): { edgeIdx1Based: number; sameSense: boolean } {
+    const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+    const existing = edgeMap.get(key);
+    if (existing) {
+      return {
+        edgeIdx1Based: existing.edgeIdx + 1,
+        sameSense: existing.vStart === a && existing.vEnd === b,
+      };
+    }
+    const edgeIdx = edgeList.length;
+    edgeList.push({ vStart: a, vEnd: b });
+    edgeMap.set(key, { edgeIdx, vStart: a, vEnd: b });
+    return { edgeIdx1Based: edgeIdx + 1, sameSense: true };
+  }
+
+  // Pre-process faces to construct edge loops
+  interface FaceLoopData {
+    edgeIndices: number[];
+    orientations: number[];
+    p0: [number, number, number];
+    normal: [number, number, number];
+  }
+  const faceLoops: FaceLoopData[] = [];
+
+  for (let f = 0; f < mesh.faces.length; f++) {
+    const [v0, v1, v2] = mesh.faces[f];
+    const e01 = getOrAddEdge(v0, v1);
+    const e12 = getOrAddEdge(v1, v2);
+    const e20 = getOrAddEdge(v2, v0);
+
+    const p0 = mesh.vertices[v0] || [0, 0, 0];
+    const p1 = mesh.vertices[v1] || [0, 0, 0];
+    const p2 = mesh.vertices[v2] || [0, 0, 0];
+
+    const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+    const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+    let nx = uy * vz - uz * vy;
+    let ny = uz * vx - ux * vz;
+    let nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len > 1e-12) {
+      nx /= len; ny /= len; nz /= len;
+    } else {
+      nx = 0; ny = 0; nz = 1;
+    }
+
+    faceLoops.push({
+      edgeIndices: [e01.edgeIdx1Based, e12.edgeIdx1Based, e20.edgeIdx1Based],
+      orientations: [e01.sameSense ? 1 : 0, e12.sameSense ? 1 : 0, e20.sameSense ? 1 : 0],
+      p0,
+      normal: [nx, ny, nz],
+    });
+  }
+
+  const numFaces = mesh.faces.length;
+  const vListDePtr = 1;
+  const eListDePtr = 3;
+  const faceDePtrs: number[] = [];
+
+  for (let f = 0; f < numFaces; f++) {
+    const faceDe = 5 + 6 * f + 4;
+    faceDePtrs.push(faceDe);
+  }
+  const shellDePtr = 5 + 6 * numFaces;
+  const solidDePtr = isClosed ? shellDePtr + 2 : 0;
+
+  interface EntityEntry {
+    type: number;
+    dePtr: number;
+    form: number;
+    label: string;
+    params: (string | number)[];
+  }
+  const entities: EntityEntry[] = [];
+
+  // 1. Entity 502 (Vertex List)
+  const vParams: (string | number)[] = [mesh.vertices.length];
+  for (const v of mesh.vertices) {
+    vParams.push(fmtReal(v[0]), fmtReal(v[1]), fmtReal(v[2]));
+  }
+  entities.push({ type: 502, dePtr: vListDePtr, form: 1, label: 'VLIST', params: vParams });
+
+  // 2. Entity 504 (Edge List)
+  const eParams: (string | number)[] = [edgeList.length];
+  for (const e of edgeList) {
+    eParams.push(0, e.vStart + 1, e.vEnd + 1);
+  }
+  entities.push({ type: 504, dePtr: eListDePtr, form: 1, label: 'EDGELIST', params: eParams });
+
+  // 3. For each face: 190, 508, 510
+  for (let f = 0; f < numFaces; f++) {
+    const loop = faceLoops[f];
+    const planeDe = 5 + 6 * f;
+    const loopDe = planeDe + 2;
+    const faceDe = loopDe + 2;
+
+    entities.push({
+      type: 190,
+      dePtr: planeDe,
+      form: 1,
+      label: 'PLANE',
+      params: [
+        fmtReal(loop.p0[0]),
+        fmtReal(loop.p0[1]),
+        fmtReal(loop.p0[2]),
+        fmtReal(loop.normal[0]),
+        fmtReal(loop.normal[1]),
+        fmtReal(loop.normal[2]),
+        0,
+      ],
+    });
+
+    entities.push({
+      type: 508,
+      dePtr: loopDe,
+      form: 1,
+      label: 'LOOP',
+      params: [
+        1,
+        3,
+        0,
+        loop.edgeIndices[0],
+        loop.orientations[0],
+        0,
+        0,
+        loop.edgeIndices[1],
+        loop.orientations[1],
+        0,
+        0,
+        loop.edgeIndices[2],
+        loop.orientations[2],
+        0,
+      ],
+    });
+
+    entities.push({
+      type: 510,
+      dePtr: faceDe,
+      form: 1,
+      label: 'FACE',
+      params: [planeDe, 1, 1, loopDe],
+    });
+  }
+
+  // 4. Entity 514 (Shell)
+  const shellParams: (string | number)[] = [numFaces];
+  for (const fDe of faceDePtrs) {
+    shellParams.push(fDe, 1);
+  }
+  entities.push({ type: 514, dePtr: shellDePtr, form: 1, label: 'SHELL', params: shellParams });
+
+  // 5. Entity 186 (Manifold Solid B-Rep)
+  if (isClosed) {
+    entities.push({
+      type: 186,
+      dePtr: solidDePtr,
+      form: 0,
+      label: 'SOLID',
+      params: [shellDePtr, 1, 0],
+    });
+  }
+
+  // Format P and D records
+  const dLines: string[] = [];
+  const pLines: string[] = [];
+  let currentPSeq = 1;
+
+  for (let eIdx = 0; eIdx < entities.length; eIdx++) {
+    const ent = entities[eIdx];
+    const fullText = `${ent.type},${ent.params.join(',')};`;
+
+    const chunks: string[] = [];
+    let rem = fullText;
+    while (rem.length > 64) {
+      let cut = rem.lastIndexOf(',', 63);
+      if (cut <= 0) cut = 64;
+      else cut += 1;
+      chunks.push(rem.substring(0, cut));
+      rem = rem.substring(cut);
+    }
+    if (rem.length > 0) chunks.push(rem);
+
+    const startP = currentPSeq;
+    const pLineCount = chunks.length;
+
+    for (let c = 0; c < chunks.length; c++) {
+      const chunkStr = chunks[c].length >= 64 ? chunks[c].substring(0, 64) : chunks[c].padEnd(64, ' ');
+      const deStr = padField(ent.dePtr, 7);
+      const pSeq = padField(currentPSeq, 7);
+      pLines.push(`${chunkStr} ${deStr}P${pSeq}\n`);
+      currentPSeq++;
+    }
+
+    const dSeq1 = 2 * eIdx + 1;
+    const dSeq2 = 2 * eIdx + 2;
+
+    const d1Content = [
+      padField(ent.type, 8),
+      padField(startP, 8),
+      padField(0, 8),
+      padField(0, 8),
+      padField(0, 8),
+      padField(0, 8),
+      padField(0, 8),
+      padField(0, 8),
+      '00000000',
+    ].join('');
+
+    const d2Content = [
+      padField(ent.type, 8),
+      padField(0, 8),
+      padField(0, 8),
+      padField(pLineCount, 8),
+      padField(ent.form, 8),
+      padField('', 8),
+      padField('', 8),
+      padField(ent.label, 8),
+      padField(0, 8),
+    ].join('');
+
+    dLines.push(`${d1Content}D${padField(dSeq1, 7)}\n`);
+    dLines.push(`${d2Content}D${padField(dSeq2, 7)}\n`);
+  }
+
+  // 5. T (Terminate) Section
+  const sCount = 1;
+  const gCount = formattedGLines.length;
+  const dCount = dLines.length;
+  const pCount = pLines.length;
+  const tContent = `${padField('S', 1)}${padField(sCount, 7)}${padField('G', 1)}${padField(gCount, 7)}${padField('D', 1)}${padField(dCount, 7)}${padField('P', 1)}${padField(pCount, 7)}`.padEnd(72, ' ');
+  const tLine = `${tContent}T0000001\n`;
+
+  return [sLine, ...formattedGLines, ...dLines, ...pLines, tLine].join('');
 }
 
 function dxfToDwg(_dxfString: string): Buffer {
