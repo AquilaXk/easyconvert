@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { Readable, Transform } from 'node:stream';
+import { Readable, Transform, pipeline } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
@@ -520,18 +520,21 @@ async function importUrlArtifact(
   }
 
   let received = 0;
-  const limited = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream).pipe(
-    new Transform({
-      transform(chunk: Buffer, _enc, done) {
-        received += chunk.length;
-        if (received > maxBytes) {
-          done(new ConversionFailedError(`Remote file at ${url} exceeds the ${maxBytes}-byte import limit`));
-          return;
-        }
-        done(null, chunk);
-      },
-    })
-  );
+  const source = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream);
+  const limiter = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      received += chunk.length;
+      if (received > maxBytes) {
+        done(new ConversionFailedError(`Remote file at ${url} exceeds the ${maxBytes}-byte import limit`));
+        return;
+      }
+      done(null, chunk);
+    },
+  });
+  // pipeline forwards a source error (remote reset, abort) to the limiter that storage consumes,
+  // and destroys the source, cancelling the download, when the limiter fails. Storage observes
+  // every failure through the limiter's 'error' event, so the callback has nothing left to do.
+  const limited = pipeline(source, limiter, () => undefined);
 
   const urlName = path.basename(new URL(url).pathname);
   const filename = urlName && urlName !== '/' ? urlName : `${nodeId}.bin`;
