@@ -270,6 +270,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (tasks && Array.isArray(tasks)) {
+      let pageRangeError: string | null = null;
       for (const t of tasks) {
         if (t.options) {
           if (!t.options.pages && t.options.page) {
@@ -279,10 +280,14 @@ export async function POST(req: NextRequest) {
             try {
               validateTierPageLimit(t.options.pages, auth.user.tier);
             } catch (err: any) {
-              return await failWithRollback(422, err.message, 'Unprocessable Entity');
+              pageRangeError = err.message;
+              break;
             }
           }
         }
+      }
+      if (pageRangeError) {
+        return await failWithRollback(422, pageRangeError, 'Unprocessable Entity');
       }
     }
 

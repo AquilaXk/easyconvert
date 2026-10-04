@@ -16,7 +16,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/stora
 import { convertFile } from '../lib/conversions';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { parsePageRanges, groupConsecutiveRanges } from '../lib/conversions/page-range';
+import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   probeHardwareAcceleration,
@@ -791,8 +791,7 @@ function buildPdftoppmArgs(
     args.push('-upw', options.password);
   }
 
-  args.push('-f', String(startPage), '-l', String(endPage));
-  args.push(inputPath, prefix);
+  args.push('-f', String(startPage), '-l', String(endPage), inputPath, prefix);
   return args;
 }
 
@@ -879,24 +878,26 @@ function matchOutputPageFiles(
   files: string[],
   requestedPages: number[]
 ): Array<{ file: string; pageNum: number }> {
+  const pageRegex = /-(\d+)\.[^.]+$/;
   const parsedFiles = files
     .map((f) => {
-      const m = f.match(/-(\d+)\.[^.]+$/);
-      return {
-        file: f,
-        pageNum: m
-          ? Number.parseInt(m[1], 10)
-          : files.length === 1 && requestedPages.length === 1
-            ? requestedPages[0]
-            : 0,
-      };
+      const m = pageRegex.exec(f);
+      let pageNum = 0;
+      if (m) {
+        pageNum = Number.parseInt(m[1], 10);
+      } else if (files.length === 1 && requestedPages.length === 1) {
+        pageNum = requestedPages[0];
+      }
+      return { file: f, pageNum };
     })
     .filter((item) => requestedPages.includes(item.pageNum))
     .sort((a, b) => a.pageNum - b.pageNum);
 
   return parsedFiles.length > 0
     ? parsedFiles
-    : files.sort().map((f, i) => ({ file: f, pageNum: requestedPages[i] ?? i + 1 }));
+    : [...files]
+        .sort((a, b) => a.localeCompare(b))
+        .map((f, i) => ({ file: f, pageNum: requestedPages[i] ?? i + 1 }));
 }
 
 interface FinalizeMultiPageParams {
@@ -941,7 +942,7 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
 
   // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
   const zip = new JSZip();
-  const maxPage = requestedPages[requestedPages.length - 1] ?? 1;
+  const maxPage = requestedPages.at(-1) ?? 1;
   const padLen = Math.max(3, String(maxPage).length);
 
   for (const item of resolvedFiles) {
@@ -970,26 +971,67 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
   );
 }
 
-async function renderPdfToImageWithPoppler(
-  input: Buffer | WorkerVfsPayload,
-  tgt: string,
-  options: WorkerEngineOptions,
-  originalFilename: string,
-  startTime: number,
-  timeout: number,
-  maxBuffer: number
-): Promise<WorkerConversionResult | null> {
-  const pdftoppmBin = resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH);
-  if (!pdftoppmBin) {
-    if (options.throwOnUnavailable) {
-      throw new EngineUnavailableError('pdftoppm', 'pdftoppm binary is not installed or not in PATH');
-    }
-    return null;
+interface PopplerRenderParams {
+  binaryPath: string;
+  sandboxPrefix: string;
+  tgt: string;
+  input: Buffer | WorkerVfsPayload;
+  options: WorkerEngineOptions;
+  originalFilename: string;
+  startTime: number;
+  timeout: number;
+  maxBuffer: number;
+  buildArgs: (interval: PageInterval, inputPath: string, prefix: string) => string[];
+  filterOutputFile: (fileName: string) => boolean;
+  missingOutputError: string;
+}
+
+async function executeIntervalsSequentially(
+  intervals: PageInterval[],
+  binaryPath: string,
+  inputPath: string,
+  prefix: string,
+  tempDir: string,
+  timeoutMs: number,
+  maxBuffer: number,
+  signal: AbortSignal | undefined,
+  buildArgs: (interval: PageInterval, inputPath: string, prefix: string) => string[]
+): Promise<void> {
+  let step: Promise<any> = Promise.resolve();
+  for (const interval of intervals) {
+    step = step.then(() => {
+      const args = buildArgs(interval, inputPath, prefix);
+      return executeSandboxedBinary(binaryPath, args, {
+        cwd: tempDir,
+        timeoutMs,
+        maxBuffer,
+        networkIsolated: true,
+        signal,
+      });
+    });
   }
+  await step;
+}
+
+async function executePopplerRender(params: PopplerRenderParams): Promise<WorkerConversionResult | null> {
+  const {
+    binaryPath,
+    sandboxPrefix,
+    tgt,
+    input,
+    options,
+    originalFilename,
+    startTime,
+    timeout,
+    maxBuffer,
+    buildArgs,
+    filterOutputFile,
+    missingOutputError,
+  } = params;
 
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   try {
-    return await withSandboxDir('easyconvert-poppler-img-', async (tempDir) => {
+    return await withSandboxDir(sandboxPrefix, async (tempDir) => {
       const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
       const inputBuffer = Buffer.isBuffer(input)
         ? input
@@ -1007,20 +1049,21 @@ async function renderPdfToImageWithPoppler(
       const intervals = groupConsecutiveRanges(requestedPages);
       const prefix = path.join(tempDir, 'page');
 
-      for (const interval of intervals) {
-        const args = buildPdftoppmArgs(tgt, options, interval.start, interval.end, inputPath, prefix);
-        await executeSandboxedBinary(pdftoppmBin, args, {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-          signal: options.signal,
-        });
-      }
+      await executeIntervalsSequentially(
+        intervals,
+        binaryPath,
+        inputPath,
+        prefix,
+        tempDir,
+        timeout,
+        maxBuffer,
+        options.signal,
+        buildArgs
+      );
 
-      const files = fs.readdirSync(tempDir).filter((f) => f.startsWith('page') && !f.endsWith('.pdf'));
+      const files = fs.readdirSync(tempDir).filter(filterOutputFile);
       if (files.length === 0) {
-        throw new Error('pdftoppm execution completed without producing any output images');
+        throw new Error(missingOutputError);
       }
 
       const resolvedFiles = matchOutputPageFiles(files, requestedPages);
@@ -1043,6 +1086,40 @@ async function renderPdfToImageWithPoppler(
   }
 }
 
+async function renderPdfToImageWithPoppler(
+  input: Buffer | WorkerVfsPayload,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  startTime: number,
+  timeout: number,
+  maxBuffer: number
+): Promise<WorkerConversionResult | null> {
+  const pdftoppmBin = resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH);
+  if (!pdftoppmBin) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('pdftoppm', 'pdftoppm binary is not installed or not in PATH');
+    }
+    return null;
+  }
+
+  return executePopplerRender({
+    binaryPath: pdftoppmBin,
+    sandboxPrefix: 'easyconvert-poppler-img-',
+    tgt,
+    input,
+    options,
+    originalFilename,
+    startTime,
+    timeout,
+    maxBuffer,
+    buildArgs: (interval, inputPath, prefix) =>
+      buildPdftoppmArgs(tgt, options, interval.start, interval.end, inputPath, prefix),
+    filterOutputFile: (f) => f.startsWith('page') && !f.endsWith('.pdf'),
+    missingOutputError: 'pdftoppm execution completed without producing any output images',
+  });
+}
+
 async function renderPdfToSvgWithPoppler(
   input: Buffer | WorkerVfsPayload,
   options: WorkerEngineOptions,
@@ -1059,65 +1136,27 @@ async function renderPdfToSvgWithPoppler(
     return null;
   }
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
-  try {
-    return await withSandboxDir('easyconvert-poppler-svg-', async (tempDir) => {
-      const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
-      const inputBuffer = Buffer.isBuffer(input)
-        ? input
-        : (input.inputBuffer ?? (input.inputPath ? fs.readFileSync(input.inputPath) : undefined));
-      const pageCount = await getPdfPageCount(
-        inputPath,
-        tempDir,
-        timeout,
-        options.signal,
-        inputBuffer,
-        options.password
-      );
-
-      const requestedPages = resolveRequestedPages(options, pageCount);
-      const intervals = groupConsecutiveRanges(requestedPages);
-      const prefix = path.join(tempDir, 'page');
-
-      for (const interval of intervals) {
-        const args: string[] = ['-svg', '-f', String(interval.start), '-l', String(interval.end)];
-        if (options.password) {
-          args.push('-upw', options.password);
-        }
-        args.push(inputPath, prefix);
-
-        await executeSandboxedBinary(pdftocairoBin, args, {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-          signal: options.signal,
-        });
+  return executePopplerRender({
+    binaryPath: pdftocairoBin,
+    sandboxPrefix: 'easyconvert-poppler-svg-',
+    tgt: 'svg',
+    input,
+    options,
+    originalFilename,
+    startTime,
+    timeout,
+    maxBuffer,
+    buildArgs: (interval, inputPath, prefix) => {
+      const args = ['-svg', '-f', String(interval.start), '-l', String(interval.end)];
+      if (options.password) {
+        args.push('-upw', options.password);
       }
-
-      const files = fs.readdirSync(tempDir).filter((f) => f.endsWith('.svg'));
-      if (files.length === 0) {
-        throw new Error('pdftocairo execution completed without producing any output SVG files');
-      }
-
-      const resolvedFiles = matchOutputPageFiles(files, requestedPages);
-      return finalizeMultiPageOutput({
-        tempDir,
-        resolvedFiles,
-        requestedPages,
-        tgt: 'svg',
-        baseName,
-        options,
-        input,
-        startTime,
-      });
-    });
-  } catch (err) {
-    if (options.throwOnUnavailable) {
-      throw err;
-    }
-    return null;
-  }
+      args.push(inputPath, prefix);
+      return args;
+    },
+    filterOutputFile: (f) => f.endsWith('.svg'),
+    missingOutputError: 'pdftocairo execution completed without producing any output SVG files',
+  });
 }
 
 /**

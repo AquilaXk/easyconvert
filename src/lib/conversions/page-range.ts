@@ -8,18 +8,108 @@ export interface PageInterval {
 }
 
 /**
+ * Maximum pages allowed per conversion request by user subscription tier.
+ */
+export const TIER_MAX_PAGES: Record<string, number> = {
+  free: 50,
+  pro: 500,
+  enterprise: 2000,
+};
+
+function parseIntegerPage(val: string, label: string): number {
+  const num = Number.parseInt(val, 10);
+  if (Number.isNaN(num) || num < 1) {
+    throw new InvalidPageRangeError(`Invalid ${label}: "${val}". Page numbers must be >= 1.`);
+  }
+  return num;
+}
+
+function parseSinglePageToken(token: string, pageCount: number): number {
+  const page = parseIntegerPage(token, 'page number');
+  if (page > pageCount) {
+    throw new InvalidPageRangeError(`Page number ${page} exceeds document page count of ${pageCount}.`);
+  }
+  return page;
+}
+
+function parseOpenEndedStart(startPart: string, pageCount: number): number[] {
+  const start = parseIntegerPage(startPart, 'range start');
+  if (start > pageCount) {
+    throw new InvalidPageRangeError(`Range start ${start} exceeds document page count of ${pageCount}.`);
+  }
+  const pages: number[] = [];
+  for (let p = start; p <= pageCount; p++) {
+    pages.push(p);
+  }
+  return pages;
+}
+
+function parseOpenEndedEnd(endPart: string, pageCount: number): number[] {
+  const end = parseIntegerPage(endPart, 'range end');
+  if (end > pageCount) {
+    throw new InvalidPageRangeError(`Range end ${end} exceeds document page count of ${pageCount}.`);
+  }
+  const pages: number[] = [];
+  for (let p = 1; p <= end; p++) {
+    pages.push(p);
+  }
+  return pages;
+}
+
+function parseClosedRange(startPart: string, endPart: string, pageCount: number): number[] {
+  const start = parseIntegerPage(startPart, 'range start');
+  const end = parseIntegerPage(endPart, 'range end');
+  if (start > pageCount || end > pageCount) {
+    throw new InvalidPageRangeError(`Range ${start}-${end} exceeds document page count of ${pageCount}.`);
+  }
+  if (start > end) {
+    throw new InvalidPageRangeError(`Range start ${start} cannot exceed range end ${end}.`);
+  }
+  const pages: number[] = [];
+  for (let p = start; p <= end; p++) {
+    pages.push(p);
+  }
+  return pages;
+}
+
+function parseRangeToken(token: string, pageCount: number): number[] {
+  const hyphenCount = (token.match(/-/g) || []).length;
+  if (hyphenCount !== 1) {
+    throw new InvalidPageRangeError(`Invalid range format: "${token}". Exactly one hyphen is allowed per range.`);
+  }
+
+  const [startPart, endPart] = token.split('-');
+  if (startPart === '' && endPart === '') {
+    throw new InvalidPageRangeError('Bare hyphen "-" is not a valid page range.');
+  }
+  if (startPart !== '' && endPart === '') {
+    return parseOpenEndedStart(startPart, pageCount);
+  }
+  if (startPart === '' && endPart !== '') {
+    return parseOpenEndedEnd(endPart, pageCount);
+  }
+  return parseClosedRange(startPart, endPart, pageCount);
+}
+
+function parseTokenPages(token: string, pageCount: number): number[] {
+  if (!token.includes('-')) {
+    return [parseSinglePageToken(token, pageCount)];
+  }
+  return parseRangeToken(token, pageCount);
+}
+
+function assertValidTokenString(token: string, spec: string): void {
+  if (token === '') {
+    throw new InvalidPageRangeError(`Invalid empty page range token in specification: "${spec}".`);
+  }
+  if (!/^[0-9-]+$/.test(token)) {
+    throw new InvalidPageRangeError(`Invalid character in page range token: "${token}". Only digits and hyphens are allowed.`);
+  }
+}
+
+/**
  * Parses and validates a page range specification string against the total page count.
  * Grammar: N | N-M | N- | -M, comma separated (e.g. "1, 3-5, 8-").
- *
- * Rules:
- * - 1-indexed pages (pages >= 1).
- * - Fails closed on any unexpected characters, 0, page numbers exceeding pageCount,
- *   reverse ranges (start > end), empty tokens (e.g. "1,,2" or ",1"), or bare hyphens.
- * - Deduplicates pages and returns them sorted in ascending order.
- *
- * @param spec Comma-separated page range expression.
- * @param pageCount Total number of pages in the document (must be >= 1).
- * @returns Array of unique, 1-indexed page numbers in ascending order.
  */
 export function parsePageRanges(spec: string, pageCount: number): number[] {
   if (typeof pageCount !== 'number' || !Number.isInteger(pageCount) || pageCount < 1) {
@@ -35,82 +125,9 @@ export function parsePageRanges(spec: string, pageCount: number): number[] {
 
   for (const rawToken of rawTokens) {
     const token = rawToken.trim();
-    if (token === '') {
-      throw new InvalidPageRangeError(`Invalid empty page range token in specification: "${spec}".`);
-    }
-
-    // Only digits and hyphen allowed
-    if (!/^[0-9-]+$/.test(token)) {
-      throw new InvalidPageRangeError(`Invalid character in page range token: "${token}". Only digits and hyphens are allowed.`);
-    }
-
-    if (!token.includes('-')) {
-      // Single page number: N
-      const page = Number.parseInt(token, 10);
-      if (Number.isNaN(page) || page < 1) {
-        throw new InvalidPageRangeError(`Invalid page number: "${token}". Page numbers must be >= 1.`);
-      }
-      if (page > pageCount) {
-        throw new InvalidPageRangeError(`Page number ${page} exceeds document page count of ${pageCount}.`);
-      }
+    assertValidTokenString(token, spec);
+    for (const page of parseTokenPages(token, pageCount)) {
       matchedPages.add(page);
-    } else {
-      // Range token containing '-'
-      const hyphenCount = (token.match(/-/g) || []).length;
-      if (hyphenCount !== 1) {
-        throw new InvalidPageRangeError(`Invalid range format: "${token}". Exactly one hyphen is allowed per range.`);
-      }
-
-      const [startPart, endPart] = token.split('-');
-
-      if (startPart === '' && endPart === '') {
-        throw new InvalidPageRangeError(`Bare hyphen "-" is not a valid page range.`);
-      }
-
-      if (startPart !== '' && endPart === '') {
-        // Open-ended start: N- (from N to pageCount)
-        const start = Number.parseInt(startPart, 10);
-        if (Number.isNaN(start) || start < 1) {
-          throw new InvalidPageRangeError(`Invalid range start: "${startPart}". Page numbers must be >= 1.`);
-        }
-        if (start > pageCount) {
-          throw new InvalidPageRangeError(`Range start ${start} exceeds document page count of ${pageCount}.`);
-        }
-        for (let p = start; p <= pageCount; p++) {
-          matchedPages.add(p);
-        }
-      } else if (startPart === '' && endPart !== '') {
-        // Open-ended end: -M (from 1 to M)
-        const end = Number.parseInt(endPart, 10);
-        if (Number.isNaN(end) || end < 1) {
-          throw new InvalidPageRangeError(`Invalid range end: "${endPart}". Page numbers must be >= 1.`);
-        }
-        if (end > pageCount) {
-          throw new InvalidPageRangeError(`Range end ${end} exceeds document page count of ${pageCount}.`);
-        }
-        for (let p = 1; p <= end; p++) {
-          matchedPages.add(p);
-        }
-      } else {
-        // Closed range: N-M
-        const start = Number.parseInt(startPart, 10);
-        const end = Number.parseInt(endPart, 10);
-        if (Number.isNaN(start) || start < 1) {
-          throw new InvalidPageRangeError(`Invalid range start: "${startPart}". Page numbers must be >= 1.`);
-        }
-        if (Number.isNaN(end) || end < 1) {
-          throw new InvalidPageRangeError(`Invalid range end: "${endPart}". Page numbers must be >= 1.`);
-        }
-        if (start > pageCount || end > pageCount) {
-          throw new InvalidPageRangeError(`Range ${start}-${end} exceeds document page count of ${pageCount}.`);
-        }
-        if (start > end) {
-          throw new InvalidPageRangeError(`Range start ${start} cannot exceed range end ${end}.`);
-        }
-        for (let p = start; p <= end; p++) {
-          matchedPages.add(p);
-        }
-      }
     }
   }
 
@@ -124,8 +141,6 @@ export function parsePageRanges(spec: string, pageCount: number): number[] {
 /**
  * Groups a sorted array of page numbers into contiguous intervals.
  * E.g. [1, 2, 3, 5, 7, 8] => [{ start: 1, end: 3 }, { start: 5, end: 5 }, { start: 7, end: 8 }].
- *
- * This allows efficient multi-page extraction via tools that support range arguments (e.g. pdftoppm -f -l).
  */
 export function groupConsecutiveRanges(pages: number[]): PageInterval[] {
   if (pages.length === 0) return [];
@@ -147,19 +162,38 @@ export function groupConsecutiveRanges(pages: number[]): PageInterval[] {
   return intervals;
 }
 
-/**
- * Maximum pages allowed per conversion request by user subscription tier.
- */
-export const TIER_MAX_PAGES: Record<string, number> = {
-  free: 50,
-  pro: 500,
-  enterprise: 2000,
-};
+function validateRangeBound(part: string, label: string): number | undefined {
+  if (part === '') return undefined;
+  return parseIntegerPage(part, label);
+}
+
+function validateSingleTokenSyntax(token: string, spec: string): void {
+  assertValidTokenString(token, spec);
+
+  if (!token.includes('-')) {
+    parseIntegerPage(token, 'page number');
+    return;
+  }
+
+  const hyphenCount = (token.match(/-/g) || []).length;
+  if (hyphenCount !== 1) {
+    throw new InvalidPageRangeError(`Invalid range format: "${token}". Exactly one hyphen is allowed per range.`);
+  }
+
+  const [startPart, endPart] = token.split('-');
+  if (startPart === '' && endPart === '') {
+    throw new InvalidPageRangeError('Bare hyphen "-" is not a valid page range.');
+  }
+
+  const start = validateRangeBound(startPart, 'range start');
+  const end = validateRangeBound(endPart, 'range end');
+  if (start !== undefined && end !== undefined && start > end) {
+    throw new InvalidPageRangeError(`Range start ${start} cannot exceed range end ${end}.`);
+  }
+}
 
 /**
  * Validates the syntactic validity of a page range string without requiring a known total page count.
- * Grammar: N | N-M | N- | -M, comma separated.
- * Checks for invalid characters, empty tokens, bare hyphens, and start > end.
  */
 export function validatePageRangeSyntax(spec: string): void {
   if (typeof spec !== 'string' || spec.trim() === '') {
@@ -168,53 +202,39 @@ export function validatePageRangeSyntax(spec: string): void {
 
   const rawTokens = spec.split(',');
   for (const rawToken of rawTokens) {
-    const token = rawToken.trim();
-    if (token === '') {
-      throw new InvalidPageRangeError(`Invalid empty page range token in specification: "${spec}".`);
-    }
-
-    if (!/^[0-9-]+$/.test(token)) {
-      throw new InvalidPageRangeError(`Invalid character in page range token: "${token}". Only digits and hyphens are allowed.`);
-    }
-
-    if (!token.includes('-')) {
-      const page = Number.parseInt(token, 10);
-      if (Number.isNaN(page) || page < 1) {
-        throw new InvalidPageRangeError(`Invalid page number: "${token}". Page numbers must be >= 1.`);
-      }
-    } else {
-      const hyphenCount = (token.match(/-/g) || []).length;
-      if (hyphenCount !== 1) {
-        throw new InvalidPageRangeError(`Invalid range format: "${token}". Exactly one hyphen is allowed per range.`);
-      }
-
-      const [startPart, endPart] = token.split('-');
-      if (startPart === '' && endPart === '') {
-        throw new InvalidPageRangeError('Bare hyphen "-" is not a valid page range.');
-      }
-
-      let start: number | undefined;
-      let end: number | undefined;
-
-      if (startPart !== '') {
-        start = Number.parseInt(startPart, 10);
-        if (Number.isNaN(start) || start < 1) {
-          throw new InvalidPageRangeError(`Invalid range start: "${startPart}". Page numbers must be >= 1.`);
-        }
-      }
-
-      if (endPart !== '') {
-        end = Number.parseInt(endPart, 10);
-        if (Number.isNaN(end) || end < 1) {
-          throw new InvalidPageRangeError(`Invalid range end: "${endPart}". Page numbers must be >= 1.`);
-        }
-      }
-
-      if (start !== undefined && end !== undefined && start > end) {
-        throw new InvalidPageRangeError(`Range start ${start} cannot exceed range end ${end}.`);
-      }
-    }
+    validateSingleTokenSyntax(rawToken.trim(), spec);
   }
+}
+
+function countTokenPages(token: string, maxAllowed: number, userTier: string): number {
+  if (!token.includes('-')) {
+    const page = Number.parseInt(token, 10);
+    if (page > maxAllowed) {
+      throw new InvalidPageRangeError(
+        `Page ${page} exceeds maximum allowed page (${maxAllowed}) for tier '${userTier}'.`
+      );
+    }
+    return 1;
+  }
+
+  const [startPart, endPart] = token.split('-');
+  const start = startPart ? Number.parseInt(startPart, 10) : 1;
+  const end = endPart ? Number.parseInt(endPart, 10) : undefined;
+
+  if (start > maxAllowed) {
+    throw new InvalidPageRangeError(
+      `Range start ${start} exceeds maximum allowed page (${maxAllowed}) for tier '${userTier}'.`
+    );
+  }
+  if (end !== undefined) {
+    if (end > maxAllowed) {
+      throw new InvalidPageRangeError(
+        `Range end ${end} exceeds maximum allowed page (${maxAllowed}) for tier '${userTier}'.`
+      );
+    }
+    return end - start + 1;
+  }
+  return 0;
 }
 
 /**
@@ -229,34 +249,7 @@ export function validateTierPageLimit(spec: string, userTier = 'free'): void {
   let estimatedTotal = 0;
 
   for (const rawToken of tokens) {
-    const token = rawToken.trim();
-    if (!token.includes('-')) {
-      const page = Number.parseInt(token, 10);
-      if (page > maxAllowed) {
-        throw new InvalidPageRangeError(
-          `Page ${page} exceeds maximum allowed page (${maxAllowed}) for tier '${userTier}'.`
-        );
-      }
-      estimatedTotal += 1;
-    } else {
-      const [startPart, endPart] = token.split('-');
-      const start = startPart ? Number.parseInt(startPart, 10) : 1;
-      const end = endPart ? Number.parseInt(endPart, 10) : undefined;
-
-      if (start > maxAllowed) {
-        throw new InvalidPageRangeError(
-          `Range start ${start} exceeds maximum allowed page (${maxAllowed}) for tier '${userTier}'.`
-        );
-      }
-      if (end !== undefined) {
-        if (end > maxAllowed) {
-          throw new InvalidPageRangeError(
-            `Range end ${end} exceeds maximum allowed page (${maxAllowed}) for tier '${userTier}'.`
-          );
-        }
-        estimatedTotal += end - start + 1;
-      }
-    }
+    estimatedTotal += countTokenPages(rawToken.trim(), maxAllowed, userTier);
   }
 
   if (estimatedTotal > maxAllowed) {
