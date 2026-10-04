@@ -484,7 +484,7 @@ export interface PlaybackShape {
   /** One entry per polygon/polyline, in reference-device pixels (96 DPI). */
   rings: PlaybackPoint[][];
   /** Pen colour as 0xRRGGBB and width in device pixels, or null for a null pen. */
-  pen: { color: number; width: number } | null;
+  pen: { color: number; width: number; style: number } | null;
   /** Brush colour as 0xRRGGBB, or null for a hollow/null brush. */
   brush: number | null;
   /** 1 = ALTERNATE (even-odd), 2 = WINDING (nonzero). */
@@ -495,6 +495,8 @@ interface GdiPen {
   type: 'pen';
   color: number | null;
   width: number;
+  /** Raw PenStyle bits (line style, end cap, join, pen type). */
+  style: number;
 }
 interface GdiBrush {
   type: 'brush';
@@ -549,7 +551,7 @@ export function playbackEmf(buffer: Buffer): PlaybackShape[] {
   const STOCK_NULL_PEN = 0x80000008;
   const STOCK_BLACK_PEN = 0x80000007;
   const STOCK_WHITE_BRUSH = 0x80000000;
-  let pen: GdiPen = { type: 'pen', color: 0, width: 1 };
+  let pen: GdiPen = { type: 'pen', color: 0, width: 1, style: 0 };
   let brush: GdiBrush = { type: 'brush', color: 0xffffff };
   let fillMode = 1;
   const m: MappingState = {
@@ -565,7 +567,7 @@ export function playbackEmf(buffer: Buffer): PlaybackShape[] {
     shapes.push({
       kind,
       rings,
-      pen: pen.color === null ? null : { color: pen.color, width: pen.width * scale },
+      pen: pen.color === null ? null : { color: pen.color, width: pen.width * scale, style: pen.style },
       brush: kind === 'polygon' ? brush.color : null,
       fillMode,
     });
@@ -618,6 +620,7 @@ export function playbackEmf(buffer: Buffer): PlaybackShape[] {
           type: 'pen',
           color: (style & 0xf) === PS_NULL ? null : colorRefToRgb(buffer.readUInt32LE(offset + 24)),
           width: buffer.readInt32LE(offset + 16),
+          style,
         });
         break;
       }
@@ -636,8 +639,8 @@ export function playbackEmf(buffer: Buffer): PlaybackShape[] {
       case 37: {
         // EMR_SELECTOBJECT
         const ih = buffer.readUInt32LE(offset + 8);
-        if (ih === STOCK_NULL_PEN) pen = { type: 'pen', color: null, width: 0 };
-        else if (ih === STOCK_BLACK_PEN) pen = { type: 'pen', color: 0, width: 1 };
+        if (ih === STOCK_NULL_PEN) pen = { type: 'pen', color: null, width: 0, style: 5 };
+        else if (ih === STOCK_BLACK_PEN) pen = { type: 'pen', color: 0, width: 1, style: 0 };
         else if (ih === STOCK_NULL_BRUSH) brush = { type: 'brush', color: null };
         else if (ih === STOCK_WHITE_BRUSH) brush = { type: 'brush', color: 0xffffff };
         else {
@@ -700,7 +703,7 @@ export function playbackWmf(buffer: Buffer): PlaybackShape[] {
   const CSS_DPI = 96;
   const toPx = CSS_DPI / inch;
   const objects: (GdiObject | null)[] = [];
-  let pen: GdiPen = { type: 'pen', color: 0, width: 1 };
+  let pen: GdiPen = { type: 'pen', color: 0, width: 1, style: 0 };
   let brush: GdiBrush = { type: 'brush', color: 0xffffff };
   let fillMode = 1;
   let windowOrg: PlaybackPoint = { x: bboxLeft, y: bboxTop };
@@ -715,7 +718,7 @@ export function playbackWmf(buffer: Buffer): PlaybackShape[] {
     shapes.push({
       kind,
       rings,
-      pen: pen.color === null ? null : { color: pen.color, width: pen.width * toPx },
+      pen: pen.color === null ? null : { color: pen.color, width: pen.width * toPx, style: pen.style },
       brush: kind === 'polygon' ? brush.color : null,
       fillMode,
     });
@@ -746,6 +749,7 @@ export function playbackWmf(buffer: Buffer): PlaybackShape[] {
             type: 'pen',
             color: (style & 0xf) === PS_NULL ? null : colorRefToRgb(buffer.readUInt32LE(offset + 12)),
             width: buffer.readInt16LE(offset + 8),
+            style,
           };
         } else {
           const BS_NULL = 1;

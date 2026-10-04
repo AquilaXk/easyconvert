@@ -1,4 +1,4 @@
-import type { RgbColor, SvgFillRule, SvgGeometryElement } from './svg-geometry';
+import type { RgbColor, SvgFillRule, SvgGeometryElement, SvgLinecap, SvgLinejoin } from './svg-geometry';
 
 export interface PlanPoint {
   x: number;
@@ -9,6 +9,8 @@ export interface PlanPen {
   color: RgbColor;
   /** Stroke width in device pixels. */
   width: number;
+  cap: SvgLinecap;
+  join: SvgLinejoin;
 }
 
 /** One filled shape: every ring belongs to the same area, so holes stay holes. */
@@ -63,7 +65,7 @@ function toRing(points: PlanPoint[]): PlanPoint[] {
 export function planElement(el: SvgGeometryElement): DrawOp[] {
   const subpaths = el.subpaths.map(dedupeConsecutive).filter((s) => s.length >= MIN_LINE_POINTS);
   const ops: DrawOp[] = [];
-  const pen: PlanPen | null = el.stroke ? { color: el.stroke, width: el.strokeWidth } : null;
+  const pen: PlanPen | null = el.stroke ? { color: el.stroke, width: el.strokeWidth, cap: el.strokeLinecap, join: el.strokeLinejoin } : null;
 
   const rings = el.fillable && el.fill ? subpaths.map(toRing).filter((r) => r.length >= MIN_RING_POINTS) : [];
   const allClosed = subpaths.length > 0 && subpaths.every(isExplicitlyClosed);

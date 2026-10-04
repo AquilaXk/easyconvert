@@ -635,4 +635,88 @@ describe('SVG document model for metafile encoders', () => {
       });
     }
   });
+
+  describe('paint-affecting properties', () => {
+    const R = (attrs: string, x = 0) => `<rect x="${x}" y="0" width="10" height="10" fill="#000" ${attrs}/>`;
+
+    it('skips display:none from attribute, inline style and stylesheet, including the subtree', () => {
+      for (const body of [
+        `<g display="none">${R('')}</g>`,
+        `<g style="display:none">${R('')}</g>`,
+        `<style>.h { display: none }</style><g class="h">${R('')}</g>`,
+      ]) {
+        expect(filledShapes(emfShapes(body + R('fill="#00ff00"', 50))).map((s) => s.brush)).toEqual([0x00ff00]);
+      }
+    });
+
+    it('hides visibility:hidden elements but renders children that set visibility:visible', () => {
+      const shapes = emfShapes(
+        `<g visibility="hidden">${R('fill="#ff0000"')}${R('fill="#00ff00" style="visibility: visible"', 20)}</g>` +
+          `<style>.v { visibility: collapse }</style>${R('class="v" fill="#0000ff"', 40)}`
+      );
+      expect(filledShapes(shapes).map((s) => s.brush)).toEqual([0x00ff00]);
+    });
+
+    it('accepts opacity values of exactly 1', () => {
+      expect(filledShapes(emfShapes(R('opacity="1" fill-opacity="100%" style="stroke-opacity: 1"'))).length).toBe(1);
+    });
+
+    const rejected: [string, string][] = [
+      ['opacity', R('opacity="0.5"')],
+      ['fill-opacity', `<g fill-opacity="0.2">${R('')}</g>`],
+      ['stroke-opacity', R('style="stroke-opacity: 50%"')],
+      ['stroke-dasharray', R('stroke="#000" stroke-dasharray="4 2"')],
+      ['paint-order', R('paint-order="stroke"')],
+      ['vector-effect', R('vector-effect="non-scaling-stroke"')],
+      ['mix-blend-mode', `<style>rect { mix-blend-mode: multiply }</style>${R('')}`],
+      ['stroke-miterlimit', R('stroke="#000" stroke-miterlimit="10"')],
+    ];
+    for (const [property, body] of rejected) {
+      it(`rejects ${property} it cannot draw with a typed error naming it`, () => {
+        for (const encode of [encodeEmf, encodeWmf, encodeCgm]) {
+          expect(() => encode(svgDoc(body))).toThrow(UnsupportedOptionError);
+          expect(() => encode(svgDoc(body))).toThrow(property);
+        }
+      });
+    }
+
+    it('ignores properties without a paint effect on shapes', () => {
+      const shapes = emfShapes(R('font-family="serif" letter-spacing="2" cursor="pointer" pointer-events="none" stroke-dasharray="none"'));
+      expect(filledShapes(shapes).length).toBe(1);
+    });
+
+    // MS-EMF 2.1.25 / MS-WMF 2.1.1.23 PenStyle bits
+    const PS_ENDCAP_ROUND = 0x0000;
+    const PS_ENDCAP_SQUARE = 0x0100;
+    const PS_ENDCAP_FLAT = 0x0200;
+    const PS_JOIN_ROUND = 0x0000;
+    const PS_JOIN_BEVEL = 0x1000;
+    const PS_JOIN_MITER = 0x2000;
+    const CAP_MASK = 0x0f00;
+    const JOIN_MASK = 0xf000;
+    const capJoinCases: [string, number, number][] = [
+      ['', PS_ENDCAP_FLAT, PS_JOIN_MITER],
+      ['stroke-linecap="round" stroke-linejoin="round"', PS_ENDCAP_ROUND, PS_JOIN_ROUND],
+      ['stroke-linecap="square" stroke-linejoin="bevel"', PS_ENDCAP_SQUARE, PS_JOIN_BEVEL],
+    ];
+    for (const [attrs, cap, join] of capJoinCases) {
+      it(`maps SVG caps/joins (${attrs || 'defaults butt/miter'}) to EMF and WMF pen styles`, () => {
+        const body = `<polyline points="0,0 20,20 40,0" fill="none" stroke="#000" stroke-width="4" ${attrs}/>`;
+        for (const shapes of [emfShapes(body), wmfShapes(body)]) {
+          const pens = shapes.filter((s) => s.pen !== null).map((s) => s.pen!.style);
+          expect(pens.length).toBeGreaterThan(0);
+          for (const style of pens) {
+            expect(style & CAP_MASK).toBe(cap);
+            expect(style & JOIN_MASK).toBe(join);
+          }
+        }
+      });
+    }
+
+    it('rejects non-default caps/joins in CGM, which has no cap or join control in version 1', () => {
+      const body = svgDoc('<polyline points="0,0 20,20 40,0" fill="none" stroke="#000" stroke-linecap="round"/>');
+      expect(() => encodeCgm(body)).toThrow(UnsupportedOptionError);
+      expect(() => encodeCgm(body)).toThrow(/stroke-linecap/);
+    });
+  });
 });

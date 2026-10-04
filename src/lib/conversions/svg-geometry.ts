@@ -10,6 +10,9 @@ export interface RgbColor {
 
 export type SvgFillRule = 'nonzero' | 'evenodd';
 
+export type SvgLinecap = 'butt' | 'round' | 'square';
+export type SvgLinejoin = 'miter' | 'round' | 'bevel';
+
 export interface SvgGeometryElement {
   subpaths: { x: number; y: number }[][];
   isClosed: boolean;
@@ -19,6 +22,8 @@ export interface SvgGeometryElement {
   fillRule: SvgFillRule;
   stroke: RgbColor | null;
   strokeWidth: number;
+  strokeLinecap: SvgLinecap;
+  strokeLinejoin: SvgLinejoin;
 }
 
 export interface ParsedSvgVectorDocument {
@@ -619,6 +624,8 @@ interface StyleContext {
   fillRule: string;
   color: string;
   visibility: string;
+  strokeLinecap: string;
+  strokeLinejoin: string;
   ctm: AffineMatrix;
 }
 
@@ -629,6 +636,8 @@ const INITIAL_STYLE: StyleContext = {
   fillRule: 'nonzero',
   color: 'black',
   visibility: 'visible',
+  strokeLinecap: 'butt',
+  strokeLinejoin: 'miter',
   ctm: IDENTITY_MATRIX,
 };
 
@@ -640,7 +649,47 @@ const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm'>> = {
   'fill-rule': 'fillRule',
   color: 'color',
   visibility: 'visibility',
+  'stroke-linecap': 'strokeLinecap',
+  'stroke-linejoin': 'strokeLinejoin',
 };
+
+/**
+ * Properties that change painted pixels but are only representable at their
+ * neutral value; anything else throws (metafile brushes and pens are opaque,
+ * solid and painted fill-then-stroke).
+ */
+const NEUTRAL_ONLY_PROPERTIES: Record<string, (value: string) => boolean> = {
+  opacity: isOpaque,
+  'fill-opacity': isOpaque,
+  'stroke-opacity': isOpaque,
+  'stroke-dasharray': (v) => v === 'none',
+  'paint-order': (v) => v === 'normal' || v === 'fill' || v === 'fill stroke' || v === 'fill stroke markers',
+  'vector-effect': (v) => v === 'none',
+  'mix-blend-mode': (v) => v === 'normal',
+  'stroke-miterlimit': (v) => Number(v) === SVG_DEFAULT_MITER_LIMIT,
+  'stroke-linecap': (v) => SVG_LINECAPS.has(v),
+  'stroke-linejoin': (v) => SVG_LINEJOINS.has(v),
+};
+
+const SVG_DEFAULT_MITER_LIMIT = 4;
+const SVG_LINECAPS = new Set(['butt', 'round', 'square']);
+const SVG_LINEJOINS = new Set(['miter', 'round', 'bevel']);
+
+function isOpaque(value: string): boolean {
+  const v = value.trim();
+  if (v.endsWith('%')) return Number(v.slice(0, -1)) >= 100;
+  return Number(v) >= 1;
+}
+
+function assertNeutralPaintProperties(declared: Map<string, string>): void {
+  for (const [prop, isNeutral] of Object.entries(NEUTRAL_ONLY_PROPERTIES)) {
+    const raw = declared.get(prop);
+    if (raw === undefined || raw.trim().toLowerCase() === 'inherit') continue;
+    if (!isNeutral(raw.trim().toLowerCase().replace(/\s+/g, ' '))) {
+      throw new UnsupportedOptionError(`SVG ${prop} "${raw.trim()}" is not supported by metafile encoders.`);
+    }
+  }
+}
 
 /** Elements whose content is never rendered directly. */
 const NON_RENDERED_ELEMENTS = new Set([
@@ -791,7 +840,7 @@ function compareRules(a: CssRule, b: CssRule): number {
  */
 function declaredProperties(attrs: Map<string, string>, name = '', sheet: CssRule[] = []): Map<string, string> {
   const declared = new Map<string, string>();
-  for (const prop of [...Object.keys(INHERITED_PROPERTIES), 'display']) {
+  for (const prop of [...Object.keys(INHERITED_PROPERTIES), ...Object.keys(NEUTRAL_ONLY_PROPERTIES), 'display']) {
     const v = attrs.get(prop);
     if (v !== undefined && v.trim() !== '') declared.set(prop, v.trim());
   }
@@ -1177,6 +1226,8 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
     stroke: strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null,
     strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
+    strokeLinecap: ctx.strokeLinecap.trim() as SvgLinecap,
+    strokeLinejoin: ctx.strokeLinejoin.trim() as SvgLinejoin,
   });
 }
 
@@ -1193,6 +1244,7 @@ function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): vo
   if (!isShape && !isUse && !GROUP_ELEMENTS.has(node.name)) throw unsupportedElementError(node.name);
 
   const declared = declaredProperties(node.attrs, node.name, state.sheet);
+  assertNeutralPaintProperties(declared);
   if (declared.get('display') === 'none') return;
   assertNoUnsupportedReferences(node.attrs);
   const ctx = deriveContext(parent, node.attrs, declared);
@@ -1219,6 +1271,7 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   const viewport = resolveViewport(root.attrs);
   const sheet = extractStylesheets(svgContent);
   const declared = declaredProperties(root.attrs, root.name, sheet);
+  assertNeutralPaintProperties(declared);
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
   const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, sheet };

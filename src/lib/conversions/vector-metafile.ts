@@ -1,5 +1,5 @@
-import { CadGeometryUnavailableError } from '../types';
-import { parseSvgGeometries, type ParsedSvgVectorDocument, type RgbColor } from './svg-geometry';
+import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
+import { parseSvgGeometries, type ParsedSvgVectorDocument, type RgbColor, type SvgLinecap, type SvgLinejoin } from './svg-geometry';
 import { planElement, nonzeroDiffersFromEvenOdd, type DrawOp, type FillOp, type PlanPen, type PlanPoint } from './metafile-draw-plan';
 
 export {
@@ -184,6 +184,14 @@ function computeBounds(pts: { x: number; y: number }[]): { minX: number; minY: n
 const EMF_PS_GEOMETRIC = 0x00010000;
 const EMF_PS_SOLID = 0x00000000;
 
+/** PenStyle end-cap and join bits, shared by MS-EMF 2.1.25 and MS-WMF 2.1.1.23. */
+const PEN_ENDCAP_BITS: Record<SvgLinecap, number> = { round: 0x0000, square: 0x0100, butt: 0x0200 };
+const PEN_JOIN_BITS: Record<SvgLinejoin, number> = { round: 0x0000, bevel: 0x1000, miter: 0x2000 };
+
+function penCapJoinBits(pen: PlanPen): number {
+  return PEN_ENDCAP_BITS[pen.cap] | PEN_JOIN_BITS[pen.join];
+}
+
 function emfColorRef(c: RgbColor): number {
   return (c.b << 16) | (c.g << 8) | c.r;
 }
@@ -206,7 +214,7 @@ function emitEmfPen(pen: PlanPen | null, out: Buffer[]): boolean {
   penRec.writeUInt32LE(EMR_CREATEPEN, 0);
   penRec.writeUInt32LE(28, 4);
   penRec.writeUInt32LE(EMF_PEN_HANDLE, 8);
-  penRec.writeUInt32LE(EMF_PS_GEOMETRIC | EMF_PS_SOLID, 12);
+  penRec.writeUInt32LE(EMF_PS_GEOMETRIC | EMF_PS_SOLID | penCapJoinBits(pen), 12);
   penRec.writeUInt32LE(Math.max(1, Math.round(pen.width)), 16);
   penRec.writeUInt32LE(0, 20);
   penRec.writeUInt32LE(emfColorRef(pen.color), 24);
@@ -408,7 +416,7 @@ function emitWmfPen(pen: PlanPen | null, out: Buffer[]): void {
   penRec.writeUInt32LE(8, 0);
   penRec.writeUInt16LE(META_CREATEPENINDIRECT, 4);
   if (pen) {
-    penRec.writeUInt16LE(WMF_PS_SOLID, 6);
+    penRec.writeUInt16LE(WMF_PS_SOLID | penCapJoinBits(pen), 6);
     penRec.writeUInt16LE(Math.max(1, Math.round(pen.width)), 8);
     penRec.writeUInt16LE(0, 10);
     penRec.writeUInt32LE(emfColorRef(pen.color), 12);
@@ -645,6 +653,13 @@ function assertCgmFillRule(op: FillOp): void {
 }
 
 function formatCgmPen(pen: PlanPen, lines: string[]): void {
+  // Version 1 CGM has no line cap or join elements; only the SVG defaults are accepted.
+  if (pen.cap !== 'butt') {
+    throw new UnsupportedOptionError(`SVG stroke-linecap "${pen.cap}" is not supported by the CGM encoder.`);
+  }
+  if (pen.join !== 'miter') {
+    throw new UnsupportedOptionError(`SVG stroke-linejoin "${pen.join}" is not supported by the CGM encoder.`);
+  }
   lines.push(`LINECOLR ${formatCgmColour(pen.color)};`, `LINEWIDTH ${Math.max(1, Math.round(pen.width))};`);
 }
 
