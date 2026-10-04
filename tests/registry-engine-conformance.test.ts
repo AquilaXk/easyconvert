@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
+import JSZip from 'jszip';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { convertFile } from '../src/lib/conversions';
 import { convertOffice } from '../src/lib/conversions/office';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
+import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { UnsupportedTargetError } from '../src/lib/types';
 
 /**
@@ -90,6 +93,9 @@ function collectFixtures(dir: string, out: Map<string, Buffer[]>): void {
 const FIXTURES = new Map<string, Buffer[]>();
 collectFixtures(FIXTURE_ROOT, FIXTURES);
 const PNG_SEED = FIXTURES.get('png')![0];
+const TAR_SEED = FIXTURES.get('tar')![0];
+const ZIP_SEED = FIXTURES.get('zip')![0];
+const STEP_SEED = FIXTURES.get('step')![0];
 const DXF_SEED = FIXTURES.get('dxf')![0];
 const VECTOR_PROBE_CATEGORIES = new Set(['image', 'vector', 'cad']);
 
@@ -100,7 +106,65 @@ const DERIVATION_SEEDS: readonly { format: string; buffer: Buffer }[] = [
   { format: 'csv', buffer: CSV_TEXT },
   { format: 'svg', buffer: SVG_TEXT },
   { format: 'png', buffer: PNG_SEED },
+  { format: 'tar', buffer: TAR_SEED },
+  { format: 'zip', buffer: ZIP_SEED },
+  { format: 'step', buffer: STEP_SEED },
 ];
+
+const NDJSON_TEXT = Buffer.from('{"name":"alpha","count":1}\n{"name":"beta","count":2}\n', 'utf-8');
+const STL_TEXT = Buffer.from(
+  [
+    'solid probe',
+    ...[
+      ['0 0 0', '1 0 0', '0 1 0'],
+      ['0 0 0', '0 1 0', '0 0 1'],
+      ['0 0 0', '0 0 1', '1 0 0'],
+      ['1 0 0', '0 0 1', '0 1 0'],
+    ].map((tri) => ['facet normal 0 0 0', 'outer loop', ...tri.map((v) => `vertex ${v}`), 'endloop', 'endfacet'].join('\n')),
+    'endsolid probe',
+    '',
+  ].join('\n'),
+  'utf-8'
+);
+const OBJ_TEXT = Buffer.from(
+  'v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 2 3\nf 1 3 4\nf 1 4 2\nf 2 4 3\n',
+  'utf-8'
+);
+
+async function buildCbz(): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file('page-001.png', PNG_SEED);
+  zip.file('page-002.png', PNG_SEED);
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+/** Small hand-built inputs for source families with no fixture and no derivation seed. */
+const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
+  ndjson: () => NDJSON_TEXT,
+  jsonl: () => NDJSON_TEXT,
+  stl: () => STL_TEXT,
+  obj: () => OBJ_TEXT,
+  gz: () => gzipSync(PLAIN_TEXT),
+  tgz: () => gzipSync(TAR_SEED),
+  'tar.gz': () => gzipSync(TAR_SEED),
+  cbz: buildCbz,
+  // A tar.bz2 is a valid bzip2 stream, and a zst archive a valid Zstandard frame.
+  bz: () => requireDerived('tar.bz2'),
+  bz2: () => requireDerived('tar.bz2'),
+  tbz: () => requireDerived('tar.bz2'),
+  tbz2: () => requireDerived('tar.bz2'),
+  zstd: () => requireDerived('zst'),
+  xz: () => compressXz(PLAIN_TEXT),
+  txz: () => compressXz(TAR_SEED),
+  'tar.xz': () => compressXz(TAR_SEED),
+  'tar.7z': () => create7zArchive([{ filename: 'probe.tar', buffer: TAR_SEED }]).buffer,
+};
+
+async function requireDerived(format: string): Promise<Buffer> {
+  const derived = await deriveProbeInput(format);
+  if (!derived) throw new Error(`no probe input could be derived for .${format}`);
+  return derived;
+}
 
 function withTimeout<T>(promise: Promise<T>): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -133,6 +197,14 @@ async function deriveProbeInput(source: string): Promise<Buffer | null> {
 
 async function probeInputs(source: string): Promise<Buffer[]> {
   const inputs: Buffer[] = [...(FIXTURES.get(source) ?? [])];
+  const extra = EXTRA_PROBES[source];
+  if (extra) {
+    // A builder that needs a missing native tool leaves the pair to the remaining inputs.
+    const built = await Promise.resolve()
+      .then(extra)
+      .catch(() => null);
+    if (built) inputs.push(built);
+  }
   const derived = await deriveProbeInput(source);
   if (derived) inputs.push(derived);
   const category = FORMAT_REGISTRY[source].category;
@@ -173,19 +245,43 @@ function pairsFor(predicate: (category: string, target: string) => boolean): [st
   return pairs;
 }
 
+const probeCache = new Map<string, Promise<{ outcome: PairOutcome; detail: string }>>();
+
+function probePairCached(source: string, target: string): Promise<{ outcome: PairOutcome; detail: string }> {
+  const key = `${source}->${target}`;
+  let pending = probeCache.get(key);
+  if (!pending) {
+    pending = probePair(source, target);
+    probeCache.set(key, pending);
+  }
+  return pending;
+}
+
 async function findUnroutedPairs(pairs: [string, string][]): Promise<string[]> {
   const unrouted: string[] = [];
-  let inconclusive = 0;
   for (const [source, target] of pairs) {
-    const { outcome, detail } = await probePair(source, target);
+    const { outcome, detail } = await probePairCached(source, target);
     if (outcome === 'unrouted') unrouted.push(`${source} -> ${target}: ${detail}`);
-    if (outcome === 'inconclusive') inconclusive += 1;
-  }
-  if (inconclusive > 0) {
-    console.info(`[registry-conformance] ${inconclusive}/${pairs.length} pairs inconclusive (input rejected before routing)`);
   }
   return unrouted;
 }
+
+async function findInconclusivePairs(pairs: [string, string][]): Promise<string[]> {
+  const inconclusive: string[] = [];
+  for (const [source, target] of pairs) {
+    if ((await probePairCached(source, target)).outcome === 'inconclusive') inconclusive.push(`${source}->${target}`);
+  }
+  return inconclusive.sort();
+}
+
+/** Media pairs that reach FFmpeg are opt-in; every other advertised pair is always probed. */
+function isTranscoderPair(category: string, target: string): boolean {
+  return MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category !== 'archive';
+}
+
+const INCONCLUSIVE_ALLOWLIST: readonly string[] = JSON.parse(
+  readFileSync(path.resolve(__dirname, 'registry-engine-conformance.inconclusive.json'), 'utf-8')
+);
 
 function hasBinary(name: string): boolean {
   try {
@@ -197,6 +293,29 @@ function hasBinary(name: string): boolean {
 }
 
 const HAS_FFMPEG = hasBinary('ffmpeg');
+
+function onPath(name: string): boolean {
+  try {
+    execFileSync('which', [name], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const TESSDATA_DIRS = [
+  ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
+  process.cwd(),
+  '/usr/share/tesseract-ocr/5/tessdata',
+  '/usr/share/tesseract-ocr/4.00/tessdata',
+  '/usr/share/tessdata',
+];
+const HAS_OCR_DATA = TESSDATA_DIRS.some(
+  (dir) => existsSync(path.join(dir, 'eng.traineddata')) || existsSync(path.join(dir, 'eng.traineddata.gz'))
+);
+/** Whether a pair is decidable depends on the native tools, so the ratchet needs the CI toolchain. */
+const HAS_CI_TOOLCHAIN =
+  HAS_FFMPEG && HAS_OCR_DATA && ['7z', 'soffice', 'pdftoppm', 'tesseract'].every(onPath);
 const RUN_MEDIA_TRANSCODER_PAIRS = process.env.REGISTRY_CONFORMANCE_MEDIA === '1';
 
 describe('routing-error classifier', () => {
@@ -349,11 +468,25 @@ describe('every advertised registry pair has an engine path', () => {
   it.skipIf(!HAS_FFMPEG || !RUN_MEDIA_TRANSCODER_PAIRS)(
     'audio and video sources routed through the media transcoder (REGISTRY_CONFORMANCE_MEDIA=1, needs ffmpeg)',
     async () => {
-      const transcoderPairs = pairsFor(
-        (c, target) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category !== 'archive'
-      );
+      const transcoderPairs = pairsFor(isTranscoderPair);
       expect(await findUnroutedPairs(transcoderPairs)).toEqual([]);
     },
     CATEGORY_TIMEOUT_MS
   );
+});
+
+describe('inconclusive pairs ratchet', () => {
+  // Pairs whose every probe input is rejected before the engine's routing step. They are not
+  // proven routable, so each one is listed explicitly; the list may only shrink.
+  it('lists the allowlist sorted and without duplicates', () => {
+    expect([...new Set(INCONCLUSIVE_ALLOWLIST)].sort()).toEqual(INCONCLUSIVE_ALLOWLIST);
+  });
+
+  it.skipIf(!HAS_CI_TOOLCHAIN)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain)', async () => {
+    const inconclusive = await findInconclusivePairs(pairsFor((c, t) => !isTranscoderPair(c, t)));
+    const allowed = new Set(INCONCLUSIVE_ALLOWLIST);
+    const current = new Set(inconclusive);
+    expect(inconclusive.filter((pair) => !allowed.has(pair))).toEqual([]);
+    expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => !current.has(pair))).toEqual([]);
+  }, CATEGORY_TIMEOUT_MS);
 });
