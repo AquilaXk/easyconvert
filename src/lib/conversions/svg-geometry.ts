@@ -907,7 +907,7 @@ export function requireFinite(value: number, what: string): number {
 function numberAttr(attrs: Map<string, string>, name: string): number {
   const v = attrs.get(name);
   if (v === undefined) return 0;
-  return requireFinite(Number.parseFloat(v), `attribute ${name}="${v}"`);
+  return parseLength(v, `attribute ${name}`);
 }
 
 function ellipsePoints(cx: number, cy: number, rx: number, ry: number): { x: number; y: number }[] {
@@ -1012,7 +1012,7 @@ const DEFAULT_STROKE_WIDTH = 1;
  * zero or negative widths disable the stroke (returns 0).
  */
 function resolveStrokeWidth(value: string): number {
-  return Math.max(0, requireFinite(Number.parseFloat(value), `stroke-width "${value}"`));
+  return Math.max(0, parseLength(value, 'stroke-width'));
 }
 
 /** Uniform length scale of a transform: the square root of its determinant's magnitude. */
@@ -1056,15 +1056,31 @@ const ABSOLUTE_LENGTH_UNITS: Record<string, number> = {
 };
 const LENGTH_PATTERN = /^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$/;
 
-/** Parses an absolute length to CSS px; relative units (%, em, ...) yield null. */
-function parseAbsoluteLength(value: string | undefined): number | null {
-  if (value === undefined) return null;
+/**
+ * Parses an SVG length in user units (px). Absolute units convert at 96 DPI;
+ * relative units (%, em, ex, ...) and malformed values throw.
+ */
+function parseLength(value: string, what: string): number {
   const m = LENGTH_PATTERN.exec(value);
-  if (!m) return null;
-  const factor = ABSOLUTE_LENGTH_UNITS[m[2].toLowerCase()];
-  if (factor === undefined) return null;
-  const px = requireFinite(Number.parseFloat(m[1]) * factor, `length "${value}"`);
-  return px > 0 ? px : null;
+  const factor = m ? ABSOLUTE_LENGTH_UNITS[m[2].toLowerCase()] : undefined;
+  if (!m || factor === undefined) {
+    throw new CadGeometryUnavailableError(`SVG ${what} "${value}" is not an absolute length (px, in, cm, mm, pt, pc).`);
+  }
+  return requireFinite(Number.parseFloat(m[1]) * factor, `${what} "${value}"`);
+}
+
+/**
+ * Root width/height: an absolute length, or a percentage that resolves
+ * against the viewBox (returns null) when one is present.
+ */
+function parseRootLength(value: string | undefined, name: string, hasViewBox: boolean): number | null {
+  if (value === undefined) return null;
+  if (hasViewBox && /^\s*[-+]?(?:\d+\.?\d*|\.\d+)\s*%\s*$/.test(value)) return null;
+  const px = parseLength(value, `root ${name}`);
+  if (px <= 0) {
+    throw new CadGeometryUnavailableError(`SVG root ${name} "${value}" must be positive.`);
+  }
+  return px;
 }
 
 const ALIGN_FACTORS: Record<string, number> = { min: 0, mid: 0.5, max: 1 };
@@ -1103,8 +1119,8 @@ function viewBoxMatrix(
  */
 function resolveViewport(attrs: Map<string, string>): Viewport {
   const vb = parseViewBox(attrs.get('viewBox'));
-  const lengthW = parseAbsoluteLength(attrs.get('width'));
-  const lengthH = parseAbsoluteLength(attrs.get('height'));
+  const lengthW = parseRootLength(attrs.get('width'), 'width', vb !== null);
+  const lengthH = parseRootLength(attrs.get('height'), 'height', vb !== null);
 
   if (!vb) {
     const width = lengthW ?? DEFAULT_VIEWPORT_WIDTH;

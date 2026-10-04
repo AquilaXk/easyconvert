@@ -760,6 +760,30 @@ describe('SVG document model for metafile encoders', () => {
   });
 
   describe('strict input parsing', () => {
+    it('converts absolute units on shape attributes and stroke widths to user units', () => {
+      const shapes = emfShapes('<rect x="1in" y="0.5in" width="10mm" height="12pt" fill="#000" stroke="#f00" stroke-width="0.25in"/>', 'width="300" height="300"');
+      const filled = filledShapes(shapes)[0];
+      // 1in = 96px, 10mm = 37.795px, 12pt = 16px
+      expect(corners(filled.rings[0])).toEqual([[96, 48], [134, 48], [134, 64], [96, 64]]);
+      expect(filled.pen!.width).toBe(24);
+    });
+
+    const rejectedLengths: [string, string, string?][] = [
+      ['em on a shape attribute', '<rect x="2em" width="10" height="10"/>'],
+      ['ex on stroke-width', '<line x1="0" y1="0" x2="5" y2="5" stroke="#000" stroke-width="1ex"/>'],
+      ['% on a shape attribute', '<rect width="50%" height="10"/>'],
+      ['an unknown unit', '<circle cx="5furlong" cy="5" r="3"/>'],
+      ['trailing garbage', '<rect width="10px wide" height="10"/>'],
+      ['% root width without a viewBox', '<rect width="10" height="10"/>', 'width="100%" height="100"'],
+      ['em root height', '<rect width="10" height="10"/>', 'width="100" height="20em"'],
+      ['an invalid root width', '<rect width="10" height="10"/>', 'width="wide" height="100"'],
+    ];
+    for (const [label, body, root] of rejectedLengths) {
+      it(`rejects ${label} with a typed error`, () => {
+        expect(() => encodeEmf(svgDoc(body, root))).toThrow(CadGeometryUnavailableError);
+      });
+    }
+
     it('rejects unexpected characters in path data', () => {
       for (const d of ['M0 0 L10 10 X 5 5 Z', 'M0 0 L10$10 L0 10 Z', 'M0 0 L10 10 L0 10 Z;', 'M0 0 L Infinity 10 L0 10 Z']) {
         expect(() => encodeEmf(svgDoc(`<path d="${d}" fill="#000"/>`)), d).toThrow(CadGeometryUnavailableError);
