@@ -553,7 +553,13 @@ export function validateJobGraph(
     if (op === 'merge' && target && MERGE_FORMATS.has(target)) {
       for (const inputId of getTaskDependencies(node)) {
         const inputFormat = inferredFormats[inputId];
-        if (inputFormat && inputFormat !== DYNAMIC_FORMAT && inputFormat !== target) {
+        if (inputFormat === UNKNOWN_FORMAT) {
+          errors.push({
+            path: `nodes.${nodeId}.input`,
+            message: `Cannot determine the format of input "${inputId}" for merge node "${nodeId}"; provide a filename extension or sourceFormat.`,
+            code: 'SOURCE_FORMAT_UNKNOWN',
+          });
+        } else if (inputFormat && inputFormat !== DYNAMIC_FORMAT && inputFormat !== target) {
           errors.push({
             path: `nodes.${nodeId}.input`,
             message: `Merge node "${nodeId}" produces "${target}" but input "${inputId}" is "${inputFormat}".`,
