@@ -78,6 +78,22 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       expect(result.retryAfterMs).toBe(5000);
       expect(result.serviceUnavailable).toBe(true);
     });
+
+    it('enforces boundary conditions and deducts quota correctly in local in-memory fallback', async () => {
+      const store = new RedisKeyStore({ isolated: true });
+      // Free tier default limit is 25
+      const withinLimit = await store.deductQuota('local-user-1', 5);
+      expect(withinLimit.allowed).toBe(true);
+      expect(withinLimit.remaining).toBe(20);
+
+      const exactBoundary = await store.deductQuota('local-user-1', 20);
+      expect(exactBoundary.allowed).toBe(true);
+      expect(exactBoundary.remaining).toBe(0);
+
+      const exceeded = await store.deductQuota('local-user-1', 1);
+      expect(exceeded.allowed).toBe(false);
+      expect(exceeded.remaining).toBe(0);
+    });
   });
 
   describe('Lua Scripts Architecture & Monotonic Time Verification', () => {
