@@ -396,21 +396,22 @@ async function processL2Conversion(
   onProgress?: (progress: number) => void
 ): Promise<ClientEdgeResult | null> {
   if (item.options.ocrEnabled || src === 'pdf') {
+    let edgeOcrRes: Awaited<ReturnType<typeof tryProcessClientEdgeOcr>>;
     try {
-      const edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);
-      if (edgeOcrRes) {
-        return {
-          resultUrl: edgeOcrRes.resultUrl,
-          resultSize: edgeOcrRes.resultSize,
-          tier: 'L2',
-          tierName: 'Edge L2 (SIMD Wasm)',
-        };
-      }
+      edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);
     } catch (err: unknown) {
-      // Propagate OCR error to respect fail-closed invariant
-      throw err;
+      // Edge OCR could not produce a searchable PDF: escalate to L4 and keep the reason
+      throw new ClientEdgeEscalationError('L2', describeEdgeError(err));
     }
-    return null;
+    if (!edgeOcrRes) {
+      return null;
+    }
+    return {
+      resultUrl: edgeOcrRes.resultUrl,
+      resultSize: edgeOcrRes.resultSize,
+      tier: 'L2',
+      tierName: 'Edge L2 (SIMD Wasm)',
+    };
   } else {
     const isImage = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(src);
     if (isImage) {
