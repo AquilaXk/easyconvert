@@ -1277,7 +1277,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     category: 'presentation',
     description: 'Microsoft PowerPoint OpenXML slide presentation standard.',
-    targetFormats: ['pdf', 'html', 'odp', 'ppt', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'key', 'emf', 'swf'],
+    targetFormats: ['pdf', 'html', 'odp', 'ppt', 'txt', 'zip', 'jpg', 'png', 'swf'],
     optionsSchema: { orientation: true },
   },
   ppt: {
@@ -1287,7 +1287,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Microsoft PowerPoint legacy binary presentation format.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'xps', 'odp', 'emf', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'jpg', 'png', 'odp', 'swf'],
   },
   pptm: {
     id: 'pptm',
@@ -1296,7 +1296,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
     category: 'presentation',
     description: 'Microsoft PowerPoint macro-enabled OpenXML slide presentation.',
-    targetFormats: ['pptx', 'pdf', 'html', 'zip', 'md', 'txt', 'eps', 'jpg', 'png', 'xps', 'odp', 'ppt', 'emf', 'swf'],
+    targetFormats: ['zip', 'swf'],
   },
   potx: {
     id: 'potx',
@@ -1305,7 +1305,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.template',
     category: 'presentation',
     description: 'PowerPoint OpenXML presentation template.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'jpg', 'png', 'xps', 'odp', 'ppt', 'emf'],
+    targetFormats: ['pptx', 'pdf', 'zip'],
   },
   pot: {
     id: 'pot',
@@ -1314,7 +1314,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint presentation template.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'jpg', 'png', 'xps', 'odp', 'ppt', 'emf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'xps', 'odp'],
   },
   ppsx: {
     id: 'ppsx',
@@ -1323,7 +1323,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
     category: 'presentation',
     description: 'PowerPoint presentation designed to launch directly in full slideshow mode.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'md', 'txt', 'eps', 'jpg', 'png', 'odp', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp', 'swf'],
   },
   pps: {
     id: 'pps',
@@ -1332,7 +1332,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint slideshow binary file.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'md', 'txt', 'eps', 'jpg', 'png', 'odp', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp', 'swf'],
   },
   odp: {
     id: 'odp',
@@ -1341,7 +1341,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.presentation',
     category: 'presentation',
     description: 'OASIS OpenDocument Presentation standard used in LibreOffice Impress.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'md', 'eps', 'jpg', 'png', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'jpg', 'png', 'ppt', 'swf'],
   },
   otp: {
     id: 'otp',
@@ -1368,7 +1368,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-keynote-sffkey',
     category: 'presentation',
     description: 'Apple iWork Keynote presentation slideshow file.',
-    targetFormats: ['pptx', 'pdf', 'html', 'zip', 'doc', 'jpg', 'png', 'ppt', 'xls'],
+    targetFormats: ['pptx', 'pdf', 'html', 'zip'],
   },
   keynotes: {
     id: 'keynotes',
@@ -1413,7 +1413,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'WPS Office Kingsoft Presentation slide deck.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'md', 'txt', 'eps', 'jpg', 'png', 'odp', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp', 'swf'],
   },
   shw: {
     id: 'shw',
