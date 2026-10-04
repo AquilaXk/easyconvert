@@ -64,9 +64,12 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
       const service = new S3ObjectStorageService();
       const presigned = service.generatePresignedUploadUrl('uploads/doc.pdf', 2, 'upload_abc999', 600);
 
-      expect(presigned.url).toContain('AKIA_CUSTOM_REAL_TENANT_KEY');
-      expect(presigned.url).toContain('ap-northeast-2');
-      expect(presigned.url).not.toContain('AKIAIOSFODNN7EXAMPLE');
+      const parsedUrl = new URL(presigned.url);
+      const credentialParam = parsedUrl.searchParams.get('X-Amz-Credential');
+      expect(credentialParam).toMatch(/^AKIA_CUSTOM_REAL_TENANT_KEY\/\d{8}\/ap-northeast-2\/s3\/aws4_request$/);
+      expect(parsedUrl.searchParams.get('partNumber')).toBe('2');
+      expect(parsedUrl.searchParams.get('uploadId')).toBe('upload_abc999');
+      expect(presigned.signature.length).toBe(64);
     });
 
     it('safely rejects presigned signatures with length mismatch without throwing TypeError', () => {
@@ -137,7 +140,10 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
       });
 
       const uploadUrl = service.generatePresignedUploadUrl('parts/file.zip', 1, 'up_session_42', 300);
-      expect(uploadUrl.url).toContain('uploadId=up_session_42');
+      const parsedOciUrl = new URL(uploadUrl.url);
+      expect(parsedOciUrl.searchParams.get('uploadId')).toBe('up_session_42');
+      expect(parsedOciUrl.searchParams.get('partNumber')).toBe('1');
+      expect(uploadUrl.signature.length).toBe(64);
 
       // Valid signature
       const isValid = service.verifyPresignedSignature(

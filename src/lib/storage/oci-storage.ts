@@ -96,7 +96,7 @@ export class OciObjectStorageService implements IStorageBackend {
 
   constructor(customConfig?: Partial<OciStorageConfig>, options?: { signingSecret?: string }) {
     const namespace = customConfig?.namespace || process.env.OCI_NAMESPACE;
-    if (!namespace && process.env.NODE_ENV === 'production') {
+    if (!namespace && process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE !== 'phase-production-build') {
       throw new Error('Missing required OCI_NAMESPACE environment variable in production');
     }
     const resolvedNamespace = namespace || 'default';
@@ -120,7 +120,7 @@ export class OciObjectStorageService implements IStorageBackend {
       process.env.OCI_SIGNING_SECRET;
 
     if (!secret) {
-      if (process.env.NODE_ENV === 'production') {
+      if (process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE !== 'phase-production-build') {
         throw new Error('Missing required STORAGE_SIGNING_SECRET or OCI_SIGNING_SECRET environment variable in production');
       }
       this.signingSecret = crypto.randomBytes(32).toString('hex');
