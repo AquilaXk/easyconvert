@@ -28,7 +28,7 @@ export interface EmfParsedHeader {
   millimeters: { cx: number; cy: number };
 }
 
-export function parseEmfBinary(buffer: Buffer): {
+export function emfOracleRecords(buffer: Buffer): {
   header: EmfParsedHeader;
   records: EmfParsedRecord[];
   hasSetMapMode: boolean;
@@ -214,7 +214,7 @@ export interface WmfParsedHeader {
   maxRecordInWords: number;
 }
 
-export function parseWmfBinary(buffer: Buffer): {
+export function wmfOracleRecords(buffer: Buffer): {
   header: WmfParsedHeader;
   hasSetWindowOrg: boolean;
   hasSetWindowExt: boolean;
@@ -361,7 +361,7 @@ export interface CgmElement {
 }
 
 /** Splits clear-text CGM into elements at ';' outside quoted strings (8632-4 clause 6). */
-export function tokenizeClearTextCgm(text: string): CgmElement[] {
+export function cgmOracleTokens(text: string): CgmElement[] {
   const elements: CgmElement[] = [];
   let current = '';
   let quote: string | null = null;
@@ -398,7 +398,7 @@ export function tokenizeClearTextCgm(text: string): CgmElement[] {
 }
 
 /** Decodes one quoted clear-text string parameter, honouring doubled delimiters. */
-export function decodeCgmString(param: string): string {
+export function cgmOracleString(param: string): string {
   const delim = param[0];
   expect(delim === '"' || delim === "'").toBe(true);
   expect(param.endsWith(delim)).toBe(true);
@@ -407,7 +407,7 @@ export function decodeCgmString(param: string): string {
   return body.split(delim + delim).join(delim);
 }
 
-export function parseCgmPoints(params: string): { x: number; y: number }[] {
+export function cgmOraclePoints(params: string): { x: number; y: number }[] {
   const pts: { x: number; y: number }[] = [];
   const rest = params.replace(/\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/g, (_m, x, y) => {
     pts.push({ x: Number(x), y: Number(y) });
@@ -417,7 +417,7 @@ export function parseCgmPoints(params: string): { x: number; y: number }[] {
   return pts;
 }
 
-export function parseCgmDirectColour(params: string): [number, number, number] {
+export function cgmOracleColour(params: string): [number, number, number] {
   expect(params).toMatch(/^\d+\s+\d+\s+\d+$/);
   const parts = params.split(/\s+/).map(Number);
   for (const c of parts) {
@@ -440,8 +440,8 @@ export interface CgmDocument {
 }
 
 /** Validates metafile/picture structure per ISO/IEC 8632-1 clause 7 and returns its parts. */
-export function parseClearTextCgm(text: string): CgmDocument {
-  const elements = tokenizeClearTextCgm(text);
+export function cgmOracleDocument(text: string): CgmDocument {
+  const elements = cgmOracleTokens(text);
   expect(elements[0].name).toBe('BEGMF');
   expect(elements[elements.length - 1].name).toBe('ENDMF');
   expect(elements[1].name).toBe('MFVERSION');
@@ -452,7 +452,7 @@ export function parseClearTextCgm(text: string): CgmDocument {
   for (const el of elements.slice(1, -1)) {
     if (el.name === 'BEGPIC') {
       expect(['mfdesc', 'between']).toContain(state);
-      decodeCgmString(el.params);
+      cgmOracleString(el.params);
       state = 'picdesc';
     } else if (el.name === 'BEGPICBODY') {
       expect(state).toBe('picdesc');
@@ -464,7 +464,7 @@ export function parseClearTextCgm(text: string): CgmDocument {
       expect(CGM_METAFILE_DESCRIPTOR.has(el.name), `${el.name} in metafile descriptor`).toBe(true);
     } else if (state === 'picdesc') {
       expect(CGM_PICTURE_DESCRIPTOR.has(el.name), `${el.name} in picture descriptor`).toBe(true);
-      if (el.name === 'VDCEXT') vdcExtent = parseCgmPoints(el.params);
+      if (el.name === 'VDCEXT') vdcExtent = cgmOraclePoints(el.params);
     } else if (state === 'body') {
       expect(CGM_PICTURE_BODY.has(el.name), `${el.name} in picture body`).toBe(true);
       body.push(el);
@@ -473,7 +473,7 @@ export function parseClearTextCgm(text: string): CgmDocument {
     }
   }
   expect(state).toBe('between');
-  return { elements, mfName: decodeCgmString(elements[0].params), vdcExtent, body };
+  return { elements, mfName: cgmOracleString(elements[0].params), vdcExtent, body };
 }
 
 
@@ -553,7 +553,7 @@ function emfWidthScale(m: MappingState): number {
 }
 
 /** Replays an EMF file (as written by MS-EMF 2.3) into device-space shapes. */
-export function playbackEmf(buffer: Buffer): PlaybackShape[] {
+export function emfOraclePlayback(buffer: Buffer): PlaybackShape[] {
   const nBytes = buffer.readUInt32LE(48);
   expect(nBytes).toBe(buffer.length);
   const objects = new Map<number, GdiObject>();
@@ -727,7 +727,7 @@ export function playbackEmf(buffer: Buffer): PlaybackShape[] {
 }
 
 /** Replays a placeable WMF (MS-WMF 2.3) into shapes in 96-DPI device pixels. */
-export function playbackWmf(buffer: Buffer): PlaybackShape[] {
+export function wmfOraclePlayback(buffer: Buffer): PlaybackShape[] {
   const bboxLeft = buffer.readInt16LE(6);
   const bboxTop = buffer.readInt16LE(8);
   const inch = buffer.readUInt16LE(14);
@@ -840,7 +840,7 @@ export function playbackWmf(buffer: Buffer): PlaybackShape[] {
  * Parses POLYGONSET parameters, (x,y) followed by an edge-out flag
  * (INVIS | VIS | CLOSEINVIS | CLOSEVIS), into closed rings (ISO/IEC 8632-4).
  */
-export function parseCgmPolygonSet(params: string): { x: number; y: number }[][] {
+export function cgmOraclePolygonSet(params: string): { x: number; y: number }[][] {
   const rings: { x: number; y: number }[][] = [];
   let current: { x: number; y: number }[] = [];
   const pairPattern = /\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)\s*(INVIS|VIS|CLOSEINVIS|CLOSEVIS)\b/gi;

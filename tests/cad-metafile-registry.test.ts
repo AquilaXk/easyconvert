@@ -4,7 +4,7 @@ import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry'
 import { convertFile } from '../src/lib/conversions';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { ConversionFailedError } from '../src/lib/types';
-import { parseEmfBinary, parseWmfBinary, parseClearTextCgm } from './helpers/metafile-oracle';
+import { emfOracleRecords, wmfOracleRecords, cgmOracleDocument } from './helpers/metafile-oracle';
 
 const METAFILE_TARGETS = ['emf', 'wmf', 'cgm'];
 
@@ -31,21 +31,21 @@ const SOURCE_SAMPLES: Record<string, Buffer> = {
 function assertOutputFormat(target: string, out: Buffer): void {
   switch (target) {
     case 'emf': {
-      const emf = parseEmfBinary(out);
+      const emf = emfOracleRecords(out);
       expect(emf.header.signature).toBe(0x464d4520);
       expect(emf.hasEof).toBe(true);
       expect(emf.pointCounts.length).toBeGreaterThan(0);
       break;
     }
     case 'wmf': {
-      const wmf = parseWmfBinary(out);
+      const wmf = wmfOracleRecords(out);
       expect(wmf.header.aldusKey).toBe(0x9ac6cdd7);
       expect(wmf.hasEof).toBe(true);
       expect(wmf.hasPolygon || wmf.hasPolyline).toBe(true);
       break;
     }
     case 'cgm': {
-      const cgm = parseClearTextCgm(out.toString('utf-8'));
+      const cgm = cgmOracleDocument(out.toString('utf-8'));
       expect(cgm.body.some((e) => e.name === 'POLYGON' || e.name === 'POLYLINE' || e.name === 'POLYGONSET')).toBe(true);
       break;
     }

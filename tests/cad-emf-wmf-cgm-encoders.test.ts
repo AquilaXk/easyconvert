@@ -10,7 +10,7 @@ import {
 } from '../src/lib/conversions/vector-cad';
 import { getAvailableTargetFormats } from '../src/lib/registry';
 import { oracleTest } from './helpers/oracle-test';
-import { parseEmfBinary, parseWmfBinary, parseClearTextCgm, parseCgmDirectColour, parseCgmPoints } from './helpers/metafile-oracle';
+import { emfOracleRecords, wmfOracleRecords, cgmOracleDocument, cgmOracleColour, cgmOraclePoints } from './helpers/metafile-oracle';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { CadGeometryUnavailableError, ConversionFailedError } from '../src/lib/types';
 import { execFileSync } from 'node:child_process';
@@ -85,7 +85,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       expect(emfBuf).toBeInstanceOf(Buffer);
       expect(emfBuf.length).toBeGreaterThan(88);
 
-      const parsed = parseEmfBinary(emfBuf);
+      const parsed = emfOracleRecords(emfBuf);
 
       // MS-EMF 2.2.9: dSignature MUST be ENHMETA_SIGNATURE, the ASCII bytes " EMF"
       expect(emfBuf.subarray(40, 44).toString('latin1')).toBe(' EMF');
@@ -138,7 +138,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       expect(wmfBuf).toBeInstanceOf(Buffer);
       expect(wmfBuf.length).toBeGreaterThan(40);
 
-      const parsed = parseWmfBinary(wmfBuf);
+      const parsed = wmfOracleRecords(wmfBuf);
 
       // Aldus Header Integrity
       expect(parsed.header.aldusKey).toBe(0x9ac6cdd7);
@@ -183,7 +183,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
         '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50"><line x1="0" y1="0" x2="40" y2="40" stroke="#000"/></svg>',
         'utf-8'
       );
-      const parsed = parseWmfBinary(encodeWmf(lineSvg));
+      const parsed = wmfOracleRecords(encodeWmf(lineSvg));
       // Largest record here is CREATEPENINDIRECT / two-point POLYLINE: 8 WORDs
       expect(parsed.observedMaxRecordWords).toBe(8);
       expect(parsed.header.maxRecordInWords).toBe(8);
@@ -194,7 +194,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
   describe('CGM Encoder (ISO 8632 Clear-Text)', () => {
     it('generates ISO 8632-4 clear-text CGM with valid element names, structure and syntax', () => {
       const cgmBuf = encodeCgm(svgBuffer, 'My "Engineering" Model');
-      const doc = parseClearTextCgm(cgmBuf.toString('utf-8'));
+      const doc = cgmOracleDocument(cgmBuf.toString('utf-8'));
 
       // Quoted strings round-trip through the clear-text doubled-delimiter rule
       expect(doc.mfName).toBe('My "Engineering" Model');
@@ -214,15 +214,15 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       expect(solidIdx).toBeLessThan(firstPolygon);
 
       // Direct colours: three integers without parentheses
-      const lineColours = doc.body.filter((e) => e.name === 'LINECOLR').map((e) => parseCgmDirectColour(e.params));
-      const fillColours = doc.body.filter((e) => e.name === 'FILLCOLR').map((e) => parseCgmDirectColour(e.params));
+      const lineColours = doc.body.filter((e) => e.name === 'LINECOLR').map((e) => cgmOracleColour(e.params));
+      const fillColours = doc.body.filter((e) => e.name === 'FILLCOLR').map((e) => cgmOracleColour(e.params));
       expect(lineColours).toContainEqual([255, 0, 0]); // rect stroke
       expect(fillColours).toContainEqual([0, 0, 255]); // rect fill
       expect(fillColours).toContainEqual([128, 0, 128]); // polygon fill
 
       // Geometry: rect corners in VDC match the SVG coordinates
-      const polygons = doc.body.filter((e) => e.name === 'POLYGON').map((e) => parseCgmPoints(e.params));
-      const polylines = doc.body.filter((e) => e.name === 'POLYLINE').map((e) => parseCgmPoints(e.params));
+      const polygons = doc.body.filter((e) => e.name === 'POLYGON').map((e) => cgmOraclePoints(e.params));
+      const polylines = doc.body.filter((e) => e.name === 'POLYLINE').map((e) => cgmOraclePoints(e.params));
       for (const pg of polygons) expect(pg.length).toBeGreaterThanOrEqual(3);
       for (const pl of polylines) expect(pl.length).toBeGreaterThanOrEqual(2);
       // Filled rings are closed implicitly, so the closing vertex is not repeated
@@ -231,13 +231,13 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
     });
 
     it('encodes every SVG shape as CGM geometry in SVG coordinates (independent parser)', () => {
-      const doc = parseClearTextCgm(encodeCgm(svgBuffer, 'shapes').toString('utf-8'));
+      const doc = cgmOracleDocument(encodeCgm(svgBuffer, 'shapes').toString('utf-8'));
       const distinct = (pts: { x: number; y: number }[]) => {
         const last = pts[pts.length - 1];
         return pts.length > 1 && last.x === pts[0].x && last.y === pts[0].y ? pts.slice(0, -1) : pts;
       };
-      const polygons = doc.body.filter((e) => e.name === 'POLYGON').map((e) => distinct(parseCgmPoints(e.params)));
-      const polylines = doc.body.filter((e) => e.name === 'POLYLINE').map((e) => parseCgmPoints(e.params));
+      const polygons = doc.body.filter((e) => e.name === 'POLYGON').map((e) => distinct(cgmOraclePoints(e.params)));
+      const polylines = doc.body.filter((e) => e.name === 'POLYLINE').map((e) => cgmOraclePoints(e.params));
 
       // Picture extent covers the SVG viewport with a flipped y axis
       expect(doc.vdcExtent).toEqual([{ x: 0, y: 300 }, { x: 400, y: 0 }]);
@@ -317,7 +317,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       expect(res.filename).toBe('diagram.emf');
       expect(res.size).toBeGreaterThan(88);
 
-      const parsed = parseEmfBinary(res.buffer);
+      const parsed = emfOracleRecords(res.buffer);
       expect(parsed.hasEof).toBe(true);
     });
 
@@ -327,7 +327,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       expect(res.filename).toBe('diagram.wmf');
       expect(res.size).toBeGreaterThan(40);
 
-      const parsed = parseWmfBinary(res.buffer);
+      const parsed = wmfOracleRecords(res.buffer);
       expect(parsed.hasEof).toBe(true);
     });
 
@@ -335,7 +335,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       const res = await convertVectorCad(svgBuffer, 'svg', 'cgm', {}, 'diagram.svg');
       expect(res.mimeType).toBe('image/cgm');
       expect(res.filename).toBe('diagram.cgm');
-      expect(parseClearTextCgm(res.buffer.toString('utf-8')).mfName).toBe('diagram');
+      expect(cgmOracleDocument(res.buffer.toString('utf-8')).mfName).toBe('diagram');
     });
   });
 

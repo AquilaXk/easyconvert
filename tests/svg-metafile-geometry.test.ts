@@ -2,18 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { encodeEmf, encodeWmf, encodeCgm } from '../src/lib/conversions/vector-metafile';
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../src/lib/types';
 import { convertFile } from '../src/lib/conversions';
-import { parseEmfBinary, playbackEmf, playbackWmf, parseClearTextCgm, parseCgmPoints, parseCgmPolygonSet, type PlaybackShape } from './helpers/metafile-oracle';
+import { emfOracleRecords, emfOraclePlayback, wmfOraclePlayback, cgmOracleDocument, cgmOraclePoints, cgmOraclePolygonSet, type PlaybackShape } from './helpers/metafile-oracle';
 
 function svgDoc(body: string, rootAttrs = 'width="100" height="100" viewBox="0 0 100 100"'): Buffer {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" ${rootAttrs}>${body}</svg>`, 'utf-8');
 }
 
 function emfShapes(body: string, rootAttrs?: string): PlaybackShape[] {
-  return playbackEmf(encodeEmf(svgDoc(body, rootAttrs)));
+  return emfOraclePlayback(encodeEmf(svgDoc(body, rootAttrs)));
 }
 
 function wmfShapes(body: string, rootAttrs?: string): PlaybackShape[] {
-  return playbackWmf(encodeWmf(svgDoc(body, rootAttrs)));
+  return wmfOraclePlayback(encodeWmf(svgDoc(body, rootAttrs)));
 }
 
 /** Distinct ring vertices, dropping a repeated closing point. */
@@ -104,12 +104,12 @@ describe('SVG document model for metafile encoders', () => {
     }
 
     it('applies transforms to CGM geometry', () => {
-      const cgm = parseClearTextCgm(
+      const cgm = cgmOracleDocument(
         encodeCgm(svgDoc('<rect x="0" y="0" width="10" height="10" transform="translate(30 40) scale(2)" fill="#000"/>')).toString('utf-8')
       );
       const polygons = cgm.body
         .filter((e) => e.name === 'POLYGON' || e.name === 'POLYGONSET')
-        .map((e) => parseCgmPoints(e.params.replace(/\b(CLOSE)?(VIS|INVIS)\b/g, '')));
+        .map((e) => cgmOraclePoints(e.params.replace(/\b(CLOSE)?(VIS|INVIS)\b/g, '')));
       expect(polygons.map((p) => corners(p))).toContainEqual([[30, 40], [50, 40], [50, 60], [30, 60]]);
     });
 
@@ -123,7 +123,7 @@ describe('SVG document model for metafile encoders', () => {
   describe('viewport', () => {
     function emfFor(rootAttrs: string, body: string) {
       const buf = encodeEmf(svgDoc(body, rootAttrs));
-      return { header: parseEmfBinary(buf).header, shapes: playbackEmf(buf) };
+      return { header: emfOracleRecords(buf).header, shapes: emfOraclePlayback(buf) };
     }
 
     it('derives the viewBox from width/height when none is given', () => {
@@ -257,7 +257,7 @@ describe('SVG document model for metafile encoders', () => {
     const INNER_SAME = 'M25 25 H75 V75 H25 Z';
 
     function cgmBody(body: string) {
-      return parseClearTextCgm(encodeCgm(svgDoc(body)).toString('utf-8')).body;
+      return cgmOracleDocument(encodeCgm(svgDoc(body)).toString('utf-8')).body;
     }
 
     it('fills open sub-paths, closing them implicitly', () => {
@@ -267,7 +267,7 @@ describe('SVG document model for metafile encoders', () => {
           expect(filled.map((s) => s.brush)).toEqual([0xff0000]);
           expect(corners(filled[0].rings[0])).toEqual([[10, 10], [50, 10], [50, 50]]);
         }
-        const polygons = cgmBody(body).filter((e) => e.name === 'POLYGON').map((e) => corners(parseCgmPoints(e.params)));
+        const polygons = cgmBody(body).filter((e) => e.name === 'POLYGON').map((e) => corners(cgmOraclePoints(e.params)));
         expect(polygons).toEqual([[[10, 10], [50, 10], [50, 50]]]);
       }
     });
@@ -285,7 +285,7 @@ describe('SVG document model for metafile encoders', () => {
       }
       const sets = cgmBody(body).filter((e) => e.name === 'POLYGONSET');
       expect(sets).toHaveLength(1);
-      expect(parseCgmPolygonSet(sets[0].params).map(corners)).toEqual([
+      expect(cgmOraclePolygonSet(sets[0].params).map(corners)).toEqual([
         [[0, 0], [100, 0], [100, 100], [0, 100]],
         [[25, 25], [75, 25], [75, 75], [25, 75]],
       ]);
@@ -312,7 +312,7 @@ describe('SVG document model for metafile encoders', () => {
     it('accepts nonzero in CGM when even-odd gives the same result (opposite inner orientation)', () => {
       const sets = cgmBody(`<path d="${OUTER} ${INNER_REVERSED}" fill="#0000ff"/>`).filter((e) => e.name === 'POLYGONSET');
       expect(sets).toHaveLength(1);
-      expect(parseCgmPolygonSet(sets[0].params)).toHaveLength(2);
+      expect(cgmOraclePolygonSet(sets[0].params)).toHaveLength(2);
     });
 
     it('rejects nonzero in CGM when even-odd would open a hole that nonzero fills', () => {
@@ -354,7 +354,7 @@ describe('SVG document model for metafile encoders', () => {
     });
 
     it('writes CGM line widths in VDC units (LINEWIDTHMODE ABS)', () => {
-      const doc = parseClearTextCgm(
+      const doc = cgmOracleDocument(
         encodeCgm(svgDoc('<line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="1"/>', 'width="100" height="100" viewBox="0 0 10 10"')).toString('utf-8')
       );
       expect(doc.elements.find((e) => e.name === 'LINEWIDTHMODE')?.params).toBe('ABS');
@@ -384,10 +384,10 @@ describe('SVG document model for metafile encoders', () => {
 
     it('scales the EMF logical space uniformly instead of clamping, keeping the frame size', () => {
       const buf = encodeEmf(svgDoc(BIG_RECT, BIG_ROOT));
-      const header = parseEmfBinary(buf).header;
+      const header = emfOracleRecords(buf).header;
       expect([header.bounds.right, header.bounds.bottom]).toEqual([40000, 20000]);
       expect(header.frame.right).toBe(Math.round((40000 * 2540) / 96));
-      const filled = filledShapes(playbackEmf(buf));
+      const filled = filledShapes(emfOraclePlayback(buf));
       expectCornersNear(corners(filled[0].rings[0]), EXPECTED);
       expect(Math.abs(filled[0].pen!.width - 100)).toBeLessThanOrEqual(TOLERANCE_PX);
     });
@@ -398,13 +398,13 @@ describe('SVG document model for metafile encoders', () => {
       expect(inch).toBeLessThan(96);
       // Physical size is preserved: bbox / inch = 40000 px / 96 DPI
       expect(Math.abs(buf.readInt16LE(10) / inch - 40000 / 96)).toBeLessThan(0.02);
-      const filled = filledShapes(playbackWmf(buf));
+      const filled = filledShapes(wmfOraclePlayback(buf));
       expectCornersNear(corners(filled[0].rings[0]), EXPECTED);
       expect(Math.abs(filled[0].pen!.width - 100)).toBeLessThanOrEqual(TOLERANCE_PX);
     });
 
     it('scales CGM VDC coordinates into the 16-bit integer range', () => {
-      const doc = parseClearTextCgm(encodeCgm(svgDoc(BIG_RECT, BIG_ROOT)).toString('utf-8'));
+      const doc = cgmOracleDocument(encodeCgm(svgDoc(BIG_RECT, BIG_ROOT)).toString('utf-8'));
       const [lowerLeft, upperRight] = doc.vdcExtent;
       expect(lowerLeft.x).toBe(0);
       expect(upperRight.y).toBe(0);
@@ -412,7 +412,7 @@ describe('SVG document model for metafile encoders', () => {
       const scale = upperRight.x / 40000;
       expect(Math.abs(lowerLeft.y - 20000 * scale)).toBeLessThanOrEqual(1);
       const polygon = doc.body.find((e) => e.name === 'POLYGON')!;
-      const pts = parseCgmPoints(polygon.params).map((p) => [Math.round(p.x / scale), Math.round(p.y / scale)] as [number, number]);
+      const pts = cgmOraclePoints(polygon.params).map((p) => [Math.round(p.x / scale), Math.round(p.y / scale)] as [number, number]);
       expectCornersNear(corners(pts.map(([x, y]) => ({ x, y }))), EXPECTED);
     });
 
