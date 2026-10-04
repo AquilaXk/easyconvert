@@ -1,0 +1,71 @@
+[
+  {
+    "name": "get-vanilla",
+    "method": "GET",
+    "canonicalUri": "/",
+    "canonicalQueryString": "",
+    "headers": {
+      "date": "Mon, 09 Sep 2011 23:36:00 GMT",
+      "host": "host.foo.com"
+    },
+    "signedHeaders": "date;host",
+    "hashedPayload": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "credentials": {
+      "accessKeyId": "AKIDEXAMPLE",
+      "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "region": "us-east-1",
+      "service": "service"
+    },
+    "timestamp": "20110909T233600Z",
+    "dateStamp": "20110909",
+    "expectedCanonicalRequest": "GET\n/\n\ndate:Mon, 09 Sep 2011 23:36:00 GMT\nhost:host.foo.com\n\ndate;host\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "expectedStringToSign": "AWS4-HMAC-SHA256\n20110909T233600Z\n20110909/us-east-1/service/aws4_request\n366b91fb121d72a00f46bbe8d395f53a102b06dfb7e79636515208ed3fa606b1",
+    "expectedSignature": "b5684fb8ded29acf3d4f2c63701974c63fa3905e5b0792ef550c7eeb148593a0"
+  },
+  {
+    "name": "post-vanilla",
+    "method": "POST",
+    "canonicalUri": "/",
+    "canonicalQueryString": "",
+    "headers": {
+      "date": "Mon, 09 Sep 2011 23:36:00 GMT",
+      "host": "host.foo.com"
+    },
+    "signedHeaders": "date;host",
+    "hashedPayload": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "credentials": {
+      "accessKeyId": "AKIDEXAMPLE",
+      "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "region": "us-east-1",
+      "service": "service"
+    },
+    "timestamp": "20110909T233600Z",
+    "dateStamp": "20110909",
+    "expectedCanonicalRequest": "POST\n/\n\ndate:Mon, 09 Sep 2011 23:36:00 GMT\nhost:host.foo.com\n\ndate;host\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "expectedStringToSign": "AWS4-HMAC-SHA256\n20110909T233600Z\n20110909/us-east-1/service/aws4_request\n05da62cee468d24ae84faff3c39f1b85540de60243c1bcaace39c0a2acc7b2c4",
+    "expectedSignature": "a917fba1436105bf3aac1ece1c3fb1b010880853c105d53d3f40c3ed8dcbe965"
+  },
+  {
+    "name": "get-vanilla-query",
+    "method": "GET",
+    "canonicalUri": "/",
+    "canonicalQueryString": "value=bar",
+    "headers": {
+      "date": "Mon, 09 Sep 2011 23:36:00 GMT",
+      "host": "host.foo.com"
+    },
+    "signedHeaders": "date;host",
+    "hashedPayload": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "credentials": {
+      "accessKeyId": "AKIDEXAMPLE",
+      "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "region": "us-east-1",
+      "service": "service"
+    },
+    "timestamp": "20110909T233600Z",
+    "dateStamp": "20110909",
+    "expectedCanonicalRequest": "GET\n/\nvalue=bar\ndate:Mon, 09 Sep 2011 23:36:00 GMT\nhost:host.foo.com\n\ndate;host\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "expectedStringToSign": "AWS4-HMAC-SHA256\n20110909T233600Z\n20110909/us-east-1/service/aws4_request\n5ab8be331484feb44a58c8535d076c2f2261770f29ffbdab52f9052663fba8f1",
+    "expectedSignature": "4a4a2e337ce394a7a373982c3cef51f24ed866939cf74781e4e269a7787c994a"
+  }
+]
