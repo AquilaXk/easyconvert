@@ -1,0 +1,233 @@
+import crypto from 'node:crypto';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { verifySigV4Request, type SigV4VerifyResult } from './sigv4-verifier';
+
+/**
+ * Minimal path-style S3 endpoint for adapter tests. Every request is authenticated with the
+ * independent verifier in ./sigv4-verifier; a bad signature gets the S3 SignatureDoesNotMatch
+ * error document. Objects and multipart sessions live in memory.
+ */
+
+export interface StubRequestRecord {
+  method: string;
+  rawUrl: string;
+  key: string;
+  query: URLSearchParams;
+  headers: http.IncomingHttpHeaders;
+  bodyLength: number;
+  auth: SigV4VerifyResult;
+}
+
+export interface StubFault {
+  /** Selects the requests to fail. */
+  match: (req: StubRequestRecord) => boolean;
+  status: number;
+  code?: string;
+  /** Send this XML in a 200 response instead (CompleteMultipartUpload can fail inside a 200). */
+  errorIn200?: boolean;
+  /** Number of matching requests to fail; Infinity for all. */
+  times: number;
+  /** Delay before answering, in ms. */
+  delayMs?: number;
+}
+
+export interface StoredStubObject {
+  body: Buffer;
+  contentType: string;
+  etag: string;
+}
+
+export interface S3StubServer {
+  url: string;
+  host: string;
+  bucket: string;
+  objects: Map<string, StoredStubObject>;
+  uploads: Map<string, Map<number, Buffer>>;
+  requests: StubRequestRecord[];
+  faults: StubFault[];
+  close: () => Promise<void>;
+}
+
+function errorXml(code: string, message: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>${code}</Code><Message>${message}</Message><RequestId>STUBREQ1</RequestId></Error>`;
+}
+
+function md5Etag(body: Buffer): string {
+  return `"${crypto.createHash('md5').update(body).digest('hex')}"`;
+}
+
+function send(res: http.ServerResponse, status: number, body = '', headers: Record<string, string> = {}): void {
+  res.writeHead(status, { 'content-type': 'application/xml', ...headers });
+  res.end(body);
+}
+
+export async function startS3StubServer(options: {
+  bucket: string;
+  credentials: Record<string, string>;
+}): Promise<S3StubServer> {
+  const objects = new Map<string, StoredStubObject>();
+  const uploads = new Map<string, Map<number, Buffer>>();
+  const requests: StubRequestRecord[] = [];
+  const faults: StubFault[] = [];
+  let uploadCounter = 0;
+
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      const rawUrl = req.url ?? '/';
+      const parsed = new URL(rawUrl, 'http://stub.invalid');
+      const segments = parsed.pathname.split('/');
+      const bucket = decodeURIComponent(segments[1] ?? '');
+      const key = segments.slice(2).map((s) => decodeURIComponent(s)).join('/');
+      const record: StubRequestRecord = {
+        method: req.method ?? 'GET',
+        rawUrl,
+        key,
+        query: parsed.searchParams,
+        headers: req.headers,
+        bodyLength: body.length,
+        auth: verifySigV4Request({
+          method: req.method ?? 'GET',
+          rawUrl,
+          headers: req.headers,
+          body,
+          secretFor: (id) => options.credentials[id],
+        }),
+      };
+      requests.push(record);
+
+      const respond = () => handle(record, body, bucket, res);
+      const fault = faults.find((f) => f.times > 0 && f.match(record));
+      if (!fault) {
+        respond();
+        return;
+      }
+      fault.times -= 1;
+      const fail = () => {
+        const xml = errorXml(fault.code ?? 'InternalError', 'Injected failure');
+        if (fault.errorIn200) {
+          send(res, 200, xml);
+        } else if (record.method === 'HEAD') {
+          send(res, fault.status);
+        } else {
+          send(res, fault.status, xml);
+        }
+      };
+      if (fault.delayMs) {
+        setTimeout(fail, fault.delayMs);
+      } else {
+        fail();
+      }
+    });
+  });
+
+  function handle(record: StubRequestRecord, body: Buffer, bucket: string, res: http.ServerResponse): void {
+    if (!record.auth.ok) {
+      send(res, 403, record.method === 'HEAD' ? '' : errorXml('SignatureDoesNotMatch', 'The request signature we calculated does not match the signature you provided.'));
+      return;
+    }
+    if (bucket !== options.bucket) {
+      send(res, 404, record.method === 'HEAD' ? '' : errorXml('NoSuchBucket', 'The specified bucket does not exist'));
+      return;
+    }
+    const { method, key, query } = record;
+    const uploadId = query.get('uploadId');
+
+    if (method === 'POST' && query.has('uploads')) {
+      uploadCounter += 1;
+      const id = `stub-upload-${uploadCounter}`;
+      uploads.set(id, new Map());
+      send(res, 200, `<InitiateMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${key}</Key><UploadId>${id}</UploadId></InitiateMultipartUploadResult>`);
+      return;
+    }
+    if (uploadId !== null) {
+      const parts = uploads.get(uploadId);
+      if (!parts) {
+        send(res, 404, errorXml('NoSuchUpload', 'The specified upload does not exist'));
+        return;
+      }
+      if (method === 'PUT') {
+        const partNumber = Number(query.get('partNumber'));
+        parts.set(partNumber, body);
+        send(res, 200, '', { etag: md5Etag(body) });
+        return;
+      }
+      if (method === 'DELETE') {
+        uploads.delete(uploadId);
+        send(res, 204);
+        return;
+      }
+      if (method === 'POST') {
+        const listed = [...body.toString('utf-8').matchAll(/<PartNumber>(\d+)<\/PartNumber><ETag>([^<]*)<\/ETag>/g)];
+        const ordered: Buffer[] = [];
+        for (const [, num, etag] of listed) {
+          const part = parts.get(Number(num));
+          if (!part || etag.replace(/&quot;/g, '"') !== md5Etag(part)) {
+            send(res, 400, errorXml('InvalidPart', 'One or more of the specified parts could not be found'));
+            return;
+          }
+          ordered.push(part);
+        }
+        const assembled = Buffer.concat(ordered);
+        const etag = `"${crypto.createHash('md5').update(assembled).digest('hex')}-${ordered.length}"`;
+        objects.set(key, { body: assembled, contentType: 'application/octet-stream', etag });
+        uploads.delete(uploadId);
+        send(res, 200, `<CompleteMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${key}</Key><ETag>${etag.replace(/"/g, '&quot;')}</ETag></CompleteMultipartUploadResult>`);
+        return;
+      }
+    }
+
+    const object = objects.get(key);
+    switch (method) {
+      case 'PUT': {
+        const etag = md5Etag(body);
+        objects.set(key, { body, contentType: String(record.headers['content-type'] ?? 'binary/octet-stream'), etag });
+        send(res, 200, '', { etag });
+        return;
+      }
+      case 'GET':
+        if (!object) {
+          send(res, 404, errorXml('NoSuchKey', 'The specified key does not exist.'));
+          return;
+        }
+        res.writeHead(200, { 'content-type': object.contentType, 'content-length': String(object.body.length), etag: object.etag });
+        res.end(object.body);
+        return;
+      case 'HEAD':
+        if (!object) {
+          send(res, 404);
+          return;
+        }
+        res.writeHead(200, { 'content-type': object.contentType, 'content-length': String(object.body.length), etag: object.etag, 'last-modified': 'Wed, 01 Oct 2026 10:00:00 GMT' });
+        res.end();
+        return;
+      case 'DELETE':
+        objects.delete(key);
+        send(res, 204);
+        return;
+      default:
+        send(res, 405, errorXml('MethodNotAllowed', 'Method not allowed'));
+    }
+  }
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  const host = `127.0.0.1:${port}`;
+  return {
+    url: `http://${host}`,
+    host,
+    bucket: options.bucket,
+    objects,
+    uploads,
+    requests,
+    faults,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}

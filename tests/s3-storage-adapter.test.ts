@@ -1,0 +1,297 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import crypto from 'node:crypto';
+import { Readable } from 'node:stream';
+import { S3StorageAdapter, S3_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/s3';
+import {
+  StorageAdapterError,
+  StorageAuthenticationError,
+  StorageNotFoundError,
+  StorageServiceError,
+  StorageSsrfError,
+  StorageTimeoutError,
+} from '../src/lib/storage/adapters/adapter-interface';
+import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
+import { verifySigV4Request } from './helpers/sigv4-verifier';
+
+/**
+ * Oracle: a node:http S3 stub that authenticates every request with an independently written
+ * SigV4 verifier (tests/helpers/sigv4-verifier.ts) and stores the bytes it actually received.
+ * The verifier itself is first checked against the published S3 GET Object example.
+ */
+
+const MIB = 1024 * 1024;
+const BUCKET = 'byos-bucket';
+const ACCESS_KEY = 'AKIASTUBEXAMPLE00001';
+const SECRET = 'stub/Secret+Key/EXAMPLEKEY0000000000000';
+const MIN_PART = 5 * MIB;
+
+function sha256(buf: Buffer): string {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
+  return Buffer.concat(chunks);
+}
+
+/** Streams a buffer in small slices so the adapter has to reassemble parts itself. */
+function sliced(buf: Buffer, slice = 64 * 1024): Readable {
+  const pieces: Buffer[] = [];
+  for (let i = 0; i < buf.length; i += slice) pieces.push(buf.subarray(i, i + slice));
+  return Readable.from(pieces);
+}
+
+describe('independent SigV4 verifier', () => {
+  // Amazon S3 API Reference, header-based auth GET Object example (AKIAIOSFODNN7EXAMPLE).
+  const published = {
+    method: 'GET',
+    rawUrl: '/test.txt',
+    headers: {
+      host: 'examplebucket.s3.amazonaws.com',
+      range: 'bytes=0-9',
+      'x-amz-content-sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      'x-amz-date': '20130524T000000Z',
+      authorization:
+        'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41',
+    },
+    body: Buffer.alloc(0),
+    secretFor: (id: string) => (id === 'AKIAIOSFODNN7EXAMPLE' ? 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' : undefined),
+  };
+
+  it('accepts the published GET Object example', () => {
+    expect(verifySigV4Request(published)).toMatchObject({ ok: true, region: 'us-east-1', service: 's3' });
+  });
+
+  it('rejects the example once a signed header changes', () => {
+    const tampered = { ...published, headers: { ...published.headers, range: 'bytes=0-10' } };
+    expect(verifySigV4Request(tampered)).toMatchObject({ ok: false, reason: 'signature mismatch' });
+  });
+});
+
+describe('S3StorageAdapter against a signature-verifying stub', () => {
+  let stub: S3StubServer;
+
+  beforeAll(async () => {
+    stub = await startS3StubServer({ bucket: BUCKET, credentials: { [ACCESS_KEY]: SECRET } });
+  });
+
+  afterAll(async () => {
+    await stub.close();
+  });
+
+  beforeEach(() => {
+    vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, stub.host);
+    stub.objects.clear();
+    stub.uploads.clear();
+    stub.requests.length = 0;
+    stub.faults.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function adapter(overrides: Partial<{ secretAccessKey: string; sessionToken: string }> = {}, options = {}) {
+    return new S3StorageAdapter(
+      {
+        type: 's3',
+        bucket: BUCKET,
+        accessKeyId: ACCESS_KEY,
+        secretAccessKey: overrides.secretAccessKey ?? SECRET,
+        sessionToken: overrides.sessionToken,
+        region: 'eu-central-1',
+        endpoint: stub.url,
+        forcePathStyle: true,
+      },
+      { retryBaseDelayMs: 1, ...options }
+    );
+  }
+
+  it('streams a small object with UNSIGNED-PAYLOAD, then GETs, HEADs, and DELETEs it', async () => {
+    const payload = Buffer.from('quarterly,report\n1,2\n', 'utf-8');
+    const s3 = adapter();
+
+    const put = await s3.uploadStream('reports/q3 final.csv', Readable.from([payload]), {
+      contentType: 'text/csv',
+      size: payload.length,
+    });
+    const putReq = stub.requests[0];
+    expect(putReq).toMatchObject({ method: 'PUT', key: 'reports/q3 final.csv' });
+    expect(putReq.rawUrl).toBe(`/${BUCKET}/reports/q3%20final.csv`);
+    expect(putReq.auth).toMatchObject({ ok: true, region: 'eu-central-1', service: 's3', payloadHash: 'UNSIGNED-PAYLOAD' });
+    expect(stub.objects.get('reports/q3 final.csv')?.body.equals(payload)).toBe(true);
+    expect(put.etag).toBe(crypto.createHash('md5').update(payload).digest('hex'));
+    expect(put.size).toBe(payload.length);
+
+    const downloaded = await collect(await s3.downloadStream('/reports/q3 final.csv'));
+    expect(downloaded.equals(payload)).toBe(true);
+
+    const head = await s3.head('reports/q3 final.csv');
+    expect(head).toMatchObject({ size: payload.length, contentType: 'text/csv', etag: put.etag });
+    expect(head?.lastModified?.toISOString()).toBe('2026-10-01T10:00:00.000Z');
+
+    expect(await s3.delete('reports/q3 final.csv')).toBe(true);
+    expect(await s3.head('reports/q3 final.csv')).toBeNull();
+    expect(stub.requests.every((r) => r.auth.ok)).toBe(true);
+    expect(stub.requests.map((r) => r.auth.payloadHash).slice(1)).toEqual([
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    ]);
+  });
+
+  it('uploads an object of unknown size as 5 MiB signed parts and completes the multipart upload', async () => {
+    const payload = crypto.randomBytes(2 * MIN_PART + 123_457);
+    const s3 = adapter({}, { partSizeBytes: MIN_PART });
+
+    const result = await s3.uploadStream('video/big.bin', sliced(payload), { contentType: 'video/mp4' });
+
+    const stored = stub.objects.get('video/big.bin');
+    expect(stored && sha256(stored.body)).toBe(sha256(payload));
+    expect(result.size).toBe(payload.length);
+    expect(result.etag).toMatch(/^[0-9a-f]{32}-3$/);
+
+    const ops = stub.requests.map((r) => `${r.method} ${[...r.query.keys()].sort().join(',')}`);
+    expect(ops).toEqual(['POST uploads', 'PUT partNumber,uploadId', 'PUT partNumber,uploadId', 'PUT partNumber,uploadId', 'POST uploadId']);
+    const parts = stub.requests.filter((r) => r.query.has('partNumber'));
+    expect(parts.map((r) => r.bodyLength)).toEqual([MIN_PART, MIN_PART, 123_457]);
+    // Parts carry a signed SHA-256 that the verifier checked against the received bytes.
+    for (const part of parts) {
+      expect(part.auth.ok).toBe(true);
+      expect(part.auth.payloadHash).toMatch(/^[0-9a-f]{64}$/);
+    }
+    expect(stub.uploads.size).toBe(0);
+  });
+
+  it('switches a known-size upload above the part size to multipart', async () => {
+    const payload = crypto.randomBytes(MIN_PART + 1);
+    const s3 = adapter({}, { partSizeBytes: MIN_PART });
+    await s3.uploadStream('k/known.bin', sliced(payload), { size: payload.length });
+    expect(stub.requests.filter((r) => r.query.has('partNumber')).map((r) => r.bodyLength)).toEqual([MIN_PART, 1]);
+    expect(sha256(stub.objects.get('k/known.bin')!.body)).toBe(sha256(payload));
+  });
+
+  it('aborts the multipart upload when a part fails and surfaces the typed error', async () => {
+    stub.faults.push({
+      match: (r) => r.method === 'PUT' && r.query.get('partNumber') === '2',
+      status: 403,
+      code: 'AccessDenied',
+      times: 1,
+    });
+    const s3 = adapter({}, { partSizeBytes: MIN_PART });
+
+    await expect(s3.uploadStream('fail/obj.bin', sliced(crypto.randomBytes(2 * MIN_PART + 10)))).rejects.toThrow(
+      StorageAuthenticationError
+    );
+
+    const created = stub.requests.find((r) => r.method === 'PUT' && r.query.get('partNumber') === '1');
+    const abort = stub.requests.find((r) => r.method === 'DELETE' && r.query.has('uploadId'));
+    expect(abort?.query.get('uploadId')).toMatch(/^stub-upload-\d+$/);
+    expect(abort?.query.get('uploadId')).toBe(created?.query.get('uploadId'));
+    expect(abort?.auth.ok).toBe(true);
+    expect(stub.uploads.size).toBe(0);
+    expect(stub.objects.has('fail/obj.bin')).toBe(false);
+  });
+
+  it('retries throttling and 5xx with backoff, including an error inside a 200 Complete response', async () => {
+    stub.faults.push(
+      { match: (r) => r.query.get('partNumber') === '1', status: 503, code: 'SlowDown', times: 2 },
+      { match: (r) => r.method === 'POST' && r.query.has('uploadId'), status: 200, code: 'InternalError', errorIn200: true, times: 1 }
+    );
+    const payload = crypto.randomBytes(MIN_PART + 99);
+    const s3 = adapter({}, { partSizeBytes: MIN_PART });
+
+    await s3.uploadStream('retry/obj.bin', sliced(payload));
+
+    expect(stub.requests.filter((r) => r.query.get('partNumber') === '1')).toHaveLength(3);
+    expect(stub.requests.filter((r) => r.method === 'POST' && r.query.has('uploadId'))).toHaveLength(2);
+    expect(sha256(stub.objects.get('retry/obj.bin')!.body)).toBe(sha256(payload));
+  });
+
+  it('gives up after maxAttempts on persistent 500 with a retryable StorageServiceError', async () => {
+    stub.faults.push({ match: (r) => r.method === 'GET', status: 500, code: 'InternalError', times: Infinity });
+    const s3 = adapter({}, { maxAttempts: 3 });
+    const err = await s3.downloadStream('any.txt').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageServiceError);
+    expect(err).toMatchObject({ statusCode: 500, code: 'InternalError', requestId: 'STUBREQ1', retryable: true });
+    expect(stub.requests.filter((r) => r.method === 'GET')).toHaveLength(3);
+  });
+
+  it('maps error XML: NoSuchKey to StorageNotFoundError and a bad signature to StorageAuthenticationError', async () => {
+    await expect(adapter().downloadStream('missing/file.txt')).rejects.toThrow(StorageNotFoundError);
+
+    const err = await adapter({ secretAccessKey: 'wrong-secret' })
+      .downloadStream('x.txt')
+      .catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(StorageAuthenticationError);
+    expect((err as Error).message).toContain('SignatureDoesNotMatch');
+    expect((err as Error).message).not.toContain('wrong-secret');
+    expect(stub.requests.at(-1)?.auth).toMatchObject({ ok: false, reason: 'signature mismatch' });
+  });
+
+  it('times out a request that gets no response', async () => {
+    stub.faults.push({ match: (r) => r.method === 'HEAD', status: 200, times: 1, delayMs: 500 });
+    await expect(adapter({}, { requestTimeoutMs: 50, maxAttempts: 1 }).head('slow.bin')).rejects.toThrow(
+      StorageTimeoutError
+    );
+  });
+
+  it('signs the session token', async () => {
+    await adapter({ sessionToken: 'FQoGZXIvYXdzEXAMPLE//token+' }).head('none.bin');
+    const req = stub.requests[0];
+    expect(req.headers['x-amz-security-token']).toBe('FQoGZXIvYXdzEXAMPLE//token+');
+    expect(req.auth.signedHeaders).toContain('x-amz-security-token');
+    expect(req.auth.ok).toBe(true);
+  });
+
+  it('refuses keys with dot segments before sending anything', async () => {
+    await expect(adapter().downloadStream('a/../../other-bucket/secret')).rejects.toThrow(StorageAdapterError);
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it('keeps credentials out of serialization and error messages', async () => {
+    const s3 = adapter();
+    expect(JSON.stringify(s3)).not.toContain(SECRET);
+    stub.faults.push({ match: () => true, status: 400, code: 'InvalidArgument', times: 1 });
+    const err = (await s3.downloadStream('x').catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(StorageServiceError);
+    expect(`${err.message}${err.stack}`).not.toContain(SECRET);
+  });
+});
+
+describe('S3StorageAdapter endpoint policy', () => {
+  const base = { type: 's3' as const, bucket: 'b-bucket', accessKeyId: 'AKIA', secretAccessKey: 'S' };
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['loopback over HTTP', 'http://127.0.0.1:9000'],
+    ['loopback over TLS', 'https://127.0.0.1:9000'],
+    ['cloud metadata IP', 'https://169.254.169.254'],
+    ['metadata hostname', 'https://metadata.google.internal'],
+    ['private network', 'https://10.0.0.5'],
+    ['public host without TLS', 'http://objects.example.com'],
+  ])('rejects %s', (_label, endpoint) => {
+    expect(() => new S3StorageAdapter({ ...base, endpoint })).toThrow(StorageSsrfError);
+  });
+
+  it('ignores the development allowlist in production', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, '127.0.0.1:9000');
+    expect(() => new S3StorageAdapter({ ...base, endpoint: 'http://127.0.0.1:9000' })).toThrow(StorageSsrfError);
+  });
+
+  it('allows only the exact allowlisted host and port', () => {
+    vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, '127.0.0.1:9000');
+    expect(new S3StorageAdapter({ ...base, endpoint: 'http://127.0.0.1:9000' }).providerName).toBe('s3');
+    expect(() => new S3StorageAdapter({ ...base, endpoint: 'http://127.0.0.1:9001' })).toThrow(StorageSsrfError);
+  });
+
+  it('rejects a part size below the 5 MiB minimum', () => {
+    expect(() => new S3StorageAdapter({ ...base }, { partSizeBytes: MIN_PART - 1 })).toThrow(StorageAdapterError);
+  });
+});
