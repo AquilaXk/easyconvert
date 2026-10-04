@@ -93,6 +93,9 @@ export interface ConversionOptions {
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;
+  allowOpenMesh?: boolean;
+  smoothingAngleDeg?: number;
+  outputUnit?: 'mm' | 'cm' | 'm' | 'in';
   // Document & PDF options
   page?: number;
   pages?: string;
@@ -454,6 +457,13 @@ export class CadGeometryUnavailableError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'CadGeometryUnavailableError';
+  }
+}
+
+export class CadTopologyError extends ConversionFailedError {
+  constructor(message = 'CAD mesh failed topology or watertightness validation') {
+    super(message);
+    this.name = 'CadTopologyError';
   }
 }
 

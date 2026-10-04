@@ -19,7 +19,7 @@ import {
   incircleExact,
   windingNumberPointInPolygon,
 } from './cad-predicates';
-import { CadGeometryUnavailableError } from '../types';
+import { CadGeometryUnavailableError, CadTopologyError, ConversionOptions } from '../types';
 
 export interface Point3D {
   x: number;
@@ -50,6 +50,8 @@ export interface TessellatedMesh {
   vertices: [number, number, number][];
   normals: [number, number, number][];
   faces: [number, number, number][];
+  topologyReport?: MeshTopologyReport;
+  unit?: string;
 }
 
 // ============================================================================
@@ -2326,8 +2328,8 @@ export function verifyWatertightManifoldMesh(
 
   const genus = Math.max(0, Math.round((2 * componentsCount - chi) / 2));
   const isManifold = nonManifoldEdges === 0 && !hasDegenerateFace && !hasNonManifoldVertex;
-  // Watertight: manifold, 0 boundary edges, Euler characteristic chi === 2, and no floating isolated vertices
-  const isWatertight = isManifold && boundaryEdges === 0 && chi === 2 && !hasIsolatedVertices;
+  // Watertight: 2-manifold without boundary edges, no floating isolated vertices, and non-empty faces
+  const isWatertight = isManifold && boundaryEdges === 0 && !hasIsolatedVertices && faces.length > 0;
 
   return {
     isManifold,
@@ -3876,6 +3878,346 @@ export function extractStepBRepMesh(
   return glueBRepTopologicalEdges(rawMesh, { epsilon: 1e-6, enforceOrientedManifold: true });
 }
 
+// ============================================================================
+// 4.4 STEP & IGES Units Resolution, Scaling & Crease Angle Normal Splitting
+// ============================================================================
+
+export const CAD_UNIT_FACTORS_IN_MM: Record<string, number> = {
+  mm: 1.0,
+  cm: 10.0,
+  m: 1000.0,
+  in: 25.4,
+  ft: 304.8,
+};
+
+export function parseStepUnit(text: string, entityMap?: Map<number, StepEntity>): string | null {
+  if (entityMap && typeof entityMap.values === 'function') {
+    for (const ent of entityMap.values()) {
+      if (ent.type === 'CONVERSION_BASED_UNIT' || ent.type.includes('CONVERSION_BASED_UNIT')) {
+        const unitName = String(ent.args[0] || '').replace(/['"]/g, '').trim().toUpperCase();
+        if (unitName === 'INCH' || unitName === 'IN') return 'in';
+        if (unitName === 'FOOT' || unitName === 'FEET' || unitName === 'FT') return 'ft';
+        if (unitName === 'MILLIMETRE' || unitName === 'MM') return 'mm';
+        if (unitName === 'CENTIMETRE' || unitName === 'CM') return 'cm';
+        if (unitName === 'METRE' || unitName === 'M') return 'm';
+      }
+      if (ent.type === 'SI_UNIT' || ent.type.includes('SI_UNIT')) {
+        const str = JSON.stringify(ent.args).toUpperCase();
+        if (str.includes('.MILLI.') && str.includes('.METRE.')) return 'mm';
+        if (str.includes('.CENTI.') && str.includes('.METRE.')) return 'cm';
+        if (str.includes('.METRE.')) return 'm';
+      }
+    }
+  }
+
+  const convMatch = text.match(/CONVERSION_BASED_UNIT\s*\(\s*['"]([A-Z_]+)['"]/i);
+  if (convMatch) {
+    const unitName = convMatch[1].toUpperCase();
+    if (unitName === 'INCH' || unitName === 'IN') return 'in';
+    if (unitName === 'FOOT' || unitName === 'FEET' || unitName === 'FT') return 'ft';
+    if (unitName === 'MILLIMETRE' || unitName === 'MM') return 'mm';
+    if (unitName === 'CENTIMETRE' || unitName === 'CM') return 'cm';
+    if (unitName === 'METRE' || unitName === 'M') return 'm';
+  }
+
+  if (/SI_UNIT\s*\([^)]*\.MILLI\.[^)]*\.METRE\.[^)]*\)/i.test(text)) return 'mm';
+  if (/SI_UNIT\s*\([^)]*\.CENTI\.[^)]*\.METRE\.[^)]*\)/i.test(text)) return 'cm';
+  if (/SI_UNIT\s*\([^)]*\.METRE\.[^)]*\)/i.test(text)) return 'm';
+  if (/LENGTH_MEASURE_WITH_UNIT\s*\(\s*LENGTH_MEASURE\s*\(\s*25\.4\s*\)/i.test(text)) return 'in';
+
+  return null;
+}
+
+export function parseIgesUnit(text: string): string | null {
+  const lines = text.split(/\r?\n/);
+  const gLines: string[] = [];
+  for (const line of lines) {
+    if (line.length >= 73 && line[72].toUpperCase() === 'G') {
+      gLines.push(line.substring(0, 72));
+    } else if (/[Gg]\s*\d+\s*$/.test(line)) {
+      gLines.push(line.replace(/[Gg]\s*\d+\s*$/, ''));
+    }
+  }
+
+  const gText = gLines.length > 0 ? gLines.join('') : text;
+  let delim = ',';
+  const term = ';';
+  const trimmedG = gText.trim();
+  if (trimmedG.startsWith('1H')) {
+    delim = trimmedG[2] || ',';
+  }
+
+  const endIdx = gText.indexOf(term);
+  const payload = endIdx !== -1 ? gText.substring(0, endIdx) : gText;
+
+  const tokens: string[] = [];
+  let cur = '';
+  let inHollerith = 0;
+  for (let i = 0; i < payload.length; i++) {
+    const ch = payload[i];
+    if (inHollerith > 0) {
+      cur += ch;
+      inHollerith--;
+      continue;
+    }
+    const hMatch = payload.substring(i).match(/^(\d+)H/);
+    if (hMatch) {
+      const len = parseInt(hMatch[1], 10);
+      const prefixLen = hMatch[0].length;
+      cur += payload.substring(i, i + prefixLen);
+      i += prefixLen - 1;
+      inHollerith = len;
+      continue;
+    }
+    if (ch === delim) {
+      tokens.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) tokens.push(cur.trim());
+
+  if (tokens.length >= 14) {
+    const flag = parseInt(tokens[13], 10);
+    switch (flag) {
+      case 1: return 'in';
+      case 2: return 'mm';
+      case 4: return 'ft';
+      case 6: return 'm';
+      case 10: return 'cm';
+    }
+  }
+  if (tokens.length >= 15) {
+    const name = tokens[14].replace(/^\d+H/i, '').trim().toUpperCase();
+    if (name === 'MM' || name === 'MILLIMETER' || name === 'MILLIMETRE') return 'mm';
+    if (name === 'INCH' || name === 'IN') return 'in';
+    if (name === 'FEET' || name === 'FOOT' || name === 'FT') return 'ft';
+    if (name === 'METER' || name === 'METRE' || name === 'M') return 'm';
+    if (name === 'CM' || name === 'CENTIMETER' || name === 'CENTIMETRE') return 'cm';
+  }
+
+  const flagMatch = text.match(/,\s*([1246]|10)\s*,\s*\d+H(MM|INCH|IN|FEET|FOOT|METRE|METER|CM)/i);
+  if (flagMatch) {
+    const f = parseInt(flagMatch[1], 10);
+    if (f === 1) return 'in';
+    if (f === 2) return 'mm';
+    if (f === 4) return 'ft';
+    if (f === 6) return 'm';
+    if (f === 10) return 'cm';
+  }
+
+  return null;
+}
+
+export function scaleMeshCoordinates(
+  mesh: TessellatedMesh,
+  sourceUnit: string | null,
+  targetUnit?: 'mm' | 'cm' | 'm' | 'in'
+): TessellatedMesh {
+  if (!sourceUnit || !CAD_UNIT_FACTORS_IN_MM[sourceUnit]) {
+    mesh.unit = 'unknown';
+    return mesh;
+  }
+
+  mesh.unit = sourceUnit;
+  if (!targetUnit || targetUnit === sourceUnit || !CAD_UNIT_FACTORS_IN_MM[targetUnit]) {
+    return mesh;
+  }
+
+  const factorSrc = CAD_UNIT_FACTORS_IN_MM[sourceUnit];
+  const factorTgt = CAD_UNIT_FACTORS_IN_MM[targetUnit];
+  const scale = factorSrc / factorTgt;
+
+  for (let i = 0; i < mesh.vertices.length; i++) {
+    mesh.vertices[i][0] *= scale;
+    mesh.vertices[i][1] *= scale;
+    mesh.vertices[i][2] *= scale;
+  }
+  mesh.unit = targetUnit;
+  return mesh;
+}
+
+function computeFaceNormalsAndAreas(
+  vertices: [number, number, number][],
+  faces: [number, number, number][]
+): { normals: [number, number, number][]; areas: number[] } {
+  const F = faces.length;
+  const normals: [number, number, number][] = new Array(F);
+  const areas: number[] = new Array(F);
+
+  for (let f = 0; f < F; f++) {
+    const [i0, i1, i2] = faces[f];
+    const p0 = vertices[i0] || [0, 0, 0];
+    const p1 = vertices[i1] || [0, 0, 0];
+    const p2 = vertices[i2] || [0, 0, 0];
+    const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2];
+    const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
+    const cx = ay * bz - az * by;
+    const cy = az * bx - ax * bz;
+    const cz = ax * by - ay * bx;
+    const len = Math.hypot(cx, cy, cz);
+    if (len > 1e-12) {
+      normals[f] = [cx / len, cy / len, cz / len];
+      areas[f] = 0.5 * len;
+    } else {
+      normals[f] = [0, 0, 1];
+      areas[f] = 0;
+    }
+  }
+  return { normals, areas };
+}
+
+function buildMeshAdjacencies(
+  vertexCount: number,
+  faces: [number, number, number][]
+): { vertexFaces: number[][]; edgeFaces: Map<string, number[]> } {
+  const vertexFaces: number[][] = Array.from({ length: vertexCount }, () => []);
+  const edgeFaces = new Map<string, number[]>();
+
+  for (let f = 0; f < faces.length; f++) {
+    const [i0, i1, i2] = faces[f];
+    if (i0 < vertexCount) vertexFaces[i0].push(f);
+    if (i1 < vertexCount) vertexFaces[i1].push(f);
+    if (i2 < vertexCount) vertexFaces[i2].push(f);
+
+    const edges = [
+      i0 < i1 ? `${i0}_${i1}` : `${i1}_${i0}`,
+      i1 < i2 ? `${i1}_${i2}` : `${i2}_${i1}`,
+      i2 < i0 ? `${i2}_${i0}` : `${i0}_${i2}`,
+    ];
+    for (const eKey of edges) {
+      let list = edgeFaces.get(eKey);
+      if (!list) {
+        list = [];
+        edgeFaces.set(eKey, list);
+      }
+      list.push(f);
+    }
+  }
+  return { vertexFaces, edgeFaces };
+}
+
+export function splitNormalsByCreaseAngle(
+  mesh: TessellatedMesh,
+  smoothingAngleDeg = 30
+): TessellatedMesh {
+  const { vertices, faces, name } = mesh;
+  if (faces.length === 0 || vertices.length === 0) {
+    return { ...mesh };
+  }
+
+  const angleRad = (Math.max(0, Math.min(180, smoothingAngleDeg)) * Math.PI) / 180;
+  const cosThreshold = Math.cos(angleRad);
+
+  const { normals: faceNormals, areas: faceAreas } = computeFaceNormalsAndAreas(vertices, faces);
+  const V = vertices.length;
+  const F = faces.length;
+  const { vertexFaces, edgeFaces } = buildMeshAdjacencies(V, faces);
+
+  const outputVertices: [number, number, number][] = [];
+  const outputNormals: [number, number, number][] = [];
+  const vertexFaceToNewIndex = new Map<string, number>();
+
+  for (let v = 0; v < V; v++) {
+    const adjFaces = vertexFaces[v];
+    if (adjFaces.length === 0) continue;
+
+    const parent: Record<number, number> = {};
+    for (const f of adjFaces) parent[f] = f;
+    const findRoot = (i: number): number => {
+      let r = i;
+      while (parent[r] !== r) r = parent[r];
+      let curr = i;
+      while (curr !== r) {
+        const nxt = parent[curr];
+        parent[curr] = r;
+        curr = nxt;
+      }
+      return r;
+    };
+    const unionGroup = (i: number, j: number) => {
+      const ri = findRoot(i);
+      const rj = findRoot(j);
+      if (ri !== rj) parent[ri] = rj;
+    };
+
+    for (let i = 0; i < adjFaces.length; i++) {
+      const f1 = adjFaces[i];
+      const [v0, v1, v2] = faces[f1];
+      const otherVerts = [v0, v1, v2].filter((u) => u !== v);
+      for (const w of otherVerts) {
+        const eKey = v < w ? `${v}_${w}` : `${w}_${v}`;
+        const sharing = edgeFaces.get(eKey);
+        if (sharing) {
+          for (const f2 of sharing) {
+            if (f2 !== f1 && adjFaces.includes(f2)) {
+              const dot =
+                faceNormals[f1][0] * faceNormals[f2][0] +
+                faceNormals[f1][1] * faceNormals[f2][1] +
+                faceNormals[f1][2] * faceNormals[f2][2];
+              if (dot >= cosThreshold - 1e-9) {
+                unionGroup(f1, f2);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const groups = new Map<number, number[]>();
+    for (const f of adjFaces) {
+      const root = findRoot(f);
+      let g = groups.get(root);
+      if (!g) {
+        g = [];
+        groups.set(root, g);
+      }
+      g.push(f);
+    }
+
+    const origPos = vertices[v];
+    for (const group of groups.values()) {
+      let nx = 0, ny = 0, nz = 0;
+      for (const f of group) {
+        const w = faceAreas[f] > 0 ? faceAreas[f] : 1;
+        nx += faceNormals[f][0] * w;
+        ny += faceNormals[f][1] * w;
+        nz += faceNormals[f][2] * w;
+      }
+      const nLen = Math.hypot(nx, ny, nz);
+      const finalNorm: [number, number, number] =
+        nLen > 1e-12 ? [nx / nLen, ny / nLen, nz / nLen] : faceNormals[group[0]];
+
+      const newIdx = outputVertices.length;
+      outputVertices.push([origPos[0], origPos[1], origPos[2]]);
+      outputNormals.push(finalNorm);
+
+      for (const f of group) {
+        vertexFaceToNewIndex.set(`${v}_${f}`, newIdx);
+      }
+    }
+  }
+
+  const outputFaces: [number, number, number][] = new Array(F);
+  for (let f = 0; f < F; f++) {
+    const [i0, i1, i2] = faces[f];
+    const n0 = vertexFaceToNewIndex.get(`${i0}_${f}`) ?? i0;
+    const n1 = vertexFaceToNewIndex.get(`${i1}_${f}`) ?? i1;
+    const n2 = vertexFaceToNewIndex.get(`${i2}_${f}`) ?? i2;
+    outputFaces[f] = [n0, n1, n2];
+  }
+
+  return {
+    name,
+    vertices: outputVertices,
+    normals: outputNormals,
+    faces: outputFaces,
+    topologyReport: mesh.topologyReport,
+    unit: mesh.unit,
+  };
+}
+
 /**
  * Tessellates any STEP or IGES CAD model string with B-spline curves/surfaces or B-Rep topology into
  * a unified 3D mesh (TessellatedMesh) ready for STL, OBJ, or DXF export.
@@ -3883,46 +4225,82 @@ export function extractStepBRepMesh(
 export function tessellateCadText(
   text: string,
   format: 'step' | 'stp' | 'iges' | 'igs' | string,
-  modelName = 'cad_model'
+  modelName = 'cad_model',
+  options: ConversionOptions = {}
 ): TessellatedMesh {
   const isIges = format === 'iges' || format === 'igs' || text.includes('S      1');
+  let mesh: TessellatedMesh | null = null;
+  let isSolid = false;
+  let sourceUnit: string | null = null;
 
   if (isIges) {
+    sourceUnit = parseIgesUnit(text);
+    isSolid = /^\s*186\s/m.test(text) || text.includes(',186,') || /MANIFOLD_SOLID_BREP/i.test(text);
+
     const surfaces = parseIgesBSplineSurfaces(text);
     if (surfaces.length > 0) {
-      return mergeTessellatedSurfaces(surfaces, modelName);
+      mesh = mergeTessellatedSurfaces(surfaces, modelName);
+    } else {
+      const curves = parseIgesBSplineCurves(text);
+      if (curves.length > 0) {
+        mesh = tessellateCurvesToMesh(curves, modelName);
+      }
     }
-
-    // Fallback 1: IGES B-Spline Curves (Entity 126)
-    const curves = parseIgesBSplineCurves(text);
-    if (curves.length > 0) {
-      return tessellateCurvesToMesh(curves, modelName);
-    }
-
   } else {
     // STEP format
     const entityMap = parseStepEntities(text);
+    sourceUnit = parseStepUnit(text, entityMap);
+    isSolid =
+      Array.from(entityMap.values()).some(
+        (e) =>
+          e.type === 'MANIFOLD_SOLID_BREP' ||
+          e.type === 'BREP_WITH_VOIDS' ||
+          e.type === 'FACETED_BREP'
+      ) || /MANIFOLD_SOLID_BREP|BREP_WITH_VOIDS|FACETED_BREP/i.test(text);
+
     const surfaces = extractStepBSplineSurfaces(entityMap);
     if (surfaces.length > 0) {
-      return mergeTessellatedSurfaces(surfaces, modelName);
-    }
-
-    // Step B-Rep topology (ADVANCED_FACE / EDGE_LOOP / PLANE / etc.)
-    const brepMesh = extractStepBRepMesh(entityMap, modelName);
-    if (brepMesh && brepMesh.faces.length > 0) {
-      return brepMesh;
-    }
-
-    // Fallback 1: STEP B-Spline Curves
-    const curves = extractStepBSplineCurves(entityMap);
-    if (curves.length > 0) {
-      return tessellateCurvesToMesh(curves, modelName);
+      mesh = mergeTessellatedSurfaces(surfaces, modelName);
+    } else {
+      const brepMesh = extractStepBRepMesh(entityMap, modelName);
+      if (brepMesh && brepMesh.faces.length > 0) {
+        mesh = brepMesh;
+      } else {
+        const curves = extractStepBSplineCurves(entityMap);
+        if (curves.length > 0) {
+          mesh = tessellateCurvesToMesh(curves, modelName);
+        }
+      }
     }
   }
 
-  throw new CadGeometryUnavailableError(
-    `Failed to tessellate CAD geometry from ${format}: No valid B-spline surfaces, B-Rep topology, or curves found.`
-  );
+  if (!mesh || mesh.vertices.length === 0) {
+    throw new CadGeometryUnavailableError(
+      `Failed to tessellate CAD geometry from ${format}: No valid B-spline surfaces, B-Rep topology, or curves found.`
+    );
+  }
+
+  // 1. Topology validation and watertightness gate for solid B-Reps
+  if (mesh.faces.length > 0) {
+    const topologyReport = verifyWatertightManifoldMesh(mesh.vertices, mesh.faces);
+    mesh.topologyReport = topologyReport;
+
+    if (isSolid && !topologyReport.isWatertight && !options.allowOpenMesh) {
+      throw new CadTopologyError(
+        `CAD solid B-Rep model '${modelName}' produced a non-watertight mesh (${topologyReport.boundaryEdges} boundary edges, ${topologyReport.nonManifoldEdges} non-manifold edges, Euler characteristic=${topologyReport.eulerCharacteristic}, genus=${topologyReport.genus}). Set allowOpenMesh: true to bypass.`
+      );
+    }
+  }
+
+  // 2. Unit scaling
+  scaleMeshCoordinates(mesh, sourceUnit, options.outputUnit);
+
+  // 3. Normal splitting by crease angle
+  if (options.smoothingAngleDeg !== undefined) {
+    mesh = splitNormalsByCreaseAngle(mesh, options.smoothingAngleDeg);
+  }
+
+  return mesh;
 }
 
 /**
@@ -3932,7 +4310,8 @@ export function tessellateCadText(
 export function tessellateCadBuffer(
   buffer: Buffer | Uint8Array | string,
   format: 'step' | 'stp' | 'iges' | 'igs',
-  modelName = 'cad_model'
+  modelName = 'cad_model',
+  options: ConversionOptions = {}
 ): TessellatedMesh {
   const text =
     typeof buffer === 'string'
@@ -3940,7 +4319,7 @@ export function tessellateCadBuffer(
       : typeof Buffer !== 'undefined' && Buffer.isBuffer(buffer)
       ? buffer.toString('utf-8')
       : new TextDecoder('utf-8').decode(buffer);
-  return tessellateCadText(text, format, modelName);
+  return tessellateCadText(text, format, modelName, options);
 }
 
 /**
