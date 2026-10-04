@@ -229,6 +229,21 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Enable solid archive mode for multi-file packaging.',
     },
+    collisionPolicy: {
+      type: 'string',
+      enum: ['rename', 'error', 'overwrite'],
+      default: 'rename',
+      description: 'Resolution strategy for archive entry name collisions.',
+    },
+    entries: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Glob patterns for selective extraction from archives.',
+    },
+    repair: {
+      type: 'boolean',
+      description: 'Attempt archive repair mode (supported for ZIP via zip -FF).',
+    },
 
     // Audio options
     audioBitrate: {
@@ -1038,4 +1053,34 @@ export const UsageQueryResponseSchema = {
     count: { type: 'integer', minimum: 0, description: 'Number of returned ledger items.' },
   },
 } as const;
+
+export const ArchiveInspectResponseSchema = {
+  $id: 'https://easyconvert.local/schemas/archive-inspect-response.json',
+  type: 'object',
+  required: ['format', 'totalEntries', 'totalUncompressedBytes', 'totalCompressedBytes', 'isEncrypted', 'entries'],
+  properties: {
+    format: { type: 'string', description: 'Detected archive format standard.' },
+    totalEntries: { type: 'integer', minimum: 0, description: 'Total number of items in the archive.' },
+    totalUncompressedBytes: { type: 'integer', minimum: 0, description: 'Sum of uncompressed file sizes in bytes.' },
+    totalCompressedBytes: { type: 'integer', minimum: 0, description: 'Sum of compressed storage sizes in bytes.' },
+    isEncrypted: { type: 'boolean', description: 'Whether archive or its entries require a password.' },
+    entries: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['name', 'uncompressedSize', 'isEncrypted', 'isDirectory'],
+        properties: {
+          name: { type: 'string', description: 'Internal relative file or directory path.' },
+          uncompressedSize: { type: 'integer', minimum: 0, description: 'Uncompressed size in bytes.' },
+          compressedSize: { type: 'integer', minimum: 0, description: 'Compressed payload size in bytes.' },
+          isEncrypted: { type: 'boolean', description: 'Whether this entry is password-protected.' },
+          isDirectory: { type: 'boolean', description: 'Whether this entry represents a directory.' },
+          modifiedAt: { type: 'string', description: 'ISO 8601 modification timestamp.' },
+          crc32: { type: 'string', description: 'Hex-encoded CRC32 checksum.' },
+        },
+      },
+    },
+  },
+} as const;
+
 

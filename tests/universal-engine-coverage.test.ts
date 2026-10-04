@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
 import { decompressBzip2 } from '../src/lib/conversions/bzip2';
-import { extractTarArchive, extractZipArchive, extractRarArchive, createZipArchive } from '../src/lib/conversions/archive';
+import { extractTarArchive, extractZipArchive, extractRarArchive, createZipArchive, buildSyntheticStoredRarBuffer } from '../src/lib/conversions/archive';
 
 describe('Universal Engine Conversion Coverage', () => {
   it('converts archive formats (tar.gz, tar.bz2, 7z, rar, etc.) with real binary validation', async () => {
@@ -36,19 +36,18 @@ describe('Universal Engine Conversion Coverage', () => {
     // Standard 7z signature: 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C
     expect(res2.buffer.subarray(0, 6)).toEqual(Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]));
 
-    // zip -> rar
-    const resRar = await convertFile(textData, 'zip', 'rar', {}, 'test.zip');
-    expect(resRar.filename).toBe('test.rar');
-    expect(resRar.mimeType).toBe('application/x-rar-compressed');
-    // Standard RAR signature: Rar!\x1a\x07\x00
-    expect(resRar.buffer.subarray(0, 7)).toEqual(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]));
+    // zip -> rar: Design Decision D8 permanently removes RAR creation (fail closed)
+    await expect(convertFile(textData, 'zip', 'rar', {}, 'test.zip')).rejects.toThrow();
 
-    // rar -> zip roundtrip
-    const rarExtract = extractRarArchive(resRar.buffer);
+    // rar -> zip roundtrip with synthetic stored RAR fixture
+    const syntheticRar = buildSyntheticStoredRarBuffer([
+      { filename: 'test.txt', buffer: rawContent },
+    ]);
+    const rarExtract = extractRarArchive(syntheticRar);
     expect(rarExtract.length).toBeGreaterThan(0);
     expect(rarExtract[0].buffer.toString('utf-8')).toBe('Archive test content for universal conversion');
 
-    const resZipFromRar = await convertFile(resRar.buffer, 'rar', 'zip', {}, 'test.rar');
+    const resZipFromRar = await convertFile(syntheticRar, 'rar', 'zip', {}, 'test.rar');
     const zipFiles = await extractZipArchive(resZipFromRar.buffer);
     expect(zipFiles.length).toBeGreaterThan(0);
     expect(zipFiles[0].buffer.toString('utf-8')).toBe('Archive test content for universal conversion');

@@ -9,7 +9,19 @@ import { s3Storage } from '../../storage/s3-storage';
 import type { IStorageBackend } from '../../storage/oci-storage';
 import type { ConversionEnginePort } from '../engine-port';
 import { graphScheduler } from './scheduler';
-import { createTarArchive, extractTarArchive, create7zArchive, extract7zArchive } from '../../conversions/archive';
+import {
+  createTarArchive,
+  extractTarArchive,
+  create7zArchive,
+  extract7zArchive,
+  createZipArchive,
+  extractZipArchive,
+  extractRarArchive,
+  validateMultiVolumeSequence,
+  stitchMultiVolumeArchive,
+  isSplitArchive,
+} from '../../conversions';
+import { ConversionFailedError } from '../../types';
 
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
@@ -167,6 +179,13 @@ export async function processGraphNodeJob(
           throw new Error(`archive.create node "${nodeId}" has no input artifacts to bundle`);
         }
 
+        const targetFmt = (node.targetFormat || 'zip').toLowerCase().replace(/^\./, '');
+        if (targetFmt === 'rar') {
+          throw new ConversionFailedError(
+            "Target archive format 'rar' creation is not supported. RAR archive creation has been removed per D8; please use ZIP, 7z, or TAR."
+          );
+        }
+
         const filesToArchive: { filename: string; buffer: Buffer }[] = [];
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
@@ -182,29 +201,22 @@ export async function processGraphNodeJob(
 
         let archiveBuf: Buffer;
         let archiveMime: string;
-        const targetFmt = node.targetFormat || 'zip';
 
         if (targetFmt === 'zip') {
-          const zip = new JSZip();
-          for (const f of filesToArchive) {
-            zip.file(f.filename, f.buffer);
-          }
-          archiveBuf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+          const zipRes = await createZipArchive(filesToArchive, node.options || {}, `bundle.zip`);
+          archiveBuf = zipRes.buffer;
           archiveMime = 'application/zip';
         } else if (targetFmt === 'tar' || targetFmt === 'tar.gz') {
-          const tarRes = createTarArchive(filesToArchive, {});
+          const tarRes = createTarArchive(filesToArchive, node.options || {}, `bundle.tar`);
           archiveBuf = targetFmt === 'tar.gz' ? zlib.gzipSync(tarRes.buffer) : tarRes.buffer;
           archiveMime = targetFmt === 'tar.gz' ? 'application/gzip' : 'application/x-tar';
         } else if (targetFmt === '7z') {
-          const sevenZipRes = create7zArchive(filesToArchive);
+          const sevenZipRes = create7zArchive(filesToArchive, node.options || {}, `bundle.7z`);
           archiveBuf = sevenZipRes.buffer;
           archiveMime = 'application/x-7z-compressed';
         } else {
-          const zip = new JSZip();
-          for (const f of filesToArchive) {
-            zip.file(f.filename, f.buffer);
-          }
-          archiveBuf = await zip.generateAsync({ type: 'nodebuffer' });
+          const zipRes = await createZipArchive(filesToArchive, node.options || {}, `bundle.${targetFmt}`);
+          archiveBuf = zipRes.buffer;
           archiveMime = 'application/zip';
         }
 
@@ -221,32 +233,44 @@ export async function processGraphNodeJob(
           throw new Error(`archive.extract node "${nodeId}" has no input artifact`);
         }
 
-        const archiveKey = inputArtifacts[0];
-        const stored = effectiveStorage.getObject(archiveKey);
-        if (!stored) {
-          throw new Error(`Archive artifact "${archiveKey}" not found`);
+        let archiveBuffer: Buffer;
+        let effectiveFilename: string;
+
+        if (inputArtifacts.length > 1) {
+          const parts = inputArtifacts.map((k) => {
+            const st = effectiveStorage.getObject(k);
+            if (!st) throw new Error(`Archive artifact "${k}" not found`);
+            return { filename: st.filename || path.basename(k), buffer: st.buffer };
+          });
+          validateMultiVolumeSequence(parts.map((p) => p.filename));
+          const stitched = stitchMultiVolumeArchive(parts);
+          archiveBuffer = stitched.buffer;
+          effectiveFilename = stitched.baseFilename;
+        } else {
+          const archiveKey = inputArtifacts[0];
+          const stored = effectiveStorage.getObject(archiveKey);
+          if (!stored) {
+            throw new Error(`Archive artifact "${archiveKey}" not found`);
+          }
+          effectiveFilename = stored.filename || archiveKey;
+          if (isSplitArchive(effectiveFilename)) {
+            validateMultiVolumeSequence([effectiveFilename]);
+          }
+          archiveBuffer = stored.buffer;
         }
 
-        const ext = path.extname(stored.filename || archiveKey).toLowerCase().replace(/^\./, '');
+        const ext = path.extname(effectiveFilename).toLowerCase().replace(/^\./, '');
         let extracted: { filename: string; buffer: Buffer }[] = [];
 
         if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
-          extracted = extractTarArchive(stored.buffer);
+          const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? zlib.gunzipSync(archiveBuffer) : archiveBuffer;
+          extracted = extractTarArchive(uncompressed, { entries: node.entries });
         } else if (ext === '7z') {
-          extracted = extract7zArchive(stored.buffer);
+          extracted = extract7zArchive(archiveBuffer, { entries: node.entries });
+        } else if (ext === 'rar') {
+          extracted = extractRarArchive(archiveBuffer, { entries: node.entries });
         } else {
-          const zip = await JSZip.loadAsync(stored.buffer);
-          for (const [entryName, entryFile] of Object.entries(zip.files)) {
-            if (!entryFile.dir) {
-              const fileBuf = await entryFile.async('nodebuffer');
-              extracted.push({ filename: entryName, buffer: fileBuf });
-            }
-          }
-        }
-
-        if (node.entries && node.entries.length > 0) {
-          const allowed = new Set(node.entries);
-          extracted = extracted.filter((e) => allowed.has(e.filename) || allowed.has(path.basename(e.filename)));
+          extracted = await extractZipArchive(archiveBuffer, { entries: node.entries });
         }
 
         for (const f of extracted) {

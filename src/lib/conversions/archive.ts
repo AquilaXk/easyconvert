@@ -11,6 +11,11 @@ import {
   ConversionFailedError,
   ArchiveEncryptionUnavailableError,
   UnsupportedOptionError,
+  ArchiveCollisionPolicy,
+  ArchiveEntryMetadata,
+  ArchiveInspectResponse,
+  ArchiveEncryptedHeaderError,
+  ArchiveEntryCollisionError,
 } from '../types';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
@@ -33,6 +38,7 @@ import {
   MultiVolumeBufferOverflowError,
   MAX_STITCH_BUFFER_SIZE,
   validateAndSortSplitParts,
+  validateMultiVolumeSequence,
   type VirtualSpannedPartSource,
   type VirtualSpannedStreamOptions,
   type SpannedArchiveMetadata,
@@ -78,6 +84,7 @@ export {
   MultiVolumeBufferOverflowError,
   MAX_STITCH_BUFFER_SIZE,
   validateAndSortSplitParts,
+  validateMultiVolumeSequence,
   type VirtualSpannedPartSource,
   type VirtualSpannedStreamOptions,
   type SpannedArchiveMetadata,
@@ -123,12 +130,114 @@ function rarHeaderCrc(headerWithoutCrc: Buffer): number {
   return (c ^ 0xffffffff) & 0xffff;
 }
 
+/**
+ * Resolves entry collisions for archive creation based on the chosen collision policy.
+ * - 'rename': appends a suffix (e.g., stem-1.ext, stem-2.ext) to conflicting files.
+ * - 'error': throws ArchiveEntryCollisionError on any duplicate relative path.
+ * - 'overwrite': keeps the last occurrence of the conflicting entry.
+ */
+export function resolveArchiveEntryCollisions(
+  files: { filename: string; buffer: Buffer }[],
+  policy: ArchiveCollisionPolicy = 'rename'
+): { filename: string; buffer: Buffer }[] {
+  if (files.length <= 1) return [...files];
+
+  if (policy === 'overwrite') {
+    const map = new Map<string, { filename: string; buffer: Buffer }>();
+    for (const f of files) {
+      const norm = f.filename.replace(/\\/g, '/');
+      map.set(norm, { filename: norm, buffer: f.buffer });
+    }
+    return Array.from(map.values());
+  }
+
+  if (policy === 'error') {
+    const seen = new Set<string>();
+    for (const f of files) {
+      const norm = f.filename.replace(/\\/g, '/');
+      if (seen.has(norm)) {
+        throw new ArchiveEntryCollisionError(
+          `Archive entry collision detected for '${norm}' under collision policy 'error'.`
+        );
+      }
+      seen.add(norm);
+    }
+    return [...files];
+  }
+
+  // policy === 'rename'
+  const seen = new Set<string>();
+  const result: { filename: string; buffer: Buffer }[] = [];
+
+  for (const f of files) {
+    const norm = f.filename.replace(/\\/g, '/');
+    if (!seen.has(norm)) {
+      seen.add(norm);
+      result.push({ filename: norm, buffer: f.buffer });
+      continue;
+    }
+
+    const ext = path.extname(norm);
+    const dir = path.dirname(norm);
+    const baseStem = path.basename(norm, ext);
+
+    let counter = 1;
+    let candidate = dir === '.' || dir === '' ? `${baseStem}-${counter}${ext}` : `${dir}/${baseStem}-${counter}${ext}`;
+    while (seen.has(candidate)) {
+      counter++;
+      candidate = dir === '.' || dir === '' ? `${baseStem}-${counter}${ext}` : `${dir}/${baseStem}-${counter}${ext}`;
+    }
+    seen.add(candidate);
+    result.push({ filename: candidate, buffer: f.buffer });
+  }
+
+  return result;
+}
+
+/**
+ * Evaluates whether an archive entry path matches any of the provided glob patterns.
+ * Supports exact paths, *, **, ?, and directory prefixes.
+ */
+export function matchArchiveGlob(filePath: string, patterns?: string[]): boolean {
+  if (!patterns || patterns.length === 0) return true;
+  const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const baseName = path.basename(normalizedPath);
+
+  for (const pattern of patterns) {
+    if (!pattern) continue;
+    const normPattern = pattern.replace(/\\/g, '/').replace(/^\/+/, '');
+
+    if (normalizedPath === normPattern || baseName === normPattern) {
+      return true;
+    }
+
+    const target = normPattern.includes('/') ? normalizedPath : baseName;
+
+    const regexStr = '^' + normPattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, '___GLOB_STAR_STAR___')
+      .replace(/\*/g, '[^/]*')
+      .replace(/\?/g, '[^/]')
+      .replace(/___GLOB_STAR_STAR___/g, '.*') + '$';
+
+    try {
+      const regex = new RegExp(regexStr);
+      if (regex.test(target) || regex.test(normalizedPath)) {
+        return true;
+      }
+    } catch {}
+  }
+
+  return false;
+}
+
 function createEncryptedArchiveVia7z(
   files: { filename: string; buffer: Buffer }[],
   archiveName: string,
   archiveType: 'zip' | '7z',
   mimeType: string,
-  password?: string
+  password?: string,
+  collisionPolicy?: ArchiveCollisionPolicy
 ): ConversionResult | null {
   const p7z = get7zBinaryPath();
   if (!p7z || !password) return null;
@@ -136,14 +245,16 @@ function createEncryptedArchiveVia7z(
     throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
   }
 
+  const resolvedFiles = resolveArchiveEntryCollisions(files, collisionPolicy || 'rename');
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
   const stagingDir = path.join(workDir, 'staging');
   fs.mkdirSync(stagingDir, { recursive: true });
   try {
-    for (const f of files) {
-      const dest = path.join(stagingDir, f.filename);
+    for (const f of resolvedFiles) {
+      const safe = sanitizeArchivePath(f.filename) || path.basename(f.filename);
+      const dest = path.join(stagingDir, safe);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, f.buffer);
     }
@@ -177,6 +288,7 @@ export async function createZipArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.zip'
 ): Promise<ConversionResult> {
+  const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   if (options.password) {
     const p7z = get7zBinaryPath();
     if (!p7z) {
@@ -184,14 +296,21 @@ export async function createZipArchive(
         'Archive encryption is unavailable: native 7z binary is required for encrypted ZIP archives.'
       );
     }
-    const encRes = createEncryptedArchiveVia7z(files, archiveName, 'zip', 'application/zip', options.password);
+    const encRes = createEncryptedArchiveVia7z(
+      resolvedFiles,
+      archiveName,
+      'zip',
+      'application/zip',
+      options.password,
+      options.collisionPolicy
+    );
     if (encRes) return encRes;
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted ZIP archive.');
   }
 
   const zip = new JSZip();
 
-  for (const f of files) {
+  for (const f of resolvedFiles) {
     zip.file(f.filename, f.buffer);
   }
 
@@ -274,7 +393,7 @@ export function isZipBufferEncrypted(buffer: Buffer): boolean {
 
 export async function extractZipArchive(
   zipBuffer: Buffer,
-  options: { password?: string } = {}
+  options: { password?: string; entries?: string[] } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
   if (options.password && /[\r\n\0]/.test(options.password)) {
     throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
@@ -327,6 +446,9 @@ export async function extractZipArchive(
             if (stat.isDirectory()) {
               readRec(full, rel);
             } else {
+              if (!matchArchiveGlob(rel, options.entries)) {
+                continue;
+              }
               totalSize += stat.size;
               if (totalSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
                 throw new ConversionFailedError(
@@ -348,7 +470,7 @@ export async function extractZipArchive(
   }
 
   const zip = await JSZip.loadAsync(zipBuffer);
-  const entries = Object.entries(zip.files).filter(([, f]) => !f.dir);
+  const entries = Object.entries(zip.files).filter(([filename, f]) => !f.dir && matchArchiveGlob(filename, options.entries));
 
   if (entries.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
     throw new Error(
@@ -467,9 +589,10 @@ export function createTarArchive(
   if (options.password) {
     throw new UnsupportedOptionError('TAR archives do not support password encryption.');
   }
+  const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   const blocks: Buffer[] = [];
 
-  for (const file of files) {
+  for (const file of resolvedFiles) {
     const header = Buffer.alloc(512);
     // name (100)
     header.write(file.filename.slice(0, 100), 0, 100, 'ascii');
@@ -520,7 +643,10 @@ export function createTarArchive(
   };
 }
 
-export function extractTarArchive(tarBuffer: Buffer): { filename: string; buffer: Buffer }[] {
+export function extractTarArchive(
+  tarBuffer: Buffer,
+  options: { entries?: string[] } = {}
+): { filename: string; buffer: Buffer }[] {
   const files: { filename: string; buffer: Buffer }[] = [];
   let offset = 0;
   let totalUncompressedSize = 0;
@@ -554,8 +680,10 @@ export function extractTarArchive(tarBuffer: Buffer): { filename: string; buffer
     const pad = (512 - (size % 512)) % 512;
     const sanitizedName = sanitizeArchivePath(rawName);
     if (sanitizedName) {
-      const fileBuf = tarBuffer.subarray(offset, offset + size);
-      files.push({ filename: sanitizedName, buffer: Buffer.from(fileBuf) });
+      if (matchArchiveGlob(sanitizedName, options.entries)) {
+        const fileBuf = tarBuffer.subarray(offset, offset + size);
+        files.push({ filename: sanitizedName, buffer: Buffer.from(fileBuf) });
+      }
     }
     offset += size + pad;
   }
@@ -563,14 +691,13 @@ export function extractTarArchive(tarBuffer: Buffer): { filename: string; buffer
   return files;
 }
 
-export function createRarArchive(
-  files: { filename: string; buffer: Buffer }[],
-  options: ConversionOptions = {},
-  archiveName = 'converted_files.rar'
-): ConversionResult {
-  if (options.password) {
-    throw new UnsupportedOptionError("Target archive format 'rar' does not support password encryption.");
-  }
+/**
+ * @internal Creates a synthetic uncompressed RAR v2 archive buffer strictly for testing
+ * archive splitting, stitching, and decompression. Production RAR creation is disabled per D8.
+ */
+export function buildSyntheticStoredRarBuffer(
+  files: { filename: string; buffer: Buffer }[]
+): Buffer {
   const blocks: Buffer[] = [];
 
   // 1. Marker block (7 bytes)
@@ -631,13 +758,22 @@ export function createRarArchive(
   endHeadData.copy(endHead, 2);
   blocks.push(endHead);
 
-  const buffer = Buffer.concat(blocks);
-  return {
-    buffer,
-    mimeType: 'application/x-rar-compressed',
-    filename: archiveName,
-    size: buffer.length,
-  };
+  return Buffer.concat(blocks);
+}
+
+export function createRarArchive(
+  files: { filename: string; buffer: Buffer }[],
+  _options: ConversionOptions = {},
+  _archiveName = 'converted_files.rar'
+): ConversionResult {
+  if (Array.isArray(files)) {
+    throw new ConversionFailedError(
+      "Target archive format 'rar' creation is not supported. RAR archive creation has been removed per D8; please use ZIP, 7z, or TAR."
+    );
+  }
+  throw new ConversionFailedError(
+    "Target archive format 'rar' creation is not supported. RAR archive creation has been removed per D8; please use ZIP, 7z, or TAR."
+  );
 }
 
 let resolvedUnrarPath: string | null = null;
@@ -679,7 +815,7 @@ export function getUnrarBinaryPath(): string | null {
 
 export function extractRarArchive(
   rarBuffer: Buffer,
-  options: { password?: string } = {}
+  options: { password?: string; entries?: string[] } = {}
 ): { filename: string; buffer: Buffer }[] {
   if (!rarBuffer || rarBuffer.length < 14) {
     throw new Error('Invalid RAR archive: buffer too small');
@@ -766,7 +902,7 @@ export function extractRarArchive(
               throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
             }
             const sanitized = sanitizeArchivePath(relPath);
-            if (sanitized) {
+            if (sanitized && matchArchiveGlob(sanitized, options.entries)) {
               extracted.push({ filename: sanitized, buffer: buf });
             }
           }
@@ -860,7 +996,7 @@ export function extractRarArchive(
           throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
         }
 
-        if (sanitizedName) {
+        if (sanitizedName && matchArchiveGlob(sanitizedName, options.entries)) {
           files.push({ filename: sanitizedName, buffer: fileBuf });
         }
       }
@@ -1832,6 +1968,8 @@ export function create7zArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.7z'
 ): ConversionResult {
+  const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
+  files = resolvedFiles;
   if (options.password) {
     const p7z = get7zBinaryPath();
     if (!p7z) {
@@ -1839,7 +1977,14 @@ export function create7zArchive(
         'Archive encryption is unavailable: native 7z binary is required for encrypted 7z archives.'
       );
     }
-    const encRes = createEncryptedArchiveVia7z(files, archiveName, '7z', 'application/x-7z-compressed', options.password);
+    const encRes = createEncryptedArchiveVia7z(
+      resolvedFiles,
+      archiveName,
+      '7z',
+      'application/x-7z-compressed',
+      options.password,
+      options.collisionPolicy
+    );
     if (encRes) return encRes;
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
   }
@@ -2187,7 +2332,10 @@ function decode7zEncodedHeader(sevenZipBuffer: Buffer, nh: Buffer): Buffer | nul
   return null;
 }
 
-export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; buffer: Buffer }[] {
+export function extract7zArchive(
+  sevenZipBuffer: Buffer,
+  options: { password?: string; entries?: string[] } = {}
+): { filename: string; buffer: Buffer }[] {
   const files: { filename: string; buffer: Buffer }[] = [];
   if (sevenZipBuffer.length < 32) return files;
 
@@ -2528,6 +2676,9 @@ export function extract7zArchive(sevenZipBuffer: Buffer): { filename: string; bu
     }
   }
 
+  if (options.entries && options.entries.length > 0) {
+    return files.filter((f) => matchArchiveGlob(f.filename, options.entries));
+  }
   return files;
 }
 
@@ -2609,6 +2760,772 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
   });
 }
 
+let resolvedZipPath: string | null = null;
+export function getZipBinaryPath(): string | null {
+  const envOverride = process.env.ZIP_PATH;
+  if (envOverride !== undefined) {
+    if (path.isAbsolute(envOverride) && fs.existsSync(envOverride)) {
+      return envOverride;
+    }
+    return null;
+  }
+  if (resolvedZipPath !== null) return resolvedZipPath || null;
+  const fixedLocations = [
+    '/usr/bin/zip',
+    '/usr/local/bin/zip',
+    '/opt/homebrew/bin/zip',
+    '/bin/zip',
+  ];
+  for (const loc of fixedLocations) {
+    if (fs.existsSync(loc)) {
+      resolvedZipPath = loc;
+      return loc;
+    }
+  }
+  return null;
+}
+
+/**
+ * Repairs a damaged or truncated ZIP archive.
+ * First attempts sandboxed `zip -FF <in> --out <out> -q -y`.
+ * Falls back to pure TypeScript Local File Header scanner that salvages all valid entries
+ * and rebuilds an intact Central Directory structure.
+ */
+export async function repairZipArchive(
+  zipBuffer: Buffer,
+  _options: ConversionOptions = {}
+): Promise<Buffer> {
+  const zipBin = getZipBinaryPath();
+  if (zipBin) {
+    const tmpDir = os.tmpdir();
+    const token = crypto.randomBytes(8).toString('hex');
+    const workDir = path.join(tmpDir, `easyconvert_zip_repair_${Date.now()}_${token}`);
+    fs.mkdirSync(workDir, { recursive: true });
+    try {
+      const inPath = path.join(workDir, 'corrupt.zip');
+      const outPath = path.join(workDir, 'repaired.zip');
+      fs.writeFileSync(inPath, zipBuffer);
+
+      const resolved = resolveSandboxedCommand(zipBin, [inPath, '-FF', '--out', outPath, '-q'], {
+        networkIsolated: true,
+      });
+      try {
+        const out = execFileSync(resolved.binary, resolved.args, {
+          cwd: workDir,
+          env: getSanitizedEnvironment({}, true),
+          timeout: 60000,
+          input: Buffer.from('y\ny\ny\ny\n'),
+        });
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 22) {
+          const repaired = fs.readFileSync(outPath);
+          try {
+            if ((await extractZipArchive(repaired)).length > 0) {
+              return repaired;
+            }
+          } catch {
+            // Repaired zip is invalid or empty, fall through to pure TS recovery
+          }
+        }
+      } catch {
+        // Fall through to pure TS recovery
+      }
+    } finally {
+      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  // Pure TypeScript ZIP recovery:
+  // Scans for Local File Header magic bytes (0x04034b50 / PK\x03\x04),
+  // salvages recoverable uncompressed or deflated streams, and rebuilds Central Directory.
+  const salvagedFiles: { filename: string; buffer: Buffer }[] = [];
+  let pos = 0;
+  while (pos + 30 <= zipBuffer.length) {
+    if (
+      zipBuffer[pos] === 0x50 &&
+      zipBuffer[pos + 1] === 0x4b &&
+      zipBuffer[pos + 2] === 0x03 &&
+      zipBuffer[pos + 3] === 0x04
+    ) {
+      try {
+        const compMethod = zipBuffer.readUInt16LE(pos + 8);
+        const compSize = zipBuffer.readUInt32LE(pos + 18);
+        const uncompSize = zipBuffer.readUInt32LE(pos + 22);
+        const nameLen = zipBuffer.readUInt16LE(pos + 26);
+        const extraLen = zipBuffer.readUInt16LE(pos + 28);
+
+        const dataStart = pos + 30 + nameLen + extraLen;
+        if (pos + 30 + nameLen <= zipBuffer.length && dataStart <= zipBuffer.length) {
+          const rawName = zipBuffer.toString('utf-8', pos + 30, pos + 30 + nameLen);
+          const cleanName = sanitizeArchivePath(rawName) || path.basename(rawName);
+
+          let rawChunk: Buffer | null = null;
+          if (compSize > 0 && dataStart + compSize <= zipBuffer.length) {
+            rawChunk = zipBuffer.subarray(dataStart, dataStart + compSize);
+          } else {
+            const nextPk = zipBuffer.indexOf(Buffer.from([0x50, 0x4b]), dataStart);
+            const endSlice = nextPk !== -1 ? nextPk : zipBuffer.length;
+            rawChunk = zipBuffer.subarray(dataStart, endSlice);
+          }
+
+          if (cleanName && rawChunk && rawChunk.length > 0) {
+            let uncompressed: Buffer | null = null;
+            if (compMethod === 0) {
+              uncompressed = Buffer.from(rawChunk);
+            } else if (compMethod === 8) {
+              try {
+                uncompressed = zlib.inflateRawSync(rawChunk);
+              } catch {
+                for (let offset = rawChunk.length - 1; offset > 0 && !uncompressed; offset--) {
+                  try {
+                    uncompressed = zlib.inflateRawSync(rawChunk.subarray(0, offset));
+                  } catch {}
+                }
+              }
+            }
+            if (uncompressed && (uncompSize === 0 || uncompressed.length === uncompSize || compSize === 0)) {
+              salvagedFiles.push({ filename: cleanName, buffer: uncompressed });
+              pos = dataStart + (compSize > 0 ? compSize : rawChunk.length);
+              continue;
+            }
+          }
+        }
+      } catch {}
+    }
+    pos++;
+  }
+
+  if (salvagedFiles.length === 0) {
+    throw new ConversionFailedError('ZIP archive repair failed: no recoverable file records found in buffer.');
+  }
+
+  const zip = new JSZip();
+  for (const f of salvagedFiles) {
+    zip.file(f.filename, f.buffer);
+  }
+  return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
+  if (buffer.length < 22) {
+    throw new ConversionFailedError('Invalid ZIP archive: buffer too small');
+  }
+
+  let eocdOffset = -1;
+  const maxScan = Math.min(buffer.length, 65535 + 22);
+  const startScan = buffer.length - maxScan;
+  for (let i = buffer.length - 22; i >= startScan; i--) {
+    if (
+      buffer[i] === 0x50 &&
+      buffer[i + 1] === 0x4b &&
+      buffer[i + 2] === 0x05 &&
+      buffer[i + 3] === 0x06
+    ) {
+      eocdOffset = i;
+      break;
+    }
+  }
+
+  const entries: ArchiveEntryMetadata[] = [];
+  let isEncryptedArchive = false;
+
+  if (eocdOffset !== -1) {
+    let cdOffset = buffer.readUInt32LE(eocdOffset + 16);
+
+    // Check for Zip64 EOCD locator (0x07064b50)
+    if (eocdOffset >= 20) {
+      const locPos = eocdOffset - 20;
+      if (
+        buffer[locPos] === 0x50 &&
+        buffer[locPos + 1] === 0x4b &&
+        buffer[locPos + 2] === 0x06 &&
+        buffer[locPos + 3] === 0x07
+      ) {
+        const zip64EocdOffset = Number(buffer.readBigUInt64LE(locPos + 8));
+        if (
+          zip64EocdOffset + 56 <= buffer.length &&
+          buffer[zip64EocdOffset] === 0x50 &&
+          buffer[zip64EocdOffset + 1] === 0x4b &&
+          buffer[zip64EocdOffset + 2] === 0x06 &&
+          buffer[zip64EocdOffset + 3] === 0x06
+        ) {
+          cdOffset = Number(buffer.readBigUInt64LE(zip64EocdOffset + 48));
+        }
+      }
+    }
+
+    let pos = cdOffset;
+    while (
+      pos + 46 <= buffer.length &&
+      buffer[pos] === 0x50 &&
+      buffer[pos + 1] === 0x4b &&
+      buffer[pos + 2] === 0x01 &&
+      buffer[pos + 3] === 0x02
+    ) {
+      const flags = buffer.readUInt16LE(pos + 8);
+      const isEncrypted = (flags & 1) !== 0;
+      if (isEncrypted) isEncryptedArchive = true;
+
+      const modTime = buffer.readUInt16LE(pos + 12);
+      const modDate = buffer.readUInt16LE(pos + 14);
+      const year = ((modDate >> 9) & 0x7f) + 1980;
+      const month = Math.max(0, Math.min(11, ((modDate >> 5) & 0x0f) - 1));
+      const day = Math.max(1, Math.min(31, modDate & 0x1f));
+      const hour = Math.min(23, (modTime >> 11) & 0x1f);
+      const min = Math.min(59, (modTime >> 5) & 0x3f);
+      const sec = Math.min(59, (modTime & 0x1f) * 2);
+      const modifiedAt = new Date(Date.UTC(year, month, day, hour, min, sec)).toISOString();
+
+      const crc = buffer.readUInt32LE(pos + 16);
+      const crc32Str = crc.toString(16).padStart(8, '0');
+      let compSize = buffer.readUInt32LE(pos + 20);
+      let uncompSize = buffer.readUInt32LE(pos + 24);
+      const fnLen = buffer.readUInt16LE(pos + 28);
+      const extraLen = buffer.readUInt16LE(pos + 30);
+      const commentLen = buffer.readUInt16LE(pos + 32);
+
+      const nameStart = pos + 46;
+      const nameEnd = nameStart + fnLen;
+      const rawName = nameEnd <= buffer.length ? buffer.toString('utf-8', nameStart, nameEnd) : 'unknown';
+
+      if (extraLen > 0 && nameEnd + extraLen <= buffer.length) {
+        let extraPos = nameEnd;
+        while (extraPos + 4 <= nameEnd + extraLen) {
+          const headerId = buffer.readUInt16LE(extraPos);
+          const dataSize = buffer.readUInt16LE(extraPos + 2);
+          if (headerId === 0x0001 && extraPos + 4 + dataSize <= nameEnd + extraLen) {
+            let offsetInZip64 = extraPos + 4;
+            if (uncompSize === 0xffffffff && offsetInZip64 + 8 <= extraPos + 4 + dataSize) {
+              uncompSize = Number(buffer.readBigUInt64LE(offsetInZip64));
+              offsetInZip64 += 8;
+            }
+            if (compSize === 0xffffffff && offsetInZip64 + 8 <= extraPos + 4 + dataSize) {
+              compSize = Number(buffer.readBigUInt64LE(offsetInZip64));
+            }
+            break;
+          }
+          extraPos += 4 + dataSize;
+        }
+      }
+
+      const isDirectory = rawName.endsWith('/') || (buffer.readUInt32LE(pos + 38) & 0x10) !== 0;
+
+      entries.push({
+        name: rawName,
+        uncompressedSize: uncompSize,
+        compressedSize: compSize,
+        isEncrypted,
+        isDirectory,
+        modifiedAt,
+        crc32: crc32Str,
+      });
+
+      pos += 46 + fnLen + extraLen + commentLen;
+    }
+  } else {
+    let pos = 0;
+    while (pos + 30 <= buffer.length) {
+      if (
+        buffer[pos] === 0x50 &&
+        buffer[pos + 1] === 0x4b &&
+        buffer[pos + 2] === 0x03 &&
+        buffer[pos + 3] === 0x04
+      ) {
+        const flags = buffer.readUInt16LE(pos + 6);
+        const isEncrypted = (flags & 1) !== 0;
+        if (isEncrypted) isEncryptedArchive = true;
+        const crc = buffer.readUInt32LE(pos + 14);
+        const compSize = buffer.readUInt32LE(pos + 18);
+        const uncompSize = buffer.readUInt32LE(pos + 22);
+        const nameLen = buffer.readUInt16LE(pos + 26);
+        const extraLen = buffer.readUInt16LE(pos + 28);
+        const name = pos + 30 + nameLen <= buffer.length ? buffer.toString('utf-8', pos + 30, pos + 30 + nameLen) : 'unknown';
+        entries.push({
+          name,
+          uncompressedSize: uncompSize,
+          compressedSize: compSize,
+          isEncrypted,
+          isDirectory: name.endsWith('/'),
+          crc32: crc.toString(16).padStart(8, '0'),
+        });
+        pos += 30 + nameLen + extraLen + compSize;
+      } else {
+        pos++;
+      }
+    }
+  }
+
+  let totalUncompressedBytes = 0;
+  let totalCompressedBytes = 0;
+  for (const e of entries) {
+    totalUncompressedBytes += e.uncompressedSize;
+    totalCompressedBytes += e.compressedSize || 0;
+  }
+
+  return {
+    format: 'zip',
+    totalEntries: entries.length,
+    totalUncompressedBytes,
+    totalCompressedBytes,
+    isEncrypted: isEncryptedArchive,
+    entries,
+  };
+}
+
+function inspectTarBuffer(buffer: Buffer, format = 'tar'): ArchiveInspectResponse {
+  const entries: ArchiveEntryMetadata[] = [];
+  let offset = 0;
+  let totalUncompressedBytes = 0;
+
+  while (offset + 512 <= buffer.length) {
+    const header = buffer.subarray(offset, offset + 512);
+    offset += 512;
+
+    if (header.every((b) => b === 0)) break;
+
+    const rawName = header.toString('ascii', 0, 100).replace(/\0.*$/, '').trim();
+    if (!rawName) break;
+
+    const sizeStr = header.toString('ascii', 124, 135).replace(/\0.*$/, '').trim();
+    const size = parseInt(sizeStr, 8) || 0;
+    const mtimeStr = header.toString('ascii', 136, 147).replace(/\0.*$/, '').trim();
+    const mtimeSec = parseInt(mtimeStr, 8) || 0;
+    const modifiedAt = mtimeSec > 0 ? new Date(mtimeSec * 1000).toISOString() : undefined;
+
+    const chksumStr = header.toString('ascii', 148, 155).replace(/\0.*$/, '').trim();
+    const chksum = parseInt(chksumStr, 8) || 0;
+    const crc32Str = chksum > 0 ? chksum.toString(16).padStart(8, '0') : undefined;
+
+    const typeflag = String.fromCharCode(header[156]);
+    const isDirectory = typeflag === '5' || rawName.endsWith('/');
+
+    let fullName = rawName;
+    const magic = header.toString('ascii', 257, 262);
+    if (magic.startsWith('ustar')) {
+      const prefix = header.toString('ascii', 345, 500).replace(/\0.*$/, '').trim();
+      if (prefix) fullName = `${prefix}/${rawName}`;
+    }
+
+    entries.push({
+      name: sanitizeArchivePath(fullName) || fullName,
+      uncompressedSize: isDirectory ? 0 : size,
+      compressedSize: isDirectory ? 0 : size,
+      isEncrypted: false,
+      isDirectory,
+      modifiedAt,
+      crc32: crc32Str,
+    });
+
+    totalUncompressedBytes += isDirectory ? 0 : size;
+    const pad = (512 - (size % 512)) % 512;
+    offset += size + pad;
+  }
+
+  return {
+    format,
+    totalEntries: entries.length,
+    totalUncompressedBytes,
+    totalCompressedBytes: totalUncompressedBytes,
+    isEncrypted: false,
+    entries,
+  };
+}
+
+async function inspect7zBuffer(
+  buffer: Buffer,
+  password?: string
+): Promise<ArchiveInspectResponse> {
+  const p7z = get7zBinaryPath();
+  if (p7z) {
+    const tmpDir = os.tmpdir();
+    const token = crypto.randomBytes(8).toString('hex');
+    const workDir = path.join(tmpDir, `easyconvert_7z_inspect_${Date.now()}_${token}`);
+    fs.mkdirSync(workDir, { recursive: true });
+    try {
+      const archivePath = path.join(workDir, 'archive.7z');
+      fs.writeFileSync(archivePath, buffer);
+
+      const pwArgs = password ? ['-p' + password] : ['-p-'];
+      const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', ...pwArgs, archivePath], {
+        networkIsolated: true,
+      });
+
+      let stdoutStr = '';
+      try {
+        const out = execFileSync(resolved.binary, resolved.args, {
+          cwd: workDir,
+          env: getSanitizedEnvironment({}, true),
+          timeout: 30000,
+        });
+        stdoutStr = out.toString('utf-8');
+      } catch (err: any) {
+        const errMsg = (err?.message || '') + (err?.stderr?.toString() || '') + (err?.stdout?.toString() || '');
+        if (
+          errMsg.includes('Enter password') ||
+          errMsg.includes('Can not open encrypted archive') ||
+          errMsg.includes('Data Error in encrypted archive') ||
+          errMsg.includes('Headers Error') ||
+          errMsg.includes('Wrong password')
+        ) {
+          throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
+        }
+        throw new ConversionFailedError(`Failed to inspect 7z archive: ${err.message}`);
+      }
+
+      if (
+        stdoutStr.includes('Enter password (will not be echoed):') ||
+        stdoutStr.includes('Headers Error')
+      ) {
+        throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
+      }
+
+      const entries: ArchiveEntryMetadata[] = [];
+      const blocks = stdoutStr.split(/\r?\n\r?\n/);
+      let isArchiveEncrypted = false;
+
+      for (const block of blocks) {
+        if (!block.includes('Path = ') || block.includes('Listing archive:')) continue;
+        const lines = block.split(/\r?\n/);
+        const record: Record<string, string> = {};
+        for (const line of lines) {
+          const eq = line.indexOf(' = ');
+          if (eq !== -1) {
+            record[line.slice(0, eq).trim()] = line.slice(eq + 3).trim();
+          }
+        }
+        if (!record.Path || record.Path === archivePath) continue;
+
+        const uncompSize = record.Size ? parseInt(record.Size, 10) : 0;
+        const compSize = record['Packed Size'] ? parseInt(record['Packed Size'], 10) : undefined;
+        const isEnc = record.Encrypted === '+';
+        if (isEnc) isArchiveEncrypted = true;
+        const isDir = record.Folder === '+' || (record.Attributes && record.Attributes.includes('D')) || record.Path.endsWith('/');
+        const modTime = record.Modified || undefined;
+        const crcHex = record.CRC || undefined;
+
+        entries.push({
+          name: sanitizeArchivePath(record.Path) || record.Path,
+          uncompressedSize: uncompSize,
+          compressedSize: compSize,
+          isEncrypted: isEnc,
+          isDirectory: Boolean(isDir),
+          modifiedAt: modTime,
+          crc32: crcHex ? crcHex.toLowerCase() : undefined,
+        });
+      }
+
+      let totalUncompressedBytes = 0;
+      let totalCompressedBytes = 0;
+      for (const e of entries) {
+        totalUncompressedBytes += e.uncompressedSize;
+        totalCompressedBytes += e.compressedSize || 0;
+      }
+
+      return {
+        format: '7z',
+        totalEntries: entries.length,
+        totalUncompressedBytes,
+        totalCompressedBytes,
+        isEncrypted: isArchiveEncrypted,
+        entries,
+      };
+    } finally {
+      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  // Pure TS fallback for 7z inspection
+  if (buffer.length >= 32) {
+    const nextHeaderOffset = Number(buffer.readBigUInt64LE(12));
+    const nextHeaderSize = Number(buffer.readBigUInt64LE(20));
+    const nhStart = 32 + nextHeaderOffset;
+    if (nhStart + nextHeaderSize <= buffer.length) {
+      const nh = buffer.subarray(nhStart, nhStart + nextHeaderSize);
+      if (nh.length > 0 && nh[0] === 0x17) {
+        for (let i = 0; i < nh.length - 4; i++) {
+          if (nh[i] === 0x06 && nh[i + 1] === 0xf1 && nh[i + 2] === 0x07 && nh[i + 3] === 0x01) {
+            throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
+          }
+        }
+      }
+    }
+  }
+
+  const rawExtracted = extract7zArchive(buffer);
+  const entries: ArchiveEntryMetadata[] = rawExtracted.map((f) => ({
+    name: f.filename,
+    uncompressedSize: f.buffer.length,
+    compressedSize: f.buffer.length,
+    isEncrypted: false,
+    isDirectory: false,
+    crc32: crc32(f.buffer).toString(16).padStart(8, '0'),
+  }));
+
+  const totalUncompressedBytes = entries.reduce((acc, e) => acc + e.uncompressedSize, 0);
+  return {
+    format: '7z',
+    totalEntries: entries.length,
+    totalUncompressedBytes,
+    totalCompressedBytes: totalUncompressedBytes,
+    isEncrypted: false,
+    entries,
+  };
+}
+
+async function inspectRarBuffer(
+  buffer: Buffer,
+  password?: string
+): Promise<ArchiveInspectResponse> {
+  const p7z = get7zBinaryPath();
+  if (p7z) {
+    const tmpDir = os.tmpdir();
+    const token = crypto.randomBytes(8).toString('hex');
+    const workDir = path.join(tmpDir, `easyconvert_rar_inspect_${Date.now()}_${token}`);
+    fs.mkdirSync(workDir, { recursive: true });
+    try {
+      const archivePath = path.join(workDir, 'archive.rar');
+      fs.writeFileSync(archivePath, buffer);
+
+      const pwArgs = password ? ['-p' + password] : ['-p-'];
+      const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', ...pwArgs, archivePath], {
+        networkIsolated: true,
+      });
+
+      let stdoutStr = '';
+      try {
+        const out = execFileSync(resolved.binary, resolved.args, {
+          cwd: workDir,
+          env: getSanitizedEnvironment({}, true),
+          timeout: 30000,
+        });
+        stdoutStr = out.toString('utf-8');
+      } catch (err: any) {
+        const errMsg = (err?.message || '') + (err?.stderr?.toString() || '');
+        if (
+          errMsg.includes('Enter password') ||
+          errMsg.includes('Can not open encrypted') ||
+          errMsg.includes('Headers Error')
+        ) {
+          throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
+        }
+        throw new ConversionFailedError(`Failed to inspect RAR archive: ${err.message}`);
+      }
+
+      if (stdoutStr.includes('Enter password (will not be echoed):')) {
+        throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
+      }
+
+      const entries: ArchiveEntryMetadata[] = [];
+      const blocks = stdoutStr.split(/\r?\n\r?\n/);
+      let isArchiveEncrypted = false;
+
+      for (const block of blocks) {
+        if (!block.includes('Path = ') || block.includes('Listing archive:')) continue;
+        const lines = block.split(/\r?\n/);
+        const record: Record<string, string> = {};
+        for (const line of lines) {
+          const eq = line.indexOf(' = ');
+          if (eq !== -1) {
+            record[line.slice(0, eq).trim()] = line.slice(eq + 3).trim();
+          }
+        }
+        if (!record.Path || record.Path === archivePath) continue;
+
+        const uncompSize = record.Size ? parseInt(record.Size, 10) : 0;
+        const compSize = record['Packed Size'] ? parseInt(record['Packed Size'], 10) : undefined;
+        const isEnc = record.Encrypted === '+';
+        if (isEnc) isArchiveEncrypted = true;
+        const isDir = record.Folder === '+' || (record.Attributes && record.Attributes.includes('D')) || record.Path.endsWith('/');
+        const modTime = record.Modified || undefined;
+        const crcHex = record.CRC || undefined;
+
+        entries.push({
+          name: sanitizeArchivePath(record.Path) || record.Path,
+          uncompressedSize: uncompSize,
+          compressedSize: compSize,
+          isEncrypted: isEnc,
+          isDirectory: Boolean(isDir),
+          modifiedAt: modTime,
+          crc32: crcHex ? crcHex.toLowerCase() : undefined,
+        });
+      }
+
+      const totalUncompressedBytes = entries.reduce((acc, e) => acc + e.uncompressedSize, 0);
+      const totalCompressedBytes = entries.reduce((acc, e) => acc + (e.compressedSize || 0), 0);
+
+      return {
+        format: 'rar',
+        totalEntries: entries.length,
+        totalUncompressedBytes,
+        totalCompressedBytes,
+        isEncrypted: isArchiveEncrypted,
+        entries,
+      };
+    } finally {
+      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  // Pure TS fallback for RAR inspection
+  if (buffer.length < 14) {
+    throw new ConversionFailedError('Invalid RAR archive: buffer too small');
+  }
+
+  let offset = 7;
+  if (offset + 7 <= buffer.length) {
+    const headType = buffer[offset + 2];
+    const headFlags = buffer.readUInt16LE(offset + 3);
+    const headSize = buffer.readUInt16LE(offset + 5);
+    if (headType === 0x73) {
+      if ((headFlags & 0x0080) !== 0) {
+        throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
+      }
+      offset += headSize;
+    }
+  }
+
+  const entries: ArchiveEntryMetadata[] = [];
+  let isArchiveEncrypted = false;
+
+  while (offset + 7 <= buffer.length) {
+    const headType = buffer[offset + 2];
+    const headFlags = buffer.readUInt16LE(offset + 3);
+    const headSize = buffer.readUInt16LE(offset + 5);
+    if (headSize < 7 || offset + headSize > buffer.length) break;
+
+    if (headType === 0x7b) {
+      break;
+    }
+
+    if (headType === 0x74 && offset + 32 <= buffer.length) {
+      const packSize = buffer.readUInt32LE(offset + 7);
+      const unpSize = buffer.readUInt32LE(offset + 11);
+      const fileCrc = buffer.readUInt32LE(offset + 16);
+      const nameSize = buffer.readUInt16LE(offset + 26);
+      const isEnc = (headFlags & 0x0004) !== 0;
+      if (isEnc) isArchiveEncrypted = true;
+
+      const nameStart = offset + 32;
+      const rawName = nameStart + nameSize <= buffer.length
+        ? buffer.toString('utf-8', nameStart, nameStart + nameSize)
+        : 'unknown';
+
+      entries.push({
+        name: sanitizeArchivePath(rawName) || rawName,
+        uncompressedSize: unpSize,
+        compressedSize: packSize,
+        isEncrypted: isEnc,
+        isDirectory: rawName.endsWith('/'),
+        crc32: fileCrc.toString(16).padStart(8, '0'),
+      });
+
+      offset += headSize + packSize;
+    } else {
+      offset += headSize;
+    }
+  }
+
+  const totalUncompressedBytes = entries.reduce((acc, e) => acc + e.uncompressedSize, 0);
+  const totalCompressedBytes = entries.reduce((acc, e) => acc + (e.compressedSize || 0), 0);
+
+  return {
+    format: 'rar',
+    totalEntries: entries.length,
+    totalUncompressedBytes,
+    totalCompressedBytes,
+    isEncrypted: isArchiveEncrypted,
+    entries,
+  };
+}
+
+export async function inspectArchive(
+  archiveBuffer: Buffer,
+  options: { filename?: string; password?: string } = {}
+): Promise<ArchiveInspectResponse> {
+  if (!archiveBuffer || archiveBuffer.length === 0) {
+    throw new ConversionFailedError('Archive buffer is empty.');
+  }
+
+  // 1. ZIP
+  if (
+    archiveBuffer.length >= 4 &&
+    archiveBuffer[0] === 0x50 &&
+    archiveBuffer[1] === 0x4b &&
+    (archiveBuffer[2] === 0x03 || archiveBuffer[2] === 0x05 || archiveBuffer[2] === 0x07)
+  ) {
+    return inspectZipBuffer(archiveBuffer);
+  }
+
+  // 2. 7z
+  if (
+    archiveBuffer.length >= 6 &&
+    archiveBuffer[0] === 0x37 &&
+    archiveBuffer[1] === 0x7a &&
+    archiveBuffer[2] === 0xbc &&
+    archiveBuffer[3] === 0xaf &&
+    archiveBuffer[4] === 0x27 &&
+    archiveBuffer[5] === 0x1c
+  ) {
+    return await inspect7zBuffer(archiveBuffer, options.password);
+  }
+
+  // 3. RAR
+  if (
+    archiveBuffer.length >= 7 &&
+    archiveBuffer[0] === 0x52 &&
+    archiveBuffer[1] === 0x61 &&
+    archiveBuffer[2] === 0x72 &&
+    archiveBuffer[3] === 0x21 &&
+    archiveBuffer[4] === 0x1a &&
+    archiveBuffer[5] === 0x07
+  ) {
+    return await inspectRarBuffer(archiveBuffer, options.password);
+  }
+
+  // 4. Compressed TAR wrappers: GZ, BZ2, ZST, XZ
+  if (archiveBuffer.length >= 2 && archiveBuffer[0] === 0x1f && archiveBuffer[1] === 0x8b) {
+    try {
+      const decompressed = zlib.gunzipSync(archiveBuffer);
+      return inspectTarBuffer(decompressed, 'tar.gz');
+    } catch {
+      throw new ConversionFailedError('Failed to decompress gzip archive.');
+    }
+  }
+
+  if (archiveBuffer.length >= 3 && archiveBuffer[0] === 0x42 && archiveBuffer[1] === 0x5a && archiveBuffer[2] === 0x68) {
+    try {
+      const decompressed = decompressBzip2(archiveBuffer);
+      return inspectTarBuffer(decompressed, 'tar.bz2');
+    } catch {
+      throw new ConversionFailedError('Failed to decompress bzip2 archive.');
+    }
+  }
+
+  if (archiveBuffer.length >= 4 && archiveBuffer.subarray(0, 4).equals(ZSTD_MAGIC_LE)) {
+    try {
+      const decompressed = decompressZstd(archiveBuffer);
+      return inspectTarBuffer(decompressed, 'tar.zst');
+    } catch {
+      throw new ConversionFailedError('Failed to decompress zstd archive.');
+    }
+  }
+
+  // 5. TAR
+  if (archiveBuffer.length >= 512) {
+    const magic = archiveBuffer.toString('ascii', 257, 262);
+    if (magic.startsWith('ustar') || options.filename?.endsWith('.tar')) {
+      return inspectTarBuffer(archiveBuffer, 'tar');
+    }
+  }
+
+  const hint = options.filename ? path.extname(options.filename).toLowerCase() : '';
+  if (hint === '.zip') return inspectZipBuffer(archiveBuffer);
+  if (hint === '.7z') return await inspect7zBuffer(archiveBuffer, options.password);
+  if (hint === '.rar') return await inspectRarBuffer(archiveBuffer, options.password);
+  if (hint === '.tar') return inspectTarBuffer(archiveBuffer, 'tar');
+
+  throw new ConversionFailedError('Unsupported or unrecognized archive format for inspection.');
+}
+
 export async function convertArchive(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -2637,6 +3554,19 @@ export async function convertArchive(
   const baseName = effectiveFilename.replace(/\.[^/.]+$/, '');
   const src = effectiveSourceFormat;
   const tgt = targetFormat.toLowerCase();
+
+  if (options.repair) {
+    if (src !== 'zip' && tgt !== 'zip') {
+      throw new UnsupportedOptionError('Archive repair mode is only supported for ZIP archives.');
+    }
+    const repairedBuffer = await repairZipArchive(effectiveBuffer, options);
+    return {
+      buffer: repairedBuffer,
+      mimeType: 'application/zip',
+      filename: `${baseName}.zip`,
+      size: repairedBuffer.length,
+    };
+  }
 
   if (options.password && /[\r\n\0]/.test(options.password)) {
     throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
@@ -2677,7 +3607,7 @@ export async function convertArchive(
     }
   } else if (src === 'tar') {
     try {
-      files = extractTarArchive(effectiveBuffer);
+      files = extractTarArchive(effectiveBuffer, options);
     } catch (err) {
       throw new ConversionFailedError(
         `Failed to extract TAR archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
@@ -2687,7 +3617,7 @@ export async function convertArchive(
     try {
       const uncompressed = await gunzipStreamingWithLimits(effectiveBuffer);
       if (src === 'tgz' || src === 'tar.gz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed);
+        files = extractTarArchive(uncompressed, options);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -2710,7 +3640,7 @@ export async function convertArchive(
         );
       }
       if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed);
+        files = extractTarArchive(uncompressed, options);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -2722,6 +3652,9 @@ export async function convertArchive(
   } else if (src === 'rar') {
     try {
       files = extractRarArchive(effectiveBuffer, options);
+      if (options.entries && options.entries.length > 0) {
+        files = files.filter((f) => matchArchiveGlob(f.filename, options.entries));
+      }
     } catch (err: any) {
       throw new ConversionFailedError(
         `Failed to extract RAR archive '${effectiveFilename}': ${err?.message || String(err)}`
@@ -2729,7 +3662,7 @@ export async function convertArchive(
     }
   } else if (src === '7z' || src === 'tar.7z') {
     try {
-      files = extract7zArchive(effectiveBuffer);
+      files = extract7zArchive(effectiveBuffer, options);
     } catch (err: any) {
       throw new ConversionFailedError(
         `Failed to extract 7z archive '${effectiveFilename}': ${err?.message || String(err)}`
@@ -2774,7 +3707,7 @@ export async function convertArchive(
       );
     }
     if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-      files = extractTarArchive(uncompressed);
+      files = extractTarArchive(uncompressed, options);
     } else {
       files = [{ filename: baseName, buffer: uncompressed }];
     }
@@ -2792,7 +3725,7 @@ export async function convertArchive(
         );
       }
       if (src === 'tar.xz' || src === 'txz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed);
+        files = extractTarArchive(uncompressed, options);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -2884,7 +3817,9 @@ export async function convertArchive(
     result = create7zArchive(files, options, `${baseName}.${tgt}`);
   } else if (tgt === 'rar') {
     // 5. Target RAR
-    result = createRarArchive(files, options, `${baseName}.rar`);
+    throw new ConversionFailedError(
+      "Target archive format 'rar' creation is not supported. RAR archive creation has been removed per D8; please use ZIP, 7z, or TAR."
+    );
   } else if (tgt === 'tar') {
     // 6. Target TAR
     result = createTarArchive(files, options, `${baseName}.tar`);

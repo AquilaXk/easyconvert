@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { MissingVolumeError } from '../types';
 
 export interface SplitArchivePartInfo {
   baseName: string;
@@ -196,16 +197,24 @@ export function validateAndSortSplitParts(
     let source: VirtualSpannedPartSource;
 
     if (typeof rawPart === 'string') {
-      const resolved = path.resolve(rawPart);
-      if (!fs.existsSync(resolved)) {
-        throw new Error(`Split archive part file not found on disk: "${rawPart}"`);
+      const isPath = rawPart.includes('/') || rawPart.includes('\\');
+      if (isPath) {
+        const resolved = path.resolve(rawPart);
+        if (!fs.existsSync(resolved)) {
+          throw new Error(`Split archive part file not found on disk: "${rawPart}"`);
+        }
+        const stat = fs.statSync(resolved);
+        source = {
+          filename: path.basename(resolved),
+          filePath: resolved,
+          sizeBytes: stat.size,
+        };
+      } else {
+        source = {
+          filename: rawPart,
+          sizeBytes: 0,
+        };
       }
-      const stat = fs.statSync(resolved);
-      source = {
-        filename: path.basename(resolved),
-        filePath: resolved,
-        sizeBytes: stat.size,
-      };
     } else {
       source = { ...rawPart };
       if (source.filePath) {
@@ -271,10 +280,31 @@ export function validateAndSortSplitParts(
   // Sort parts by partNumber ascending
   normalizedParts.sort((a, b) => a.info.partNumber - b.info.partNumber);
 
+  // Helper to format expected missing volume part name
+  const formatExpectedPartName = (base: string, partNum: number, info: SplitArchivePartInfo): string => {
+    const digits = info.totalDigits || (info.format === '7z' || info.format === 'tar' ? 3 : 2);
+    const numStr = String(partNum).padStart(digits, '0');
+    if (info.format === 'rar') {
+      const stem = base.replace(/\.rar$/i, '');
+      return `${stem}.part${numStr}.rar`;
+    }
+    if (info.format === '7z') {
+      const stem = base.replace(/\.7z$/i, '');
+      return `${stem}.7z.${numStr}`;
+    }
+    if (info.format === 'zip') {
+      const stem = base.replace(/\.zip$/i, '');
+      return `${stem}.z${numStr}`;
+    }
+    return `${base}.${numStr}`;
+  };
+
   // Validate sequence starts strictly at part 1
   if (normalizedParts[0].info.partNumber !== 1) {
-    throw new Error(
-      `Incomplete multi-volume archive for "${commonBase}": missing volume 1 (starts at volume ${normalizedParts[0].info.partNumber})`
+    const missingName = formatExpectedPartName(commonBase || 'archive', 1, normalizedParts[0].info);
+    throw new MissingVolumeError(
+      missingName,
+      `Missing archive volume part "${missingName}": missing volume 1 (starts at volume ${normalizedParts[0].info.partNumber}) in incomplete multi-volume archive for "${commonBase}"`
     );
   }
 
@@ -288,8 +318,10 @@ export function validateAndSortSplitParts(
       );
     }
     if (actual !== expected) {
-      throw new Error(
-        `Incomplete multi-volume archive for "${commonBase}": missing volume ${expected} (found volume ${actual})`
+      const missingName = formatExpectedPartName(commonBase || 'archive', expected, normalizedParts[i].info);
+      throw new MissingVolumeError(
+        missingName,
+        `Missing archive volume part "${missingName}": missing volume ${expected} (found volume ${actual}) in incomplete multi-volume archive for "${commonBase}"`
       );
     }
   }
@@ -314,6 +346,8 @@ export function validateAndSortSplitParts(
 
   return { sortedParts: normalizedParts, metadata };
 }
+
+export const validateMultiVolumeSequence = validateAndSortSplitParts;
 
 /**
  * Virtual Spanned Readable Stream (VFS Pipeline).

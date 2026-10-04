@@ -8,6 +8,7 @@ import {
   decompressLzma2,
   createRarArchive,
   extractRarArchive,
+  buildSyntheticStoredRarBuffer,
   convertArchive,
   convertMedia,
   decodeAudioBuffer,
@@ -185,11 +186,13 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
         { filename: 'stored2.txt', buffer: Buffer.from('Uncompressed stored RAR test file 2') },
       ];
 
-      const rarArchive = createRarArchive(files, {}, 'bundle.rar');
-      expect(rarArchive.mimeType).toBe('application/x-rar-compressed');
-      expect(rarArchive.buffer.subarray(0, 7)).toEqual(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]));
+      // D8 contract: createRarArchive is disabled
+      expect(() => createRarArchive(files, {}, 'bundle.rar')).toThrow();
 
-      const extracted = extractRarArchive(rarArchive.buffer);
+      const rarBuffer = buildSyntheticStoredRarBuffer(files);
+      expect(rarBuffer.subarray(0, 7)).toEqual(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]));
+
+      const extracted = extractRarArchive(rarBuffer);
       expect(extracted).toHaveLength(2);
       expect(extracted[0].filename).toBe('stored1.txt');
       expect(extracted[0].buffer.toString('utf-8')).toBe('Uncompressed stored RAR test file 1');

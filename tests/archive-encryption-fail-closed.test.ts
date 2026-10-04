@@ -90,22 +90,26 @@ describe('Archive Encryption Fail-Closed Verification', () => {
       ).toThrow(UnsupportedOptionError);
     });
 
-    it('createRarArchive throws UnsupportedOptionError when password is provided', () => {
+    it('createRarArchive throws ConversionFailedError per D8 (RAR creation removed)', () => {
       const files = [{ filename: 'file.txt', buffer: Buffer.from('data', 'utf-8') }];
       expect(() =>
         createRarArchive(files, { password: 'password' }, 'archive.rar')
-      ).toThrow(UnsupportedOptionError);
+      ).toThrow(ConversionFailedError);
     });
 
-    it('convertArchive throws UnsupportedOptionError when password is provided for non-encryptable archive formats (rar, gz, bz2, xz, zst)', async () => {
+    it('convertArchive fails closed when password is provided for non-encryptable archive formats (rar, gz, bz2, xz, zst)', async () => {
       const input = Buffer.from('content', 'utf-8');
-      const nonEncryptableTargets = ['rar', 'gz', 'bz2', 'xz', 'zst'];
+      const nonEncryptableTargets = ['gz', 'bz2', 'xz', 'zst'];
 
       for (const tgt of nonEncryptableTargets) {
         await expect(
           convertArchive(input, 'zip', tgt, { password: 'password' }, 'file.zip')
         ).rejects.toThrow(UnsupportedOptionError);
       }
+
+      await expect(
+        convertArchive(input, 'zip', 'rar', { password: 'password' }, 'file.zip')
+      ).rejects.toThrow(ConversionFailedError);
     });
 
     it('convertArchive fails closed when extracting corrupt or invalid ZIP archive', async () => {

@@ -20,6 +20,7 @@ import {
   convertArchive,
   createRarArchive,
   extractRarArchive,
+  buildSyntheticStoredRarBuffer,
 } from '../src/lib/conversions';
 
 describe('Archive Domain: Pure TS LZMA/LZMA2, Multi-Volume Splitting/Stitching & RFC 9842 Zstd Dict (#133)', () => {
@@ -292,14 +293,12 @@ describe('Archive Domain: Pure TS LZMA/LZMA2, Multi-Volume Splitting/Stitching &
 
     it('stitches multi-volume RAR archive parts and successfully extracts original files', () => {
       const content = Buffer.from('Multi-volume RAR test payload data.\n'.repeat(40));
-      const originalRar = createRarArchive(
-        [{ filename: 'document.txt', buffer: content }],
-        {},
-        'dataset.rar'
-      );
+      const rarBuffer = buildSyntheticStoredRarBuffer([
+        { filename: 'document.txt', buffer: content },
+      ]);
 
       // Split into 50-byte parts
-      const parts = splitArchive(originalRar.buffer, 'dataset.rar', 50, 'rar');
+      const parts = splitArchive(rarBuffer, 'dataset.rar', 50, 'rar');
       expect(parts.length).toBeGreaterThan(1);
       expect(parts[0].filename).toBe('dataset.part1.rar');
       expect(parts[1].filename).toBe('dataset.part2.rar');
@@ -308,7 +307,7 @@ describe('Archive Domain: Pure TS LZMA/LZMA2, Multi-Volume Splitting/Stitching &
       const stitched = stitchMultiVolumeArchive(parts);
       expect(stitched.baseFilename).toBe('dataset.rar');
       expect(stitched.format).toBe('rar');
-      expect(sha256(stitched.buffer)).toBe(sha256(originalRar.buffer));
+      expect(sha256(stitched.buffer)).toBe(sha256(rarBuffer));
 
       // Extract from stitched buffer
       const extracted = extractRarArchive(stitched.buffer);
@@ -376,12 +375,10 @@ describe('Archive Domain: Pure TS LZMA/LZMA2, Multi-Volume Splitting/Stitching &
 
     it('integrates multi-volume stitching on input in convertArchive via archiveParts', async () => {
       const originalContent = Buffer.from('Stitched input test content.\n'.repeat(30));
-      const rarArchive = createRarArchive(
-        [{ filename: 'source.txt', buffer: originalContent }],
-        {},
-        'source.rar'
-      );
-      const parts = splitArchive(rarArchive.buffer, 'source.rar', 60, 'rar');
+      const rarBuffer = buildSyntheticStoredRarBuffer([
+        { filename: 'source.txt', buffer: originalContent },
+      ]);
+      const parts = splitArchive(rarBuffer, 'source.rar', 60, 'rar');
 
       // Convert multi-part RAR input to ZIP
       const zipResult = await convertArchive(

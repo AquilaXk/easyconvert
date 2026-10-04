@@ -121,6 +121,9 @@ export interface ConversionOptions {
   archiveParts?: { filename: string; buffer: Buffer }[];
   useNative7z?: boolean;
   solid?: boolean;
+  collisionPolicy?: ArchiveCollisionPolicy;
+  entries?: string[];
+  repair?: boolean;
   // Audio options
   audio?: AudioEncodingOptions;
   audioBitrate?: '64k' | '96k' | '128k' | '192k' | '256k' | '320k';
@@ -465,6 +468,52 @@ export class InvalidMediaOptionError extends UnsupportedOptionError {
     this.name = 'InvalidMediaOptionError';
   }
 }
+
+export type ArchiveCollisionPolicy = 'rename' | 'error' | 'overwrite';
+
+export interface ArchiveEntryMetadata {
+  name: string;
+  uncompressedSize: number;
+  compressedSize?: number;
+  isEncrypted: boolean;
+  isDirectory: boolean;
+  modifiedAt?: string;
+  crc32?: string;
+}
+
+export interface ArchiveInspectResponse {
+  format: string;
+  totalEntries: number;
+  totalUncompressedBytes: number;
+  totalCompressedBytes: number;
+  isEncrypted: boolean;
+  entries: ArchiveEntryMetadata[];
+}
+
+export class MissingVolumeError extends Error {
+  readonly status = 422;
+  constructor(missingVolume: string, message?: string) {
+    super(message || `Missing archive volume part: "${missingVolume}".`);
+    this.name = 'MissingVolumeError';
+  }
+}
+
+export class ArchiveEntryCollisionError extends Error {
+  readonly status = 422;
+  constructor(entryName: string, message?: string) {
+    super(message || `Archive entry name collision detected for "${entryName}".`);
+    this.name = 'ArchiveEntryCollisionError';
+  }
+}
+
+export class ArchiveEncryptedHeaderError extends Error {
+  readonly status = 422;
+  constructor(message?: string) {
+    super(message || 'Archive header is encrypted and requires a password to inspect entries.');
+    this.name = 'ArchiveEncryptedHeaderError';
+  }
+}
+
 
 
 

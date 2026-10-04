@@ -1804,7 +1804,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/zip',
     category: 'archive',
     description: 'Universal lossless compression archive container.',
-    targetFormats: ['tar', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
+    targetFormats: ['tar', 'gz', 'tgz', '7z', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
     optionsSchema: { compressionLevel: true, splitVolumeBytes: true, password: true },
   },
   tar: {
@@ -1814,7 +1814,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-tar',
     category: 'archive',
     description: 'Tape archive file format commonly used for packaging unix collections.',
-    targetFormats: ['zip', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
+    targetFormats: ['zip', 'gz', 'tgz', '7z', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
   },
   gz: {
     id: 'gz',
@@ -1823,7 +1823,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/gzip',
     category: 'archive',
     description: 'GNU zip single-file compression format.',
-    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst'],
+    targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz', 'zst'],
   },
   tgz: {
     id: 'tgz',
@@ -1832,7 +1832,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/gzip',
     category: 'archive',
     description: 'Tarball compressed using GNU zip.',
-    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz', 'tar.zst'],
+    targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz', 'tar.zst'],
   },
   '7z': {
     id: '7z',
@@ -1841,7 +1841,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-7z-compressed',
     category: 'archive',
     description: 'Open-architecture high compression ratio LZMA/LZMA2 archive.',
-    targetFormats: ['zip', 'tar', 'gz', 'rar', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
+    targetFormats: ['zip', 'tar', 'gz', 'tar.bz2', 'tar.gz', 'zst', 'tar.zst'],
     optionsSchema: { compressionLevel: true, archiveCoder: true, splitVolumeBytes: true, solid: true, password: true },
   },
   zst: {
@@ -1871,7 +1871,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-zstd-compressed-tar',
     category: 'archive',
     description: 'Tarball compressed using Zstandard algorithm.',
-    targetFormats: ['zip', 'tar', 'gz', 'tgz', '7z', 'rar', 'tar.bz2', 'tar.gz', 'zst'],
+    targetFormats: ['zip', 'tar', 'gz', 'tgz', '7z', 'tar.bz2', 'tar.gz', 'zst'],
     optionsSchema: { compressionLevel: true },
   },
   tbz2: {
@@ -1881,7 +1881,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-bzip-compressed-tar',
     category: 'archive',
     description: 'Tar archive compressed with bzip2.',
-    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz'],
   },
   xz: {
     id: 'xz',
@@ -1890,7 +1890,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-xz',
     category: 'archive',
     description: 'LZMA2 based high-ratio data compression format.',
-    targetFormats: ['zip', 'tar', 'gz', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', 'gz', '7z', 'tar.bz2', 'tar.gz'],
   },
   txz: {
     id: 'txz',
@@ -1918,7 +1918,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-cab-compressed',
     category: 'archive',
     description: 'Windows setup package compression archive.',
-    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz'],
   },
   deb: {
     id: 'deb',
@@ -1927,7 +1927,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.debian.binary-package',
     category: 'archive',
     description: 'Debian and Ubuntu Linux binary package archive.',
-    targetFormats: ['tar', 'zip', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['tar', 'zip', '7z', 'tar.bz2', 'tar.gz'],
   },
   rpm: {
     id: 'rpm',
@@ -1936,7 +1936,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-rpm',
     category: 'archive',
     description: 'Red Hat Enterprise Linux and Fedora software package.',
-    targetFormats: ['tar', 'zip', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['tar', 'zip', '7z', 'tar.bz2', 'tar.gz'],
   },
   cpio: {
     id: 'cpio',
@@ -1945,7 +1945,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-cpio',
     category: 'archive',
     description: 'Standard Unix file archiver format.',
-    targetFormats: ['tar', 'zip', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['tar', 'zip', '7z', 'tar.bz2', 'tar.gz'],
   },
   iso: {
     id: 'iso',
@@ -1954,7 +1954,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iso9660-image',
     category: 'archive',
     description: 'Optical disc file system sector image.',
-    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz'],
   },
   dmg: {
     id: 'dmg',
@@ -1963,7 +1963,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-apple-diskimage',
     category: 'archive',
     description: 'macOS mountable disk image archive.',
-    targetFormats: ['zip', 'tar', 'iso', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', 'iso', '7z', 'tar.bz2', 'tar.gz'],
   },
   jar: {
     id: 'jar',
@@ -1972,7 +1972,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/java-archive',
     category: 'archive',
     description: 'Java class and asset packaging archive based on ZIP.',
-    targetFormats: ['zip', 'tar', '7z', 'rar', 'tar.bz2', 'tar.gz'],
+    targetFormats: ['zip', 'tar', '7z', 'tar.bz2', 'tar.gz'],
   },
   war: {
     id: 'war',
@@ -2173,7 +2173,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-bzip-compressed-tar',
     category: 'archive',
     description: 'Tar archive compressed with bzip2 high-ratio block-sorting algorithm.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.gz', 'zip', 'tar.bz2'],
+    targetFormats: ['7z', 'tar', 'tar.gz', 'zip', 'tar.bz2'],
     optionsSchema: {compressionLevel:true},
   },
   'tar.gz': {
@@ -2183,7 +2183,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/gzip',
     category: 'archive',
     description: 'Tar archive compressed using standard GNU zip.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'zip', 'tar.gz'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'zip', 'tar.gz'],
     optionsSchema: {compressionLevel:true},
   },
   ace: {
@@ -2193,7 +2193,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-ace-compressed',
     category: 'archive',
     description: 'WinAce compressed data archive container.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   alz: {
@@ -2203,7 +2203,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-alz-compressed',
     category: 'archive',
     description: 'ALZip proprietary compressed archive file format.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   arc: {
@@ -2213,7 +2213,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-arc',
     category: 'archive',
     description: 'Standard lossless data compression and archive format by SEA.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   arj: {
@@ -2223,7 +2223,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-arj',
     category: 'archive',
     description: 'Archived by Robert Jung high-compression archive format.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   bz: {
@@ -2233,7 +2233,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-bzip',
     category: 'archive',
     description: 'Legacy Burrows-Wheeler block-sorting compressed file.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   bz2: {
@@ -2243,7 +2243,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-bzip2',
     category: 'archive',
     description: 'High-ratio Burrows-Wheeler compressed data file.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   img: {
@@ -2253,7 +2253,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-raw-disk-image',
     category: 'archive',
     description: 'Raw sector-by-sector disk image file.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   lha: {
@@ -2263,7 +2263,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-lzh-compressed',
     category: 'archive',
     description: 'Lempel-Ziv and Haruyasu compressed archive file.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   lz: {
@@ -2273,7 +2273,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-lzip',
     category: 'archive',
     description: 'LZMA-based compressed file format designed for long-term data archiving.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   lzma: {
@@ -2283,7 +2283,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-lzma',
     category: 'archive',
     description: 'Lempel-Ziv-Markov chain algorithm compressed archive.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   lzo: {
@@ -2293,7 +2293,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-lzop',
     category: 'archive',
     description: 'Lempel-Ziv-Oberhumer real-time data compression format.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   rz: {
@@ -2303,7 +2303,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-rzip',
     category: 'archive',
     description: 'Long-distance redundancy compression archive file.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   'tar.7z': {
@@ -2313,7 +2313,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-7z-compressed',
     category: 'archive',
     description: 'Tar archive compressed with 7-Zip LZMA/LZMA2.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   'tar.bz': {
@@ -2323,7 +2323,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-bzip-compressed-tar',
     category: 'archive',
     description: 'Tar archive compressed with bzip.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   'tar.lzo': {
@@ -2333,7 +2333,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-lzop',
     category: 'archive',
     description: 'Tar archive compressed with LZO high-speed algorithm.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   'tar.xz': {
@@ -2343,7 +2343,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-xz-compressed-tar',
     category: 'archive',
     description: 'Tar archive compressed with LZMA2 XZ algorithm.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   'tar.z': {
@@ -2353,7 +2353,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-compress',
     category: 'archive',
     description: 'UNIX compress compressed tarball archive.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   tbz: {
@@ -2363,7 +2363,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-bzip-compressed-tar',
     category: 'archive',
     description: 'Short extension for bzip-compressed tarball.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   tz: {
@@ -2373,7 +2373,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-compress',
     category: 'archive',
     description: 'Compressed tar archive with .tz extension.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   tzo: {
@@ -2383,7 +2383,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-lzop',
     category: 'archive',
     description: 'Tarball compressed using LZOP with short extension.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   z: {
@@ -2393,7 +2393,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-compress',
     category: 'archive',
     description: 'Traditional UNIX LZW compressed single file.',
-    targetFormats: ['7z', 'rar', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
+    targetFormats: ['7z', 'tar', 'tar.bz2', 'tar.gz', 'zip'],
     optionsSchema: {compressionLevel:true},
   },
   aifc: {

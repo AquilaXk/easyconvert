@@ -703,9 +703,12 @@ async function extractSourceArchive(params: ExtractArchiveParams): Promise<void>
     });
   } else {
     const pwArgs = options?.password ? ['-p'] : [];
+    const includeArgs = (options?.entries && options.entries.length > 0)
+      ? options.entries.map((p) => `-i!${p}`)
+      : [];
     await executeSandboxedBinary(
       p7zBin,
-      ['x', '-y', ...pwArgs, `-o${extractDir}`, inputPath],
+      ['x', '-y', ...pwArgs, `-o${extractDir}`, inputPath, ...includeArgs],
       {
         cwd: tempDir,
         timeoutMs: timeout,
