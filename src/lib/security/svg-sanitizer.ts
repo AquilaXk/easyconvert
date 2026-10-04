@@ -7,7 +7,263 @@
  * - Strips inline event handlers (onload, onclick, onerror, on*).
  * - Sanitizes dangerous URI schemes (javascript:, vbscript:, data:text/html) in href/xlink:href/src attributes.
  * - Preserves authentic vector geometry (path, rect, circle, g, svg, text, defs, use, etc.).
+ *
+ * Element, comment and DOCTYPE stripping uses linear indexOf scanners instead of lazy regexes so that
+ * unterminated openers cannot trigger quadratic backtracking.
  */
+
+import { SvgSanitizationError } from '../types';
+
+const MAX_STRIP_PASSES = 16;
+const ASCII_UPPER_A = 0x41;
+const ASCII_UPPER_Z = 0x5a;
+const ASCII_CASE_OFFSET = 0x20;
+const COMMENT_OPEN = '<!--';
+const COMMENT_CLOSE = '-->';
+const COMMENT_OPEN_LENGTH = COMMENT_OPEN.length;
+const DOCTYPE_OPEN = '<!doctype';
+
+/** Elements removed together with their content when a matching close tag exists. */
+const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed'] as const;
+/** Elements removed as a single opening tag. */
+const VOID_DANGEROUS_ELEMENTS = ['meta', 'link', '!ENTITY'] as const;
+
+const EXTERNAL_CSS_URL_START = /url\s*\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/gi;
+
+/**
+ * Lowercases while keeping every index aligned with the original string. Native lowercasing is used when it
+ * preserves length; otherwise only ASCII letters are folded.
+ */
+function lowerKeepingLength(str: string): string {
+  const native = str.toLowerCase();
+  if (native.length === str.length) return native;
+  return str.replace(/[A-Z]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + ASCII_CASE_OFFSET));
+}
+
+function isWordCharAt(str: string, index: number): boolean {
+  if (index >= str.length) return false;
+  const code = str.charCodeAt(index);
+  const isDigit = code >= 0x30 && code <= 0x39;
+  const isUpper = code >= ASCII_UPPER_A && code <= ASCII_UPPER_Z;
+  const isLower = code >= 0x61 && code <= 0x7a;
+  return isDigit || isUpper || isLower || code === 0x5f;
+}
+
+function isWhitespaceAt(str: string, index: number): boolean {
+  return /\s/.test(str.charAt(index));
+}
+
+/**
+ * Returns the index just past the '>' closing the tag whose body starts at `from`, honouring quoted
+ * attribute values, or -1 when the tag (or one of its quotes) is unterminated.
+ */
+function findTagEnd(src: string, from: number): number {
+  for (let i = from; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '>') return i + 1;
+    if (ch === '"' || ch === "'") {
+      const closingQuote = src.indexOf(ch, i + 1);
+      if (closingQuote === -1) return -1;
+      i = closingQuote;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Finds `</name\s*>` at or after `from` in the lowercase view. Returns [start, end) or null.
+ */
+function findCloseTag(lower: string, lowerName: string, from: number): [number, number] | null {
+  const needle = `</${lowerName}`;
+  let search = from;
+  for (;;) {
+    const start = lower.indexOf(needle, search);
+    if (start === -1) return null;
+    let end = start + needle.length;
+    while (end < lower.length && isWhitespaceAt(lower, end)) end++;
+    if (lower[end] === '>') return [start, end + 1];
+    search = start + 1;
+  }
+}
+
+/**
+ * Removes every `<name ...>` element in linear time. Paired elements are removed through their close
+ * tag; an opener without a close tag is removed alone; an opening tag that never terminates is removed
+ * through the end of input (fail closed).
+ */
+function stripElement(src: string, name: string, paired: boolean): string {
+  const lowerName = lowerKeepingLength(name);
+  const lower = lowerKeepingLength(src);
+  const open = `<${lowerName}`;
+  const parts: string[] = [];
+  let copied = 0;
+  let search = 0;
+  let closeMissing = false;
+
+  for (;;) {
+    const start = lower.indexOf(open, search);
+    if (start === -1) break;
+    const afterName = start + open.length;
+    if (isWordCharAt(src, afterName)) {
+      search = start + 1;
+      continue;
+    }
+    parts.push(src.slice(copied, start));
+    const tagEnd = findTagEnd(src, afterName);
+    if (tagEnd === -1) {
+      copied = src.length;
+      break;
+    }
+    let removeEnd = tagEnd;
+    if (paired && !closeMissing) {
+      const close = findCloseTag(lower, lowerName, tagEnd);
+      if (close === null) closeMissing = true;
+      else removeEnd = close[1];
+    }
+    copied = removeEnd;
+    search = removeEnd;
+  }
+
+  if (copied === 0 && parts.length === 0) return src;
+  parts.push(src.slice(copied));
+  return parts.join('');
+}
+
+/**
+ * Removes DOCTYPE declarations including internal subsets in linear time. An unterminated declaration is
+ * removed through the end of input.
+ */
+function stripDoctype(src: string): string {
+  const lower = lowerKeepingLength(src);
+  const parts: string[] = [];
+  let copied = 0;
+  let search = 0;
+
+  for (;;) {
+    const start = lower.indexOf(DOCTYPE_OPEN, search);
+    if (start === -1) break;
+    const afterName = start + DOCTYPE_OPEN.length;
+    if (isWordCharAt(src, afterName)) {
+      search = start + 1;
+      continue;
+    }
+    parts.push(src.slice(copied, start));
+    let end = -1;
+    let i = afterName;
+    while (i < src.length && src[i] !== '>' && src[i] !== '[') i++;
+    if (src[i] === '>') {
+      end = i + 1;
+    } else if (src[i] === '[') {
+      let bracket = src.indexOf(']', i + 1);
+      while (bracket !== -1 && end === -1) {
+        let k = bracket + 1;
+        while (k < src.length && isWhitespaceAt(src, k)) k++;
+        if (src[k] === '>') end = k + 1;
+        else bracket = src.indexOf(']', bracket + 1);
+      }
+    }
+    if (end === -1) {
+      copied = src.length;
+      break;
+    }
+    copied = end;
+    search = end;
+  }
+
+  if (copied === 0 && parts.length === 0) return src;
+  parts.push(src.slice(copied));
+  return parts.join('');
+}
+
+/**
+ * Removes XML comments in linear time; an unterminated comment is removed through the end of input.
+ */
+function stripComments(src: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  for (;;) {
+    const start = src.indexOf(COMMENT_OPEN, copied);
+    if (start === -1) break;
+    parts.push(src.slice(copied, start));
+    const close = src.indexOf(COMMENT_CLOSE, start + COMMENT_OPEN_LENGTH);
+    if (close === -1) {
+      copied = src.length;
+      break;
+    }
+    copied = close + COMMENT_CLOSE.length;
+  }
+  if (copied === 0 && parts.length === 0) return src;
+  parts.push(src.slice(copied));
+  return parts.join('');
+}
+
+/**
+ * Replaces external CSS url() references with `none`; an unterminated url( swallows the rest of the body.
+ */
+function stripExternalCssUrls(css: string): string {
+  let out = '';
+  let last = 0;
+  for (const match of css.matchAll(EXTERNAL_CSS_URL_START)) {
+    if (match.index < last) continue;
+    out += `${css.slice(last, match.index)}none`;
+    const close = css.indexOf(')', match.index + match[0].length);
+    if (close === -1) {
+      last = css.length;
+      break;
+    }
+    last = close + 1;
+  }
+  return out + css.slice(last);
+}
+
+function sanitizeCss(css: string): string {
+  return stripExternalCssUrls(css.replace(/@import\s+[^;]+;?/gi, ''));
+}
+
+/**
+ * Rewrites every <style> element so its body is sanitized; an unterminated element is closed at end of input.
+ */
+function sanitizeStyleElements(src: string): string {
+  const lower = lowerKeepingLength(src);
+  const parts: string[] = [];
+  let copied = 0;
+  let search = 0;
+
+  for (;;) {
+    const start = lower.indexOf('<style', search);
+    if (start === -1) break;
+    const afterName = start + '<style'.length;
+    if (isWordCharAt(src, afterName)) {
+      search = start + 1;
+      continue;
+    }
+    parts.push(src.slice(copied, start));
+    const tagEnd = findTagEnd(src, afterName);
+    if (tagEnd === -1) {
+      copied = src.length;
+      break;
+    }
+    const close = findCloseTag(lower, 'style', tagEnd);
+    const bodyEnd = close === null ? src.length : close[0];
+    parts.push(`<style>${sanitizeCss(src.slice(tagEnd, bodyEnd))}</style>`);
+    copied = close === null ? src.length : close[1];
+    search = copied;
+  }
+
+  if (copied === 0 && parts.length === 0) return src;
+  parts.push(src.slice(copied));
+  return parts.join('');
+}
+
+/**
+ * One pass of dangerous markup removal; callers repeat until stable to defeat split-opener tricks.
+ */
+function stripDangerousMarkupPass(input: string): string {
+  let result = stripDoctype(input);
+  for (const name of PAIRED_DANGEROUS_ELEMENTS) result = stripElement(result, name, true);
+  for (const name of VOID_DANGEROUS_ELEMENTS) result = stripElement(result, name, false);
+  return result.replace(/\son[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+}
 
 /**
  * Decodes standard and numerical HTML entities (hex and decimal).
@@ -42,11 +298,7 @@ export function isSvg(input: string | Buffer): boolean {
   if (trimmed.startsWith('GIF87a') || trimmed.startsWith('GIF89a')) return false;
 
   // Strip XML declaration, comments, and doctypes (including internal subsets) to verify root element
-  const stripped = trimmed
-    .replace(/^<\?xml[^>]*\?>/i, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<!DOCTYPE\b[^>[]*(?:\[[\s\S]*?\]\s*)?>/gi, '')
-    .trim();
+  const stripped = stripDoctype(stripComments(trimmed.replace(/^<\?xml[^>]*\?>/i, ''))).trim();
 
   return /^<svg\b/i.test(stripped);
 }
@@ -59,37 +311,21 @@ export function sanitizeSvgString(svg: string): string {
 
   let result = svg;
 
-  // 1. Strip DOCTYPE and ENTITY definitions (including multiline internal subsets)
-  result = result.replace(/<!DOCTYPE\b[^>[]*(?:\[[\s\S]*?\]\s*)?>/gi, '');
-  result = result.replace(/<!ENTITY\b[^>]*>/gi, '');
-
-  // 2. Iteratively strip dangerous executable and embedding tags (both paired and unclosed/self-closing)
-  // to defeat recursive tag injection attacks like <scr<script>ipt>
-  let prev = '';
-  while (prev !== result) {
-    prev = result;
-
-    result = result.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-    result = result.replace(/<script\b[^>]*\/?>/gi, '');
-
-    result = result.replace(/<foreignObject\b[^>]*>[\s\S]*?<\/foreignObject>/gi, '');
-    result = result.replace(/<foreignObject\b[^>]*\/?>/gi, '');
-
-    result = result.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
-    result = result.replace(/<iframe\b[^>]*\/?>/gi, '');
-
-    result = result.replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '');
-    result = result.replace(/<object\b[^>]*\/?>/gi, '');
-
-    result = result.replace(/<embed\b[^>]*>[\s\S]*?<\/embed>/gi, '');
-    result = result.replace(/<embed\b[^>]*\/?>/gi, '');
-
-    result = result.replace(/<meta\b[^>]*\/?>/gi, '');
-    result = result.replace(/<link\b[^>]*\/?>/gi, '');
+  // 1-3. Strip DOCTYPE/ENTITY declarations, executable and embedding elements, and on* event handlers.
+  // Repeat until stable to defeat recursive tag injection such as <scr<script>ipt>; payloads that need more
+  // passes than any real document are rejected (fail closed).
+  let stable = false;
+  for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
+    const next = stripDangerousMarkupPass(result);
+    if (next === result) {
+      stable = true;
+      break;
+    }
+    result = next;
   }
-
-  // 3. Strip all inline on* event handler attributes
-  result = result.replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  if (!stable) {
+    throw new SvgSanitizationError('SVG contains nested markup that cannot be sanitized safely.');
+  }
 
   // 4. Sanitize dangerous URI protocols (javascript:, vbscript:, data:text/html, data:image/svg+xml, http:, https:, file:, ftp:, //)
   result = result.replace(
@@ -140,19 +376,11 @@ export function sanitizeSvgString(svg: string): string {
   );
 
   // 6. Sanitize <style> blocks and inline style attributes against SSRF and data exfiltration
-  result = result.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_, styleBody) => {
-    const cleanStyle = styleBody
-      .replace(/@import\s+[^;]+;?/gi, '')
-      .replace(/url\s*\(\s*(['"]?)(?:https?:|file:|ftp:|\/\/)[^)]*\1\s*\)/gi, 'none');
-    return `<style>${cleanStyle}</style>`;
-  });
+  result = sanitizeStyleElements(result);
 
   result = result.replace(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (full, s1, s2, s3) => {
     const styleBody = s1 !== undefined ? s1 : (s2 !== undefined ? s2 : s3);
-    const cleanStyle = styleBody
-      .replace(/@import\s+[^;]+;?/gi, '')
-      .replace(/url\s*\(\s*(['"]?)(?:https?:|file:|ftp:|\/\/)[^)]*\1\s*\)/gi, 'none');
-    return `style="${cleanStyle}"`;
+    return `style="${sanitizeCss(styleBody)}"`;
   });
 
   return result.trim();

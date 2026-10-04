@@ -474,6 +474,13 @@ export class CadGeometryUnavailableError extends ConversionFailedError {
   }
 }
 
+export class SvgSanitizationError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SvgSanitizationError';
+  }
+}
+
 export class CadTopologyError extends ConversionFailedError {
   constructor(message = 'CAD mesh failed topology or watertightness validation') {
     super(message);
