@@ -12,6 +12,7 @@
  * unterminated openers cannot trigger quadratic backtracking.
  */
 
+import { MAX_SVG_INPUT_CHARS } from '../conversions/svg-geometry';
 import { SvgSanitizationError } from '../types';
 
 const MAX_STRIP_PASSES = 16;
@@ -308,6 +309,9 @@ export function isSvg(input: string | Buffer): boolean {
  */
 export function sanitizeSvgString(svg: string): string {
   if (!svg || typeof svg !== 'string') return '';
+  if (svg.length > MAX_SVG_INPUT_CHARS) {
+    throw new SvgSanitizationError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
+  }
 
   let result = svg;
 

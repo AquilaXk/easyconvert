@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_SVG_INPUT_CHARS } from '../src/lib/conversions/svg-geometry';
 import { isSvg, sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { ConversionFailedError, SvgSanitizationError } from '../src/lib/types';
 
@@ -127,5 +128,20 @@ describe('SVG sanitizer scanner semantics', () => {
   it('removes an unterminated DOCTYPE', () => {
     const out = sanitizeSvgString('<!DOCTYPE svg [<!ENTITY x "y"><svg><rect/></svg>');
     expect(out).toBe('');
+  });
+});
+
+describe('SVG sanitizer input size cap', () => {
+  it('rejects input above the SVG character limit with a typed error', () => {
+    const oversized = `<svg>${' '.repeat(MAX_SVG_INPUT_CHARS)}</svg>`;
+    expect(() => sanitizeSvgString(oversized)).toThrow(SvgSanitizationError);
+    expect(() => sanitizeSvgString(oversized)).toThrow(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
+  });
+
+  it('accepts input exactly at the limit', () => {
+    const atLimit = `<svg>${'a'.repeat(MAX_SVG_INPUT_CHARS - '<svg></svg>'.length)}</svg>`;
+    const out = sanitizeSvgString(atLimit);
+    expect(out.length).toBe(MAX_SVG_INPUT_CHARS);
+    expect(out.startsWith('<svg>aaa')).toBe(true);
   });
 });
