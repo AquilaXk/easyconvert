@@ -543,12 +543,30 @@ export function encodeStep(model: any): Buffer {
       expect([...new Set(flagged.values())]).toEqual(['<unknown host>']);
     });
 
+    it('flags a literal host or external suffix next to an unknown value without a port (positive case)', () => {
+      const { status, flagged } = runG5Cases({
+        'dotted-host-suffix.mjs': 'await fetch(`https://third-party.dev${path}`);\n',
+        'const-base-suffix.mjs': `const BASE = 'https://third-party.dev';\nawait fetch(BASE + path);\n`,
+        'label-host-suffix.mjs': 'await fetch(`https://third-party${tld}/x`);\n',
+        'unknown-subdomain.mjs': 'await page.goto(`https://${sub}.third-party.dev/x`);\n',
+      });
+      expect(status).not.toBe(0);
+      expect(Object.fromEntries(flagged)).toEqual({
+        'dotted-host-suffix.mjs': 'third-party.dev',
+        'const-base-suffix.mjs': 'third-party.dev',
+        'label-host-suffix.mjs': '<unknown host>',
+        'unknown-subdomain.mjs': '*.third-party.dev',
+      });
+    });
+
     it('does not flag a prefix whose host is incomplete (negative case)', () => {
       expectNoneFlagged({
         'tpl-host.mjs': 'await page.goto(`https://${host}`);\n',
         'concat-host.mjs': `await fetch('https://' + host);\n`,
-        'tpl-tld.mjs': 'await fetch(`https://third-party${tld}/x`);\n',
-        'concat-suffix.mjs': `await fetch('https://third-party.dev' + suffix);\n`,
+        'local-host-suffix.mjs': 'await fetch(`https://localhost${p}`);\n',
+        'loopback-host-suffix.mjs': 'await fetch(`http://127.0.0.1${p}`);\n',
+        'local-subdomain.mjs': 'await fetch(`http://${sub}.localhost:3000/x`);\n',
+        'env-base-suffix.mjs': `await fetch(process.env.BASE_URL + path);\n`,
         'userinfo-local.mjs': 'await fetch(`https://api:${process.env.KEY}@localhost:3000/v3`);\n',
         'local-unknown-port.mjs': 'await page.goto(`http://localhost:${port}/convert`);\n',
         'loopback-unknown-port.mjs': `await fetch('http://127.0.0.1:' + port + '/api');\n`,
@@ -599,6 +617,25 @@ export function encodeStep(model: any): Buffer {
         },
         'third-party.dev'
       );
+    });
+
+    it('flags EventSource, node http option hosts, named node http imports, and slashless schemes (positive case)', () => {
+      expectAllFlagged(
+        {
+          'event-source.mjs': `const events = new EventSource('https://third-party.dev/events');\n`,
+          'https-options.mjs': `import https from 'node:https';\nhttps.get({ hostname: 'third-party.dev', path: '/feed' });\n`,
+          'http-options-host.mjs': `import http from 'node:http';\nhttp.request({ host: 'third-party.dev', port: 80 }).end();\n`,
+          'named-get.mjs': `import { get } from 'node:https';\nget('https://third-party.dev/feed');\n`,
+          'named-request.mjs': `import { request as send } from 'node:http';\nsend({ hostname: 'third-party.dev' }).end();\n`,
+          'slashless-scheme.mjs': `await fetch('https:third-party.dev/api');\n`,
+        },
+        'third-party.dev'
+      );
+      expectNoneFlagged({
+        'http-options-local.mjs': `import http from 'node:http';\nhttp.request({ host: 'localhost', port: 3000, headers: { Referer: 'https://third-party.dev/' } }).end();\n`,
+        'named-get-other.mjs': `import { get } from 'lodash';\nget({ hostname: 'third-party.dev' }, 'hostname');\n`,
+        'event-source-local.mjs': `const events = new EventSource('http://localhost:3000/events');\n`,
+      });
     });
 
     it('ignores non-URL arguments of node http clients, WebSocket, and axios (negative case)', () => {

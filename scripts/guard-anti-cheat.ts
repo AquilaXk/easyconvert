@@ -580,6 +580,10 @@ function checkHollowAssertions(targetDir?: string): Violation[] {
 
 // ============================================================================
 // Gate 5: Governance (AST G5 external navigation + AST G6 built-in specifier)
+//
+// G5 checks only the URL (or host) position of each API, resolving in-scope `const` bindings through the checker.
+// Known limits: values assigned through `let` reassignment, property access (`cfg.url`), imported constants,
+// function returns, loops, and object spreads are not resolved, so such URLs are treated as unknown.
 // ============================================================================
 
 /** Exact hosts a script or test may reach: loopback, the docker host gateway, and the unspecified address. */
@@ -599,10 +603,13 @@ const BASE_URL_PROPERTIES: readonly string[] = ['baseURL'];
 /** Properties of a request config object (`axios({ url })`) that name the target. */
 const REQUEST_CONFIG_URL_PROPERTIES: readonly string[] = ['url', 'baseURL'];
 /** Constructors whose first argument is the URL to open (`new WebSocket(url)`). */
-const URL_ARGUMENT_CONSTRUCTORS: ReadonlySet<string> = new Set(['WebSocket']);
+const URL_ARGUMENT_CONSTRUCTORS: ReadonlySet<string> = new Set(['WebSocket', 'EventSource']);
 /** `node:http` / `node:https` clients whose first argument is the URL to request. */
 const NODE_HTTP_RECEIVERS: ReadonlySet<string> = new Set(['http', 'https']);
 const NODE_HTTP_METHODS: ReadonlySet<string> = new Set(['get', 'request']);
+const NODE_HTTP_MODULES: ReadonlySet<string> = new Set(['http', 'https', 'node:http', 'node:https']);
+/** Properties of a `node:http(s)` options object that name the target host (not a URL). */
+const NODE_HTTP_HOST_PROPERTIES: readonly string[] = ['hostname', 'host'];
 /** Receivers whose `use(options)` sets test-wide options that may carry a `baseURL`. */
 const TEST_OPTION_RECEIVERS: ReadonlySet<string> = new Set(['test']);
 const TEST_OPTION_METHOD = 'use';
@@ -621,8 +628,8 @@ const AXIOS_CONFIG_ARGUMENT_INDEX: ReadonlyMap<string, number> = new Map([
 /** Receivers whose HTTP-verb methods issue a request (`page.request.get`, `request.post`, `axios.get`). */
 const REQUEST_RECEIVERS: ReadonlySet<string> = new Set(['request', 'axios']);
 const REQUEST_METHODS: ReadonlySet<string> = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'fetch', 'request']);
-/** Scheme of an http(s) or ws(s) URL, captured without the `//`. */
-const HTTP_SCHEME_PREFIX = /^((?:http|ws)s?:)\/\//i;
+/** Scheme of an http(s) or ws(s) URL, captured without the slashes the URL parser also accepts as optional. */
+const HTTP_SCHEME_PREFIX = /^((?:http|ws)s?:)[/\\]*/i;
 /** Characters that end the authority (`userinfo@host:port`) of a URL. */
 const AUTHORITY_TERMINATOR = /[/?#]/;
 /** A URL input that carries its own scheme and therefore ignores the base passed to `new URL`. */
@@ -776,7 +783,23 @@ function externalUrlHost(value: StaticText): string | undefined {
   const lastChunk = authority[authority.length - 1];
   const at = lastChunk.lastIndexOf('@');
   if (authority.length === 1 || at !== -1) return parseHost(scheme[1], lastChunk.slice(at + 1));
-  return hostBeforeUnknownAuthority(scheme[1], authority);
+  return externalSuffixHost(scheme[1], lastChunk) ?? hostBeforeUnknownAuthority(scheme[1], authority);
+}
+
+/** Placeholder label standing in for an unknown subdomain when checking a fixed host suffix. */
+const SUBDOMAIN_PLACEHOLDER = 'subdomain';
+
+/**
+ * `https://${sub}.third-party.dev/x`: the fixed suffix after the last unknown value is already a registrable host
+ * (two or more labels), so any subdomain of it is reported as `*.<suffix>`. A local suffix resolves as local.
+ */
+function externalSuffixHost(scheme: string, lastChunk: string): string | undefined {
+  if (!lastChunk.startsWith('.')) return undefined;
+  const host = parseHost(scheme, SUBDOMAIN_PLACEHOLDER + lastChunk);
+  if (host === undefined) return undefined;
+  if (isReservedLocalHost(host)) return host;
+  const suffix = host.slice(SUBDOMAIN_PLACEHOLDER.length + 1);
+  return suffix.includes('.') ? `*.${suffix}` : undefined;
 }
 
 function parseHost(scheme: string, hostPort: string): string | undefined {
@@ -789,21 +812,33 @@ function parseHost(scheme: string, hostPort: string): string | undefined {
 }
 
 /**
- * Host of an authority that continues into an unknown value with no literal `@` after it. The literal text before
- * the first `:` is the host, unless it is a single label that may be a username (`api:${key}`) or a literal `@`
- * already hands the host to an unknown value: then the host is unknown and reported conservatively.
- * Without a `:` the host itself is incomplete (`https://${host}`) and nothing is reported.
+ * Host of an authority that continues into an unknown value with no literal `@` after it.
+ * - With a `:`: the literal text before it is the host, unless it is a single label that may be a username
+ *   (`api:${key}`) or a literal `@` later hands the host to an unknown value; then the host is unknown.
+ * - Without a `:` (`https://third-party.dev${path}`): the literal text is the host when it is local or already
+ *   dotted; a bare label that the unknown value may extend is an unknown host.
+ * - With no literal host at all (`https://${host}`) nothing is known and nothing is reported.
+ * Unknown hosts are reported conservatively as UNKNOWN_HOST.
  */
 function hostBeforeUnknownAuthority(scheme: string, authority: string[]): string | undefined {
   const [first, ...rest] = authority;
   const hostSection = first.slice(first.lastIndexOf('@') + 1);
   const colon = hostSection.indexOf(':');
-  if (colon <= 0) return undefined;
-  if (rest.some((chunk) => chunk.includes('@'))) return UNKNOWN_HOST;
-  const host = parseHost(scheme, hostSection.slice(0, colon));
+  const literalHost = colon === -1 ? hostSection : hostSection.slice(0, colon);
+  if (!literalHost) return undefined;
+  if (colon !== -1 && rest.some((chunk) => chunk.includes('@'))) return UNKNOWN_HOST;
+  const host = parseHost(scheme, literalHost);
   if (host === undefined) return undefined;
-  const mayBeUsername = !first.includes('@') && SINGLE_LABEL_HOST_PATTERN.test(host) && !isReservedLocalHost(host);
+  if (isReservedLocalHost(host)) return host;
+  if (colon === -1) return host.includes('.') ? host : UNKNOWN_HOST;
+  const mayBeUsername = !first.includes('@') && SINGLE_LABEL_HOST_PATTERN.test(host);
   return mayBeUsername ? UNKNOWN_HOST : host;
+}
+
+/** Host named by a `node:http(s)` `hostname` / `host` option; only a fully known value is checked. */
+function optionHost(value: StaticText): string | undefined {
+  if (value.parts.length !== 1 || !value.parts[0]) return undefined;
+  return parseHost('http:', value.parts[0]) ?? '';
 }
 
 /** Loopback, docker gateway, and reserved names; excludes bare single labels, which may also be usernames. */
@@ -867,44 +902,72 @@ function optionValues(node: ts.Expression | undefined, names: readonly string[],
 }
 
 /** URL positions of a method call `receiver.method(...)`. */
-function methodUrlExpressions(node: ts.CallExpression, callee: ts.PropertyAccessExpression, resolver: ConstantResolver) {
+/** An expression in a URL position, or in a host position (`node:http(s)` options) when `hostOnly` is set. */
+interface UrlTarget {
+  expression: ts.Expression;
+  hostOnly: boolean;
+}
+
+function asUrlTargets(expressions: ts.Expression[]): UrlTarget[] {
+  return expressions.map((expression) => ({ expression, hostOnly: false }));
+}
+
+/** `node:http(s)` `get` / `request`: a URL first argument, or the host of an options object. */
+function nodeHttpTargets(first: ts.Expression, resolver: ConstantResolver): UrlTarget[] {
+  const options = objectLiteralOf(first, resolver);
+  if (!options) return asUrlTargets([first]);
+  return propertyValues(options, NODE_HTTP_HOST_PROPERTIES).map((expression) => ({ expression, hostOnly: true }));
+}
+
+/** Whether an identifier is `get` / `request` imported by name from `node:http(s)`. */
+function isNodeHttpImport(identifier: ts.Identifier, resolver: ConstantResolver): boolean {
+  const declaration = resolver.checker?.getSymbolAtLocation(identifier)?.declarations?.[0];
+  if (!declaration || !ts.isImportSpecifier(declaration)) return false;
+  const imported = (declaration.propertyName ?? declaration.name).text;
+  const moduleSpecifier = stringLiteralText(declaration.parent.parent.parent.moduleSpecifier);
+  return NODE_HTTP_METHODS.has(imported) && moduleSpecifier !== undefined && NODE_HTTP_MODULES.has(moduleSpecifier);
+}
+
+function methodUrlExpressions(node: ts.CallExpression, callee: ts.PropertyAccessExpression, resolver: ConstantResolver): UrlTarget[] {
   const method = callee.name.text;
   const receiver = receiverName(callee);
   const [first] = node.arguments;
-  if (BASE_URL_OPTION_CALLEES.has(method)) return optionValues(first, BASE_URL_PROPERTIES, resolver);
+  if (BASE_URL_OPTION_CALLEES.has(method)) return asUrlTargets(optionValues(first, BASE_URL_PROPERTIES, resolver));
   if (method === TEST_OPTION_METHOD) {
-    return receiver && TEST_OPTION_RECEIVERS.has(receiver) ? optionValues(first, BASE_URL_PROPERTIES, resolver) : [];
+    const isTestOptions = receiver !== undefined && TEST_OPTION_RECEIVERS.has(receiver);
+    return isTestOptions ? asUrlTargets(optionValues(first, BASE_URL_PROPERTIES, resolver)) : [];
   }
   if (receiver === AXIOS_RECEIVER && method === AXIOS_CREATE_METHOD) {
-    return optionValues(first, BASE_URL_PROPERTIES, resolver);
+    return asUrlTargets(optionValues(first, BASE_URL_PROPERTIES, resolver));
   }
-  if (receiver && NODE_HTTP_RECEIVERS.has(receiver) && NODE_HTTP_METHODS.has(method)) return [first];
+  if (receiver && NODE_HTTP_RECEIVERS.has(receiver) && NODE_HTTP_METHODS.has(method)) return nodeHttpTargets(first, resolver);
   if (isRequestCall(callee)) {
     const config = objectLiteralOf(first, resolver);
-    if (config) return propertyValues(config, REQUEST_CONFIG_URL_PROPERTIES);
+    if (config) return asUrlTargets(propertyValues(config, REQUEST_CONFIG_URL_PROPERTIES));
     const configIndex = receiver === AXIOS_RECEIVER ? AXIOS_CONFIG_ARGUMENT_INDEX.get(method) : undefined;
     const baseUrls = configIndex === undefined ? [] : optionValues(node.arguments[configIndex], BASE_URL_PROPERTIES, resolver);
-    return [first, ...baseUrls];
+    return asUrlTargets([first, ...baseUrls]);
   }
-  return URL_ARGUMENT_CALLEES.has(method) ? [first] : [];
+  return URL_ARGUMENT_CALLEES.has(method) ? asUrlTargets([first]) : [];
 }
 
-/** The argument expressions of a call or constructor that sit in a URL position for that API; bodies and headers are excluded. */
-function urlPositionExpressions(node: ts.CallExpression | ts.NewExpression, resolver: ConstantResolver): ts.Expression[] {
+/** The arguments of a call or constructor that sit in a URL or host position for that API; bodies and headers are excluded. */
+function urlPositionExpressions(node: ts.CallExpression | ts.NewExpression, resolver: ConstantResolver): UrlTarget[] {
   const callee = node.expression;
   const first = node.arguments?.[0];
   if (!first) return [];
   if (ts.isNewExpression(node)) {
-    return ts.isIdentifier(callee) && URL_ARGUMENT_CONSTRUCTORS.has(callee.text) ? [first] : [];
+    return ts.isIdentifier(callee) && URL_ARGUMENT_CONSTRUCTORS.has(callee.text) ? asUrlTargets([first]) : [];
   }
   if (ts.isPropertyAccessExpression(callee)) return methodUrlExpressions(node, callee, resolver);
   if (!ts.isIdentifier(callee)) return [];
+  if (isNodeHttpImport(callee, resolver)) return nodeHttpTargets(first, resolver);
   if (REQUEST_RECEIVERS.has(callee.text)) {
     const config = objectLiteralOf(first, resolver);
-    return config ? propertyValues(config, REQUEST_CONFIG_URL_PROPERTIES) : [first];
+    return asUrlTargets(config ? propertyValues(config, REQUEST_CONFIG_URL_PROPERTIES) : [first]);
   }
-  if (BASE_URL_OPTION_CALLEES.has(callee.text)) return optionValues(first, BASE_URL_PROPERTIES, resolver);
-  return URL_ARGUMENT_CALLEES.has(callee.text) ? [first] : [];
+  if (BASE_URL_OPTION_CALLEES.has(callee.text)) return asUrlTargets(optionValues(first, BASE_URL_PROPERTIES, resolver));
+  return URL_ARGUMENT_CALLEES.has(callee.text) ? asUrlTargets([first]) : [];
 }
 
 /** One program over the automation files so identifiers resolve through real scopes; no lib or module resolution. */
@@ -974,7 +1037,8 @@ function checkGovernance(targetDir?: string): Violation[] {
       // G5: automation must not navigate to or fetch a non-local site (e.g. scraping a third-party service).
       if (automation && (ts.isCallExpression(node) || ts.isNewExpression(node))) {
         for (const target of urlPositionExpressions(node, resolver)) {
-          const host = externalUrlHost(staticText(target, resolver));
+          const value = staticText(target.expression, resolver);
+          const host = target.hostOnly ? optionHost(value) : externalUrlHost(value);
           if (host === undefined || isLocalHost(host)) continue;
           const { line, snippet } = getNodeSnippet(sourceFile, node);
           violations.push({
