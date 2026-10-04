@@ -91,10 +91,10 @@ function toUnsigned(value: number, max: number, what: string): number {
 }
 
 /** Rounds to a signed 16-bit value; the logical space is pre-scaled so this never clamps. */
-function toInt16(value: number): number {
+function toInt16(value: number, what = 'Coordinate'): number {
   const v = Math.round(value);
-  if (v < -INT16_MAX || v > INT16_MAX) {
-    throw new CadGeometryUnavailableError(`Coordinate ${v} does not fit the 16-bit metafile coordinate range.`);
+  if (!Number.isFinite(v) || v < -INT16_MAX || v > INT16_MAX) {
+    throw new CadGeometryUnavailableError(`${what} ${v} does not fit the 16-bit metafile range.`);
   }
   return v;
 }
@@ -476,7 +476,7 @@ function emitWmfPen(pen: PlanPen | null, out: Buffer[]): void {
   const penRec = wmfRecord(META_CREATEPENINDIRECT, WMF_PEN_RECORD_WORDS);
   if (pen) {
     penRec.writeUInt16LE(WMF_PS_SOLID | penCapJoinBits(pen), 6);
-    penRec.writeInt16LE(toInt16(Math.max(1, pen.width)), 8);
+    penRec.writeInt16LE(toInt16(Math.max(1, pen.width), 'WMF pen width'), 8);
     penRec.writeUInt16LE(0, 10);
     penRec.writeUInt32LE(emfColorRef(pen.color), 12);
   } else {
@@ -721,7 +721,7 @@ function formatCgmPen(pen: PlanPen, lines: string[]): void {
   if (pen.join !== 'miter') {
     throw new UnsupportedOptionError(`SVG stroke-linejoin "${pen.join}" is not supported by the CGM encoder.`);
   }
-  lines.push(`LINECOLR ${formatCgmColour(pen.color)};`, `LINEWIDTH ${toInt16(Math.max(1, pen.width))};`);
+  lines.push(`LINECOLR ${formatCgmColour(pen.color)};`, `LINEWIDTH ${toInt16(Math.max(1, pen.width), 'CGM line width')};`);
 }
 
 function formatCgmOp(op: DrawOp, lines: string[], meter: WorkMeter): void {

@@ -931,16 +931,16 @@ describe('SVG document model for metafile encoders', () => {
     }
     const LINE = (attrs: string) => `<polyline points="10,10 50,50 90,10" fill="none" stroke="#000" ${attrs}/>`;
 
-    const cases: [string, (b: Buffer) => Buffer, string][] = [
-      ['a WMF pen wider than 16 bits', encodeWmf, LINE('stroke-width="70000"')],
-      ['an EMF pen wider than 32 bits', encodeEmf, LINE('stroke-width="1e300"')],
-      ['a CGM line width beyond the VDC integer range', encodeCgm, LINE('stroke-width="70000"')],
+    const cases: [string, (b: Buffer) => Buffer, string, RegExp][] = [
+      ['a WMF pen wider than 16 bits', encodeWmf, LINE('stroke-width="70000"'), /^WMF pen width 70000 /],
+      ['an EMF pen wider than 32 bits', encodeEmf, LINE('stroke-width="1e300"'), /^EMF pen width 1e\+300 /],
+      ['a CGM line width beyond the VDC integer range', encodeCgm, LINE('stroke-width="70000"'), /^CGM line width 70000 /],
     ];
-    for (const [label, encode, body] of cases) {
+    for (const [label, encode, body, message] of cases) {
       it(`rejects ${label} with a typed error instead of a RangeError`, () => {
         const err = errorOf(() => encode(svgDoc(body)));
         expect(err).toBeInstanceOf(ConversionFailedError);
-        expect(err).not.toBeInstanceOf(RangeError);
+        expect((err as Error).message).toMatch(message);
       });
     }
 
@@ -956,6 +956,7 @@ describe('SVG document model for metafile encoders', () => {
       const d = Array.from({ length: RINGS }, (_, k) => `M${k % 100} ${Math.floor(k / 100) % 100} h1 v1 z`).join('');
       const err = errorOf(() => encodeWmf(svgDoc(`<path fill-rule="evenodd" fill="#000" d="${d}"/>`)));
       expect(err).toBeInstanceOf(ConversionFailedError);
+      expect((err as Error).message).toMatch(/^WMF polygon count 65536 /);
     });
   });
 
