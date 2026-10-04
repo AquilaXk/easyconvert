@@ -1,4 +1,5 @@
 import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-nurbs';
+import { CadGeometryUnavailableError } from '../types';
 
 export interface RgbColor {
   r: number;
@@ -694,6 +695,28 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   return { width: vp.width, height: vp.height, elements };
 }
 
+const SVG_ROOT_PATTERN = /<svg\b/i;
+
+/**
+ * Parses the SVG input for a metafile encoder and fails closed when there is
+ * nothing to encode: empty input, a non-SVG payload, or no drawable geometry.
+ */
+function parseDrawableSvg(svgBuffer: Buffer, targetLabel: string): ParsedSvgVectorDocument {
+  if (!svgBuffer || svgBuffer.length === 0) {
+    throw new CadGeometryUnavailableError(`${targetLabel} encoding failed: SVG buffer is empty.`);
+  }
+  const svgText = svgBuffer.toString('utf-8');
+  if (!SVG_ROOT_PATTERN.test(svgText)) {
+    throw new CadGeometryUnavailableError(`${targetLabel} encoding failed: input is not an SVG document.`);
+  }
+  const doc = parseSvgGeometries(svgText);
+  const hasDrawable = doc.elements.some((el) => el.subpaths.some((sub) => sub.length >= 2));
+  if (!hasDrawable) {
+    throw new CadGeometryUnavailableError(`${targetLabel} encoding failed: SVG contains no drawable vector geometry.`);
+  }
+  return doc;
+}
+
 // ============================================================================
 // EMF ENCODER (MS-EMF Enhanced Metafile)
 // ============================================================================
@@ -865,11 +888,7 @@ function buildEmfHeader(width: number, height: number, totalFileSize: number, to
  * Encodes an SVG document into a genuine Win32 Enhanced Metafile (EMF) binary buffer.
  */
 export function encodeEmf(svgBuffer: Buffer): Buffer {
-  if (!svgBuffer || svgBuffer.length === 0) {
-    throw new Error('SVG buffer is empty.');
-  }
-
-  const doc = parseSvgGeometries(svgBuffer.toString('utf-8'));
+  const doc = parseDrawableSvg(svgBuffer, 'EMF');
   const width = Math.max(1, Math.round(doc.width));
   const height = Math.max(1, Math.round(doc.height));
 
@@ -1014,11 +1033,7 @@ function buildAldusHeader(width: number, height: number): Buffer {
  * Encodes an SVG document into a genuine Windows Metafile (WMF) binary buffer.
  */
 export function encodeWmf(svgBuffer: Buffer): Buffer {
-  if (!svgBuffer || svgBuffer.length === 0) {
-    throw new Error('SVG buffer is empty.');
-  }
-
-  const doc = parseSvgGeometries(svgBuffer.toString('utf-8'));
+  const doc = parseDrawableSvg(svgBuffer, 'WMF');
   const width = Math.max(1, Math.round(doc.width));
   const height = Math.max(1, Math.round(doc.height));
 
@@ -1110,11 +1125,7 @@ function formatCgmElement(el: SvgGeometryElement, lines: string[]) {
  * Encodes an SVG document into standard ISO 8632 clear-text Computer Graphics Metafile (CGM).
  */
 export function encodeCgm(svgBuffer: Buffer, baseName: string = 'drawing'): Buffer {
-  if (!svgBuffer || svgBuffer.length === 0) {
-    throw new Error('SVG buffer is empty.');
-  }
-
-  const doc = parseSvgGeometries(svgBuffer.toString('utf-8'));
+  const doc = parseDrawableSvg(svgBuffer, 'CGM');
   const width = Math.max(1, Math.round(doc.width));
   const height = Math.max(1, Math.round(doc.height));
   const safeName = escapeCgmString(baseName || 'drawing');

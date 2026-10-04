@@ -9,6 +9,7 @@ import {
 } from '../src/lib/conversions/vector-cad';
 import { getAvailableTargetFormats } from '../src/lib/registry';
 import { oracleTest } from './helpers/oracle-test';
+import { CadGeometryUnavailableError, ConversionFailedError } from '../src/lib/types';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -500,6 +501,33 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
     it('rejects empty input buffer fail-closed', () => {
       expect(() => encodeCgm(Buffer.alloc(0))).toThrow(/empty/i);
     });
+  });
+
+  describe('Fail-closed input validation', () => {
+    const encoders = [
+      ['emf', (b: Buffer) => encodeEmf(b)],
+      ['wmf', (b: Buffer) => encodeWmf(b)],
+      ['cgm', (b: Buffer) => encodeCgm(b)],
+    ] as const;
+    const invalidInputs: [string, Buffer][] = [
+      ['empty buffer', Buffer.alloc(0)],
+      ['non-SVG text', Buffer.from('hello world, not a drawing', 'utf-8')],
+      ['SVG without drawable geometry', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>', 'utf-8')],
+      ['SVG with only degenerate shapes', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="0" height="5"/><circle r="0"/></svg>', 'utf-8')],
+    ];
+
+    for (const [target, encode] of encoders) {
+      for (const [label, input] of invalidInputs) {
+        it(`throws CadGeometryUnavailableError for ${label} -> ${target}`, () => {
+          expect(() => encode(input)).toThrow(CadGeometryUnavailableError);
+        });
+      }
+
+      it(`rejects geometry-less SVG through convertVectorCad -> ${target} with a typed error`, async () => {
+        const input = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'utf-8');
+        await expect(convertVectorCad(input, 'svg', target, {}, 'blank.svg')).rejects.toBeInstanceOf(ConversionFailedError);
+      });
+    }
   });
 
   describe('Integration & Registry Routing', () => {
