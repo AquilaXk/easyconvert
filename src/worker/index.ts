@@ -271,10 +271,8 @@ export async function drainWorker(
   console.log(`[EasyConvert OCI Worker] Worker daemon drain completed cleanly.`);
 }
 
-// Start local heartbeat monitoring in non-test environments
-if (process.env.NODE_ENV !== 'test') {
-  startHeartbeat();
-}
+// Start local heartbeat monitoring
+startHeartbeat();
 
 // Attach signal listeners in non-test environments
 if (process.env.NODE_ENV !== 'test') {
