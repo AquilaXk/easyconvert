@@ -120,6 +120,7 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     stub.faults.length = 0;
     stub.complete.keepalive = undefined;
     stub.complete.failAfterComplete = undefined;
+    stub.complete.afterComplete = undefined;
   });
 
   afterEach(() => {
@@ -369,6 +370,41 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     expect(result.etag).toMatch(/^[0-9a-f]{32}-2$/);
     expect(stub.requests.filter(isComplete)).toHaveLength(1);
     expect(stub.requests.some(isListParts)).toBe(false);
+  });
+
+  /** Independent oracle: S3 multipart ETag = MD5(concat of binary part MD5s) + "-" + part count. */
+  function multipartEtag(payload: Buffer, partSize: number): string {
+    const digests: Buffer[] = [];
+    for (let i = 0; i < payload.length; i += partSize) {
+      digests.push(crypto.createHash('md5').update(payload.subarray(i, i + partSize)).digest());
+    }
+    return `${crypto.createHash('md5').update(Buffer.concat(digests)).digest('hex')}-${digests.length}`;
+  }
+
+  it('reports the exact multipart ETag after verifying an ambiguous Complete', async () => {
+    stub.complete.failAfterComplete = { status: 500, code: 'InternalError' };
+    const payload = crypto.randomBytes(2 * MIN_PART + 11);
+    const result = await adapter({}, { partSizeBytes: MIN_PART }).uploadStream('exact/etag.bin', sliced(payload));
+    expect(result.etag).toBe(multipartEtag(payload, MIN_PART));
+    expect(stub.requests.some(isListParts)).toBe(true);
+  });
+
+  it('does not accept another writer\'s object of the same size as proof of completion', async () => {
+    stub.complete.failAfterComplete = { status: 500, code: 'InternalError' };
+    stub.complete.afterComplete = (key) => {
+      const original = stub.objects.get(key)!;
+      stub.objects.set(key, {
+        body: crypto.randomBytes(original.body.length),
+        contentType: 'application/octet-stream',
+        etag: `"${'f'.repeat(32)}-2"`,
+      });
+    };
+    const err = await adapter({}, { partSizeBytes: MIN_PART })
+      .uploadStream('foreign/obj.bin', sliced(crypto.randomBytes(MIN_PART + 9)))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageServiceError);
+    expect(stub.requests.some((r) => r.method === 'HEAD' && r.key === 'foreign/obj.bin')).toBe(true);
+    expect(stub.requests.filter(isAbort)).toHaveLength(1);
   });
 
   it('aborts after an ambiguous Complete failure when ListParts shows the upload still open', async () => {

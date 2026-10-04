@@ -45,6 +45,8 @@ export interface StubCompleteBehavior {
   keepalive?: { count: number; intervalMs: number; chunk?: string };
   /** Complete the upload, then answer with this error instead of the result (once). */
   failAfterComplete?: { status: number; code: string };
+  /** Runs right after an upload is assembled, e.g. to simulate another writer replacing the object. */
+  afterComplete?: (key: string) => void;
 }
 
 export interface StoredStubObject {
@@ -210,9 +212,12 @@ export async function startS3StubServer(options: {
           ordered.push(part);
         }
         const assembled = Buffer.concat(ordered);
-        const etag = `"${crypto.createHash('md5').update(assembled).digest('hex')}-${ordered.length}"`;
+        // S3 multipart ETag: MD5 of the concatenated binary part MD5s, then "-<part count>".
+        const partDigests = Buffer.concat(ordered.map((part) => crypto.createHash('md5').update(part).digest()));
+        const etag = `"${crypto.createHash('md5').update(partDigests).digest('hex')}-${ordered.length}"`;
         objects.set(key, { body: assembled, contentType: 'application/octet-stream', etag });
         uploads.delete(uploadId);
+        complete.afterComplete?.(key);
         if (complete.failAfterComplete) {
           const { status, code } = complete.failAfterComplete;
           complete.failAfterComplete = undefined;

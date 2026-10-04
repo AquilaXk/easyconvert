@@ -313,6 +313,24 @@ function isAmbiguousCompletion(err: unknown): boolean {
   );
 }
 
+const PART_MD5_PATTERN = /^[0-9a-f]{32}$/i;
+
+/**
+ * The ETag S3 gives a completed multipart object: MD5 of the concatenated binary part MD5s, then
+ * `-<part count>`. MD5 is S3's integrity checksum here, not a security control. Returns undefined
+ * when a part ETag is not a plain MD5 (e.g. server-side encryption with KMS), in which case
+ * completion cannot be proven this way.
+ */
+function expectedMultipartEtag(partEtags: readonly string[]): string | undefined {
+  const digests: Buffer[] = [];
+  for (const etag of partEtags) {
+    const hex = etag.replace(/"/g, '');
+    if (!PART_MD5_PATTERN.test(hex)) return undefined;
+    digests.push(Buffer.from(hex, 'hex'));
+  }
+  return `${crypto.createHash('md5').update(Buffer.concat(digests)).digest('hex')}-${partEtags.length}`;
+}
+
 /** Wraps a failure of the caller's source stream; StorageAdapterErrors pass through unchanged. */
 function wrapSourceError(err: unknown): StorageAdapterError {
   if (err instanceof StorageAdapterError) return err;
@@ -806,7 +824,12 @@ export class S3StorageAdapter implements IStorageAdapter {
       return { size: total, etag, contentType, lastModified: new Date() };
     } catch (err) {
       if (isAmbiguousCompletion(err)) {
-        const verifiedEtag = await this.verifyCompletion(key, uploadId, parts.length, total);
+        const verifiedEtag = await this.verifyCompletion(
+          key,
+          uploadId,
+          parts.map((part) => part.etag),
+          total
+        );
         if (verifiedEtag !== undefined) {
           return { size: total, etag: verifiedEtag, contentType, lastModified: new Date() };
         }
@@ -818,15 +841,20 @@ export class S3StorageAdapter implements IStorageAdapter {
 
   /**
    * After an ambiguous Complete failure: the upload counts as completed only when ListParts says
-   * the upload is gone and HEAD shows the object with the expected size and a `-<parts>` ETag.
+   * the upload is gone and HEAD shows the object with the expected size and exactly the multipart
+   * ETag computed from our own part ETags, so another writer's object is never taken as ours.
    * Returns that ETag, or undefined when completion is not proven.
    */
   private async verifyCompletion(
     key: string,
     uploadId: string,
-    partCount: number,
+    partEtags: readonly string[],
     size: number
   ): Promise<string | undefined> {
+    const expected = expectedMultipartEtag(partEtags);
+    if (expected === undefined) {
+      return undefined;
+    }
     try {
       await this.send({
         method: 'GET',
@@ -843,8 +871,8 @@ export class S3StorageAdapter implements IStorageAdapter {
       }
     }
     const head = await this.head(key).catch(() => null);
-    if (head?.size === size && head.etag?.endsWith(`-${partCount}`)) {
-      return head.etag;
+    if (head?.size === size && head.etag?.toLowerCase() === expected) {
+      return expected;
     }
     return undefined;
   }
