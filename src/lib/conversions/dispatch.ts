@@ -41,11 +41,29 @@ export function requiresNativeEngine(sourceFormat: string, targetFormat: string)
   return NATIVE_ENGINE_ONLY_PAIRS.has(`${normalizeFormat(sourceFormat)}->${normalizeFormat(targetFormat)}`);
 }
 
-function assertAdvertised(src: string, tgt: string): void {
+/**
+ * Targets the registry does not list for a video source but the native media engine produces when
+ * the request carries the task option that selects them: thumbnails (`thumbnail`), streaming
+ * packaging (`packaging`) and subtitle extraction (`subtitles.mode === 'extract'`).
+ */
+const THUMBNAIL_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'png']);
+const PACKAGING_TARGETS: ReadonlySet<string> = new Set(['hls', 'dash']);
+const SUBTITLE_EXTRACT_TARGETS: ReadonlySet<string> = new Set(['srt', 'vtt', 'ass']);
+const VIDEO_CATEGORY = 'video';
+
+/** Whether the request selects an option-driven media target the registry does not list. */
+function isTaskDrivenMediaTarget(src: string, tgt: string, options: WorkerEngineOptions): boolean {
+  if (FORMAT_REGISTRY[src]?.category !== VIDEO_CATEGORY) return false;
+  if (THUMBNAIL_TARGETS.has(tgt)) return Boolean(options.thumbnail);
+  if (PACKAGING_TARGETS.has(tgt)) return Boolean(options.packaging);
+  if (SUBTITLE_EXTRACT_TARGETS.has(tgt)) return options.subtitles?.mode === 'extract';
+  return false;
+}
+
+function assertAdvertised(src: string, tgt: string, options: WorkerEngineOptions): void {
   const def = FORMAT_REGISTRY[src];
-  if (!def?.targetFormats.includes(tgt)) {
-    throw new UnsupportedTargetError(`Unsupported conversion from .${src} to .${tgt}: the pair is not offered`);
-  }
+  if (def?.targetFormats.includes(tgt) || isTaskDrivenMediaTarget(src, tgt, options)) return;
+  throw new UnsupportedTargetError(`Unsupported conversion from .${src} to .${tgt}: the pair is not offered`);
 }
 
 /** Reads a native engine's temporary output into memory and deletes the file. */
@@ -96,7 +114,7 @@ export async function dispatchConversion(
 ): Promise<WorkerConversionResult> {
   const src = normalizeFormat(sourceFormat);
   const tgt = normalizeFormat(targetFormat);
-  assertAdvertised(src, tgt);
+  assertAdvertised(src, tgt, options);
   if (tgt === PDF_FORMAT) {
     assertPdfPostProcessOptions(options);
   }
