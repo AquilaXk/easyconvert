@@ -10,19 +10,40 @@ import {
 } from './adapter-interface';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../../security/ssrf';
 
+function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) {
+    end--;
+  }
+  return s.slice(0, end);
+}
+
+function stripLeadingSlashes(s: string): string {
+  let start = 0;
+  while (start < s.length && s.charCodeAt(start) === 47) {
+    start++;
+  }
+  return s.slice(start);
+}
+
+function stripSlashes(s: string): string {
+  return stripTrailingSlashes(stripLeadingSlashes(s));
+}
+
 export class WebDavStorageAdapter implements IStorageAdapter {
   readonly providerName = 'webdav';
-  private baseUrl: string;
-  private authHeader?: string;
+  private readonly baseUrl: string;
+  private readonly authHeader?: string;
 
   constructor(credentials: WebDavCredentials) {
-    this.baseUrl = credentials.url.replace(/\/+$/, '');
+    let base = stripTrailingSlashes(credentials.url);
     if (credentials.basePath) {
-      const cleanBase = credentials.basePath.replace(/^\/+|\/+$/g, '');
+      const cleanBase = stripSlashes(credentials.basePath);
       if (cleanBase) {
-        this.baseUrl = `${this.baseUrl}/${cleanBase}`;
+        base = `${base}/${cleanBase}`;
       }
     }
+    this.baseUrl = base;
 
     if (credentials.username && credentials.password) {
       const token = Buffer.from(`${credentials.username}:${credentials.password}`, 'utf-8').toString('base64');
@@ -39,7 +60,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
   }
 
   private buildUrl(remotePath: string): string {
-    const cleanPath = remotePath.replace(/^\/+/, '');
+    const cleanPath = stripLeadingSlashes(remotePath);
     return `${this.baseUrl}/${encodeURI(cleanPath)}`;
   }
 

@@ -14,12 +14,12 @@ import { createSsrfSafeAgent, validateUrlForSsrf } from '../../security/ssrf';
 
 export class GcsStorageAdapter implements IStorageAdapter {
   readonly providerName = 'gcs';
-  private endpoint: string;
-  private bucket: string;
+  private readonly endpoint: string;
+  private readonly bucket: string;
   private cachedToken: string | null = null;
   private tokenExpiresAt = 0;
 
-  constructor(private credentials: GcsCredentials) {
+  constructor(private readonly credentials: GcsCredentials) {
     this.bucket = credentials.bucket;
     this.endpoint = credentials.endpoint || 'https://storage.googleapis.com';
   }
@@ -46,7 +46,11 @@ export class GcsStorageAdapter implements IStorageAdapter {
         clientEmail = parsed.client_email;
         privateKey = parsed.private_key;
       } catch (err) {
-        throw new StorageAuthenticationError('Invalid serviceAccountKeyJson format', this.providerName);
+        // Rethrow JSON parse failure as typed StorageAuthenticationError
+        throw new StorageAuthenticationError(
+          `Invalid serviceAccountKeyJson format: ${err instanceof Error ? err.message : String(err)}`,
+          this.providerName
+        );
       }
     }
 

@@ -18,11 +18,27 @@ import { isPrivateOrRestrictedHost, isBlockedIp } from '../../security/ssrf';
 
 const streamPipeline = promisify(pipeline);
 
+function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) {
+    end--;
+  }
+  return s.slice(0, end);
+}
+
+function stripLeadingSlashes(s: string): string {
+  let start = 0;
+  while (start < s.length && s.charCodeAt(start) === 47) {
+    start++;
+  }
+  return s.slice(start);
+}
+
 export class SftpStorageAdapter implements IStorageAdapter {
   readonly providerName = 'sftp';
-  private port: number;
+  private readonly port: number;
 
-  constructor(private credentials: SftpCredentials) {
+  constructor(private readonly credentials: SftpCredentials) {
     this.port = credentials.port || 22;
   }
 
@@ -49,9 +65,9 @@ export class SftpStorageAdapter implements IStorageAdapter {
   }
 
   private resolveRemotePath(remotePath: string): string {
-    const clean = remotePath.replace(/^\/+/, '');
+    const clean = stripLeadingSlashes(remotePath);
     if (this.credentials.basePath) {
-      const base = this.credentials.basePath.replace(/\/+$/, '');
+      const base = stripTrailingSlashes(this.credentials.basePath);
       return `${base}/${clean}`;
     }
     return `/${clean}`;
@@ -139,7 +155,8 @@ export class SftpStorageAdapter implements IStorageAdapter {
         return null;
       }
       // Parse ls -l line: -rw-r--r-- 1 user group 123456 Oct 04 10:00 filename
-      const match = output.match(/[-rwx]{10}\s+\d+\s+\S+\s+\S+\s+(\d+)\s+/);
+      const lsRegex = /[-rwx]{10}\s+\d+\s+\S+\s+\S+\s+(\d+)\s+/;
+      const match = lsRegex.exec(output);
       const size = match ? Number.parseInt(match[1], 10) : 0;
       return {
         size,
@@ -181,9 +198,15 @@ export class SftpStorageAdapter implements IStorageAdapter {
       const destination = `${this.credentials.username}@${this.credentials.host}`;
       args.push(destination);
 
-      const child = spawn('sftp', args, {
+      const trustedPath = '/usr/bin:/bin:/usr/sbin:/sbin';
+      const sftpBin = fs.existsSync('/usr/bin/sftp') ? '/usr/bin/sftp' : 'sftp';
+      const child = spawn(sftpBin, args, {
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          PATH: trustedPath,
+        },
       });
 
       let stdout = '';
@@ -203,14 +226,12 @@ export class SftpStorageAdapter implements IStorageAdapter {
       child.on('close', (code) => {
         if (code === 0) {
           resolve(stdout);
+        } else if (stderr.includes('Permission denied') || stderr.includes('Authentication failed')) {
+          reject(new StorageAuthenticationError(stderr.trim(), this.providerName));
+        } else if (stderr.includes('No such file') || stderr.includes('not found')) {
+          reject(new StorageNotFoundError(commands, this.providerName));
         } else {
-          if (stderr.includes('Permission denied') || stderr.includes('Authentication failed')) {
-            reject(new StorageAuthenticationError(stderr.trim(), this.providerName));
-          } else if (stderr.includes('No such file') || stderr.includes('not found')) {
-            reject(new StorageNotFoundError(commands, this.providerName));
-          } else {
-            reject(new StorageAdapterError(`SFTP command exited with code ${code}: ${stderr}`, this.providerName));
-          }
+          reject(new StorageAdapterError(`SFTP command exited with code ${code}: ${stderr}`, this.providerName));
         }
       });
 

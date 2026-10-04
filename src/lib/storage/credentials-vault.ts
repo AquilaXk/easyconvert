@@ -125,8 +125,8 @@ function getVaultMasterKey(): Buffer {
 }
 
 export class CredentialsVault {
-  private inMemoryStore = new Map<string, StoredCredentialEnvelope>();
-  private redisClient: Redis | null = null;
+  private readonly inMemoryStore = new Map<string, StoredCredentialEnvelope>();
+  private readonly redisClient: Redis | null = null;
   private redisConnected = false;
 
   constructor(redisClient?: Redis) {
@@ -168,7 +168,7 @@ export class CredentialsVault {
     if (!userId || typeof userId !== 'string') {
       throw new Error('[CredentialsVault] userId is required to associate credentials');
     }
-    if (!credentials || !credentials.type) {
+    if (!credentials?.type) {
       throw new Error('[CredentialsVault] Invalid credentials payload: missing provider type');
     }
 
@@ -224,7 +224,7 @@ export class CredentialsVault {
    * Optionally enforces tenancy boundary by verifying matching userId.
    */
   async get(credentialRef: string, userId?: string): Promise<CustomerStorageCredentials | null> {
-    if (!credentialRef || !credentialRef.startsWith('cred_')) {
+    if (!credentialRef?.startsWith('cred_')) {
       return null;
     }
 
@@ -241,9 +241,7 @@ export class CredentialsVault {
       }
     }
 
-    if (!envelope) {
-      envelope = this.inMemoryStore.get(credentialRef) || null;
-    }
+    envelope ??= this.inMemoryStore.get(credentialRef) || null;
 
     if (!envelope) {
       return null;
@@ -283,7 +281,7 @@ export class CredentialsVault {
    * Deletes credentials by reference with optional tenancy check.
    */
   async delete(credentialRef: string, userId?: string): Promise<boolean> {
-    if (!credentialRef || !credentialRef.startsWith('cred_')) {
+    if (!credentialRef?.startsWith('cred_')) {
       return false;
     }
 
@@ -324,6 +322,31 @@ export class CredentialsVault {
 
     const results: CredentialSummary[] = [];
     const now = Date.now();
+
+    if (this.redisClient && this.redisConnected) {
+      try {
+        const keys = await this.redisClient.keys(`${VAULT_PREFIX}*`);
+        for (const k of keys) {
+          const raw = await this.redisClient.get(k);
+          if (raw) {
+            const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
+            if (envelope.userId === userId && (!envelope.expiresAt || now <= envelope.expiresAt)) {
+              results.push({
+                id: envelope.id,
+                userId: envelope.userId,
+                providerType: envelope.providerType,
+                name: envelope.name,
+                createdAt: envelope.createdAt,
+                expiresAt: envelope.expiresAt,
+              });
+            }
+          }
+        }
+        return results;
+      } catch {
+        // Fall back to in-memory store
+      }
+    }
 
     for (const envelope of this.inMemoryStore.values()) {
       if (envelope.userId === userId) {

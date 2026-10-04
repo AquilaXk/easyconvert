@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { request } from 'undici';
 import { localFsStorage } from './local-fs-storage';
@@ -10,6 +11,7 @@ import {
   StorageSsrfError,
 } from './adapters/adapter-interface';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
+import type { ObjectReadStream, StoredObjectMetadata } from './object-storage';
 
 export type ImportOperationType =
   | 'import/url'
@@ -62,86 +64,92 @@ export interface ExportOperationResult {
   success: boolean;
 }
 
-/**
- * Executes a streaming BYOS import task from customer storage or external URL directly into object storage.
- * Enforces strict zero-heap spooling and zero-trust SSRF protections.
- */
-export async function executeImportTask(params: ImportOperationParams): Promise<ImportOperationResult> {
-  const targetKey = params.targetKey || `import-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-  const filename = params.filename || params.remotePath?.split('/').pop() || 'imported-file';
-
-  if (params.operation === 'import/url') {
-    if (!params.url) {
-      throw new Error('[BYOS] "url" parameter is required for import/url operation');
-    }
-
-    const parsedUrl = new URL(params.url);
-    const isSafe = await validateUrlForSsrf(parsedUrl);
-    if (!isSafe) {
-      throw new StorageSsrfError(params.url, 'import/url');
-    }
-
-    const headers: Record<string, string> = {};
-    if (params.credentialRef) {
-      const creds = await credentialsVault.get(params.credentialRef, params.userId);
-      if (creds && creds.type === 'http') {
-        if (creds.bearerToken) {
-          headers.Authorization = `Bearer ${creds.bearerToken}`;
-        }
-        if (creds.headers) {
-          Object.assign(headers, creds.headers);
-        }
+function registerSharedObject(
+  targetKey: string,
+  stored: StoredObjectMetadata
+): void {
+  const binPath = (localFsStorage as any).getPathsForKey(targetKey).binPath;
+  let cachedBuffer: Buffer | null = null;
+  globalSharedObjects.set(targetKey, {
+    key: stored.key,
+    filename: stored.filename,
+    mimeType: stored.mimeType,
+    size: stored.size,
+    etag: stored.etag,
+    uploadedAt: stored.uploadedAt,
+    expiresAt: stored.expiresAt,
+    filePath: binPath,
+    get buffer(): Buffer {
+      if (cachedBuffer) return cachedBuffer;
+      if (fs.existsSync(binPath)) {
+        cachedBuffer = fs.readFileSync(binPath);
+        return cachedBuffer;
       }
-    }
+      return Buffer.alloc(0);
+    },
+  });
+}
 
-    const res = await request(params.url, {
-      method: 'GET',
-      headers,
-      dispatcher: createSsrfSafeAgent(),
-    });
-
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw new Error(`[BYOS] Remote URL fetch failed with HTTP ${res.statusCode}`);
-    }
-
-    const contentType = (res.headers['content-type'] as string) || 'application/octet-stream';
-    const stored = await localFsStorage.putStream(targetKey, res.body as unknown as NodeJS.ReadableStream, {
-      filename,
-      contentType,
-    });
-
-    // Mirror in shared objects for immediate worker consumption
-    const urlBinPath = (localFsStorage as any).getPathsForKey(targetKey).binPath;
-    let urlCachedBuffer: Buffer | null = null;
-    globalSharedObjects.set(targetKey, {
-      key: stored.key,
-      filename: stored.filename,
-      mimeType: stored.mimeType,
-      size: stored.size,
-      etag: stored.etag,
-      uploadedAt: stored.uploadedAt,
-      expiresAt: stored.expiresAt,
-      filePath: urlBinPath,
-      get buffer(): Buffer {
-        if (urlCachedBuffer) return urlCachedBuffer;
-        if (fs.existsSync(urlBinPath)) {
-          urlCachedBuffer = fs.readFileSync(urlBinPath);
-          return urlCachedBuffer;
-        }
-        return Buffer.alloc(0);
-      },
-    });
-
-    return {
-      key: stored.key,
-      size: stored.size,
-      filename: stored.filename,
-      mimeType: stored.mimeType,
-      etag: stored.etag,
-    };
+async function executeUrlImport(
+  params: ImportOperationParams,
+  targetKey: string,
+  filename: string
+): Promise<ImportOperationResult> {
+  if (!params.url) {
+    throw new Error('[BYOS] "url" parameter is required for import/url operation');
   }
 
-  // Cloud/Remote Storage Adapters (S3, GCS, Azure, SFTP, WebDAV)
+  const parsedUrl = new URL(params.url);
+  const isSafe = await validateUrlForSsrf(parsedUrl);
+  if (!isSafe) {
+    throw new StorageSsrfError(params.url, 'import/url');
+  }
+
+  const headers: Record<string, string> = {};
+  if (params.credentialRef) {
+    const creds = await credentialsVault.get(params.credentialRef, params.userId);
+    if (creds?.type === 'http') {
+      if (creds.bearerToken) {
+        headers.Authorization = `Bearer ${creds.bearerToken}`;
+      }
+      if (creds.headers) {
+        Object.assign(headers, creds.headers);
+      }
+    }
+  }
+
+  const res = await request(params.url, {
+    method: 'GET',
+    headers,
+    dispatcher: createSsrfSafeAgent(),
+  });
+
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new Error(`[BYOS] Remote URL fetch failed with HTTP ${res.statusCode}`);
+  }
+
+  const contentType = (res.headers['content-type'] as string) || 'application/octet-stream';
+  const stored = await localFsStorage.putStream(targetKey, res.body as unknown as NodeJS.ReadableStream, {
+    filename,
+    contentType,
+  });
+
+  registerSharedObject(targetKey, stored);
+
+  return {
+    key: stored.key,
+    size: stored.size,
+    filename: stored.filename,
+    mimeType: stored.mimeType,
+    etag: stored.etag,
+  };
+}
+
+async function executeAdapterImport(
+  params: ImportOperationParams,
+  targetKey: string,
+  filename: string
+): Promise<ImportOperationResult> {
   if (!params.remotePath) {
     throw new Error(`[BYOS] "remotePath" parameter is required for ${params.operation}`);
   }
@@ -167,26 +175,7 @@ export async function executeImportTask(params: ImportOperationParams): Promise<
     filename,
   });
 
-  const adapterBinPath = (localFsStorage as any).getPathsForKey(targetKey).binPath;
-  let adapterCachedBuffer: Buffer | null = null;
-  globalSharedObjects.set(targetKey, {
-    key: stored.key,
-    filename: stored.filename,
-    mimeType: stored.mimeType,
-    size: stored.size,
-    etag: stored.etag,
-    uploadedAt: stored.uploadedAt,
-    expiresAt: stored.expiresAt,
-    filePath: adapterBinPath,
-    get buffer(): Buffer {
-      if (adapterCachedBuffer) return adapterCachedBuffer;
-      if (fs.existsSync(adapterBinPath)) {
-        adapterCachedBuffer = fs.readFileSync(adapterBinPath);
-        return adapterCachedBuffer;
-      }
-      return Buffer.alloc(0);
-    },
-  });
+  registerSharedObject(targetKey, stored);
 
   return {
     key: stored.key,
@@ -198,62 +187,74 @@ export async function executeImportTask(params: ImportOperationParams): Promise<
 }
 
 /**
- * Executes a streaming BYOS export task from object storage directly to customer storage or remote URL.
- * Guarantees zero Next.js heap buffering and socket-level SSRF verification.
+ * Executes a streaming BYOS import task from customer storage or external URL directly into object storage.
+ * Enforces strict zero-heap spooling and zero-trust SSRF protections.
  */
-export async function executeExportTask(params: ExportOperationParams): Promise<ExportOperationResult> {
-  const source = await localFsStorage.getStream(params.sourceKey);
-  if (!source) {
-    throw new StorageNotFoundError(params.sourceKey, 'local-fs');
+export async function executeImportTask(params: ImportOperationParams): Promise<ImportOperationResult> {
+  const targetKey =
+    params.targetKey || `import-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+  const filename = params.filename || params.remotePath?.split('/').pop() || 'imported-file';
+
+  if (params.operation === 'import/url') {
+    return executeUrlImport(params, targetKey, filename);
   }
 
-  if (params.operation === 'export/url') {
-    if (!params.url) {
-      throw new Error('[BYOS] "url" parameter is required for export/url operation');
-    }
+  return executeAdapterImport(params, targetKey, filename);
+}
 
-    const parsedUrl = new URL(params.url);
-    const isSafe = await validateUrlForSsrf(parsedUrl);
-    if (!isSafe) {
-      throw new StorageSsrfError(params.url, 'export/url');
-    }
+async function executeUrlExport(
+  params: ExportOperationParams,
+  source: ObjectReadStream
+): Promise<ExportOperationResult> {
+  if (!params.url) {
+    throw new Error('[BYOS] "url" parameter is required for export/url operation');
+  }
 
-    const headers: Record<string, string> = {
-      'Content-Type': params.contentType || source.metadata.mimeType || 'application/octet-stream',
-      'Content-Length': String(source.metadata.size),
-    };
+  const parsedUrl = new URL(params.url);
+  const isSafe = await validateUrlForSsrf(parsedUrl);
+  if (!isSafe) {
+    throw new StorageSsrfError(params.url, 'export/url');
+  }
 
-    if (params.credentialRef) {
-      const creds = await credentialsVault.get(params.credentialRef, params.userId);
-      if (creds && creds.type === 'http') {
-        if (creds.bearerToken) {
-          headers.Authorization = `Bearer ${creds.bearerToken}`;
-        }
-        if (creds.headers) {
-          Object.assign(headers, creds.headers);
-        }
+  const headers: Record<string, string> = {
+    'Content-Type': params.contentType || source.metadata.mimeType || 'application/octet-stream',
+    'Content-Length': String(source.metadata.size),
+  };
+
+  if (params.credentialRef) {
+    const creds = await credentialsVault.get(params.credentialRef, params.userId);
+    if (creds?.type === 'http') {
+      if (creds.bearerToken) {
+        headers.Authorization = `Bearer ${creds.bearerToken}`;
+      }
+      if (creds.headers) {
+        Object.assign(headers, creds.headers);
       }
     }
-
-    const res = await request(params.url, {
-      method: 'POST',
-      headers,
-      body: source.stream as any,
-      dispatcher: createSsrfSafeAgent(),
-    });
-
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw new Error(`[BYOS] Remote webhook/URL export failed with HTTP ${res.statusCode}`);
-    }
-
-    return {
-      destination: params.url,
-      size: source.metadata.size,
-      success: true,
-    };
   }
 
-  // Cloud/Remote Storage Adapters
+  const res = await request(params.url, {
+    method: 'POST',
+    headers,
+    body: source.stream as any,
+    dispatcher: createSsrfSafeAgent(),
+  });
+
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new Error(`[BYOS] Remote webhook/URL export failed with HTTP ${res.statusCode}`);
+  }
+
+  return {
+    destination: params.url,
+    size: source.metadata.size,
+    success: true,
+  };
+}
+
+async function executeAdapterExport(
+  params: ExportOperationParams,
+  source: ObjectReadStream
+): Promise<ExportOperationResult> {
   if (!params.remotePath) {
     throw new Error(`[BYOS] "remotePath" parameter is required for ${params.operation}`);
   }
@@ -284,4 +285,21 @@ export async function executeExportTask(params: ExportOperationParams): Promise<
     etag: result.etag,
     success: true,
   };
+}
+
+/**
+ * Executes a streaming BYOS export task from object storage directly to customer storage or remote URL.
+ * Guarantees zero Next.js heap buffering and socket-level SSRF verification.
+ */
+export async function executeExportTask(params: ExportOperationParams): Promise<ExportOperationResult> {
+  const source = await localFsStorage.getStream(params.sourceKey);
+  if (!source) {
+    throw new StorageNotFoundError(params.sourceKey, 'local-fs');
+  }
+
+  if (params.operation === 'export/url') {
+    return executeUrlExport(params, source);
+  }
+
+  return executeAdapterExport(params, source);
 }

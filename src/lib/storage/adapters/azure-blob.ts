@@ -13,22 +13,38 @@ import { createSsrfSafeAgent, validateUrlForSsrf } from '../../security/ssrf';
 
 const AZURE_REST_VERSION = '2023-11-03';
 
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) {
+    end--;
+  }
+  return url.slice(0, end);
+}
+
+function stripLeadingSlashes(pathStr: string): string {
+  let start = 0;
+  while (start < pathStr.length && pathStr.charCodeAt(start) === 47) {
+    start++;
+  }
+  return pathStr.slice(start);
+}
+
 export class AzureBlobStorageAdapter implements IStorageAdapter {
   readonly providerName = 'azure-blob';
-  private storageAccount: string;
-  private containerName: string;
-  private accountKey?: string;
-  private sasToken?: string;
-  private baseUrl: string;
+  private readonly storageAccount: string;
+  private readonly containerName: string;
+  private readonly accountKey?: string;
+  private readonly sasToken?: string;
+  private readonly baseUrl: string;
 
   constructor(credentials: AzureBlobCredentials) {
     this.storageAccount = credentials.storageAccount;
     this.containerName = credentials.containerName;
     this.accountKey = credentials.accountKey;
-    this.sasToken = credentials.sasToken?.replace(/^\?/, '');
+    this.sasToken = credentials.sasToken ? stripLeadingSlashes(credentials.sasToken.replace(/^\?/, '')) : undefined;
 
     if (credentials.customEndpoint) {
-      this.baseUrl = credentials.customEndpoint.replace(/\/+$/, '');
+      this.baseUrl = stripTrailingSlashes(credentials.customEndpoint);
     } else {
       this.baseUrl = `https://${this.storageAccount}.blob.core.windows.net`;
     }
@@ -43,7 +59,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
   }
 
   private buildUrl(remotePath: string): string {
-    const cleanPath = remotePath.replace(/^\/+/, '');
+    const cleanPath = stripLeadingSlashes(remotePath);
     let url = `${this.baseUrl}/${encodeURIComponent(this.containerName)}/${encodeURI(cleanPath)}`;
     if (this.sasToken) {
       url += `?${this.sasToken}`;
@@ -59,7 +75,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
   ): void {
     if (!this.accountKey) return;
 
-    const cleanPath = remotePath.replace(/^\/+/, '');
+    const cleanPath = stripLeadingSlashes(remotePath);
     const canonicalizedResource = `/${this.storageAccount}/${this.containerName}/${cleanPath}`;
 
     // Canonicalize x-ms-* headers in lexicographical order

@@ -24,7 +24,7 @@ export async function DELETE(
     );
   }
 
-  if (!id || !id.startsWith('cred_')) {
+  if (!id?.startsWith('cred_')) {
     return createProblemDetailsResponse(400, 'Invalid credential reference identifier.', instanceUri);
   }
 

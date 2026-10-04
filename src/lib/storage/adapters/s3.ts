@@ -1,3 +1,4 @@
+import net from 'node:net';
 import { S3CompatibleStorage } from '../s3-compatible-storage';
 import type { S3Credentials } from '../credentials-vault';
 import {
@@ -6,24 +7,23 @@ import {
   StorageNotFoundError,
   StorageSsrfError,
 } from './adapter-interface';
-import { validateUrlForSsrf } from '../../security/ssrf';
+import { isBlockedIpv4, isBlockedIpv6, validateUrlForSsrf } from '../../security/ssrf';
 
 export class S3StorageAdapter implements IStorageAdapter {
   readonly providerName = 's3';
-  private storage: S3CompatibleStorage;
+  private readonly storage: S3CompatibleStorage;
 
-  constructor(private credentials: S3Credentials) {
+  constructor(private readonly credentials: S3Credentials) {
     if (credentials.endpoint) {
       try {
         const parsed = new URL(credentials.endpoint);
         // Synchronous check if IP or domain is private/restricted
         const host = parsed.hostname.toLowerCase();
+        const ipVer = net.isIP(host);
         if (
           host === 'localhost' ||
-          host.startsWith('127.') ||
-          host.startsWith('10.') ||
-          host.startsWith('192.168.') ||
-          host === '169.254.169.254'
+          (ipVer === 4 && isBlockedIpv4(host)) ||
+          (ipVer === 6 && isBlockedIpv6(host))
         ) {
           throw new StorageSsrfError(credentials.endpoint, 's3');
         }
