@@ -1,5 +1,5 @@
-import { execFileSync } from 'child_process';
-import fs from 'fs';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { decodeZstdCompressedBlockWithDict } from './zstd-dict';
 
 /**
