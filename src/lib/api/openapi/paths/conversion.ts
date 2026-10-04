@@ -1,5 +1,10 @@
 import { JobCreateRequestSchema } from '@/lib/api/contracts';
-import { createProblemResponse } from '../shared';
+import {
+  IDEMPOTENCY_KEY_PARAMETER,
+  createPathParameter,
+  createProblemResponse,
+  requireScope,
+} from '../shared';
 
 /** Conversion, archive inspection, job, and format catalog operations. */
 export const conversionPaths = {
@@ -9,10 +14,7 @@ export const conversionPaths = {
       description:
         'Inspects archive structure, entry metadata, and encryption status without extracting uncompressed contents. Supports ZIP, 7z, TAR, RAR, and compressed TAR variants.',
       operationId: 'inspectArchiveV1',
-      security: [
-        { ApiKeyAuth: ['convert:write'] },
-        { BearerAuth: ['convert:write'] },
-      ],
+      security: requireScope('convert:write'),
       requestBody: {
         required: true,
         content: {
@@ -80,21 +82,8 @@ export const conversionPaths = {
       description:
         'Converts an uploaded file synchronously. Protected by 2-phase quota transactions (reserve -> commit/rollback). Requires "convert:write" scope.',
       operationId: 'convertFileV1',
-      security: [
-        { ApiKeyAuth: ['convert:write'] },
-        { BearerAuth: ['convert:write'] },
-      ],
-      parameters: [
-        {
-          name: 'Idempotency-Key',
-          in: 'header',
-          required: false,
-          description: 'Optional 1-255 character printable ASCII idempotency key for safe retries.',
-          schema: {
-            $ref: '#/components/schemas/IdempotencyKeyHeader',
-          },
-        },
-      ],
+      security: requireScope('convert:write'),
+      parameters: [IDEMPOTENCY_KEY_PARAMETER],
       requestBody: {
         required: true,
         content: {
@@ -158,21 +147,8 @@ export const conversionPaths = {
       description:
         'Enqueues a conversion job to the distributed BullMQ queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.',
       operationId: 'createJobV1',
-      security: [
-        { ApiKeyAuth: ['convert:write'] },
-        { BearerAuth: ['convert:write'] },
-      ],
-      parameters: [
-        {
-          name: 'Idempotency-Key',
-          in: 'header',
-          required: false,
-          description: 'Optional 1-255 character printable ASCII idempotency key for safe retries.',
-          schema: {
-            $ref: '#/components/schemas/IdempotencyKeyHeader',
-          },
-        },
-      ],
+      security: requireScope('convert:write'),
+      parameters: [IDEMPOTENCY_KEY_PARAMETER],
       requestBody: {
         required: true,
         content: {
@@ -243,10 +219,7 @@ export const conversionPaths = {
       summary: 'List Conversion Jobs',
       description: 'Returns asynchronous conversion jobs created by the authenticated user. Requires "convert:read" scope.',
       operationId: 'listJobsV1',
-      security: [
-        { ApiKeyAuth: ['convert:read'] },
-        { BearerAuth: ['convert:read'] },
-      ],
+      security: requireScope('convert:read'),
       parameters: [
         {
           name: 'status',
@@ -290,18 +263,9 @@ export const conversionPaths = {
       summary: 'Get Job Status and Details',
       description: 'Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires "convert:read" scope.',
       operationId: 'getJobStatusV1',
-      security: [
-        { ApiKeyAuth: ['convert:read'] },
-        { BearerAuth: ['convert:read'] },
-      ],
+      security: requireScope('convert:read'),
       parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-          description: 'Conversion job identifier.',
-        },
+        createPathParameter('id', 'Conversion job identifier.'),
       ],
       responses: {
         '200': {
@@ -322,18 +286,9 @@ export const conversionPaths = {
       description:
         'Cancels a waiting, delayed, or active conversion job, aborting worker processing and rolling back reserved quota units. Requires "convert:write" scope.',
       operationId: 'cancelJobV1',
-      security: [
-        { ApiKeyAuth: ['convert:write'] },
-        { BearerAuth: ['convert:write'] },
-      ],
+      security: requireScope('convert:write'),
       parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-          description: 'Conversion job identifier.',
-        },
+        createPathParameter('id', 'Conversion job identifier.'),
       ],
       responses: {
         '200': {

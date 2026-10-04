@@ -1,4 +1,8 @@
-import { createProblemResponse } from '../shared';
+import {
+  createPathParameter,
+  createProblemResponse,
+  requireScope,
+} from '../shared';
 
 /** Webhook dead-letter queue and signing secret operations. */
 export const webhookPaths = {
@@ -7,10 +11,7 @@ export const webhookPaths = {
       summary: 'List Webhook DLQ Entries',
       description: 'Retrieves the caller\'s failed webhook dispatches stored in the Dead Letter Queue. Requires "convert:read" scope.',
       operationId: 'listWebhookDlq',
-      security: [
-        { ApiKeyAuth: ['convert:read'] },
-        { BearerAuth: ['convert:read'] },
-      ],
+      security: requireScope('convert:read'),
       responses: {
         '200': {
           description: 'List of dead-lettered webhook entries.',
@@ -36,10 +37,7 @@ export const webhookPaths = {
       summary: 'Clear Webhook DLQ',
       description: 'Purges the caller\'s entries from the Webhook Dead Letter Queue. Requires admin wildcard (*) scope.',
       operationId: 'clearWebhookDlq',
-      security: [
-        { ApiKeyAuth: ['*'] },
-        { BearerAuth: ['*'] },
-      ],
+      security: requireScope('*'),
       responses: {
         '200': {
           description: 'DLQ purged successfully.',
@@ -63,18 +61,9 @@ export const webhookPaths = {
       summary: 'Get Webhook DLQ Entry',
       description: 'Inspects one of the caller\'s failed webhook payloads and delivery attempt details. Entries owned by other users return 404. Requires "convert:read" scope.',
       operationId: 'getWebhookDlqEntry',
-      security: [
-        { ApiKeyAuth: ['convert:read'] },
-        { BearerAuth: ['convert:read'] },
-      ],
+      security: requireScope('convert:read'),
       parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-          description: 'DLQ entry identifier.',
-        },
+        createPathParameter('id', 'DLQ entry identifier.'),
       ],
       responses: {
         '200': {
@@ -98,17 +87,9 @@ export const webhookPaths = {
       summary: 'Delete Webhook DLQ Entry',
       description: 'Removes one of the caller\'s failed webhook entries from the DLQ. Entries owned by other users return 404. Requires admin wildcard (*) scope.',
       operationId: 'deleteWebhookDlqEntry',
-      security: [
-        { ApiKeyAuth: ['*'] },
-        { BearerAuth: ['*'] },
-      ],
+      security: requireScope('*'),
       parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-        },
+        createPathParameter('id', 'DLQ entry identifier.'),
       ],
       responses: {
         '200': { description: 'Entry deleted.' },
@@ -121,17 +102,9 @@ export const webhookPaths = {
       summary: 'Replay Dead-Lettered Webhook',
       description: 'Triggers a 1-click manual re-dispatch of one of the caller\'s dead-lettered webhooks with fresh HMAC signature. Entries owned by other users return 404. Requires admin wildcard (*) scope.',
       operationId: 'replayWebhookDlq',
-      security: [
-        { ApiKeyAuth: ['*'] },
-        { BearerAuth: ['*'] },
-      ],
+      security: requireScope('*'),
       parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-        },
+        createPathParameter('id', 'DLQ entry identifier.'),
       ],
       responses: {
         '200': {
@@ -164,10 +137,7 @@ export const webhookPaths = {
       description:
         'Programmatically rotates a webhook signing secret with dual-signature grace period support. Requires "convert:write" scope.',
       operationId: 'rotateWebhookSecretV1',
-      security: [
-        { ApiKeyAuth: ['convert:write'] },
-        { BearerAuth: ['convert:write'] },
-      ],
+      security: requireScope('convert:write'),
       requestBody: {
         required: false,
         content: {

@@ -1,4 +1,9 @@
-import { createJsonResponse, createPathParameter, createProblemResponse, requireScope } from '../shared';
+import {
+  createJsonResponse,
+  createPathParameter,
+  createProblemResponse,
+  requireScope,
+} from '../shared';
 
 const STORAGE_PROVIDER_TYPES = ['s3', 'gcs', 'azure-blob', 'sftp', 'webdav', 'http'];
 
@@ -10,19 +15,9 @@ export const storagePaths = {
       description:
         'Downloads a stored file by the key in a `downloadUrl`. Outputs owned by a user (`conversions/{userId}/...` keys and results of jobs created with credentials) are served only to that user through a session or an API key with the "storage:download" scope; any other caller gets 404 so keys cannot be probed. Anonymous job results keep capability-URL access. Every file response is sent with `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`. A single byte range is supported; multi-range requests return the full file.',
       operationId: 'downloadStoredFile',
-      security: [
-        { ApiKeyAuth: ['storage:download'] },
-        { BearerAuth: ['storage:download'] },
-        {},
-      ],
+      security: [...requireScope('storage:download'), {}],
       parameters: [
-        {
-          name: 'key',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-          description: 'URL-encoded storage key, as returned in `downloadUrl`.',
-        },
+        createPathParameter('key', 'URL-encoded storage key, as returned in `downloadUrl`.'),
         {
           name: 'Range',
           in: 'header',

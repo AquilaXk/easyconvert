@@ -14,10 +14,7 @@ export const keyPaths = {
       summary: 'List API Keys',
       description: 'Retrieves developer API keys, granular scopes, expiration dates, and IP whitelist restrictions. Requires admin wildcard (*) scope.',
       operationId: 'listApiKeys',
-      security: [
-        { ApiKeyAuth: ['*'] },
-        { BearerAuth: ['*'] },
-      ],
+      security: requireScope('*'),
       responses: {
         '200': { description: 'User API keys list.' },
       },
@@ -26,10 +23,7 @@ export const keyPaths = {
       summary: 'Create API Key',
       description: 'Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and webhook URL. Requires admin wildcard (*) scope.',
       operationId: 'createApiKey',
-      security: [
-        { ApiKeyAuth: ['*'] },
-        { BearerAuth: ['*'] },
-      ],
+      security: requireScope('*'),
       requestBody: {
         required: true,
         content: {
@@ -66,18 +60,9 @@ export const keyPaths = {
       summary: 'Revoke API Key',
       description: 'Revokes an active API key by ID. Requires admin wildcard (*) scope.',
       operationId: 'revokeApiKey',
-      security: [
-        { ApiKeyAuth: ['*'] },
-        { BearerAuth: ['*'] },
-      ],
+      security: requireScope('*'),
       parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-          description: 'API key ID to revoke.',
-        },
+        createPathParameter('id', 'API key ID to revoke.'),
       ],
       responses: {
         '200': { description: 'API key successfully revoked.' },
@@ -163,10 +148,7 @@ export const keyPaths = {
       summary: 'Get Quota Usage',
       description: 'Retrieves current daily quota usage and limits.',
       operationId: 'getQuotaUsage',
-      security: [
-        { ApiKeyAuth: [] },
-        { BearerAuth: [] },
-      ],
+      security: requireScope(),
       responses: {
         '200': {
           description: 'Daily conversion quota usage details.',
@@ -191,10 +173,7 @@ export const keyPaths = {
       description:
         'Queries append-only metered resource usage events recorded for the authenticated user.',
       operationId: 'getUsageLedgerV1',
-      security: [
-        { ApiKeyAuth: ['read:usage'] },
-        { BearerAuth: ['read:usage'] },
-      ],
+      security: requireScope('read:usage'),
       parameters: [
         {
           name: 'from',

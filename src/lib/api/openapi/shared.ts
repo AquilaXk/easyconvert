@@ -40,3 +40,11 @@ export const requireScope = (...scopes: string[]) => [
 
 export const SESSION_ONLY = [{ SessionCookie: [] }];
 export const PUBLIC_ACCESS: Record<string, string[]>[] = [];
+
+export const IDEMPOTENCY_KEY_PARAMETER = {
+  name: 'Idempotency-Key',
+  in: 'header',
+  required: false,
+  description: 'Optional 1-255 character printable ASCII idempotency key for safe retries.',
+  schema: { $ref: '#/components/schemas/IdempotencyKeyHeader' },
+};
