@@ -509,7 +509,9 @@ export async function convertFile(
       'cavs',
       'dv',
       'dvr',
-    ].includes(tgt)
+    ].includes(tgt) ||
+    (Boolean(options.thumbnail) && ['jpg', 'jpeg', 'png'].includes(tgt)) ||
+    (options.subtitles?.mode === 'extract' && ['srt', 'vtt', 'ass'].includes(tgt))
   ) {
     return convertMedia(inputBuffer, src, tgt, options, originalFilename);
   }

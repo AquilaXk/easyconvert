@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { ConversionOptions, InvalidMediaOptionError } from '../types';
+import { ConversionOptions, InvalidMediaOptionError, AudioCodec } from '../types';
 
 export interface HardwareAccelerationCapabilities {
   nvenc: boolean;
@@ -10,6 +10,76 @@ export interface HardwareAccelerationCapabilities {
   videotoolbox: boolean;
   supportedEncoders: Set<string>;
   probedAt: number;
+}
+
+export const AUDIO_CODEC_MAP: Record<AudioCodec, string> = {
+  aac: 'aac',
+  mp3: 'libmp3lame',
+  opus: 'libopus',
+  flac: 'flac',
+  vorbis: 'libvorbis',
+  pcm_s16le: 'pcm_s16le',
+};
+
+/**
+ * Escapes file paths for safe inclusion in FFmpeg filter graph strings (e.g. subtitles filter).
+ */
+export function escapeFfmpegFilterPath(filePath: string): string {
+  return filePath
+    .replace(/\\/g, '/')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "'\\\\''");
+}
+
+let cachedFfprobeBin: string | null = null;
+function getInternalFfprobe(): string | null {
+  if (cachedFfprobeBin !== null) return cachedFfprobeBin || null;
+  const envPath = process.env.FFPROBE_PATH;
+  if (envPath && fs.existsSync(envPath)) {
+    cachedFfprobeBin = envPath;
+    return envPath;
+  }
+  const fixedLocations = [
+    '/usr/bin/ffprobe',
+    '/usr/local/bin/ffprobe',
+    '/opt/homebrew/bin/ffprobe',
+    '/bin/ffprobe',
+  ];
+  for (const loc of fixedLocations) {
+    if (fs.existsSync(loc)) {
+      cachedFfprobeBin = loc;
+      return loc;
+    }
+  }
+  cachedFfprobeBin = '';
+  return null;
+}
+
+/**
+ * Probes the number of audio channels in the first audio stream of a file.
+ */
+export function probeAudioChannels(filePath: string, ffprobeBin?: string | null): number {
+  const ffprobe = ffprobeBin || getInternalFfprobe();
+  if (!ffprobe || !fs.existsSync(filePath)) {
+    return 0;
+  }
+  try {
+    const out = execFileSync(
+      ffprobe,
+      [
+        '-v', 'error',
+        '-select_streams', 'a:0',
+        '-show_entries', 'stream=channels',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        filePath,
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }
+    ).toString('utf-8').trim();
+    const parsed = Number.parseInt(out, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
 }
 
 export const H264_ALLOWED_PROFILES = new Set(['baseline', 'main', 'high', 'high10']);
@@ -102,13 +172,63 @@ export function buildFfmpegArguments(
   src: string,
   tgt: string,
   options: ConversionOptions = {},
-  ffmpegBin?: string | null
+  ffmpegBin?: string | null,
+  overrideTimestamp?: string
 ): string[] {
   const globalArgs: string[] = ['-y'];
   const inputArgs: string[] = [];
   const outputArgs: string[] = [];
 
-  // Trim parameters (start seek and stop timestamp before input for speed and precision)
+  // Thumbnail branch: produce a single frame image
+  const isThumbnail = Boolean(options.thumbnail) || (['jpg', 'jpeg', 'png'].includes(tgt) && Boolean(options.thumbnail));
+  if (isThumbnail) {
+    const timestamp = overrideTimestamp || options.thumbnail?.at?.[0] || '00:00:01.000';
+    if (options.thumbnail?.accurate) {
+      inputArgs.push('-i', inputPath);
+      outputArgs.push('-ss', timestamp);
+    } else {
+      inputArgs.push('-ss', timestamp, '-i', inputPath);
+    }
+
+    const videoFilters: string[] = [];
+    if (options.thumbnail?.width && options.thumbnail.width > 0) {
+      videoFilters.push(`scale=${options.thumbnail.width}:-2`);
+    }
+    videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+    outputArgs.push('-vf', videoFilters.join(','));
+
+    outputArgs.push('-frames:v', '1', '-an');
+    const imgCodec = (tgt === 'png' || options.thumbnail?.format === 'png') ? 'png' : 'mjpeg';
+    outputArgs.push('-c:v', imgCodec);
+
+    return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
+  }
+
+  // Subtitle extraction branch: demux subtitle stream directly
+  if (options.subtitles?.mode === 'extract') {
+    if (options.trim?.start) {
+      inputArgs.push('-ss', options.trim.start);
+    }
+    if (options.trim?.end) {
+      inputArgs.push('-to', options.trim.end);
+    }
+    inputArgs.push('-i', inputPath);
+
+    outputArgs.push('-vn', '-an');
+    const sIdx = typeof options.subtitles.streamIndex === 'number' ? options.subtitles.streamIndex : 0;
+    if (sIdx < 0) {
+      throw new InvalidMediaOptionError('Subtitle stream index must be non-negative.');
+    }
+    outputArgs.push('-map', `0:s:${sIdx}`);
+
+    const subFmt = options.subtitles.format || (tgt === 'vtt' ? 'vtt' : tgt === 'ass' ? 'ass' : 'srt');
+    const subCodec = subFmt === 'vtt' ? 'webvtt' : subFmt === 'ass' ? 'ass' : 'srt';
+    outputArgs.push('-c:s', subCodec);
+
+    return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
+  }
+
+  // Standard video/audio transcoding branch
   if (options.trim?.start) {
     inputArgs.push('-ss', options.trim.start);
   }
@@ -117,8 +237,83 @@ export function buildFfmpegArguments(
   }
   inputArgs.push('-i', inputPath);
 
+  if (options.subtitles?.mode === 'soft') {
+    if (!options.subtitles.input) {
+      throw new InvalidMediaOptionError("Subtitle 'soft' mode requires an input subtitle file path.");
+    }
+    inputArgs.push('-i', options.subtitles.input);
+  }
+
   const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(tgt);
   const isAudioOnly = ['mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma'].includes(tgt);
+
+  if (options.subtitles?.mode === 'burn' && !isVideo) {
+    throw new InvalidMediaOptionError("Subtitle 'burn' mode is only supported for video targets.");
+  }
+  if (options.subtitles?.mode === 'soft' && !['mp4', 'mov', 'mkv', 'webm'].includes(tgt)) {
+    throw new InvalidMediaOptionError(`Container '${tgt}' does not support soft subtitle embedding.`);
+  }
+
+  // Audio codec validation and container compatibility gates
+  if (options.audio?.codec) {
+    const ac = options.audio.codec;
+    if (!AUDIO_CODEC_MAP[ac]) {
+      throw new InvalidMediaOptionError(`Unsupported audio codec '${ac}'.`);
+    }
+    if (tgt === 'webm' && ac !== 'opus' && ac !== 'vorbis') {
+      throw new InvalidMediaOptionError(
+        `WebM container only supports 'opus' or 'vorbis' audio codecs, but '${ac}' was requested.`
+      );
+    }
+    if (tgt === 'ogg' && ac !== 'opus' && ac !== 'vorbis' && ac !== 'flac') {
+      throw new InvalidMediaOptionError(
+        `Ogg container only supports 'opus', 'vorbis', or 'flac' audio codecs, but '${ac}' was requested.`
+      );
+    }
+    if ((tgt === 'mp4' || tgt === 'mov') && ac === 'vorbis') {
+      throw new InvalidMediaOptionError("MP4/MOV container does not support 'vorbis' audio codec.");
+    }
+  }
+
+  // Stream mapping
+  if (options.subtitles?.mode === 'soft') {
+    outputArgs.push('-map', '0:v');
+    if (options.audio?.track === 'all') {
+      outputArgs.push('-map', '0:a');
+    } else if (typeof options.audio?.track === 'number') {
+      if (options.audio.track < 0) {
+        throw new InvalidMediaOptionError('Audio track index must be non-negative.');
+      }
+      outputArgs.push('-map', `0:a:${options.audio.track}`);
+    } else {
+      outputArgs.push('-map', '0:a?');
+    }
+    outputArgs.push('-map', '1:0');
+  } else if (options.audio?.track !== undefined) {
+    if (isVideo) {
+      outputArgs.push('-map', '0:v:0');
+    }
+    if (options.audio.track === 'all') {
+      outputArgs.push('-map', '0:a');
+    } else if (typeof options.audio.track === 'number') {
+      if (options.audio.track < 0) {
+        throw new InvalidMediaOptionError('Audio track index must be non-negative.');
+      }
+      outputArgs.push('-map', `0:a:${options.audio.track}`);
+    }
+  }
+
+  if (options.subtitles?.mode === 'soft') {
+    if (tgt === 'mp4' || tgt === 'mov') {
+      outputArgs.push('-c:s', 'mov_text');
+    } else if (tgt === 'webm') {
+      outputArgs.push('-c:s', 'webvtt');
+    } else if (tgt === 'mkv') {
+      outputArgs.push('-c:s', options.subtitles.format === 'ass' ? 'ass' : 'srt');
+    } else {
+      outputArgs.push('-c:s', 'copy');
+    }
+  }
 
   if (isVideo) {
     const hw = probeHardwareAcceleration(ffmpegBin);
@@ -216,7 +411,7 @@ export function buildFfmpegArguments(
     }
 
     // 5. Strict Filter Graph Construction
-    // Sequence: yadif -> crop -> transpose -> scale -> fps -> even parity correction -> format
+    // Sequence: yadif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
     const videoFilters: string[] = [];
 
     // Stage 1: yadif (deinterlace)
@@ -274,10 +469,18 @@ export function buildFfmpegArguments(
       videoFilters.push(`fps=${videoOpts.fps}`);
     }
 
-    // Stage 6: Even dimension normalization (ALWAYS LAST filter before format)
+    // Stage 6: subtitles burn (prior to even dimension normalization)
+    if (options.subtitles?.mode === 'burn') {
+      if (!options.subtitles.input) {
+        throw new InvalidMediaOptionError("Subtitle 'burn' mode requires an input subtitle file path.");
+      }
+      videoFilters.push(`subtitles='${escapeFfmpegFilterPath(options.subtitles.input)}'`);
+    }
+
+    // Stage 7: Even dimension normalization (ALWAYS LAST filter before format)
     videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
 
-    // Stage 7: Format upload (for VAAPI)
+    // Stage 8: Format upload (for VAAPI)
     if (isVaapi) {
       videoFilters.push('format=nv12,hwupload');
     }
@@ -399,13 +602,6 @@ export function buildFfmpegArguments(
       if (tgt === 'mp4' || tgt === 'mov') {
         outputArgs.push('-movflags', '+faststart');
       }
-
-      outputArgs.push('-c:a', 'aac');
-      if (options.audioBitrate && /^\d+[kK]?$/.test(options.audioBitrate)) {
-        outputArgs.push('-b:a', options.audioBitrate);
-      } else {
-        outputArgs.push('-b:a', '192k');
-      }
     } else if (tgt === 'webm') {
       if (codec === 'av1') {
         outputArgs.push('-c:v', 'libaom-av1');
@@ -429,54 +625,117 @@ export function buildFfmpegArguments(
       } else if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0) {
         outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
       }
-
-      outputArgs.push('-c:a', 'libopus', '-b:a', '128k');
     } else if (tgt === 'avi') {
       outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID');
-      outputArgs.push('-c:a', 'libmp3lame', '-b:a', '192k');
+    }
+  }
+
+  // Unified Audio Encoding & Filter Configuration
+  let resolvedAudioCodec: string;
+  if (options.audio?.codec) {
+    resolvedAudioCodec = AUDIO_CODEC_MAP[options.audio.codec];
+  } else if (isVideo) {
+    if (tgt === 'webm') {
+      resolvedAudioCodec = 'libopus';
+    } else if (tgt === 'avi') {
+      resolvedAudioCodec = 'libmp3lame';
+    } else {
+      resolvedAudioCodec = 'aac';
     }
   } else if (isAudioOnly) {
     switch (tgt) {
       case 'mp3':
-        outputArgs.push('-c:a', 'libmp3lame');
+        resolvedAudioCodec = 'libmp3lame';
         break;
       case 'aac':
       case 'm4a':
-        outputArgs.push('-c:a', 'aac');
-        if (tgt === 'm4a') outputArgs.push('-movflags', '+faststart');
+        resolvedAudioCodec = 'aac';
         break;
       case 'ogg':
-        outputArgs.push('-c:a', 'libvorbis');
+        resolvedAudioCodec = 'libvorbis';
         break;
       case 'opus':
-        outputArgs.push('-c:a', 'libopus');
+        resolvedAudioCodec = 'libopus';
         break;
       case 'flac':
-        outputArgs.push('-c:a', 'flac');
+        resolvedAudioCodec = 'flac';
         break;
       case 'wav':
-        outputArgs.push('-c:a', 'pcm_s16le');
+        resolvedAudioCodec = 'pcm_s16le';
         break;
+      default:
+        resolvedAudioCodec = 'aac';
     }
-    if (options.audioBitrate && /^\d+[kK]?$/.test(options.audioBitrate)) {
-      outputArgs.push('-b:a', options.audioBitrate);
+  } else {
+    resolvedAudioCodec = 'aac';
+  }
+
+  outputArgs.push('-c:a', resolvedAudioCodec);
+
+  // Audio bitrate
+  if (typeof options.audio?.bitrateK === 'number') {
+    if (!Number.isFinite(options.audio.bitrateK) || options.audio.bitrateK <= 0) {
+      throw new InvalidMediaOptionError(`Invalid audio bitrate: ${options.audio.bitrateK}k`);
+    }
+    outputArgs.push('-b:a', `${Math.floor(options.audio.bitrateK)}k`);
+  } else if (options.audioBitrate && /^\d+[kK]?$/.test(options.audioBitrate)) {
+    outputArgs.push('-b:a', options.audioBitrate.toLowerCase().endsWith('k') ? options.audioBitrate : `${options.audioBitrate}k`);
+  } else if (resolvedAudioCodec !== 'flac' && resolvedAudioCodec !== 'pcm_s16le') {
+    if (tgt === 'webm' || resolvedAudioCodec === 'libopus') {
+      outputArgs.push('-b:a', '128k');
+    } else {
+      outputArgs.push('-b:a', '192k');
     }
   }
 
-  // Audio channels
-  if (options.audioChannels && ['mono', 'stereo', '5.1'].includes(options.audioChannels)) {
-    outputArgs.push('-ac', options.audioChannels === 'mono' ? '1' : options.audioChannels === '5.1' ? '6' : '2');
+  // Audio filters and ITU-R BS.775 downmix
+  const audioFilters: string[] = [];
+  if (options.audio?.downmix === 'itu-r-bs775') {
+    const is71 = options.audio.channels === 8 || options.audioChannels === '7.1' || probeAudioChannels(inputPath, ffmpegBin) === 8;
+    if (is71) {
+      audioFilters.push('pan=stereo|FL=0.3204*FL+0.2265*FC+0.2265*BL+0.2265*SL|FR=0.3204*FR+0.2265*FC+0.2265*BR+0.2265*SR');
+    } else {
+      audioFilters.push('pan=stereo|FL=0.4142*FL+0.2929*FC+0.2929*BL|FR=0.4142*FR+0.2929*FC+0.2929*BR');
+    }
+    outputArgs.push('-ac', '2');
+  } else if (options.audio?.channels) {
+    if (![1, 2, 6, 8].includes(options.audio.channels)) {
+      throw new InvalidMediaOptionError(`Invalid audio channels: ${options.audio.channels}. Allowed: 1, 2, 6, 8.`);
+    }
+    outputArgs.push('-ac', String(options.audio.channels));
+  } else if (options.audioChannels && ['mono', 'stereo', '5.1', '7.1'].includes(options.audioChannels)) {
+    const chMap: Record<string, string> = { mono: '1', stereo: '2', '5.1': '6', '7.1': '8' };
+    outputArgs.push('-ac', chMap[options.audioChannels]);
   }
 
   // Audio sample rate
-  if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
+  if (typeof options.audio?.sampleRate === 'number') {
+    if (!Number.isFinite(options.audio.sampleRate) || options.audio.sampleRate < 8000 || options.audio.sampleRate > 192000) {
+      throw new InvalidMediaOptionError(`Invalid audio sample rate: ${options.audio.sampleRate}. Allowed range: 8000 to 192000 Hz.`);
+    }
+    outputArgs.push('-ar', String(options.audio.sampleRate));
+  } else if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
     outputArgs.push('-ar', String(options.audioSampleRate));
   }
 
   // Audio volume
-  if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= 200 && options.audioVolume !== 100) {
-    const vol = options.audioVolume / 100;
-    outputArgs.push('-filter:a', `volume=${vol}`);
+  if (typeof options.audio?.volume === 'number') {
+    if (!Number.isFinite(options.audio.volume) || options.audio.volume < 0 || options.audio.volume > 200) {
+      throw new InvalidMediaOptionError(`Invalid audio volume: ${options.audio.volume}. Allowed range: 0 to 200%.`);
+    }
+    if (options.audio.volume !== 100) {
+      audioFilters.push(`volume=${options.audio.volume / 100}`);
+    }
+  } else if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= 200 && options.audioVolume !== 100) {
+    audioFilters.push(`volume=${options.audioVolume / 100}`);
+  }
+
+  if (audioFilters.length > 0) {
+    outputArgs.push('-filter:a', audioFilters.join(','));
+  }
+
+  if (tgt === 'm4a') {
+    outputArgs.push('-movflags', '+faststart');
   }
 
   return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];

@@ -122,13 +122,16 @@ export interface ConversionOptions {
   useNative7z?: boolean;
   solid?: boolean;
   // Audio options
+  audio?: AudioEncodingOptions;
   audioBitrate?: '64k' | '96k' | '128k' | '192k' | '256k' | '320k';
-  audioChannels?: 'mono' | 'stereo' | '5.1';
+  audioChannels?: 'mono' | 'stereo' | '5.1' | '7.1';
   audioSampleRate?: 16000 | 22050 | 32000 | 44100 | 48000;
   audioVolume?: number; // 0 - 200 (percentage)
   // Video options
   video?: VideoEncodingOptions;
   trim?: MediaTrimOptions;
+  subtitles?: SubtitleOptions;
+  thumbnail?: ThumbnailOptions;
   videoResolution?: 'original' | '4k' | '1080p' | '720p' | '480p' | '360p';
   videoFps?: 24 | 30 | 60;
   videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1';
@@ -196,6 +199,35 @@ export interface VideoEncodingOptions {
 export interface MediaTrimOptions {
   start?: string;
   end?: string;
+}
+
+export type AudioCodec = 'aac' | 'mp3' | 'opus' | 'flac' | 'vorbis' | 'pcm_s16le';
+
+export interface AudioEncodingOptions {
+  codec?: AudioCodec;
+  bitrateK?: number;
+  channels?: 1 | 2 | 6 | 8;
+  sampleRate?: number;
+  volume?: number;
+  downmix?: 'itu-r-bs775';
+  track?: number | 'all';
+}
+
+export type SubtitleMode = 'burn' | 'soft' | 'extract';
+export type SubtitleFormat = 'srt' | 'vtt' | 'ass';
+
+export interface SubtitleOptions {
+  mode: SubtitleMode;
+  input?: string;
+  streamIndex?: number;
+  format?: SubtitleFormat;
+}
+
+export interface ThumbnailOptions {
+  at?: string[];
+  format?: 'jpg' | 'png';
+  width?: number;
+  accurate?: boolean;
 }
 
 export type QueueItemStatus =

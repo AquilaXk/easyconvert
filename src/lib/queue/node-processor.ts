@@ -230,7 +230,7 @@ export async function processNodeJob(
         attemptSignal.throwIfAborted();
         const task = job.data.tasks[i];
         const taskProgress = Math.round(20 + ((i + 1) / job.data.tasks.length) * 60);
-        const stageTarget = task.targetFormat || (task.operation === 'ocr' ? 'pdf' : job.data.targetFormat);
+        const stageTarget = task.targetFormat || (task.operation === 'ocr' ? 'pdf' : task.operation === 'media.thumbnail' ? (task.options?.thumbnail?.format || 'jpg') : job.data.targetFormat);
 
         await job.log(
           `[${engine.name}] [Stage ${i + 1}/${job.data.tasks.length}] Task "${task.name}" (${task.operation}): ${currentSourceFormat} -> ${stageTarget}`
@@ -243,6 +243,8 @@ export async function processNodeJob(
         };
         if (task.operation === 'ocr') {
           mergedOptions.ocrEnabled = true;
+        } else if (task.operation === 'media.thumbnail') {
+          mergedOptions.thumbnail = mergedOptions.thumbnail || { at: ['00:00:01.000'] };
         }
 
         const stageResult = await engine.convert(

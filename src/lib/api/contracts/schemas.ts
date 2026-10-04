@@ -238,7 +238,7 @@ export const ConversionOptionsSchema = {
     },
     audioChannels: {
       type: 'string',
-      enum: ['mono', 'stereo', '5.1'],
+      enum: ['mono', 'stereo', '5.1', '7.1'],
       description: 'Audio channel layout.',
     },
     audioSampleRate: {
@@ -251,6 +251,52 @@ export const ConversionOptionsSchema = {
       minimum: 0,
       maximum: 200,
       description: 'Audio volume percentage adjustment (0-200).',
+    },
+    audio: {
+      type: 'object',
+      description: 'Structured audio encoding, downmixing, and channel options.',
+      properties: {
+        codec: {
+          type: 'string',
+          enum: ['aac', 'mp3', 'opus', 'flac', 'vorbis', 'pcm_s16le'],
+          description: 'Audio compression or uncompressed PCM codec.',
+        },
+        bitrateK: {
+          type: 'integer',
+          minimum: 8,
+          maximum: 1024,
+          description: 'Audio bitrate target in kilobits per second (kbps).',
+        },
+        channels: {
+          type: 'integer',
+          enum: [1, 2, 6, 8],
+          description: 'Audio channel layout count (1=mono, 2=stereo, 6=5.1, 8=7.1).',
+        },
+        sampleRate: {
+          type: 'integer',
+          minimum: 8000,
+          maximum: 192000,
+          description: 'Audio sampling rate in Hertz.',
+        },
+        volume: {
+          type: 'number',
+          minimum: 0,
+          maximum: 200,
+          description: 'Audio volume percentage adjustment (0-200).',
+        },
+        downmix: {
+          type: 'string',
+          enum: ['itu-r-bs775'],
+          description: 'ITU-R BS.775 surround-to-stereo downmixing matrix.',
+        },
+        track: {
+          oneOf: [
+            { type: 'integer', minimum: 0 },
+            { const: 'all' },
+          ],
+          description: 'Specific audio stream index to encode, or "all" streams.',
+        },
+      },
     },
 
     // Video options
@@ -351,6 +397,58 @@ export const ConversionOptionsSchema = {
         end: { type: 'string', description: 'End time offset (HH:MM:SS.mmm or seconds).' },
       },
       description: 'Temporal clipping boundaries.',
+    },
+    subtitles: {
+      type: 'object',
+      required: ['mode'],
+      description: 'Subtitle rendering and stream management options.',
+      properties: {
+        mode: {
+          type: 'string',
+          enum: ['burn', 'soft', 'extract'],
+          description: 'Subtitle operation mode: burn into video filter, soft embed in container, or extract stream.',
+        },
+        input: {
+          type: 'string',
+          description: 'External subtitle source file path or identifier.',
+        },
+        streamIndex: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Subtitle stream index within source or external file.',
+        },
+        format: {
+          type: 'string',
+          enum: ['srt', 'vtt', 'ass'],
+          description: 'Target subtitle format when extracting or soft embedding.',
+        },
+      },
+    },
+    thumbnail: {
+      type: 'object',
+      description: 'Video frame thumbnail extraction options.',
+      properties: {
+        at: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Timestamp strings or second offsets where thumbnails should be sampled.',
+        },
+        format: {
+          type: 'string',
+          enum: ['jpg', 'png'],
+          description: 'Output thumbnail image format.',
+        },
+        width: {
+          type: 'integer',
+          minimum: 16,
+          maximum: 7680,
+          description: 'Target thumbnail width in pixels.',
+        },
+        accurate: {
+          type: 'boolean',
+          description: 'Whether to use sample-accurate seek instead of fast keyframe seek.',
+        },
+      },
     },
     videoResolution: {
       type: 'string',
