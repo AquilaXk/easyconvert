@@ -198,9 +198,9 @@ endsolid TestModel`;
       UnsupportedTargetError
     );
 
-    // PDF -> DXF without vector CAD geometry fails closed
+    // PDF -> DXF has no engine path, so the registry no longer advertises it
     await expect(convertFile(pdfBuf, 'pdf', 'dxf', {}, 'sample.pdf')).rejects.toThrow(
-      UnsupportedTargetError
+      /^Cannot convert from PDF Document \(\.pdf\) to target format \.dxf\./
     );
 
     // PDF -> RTF succeeds with authentic text escaping

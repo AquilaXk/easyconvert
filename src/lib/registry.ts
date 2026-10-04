@@ -515,7 +515,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/pdf',
     category: 'document',
     description: 'Portable Document Format - Industry standard fixed-layout document.',
-    targetFormats: ['doc', 'docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'dxf', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'ps', 'psd', 'tiff', 'webp', 'ppt', 'xls', 'emf', 'wmf', 'hocr', 'alto'],
+    targetFormats: ['docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'tiff', 'xls', 'hocr', 'alto'],
     optionsSchema: { orientation: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   docx: {
@@ -525,7 +525,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     category: 'document',
     description: 'Microsoft Word OpenXML document format with complete styles and tables.',
-    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'pages', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
+    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'rtf', 'jpg', 'png'],
     optionsSchema: { orientation: true },
   },
   doc: {
@@ -544,7 +544,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-word.document.macroEnabled.12',
     category: 'document',
     description: 'Microsoft Word macro-enabled OpenXML document.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'zip', 'doc', 'md', 'odt', 'rtf', 'jpg', 'png', 'xps'],
+    targetFormats: ['pdf', 'html', 'txt', 'zip', 'md', 'xps'],
   },
   dotx: {
     id: 'dotx',
@@ -553,7 +553,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
     category: 'document',
     description: 'Word template file for pre-formatted document structures.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'zip', 'doc', 'odt', 'rtf', 'jpg', 'png', 'xps'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'zip', 'odt', 'xps'],
   },
   dot: {
     id: 'dot',
@@ -562,7 +562,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/msword',
     category: 'document',
     description: 'Legacy Word template file.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'doc', 'html', 'odt', 'rtf', 'jpg', 'png', 'xps'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'odt', 'xps'],
   },
   rtf: {
     id: 'rtf',
@@ -580,7 +580,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.text',
     category: 'document',
     description: 'OASIS OpenDocument Text standard used in LibreOffice and OpenOffice.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'jpg', 'png'],
   },
   ott: {
     id: 'ott',
@@ -607,7 +607,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/plain',
     category: 'document',
     description: 'Standard unformatted plain text document.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true },
   },
   text: {
@@ -626,7 +626,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/markdown',
     category: 'document',
     description: 'Lightweight markup language with plain-text formatting syntax.',
-    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'doc', 'md', 'rst', 'rtf', 'tex', 'jpg', 'png', 'hwp', 'hwpx'],
+    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'md', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true },
   },
   html: {
@@ -636,7 +636,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/html',
     category: 'document',
     description: 'HyperText Markup Language - Standard document format for web pages.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'tex', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'hwp', 'hwpx'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx'],
     optionsSchema: { orientation: true },
   },
   htm: {
@@ -646,7 +646,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/html',
     category: 'document',
     description: 'Short extension HyperText Markup Language file.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'doc', 'odt', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   },
   xhtml: {
     id: 'xhtml',
@@ -664,7 +664,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-pages-sffpages',
     category: 'document',
     description: 'Apple iWork Pages word processing document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'html', 'zip', 'doc', 'epub', 'jpg', 'png', 'ppt', 'xls'],
+    targetFormats: ['zip', 'xls'],
   },
   wpd: {
     id: 'wpd',
@@ -673,7 +673,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.wordperfect',
     category: 'document',
     description: 'Corel WordPerfect legacy word processing document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'doc', 'html', 'md', 'odt', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'],
   },
   wps: {
     id: 'wps',
@@ -682,7 +682,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-works',
     category: 'document',
     description: 'Microsoft Works Word Processor document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'doc', 'html', 'md', 'odt', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'],
   },
   rst: {
     id: 'rst',
@@ -691,7 +691,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'text/x-rst',
     category: 'document',
     description: 'Python Sphinx and Docutils structured text formatting markup.',
-    targetFormats: ['html', 'md', 'pdf', 'docx', 'txt', 'zip', 'odt', 'rtf'],
+    targetFormats: ['html', 'md', 'pdf', 'docx', 'txt', 'zip', 'odt'],
   },
   tex: {
     id: 'tex',
@@ -718,7 +718,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.djvu',
     category: 'document',
     description: 'High-density compression format designed for scanned books and high-res text.',
-    targetFormats: ['pdf', 'txt', 'docx', 'zip'],
+    targetFormats: ['pdf', 'txt', 'zip'],
     optionsSchema: { ocrEnabled: true, ocrLanguage: true },
   },
   abw: {
@@ -728,7 +728,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-abiword',
     category: 'document',
     description: 'AbiWord open-source word processor XML file.',
-    targetFormats: ['docx', 'pdf', 'txt', 'html', 'zip', 'doc', 'md', 'odt', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'txt', 'html', 'zip', 'md', 'odt'],
   },
   zabw: {
     id: 'zabw',
@@ -737,7 +737,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-abiword',
     category: 'document',
     description: 'GZ-compressed AbiWord document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'doc', 'html', 'md', 'odt', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'],
   },
   sdw: {
     id: 'sdw',
@@ -764,7 +764,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.palm',
     category: 'document',
     description: 'Palm OS document database file format.',
-    targetFormats: ['txt', 'pdf', 'epub', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb'],
+    targetFormats: ['txt', 'pdf', 'epub', 'zip', 'azw3', 'lrf', 'mobi', 'oeb'],
   },
   pdfa: {
     id: 'pdfa',
@@ -782,7 +782,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-xpsdocument',
     category: 'document',
     description: 'Microsoft XML Paper Specification fixed document format.',
-    targetFormats: ['pdf', 'docx', 'txt', 'zip', 'html', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp', 'svg'],
+    targetFormats: ['pdf', 'txt', 'zip', 'html'],
   },
   oxps: {
     id: 'oxps',
@@ -791,7 +791,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/oxps',
     category: 'document',
     description: 'Open XML Paper Specification standardized by ECMA-388.',
-    targetFormats: ['pdf', 'docx', 'txt', 'zip'],
+    targetFormats: ['pdf', 'txt', 'zip'],
   },
   eml: {
     id: 'eml',
@@ -809,7 +809,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-outlook',
     category: 'document',
     description: 'Microsoft Outlook binary compound file email message format.',
-    targetFormats: ['pdf', 'html', 'txt', 'eml', 'zip'],
+    targetFormats: ['pdf', 'html', 'txt', 'zip'],
   },
   log: {
     id: 'log',
