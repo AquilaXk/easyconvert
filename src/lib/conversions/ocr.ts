@@ -120,10 +120,11 @@ export async function performOcr(
   }
 
   // Decode with sharp and re-encode as PNG: the OCR reader opens fewer formats (no AVIF, HEIF,
-  // SVG or many TIFF variants) than the decoder, so it only ever receives a lossless PNG.
+  // SVG or many TIFF variants) than the decoder, so it only ever receives a lossless PNG. EXIF
+  // orientation is applied first, so text is recognized as displayed.
   let ocrInput: Buffer;
   try {
-    ocrInput = await sharp(imageBuffer).png().toBuffer();
+    ocrInput = await sharp(imageBuffer).rotate().png().toBuffer();
   } catch {
     throw new OcrEngineUnavailableError(
       `OCR engine (Tesseract) is unavailable or failed to execute for language '${language}': invalid image buffer.`
@@ -259,7 +260,22 @@ export async function generateSearchablePdf(
   options: ConversionOptions = {},
   title = 'Searchable Document'
 ): Promise<Buffer> {
-  return createLosslessSandwichPdfFromImage(scannedImageBuffer, ocrResult, options, title);
+  return createLosslessSandwichPdfFromImage(await uprightImage(scannedImageBuffer), ocrResult, options, title);
+}
+
+/** EXIF orientation value for pixels that are already stored upright. */
+const EXIF_ORIENTATION_UPRIGHT = 1;
+
+/**
+ * PDF image embedding ignores EXIF orientation, while OCR coordinates refer to the displayed
+ * image. A rotated photo is re-encoded upright so the page and its text layer line up.
+ */
+async function uprightImage(imageBuffer: Buffer): Promise<Buffer> {
+  const { orientation } = await sharp(imageBuffer).metadata();
+  if (!orientation || orientation === EXIF_ORIENTATION_UPRIGHT) {
+    return imageBuffer;
+  }
+  return sharp(imageBuffer).rotate().png().toBuffer();
 }
 
 /**

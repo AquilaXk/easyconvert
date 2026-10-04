@@ -2,7 +2,8 @@ import { describe, it, expect, onTestFinished } from 'vitest';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { performOcr } from '../src/lib/conversions/ocr';
+import { PDFDocument } from 'pdf-lib';
+import { generateSearchablePdf, performOcr } from '../src/lib/conversions/ocr';
 
 /**
  * The OCR worker's image reader accepts fewer formats than the image decoder used for
@@ -59,5 +60,38 @@ describe.skipIf(!HAS_ENG)('OCR worker error containment (needs eng.traineddata)'
     // Let any late worker messages surface before checking.
     await new Promise((resolve) => setImmediate(resolve));
     expect(uncaught.map((e) => e.message)).toEqual([]);
+  }, 120_000);
+});
+
+/** EXIF orientation 6: the stored pixels must be rotated 90° clockwise to display upright. */
+const EXIF_ROTATE_90_CW = 6;
+const STORED_COUNTER_CLOCKWISE_DEGREES = 270;
+
+async function rotatedPhotoJpeg(): Promise<Buffer> {
+  const upright = await sharp(TEXT_SVG).flatten({ background: '#ffffff' }).png().toBuffer();
+  return sharp(upright)
+    .rotate(STORED_COUNTER_CLOCKWISE_DEGREES)
+    .jpeg({ quality: 95 })
+    .withMetadata({ orientation: EXIF_ROTATE_90_CW })
+    .toBuffer();
+}
+
+describe.skipIf(!HAS_ENG)('OCR of EXIF-rotated photos (needs eng.traineddata)', () => {
+  it('recognizes text in the displayed orientation and reports upright dimensions', async () => {
+    const photo = await rotatedPhotoJpeg();
+    const stored = await sharp(photo).metadata();
+    expect([stored.width, stored.height, stored.orientation]).toEqual([160, 480, EXIF_ROTATE_90_CW]);
+
+    const result = await performOcr(photo, 'eng');
+    expect(result.text.toUpperCase()).toContain(WORD);
+    expect([result.imageWidth, result.imageHeight]).toEqual([480, 160]);
+  }, 120_000);
+
+  it('embeds the upright image so the searchable page matches the text layer', async () => {
+    const photo = await rotatedPhotoJpeg();
+    const result = await performOcr(photo, 'eng');
+    const pdf = await PDFDocument.load(await generateSearchablePdf(photo, result));
+    const { width, height } = pdf.getPage(0).getSize();
+    expect([width, height]).toEqual([480, 160]);
   }, 120_000);
 });
