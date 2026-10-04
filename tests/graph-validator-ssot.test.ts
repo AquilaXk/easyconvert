@@ -131,6 +131,12 @@ describe('restricted output formats', () => {
     ).toEqual(['INCOMPATIBLE_MERGE_INPUT']);
   });
 
+  it('reports a merge input whose uploaded format cannot be determined as unknown, not incompatible', () => {
+    expect(
+      codes(graph({ src: { op: 'import.upload', storageKey: 'uploads/u1/blob' }, step: { op: 'merge', input: ['src'], targetFormat: 'pdf' }, out: exportOf('step') }))
+    ).toEqual(['SOURCE_FORMAT_UNKNOWN']);
+  });
+
   it('accepts merging converted PDFs', () => {
     const result = validateJobGraph(
       graph({
