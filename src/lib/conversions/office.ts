@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
@@ -8234,9 +8235,13 @@ export async function generateXlsxFromData(
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
+/** BCP 47 tag for content whose language is not known. */
+const UNDETERMINED_LANGUAGE = 'und';
+
 /**
  * Generates IDPF EPUB Container with EPUB 3 Navigation & NCX Semantic Markup
  */
+
 async function generateEpubFromText(
   text: string,
   sourceType: string,
@@ -8244,6 +8249,9 @@ async function generateEpubFromText(
   title: string
 ): Promise<Buffer> {
   const zip = new JSZip();
+  // Every book gets its own identifier; the input carries no language metadata, so it is undetermined.
+  const bookId = `urn:uuid:${crypto.randomUUID()}`;
+  const language = UNDETERMINED_LANGUAGE;
 
   // mimetype must be uncompressed first entry in EPUB
   zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
@@ -8324,7 +8332,7 @@ blockquote { border-left: 4px solid #5C6BC0; margin: 1.5rem 0; padding: 0.5rem 1
     'OEBPS/chapter1.xhtml',
     `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="${language}">
 <head>
   <title>${escapeXml(title)}</title>
   <link rel="stylesheet" type="text/css" href="styles.css"/>
@@ -8347,7 +8355,7 @@ blockquote { border-left: 4px solid #5C6BC0; margin: 1.5rem 0; padding: 0.5rem 1
     'OEBPS/nav.xhtml',
     `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${language}">
 <head>
   <title>Navigation</title>
   <link rel="stylesheet" type="text/css" href="styles.css"/>
@@ -8369,7 +8377,7 @@ blockquote { border-left: 4px solid #5C6BC0; margin: 1.5rem 0; padding: 0.5rem 1
     `<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
-    <meta name="dtb:uid" content="urn:uuid:easyconvert-book"/>
+    <meta name="dtb:uid" content="${bookId}"/>
     <meta name="dtb:depth" content="1"/>
     <meta name="dtb:totalPageCount" content="0"/>
     <meta name="dtb:maxPageNumber" content="0"/>
@@ -8391,9 +8399,8 @@ blockquote { border-left: 4px solid #5C6BC0; margin: 1.5rem 0; padding: 0.5rem 1
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>${escapeXml(title)}</dc:title>
-    <dc:language>en</dc:language>
-    <dc:identifier id="BookId">urn:uuid:easyconvert-book</dc:identifier>
-    <dc:creator>EasyConvert Ebook Engine</dc:creator>
+    <dc:language>${language}</dc:language>
+    <dc:identifier id="BookId">${bookId}</dc:identifier>
     <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
   </metadata>
   <manifest>
