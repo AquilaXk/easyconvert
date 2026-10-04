@@ -108,9 +108,12 @@ export function buildFfmpegArguments(
   const inputArgs: string[] = [];
   const outputArgs: string[] = [];
 
-  // Trim parameters (start seek before input for speed and precision)
+  // Trim parameters (start seek and stop timestamp before input for speed and precision)
   if (options.trim?.start) {
     inputArgs.push('-ss', options.trim.start);
+  }
+  if (options.trim?.end) {
+    inputArgs.push('-to', options.trim.end);
   }
   inputArgs.push('-i', inputPath);
 
@@ -474,11 +477,6 @@ export function buildFfmpegArguments(
   if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= 200 && options.audioVolume !== 100) {
     const vol = options.audioVolume / 100;
     outputArgs.push('-filter:a', `volume=${vol}`);
-  }
-
-  // Trim end
-  if (options.trim?.end) {
-    outputArgs.push('-to', options.trim.end);
   }
 
   return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];

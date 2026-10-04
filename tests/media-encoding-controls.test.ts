@@ -306,8 +306,9 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       });
       expect(trimArgs[1]).toBe('-ss');
       expect(trimArgs[2]).toBe('00:00:02.500');
-      expect(trimArgs[3]).toBe('-i');
-      expect(trimArgs[trimArgs.indexOf('-to') + 1]).toBe('00:00:15.000');
+      expect(trimArgs[3]).toBe('-to');
+      expect(trimArgs[4]).toBe('00:00:15.000');
+      expect(trimArgs[5]).toBe('-i');
     });
   });
 
