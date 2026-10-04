@@ -52,6 +52,8 @@ describe('s3 credential registration validates the endpoint', () => {
     ['public host without TLS', { endpoint: 'http://objects.example.com' }],
     ['unparseable endpoint', { endpoint: 'not a url' }],
     ['invalid bucket name', { bucket: 'Bad_Bucket' }],
+    ['private IPv6 literal with virtual-hosted addressing', { endpoint: 'https://[fd00::1]', forcePathStyle: false }],
+    ['private IPv4 literal with virtual-hosted addressing', { endpoint: 'https://10.0.0.7', forcePathStyle: false }],
   ])('refuses %s with a typed 400 and stores nothing', async (_label, override) => {
     const res = await register(override);
     expect(res.status).toBe(400);

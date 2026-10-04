@@ -220,6 +220,14 @@ describe('S3 addressing', () => {
     });
   });
 
+  it.each([['IPv4', 'https://203.0.114.7:9000'], ['IPv6', 'https://[2001:4860::8888]']])(
+    'always uses path style for an %s literal endpoint',
+    (_label, endpoint) => {
+      const address = resolveS3Address({ bucket: 'bkt-a', key: 'k', region: 'us-east-1', endpoint, forcePathStyle: false });
+      expect(address).toEqual({ origin: endpoint, path: '/bkt-a/k', style: 'path' });
+    }
+  );
+
   it('falls back to path style for a dotted bucket so TLS hostnames still match', () => {
     expect(resolveS3Address({ bucket: 'my.bucket', key: 'k', region: 'us-east-1' }).style).toBe('path');
   });

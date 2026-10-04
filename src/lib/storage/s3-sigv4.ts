@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 import {
   buildCanonicalRequest,
   buildStringToSign,
@@ -214,6 +215,11 @@ function isVirtualHostableBucket(bucket: string): boolean {
   return !bucket.includes('.') && !bucket.includes('--');
 }
 
+/** An IP address cannot take a bucket subdomain, so such an endpoint is always path-style. */
+function isIpLiteralHost(endpoint: URL): boolean {
+  return net.isIP(endpoint.hostname.replace(/^\[|\]$/g, '')) !== 0;
+}
+
 export function assertValidBucketName(bucket: string): void {
   if (!BUCKET_NAME_PATTERN.test(bucket) || IPV4_LIKE_PATTERN.test(bucket) || bucket.includes('..')) {
     throw new SigV4SigningError(`Invalid bucket name "${bucket}".`);
@@ -249,7 +255,7 @@ export function resolveS3Address(input: S3AddressInput): S3Address {
   const endpoint = parseOrigin(input.endpoint ?? defaultS3Endpoint(input.region));
   const forcePathStyle = input.forcePathStyle ?? input.endpoint !== undefined;
 
-  if (forcePathStyle || !isVirtualHostableBucket(input.bucket)) {
+  if (forcePathStyle || isIpLiteralHost(endpoint) || !isVirtualHostableBucket(input.bucket)) {
     const keyPart = input.key === '' ? '' : `/${input.key}`;
     return { origin: `${endpoint.protocol}//${endpoint.host}`, path: `/${input.bucket}${keyPart}`, style: 'path' };
   }

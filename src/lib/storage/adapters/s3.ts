@@ -308,7 +308,7 @@ export class S3StorageAdapter implements IStorageAdapter {
     this.retryBaseDelayMs = Math.max(0, options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS);
     this.requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
 
-    this.origin = new URL(this.address('').origin);
+    this.origin = this.parseOrigin(this.address('').origin);
     const devEntry = findDevAllowlistEntry(this.origin);
     this.devAllowlisted = devEntry !== undefined;
     if (devEntry !== undefined) {
@@ -354,6 +354,14 @@ export class S3StorageAdapter implements IStorageAdapter {
         throw new StorageAdapterError(err.message, PROVIDER, err);
       }
       throw err;
+    }
+  }
+
+  private parseOrigin(origin: string): URL {
+    try {
+      return new URL(origin);
+    } catch (err) {
+      throw new StorageAdapterError('S3 endpoint does not form a valid URL', PROVIDER, err);
     }
   }
 
