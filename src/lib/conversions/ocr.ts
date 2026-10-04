@@ -26,20 +26,21 @@ import {
   OcrResult,
   OcrPageResult,
 } from './ocr-pdf-combiner';
-import { exportHocr, exportAlto, parseHocr, parseAlto, unescapeXml } from './ocr-export';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
 export {
   sortLineBlocksTopological,
   detectColumnGutters,
+  createLosslessSandwichPdfFromPdf,
+};
+export {
   exportHocr,
   exportAlto,
   parseHocr,
   parseAlto,
   unescapeXml,
-  createLosslessSandwichPdfFromPdf,
-};
+} from './ocr-export';
 
 /**
  * Optical Character Recognition (OCR) Engine
