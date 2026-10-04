@@ -96,6 +96,8 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       expect(parsed.header.handles).toBe(parsed.maxObjectIndex + 1);
       // EMR_EOF: no palette, nSizeLast repeats the record size
       expect(parsed.eof?.nPalEntries).toBe(0);
+      // MS-EMF 2.3.4.1: with no palette, offPalEntries is the conventional 16 (end of the fixed fields)
+      expect(parsed.eof?.offPalEntries).toBe(16);
       expect(parsed.eof?.nSizeLast).toBe(parsed.eof?.size);
 
       // Dimensions & Device bounds

@@ -67,6 +67,8 @@ const EMF_STOCK_NULL_BRUSH = 0x80000005;
 const EMF_STOCK_NULL_PEN = 0x80000008;
 const EMF_HEADER_SIZE = 88;
 const EMF_EOF_SIZE = 20;
+/** EMR_EOF offPalEntries when nPalEntries is 0: the offset just past the fixed fields (type, size, nPalEntries, offPalEntries). */
+const EMF_EOF_OFF_PAL_ENTRIES = 16;
 const EMF_VERSION_1_0 = 0x00010000;
 /** Object table: index 0 is reserved, the pen uses 1 and the brush 2. */
 const EMF_PEN_HANDLE = 1;
@@ -472,7 +474,7 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
   // EMR_EOF
   const eofRec = emfRecord(EMR_EOF, EMF_EOF_SIZE);
   eofRec.writeUInt32LE(0, 8);
-  eofRec.writeUInt32LE(0, 12);
+  eofRec.writeUInt32LE(EMF_EOF_OFF_PAL_ENTRIES, 12);
   eofRec.writeUInt32LE(EMF_EOF_SIZE, 16); // nSizeLast
   records.push(eofRec);
 
