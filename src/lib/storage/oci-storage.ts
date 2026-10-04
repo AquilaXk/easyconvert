@@ -59,6 +59,7 @@ export interface IStorageBackend {
   saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): StoredObject;
   saveObjectFromFile?(key: string, filePath: string, mimeType: string, filename: string, ttlMs?: number): StoredObject;
   getObject(key: string): StoredObject | undefined;
+  getObjectStream?(key: string, range?: { start: number; end: number }): fs.ReadStream | null;
   deleteObject(key: string): boolean;
   getActiveSessionsCount(): number;
   getObjectsCount(): number;
@@ -524,7 +525,7 @@ export class OciObjectStorageService implements IStorageBackend {
     if (obj.filePath && fs.existsSync(obj.filePath)) {
       return fs.createReadStream(obj.filePath, range ? { start: range.start, end: range.end } : undefined);
     }
-    return null;
+    return globalSharedObjects.getStream(key, range);
   }
 
   getActiveSessionsCount(): number {

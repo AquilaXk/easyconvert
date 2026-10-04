@@ -80,6 +80,38 @@ export async function GET(
       }
     );
   }
+
+  const nodeStream =
+    typeof s3Storage.getObjectStream === 'function'
+      ? s3Storage.getObjectStream(
+          resolvedKey,
+          range.kind === 'partial' ? { start: range.start, end: range.end } : undefined
+        )
+      : null;
+
+  if (nodeStream) {
+    const { Readable } = await import('node:stream');
+    const webStream = Readable.toWeb(nodeStream);
+    if (range.kind === 'partial') {
+      return new NextResponse(webStream as any, {
+        status: 206,
+        headers: {
+          ...contentHeaders,
+          'Content-Range': satisfiedContentRange(range.start, range.end, stored.size),
+          'Content-Length': String(range.end - range.start + 1),
+        },
+      });
+    }
+
+    return new NextResponse(webStream as any, {
+      status: 200,
+      headers: {
+        ...contentHeaders,
+        'Content-Length': stored.size.toString(),
+      },
+    });
+  }
+
   if (range.kind === 'partial') {
     const chunkBuffer = stored.buffer.subarray(range.start, range.end + 1);
     return new NextResponse(new Uint8Array(chunkBuffer), {
