@@ -8235,11 +8235,12 @@ export async function generateXlsxFromData(
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
+/** BCP 47 tag for content whose language is not known. */
+const UNDETERMINED_LANGUAGE = 'und';
+
 /**
  * Generates IDPF EPUB Container with EPUB 3 Navigation & NCX Semantic Markup
  */
-/** BCP 47 tag for content whose language is not known. */
-const UNDETERMINED_LANGUAGE = 'und';
 
 async function generateEpubFromText(
   text: string,
