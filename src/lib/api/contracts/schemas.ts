@@ -163,6 +163,21 @@ export const ConversionOptionsSchema = {
       minimum: 1,
       description: 'Evaluation sample grid density along V parametric coordinate.',
     },
+    allowOpenMesh: {
+      type: 'boolean',
+      description: 'Allow non-watertight or open surface mesh generation from CAD solids without throwing CadTopologyError.',
+    },
+    smoothingAngleDeg: {
+      type: 'number',
+      minimum: 0,
+      maximum: 180,
+      description: 'Crease angle threshold in degrees for facet normal splitting.',
+    },
+    outputUnit: {
+      type: 'string',
+      enum: ['mm', 'cm', 'm', 'in'],
+      description: 'Target dimensional unit scale for exported CAD geometry.',
+    },
 
     // Document & PDF options
     page: {

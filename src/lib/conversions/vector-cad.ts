@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'zlib';
-import { ConversionOptions, ConversionResult, UnsupportedTargetError, CadGeometryUnavailableError } from '../types';
+import { ConversionOptions, ConversionResult, UnsupportedTargetError, CadGeometryUnavailableError, CadTopologyError } from '../types';
 import { encodeBmp, encodePostscript } from './image';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 
@@ -476,7 +476,7 @@ async function convert3dCad(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const mesh = parse3dCad(inputBuffer, src, baseName);
+  const mesh = parse3dCad(inputBuffer, src, baseName, options);
 
   let outputBuffer: Buffer;
   let mimeType: string;
@@ -1170,7 +1170,7 @@ function postScriptToSvg(ps: string, title: string): string {
 /**
  * 3D CAD Parser (STEP, STP, IGES, IGS, STL, OBJ)
  */
-function parse3dCad(buffer: Buffer, format: string, defaultName: string): CadMesh3D {
+function parse3dCad(buffer: Buffer, format: string, defaultName: string, options: ConversionOptions = {}): CadMesh3D {
   const text = buffer.toString('utf-8');
 
   // 1. Binary or ASCII STL Parser
@@ -1262,12 +1262,12 @@ function parse3dCad(buffer: Buffer, format: string, defaultName: string): CadMes
   ) {
     try {
       const cadFmt = ['iges', 'igs'].includes(format) || text.includes('S      1') ? 'iges' : 'step';
-      const mesh = tessellateCadBuffer(buffer, cadFmt, defaultName);
+      const mesh = tessellateCadBuffer(buffer, cadFmt, defaultName, options);
       if (mesh.vertices.length > 0) {
         return mesh;
       }
     } catch (err) {
-      if (err instanceof CadGeometryUnavailableError) {
+      if (err instanceof CadGeometryUnavailableError || err instanceof CadTopologyError) {
         throw err;
       }
       throw new CadGeometryUnavailableError(
@@ -1325,7 +1325,7 @@ export function encode3dCadToDxf(mesh: CadMesh3D): string {
     });
   }
   if (!entitiesDxf) {
-    entitiesDxf = '  0\nLINE\n  8\n0\n 10\n0.0\n 20\n0.0\n 30\n0.0\n 11\n10.0\n 21\n10.0\n 31\n10.0\n';
+    throw new CadGeometryUnavailableError('Cannot export 3D CAD mesh to DXF: Mesh contains no faces or vertices.');
   }
   return `  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1015\n  0\nENDSEC\n  0\nSECTION\n  2\nTABLES\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n${entitiesDxf}  0\nENDSEC\n  0\nEOF\n`;
 }
