@@ -1,11 +1,14 @@
-import { describe, expect, beforeAll, afterAll } from 'vitest';
+import { describe, expect, beforeAll, afterAll, afterEach, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import JSZip from 'jszip';
 import { oracleTest } from './helpers/oracle-test';
+import { getOracleToolPath } from './helpers/differential-oracle';
 import { convertMedia, packageHlsDashMedia } from '../src/lib/conversions/media';
+import { buildFfmpegArguments, resetHardwareAccelerationCache } from '../src/lib/conversions/media-ffmpeg-args';
+import { InvalidMediaOptionError } from '../src/lib/types';
 
 /**
  * Regression tests for media fail-open defects. Inputs are generated with ffmpeg lavfi sources;
@@ -21,6 +24,9 @@ const PCM_FULL_SCALE = 32768;
 const SILENCE_RMS = 1e-4;
 /** RMS above which a channel clearly carries the generated tone (lavfi sine peaks at 1/8 full scale). */
 const AUDIBLE_RMS = 0.01;
+/** Render nodes whose presence lets the encoder pick VAAPI. */
+const DRI_RENDER_NODES = ['/dev/dri/renderD128', '/dev/dri/card0'];
+const HDR_ERROR = /HDR/;
 
 let workDir: string;
 
@@ -46,8 +52,49 @@ function stereoRms(file: string): [number, number] {
   return [Math.sqrt(sums[0] / frames), Math.sqrt(sums[1] / frames)];
 }
 
+/** Encodes a PQ-tagged BT.2020 10-bit H.264 clip, the shape of a typical HDR10 source. */
+function makeHdrInput(name: string): string {
+  const input = path.join(workDir, name);
+  run('ffmpeg', [
+    '-v', 'error', '-y',
+    '-f', 'lavfi', '-i', `testsrc2=size=320x240:rate=25:duration=${CLIP_SECONDS}`,
+    '-c:v', 'libx264', '-profile:v', 'high10', '-pix_fmt', 'yuv420p10le',
+    '-color_trc', 'smpte2084', '-color_primaries', 'bt2020', '-colorspace', 'bt2020nc',
+    input,
+  ]);
+  const video = ffprobeJson(input).streams.find((s) => s.codec_type === 'video')!;
+  expect(video.color_transfer).toBe('smpte2084');
+  return input;
+}
+
+/**
+ * Builds an ffmpeg stand-in whose `-encoders` listing advertises the given hardware encoders, so the
+ * argument builder's encoder probe selects a hardware path on a machine without that hardware.
+ * The real ffprobe is linked beside it because the builder resolves ffprobe as ffmpeg's sibling.
+ */
+function makeHardwareFfmpeg(name: string, encoders: string[]): string {
+  const dir = path.join(workDir, name);
+  fs.mkdirSync(dir, { recursive: true });
+  const bin = path.join(dir, 'ffmpeg');
+  const listing = encoders.map((enc) => ` V..... ${enc}  hardware encoder`).join('\n');
+  fs.writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "${listing}"\n`, { mode: 0o755 });
+  fs.symlinkSync(getOracleToolPath('ffprobe')!, path.join(dir, 'ffprobe'));
+  return bin;
+}
+
+/** Value that follows `flag` in an ffmpeg argument list. */
+function argAfter(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx >= 0 ? args[idx + 1] : undefined;
+}
+
 beforeAll(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-fail-open-'));
+});
+
+afterEach(() => {
+  // Hardware probes are cached; never leak a stand-in's capabilities into another test.
+  resetHardwareAccelerationCache();
 });
 
 afterAll(() => {
@@ -138,4 +185,108 @@ describe('media fail-open regressions', () => {
     expect(video.profile).toBe('Main 10');
     expect(video.pix_fmt).toBe('yuv420p10le');
   }, 120_000);
+
+  oracleTest('rejects HDR input for an 8-bit target instead of writing untonemapped 8-bit video', ['ffmpeg', 'ffprobe'], async () => {
+    const inputPath = makeHdrInput('hdr-reject.mp4');
+    const input = fs.readFileSync(inputPath);
+    for (const video of [{ codec: 'h264' as const }, { codec: 'hevc' as const, profile: 'main' }]) {
+      const build = () =>
+        buildFfmpegArguments(inputPath, path.join(workDir, 'hdr-reject-out.mp4'), 'mp4', 'mp4', { disableHwaccel: true, video });
+      expect(build).toThrow(InvalidMediaOptionError);
+      expect(build).toThrow(HDR_ERROR);
+
+      // The explicit native path surfaces the typed option error unchanged.
+      const attempt = convertMedia(input, 'mp4', 'mp4', { useFfmpeg: true, disableHwaccel: true, video }, 'hdr-reject');
+      await expect(attempt).rejects.toBeInstanceOf(InvalidMediaOptionError);
+      await expect(attempt).rejects.toThrow(HDR_ERROR);
+    }
+  }, 120_000);
+
+  oracleTest('keeps HDR input 10-bit PQ when encoding H.264 high10', ['ffmpeg', 'ffprobe'], async () => {
+    const input = makeHdrInput('hdr-high10-in.mp4');
+    const result = await convertMedia(
+      fs.readFileSync(input),
+      'mp4',
+      'mp4',
+      { video: { codec: 'h264', profile: 'high10' } },
+      'hdr-high10'
+    );
+    const output = path.join(workDir, 'hdr-high10-out.mp4');
+    fs.writeFileSync(output, result.buffer);
+
+    const video = ffprobeJson(output).streams.find((s) => s.codec_type === 'video')!;
+    expect(video.codec_name).toBe('h264');
+    expect(video.profile).toBe('High 10');
+    expect(video.pix_fmt).toBe('yuv420p10le');
+    expect(video.color_transfer).toBe('smpte2084');
+  }, 120_000);
+
+  oracleTest('rejects HDR input for an 8-bit target when a hardware encoder is advertised', ['ffmpeg', 'ffprobe'], () => {
+    const input = makeHdrInput('hdr-hw-reject.mp4');
+    const cases: Array<{ encoders: string[]; codec: 'h264' | 'hevc' }> = [
+      { encoders: ['h264_nvenc', 'hevc_nvenc'], codec: 'h264' },
+      { encoders: ['h264_nvenc', 'hevc_nvenc'], codec: 'hevc' },
+      { encoders: ['h264_qsv'], codec: 'h264' },
+    ];
+    for (const [i, { encoders, codec }] of cases.entries()) {
+      resetHardwareAccelerationCache();
+      const fakeFfmpeg = makeHardwareFfmpeg(`hw-reject-${i}`, encoders);
+      const build = () =>
+        buildFfmpegArguments(input, path.join(workDir, `hw-reject-${i}.mp4`), 'mp4', 'mp4', { video: { codec } }, fakeFfmpeg);
+      expect(build).toThrow(InvalidMediaOptionError);
+      expect(build).toThrow(HDR_ERROR);
+    }
+  }, 120_000);
+
+  oracleTest('encodes a 10-bit profile in software even when a hardware encoder is advertised', ['ffmpeg', 'ffprobe'], () => {
+    const input = makeHdrInput('hdr-hw-tenbit.mp4');
+    const cases: Array<{ encoders: string[]; codec: 'h264' | 'hevc'; profile: string; probeProfile: string }> = [
+      { encoders: ['h264_nvenc', 'hevc_nvenc'], codec: 'h264', profile: 'high10', probeProfile: 'High 10' },
+      { encoders: ['h264_qsv'], codec: 'h264', profile: 'high10', probeProfile: 'High 10' },
+      { encoders: ['h264_nvenc', 'hevc_nvenc'], codec: 'hevc', profile: 'main10', probeProfile: 'Main 10' },
+    ];
+    for (const [i, { encoders, codec, profile, probeProfile }] of cases.entries()) {
+      resetHardwareAccelerationCache();
+      const fakeFfmpeg = makeHardwareFfmpeg(`hw-tenbit-${i}`, encoders);
+      const output = path.join(workDir, `hw-tenbit-${i}.mp4`);
+      const args = buildFfmpegArguments(input, output, 'mp4', 'mp4', { video: { codec, profile } }, fakeFfmpeg);
+
+      // Hardware encoders here receive no -profile:v and may only take 8-bit surfaces.
+      for (const enc of encoders) {
+        expect(args).not.toContain(enc);
+      }
+      expect(args.join(' ')).not.toContain('nv12');
+      expect(argAfter(args, '-profile:v')).toBe(profile);
+      expect(argAfter(args, '-pix_fmt')).toBe('yuv420p10le');
+
+      // Run the generated arguments through the real ffmpeg and read the result back.
+      run('ffmpeg', ['-v', 'error', ...args]);
+      const video = ffprobeJson(output).streams.find((s) => s.codec_type === 'video')!;
+      expect(video.codec_name).toBe(codec);
+      expect(video.profile).toBe(probeProfile);
+      expect(video.pix_fmt).toBe('yuv420p10le');
+      expect(video.color_transfer).toBe('smpte2084');
+    }
+  }, 240_000);
+
+  const hasDri = DRI_RENDER_NODES.some((node) => fs.existsSync(node));
+  it.skipIf(!hasDri)('never routes HDR input through the 8-bit VAAPI upload path', () => {
+    const ffmpeg = getOracleToolPath('ffmpeg');
+    if (!ffmpeg) {
+      throw new Error('ffmpeg is required for the VAAPI regression on a host with a DRI render node');
+    }
+    const input = makeHdrInput('hdr-vaapi.mp4');
+    const fakeFfmpeg = makeHardwareFfmpeg('hw-vaapi', ['h264_vaapi', 'hevc_vaapi']);
+    const build8 = () =>
+      buildFfmpegArguments(input, path.join(workDir, 'vaapi-8.mp4'), 'mp4', 'mp4', { video: { codec: 'hevc' } }, fakeFfmpeg);
+    expect(build8).toThrow(HDR_ERROR);
+
+    resetHardwareAccelerationCache();
+    const args = buildFfmpegArguments(
+      input, path.join(workDir, 'vaapi-10.mp4'), 'mp4', 'mp4', { video: { codec: 'hevc', profile: 'main10' } }, fakeFfmpeg
+    );
+    expect(args).not.toContain('hevc_vaapi');
+    expect(args.join(' ')).not.toContain('format=nv12,hwupload');
+    expect(argAfter(args, '-pix_fmt')).toBe('yuv420p10le');
+  });
 });

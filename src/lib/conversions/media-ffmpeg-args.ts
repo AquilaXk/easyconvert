@@ -432,13 +432,27 @@ export function buildFfmpegArguments(
       }
     }
 
-    // 4. Determine Hardware Acceleration Usage
+    // 4. Bit Depth and HDR Gate (before encoder selection, independent of available hardware)
+    // Hardware encoders receive no -profile:v and may only accept 8-bit surfaces (VAAPI uploads
+    // nv12, h264_qsv takes nv12), so a 10-bit profile always takes the software encoder path.
+    const tenBit = TEN_BIT_PROFILES.has((videoOpts?.profile || '').toLowerCase());
+    if (!tenBit && codec !== 'prores' && fs.existsSync(inputPath)) {
+      // Squeezing PQ/HLG samples into 8-bit without tone mapping corrupts the picture.
+      const transfer = probeVideoColorTransfer(inputPath, resolveFfprobeBinary(ffmpegBin));
+      if (HDR_TRANSFERS.has(transfer)) {
+        throw new InvalidMediaOptionError(
+          `HDR input (transfer "${transfer}") needs a 10-bit profile such as hevc main10; 8-bit output without tone mapping is not supported.`
+        );
+      }
+    }
+
+    // 5. Determine Hardware Acceleration Usage
     let isVaapi = false;
     let isNvenc = false;
     let isVideotoolbox = false;
     let isQsv = false;
 
-    if (!disableHw && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
+    if (!disableHw && !tenBit && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
       if (codec === 'h264') {
         if (hw.nvenc && hw.supportedEncoders.has('h264_nvenc')) isNvenc = true;
         else if (hw.vaapi && driDev && hw.supportedEncoders.has('h264_vaapi')) isVaapi = true;
@@ -456,7 +470,7 @@ export function buildFfmpegArguments(
       throw new InvalidMediaOptionError('Hardware accelerated video encoders do not support 2-pass encoding.');
     }
 
-    // 5. Strict Filter Graph Construction
+    // 6. Strict Filter Graph Construction
     // Sequence: yadif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
     const videoFilters: string[] = [];
 
@@ -537,20 +551,10 @@ export function buildFfmpegArguments(
 
     // Software pixel format (exclude VAAPI which uses hwupload, and ProRes which has custom 10-bit format)
     if (!isVaapi && codec !== 'prores') {
-      const tenBit = TEN_BIT_PROFILES.has((videoOpts?.profile || '').toLowerCase());
-      if (!tenBit && fs.existsSync(inputPath)) {
-        // Squeezing PQ/HLG samples into 8-bit without tone mapping corrupts the picture.
-        const transfer = probeVideoColorTransfer(inputPath, resolveFfprobeBinary(ffmpegBin));
-        if (HDR_TRANSFERS.has(transfer)) {
-          throw new InvalidMediaOptionError(
-            `HDR input (transfer "${transfer}") needs a 10-bit profile such as hevc main10; 8-bit output without tone mapping is not supported.`
-          );
-        }
-      }
       outputArgs.push('-pix_fmt', tenBit ? TEN_BIT_PIX_FMT : EIGHT_BIT_PIX_FMT);
     }
 
-    // 6. Video Encoder Selection and Arguments
+    // 7. Video Encoder Selection and Arguments
     if (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv') {
       if (codec === 'h264' || codec === 'hevc') {
         const isH264 = codec === 'h264';
