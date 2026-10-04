@@ -9,6 +9,7 @@ import {
 } from '../src/lib/conversions/vector-cad';
 import { getAvailableTargetFormats } from '../src/lib/registry';
 import { oracleTest } from './helpers/oracle-test';
+import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { CadGeometryUnavailableError, ConversionFailedError } from '../src/lib/types';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -772,62 +773,84 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
   });
 
   describe('Differential Visual Oracle (LibreOffice soffice)', () => {
-    oracleTest(
-      'renders EMF and WMF via LibreOffice soffice to PNG and verifies visual similarity',
-      ['soffice', 'pdftoppm'],
-      async () => {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cad-oracle-'));
-        try {
-          const emfPath = path.join(tempDir, 'sample.emf');
-          const wmfPath = path.join(tempDir, 'sample.wmf');
-          const refSvgPngPath = path.join(tempDir, 'ref.png');
+    const SOFFICE_TIMEOUT_MS = 60000;
+    const MIN_SSIM = 0.85;
+    const COMPARE_WIDTH = 400;
+    const COMPARE_HEIGHT = 300;
 
-          // Generate EMF and WMF
-          const emfBuf = encodeEmf(svgBuffer);
-          const wmfBuf = encodeWmf(svgBuffer);
-          fs.writeFileSync(emfPath, emfBuf);
-          fs.writeFileSync(wmfPath, wmfBuf);
+    /** EMF/WMF import lives in the Draw module; a Writer/Calc-only install cannot load them. */
+    function requireSofficeDrawModule(): void {
+      const sofficePath = getOracleToolPath('soffice');
+      if (!sofficePath) throw new OracleToolMissingError('soffice');
+      const programDir = path.dirname(fs.realpathSync(sofficePath));
+      const hasDraw = fs.readdirSync(programDir).some((f) => /^(lib)?sdlo\.(so|dll|dylib)$/.test(f));
+      if (!hasDraw) {
+        throw new OracleToolMissingError('soffice-draw', 'LibreOffice Draw module (libreoffice-draw) is not installed');
+      }
+    }
 
-          // Render Reference PNG from SVG via sharp
-          const refPng = await sharp(svgBuffer).resize(400, 300).png().toBuffer();
-          fs.writeFileSync(refSvgPngPath, refPng);
+    async function renderMetafileWithSoffice(metafile: Buffer, fileName: string): Promise<Buffer> {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cad-oracle-'));
+      try {
+        const inputPath = path.join(tempDir, fileName);
+        fs.writeFileSync(inputPath, metafile);
+        execFileSync(
+          'soffice',
+          [
+            '--headless',
+            '--norestore',
+            '--nofirststartwizard',
+            '--nologo',
+            `-env:UserInstallation=file://${tempDir}/user`,
+            '--convert-to',
+            'pdf',
+            inputPath,
+            '--outdir',
+            tempDir,
+          ],
+          {
+            timeout: SOFFICE_TIMEOUT_MS,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env, HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+          }
+        );
+        const pdfPath = path.join(tempDir, `${path.parse(fileName).name}.pdf`);
+        expect(fs.existsSync(pdfPath), `soffice could not load ${fileName}`).toBe(true);
+        const pages = await renderPdfPagesWithPdftoppm(fs.readFileSync(pdfPath));
+        expect(pages.length).toBeGreaterThanOrEqual(1);
+        return pages[0];
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }
 
-          // Convert EMF to PDF using LibreOffice with isolated profile
-          execFileSync(
-            'soffice',
-            [
-              '--headless',
-              '--norestore',
-              '--nofirststartwizard',
-              '--nologo',
-              `-env:UserInstallation=file://${tempDir}/user`,
-              '--convert-to',
-              'pdf',
-              emfPath,
-              '--outdir',
-              tempDir,
-            ],
-            {
-              timeout: 30000,
-              stdio: ['pipe', 'pipe', 'pipe'],
-              env: { ...process.env, HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
-            }
-          );
-          const emfPdfPath = path.join(tempDir, 'sample.pdf');
-          expect(fs.existsSync(emfPdfPath)).toBe(true);
+    /** Crops to the drawn content on a white page and scales to a common comparison size. */
+    async function normalizeDrawing(png: Buffer): Promise<Buffer> {
+      const flat = await sharp(png).flatten({ background: '#ffffff' }).png().toBuffer();
+      return sharp(flat)
+        .trim({ background: '#ffffff', threshold: 10 })
+        .resize(COMPARE_WIDTH, COMPARE_HEIGHT, { fit: 'fill' })
+        .png()
+        .toBuffer();
+    }
 
-          const pdfBuf = fs.readFileSync(emfPdfPath);
-          const pages = await renderPdfPagesWithPdftoppm(pdfBuf);
-          expect(pages.length).toBeGreaterThanOrEqual(1);
-          const emfResized = await sharp(pages[0]).resize(400, 300).png().toBuffer();
-          const vrtResult = await compareImages(emfResized, refPng, { minSsim: 0.85 });
+    for (const target of ['emf', 'wmf'] as const) {
+      oracleTest(
+        `renders ${target.toUpperCase()} via LibreOffice and matches the SVG reference raster`,
+        ['soffice', 'pdftoppm'],
+        async () => {
+          requireSofficeDrawModule();
+          const metafile = target === 'emf' ? encodeEmf(svgBuffer) : encodeWmf(svgBuffer);
+          const rendered = await renderMetafileWithSoffice(metafile, `sample.${target}`);
+          const reference = await sharp(svgBuffer, { density: 192 }).png().toBuffer();
 
-          expect(vrtResult.ssim).toBeGreaterThanOrEqual(0.85);
-        } finally {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        }
-      },
-      45000
-    );
+          const vrtResult = await compareImages(await normalizeDrawing(rendered), await normalizeDrawing(reference), {
+            minSsim: MIN_SSIM,
+          });
+          expect(vrtResult.ssim).toBeGreaterThanOrEqual(MIN_SSIM);
+        },
+        SOFFICE_TIMEOUT_MS + 15000
+      );
+    }
   });
 });
