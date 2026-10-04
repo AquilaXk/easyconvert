@@ -2918,7 +2918,6 @@ export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinit
   const source = FORMAT_REGISTRY[sourceFormatId.toLowerCase()];
   if (!source) return [];
   return source.targetFormats
-    .filter((targetId) => !DISABLED_TARGET_FORMATS.has(targetId.toLowerCase()))
     .map((targetId) => FORMAT_REGISTRY[targetId])
     .filter((def): def is FormatDefinition => Boolean(def) && def.available !== false);
 }
