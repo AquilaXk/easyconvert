@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
@@ -7,7 +8,8 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
-import { ConversionOptions, JobStatus, PipelineTask } from '@/lib/types';
+import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
+import { validateGraph, linearTasksToGraph } from '@/lib/queue/graph';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import {
@@ -15,6 +17,7 @@ import {
   JobCreateRequestSchema,
   ConversionOptionsSchema,
   PipelineTaskSchema,
+  JobGraphSchema,
 } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
 import { tusEngine } from '@/lib/storage/tus-engine';
@@ -99,6 +102,7 @@ export async function POST(req: NextRequest) {
     let sourceFormatParam: string | undefined;
     let options: ConversionOptions = {};
     let tasks: PipelineTask[] | undefined;
+    let graph: JobGraph | undefined;
     let storageKey: string | undefined;
     let uploadId: string | undefined;
     let inputBufferBase64: string | undefined;
@@ -131,6 +135,24 @@ export async function POST(req: NextRequest) {
           return reply(optValidation.response);
         }
         options = (parsed && typeof parsed === 'object' ? parsed : {}) as ConversionOptions;
+      }
+
+      const graphRaw = formData.get('graph') as string | null;
+      if (graphRaw) {
+        try {
+          const parsedGraph = JSON.parse(graphRaw);
+          if (parsedGraph && typeof parsedGraph === 'object') {
+            graph = parsedGraph as JobGraph;
+          } else {
+            return reply(createProblemDetailsResponse(422, 'Request validation failed: graph must be an object', instanceUri));
+          }
+        } catch {
+          return reply(createProblemDetailsResponse(400, 'Invalid JSON string provided in "graph" parameter.', instanceUri));
+        }
+        const graphValidation = validateOrProblem(JobGraphSchema, graph, instanceUri);
+        if (!graphValidation.ok) {
+          return reply(graphValidation.response);
+        }
       }
 
       const tasksRaw = formData.get('tasks') as string | null;
@@ -206,6 +228,9 @@ export async function POST(req: NextRequest) {
       if (validBody.tasks && Array.isArray(validBody.tasks)) {
         tasks = validBody.tasks;
       }
+      if (validBody.graph && typeof validBody.graph === 'object') {
+        graph = validBody.graph as JobGraph;
+      }
       storageKey = (validBody.storageKey || '').trim() || undefined;
       uploadId = (validBody.uploadId || '').trim() || undefined;
       inputBufferBase64 = validBody.inputBufferBase64;
@@ -250,19 +275,91 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // 1c. Validate JobGraph or adapt legacy tasks into JobGraph
+    if (graph) {
+      const graphValidation = validateGraph(graph, {
+        userTier: auth.user.tier,
+        sourceFormat: sourceFormatParam,
+        sourceFilename: originalFilename,
+      });
+      if (!graphValidation.valid) {
+        return reply(
+          createProblemDetailsResponse(
+            422,
+            `Graph validation failed: ${graphValidation.errors.map((e) => e.message).join(' ')}`,
+            instanceUri,
+            'Unprocessable Entity',
+            'https://api.easyconvert.io/problems/unprocessable-entity',
+            undefined,
+            graphValidation.errors.map((e) => ({ name: e.path, reason: e.message }))
+          )
+        );
+      }
+    } else if (tasks && tasks.length > 0) {
+      graph = linearTasksToGraph(
+        {
+          storageKey,
+          sourceFormat: sourceFormatParam,
+          filename: originalFilename,
+        },
+        tasks
+      );
+      const graphValidation = validateGraph(graph, {
+        userTier: auth.user.tier,
+        sourceFormat: sourceFormatParam,
+        sourceFilename: originalFilename,
+      });
+      if (!graphValidation.valid) {
+        return reply(
+          createProblemDetailsResponse(
+            422,
+            `Pipeline tasks validation failed: ${graphValidation.errors.map((e) => e.message).join(' ')}`,
+            instanceUri,
+            'Unprocessable Entity',
+            'https://api.easyconvert.io/problems/unprocessable-entity',
+            undefined,
+            graphValidation.errors.map((e) => ({ name: e.path, reason: e.message }))
+          )
+        );
+      }
+    }
+
     if (tasks && tasks.length > 0 && !targetFormat) {
       targetFormat = (tasks[tasks.length - 1].targetFormat || '').trim();
     }
 
-    if (!originalFilename && storageKey) {
+    if (graph && !targetFormat) {
+      const convertNodes = Object.values(graph.nodes).filter((n) => n.op === 'convert') as { targetFormat: string }[];
+      if (convertNodes.length > 0) {
+        targetFormat = convertNodes[convertNodes.length - 1].targetFormat;
+      } else {
+        const archiveNodes = Object.values(graph.nodes).filter((n) => n.op === 'archive.create') as { targetFormat: string }[];
+        if (archiveNodes.length > 0) {
+          targetFormat = archiveNodes[0].targetFormat;
+        } else {
+          targetFormat = 'pdf';
+        }
+      }
+    }
+
+    if (!storageKey && graph && !inputBufferBase64 && !uploadedBuffer) {
+      const uploadNode = Object.values(graph.nodes).find((n) => n.op === 'import.upload') as { storageKey?: string } | undefined;
+      if (uploadNode?.storageKey && !uploadNode.storageKey.startsWith('inline')) {
+        storageKey = uploadNode.storageKey;
+      }
+    }
+
+    if (!originalFilename && storageKey && !storageKey.startsWith('inline')) {
       originalFilename = storageKey.split('/').pop() || 'file';
     }
+
+    const hasImportUrl = graph && Object.values(graph.nodes).some((n) => n.op === 'import.url');
 
     if (!targetFormat) {
       return await failWithRollback(400, 'Missing required parameter: "targetFormat".');
     }
 
-    if (!storageKey && !inputBufferBase64 && !uploadedBuffer) {
+    if (!storageKey && !inputBufferBase64 && !uploadedBuffer && !hasImportUrl) {
       return await failWithRollback(
         400,
         'Missing input file data. Please upload a "file" or provide "uploadId" / "storageKey" / "inputBufferBase64".'
@@ -270,13 +367,29 @@ export async function POST(req: NextRequest) {
     }
 
     // Authorize a caller-supplied key before anything reads the object.
-    if (storageKey && !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id))) {
+    if (storageKey && !storageKey.startsWith('inline') && !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id))) {
       return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
     }
 
     // Resolve source format definition
     let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
     sourceDef ??= detectFormatFromFilename(originalFilename);
+
+    if (!sourceDef && hasImportUrl && graph) {
+      const urlNode = Object.values(graph.nodes).find((n) => n.op === 'import.url') as { url?: string } | undefined;
+      if (urlNode?.url) {
+        try {
+          const parsedUrl = new URL(urlNode.url);
+          const urlExt = path.extname(parsedUrl.pathname).replace(/^\./, '').toLowerCase();
+          sourceDef = getFormatByExtension(urlExt);
+          if (!originalFilename) {
+            originalFilename = path.basename(parsedUrl.pathname) || 'remote_file';
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
 
     if (!sourceDef) {
       return await failWithRollback(400, `Could not identify source format for file "${originalFilename}".`);
@@ -350,12 +463,14 @@ export async function POST(req: NextRequest) {
       return await failWithRollback(400, `Unsupported target format "${targetFormat}".`);
     }
 
-    // Check format compatibility
-    if (!sourceDef.targetFormats.includes(cleanTarget) && !sourceDef.targetFormats.includes(targetDef.id)) {
-      return await failWithRollback(
-        400,
-        `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`
-      );
+    // Check format compatibility for direct single conversion (multi-stage tasks and graphs validated above)
+    if (!tasks && !graph) {
+      if (!sourceDef.targetFormats.includes(cleanTarget) && !sourceDef.targetFormats.includes(targetDef.id)) {
+        return await failWithRollback(
+          400,
+          `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`
+        );
+      }
     }
 
     // Fall back to API Key configured webhook URL/Secret if not overridden in request
@@ -403,6 +518,7 @@ export async function POST(req: NextRequest) {
         userId: auth.user.id,
         reservationId: reservation.reservationId,
         tasks,
+        graph,
       },
       {
         attempts: 3,
@@ -421,6 +537,7 @@ export async function POST(req: NextRequest) {
         sourceFormat: sourceDef.id,
         targetFormat: targetDef.id,
         originalFilename,
+        graph: job.data.graph,
       },
       { status: 202 }
     );

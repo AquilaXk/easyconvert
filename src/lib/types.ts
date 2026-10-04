@@ -213,6 +213,9 @@ export interface PipelineTask {
   url?: string;
 }
 
+import type { JobGraph, GraphNode, NodeId } from './queue/graph/types';
+export type { JobGraph, GraphNode, NodeId };
+
 export interface ConversionJobData {
   jobId: string;
   originalFilename: string;
@@ -227,6 +230,7 @@ export interface ConversionJobData {
   userId?: string;
   reservationId?: string;
   tasks?: PipelineTask[];
+  graph?: JobGraph;
 }
 
 export interface ConversionJobResult {
