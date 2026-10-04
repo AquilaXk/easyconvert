@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
-import { ConversionOptions, ConversionResult, ConversionFailedError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidSheetIndexError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
@@ -5149,12 +5149,139 @@ export interface OfficeWorksheetCell {
   align?: 'left' | 'center' | 'right';
 }
 
+export interface OfficeWorksheetPrintArea {
+  startRow: number;
+  endRow: number;
+  startCol: number;
+  endCol: number;
+}
+
 export interface OfficeWorksheet {
   name: string;
   rows: string[][];
   structuredRows?: OfficeWorksheetCell[][];
   columnWidths?: number[];
+  printArea?: OfficeWorksheetPrintArea;
 }
+
+/**
+ * Parses an Excel A1 reference or range string into 0-based boundary coordinates.
+ * Supports: 'Sheet1!$B$2:$C$3', ''Sheet 1'!$B$2:$C$3', '$B$2:$C$3', 'B2:C3', '$B$2'.
+ */
+export function parseA1Range(rangeStr: string): {
+  sheetName?: string;
+  startRow: number;
+  endRow: number;
+  startCol: number;
+  endCol: number;
+} | null {
+  if (!rangeStr || typeof rangeStr !== 'string') return null;
+  const trimmed = rangeStr.trim();
+  if (trimmed === '') return null;
+
+  let sheetName: string | undefined;
+  let cellRange = trimmed;
+
+  const bangIdx = trimmed.indexOf('!');
+  if (bangIdx !== -1) {
+    let rawSheet = trimmed.slice(0, bangIdx).trim();
+    if ((rawSheet.startsWith("'") && rawSheet.endsWith("'")) || (rawSheet.startsWith('"') && rawSheet.endsWith('"'))) {
+      rawSheet = rawSheet.slice(1, -1);
+    }
+    sheetName = rawSheet;
+    cellRange = trimmed.slice(bangIdx + 1).trim();
+  }
+
+  // Range may have multiple comma-separated areas; take the first area
+  const firstArea = cellRange.split(',')[0].trim();
+  const parts = firstArea.split(':');
+
+  const parseCellCoord = (cell: string): { col: number; row: number } | null => {
+    const clean = cell.replace(/\$/g, '').trim().toUpperCase();
+    const match = clean.match(/^([A-Z]+)(\d+)$/);
+    if (!match) return null;
+    return {
+      col: getExcelColumnIndex(match[1]),
+      row: parseInt(match[2], 10) - 1,
+    };
+  };
+
+  const startCoord = parseCellCoord(parts[0]);
+  if (!startCoord) return null;
+
+  const endCoord = parts.length > 1 ? parseCellCoord(parts[1]) : startCoord;
+  if (!endCoord) return null;
+
+  return {
+    sheetName,
+    startRow: Math.min(startCoord.row, endCoord.row),
+    endRow: Math.max(startCoord.row, endCoord.row),
+    startCol: Math.min(startCoord.col, endCoord.col),
+    endCol: Math.max(startCoord.col, endCoord.col),
+  };
+}
+
+/**
+ * Slices worksheet rows and columns down to specified print area rectangular bounds.
+ */
+export function sliceWorksheetToRange(
+  sheet: OfficeWorksheet,
+  range: OfficeWorksheetPrintArea
+): OfficeWorksheet {
+  const { startRow, endRow, startCol, endCol } = range;
+  const slicedRows: string[][] = [];
+  const slicedStructuredRows: OfficeWorksheetCell[][] = [];
+
+  for (let r = startRow; r <= endRow; r++) {
+    const origRow = sheet.rows[r] || [];
+    const newRow: string[] = [];
+    for (let c = startCol; c <= endCol; c++) {
+      newRow.push(origRow[c] ?? '');
+    }
+    slicedRows.push(newRow);
+
+    if (sheet.structuredRows) {
+      const origStructRow = sheet.structuredRows[r] || [];
+      const newStructRow: OfficeWorksheetCell[] = [];
+      for (let c = startCol; c <= endCol; c++) {
+        newStructRow.push(origStructRow[c] ?? { value: '' });
+      }
+      slicedStructuredRows.push(newStructRow);
+    }
+  }
+
+  let slicedWidths: number[] | undefined;
+  if (sheet.columnWidths) {
+    slicedWidths = sheet.columnWidths.slice(startCol, endCol + 1);
+  }
+
+  return {
+    name: sheet.name,
+    rows: slicedRows,
+    structuredRows: sheet.structuredRows ? slicedStructuredRows : undefined,
+    columnWidths: slicedWidths,
+    printArea: sheet.printArea,
+  };
+}
+
+/**
+ * Sanitizes worksheet name for safe filesystem and archive entry usage.
+ */
+export function sanitizeSheetName(name: string): string {
+  const sanitized = name.replace(/[/\\:*?"<>|\x00-\x1f]/g, '_').trim();
+  return sanitized.length > 0 ? sanitized : 'sheet';
+}
+
+/**
+ * Formats a CSV cell conforming to RFC 4180 Section 2.6 (quotes cells with delimiter, quotes, CR, or LF).
+ */
+export function formatCsvCell(cell: string, delimiter: string): string {
+  if (cell.includes(delimiter) || cell.includes('"') || cell.includes('\n') || cell.includes('\r')) {
+    return `"${cell.replace(/"/g, '""')}"`;
+  }
+  return cell;
+}
+
 
 /**
  * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
@@ -5303,6 +5430,8 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
   // 3. Discover all worksheets from workbook.xml and workbook.xml.rels
   const sheetEntries: Array<{ name: string; path: string }> = [];
+  const printAreaBySheetIndex = new Map<number, OfficeWorksheetPrintArea>();
+  const printAreaBySheetName = new Map<string, OfficeWorksheetPrintArea>();
 
   const wbFile = zip.file('xl/workbook.xml');
   const wbRelsFile = zip.file('xl/_rels/workbook.xml.rels');
@@ -5332,6 +5461,30 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
         sheetEntries.push({ name: sheetName, path: relTarget });
       }
     }
+
+    // Parse <definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">Sheet1!$B$2:$C$3</definedName></definedNames>
+    for (const dnEl of safeExtractXmlElements(wbXml, 'definedName')) {
+      if (dnEl.attrs.name === '_xlnm.Print_Area') {
+        const parsed = parseA1Range(dnEl.content);
+        if (parsed) {
+          const area: OfficeWorksheetPrintArea = {
+            startRow: parsed.startRow,
+            endRow: parsed.endRow,
+            startCol: parsed.startCol,
+            endCol: parsed.endCol,
+          };
+          if (dnEl.attrs.localSheetId !== undefined) {
+            const sid = parseInt(dnEl.attrs.localSheetId, 10);
+            if (!isNaN(sid)) {
+              printAreaBySheetIndex.set(sid, area);
+            }
+          }
+          if (parsed.sheetName) {
+            printAreaBySheetName.set(parsed.sheetName.toLowerCase(), area);
+          }
+        }
+      }
+    }
   }
 
   // Fallback: search zip directly for worksheets
@@ -5356,7 +5509,9 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   // 4. Parse all discovered worksheets
   const allSheets: OfficeWorksheet[] = [];
 
-  for (const entry of sheetEntries) {
+  for (let entryIdx = 0; entryIdx < sheetEntries.length; entryIdx++) {
+    const entry = sheetEntries[entryIdx];
+    const printArea = printAreaBySheetIndex.get(entryIdx) || printAreaBySheetName.get(entry.name.toLowerCase());
     const sFile = zip.file(entry.path);
     if (!sFile) continue;
 
@@ -5497,6 +5652,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       rows,
       structuredRows,
       columnWidths: columnWidths.length > 0 ? columnWidths : undefined,
+      printArea,
     });
   }
 
@@ -5671,38 +5827,129 @@ async function convertXlsxSource(
   baseName: string
 ): Promise<ConversionResult> {
   const zip = await JSZip.loadAsync(inputBuffer);
-  const allSheets = await parseAllXlsxWorksheets(zip);
+  const rawSheets = await parseAllXlsxWorksheets(zip);
+
+  // 1. Slicing by print area if range: 'printArea'
+  const allSheets = options.range === 'printArea'
+    ? rawSheets.map((s) => (s.printArea ? sliceWorksheetToRange(s, s.printArea) : s))
+    : rawSheets;
+
+  const sheetMode = options.sheetMode || 'merged';
+  const delimiter = options.delimiter || (tgt === 'tsv' ? '\t' : ',');
+  const lineEnding = options.lineEnding === 'crlf' ? '\r\n' : '\n';
+
+  // 2. Handle sheetMode: 'index'
+  if (sheetMode === 'index') {
+    const targetIdx = options.sheetIndex ?? 0;
+    if (targetIdx < 0 || targetIdx >= allSheets.length) {
+      throw new InvalidSheetIndexError(
+        `Invalid sheetIndex ${targetIdx}: workbook has ${allSheets.length} worksheet(s)`
+      );
+    }
+    const selectedSheet = allSheets[targetIdx];
+    const targetRows = selectedSheet.rows;
+
+    if (tgt === 'csv' || tgt === 'tsv') {
+      const csvContent = targetRows
+        .map((r) => r.map((c) => formatCsvCell(c, delimiter)).join(delimiter))
+        .join(lineEnding);
+      const buffer = Buffer.from(csvContent, 'utf-8');
+      const mimeType = tgt === 'csv' ? 'text/csv' : 'text/tab-separated-values';
+      return { buffer, mimeType, filename: `${baseName}.${tgt}`, size: buffer.length };
+    }
+
+    if (tgt === 'json') {
+      let outputJson: any;
+      if (targetRows.length > 1) {
+        const headers = targetRows[0];
+        outputJson = targetRows.slice(1).map((row) => {
+          const obj: Record<string, string> = {};
+          headers.forEach((h, i) => {
+            obj[h || `column_${i + 1}`] = row[i] || '';
+          });
+          return obj;
+        });
+      } else {
+        outputJson = targetRows;
+      }
+      const buffer = Buffer.from(JSON.stringify(outputJson, null, 2), 'utf-8');
+      return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+    }
+
+    if (tgt === 'html') {
+      let tableHtml =
+        '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;margin-bottom:2rem;border-color:#CCD2FC;">\n';
+      targetRows.forEach((r, idx) => {
+        tableHtml += '<tr>\n';
+        r.forEach((c) => {
+          if (idx === 0) {
+            tableHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(
+              c
+            )}</th>\n`;
+          } else {
+            tableHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>\n`;
+          }
+        });
+        tableHtml += '</tr>\n';
+      });
+      tableHtml += '</table>';
+      const bodyHtml = `<h3>${escapeHtml(selectedSheet.name)}</h3>${tableHtml}`;
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeXml(
+        baseName
+      )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeXml(
+        baseName
+      )}</h2>${bodyHtml}</body></html>`;
+      const buffer = Buffer.from(html, 'utf-8');
+      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+    }
+
+    if (tgt === 'pdf') {
+      const pdfBuffer = await generatePdfFromWorksheets([selectedSheet], options, baseName);
+      return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+    }
+  }
+
+  // 3. Handle sheetMode: 'split'
+  if (sheetMode === 'split') {
+    if (tgt === 'csv' || tgt === 'tsv') {
+      const outZip = new JSZip();
+      for (let i = 0; i < allSheets.length; i++) {
+        const s = allSheets[i];
+        const content = s.rows
+          .map((r) => r.map((c) => formatCsvCell(c, delimiter)).join(delimiter))
+          .join(lineEnding);
+        const safeName = sanitizeSheetName(s.name || `Sheet${i + 1}`);
+        outZip.file(`${baseName}-${safeName}.${tgt}`, content);
+      }
+      const zipBuffer = await outZip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      return {
+        buffer: zipBuffer,
+        mimeType: 'application/zip',
+        filename: `${baseName}.zip`,
+        size: zipBuffer.length,
+      };
+    }
+  }
+
+  // 4. Default sheetMode: 'merged'
   const primaryRows = allSheets.length > 0 ? allSheets[0].rows : [];
 
   // XLSX -> CSV
   if (tgt === 'csv') {
-    const delimiter = options.delimiter || ',';
     let csvContent: string;
     if (allSheets.length <= 1) {
       csvContent = primaryRows
-        .map((r) =>
-          r
-            .map((c) =>
-              c.includes(delimiter) || c.includes('"') ? `"${c.replace(/"/g, '""')}"` : c
-            )
-            .join(delimiter)
-        )
-        .join('\n');
+        .map((r) => r.map((c) => formatCsvCell(c, delimiter)).join(delimiter))
+        .join(lineEnding);
     } else {
       csvContent = allSheets
         .map((s) => {
           const table = s.rows
-            .map((r) =>
-              r
-                .map((c) =>
-                  c.includes(delimiter) || c.includes('"') ? `"${c.replace(/"/g, '""')}"` : c
-                )
-                .join(delimiter)
-            )
-            .join('\n');
+            .map((r) => r.map((c) => formatCsvCell(c, delimiter)).join(delimiter))
+            .join(lineEnding);
           return `### Sheet: ${s.name}\n${table}`;
         })
-        .join('\n\n');
+        .join(lineEnding + lineEnding);
     }
     const buffer = Buffer.from(csvContent, 'utf-8');
     return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
@@ -5712,11 +5959,11 @@ async function convertXlsxSource(
   if (tgt === 'tsv') {
     let tsvContent: string;
     if (allSheets.length <= 1) {
-      tsvContent = primaryRows.map((r) => r.join('\t')).join('\n');
+      tsvContent = primaryRows.map((r) => r.join('\t')).join(lineEnding);
     } else {
       tsvContent = allSheets
-        .map((s) => `### Sheet: ${s.name}\n` + s.rows.map((r) => r.join('\t')).join('\n'))
-        .join('\n\n');
+        .map((s) => `### Sheet: ${s.name}\n` + s.rows.map((r) => r.join('\t')).join(lineEnding))
+        .join(lineEnding + lineEnding);
     }
     const buffer = Buffer.from(tsvContent, 'utf-8');
     return {
@@ -8351,18 +8598,18 @@ export async function convertOdsSource(
   // ODS -> CSV
   if (tgt === 'csv') {
     const delim = options.delimiter || ',';
+    const lineEnding = options.lineEnding === 'crlf' ? '\r\n' : '\n';
     const csv = rows
-      .map((r) =>
-        r.map((c) => (c.includes(delim) || c.includes('"') ? `"${c.replace(/"/g, '""')}"` : c)).join(delim)
-      )
-      .join('\n');
+      .map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim))
+      .join(lineEnding);
     const buffer = Buffer.from(csv, 'utf-8');
     return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
   }
 
   // ODS -> TSV
   if (tgt === 'tsv') {
-    const tsv = rows.map((r) => r.join('\t')).join('\n');
+    const lineEnding = options.lineEnding === 'crlf' ? '\r\n' : '\n';
+    const tsv = rows.map((r) => r.join('\t')).join(lineEnding);
     const buffer = Buffer.from(tsv, 'utf-8');
     return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
   }

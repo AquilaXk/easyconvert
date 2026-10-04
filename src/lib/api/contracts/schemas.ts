@@ -168,11 +168,33 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Treat first row of table data as column header names.',
     },
+    sheetMode: {
+      type: 'string',
+      enum: ['merged', 'split', 'index'],
+      default: 'merged',
+      description: 'Spreadsheet sheet output mode: merged multi-sheet table, split individual CSV files in ZIP, or single sheet by index.',
+    },
     sheetIndex: {
       type: 'integer',
       minimum: 0,
-      description: 'Zero-based worksheet index to extract (planned).',
-      'x-easyconvert-status': 'planned',
+      description: 'Zero-based worksheet index to extract in index mode.',
+    },
+    range: {
+      type: 'string',
+      enum: ['used', 'printArea'],
+      default: 'used',
+      description: 'Spreadsheet cell range to extract: all used cells or defined print area (_xlnm.Print_Area).',
+    },
+    lineEnding: {
+      type: 'string',
+      enum: ['lf', 'crlf'],
+      default: 'lf',
+      description: 'CSV row delimiter line ending format (LF vs CRLF).',
+    },
+    recalculate: {
+      type: 'boolean',
+      default: false,
+      description: 'Recalculate spreadsheet formulas before export using headless office.',
     },
 
     // Archive options

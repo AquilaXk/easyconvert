@@ -307,41 +307,7 @@
     "reason": "Test block \"parses CSV with quoted commas cleanly using Papa.parse without splitting fields\" contains only weak assertions (7 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
   },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-office-drawingml-and-cjk.test.ts",
-    "symbol": "renders all expanded shape presets directly to PDFKit without errors",
-    "reason": "Test block \"renders all expanded shape presets directly to PDFKit without errors\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-43"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-office-drawingml-and-cjk.test.ts",
-    "symbol": "renders 360-degree single-slice pie and doughnut charts without SVG arc singularities",
-    "reason": "Test block \"renders 360-degree single-slice pie and doughnut charts without SVG arc singularities\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-43"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-office-drawingml-and-cjk.test.ts",
-    "symbol": "renders all chart types (bar, line, area, pie, doughnut, scatter) in PDFKit without error",
-    "reason": "Test block \"renders all chart types (bar, line, area, pie, doughnut, scatter) in PDFKit without error\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-43"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-office-drawingml-and-cjk.test.ts",
-    "symbol": "sanitizes non-WinAnsi text gracefully while preserving valid Latin glyphs",
-    "reason": "Test block \"sanitizes non-WinAnsi text gracefully while preserving valid Latin glyphs\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-43"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-office-drawingml-and-cjk.test.ts",
-    "symbol": "renders CJK text safely without throwing WinAnsi encoding errors",
-    "reason": "Test block \"renders CJK text safely without throwing WinAnsi encoding errors\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-43"
-  },
+
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-1-queue-sandbox-lifecycle.test.ts",

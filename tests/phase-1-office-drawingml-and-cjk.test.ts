@@ -174,10 +174,13 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       expect(resolved.finalY).toBe(100);
     });
 
-    it('renders all expanded shape presets directly to PDFKit without errors', () => {
+    it('renders all expanded shape presets directly to PDFKit without errors', async () => {
       const doc = new PDFDocument({ autoFirstPage: true });
       const chunks: Buffer[] = [];
       doc.on('data', (c) => chunks.push(c));
+      const endPromise = new Promise<Buffer>((resolve) => {
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+      });
 
       const presets: Array<DrawingMlShape['presetGeom']> = [
         'flowchartprocess',
@@ -194,51 +197,52 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
         'star5',
       ];
 
-      expect(() => {
-        presets.forEach((preset, idx) => {
-          renderSinglePdfShape(
-            doc,
-            {
-              geomType: 'preset',
-              presetGeom: preset,
-              x: 20 + (idx % 4) * 100,
-              y: 20 + Math.floor(idx / 4) * 80,
-              width: 80,
-              height: 60,
-              fillColor: idx % 2 === 0 ? '#5C6BC0' : undefined,
-              strokeColor: '#1F2340',
-              strokeWidth: 1.5,
-              text: preset,
-            },
-            false,
-            20 + (idx % 4) * 100,
-            20 + Math.floor(idx / 4) * 80,
-            80,
-            60
-          );
-        });
-
-        // Also test custom SVG path
+      presets.forEach((preset, idx) => {
         renderSinglePdfShape(
           doc,
           {
-            geomType: 'custom',
-            svgPath: 'M 0 0 L 50 0 L 50 50 Z',
-            x: 20,
-            y: 300,
-            width: 50,
-            height: 50,
-            fillColor: '#26A69A',
+            geomType: 'preset',
+            presetGeom: preset,
+            x: 20 + (idx % 4) * 100,
+            y: 20 + Math.floor(idx / 4) * 80,
+            width: 80,
+            height: 60,
+            fillColor: idx % 2 === 0 ? '#5C6BC0' : undefined,
+            strokeColor: '#1F2340',
+            strokeWidth: 1.5,
+            text: preset,
           },
           false,
-          20,
-          300,
-          50,
-          50
+          20 + (idx % 4) * 100,
+          20 + Math.floor(idx / 4) * 80,
+          80,
+          60
         );
+      });
 
-        doc.end();
-      }).not.toThrow();
+      // Also test custom SVG path
+      renderSinglePdfShape(
+        doc,
+        {
+          geomType: 'custom',
+          svgPath: 'M 0 0 L 50 0 L 50 50 Z',
+          x: 20,
+          y: 300,
+          width: 50,
+          height: 50,
+          fillColor: '#26A69A',
+        },
+        false,
+        20,
+        300,
+        50,
+        50
+      );
+
+      doc.end();
+      const pdfBuffer = await endPromise;
+      expect(pdfBuffer.subarray(0, 5).toString()).toBe('%PDF-');
+      expect(pdfBuffer.length).toBeGreaterThan(1500);
     });
 
     it('handles flipH and flipV coordinate transforms in shapes and SVG rendering', () => {
@@ -414,8 +418,10 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
         categories: ['All'],
         series: [{ name: 'Share', values: [100] }],
       });
+      expect(singlePieSvg.startsWith('<svg')).toBe(true);
       expect(singlePieSvg).toContain('<circle');
       expect(singlePieSvg).toContain('Mono Category');
+      expect(singlePieSvg.length).toBeGreaterThan(200);
 
       // 100% single-slice doughnut chart
       const singleDoughnutSvg = renderChartToSvg({
@@ -424,8 +430,10 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
         categories: ['All'],
         series: [{ name: 'Share', values: [100] }],
       });
+      expect(singleDoughnutSvg.startsWith('<svg')).toBe(true);
       expect(singleDoughnutSvg).toContain('fill-rule="evenodd"');
       expect(singleDoughnutSvg).toContain('Doughnut 100%');
+      expect(singleDoughnutSvg.length).toBeGreaterThan(200);
     });
 
     it('handles self-closing c:pt elements correctly during series data extraction', () => {
@@ -460,7 +468,7 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       expect(chart!.series[0].values).toEqual([500, 150]);
     });
 
-    it('renders all chart types (bar, line, area, pie, doughnut, scatter) in PDFKit without error', () => {
+    it('renders all chart types (bar, line, area, pie, doughnut, scatter) in PDFKit without error', async () => {
       const chartTypes: Array<OpenXmlChartData['type']> = [
         'bar',
         'line',
@@ -470,33 +478,37 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
         'scatter',
       ];
 
-      expect(() => {
-        chartTypes.forEach((type) => {
-          const doc = new PDFDocument({ autoFirstPage: true });
-          const chunks: Buffer[] = [];
-          doc.on('data', (c) => chunks.push(c));
-
-          renderPdfChart(
-            doc,
-            {
-              type,
-              title: `${type.toUpperCase()} Chart Title`,
-              categories: ['Cat A', 'Cat B', 'Cat C'],
-              series: [
-                { name: 'Series 1', values: [30, 70, 45] },
-                { name: 'Series 2', values: [50, 20, 65] },
-              ],
-            },
-            false,
-            50,
-            50,
-            400,
-            200
-          );
-
-          doc.end();
+      for (const type of chartTypes) {
+        const doc = new PDFDocument({ autoFirstPage: true });
+        const chunks: Buffer[] = [];
+        doc.on('data', (c) => chunks.push(c));
+        const endPromise = new Promise<Buffer>((resolve) => {
+          doc.on('end', () => resolve(Buffer.concat(chunks)));
         });
-      }).not.toThrow();
+
+        renderPdfChart(
+          doc,
+          {
+            type,
+            title: `${type.toUpperCase()} Chart Title`,
+            categories: ['Cat A', 'Cat B', 'Cat C'],
+            series: [
+              { name: 'Series 1', values: [30, 70, 45] },
+              { name: 'Series 2', values: [50, 20, 65] },
+            ],
+          },
+          false,
+          50,
+          50,
+          400,
+          200
+        );
+
+        doc.end();
+        const pdf = await endPromise;
+        expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+        expect(pdf.length).toBeGreaterThan(1000);
+      }
     });
 
     it('returns null safely for non-chart XML or empty input', () => {
@@ -522,8 +534,7 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
     it('sanitizes non-WinAnsi text gracefully while preserving valid Latin glyphs', () => {
       const mixed = 'EasyConvert 2026: 한글 보고서 (Enterprise Edition €100)';
       const safe = sanitizeWinAnsi(mixed);
-      expect(safe).toContain('EasyConvert 2026:');
-      expect(safe).toContain('(Enterprise Edition €100)');
+      expect(safe).toBe('EasyConvert 2026:   (Enterprise Edition €100)');
       expect(safe).not.toContain('한글');
       expect(safe).not.toContain('보고서');
     });
@@ -540,18 +551,22 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       expect(typeof config.hasUnicodeFont).toBe('boolean');
     });
 
-    it('renders CJK text safely without throwing WinAnsi encoding errors', () => {
+    it('renders CJK text safely without throwing WinAnsi encoding errors', async () => {
       const doc = new PDFDocument();
       const chunks: Buffer[] = [];
       doc.on('data', (c) => chunks.push(c));
+      const endPromise = new Promise<Buffer>((resolve) => {
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+      });
 
-      // Test rendering CJK text using safe helper
-      expect(() => {
-        renderSafePdfText(doc, '한국어 문서 보고서 (Korean Performance Report)', false);
-        renderSafePdfText(doc, '日本語の概要 (Japanese Summary)', false);
-        renderSafePdfText(doc, '中文简要 (Chinese Overview)', false);
-        doc.end();
-      }).not.toThrow();
+      renderSafePdfText(doc, '한국어 문서 보고서 (Korean Performance Report)', false);
+      renderSafePdfText(doc, '日本語の概要 (Japanese Summary)', false);
+      renderSafePdfText(doc, '中文简要 (Chinese Overview)', false);
+      doc.end();
+
+      const pdf = await endPromise;
+      expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+      expect(pdf.length).toBeGreaterThan(200);
     });
 
     it('fails closed on non-WinAnsi text without silent dropping if no Unicode font is available', () => {

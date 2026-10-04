@@ -108,7 +108,11 @@ export interface ConversionOptions {
   // Data & Spreadsheet options
   delimiter?: string;
   hasHeaders?: boolean;
+  sheetMode?: 'merged' | 'split' | 'index';
   sheetIndex?: number;
+  range?: 'used' | 'printArea';
+  lineEnding?: 'lf' | 'crlf';
+  recalculate?: boolean;
   // Archive options
   compressionLevel?: number;
   archiveCoder?: 'lzma' | 'lzma2' | 'deflate' | 'copy';
@@ -340,5 +344,13 @@ export class ComplexScriptRequiresNativeEngineError extends ConversionFailedErro
     this.name = 'ComplexScriptRequiresNativeEngineError';
   }
 }
+
+export class InvalidSheetIndexError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidSheetIndexError';
+  }
+}
+
 
 
