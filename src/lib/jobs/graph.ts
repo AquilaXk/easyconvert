@@ -1,6 +1,18 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
+import {
+  GRAPH_OPERATION_SET,
+  IMPORT_OPERATIONS,
+  EXPORT_OPERATIONS,
+  TARGET_FORMAT_REQUIRED_OPERATIONS,
+  RESTRICTED_OUTPUT_FORMATS,
+  MERGE_FORMATS,
+  FIXED_OUTPUT_FORMATS,
+  canonicalGraphOperation,
+  requestedTargetFormat,
+  type GraphOperation,
+} from './graph-operations';
 
 export type GraphFailurePolicy = 'fail_job' | 'continue';
 
@@ -12,7 +24,10 @@ export interface TaskDependency {
 
 export interface TaskNode {
   id: string;
-  operation: string;
+  /** Canonical operation after normalization (see graph-operations). */
+  op?: string;
+  /** Legacy field name for `op`; removed by normalization. */
+  operation?: string;
   dependencies?: (string | TaskDependency)[];
   input?: string | string[];
   inputs?: string[];
@@ -32,6 +47,9 @@ export interface JobGraph {
   failurePolicy?: GraphFailurePolicy | 'fail_fast';
   [key: string]: any;
 }
+
+/** Graph shapes accepted for validation: raw API submissions and typed scheduler graphs. */
+export type SubmittedJobGraph = JobGraph | { nodes: Record<string, object>; failurePolicy?: string };
 
 export interface GraphValidationOptions {
   userTier?: 'free' | 'pro' | 'enterprise';
@@ -55,6 +73,8 @@ export interface GraphValidationResult {
   topologicalOrder?: string[];
   depth?: number;
   inferredOutputFormats?: Record<string, string>;
+  /** Nodes with canonical `op` names, as they must be stored and executed. Set when valid. */
+  normalizedNodes?: Record<string, TaskNode>;
 }
 
 export class JobGraphValidationError extends Error {
@@ -70,30 +90,14 @@ export class JobGraphValidationError extends Error {
 // Backwards compatibility alias
 export { JobGraphValidationError as GraphValidationError };
 
-export const SUPPORTED_GRAPH_OPERATIONS = new Set<string>([
-  'import.upload',
-  'import.url',
-  'import',
-  'convert',
-  'ocr',
-  'optimize',
-  'thumbnail',
-  'media.thumbnail',
-  'archive.create',
-  'archive/create',
-  'archive',
-  'archive.extract',
-  'archive/extract',
-  'merge',
-  'metadata',
-  'watermark',
-  'pdf.watermark',
-  'pdf.protect',
-  'export.url',
-  'export.internal',
-]);
+/** Canonical operations a graph node may use after normalization. */
+export const SUPPORTED_GRAPH_OPERATIONS: ReadonlySet<string> = GRAPH_OPERATION_SET;
 
 const NODE_ID_REGEX = /^[a-z][a-z0-9_-]{0,63}$/;
+/** Inferred format of a node whose source format could not be determined at submission. */
+const UNKNOWN_FORMAT = 'unknown';
+/** Inferred format resolved only at run time (URL imports without an extension, extracted entries). */
+const DYNAMIC_FORMAT = 'dynamic';
 
 const TIER_NODE_LIMITS: Record<string, number> = {
   free: 8,
@@ -117,35 +121,37 @@ function extractExtension(target: string | undefined): string | undefined {
  * Normalizes any variation of JobGraph (nodes record, tasks record, or tasks array)
  * into a canonical Record<string, TaskNode>.
  */
+/**
+ * Rewrites a raw node to its canonical form: `op` holds the canonical operation and the legacy
+ * `operation` field is dropped. Unknown names are kept as written so validation can report them;
+ * a node without any operation keeps `op` undefined.
+ */
 function normalizeNodeEntry(id: string, raw: any): TaskNode {
-  const op = raw.operation || raw.op || 'convert';
-  return { ...raw, id, operation: op, op };
+  const { operation, ...rest } = raw;
+  const named = raw.op ?? operation;
+  return { ...rest, id, op: canonicalGraphOperation(named) ?? named };
+}
+
+/** Raw node objects keyed by id, from either `nodes`/`tasks` maps or a `tasks` array. */
+function rawGraphNodeEntries(graph: JobGraph): Array<[string, any]> {
+  if (!graph || typeof graph !== 'object') return [];
+  const rawMap = graph.nodes || (!Array.isArray(graph.tasks) ? graph.tasks : undefined);
+  if (rawMap && typeof rawMap === 'object') {
+    return Object.entries(rawMap).filter(([, node]) => node && typeof node === 'object');
+  }
+  if (Array.isArray(graph.tasks)) {
+    return graph.tasks
+      .map((task, i): [string, any] => [task?.id || `task_${i + 1}`, task])
+      .filter(([, task]) => task && typeof task === 'object');
+  }
+  return [];
 }
 
 export function normalizeGraphNodes(graph: JobGraph): Record<string, TaskNode> {
   const result: Record<string, TaskNode> = {};
-  if (!graph || typeof graph !== 'object') return result;
-
-  const rawMap = graph.nodes || (!Array.isArray(graph.tasks) ? graph.tasks : undefined);
-  if (rawMap && typeof rawMap === 'object') {
-    for (const [id, rawNode] of Object.entries(rawMap)) {
-      if (rawNode && typeof rawNode === 'object') {
-        result[id] = normalizeNodeEntry(id, rawNode);
-      }
-    }
-    return result;
+  for (const [id, rawNode] of rawGraphNodeEntries(graph)) {
+    result[id] = normalizeNodeEntry(id, rawNode);
   }
-
-  if (Array.isArray(graph.tasks)) {
-    graph.tasks.forEach((task, i) => {
-      if (task && typeof task === 'object') {
-        const id = task.id || `task_${i + 1}`;
-        result[id] = normalizeNodeEntry(id, task);
-      }
-    });
-    return result;
-  }
-
   return result;
 }
 
@@ -237,10 +243,11 @@ function findCyclePath(
  * depth limits, and format transition compatibility.
  */
 export function validateJobGraph(
-  graph: JobGraph,
+  submitted: SubmittedJobGraph,
   options: GraphValidationOptions = {}
 ): GraphValidationResult {
   const errors: GraphValidationErrorDetail[] = [];
+  const graph = submitted as JobGraph;
 
   if (!graph || typeof graph !== 'object') {
     return {
@@ -257,6 +264,20 @@ export function validateJobGraph(
 
   const nodes = normalizeGraphNodes(graph);
   const nodeEntries = Object.entries(nodes);
+
+  for (const [nodeId, raw] of rawGraphNodeEntries(graph)) {
+    if (raw.op !== undefined && raw.operation !== undefined) {
+      const fromOp = canonicalGraphOperation(raw.op) ?? raw.op;
+      const fromOperation = canonicalGraphOperation(raw.operation) ?? raw.operation;
+      if (fromOp !== fromOperation) {
+        errors.push({
+          path: `nodes.${nodeId}`,
+          message: `Node "${nodeId}" names two operations: op "${raw.op}" and operation "${raw.operation}".`,
+          code: 'CONFLICTING_OPERATION',
+        });
+      }
+    }
+  }
   const totalNodes = nodeEntries.length;
 
   // 1. Empty graph check
@@ -302,8 +323,14 @@ export function validateJobGraph(
     adjacency.set(nodeId, []);
     incoming.set(nodeId, []);
 
-    const op = node.operation || node.op || '';
-    if (!SUPPORTED_GRAPH_OPERATIONS.has(op)) {
+    const op = node.op ?? '';
+    if (!op) {
+      errors.push({
+        path: `nodes.${nodeId}.op`,
+        message: `Node "${nodeId}" does not name an operation.`,
+        code: 'MISSING_OPERATION',
+      });
+    } else if (!SUPPORTED_GRAPH_OPERATIONS.has(op)) {
       errors.push({
         path: `nodes.${nodeId}`,
         message: `Unsupported task operation "${op}" in node "${nodeId}".`,
@@ -311,7 +338,7 @@ export function validateJobGraph(
       });
     }
 
-    if (op === 'import.upload' || op === 'import.url' || op === 'import') {
+    if (IMPORT_OPERATIONS.has(op as GraphOperation)) {
       importCount++;
       const deps = getTaskDependencies(node);
       if (deps.length > 0) {
@@ -321,7 +348,7 @@ export function validateJobGraph(
           code: 'IMPORT_NODE_HAS_INPUT',
         });
       }
-    } else if (op === 'export.url' || op === 'export.internal' || op.startsWith('export')) {
+    } else if (EXPORT_OPERATIONS.has(op as GraphOperation)) {
       exportCount++;
     }
   }
@@ -348,8 +375,8 @@ export function validateJobGraph(
 
   for (const [nodeId, node] of nodeEntries) {
     const deps = getTaskDependencies(node);
-    const op = node.operation || node.op || '';
-    const isImport = op === 'import.upload' || op === 'import.url' || op === 'import';
+    const op = node.op ?? '';
+    const isImport = IMPORT_OPERATIONS.has(op as GraphOperation);
 
     if (!isImport && deps.length === 0) {
       errors.push({
@@ -388,8 +415,7 @@ export function validateJobGraph(
       }
 
       const depNode = nodes[depId];
-      const depOp = depNode.operation || depNode.op || '';
-      if (depOp === 'export.url' || depOp === 'export.internal') {
+      if (EXPORT_OPERATIONS.has(depNode.op as GraphOperation)) {
         errors.push({
           path: `nodes.${nodeId}.input`,
           message: `Node "${nodeId}" cannot use terminal export node "${depId}" as an input.`,
@@ -495,117 +521,167 @@ export function validateJobGraph(
     });
   }
 
-  // 8. Output format inference & Format transition compatibility check
+  // 8. Output format inference & Format transition compatibility check. No format is assumed:
+  // operations that need one must name it, and a source whose format cannot be determined at
+  // submission is either rejected (uploads) or left to the runtime check (URL and extract output).
   const inferredFormats: Record<string, string> = {};
+  const firstInputFormat = (node: TaskNode): string => {
+    const inputId = getTaskDependencies(node)[0];
+    return (inputId && inferredFormats[inputId]) || UNKNOWN_FORMAT;
+  };
 
   for (const nodeId of topologicalOrder) {
     const node = nodes[nodeId];
-    const op = node.operation || node.op || '';
+    const op = node.op as GraphOperation;
+    const target = requestedTargetFormat(node);
+
+    if (TARGET_FORMAT_REQUIRED_OPERATIONS.has(op) && !target) {
+      errors.push({
+        path: `nodes.${nodeId}.targetFormat`,
+        message: `Operation "${op}" in node "${nodeId}" requires a targetFormat.`,
+        code: 'MISSING_TARGET_FORMAT',
+      });
+    }
+    const allowedTargets = RESTRICTED_OUTPUT_FORMATS[op];
+    if (target && allowedTargets && !allowedTargets.has(target)) {
+      errors.push({
+        path: `nodes.${nodeId}.targetFormat`,
+        message: `Operation "${op}" in node "${nodeId}" cannot produce "${target}"; supported: ${[...allowedTargets].join(', ')}.`,
+        code: 'UNSUPPORTED_OUTPUT_FORMAT',
+      });
+    }
+    if (op === 'merge' && target && MERGE_FORMATS.has(target)) {
+      for (const inputId of getTaskDependencies(node)) {
+        const inputFormat = inferredFormats[inputId];
+        if (inputFormat === UNKNOWN_FORMAT) {
+          errors.push({
+            path: `nodes.${nodeId}.input`,
+            message: `Cannot determine the format of input "${inputId}" for merge node "${nodeId}"; provide a filename extension or sourceFormat.`,
+            code: 'SOURCE_FORMAT_UNKNOWN',
+          });
+        } else if (inputFormat && inputFormat !== DYNAMIC_FORMAT && inputFormat !== target) {
+          errors.push({
+            path: `nodes.${nodeId}.input`,
+            message: `Merge node "${nodeId}" produces "${target}" but input "${inputId}" is "${inputFormat}".`,
+            code: 'INCOMPATIBLE_MERGE_INPUT',
+          });
+        }
+      }
+    }
 
     switch (op) {
-      case 'import.upload':
-      case 'import': {
-        const ext =
+      case 'import.upload': {
+        inferredFormats[nodeId] =
           extractExtension(options.sourceFilename) ||
           extractExtension(node.storageKey) ||
-          options.sourceFormat?.toLowerCase();
-        inferredFormats[nodeId] = ext || 'binary';
+          options.sourceFormat?.toLowerCase() ||
+          UNKNOWN_FORMAT;
         break;
       }
       case 'import.url': {
-        const ext = extractExtension(node.url);
-        inferredFormats[nodeId] = ext || 'binary';
+        inferredFormats[nodeId] = extractExtension(node.url) || DYNAMIC_FORMAT;
+        break;
+      }
+      case 'archive.extract': {
+        inferredFormats[nodeId] = DYNAMIC_FORMAT;
         break;
       }
       case 'convert': {
-        const cleanTarget = (node.targetFormat || 'pdf').toLowerCase().trim().replace(/^\./, '');
-        inferredFormats[nodeId] = cleanTarget;
-
-        const targetDef = FORMAT_REGISTRY[cleanTarget] || getFormatByExtension(cleanTarget);
-        if (!targetDef) {
-          errors.push({
-            path: `nodes.${nodeId}`,
-            message: `Unknown or unsupported target format "${cleanTarget}" in convert node "${nodeId}".`,
-            code: 'UNKNOWN_TARGET_FORMAT',
-          });
+        inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
+        if (target) {
+          checkConversion(nodeId, getTaskDependencies(node)[0], firstInputFormat(node), target, errors);
         }
-
-        const deps = getTaskDependencies(node);
-        const inputId = deps[0];
-        const sourceFmt = inputId ? inferredFormats[inputId] : undefined;
-
-        if (sourceFmt && sourceFmt !== 'binary' && sourceFmt !== 'dynamic') {
-          const sourceDef = FORMAT_REGISTRY[sourceFmt] || getFormatByExtension(sourceFmt);
-          if (sourceDef) {
-            const isSupported =
-              sourceDef.targetFormats.includes(cleanTarget) ||
-              sourceDef.targetFormats.includes(cleanTarget.toUpperCase()) ||
-              sourceDef.id === cleanTarget;
-
-            if (!isSupported) {
-              errors.push({
-                path: `nodes.${nodeId}`,
-                message: `Incompatible conversion from "${sourceFmt}" to "${cleanTarget}" between node "${inputId}" and node "${nodeId}".`,
-                code: 'INCOMPATIBLE_FORMAT_CONVERSION',
-              });
-            }
-          }
-        }
-        break;
-      }
-      case 'thumbnail': {
-        const thumbFormat = (node.targetFormat || node.options?.thumbnail?.format || 'jpg').toLowerCase().replace(/^\./, '');
-        inferredFormats[nodeId] = thumbFormat;
         break;
       }
       case 'ocr': {
-        const ocrFormat = node.options?.ocrFormat || 'pdf';
-        inferredFormats[nodeId] = ocrFormat;
-        break;
-      }
-      case 'optimize': {
-        const deps = getTaskDependencies(node);
-        const inputId = deps[0];
-        inferredFormats[nodeId] = (inputId && inferredFormats[inputId]) || 'binary';
-        break;
-      }
-      case 'archive.create':
-      case 'archive/create':
-      case 'archive': {
-        inferredFormats[nodeId] = (node.targetFormat || 'zip').toLowerCase().trim();
-        break;
-      }
-      case 'archive.extract':
-      case 'archive/extract': {
-        inferredFormats[nodeId] = 'dynamic';
-        break;
-      }
-      case 'merge': {
-        inferredFormats[nodeId] = (node.targetFormat || 'pdf').toLowerCase().trim();
+        const fixed = FIXED_OUTPUT_FORMATS.ocr as string;
+        const requested = node.options?.ocrFormat;
+        if (requested !== undefined && requested !== fixed) {
+          errors.push({
+            path: `nodes.${nodeId}.options.ocrFormat`,
+            message: `OCR node "${nodeId}" produces "${fixed}"; ocrFormat "${requested}" is not supported.`,
+            code: 'UNSUPPORTED_OUTPUT_FORMAT',
+          });
+        }
+        inferredFormats[nodeId] = fixed;
         break;
       }
       case 'metadata': {
-        inferredFormats[nodeId] = 'json';
+        inferredFormats[nodeId] = FIXED_OUTPUT_FORMATS.metadata as string;
         break;
       }
-      case 'export.url':
-      case 'export.internal':
+      case 'thumbnail':
+      case 'merge':
+      case 'archive.create': {
+        inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
+        break;
+      }
       default: {
-        const deps = getTaskDependencies(node);
-        const firstInput = deps[0];
-        inferredFormats[nodeId] = (firstInput && inferredFormats[firstInput]) || 'binary';
+        // Pass-through operations (optimize, watermark, protect, export) keep their input format.
+        inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }
     }
   }
 
+  const valid = errors.length === 0;
   return {
-    valid: errors.length === 0,
+    valid,
     errors,
-    topologicalOrder: errors.length === 0 ? topologicalOrder : undefined,
+    topologicalOrder: valid ? topologicalOrder : undefined,
     depth: computedMaxDepth,
     inferredOutputFormats: inferredFormats,
+    normalizedNodes: valid ? nodes : undefined,
   };
+}
+
+/** Records why a convert node cannot run on its input format, if it cannot. */
+function checkConversion(
+  nodeId: string,
+  inputId: string | undefined,
+  sourceFmt: string,
+  target: string,
+  errors: GraphValidationErrorDetail[]
+): void {
+  const targetDef = FORMAT_REGISTRY[target] || getFormatByExtension(target);
+  if (!targetDef) {
+    errors.push({
+      path: `nodes.${nodeId}`,
+      message: `Unknown or unsupported target format "${target}" in convert node "${nodeId}".`,
+      code: 'UNKNOWN_TARGET_FORMAT',
+    });
+  }
+  if (sourceFmt === DYNAMIC_FORMAT) {
+    return;
+  }
+  if (sourceFmt === UNKNOWN_FORMAT) {
+    errors.push({
+      path: `nodes.${nodeId}`,
+      message: `Cannot determine the source format of node "${inputId}" for convert node "${nodeId}"; provide a filename extension or sourceFormat.`,
+      code: 'SOURCE_FORMAT_UNKNOWN',
+    });
+    return;
+  }
+  const sourceDef = FORMAT_REGISTRY[sourceFmt] || getFormatByExtension(sourceFmt);
+  if (!sourceDef) {
+    errors.push({
+      path: `nodes.${nodeId}`,
+      message: `Unknown source format "${sourceFmt}" from node "${inputId}" for convert node "${nodeId}".`,
+      code: 'UNKNOWN_SOURCE_FORMAT',
+    });
+    return;
+  }
+  const isSupported =
+    sourceDef.targetFormats.includes(target) ||
+    sourceDef.targetFormats.includes(target.toUpperCase()) ||
+    sourceDef.id === target;
+  if (!isSupported) {
+    errors.push({
+      path: `nodes.${nodeId}`,
+      message: `Incompatible conversion from "${sourceFmt}" to "${target}" between node "${inputId}" and node "${nodeId}".`,
+      code: 'INCOMPATIBLE_FORMAT_CONVERSION',
+    });
+  }
 }
 
 // Backwards-compatible alias for existing callers
@@ -615,7 +691,7 @@ export const validateGraph = validateJobGraph;
  * Asserts that a JobGraph is strictly valid, throwing JobGraphValidationError on failure.
  */
 export function assertValidJobGraph(
-  graph: JobGraph,
+  graph: SubmittedJobGraph,
   options: GraphValidationOptions = {}
 ): asserts graph is JobGraph {
   const result = validateJobGraph(graph, options);
@@ -655,6 +731,7 @@ const LEGACY_TARGET_REQUIRED: ReadonlySet<string> = new Set([
   'archive.create',
   'thumbnail',
   'media.thumbnail',
+  'merge',
 ]);
 
 /** Operations `linearTasksToJobGraph` translates. */
@@ -797,7 +874,7 @@ export function linearTasksToJobGraph(
           op: 'merge',
           input: [currentInput],
           dependencies: [currentInput],
-          targetFormat: task.targetFormat || 'pdf',
+          targetFormat: task.targetFormat as string,
           options: task.options,
         };
         lastWasExport = false;
