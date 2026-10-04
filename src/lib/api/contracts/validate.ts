@@ -54,10 +54,14 @@ export function validateOrProblem<T = unknown>(
   data: unknown,
   instanceUri: string = '/api/v1/jobs'
 ): ValidateResult<T> {
-  const validator =
-    typeof schema === 'string'
-      ? ajv.getSchema(schema)
-      : (schema?.$id ? ajv.getSchema(schema.$id) ?? ajv.compile(schema) : ajv.compile(schema));
+  let validator;
+  if (typeof schema === 'string') {
+    validator = ajv.getSchema(schema);
+  } else if (schema?.$id) {
+    validator = ajv.getSchema(schema.$id) ?? ajv.compile(schema);
+  } else {
+    validator = ajv.compile(schema);
+  }
 
   if (!validator) {
     const detail = 'Internal validation schema configuration error.';
