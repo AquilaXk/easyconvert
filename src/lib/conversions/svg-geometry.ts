@@ -566,7 +566,8 @@ export function parseSvgTransform(value: string): AffineMatrix {
   let matrix: AffineMatrix = IDENTITY_MATRIX;
   while (rest.length > 0) {
     const fn = TRANSFORM_FUNCTION_PATTERN.exec(rest);
-    const rawArgs = fn ? fn[2].trim().split(/\s*,\s*|\s+/).filter((a) => a.length > 0) : [];
+    // Every argument must be present: "translate(,5)" or a trailing comma is malformed.
+    const rawArgs = fn ? fn[2].trim().split(/\s*,\s*|\s+/) : [];
     const valid = fn !== null && rawArgs.every((a) => TRANSFORM_NUMBER_PATTERN.test(a));
     const fnMatrix = valid ? transformFunctionMatrix(fn[1], rawArgs.map(Number)) : null;
     if (!fn || !fnMatrix) {

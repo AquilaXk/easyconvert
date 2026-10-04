@@ -113,6 +113,12 @@ describe('SVG document model for metafile encoders', () => {
       expect(polygons.map((p) => corners(p))).toContainEqual([[30, 40], [50, 40], [50, 60], [30, 60]]);
     });
 
+    it('rejects empty or doubled transform arguments', () => {
+      for (const t of ['translate(,5)', 'translate(5,)', 'scale(2,,3)', 'rotate( , 10, 10)', 'matrix(1 0 0 1 0 0,)']) {
+        expect(() => encodeEmf(svgDoc(`<rect width="10" height="10" transform="${t}"/>`)), t).toThrow(CadGeometryUnavailableError);
+      }
+    });
+
     it('rejects a malformed transform instead of dropping it', () => {
       const bad = svgDoc('<rect x="0" y="0" width="10" height="10" transform="translate(10"/>');
       expect(() => encodeEmf(bad)).toThrow(CadGeometryUnavailableError);
