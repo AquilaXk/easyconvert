@@ -11,6 +11,7 @@ import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, F
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
 import { validateGraph, linearTasksToGraph, graphScheduler } from '@/lib/queue/graph';
+import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import {
@@ -250,6 +251,37 @@ export async function POST(req: NextRequest) {
               'Payload Too Large'
             )
           );
+        }
+      }
+    }
+
+    // Normalize page / pages option and validate tier page limits
+    if (options) {
+      if (!options.pages && options.page) {
+        options.pages = String(options.page);
+      }
+      if (options.pages) {
+        try {
+          validateTierPageLimit(options.pages, auth.user.tier);
+        } catch (err: any) {
+          return await failWithRollback(422, err.message, 'Unprocessable Entity');
+        }
+      }
+    }
+
+    if (tasks && Array.isArray(tasks)) {
+      for (const t of tasks) {
+        if (t.options) {
+          if (!t.options.pages && t.options.page) {
+            t.options.pages = String(t.options.page);
+          }
+          if (t.options.pages) {
+            try {
+              validateTierPageLimit(t.options.pages, auth.user.tier);
+            } catch (err: any) {
+              return await failWithRollback(422, err.message, 'Unprocessable Entity');
+            }
+          }
         }
       }
     }

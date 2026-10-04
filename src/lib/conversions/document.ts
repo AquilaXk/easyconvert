@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
   convertOffice,
@@ -63,7 +63,7 @@ export async function convertDocument(
   sourceFormat: string,
   targetFormat: string,
   options: ConversionOptions = {},
-  originalFilename: string
+  originalFilename = 'file'
 ): Promise<ConversionResult> {
   const baseName = originalFilename.replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
@@ -97,6 +97,10 @@ export async function convertDocument(
           const cleanMsg = rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg;
           throw new Error(`PDF OCR failed: ${cleanMsg}`);
         }
+      }
+
+      if (rasterImages.length === 0 && options.ocrEnabled) {
+        throw new ConversionFailedError('PDF OCR failed: PDF contains no renderable raster pages or images. Page rasterization requires the native worker.');
       }
 
       if (rasterImages.length > 0) {
@@ -338,20 +342,11 @@ export async function convertDocument(
       };
     }
 
-    if (tgt === 'png') {
-      const rasterImages = await extractRasterImagesFromPdf(inputBuffer, 300);
-      if (rasterImages.length === 0) {
-        throw new ConversionFailedError('PDF contains no renderable raster pages or images.');
-      }
-      const pngBuffer = rasterImages[0].buffer;
-      return {
-        buffer: pngBuffer,
-        mimeType: 'image/png',
-        filename: `${baseName}.png`,
-        size: pngBuffer.length,
-        ocrExtractedText: ocrInfo.text,
-        ocrConfidence: ocrInfo.confidence,
-      };
+    if (tgt === 'png' || tgt === 'jpg' || tgt === 'jpeg' || tgt === 'tiff' || tgt === 'tif' || tgt === 'ppm') {
+      throw new EngineUnavailableError(
+        'pdftoppm',
+        'PDF page rasterization requires the native worker with Poppler pdftoppm.'
+      );
     }
 
     if (tgt === 'svg') {

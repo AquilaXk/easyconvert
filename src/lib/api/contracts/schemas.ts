@@ -102,11 +102,20 @@ export const ConversionOptionsSchema = {
     },
 
     // Document & PDF options
+    page: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Single target page index for rasterization (1-indexed).',
+    },
     pages: {
       type: 'string',
       pattern: '^[0-9,\\-\\s]+$',
-      description: 'Page range string for multi-page documents (planned).',
-      'x-easyconvert-status': 'planned',
+      description: 'Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4").',
+    },
+    multiPageOutput: {
+      type: 'string',
+      enum: ['zip', 'first'],
+      description: 'Packaging strategy for multi-page raster output: "zip" archive (default) or "first" page only.',
     },
     pageCount: {
       type: 'integer',

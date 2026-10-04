@@ -3,6 +3,7 @@ import { executeWorkerConversion } from '@/worker/engines';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import { ConversionOptions, ConversionFailedError } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
@@ -115,6 +116,19 @@ export async function POST(req: NextRequest) {
           { success: false, error: 'Invalid JSON format for "options" parameter.' },
           { status: 400 }
         );
+      }
+    }
+
+    if (options) {
+      if (!options.pages && options.page) {
+        options.pages = String(options.page);
+      }
+      if (options.pages) {
+        try {
+          validateTierPageLimit(options.pages, auth.user?.tier || 'free');
+        } catch (err: any) {
+          return await failWithRollback(422, err.message);
+        }
       }
     }
 
