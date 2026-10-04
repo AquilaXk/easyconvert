@@ -510,6 +510,25 @@ export class S3ObjectStorageService implements IStorageBackend {
     return this.objects.delete(key);
   }
 
+  deleteByPrefix(prefix: string): number {
+    let count = 0;
+    for (const key of Array.from(this.objects.keys())) {
+      if (key.startsWith(prefix)) {
+        if (this.deleteObject(key)) {
+          count++;
+        }
+      }
+    }
+    for (const key of Array.from(globalSharedObjects.keys())) {
+      if (key.startsWith(prefix)) {
+        if (this.deleteObject(key)) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
   getObjectStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
     const obj = this.getObject(key);
     if (!obj) return null;

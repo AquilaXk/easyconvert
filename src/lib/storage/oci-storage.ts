@@ -78,6 +78,7 @@ export interface IStorageBackend {
   openReadStream(key: string, range?: { start: number; end: number }): NodeJS.ReadableStream | null;
   getObjectStream?(key: string, range?: { start: number; end: number }): fs.ReadStream | null;
   deleteObject(key: string): boolean;
+  deleteByPrefix?(prefix: string): number;
   getActiveSessionsCount(): number;
   getObjectsCount(): number;
   sweepExpiredObjects?(now?: number): number;
@@ -524,6 +525,25 @@ export class OciObjectStorageService implements IStorageBackend {
     return true;
   }
 
+  deleteByPrefix(prefix: string): number {
+    let count = 0;
+    for (const key of Array.from(this.objects.keys())) {
+      if (key.startsWith(prefix)) {
+        if (this.deleteObject(key)) {
+          count++;
+        }
+      }
+    }
+    for (const key of Array.from(globalSharedObjects.keys())) {
+      if (key.startsWith(prefix)) {
+        if (this.deleteObject(key)) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
   /**
    * Sweeps expired objects from memory and shreds their buffers in bulk
    */
@@ -878,6 +898,12 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
 
   deleteObject(key: string): boolean {
     return this.backend.deleteObject(key);
+  }
+
+  deleteByPrefix(prefix: string): number {
+    return typeof this.backend.deleteByPrefix === 'function'
+      ? this.backend.deleteByPrefix(prefix)
+      : 0;
   }
 
   sweepExpiredObjects(now?: number): number {

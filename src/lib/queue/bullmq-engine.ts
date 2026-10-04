@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 
 export interface JobOptions {
+  jobId?: string;
   priority?: number;
   delay?: number;
   attempts?: number;
@@ -246,7 +247,11 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
-    const id = `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
+    const id = opts.jobId || `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
+    const existing = this.jobs.get(id);
+    if (existing) {
+      return existing;
+    }
     const job = new Job<T, R>(id, name, data, opts, this);
     this.jobs.set(id, job);
 
@@ -1186,7 +1191,15 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
     if (this.redisClient && this.redisConnected) {
-      const id = `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
+      const id = opts.jobId || `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
+      if (opts.jobId) {
+        try {
+          const existingRaw = await this.redisClient.hgetall(this.getJobKey(id));
+          if (existingRaw && Object.keys(existingRaw).length > 0) {
+            return this.hashToJob(existingRaw);
+          }
+        } catch {}
+      }
       const job = new Job<T, R>(
         id,
         name,

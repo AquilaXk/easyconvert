@@ -38,7 +38,7 @@ function extractExtension(target: string | undefined): string | undefined {
   return ext || undefined;
 }
 
-function getNodeInputs(node: GraphNode): NodeId[] {
+export function getNodeInputs(node: GraphNode): NodeId[] {
   if ('input' in node && node.input) {
     if (Array.isArray(node.input)) {
       return node.input;
