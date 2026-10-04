@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { S3StorageAdapter, S3_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/s3';
+import { S3StorageAdapter, S3_DEV_ENDPOINT_ALLOWLIST_ENV, parseS3ErrorXml } from '../src/lib/storage/adapters/s3';
 import {
   StorageAdapterError,
   StorageAuthenticationError,
@@ -66,6 +66,26 @@ describe('independent SigV4 verifier', () => {
   it('rejects the example once a signed header changes', () => {
     const tampered = { ...published, headers: { ...published.headers, range: 'bytes=0-10' } };
     expect(verifySigV4Request(tampered)).toMatchObject({ ok: false, reason: 'signature mismatch' });
+  });
+});
+
+/** An external-entity (XXE) payload: a parser that honoured the DTD would read a local file. */
+const DTD_ERROR_DOCUMENT =
+  '<?xml version="1.0"?><!DOCTYPE Error [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>' +
+  '<Error><Code>NoSuchKey</Code><Message>&xxe;</Message><RequestId>R1</RequestId></Error>';
+
+describe('S3 XML handling refuses DTDs', () => {
+  it('extracts nothing from an error document that declares a DTD or entities', () => {
+    expect(parseS3ErrorXml(DTD_ERROR_DOCUMENT)).toEqual({});
+    expect(parseS3ErrorXml('<!ENTITY a "b"><Error><Code>AccessDenied</Code></Error>')).toEqual({});
+  });
+
+  it('still reads a plain error document and leaves unknown entities literal', () => {
+    expect(parseS3ErrorXml('<Error><Code>SlowDown</Code><Message>a &amp; &foo;</Message></Error>')).toEqual({
+      code: 'SlowDown',
+      message: 'a & &foo;',
+      requestId: undefined,
+    });
   });
 });
 
@@ -229,6 +249,32 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     expect((err as Error).message).toContain('SignatureDoesNotMatch');
     expect((err as Error).message).not.toContain('wrong-secret');
     expect(stub.requests.at(-1)?.auth).toMatchObject({ ok: false, reason: 'signature mismatch' });
+  });
+
+  it('rejects a CreateMultipartUpload response that carries a DTD and uploads no parts', async () => {
+    stub.faults.push({
+      match: (r) => r.method === 'POST' && r.query.has('uploads'),
+      status: 200,
+      errorIn200: true,
+      body:
+        '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY id "stub-upload-999">]>' +
+        '<InitiateMultipartUploadResult><UploadId>&id;</UploadId></InitiateMultipartUploadResult>',
+      times: 1,
+    });
+    const err = await adapter({}, { partSizeBytes: MIN_PART })
+      .uploadStream('dtd/obj.bin', sliced(crypto.randomBytes(MIN_PART + 1)))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageServiceError);
+    expect(err).toMatchObject({ code: 'MalformedXML', retryable: false });
+    expect(stub.requests.filter((r) => r.query.has('partNumber'))).toHaveLength(0);
+  });
+
+  it('does not trust the error code of a DTD-bearing error body', async () => {
+    stub.faults.push({ match: (r) => r.method === 'GET', status: 400, body: DTD_ERROR_DOCUMENT, times: 1 });
+    const err = (await adapter().downloadStream('x.txt').catch((e: unknown) => e)) as StorageServiceError;
+    expect(err).toBeInstanceOf(StorageServiceError);
+    expect(err.code).toBeUndefined();
+    expect(err.message).not.toContain('etc/passwd');
   });
 
   it('times out a request that gets no response', async () => {

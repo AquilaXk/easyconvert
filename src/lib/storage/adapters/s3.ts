@@ -95,6 +95,9 @@ const XML_ESCAPES: ReadonlyMap<string, string> = new Map([
   ["'", '&apos;'],
 ]);
 const ERROR_ELEMENT_PATTERN = /<Error\b/;
+/** S3 never sends a DTD; a document declaring one (or an entity) is refused instead of interpreted. */
+const DTD_DECLARATION_PATTERN = /<!(?:DOCTYPE|ENTITY)/i;
+const MALFORMED_XML_CODE = 'MalformedXML';
 
 export interface S3AdapterOptions {
   /** Multipart part size; at least 5 MiB. Grows automatically to stay within 10,000 parts. */
@@ -123,8 +126,19 @@ function readXmlElement(xml: string, name: string): string | undefined {
   return match ? decodeXmlText(match[1]) : undefined;
 }
 
-/** Extracts Code, Message, and RequestId from an S3 `<Error>` document. */
+function declaresDtd(xml: string): boolean {
+  return DTD_DECLARATION_PATTERN.test(xml);
+}
+
+/**
+ * Extracts Code, Message, and RequestId from an S3 `<Error>` document. Elements are read as
+ * plain text: only the five predefined entities are decoded, and a document that declares a DTD
+ * or entity yields nothing, so the HTTP status alone decides the error.
+ */
 export function parseS3ErrorXml(xml: string): S3ErrorDocument {
+  if (declaresDtd(xml)) {
+    return {};
+  }
   return {
     code: readXmlElement(xml, 'Code'),
     message: readXmlElement(xml, 'Message'),
@@ -145,9 +159,10 @@ function readDevAllowlist(): ReadonlySet<string> {
   );
 }
 
-function isDevAllowlisted(origin: URL): boolean {
-  const allowlist = readDevAllowlist();
-  return allowlist.has(origin.host.toLowerCase()) || allowlist.has(origin.hostname.toLowerCase());
+/** The allowlist entry (from server configuration) that exactly equals the origin's host[:port], if any. */
+function findDevAllowlistEntry(origin: URL): string | undefined {
+  const host = origin.host.toLowerCase();
+  return [...readDevAllowlist()].find((entry) => entry === host);
 }
 
 let devAgent: Dispatcher | null = null;
@@ -253,6 +268,8 @@ export class S3StorageAdapter implements IStorageAdapter {
   private readonly endpoint?: string;
   private readonly forcePathStyle?: boolean;
   private readonly devAllowlisted: boolean;
+  /** Origin built from the server-side allowlist entry, never from customer input. */
+  private readonly devOrigin?: string;
   private readonly origin: URL;
   private readonly partSizeBytes: number;
   private readonly maxAttempts: number;
@@ -284,7 +301,11 @@ export class S3StorageAdapter implements IStorageAdapter {
     this.requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
 
     this.origin = new URL(this.address('').origin);
-    this.devAllowlisted = isDevAllowlisted(this.origin);
+    const devEntry = findDevAllowlistEntry(this.origin);
+    this.devAllowlisted = devEntry !== undefined;
+    if (devEntry !== undefined) {
+      this.devOrigin = `${this.origin.protocol === 'https:' ? 'https:' : 'http:'}//${devEntry}`;
+    }
     this.assertEndpointPolicy(this.origin);
   }
 
@@ -344,8 +365,11 @@ export class S3StorageAdapter implements IStorageAdapter {
   }
 
   private async fetchOnce(url: string, init: UndiciRequestInit): Promise<Response> {
-    if (this.devAllowlisted) {
-      return (await undiciFetch(url, { ...init, redirect: 'manual', dispatcher: devDispatcher() })) as unknown as Response;
+    if (this.devOrigin !== undefined) {
+      // The host comes from the server-side allowlist; only the signed path and query come from the request.
+      const target = new URL(url);
+      const devUrl = `${this.devOrigin}${target.pathname}${target.search}`;
+      return (await undiciFetch(devUrl, { ...init, redirect: 'manual', dispatcher: devDispatcher() })) as unknown as Response;
     }
     return safeFetch(url, init, { maxRedirects: 0 });
   }
@@ -449,6 +473,13 @@ export class S3StorageAdapter implements IStorageAdapter {
         }
         if (res.ok) {
           const text = await readLimitedText(res);
+          if (declaresDtd(text)) {
+            throw new StorageServiceError('S3 response declares a DTD and was refused', PROVIDER, {
+              statusCode: res.status,
+              code: MALFORMED_XML_CODE,
+              retryable: false,
+            });
+          }
           if (!ERROR_ELEMENT_PATTERN.test(text)) {
             return { res, text };
           }

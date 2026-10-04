@@ -30,6 +30,8 @@ export interface StubFault {
   times: number;
   /** Delay before answering, in ms. */
   delayMs?: number;
+  /** Raw response body to send instead of the generated error document. */
+  body?: string;
 }
 
 export interface StoredStubObject {
@@ -107,7 +109,7 @@ export async function startS3StubServer(options: {
       }
       fault.times -= 1;
       const fail = () => {
-        const xml = errorXml(fault.code ?? 'InternalError', 'Injected failure');
+        const xml = fault.body ?? errorXml(fault.code ?? 'InternalError', 'Injected failure');
         if (fault.errorIn200) {
           send(res, 200, xml);
         } else if (record.method === 'HEAD') {
