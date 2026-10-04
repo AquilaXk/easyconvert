@@ -515,7 +515,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/pdf',
     category: 'document',
     description: 'Portable Document Format - Industry standard fixed-layout document.',
-    targetFormats: ['docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'tiff', 'xls', 'hocr', 'alto'],
+    targetFormats: ['docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'tiff', 'xls', 'hocr', 'alto'],
     optionsSchema: { orientation: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   docx: {
@@ -525,7 +525,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     category: 'document',
     description: 'Microsoft Word OpenXML document format with complete styles and tables.',
-    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'rtf', 'jpg', 'png'],
+    targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip'],
     optionsSchema: { orientation: true },
   },
   doc: {
@@ -535,7 +535,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/msword',
     category: 'document',
     description: 'Legacy binary Microsoft Word document format.',
-    targetFormats: ['docx', 'pdf', 'txt', 'html', 'md', 'zip', 'odt', 'rtf', 'jpg', 'png', 'xps'],
+    targetFormats: ['docx', 'pdf', 'txt', 'html', 'md', 'zip', 'odt', 'xps'],
   },
   docm: {
     id: 'docm',
@@ -571,7 +571,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/rtf',
     category: 'document',
     description: 'Cross-platform document format with text formatting and font tables.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'doc', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'png', 'xps', 'hwp', 'hwpx'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'zip', 'odt', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx'],
   },
   odt: {
     id: 'odt',
@@ -580,7 +580,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.text',
     category: 'document',
     description: 'OASIS OpenDocument Text standard used in LibreOffice and OpenOffice.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip', 'doc', 'rtf', 'jpg', 'png'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'md', 'epub', 'zip'],
   },
   ott: {
     id: 'ott',
@@ -1083,7 +1083,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     category: 'spreadsheet',
     description: 'Microsoft Excel OpenXML spreadsheet with complete grid, formulas, and cells.',
-    targetFormats: ['csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'xls', 'xml', 'zip', 'jpg', 'png'],
+    targetFormats: ['csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'xls', 'xml', 'zip'],
   },
   xls: {
     id: 'xls',
@@ -1092,7 +1092,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-excel',
     category: 'spreadsheet',
     description: 'Microsoft Excel 97-2003 legacy binary BIFF8 spreadsheet format.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'zip', 'jpg', 'png'],
+    targetFormats: ['xlsx', 'csv', 'tsv', 'json', 'pdf', 'html', 'ods', 'zip'],
   },
   xlsm: {
     id: 'xlsm',
@@ -1128,7 +1128,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
     category: 'spreadsheet',
     description: 'OASIS OpenDocument Spreadsheet format used in LibreOffice Calc.',
-    targetFormats: ['xlsx', 'csv', 'tsv', 'pdf', 'json', 'html', 'xls', 'zip', 'jpg', 'png'],
+    targetFormats: ['xlsx', 'csv', 'tsv', 'pdf', 'json', 'html', 'xls', 'zip'],
     optionsSchema: { preserveTables: true },
   },
   ots: {
@@ -1277,7 +1277,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     category: 'presentation',
     description: 'Microsoft PowerPoint OpenXML slide presentation standard.',
-    targetFormats: ['pdf', 'html', 'odp', 'ppt', 'txt', 'zip', 'jpg', 'png', 'swf'],
+    targetFormats: ['pdf', 'html', 'odp', 'txt', 'zip', 'swf'],
     optionsSchema: { orientation: true },
   },
   ppt: {
@@ -1287,7 +1287,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Microsoft PowerPoint legacy binary presentation format.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'jpg', 'png', 'odp', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'swf'],
   },
   pptm: {
     id: 'pptm',
@@ -1341,7 +1341,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.presentation',
     category: 'presentation',
     description: 'OASIS OpenDocument Presentation standard used in LibreOffice Impress.',
-    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'jpg', 'png', 'ppt', 'swf'],
+    targetFormats: ['pptx', 'pdf', 'html', 'txt', 'zip', 'swf'],
   },
   otp: {
     id: 'otp',

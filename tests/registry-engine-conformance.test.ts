@@ -7,13 +7,6 @@ import { convertFile } from '../src/lib/conversions';
 import { convertOffice } from '../src/lib/conversions/office';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { UnsupportedTargetError } from '../src/lib/types';
-import {
-  ARCHIVE_EXTRACT_FORMATS,
-  ARCHIVE_TARGET_FORMATS,
-  MEDIA_FORMATS,
-  OFFICE_FORMATS,
-  POPPLER_IMAGE_FORMATS,
-} from '../src/worker/engines';
 
 /**
  * Registry/engine conformance gate.
@@ -23,9 +16,8 @@ import {
  * the engine rejects it with a routing error ("no code path for this pair"). Parse errors,
  * missing native tools, and other input-dependent failures do not count either way.
  *
- * The OCI worker tries native engines (LibreOffice, Poppler, FFmpeg, 7-Zip) before the
- * dispatcher, so a pair that the dispatcher rejects still has an engine path when one of the
- * worker's native routes (executeWorkerConversion in src/worker/engines.ts) accepts it.
+ * The sync convert API, batch API and graph executor call convertFile in-process, so a native
+ * route that exists only in the OCI worker does not make a pair routable.
  *
  * The routing-error classifier below is authored by hand from the engines' fail-closed
  * messages; it is not derived from the registry or the dispatcher, so the expected outcome
@@ -48,16 +40,6 @@ function isRoutingError(err: unknown): boolean {
   if (err instanceof UnsupportedTargetError) return true;
   const message = err instanceof Error ? err.message : String(err);
   return ROUTING_ERROR_PATTERNS.some((pattern) => pattern.test(message));
-}
-
-/** Mirrors the native-engine branches of executeWorkerConversion, built from the worker's own format sets. */
-function hasNativeWorkerRoute(source: string, target: string): boolean {
-  const officeTarget = target === 'pdf' || OFFICE_FORMATS.has(target);
-  const rasterOrSvg = POPPLER_IMAGE_FORMATS.has(target) || target === 'svg';
-  if (OFFICE_FORMATS.has(source) && (officeTarget || rasterOrSvg)) return true;
-  if (MEDIA_FORMATS.has(source) && MEDIA_FORMATS.has(target)) return true;
-  if (source === 'pdf' && (rasterOrSvg || target === 'txt' || target === 'text')) return true;
-  return ARCHIVE_EXTRACT_FORMATS.has(source) && ARCHIVE_TARGET_FORMATS.has(target);
 }
 
 const PROBE_TIMEOUT_MS = 20_000;
@@ -176,22 +158,14 @@ function pairsFor(predicate: (category: string, target: string) => boolean): [st
 
 async function findUnroutedPairs(pairs: [string, string][]): Promise<string[]> {
   const unrouted: string[] = [];
-  const workerOnly: string[] = [];
   let inconclusive = 0;
   for (const [source, target] of pairs) {
     const { outcome, detail } = await probePair(source, target);
-    if (outcome === 'unrouted' && hasNativeWorkerRoute(source, target)) {
-      workerOnly.push(`${source}->${target}`);
-    } else if (outcome === 'unrouted') {
-      unrouted.push(`${source} -> ${target}: ${detail}`);
-    }
+    if (outcome === 'unrouted') unrouted.push(`${source} -> ${target}: ${detail}`);
     if (outcome === 'inconclusive') inconclusive += 1;
   }
   if (inconclusive > 0) {
     console.info(`[registry-conformance] ${inconclusive}/${pairs.length} pairs inconclusive (input rejected before routing)`);
-  }
-  if (workerOnly.length > 0) {
-    console.info(`[registry-conformance] native worker engine only: ${workerOnly.join(', ')}`);
   }
   return unrouted;
 }
@@ -231,8 +205,8 @@ describe('routing-error classifier', () => {
 });
 
 describe('withdrawn pairs stay withdrawn', () => {
-  // Recorded list of pairs whose dispatch ended in an engine routing error, with no native
-  // worker route, when this gate was introduced. Kept separately from the live probe so a
+  // Recorded list of pairs whose dispatch ended in an engine routing error when this gate was
+  // introduced. Kept separately from the live probe so a
   // re-advertised pair fails here even if its probe input stops reaching the routing step.
   const WITHDRAWN: Readonly<Record<string, readonly string[]>> = {
     abw: ['doc', 'jpg', 'png', 'rtf'],
@@ -252,8 +226,9 @@ describe('withdrawn pairs stay withdrawn', () => {
     dif: ['json', 'tsv'],
     djvu: ['docx'],
     dmg: ['iso'],
+    doc: ['jpg', 'png', 'rtf'],
     docm: ['doc', 'docx', 'jpg', 'odt', 'png', 'rtf'],
-    docx: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pages', 'pdb', 'xps'],
+    docx: ['azw3', 'doc', 'hwp', 'hwpx', 'jpg', 'lrf', 'mobi', 'oeb', 'pages', 'pdb', 'png', 'rtf', 'xps'],
     dot: ['doc', 'jpg', 'png', 'rtf'],
     dotx: ['doc', 'jpg', 'png', 'rtf'],
     dps: ['eps', 'jpg', 'md', 'png', 'ppt'],
@@ -276,25 +251,27 @@ describe('withdrawn pairs stay withdrawn', () => {
     mobi: ['docx', 'rtf'],
     msg: ['eml'],
     numbers: ['doc', 'jpg', 'pdf', 'png', 'ppt', 'tsv'],
-    odp: ['eps', 'md'],
-    odt: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
+    odp: ['eps', 'jpg', 'md', 'png', 'ppt'],
+    ods: ['jpg', 'png'],
+    odt: ['azw3', 'doc', 'hwp', 'hwpx', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf', 'xps'],
     oxps: ['docx'],
     pages: ['doc', 'docx', 'epub', 'html', 'jpg', 'pdf', 'png', 'ppt', 'txt'],
     pdb: ['rtf'],
-    pdf: ['avif', 'bmp', 'doc', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ppt', 'ps', 'psd', 'webp', 'wmf'],
+    pdf: ['avif', 'bmp', 'doc', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ppt', 'ps', 'psd', 'svg', 'webp', 'wmf'],
     png: ['svg'],
     pot: ['emf', 'jpg', 'png', 'ppt'],
     potx: ['emf', 'jpg', 'odp', 'png', 'ppt', 'xps'],
     pps: ['eps', 'jpg', 'md', 'png', 'ppt'],
     ppsx: ['eps', 'jpg', 'md', 'png', 'ppt'],
-    ppt: ['emf', 'eps', 'md', 'xps'],
+    ppt: ['emf', 'eps', 'jpg', 'md', 'odp', 'png', 'xps'],
     pptm: ['emf', 'eps', 'html', 'jpg', 'md', 'odp', 'pdf', 'png', 'ppt', 'pptx', 'txt', 'xps'],
-    pptx: ['emf', 'eps', 'key', 'md', 'xps'],
+    pptx: ['emf', 'eps', 'jpg', 'key', 'md', 'png', 'ppt', 'xps'],
     prc: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     prn: ['tsv'],
     ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     qpw: ['tsv'],
     rst: ['rtf'],
+    rtf: ['doc', 'jpg', 'png'],
     sk: ['emf', 'wmf'],
     sk1: ['emf', 'wmf'],
     slk: ['tsv'],
@@ -312,9 +289,9 @@ describe('withdrawn pairs stay withdrawn', () => {
     wmf: ['emf', 'wmf'],
     wpd: ['doc', 'jpg', 'png', 'rtf'],
     wps: ['doc', 'jpg', 'png', 'rtf'],
-    xls: ['xps'],
+    xls: ['jpg', 'png', 'xps'],
     xlsm: ['jpg', 'json', 'png'],
-    xlsx: ['numbers', 'xps'],
+    xlsx: ['jpg', 'numbers', 'png', 'xps'],
     xps: ['avif', 'bmp', 'docx', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
     yaml: ['xml'],
     yml: ['xml'],

@@ -193,9 +193,9 @@ endsolid TestModel`;
       ConversionFailedError
     );
 
-    // PDF -> SVG without vector graphics renderer fails closed
+    // PDF -> SVG has no in-process engine path, so the registry no longer advertises it
     await expect(convertFile(pdfBuf, 'pdf', 'svg', {}, 'sample.pdf')).rejects.toThrow(
-      UnsupportedTargetError
+      /^Cannot convert from PDF Document \(\.pdf\) to target format \.svg\./
     );
 
     // PDF -> DXF has no engine path, so the registry no longer advertises it

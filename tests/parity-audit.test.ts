@@ -76,6 +76,17 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'sk1->emf', 'sk1->wmf',
   'vsd->emf', 'vsd->wmf',
   'wmf->emf', 'wmf->wmf',
+  'doc->jpg', 'doc->png', 'doc->rtf',
+  'docx->doc', 'docx->jpg', 'docx->png', 'docx->rtf',
+  'odp->jpg', 'odp->png', 'odp->ppt',
+  'ods->jpg', 'ods->png',
+  'odt->doc', 'odt->jpg', 'odt->png', 'odt->rtf',
+  'pdf->svg',
+  'ppt->jpg', 'ppt->odp', 'ppt->png',
+  'pptx->jpg', 'pptx->png', 'pptx->ppt',
+  'rtf->doc', 'rtf->jpg', 'rtf->png',
+  'xls->jpg', 'xls->png',
+  'xlsx->jpg', 'xlsx->png',
 ]);
 
 describe('Universal Format Matrix & Parity Verification', () => {
