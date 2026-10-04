@@ -511,10 +511,17 @@ const XML_TOKEN_PATTERN =
 const XML_ATTR_PATTERN = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g;
 const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 
+const MAX_CODE_POINT = 0x10ffff;
+
 function decodeXmlEntities(value: string): string {
   return value.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (whole, ent: string) => {
-    if (ent.startsWith('#x')) return String.fromCodePoint(Number.parseInt(ent.slice(2), 16));
-    if (ent.startsWith('#')) return String.fromCodePoint(Number.parseInt(ent.slice(1), 10));
+    if (ent.startsWith('#')) {
+      const code = ent.startsWith('#x') ? Number.parseInt(ent.slice(2), 16) : Number.parseInt(ent.slice(1), 10);
+      if (Number.isNaN(code) || code < 0 || code > MAX_CODE_POINT) {
+        throw new CadGeometryUnavailableError(`Invalid XML character reference "${whole}".`);
+      }
+      return String.fromCodePoint(code);
+    }
     return XML_ENTITIES[ent] ?? whole;
   });
 }
@@ -586,7 +593,7 @@ const NEUTRAL_ONLY_PROPERTIES: Record<string, (value: string) => boolean> = {
   'paint-order': (v) => v === 'normal' || v === 'fill' || v === 'fill stroke' || v === 'fill stroke markers',
   'vector-effect': (v) => v === 'none',
   'mix-blend-mode': (v) => v === 'normal',
-  'stroke-miterlimit': (v) => Number(v) >= 1,
+  'stroke-miterlimit': (v) => SVG_NUMBER_PATTERN.test(v) && Number(v) >= 1,
   'stroke-linecap': (v) => SVG_LINECAPS.has(v),
   'stroke-linejoin': (v) => SVG_LINEJOINS.has(v),
 };
@@ -596,8 +603,10 @@ const SVG_LINEJOINS = new Set(['miter', 'round', 'bevel']);
 
 function isOpaque(value: string): boolean {
   const v = value.trim();
-  if (v.endsWith('%')) return Number(v.slice(0, -1)) >= 100;
-  return Number(v) >= 1;
+  const isPercent = v.endsWith('%');
+  const body = isPercent ? v.slice(0, -1) : v;
+  if (!SVG_NUMBER_PATTERN.test(body)) return false;
+  return Number(body) >= (isPercent ? 100 : 1);
 }
 
 function assertNeutralPaintProperties(declared: Map<string, string>): void {
@@ -821,6 +830,31 @@ export function requireFinite(value: number, what: string): number {
   return value;
 }
 
+/** SVG/CSS <number> grammar: no hex, no Infinity/NaN, no empty strings. */
+const SVG_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
+const NUMBER_LIST_TOKEN_PATTERN = /[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
+const LIST_SEPARATOR_PATTERN = /^[\s,]+$/;
+
+/** Parses one number in strict SVG grammar, throwing the typed error otherwise. */
+export function parseSvgNumber(text: string, what: string): number {
+  const t = text.trim();
+  if (!SVG_NUMBER_PATTERN.test(t)) {
+    throw new CadGeometryUnavailableError(`SVG ${what} "${text}" is not a valid number.`);
+  }
+  return requireFinite(Number(t), `${what} "${text}"`);
+}
+
+/** Parses a whitespace/comma separated number list (signs may also separate, as in "10-5"). */
+function parseNumberList(value: string, what: string): number[] {
+  const out: number[] = [];
+  for (const m of value.matchAll(NUMBER_LIST_TOKEN_PATTERN)) {
+    const tok = m[0];
+    if (LIST_SEPARATOR_PATTERN.test(tok)) continue;
+    out.push(parseSvgNumber(tok, what));
+  }
+  return out;
+}
+
 function numberAttr(attrs: Map<string, string>, name: string): number {
   const v = attrs.get(name);
   if (v === undefined) return 0;
@@ -838,10 +872,7 @@ function ellipsePoints(cx: number, cy: number, rx: number, ry: number): { x: num
 
 function parsePointList(value: string | undefined): { x: number; y: number }[] {
   if (!value) return [];
-  const coords = value
-    .trim()
-    .split(/[\s,]+/)
-    .map((v) => requireFinite(Number(v), `points value "${v}"`));
+  const coords = parseNumberList(value, 'points value');
   const pts: { x: number; y: number }[] = [];
   for (let k = 0; k + 1 < coords.length; k += 2) {
     pts.push({ x: coords[k], y: coords[k + 1] });
@@ -964,8 +995,8 @@ const DEFAULT_VIEWPORT_HEIGHT = 600;
 
 function parseViewBox(value: string | undefined): [number, number, number, number] | null {
   if (!value) return null;
-  const parts = value.trim().split(/[\s,]+/).map(Number);
-  if (parts.length !== 4 || !parts.every(Number.isFinite) || parts[2] <= 0 || parts[3] <= 0) {
+  const parts = value.trim() === '' ? [] : value.trim().split(/\s*,\s*|\s+/).map((v) => parseSvgNumber(v, 'viewBox value'));
+  if (parts.length !== 4 || parts[2] <= 0 || parts[3] <= 0) {
     throw new CadGeometryUnavailableError(`SVG viewBox "${value}" must be four finite numbers with positive width and height.`);
   }
   return [parts[0], parts[1], parts[2], parts[3]];
@@ -1243,7 +1274,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
     strokeLinecap: ctx.strokeLinecap.trim() as SvgLinecap,
     strokeLinejoin: ctx.strokeLinejoin.trim() as SvgLinejoin,
-    strokeMiterlimit: Number(ctx.strokeMiterlimit.trim()),
+    strokeMiterlimit: parseSvgNumber(ctx.strokeMiterlimit, 'stroke-miterlimit'),
   });
 }
 

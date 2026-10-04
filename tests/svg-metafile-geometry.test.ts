@@ -958,4 +958,31 @@ describe('SVG document model for metafile encoders', () => {
       expect(err).toBeInstanceOf(ConversionFailedError);
     });
   });
+
+  describe('SVG number grammar', () => {
+    const rejected: [string, string, string?][] = [
+      ['hex in points', '<polygon points="0x10,0 20,0 20,20" fill="#000"/>'],
+      ['hex in viewBox', '<rect width="10" height="10"/>', 'viewBox="0 0 0x64 100"'],
+      ['hex in stroke-miterlimit', '<polyline points="0,0 10,10 20,0" fill="none" stroke="#000" stroke-miterlimit="0x10"/>'],
+      ['hex in opacity', '<rect width="10" height="10" opacity="0x1"/>'],
+      ['Infinity in points', '<polygon points="0,0 Infinity,0 20,20" fill="#000"/>'],
+      ['an empty viewBox entry', '<rect width="10" height="10"/>', 'viewBox="0 0  , 100"'],
+      ['a blank stroke-miterlimit', '<polyline points="0,0 10,10 20,0" fill="none" stroke="#000" style="stroke-miterlimit: _"/>'],
+    ];
+    for (const [label, body, root] of rejected) {
+      it(`rejects ${label} with a typed error`, () => {
+        expect(() => encodeEmf(svgDoc(body, root))).toThrow(ConversionFailedError);
+      });
+    }
+
+    it('rejects out-of-range XML character references with a typed error', () => {
+      expect(() => encodeEmf(svgDoc('<rect width="10" height="10" fill="&#x110000;"/>'))).toThrow(ConversionFailedError);
+      expect(() => encodeEmf(svgDoc('<rect width="10" height="10" fill="&#99999999999;"/>'))).toThrow(ConversionFailedError);
+    });
+
+    it('accepts compact SVG number lists (sign and exponent as separators)', () => {
+      const shapes = emfShapes('<polygon points="10-5e0 20,0 2e1 2E1" fill="#000"/>', 'width="100" height="100" viewBox="0,-10 100,100"');
+      expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[10, 5], [20, 10], [20, 30]]);
+    });
+  });
 });
