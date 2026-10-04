@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 import { Agent, fetch as undiciFetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici';
 import type { S3Credentials } from '../credentials-vault';
@@ -98,6 +98,7 @@ const ERROR_ELEMENT_PATTERN = /<Error\b/;
 /** S3 never sends a DTD; a document declaring one (or an entity) is refused instead of interpreted. */
 const DTD_DECLARATION_PATTERN = /<!(?:DOCTYPE|ENTITY)/i;
 const MALFORMED_XML_CODE = 'MalformedXML';
+const NO_SUCH_UPLOAD_CODE = 'NoSuchUpload';
 
 export interface S3AdapterOptions {
   /** Multipart part size; at least 5 MiB. Grows automatically to stay within 10,000 parts. */
@@ -224,7 +225,11 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
 }
 
-async function readLimitedText(res: Response): Promise<string> {
+/**
+ * Reads at most MAX_ERROR_BODY_BYTES of a response body. `onBytes` runs for every chunk so the
+ * caller can extend its deadline (S3 sends whitespace keepalives while completing an upload).
+ */
+async function readLimitedText(res: Response, onBytes?: () => void): Promise<string> {
   if (!res.body) return '';
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -232,6 +237,7 @@ async function readLimitedText(res: Response): Promise<string> {
   while (total < MAX_ERROR_BODY_BYTES) {
     const { done, value } = await reader.read();
     if (done) break;
+    onBytes?.();
     chunks.push(value);
     total += value.length;
   }
@@ -240,6 +246,27 @@ async function readLimitedText(res: Response): Promise<string> {
 }
 
 type RequestBody = Buffer | Readable;
+
+function isRetryable(err: StorageAdapterError): boolean {
+  return err instanceof StorageTimeoutError || (err instanceof StorageServiceError && err.retryable);
+}
+
+/**
+ * A CompleteMultipartUpload failure after which the object may exist anyway: a timeout, a
+ * retryable service or transport error, or a retry that finds the upload already gone.
+ */
+function isAmbiguousCompletion(err: unknown): boolean {
+  return (
+    err instanceof StorageTimeoutError ||
+    (err instanceof StorageServiceError && (err.retryable || err.code === NO_SUCH_UPLOAD_CODE))
+  );
+}
+
+/** Wraps a failure of the caller's source stream; StorageAdapterErrors pass through unchanged. */
+function wrapSourceError(err: unknown): StorageAdapterError {
+  if (err instanceof StorageAdapterError) return err;
+  return new StorageServiceError('Upload source stream failed', PROVIDER, { retryable: false }, err);
+}
 
 interface S3Request {
   method: 'GET' | 'PUT' | 'POST' | 'HEAD' | 'DELETE';
@@ -390,10 +417,23 @@ export class S3StorageAdapter implements IStorageAdapter {
     return safeFetch(url, init, { maxRedirects: 0 });
   }
 
-  private async toServiceError(res: Response, key: string, body?: string): Promise<StorageAdapterError> {
-    const text = body ?? (await readLimitedText(res));
+  private async toServiceError(
+    res: Response,
+    key: string,
+    body?: string,
+    onBytes?: () => void
+  ): Promise<StorageAdapterError> {
+    const text = body ?? (await readLimitedText(res, onBytes));
     const doc = parseS3ErrorXml(text);
     const status = res.status;
+    if (doc.code === NO_SUCH_UPLOAD_CODE) {
+      return new StorageServiceError('Multipart upload no longer exists', PROVIDER, {
+        statusCode: status,
+        code: doc.code,
+        requestId: doc.requestId,
+        retryable: false,
+      });
+    }
     if (status === HTTP_NOT_FOUND || (doc.code && NOT_FOUND_CODES.has(doc.code))) {
       return new StorageNotFoundError(key, PROVIDER);
     }
@@ -435,6 +475,13 @@ export class S3StorageAdapter implements IStorageAdapter {
     return new StorageServiceError(`S3 request failed: ${message}`, PROVIDER, { retryable: true }, err);
   }
 
+  /** Types a failure while a response body is read: the deadline firing, or the connection dropping. */
+  private mapBodyError(err: unknown, timedOut: boolean): StorageAdapterError {
+    if (err instanceof StorageAdapterError) return err;
+    if (timedOut || isAbortError(err)) return new StorageTimeoutError(this.requestTimeoutMs, PROVIDER);
+    return this.mapTransportError(err);
+  }
+
   private async send(request: S3Request): Promise<S3Response> {
     const address = this.address(request.key);
     let lastError: StorageAdapterError | null = null;
@@ -459,7 +506,13 @@ export class S3StorageAdapter implements IStorageAdapter {
       });
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      const abort = () => controller.abort();
+      let timer = setTimeout(abort, this.requestTimeoutMs);
+      // Received bytes extend the deadline, so whitespace keepalives keep a Complete alive.
+      const touch = () => {
+        clearTimeout(timer);
+        timer = setTimeout(abort, this.requestTimeoutMs);
+      };
       let res: Response;
       try {
         res = await this.fetchOnce(signed.url, {
@@ -471,47 +524,60 @@ export class S3StorageAdapter implements IStorageAdapter {
         } as UndiciRequestInit);
       } catch (err) {
         clearTimeout(timer);
-        lastError = isAbortError(err)
-          ? new StorageTimeoutError(this.requestTimeoutMs, PROVIDER)
-          : this.mapTransportError(err);
-        const retryable = lastError instanceof StorageTimeoutError || (lastError instanceof StorageServiceError && lastError.retryable);
-        if (retryable && request.replayable) continue;
+        lastError = this.mapBodyError(err, controller.signal.aborted);
+        if (isRetryable(lastError) && request.replayable) continue;
         throw lastError;
       }
 
       try {
-        if (res.status === HTTP_NOT_FOUND && request.allowNotFound) {
-          await res.body?.cancel();
-          return { res };
+        const outcome = await this.readOutcome(res, request, touch);
+        if ('ok' in outcome) {
+          return outcome.ok;
         }
-        if (res.ok && !request.readBody) {
-          return { res };
-        }
-        if (res.ok) {
-          const text = await readLimitedText(res);
-          if (declaresDtd(text)) {
-            throw new StorageServiceError('S3 response declares a DTD and was refused', PROVIDER, {
-              statusCode: res.status,
-              code: MALFORMED_XML_CODE,
-              retryable: false,
-            });
-          }
-          if (!ERROR_ELEMENT_PATTERN.test(text)) {
-            return { res, text };
-          }
-          lastError = await this.toServiceError(res, request.key, text);
-        } else {
-          lastError = await this.toServiceError(res, request.key);
-        }
+        lastError = outcome.error;
+      } catch (err) {
+        lastError = this.mapBodyError(err, controller.signal.aborted);
       } finally {
         clearTimeout(timer);
       }
 
-      if (!(lastError instanceof StorageServiceError && lastError.retryable && request.replayable)) {
+      if (!(isRetryable(lastError) && request.replayable)) {
         throw lastError;
       }
     }
     throw lastError ?? new StorageServiceError('S3 request failed', PROVIDER, { retryable: false });
+  }
+
+  /** Decides whether a response is the result or an error; DTD-bearing bodies are refused. */
+  private async readOutcome(
+    res: Response,
+    request: S3Request,
+    onBytes: () => void
+  ): Promise<{ ok: S3Response } | { error: StorageAdapterError }> {
+    if (res.status === HTTP_NOT_FOUND && request.allowNotFound) {
+      await res.body?.cancel();
+      return { ok: { res } };
+    }
+    if (res.ok && !request.readBody) {
+      return { ok: { res } };
+    }
+    if (!res.ok) {
+      return { error: await this.toServiceError(res, request.key, undefined, onBytes) };
+    }
+    const text = await readLimitedText(res, onBytes);
+    if (declaresDtd(text)) {
+      return {
+        error: new StorageServiceError('S3 response declares a DTD and was refused', PROVIDER, {
+          statusCode: res.status,
+          code: MALFORMED_XML_CODE,
+          retryable: false,
+        }),
+      };
+    }
+    if (ERROR_ELEMENT_PATTERN.test(text)) {
+      return { error: await this.toServiceError(res, request.key, text) };
+    }
+    return { ok: { res, text } };
   }
 
   async downloadStream(remotePath: string): Promise<NodeJS.ReadableStream> {
@@ -520,7 +586,12 @@ export class S3StorageAdapter implements IStorageAdapter {
     if (!res.body) {
       return Readable.from([]);
     }
-    return Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>);
+    const source = Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>);
+    const output = new PassThrough();
+    source.on('error', (err) => output.destroy(this.mapBodyError(err, false)));
+    output.on('close', () => source.destroy());
+    source.pipe(output);
+    return output;
   }
 
   async head(remotePath: string): Promise<StorageAdapterMetadata | null> {
@@ -626,6 +697,8 @@ export class S3StorageAdapter implements IStorageAdapter {
         return await this.putBuffer(key, first.value, contentType);
       }
       return await this.multipartUpload(key, contentType, [first.value, second.value], chunks);
+    } catch (err) {
+      throw wrapSourceError(err);
     } finally {
       await chunks.return(undefined);
     }
@@ -655,12 +728,57 @@ export class S3StorageAdapter implements IStorageAdapter {
       for await (const body of rest) {
         await upload(body);
       }
+    } catch (err) {
+      await this.abortMultipartUpload(key, uploadId).catch(() => undefined);
+      throw wrapSourceError(err);
+    }
+
+    try {
       const etag = await this.completeMultipartUpload(key, uploadId, parts);
       return { size: total, etag, contentType, lastModified: new Date() };
     } catch (err) {
+      if (isAmbiguousCompletion(err)) {
+        const verifiedEtag = await this.verifyCompletion(key, uploadId, parts.length, total);
+        if (verifiedEtag !== undefined) {
+          return { size: total, etag: verifiedEtag, contentType, lastModified: new Date() };
+        }
+      }
       await this.abortMultipartUpload(key, uploadId).catch(() => undefined);
       throw err;
     }
+  }
+
+  /**
+   * After an ambiguous Complete failure: the upload counts as completed only when ListParts says
+   * the upload is gone and HEAD shows the object with the expected size and a `-<parts>` ETag.
+   * Returns that ETag, or undefined when completion is not proven.
+   */
+  private async verifyCompletion(
+    key: string,
+    uploadId: string,
+    partCount: number,
+    size: number
+  ): Promise<string | undefined> {
+    try {
+      await this.send({
+        method: 'GET',
+        key,
+        query: [['uploadId', uploadId]],
+        payloadHash: EMPTY_PAYLOAD_SHA256,
+        replayable: true,
+        readBody: true,
+      });
+      return undefined;
+    } catch (err) {
+      if (!(err instanceof StorageServiceError && err.code === NO_SUCH_UPLOAD_CODE)) {
+        return undefined;
+      }
+    }
+    const head = await this.head(key).catch(() => null);
+    if (head?.size === size && head.etag?.endsWith(`-${partCount}`)) {
+      return head.etag;
+    }
+    return undefined;
   }
 
   private async createMultipartUpload(key: string, contentType: string): Promise<string> {
@@ -670,7 +788,8 @@ export class S3StorageAdapter implements IStorageAdapter {
       query: [['uploads', '']],
       headers: { 'content-type': contentType },
       payloadHash: EMPTY_PAYLOAD_SHA256,
-      replayable: true,
+      // Not idempotent: a replay could open a second, orphaned upload.
+      replayable: false,
       readBody: true,
     });
     const uploadId = text ? readXmlElement(text, 'UploadId') : undefined;

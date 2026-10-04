@@ -107,6 +107,8 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     stub.uploads.clear();
     stub.requests.length = 0;
     stub.faults.length = 0;
+    stub.complete.keepalive = undefined;
+    stub.complete.failAfterComplete = undefined;
   });
 
   afterEach(() => {
@@ -276,6 +278,88 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     expect(err).toBeInstanceOf(StorageServiceError);
     expect(err.code).toBeUndefined();
     expect(err.message).not.toContain('etc/passwd');
+  });
+
+  const isComplete = (r: { method: string; query: URLSearchParams }) => r.method === 'POST' && r.query.has('uploadId');
+  const isAbort = (r: { method: string; query: URLSearchParams }) => r.method === 'DELETE' && r.query.has('uploadId');
+
+  it('keeps a CompleteMultipartUpload alive while S3 streams whitespace past the request timeout', async () => {
+    stub.complete.keepalive = { count: 6, intervalMs: 40 };
+    const payload = crypto.randomBytes(MIN_PART + 5);
+    const s3 = adapter({}, { partSizeBytes: MIN_PART, requestTimeoutMs: 100 });
+
+    const result = await s3.uploadStream('slow/complete.bin', sliced(payload));
+
+    expect(result.etag).toMatch(/^[0-9a-f]{32}-2$/);
+    expect(sha256(stub.objects.get('slow/complete.bin')!.body)).toBe(sha256(payload));
+    expect(stub.requests.filter(isComplete)).toHaveLength(1);
+    expect(stub.requests.filter(isAbort)).toHaveLength(0);
+  });
+
+  it('verifies with ListParts and HEAD when a retried Complete finds the upload already completed', async () => {
+    stub.complete.failAfterComplete = { status: 500, code: 'InternalError' };
+    const payload = crypto.randomBytes(MIN_PART + 77);
+    const s3 = adapter({}, { partSizeBytes: MIN_PART });
+
+    const result = await s3.uploadStream('ambiguous/ok.bin', sliced(payload));
+
+    expect(result).toMatchObject({ size: payload.length });
+    expect(result.etag).toMatch(/^[0-9a-f]{32}-2$/);
+    expect(stub.requests.filter(isComplete)).toHaveLength(2);
+    expect(stub.requests.some((r) => r.method === 'GET' && r.query.has('uploadId'))).toBe(true);
+    expect(stub.requests.some((r) => r.method === 'HEAD' && r.key === 'ambiguous/ok.bin')).toBe(true);
+    expect(stub.requests.filter(isAbort)).toHaveLength(0);
+    expect(sha256(stub.objects.get('ambiguous/ok.bin')!.body)).toBe(sha256(payload));
+  });
+
+  it('aborts after an ambiguous Complete failure when ListParts shows the upload still open', async () => {
+    stub.faults.push({ match: isComplete, status: 500, code: 'InternalError', times: Infinity });
+    const s3 = adapter({}, { partSizeBytes: MIN_PART, maxAttempts: 2 });
+
+    await expect(s3.uploadStream('ambiguous/fail.bin', sliced(crypto.randomBytes(MIN_PART + 1)))).rejects.toThrow(
+      StorageServiceError
+    );
+    expect(stub.requests.some((r) => r.method === 'GET' && r.query.has('uploadId'))).toBe(true);
+    expect(stub.requests.filter(isAbort)).toHaveLength(1);
+    expect(stub.objects.has('ambiguous/fail.bin')).toBe(false);
+  });
+
+  it('does not replay CreateMultipartUpload', async () => {
+    stub.faults.push({ match: (r) => r.method === 'POST' && r.query.has('uploads'), status: 503, code: 'SlowDown', times: 1 });
+    const err = await adapter({}, { partSizeBytes: MIN_PART })
+      .uploadStream('create/once.bin', sliced(crypto.randomBytes(MIN_PART + 1)))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageServiceError);
+    expect(err).toMatchObject({ statusCode: 503, code: 'SlowDown' });
+    expect(stub.requests.filter((r) => r.method === 'POST' && r.query.has('uploads'))).toHaveLength(1);
+    expect(stub.requests.filter((r) => r.query.has('partNumber'))).toHaveLength(0);
+  });
+
+  it('types a timeout that fires while an error body is still arriving', async () => {
+    stub.faults.push({ match: (r) => r.method === 'GET', status: 500, stallBody: true, times: 1 });
+    await expect(adapter({}, { requestTimeoutMs: 80, maxAttempts: 1 }).downloadStream('stall.txt')).rejects.toThrow(
+      StorageTimeoutError
+    );
+  });
+
+  it('types a source stream failure and aborts the multipart upload', async () => {
+    async function* failingSource() {
+      yield crypto.randomBytes(2 * MIN_PART + 3);
+      throw new Error('source disk read failed');
+    }
+    const err = (await adapter({}, { partSizeBytes: MIN_PART })
+      .uploadStream('src/fail.bin', Readable.from(failingSource()))
+      .catch((e: unknown) => e)) as StorageServiceError;
+    expect(err).toBeInstanceOf(StorageServiceError);
+    expect(err.retryable).toBe(false);
+    expect((err.cause as Error).message).toBe('source disk read failed');
+    expect(stub.requests.filter(isAbort)).toHaveLength(1);
+  });
+
+  it('types a download body that is cut off mid-stream', async () => {
+    stub.faults.push({ match: (r) => r.method === 'GET', status: 200, truncateBody: true, times: 1 });
+    const stream = await adapter().downloadStream('cut.bin');
+    await expect(collect(stream)).rejects.toThrow(StorageServiceError);
   });
 
   it('times out a request that gets no response', async () => {

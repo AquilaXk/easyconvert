@@ -32,6 +32,17 @@ export interface StubFault {
   delayMs?: number;
   /** Raw response body to send instead of the generated error document. */
   body?: string;
+  /** Send the status line and part of the body, then never finish it. */
+  stallBody?: boolean;
+  /** Promise a 1000-byte body, send a few bytes, then reset the connection. */
+  truncateBody?: boolean;
+}
+
+export interface StubCompleteBehavior {
+  /** Send 200 headers, then this many single spaces at this interval before the result XML. */
+  keepalive?: { count: number; intervalMs: number };
+  /** Complete the upload, then answer with this error instead of the result (once). */
+  failAfterComplete?: { status: number; code: string };
 }
 
 export interface StoredStubObject {
@@ -48,6 +59,7 @@ export interface S3StubServer {
   uploads: Map<string, Map<number, Buffer>>;
   requests: StubRequestRecord[];
   faults: StubFault[];
+  complete: StubCompleteBehavior;
   close: () => Promise<void>;
 }
 
@@ -72,6 +84,7 @@ export async function startS3StubServer(options: {
   const uploads = new Map<string, Map<number, Buffer>>();
   const requests: StubRequestRecord[] = [];
   const faults: StubFault[] = [];
+  const complete: StubCompleteBehavior = {};
   let uploadCounter = 0;
 
   const server = http.createServer((req, res) => {
@@ -109,6 +122,16 @@ export async function startS3StubServer(options: {
       }
       fault.times -= 1;
       const fail = () => {
+        if (fault.stallBody) {
+          res.writeHead(fault.status, { 'content-type': 'application/xml' });
+          res.write('<Error><Code>');
+          return;
+        }
+        if (fault.truncateBody) {
+          res.writeHead(fault.status, { 'content-type': 'application/octet-stream', 'content-length': '1000' });
+          res.write(Buffer.alloc(10, 0x41), () => res.socket?.destroy());
+          return;
+        }
         const xml = fault.body ?? errorXml(fault.code ?? 'InternalError', 'Injected failure');
         if (fault.errorIn200) {
           send(res, 200, xml);
@@ -157,6 +180,11 @@ export async function startS3StubServer(options: {
         send(res, 200, '', { etag: md5Etag(body) });
         return;
       }
+      if (method === 'GET') {
+        const listed = [...parts.keys()].sort((a, b) => a - b).map((n) => `<Part><PartNumber>${n}</PartNumber></Part>`);
+        send(res, 200, `<ListPartsResult><UploadId>${uploadId}</UploadId>${listed.join('')}</ListPartsResult>`);
+        return;
+      }
       if (method === 'DELETE') {
         uploads.delete(uploadId);
         send(res, 204);
@@ -177,7 +205,29 @@ export async function startS3StubServer(options: {
         const etag = `"${crypto.createHash('md5').update(assembled).digest('hex')}-${ordered.length}"`;
         objects.set(key, { body: assembled, contentType: 'application/octet-stream', etag });
         uploads.delete(uploadId);
-        send(res, 200, `<CompleteMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${key}</Key><ETag>${etag.replace(/"/g, '&quot;')}</ETag></CompleteMultipartUploadResult>`);
+        if (complete.failAfterComplete) {
+          const { status, code } = complete.failAfterComplete;
+          complete.failAfterComplete = undefined;
+          send(res, status, errorXml(code, 'Injected failure after completion'));
+          return;
+        }
+        const resultXml = `<CompleteMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${key}</Key><ETag>${etag.replace(/"/g, '&quot;')}</ETag></CompleteMultipartUploadResult>`;
+        if (complete.keepalive) {
+          const { count, intervalMs } = complete.keepalive;
+          res.writeHead(200, { 'content-type': 'application/xml' });
+          let sent = 0;
+          const tick = setInterval(() => {
+            if (sent < count) {
+              res.write(' ');
+              sent += 1;
+              return;
+            }
+            clearInterval(tick);
+            res.end(resultXml);
+          }, intervalMs);
+          return;
+        }
+        send(res, 200, resultXml);
         return;
       }
     }
@@ -226,6 +276,7 @@ export async function startS3StubServer(options: {
     uploads,
     requests,
     faults,
+    complete,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
