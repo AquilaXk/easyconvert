@@ -29,7 +29,24 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
 
   it('(b) guarantees PipelineTaskSchema operation enum strictly mirrors PIPELINE_OPERATIONS SSOT', () => {
     const schemaOperationEnum = Array.from(PipelineTaskSchema.properties.operation.enum);
-    const expectedOperations = ['convert', 'ocr', 'archive', 'optimize'];
+    const expectedOperations = [
+      'convert',
+      'ocr',
+      'archive',
+      'optimize',
+      'import/url',
+      'import/s3',
+      'import/gcs',
+      'import/azure',
+      'import/sftp',
+      'import/webdav',
+      'export/url',
+      'export/s3',
+      'export/gcs',
+      'export/azure',
+      'export/sftp',
+      'export/webdav',
+    ];
 
     expect(schemaOperationEnum).toEqual(expectedOperations);
     expect(schemaOperationEnum).toEqual(Array.from(PIPELINE_OPERATIONS));

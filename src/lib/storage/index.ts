@@ -4,6 +4,9 @@ export * from './s3-compatible-storage';
 export * from './oci-storage';
 export { S3ObjectStorageService, s3Storage } from './s3-storage';
 export * from './shared-store';
+export * from './credentials-vault';
+export * from './adapters';
+export * from './byos-operations';
 
 import { s3Storage } from './s3-storage';
 import { LocalFsStorage } from './local-fs-storage';

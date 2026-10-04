@@ -542,3 +542,6 @@ export class LocalFsStorage implements IObjectStorage {
     }
   }
 }
+
+export const localFsStorage = new LocalFsStorage();
+
