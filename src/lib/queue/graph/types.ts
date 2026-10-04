@@ -41,7 +41,7 @@ export interface OptimizeNode {
 export interface ArchiveCreateNode {
   op: 'archive.create';
   input: NodeId[];
-  targetFormat: 'zip' | '7z' | 'tar' | 'tar.gz' | 'tar.zst';
+  targetFormat: 'zip' | '7z' | 'tar' | 'tar.gz';
   options?: ConversionOptions & {
     compressionLevel?: number;
     password?: string;
@@ -80,6 +80,24 @@ export interface PdfProtectNode {
   options?: ConversionOptions;
 }
 
+export interface ThumbnailNode {
+  op: 'thumbnail';
+  input: NodeId;
+  targetFormat?: 'jpg' | 'png';
+  options?: ConversionOptions & { thumbnail?: { width?: number; height?: number; format?: 'jpg' | 'png' } };
+}
+
+export interface MergeNode {
+  op: 'merge';
+  input: NodeId[];
+  targetFormat: 'pdf' | 'txt';
+}
+
+export interface MetadataNode {
+  op: 'metadata';
+  input: NodeId;
+}
+
 export interface ExportInternalNode {
   op: 'export.internal';
   input: NodeId | NodeId[];
@@ -91,6 +109,9 @@ export type GraphNode =
   | ConvertNode
   | OcrNode
   | OptimizeNode
+  | ThumbnailNode
+  | MergeNode
+  | MetadataNode
   | WatermarkNode
   | PdfWatermarkNode
   | PdfProtectNode
