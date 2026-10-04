@@ -537,4 +537,308 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
     const problem = await patchRes.json();
     expect(problem.detail || problem.message || '').toContain('spoofing rejected');
   });
+
+  it('serializes concurrent PATCH requests to the same session and rejects conflicting offsets with 409 Conflict without data corruption', async () => {
+    const authHeaders = sessionHeaders(userA);
+    const chunkA = Buffer.alloc(1024, 0x41); // 'A'
+    const chunkB = Buffer.alloc(1024, 0x42); // 'B'
+    const totalLength = 2048;
+
+    const postReq = new NextRequest(`${BASE_URL}/api/v1/uploads`, {
+      method: 'POST',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Upload-Length': String(totalLength),
+        'Upload-Metadata': serializeTusMetadata({ filename: 'concurrency-race.bin' }),
+        ...authHeaders,
+      },
+    });
+    const postRes = await tusPostHandler(postReq);
+    expect(postRes.status).toBe(201);
+    const location = postRes.headers.get('Location')!;
+    const sessionId = location.split('/').pop()!;
+
+    // Send two concurrent PATCH requests with identical offset 0
+    const req1 = createStreamRequest(`${BASE_URL}${location}`, {
+      method: 'PATCH',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Content-Type': 'application/offset+octet-stream',
+        'Upload-Offset': '0',
+        ...authHeaders,
+      },
+      body: new ReadableStream({
+        async start(controller) {
+          controller.enqueue(chunkA.subarray(0, 512));
+          await new Promise((r) => setTimeout(r, 20));
+          controller.enqueue(chunkA.subarray(512));
+          controller.close();
+        },
+      }),
+    });
+
+    const req2 = createStreamRequest(`${BASE_URL}${location}`, {
+      method: 'PATCH',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Content-Type': 'application/offset+octet-stream',
+        'Upload-Offset': '0',
+        ...authHeaders,
+      },
+      body: new ReadableStream({
+        async start(controller) {
+          controller.enqueue(chunkB.subarray(0, 512));
+          await new Promise((r) => setTimeout(r, 20));
+          controller.enqueue(chunkB.subarray(512));
+          controller.close();
+        },
+      }),
+    });
+
+    const [res1, res2] = await Promise.all([
+      tusPatchHandler(req1, { params: { id: [sessionId] } }),
+      tusPatchHandler(req2, { params: { id: [sessionId] } }),
+    ]);
+
+    const statuses = [res1.status, res2.status].sort();
+    // One must succeed with 204, and the other must be rejected with 409 Conflict
+    expect(statuses).toEqual([204, 409]);
+
+    const conflictRes = res1.status === 409 ? res1 : res2;
+    expect(conflictRes.headers.get('Upload-Offset')).toBe('1024');
+
+    // Confirm that disk file is exactly 1024 bytes (NOT interleaved or corrupted 2048 bytes)
+    const headReq = new NextRequest(`${BASE_URL}${location}`, {
+      method: 'HEAD',
+      headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
+    });
+    const headRes = await tusHeadHandler(headReq, { params: { id: [sessionId] } });
+    expect(headRes.status).toBe(200);
+    expect(headRes.headers.get('Upload-Offset')).toBe('1024');
+  });
+
+  it('enforces Tus-Resumable: 1.0.0 precondition check on HEAD, PATCH, and DELETE with 412 Precondition Failed', async () => {
+    const authHeaders = sessionHeaders(userA);
+
+    const postReq = new NextRequest(`${BASE_URL}/api/v1/uploads`, {
+      method: 'POST',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Upload-Length': '1024',
+        'Upload-Metadata': serializeTusMetadata({ filename: 'precondition.bin' }),
+        ...authHeaders,
+      },
+    });
+    const postRes = await tusPostHandler(postReq);
+    expect(postRes.status).toBe(201);
+    const location = postRes.headers.get('Location')!;
+    const sessionId = location.split('/').pop()!;
+
+    // 1. HEAD with invalid version 2.0.0
+    const headBad = new NextRequest(`${BASE_URL}${location}`, {
+      method: 'HEAD',
+      headers: { 'Tus-Resumable': '2.0.0', ...authHeaders },
+    });
+    const headBadRes = await tusHeadHandler(headBad, { params: { id: [sessionId] } });
+    expect(headBadRes.status).toBe(412);
+    expect(headBadRes.headers.get('Tus-Version')).toBe('1.0.0');
+
+    // 2. PATCH with invalid version 0.2.1
+    const patchBad = createStreamRequest(`${BASE_URL}${location}`, {
+      method: 'PATCH',
+      headers: {
+        'Tus-Resumable': '0.2.1',
+        'Content-Type': 'application/offset+octet-stream',
+        'Upload-Offset': '0',
+        ...authHeaders,
+      },
+      body: new ReadableStream({
+        start(c) {
+          c.enqueue(Buffer.from('test'));
+          c.close();
+        },
+      }),
+    });
+    const patchBadRes = await tusPatchHandler(patchBad, { params: { id: [sessionId] } });
+    expect(patchBadRes.status).toBe(412);
+    expect(patchBadRes.headers.get('Tus-Version')).toBe('1.0.0');
+
+    // 3. DELETE with invalid version 3.0.0
+    const deleteBad = new NextRequest(`${BASE_URL}${location}`, {
+      method: 'DELETE',
+      headers: { 'Tus-Resumable': '3.0.0', ...authHeaders },
+    });
+    const deleteBadRes = await tusDeleteHandler(deleteBad, { params: { id: [sessionId] } });
+    expect(deleteBadRes.status).toBe(412);
+    expect(deleteBadRes.headers.get('Tus-Version')).toBe('1.0.0');
+  });
+
+  it('rejects malformed Upload-Checksum headers and unsupported algorithms fail-closed with 400 Bad Request', async () => {
+    const authHeaders = sessionHeaders(userA);
+    const chunk = Buffer.from('TEST_PAYLOAD');
+
+    const postReq = new NextRequest(`${BASE_URL}/api/v1/uploads`, {
+      method: 'POST',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Upload-Length': String(chunk.length),
+        'Upload-Metadata': serializeTusMetadata({ filename: 'checksum-error.bin' }),
+        ...authHeaders,
+      },
+    });
+    const postRes = await tusPostHandler(postReq);
+    expect(postRes.status).toBe(201);
+    const location = postRes.headers.get('Location')!;
+    const sessionId = location.split('/').pop()!;
+
+    // 1. Malformed header (missing space separator) -> 400 Bad Request
+    const badFormatReq = createStreamRequest(`${BASE_URL}${location}`, {
+      method: 'PATCH',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Content-Type': 'application/offset+octet-stream',
+        'Upload-Offset': '0',
+        'Upload-Checksum': 'invalid-no-space-separator',
+        ...authHeaders,
+      },
+      body: new ReadableStream({
+        start(c) {
+          c.enqueue(chunk);
+          c.close();
+        },
+      }),
+    });
+    const badFormatRes = await tusPatchHandler(badFormatReq, { params: { id: [sessionId] } });
+    expect(badFormatRes.status).toBe(400);
+    expect(badFormatRes.headers.get('Tus-Resumable')).toBe('1.0.0');
+
+    // 2. Unsupported algorithm (e.g. md5) -> 400 Bad Request
+    const md5Digest = crypto.createHash('md5').update(chunk).digest('base64');
+    const unsupportedAlgoReq = createStreamRequest(`${BASE_URL}${location}`, {
+      method: 'PATCH',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Content-Type': 'application/offset+octet-stream',
+        'Upload-Offset': '0',
+        'Upload-Checksum': `md5 ${md5Digest}`,
+        ...authHeaders,
+      },
+      body: new ReadableStream({
+        start(c) {
+          c.enqueue(chunk);
+          c.close();
+        },
+      }),
+    });
+    const unsupportedAlgoRes = await tusPatchHandler(unsupportedAlgoReq, { params: { id: [sessionId] } });
+    expect(unsupportedAlgoRes.status).toBe(400);
+    const errPayload = await unsupportedAlgoRes.json();
+    expect(errPayload.detail).toContain('Unsupported checksum algorithm "md5"');
+  });
+
+  it('aborts and truncates streaming immediately when uploaded bytes exceed declared Upload-Length mid-stream', async () => {
+    const authHeaders = sessionHeaders(userA);
+    const declaredLimit = 256;
+    const oversizedPayload = crypto.randomBytes(1024); // 4x over declared length
+
+    const postReq = new NextRequest(`${BASE_URL}/api/v1/uploads`, {
+      method: 'POST',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Upload-Length': String(declaredLimit),
+        'Upload-Metadata': serializeTusMetadata({ filename: 'stream-overflow.bin' }),
+        ...authHeaders,
+      },
+    });
+    const postRes = await tusPostHandler(postReq);
+    expect(postRes.status).toBe(201);
+    const location = postRes.headers.get('Location')!;
+    const sessionId = location.split('/').pop()!;
+
+    // Stream oversized payload into PATCH
+    const patchReq = createStreamRequest(`${BASE_URL}${location}`, {
+      method: 'PATCH',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Content-Type': 'application/offset+octet-stream',
+        'Upload-Offset': '0',
+        ...authHeaders,
+      },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(oversizedPayload);
+          controller.close();
+        },
+      }),
+    });
+
+    const patchRes = await tusPatchHandler(patchReq, { params: { id: [sessionId] } });
+    expect(patchRes.status).toBe(400);
+    const errBody = await patchRes.json();
+    expect(errBody.detail).toContain('exceed declared Upload-Length');
+
+    // Confirm session offset was rolled back to 0
+    const headReq = new NextRequest(`${BASE_URL}${location}`, {
+      method: 'HEAD',
+      headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
+    });
+    const headRes = await tusHeadHandler(headReq, { params: { id: [sessionId] } });
+    expect(headRes.status).toBe(200);
+    expect(headRes.headers.get('Upload-Offset')).toBe('0');
+  });
+
+  it('validates magic bytes for extensionless uploads with valid MIME type metadata', async () => {
+    const authHeaders = sessionHeaders(userA);
+    // Real minimal valid PNG file bytes
+    const validPng = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, // IHDR header
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+      0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41,
+      0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+      0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d,
+      0xb0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+      0x44, 0xae, 0x42, 0x60, 0x82,
+    ]);
+
+    // Filename 'avatar-image' has no extension, but filetype is 'image/png'
+    const postReq = new NextRequest(`${BASE_URL}/api/v1/uploads`, {
+      method: 'POST',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Upload-Length': String(validPng.length),
+        'Upload-Metadata': serializeTusMetadata({
+          filename: 'avatar-image',
+          filetype: 'image/png',
+        }),
+        ...authHeaders,
+      },
+    });
+    const postRes = await tusPostHandler(postReq);
+    expect(postRes.status).toBe(201);
+    const location = postRes.headers.get('Location')!;
+    const sessionId = location.split('/').pop()!;
+
+    const patchReq = createStreamRequest(`${BASE_URL}${location}`, {
+      method: 'PATCH',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Content-Type': 'application/offset+octet-stream',
+        'Upload-Offset': '0',
+        ...authHeaders,
+      },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(validPng);
+          controller.close();
+        },
+      }),
+    });
+
+    const patchRes = await tusPatchHandler(patchReq, { params: { id: [sessionId] } });
+    expect(patchRes.status).toBe(204);
+    expect(patchRes.headers.get('Upload-Offset')).toBe(String(validPng.length));
+    expect(patchRes.headers.get('EasyConvert-Storage-Key')).toBeDefined();
+  });
 });

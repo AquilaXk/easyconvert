@@ -6,6 +6,9 @@ import {
   tusEngine,
   TusOffsetMismatchError,
   TusChecksumMismatchError,
+  TusInvalidChecksumHeaderError,
+  TusUnsupportedChecksumAlgorithmError,
+  TusUploadExceededLengthError,
   TusNotFoundError,
 } from '@/lib/storage/tus-engine';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -14,6 +17,15 @@ export const dynamic = 'force-dynamic';
 
 const TUS_RESUMABLE_VERSION = '1.0.0';
 const TUS_MAX_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
+
+function checkTusVersion(req: NextRequest): NextResponse | null {
+  const clientVersion = req.headers.get('tus-resumable');
+  if (clientVersion && clientVersion !== TUS_RESUMABLE_VERSION) {
+    const headers = createTusHeaders({ 'Tus-Version': TUS_RESUMABLE_VERSION });
+    return new NextResponse('Unsupported TUS version', { status: 412, headers });
+  }
+  return null;
+}
 
 const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
@@ -257,24 +269,32 @@ export async function POST(
   }
 
   // Otherwise, handle TUS 1.0 creation / creation-with-upload
-  const clientVersion = req.headers.get('tus-resumable');
-  if (clientVersion && clientVersion !== TUS_RESUMABLE_VERSION) {
-    const headers = createTusHeaders({ 'Tus-Version': TUS_RESUMABLE_VERSION });
-    return new NextResponse('Unsupported TUS version', { status: 412, headers });
-  }
+  const versionMismatch = checkTusVersion(req);
+  if (versionMismatch) return versionMismatch;
 
   const uploadLengthHeader = req.headers.get('upload-length');
   if (!uploadLengthHeader) {
-    return createProblemDetailsResponse(400, 'Missing required "Upload-Length" header.', instanceUri);
+    return createProblemDetailsResponse(400, 'Missing required "Upload-Length" header.', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 
   const uploadLength = Number.parseInt(uploadLengthHeader, 10);
   if (!Number.isFinite(uploadLength) || uploadLength < 0) {
-    return createProblemDetailsResponse(400, 'Invalid "Upload-Length" header value.', instanceUri);
+    return createProblemDetailsResponse(400, 'Invalid "Upload-Length" header value.', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 
   if (uploadLength > TUS_MAX_SIZE) {
-    return createProblemDetailsResponse(413, `Upload-Length exceeds maximum size of ${TUS_MAX_SIZE} bytes.`, instanceUri);
+    return createProblemDetailsResponse(
+      413,
+      `Upload-Length exceeds maximum size of ${TUS_MAX_SIZE} bytes.`,
+      instanceUri,
+      undefined,
+      undefined,
+      { 'Tus-Resumable': TUS_RESUMABLE_VERSION }
+    );
   }
 
   const metadataHeader = req.headers.get('upload-metadata') || undefined;
@@ -313,7 +333,24 @@ export async function POST(
         if (err instanceof TusChecksumMismatchError) {
           return new NextResponse('Checksum Mismatch', { status: 460, headers: createTusHeaders() });
         }
-        return createProblemDetailsResponse(400, err?.message || 'Error processing creation-with-upload chunk', instanceUri);
+        if (err instanceof TusInvalidChecksumHeaderError || err instanceof TusUnsupportedChecksumAlgorithmError) {
+          return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
+            'Tus-Resumable': TUS_RESUMABLE_VERSION,
+          });
+        }
+        if (err instanceof TusUploadExceededLengthError) {
+          return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
+            'Tus-Resumable': TUS_RESUMABLE_VERSION,
+          });
+        }
+        return createProblemDetailsResponse(
+          400,
+          err?.message || 'Error processing creation-with-upload chunk',
+          instanceUri,
+          undefined,
+          undefined,
+          { 'Tus-Resumable': TUS_RESUMABLE_VERSION }
+        );
       }
     }
 
@@ -330,7 +367,14 @@ export async function POST(
 
     return new NextResponse(null, { status: 201, headers });
   } catch (err: any) {
-    return createProblemDetailsResponse(500, err?.message || 'Failed to initialize TUS upload session', instanceUri);
+    return createProblemDetailsResponse(
+      500,
+      err?.message || 'Failed to initialize TUS upload session',
+      instanceUri,
+      undefined,
+      undefined,
+      { 'Tus-Resumable': TUS_RESUMABLE_VERSION }
+    );
   }
 }
 
@@ -338,11 +382,16 @@ export async function HEAD(
   req: NextRequest,
   context: { params?: { id?: string[] } } = {}
 ) {
+  const versionMismatch = checkTusVersion(req);
+  if (versionMismatch) return versionMismatch;
+
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
   const sessionId = resolveSessionId(context.params);
 
   if (!sessionId) {
-    return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri);
+    return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 
   // Guard check: Require authenticated access
@@ -354,7 +403,7 @@ export async function HEAD(
       instanceUri,
       undefined,
       auth.problemType,
-      authErrorHeaders(auth)
+      { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
     );
   }
 
@@ -377,10 +426,12 @@ export async function HEAD(
   const headers = createTusHeaders({
     'Upload-Offset': String(session.uploadOffset),
     'Upload-Length': String(session.uploadLength),
-    'Upload-Metadata': session.metadata,
     'Upload-Expires': new Date(session.expiresAt).toUTCString(),
     'Cache-Control': 'no-store',
   });
+  if (session.metadata) {
+    headers.set('Upload-Metadata', session.metadata);
+  }
 
   return new NextResponse(null, { status: 200, headers });
 }
@@ -389,11 +440,16 @@ export async function PATCH(
   req: NextRequest,
   context: { params?: { id?: string[] } } = {}
 ) {
+  const versionMismatch = checkTusVersion(req);
+  if (versionMismatch) return versionMismatch;
+
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
   const sessionId = resolveSessionId(context.params);
 
   if (!sessionId) {
-    return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri);
+    return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 
   // Guard check: Authenticate API key or user session with 'convert:write' scope
@@ -405,7 +461,7 @@ export async function PATCH(
       instanceUri,
       undefined,
       auth.problemType,
-      authErrorHeaders(auth)
+      { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
     );
   }
 
@@ -419,7 +475,7 @@ export async function PATCH(
     return new NextResponse('Upload Not Found', { status: 404, headers: createTusHeaders() });
   }
 
-  const contentType = req.headers.get('content-type') || '';
+  const contentType = (req.headers.get('content-type') || '').toLowerCase();
   if (!contentType.includes('application/offset+octet-stream')) {
     return new NextResponse('Content-Type must be application/offset+octet-stream', {
       status: 415,
@@ -429,18 +485,24 @@ export async function PATCH(
 
   const offsetHeader = req.headers.get('upload-offset');
   if (offsetHeader === null) {
-    return createProblemDetailsResponse(400, 'Missing required "Upload-Offset" header.', instanceUri);
+    return createProblemDetailsResponse(400, 'Missing required "Upload-Offset" header.', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 
   const clientOffset = Number.parseInt(offsetHeader, 10);
   if (!Number.isFinite(clientOffset) || clientOffset < 0) {
-    return createProblemDetailsResponse(400, 'Invalid "Upload-Offset" header value.', instanceUri);
+    return createProblemDetailsResponse(400, 'Invalid "Upload-Offset" header value.', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 
   const checksumHeader = req.headers.get('upload-checksum');
 
   if (!req.body) {
-    return createProblemDetailsResponse(400, 'Empty PATCH payload body.', instanceUri);
+    return createProblemDetailsResponse(400, 'Empty PATCH payload body.', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 
   try {
@@ -468,7 +530,19 @@ export async function PATCH(
     if (err instanceof TusNotFoundError) {
       return new NextResponse('Upload Not Found', { status: 404, headers: createTusHeaders() });
     }
-    return createProblemDetailsResponse(400, err?.message || 'Error processing TUS chunk upload', instanceUri);
+    if (err instanceof TusInvalidChecksumHeaderError || err instanceof TusUnsupportedChecksumAlgorithmError) {
+      return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
+        'Tus-Resumable': TUS_RESUMABLE_VERSION,
+      });
+    }
+    if (err instanceof TusUploadExceededLengthError) {
+      return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
+        'Tus-Resumable': TUS_RESUMABLE_VERSION,
+      });
+    }
+    return createProblemDetailsResponse(400, err?.message || 'Error processing TUS chunk upload', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 }
 
@@ -476,11 +550,16 @@ export async function DELETE(
   req: NextRequest,
   context: { params?: { id?: string[] } } = {}
 ) {
+  const versionMismatch = checkTusVersion(req);
+  if (versionMismatch) return versionMismatch;
+
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
   const sessionId = resolveSessionId(context.params);
 
   if (!sessionId) {
-    return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri);
+    return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {
+      'Tus-Resumable': TUS_RESUMABLE_VERSION,
+    });
   }
 
   // Guard check: Authenticate API key or user session with 'convert:write' scope
@@ -492,7 +571,7 @@ export async function DELETE(
       instanceUri,
       undefined,
       auth.problemType,
-      authErrorHeaders(auth)
+      { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
     );
   }
 
