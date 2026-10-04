@@ -7,6 +7,7 @@ import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { POST as createJobHandler } from '../src/app/api/v1/jobs/route';
 import { GET as getJobHandler, DELETE as cancelJobHandler } from '../src/app/api/v1/jobs/[id]/route';
 import { GET as getOpenApiHandler } from '../src/app/api/v1/openapi/route';
+import { graphScheduler } from '../src/lib/queue/graph';
 import { GET as getOpenApiJsonHandler } from '../src/app/api/v1/openapi.json/route';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import type { ApiKeyScope } from '../src/lib/api-keys/types';
@@ -400,10 +401,15 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
       const json = await res.json();
       expect(json.jobId).toBeDefined();
 
-      const queuedJob = await conversionQueue.getJob(json.jobId);
-      expect(queuedJob).toBeDefined();
-      expect(queuedJob?.data.tasks).toHaveLength(2);
-      expect(queuedJob?.data.targetFormat).toBe('yaml');
+      // Tasks run only as graph nodes: a second whole-pipeline conversion job would run it twice.
+      expect(await conversionQueue.getJob(json.jobId)).toBeUndefined();
+      const graphState = await graphScheduler.getGraphState(json.jobId);
+      expect(graphState?.tasks).toHaveLength(2);
+      expect(graphState?.targetFormat).toBe('yaml');
+      const convertTargets = Object.values(graphState!.graph.nodes)
+        .filter((n) => n.op === 'convert')
+        .map((n) => (n as { targetFormat: string }).targetFormat);
+      expect(convertTargets).toEqual(['json', 'yaml']);
     });
   });
 

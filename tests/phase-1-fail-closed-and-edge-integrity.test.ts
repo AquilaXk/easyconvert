@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import JSZip from 'jszip';
 import { convertVectorCad, parseCgmToSvg } from '../src/lib/conversions/vector-cad';
 import { convertOffice, extractTextContentForOffice } from '../src/lib/conversions/office';

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
-import zlib from 'zlib';
+import zlib from 'node:zlib';
 import { convertFile } from '../src/lib/conversions/index';
 import { performOcr } from '../src/lib/conversions/ocr';
 import { createLosslessSandwichPdfFromImage } from '../src/lib/conversions/ocr-pdf-combiner';

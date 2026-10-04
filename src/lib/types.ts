@@ -494,6 +494,14 @@ export class EngineUnavailableError extends ConversionFailedError {
   }
 }
 
+/** An `export.url` node could not deliver an artifact to the destination URL. */
+export class GraphExportError extends ConversionFailedError {
+  constructor(message: string, readonly destinationStatus?: number) {
+    super(message);
+    this.name = 'GraphExportError';
+  }
+}
+
 export class InvalidPageRangeError extends ConversionFailedError {
   constructor(message: string) {
     super(message);

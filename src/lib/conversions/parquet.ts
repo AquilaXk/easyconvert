@@ -1,4 +1,4 @@
-import zlib from 'zlib';
+import zlib from 'node:zlib';
 import { decompressZstd } from './zstd';
 
 /**
