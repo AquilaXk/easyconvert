@@ -151,18 +151,19 @@ export async function computeFfmpegLavfiSsimPsnr(
     }
 
     // Parse SSIM: "All:0.998234 (27.528492)" or "ssim: 0.998"
-    let ssim = 1.0;
     const ssimMatch = output.match(/All:([0-9.]+)/i) || output.match(/ssim\s*[:=]\s*([0-9.]+)/i);
-    if (ssimMatch) {
-      ssim = parseFloat(ssimMatch[1]);
-    }
 
     // Parse PSNR: "average:45.32" or "psnr: 45.32"
-    let psnr = 50.0;
     const psnrMatch = output.match(/average:([0-9.]+)/i) || output.match(/psnr\s*[:=]\s*([0-9.]+)/i);
-    if (psnrMatch) {
-      psnr = parseFloat(psnrMatch[1]);
+
+    if (!ssimMatch || !psnrMatch) {
+      throw new Error(
+        `Failed to compute SSIM/PSNR via FFmpeg lavfi: ${output.slice(0, 1000) || 'no output produced'}`
+      );
     }
+
+    const ssim = parseFloat(ssimMatch[1]);
+    const psnr = parseFloat(psnrMatch[1]);
 
     return {
       ssim,
