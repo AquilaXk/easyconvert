@@ -52,6 +52,9 @@ jobs:
             tesseract-ocr \
             tesseract-ocr-kor \
             fonts-nanum \
+            fonts-noto-core \
+            fonts-noto-ui-core \
+            fonts-noto-color-emoji \
             unrar
           # Pre-stage Tesseract traineddata assets for offline inference
           find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true

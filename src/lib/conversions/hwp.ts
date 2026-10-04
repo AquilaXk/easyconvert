@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { ConversionOptions, ConversionResult } from '../types';
 import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
+import { assertNoComplexScript } from './ctl';
 
 /**
  * HWP 5.0 Record Tag IDs
@@ -1205,6 +1206,22 @@ async function generatePdfFromHwp(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
+  assertNoComplexScript(title, 'Pure-TS HWP to PDF');
+  if (doc.paragraphs) {
+    for (const p of doc.paragraphs) {
+      if (p.text) assertNoComplexScript(p.text, 'Pure-TS HWP to PDF');
+    }
+  }
+  if (doc.tables) {
+    for (const tbl of doc.tables) {
+      for (const r of tbl.rows) {
+        for (const cell of r) {
+          assertNoComplexScript(cell, 'Pure-TS HWP to PDF');
+        }
+      }
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const isLandscape = options.orientation === 'landscape';
     const pdf = new PDFDocument({

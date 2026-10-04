@@ -7,42 +7,6 @@
     "owningWP": "WP-45"
   },
   {
-    "rule": "G3b-TRUNCATION",
-    "file": "src/lib/conversions/font.ts",
-    "symbol": "encodeSfnt",
-    "reason": "Hardcoded numeric truncation \"tbl.tag.padEnd(4, ' ').slice(0, 4)\" inside generator/converter function \"encodeSfnt\".",
-    "owningWP": "WP-42"
-  },
-  {
-    "rule": "G3b-TRUNCATION",
-    "file": "src/lib/conversions/font.ts",
-    "symbol": "encodeWoff",
-    "reason": "Hardcoded numeric truncation \"tbl.tag.padEnd(4, ' ').slice(0, 4)\" inside generator/converter function \"encodeWoff\".",
-    "owningWP": "WP-42"
-  },
-  {
-    "rule": "G3c-IGNORED-INPUT",
-    "file": "src/lib/conversions/font.ts",
-    "symbol": "createCanonicalFont",
-    "reason": "Exported function \"createCanonicalFont\" ignores its first parameter \"seedData\" entirely.",
-    "owningWP": "WP-42"
-  },
-  {
-    "rule": "G3b-TRUNCATION",
-    "file": "src/lib/conversions/font.ts",
-    "symbol": "createFvarTable",
-    "reason": "Hardcoded numeric truncation \"ax.tag.padEnd(4, ' ').slice(0, 4)\" inside generator/converter function \"createFvarTable\".",
-    "owningWP": "WP-42"
-  },
-  {
-    "rule": "G3b-TRUNCATION",
-    "file": "src/lib/conversions/font.ts",
-    "symbol": "createStatTable",
-    "reason": "Hardcoded numeric truncation \"ax.tag.padEnd(4, ' ').slice(0, 4)\" inside generator/converter function \"createStatTable\".",
-    "owningWP": "WP-42"
-  },
-
-  {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/advanced-conversions-boost.test.ts",
     "symbol": "converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup",

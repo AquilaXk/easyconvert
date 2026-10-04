@@ -17,6 +17,7 @@ export type ExternalOracleTool =
   | 'pdfinfo'
   | 'pdftoppm'
   | 'pdftocairo'
+  | 'pdffonts'
   | 'ffmpeg'
   | 'ffprobe'
   | 'soffice'
@@ -214,6 +215,54 @@ export function extractTextWithExternalPdftotext(buffer: Buffer): string | null 
     return stdout;
   } catch {
     return null;
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
+}
+
+export interface PdfFontEntry {
+  name: string;
+  type: string;
+  encoding: string;
+  emb: boolean;
+  sub: boolean;
+  uni: boolean;
+  object: number;
+}
+
+/**
+ * Inspects embedded fonts in a PDF using external Poppler pdffonts binary.
+ */
+export function extractFontsWithExternalPdffonts(buffer: Buffer): PdfFontEntry[] {
+  const toolPath = requireOracleTool('pdffonts');
+  const tmpPath = path.join(os.tmpdir(), `oracle_fonts_${crypto.randomUUID()}.pdf`);
+  try {
+    fs.writeFileSync(tmpPath, buffer);
+    const stdout = execFileSync(toolPath, [tmpPath], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const lines = stdout.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length < 2) return [];
+    const entries: PdfFontEntry[] = [];
+    for (let i = 2; i < lines.length; i++) {
+      const parts = lines[i].trim().split(/\s+/);
+      if (parts.length >= 7) {
+        entries.push({
+          name: parts[0],
+          type: parts[1],
+          encoding: parts[2],
+          emb: parts[3] === 'yes',
+          sub: parts[4] === 'yes',
+          uni: parts[5] === 'yes',
+          object: parseInt(parts[6], 10) || 0,
+        });
+      }
+    }
+    return entries;
   } finally {
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);

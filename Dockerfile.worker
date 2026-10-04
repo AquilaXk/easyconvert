@@ -42,6 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     fonts-freefont-ttf \
     fonts-noto-cjk \
+    fonts-noto-core \
+    fonts-noto-ui-core \
+    fonts-noto-color-emoji \
     libreoffice-calc \
     libreoffice-impress \
     libreoffice-nogpu \
