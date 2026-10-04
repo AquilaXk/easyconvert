@@ -160,6 +160,65 @@ function assertOutputSize(bytes: number, format: string): void {
   }
 }
 
+// Upper-bound size model per draw operation, derived from the records each encoder writes.
+const EMF_FILE_OVERHEAD = 256; // header, state records, window/viewport extents, EOF
+const EMF_OP_OVERHEAD = 160; // fill mode, pen, brush, selects and deletes
+const EMF_STROKE_LINE_HEADER = 28;
+const WMF_FILE_OVERHEAD = 96; // placeable + META_HEADER, window org/ext, EOF
+const WMF_OP_OVERHEAD = 80; // fill mode, pen, brush, selects and deletes
+const CGM_FILE_OVERHEAD = 512; // metafile/picture descriptors and terminators
+const CGM_OP_OVERHEAD = 96; // LINECOLR, LINEWIDTH, FILLCOLR elements
+const CGM_ELEMENT_OVERHEAD = 24; // element name, separators and terminator
+const CGM_MAX_POINT_CHARS = 26; // "(-32767,-32767) CLOSEVIS "
+
+function pointCount(lines: PlanPoint[][]): number {
+  return lines.reduce((n, l) => n + l.length, 0);
+}
+
+function estimateOpBytes(op: DrawOp, format: MetafileFormat): number {
+  const lines = op.kind === 'fill' ? op.rings : op.lines;
+  const points = pointCount(lines);
+  if (format === 'emf') {
+    const body =
+      op.kind === 'fill'
+        ? EMF_POLYPOLY16_HEADER_SIZE + EMF_COUNT_SIZE * lines.length + EMF_POINT16_SIZE * points
+        : EMF_STROKE_LINE_HEADER * lines.length + EMF_POINT16_SIZE * points;
+    return EMF_OP_OVERHEAD + body;
+  }
+  if (format === 'wmf') {
+    const words = WMF_POLY_HEADER_WORDS * lines.length + lines.length + WMF_POINT_WORDS * points;
+    return WMF_OP_OVERHEAD + words * BYTES_PER_WORD;
+  }
+  const outlined = op.kind === 'fill' && op.pen ? 2 : 1;
+  return CGM_OP_OVERHEAD + outlined * (CGM_ELEMENT_OVERHEAD * lines.length + CGM_MAX_POINT_CHARS * (points + lines.length));
+}
+
+type MetafileFormat = 'emf' | 'wmf' | 'cgm';
+
+const FILE_OVERHEAD: Record<MetafileFormat, number> = {
+  emf: EMF_FILE_OVERHEAD,
+  wmf: WMF_FILE_OVERHEAD,
+  cgm: CGM_FILE_OVERHEAD,
+};
+
+function estimateOpsBytes(ops: DrawOp[], format: MetafileFormat, extra = 0): number {
+  return ops.reduce((n, op) => n + estimateOpBytes(op, format), FILE_OVERHEAD[format] + extra);
+}
+
+/** Checks the estimated output size against the cap before any record buffer is allocated. */
+function assertEstimatedSize(ops: DrawOp[], format: MetafileFormat, extra = 0): void {
+  assertOutputSize(estimateOpsBytes(ops, format, extra), format.toUpperCase());
+}
+
+/**
+ * Upper bound, in bytes, of the metafile the encoder would write for an SVG,
+ * computed from record and point counts without allocating any record.
+ */
+export function estimateMetafileBytes(svgBuffer: Buffer, format: MetafileFormat): number {
+  const doc = parseDrawableSvg(svgBuffer, format.toUpperCase());
+  return estimateOpsBytes(planDocument(doc), format);
+}
+
 function totalLength(records: Buffer[]): number {
   return records.reduce((sum, r) => sum + r.length, 0);
 }
@@ -401,6 +460,7 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
   const height = Math.max(1, Math.round(doc.height));
 
   const deviceOps = planDocument(doc);
+  assertEstimatedSize(deviceOps, 'emf');
   const space = computeLogicalSpace(deviceOps, width, height);
   const records: Buffer[] = [...createEmfStateRecords(space)];
 
@@ -615,6 +675,7 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   const height = Math.max(1, Math.round(doc.height));
 
   const deviceOps = planDocument(doc);
+  assertEstimatedSize(deviceOps, 'wmf');
   const space = computeLogicalSpace(deviceOps, width, height);
   const logicalOps = scaleOps(deviceOps, space.scale);
   const logicalWidth = Math.round(width * space.scale);
@@ -752,6 +813,7 @@ export function encodeCgm(svgBuffer: Buffer, baseName: string = 'drawing'): Buff
 
   // VDC integers are 16-bit by default, so large drawings use a scaled VDC space.
   const deviceOps = planDocument(doc);
+  assertEstimatedSize(deviceOps, 'cgm', quotedName.length * 2);
   const space = computeLogicalSpace(deviceOps, width, height);
   const vdcWidth = Math.round(width * space.scale);
   const vdcHeight = Math.round(height * space.scale);

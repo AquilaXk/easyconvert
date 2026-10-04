@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { encodeEmf, encodeWmf, encodeCgm } from '../src/lib/conversions/vector-metafile';
+import { encodeEmf, encodeWmf, encodeCgm, estimateMetafileBytes } from '../src/lib/conversions/vector-metafile';
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../src/lib/types';
 import { convertFile } from '../src/lib/conversions';
 import { emfOracleRecords, emfOraclePlayback, wmfOraclePlayback, cgmOracleDocument, cgmOraclePoints, cgmOraclePolygonSet, type PlaybackShape } from './helpers/metafile-oracle';
@@ -1034,5 +1034,22 @@ describe('SVG document model for metafile encoders', () => {
       const shapes = emfShapes('<polygon points="10-5e0 20,0 2e1 2E1" fill="#000"/>', 'width="100" height="100" viewBox="0,-10 100,100"');
       expect(corners(filledShapes(shapes)[0].rings[0])).toEqual([[10, 5], [20, 10], [20, 30]]);
     });
+  });
+
+  describe('output size estimate', () => {
+    const docs = [
+      '<rect x="1" y="1" width="20" height="20" fill="#ff0000" stroke="#0000ff" stroke-width="2"/>',
+      '<path fill-rule="evenodd" fill="#00ff00" stroke="#000" d="M0 0 H90 V90 H0 Z M20 20 V70 H70 V20 Z"/>',
+      '<polyline points="0,0 10,30 20,0 30,30" fill="none" stroke="#123456" stroke-width="3"/><circle cx="50" cy="50" r="30" fill="#abcdef"/>',
+      '<path fill="#000" d="M0 0 L-30000 5 L-29990 90 Z"/>',
+    ];
+    for (const [i, body] of docs.entries()) {
+      it(`bounds the real output size from record counts before encoding (document ${i + 1})`, () => {
+        const svg = svgDoc(body);
+        expect(estimateMetafileBytes(svg, 'emf')).toBeGreaterThanOrEqual(encodeEmf(svg).length);
+        expect(estimateMetafileBytes(svg, 'wmf')).toBeGreaterThanOrEqual(encodeWmf(svg).length);
+        expect(estimateMetafileBytes(svg, 'cgm')).toBeGreaterThanOrEqual(encodeCgm(svg).length);
+      });
+    }
   });
 });
