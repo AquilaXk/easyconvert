@@ -2,6 +2,7 @@ import {
   createJsonResponse,
   createPathParameter,
   createProblemResponse,
+  jsonBody,
   requireScope,
 } from '../shared';
 
@@ -79,29 +80,18 @@ export const storagePaths = {
         'Stores customer storage credentials encrypted at rest and returns a `credentialRef` for import and export tasks. Raw credentials are never returned.',
       operationId: 'createStorageCredentialV1',
       security: requireScope('convert:write'),
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              type: 'object',
-              required: ['providerType', 'credentials'],
-              properties: {
-                providerType: { type: 'string', enum: STORAGE_PROVIDER_TYPES },
-                credentials: {
-                  type: 'object',
-                  required: ['type'],
-                  additionalProperties: true,
-                  properties: { type: { type: 'string', enum: STORAGE_PROVIDER_TYPES } },
-                  description: 'Provider-specific credentials; `type` must equal `providerType`.',
-                },
-                name: { type: 'string' },
-                ttlSeconds: { type: 'integer', minimum: 1 },
-              },
-            },
-          },
+      requestBody: jsonBody({
+        providerType: { type: 'string', enum: STORAGE_PROVIDER_TYPES },
+        credentials: {
+          type: 'object',
+          required: ['type'],
+          additionalProperties: true,
+          properties: { type: { type: 'string', enum: STORAGE_PROVIDER_TYPES } },
+          description: 'Provider-specific credentials; `type` must equal `providerType`.',
         },
-      },
+        name: { type: 'string' },
+        ttlSeconds: { type: 'integer', minimum: 1 },
+      }, ['providerType', 'credentials']),
       responses: {
         '201': createJsonResponse('Credentials stored.', {
           success: { type: 'boolean' },

@@ -1,10 +1,12 @@
 import {
+  CONVERT_FORM_PROPERTIES,
   PUBLIC_ACCESS,
   SESSION_ONLY,
   createErrorResponse,
   createJsonResponse,
   createPathParameter,
   createProblemResponse,
+  multipartBody,
   requireScope,
 } from '../shared';
 
@@ -197,23 +199,7 @@ export const internalPaths = {
       description: 'Converts one file and streams the result without retaining it. Anonymous callers use the IP quota.',
       operationId: 'convertFileInternal',
       security: ANONYMOUS_OR_SCOPE('convert:write'),
-      requestBody: {
-        required: true,
-        content: {
-          'multipart/form-data': {
-            schema: {
-              type: 'object',
-              required: ['file', 'targetFormat'],
-              properties: {
-                file: { type: 'string', format: 'binary', description: 'Up to 100 MB.' },
-                targetFormat: { type: 'string' },
-                sourceFormat: { type: 'string' },
-                options: { type: 'string', description: 'JSON-serialized conversion options.' },
-              },
-            },
-          },
-        },
-      },
+      requestBody: multipartBody(CONVERT_FORM_PROPERTIES, ['file', 'targetFormat']),
       responses: {
         '200': binaryResponse('Converted file.'),
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
@@ -231,22 +217,11 @@ export const internalPaths = {
       description: 'Converts several files and returns them as one ZIP archive.',
       operationId: 'convertBatchInternal',
       security: ANONYMOUS_OR_SCOPE('convert:write'),
-      requestBody: {
-        required: true,
-        content: {
-          'multipart/form-data': {
-            schema: {
-              type: 'object',
-              required: ['files'],
-              properties: {
-                files: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Up to 100 MB in total.' },
-                targetFormats: { type: 'string', description: 'JSON map of filename to target format; `default` applies to the rest.' },
-                options: { type: 'string', description: 'JSON-serialized conversion options.' },
-              },
-            },
-          },
-        },
-      },
+      requestBody: multipartBody({
+        files: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Up to 100 MB in total.' },
+        targetFormats: { type: 'string', description: 'JSON map of filename to target format; `default` applies to the rest.' },
+        options: { type: 'string', description: 'JSON-serialized conversion options.' },
+      }, ['files']),
       responses: {
         '200': binaryResponse('ZIP archive of converted files.', 'application/zip'),
         '400': createErrorResponse('No files, invalid input, or nothing could be converted.'),

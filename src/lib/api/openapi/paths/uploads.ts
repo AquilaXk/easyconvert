@@ -1,6 +1,14 @@
-import { createJsonResponse, createPathParameter, createProblemResponse, requireScope } from '../shared';
+import {
+  binaryBody,
+  createJsonResponse,
+  createPathParameter,
+  createProblemResponse,
+  jsonBody,
+  requireScope,
+} from '../shared';
 
 const TUS_VERSION = '1.0.0';
+const TUS_CHUNK_MEDIA_TYPE = 'application/offset+octet-stream';
 
 const tusResumableHeader = {
   name: 'Tus-Resumable',
@@ -82,10 +90,7 @@ export const uploadPaths = {
           description: 'Checksum of the first chunk sent with creation-with-upload.',
         },
       ],
-      requestBody: {
-        required: false,
-        content: { 'application/offset+octet-stream': { schema: { type: 'string', format: 'binary' } } },
-      },
+      requestBody: binaryBody(TUS_CHUNK_MEDIA_TYPE, false),
       responses: {
         '201': {
           description: 'Upload created.',
@@ -150,10 +155,7 @@ export const uploadPaths = {
           description: '`sha256 <base64>` of this chunk; a mismatch discards the chunk.',
         },
       ],
-      requestBody: {
-        required: true,
-        content: { 'application/offset+octet-stream': { schema: { type: 'string', format: 'binary' } } },
-      },
+      requestBody: binaryBody(TUS_CHUNK_MEDIA_TYPE, true),
       responses: {
         '204': {
           description: 'Chunk stored.',
@@ -192,23 +194,12 @@ export const uploadPaths = {
       description: 'Creates a multipart upload and returns a presigned PUT URL for every part. Part URLs expire after 15 minutes.',
       operationId: 'createDirectUploadV1',
       security: requireScope('convert:write'),
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              type: 'object',
-              required: ['filename', 'totalSize'],
-              properties: {
-                filename: { type: 'string' },
-                totalSize: { type: 'integer', minimum: 0, description: 'Total size in bytes (at most 10 GiB).' },
-                mimeType: { type: 'string', default: 'application/octet-stream' },
-                partSize: { type: 'integer', description: 'Requested part size in bytes; at most 10,000 parts are allowed.' },
-              },
-            },
-          },
-        },
-      },
+      requestBody: jsonBody({
+        filename: { type: 'string' },
+        totalSize: { type: 'integer', minimum: 0, description: 'Total size in bytes (at most 10 GiB).' },
+        mimeType: { type: 'string', default: 'application/octet-stream' },
+        partSize: { type: 'integer', description: 'Requested part size in bytes; at most 10,000 parts are allowed.' },
+      }, ['filename', 'totalSize']),
       responses: {
         '200': createJsonResponse('Upload created with presigned part URLs.', {
           uploadId: { type: 'string' },
@@ -279,21 +270,10 @@ export const uploadPaths = {
       description: 'Assembles the parts, verifies their entity tags, and checks the file signature against the declared format.',
       operationId: 'completeDirectUploadV1',
       security: requireScope('convert:write'),
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              type: 'object',
-              required: ['uploadId', 'parts'],
-              properties: {
-                uploadId: { type: 'string' },
-                parts: { type: 'array', minItems: 1, items: directPartSchema },
-              },
-            },
-          },
-        },
-      },
+      requestBody: jsonBody({
+        uploadId: { type: 'string' },
+        parts: { type: 'array', minItems: 1, items: directPartSchema },
+      }, ['uploadId', 'parts']),
       responses: {
         '200': createJsonResponse('Upload assembled.', {
           location: { type: 'string' },

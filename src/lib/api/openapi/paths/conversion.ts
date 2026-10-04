@@ -1,8 +1,10 @@
 import { JobCreateRequestSchema } from '@/lib/api/contracts';
 import {
+  CONVERT_FORM_PROPERTIES,
   IDEMPOTENCY_KEY_PARAMETER,
   createPathParameter,
   createProblemResponse,
+  multipartBody,
   requireScope,
 } from '../shared';
 
@@ -84,36 +86,7 @@ export const conversionPaths = {
       operationId: 'convertFileV1',
       security: requireScope('convert:write'),
       parameters: [IDEMPOTENCY_KEY_PARAMETER],
-      requestBody: {
-        required: true,
-        content: {
-          'multipart/form-data': {
-            schema: {
-              type: 'object',
-              required: ['file', 'targetFormat'],
-              properties: {
-                file: {
-                  type: 'string',
-                  format: 'binary',
-                  description: 'Source input file binary (up to 100 MB).',
-                },
-                targetFormat: {
-                  type: 'string',
-                  description: 'Target format extension or identifier (e.g., "pdf", "step", "webp").',
-                },
-                sourceFormat: {
-                  type: 'string',
-                  description: 'Explicit source format override. If omitted, inferred from filename.',
-                },
-                options: {
-                  type: 'string',
-                  description: 'JSON-serialized conversion options (e.g. quality, resolution, delimiter).',
-                },
-              },
-            },
-          },
-        },
-      },
+      requestBody: multipartBody(CONVERT_FORM_PROPERTIES, ['file', 'targetFormat']),
       responses: {
         '200': {
           description: 'Successful conversion returning file metadata or raw binary stream.',

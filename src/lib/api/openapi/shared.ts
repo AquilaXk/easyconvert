@@ -48,3 +48,37 @@ export const IDEMPOTENCY_KEY_PARAMETER = {
   description: 'Optional 1-255 character printable ASCII idempotency key for safe retries.',
   schema: { $ref: '#/components/schemas/IdempotencyKeyHeader' },
 };
+
+type SchemaProperties = Record<string, unknown>;
+
+const objectSchema = (properties: SchemaProperties, required?: string[]) => ({
+  type: 'object',
+  ...(required ? { required } : {}),
+  properties,
+});
+
+/** Required multipart/form-data request body with an object schema. */
+export const multipartBody = (properties: SchemaProperties, required?: string[]) => ({
+  required: true,
+  content: { 'multipart/form-data': { schema: objectSchema(properties, required) } },
+});
+
+/** Required JSON request body with an object schema. */
+export const jsonBody = (properties: SchemaProperties, required?: string[]) => ({
+  required: true,
+  content: { 'application/json': { schema: objectSchema(properties, required) } },
+});
+
+/** Raw binary request body of the given media type. */
+export const binaryBody = (mediaType: string, required: boolean) => ({
+  required,
+  content: { [mediaType]: { schema: { type: 'string', format: 'binary' } } },
+});
+
+/** Form fields of a single-file conversion request. */
+export const CONVERT_FORM_PROPERTIES = {
+  file: { type: 'string', format: 'binary', description: 'Source input file binary (up to 100 MB).' },
+  targetFormat: { type: 'string', description: 'Target format extension or identifier (e.g., "pdf", "step", "webp").' },
+  sourceFormat: { type: 'string', description: 'Explicit source format override. If omitted, inferred from filename.' },
+  options: { type: 'string', description: 'JSON-serialized conversion options (e.g. quality, resolution, delimiter).' },
+};

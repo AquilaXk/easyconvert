@@ -4,6 +4,7 @@ import {
   createJsonResponse,
   createPathParameter,
   createProblemResponse,
+  jsonBody,
   requireScope,
 } from '../shared';
 
@@ -24,32 +25,21 @@ export const keyPaths = {
       description: 'Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and webhook URL. Requires admin wildcard (*) scope.',
       operationId: 'createApiKey',
       security: requireScope('*'),
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              type: 'object',
-              required: ['name'],
-              properties: {
-                name: { type: 'string', example: 'Production Microservice Key' },
-                allowedIps: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  example: ['192.168.1.0/24', '10.0.0.1'],
-                },
-                webhookUrl: { type: 'string', format: 'uri' },
-                webhookSecret: { type: 'string' },
-                scopes: {
-                  type: 'array',
-                  items: { type: 'string', enum: API_KEY_SCOPES },
-                },
-                expiresAt: { type: 'number', description: 'Unix timestamp in milliseconds when the key expires.' },
-              },
-            },
-          },
+      requestBody: jsonBody({
+        name: { type: 'string', example: 'Production Microservice Key' },
+        allowedIps: {
+          type: 'array',
+          items: { type: 'string' },
+          example: ['192.168.1.0/24', '10.0.0.1'],
         },
-      },
+        webhookUrl: { type: 'string', format: 'uri' },
+        webhookSecret: { type: 'string' },
+        scopes: {
+          type: 'array',
+          items: { type: 'string', enum: API_KEY_SCOPES },
+        },
+        expiresAt: { type: 'number', description: 'Unix timestamp in milliseconds when the key expires.' },
+      }, ['name']),
       responses: {
         '200': { description: 'API key generated; `secretKey` is returned only once.' },
       },
@@ -75,24 +65,14 @@ export const keyPaths = {
       operationId: 'updateApiKey',
       security: requireScope('*'),
       parameters: [createPathParameter('id', 'API key ID to update.')],
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              type: 'object',
-              properties: {
-                name: { type: 'string', minLength: 1 },
-                allowedIps: { type: 'array', items: { type: 'string' } },
-                webhookUrl: { type: 'string', format: 'uri' },
-                webhookSecret: { type: 'string' },
-                scopes: { type: 'array', minItems: 1, items: { type: 'string', enum: API_KEY_SCOPES } },
-                expiresAt: { type: 'number', description: 'Future Unix timestamp in milliseconds.' },
-              },
-            },
-          },
-        },
-      },
+      requestBody: jsonBody({
+        name: { type: 'string', minLength: 1 },
+        allowedIps: { type: 'array', items: { type: 'string' } },
+        webhookUrl: { type: 'string', format: 'uri' },
+        webhookSecret: { type: 'string' },
+        scopes: { type: 'array', minItems: 1, items: { type: 'string', enum: API_KEY_SCOPES } },
+        expiresAt: { type: 'number', description: 'Future Unix timestamp in milliseconds.' },
+      }),
       responses: {
         '200': createJsonResponse('API key updated.', {
           success: { type: 'boolean' },
