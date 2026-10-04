@@ -77,6 +77,8 @@ const CSS_PX_PER_INCH = 96;
 const MM_PER_INCH = 25.4;
 const HUNDREDTHS_MM_PER_PX = (MM_PER_INCH * 100) / CSS_PX_PER_INCH;
 const INT16_MAX = 32767;
+/** Coarsest logical resolution accepted; below it small geometry collapses onto the integer grid. */
+const MIN_UNITS_PER_INCH = 8;
 
 const UINT16_MAX = 0xffff;
 const UINT32_MAX = 0xffffffff;
@@ -122,9 +124,9 @@ function computeLogicalSpace(ops: DrawOp[], width: number, height: number): Logi
   }
   if (maxAbs <= INT16_MAX) return { unitsPerInch: CSS_PX_PER_INCH, scale: 1 };
   const unitsPerInch = Math.floor((CSS_PX_PER_INCH * INT16_MAX) / maxAbs);
-  if (unitsPerInch < 1) {
+  if (unitsPerInch < MIN_UNITS_PER_INCH) {
     throw new CadGeometryUnavailableError(
-      `Drawing extent of ${Math.round(maxAbs)} px is too large for the 16-bit metafile coordinate range.`
+      `Drawing extent of ${Math.round(maxAbs)} px is too large for the 16-bit metafile coordinate range at a usable resolution (minimum ${MIN_UNITS_PER_INCH} units per inch).`
     );
   }
   const scale = unitsPerInch / CSS_PX_PER_INCH;
