@@ -626,6 +626,18 @@ describe('Phase 4-F: Float32 Linear Color Pipeline, RCD Demosaicing & Ultra HDR/
       expect(Buffer.compare(resRcd.data, resAhd.data)).not.toBe(0);
       expect(Buffer.compare(resRcd.data, resAmaze.data)).not.toBe(0);
     });
+
+    it('routes options.demosaicMethod in processFloat32LinearPipeline to amaze, ahd, and rcd', () => {
+      const { sensor } = generateZonePlateCfa(16, 16, 'RGGB');
+
+      const resRcd = processFloat32LinearPipeline(sensor, { demosaicMethod: 'rcd' });
+      const resAmaze = processFloat32LinearPipeline(sensor, { demosaicMethod: 'amaze' });
+      const resAhd = processFloat32LinearPipeline(sensor, { demosaicMethod: 'ahd' });
+
+      expect(Buffer.compare(resRcd.rgb8, resAmaze.rgb8)).not.toBe(0);
+      expect(Buffer.compare(resRcd.rgb8, resAhd.rgb8)).not.toBe(0);
+      expect(Buffer.compare(resAmaze.rgb8, resAhd.rgb8)).not.toBe(0);
+    });
   });
 
   describe('3. Color Transformation Pipeline & Delta E Accuracy', () => {
@@ -820,6 +832,103 @@ describe('Phase 4-F: Float32 Linear Color Pipeline, RCD Demosaicing & Ultra HDR/
       for (let i = 0; i < totalPixels; i++) {
         expect(unpacked10[i]).toBe(orig10[i]);
       }
+
+      // 3. Test 14-bit packed (4 pixels in 7 bytes) LE and BE
+      const orig14 = new Uint16Array(totalPixels);
+      for (let i = 0; i < totalPixels; i++) orig14[i] = (i * 353) & 0x3fff;
+
+      const packed14LE = Buffer.alloc((totalPixels * 7) / 4);
+      const packed14BE = Buffer.alloc((totalPixels * 7) / 4);
+      let pIdx14 = 0;
+      for (let i = 0; i < totalPixels; i += 4) {
+        const p0 = orig14[i];
+        const p1 = orig14[i + 1];
+        const p2 = orig14[i + 2];
+        const p3 = orig14[i + 3];
+
+        // LE packing
+        packed14LE[pIdx14] = p0 & 0xff;
+        packed14LE[pIdx14 + 1] = ((p0 >> 8) & 0x3f) | ((p1 & 0x03) << 6);
+        packed14LE[pIdx14 + 2] = (p1 >> 2) & 0xff;
+        packed14LE[pIdx14 + 3] = ((p1 >> 10) & 0x0f) | ((p2 & 0x0f) << 4);
+        packed14LE[pIdx14 + 4] = (p2 >> 4) & 0xff;
+        packed14LE[pIdx14 + 5] = ((p2 >> 12) & 0x03) | ((p3 & 0x3f) << 2);
+        packed14LE[pIdx14 + 6] = (p3 >> 6) & 0xff;
+
+        // BE packing
+        packed14BE[pIdx14] = (p0 >> 6) & 0xff;
+        packed14BE[pIdx14 + 1] = ((p0 & 0x3f) << 2) | ((p1 >> 12) & 0x03);
+        packed14BE[pIdx14 + 2] = (p1 >> 4) & 0xff;
+        packed14BE[pIdx14 + 3] = ((p1 & 0x0f) << 4) | ((p2 >> 10) & 0x0f);
+        packed14BE[pIdx14 + 4] = (p2 >> 2) & 0xff;
+        packed14BE[pIdx14 + 5] = ((p2 & 0x03) << 6) | ((p3 >> 8) & 0x3f);
+        packed14BE[pIdx14 + 6] = p3 & 0xff;
+
+        pIdx14 += 7;
+      }
+
+      const unpacked14LE = unpackRawSensorBits(packed14LE, width, height, 14, true);
+      const unpacked14BE = unpackRawSensorBits(packed14BE, width, height, 14, false);
+      expect(unpacked14LE.length).toBe(totalPixels);
+      expect(unpacked14BE.length).toBe(totalPixels);
+      for (let i = 0; i < totalPixels; i++) {
+        expect(unpacked14LE[i]).toBe(orig14[i]);
+        expect(unpacked14BE[i]).toBe(orig14[i]);
+      }
+
+      // 4. Test 12-bit Big-Endian packed
+      const packed12BE = Buffer.alloc((totalPixels * 3) / 2);
+      let pIdx12BE = 0;
+      for (let i = 0; i < totalPixels; i += 2) {
+        const p0 = orig12[i];
+        const p1 = orig12[i + 1];
+        packed12BE[pIdx12BE] = (p0 >> 4) & 0xff;
+        packed12BE[pIdx12BE + 1] = ((p0 & 0x0f) << 4) | ((p1 >> 8) & 0x0f);
+        packed12BE[pIdx12BE + 2] = p1 & 0xff;
+        pIdx12BE += 3;
+      }
+      const unpacked12BE = unpackRawSensorBits(packed12BE, width, height, 12, false);
+      for (let i = 0; i < totalPixels; i++) {
+        expect(unpacked12BE[i]).toBe(orig12[i]);
+      }
+
+      // 5. Test 10-bit Big-Endian packed
+      const packed10BE = Buffer.alloc((totalPixels * 5) / 4);
+      let pIdx10BE = 0;
+      for (let i = 0; i < totalPixels; i += 4) {
+        const p0 = orig10[i];
+        const p1 = orig10[i + 1];
+        const p2 = orig10[i + 2];
+        const p3 = orig10[i + 3];
+        packed10BE[pIdx10BE] = (p0 >> 2) & 0xff;
+        packed10BE[pIdx10BE + 1] = ((p0 & 0x03) << 6) | ((p1 >> 4) & 0x3f);
+        packed10BE[pIdx10BE + 2] = ((p1 & 0x0f) << 4) | ((p2 >> 6) & 0x0f);
+        packed10BE[pIdx10BE + 3] = ((p2 & 0x3f) << 2) | ((p3 >> 8) & 0x03);
+        packed10BE[pIdx10BE + 4] = p3 & 0xff;
+        pIdx10BE += 5;
+      }
+      const unpacked10BE = unpackRawSensorBits(packed10BE, width, height, 10, false);
+      for (let i = 0; i < totalPixels; i++) {
+        expect(unpacked10BE[i]).toBe(orig10[i]);
+      }
+
+      // 6. Test odd pixel count / tail pixel unpacking (e.g. 5 pixels of 12-bit)
+      const odd12 = [111, 222, 333, 444, 555];
+      const oddBuf = Buffer.alloc(8);
+      oddBuf[0] = odd12[0] & 0xff;
+      oddBuf[1] = ((odd12[0] >> 8) & 0x0f) | ((odd12[1] & 0x0f) << 4);
+      oddBuf[2] = (odd12[1] >> 4) & 0xff;
+      oddBuf[3] = odd12[2] & 0xff;
+      oddBuf[4] = ((odd12[2] >> 8) & 0x0f) | ((odd12[3] & 0x0f) << 4);
+      oddBuf[5] = (odd12[3] >> 4) & 0xff;
+      oddBuf[6] = odd12[4] & 0xff;
+      oddBuf[7] = (odd12[4] >> 8) & 0x0f;
+
+      const oddUnpacked = unpackRawSensorBits(oddBuf, 5, 1, 12, true);
+      expect(oddUnpacked.length).toBe(5);
+      for (let i = 0; i < 5; i++) {
+        expect(oddUnpacked[i]).toBe(odd12[i]);
+      }
     });
 
     it('handles big-endian (MM) byte order in TIFF headers and tags', () => {
@@ -958,6 +1067,16 @@ describe('Phase 4-F: Float32 Linear Color Pipeline, RCD Demosaicing & Ultra HDR/
       expect(gmMeta.format).toBe('jpeg');
       expect(gmMeta.width).toBe(width);
       expect(gmMeta.height).toBe(height);
+
+      // 5. Verify CIPA DC-007 MPF marker points accurately to secondary JPEG SOI
+      const mpfIdx = ultraHdrBuf.indexOf(Buffer.from('MPF\0II', 'ascii'));
+      expect(mpfIdx).toBeGreaterThan(0);
+      const mpfHeaderStart = mpfIdx + 4;
+      const mp2OffsetPos = mpfHeaderStart + 50 + 16 + 8;
+      const offsetToSecondary = ultraHdrBuf.readUInt32LE(mp2OffsetPos);
+      const secondaryTarget = mpfHeaderStart + offsetToSecondary;
+      expect(ultraHdrBuf[secondaryTarget]).toBe(0xff);
+      expect(ultraHdrBuf[secondaryTarget + 1]).toBe(0xd8);
     });
   });
 
@@ -978,6 +1097,19 @@ describe('Phase 4-F: Float32 Linear Color Pipeline, RCD Demosaicing & Ultra HDR/
       expect(meta.depth).toBe('ushort'); // 16-bit depth
       expect(meta.icc).toBeDefined();
       expect(meta.icc!.length).toBeGreaterThan(200);
+
+      // Verify baseline TIFF tags: 282 (XResolution), 283 (YResolution), 296 (ResolutionUnit)
+      const tiffLe = tiffBuf[0] === 0x49;
+      const read16 = (off: number) => (tiffLe ? tiffBuf.readUInt16LE(off) : tiffBuf.readUInt16BE(off));
+      const ifdOffset = tiffLe ? tiffBuf.readUInt32LE(4) : tiffBuf.readUInt32BE(4);
+      const tagCount = read16(ifdOffset);
+      const tags: number[] = [];
+      for (let i = 0; i < tagCount; i++) {
+        tags.push(read16(ifdOffset + 2 + i * 12));
+      }
+      expect(tags).toContain(282); // XResolution
+      expect(tags).toContain(283); // YResolution
+      expect(tags).toContain(296); // ResolutionUnit
     });
 
     it('encodes genuine 16-bit PNG with Rec.2020 iCCP chunk', async () => {
@@ -1068,6 +1200,119 @@ describe('Phase 4-F: Float32 Linear Color Pipeline, RCD Demosaicing & Ultra HDR/
       const meta = await sharp(res.buffer).metadata();
       expect(meta.depth).toBe('ushort');
       expect(meta.icc).toBeDefined();
+    });
+
+    it('converts OpenEXR (.exr) input to PNG and JPEG without unsupported image format errors', async () => {
+      const width = 8;
+      const height = 8;
+      const pixels = new Float32Array(width * height * 3);
+      for (let i = 0; i < pixels.length; i++) {
+        pixels[i] = (i * 0.1) % 2.0;
+      }
+
+      const exrBuf = encodeOpenExr(pixels, width, height, true);
+
+      // Convert EXR to PNG
+      const pngRes = await convertImage(exrBuf, 'png', {}, 'render.exr', 'exr');
+      expect(pngRes.mimeType).toBe('image/png');
+      expect(pngRes.filename).toBe('render.png');
+      const pngMeta = await sharp(pngRes.buffer).metadata();
+      expect(pngMeta.format).toBe('png');
+      expect(pngMeta.width).toBe(width);
+      expect(pngMeta.height).toBe(height);
+
+      // Convert EXR to JPEG
+      const jpgRes = await convertImage(exrBuf, 'jpg', { quality: 90 }, 'render.exr', 'exr');
+      expect(jpgRes.mimeType).toBe('image/jpeg');
+      expect(jpgRes.filename).toBe('render.jpg');
+      const jpgMeta = await sharp(jpgRes.buffer).metadata();
+      expect(jpgMeta.format).toBe('jpeg');
+      expect(jpgMeta.width).toBe(width);
+      expect(jpgMeta.height).toBe(height);
+    });
+
+    it('converts Ultra HDR JPEG input to OpenEXR (.exr) preserving reconstructed HDR radiance > 1.0', async () => {
+      const width = 16;
+      const height = 16;
+      const totalPixels = width * height;
+
+      const sdrRgb = Buffer.alloc(totalPixels * 3, 128);
+      const hdrRgb = new Float32Array(totalPixels * 3);
+      for (let i = 0; i < totalPixels * 3; i++) {
+        hdrRgb[i] = 1.0 + (i % 3 === 0 ? 3.0 : 0.5); // Peak radiance up to 4.0
+      }
+
+      const ultraHdrBuf = await encodeUltraHdrJpeg(sdrRgb, hdrRgb, width, height, {
+        quality: 95,
+        gainMapMax: 3.0,
+      });
+
+      const exrRes = await convertImage(ultraHdrBuf, 'exr', {}, 'sunset.jpg', 'ultrahdr');
+      expect(exrRes.mimeType).toBe('image/x-exr');
+      expect(exrRes.filename).toBe('sunset.exr');
+
+      const decodedExr = decodeOpenExr(exrRes.buffer);
+      expect(decodedExr.width).toBe(width);
+      expect(decodedExr.height).toBe(height);
+
+      // Reconstructed HDR radiance must exceed 1.0, preserving highlight headroom from the gain map
+      let maxVal = 0;
+      for (let i = 0; i < decodedExr.rgb.length; i++) {
+        if (decodedExr.rgb[i] > maxVal) maxVal = decodedExr.rgb[i];
+      }
+      expect(maxVal).toBeGreaterThan(1.5);
+    });
+
+    it('preserves highlight headroom (> 1.0) in Float32 linear pipeline when demosaicing with AMaZE and AHD', () => {
+      const width = 8;
+      const height = 8;
+      const data = new Uint16Array(width * height);
+      for (let i = 0; i < width * height; i++) {
+        data[i] = 1023 + 500; // rawVal exceeds whiteLevel
+      }
+      const sensor: BayerSensorData = {
+        width,
+        height,
+        pattern: 'RGGB',
+        data,
+        blackLevel: 0,
+        whiteLevel: 1023,
+      };
+
+      const amazeRes = demosaicAmazeBayerCfa(sensor);
+      expect(amazeRes.floatData).toBeDefined();
+      expect(amazeRes.floatData![0]).toBeGreaterThan(1.0);
+
+      const ahdRes = demosaicAhdBayerCfa(sensor);
+      expect(ahdRes.floatData).toBeDefined();
+      expect(ahdRes.floatData![0]).toBeGreaterThan(1.0);
+
+      const pipeAmaze = processFloat32LinearPipeline(sensor, { demosaicMethod: 'amaze' });
+      expect(pipeAmaze.rgbFloat[0]).toBeGreaterThan(1.0);
+
+      const pipeAhd = processFloat32LinearPipeline(sensor, { demosaicMethod: 'ahd' });
+      expect(pipeAhd.rgbFloat[0]).toBeGreaterThan(1.0);
+    });
+
+    it('fails closed when converting corrupt or missing gain map Ultra HDR input with src === "ultrahdr"', async () => {
+      const dummyJpeg = await sharp({
+        create: {
+          width: 16,
+          height: 16,
+          channels: 3,
+          background: { r: 128, g: 128, b: 128 },
+        },
+      })
+        .jpeg()
+        .toBuffer();
+
+      await expect(
+        convertImage(dummyJpeg, 'png', {}, 'corrupt.jpg', 'ultrahdr')
+      ).rejects.toThrow('Invalid Ultra HDR JPEG: secondary gain map JPEG not detected.');
+
+      await expect(
+        convertImage(dummyJpeg, 'exr', {}, 'corrupt.jpg', 'ultrahdr')
+      ).rejects.toThrow('Invalid Ultra HDR JPEG: secondary gain map JPEG not detected.');
     });
   });
 });
