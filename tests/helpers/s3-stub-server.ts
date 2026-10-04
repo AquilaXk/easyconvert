@@ -107,7 +107,7 @@ export async function startS3StubServer(options: {
     req.on('end', () => {
       const body = Buffer.concat(chunks);
       const rawUrl = req.url ?? '/';
-      const parsed = new URL(rawUrl, 'http://stub.invalid');
+      const parsed = new URL(rawUrl, 'https://stub.invalid');
       const segments = parsed.pathname.split('/');
       const bucket = decodeURIComponent(segments[1] ?? '');
       const key = segments.slice(2).map((s) => decodeURIComponent(s)).join('/');
