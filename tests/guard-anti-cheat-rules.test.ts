@@ -340,6 +340,78 @@ export function encodeStep(model: any): Buffer {
       });
     });
 
+    /** Parses strict-mode output into `file -> symbol` entries for a single rule. */
+    function ruleHits(output: string, rule: string): Array<{ file: string; symbol: string }> {
+      // eslint-disable-next-line no-control-regex
+      const plain = output.replace(/\x1b\[[0-9;]*m/g, '');
+      const pattern = new RegExp(String.raw`^\s*(\S+):\d+ \[${rule}\] \((.*?)\)`, 'gm');
+      return [...plain.matchAll(pattern)].map((m) => ({ file: path.basename(m[1]), symbol: m[2] }));
+    }
+
+    it('flags external hosts reached through constants, templates, and request helpers (positive case)', () => {
+      withTempDir((dir) => {
+        const cases: Record<string, string> = {
+          'concat.mjs': `const BASE = 'https://third-party.test';\nawait page.goto(BASE + '/pricing');\n`,
+          'template-ident.mjs': "const BASE = 'https://third-party.test';\nawait page.goto(`${BASE}/pricing`);\n",
+          'template-host.mjs': 'await page.goto(`https://third.party/items/${id}`);\n',
+          'const-ident.mjs': `const API = 'https://third-party.test/api';\nawait fetch(API);\n`,
+          'page-request.mjs': `await page.request.get('https://third-party.test/api');\n`,
+          'request-post.mjs': `await request.post('https://third-party.test/api', { data: 1 });\n`,
+          'axios-get.mjs': `await axios.get('https://third-party.test/api');\n`,
+          'second-arg.mjs': `await context.newPage();\nawait page.goto(url, 'https://third-party.test/ref');\n`,
+        };
+        for (const [name, body] of Object.entries(cases)) writeScript(dir, name, body);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        expect(res.status).not.toBe(0);
+        const hits = ruleHits(res.stderr + res.stdout, 'G5-EXTERNAL-NAVIGATION');
+        const flagged = new Map(hits.map((h) => [h.file, h.symbol]));
+        expect([...flagged.keys()].sort()).toEqual(Object.keys(cases).sort());
+        expect(flagged.get('template-host.mjs')).toBe('third.party');
+        expect(flagged.get('concat.mjs')).toBe('third-party.test');
+        expect(flagged.get('template-ident.mjs')).toBe('third-party.test');
+      });
+    });
+
+    it('permits local hosts, unresolved bases, comments, and non-request getters (negative case)', () => {
+      withTempDir((dir) => {
+        writeScript(
+          dir,
+          'local.mjs',
+          [
+            `const BASE = 'http://localhost:3000';`,
+            `const DOCS = 'https://third-party.test/docs';`,
+            `// await page.goto('https://third-party.test/commented');`,
+            `/* axios.get('https://third-party.test/block'); */`,
+            `await page.goto(BASE + '/convert');`,
+            'await page.goto(`${BASE}/convert`);',
+            'await page.goto(`${process.env.BASE_URL}/convert`);',
+            'await page.goto(`http://${host}:3000/convert`);',
+            `await page.request.get('http://127.0.0.1:3000/api/health');`,
+            `await axios.post('https://api.example.com/v1', {});`,
+            `const cached = cache.get(DOCS);`,
+            `console.log(DOCS, cached);`,
+          ].join('\n') + '\n'
+        );
+        const res = runGuardSubprocess(dir, ['--strict']);
+        expect(ruleHits(res.stderr + res.stdout, 'G5-EXTERNAL-NAVIGATION')).toEqual([]);
+        expect(res.status).toBe(0);
+      });
+    });
+
+    it('flags import-equals and dynamic import of un-prefixed built-ins (positive case)', () => {
+      withTempDir((dir) => {
+        writeScript(
+          dir,
+          'legacy-forms.ts',
+          `import zlib = require('zlib');\nconst os = await import('os');\nconst fs = require('fs');\nexport { zlib, os, fs };\n`
+        );
+        const res = runGuardSubprocess(dir, ['--strict']);
+        expect(res.status).not.toBe(0);
+        const symbols = ruleHits(res.stderr + res.stdout, 'G6-NODE-PREFIX').map((h) => h.symbol);
+        expect(symbols.sort()).toEqual(['fs', 'os', 'zlib']);
+      });
+    });
+
     it('flags built-in imports without the node: prefix (positive case)', () => {
       withTempDir((dir) => {
         writeScript(dir, 'legacy.ts', `import fs from 'fs';\nconst cp = require('child_process');\nexport { fs, cp };\n`);
