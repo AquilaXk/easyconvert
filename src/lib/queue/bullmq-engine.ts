@@ -196,12 +196,24 @@ export interface DlqEntry<T = any> {
   stacktrace: string[];
 }
 
+/**
+ * Calculates priority score for waiting ZSET:
+ * score = priorityRank * 1e12 + (timestamp % 1e12)
+ * High priority jobs (priority 1 > 2 > 0/default 1000) have lower score and execute first.
+ * Strict FIFO order is preserved within the same priority level.
+ */
+export function calculateJobPriorityScore(priority?: number, timestamp: number = Date.now()): number {
+  const priorityRank = typeof priority === 'number' && priority > 0 ? priority : 1000;
+  return priorityRank * 1e12 + (timestamp % 1e12);
+}
+
 export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   readonly name: string;
   readonly isDistributed: boolean;
   add(name: string, data: T, opts?: JobOptions): Promise<Job<T, R>>;
   getJob(id: string): Promise<Job<T, R> | undefined>;
   getJobs(types: JobState[]): Promise<Job<T, R>[]>;
+  getJobsByUser(userId: string, states?: JobState[], limit?: number, offset?: number): Promise<Job<T, R>[]>;
   getJobCounts(): Promise<JobCounts>;
   clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]>;
   close(): Promise<void>;
@@ -239,11 +251,27 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   private waitingIds: string[] = [];
   private delayedIds: string[] = [];
   private delayTimers = new Map<string, NodeJS.Timeout>();
+  private userJobs = new Map<string, string[]>();
   private dlq: DlqEntry<T>[] = [];
 
   constructor(name: string) {
     super();
     this.name = name;
+  }
+
+  private insertWaitingId(id: string): void {
+    const job = this.jobs.get(id);
+    const score = job ? calculateJobPriorityScore(job.opts.priority, job.timestamp) : Infinity;
+    let insertIdx = this.waitingIds.length;
+    for (let i = 0; i < this.waitingIds.length; i++) {
+      const otherJob = this.jobs.get(this.waitingIds[i]);
+      const otherScore = otherJob ? calculateJobPriorityScore(otherJob.opts.priority, otherJob.timestamp) : Infinity;
+      if (score < otherScore) {
+        insertIdx = i;
+        break;
+      }
+    }
+    this.waitingIds.splice(insertIdx, 0, id);
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
@@ -255,6 +283,13 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     const job = new Job<T, R>(id, name, data, opts, this);
     this.jobs.set(id, job);
 
+    const userId = (data as any)?.userId;
+    if (userId && typeof userId === 'string') {
+      const userList = this.userJobs.get(userId) || [];
+      userList.push(id);
+      this.userJobs.set(userId, userList);
+    }
+
     if (opts.delay && opts.delay > 0) {
       this.delayedIds.push(id);
       const timer = setTimeout(() => {
@@ -263,13 +298,13 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
         if (idx !== -1) {
           this.delayedIds.splice(idx, 1);
           job.state = 'waiting';
-          this.waitingIds.push(id);
+          this.insertWaitingId(id);
           this.emit('waiting', job);
         }
       }, opts.delay);
       this.delayTimers.set(id, timer);
     } else {
-      this.waitingIds.push(id);
+      this.insertWaitingId(id);
       this.emit('waiting', job);
     }
 
@@ -281,7 +316,43 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   async getJobs(types: JobState[]): Promise<Job<T, R>[]> {
-    return Array.from(this.jobs.values()).filter((j) => types.includes(j.state));
+    const result: Job<T, R>[] = [];
+    if (types.includes('waiting')) {
+      for (const id of this.waitingIds) {
+        const job = this.jobs.get(id);
+        if (job && job.state === 'waiting') {
+          result.push(job);
+        }
+      }
+    }
+    for (const job of this.jobs.values()) {
+      if (job.state !== 'waiting' && types.includes(job.state)) {
+        result.push(job);
+      }
+    }
+    return result;
+  }
+
+  async getJobsByUser(
+    userId: string,
+    states?: JobState[],
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<Job<T, R>[]> {
+    const ids = this.userJobs.get(userId);
+    if (!ids || ids.length === 0) {
+      return [];
+    }
+    const validStates = states && states.length > 0 ? new Set(states) : null;
+    const matching: Job<T, R>[] = [];
+    for (let i = ids.length - 1; i >= 0; i--) {
+      const job = this.jobs.get(ids[i]);
+      if (job && (!validStates || validStates.has(job.state))) {
+        matching.push(job);
+      }
+    }
+    matching.sort((a, b) => b.timestamp - a.timestamp);
+    return matching.slice(offset, offset + limit);
   }
 
   async getJobCounts(): Promise<JobCounts> {
@@ -294,20 +365,14 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
   // Internal worker queue interface
   _popNextWaiting(): Job<T, R> | undefined {
-    if (this.waitingIds.length === 0) return undefined;
-    // Prioritized search: pick job with lowest opts.priority (e.g. 1 > 2 > 3), preserving FIFO on ties
-    let bestIdx = 0;
-    let bestPriority = this.jobs.get(this.waitingIds[0])?.opts.priority ?? Number.MAX_SAFE_INTEGER;
-    for (let i = 1; i < this.waitingIds.length; i++) {
-      const job = this.jobs.get(this.waitingIds[i]);
-      const prio = job?.opts.priority ?? Number.MAX_SAFE_INTEGER;
-      if (prio < bestPriority) {
-        bestPriority = prio;
-        bestIdx = i;
+    while (this.waitingIds.length > 0) {
+      const id = this.waitingIds.shift()!;
+      const job = this.jobs.get(id);
+      if (job && job.state === 'waiting') {
+        return job;
       }
     }
-    const [id] = this.waitingIds.splice(bestIdx, 1);
-    return this.jobs.get(id);
+    return undefined;
   }
 
   _requeue(job: Job<T, R>, delayMs: number = 0): boolean {
@@ -324,15 +389,45 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
         if (idx !== -1) {
           this.delayedIds.splice(idx, 1);
           job.state = 'waiting';
-          this.waitingIds.push(job.id);
+          this.insertWaitingId(job.id);
           this.emit('waiting', job);
         }
       }, delayMs);
       this.delayTimers.set(job.id, timer);
     } else {
       job.state = 'waiting';
-      this.waitingIds.push(job.id);
+      this.insertWaitingId(job.id);
       this.emit('waiting', job);
+    }
+    return true;
+  }
+
+  _onJobCompleted(job: Job<T, R>, _result: R): boolean {
+    if (job.opts?.removeOnComplete === true) {
+      this.jobs.delete(job.id);
+    } else if (typeof job.opts?.removeOnComplete === 'number') {
+      const maxToKeep = job.opts.removeOnComplete;
+      const completed = Array.from(this.jobs.values())
+        .filter((j) => j.state === 'completed')
+        .sort((a, b) => (b.finishedOn || 0) - (a.finishedOn || 0));
+      for (let i = maxToKeep; i < completed.length; i++) {
+        this.jobs.delete(completed[i].id);
+      }
+    }
+    return true;
+  }
+
+  _onJobFailed(job: Job<T, R>, _err: any): boolean {
+    if (job.opts?.removeOnFail === true) {
+      this.jobs.delete(job.id);
+    } else if (typeof job.opts?.removeOnFail === 'number') {
+      const maxToKeep = job.opts.removeOnFail;
+      const failed = Array.from(this.jobs.values())
+        .filter((j) => j.state === 'failed')
+        .sort((a, b) => (b.finishedOn || 0) - (a.finishedOn || 0));
+      for (let i = maxToKeep; i < failed.length; i++) {
+        this.jobs.delete(failed[i].id);
+      }
     }
     return true;
   }
@@ -345,6 +440,16 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
       if (removed.length >= limit) break;
       if (job.state === type && job.finishedOn && job.finishedOn < threshold) {
         this.jobs.delete(id);
+        const userId = (job.data as any)?.userId;
+        if (userId) {
+          const userList = this.userJobs.get(userId);
+          if (userList) {
+            this.userJobs.set(
+              userId,
+              userList.filter((jid) => jid !== id)
+            );
+          }
+        }
         removed.push(id);
       }
     }
@@ -721,20 +826,104 @@ export interface RedisConnectionOptions {
   keyPrefix?: string;
 }
 
+export const ADD_JOB_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- KEYS[2]: waitingKey (ZSET)
+-- KEYS[3]: delayedKey (ZSET)
+-- KEYS[4]: userJobsKey (ZSET, or placeholder if none)
+-- ARGV[1]: jobId
+-- ARGV[2]: isDelayed ('1' or '0')
+-- ARGV[3]: delayUntil timestamp in ms
+-- ARGV[4]: priorityScore (score for waiting ZSET)
+-- ARGV[5]: timestamp in ms (score for userJobsKey)
+-- ARGV[6]: userId (empty string if none)
+-- ARGV[7]: eventsChannel ({queue}:events)
+-- ARGV[8]: jobEventsChannel ({queue}:job:{id}:events)
+-- ARGV[9..N]: flat key-value pairs for HSET
+
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return { 0, redis.call('HGETALL', KEYS[1]) }
+end
+
+for i = 9, #ARGV, 2 do
+  redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
+end
+
+if ARGV[2] == '1' then
+  redis.call('ZADD', KEYS[3], tonumber(ARGV[3]), ARGV[1])
+else
+  local t = redis.call('TYPE', KEYS[2])
+  local typeName = (type(t) == 'table' and t.ok) or t
+  if typeName == 'list' then
+    local items = redis.call('LRANGE', KEYS[2], 0, -1)
+    redis.call('DEL', KEYS[2])
+    for _, itemId in ipairs(items) do
+      redis.call('ZADD', KEYS[2], 1000000000000000, itemId)
+    end
+  end
+  redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), ARGV[1])
+  local waitingPayload = cjson.encode({ event = 'waiting', jobId = ARGV[1] })
+  redis.call('PUBLISH', ARGV[7], waitingPayload)
+  redis.call('PUBLISH', ARGV[8], waitingPayload)
+end
+
+if ARGV[6] ~= '' and KEYS[4] ~= '' then
+  redis.call('ZADD', KEYS[4], tonumber(ARGV[5]), ARGV[1])
+end
+
+return { 1 }
+`;
+
 export const PROMOTE_DELAYED_JOBS_LUA_SCRIPT = `
 -- KEYS[1]: delayedKey
 -- KEYS[2]: waitingKey
 -- KEYS[3]: jobPrefix (e.g. prefix:job:)
 -- ARGV[1]: current timestamp in milliseconds
 -- ARGV[2]: max batch size
+-- ARGV[3]: eventsChannel (optional)
 local due = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1], 'LIMIT', 0, tonumber(ARGV[2] or 50))
 local promoted = {}
+
+local t = redis.call('TYPE', KEYS[2])
+local typeName = (type(t) == 'table' and t.ok) or t
+if typeName == 'list' then
+  local items = redis.call('LRANGE', KEYS[2], 0, -1)
+  redis.call('DEL', KEYS[2])
+  for _, itemId in ipairs(items) do
+    local rawOpts = redis.call('HGET', KEYS[3] .. itemId, 'opts')
+    local prioRank = 1000
+    if rawOpts and rawOpts ~= '' then
+      local ok, opts = pcall(cjson.decode, rawOpts)
+      if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
+        prioRank = tonumber(opts.priority)
+      end
+    end
+    local rawTs = redis.call('HGET', KEYS[3] .. itemId, 'timestamp')
+    local ts = tonumber(rawTs) or tonumber(ARGV[1])
+    local score = prioRank * 1000000000000 + (ts % 1000000000000)
+    redis.call('ZADD', KEYS[2], score, itemId)
+  end
+end
+
 if due and #due > 0 then
   for i, id in ipairs(due) do
     if redis.call('ZREM', KEYS[1], id) > 0 then
-      redis.call('RPUSH', KEYS[2], id)
+      local rawOpts = redis.call('HGET', KEYS[3] .. id, 'opts')
+      local prioRank = 1000
+      if rawOpts and rawOpts ~= '' then
+        local ok, opts = pcall(cjson.decode, rawOpts)
+        if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
+          prioRank = tonumber(opts.priority)
+        end
+      end
+      local score = prioRank * 1000000000000 + (tonumber(ARGV[1]) % 1000000000000)
+      redis.call('ZADD', KEYS[2], score, id)
       redis.call('HSET', KEYS[3] .. id, 'state', 'waiting')
       table.insert(promoted, id)
+      if ARGV[3] and ARGV[3] ~= '' then
+        local waitingPayload = cjson.encode({ event = 'waiting', jobId = id })
+        redis.call('PUBLISH', ARGV[3], waitingPayload)
+      end
     end
   end
 end
@@ -749,13 +938,35 @@ export const POP_NEXT_WAITING_JOB_LUA_SCRIPT = `
 -- ARGV[1]: processedOn timestamp in milliseconds
 -- ARGV[2]: heartbeat TTL in milliseconds
 -- ARGV[3]: attempt token of the new attempt
--- Pops ids until one is still waiting, marks it active under the new attempt token, starts its
--- heartbeat, and returns its hash. Ids whose job is no longer waiting (cancelled, missing) are dropped.
+
+-- Auto-migrate waitingKey from list to zset if needed
+local t = redis.call('TYPE', KEYS[1])
+local typeName = (type(t) == 'table' and t.ok) or t
+if typeName == 'list' then
+  local items = redis.call('LRANGE', KEYS[1], 0, -1)
+  redis.call('DEL', KEYS[1])
+  for _, itemId in ipairs(items) do
+    local rawOpts = redis.call('HGET', KEYS[3] .. itemId, 'opts')
+    local prioRank = 1000
+    if rawOpts and rawOpts ~= '' then
+      local ok, opts = pcall(cjson.decode, rawOpts)
+      if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
+        prioRank = tonumber(opts.priority)
+      end
+    end
+    local rawTs = redis.call('HGET', KEYS[3] .. itemId, 'timestamp')
+    local ts = tonumber(rawTs) or tonumber(ARGV[1])
+    local score = prioRank * 1000000000000 + (ts % 1000000000000)
+    redis.call('ZADD', KEYS[1], score, itemId)
+  end
+end
+
 while true do
-  local jobId = redis.call('LPOP', KEYS[1])
-  if not jobId then
+  local popped = redis.call('ZPOPMIN', KEYS[1])
+  if not popped or #popped == 0 then
     return false
   end
+  local jobId = popped[1]
   local jobKey = KEYS[3] .. jobId
   if redis.call('HGET', jobKey, 'state') == 'waiting' then
     redis.call('SADD', KEYS[2], jobId)
@@ -782,7 +993,13 @@ local state = redis.call('HGET', KEYS[1], 'state')
 if state ~= 'waiting' and state ~= 'delayed' and state ~= 'active' then
   return 0
 end
-redis.call('LREM', KEYS[2], 0, ARGV[1])
+local t = redis.call('TYPE', KEYS[2])
+local typeName = (type(t) == 'table' and t.ok) or t
+if typeName == 'list' then
+  redis.call('LREM', KEYS[2], 0, ARGV[1])
+else
+  redis.call('ZREM', KEYS[2], ARGV[1])
+end
 redis.call('ZREM', KEYS[3], ARGV[1])
 redis.call('SREM', KEYS[4], ARGV[1])
 redis.call('DEL', KEYS[6])
@@ -812,6 +1029,7 @@ export const REQUEUE_JOB_LUA_SCRIPT = `
 -- ARGV[4]: retry delay in milliseconds
 -- ARGV[5]: current timestamp in milliseconds
 -- ARGV[6]: attempt token of the caller
+-- ARGV[7]: priorityScore (score for waiting ZSET)
 -- Returns 1 after moving the job from active to waiting/delayed, or 0 when it is no longer active
 -- or another attempt owns it.
 if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[6] then
@@ -824,7 +1042,17 @@ if delayMs > 0 then
   redis.call('ZADD', KEYS[4], tonumber(ARGV[5]) + delayMs, ARGV[1])
   redis.call('HSET', KEYS[1], 'state', 'delayed', 'attemptsMade', ARGV[2], 'failedReason', ARGV[3])
 else
-  redis.call('RPUSH', KEYS[3], ARGV[1])
+  local t = redis.call('TYPE', KEYS[3])
+  local typeName = (type(t) == 'table' and t.ok) or t
+  if typeName == 'list' then
+    local items = redis.call('LRANGE', KEYS[3], 0, -1)
+    redis.call('DEL', KEYS[3])
+    for _, itemId in ipairs(items) do
+      redis.call('ZADD', KEYS[3], 1000000000000000, itemId)
+    end
+  end
+  local score = tonumber(ARGV[7]) or 1000000000000000
+  redis.call('ZADD', KEYS[3], score, ARGV[1])
   redis.call('HSET', KEYS[1], 'state', 'waiting', 'attemptsMade', ARGV[2], 'failedReason', ARGV[3])
 end
 return 1
@@ -937,6 +1165,17 @@ export const RECOVER_STALLED_JOBS_LUA_SCRIPT = `
 -- Returns { requeued ids, failed ids }.
 local requeued = {}
 local failed = {}
+
+local t = redis.call('TYPE', KEYS[2])
+local typeName = (type(t) == 'table' and t.ok) or t
+if typeName == 'list' then
+  local items = redis.call('LRANGE', KEYS[2], 0, -1)
+  redis.call('DEL', KEYS[2])
+  for _, itemId in ipairs(items) do
+    redis.call('ZADD', KEYS[2], 1000000000000000, itemId)
+  end
+end
+
 local activeIds = redis.call('SMEMBERS', KEYS[1])
 for _, jobId in ipairs(activeIds) do
   if redis.call('EXISTS', KEYS[5] .. jobId) == 0 then
@@ -946,17 +1185,26 @@ for _, jobId in ipairs(activeIds) do
       local attemptsMade = (tonumber(redis.call('HGET', jobKey, 'attemptsMade')) or 0) + 1
       local maxAttempts = 1
       local rawOpts = redis.call('HGET', jobKey, 'opts')
+      local prioRank = 1000
       if rawOpts then
         local ok, opts = pcall(cjson.decode, rawOpts)
-        if ok and type(opts) == 'table' and tonumber(opts.attempts) and tonumber(opts.attempts) > 0 then
-          maxAttempts = tonumber(opts.attempts)
+        if ok and type(opts) == 'table' then
+          if tonumber(opts.attempts) and tonumber(opts.attempts) > 0 then
+            maxAttempts = tonumber(opts.attempts)
+          end
+          if tonumber(opts.priority) and tonumber(opts.priority) > 0 then
+            prioRank = tonumber(opts.priority)
+          end
         end
       end
       -- The stalled attempt loses ownership: clearing its token fences any write it still tries.
       redis.call('HDEL', jobKey, 'attemptToken')
       if attemptsMade < maxAttempts then
         redis.call('HSET', jobKey, 'state', 'waiting', 'attemptsMade', attemptsMade, 'failedReason', ARGV[2])
-        redis.call('RPUSH', KEYS[2], jobId)
+        local rawTs = redis.call('HGET', jobKey, 'timestamp')
+        local ts = tonumber(rawTs) or tonumber(ARGV[1])
+        local score = prioRank * 1000000000000 + (ts % 1000000000000)
+        redis.call('ZADD', KEYS[2], score, jobId)
         table.insert(requeued, jobId)
       else
         redis.call('HSET', jobKey, 'state', 'failed', 'attemptsMade', attemptsMade, 'failedReason', ARGV[2], 'finishedOn', ARGV[1])
@@ -992,6 +1240,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   private redisConnected: boolean = false;
   private keyPrefix: string = 'easyconvert:queue:';
   private eventsChannel: string;
+  private localRecentEvents = new Set<string>();
   /** Redis mode: attempts this process is running, so a remote cancel can abort their signal. */
   private localActiveJobs = new Map<string, Job<T, R>>();
 
@@ -1012,8 +1261,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
     if (connectionOpts?.redisClient) {
       this.redisClient = connectionOpts.redisClient;
-      this.redisConnected = true;
-      this.initPubSub();
+      this.setupConnectionTracking(this.redisClient);
+      if (this.redisConnected) {
+        this.initPubSub();
+      }
     } else {
       const host = connectionOpts?.host || process.env.REDIS_HOST;
       const url = connectionOpts?.url || process.env.REDIS_URL;
@@ -1027,8 +1278,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             enableOfflineQueue: false,
             maxRetriesPerRequest: 1,
           });
-          this.redisConnected = true;
-          this.initPubSub();
+          this.setupConnectionTracking(this.redisClient);
+          this.redisClient.connect().catch(() => {
+            this.redisConnected = false;
+          });
         } catch {
           this.redisConnected = false;
         }
@@ -1041,8 +1294,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             enableOfflineQueue: false,
             maxRetriesPerRequest: 1,
           });
-          this.redisConnected = true;
-          this.initPubSub();
+          this.setupConnectionTracking(this.redisClient);
+          this.redisClient.connect().catch(() => {
+            this.redisConnected = false;
+          });
         } catch {
           this.redisConnected = false;
         }
@@ -1050,41 +1305,135 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
   }
 
+  getJobEventsChannel(id: string): string {
+    return `${this.keyPrefix}${this.name}:job:${id}:events`;
+  }
+
+  getUserJobsKey(userId: string): string {
+    return `${this.keyPrefix}{${this.name}}:user_jobs:${userId}`;
+  }
+
+  private setupConnectionTracking(client: Redis): void {
+    const status = (client as any).status;
+    if (typeof status === 'string') {
+      this.redisConnected = status === 'ready' || status === 'connecting' || status === 'connect';
+    } else {
+      this.redisConnected = true;
+    }
+
+    if (typeof client.on === 'function') {
+      client.on('ready', () => {
+        this.redisConnected = true;
+        this.initPubSub();
+      });
+      client.on('connect', () => {
+        const s = (client as any).status;
+        if (s === 'ready' || s === 'connect' || s === 'connecting') {
+          this.redisConnected = true;
+        }
+      });
+      client.on('close', () => {
+        this.redisConnected = false;
+      });
+      client.on('end', () => {
+        this.redisConnected = false;
+      });
+      client.on('error', (_err) => {
+        const s = (client as any).status;
+        if (s === 'close' || s === 'end') {
+          this.redisConnected = false;
+        }
+      });
+    }
+  }
+
   private initPubSub(): void {
     if (!this.redisClient) return;
     try {
       if (typeof this.redisClient.duplicate === 'function') {
-        this.subClient = this.redisClient.duplicate();
-        this.subClient.subscribe(this.eventsChannel).catch(() => {});
-        this.subClient.on('message', (_chan, msg) => {
-          try {
-            const payload = JSON.parse(msg);
-            if (payload.event === 'waiting') {
-              this.emit('waiting');
-            } else if (payload.event === 'cancelled' && typeof payload.jobId === 'string') {
-              // Abort only; the refund and the `cancelled` event belong to the process that cancelled.
-              this.abortLocalActiveJob(payload.jobId, String(payload.reason ?? ''));
-            }
-          } catch {}
-        });
+        if (!this.subClient) {
+          this.subClient = this.redisClient.duplicate();
+          this.subClient.subscribe(this.eventsChannel).catch(() => {});
+          this.subClient.on('message', (_chan, msg) => {
+            try {
+              const payload = JSON.parse(msg);
+              const eventKey = `${payload.event}:${payload.jobId}`;
+              if (this.localRecentEvents.has(eventKey)) {
+                return;
+              }
+              if (payload.event === 'waiting') {
+                this.emit('waiting');
+              } else if (payload.event === 'progress' && payload.jobId) {
+                const localJob = this.localActiveJobs.get(payload.jobId);
+                if (localJob) {
+                  localJob.progress = Number(payload.progress || 0);
+                  this.emit('progress', localJob, localJob.progress);
+                } else {
+                  this.emit('progress', { id: payload.jobId, progress: Number(payload.progress || 0), state: 'active' }, Number(payload.progress || 0));
+                }
+              } else if (payload.event === 'completed' && payload.jobId) {
+                const localJob = this.localActiveJobs.get(payload.jobId);
+                if (localJob) {
+                  localJob.state = 'completed';
+                  localJob.progress = 100;
+                  localJob.returnvalue = payload.result;
+                  this.emit('completed', localJob, payload.result);
+                } else {
+                  this.emit('completed', { id: payload.jobId, state: 'completed', progress: 100, returnvalue: payload.result }, payload.result);
+                }
+              } else if (payload.event === 'failed' && payload.jobId) {
+                const localJob = this.localActiveJobs.get(payload.jobId);
+                if (localJob) {
+                  localJob.state = 'failed';
+                  localJob.failedReason = payload.error;
+                  this.emit('failed', localJob, payload.error);
+                } else {
+                  this.emit('failed', { id: payload.jobId, state: 'failed', failedReason: payload.error }, payload.error);
+                }
+              } else if (payload.event === 'cancelled' && typeof payload.jobId === 'string') {
+                this.abortLocalActiveJob(payload.jobId, String(payload.reason ?? ''));
+                this.emit(`telemetry:${payload.jobId}`, {
+                  event: 'cancelled',
+                  data: { jobId: payload.jobId, state: 'cancelled', error: payload.reason },
+                });
+              }
+            } catch {}
+          });
+        }
       }
     } catch {
       // Gracefully skip pub/sub if duplicate is not supported (e.g. mock)
     }
   }
 
+  private markLocalEvent(event: string, jobId?: string): void {
+    if (!jobId) return;
+    const key = `${event}:${jobId}`;
+    this.localRecentEvents.add(key);
+    setTimeout(() => {
+      this.localRecentEvents.delete(key);
+    }, 5000);
+  }
+
   private async publishEvent(payload: Record<string, any>): Promise<void> {
     if (this.redisClient && this.redisConnected) {
       try {
+        if (payload.event && payload.jobId) {
+          this.markLocalEvent(payload.event, payload.jobId);
+        }
         if (typeof this.redisClient.publish === 'function') {
-          await this.redisClient.publish(this.eventsChannel, JSON.stringify(payload));
+          const serialized = JSON.stringify(payload);
+          await this.redisClient.publish(this.eventsChannel, serialized);
+          if (payload.jobId) {
+            await this.redisClient.publish(this.getJobEventsChannel(payload.jobId), serialized);
+          }
         }
       } catch {}
     }
   }
 
   get isConnected(): boolean {
-    return this.redisConnected;
+    return Boolean(this.redisClient && this.redisConnected);
   }
 
   getRedisClient(): Redis | null {
@@ -1093,9 +1442,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   setRedisClient(client: Redis | null): void {
     this.redisClient = client;
-    this.redisConnected = Boolean(client);
     if (client) {
-      this.initPubSub();
+      this.setupConnectionTracking(client);
+      if (this.redisConnected) {
+        this.initPubSub();
+      }
+    } else {
+      this.redisConnected = false;
     }
   }
 
@@ -1212,6 +1565,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
                 JSON.stringify(j.logs)
               );
             }
+            await this.publishEvent({ event: 'progress', jobId: j.id, progress: j.progress });
           } catch {}
         }
       }
@@ -1245,21 +1599,85 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
     if (this.redisClient && this.redisConnected) {
       const id = opts.jobId || `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
-      if (opts.jobId) {
-        try {
-          const existingRaw = await this.redisClient.hgetall(this.getJobKey(id));
-          if (existingRaw && Object.keys(existingRaw).length > 0) {
-            return this.hashToJob(existingRaw);
+      const userId = (data as any)?.userId ? String((data as any).userId) : '';
+      const userJobsKey = userId ? this.getUserJobsKey(userId) : '';
+      const now = Date.now();
+      const isDelayed = Boolean(opts.delay && opts.delay > 0);
+      const delayUntil = isDelayed ? now + opts.delay! : 0;
+      const priorityScore = calculateJobPriorityScore(opts.priority, now);
+
+      if (typeof this.redisClient.eval === 'function') {
+        const jobInstance = new Job<T, R>(id, name, data, opts, this, async (j) => {
+          if (this.redisClient && this.redisConnected) {
+            try {
+              if (j._attemptToken) {
+                await this.redisClient.eval(
+                  UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
+                  1,
+                  this.getJobKey(j.id),
+                  j._attemptToken,
+                  String(j.progress),
+                  JSON.stringify(j.logs)
+                );
+              } else {
+                await this.redisClient.hset(
+                  this.getJobKey(j.id),
+                  'progress',
+                  String(j.progress),
+                  'logs',
+                  JSON.stringify(j.logs)
+                );
+              }
+              await this.publishEvent({ event: 'progress', jobId: j.id, progress: j.progress });
+            } catch {}
           }
-        } catch {}
-      }
-      const job = new Job<T, R>(
-        id,
-        name,
-        data,
-        opts,
-        this,
-        async (j) => {
+        });
+
+        const hash = this.jobToHash(jobInstance);
+        const flatHash: string[] = [];
+        for (const [k, v] of Object.entries(hash)) {
+          flatHash.push(k, v);
+        }
+
+        const res = (await this.redisClient.eval(
+          ADD_JOB_LUA_SCRIPT,
+          4,
+          this.getJobKey(id),
+          this.waitingKey,
+          this.delayedKey,
+          userJobsKey || `${this.keyPrefix}{${this.name}}:user_jobs:none`,
+          id,
+          isDelayed ? '1' : '0',
+          String(delayUntil),
+          String(priorityScore),
+          String(now),
+          userId,
+          this.eventsChannel,
+          this.getJobEventsChannel(id),
+          ...flatHash
+        )) as [number, string[]?];
+
+        if (Array.isArray(res) && res[0] === 0 && res[1]) {
+          return this.hashToJob(flatHashToRecord(res[1]));
+        }
+
+        const job = this.hashToJob(hash);
+        if (!isDelayed) {
+          this.emit('waiting', job);
+        }
+        return job;
+      } else {
+        // Fallback for mock Redis without eval
+        if (opts.jobId) {
+          try {
+            const existingRaw = await this.redisClient.hgetall(this.getJobKey(id));
+            if (existingRaw && Object.keys(existingRaw).length > 0) {
+              return this.hashToJob(existingRaw);
+            }
+          } catch {}
+        }
+
+        const job = new Job<T, R>(id, name, data, opts, this, async (j) => {
           if (this.redisClient && this.redisConnected) {
             try {
               await this.redisClient.hset(
@@ -1271,21 +1689,32 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
               );
             } catch {}
           }
+        });
+
+        const hash = this.jobToHash(job);
+        await this.redisClient.hset(this.getJobKey(id), hash);
+
+        if (isDelayed) {
+          if (typeof this.redisClient.zadd === 'function') {
+            await this.redisClient.zadd(this.delayedKey, delayUntil, id);
+          }
+        } else {
+          if (typeof this.redisClient.rpush === 'function') {
+            await this.redisClient.rpush(this.waitingKey, id);
+          }
+          if (typeof this.redisClient.zadd === 'function') {
+            await this.redisClient.zadd(this.waitingKey, priorityScore, id);
+          }
+          await this.publishEvent({ event: 'waiting', jobId: id });
         }
-      );
 
-      const hash = this.jobToHash(job);
-      await this.redisClient.hset(this.getJobKey(id), hash);
+        if (userId && typeof this.redisClient.zadd === 'function') {
+          await this.redisClient.zadd(userJobsKey, now, id);
+        }
 
-      if (opts.delay && opts.delay > 0) {
-        await this.redisClient.zadd(this.delayedKey, Date.now() + opts.delay, id);
-      } else {
-        await this.redisClient.rpush(this.waitingKey, id);
-        await this.publishEvent({ event: 'waiting', jobId: id });
+        this.emit('waiting', job);
+        return job;
       }
-
-      this.emit('waiting', job);
-      return job;
     }
     return this.memoryFallback.add(name, data, opts);
   }
@@ -1311,10 +1740,23 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         const ids: string[] = [];
         for (const type of types) {
           if (type === 'waiting') {
-            const list = await this.redisClient.lrange(this.waitingKey, 0, -1);
-            ids.push(...list);
+            let list: string[] = [];
+            if (typeof this.redisClient.zrange === 'function') {
+              try {
+                list = await this.redisClient.zrange(this.waitingKey, 0, -1 as any);
+              } catch {}
+            }
+            if ((!list || list.length === 0) && typeof this.redisClient.lrange === 'function') {
+              try {
+                const legacyList = await this.redisClient.lrange(this.waitingKey, 0, -1);
+                if (legacyList && legacyList.length > 0) {
+                  list = legacyList;
+                }
+              } catch {}
+            }
+            ids.push(...(list || []));
           } else if (type === 'delayed') {
-            const list = await this.redisClient.zrange(this.delayedKey, 0, '-1');
+            const list = await this.redisClient.zrange(this.delayedKey, 0, -1 as any);
             ids.push(...list);
           } else if (type === 'active') {
             const set = await this.redisClient.smembers(this.activeKey);
@@ -1347,8 +1789,25 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   async getJobCounts(): Promise<JobCounts> {
     if (this.redisClient && this.redisConnected) {
       try {
+        const getWaitingCount = async (): Promise<number> => {
+          if (!this.redisClient) return 0;
+          if (typeof this.redisClient.zcard === 'function') {
+            try {
+              const count = await this.redisClient.zcard(this.waitingKey);
+              if (typeof count === 'number' && !isNaN(count)) return count;
+            } catch {}
+          }
+          if (typeof this.redisClient.llen === 'function') {
+            try {
+              const count = await this.redisClient.llen(this.waitingKey);
+              if (typeof count === 'number' && !isNaN(count)) return count;
+            } catch {}
+          }
+          return 0;
+        };
+
         const [waiting, active, completed, failed, delayed, cancelled] = await Promise.all([
-          this.redisClient.llen(this.waitingKey),
+          getWaitingCount(),
           this.redisClient.scard(this.activeKey),
           this.redisClient.scard(this.completedKey),
           this.redisClient.scard(this.failedKey),
@@ -1370,6 +1829,48 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback.getJobCounts();
   }
 
+  async getJobsByUser(
+    userId: string,
+    states?: JobState[],
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<Job<T, R>[]> {
+    if (this.redisClient && this.redisConnected) {
+      try {
+        const userKey = this.getUserJobsKey(userId);
+        const allJobIds = await this.redisClient.zrevrange(userKey, 0, -1);
+        if (!allJobIds || allJobIds.length === 0) {
+          return [];
+        }
+
+        const matchedJobs: Job<T, R>[] = [];
+        const staleJobIds: string[] = [];
+
+        for (const jobId of allJobIds) {
+          const job = await this.getJob(jobId);
+          if (!job) {
+            staleJobIds.push(jobId);
+            continue;
+          }
+          if (!states || states.length === 0 || states.includes(job.state)) {
+            matchedJobs.push(job);
+          }
+        }
+
+        if (staleJobIds.length > 0) {
+          try {
+            await this.redisClient.zrem(userKey, ...staleJobIds);
+          } catch {}
+        }
+
+        return matchedJobs.slice(offset, offset + limit);
+      } catch {
+        return [];
+      }
+    }
+    return this.memoryFallback.getJobsByUser(userId, states, limit, offset);
+  }
+
   async clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]> {
     if (this.redisClient && this.redisConnected) {
       try {
@@ -1389,6 +1890,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           if (finishedOn > 0 && finishedOn < threshold) {
             await this.redisClient.srem(key, id);
             await this.redisClient.del(this.getJobKey(id));
+            try {
+              let userId = '';
+              if (raw?.data) {
+                const parsed = JSON.parse(raw.data);
+                userId = parsed.userId || '';
+              }
+              if (userId) {
+                await this.redisClient.zrem(this.getUserJobsKey(userId), id);
+              }
+            } catch {}
             removed.push(id);
           }
         }
@@ -1430,8 +1941,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     const [previousState, rawHash] = outcome as [string, string[]];
     if (previousState === 'active') {
       this.abortLocalActiveJob(id, reason);
-      await this.publishEvent({ event: 'cancelled', jobId: id, reason });
     }
+    await this.publishEvent({ event: 'cancelled', jobId: id, reason });
     this.emit('cancelled', this.hashToJob(flatHashToRecord(rawHash)));
     return true;
   }
@@ -1585,11 +2096,79 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback._popNextWaiting();
   }
 
+  private async pruneCompletedJobs(maxToKeep: number): Promise<void> {
+    if (!this.redisClient || !this.redisConnected) return;
+    try {
+      const ids = await this.redisClient.smembers(this.completedKey);
+      if (ids.length <= maxToKeep) return;
+      const jobsWithTime: { id: string; finishedOn: number; userId?: string }[] = [];
+      for (const id of ids) {
+        const raw = await this.redisClient.hmget(this.getJobKey(id), 'finishedOn', 'data');
+        let userId: string | undefined;
+        try {
+          if (raw[1]) {
+            const parsed = JSON.parse(raw[1]);
+            userId = parsed.userId;
+          }
+        } catch {}
+        jobsWithTime.push({
+          id,
+          finishedOn: Number(raw[0] || 0),
+          userId,
+        });
+      }
+      jobsWithTime.sort((a, b) => b.finishedOn - a.finishedOn);
+      const toRemove = jobsWithTime.slice(maxToKeep);
+      for (const item of toRemove) {
+        await this.redisClient.srem(this.completedKey, item.id);
+        await this.redisClient.del(this.getJobKey(item.id));
+        if (item.userId) {
+          await this.redisClient.zrem(this.getUserJobsKey(item.userId), item.id);
+        }
+      }
+    } catch {}
+  }
+
+  private async pruneFailedJobs(maxToKeep: number): Promise<void> {
+    if (!this.redisClient || !this.redisConnected) return;
+    try {
+      const ids = await this.redisClient.smembers(this.failedKey);
+      if (ids.length <= maxToKeep) return;
+      const jobsWithTime: { id: string; finishedOn: number; userId?: string }[] = [];
+      for (const id of ids) {
+        const raw = await this.redisClient.hmget(this.getJobKey(id), 'finishedOn', 'data');
+        let userId: string | undefined;
+        try {
+          if (raw[1]) {
+            const parsed = JSON.parse(raw[1]);
+            userId = parsed.userId;
+          }
+        } catch {}
+        jobsWithTime.push({
+          id,
+          finishedOn: Number(raw[0] || 0),
+          userId,
+        });
+      }
+      jobsWithTime.sort((a, b) => b.finishedOn - a.finishedOn);
+      const toRemove = jobsWithTime.slice(maxToKeep);
+      for (const item of toRemove) {
+        await this.redisClient.srem(this.failedKey, item.id);
+        await this.redisClient.del(this.getJobKey(item.id));
+        if (item.userId) {
+          await this.redisClient.zrem(this.getUserJobsKey(item.userId), item.id);
+        }
+      }
+    } catch {}
+  }
+
   async _requeue(job: Job<T, R>, delayMs: number = 0): Promise<boolean> {
     if (!this.redisClient || !this.redisConnected) {
       return this.memoryFallback._requeue(job, delayMs);
     }
     try {
+      const now = Date.now();
+      const priorityScore = calculateJobPriorityScore(job.opts?.priority, now);
       const moved = await this.redisClient.eval(
         REQUEUE_JOB_LUA_SCRIPT,
         5,
@@ -1602,8 +2181,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         String(job.attemptsMade),
         job.failedReason || '',
         String(Math.max(0, delayMs)),
-        String(Date.now()),
-        job._attemptToken ?? ''
+        String(now),
+        job._attemptToken ?? '',
+        String(priorityScore)
       );
       if (Number(moved) !== 1) {
         return false;
@@ -1650,7 +2230,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           finishedOn,
           returnValue,
           String(job.attemptsMade),
-          job.opts?.removeOnComplete ? '1' : '0',
+          job.opts?.removeOnComplete === true ? '1' : '0',
           job._attemptToken ?? ''
         );
         if (Number(committed) !== 1) {
@@ -1660,6 +2240,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           return false;
         }
         await this.publishEvent({ event: 'completed', jobId: job.id, result });
+        if (job.opts?.removeOnComplete === true) {
+          const userId = (job.data as any)?.userId;
+          if (userId) {
+            try {
+              await client.zrem(this.getUserJobsKey(userId), job.id);
+            } catch {}
+          }
+        } else if (typeof job.opts?.removeOnComplete === 'number') {
+          await this.pruneCompletedJobs(job.opts.removeOnComplete);
+        }
         return true;
       } catch (err) {
         lastError = err;
@@ -1691,7 +2281,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         job.failedReason || String(err),
         JSON.stringify(job.stacktrace || []),
         String(job.attemptsMade),
-        job.opts?.removeOnFail ? '1' : '0',
+        job.opts?.removeOnFail === true ? '1' : '0',
         job._attemptToken ?? ''
       );
       if (Number(committed) !== 1) {
@@ -1701,6 +2291,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         return false;
       }
       await this.publishEvent({ event: 'failed', jobId: job.id, error: String(err) });
+      if (job.opts?.removeOnFail === true) {
+        const userId = (job.data as any)?.userId;
+        if (userId) {
+          try {
+            await this.redisClient.zrem(this.getUserJobsKey(userId), job.id);
+          } catch {}
+        }
+      } else if (typeof job.opts?.removeOnFail === 'number') {
+        await this.pruneFailedJobs(job.opts.removeOnFail);
+      }
       return true;
     } catch (redisErr) {
       // The job stays active without a heartbeat, so the stalled sweep will recover it.
@@ -1874,15 +2474,21 @@ export function subscribeToJobTelemetry(
     }
   };
 
+  const onTelemetry = (e: JobTelemetryEvent) => {
+    onEvent(e);
+  };
+
   queue.on('progress', onProgress);
   queue.on('completed', onCompleted);
   queue.on('failed', onFailed);
   queue.on('cancelled', onCancelled);
+  (queue as any).on?.(`telemetry:${jobId}`, onTelemetry);
 
   return () => {
     queue.off('progress', onProgress);
     queue.off('completed', onCompleted);
     queue.off('failed', onFailed);
     queue.off('cancelled', onCancelled);
+    (queue as any).off?.(`telemetry:${jobId}`, onTelemetry);
   };
 }
