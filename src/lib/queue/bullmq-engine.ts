@@ -73,6 +73,11 @@ export class JobOwnershipLostError extends Error {
 /** Random bytes in a job id (128 bits); ids of anonymous jobs act as capability URLs. */
 const JOB_ID_RANDOM_BYTES = 16;
 
+/** New queue job ID; graph job IDs use the same format. */
+export function generateJobId(): string {
+  return `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
+}
+
 /** Random bytes in a Redis attempt token, which fences writes from stale attempts. */
 const ATTEMPT_TOKEN_BYTES = 16;
 
@@ -289,7 +294,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
-    const id = opts.jobId || `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
+    const id = opts.jobId || generateJobId();
     const existing = this.jobs.get(id);
     if (existing) {
       return existing;
@@ -877,6 +882,9 @@ export interface RedisConnectionOptions {
   keyPrefix?: string;
 }
 
+/** Key prefix of every queue engine key; graph state keys share it. */
+export const DEFAULT_QUEUE_KEY_PREFIX = 'easyconvert:queue:';
+
 export const ADD_JOB_LUA_SCRIPT = `
 -- KEYS[1]: job hash key
 -- KEYS[2]: waitingKey (ZSET)
@@ -1289,7 +1297,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   private redisClient: Redis | null = null;
   private subClient: Redis | null = null;
   private redisConnected: boolean = false;
-  private keyPrefix: string = 'easyconvert:queue:';
+  private keyPrefix: string = DEFAULT_QUEUE_KEY_PREFIX;
   private eventsChannel: string;
   private localRecentEvents = new Set<string>();
   /** Redis mode: attempts this process is running, so a remote cancel can abort their signal. */
@@ -1299,7 +1307,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     super();
     this.name = name;
     this.memoryFallback = new Queue<T, R>(name);
-    this.keyPrefix = connectionOpts?.keyPrefix || 'easyconvert:queue:';
+    this.keyPrefix = connectionOpts?.keyPrefix || DEFAULT_QUEUE_KEY_PREFIX;
     this.eventsChannel = `${this.keyPrefix}${this.name}:events`;
 
     // Forward memory fallback events
@@ -1649,7 +1657,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
     if (this.redisClient && this.redisConnected) {
-      const id = opts.jobId || `job_${Date.now()}_${crypto.randomBytes(JOB_ID_RANDOM_BYTES).toString('hex')}`;
+      const id = opts.jobId || generateJobId();
       const userId = (data as any)?.userId ? String((data as any).userId) : '';
       const userJobsKey = userId ? this.getUserJobsKey(userId) : '';
       const now = getMonotonicPriorityTimestamp();
