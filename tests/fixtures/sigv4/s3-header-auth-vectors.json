@@ -1,5 +1,5 @@
 {
-  "$comment": "Hand-copied published SigV4 header-authentication vectors. Never regenerate from src/. suite2015: AWS Signature Version 4 test suite (2015-08-30 revision, aws-sig-v4-test-suite), files <name>.req/.creq/.sts/.authz as redistributed in boto/botocore tests/unit/auth/aws4_testsuite. s3doc: Amazon S3 API Reference, 'Signature Calculations for the Authorization Header: Transferring Payload in a Single Chunk (AWS Signature Version 4)' (sig-v4-header-based-auth.html), Examples section; the GET Object vector (canonical request, string to sign, signature) is also reproduced in durch/rust-s3 s3/src/signing.rs test_signing.",
+  "$comment": "Hand-copied published SigV4 header-authentication vectors; never regenerate from src/. Every vector names the fetched file and commit it was copied from. suite2015 = AWS Signature Version 4 test suite (2015-08-30) as redistributed in github.com/boto/botocore; s3doc = Amazon S3 API Reference header-auth GET Object example as reproduced in github.com/durch/rust-s3 test_signing.",
   "suite2015": {
     "credentials": {
       "accessKeyId": "AKIDEXAMPLE",
@@ -12,6 +12,7 @@
     "vectors": [
       {
         "name": "get-vanilla",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/get-vanilla/get-vanilla.{req,creq,sts,authz}",
         "method": "GET",
         "path": "/",
         "query": [],
@@ -23,9 +24,19 @@
       },
       {
         "name": "get-vanilla-query-order-key-case",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/get-vanilla-query-order-key-case/get-vanilla-query-order-key-case.{req,creq,sts,authz}",
         "method": "GET",
         "path": "/",
-        "query": [["Param2", "value2"], ["Param1", "value1"]],
+        "query": [
+          [
+            "Param2",
+            "value2"
+          ],
+          [
+            "Param1",
+            "value1"
+          ]
+        ],
         "headers": {},
         "payloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "expectedCanonicalRequest": "GET\n/\nParam1=value1&Param2=value2\nhost:example.amazonaws.com\nx-amz-date:20150830T123600Z\n\nhost;x-amz-date\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -34,6 +45,7 @@
       },
       {
         "name": "get-unreserved",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/get-unreserved/get-unreserved.{req,creq,sts,authz}",
         "method": "GET",
         "path": "/-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
         "query": [],
@@ -45,8 +57,9 @@
       },
       {
         "name": "get-utf8",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/get-utf8/get-utf8.{req,creq,sts,authz}",
         "method": "GET",
-        "path": "/ሴ",
+        "path": "/\u1234",
         "query": [],
         "headers": {},
         "payloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -56,9 +69,15 @@
       },
       {
         "name": "get-vanilla-utf8-query",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/get-vanilla-utf8-query/get-vanilla-utf8-query.{req,creq,sts,authz}",
         "method": "GET",
         "path": "/",
-        "query": [["ሴ", "bar"]],
+        "query": [
+          [
+            "\u1234",
+            "bar"
+          ]
+        ],
         "headers": {},
         "payloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "expectedCanonicalRequest": "GET\n/\n%E1%88%B4=bar\nhost:example.amazonaws.com\nx-amz-date:20150830T123600Z\n\nhost;x-amz-date\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -67,10 +86,14 @@
       },
       {
         "name": "get-header-value-trim",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/get-header-value-trim/get-header-value-trim.{req,creq,sts,authz}",
         "method": "GET",
         "path": "/",
         "query": [],
-        "headers": { "My-Header1": " value1", "My-Header2": " \"a   b   c\"" },
+        "headers": {
+          "My-Header1": " value1",
+          "My-Header2": " \"a   b   c\""
+        },
         "payloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "expectedCanonicalRequest": "GET\n/\n\nhost:example.amazonaws.com\nmy-header1:value1\nmy-header2:\"a b c\"\nx-amz-date:20150830T123600Z\n\nhost;my-header1;my-header2;x-amz-date\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "expectedStringToSign": "AWS4-HMAC-SHA256\n20150830T123600Z\n20150830/us-east-1/service/aws4_request\na726db9b0df21c14f559d0a978e563112acb1b9e05476f0a6a1c7d68f28605c7",
@@ -78,6 +101,7 @@
       },
       {
         "name": "post-vanilla",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/post-vanilla/post-vanilla.{req,creq,sts,authz}",
         "method": "POST",
         "path": "/",
         "query": [],
@@ -89,10 +113,13 @@
       },
       {
         "name": "post-x-www-form-urlencoded",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/post-x-www-form-urlencoded/post-x-www-form-urlencoded.{req,creq,sts,authz}",
         "method": "POST",
         "path": "/",
         "query": [],
-        "headers": { "Content-Type": "application/x-www-form-urlencoded" },
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
         "body": "Param1=value1",
         "payloadHash": "9095672bbd1f56dfc5b65f3e153adc8731a4a654192329106275f4c7b24d0b6e",
         "expectedCanonicalRequest": "POST\n/\n\ncontent-type:application/x-www-form-urlencoded\nhost:example.amazonaws.com\nx-amz-date:20150830T123600Z\n\ncontent-type;host;x-amz-date\n9095672bbd1f56dfc5b65f3e153adc8731a4a654192329106275f4c7b24d0b6e",
@@ -101,6 +128,7 @@
       },
       {
         "name": "post-sts-header-before",
+        "source": "boto/botocore@6197e54b71a21a2e6dab2177ca051e64b51f4452:tests/unit/auth/aws4_testsuite/post-sts-token/post-sts-header-before/post-sts-header-before.{req,creq,sts,authz}",
         "method": "POST",
         "path": "/",
         "query": [],
@@ -124,52 +152,18 @@
     "vectors": [
       {
         "name": "GET Object (virtual-hosted, Range)",
+        "source": "durch/rust-s3@b58437bd07bf4aef0375c23985762fc144450b16:s3/src/signing.rs (EXPECTED_CANONICAL_REQUEST, EXPECTED_STRING_TO_SIGN, test_signing)",
         "method": "GET",
         "key": "test.txt",
         "query": [],
-        "headers": { "Range": "bytes=0-9" },
+        "headers": {
+          "Range": "bytes=0-9"
+        },
         "payloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "expectedUrl": "https://examplebucket.s3.amazonaws.com/test.txt",
         "expectedCanonicalRequest": "GET\n/test.txt\n\nhost:examplebucket.s3.amazonaws.com\nrange:bytes=0-9\nx-amz-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nx-amz-date:20130524T000000Z\n\nhost;range;x-amz-content-sha256;x-amz-date\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "expectedStringToSign": "AWS4-HMAC-SHA256\n20130524T000000Z\n20130524/us-east-1/s3/aws4_request\n7344ae5b7ee6c3e7e6b0fe0640412a37625d1fbfff95c48bbb2dc43964946972",
         "expectedSignature": "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
-      },
-      {
-        "name": "PUT Object (key with $, storage class)",
-        "method": "PUT",
-        "key": "test$file.text",
-        "query": [],
-        "headers": { "Date": "Fri, 24 May 2013 00:00:00 GMT", "x-amz-storage-class": "REDUCED_REDUNDANCY" },
-        "body": "Welcome to Amazon S3.",
-        "payloadHash": "44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072",
-        "expectedUrl": "https://examplebucket.s3.amazonaws.com/test%24file.text",
-        "expectedCanonicalRequest": "PUT\n/test%24file.text\n\ndate:Fri, 24 May 2013 00:00:00 GMT\nhost:examplebucket.s3.amazonaws.com\nx-amz-content-sha256:44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072\nx-amz-date:20130524T000000Z\nx-amz-storage-class:REDUCED_REDUNDANCY\n\ndate;host;x-amz-content-sha256;x-amz-date;x-amz-storage-class\n44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072",
-        "expectedStringToSign": "AWS4-HMAC-SHA256\n20130524T000000Z\n20130524/us-east-1/s3/aws4_request\n9e0e90d9c76de8fa5b200d8c849cd5b8dc7a3be3951ddb7f6a76b4158342019d",
-        "expectedSignature": "98ad721746da40c64f1a55b78f14c238d841ea1380cd77a1b5971af0ece108bd"
-      },
-      {
-        "name": "GET Bucket Lifecycle (subresource without value)",
-        "method": "GET",
-        "key": "",
-        "query": [["lifecycle", ""]],
-        "headers": {},
-        "payloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "expectedUrl": "https://examplebucket.s3.amazonaws.com/?lifecycle=",
-        "expectedCanonicalRequest": "GET\n/\nlifecycle=\nhost:examplebucket.s3.amazonaws.com\nx-amz-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nx-amz-date:20130524T000000Z\n\nhost;x-amz-content-sha256;x-amz-date\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "expectedStringToSign": "AWS4-HMAC-SHA256\n20130524T000000Z\n20130524/us-east-1/s3/aws4_request\n9766c798316ff2757b517bc739a67f6213b4ab36dd5da2f94eaebf79c77395ca",
-        "expectedSignature": "fea454ca298b7da1c68078a5d1bdbfbbe0d65c699e0f91ac7a200a0136783543"
-      },
-      {
-        "name": "GET Bucket (List Objects, sorted query)",
-        "method": "GET",
-        "key": "",
-        "query": [["prefix", "J"], ["max-keys", "2"]],
-        "headers": {},
-        "payloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "expectedUrl": "https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J",
-        "expectedCanonicalRequest": "GET\n/\nmax-keys=2&prefix=J\nhost:examplebucket.s3.amazonaws.com\nx-amz-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nx-amz-date:20130524T000000Z\n\nhost;x-amz-content-sha256;x-amz-date\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "expectedStringToSign": "AWS4-HMAC-SHA256\n20130524T000000Z\n20130524/us-east-1/s3/aws4_request\ndf57d21db20da04d7fa30298dd4488ba3a2b47ca3a489c74750e0f1e7df1b9b7",
-        "expectedSignature": "34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7"
       }
     ]
   }

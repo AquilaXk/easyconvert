@@ -12,12 +12,14 @@ import {
 
 /**
  * Oracle: published SigV4 vectors hand-copied into tests/fixtures/sigv4/s3-header-auth-vectors.json
- * (sources cited in its "$comment": the 2015 AWS SigV4 test suite and the Amazon S3 API Reference
- * header-auth examples with access key AKIAIOSFODNN7EXAMPLE). Nothing here is derived from src/.
+ * Each vector carries a "source" naming the fetched file and commit: the 2015 AWS SigV4 test suite
+ * (boto/botocore) and the S3 GET Object example with AKIAIOSFODNN7EXAMPLE (durch/rust-s3).
+ * Nothing here is derived from src/.
  */
 
 interface SuiteVector {
   name: string;
+  source: string;
   method: string;
   path: string;
   query: Array<[string, string]>;
@@ -32,6 +34,7 @@ interface SuiteVector {
 
 interface S3DocVector {
   name: string;
+  source: string;
   method: string;
   key: string;
   query: Array<[string, string]>;
@@ -134,6 +137,16 @@ describe('SigV4 signer: Amazon S3 header-auth examples', () => {
   });
 });
 
+describe('SigV4 signer: vector provenance', () => {
+  it('cites a pinned file for every vector', () => {
+    const all = [...fixture.suite2015.vectors, ...fixture.s3doc.vectors];
+    expect(all).toHaveLength(10);
+    for (const vector of all) {
+      expect(vector.source).toMatch(/^(boto\/botocore|durch\/rust-s3)@[0-9a-f]{40}:\S+/);
+    }
+  });
+});
+
 describe('SigV4 signer: S3 request rules', () => {
   const now = new Date('2013-05-24T00:00:00.000Z');
   const credentials = fixture.s3doc.credentials;
@@ -159,6 +172,8 @@ describe('SigV4 signer: S3 request rules', () => {
     // RFC 3986 unreserved set kept; space -> %20, "%" -> %25 (no double-decoding of a literal %XX).
     expect(encodeS3Path('/photos/2024 summer/a+b%41.jpg')).toBe('/photos/2024%20summer/a%2Bb%2541.jpg');
     expect(encodeS3Path('/a//b/')).toBe('/a//b/');
+    // "$" is outside the RFC 3986 unreserved set, so it must be percent-encoded (URL parsers keep it raw).
+    expect(encodeS3Path('/test$file.text')).toBe('/test%24file.text');
   });
 
   it('signs a session token and leaves content-length and user-agent unsigned', () => {
