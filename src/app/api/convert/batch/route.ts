@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { convertFile, createZipArchive } from '@/lib/conversions';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
+import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +11,16 @@ export const dynamic = 'force-dynamic';
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
 export async function POST(req: NextRequest) {
+  const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
+  let reservationId: string | undefined;
+
+  const failWithRollback = async (status: number, error: string) => {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return NextResponse.json({ success: false, error }, { status });
+  };
+
   try {
     const formData = await req.formData();
     const files = formData.getAll('files') as File[];
@@ -22,34 +34,44 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+    const auth = await validateApiAccess(req, {
+      requiredUnits: files.length,
+      requiredScope: 'convert:write',
+      allowAnonymous: true,
+    });
+
+    if (!auth.authorized || !auth.user) {
+      return createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      );
+    }
+
+    reservationId = auth.reservationId;
+
     let totalBatchSize = 0;
     for (const f of files) {
       if (f.size === 0) {
-        return NextResponse.json(
-          { success: false, error: `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.` },
-          { status: 400 }
-        );
+        return await failWithRollback(400, `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.`);
       }
       if (f.size > MAX_FILE_SIZE) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `File "${f.name}" exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, files larger than 100 MB are not supported.`,
-          },
-          { status: 400 }
+        return await failWithRollback(
+          400,
+          `File "${f.name}" exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, files larger than 100 MB are not supported.`
         );
       }
       totalBatchSize += f.size;
     }
 
     if (totalBatchSize > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            'Total batch payload size exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, batch conversions exceeding 100 MB are not supported.',
-        },
-        { status: 400 }
+      return await failWithRollback(
+        400,
+        'Total batch payload size exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, batch conversions exceeding 100 MB are not supported.'
       );
     }
 
@@ -116,6 +138,9 @@ export async function POST(req: NextRequest) {
     }
 
     if (convertedFiles.length === 0) {
+      if (reservationId) {
+        await rollbackQuota(reservationId);
+      }
       return NextResponse.json(
         { success: false, error: 'No files were successfully converted in batch.' },
         { status: 400 }
@@ -123,6 +148,10 @@ export async function POST(req: NextRequest) {
     }
 
     const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
+
+    if (reservationId) {
+      await commitQuota(reservationId);
+    }
 
     return new NextResponse(new Uint8Array(zipResult.buffer), {
       status: 200,
@@ -135,6 +164,9 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error: unknown) {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
     const message = error instanceof Error ? error.message : 'Batch conversion failed';
     return NextResponse.json({ success: false, error: message }, { status: 500 });
   }

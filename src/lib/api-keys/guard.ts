@@ -28,6 +28,7 @@ export interface ValidateApiAccessOptions {
   requiredUnits?: number;
   requiredScope?: string;
   scope?: string;
+  allowAnonymous?: boolean;
 }
 
 const WILDCARD_SCOPE = '*';
@@ -43,6 +44,15 @@ export const API_KEY_BURST_LIMITS: Readonly<Record<UserTier, BurstLimit>> = {
   pro: { capacity: 100, refillRate: 20 },
   enterprise: { capacity: 500, refillRate: 100 },
 };
+
+export function getAnonymousBurstLimit(): BurstLimit {
+  return {
+    capacity: process.env.ANONYMOUS_BURST_CAPACITY ? parseInt(process.env.ANONYMOUS_BURST_CAPACITY, 10) : 10,
+    refillRate: process.env.ANONYMOUS_BURST_REFILL_RATE ? parseInt(process.env.ANONYMOUS_BURST_REFILL_RATE, 10) : 1, // 1 token per second in production
+  };
+}
+
+export const ANONYMOUS_BURST_LIMIT: BurstLimit = getAnonymousBurstLimit();
 
 const API_KEY_RATE_LIMIT_PREFIX = 'apikey:';
 const MIN_RETRY_AFTER_SECONDS = 1;
@@ -87,6 +97,9 @@ export function isScopeAllowed(grantedScopes?: string[], requiredScope?: string)
 }
 
 function extractApiKeySecret(request: Request): string | null {
+  if (!request?.headers || typeof request.headers.get !== 'function') {
+    return null;
+  }
   const customHeader = request.headers.get('x-api-key');
   if (customHeader) {
     return customHeader.trim();
@@ -136,10 +149,18 @@ async function checkQuotaAndReserve(
   userId: string,
   tier: string,
   requiredUnits: number
-): Promise<{ allowed: boolean; error?: string; reservationId?: string; remaining?: number }> {
+): Promise<{ allowed: boolean; error?: string; reservationId?: string; remaining?: number; serviceUnavailable?: boolean }> {
   if (requiredUnits > 0) {
     const reservation = await redisKeyStore.reserveQuota(userId, requiredUnits);
     if (!reservation.allowed) {
+      if (reservation.serviceUnavailable) {
+        return {
+          allowed: false,
+          error: reservation.error || 'Service Unavailable: distributed quota engine is temporarily offline',
+          remaining: 0,
+          serviceUnavailable: true,
+        };
+      }
       return {
         allowed: false,
         error: `Daily conversion quota exceeded for tier '${tier}'. Please upgrade or wait for the midnight UTC reset.`,
@@ -154,11 +175,20 @@ async function checkQuotaAndReserve(
   }
 
   // Zero-unit check (reads/downloads/status inspections) - non-consuming, must not lock out user
-  const quota = await redisKeyStore.getQuotaUsage(userId);
-  return {
-    allowed: true,
-    remaining: quota.remaining,
-  };
+  try {
+    const quota = await redisKeyStore.getQuotaUsage(userId);
+    return {
+      allowed: true,
+      remaining: quota.remaining,
+    };
+  } catch (err: any) {
+    return {
+      allowed: false,
+      error: 'Service Unavailable: distributed quota engine is temporarily offline',
+      remaining: 0,
+      serviceUnavailable: true,
+    };
+  }
 }
 
 async function verifyKeyAccess(
@@ -206,6 +236,17 @@ async function verifyKeyAccess(
     API_KEY_BURST_LIMITS[verification.user.tier]
   );
   if (!burst.allowed) {
+    if (burst.serviceUnavailable) {
+      return {
+        authorized: false,
+        user: verification.user,
+        apiKey: verification.key,
+        error: burst.error || 'Service Unavailable: distributed rate limit engine is temporarily offline',
+        status: 503,
+        retryAfterSeconds: 5,
+        problemType: 'https://api.easyconvert.io/problems/service-unavailable',
+      };
+    }
     return {
       authorized: false,
       user: verification.user,
@@ -219,6 +260,17 @@ async function verifyKeyAccess(
 
   const quota = await checkQuotaAndReserve(verification.user.id, verification.user.tier, requiredUnits);
   if (!quota.allowed) {
+    if (quota.serviceUnavailable) {
+      return {
+        authorized: false,
+        user: verification.user,
+        apiKey: verification.key,
+        error: quota.error || 'Service Unavailable',
+        status: 503,
+        remaining: 0,
+        problemType: 'https://api.easyconvert.io/problems/service-unavailable',
+      };
+    }
     return {
       authorized: false,
       user: verification.user,
@@ -239,33 +291,71 @@ async function verifyKeyAccess(
   };
 }
 
-async function verifySessionAccess(
+async function verifyAnonymousAccess(
   request: Request,
   requiredUnits: number
 ): Promise<ApiAuthResult> {
-  const sessionUser = await getSessionFromRequest(request);
-  if (!sessionUser) {
+  const clientIp = extractClientIp(request);
+  const anonIdentifier = `rate:anon:${clientIp}`;
+
+  // 1. Enforce IP burst rate limit
+  const burst = await redisKeyStore.checkTokenBucketRateLimit(
+    anonIdentifier,
+    getAnonymousBurstLimit()
+  );
+  if (!burst.allowed) {
+    if (burst.serviceUnavailable) {
+      return {
+        authorized: false,
+        error: 'Service Unavailable: distributed rate limit engine is temporarily offline',
+        status: 503,
+        problemType: 'https://api.easyconvert.io/problems/service-unavailable',
+      };
+    }
     return {
       authorized: false,
-      error: 'Authentication required. Please provide a valid Bearer API key or sign in.',
-      status: 401,
+      error: 'Rate limit exceeded: too many requests from this IP address. Retry after the delay in the Retry-After header.',
+      status: 429,
+      retryAfterSeconds: toRetryAfterSeconds(burst.retryAfterMs),
+      problemType: RATE_LIMITED_PROBLEM_TYPE,
     };
   }
 
-  const quota = await checkQuotaAndReserve(sessionUser.id, sessionUser.tier, requiredUnits);
+  // 2. Check anonymous daily quota
+  const anonUserId = `anon:${clientIp}`;
+  const quota = await checkQuotaAndReserve(anonUserId, 'anonymous', requiredUnits);
   if (!quota.allowed) {
+    if (quota.serviceUnavailable) {
+      return {
+        authorized: false,
+        error: 'Service Unavailable: distributed quota engine is temporarily offline',
+        status: 503,
+        remaining: 0,
+        problemType: 'https://api.easyconvert.io/problems/service-unavailable',
+      };
+    }
     return {
       authorized: false,
-      user: sessionUser,
-      error: quota.error,
+      error: 'Daily conversion quota exceeded for anonymous usage (10 conversions per day). Please sign in or use an API key.',
       status: 429,
       remaining: quota.remaining,
+      problemType: 'https://api.easyconvert.io/problems/quota-exceeded',
     };
   }
+
+  const anonUser: User = {
+    id: anonUserId,
+    email: 'anonymous@easyconvert.local',
+    name: 'Anonymous Client',
+    tier: 'free',
+    provider: 'email',
+    createdAt: 0,
+    updatedAt: 0,
+  };
 
   return {
     authorized: true,
-    user: sessionUser,
+    user: anonUser,
     authMethod: 'session',
     reservationId: quota.reservationId,
     remaining: quota.remaining,
@@ -274,7 +364,7 @@ async function verifySessionAccess(
 
 /**
  * Validates programmatic REST API requests using either API Key header or User session.
- * Supports 2-phase quota transactions (reserve) and granular scope verification.
+ * Supports 2-phase quota transactions (reserve), anonymous IP protection, and granular scope verification.
  */
 export async function validateApiAccess(
   request: Request,
@@ -283,12 +373,14 @@ export async function validateApiAccess(
 ): Promise<ApiAuthResult> {
   let requiredUnits = 1;
   let requiredScope: string | undefined = legacyScope;
+  let allowAnonymous = false;
 
   if (typeof optionsOrUnits === 'number') {
     requiredUnits = optionsOrUnits;
   } else if (typeof optionsOrUnits === 'object' && optionsOrUnits !== null) {
     requiredUnits = optionsOrUnits.requiredUnits ?? 1;
     requiredScope = optionsOrUnits.requiredScope || optionsOrUnits.scope || legacyScope;
+    allowAnonymous = Boolean(optionsOrUnits.allowAnonymous);
   }
 
   const clientIp = extractClientIp(request);
@@ -296,7 +388,47 @@ export async function validateApiAccess(
   if (apiKeySecret) {
     return verifyKeyAccess(apiKeySecret, requiredUnits, requiredScope, clientIp);
   }
-  return verifySessionAccess(request, requiredUnits);
+
+  const sessionUser = await getSessionFromRequest(request);
+  if (sessionUser) {
+    const quota = await checkQuotaAndReserve(sessionUser.id, sessionUser.tier, requiredUnits);
+    if (!quota.allowed) {
+      if (quota.serviceUnavailable) {
+        return {
+          authorized: false,
+          user: sessionUser,
+          error: quota.error || 'Service Unavailable',
+          status: 503,
+          remaining: 0,
+          problemType: 'https://api.easyconvert.io/problems/service-unavailable',
+        };
+      }
+      return {
+        authorized: false,
+        user: sessionUser,
+        error: quota.error,
+        status: 429,
+        remaining: quota.remaining,
+      };
+    }
+    return {
+      authorized: true,
+      user: sessionUser,
+      authMethod: 'session',
+      reservationId: quota.reservationId,
+      remaining: quota.remaining,
+    };
+  }
+
+  if (allowAnonymous) {
+    return verifyAnonymousAccess(request, requiredUnits);
+  }
+
+  return {
+    authorized: false,
+    error: 'Authentication required. Please provide a valid Bearer API key or sign in.',
+    status: 401,
+  };
 }
 
 /**

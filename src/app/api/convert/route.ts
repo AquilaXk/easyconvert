@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { executeWorkerConversion } from '@/worker/engines';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import { ConversionOptions, ConversionFailedError } from '@/lib/types';
+import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,6 +12,34 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
+  const instanceUri = req.nextUrl?.pathname || '/api/convert';
+
+  // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+  const auth = await validateApiAccess(req, {
+    requiredUnits: 1,
+    requiredScope: 'convert:write',
+    allowAnonymous: true,
+  });
+
+  if (!auth.authorized || !auth.user) {
+    return createProblemDetailsResponse(
+      auth.status ?? 401,
+      auth.error ?? 'Unauthorized',
+      instanceUri,
+      undefined,
+      auth.problemType,
+      authErrorHeaders(auth)
+    );
+  }
+
+  const reservationId = auth.reservationId;
+
+  const failWithRollback = async (status: number, error: string) => {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return NextResponse.json({ success: false, error }, { status });
+  };
 
   try {
     const formData = await req.formData();
@@ -18,17 +48,11 @@ export async function POST(req: NextRequest) {
     const optionsRaw = formData.get('options') as string | null;
 
     if (!file) {
-      return NextResponse.json(
-        { success: false, error: 'Missing required "file" in multipart request.' },
-        { status: 400 }
-      );
+      return await failWithRollback(400, 'Missing required "file" in multipart request.');
     }
 
     if (file.size === 0) {
-      return NextResponse.json(
-        { success: false, error: 'Conversion payload is empty. File buffer has 0 bytes.' },
-        { status: 400 }
-      );
+      return await failWithRollback(400, 'Conversion payload is empty. File buffer has 0 bytes.');
     }
 
     if (file.size > MAX_FILE_SIZE) {
@@ -118,6 +142,10 @@ export async function POST(req: NextRequest) {
 
     const duration = Date.now() - startTime;
 
+    if (reservationId) {
+      await commitQuota(reservationId);
+    }
+
     return new NextResponse(new Uint8Array(result.buffer), {
       status: 200,
       headers: {
@@ -131,6 +159,9 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error: unknown) {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =
       error instanceof ConversionFailedError ||
