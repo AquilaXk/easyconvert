@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
+  ConversionFailedError,
   ConversionOptions,
+  EngineUnavailableError,
   InvalidMediaOptionError,
   AudioCodec,
   MediaLadderRung,
@@ -62,31 +64,68 @@ function getInternalFfprobe(): string | null {
   return null;
 }
 
+/** Path of an ffprobe binary. Branded so an ffmpeg path cannot be passed by mistake. */
+export type FfprobePath = string & { readonly __brand: 'FfprobePath' };
+
+const FFPROBE_TIMEOUT_MS = 10_000;
+/** Transfer characteristics of HDR video (SMPTE ST 2084 PQ and ARIB STD-B67 HLG). */
+const HDR_TRANSFERS: ReadonlySet<string> = new Set(['smpte2084', 'arib-std-b67']);
+/** Profiles that encode 10-bit samples; every other software profile encodes 8-bit 4:2:0. */
+const TEN_BIT_PROFILES: ReadonlySet<string> = new Set(['main10', 'high10']);
+const TEN_BIT_PIX_FMT = 'yuv420p10le';
+const EIGHT_BIT_PIX_FMT = 'yuv420p';
+
 /**
- * Probes the number of audio channels in the first audio stream of a file.
+ * Resolves the ffprobe binary that belongs to an ffmpeg installation: the sibling of `ffmpegBin`
+ * when present, otherwise `FFPROBE_PATH` or a standard location. Throws when none exists.
  */
-export function probeAudioChannels(filePath: string, ffprobeBin?: string | null): number {
-  const ffprobe = ffprobeBin || getInternalFfprobe();
-  if (!ffprobe || !fs.existsSync(filePath)) {
-    return 0;
+export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
+  if (ffmpegBin) {
+    const sibling = path.join(path.dirname(ffmpegBin), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+    if (fs.existsSync(sibling)) {
+      return sibling as FfprobePath;
+    }
   }
+  const found = getInternalFfprobe();
+  if (!found) {
+    throw new EngineUnavailableError('ffprobe is required to inspect media streams but was not found.');
+  }
+  return found as FfprobePath;
+}
+
+function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): string {
   try {
-    const out = execFileSync(
-      ffprobe,
-      [
-        '-v', 'error',
-        '-select_streams', 'a:0',
-        '-show_entries', 'stream=channels',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        filePath,
-      ],
-      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }
-    ).toString('utf-8').trim();
-    const parsed = Number.parseInt(out, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-  } catch {
+    return execFileSync(ffprobe, ['-v', 'error', ...args, '-of', 'default=noprint_wrappers=1:nokey=1', filePath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: FFPROBE_TIMEOUT_MS,
+    })
+      .toString('utf-8')
+      .trim();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
+  }
+}
+
+/**
+ * Number of channels in the first audio stream, or 0 when the file has no audio stream.
+ * Throws when ffprobe cannot read the file instead of reporting a silent input.
+ */
+export function probeAudioChannels(filePath: string, ffprobe: FfprobePath): number {
+  const out = runFfprobe(ffprobe, filePath, ['-select_streams', 'a:0', '-show_entries', 'stream=channels']);
+  if (out === '') {
     return 0;
   }
+  const parsed = Number.parseInt(out, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new ConversionFailedError(`ffprobe reported an invalid audio channel count: "${out}"`);
+  }
+  return parsed;
+}
+
+/** Transfer characteristic of the first video stream (e.g. `bt709`, `smpte2084`), or '' when unknown. */
+export function probeVideoColorTransfer(filePath: string, ffprobe: FfprobePath): string {
+  return runFfprobe(ffprobe, filePath, ['-select_streams', 'v:0', '-show_entries', 'stream=color_transfer']);
 }
 
 export const H264_ALLOWED_PROFILES = new Set(['baseline', 'main', 'high', 'high10']);
@@ -498,7 +537,17 @@ export function buildFfmpegArguments(
 
     // Software pixel format (exclude VAAPI which uses hwupload, and ProRes which has custom 10-bit format)
     if (!isVaapi && codec !== 'prores') {
-      outputArgs.push('-pix_fmt', 'yuv420p');
+      const tenBit = TEN_BIT_PROFILES.has((videoOpts?.profile || '').toLowerCase());
+      if (!tenBit && fs.existsSync(inputPath)) {
+        // Squeezing PQ/HLG samples into 8-bit without tone mapping corrupts the picture.
+        const transfer = probeVideoColorTransfer(inputPath, resolveFfprobeBinary(ffmpegBin));
+        if (HDR_TRANSFERS.has(transfer)) {
+          throw new InvalidMediaOptionError(
+            `HDR input (transfer "${transfer}") needs a 10-bit profile such as hevc main10; 8-bit output without tone mapping is not supported.`
+          );
+        }
+      }
+      outputArgs.push('-pix_fmt', tenBit ? TEN_BIT_PIX_FMT : EIGHT_BIT_PIX_FMT);
     }
 
     // 6. Video Encoder Selection and Arguments
@@ -698,7 +747,10 @@ export function buildFfmpegArguments(
   // Audio filters and ITU-R BS.775 downmix
   const audioFilters: string[] = [];
   if (options.audio?.downmix === 'itu-r-bs775') {
-    const is71 = options.audio.channels === 8 || options.audioChannels === '7.1' || probeAudioChannels(inputPath, ffmpegBin) === 8;
+    const is71 =
+      options.audio.channels === 8 ||
+      options.audioChannels === '7.1' ||
+      (fs.existsSync(inputPath) && probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin)) === 8);
     if (is71) {
       audioFilters.push('pan=stereo|FL=0.3204*FL+0.2265*FC+0.2265*BL+0.2265*SL|FR=0.3204*FR+0.2265*FC+0.2265*BR+0.2265*SR');
     } else {
@@ -862,7 +914,7 @@ export function buildHlsDashArguments(
     );
   }
 
-  const hasAudio = !fs.existsSync(inputPath) || probeAudioChannels(inputPath, ffmpegBin) > 0;
+  const hasAudio = !fs.existsSync(inputPath) || probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin)) > 0;
 
   const globalArgs: string[] = ['-y', '-loglevel', 'error'];
   const inputArgs: string[] = ['-i', inputPath];
