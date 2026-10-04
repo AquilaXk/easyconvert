@@ -46,8 +46,8 @@ const HUE_UNITS_IN_DEGREES: Record<string, number> = { '': 1, deg: 1, grad: 0.9,
 const FULL_CIRCLE_DEGREES = 360;
 const HUE_SECTOR_DEGREES = 30;
 const HUE_SECTORS = 12;
-const CSS_NUMBER = String.raw`[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?`;
-const COLOR_FUNCTION_PATTERN = /^(rgba?|hsla?)\(\s*([^()]*)\)$/;
+const CSS_NUMBER = String.raw`[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?`;
+const COLOR_FUNCTION_PATTERN = /^(rgba?|hsla?)\(([^()]*)\)$/;
 const NUMBER_WITH_UNIT_PATTERN = new RegExp(`^(${CSS_NUMBER})([a-z%]*)$`);
 
 /** A parsed colour: `rgb` is null for fully transparent; undefined means invalid. */
@@ -153,7 +153,7 @@ function parseColorValue(raw: string): ParsedColor {
   if (s.startsWith('#')) return parseHexColor(s.substring(1), raw);
   const fn = COLOR_FUNCTION_PATTERN.exec(s);
   if (!fn) return undefined;
-  const args = splitColorArgs(fn[2]);
+  const args = splitColorArgs(fn[2].trimStart());
   if (!args) return undefined;
   const alpha = parseAlphaValue(args.alpha);
   const rgb = fn[1].startsWith('rgb') ? parseRgbFunction(args.channels) : parseHslFunction(args.channels);
@@ -387,9 +387,9 @@ const PATH_HANDLERS: Record<string, (c: PathCursor) => boolean> = {
   },
 };
 
-const PATH_TOKEN_PATTERN = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
+const PATH_TOKEN_PATTERN = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
 const PATH_SEPARATOR_PATTERN = /^[\s,]+$/;
-const PATH_TOKEN_VALID = /^(?:[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$/;
+const PATH_TOKEN_VALID = /^(?:[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$/;
 
 /**
  * Lazily splits path data into commands and numbers, so a huge path is only
@@ -427,7 +427,7 @@ class PathTokenStream {
   }
 }
 
-const PATH_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
+const PATH_NUMBER_PATTERN = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
 
 const PATH_COMMAND_PATTERN = /^[MmLlHhVvCcSsQqTtAaZz]$/;
 
@@ -538,7 +538,7 @@ function applyMatrix(m: AffineMatrix, x: number, y: number): { x: number; y: num
 }
 
 const TRANSFORM_FUNCTION_PATTERN = /^\s*,?\s*(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^()]*)\)/;
-const TRANSFORM_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
+const TRANSFORM_NUMBER_PATTERN = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
 
 function rotationMatrix(args: number[]): AffineMatrix | null {
   if (args.length !== 1 && args.length !== 3) return null;
@@ -610,8 +610,7 @@ interface XmlTag {
   selfClosing: boolean;
 }
 
-const XML_TOKEN_PATTERN =
-  /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<![^>]*>|<\?[\s\S]*?\?>|<(\/?)([A-Za-z_][\w:.-]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'))?)*)\s*(\/?)>/g;
+const XML_NAME_PATTERN = /[A-Za-z_][\w:.-]*/y;
 const XML_ATTR_PATTERN = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g;
 const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 
@@ -630,14 +629,82 @@ function decodeXmlEntities(value: string): string {
   });
 }
 
+/** Largest SVG text (and decompressed SVGZ payload) the parser accepts. */
+export const MAX_SVG_INPUT_CHARS = 5 * 1024 * 1024;
+
+function malformedXml(reason: string): CadGeometryUnavailableError {
+  return new CadGeometryUnavailableError(`Malformed SVG: ${reason}.`);
+}
+
+/** Index just past the end of a markup declaration, or throws when it is never terminated. */
+function endOfMarkup(xml: string, from: number, terminator: string, what: string): number {
+  const end = xml.indexOf(terminator, from);
+  if (end < 0) throw malformedXml(`unterminated ${what}`);
+  return end + terminator.length;
+}
+
+const CHAR_GT = 0x3e;
+const CHAR_DQUOTE = 0x22;
+const CHAR_SQUOTE = 0x27;
+const CHAR_SLASH = 0x2f;
+
+/** Index of the `>` that closes the tag whose attribute text starts at `from`; quoted values may contain `>`. */
+function endOfTag(xml: string, from: number): number {
+  let i = from;
+  while (i < xml.length) {
+    const c = xml.charCodeAt(i);
+    if (c === CHAR_GT) return i;
+    if (c === CHAR_DQUOTE || c === CHAR_SQUOTE) {
+      const close = xml.indexOf(c === CHAR_DQUOTE ? '"' : "'", i + 1);
+      if (close < 0) throw malformedXml('unterminated attribute value');
+      i = close + 1;
+    } else {
+      i++;
+    }
+  }
+  throw malformedXml('unterminated tag');
+}
+
+/** Position after a comment, CDATA section, processing instruction or declaration starting at `lt`; -1 for an element. */
+function skipNonElementMarkup(xml: string, lt: number): number {
+  if (xml.startsWith('<!--', lt)) return endOfMarkup(xml, lt + 4, '-->', 'comment');
+  if (xml.startsWith('<![CDATA[', lt)) return endOfMarkup(xml, lt + 9, ']]>', 'CDATA section');
+  if (xml.startsWith('<?', lt)) return endOfMarkup(xml, lt + 2, '?>', 'processing instruction');
+  if (xml.startsWith('<!', lt)) return endOfMarkup(xml, lt + 2, '>', 'declaration');
+  return -1;
+}
+
+/** Single-pass, linear-time tokenizer; every scan advances past the text it consumed. */
 function* scanXmlTags(xml: string): Generator<XmlTag> {
-  for (const m of xml.matchAll(XML_TOKEN_PATTERN)) {
-    if (!m[2]) continue; // comment, CDATA, doctype, processing instruction
+  let pos = 0;
+  while (pos < xml.length) {
+    const lt = xml.indexOf('<', pos);
+    if (lt < 0) return;
+    const after = skipNonElementMarkup(xml, lt);
+    if (after >= 0) {
+      pos = after;
+      continue;
+    }
+    const closing = xml.charCodeAt(lt + 1) === CHAR_SLASH;
+    const nameStart = closing ? lt + 2 : lt + 1;
+    XML_NAME_PATTERN.lastIndex = nameStart;
+    const nameMatch = XML_NAME_PATTERN.exec(xml);
+    if (!nameMatch) {
+      pos = lt + 1; // a bare "<" in character data
+      continue;
+    }
+    const name = nameMatch[0];
+    const attrStart = nameStart + name.length;
+    const tagEnd = endOfTag(xml, attrStart);
+    let attrText = xml.substring(attrStart, tagEnd).trimEnd();
+    const selfClosing = attrText.endsWith('/');
+    if (selfClosing) attrText = attrText.slice(0, -1);
     const attrs = new Map<string, string>();
-    for (const a of m[3].matchAll(XML_ATTR_PATTERN)) {
+    for (const a of attrText.matchAll(XML_ATTR_PATTERN)) {
       attrs.set(a[1], decodeXmlEntities(a[2] ?? a[3] ?? ''));
     }
-    yield { name: m[2].replace(/^svg:/, ''), attrs, closing: m[1] === '/', selfClosing: m[4] === '/' };
+    pos = tagEnd + 1;
+    yield { name: name.replace(/^svg:/, ''), attrs, closing, selfClosing };
   }
 }
 
@@ -751,7 +818,7 @@ interface CssDeclaration {
   important: boolean;
 }
 
-const IMPORTANT_SUFFIX = /\s*!\s*important\s*$/i;
+const IMPORTANT_SUFFIX = /!\s*important$/i;
 
 function parseDeclarationList(style: string | undefined): Map<string, CssDeclaration> {
   const map = new Map<string, CssDeclaration>();
@@ -760,9 +827,9 @@ function parseDeclarationList(style: string | undefined): Map<string, CssDeclara
     const colonIdx = decl.indexOf(':');
     if (colonIdx > 0) {
       const key = decl.substring(0, colonIdx).trim().toLowerCase();
-      const raw = decl.substring(colonIdx + 1);
+      const raw = decl.substring(colonIdx + 1).trim();
       const important = IMPORTANT_SUFFIX.test(raw);
-      const value = raw.replace(IMPORTANT_SUFFIX, '').trim();
+      const value = important ? raw.replace(IMPORTANT_SUFFIX, '').trim() : raw;
       if (key && value) map.set(key, { value, important });
     }
   }
@@ -839,24 +906,67 @@ function parseStylesheet(css: string): CssRule[] {
   return rules;
 }
 
-/**
- * Scans markup in document order: XML comments and CDATA sections outside
- * <style> are consumed and ignored, so only real <style> elements count.
- */
-const STYLE_SCAN_PATTERN =
-  /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<style\b[^>]*?(?:\/>|>((?:<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|[\s\S])*?)<\/style\s*>)/gi;
-const STYLE_CONTENT_PATTERN = /<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->/g;
+const STYLE_CLOSE_PATTERN = /<\/style\s*>/iy;
+const STYLE_NAME_LENGTH = 'style'.length;
+const CDATA_OPEN = '<![CDATA[';
+const CDATA_CLOSE = ']]>';
 
-/** Style element text content: CDATA sections unwrap, XML comments are dropped. */
-function styleTextContent(raw: string): string {
-  return raw.replace(STYLE_CONTENT_PATTERN, (_m, cdata: string | undefined) => cdata ?? ' ');
+/** Text of a <style> body starting at `from`: CDATA sections unwrap and comments drop; returns the text and the position after `</style>`. */
+function readStyleBody(xml: string, from: number): { text: string; next: number } {
+  let text = '';
+  let p = from;
+  for (;;) {
+    const lt = xml.indexOf('<', p);
+    if (lt < 0) throw malformedXml('<style> is never closed');
+    if (xml.startsWith('<!--', lt)) {
+      text += `${xml.substring(p, lt)} `;
+      p = endOfMarkup(xml, lt + 4, '-->', 'comment');
+    } else if (xml.startsWith(CDATA_OPEN, lt)) {
+      const end = endOfMarkup(xml, lt + CDATA_OPEN.length, CDATA_CLOSE, 'CDATA section');
+      text += xml.substring(p, lt) + xml.substring(lt + CDATA_OPEN.length, end - CDATA_CLOSE.length);
+      p = end;
+    } else {
+      STYLE_CLOSE_PATTERN.lastIndex = lt;
+      const close = STYLE_CLOSE_PATTERN.exec(xml);
+      if (close) return { text: text + xml.substring(p, lt), next: lt + close[0].length };
+      text += xml.substring(p, lt + 1);
+      p = lt + 1;
+    }
+  }
+}
+
+/** Text contents of every real <style> element, in document order; comments and CDATA elsewhere are skipped. */
+function extractStyleTexts(xml: string): string[] {
+  const texts: string[] = [];
+  let pos = 0;
+  while (pos < xml.length) {
+    const lt = xml.indexOf('<', pos);
+    if (lt < 0) break;
+    const after = skipNonElementMarkup(xml, lt);
+    if (after >= 0) {
+      pos = after;
+      continue;
+    }
+    const nameStart = lt + 1;
+    const isStyle = xml.substring(nameStart, nameStart + STYLE_NAME_LENGTH).toLowerCase() === 'style' && !/[\w:.-]/.test(xml.charAt(nameStart + STYLE_NAME_LENGTH));
+    if (!isStyle) {
+      pos = nameStart;
+      continue;
+    }
+    const tagEnd = endOfTag(xml, nameStart + STYLE_NAME_LENGTH);
+    pos = tagEnd + 1;
+    if (xml.charCodeAt(tagEnd - 1) === CHAR_SLASH) continue;
+    const body = readStyleBody(xml, pos);
+    texts.push(body.text);
+    pos = body.next;
+  }
+  return texts;
 }
 
 function extractStylesheets(svgContent: string): CssRule[] {
   const rules: CssRule[] = [];
-  for (const m of svgContent.matchAll(STYLE_SCAN_PATTERN)) {
-    if (!m[0].toLowerCase().startsWith('<style')) continue;
-    for (const r of parseStylesheet(styleTextContent(m[1] ?? ''))) rules.push({ ...r, order: rules.length });
+  for (const text of extractStyleTexts(svgContent)) {
+    for (const r of parseStylesheet(text)) rules.push({ ...r, order: rules.length });
   }
   return rules;
 }
@@ -935,8 +1045,8 @@ export function requireFinite(value: number, what: string): number {
 }
 
 /** SVG/CSS <number> grammar: no hex, no Infinity/NaN, no empty strings. */
-const SVG_NUMBER_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
-const NUMBER_LIST_TOKEN_PATTERN = /[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
+const SVG_NUMBER_PATTERN = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
+const NUMBER_LIST_TOKEN_PATTERN = /[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
 const LIST_SEPARATOR_PATTERN = /^[\s,]+$/;
 
 /** Parses one number in strict SVG grammar, throwing the typed error otherwise. */
@@ -1137,7 +1247,7 @@ const ABSOLUTE_LENGTH_UNITS: Record<string, number> = {
   pt: CSS_PX_PER_INCH / 72,
   pc: CSS_PX_PER_INCH / 6,
 };
-const LENGTH_PATTERN = /^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$/;
+const LENGTH_PATTERN = /^\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$/;
 
 /**
  * Parses an SVG length in user units (px). Absolute units convert at 96 DPI;
@@ -1158,7 +1268,7 @@ function parseLength(value: string, what: string): number {
  */
 function parseRootLength(value: string | undefined, name: string, hasViewBox: boolean): number | null {
   if (value === undefined) return null;
-  if (hasViewBox && /^\s*[-+]?(?:\d+\.?\d*|\.\d+)\s*%\s*$/.test(value)) return null;
+  if (hasViewBox && /^\s*[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*%\s*$/.test(value)) return null;
   const px = parseLength(value, `root ${name}`);
   if (px <= 0) {
     throw new CadGeometryUnavailableError(`SVG root ${name} "${value}" must be positive.`);
@@ -1438,6 +1548,9 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
  * represented (text, images, clipping, ...) throws instead of being dropped.
  */
 export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument {
+  if (svgContent.length > MAX_SVG_INPUT_CHARS) {
+    throw new CadGeometryUnavailableError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
+  }
   const root = buildSvgTree(svgContent);
   if (!root) {
     return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, elements: [] };

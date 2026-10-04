@@ -825,7 +825,7 @@ describe('SVG document model for metafile encoders', () => {
     });
 
     it('charges polygon point lists against the vertex cap while parsing', () => {
-      const pts = Array.from({ length: 2_000_000 }, (_, k) => `${k % 100},${(k * 7) % 100}`).join(' ');
+      const pts = Array.from({ length: 600_000 }, (_, k) => `${k % 100},${(k * 7) % 100}`).join(' ');
       const start = performance.now();
       expect(() => encodeWmf(svgDoc(`<polygon fill="#000" points="${pts}"/>`))).toThrow(/too complex/);
       expect(performance.now() - start).toBeLessThan(1000);
