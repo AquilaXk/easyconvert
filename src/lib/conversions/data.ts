@@ -5,6 +5,7 @@ import { ConversionOptions, ConversionResult } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
 import { sanitizeSvgString } from '../security/svg-sanitizer';
 import { encodeParquet, decodeParquet } from './parquet';
+import { assertNoComplexScript } from './ctl';
 
 export { encodeParquet, decodeParquet };
 
@@ -703,6 +704,20 @@ async function renderDataToPdf(
   title: string,
   options: ConversionOptions
 ): Promise<Buffer> {
+  assertNoComplexScript(title, 'Pure-TS Data to PDF');
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      if (item && typeof item === 'object') {
+        for (const [key, val] of Object.entries(item)) {
+          assertNoComplexScript(key, 'Pure-TS Data to PDF');
+          if (typeof val === 'string') {
+            assertNoComplexScript(val, 'Pure-TS Data to PDF');
+          }
+        }
+      }
+    }
+  }
+
   return new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({
       size: 'A4',

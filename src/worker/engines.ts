@@ -11,9 +11,11 @@ import {
   UnsupportedOptionError,
   EngineUnavailableError,
   InvalidPageRangeError,
+  ComplexScriptRequiresNativeEngineError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile } from '../lib/conversions';
+import { hasComplexTextScript } from '../lib/conversions/ctl';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
@@ -26,7 +28,7 @@ import { executeSandboxedBinary, SandboxedMemoryLimitError } from './sandbox';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
 
-export { EngineUnavailableError, InvalidPageRangeError };
+export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
 export interface WorkerVfsPayload {
   inputPath?: string;
@@ -119,7 +121,7 @@ function validateFormat(format: string): string {
 }
 
 function resolveBinary(candidates: string[], envOverride?: string): string | null {
-  if (envOverride !== undefined) {
+  if (envOverride !== undefined && envOverride !== '' && envOverride !== 'undefined') {
     if (path.isAbsolute(envOverride) && fs.existsSync(envOverride)) {
       return envOverride;
     }
@@ -1182,6 +1184,33 @@ export async function convertWithNativePoppler(
  */
 const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
 const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
+const COMPLEX_TEXT_FORMATS = new Set(['txt', 'html', 'htm', 'md']);
+
+function checkInputContainsComplexScript(input: Buffer | WorkerVfsPayload, src: string): boolean {
+  if (!COMPLEX_TEXT_FORMATS.has(src)) return false;
+  try {
+    let buf: Buffer | undefined;
+    if (Buffer.isBuffer(input)) {
+      buf = input;
+    } else if (input.inputBuffer) {
+      buf = input.inputBuffer;
+    } else if (input.inputPath && fs.existsSync(input.inputPath)) {
+      const fd = fs.openSync(input.inputPath, 'r');
+      const stat = fs.fstatSync(fd);
+      const readLen = Math.min(512 * 1024, stat.size);
+      const readBuf = Buffer.alloc(readLen);
+      fs.readSync(fd, readBuf, 0, readLen, 0);
+      fs.closeSync(fd);
+      buf = readBuf;
+    }
+    if (buf) {
+      return hasComplexTextScript(buf.toString('utf-8'));
+    }
+  } catch {
+    // Ignore read errors
+  }
+  return false;
+}
 
 export async function executeWorkerConversion(
   input: Buffer | WorkerVfsPayload,
@@ -1200,9 +1229,10 @@ export async function executeWorkerConversion(
   let fallbackReason: string | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
+  const isComplexText = tgt === 'pdf' && checkInputContainsComplexScript(input, src);
 
   // 1. Native Headless Office
-  if (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt))) {
+  if (isComplexText || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {
       const officeRes = await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
       if (officeRes) {
@@ -1213,6 +1243,11 @@ export async function executeWorkerConversion(
       }
     } catch (err) {
       if (err instanceof EngineUnavailableError) {
+        if (isComplexText) {
+          throw new ComplexScriptRequiresNativeEngineError(
+            `Rendering complex text script (${src} to pdf) requires the native LibreOffice engine: ${err.message}`
+          );
+        }
         if (options.pdfStandard) {
           throw new Error(
             `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}', but engine is unavailable: ${err.reason}`

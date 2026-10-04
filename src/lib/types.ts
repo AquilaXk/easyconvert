@@ -332,4 +332,13 @@ export class InvalidPageRangeError extends ConversionFailedError {
   }
 }
 
+export class ComplexScriptRequiresNativeEngineError extends ConversionFailedError {
+  constructor(
+    message = 'Rendering complex scripts (CTL/RTL) requires the native LibreOffice engine'
+  ) {
+    super(message);
+    this.name = 'ComplexScriptRequiresNativeEngineError';
+  }
+}
+
 

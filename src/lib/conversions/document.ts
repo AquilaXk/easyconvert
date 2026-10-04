@@ -28,6 +28,7 @@ import {
 } from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
+import { assertNoComplexScript } from './ctl';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
 
 export {
@@ -570,6 +571,8 @@ async function generatePdfFromText(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
+  assertNoComplexScript(text, `Pure-TS ${sourceType.toUpperCase()} to PDF conversion`);
+
   return new Promise((resolve, reject) => {
     const isLandscape = options.orientation === 'landscape';
     const doc = new PDFDocument({

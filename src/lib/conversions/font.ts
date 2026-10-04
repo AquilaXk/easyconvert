@@ -15,6 +15,11 @@ export interface SfntTable {
   data: Buffer;
 }
 
+export function formatSfntTag(tag: string): string {
+  const padded = (tag || '').padEnd(4, ' ');
+  return padded.length === 4 ? padded : padded.substring(0, 4);
+}
+
 export interface ParsedFont {
   sfntVersion: number;
   flavor: string;
@@ -252,7 +257,7 @@ export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
 
   tableEntries.forEach((tbl, idx) => {
     const entryOffset = 12 + idx * 16;
-    directory.write(tbl.tag.padEnd(4, ' ').slice(0, 4), entryOffset, 4, 'ascii');
+    directory.write(formatSfntTag(tbl.tag), entryOffset, 4, 'ascii');
     directory.writeUInt32BE(tbl.checkSum || calculateTableChecksum(tbl.data), entryOffset + 4);
     directory.writeUInt32BE(currentOffset, entryOffset + 8);
     directory.writeUInt32BE(tbl.data.length, entryOffset + 12);
@@ -300,7 +305,7 @@ export function encodeWoff(font: ParsedFont): Buffer {
     const compLength = compData.length;
 
     const entryOffset = idx * 20;
-    dirBuf.write(tbl.tag.padEnd(4, ' ').slice(0, 4), entryOffset, 4, 'ascii');
+    dirBuf.write(formatSfntTag(tbl.tag), entryOffset, 4, 'ascii');
     dirBuf.writeUInt32BE(currentOffset, entryOffset + 4);
     dirBuf.writeUInt32BE(compLength, entryOffset + 8);
     dirBuf.writeUInt32BE(origLength, entryOffset + 12);
@@ -1217,6 +1222,7 @@ export function createCanonicalFont(
   fontFamily: string,
   charMappings?: Array<{ charCode: number; glyphId: number }>
 ): ParsedFont {
+  const seedBuffer = Buffer.isBuffer(seedData) ? seedData : Buffer.from(seedData || '');
   const tables: Record<string, SfntTable> = {};
   const mappings = charMappings && charMappings.length > 0 ? charMappings : [{ charCode: 65, glyphId: 1 }];
   const maxGid = mappings.reduce((m, item) => Math.max(m, item.glyphId), 1);
@@ -1737,7 +1743,7 @@ export function createFvarTable(
   for (let i = 0; i < axisCount; i++) {
     const ax = axes[i];
     const offset = headerSize + i * axisSize;
-    buf.write(ax.tag.padEnd(4, ' ').slice(0, 4), offset, 4, 'ascii');
+    buf.write(formatSfntTag(ax.tag), offset, 4, 'ascii');
     buf.writeInt32BE(Math.round(ax.minValue * 65536), offset + 4);
     buf.writeInt32BE(Math.round(ax.defaultValue * 65536), offset + 8);
     buf.writeInt32BE(Math.round(ax.maxValue * 65536), offset + 12);
@@ -1825,7 +1831,7 @@ export function createStatTable(
   const axesBuf = Buffer.alloc(axesBufSize);
   for (let i = 0; i < designAxisCount; i++) {
     const ax = axes[i];
-    axesBuf.write(ax.tag.padEnd(4, ' ').slice(0, 4), i * 8, 4, 'ascii');
+    axesBuf.write(formatSfntTag(ax.tag), i * 8, 4, 'ascii');
     axesBuf.writeUInt16BE(ax.axisNameID || 256 + i, i * 8 + 4);
     axesBuf.writeUInt16BE(ax.ordering || i, i * 8 + 6);
   }
