@@ -151,26 +151,8 @@ export async function GET() {
               },
               'application/json': {
                 schema: {
-                  type: 'object',
-                  required: ['targetFormat'],
-                  properties: {
-                    filename: { type: 'string', description: 'Original filename.' },
-                    targetFormat: { type: 'string', description: 'Target format extension.' },
-                    sourceFormat: { type: 'string', description: 'Source format extension.' },
-                    storageKey: {
-                      type: 'string',
-                      description: 'Key of an object from the multipart upload API (`uploads/...`), or an output owned by the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404.',
-                    },
-                    inputBufferBase64: { type: 'string', description: 'Base64-encoded source payload.' },
-                    options: { type: 'object', description: 'Conversion configuration options.' },
-                    tasks: {
-                      type: 'array',
-                      description: 'Array of sequential pipeline tasks for multi-stage conversion execution.',
-                      items: { $ref: '#/components/schemas/PipelineTask' },
-                    },
-                    webhookUrl: { type: 'string', format: 'uri' },
-                    webhookSecret: { type: 'string' },
-                  },
+                  ...JobCreateRequestSchema,
+                  $id: undefined,
                 },
               },
             },

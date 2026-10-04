@@ -54,7 +54,14 @@ export function validateOrProblem<T = unknown>(
   data: unknown,
   instanceUri: string = '/api/v1/jobs'
 ): ValidateResult<T> {
-  const validator = typeof schema === 'string' ? ajv.getSchema(schema) : ajv.compile(schema);
+  let validator;
+  if (typeof schema === 'string') {
+    validator = ajv.getSchema(schema);
+  } else if (schema?.$id) {
+    validator = ajv.getSchema(schema.$id) ?? ajv.compile(schema);
+  } else {
+    validator = ajv.compile(schema);
+  }
 
   if (!validator) {
     const detail = 'Internal validation schema configuration error.';
@@ -91,9 +98,17 @@ export function validateOrProblem<T = unknown>(
       isPlannedOption = true;
     }
 
-    const fieldPath = err.instancePath
-      ? err.instancePath.replace(/^\//, '').replace(/\//g, '.')
-      : (err.params as any)?.missingProperty || (err.params as any)?.additionalProperty || 'payload';
+    let fieldPath = err.instancePath ? err.instancePath.replace(/^\//, '').replace(/\//g, '.') : '';
+    const missingProp = (err.params as any)?.missingProperty;
+    const additionalProp = (err.params as any)?.additionalProperty;
+
+    if (missingProp) {
+      fieldPath = fieldPath ? `${fieldPath}.${missingProp}` : missingProp;
+    } else if (additionalProp) {
+      fieldPath = fieldPath ? `${fieldPath}.${additionalProp}` : additionalProp;
+    } else if (!fieldPath) {
+      fieldPath = 'payload';
+    }
 
     const reason = isPlanned ? 'option_not_supported' : err.message || 'validation failed';
     return { name: fieldPath, reason };
