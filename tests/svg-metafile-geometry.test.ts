@@ -760,6 +760,23 @@ describe('SVG document model for metafile encoders', () => {
   });
 
   describe('strict input parsing', () => {
+    it('rejects element nesting deeper than the limit with a typed error, not a stack overflow', () => {
+      const DEPTH = 20000;
+      const deep = svgDoc('<g>'.repeat(DEPTH) + '<rect width="5" height="5"/>' + '</g>'.repeat(DEPTH));
+      expect(() => encodeEmf(deep)).toThrow(CadGeometryUnavailableError);
+      expect(() => encodeEmf(deep)).toThrow(/nest/);
+    });
+
+    it('counts <use> instantiation towards the nesting limit', () => {
+      let defs = '<rect id="u0" width="1" height="1"/>';
+      for (let k = 1; k <= 300; k++) defs += `<g id="u${k}"><use href="#u${k - 1}"/></g>`;
+      expect(() => encodeEmf(svgDoc(`<defs>${defs}</defs><use href="#u300"/>`))).toThrow(/nest/);
+    });
+
+    it('accepts moderate nesting', () => {
+      expect(filledShapes(emfShapes('<g>'.repeat(100) + '<rect width="5" height="5"/>' + '</g>'.repeat(100)))).toHaveLength(1);
+    });
+
     it('rejects non-uniform scale or skew on stroked shapes, which a pen width cannot represent', () => {
       for (const t of ['scale(2 1)', 'skewX(20)', 'matrix(1 0.5 0 1 0 0)']) {
         const body = `<rect width="10" height="10" fill="#000" stroke="#f00" transform="${t}"/>`;

@@ -1152,6 +1152,13 @@ function resolveViewport(attrs: Map<string, string>): Viewport {
 // Document walk
 // ============================================================================
 
+/** Maximum element nesting, including <use> instantiation, before the input is rejected. */
+const MAX_SVG_NESTING_DEPTH = 256;
+
+function nestingTooDeep(): CadGeometryUnavailableError {
+  return new CadGeometryUnavailableError(`SVG elements nest deeper than ${MAX_SVG_NESTING_DEPTH} levels.`);
+}
+
 interface SvgNode {
   name: string;
   attrs: Map<string, string>;
@@ -1173,7 +1180,10 @@ function buildSvgTree(svgContent: string): SvgNode | null {
     }
     const node: SvgNode = { name: tag.name, attrs: tag.attrs, children: [] };
     stack[stack.length - 1].children.push(node);
-    if (!tag.selfClosing) stack.push(node);
+    if (!tag.selfClosing) {
+      stack.push(node);
+      if (stack.length > MAX_SVG_NESTING_DEPTH) throw nestingTooDeep();
+    }
   }
   if (stack.length !== 1) {
     throw new CadGeometryUnavailableError(`Malformed SVG: <${stack[stack.length - 1].name}> is never closed.`);
@@ -1212,6 +1222,7 @@ interface RenderState {
   useChain: string[];
   renderedNodes: number;
   sheet: CssRule[];
+  depth: number;
 }
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
@@ -1297,6 +1308,12 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
 }
 
 function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): void {
+  if (++state.depth > MAX_SVG_NESTING_DEPTH) throw nestingTooDeep();
+  renderNodeAtDepth(node, parent, state);
+  state.depth--;
+}
+
+function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderState): void {
   if (NON_RENDERED_ELEMENTS.has(node.name) || isForeignNamespaceElement(node.name)) return;
   if (++state.renderedNodes > MAX_RENDERED_NODES) {
     throw new CadGeometryUnavailableError(`SVG expands to more than ${MAX_RENDERED_NODES} rendered elements.`);
@@ -1339,7 +1356,7 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   assertNeutralPaintProperties(declared);
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
-  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, sheet };
+  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, sheet, depth: 0 };
   indexIds(root, state.ids);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };
