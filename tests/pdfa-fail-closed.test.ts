@@ -19,6 +19,8 @@ import { PdfPostprocessError, UnsupportedOptionError } from '../src/lib/types';
 const FONT_TABLE_HEADER_LINES = 2;
 /** Position of the `emb` column counted from the end of a `pdffonts` row. */
 const EMB_COLUMN_FROM_END = 5;
+/** Small enough that a horizontal stamp fits inside a Letter/A4 page width. */
+const WATERMARK_FONT_SIZE = 18;
 
 let workDir: string;
 const savedEnv: Record<string, string | undefined> = {};
@@ -202,13 +204,13 @@ describe('watermark before PDF/A', () => {
     ['soffice', 'pdftotext', 'pdffonts'],
     async () => {
       requireLibreOfficeDraw();
-      // Horizontal so pdftotext reads the stamp in order; the default is diagonal.
-      const watermark = 'CONFIDENTIAL DRAFT 7731';
+      // Horizontal and small enough to fit the page, so pdftotext reads the whole stamp in order.
+      const watermark = 'DRAFT 7731';
       const result = await convertFile(
         Buffer.from('Quarterly archival record\n'),
         'txt',
         'pdf',
-        { watermark: { type: 'text', text: watermark, rotation: 0 }, pdfa: { conformance: 'pdfa-2b' } },
+        { watermark: { type: 'text', text: watermark, rotation: 0, fontSize: WATERMARK_FONT_SIZE }, pdfa: { conformance: 'pdfa-2b' } },
         'record.txt'
       );
       const out = path.join(workDir, 'watermarked-pdfa.pdf');
