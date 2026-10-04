@@ -4,7 +4,7 @@ import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
-import { EngineUnavailableError, UnsupportedOptionError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError, UnsupportedOptionError } from '../src/lib/types';
 import { HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -47,10 +47,11 @@ describe('engine-missing conditions surface as EngineUnavailableError', () => {
     await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
   });
 
-  it('maps an OCR engine that cannot run', async () => {
+  it('keeps an undecodable OCR image a client error, not a missing engine', async () => {
     const run = dispatchConversion(await buildTruncatedPng(), 'png', 'pdf', { ocrEnabled: true }, 'scan.png');
-    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
-    await expect(run).rejects.toMatchObject({ engineName: 'tesseract' });
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.not.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toThrow(/could not be decoded/);
   });
 });
 
