@@ -853,6 +853,123 @@ async function convertPdfToTextWithPoppler(
   }
 }
 
+function resolveRequestedPages(options: WorkerEngineOptions, pageCount: number): number[] {
+  let requestedPages: number[];
+  if (options.pages) {
+    requestedPages = parsePageRanges(options.pages, pageCount);
+  } else if (typeof options.page === 'number') {
+    if (!Number.isInteger(options.page) || options.page < 1 || options.page > pageCount) {
+      throw new InvalidPageRangeError(
+        `Page number ${options.page} is out of bounds (1-${pageCount})`
+      );
+    }
+    requestedPages = [options.page];
+  } else {
+    requestedPages = Array.from({ length: pageCount }, (_, i) => i + 1);
+  }
+
+  if (requestedPages.length === 0) {
+    throw new InvalidPageRangeError('No pages selected for rendering');
+  }
+
+  return requestedPages;
+}
+
+function matchOutputPageFiles(
+  files: string[],
+  requestedPages: number[]
+): Array<{ file: string; pageNum: number }> {
+  const parsedFiles = files
+    .map((f) => {
+      const m = f.match(/-(\d+)\.[^.]+$/);
+      return {
+        file: f,
+        pageNum: m
+          ? Number.parseInt(m[1], 10)
+          : files.length === 1 && requestedPages.length === 1
+            ? requestedPages[0]
+            : 0,
+      };
+    })
+    .filter((item) => requestedPages.includes(item.pageNum))
+    .sort((a, b) => a.pageNum - b.pageNum);
+
+  return parsedFiles.length > 0
+    ? parsedFiles
+    : files.sort().map((f, i) => ({ file: f, pageNum: requestedPages[i] ?? i + 1 }));
+}
+
+interface FinalizeMultiPageParams {
+  tempDir: string;
+  resolvedFiles: Array<{ file: string; pageNum: number }>;
+  requestedPages: number[];
+  tgt: string;
+  baseName: string;
+  options: WorkerEngineOptions;
+  input: Buffer | WorkerVfsPayload;
+  startTime: number;
+}
+
+async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise<WorkerConversionResult> {
+  const {
+    tempDir,
+    resolvedFiles,
+    requestedPages,
+    tgt,
+    baseName,
+    options,
+    input,
+    startTime,
+  } = params;
+
+  const isSingleOutput = requestedPages.length === 1 || options.multiPageOutput === 'first';
+  const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+
+  if (isSingleOutput) {
+    const selected = resolvedFiles[0];
+    const tempOutputPath = path.join(tempDir, selected.file);
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+    return createConversionResult(
+      persistedPath,
+      tgt,
+      baseName,
+      'native-poppler',
+      Date.now() - startTime
+    );
+  }
+
+  // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
+  const zip = new JSZip();
+  const maxPage = requestedPages[requestedPages.length - 1] ?? 1;
+  const padLen = Math.max(3, String(maxPage).length);
+
+  for (const item of resolvedFiles) {
+    const entryName = `${baseName}-p${String(item.pageNum).padStart(padLen, '0')}.${tgt}`;
+    const fileBytes = fs.readFileSync(path.join(tempDir, item.file));
+    zip.file(entryName, fileBytes);
+  }
+
+  const zipBuffer = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  });
+
+  const zipOutputPath = path.join(tempDir, `${baseName}.zip`);
+  fs.writeFileSync(zipOutputPath, zipBuffer);
+
+  const persistedPath = preserveOutput(zipOutputPath, 'zip', options, vfsPayload);
+
+  return createConversionResult(
+    persistedPath,
+    'zip',
+    baseName,
+    'native-poppler',
+    Date.now() - startTime
+  );
+}
+
 async function renderPdfToImageWithPoppler(
   input: Buffer | WorkerVfsPayload,
   tgt: string,
@@ -886,25 +1003,7 @@ async function renderPdfToImageWithPoppler(
         options.password
       );
 
-      let requestedPages: number[];
-      if (options.pages) {
-        requestedPages = parsePageRanges(options.pages, pageCount);
-      } else if (typeof options.page === 'number') {
-        if (!Number.isInteger(options.page) || options.page < 1 || options.page > pageCount) {
-          throw new InvalidPageRangeError(
-            `Page number ${options.page} is out of bounds (1-${pageCount})`
-          );
-        }
-        requestedPages = [options.page];
-      } else {
-        requestedPages = Array.from({ length: pageCount }, (_, i) => i + 1);
-      }
-
-      if (requestedPages.length === 0) {
-        throw new InvalidPageRangeError('No pages selected for rendering');
-      }
-
-      // Group consecutive page intervals to minimize CLI spawns
+      const requestedPages = resolveRequestedPages(options, pageCount);
       const intervals = groupConsecutiveRanges(requestedPages);
       const prefix = path.join(tempDir, 'page');
 
@@ -924,70 +1023,17 @@ async function renderPdfToImageWithPoppler(
         throw new Error('pdftoppm execution completed without producing any output images');
       }
 
-      // pdftoppm appends -%02d or -%d to prefix. Parse page number:
-      const parsedFiles = files
-        .map((f) => {
-          const m = f.match(/-(\d+)\.[^.]+$/);
-          return {
-            file: f,
-            pageNum: m ? Number.parseInt(m[1], 10) : 0,
-          };
-        })
-        .filter((item) => requestedPages.includes(item.pageNum))
-        .sort((a, b) => a.pageNum - b.pageNum);
-
-      const resolvedFiles =
-        parsedFiles.length > 0
-          ? parsedFiles
-          : files.sort().map((f, i) => ({ file: f, pageNum: requestedPages[i] ?? i + 1 }));
-
-      const isSingleOutput = requestedPages.length === 1 || options.multiPageOutput === 'first';
-
-      if (isSingleOutput) {
-        const selected = resolvedFiles[0];
-        const tempOutputPath = path.join(tempDir, selected.file);
-        const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-        const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-        return createConversionResult(
-          persistedPath,
-          tgt,
-          baseName,
-          'native-poppler',
-          Date.now() - startTime
-        );
-      }
-
-      // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
-      const zip = new JSZip();
-      const maxPage = requestedPages[requestedPages.length - 1] ?? 1;
-      const padLen = Math.max(3, String(maxPage).length);
-
-      for (const item of resolvedFiles) {
-        const entryName = `${baseName}-p${String(item.pageNum).padStart(padLen, '0')}.${tgt}`;
-        const fileBytes = fs.readFileSync(path.join(tempDir, item.file));
-        zip.file(entryName, fileBytes);
-      }
-
-      const zipBuffer = await zip.generateAsync({
-        type: 'nodebuffer',
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 },
-      });
-
-      const zipOutputPath = path.join(tempDir, `${baseName}.zip`);
-      fs.writeFileSync(zipOutputPath, zipBuffer);
-
-      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(zipOutputPath, 'zip', options, vfsPayload);
-
-      return createConversionResult(
-        persistedPath,
-        'zip',
+      const resolvedFiles = matchOutputPageFiles(files, requestedPages);
+      return finalizeMultiPageOutput({
+        tempDir,
+        resolvedFiles,
+        requestedPages,
+        tgt,
         baseName,
-        'native-poppler',
-        Date.now() - startTime
-      );
+        options,
+        input,
+        startTime,
+      });
     });
   } catch (err) {
     if (options.throwOnUnavailable) {
@@ -1029,24 +1075,7 @@ async function renderPdfToSvgWithPoppler(
         options.password
       );
 
-      let requestedPages: number[];
-      if (options.pages) {
-        requestedPages = parsePageRanges(options.pages, pageCount);
-      } else if (typeof options.page === 'number') {
-        if (!Number.isInteger(options.page) || options.page < 1 || options.page > pageCount) {
-          throw new InvalidPageRangeError(
-            `Page number ${options.page} is out of bounds (1-${pageCount})`
-          );
-        }
-        requestedPages = [options.page];
-      } else {
-        requestedPages = Array.from({ length: pageCount }, (_, i) => i + 1);
-      }
-
-      if (requestedPages.length === 0) {
-        throw new InvalidPageRangeError('No pages selected for rendering');
-      }
-
+      const requestedPages = resolveRequestedPages(options, pageCount);
       const intervals = groupConsecutiveRanges(requestedPages);
       const prefix = path.join(tempDir, 'page');
 
@@ -1071,68 +1100,17 @@ async function renderPdfToSvgWithPoppler(
         throw new Error('pdftocairo execution completed without producing any output SVG files');
       }
 
-      const parsedFiles = files
-        .map((f) => {
-          const m = f.match(/-(\d+)\.svg$/);
-          return {
-            file: f,
-            pageNum: m ? Number.parseInt(m[1], 10) : (files.length === 1 && requestedPages.length === 1 ? requestedPages[0] : 0),
-          };
-        })
-        .filter((item) => requestedPages.includes(item.pageNum))
-        .sort((a, b) => a.pageNum - b.pageNum);
-
-      const resolvedFiles =
-        parsedFiles.length > 0
-          ? parsedFiles
-          : files.sort().map((f, i) => ({ file: f, pageNum: requestedPages[i] ?? i + 1 }));
-
-      const isSingleOutput = requestedPages.length === 1 || options.multiPageOutput === 'first';
-
-      if (isSingleOutput) {
-        const selected = resolvedFiles[0];
-        const tempOutputPath = path.join(tempDir, selected.file);
-        const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-        const persistedPath = preserveOutput(tempOutputPath, 'svg', options, vfsPayload);
-
-        return createConversionResult(
-          persistedPath,
-          'svg',
-          baseName,
-          'native-poppler',
-          Date.now() - startTime
-        );
-      }
-
-      const zip = new JSZip();
-      const maxPage = requestedPages[requestedPages.length - 1] ?? 1;
-      const padLen = Math.max(3, String(maxPage).length);
-
-      for (const item of resolvedFiles) {
-        const entryName = `${baseName}-p${String(item.pageNum).padStart(padLen, '0')}.svg`;
-        const fileBytes = fs.readFileSync(path.join(tempDir, item.file));
-        zip.file(entryName, fileBytes);
-      }
-
-      const zipBuffer = await zip.generateAsync({
-        type: 'nodebuffer',
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 },
-      });
-
-      const zipOutputPath = path.join(tempDir, `${baseName}.zip`);
-      fs.writeFileSync(zipOutputPath, zipBuffer);
-
-      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(zipOutputPath, 'zip', options, vfsPayload);
-
-      return createConversionResult(
-        persistedPath,
-        'zip',
+      const resolvedFiles = matchOutputPageFiles(files, requestedPages);
+      return finalizeMultiPageOutput({
+        tempDir,
+        resolvedFiles,
+        requestedPages,
+        tgt: 'svg',
         baseName,
-        'native-poppler',
-        Date.now() - startTime
-      );
+        options,
+        input,
+        startTime,
+      });
     });
   } catch (err) {
     if (options.throwOnUnavailable) {
