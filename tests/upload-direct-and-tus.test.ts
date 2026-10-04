@@ -1,20 +1,21 @@
 import crypto from 'node:crypto';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { POST as uploadsHandler } from '../src/app/api/v1/uploads/route';
 import {
+  POST as uploadsHandler,
   OPTIONS as tusOptionsHandler,
   POST as tusPostHandler,
   HEAD as tusHeadHandler,
   PATCH as tusPatchHandler,
   DELETE as tusDeleteHandler,
-} from '../src/app/api/v1/uploads/tus/[[...id]]/route';
+} from '../src/app/api/v1/uploads/[[...id]]/route';
 import { POST as jobsPostHandler } from '../src/app/api/v1/jobs/route';
 import { localFsStorage, storageProvider } from '../src/lib/storage';
 import { tusEngine, parseTusMetadata, serializeTusMetadata } from '../src/lib/storage/tus-engine';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import type { ApiKeyScope } from '../src/lib/api-keys/types';
 import type { User } from '../src/lib/auth/types';
 
 const BASE_URL = 'http://localhost:3000';
@@ -32,7 +33,7 @@ function sessionHeaders(user: User): Record<string, string> {
   return { Cookie: `easyconvert_session=${createSessionToken(user)}` };
 }
 
-async function apiKeyHeaders(user: User, scopes: string[] = ['convert:write']): Promise<Record<string, string>> {
+async function apiKeyHeaders(user: User, scopes: ApiKeyScope[] = ['convert:write']): Promise<Record<string, string>> {
   const key = await redisKeyStore.generateApiKey(user.id, `${user.name} key`, { scopes });
   return { Authorization: `Bearer ${key.secretKey}` };
 }
@@ -195,8 +196,9 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
 
     // 5. Verify byte content in localFsStorage
     const storedStream = await localFsStorage.getStream(storageKey);
+    expect(storedStream).not.toBeNull();
     const streamChunks: Buffer[] = [];
-    for await (const piece of storedStream.stream) {
+    for await (const piece of storedStream!.stream) {
       streamChunks.push(Buffer.isBuffer(piece) ? piece : Buffer.from(piece));
     }
     const fullBuffer = Buffer.concat(streamChunks);
@@ -463,8 +465,9 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
 
     // 8. Verify completed storage content
     const storedStream = await localFsStorage.getStream(storageKey!);
+    expect(storedStream).not.toBeNull();
     const chunks: Buffer[] = [];
-    for await (const chunk of storedStream.stream) {
+    for await (const chunk of storedStream!.stream) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
     const storedBuf = Buffer.concat(chunks);

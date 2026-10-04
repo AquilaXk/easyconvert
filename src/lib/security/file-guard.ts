@@ -28,9 +28,10 @@ export function assertNotSpoofedFilePath(
   }
   const fd = fs.openSync(filePath, 'r');
   try {
-    const headerBuf = Buffer.alloc(8192);
-    const bytesRead = fs.readSync(fd, headerBuf, 0, 8192, 0);
-    const slice = bytesRead < 8192 ? headerBuf.subarray(0, bytesRead) : headerBuf;
+    const maxHeaderBytes = 64 * 1024; // 64 KiB
+    const headerBuf = Buffer.alloc(maxHeaderBytes);
+    const bytesRead = fs.readSync(fd, headerBuf, 0, maxHeaderBytes, 0);
+    const slice = bytesRead < maxHeaderBytes ? headerBuf.subarray(0, bytesRead) : headerBuf;
     assertNotSpoofedFile(slice, declaredExtensionOrFormatId, filename);
   } finally {
     fs.closeSync(fd);

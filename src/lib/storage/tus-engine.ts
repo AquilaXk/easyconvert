@@ -3,8 +3,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable, PassThrough } from 'node:stream';
+import Redis from 'ioredis';
 import { localFsStorage } from './index';
 import { globalSharedObjects } from './shared-store';
+import { assertNotSpoofedFilePath } from '../security/file-guard';
 
 export class TusOffsetMismatchError extends Error {
   constructor(public readonly expectedOffset: number) {
@@ -56,6 +58,118 @@ export interface AppendChunkResult {
 }
 
 /**
+ * TUS Session state store interface for Redis and In-Memory storage.
+ */
+export interface TusSessionStore {
+  saveSession(session: TusSession, ttlSeconds?: number): Promise<void>;
+  getSession(id: string): Promise<TusSession | null>;
+  deleteSession(id: string): Promise<boolean>;
+  reset?(): Promise<void>;
+}
+
+export class InMemoryTusSessionStore implements TusSessionStore {
+  private readonly sessions = new Map<string, TusSession>();
+
+  async saveSession(session: TusSession): Promise<void> {
+    this.sessions.set(session.id, { ...session });
+  }
+
+  async getSession(id: string): Promise<TusSession | null> {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    if (Date.now() > s.expiresAt) {
+      this.sessions.delete(id);
+      return null;
+    }
+    return { ...s };
+  }
+
+  async deleteSession(id: string): Promise<boolean> {
+    return this.sessions.delete(id);
+  }
+
+  async reset(): Promise<void> {
+    this.sessions.clear();
+  }
+}
+
+export class RedisTusSessionStore implements TusSessionStore {
+  private readonly redis: Redis;
+  private readonly prefix: string = 'tus:session:';
+
+  constructor(redisClient?: Redis) {
+    if (redisClient) {
+      this.redis = redisClient;
+    } else {
+      const url = process.env.REDIS_URL;
+      if (url) {
+        this.redis = new Redis(url, { maxRetriesPerRequest: 2, enableOfflineQueue: false });
+      } else {
+        const host = process.env.REDIS_HOST || '127.0.0.1';
+        const port = Number(process.env.REDIS_PORT || 6379);
+        this.redis = new Redis({ host, port, maxRetriesPerRequest: 2, enableOfflineQueue: false });
+      }
+    }
+  }
+
+  async saveSession(session: TusSession, ttlSeconds: number = 86400): Promise<void> {
+    const key = `${this.prefix}${session.id}`;
+    const ttl = Math.max(1, Math.floor((session.expiresAt - Date.now()) / 1000));
+    await this.redis.set(key, JSON.stringify(session), 'EX', ttl || ttlSeconds);
+  }
+
+  async getSession(id: string): Promise<TusSession | null> {
+    const key = `${this.prefix}${id}`;
+    const raw = await this.redis.get(key);
+    if (!raw) return null;
+    try {
+      const s = JSON.parse(raw) as TusSession;
+      if (Date.now() > s.expiresAt) {
+        await this.redis.del(key);
+        return null;
+      }
+      return s;
+    } catch {
+      return null;
+    }
+  }
+
+  async deleteSession(id: string): Promise<boolean> {
+    const key = `${this.prefix}${id}`;
+    const res = await this.redis.del(key);
+    return res > 0;
+  }
+
+  async reset(): Promise<void> {
+    const keys = await this.redis.keys(`${this.prefix}*`);
+    if (keys.length > 0) {
+      await Promise.all(keys.map((k) => this.redis.del(k)));
+    }
+  }
+}
+
+let activeTusSessionStore: TusSessionStore | null = null;
+
+export function getTusSessionStore(): TusSessionStore {
+  if (!activeTusSessionStore) {
+    if (process.env.REDIS_URL || process.env.REDIS_HOST) {
+      try {
+        activeTusSessionStore = new RedisTusSessionStore();
+      } catch {
+        activeTusSessionStore = new InMemoryTusSessionStore();
+      }
+    } else {
+      activeTusSessionStore = new InMemoryTusSessionStore();
+    }
+  }
+  return activeTusSessionStore;
+}
+
+export function setTusSessionStore(store: TusSessionStore | null): void {
+  activeTusSessionStore = store;
+}
+
+/**
  * Parses TUS 1.0 Upload-Metadata header.
  * Format: "key1 base64value1,key2 base64value2"
  */
@@ -104,45 +218,84 @@ function parseChecksumHeader(header?: string | null): { algo: string; expectedDi
   return { algo, expectedDigest };
 }
 
-async function rollbackChunk(binPath: string, clientOffset: number): Promise<void> {
+/**
+ * Truncates appended file chunk back to clientOffset via ftruncateSync.
+ */
+function rollbackChunk(binPath: string, clientOffset: number): void {
   try {
-    await fs.promises.truncate(binPath, clientOffset);
+    if (fs.existsSync(binPath)) {
+      const fd = fs.openSync(binPath, 'r+');
+      try {
+        fs.ftruncateSync(fd, clientOffset);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
   } catch {
-    // Disk truncation failed in restricted / failed disk state
+    try {
+      fs.truncateSync(binPath, clientOffset);
+    } catch {
+      // Disk state handled fail-closed
+    }
   }
 }
 
 async function finalizeTusSession(session: TusSession, binPath: string): Promise<void> {
-  // Finalize into stream-first object storage
-  const readStream = fs.createReadStream(binPath);
-  await localFsStorage.putStream(session.key, readStream, {
-    contentType: session.mimeType,
-    filename: session.filename,
-    ttlSeconds: Math.max(3600, Math.floor((session.expiresAt - Date.now()) / 1000)),
-  });
+  const { metaPath, binPath: targetBinPath } = localFsStorage.getPathsForKey(session.key);
+  try {
+    const parentDir = path.dirname(targetBinPath);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+    // Zero-copy OS file copy
+    fs.copyFileSync(binPath, targetBinPath);
 
-  // Synchronize into globalSharedObjects disk spool
-  const stat = await fs.promises.stat(binPath);
-  const hash = crypto.createHash('sha256').update(String(stat.mtimeMs)).digest('hex');
-  let cachedBuffer: Buffer | null = null;
-  globalSharedObjects.set(session.key, {
-    key: session.key,
-    filename: session.filename,
-    mimeType: session.mimeType,
-    size: session.uploadLength,
-    etag: `"${hash}"`,
-    uploadedAt: Date.now(),
-    expiresAt: session.expiresAt,
-    filePath: binPath,
-    get buffer(): Buffer {
-      if (cachedBuffer) return cachedBuffer;
-      if (fs.existsSync(binPath)) {
-        cachedBuffer = fs.readFileSync(binPath);
-        return cachedBuffer;
-      }
-      return Buffer.alloc(0);
-    },
-  });
+    const stat = await fs.promises.stat(binPath);
+    const hash = crypto.createHash('sha256').update(String(stat.mtimeMs)).digest('hex');
+    const etag = `"${hash.slice(0, 32)}"`;
+
+    const meta = {
+      key: session.key,
+      filename: session.filename,
+      contentType: session.mimeType,
+      size: session.uploadLength,
+      etag,
+      createdAt: session.createdAt,
+      expiresAt: session.expiresAt,
+    };
+    await fs.promises.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+
+    let cachedBuffer: Buffer | null = null;
+    globalSharedObjects.set(session.key, {
+      key: session.key,
+      filename: session.filename,
+      mimeType: session.mimeType,
+      size: session.uploadLength,
+      etag,
+      uploadedAt: Date.now(),
+      expiresAt: session.expiresAt,
+      filePath: targetBinPath,
+      get buffer(): Buffer {
+        if (session.uploadLength > 32 * 1024 * 1024) {
+          throw new Error('Payload too large for memory');
+        }
+        if (cachedBuffer) return cachedBuffer;
+        if (fs.existsSync(targetBinPath)) {
+          cachedBuffer = fs.readFileSync(targetBinPath);
+          return cachedBuffer;
+        }
+        return Buffer.alloc(0);
+      },
+    });
+  } catch {
+    // Fallback if needed
+    const readStream = fs.createReadStream(binPath);
+    await localFsStorage.putStream(session.key, readStream, {
+      contentType: session.mimeType,
+      filename: session.filename,
+      ttlSeconds: Math.max(3600, Math.floor((session.expiresAt - Date.now()) / 1000)),
+    });
+  }
 }
 
 export class TusEngine {
@@ -159,6 +312,10 @@ export class TusEngine {
       );
     this.defaultTtlSeconds = options?.defaultTtlSeconds || 86400; // 24 hours
     this.ensureDirectory();
+  }
+
+  get sessionStore(): TusSessionStore {
+    return getTusSessionStore();
   }
 
   private ensureDirectory(): void {
@@ -181,7 +338,7 @@ export class TusEngine {
   private toNodeReadable(
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>
   ): NodeJS.ReadableStream {
-    if ('pipe' in stream && typeof stream.pipe === 'function') {
+    if ('pipe' in (stream as any) && typeof (stream as any).pipe === 'function') {
       return stream as NodeJS.ReadableStream;
     }
     return Readable.fromWeb(stream as any);
@@ -201,7 +358,13 @@ export class TusEngine {
     const mimeType = parsed.filetype || parsed.contentType || 'application/octet-stream';
     const now = Date.now();
     const expiresAt = now + (params.ttlSeconds || this.defaultTtlSeconds) * 1000;
-    const key = `uploads/${id}/${path.basename(filename)}`;
+
+    // User namespace registration:
+    // If ownerUserId is provided, register under user conversions namespace, otherwise uploads
+    const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const key = params.ownerUserId
+      ? `conversions/${params.ownerUserId}/${id}_${sanitizedFilename}`
+      : `uploads/${id}_${sanitizedFilename}`;
 
     const session: TusSession = {
       id,
@@ -222,32 +385,46 @@ export class TusEngine {
     await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
     await fs.promises.writeFile(binPath, Buffer.alloc(0));
 
+    // Save state in session store (Redis / In-memory)
+    await this.sessionStore.saveSession(session, params.ttlSeconds || this.defaultTtlSeconds);
+
     return session;
   }
 
   async getSession(id: string): Promise<TusSession | null> {
     const { infoPath, binPath } = this.getPaths(id);
-    if (!fs.existsSync(infoPath) || !fs.existsSync(binPath)) {
+    let session = await this.sessionStore.getSession(id);
+
+    if (!session) {
+      if (fs.existsSync(infoPath)) {
+        try {
+          const raw = await fs.promises.readFile(infoPath, 'utf-8');
+          session = JSON.parse(raw);
+          if (session) {
+            await this.sessionStore.saveSession(session);
+          }
+        } catch {
+          return null;
+        }
+      }
+    }
+
+    if (!session) {
       return null;
     }
 
-    try {
-      const raw = await fs.promises.readFile(infoPath, 'utf-8');
-      const session: TusSession = JSON.parse(raw);
+    if (Date.now() > session.expiresAt) {
+      await this.terminateSession(id);
+      return null;
+    }
 
-      if (Date.now() > session.expiresAt) {
-        await this.terminateSession(id);
-        return null;
-      }
-
-      // Sync uploadOffset with real byte size on disk
+    // Sync uploadOffset with real byte size on disk
+    if (fs.existsSync(binPath)) {
       const stat = await fs.promises.stat(binPath);
       session.uploadOffset = stat.size;
-
-      return session;
-    } catch {
-      return null;
     }
+
+    return session;
   }
 
   async appendChunk(
@@ -283,8 +460,7 @@ export class TusEngine {
     }
 
     let chunkBytes = 0;
-    const passThrough = new PassThrough();
-    passThrough.on('data', (chunk: Buffer | string) => {
+    nodeReadable.on('data', (chunk: Buffer | string) => {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       chunkBytes += buf.length;
       if (checksumHasher) {
@@ -295,23 +471,23 @@ export class TusEngine {
     const fileWriteStream = fs.createWriteStream(binPath, { flags: 'a' });
 
     try {
-      await pipeline(nodeReadable, passThrough, fileWriteStream);
+      await pipeline(nodeReadable, fileWriteStream);
     } catch (err) {
-      await rollbackChunk(binPath, clientOffset);
+      rollbackChunk(binPath, clientOffset);
       throw err;
     }
 
     if (checksumHasher && parsedChecksum) {
       const computedBase64 = checksumHasher.digest('base64');
       if (computedBase64 !== parsedChecksum.expectedDigest) {
-        await rollbackChunk(binPath, clientOffset);
+        rollbackChunk(binPath, clientOffset);
         throw new TusChecksumMismatchError();
       }
     }
 
     const newOffset = clientOffset + chunkBytes;
     if (newOffset > session.uploadLength) {
-      await rollbackChunk(binPath, clientOffset);
+      rollbackChunk(binPath, clientOffset);
       throw new Error(`Uploaded bytes (${newOffset}) exceed declared Upload-Length (${session.uploadLength})`);
     }
 
@@ -321,9 +497,25 @@ export class TusEngine {
     if (newOffset === session.uploadLength) {
       isComplete = true;
       session.completed = true;
+
+      // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath)
+      const ext = path.extname(session.filename);
+      const declaredFormat = ext ? ext.replace(/^\./, '') : session.mimeType || 'bin';
+      try {
+        assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
+      } catch (err) {
+        session.completed = false;
+        rollbackChunk(binPath, clientOffset);
+        session.uploadOffset = clientOffset;
+        await this.sessionStore.saveSession(session);
+        await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+        throw err;
+      }
+
       await finalizeTusSession(session, binPath);
     }
 
+    await this.sessionStore.saveSession(session);
     await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
 
     return {
@@ -335,6 +527,7 @@ export class TusEngine {
 
   async terminateSession(id: string): Promise<boolean> {
     const { infoPath, binPath } = this.getPaths(id);
+    await this.sessionStore.deleteSession(id);
     let deleted = false;
     try {
       if (fs.existsSync(infoPath)) {

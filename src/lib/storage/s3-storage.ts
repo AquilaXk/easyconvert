@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable, PassThrough } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import {
   MultipartUploadInit,
   UploadedPart,
@@ -176,6 +178,95 @@ export class S3ObjectStorageService implements IStorageBackend {
     return {
       partNumber,
       size: buffer.length,
+      etag,
+    };
+  }
+
+  async uploadPartStream(
+    uploadId: string,
+    partNumber: number,
+    stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
+    maxPartBytes?: number,
+    maxTotalBytes?: number,
+    currentSessionBytes: number = 0
+  ): Promise<UploadedPart> {
+    const session = this.sessions.get(uploadId);
+    if (!session) {
+      throw new Error(`Invalid or expired multipart upload session: ${uploadId}`);
+    }
+
+    if (partNumber < 1 || partNumber > 10000) {
+      throw new Error(`Invalid OCI partNumber: ${partNumber}. Must be between 1 and 10000.`);
+    }
+
+    const partFileName = `part-${partNumber}.bin`;
+    const partFilePath = path.join(session.diskDir, partFileName);
+    const tempPartFilePath = `${partFilePath}.tmp`;
+
+    const nodeStream =
+      'pipe' in (stream as any) && typeof (stream as any).pipe === 'function'
+        ? (stream as NodeJS.ReadableStream)
+        : Readable.fromWeb(stream as any);
+
+    const outStream = fs.createWriteStream(tempPartFilePath);
+    const hasher = crypto.createHash('sha256');
+    let partSize = 0;
+    let limitExceededMessage: string | null = null;
+
+    const passThrough = new PassThrough();
+    passThrough.on('data', (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      partSize += buf.length;
+      if (maxPartBytes !== undefined && partSize > maxPartBytes) {
+        limitExceededMessage = `Part size exceeds maximum allowed part size of ${maxPartBytes} bytes (64 MiB).`;
+        outStream.destroy(new Error(limitExceededMessage));
+        return;
+      }
+      if (maxTotalBytes !== undefined && currentSessionBytes + partSize > maxTotalBytes) {
+        limitExceededMessage = `Total upload size exceeds maximum allowed size of ${maxTotalBytes} bytes.`;
+        outStream.destroy(new Error(limitExceededMessage));
+        return;
+      }
+      hasher.update(buf);
+    });
+
+    try {
+      await pipeline(nodeStream, passThrough, outStream);
+    } catch (err: any) {
+      try {
+        if (fs.existsSync(tempPartFilePath)) fs.unlinkSync(tempPartFilePath);
+      } catch {}
+      if (limitExceededMessage) {
+        const error = new Error(limitExceededMessage);
+        (error as any).statusCode = 413;
+        throw error;
+      }
+      throw err;
+    }
+
+    if (partSize === 0) {
+      try {
+        if (fs.existsSync(tempPartFilePath)) fs.unlinkSync(tempPartFilePath);
+      } catch {}
+      const error = new Error('Chunk payload is empty (0 bytes).');
+      (error as any).statusCode = 400;
+      throw error;
+    }
+
+    fs.renameSync(tempPartFilePath, partFilePath);
+
+    const hashHex = hasher.digest('hex').slice(0, 32);
+    const etag = `"${hashHex}"`;
+
+    session.parts.set(partNumber, {
+      filePath: partFilePath,
+      etag,
+      size: partSize,
+    });
+
+    return {
+      partNumber,
+      size: partSize,
       etag,
     };
   }
