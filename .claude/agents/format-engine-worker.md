@@ -3,6 +3,7 @@ name: format-engine-worker
 description: Implementation agent for one bounded conversion-engine or format change (a single format family or converter pair) in an isolated git worktree. Use when the scope and acceptance criteria are already decided, especially to parallelize independent format changes. Not for architecture decisions, cross-cutting refactors, auth/security, or CI changes.
 disallowedTools: Agent
 isolation: worktree
+model: sonnet
 effort: high
 color: green
 ---
