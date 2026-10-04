@@ -8,6 +8,7 @@ import {
   TARGET_FORMAT_REQUIRED_OPERATIONS,
   RESTRICTED_OUTPUT_FORMATS,
   MERGE_FORMATS,
+  MIN_MERGE_INPUTS,
   FIXED_OUTPUT_FORMATS,
   canonicalGraphOperation,
   requestedTargetFormat,
@@ -550,6 +551,13 @@ export function validateJobGraph(
         code: 'UNSUPPORTED_OUTPUT_FORMAT',
       });
     }
+    if (op === 'merge' && getTaskDependencies(node).length < MIN_MERGE_INPUTS) {
+      errors.push({
+        path: `nodes.${nodeId}.input`,
+        message: `Merge node "${nodeId}" needs at least ${MIN_MERGE_INPUTS} inputs; found ${getTaskDependencies(node).length}.`,
+        code: 'MERGE_INPUTS_INSUFFICIENT',
+      });
+    }
     if (op === 'merge' && target && MERGE_FORMATS.has(target)) {
       for (const inputId of getTaskDependencies(node)) {
         const inputFormat = inferredFormats[inputId];
@@ -731,7 +739,6 @@ const LEGACY_TARGET_REQUIRED: ReadonlySet<string> = new Set([
   'archive.create',
   'thumbnail',
   'media.thumbnail',
-  'merge',
 ]);
 
 /** Operations `linearTasksToJobGraph` translates. */
@@ -744,7 +751,6 @@ export const LEGACY_TASK_OPERATIONS: ReadonlySet<string> = new Set([
   'archive',
   'archive/create',
   'archive.create',
-  'merge',
   'metadata',
   'export/url',
 ]);
@@ -763,6 +769,12 @@ export function assertValidLegacyTasks(tasks: PipelineTask[], supported: Readonl
         path,
         code: 'BYOS_OPERATION_UNSUPPORTED',
         message: `Operation "${op}" cannot run in a pipeline; use export/url with a signed destination URL.`,
+      });
+    } else if (op === 'merge') {
+      errors.push({
+        path,
+        code: 'LEGACY_TASK_MERGE_SINGLE_INPUT',
+        message: `A merge task receives only the previous stage, and merge needs at least ${MIN_MERGE_INPUTS} inputs; submit a graph whose merge node names every input.`,
       });
     } else if (!supported.has(op)) {
       errors.push({ path, code: 'UNSUPPORTED_OPERATION', message: `Unsupported pipeline operation "${op}".` });
@@ -859,19 +871,6 @@ export function linearTasksToJobGraph(
           id: nodeId,
           operation: 'archive/create',
           op: 'archive.create',
-          input: [currentInput],
-          dependencies: [currentInput],
-          targetFormat: task.targetFormat as string,
-          options: task.options,
-        };
-        lastWasExport = false;
-        break;
-      }
-      case 'merge': {
-        nodes[nodeId] = {
-          id: nodeId,
-          operation: 'merge',
-          op: 'merge',
           input: [currentInput],
           dependencies: [currentInput],
           targetFormat: task.targetFormat as string,

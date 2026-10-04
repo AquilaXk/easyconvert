@@ -193,7 +193,9 @@ export const conversionPaths = {
         '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
         '404': createProblemResponse('Storage object not found, or not usable by the caller as an input.'),
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
-        '422': createProblemResponse('An idempotency key was reused with a different request payload or parameters.'),
+        '422': createProblemResponse(
+          'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), or an idempotency key was reused with a different request payload.'
+        ),
         '429': createProblemResponse('Daily conversion quota exhausted.'),
         '500': createProblemResponse('Job enqueue failure.'),
       },
