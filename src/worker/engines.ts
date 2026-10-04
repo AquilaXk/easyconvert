@@ -1390,8 +1390,9 @@ export async function executeWorkerConversion(
 
   // 1b. Office Documents -> Raster / Vector Image Chaining via LibreOffice + Poppler
   if (OFFICE_FORMATS.has(src) && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg')) {
+    let intermediatePdf: WorkerConversionResult | null = null;
     try {
-      const intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);
+      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);
       if (intermediatePdf) {
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
@@ -1418,6 +1419,9 @@ export async function executeWorkerConversion(
       } else {
         throw err;
       }
+    } finally {
+      // The intermediate PDF is an implementation detail of this chain: never leave it on disk.
+      discardPersistedOutput(intermediatePdf?.filePath, input, options);
     }
   }
 
