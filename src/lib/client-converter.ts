@@ -208,7 +208,19 @@ export async function tryProcessClientEdge(
       // Graceful cascade to L2 Wasm, keeping the reason
       escalationReason = describeEdgeError(err);
     }
-    const l2Res = await processL2Conversion(item, src, tgt, onProgress);
+    let l2Res: ClientEdgeResult | null;
+    try {
+      l2Res = await processL2Conversion(item, src, tgt, onProgress);
+    } catch (err: unknown) {
+      if (!(err instanceof ClientEdgeEscalationError)) {
+        throw err;
+      }
+      // L2 failed too: escalate from L2, keeping both reasons in tier order
+      throw new ClientEdgeEscalationError(
+        err.fallbackFrom,
+        `L1A: ${escalationReason}; ${err.fallbackFrom}: ${err.message}`
+      );
+    }
     if (l2Res) {
       return {
         ...l2Res,
@@ -551,9 +563,14 @@ export async function executeItemConversion(
 
   // 2. Fail-closed check: if user strictly mandated client-only execution, block cloud upload
   if (item.options.clientEdgeMode === true) {
-    callbacks.onError(
-      `Conversion from ${item.sourceFormat.toUpperCase()} to ${item.targetFormat.toUpperCase()} requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.`
-    );
+    const blockedMessage = `Conversion from ${item.sourceFormat.toUpperCase()} to ${item.targetFormat.toUpperCase()} requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.`;
+    if (escalation) {
+      callbacks.onError(
+        `${blockedMessage} Edge tier ${escalation.fallbackFrom} failed: ${escalation.escalationReason}`
+      );
+      return;
+    }
+    callbacks.onError(blockedMessage);
     return;
   }
 

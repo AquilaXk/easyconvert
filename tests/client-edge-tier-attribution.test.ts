@@ -130,6 +130,55 @@ describe('Client edge tier attribution and escalation reasons', () => {
     });
   });
 
+  describe('L1A (WebGPU) and then L2 (edge OCR) both failing', () => {
+    // The fallback names the tier immediately before the cloud tier (L2). Its reason keeps every
+    // failed tier in order, "L1A: <reason>; L2: <reason>", so the L1A failure is not lost.
+    const CHAINED_REASON = 'L1A: GPU adapter lost during upload; L2: Edge OCR engine failed: worker crashed';
+
+    function failBothEdgeTiers(): void {
+      routeTo('L1A', 'Edge L1A (WebGPU Compute)');
+      vi.mocked(isWebGpuComputeSupported).mockReturnValue(true);
+      vi.stubGlobal('OffscreenCanvas', class {});
+      vi.stubGlobal(
+        'createImageBitmap',
+        vi.fn(async () => {
+          throw new Error('GPU adapter lost during upload');
+        })
+      );
+      vi.mocked(tryProcessClientEdgeOcr).mockRejectedValue(new Error('Edge OCR engine failed: worker crashed'));
+    }
+
+    it('escalates from L2 with both tier failures in the reason', async () => {
+      failBothEdgeTiers();
+
+      const attempt = tryProcessClientEdge(scanItem());
+
+      await expect(attempt).rejects.toBeInstanceOf(ClientEdgeEscalationError);
+      await expect(attempt).rejects.toMatchObject({ fallbackFrom: 'L2', message: CHAINED_REASON });
+    });
+
+    it('carries both tier failures into the cloud result', async () => {
+      failBothEdgeTiers();
+      const cloudBody = new Blob(['%PDF-1.7 cloud'], { type: 'application/pdf' });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        blob: async () => cloudBody,
+      } as Response);
+      const onSuccess = vi.fn();
+      const onError = vi.fn();
+
+      await executeItemConversion(scanItem(), { onProgress: () => undefined, onSuccess, onError });
+
+      expect(onError).not.toHaveBeenCalled();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [, size, edgeProcessed, tierName, fallback] = onSuccess.mock.calls[0];
+      expect(size).toBe(cloudBody.size);
+      expect(edgeProcessed).toBe(false);
+      expect(tierName).toBe(CLOUD_TIER_NAME);
+      expect(fallback).toEqual({ fallbackFrom: 'L2', escalationReason: CHAINED_REASON });
+    });
+  });
+
   describe('L3 (OPFS stream) failing over to L4 (cloud)', () => {
     it('surfaces the L3 failure as a typed escalation instead of discarding it', async () => {
       routeTo('L3', 'Edge L3 (OPFS Stream)');
@@ -185,7 +234,7 @@ describe('Client edge tier attribution and escalation reasons', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(onSuccess).not.toHaveBeenCalled();
       expect(onError).toHaveBeenCalledWith(
-        'Conversion from CSV to TSV requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.'
+        'Conversion from CSV to TSV requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent. Edge tier L3 failed: OPFS quota exceeded'
       );
     });
   });
