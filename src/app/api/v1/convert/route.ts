@@ -9,6 +9,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
+import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -106,20 +107,42 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // 1b. Idempotency Check
+  const rawIdempotencyKey = req.headers.get('idempotency-key');
+  let idempotencyCtx: IdempotencyContext | undefined;
+  if (rawIdempotencyKey !== null) {
+    const precheck = await acquireIdempotency(req, auth.user.id, rawIdempotencyKey, instanceUri);
+    if (precheck.response) {
+      return precheck.response;
+    }
+    idempotencyCtx = precheck.context;
+  }
+
+  const reply = async (res: NextResponse | Response) => {
+    if (idempotencyCtx) {
+      if (res.status >= 500) {
+        await idempotencyCtx.abort();
+      } else {
+        await idempotencyCtx.complete(res);
+      }
+    }
+    return res;
+  };
+
   // Obtain rate-limiting context and construct IETF RateLimit headers
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   const rateLimitHeaders = buildRateLimitHeaders(quota);
 
   if (quota.remaining <= 0) {
     const exhaustedQuota = { ...quota, remaining: 0 };
-    return createProblemDetailsResponse(
+    return reply(createProblemDetailsResponse(
       429,
       `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
       instanceUri,
       'Too Many Requests',
       undefined,
       buildRateLimitHeaders(exhaustedQuota)
-    );
+    ));
   }
 
   let reservation: { allowed: boolean; reservationId?: string } | null = null;
@@ -128,14 +151,14 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const validation = parseConvertFormData(formData);
     if (validation.error || !validation.data) {
-      return createProblemDetailsResponse(
+      return reply(createProblemDetailsResponse(
         validation.status ?? 400,
         validation.error || 'Invalid request parameters.',
         instanceUri,
         'Bad Request',
         undefined,
         rateLimitHeaders
-      );
+      ));
     }
 
     const { file, sourceDef, targetDef, options } = validation.data;
@@ -144,7 +167,7 @@ export async function POST(req: NextRequest) {
     if (options && Object.keys(options).length > 0) {
       const optionsValidation = validateOrProblem(ConversionOptionsSchema, options, instanceUri);
       if (!optionsValidation.ok) {
-        return optionsValidation.response;
+        return reply(optionsValidation.response as NextResponse);
       }
     }
 
@@ -152,42 +175,42 @@ export async function POST(req: NextRequest) {
     const webhookSecretParam = ((formData.get('webhookSecret') as string) || '').trim() || undefined;
 
     if (webhookUrlParam && !webhookSecretParam) {
-      return createProblemDetailsResponse(
+      return reply(createProblemDetailsResponse(
         400,
         'webhookSecret is required when webhookUrl is provided.',
         instanceUri,
         'Bad Request',
         undefined,
         rateLimitHeaders
-      );
+      ));
     }
 
     const effectiveWebhookUrl = webhookUrlParam || auth.apiKey?.webhookUrl;
     const effectiveWebhookSecret = webhookSecretParam || auth.apiKey?.webhookSecret;
 
     if (effectiveWebhookUrl && !effectiveWebhookSecret) {
-      return createProblemDetailsResponse(
+      return reply(createProblemDetailsResponse(
         400,
         'webhookSecret is required when webhookUrl is provided.',
         instanceUri,
         'Bad Request',
         undefined,
         rateLimitHeaders
-      );
+      ));
     }
 
     // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
     reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
     if (!reservation.allowed) {
       const exhaustedQuota = { ...quota, remaining: 0 };
-      return createProblemDetailsResponse(
+      return reply(createProblemDetailsResponse(
         429,
         `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
         instanceUri,
         'Too Many Requests',
         undefined,
         buildRateLimitHeaders(exhaustedQuota)
-      );
+      ));
     }
 
     // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff BEFORE calling file.arrayBuffer()
@@ -214,14 +237,14 @@ export async function POST(req: NextRequest) {
         if (reservation?.reservationId) {
           await redisKeyStore.rollbackQuota(reservation.reservationId);
         }
-        return createProblemDetailsResponse(
+        return reply(createProblemDetailsResponse(
           400,
           err.message || 'File upload or validation failed.',
           instanceUri,
           'Bad Request',
           undefined,
           rateLimitHeaders
-        );
+        ));
       }
 
       const job = await conversionQueue.add(
@@ -245,7 +268,7 @@ export async function POST(req: NextRequest) {
         }
       );
 
-      return NextResponse.json(
+      return reply(NextResponse.json(
         {
           success: true,
           status: 'accepted',
@@ -267,7 +290,7 @@ export async function POST(req: NextRequest) {
             ...rateLimitHeaders,
           },
         }
-      );
+      ));
     }
 
     // Synchronous execution path for payloads <= 10MB without respond-async preference
@@ -281,14 +304,14 @@ export async function POST(req: NextRequest) {
       if (reservation?.reservationId) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
-      return createProblemDetailsResponse(
+      return reply(createProblemDetailsResponse(
         400,
         err.message || 'File spoofing detected.',
         instanceUri,
         'Bad Request',
         undefined,
         rateLimitHeaders
-      );
+      ));
     }
 
     // Convert
@@ -327,7 +350,7 @@ export async function POST(req: NextRequest) {
     // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)
     const wantsRaw = req.headers.get('accept') === 'application/octet-stream' || req.nextUrl.searchParams.get('raw') === 'true';
     if (wantsRaw) {
-      return new NextResponse(new Uint8Array(outputBuffer), {
+      return reply(new NextResponse(new Uint8Array(outputBuffer), {
         status: 200,
         headers: {
           'Content-Type': conversionResult.mimeType,
@@ -336,7 +359,7 @@ export async function POST(req: NextRequest) {
           'X-File-Id': userFile.id,
           ...rateLimitHeaders,
         },
-      });
+      }));
     }
 
     // Zero-Heap optimization: only generate Base64 data URI if output payload <= 5MB
@@ -347,7 +370,7 @@ export async function POST(req: NextRequest) {
       dataUri = `data:${conversionResult.mimeType};base64,${base64Data}`;
     }
 
-    return NextResponse.json(
+    return reply(NextResponse.json(
       {
         success: true,
         fileId: userFile.id,
@@ -365,8 +388,11 @@ export async function POST(req: NextRequest) {
         status: 200,
         headers: rateLimitHeaders,
       }
-    );
+    ));
   } catch (err: unknown) {
+    if (idempotencyCtx) {
+      await idempotencyCtx.abort();
+    }
     if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }

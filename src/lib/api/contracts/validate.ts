@@ -8,6 +8,7 @@ import {
   JobCreateRequestSchema,
   ProblemDetailsSchema,
   JobResourceSchema,
+  IdempotencyKeyHeaderSchema,
 } from './schemas';
 
 export const ajv = new Ajv2020({
@@ -39,6 +40,7 @@ ajv.addSchema(PipelineTaskSchema);
 ajv.addSchema(JobCreateRequestSchema);
 ajv.addSchema(ProblemDetailsSchema);
 ajv.addSchema(JobResourceSchema);
+ajv.addSchema(IdempotencyKeyHeaderSchema);
 
 export type ValidateResult<T> =
   | { ok: true; data: T; problem?: never; response?: never }

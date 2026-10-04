@@ -16,6 +16,7 @@ import {
   ConversionOptionsSchema,
   PipelineTaskSchema,
 } from '@/lib/api/contracts';
+import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +27,7 @@ export async function POST(req: NextRequest) {
 
   // 1. Guard check: Authenticate API key or user session with 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
+
   if (!auth.authorized || !auth.user) {
     return createProblemDetailsResponse(
       auth.status ?? 401,
@@ -37,10 +39,21 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // 1b. Idempotency Check
+  const rawIdempotencyKey = req.headers.get('idempotency-key');
+  let idempotencyCtx: IdempotencyContext | undefined;
+  if (rawIdempotencyKey !== null) {
+    const precheck = await acquireIdempotency(req, auth.user.id, rawIdempotencyKey, instanceUri);
+    if (precheck.response) {
+      return precheck.response;
+    }
+    idempotencyCtx = precheck.context;
+  }
+
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   if (quota.remaining <= 0) {
     const exhaustedQuota = { ...quota, remaining: 0 };
-    return createProblemDetailsResponse(
+    const quotaRes = createProblemDetailsResponse(
       429,
       `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
       instanceUri,
@@ -48,6 +61,10 @@ export async function POST(req: NextRequest) {
       'https://api.easyconvert.io/problems/quota-exceeded',
       buildRateLimitHeaders(exhaustedQuota)
     );
+    if (idempotencyCtx) {
+      await idempotencyCtx.complete(quotaRes);
+    }
+    return quotaRes;
   }
 
   let reservation: { allowed: boolean; reservationId?: string } | null = null;
@@ -56,7 +73,15 @@ export async function POST(req: NextRequest) {
     if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
-    return createProblemDetailsResponse(status, message, instanceUri, title);
+    const problem = createProblemDetailsResponse(status, message, instanceUri, title);
+    if (idempotencyCtx) {
+      if (status >= 500) {
+        await idempotencyCtx.abort();
+      } else {
+        await idempotencyCtx.complete(problem);
+      }
+    }
+    return problem;
   };
 
   try {
@@ -308,7 +333,7 @@ export async function POST(req: NextRequest) {
       }
     );
 
-    return NextResponse.json(
+    const successRes = NextResponse.json(
       {
         success: true,
         jobId: job.id,
@@ -322,7 +347,14 @@ export async function POST(req: NextRequest) {
       },
       { status: 202 }
     );
+    if (idempotencyCtx) {
+      await idempotencyCtx.complete(successRes);
+    }
+    return successRes;
   } catch (error: unknown) {
+    if (idempotencyCtx) {
+      await idempotencyCtx.abort();
+    }
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');
   }

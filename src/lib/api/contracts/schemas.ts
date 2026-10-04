@@ -509,3 +509,12 @@ export const JobResourceSchema = {
     },
   },
 } as const;
+
+export const IdempotencyKeyHeaderSchema = {
+  $id: 'https://easyconvert.local/schemas/idempotency-key-header.json',
+  type: 'string',
+  minLength: 1,
+  maxLength: 255,
+  pattern: String.raw`^[\x21-\x7E]{1,255}$`,
+  description: 'Unique 1-255 character printable ASCII idempotency key for safe client retries.',
+} as const;
