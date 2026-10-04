@@ -40,6 +40,7 @@ import {
   decodeOpenExr,
   encodeUltraHdrJpeg,
   decodeUltraHdrJpeg,
+  reconstructUltraHdr,
   encode16BitTiff,
   encode16BitPng,
   createMinimalRgbIcc,
@@ -768,6 +769,7 @@ export function applyFalseColorSuppression(
  */
 export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
   data: Buffer;
+  floatData?: Float32Array;
   width: number;
   height: number;
 } {
@@ -1025,6 +1027,7 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
 
   // Step 4: Reconstruct full RGB, resolve dual illuminant ColorMatrix, and apply white balance & gamma
   const rgbBuffer = Buffer.alloc(width * height * 3);
+  const floatData = new Float32Array(width * height * 3);
   const rWb = whiteBalance ? whiteBalance[0] : 1.0;
   const gWb = whiteBalance ? whiteBalance[1] : 1.0;
   const bWb = whiteBalance ? whiteBalance[2] : 1.0;
@@ -1038,6 +1041,11 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
       const g = green[y * width + x];
       const r = Math.max(0, Math.min(255, g + finalRedDiff[y * width + x]));
       const b = Math.max(0, Math.min(255, g + finalBlueDiff[y * width + x]));
+
+      // Store normalized linear demosaiced Float32 values [0.0, 1.0] before color transforms
+      floatData[idx] = r / 255.0;
+      floatData[idx + 1] = g / 255.0;
+      floatData[idx + 2] = b / 255.0;
 
       // Apply white balance multipliers
       let rLin = (r * rWb) / 255.0;
@@ -1069,6 +1077,7 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
 
   return {
     data: rgbBuffer,
+    floatData,
     width,
     height,
   };
@@ -1082,6 +1091,7 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
  */
 export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
   data: Buffer;
+  floatData?: Float32Array;
   width: number;
   height: number;
 } {
@@ -1477,11 +1487,17 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
   const mat = colorMatrix || resolveBayerColorMatrix(sensor);
 
   const rgbBuffer = Buffer.alloc(width * height * 3);
+  const floatData = new Float32Array(width * height * 3);
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
       const bufIdx = idx * 3;
+
+      // Store normalized linear demosaiced Float32 values [0.0, 1.0] before color transforms
+      floatData[bufIdx] = filteredR[idx] / 255.0;
+      floatData[bufIdx + 1] = finalG[idx] / 255.0;
+      floatData[bufIdx + 2] = filteredB[idx] / 255.0;
 
       let rLin = (filteredR[idx] * rWb) / 255.0;
       let gLin = (finalG[idx] * gWb) / 255.0;
@@ -1510,6 +1526,7 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
 
   return {
     data: rgbBuffer,
+    floatData,
     width,
     height,
   };
@@ -1522,6 +1539,7 @@ export function demosaicAhdBayerCfa(sensor: BayerSensorData): {
  */
 export function demosaicBayerCfa(sensor: BayerSensorData): {
   data: Buffer;
+  floatData?: Float32Array;
   width: number;
   height: number;
 } {
@@ -2205,53 +2223,7 @@ export function decodeRawBayerSensor(
           options
         );
 
-        let outRgb =
-          options?.demosaicMethod === 'ahd'
-            ? demosaicAhdBayerCfa({
-                width: sensorWidth,
-                height: sensorHeight,
-                pattern,
-                data: sensorData,
-                bitsPerSample: sensorBpp,
-                blackLevel: chosen.blackLevel,
-                whiteLevel: chosen.whiteLevel,
-                asShotNeutral: chosen.asShotNeutral,
-                whiteBalance,
-                colorMatrix: resolvedColorMatrix,
-                colorMatrix1: chosen.colorMatrix1,
-                colorMatrix2: chosen.colorMatrix2,
-                forwardMatrix1: chosen.forwardMatrix1,
-                forwardMatrix2: chosen.forwardMatrix2,
-                activeArea: chosen.activeArea,
-                defaultCropOrigin: chosen.defaultCropOrigin,
-                defaultCropSize: chosen.defaultCropSize,
-                applySrgbGamma: true,
-                falseColorSuppression: options?.falseColorSuppression,
-              }).data
-            : options?.demosaicMethod === 'amaze'
-            ? demosaicAmazeBayerCfa({
-                width: sensorWidth,
-                height: sensorHeight,
-                pattern,
-                data: sensorData,
-                bitsPerSample: sensorBpp,
-                blackLevel: chosen.blackLevel,
-                whiteLevel: chosen.whiteLevel,
-                asShotNeutral: chosen.asShotNeutral,
-                whiteBalance,
-                colorMatrix: resolvedColorMatrix,
-                colorMatrix1: chosen.colorMatrix1,
-                colorMatrix2: chosen.colorMatrix2,
-                forwardMatrix1: chosen.forwardMatrix1,
-                forwardMatrix2: chosen.forwardMatrix2,
-                activeArea: chosen.activeArea,
-                defaultCropOrigin: chosen.defaultCropOrigin,
-                defaultCropSize: chosen.defaultCropSize,
-                applySrgbGamma: true,
-                falseColorSuppression: options?.falseColorSuppression,
-              }).data
-            : linearRes.rgb8;
-
+        let outRgb = linearRes.rgb8;
         let outFloat = linearRes.rgbFloat;
         let out16 = linearRes.rgb16;
         let outW = sensorWidth;
@@ -2426,6 +2398,53 @@ export async function convertImage(
     } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
       const payload = decodeIcns(activeBuffer);
       pipeline = sharp(payload);
+    } else if (
+      src === 'exr' ||
+      (activeBuffer.length >= 4 &&
+        activeBuffer[0] === 0x76 &&
+        activeBuffer[1] === 0x2f &&
+        activeBuffer[2] === 0x31 &&
+        activeBuffer[3] === 0x01)
+    ) {
+      const exrDecoded = decodeOpenExr(activeBuffer);
+      const sdrRgb = Buffer.alloc(exrDecoded.width * exrDecoded.height * 3);
+      const rgb16 = new Uint16Array(exrDecoded.width * exrDecoded.height * 3);
+      for (let i = 0; i < exrDecoded.width * exrDecoded.height * 3; i++) {
+        const linVal = exrDecoded.rgb[i];
+        const srgbVal = applyIec61966SrgbGamma(linVal);
+        sdrRgb[i] = Math.max(0, Math.min(255, Math.round(srgbVal * 255.0)));
+        rgb16[i] = Math.max(0, Math.min(65535, Math.round(srgbVal * 65535.0)));
+      }
+      rawDemosaiced = {
+        rgb: sdrRgb,
+        rgbFloat: exrDecoded.rgb,
+        rgb16,
+        width: exrDecoded.width,
+        height: exrDecoded.height,
+      };
+      pipeline = sharp(sdrRgb, {
+        raw: { width: exrDecoded.width, height: exrDecoded.height, channels: 3 },
+      });
+    } else if (src === 'ultrahdr') {
+      try {
+        const uHdr = await reconstructUltraHdr(activeBuffer);
+        const rgb16 = new Uint16Array(uHdr.width * uHdr.height * 3);
+        for (let i = 0; i < uHdr.width * uHdr.height * 3; i++) {
+          rgb16[i] = Math.max(0, Math.min(65535, Math.round(applyIec61966SrgbGamma(uHdr.rgbFloat[i]) * 65535.0)));
+        }
+        rawDemosaiced = {
+          rgb: uHdr.sdrRgb,
+          rgbFloat: uHdr.rgbFloat,
+          rgb16,
+          width: uHdr.width,
+          height: uHdr.height,
+        };
+        pipeline = sharp(uHdr.sdrRgb, {
+          raw: { width: uHdr.width, height: uHdr.height, channels: 3 },
+        });
+      } catch {
+        pipeline = sharp(activeBuffer);
+      }
     } else {
       pipeline = sharp(activeBuffer);
     }
@@ -2616,15 +2635,31 @@ export async function convertImage(
           options.outputDepth !== 32
         );
       } else {
-        const { data, info } = await pipeline
-          .removeAlpha()
-          .raw()
-          .toBuffer({ resolveWithObject: true });
-        const floatPix = new Float32Array(info.width * info.height * 3);
-        for (let i = 0; i < data.length; i++) {
-          floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
+        let hdrFloat: Float32Array | null = null;
+        let imgW = 0;
+        let imgH = 0;
+        try {
+          const uHdr = await reconstructUltraHdr(activeBuffer);
+          hdrFloat = uHdr.rgbFloat;
+          imgW = uHdr.width;
+          imgH = uHdr.height;
+        } catch {
+          // Standard non-UltraHDR image
         }
-        outputBuffer = encodeOpenExr(floatPix, info.width, info.height, options.outputDepth !== 32);
+
+        if (hdrFloat && imgW > 0 && imgH > 0) {
+          outputBuffer = encodeOpenExr(hdrFloat, imgW, imgH, options.outputDepth !== 32);
+        } else {
+          const { data, info } = await pipeline
+            .removeAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          const floatPix = new Float32Array(info.width * info.height * 3);
+          for (let i = 0; i < data.length; i++) {
+            floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
+          }
+          outputBuffer = encodeOpenExr(floatPix, info.width, info.height, options.outputDepth !== 32);
+        }
       }
       mimeType = 'image/x-exr';
       break;

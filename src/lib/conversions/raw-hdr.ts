@@ -12,8 +12,11 @@ import {
   interpolateDualIlluminantColorMatrix,
   XYZ_D50_TO_SRGB_MATRIX,
   applyIec61966SrgbGamma,
+  inverseIec61966SrgbGamma,
   decodeLosslessJpegStrip,
   validateBayerSensorCalibration,
+  demosaicAmazeBayerCfa,
+  demosaicAhdBayerCfa,
 } from './image';
 
 // ============================================================================
@@ -532,13 +535,15 @@ export function processFloat32LinearPipeline(
   const method = options?.demosaicMethod || sensor.demosaicMethod || 'rcd';
   let demosaicedFloat: Float32Array;
 
-  if (method === 'rcd') {
+  if (method === 'amaze') {
+    const amazeResult = demosaicAmazeBayerCfa(sensor);
+    demosaicedFloat = amazeResult.floatData ?? demosaicRcdBayerCfa(sensor).floatData;
+  } else if (method === 'ahd') {
+    const ahdResult = demosaicAhdBayerCfa(sensor);
+    demosaicedFloat = ahdResult.floatData ?? demosaicRcdBayerCfa(sensor).floatData;
+  } else {
     const rcdResult = demosaicRcdBayerCfa(sensor);
     demosaicedFloat = rcdResult.floatData;
-  } else {
-    // AMaZE or AHD
-    const res = demosaicRcdBayerCfa(sensor); // fallback/adapter
-    demosaicedFloat = res.floatData;
   }
 
   // 3. Apply White Balance prior to clipping
@@ -679,8 +684,8 @@ export function unpackRawSensorBits(
     return new Uint8Array(chunk.buffer, chunk.byteOffset, Math.min(pixelCount, chunk.length));
   }
 
-  // If already byte-aligned 16-bit words (length >= pixelCount * 2)
-  if (chunk.length >= pixelCount * 2) {
+  // If bitsPerSample is 16 and chunk contains at least pixelCount 16-bit words
+  if (bitsPerSample === 16 && chunk.length >= pixelCount * 2) {
     const out = new Uint16Array(pixelCount);
     for (let i = 0; i < pixelCount; i++) {
       out[i] = isLittleEndian ? chunk.readUInt16LE(i * 2) : chunk.readUInt16BE(i * 2);
@@ -708,6 +713,13 @@ export function unpackRawSensorBits(
       bytePos += 3;
       pixPos += 2;
     }
+    // Tail handling for 1 remaining pixel from 2 bytes
+    if (pixPos < pixelCount && bytePos + 2 <= chunk.length) {
+      const b0 = chunk[bytePos];
+      const b1 = chunk[bytePos + 1];
+      out[pixPos] = isLittleEndian ? b0 | ((b1 & 0x0f) << 8) : (b0 << 4) | (b1 >> 4);
+      pixPos++;
+    }
     return out;
   }
 
@@ -734,6 +746,23 @@ export function unpackRawSensorBits(
       }
       bytePos += 5;
       pixPos += 4;
+    }
+    // Tail handling for 1, 2, or 3 remaining pixels
+    if (pixPos < pixelCount && bytePos + 2 <= chunk.length) {
+      const b0 = chunk[bytePos];
+      const b1 = chunk[bytePos + 1];
+      out[pixPos] = isLittleEndian ? b0 | ((b1 & 0x03) << 8) : (b0 << 2) | (b1 >> 6);
+      pixPos++;
+      if (pixPos < pixelCount && bytePos + 3 <= chunk.length) {
+        const b2 = chunk[bytePos + 2];
+        out[pixPos] = isLittleEndian ? (b1 >> 2) | ((b2 & 0x0f) << 6) : ((b1 & 0x3f) << 4) | (b2 >> 4);
+        pixPos++;
+        if (pixPos < pixelCount && bytePos + 4 <= chunk.length) {
+          const b3 = chunk[bytePos + 3];
+          out[pixPos] = isLittleEndian ? (b2 >> 4) | ((b3 & 0x3f) << 4) : ((b2 & 0x0f) << 6) | (b3 >> 2);
+          pixPos++;
+        }
+      }
     }
     return out;
   }
@@ -763,6 +792,31 @@ export function unpackRawSensorBits(
       }
       bytePos += 7;
       pixPos += 4;
+    }
+    // Tail handling for 1, 2, or 3 remaining pixels
+    if (pixPos < pixelCount && bytePos + 2 <= chunk.length) {
+      const b0 = chunk[bytePos];
+      const b1 = chunk[bytePos + 1];
+      out[pixPos] = isLittleEndian ? b0 | ((b1 & 0x3f) << 8) : (b0 << 6) | (b1 >> 2);
+      pixPos++;
+      if (pixPos < pixelCount && bytePos + 4 <= chunk.length) {
+        const b2 = chunk[bytePos + 2];
+        const b3 = chunk[bytePos + 3];
+        out[pixPos] =
+          isLittleEndian
+            ? (b1 >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10)
+            : ((b1 & 0x03) << 12) | (b2 << 4) | (b3 >> 4);
+        pixPos++;
+        if (pixPos < pixelCount && bytePos + 6 <= chunk.length) {
+          const b4 = chunk[bytePos + 4];
+          const b5 = chunk[bytePos + 5];
+          out[pixPos] =
+            isLittleEndian
+              ? (b3 >> 4) | (b4 << 4) | ((b5 & 0x03) << 12)
+              : ((b3 & 0x0f) << 10) | (b4 << 2) | (b5 >> 6);
+          pixPos++;
+        }
+      }
     }
     return out;
   }
@@ -955,7 +1009,7 @@ export function decodeOpenExr(buf: Buffer): {
   isHalf: boolean;
   attrs: Record<string, { type: string; val: Buffer }>;
 } {
-  if (buf[0] !== 0x76 || buf[1] !== 0x2f || buf[2] !== 0x31 || buf[3] !== 0x01) {
+  if (buf.length < 16 || buf[0] !== 0x76 || buf[1] !== 0x2f || buf[2] !== 0x31 || buf[3] !== 0x01) {
     throw new Error('Invalid OpenEXR magic header bytes');
   }
 
@@ -963,11 +1017,14 @@ export function decodeOpenExr(buf: Buffer): {
   const attrs: Record<string, { type: string; val: Buffer }> = {};
   while (pos < buf.length && buf[pos] !== 0) {
     const nameEnd = buf.indexOf(0, pos);
+    if (nameEnd === -1) break;
     const name = buf.toString('ascii', pos, nameEnd);
     pos = nameEnd + 1;
     const typeEnd = buf.indexOf(0, pos);
+    if (typeEnd === -1) break;
     const type = buf.toString('ascii', pos, typeEnd);
     pos = typeEnd + 1;
+    if (pos + 4 > buf.length) break;
     const size = buf.readUInt32LE(pos);
     pos += 4;
     const val = buf.subarray(pos, pos + size);
@@ -976,19 +1033,55 @@ export function decodeOpenExr(buf: Buffer): {
   }
   pos++; // skip terminating 0x00
 
-  const dw = attrs.dataWindow.val;
-  const width = dw.readInt32LE(8) - dw.readInt32LE(0) + 1;
-  const height = dw.readInt32LE(12) - dw.readInt32LE(4) + 1;
+  if (!attrs.dataWindow || attrs.dataWindow.val.length < 16) {
+    throw new Error('Invalid OpenEXR: missing or corrupt dataWindow attribute');
+  }
 
-  // Determine pixel type from channels attribute
-  let isHalf = true;
-  if (attrs.channels && attrs.channels.val.length > 2) {
+  const dw = attrs.dataWindow.val;
+  const xMin = dw.readInt32LE(0);
+  const yMin = dw.readInt32LE(4);
+  const xMax = dw.readInt32LE(8);
+  const yMax = dw.readInt32LE(12);
+  const width = Math.max(1, xMax - xMin + 1);
+  const height = Math.max(1, yMax - yMin + 1);
+
+  // Parse channels list from attrs.channels
+  interface ChannelInfo {
+    name: string;
+    pixelType: number; // 1 = HALF, 2 = FLOAT, 0 = UINT
+    bytesPerPixel: number;
+  }
+  const channels: ChannelInfo[] = [];
+
+  if (attrs.channels && attrs.channels.val.length > 0) {
     const chBuf = attrs.channels.val;
-    const firstNull = chBuf.indexOf(0);
-    if (firstNull !== -1 && firstNull + 4 <= chBuf.length) {
-      const pType = chBuf.readInt32LE(firstNull + 1);
-      isHalf = pType === 1;
+    let cPos = 0;
+    while (cPos < chBuf.length && chBuf[cPos] !== 0) {
+      const nullIdx = chBuf.indexOf(0, cPos);
+      if (nullIdx === -1) break;
+      const chName = chBuf.toString('ascii', cPos, nullIdx);
+      cPos = nullIdx + 1;
+      if (cPos + 16 > chBuf.length) break;
+      const pixelType = chBuf.readInt32LE(cPos);
+      const bytesPerPixel = pixelType === 1 ? 2 : 4;
+      channels.push({ name: chName, pixelType, bytesPerPixel });
+      cPos += 16;
     }
+  }
+
+  // Fallback if channels list had no channels
+  if (channels.length === 0) {
+    channels.push(
+      { name: 'B', pixelType: 1, bytesPerPixel: 2 },
+      { name: 'G', pixelType: 1, bytesPerPixel: 2 },
+      { name: 'R', pixelType: 1, bytesPerPixel: 2 }
+    );
+  }
+
+  const isHalf = channels.some((c) => c.pixelType === 1);
+
+  if (pos + height * 8 > buf.length) {
+    throw new Error('Invalid OpenEXR: offset table truncated');
   }
 
   const scanlineOffsets: number[] = [];
@@ -997,34 +1090,40 @@ export function decodeOpenExr(buf: Buffer): {
   }
 
   const rgb = new Float32Array(width * height * 3);
-  const bytesPerChannel = isHalf ? 2 : 4;
 
   for (let y = 0; y < height; y++) {
     const blockOff = scanlineOffsets[y];
-    let p = blockOff + 8;
+    if (blockOff + 8 > buf.length) continue;
+    let p = blockOff + 8; // skip y (4) and pixelDataSize (4)
 
-    const bVals = new Float32Array(width);
-    const gVals = new Float32Array(width);
-    const rVals = new Float32Array(width);
+    // Temporary storage for channels in this scanline
+    const lineChannels: Record<string, Float32Array> = {};
+    for (const ch of channels) {
+      const vals = new Float32Array(width);
+      for (let x = 0; x < width; x++) {
+        if (p >= buf.length) break;
+        if (ch.pixelType === 1) {
+          vals[x] = float16ToFloat32(buf.readUInt16LE(p));
+        } else if (ch.pixelType === 2) {
+          vals[x] = buf.readFloatLE(p);
+        } else {
+          vals[x] = buf.readUInt32LE(p);
+        }
+        p += ch.bytesPerPixel;
+      }
+      lineChannels[ch.name] = vals;
+    }
 
-    for (let x = 0; x < width; x++) {
-      bVals[x] = isHalf ? float16ToFloat32(buf.readUInt16LE(p)) : buf.readFloatLE(p);
-      p += bytesPerChannel;
-    }
-    for (let x = 0; x < width; x++) {
-      gVals[x] = isHalf ? float16ToFloat32(buf.readUInt16LE(p)) : buf.readFloatLE(p);
-      p += bytesPerChannel;
-    }
-    for (let x = 0; x < width; x++) {
-      rVals[x] = isHalf ? float16ToFloat32(buf.readUInt16LE(p)) : buf.readFloatLE(p);
-      p += bytesPerChannel;
-    }
+    // Map channels to RGB
+    const rLine = lineChannels['R'] || lineChannels['r'] || lineChannels['Y'] || lineChannels['y'];
+    const gLine = lineChannels['G'] || lineChannels['g'] || lineChannels['Y'] || lineChannels['y'];
+    const bLine = lineChannels['B'] || lineChannels['b'] || lineChannels['Y'] || lineChannels['y'];
 
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 3;
-      rgb[idx] = rVals[x];
-      rgb[idx + 1] = gVals[x];
-      rgb[idx + 2] = bVals[x];
+      rgb[idx] = rLine ? rLine[x] : 0;
+      rgb[idx + 1] = gLine ? gLine[x] : 0;
+      rgb[idx + 2] = bLine ? bLine[x] : 0;
     }
   }
 
@@ -1113,9 +1212,9 @@ export async function encodeUltraHdrJpeg(
     const bHdr = Math.max(0, hdrRgb[idx + 2]);
     const yHdr = 0.2126 * rHdr + 0.7152 * gHdr + 0.0722 * bHdr;
 
-    const rSdr = sdrBuffer[idx] / 255.0;
-    const gSdr = sdrBuffer[idx + 1] / 255.0;
-    const bSdr = sdrBuffer[idx + 2] / 255.0;
+    const rSdr = inverseIec61966SrgbGamma(sdrBuffer[idx] / 255.0);
+    const gSdr = inverseIec61966SrgbGamma(sdrBuffer[idx + 1] / 255.0);
+    const bSdr = inverseIec61966SrgbGamma(sdrBuffer[idx + 2] / 255.0);
     const ySdr = 0.2126 * rSdr + 0.7152 * gSdr + 0.0722 * bSdr;
 
     const ratio = (yHdr + eps) / (ySdr + eps);
@@ -1187,12 +1286,13 @@ export async function encodeUltraHdrJpeg(
   mpfTiff.writeUInt32LE(0, p); // Next IFD offset = 0
   p += 4;
 
+  // MP Entry 1 & 2 exact sizes and offsets
+  const app2Length = 4 + mpfHeader.length + p + 16 + 16;
+  const primaryWithMarkersSize = primaryJpeg.length + app1.length + app2Length;
+
   // MP Entry 1 (Primary image)
   const mpEntry1 = Buffer.alloc(16);
   mpEntry1.writeUInt32LE(0x030000, 0); // Primary Image type
-  // Note: size of primary JPEG with APP1 and APP2 added
-  const estimatedApp2Size = 4 + mpfHeader.length + 64 + 32;
-  const primaryWithMarkersSize = primaryJpeg.length + app1.length + estimatedApp2Size;
   mpEntry1.writeUInt32LE(primaryWithMarkersSize, 4);
   mpEntry1.writeUInt32LE(0, 8); // Offset 0
 
@@ -1200,8 +1300,8 @@ export async function encodeUltraHdrJpeg(
   const mpEntry2 = Buffer.alloc(16);
   mpEntry2.writeUInt32LE(0x000000, 0);
   mpEntry2.writeUInt32LE(secondaryJpeg.length, 4);
-  // Offset from MPF TIFF header to secondary JPEG
-  const offsetToSecondary = primaryWithMarkersSize - (2 + app1.length + 4 + mpfTiffOffset);
+  // Exact offset from MPF TIFF header (at 10 + app1.length) to secondary JPEG (at primaryWithMarkersSize)
+  const offsetToSecondary = primaryWithMarkersSize - (10 + app1.length);
   mpEntry2.writeUInt32LE(offsetToSecondary, 8);
 
   const mpfPayload = Buffer.concat([mpfHeader, mpfTiff.subarray(0, p), mpEntry1, mpEntry2]);
@@ -1270,6 +1370,57 @@ export function decodeUltraHdrJpeg(buf: Buffer): {
   }
 
   return { primaryJpeg, secondaryJpeg, xmp, gainMapMax };
+}
+
+/**
+ * Decodes and reconstructs the full HDR Float32Array linear radiance from an Ultra HDR JPEG
+ * using the primary SDR image, secondary Gain Map JPEG, and ISO 21496-1 metadata.
+ */
+export async function reconstructUltraHdr(buf: Buffer): Promise<{
+  rgbFloat: Float32Array;
+  sdrRgb: Buffer;
+  width: number;
+  height: number;
+  gainMapMax: number;
+}> {
+  const { primaryJpeg, secondaryJpeg, gainMapMax } = decodeUltraHdrJpeg(buf);
+
+  // Decode primary SDR JPEG
+  const { data: sdrData, info: sdrInfo } = await sharp(primaryJpeg)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const width = sdrInfo.width;
+  const height = sdrInfo.height;
+
+  // Decode secondary Gain Map JPEG (grayscale, resized if needed to match primary dimension)
+  const gmBuffer = await sharp(secondaryJpeg)
+    .resize(width, height, { fit: 'fill' })
+    .toColourspace('b-w')
+    .raw()
+    .toBuffer();
+
+  const totalPixels = width * height;
+  const rgbFloat = new Float32Array(totalPixels * 3);
+  const eps = 1e-4;
+
+  for (let i = 0; i < totalPixels; i++) {
+    const gmNorm = (gmBuffer[i] !== undefined ? gmBuffer[i] : 0) / 255.0;
+    const logGain = gmNorm * gainMapMax;
+    const ratio = Math.pow(2.0, logGain);
+
+    const idx = i * 3;
+    const rLinSdr = inverseIec61966SrgbGamma(sdrData[idx] / 255.0);
+    const gLinSdr = inverseIec61966SrgbGamma(sdrData[idx + 1] / 255.0);
+    const bLinSdr = inverseIec61966SrgbGamma(sdrData[idx + 2] / 255.0);
+
+    rgbFloat[idx] = (rLinSdr + eps) * ratio - eps;
+    rgbFloat[idx + 1] = (gLinSdr + eps) * ratio - eps;
+    rgbFloat[idx + 2] = (bLinSdr + eps) * ratio - eps;
+  }
+
+  return { rgbFloat, sdrRgb: sdrData, width, height, gainMapMax };
 }
 
 // ============================================================================
@@ -1400,7 +1551,7 @@ export function encode16BitTiff(
   iccProfile?: Buffer
 ): Buffer {
   const hasIcc = Boolean(iccProfile && iccProfile.length > 0);
-  const ifdCount = hasIcc ? 11 : 10;
+  const ifdCount = hasIcc ? 13 : 12;
   const ifdSize = 2 + ifdCount * 12 + 4;
   const headerSize = 8;
   const ifdOffset = headerSize;
@@ -1456,6 +1607,8 @@ export function encode16BitTiff(
   writeTag(278, 4, 1, height); // RowsPerStrip
   writeTag(279, 4, 1, pixelDataSize); // StripByteCounts
   writeTag(282, 5, 1, xresOffset); // XResolution
+  writeTag(283, 5, 1, yresOffset); // YResolution
+  writeTag(296, 3, 1, 2); // ResolutionUnit (2 = inch)
 
   if (hasIcc) {
     writeTag(34675, 7, iccProfile!.length, iccOffset); // ICC Profile
