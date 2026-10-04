@@ -569,6 +569,7 @@ export function parseSvgTransform(value: string): AffineMatrix {
       throw new CadGeometryUnavailableError(`Unsupported or malformed SVG transform "${value}".`);
     }
     matrix = multiplyMatrix(matrix, fnMatrix);
+    matrix.forEach((v) => requireFinite(v, `transform "${value}"`));
     rest = rest.slice(fn[0].length).trim();
   }
   return matrix;
@@ -882,11 +883,18 @@ function deriveContext(parent: StyleContext, attrs: Map<string, string>, declare
 
 const ELLIPSE_SEGMENTS = 36;
 
+/** Throws unless the value is a finite number; NaN or overflow would yield dummy geometry. */
+export function requireFinite(value: number, what: string): number {
+  if (!Number.isFinite(value)) {
+    throw new CadGeometryUnavailableError(`SVG ${what} is not a finite number.`);
+  }
+  return value;
+}
+
 function numberAttr(attrs: Map<string, string>, name: string): number {
   const v = attrs.get(name);
   if (v === undefined) return 0;
-  const n = Number.parseFloat(v);
-  return Number.isFinite(n) ? n : 0;
+  return requireFinite(Number.parseFloat(v), `attribute ${name}="${v}"`);
 }
 
 function ellipsePoints(cx: number, cy: number, rx: number, ry: number): { x: number; y: number }[] {
@@ -900,12 +908,13 @@ function ellipsePoints(cx: number, cy: number, rx: number, ry: number): { x: num
 
 function parsePointList(value: string | undefined): { x: number; y: number }[] {
   if (!value) return [];
-  const coords = value.trim().split(/[\s,]+/).map((v) => Number.parseFloat(v));
+  const coords = value
+    .trim()
+    .split(/[\s,]+/)
+    .map((v) => requireFinite(Number(v), `points value "${v}"`));
   const pts: { x: number; y: number }[] = [];
   for (let k = 0; k + 1 < coords.length; k += 2) {
-    if (Number.isFinite(coords[k]) && Number.isFinite(coords[k + 1])) {
-      pts.push({ x: coords[k], y: coords[k + 1] });
-    }
+    pts.push({ x: coords[k], y: coords[k + 1] });
   }
   return pts;
 }
@@ -990,9 +999,7 @@ const DEFAULT_STROKE_WIDTH = 1;
  * zero or negative widths disable the stroke (returns 0).
  */
 function resolveStrokeWidth(value: string): number {
-  const n = Number.parseFloat(value);
-  if (!Number.isFinite(n)) return DEFAULT_STROKE_WIDTH;
-  return Math.max(0, n);
+  return Math.max(0, requireFinite(Number.parseFloat(value), `stroke-width "${value}"`));
 }
 
 /** Uniform length scale of a transform: the square root of its determinant's magnitude. */
@@ -1015,9 +1022,11 @@ const DEFAULT_VIEWPORT_HEIGHT = 600;
 
 function parseViewBox(value: string | undefined): [number, number, number, number] | null {
   if (!value) return null;
-  const parts = value.trim().split(/[\s,]+/).map((v) => Number.parseFloat(v));
-  if (parts.length >= 4 && parts[2] > 0 && parts[3] > 0) return [parts[0], parts[1], parts[2], parts[3]];
-  return null;
+  const parts = value.trim().split(/[\s,]+/).map(Number);
+  if (parts.length !== 4 || !parts.every(Number.isFinite) || parts[2] <= 0 || parts[3] <= 0) {
+    throw new CadGeometryUnavailableError(`SVG viewBox "${value}" must be four finite numbers with positive width and height.`);
+  }
+  return [parts[0], parts[1], parts[2], parts[3]];
 }
 
 /** CSS absolute length units in CSS pixels (CSS Values 4: 1in = 96px). */
@@ -1041,7 +1050,7 @@ function parseAbsoluteLength(value: string | undefined): number | null {
   if (!m) return null;
   const factor = ABSOLUTE_LENGTH_UNITS[m[2].toLowerCase()];
   if (factor === undefined) return null;
-  const px = Number.parseFloat(m[1]) * factor;
+  const px = requireFinite(Number.parseFloat(m[1]) * factor, `length "${value}"`);
   return px > 0 ? px : null;
 }
 
@@ -1218,8 +1227,17 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
   const shape = shapeGeometry(node.name, node.attrs);
   const strokeWidth = resolveStrokeWidth(ctx.strokeWidth);
   if (!shape || shape.subpaths.length === 0) return;
+  const deviceSubpaths = shape.subpaths.map((sub) =>
+    sub.map((p) => {
+      const d = applyMatrix(ctx.ctm, p.x, p.y);
+      requireFinite(d.x, `<${node.name}> device coordinate`);
+      requireFinite(d.y, `<${node.name}> device coordinate`);
+      return d;
+    })
+  );
+  requireFinite(strokeWidth * matrixLengthScale(ctx.ctm), `<${node.name}> device stroke width`);
   state.elements.push({
-    subpaths: shape.subpaths.map((sub) => sub.map((p) => applyMatrix(ctx.ctm, p.x, p.y))),
+    subpaths: deviceSubpaths,
     isClosed: shape.isClosed,
     fillable: node.name !== 'line',
     fill: resolvePaint(ctx.fill, ctx.color, 'fill'),

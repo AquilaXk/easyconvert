@@ -719,4 +719,26 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeCgm(body)).toThrow(/stroke-linecap/);
     });
   });
+
+  describe('non-finite numbers', () => {
+    const cases: [string, string, string?][] = [
+      ['an overflowing rect coordinate', '<rect x="1e400" y="0" width="10" height="10"/>'],
+      ['a NaN attribute', '<rect x="NaN" y="0" width="10" height="10"/>'],
+      ['an unparseable attribute', '<circle cx="abc" cy="5" r="3"/>'],
+      ['an overflowing path coordinate', '<path d="M 0 0 L 1e400 0 L 0 10 Z"/>'],
+      ['a non-numeric polyline point', '<polyline points="0,0 10,NaN 20,20" stroke="#000"/>'],
+      ['an overflowing transform', '<rect width="10" height="10" transform="scale(1e400)"/>'],
+      ['a transform whose product overflows', '<g transform="scale(1e200)"><rect width="10" height="10" transform="scale(1e200)"/></g>'],
+      ['an overflowing stroke width', '<line x1="0" y1="0" x2="5" y2="5" stroke="#000" stroke-width="1e400"/>'],
+      ['an overflowing viewBox', '<rect width="10" height="10"/>', 'viewBox="0 0 1e400 10"'],
+      ['an overflowing root width', '<rect width="10" height="10"/>', 'width="1e400" height="10"'],
+    ];
+    for (const [label, body, root] of cases) {
+      it(`rejects ${label} with a typed error`, () => {
+        for (const encode of [encodeEmf, encodeWmf, encodeCgm]) {
+          expect(() => encode(svgDoc(body, root))).toThrow(CadGeometryUnavailableError);
+        }
+      });
+    }
+  });
 });

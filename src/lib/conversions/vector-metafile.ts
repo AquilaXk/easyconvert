@@ -101,6 +101,9 @@ function computeLogicalSpace(ops: DrawOp[], width: number, height: number): Logi
       for (const p of pts) maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y));
     }
   }
+  if (!Number.isFinite(maxAbs)) {
+    throw new CadGeometryUnavailableError('Drawing extent is not a finite number.');
+  }
   if (maxAbs <= INT16_MAX) return { unitsPerInch: CSS_PX_PER_INCH, scale: 1 };
   const unitsPerInch = Math.floor((CSS_PX_PER_INCH * INT16_MAX) / maxAbs);
   if (unitsPerInch < 1) {
@@ -108,7 +111,11 @@ function computeLogicalSpace(ops: DrawOp[], width: number, height: number): Logi
       `Drawing extent of ${Math.round(maxAbs)} px is too large for the 16-bit metafile coordinate range.`
     );
   }
-  return { unitsPerInch, scale: unitsPerInch / CSS_PX_PER_INCH };
+  const scale = unitsPerInch / CSS_PX_PER_INCH;
+  if (!(scale > 0)) {
+    throw new CadGeometryUnavailableError('Logical coordinate scale must be positive.');
+  }
+  return { unitsPerInch, scale };
 }
 
 function scalePoints(points: PlanPoint[], s: number): PlanPoint[] {
