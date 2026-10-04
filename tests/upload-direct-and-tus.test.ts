@@ -200,7 +200,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
       streamChunks.push(Buffer.isBuffer(piece) ? piece : Buffer.from(piece));
     }
     const fullBuffer = Buffer.concat(streamChunks);
-    expect(fullBuffer.length).toBe(totalSize);
+    expect(fullBuffer).toHaveLength(totalSize);
     expect(fullBuffer.toString('utf-8')).toBe(
       'FIRST_PART_DATA_CHUNKS_OF_STREAM_SECOND_PART_DATA_CHUNKS_OF_STREAM_FINISH'
     );

@@ -29,7 +29,7 @@ function resolveSessionId(params?: { id?: string[] }): string | null {
   return params.id[0];
 }
 
-export async function OPTIONS() {
+export function OPTIONS() {
   const headers = createTusHeaders({
     'Tus-Version': TUS_RESUMABLE_VERSION,
     'Tus-Extension': 'creation,termination,checksum,expiration',
@@ -80,7 +80,7 @@ export async function POST(
     return createProblemDetailsResponse(400, 'Missing required "Upload-Length" header.', instanceUri);
   }
 
-  const uploadLength = parseInt(uploadLengthHeader, 10);
+  const uploadLength = Number.parseInt(uploadLengthHeader, 10);
   if (!Number.isFinite(uploadLength) || uploadLength < 0) {
     return createProblemDetailsResponse(400, 'Invalid "Upload-Length" header value.', instanceUri);
   }
@@ -164,7 +164,7 @@ export async function PATCH(
     return createProblemDetailsResponse(400, 'Missing required "Upload-Offset" header.', instanceUri);
   }
 
-  const clientOffset = parseInt(offsetHeader, 10);
+  const clientOffset = Number.parseInt(offsetHeader, 10);
   if (!Number.isFinite(clientOffset) || clientOffset < 0) {
     return createProblemDetailsResponse(400, 'Invalid "Upload-Offset" header value.', instanceUri);
   }

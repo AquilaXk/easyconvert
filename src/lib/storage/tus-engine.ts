@@ -123,7 +123,7 @@ async function finalizeTusSession(session: TusSession, binPath: string): Promise
 
   // Synchronize into globalSharedObjects disk spool
   const stat = await fs.promises.stat(binPath);
-  const hash = crypto.createHash('md5').update(String(stat.mtimeMs)).digest('hex');
+  const hash = crypto.createHash('sha256').update(String(stat.mtimeMs)).digest('hex');
   let cachedBuffer: Buffer | null = null;
   globalSharedObjects.set(session.key, {
     key: session.key,

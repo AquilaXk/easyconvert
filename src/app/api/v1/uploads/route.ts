@@ -55,7 +55,7 @@ async function handlePartUpload(
     return createProblemDetailsResponse(400, 'Missing "uploadId" or "partNumber" query parameter.', instanceUri);
   }
 
-  const partNumber = parseInt(partNumberStr, 10);
+  const partNumber = Number.parseInt(partNumberStr, 10);
   if (!Number.isFinite(partNumber) || partNumber < 1) {
     return createProblemDetailsResponse(400, 'Invalid "partNumber". Must be a positive integer.', instanceUri);
   }
@@ -107,12 +107,11 @@ async function handleInitiateUpload(
     filename: safeFilename,
   });
 
-  const presignedUrls: StoragePresignedUrlResult[] = [];
   const pregenLimit = Math.min(totalParts, 100);
-  for (let i = 1; i <= pregenLimit; i++) {
-    const presigned = await localFsStorage.presignPart(session.key, session.uploadId, i, 86400);
-    presignedUrls.push(presigned);
-  }
+  const presignedPromises = Array.from({ length: pregenLimit }, (_, idx) =>
+    localFsStorage.presignPart(session.key, session.uploadId, idx + 1, 86400)
+  );
+  const presignedUrls = await Promise.all(presignedPromises);
 
   return NextResponse.json({
     success: true,
