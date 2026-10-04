@@ -65,7 +65,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(content).not.toContain("from 'pdfkit'");
       expect(content).not.toContain("from './office'");
       expect(content).not.toContain("from 'sharp'");
-      expect(content).not.toContain("from 'node:fs'");
+      expect(content).not.toMatch(/['"](?:node:)?fs['"]/);
     });
 
     it('pure-cad.ts strictly avoids importing sharp, pdfkit, zlib, or vector-cad.ts', () => {
@@ -73,7 +73,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       const content = fs.readFileSync(filePath, 'utf-8');
       expect(content).not.toContain("from 'sharp'");
       expect(content).not.toContain("from 'pdfkit'");
-      expect(content).not.toContain("from 'node:zlib'");
+      expect(content).not.toMatch(/['"](?:node:)?zlib['"]/);
       expect(content).not.toContain("from './vector-cad'");
       expect(content).not.toContain("from '../../conversions/vector-cad'");
     });
