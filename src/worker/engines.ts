@@ -24,6 +24,7 @@ import {
   probeHardwareAcceleration,
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
+import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
 import { executeSandboxedBinary, SandboxedMemoryLimitError } from './sandbox';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
@@ -440,7 +441,8 @@ export async function convertWithNativeFfmpeg(
       const { inputPath } = resolveInputContext(input, src, tempDir);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
-      const timeout = Math.min(options.timeoutMs || 60000, 180000);
+      const durationSeconds = probeMediaDuration(inputPath, options);
+      const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || 180000);
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
 

@@ -92,6 +92,12 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
     expect(properties.sheetIndex['x-easyconvert-status']).toBeUndefined();
     expect(properties.sheetMode).toBeDefined();
     expect(properties.sheetMode['x-easyconvert-status']).toBeUndefined();
+
+    // WP-44a added 'video' and 'trim' as fully active, supported conversion options
+    expect(properties.video).toBeDefined();
+    expect(properties.video['x-easyconvert-status']).toBeUndefined();
+    expect(properties.trim).toBeDefined();
+    expect(properties.trim['x-easyconvert-status']).toBeUndefined();
   });
 
   it('enforces canonical $id URIs across all contract schemas', () => {

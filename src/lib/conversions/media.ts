@@ -62,6 +62,86 @@ export function getFfmpegPath(): string | null {
   return found;
 }
 
+function resolveFfprobeViaWhich(): string | null {
+  for (const whichBin of ['/usr/bin/which', '/bin/which']) {
+    if (!fs.existsSync(whichBin)) continue;
+    try {
+      const out = execFileSync(whichBin, ['ffprobe'], { stdio: 'pipe' }).toString().trim();
+      if (out && fs.existsSync(out)) return out;
+    } catch {}
+  }
+  return null;
+}
+
+let resolvedFfprobePath: string | null = null;
+export function getFfprobePath(): string | null {
+  if (resolvedFfprobePath !== null) return resolvedFfprobePath || null;
+  const envPath = process.env.FFPROBE_PATH;
+  if (envPath && fs.existsSync(envPath)) {
+    resolvedFfprobePath = envPath;
+    return envPath;
+  }
+  const fixedLocations = [
+    '/usr/bin/ffprobe',
+    '/usr/local/bin/ffprobe',
+    '/opt/homebrew/bin/ffprobe',
+    '/bin/ffprobe',
+    '/snap/bin/ffprobe',
+    '/nix/var/nix/profiles/default/bin/ffprobe',
+  ];
+  const found = findExistingPath(fixedLocations) || resolveFfprobeViaWhich();
+  resolvedFfprobePath = found || '';
+  return found;
+}
+
+/**
+ * Probes the duration of an audio/video file in seconds using ffprobe CLI.
+ * Returns 0 if ffprobe is unavailable or if parsing fails.
+ */
+export function probeMediaDuration(filePath: string, options?: ConversionOptions): number {
+  if (typeof options?.duration === 'number' && Number.isFinite(options.duration) && options.duration > 0) {
+    return options.duration;
+  }
+  const ffprobe = getFfprobePath();
+  if (ffprobe && fs.existsSync(filePath)) {
+    try {
+      const out = execFileSync(
+        ffprobe,
+        [
+          '-v',
+          'error',
+          '-show_entries',
+          'format=duration',
+          '-of',
+          'default=noprint_wrappers=1:nokey=1',
+          filePath,
+        ],
+        {
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 3000,
+        }
+      )
+        .toString('utf-8')
+        .trim();
+      const parsed = Number.parseFloat(out);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    } catch {}
+  }
+  return 0;
+}
+
+/**
+ * Computes dynamic transcoding timeout: min(tierMax, 3 * durationSeconds + 60) in milliseconds.
+ */
+export function computeMediaTimeoutMs(durationSeconds: number, tierMaxMs = 180000): number {
+  const duration = Math.max(0, durationSeconds || 0);
+  const baseTimeoutMs = Math.round((3 * duration + 60) * 1000);
+  return Math.max(10000, Math.min(tierMaxMs, baseTimeoutMs));
+}
+
+
 export function detectFfmpegEnvironment(): FfmpegEnvironmentInfo {
   const ffmpegPath = getFfmpegPath();
   const isContainer =
@@ -195,8 +275,10 @@ async function executeFfmpegTranscode(
   try {
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
     const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin);
+    const durationSeconds = probeMediaDuration(inputPath, options);
+    const timeoutMs = computeMediaTimeoutMs(durationSeconds, options.timeoutMs);
     await executeSandboxedBinary(ffmpegBin, args, {
-      timeoutMs: 30000,
+      timeoutMs,
       maxBuffer: 50 * 1024 * 1024,
       networkIsolated: true,
     });

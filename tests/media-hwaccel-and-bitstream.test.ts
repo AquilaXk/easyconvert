@@ -95,50 +95,42 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
         audioBitrate: '256k',
       });
 
+      expect(args[0]).toBe('-y');
+      expect(args[args.length - 1]).toBe('/tmp/out.mp4');
       expect(args).toContain('-i');
       expect(args).toContain('/tmp/in.wav');
-      expect(args).toContain('/tmp/out.mp4');
       expect(args).toContain('-movflags');
       expect(args).toContain('+faststart');
-      expect(args).toContain('-c:a');
-      expect(args).toContain('aac');
-      expect(args).toContain('-b:a');
-      expect(args).toContain('256k');
-      expect(args).toContain('-r');
-      expect(args).toContain('30');
+      expect(args[args.indexOf('-c:a') + 1]).toBe('aac');
+      expect(args[args.indexOf('-b:a') + 1]).toBe('256k');
+      expect(args[args.indexOf('-r') + 1]).toBe('30');
     });
 
     it('generates VP9 and Opus arguments for WebM container', () => {
       const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.webm', 'mp4', 'webm', {});
-      expect(args).toContain('-c:v');
-      expect(args).toContain('libvpx-vp9');
-      expect(args).toContain('-c:a');
-      expect(args).toContain('libopus');
-      expect(args).toContain('-b:a');
-      expect(args).toContain('128k');
+      expect(args[0]).toBe('-y');
+      expect(args[args.length - 1]).toBe('/tmp/out.webm');
+      expect(args[args.indexOf('-c:v') + 1]).toBe('libvpx-vp9');
+      expect(args[args.indexOf('-c:a') + 1]).toBe('libopus');
+      expect(args[args.indexOf('-b:a') + 1]).toBe('128k');
     });
 
     it('maps audio codecs accurately: mp3, ogg, opus, flac, wav', () => {
       const mp3Args = buildFfmpegArguments('/tmp/in.wav', '/tmp/out.mp3', 'wav', 'mp3', { audioBitrate: '320k' });
-      expect(mp3Args).toContain('-c:a');
-      expect(mp3Args).toContain('libmp3lame');
-      expect(mp3Args).toContain('320k');
+      expect(mp3Args[mp3Args.indexOf('-c:a') + 1]).toBe('libmp3lame');
+      expect(mp3Args[mp3Args.indexOf('-b:a') + 1]).toBe('320k');
 
       const oggArgs = buildFfmpegArguments('/tmp/in.wav', '/tmp/out.ogg', 'wav', 'ogg', {});
-      expect(oggArgs).toContain('-c:a');
-      expect(oggArgs).toContain('libvorbis');
+      expect(oggArgs[oggArgs.indexOf('-c:a') + 1]).toBe('libvorbis');
 
       const opusArgs = buildFfmpegArguments('/tmp/in.wav', '/tmp/out.opus', 'wav', 'opus', {});
-      expect(opusArgs).toContain('-c:a');
-      expect(opusArgs).toContain('libopus');
+      expect(opusArgs[opusArgs.indexOf('-c:a') + 1]).toBe('libopus');
 
       const flacArgs = buildFfmpegArguments('/tmp/in.wav', '/tmp/out.flac', 'wav', 'flac', {});
-      expect(flacArgs).toContain('-c:a');
-      expect(flacArgs).toContain('flac');
+      expect(flacArgs[flacArgs.indexOf('-c:a') + 1]).toBe('flac');
 
       const wavArgs = buildFfmpegArguments('/tmp/in.mp3', '/tmp/out.wav', 'mp3', 'wav', {});
-      expect(wavArgs).toContain('-c:a');
-      expect(wavArgs).toContain('pcm_s16le');
+      expect(wavArgs[wavArgs.indexOf('-c:a') + 1]).toBe('pcm_s16le');
     });
 
     it('applies audio channel mappings, volume filter, and resolution downscaling', () => {
@@ -150,16 +142,15 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
         videoBitrate: 3500,
       });
 
-      expect(args).toContain('-ac');
-      expect(args).toContain('1');
-      expect(args).toContain('-filter:a');
-      expect(args).toContain('volume=0.8');
-      expect(args).toContain('-ar');
-      expect(args).toContain('48000');
-      expect(args).toContain('-vf');
-      expect(args).toContain('scale=1920:1080:force_original_aspect_ratio=decrease');
-      expect(args).toContain('-b:v');
-      expect(args).toContain('3500k');
+      expect(args[0]).toBe('-y');
+      expect(args[args.length - 1]).toBe('/tmp/out.mp4');
+      expect(args[args.indexOf('-ac') + 1]).toBe('1');
+      expect(args[args.indexOf('-filter:a') + 1]).toBe('volume=0.8');
+      expect(args[args.indexOf('-ar') + 1]).toBe('48000');
+      expect(args[args.indexOf('-vf') + 1]).toBe(
+        'scale=1920:1080:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2'
+      );
+      expect(args[args.indexOf('-b:v') + 1]).toBe('3500k');
     });
   });
 

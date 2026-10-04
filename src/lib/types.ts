@@ -127,11 +127,14 @@ export interface ConversionOptions {
   audioSampleRate?: 16000 | 22050 | 32000 | 44100 | 48000;
   audioVolume?: number; // 0 - 200 (percentage)
   // Video options
+  video?: VideoEncodingOptions;
+  trim?: MediaTrimOptions;
   videoResolution?: 'original' | '4k' | '1080p' | '720p' | '480p' | '360p';
   videoFps?: 24 | 30 | 60;
   videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1';
   videoBitrate?: number;
   duration?: number;
+  timeoutMs?: number;
   useFfmpeg?: boolean;
   fastStart?: boolean;
   disableHwaccel?: boolean;
@@ -142,6 +145,57 @@ export interface ConversionOptions {
   pdfVersion?: string;
   libreOfficeFilter?: string;
   losslessImageCompression?: boolean;
+}
+
+export interface VideoRateControlCrf {
+  mode: 'crf';
+  crf: number;
+}
+
+export interface VideoRateControlVbr {
+  mode: 'vbr';
+  bitrateK: number;
+  maxrateK?: number;
+  bufsizeK?: number;
+  twoPass?: boolean;
+}
+
+export interface VideoRateControlCbr {
+  mode: 'cbr';
+  bitrateK: number;
+}
+
+export type VideoRateControl = VideoRateControlCrf | VideoRateControlVbr | VideoRateControlCbr;
+
+export interface VideoCropOptions {
+  w: number;
+  h: number;
+  x: number;
+  y: number;
+}
+
+export interface VideoScaleOptions {
+  width?: number;
+  height?: number;
+  fit?: 'contain' | 'cover' | 'stretch';
+}
+
+export interface VideoEncodingOptions {
+  codec?: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores';
+  profile?: string;
+  level?: string;
+  rateControl?: VideoRateControl;
+  preset?: string;
+  fps?: number;
+  crop?: VideoCropOptions;
+  rotate?: 0 | 90 | 180 | 270;
+  deinterlace?: boolean;
+  scale?: VideoScaleOptions;
+}
+
+export interface MediaTrimOptions {
+  start?: string;
+  end?: string;
 }
 
 export type QueueItemStatus =
@@ -349,6 +403,14 @@ export class InvalidSheetIndexError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidSheetIndexError';
+  }
+}
+
+export class InvalidMediaOptionError extends UnsupportedOptionError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidMediaOptionError';
   }
 }
 

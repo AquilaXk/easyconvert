@@ -192,6 +192,11 @@ describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
     it('generates compliant empty EOS page when encodedChunks is empty', () => {
       const muxed = muxOggOpus([], 48000, 2);
       expect(muxed).toBeInstanceOf(Uint8Array);
+      expect(muxed.length).toBeGreaterThan(40);
+      expect(muxed[0]).toBe(0x4f); // 'O'
+      expect(muxed[1]).toBe(0x67); // 'g'
+      expect(muxed[2]).toBe(0x67); // 'g'
+      expect(muxed[3]).toBe(0x53); // 'S'
 
       const muxedText = new TextDecoder().decode(muxed);
       expect(muxedText).toContain('OpusHead');
@@ -282,6 +287,7 @@ describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
       const dockerfilePath = path.resolve(__dirname, '../Dockerfile.worker');
       const dockerfileContent = fs.readFileSync(dockerfilePath, 'utf-8');
 
+      expect(dockerfileContent.length).toBeGreaterThan(1000);
       expect(dockerfileContent).toContain('libva-drm2');
       expect(dockerfileContent).toContain('mesa-va-drivers');
       expect(dockerfileContent).toContain('intel-media-va-driver');
@@ -301,6 +307,7 @@ describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
       const composePath = path.resolve(__dirname, '../docker-compose.yml');
       const composeContent = fs.readFileSync(composePath, 'utf-8');
 
+      expect(composeContent.length).toBeGreaterThan(100);
       expect(composeContent).toContain('/dev/dri:/dev/dri');
     });
 

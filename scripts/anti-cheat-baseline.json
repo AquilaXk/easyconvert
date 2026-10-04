@@ -127,62 +127,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/media-conversions.test.ts",
-    "symbol": "encodes Exp-Golomb and bitfields with BitWriter",
-    "reason": "Test block \"encodes Exp-Golomb and bitfields with BitWriter\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-44"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/media-hwaccel-and-bitstream.test.ts",
-    "symbol": "generates optimal H.264 video encoding arguments with faststart for MP4",
-    "reason": "Test block \"generates optimal H.264 video encoding arguments with faststart for MP4\" contains only weak assertions (11 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-44"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/media-hwaccel-and-bitstream.test.ts",
-    "symbol": "generates VP9 and Opus arguments for WebM container",
-    "reason": "Test block \"generates VP9 and Opus arguments for WebM container\" contains only weak assertions (6 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-44"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/media-hwaccel-and-bitstream.test.ts",
-    "symbol": "maps audio codecs accurately: mp3, ogg, opus, flac, wav",
-    "reason": "Test block \"maps audio codecs accurately: mp3, ogg, opus, flac, wav\" contains only weak assertions (11 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-44"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/media-hwaccel-and-bitstream.test.ts",
-    "symbol": "applies audio channel mappings, volume filter, and resolution downscaling",
-    "reason": "Test block \"applies audio channel mappings, volume filter, and resolution downscaling\" contains only weak assertions (10 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-44"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/media-spec-conformance-and-hwaccel.test.ts",
-    "symbol": "generates compliant empty EOS page when encodedChunks is empty",
-    "reason": "Test block \"generates compliant empty EOS page when encodedChunks is empty\" contains only weak assertions (3 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-44"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/media-spec-conformance-and-hwaccel.test.ts",
-    "symbol": "verifies Dockerfile.worker installs VAAPI and Mesa driver packages",
-    "reason": "Test block \"verifies Dockerfile.worker installs VAAPI and Mesa driver packages\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-44"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/media-spec-conformance-and-hwaccel.test.ts",
-    "symbol": "verifies docker-compose.yml exposes /dev/dri device mapping to worker service",
-    "reason": "Test block \"verifies docker-compose.yml exposes /dev/dri device mapping to worker service\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-44"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/ocr-phase-3.test.ts",
     "symbol": "merges multiple raster images on the same page into unified searchable text",
     "reason": "Test block \"merges multiple raster images on the same page into unified searchable text\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
@@ -335,20 +279,6 @@
     "symbol": "builds fMP4 media fragment (moof + mdat) with sequence numbers and decode timestamps",
     "reason": "Test block \"builds fMP4 media fragment (moof + mdat) with sequence numbers and decode timestamps\" contains only weak assertions (7 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-2-media-archive.test.ts",
-    "symbol": "normalizes odd video dimensions with scale=trunc(iw/2)*2:trunc(ih/2)*2 and pix_fmt yuv420p",
-    "reason": "Test block \"normalizes odd video dimensions with scale=trunc(iw/2)*2:trunc(ih/2)*2 and pix_fmt yuv420p\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-45"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-2-media-archive.test.ts",
-    "symbol": "preserves explicit resolution while adding video transcoding flags",
-    "reason": "Test block \"preserves explicit resolution while adding video transcoding flags\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-45"
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",

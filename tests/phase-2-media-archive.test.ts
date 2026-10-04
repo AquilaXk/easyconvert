@@ -19,9 +19,10 @@ describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
       });
 
       expect(args).toContain('-vf');
-      expect(args).toContain('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+      const vf = args[args.indexOf('-vf') + 1];
+      expect(vf).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
       expect(args).toContain('-pix_fmt');
-      expect(args).toContain('yuv420p');
+      expect(args[args.indexOf('-pix_fmt') + 1]).toBe('yuv420p');
     });
 
     it('preserves explicit resolution while adding video transcoding flags', () => {
@@ -31,7 +32,8 @@ describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
       });
 
       expect(args).toContain('-vf');
-      expect(args).toContain('scale=1280:720:force_original_aspect_ratio=decrease');
+      const vf = args[args.indexOf('-vf') + 1];
+      expect(vf).toBe('scale=1280:720:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2');
       expect(args).toContain('-pix_fmt');
       expect(args).toContain('yuv420p');
     });
