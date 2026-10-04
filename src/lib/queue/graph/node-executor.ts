@@ -22,6 +22,7 @@ import {
   isSplitArchive,
 } from '../../conversions';
 import { ConversionFailedError } from '../../types';
+import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
 
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
@@ -32,7 +33,7 @@ export async function processGraphNodeJob(
   const attemptSignal = job.signal;
   const graphId = job.data.graphId!;
   const nodeId = job.data.graphNodeId!;
-  const node = job.data.graphNode!;
+  const node = job.data.graphNode as any;
   const effectiveStorage: IStorageBackend = storage || s3Storage;
   const effectiveEngine: ConversionEnginePort = engine || {
     name: 'ts-engine',
@@ -173,7 +174,99 @@ export async function processGraphNodeJob(
         break;
       }
 
-      case 'archive.create': {
+      case 'thumbnail': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        for (const inputKey of inputArtifacts) {
+          attemptSignal.throwIfAborted();
+          const stored = effectiveStorage.getObject(inputKey);
+          if (!stored) {
+            throw new Error(`Input artifact "${inputKey}" not found in storage`);
+          }
+          const srcExt = path.extname(stored.filename || inputKey).replace(/^\./, '').toLowerCase() || 'jpg';
+          const targetFormat = ((node as any).targetFormat || (node as any).options?.thumbnail?.format || 'jpg').toLowerCase().replace(/^\./, '');
+          const width = (node as any).options?.thumbnail?.width || 256;
+          const height = (node as any).options?.thumbnail?.height || 256;
+          const convRes = await effectiveEngine.convert(
+            stored.buffer,
+            srcExt,
+            targetFormat === 'png' ? 'png' : 'jpg',
+            {
+              ...((node as any).options || {}),
+              thumbnail: undefined,
+              width,
+              height,
+              fit: 'inside',
+            },
+            stored.filename
+          );
+          const outFilename = `thumbnail.${targetFormat}`;
+          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, 24 * 60 * 60 * 1000);
+          outputKeys.push(outKey);
+        }
+        break;
+      }
+
+      case 'merge': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        const targetFmt = ((node as any).targetFormat || 'pdf').toLowerCase().replace(/^\./, '');
+        if (targetFmt === 'pdf') {
+          const pdfBuffers: Buffer[] = [];
+          for (const inputKey of inputArtifacts) {
+            const stored = effectiveStorage.getObject(inputKey);
+            if (stored) pdfBuffers.push(stored.buffer);
+          }
+          const mergedBuf = await mergePdfBuffers(pdfBuffers);
+          const outFilename = 'merged.pdf';
+          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          effectiveStorage.saveObject(outKey, mergedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+          outputKeys.push(outKey);
+        } else {
+          const textParts: string[] = [];
+          for (const inputKey of inputArtifacts) {
+            const stored = effectiveStorage.getObject(inputKey);
+            if (stored) textParts.push(stored.buffer.toString('utf-8'));
+          }
+          const mergedBuf = Buffer.from(textParts.join('\n\n'), 'utf-8');
+          const outFilename = `merged.${targetFmt || 'txt'}`;
+          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          effectiveStorage.saveObject(outKey, mergedBuf, 'text/plain', outFilename, 24 * 60 * 60 * 1000);
+          outputKeys.push(outKey);
+        }
+        break;
+      }
+
+      case 'metadata': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        const inputKey = inputArtifacts[0];
+        const stored = effectiveStorage.getObject(inputKey);
+        if (!stored) {
+          throw new Error(`Input artifact "${inputKey}" not found in storage`);
+        }
+        const meta = await extractArtifactMetadata(
+          stored.buffer,
+          stored.filename || path.basename(inputKey),
+          inputKey
+        );
+        const jsonBuf = Buffer.from(JSON.stringify(meta, null, 2), 'utf-8');
+        const outFilename = 'metadata.json';
+        const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+        effectiveStorage.saveObject(outKey, jsonBuf, 'application/json', outFilename, 24 * 60 * 60 * 1000);
+        outputKeys.push(outKey);
+        break;
+      }
+
+      case 'archive.create':
+      case 'archive/create': {
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`archive.create node "${nodeId}" has no input artifacts to bundle`);
