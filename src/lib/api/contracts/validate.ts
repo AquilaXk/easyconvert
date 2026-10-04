@@ -11,6 +11,9 @@ import {
   IdempotencyKeyHeaderSchema,
   WebhookSecretRotateRequestSchema,
   WebhookSecretRotateResponseSchema,
+  UsageQueryRequestSchema,
+  UsageLedgerEntrySchema,
+  UsageQueryResponseSchema,
 } from './schemas';
 
 export const ajv = new Ajv2020({
@@ -45,6 +48,9 @@ ajv.addSchema(JobResourceSchema);
 ajv.addSchema(IdempotencyKeyHeaderSchema);
 ajv.addSchema(WebhookSecretRotateRequestSchema);
 ajv.addSchema(WebhookSecretRotateResponseSchema);
+ajv.addSchema(UsageQueryRequestSchema);
+ajv.addSchema(UsageLedgerEntrySchema);
+ajv.addSchema(UsageQueryResponseSchema);
 
 export type ValidateResult<T> =
   | { ok: true; data: T; problem?: never; response?: never }

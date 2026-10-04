@@ -15,6 +15,7 @@ export function buildRateLimitHeaders(quota: QuotaUsage): Record<string, string>
   const policyStr = `${limitStr};w=86400;comment="${quota.tier} daily quota"`;
 
   const headers: Record<string, string> = {
+    'RateLimit': `limit=${limitStr}, remaining=${remainingStr}, reset=${resetStr}`,
     'RateLimit-Limit': limitStr,
     'RateLimit-Remaining': remainingStr,
     'RateLimit-Reset': resetStr,

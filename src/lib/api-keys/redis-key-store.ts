@@ -81,6 +81,24 @@ export const COMMIT_QUOTA_LUA_SCRIPT = `
 return redis.call('DEL', KEYS[1])
 `;
 
+export const SETTLE_QUOTA_LUA_SCRIPT = `
+-- KEYS[1]: usage key (e.g. easyconvert:usage:{userId}:YYYY-MM-DD)
+-- KEYS[2]: reservation key (e.g. easyconvert:res:{userId}:reservationId)
+-- ARGV[1]: actual units consumed
+local reservedUnits = tonumber(redis.call('GET', KEYS[2]) or '0')
+local actualUnits = tonumber(ARGV[1] or '0')
+local diff = actualUnits - reservedUnits
+
+if diff < 0 then
+  redis.call('DECRBY', KEYS[1], math.abs(diff))
+elseif diff > 0 then
+  redis.call('INCRBY', KEYS[1], diff)
+end
+
+redis.call('DEL', KEYS[2])
+return {1, diff}
+`;
+
 export const RENEW_RESERVATION_LUA_SCRIPT = `
 -- KEYS[1]: reservation key (e.g. easyconvert:res:{userId}:reservationId)
 -- ARGV[1]: new TTL in seconds
@@ -593,6 +611,72 @@ export class RedisKeyStore extends KeyStore {
     res.status = 'committed';
     this.reservations.delete(reservationId);
     return true;
+  }
+
+  /**
+   * 2-Phase Quota Transaction: Phase 2c (Settle with actual units)
+   * Adjusts the reserved quota to the actual consumed units (refunding surplus or charging deficit)
+   * and finalizes the reservation.
+   */
+  public async settleQuota(
+    reservationId: string,
+    actualUnits: number
+  ): Promise<{ success: boolean; difference: number }> {
+    if (!reservationId || typeof reservationId !== 'string') {
+      return { success: false, difference: 0 };
+    }
+    const safeUnits = Math.max(0, Number.isFinite(actualUnits) ? Math.floor(actualUnits) : 0);
+
+    if (this.redisClient) {
+      try {
+        const res = this.reservations.get(reservationId);
+        let userId = res?.userId;
+        let dateKey = res?.dateKey ? res.dateKey.split(':')[1] : undefined;
+        if (!userId || !dateKey) {
+          const parts = reservationId.split('_');
+          if (parts.length >= 5 && parts[0] === 'res') {
+            userId = decodeURIComponent(parts[1]);
+            dateKey = parts[2];
+          }
+        }
+        const finalUserId = userId || 'unknown';
+        const finalDateKey = dateKey || getUtcDateKey();
+        const usageKey = `${this.keyPrefix}usage:{${finalUserId}}:${finalDateKey}`;
+        const resKey = `${this.keyPrefix}res:{${finalUserId}}:${reservationId}`;
+
+        const result = (await this.redisClient.eval(
+          SETTLE_QUOTA_LUA_SCRIPT,
+          2,
+          usageKey,
+          resKey,
+          safeUnits
+        )) as [number, number];
+
+        this.reservations.delete(reservationId);
+        return {
+          success: Number(result[0]) === 1,
+          difference: Number(result[1]),
+        };
+      } catch {
+        // Fallback
+      }
+    }
+
+    const res = this.reservations.get(reservationId);
+    if (!res || res.status !== 'reserved') {
+      return { success: false, difference: 0 };
+    }
+
+    const diff = safeUnits - res.units;
+    const dateKey = res.dateKey || `${res.userId}:${getUtcDateKey()}`;
+    const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
+    this.dailyUsage.set(dateKey, Math.max(0, currentUsed + diff));
+
+    res.status = 'committed';
+    this.reservations.delete(reservationId);
+    this.persist();
+
+    return { success: true, difference: diff };
   }
 
   /**
