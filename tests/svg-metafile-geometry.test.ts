@@ -353,6 +353,14 @@ describe('SVG document model for metafile encoders', () => {
       expect(penWidths('<g transform="scale(2)"><line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="3"/></g>')).toEqual([6, 6]);
     });
 
+    it('writes CGM line widths in VDC units (LINEWIDTHMODE ABS)', () => {
+      const doc = parseClearTextCgm(
+        encodeCgm(svgDoc('<line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="1"/>', 'width="100" height="100" viewBox="0 0 10 10"')).toString('utf-8')
+      );
+      expect(doc.elements.find((e) => e.name === 'LINEWIDTHMODE')?.params).toBe('ABS');
+      expect(doc.body.filter((e) => e.name === 'LINEWIDTH').map((e) => Number(e.params))).toEqual([10]);
+    });
+
     it('treats stroke-width 0 as no stroke', () => {
       expect(() => encodeEmf(svgDoc('<line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="0"/>'))).toThrow(
         CadGeometryUnavailableError

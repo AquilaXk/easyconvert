@@ -603,6 +603,8 @@ export function encodeCgm(svgBuffer: Buffer, baseName: string = 'drawing'): Buff
     `MFELEMLIST ${quoteCgmString('DRAWINGSET')};`,
     `BEGPIC ${quotedName};`,
     'COLRMODE DIRECT;',
+    // Line widths are absolute VDC lengths, matching device-scaled SVG stroke widths
+    'LINEWIDTHMODE ABS;',
     `VDCEXT (0,${height}) (${width},0);`,
     'BEGPICBODY;',
     'INTSTYLE SOLID;',
