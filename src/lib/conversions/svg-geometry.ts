@@ -24,6 +24,8 @@ export interface SvgGeometryElement {
   strokeWidth: number;
   strokeLinecap: SvgLinecap;
   strokeLinejoin: SvgLinejoin;
+  /** SVG stroke-miterlimit (ratio of miter length to stroke width, at least 1). */
+  strokeMiterlimit: number;
 }
 
 export interface ParsedSvgVectorDocument {
@@ -640,6 +642,7 @@ interface StyleContext {
   visibility: string;
   strokeLinecap: string;
   strokeLinejoin: string;
+  strokeMiterlimit: string;
   ctm: AffineMatrix;
 }
 
@@ -652,6 +655,7 @@ const INITIAL_STYLE: StyleContext = {
   visibility: 'visible',
   strokeLinecap: 'butt',
   strokeLinejoin: 'miter',
+  strokeMiterlimit: '4',
   ctm: IDENTITY_MATRIX,
 };
 
@@ -665,6 +669,7 @@ const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm'>> = {
   visibility: 'visibility',
   'stroke-linecap': 'strokeLinecap',
   'stroke-linejoin': 'strokeLinejoin',
+  'stroke-miterlimit': 'strokeMiterlimit',
 };
 
 /**
@@ -680,12 +685,11 @@ const NEUTRAL_ONLY_PROPERTIES: Record<string, (value: string) => boolean> = {
   'paint-order': (v) => v === 'normal' || v === 'fill' || v === 'fill stroke' || v === 'fill stroke markers',
   'vector-effect': (v) => v === 'none',
   'mix-blend-mode': (v) => v === 'normal',
-  'stroke-miterlimit': (v) => Number(v) === SVG_DEFAULT_MITER_LIMIT,
+  'stroke-miterlimit': (v) => Number(v) >= 1,
   'stroke-linecap': (v) => SVG_LINECAPS.has(v),
   'stroke-linejoin': (v) => SVG_LINEJOINS.has(v),
 };
 
-const SVG_DEFAULT_MITER_LIMIT = 4;
 const SVG_LINECAPS = new Set(['butt', 'round', 'square']);
 const SVG_LINEJOINS = new Set(['miter', 'round', 'bevel']);
 
@@ -1316,6 +1320,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
     strokeLinecap: ctx.strokeLinecap.trim() as SvgLinecap,
     strokeLinejoin: ctx.strokeLinejoin.trim() as SvgLinejoin,
+    strokeMiterlimit: Number(ctx.strokeMiterlimit.trim()),
   });
 }
 

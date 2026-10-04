@@ -12,6 +12,7 @@ export interface PlanPen {
   width: number;
   cap: SvgLinecap;
   join: SvgLinejoin;
+  miterLimit: number;
 }
 
 /** One filled shape: every ring belongs to the same area, so holes stay holes. */
@@ -66,7 +67,7 @@ function toRing(points: PlanPoint[]): PlanPoint[] {
 export function planElement(el: SvgGeometryElement): DrawOp[] {
   const subpaths = el.subpaths.map(dedupeConsecutive).filter((s) => s.length >= MIN_LINE_POINTS);
   const ops: DrawOp[] = [];
-  const pen: PlanPen | null = el.stroke ? { color: el.stroke, width: el.strokeWidth, cap: el.strokeLinecap, join: el.strokeLinejoin } : null;
+  const pen: PlanPen | null = el.stroke ? { color: el.stroke, width: el.strokeWidth, cap: el.strokeLinecap, join: el.strokeLinejoin, miterLimit: el.strokeMiterlimit } : null;
 
   const rings = el.fillable && el.fill ? subpaths.map(toRing).filter((r) => r.length >= MIN_RING_POINTS) : [];
   const allClosed = subpaths.length > 0 && subpaths.every(isExplicitlyClosed);
@@ -79,6 +80,49 @@ export function planElement(el: SvgGeometryElement): DrawOp[] {
     ops.push({ kind: 'stroke', lines: subpaths, pen });
   }
   return ops;
+}
+
+// ============================================================================
+// Miter corners
+// ============================================================================
+
+const COLLINEAR_EPSILON = 1e-12;
+
+/**
+ * Miter ratios (miter length / stroke width = 1 / sin(theta / 2), theta the
+ * interior corner angle) at every vertex of a stroked polyline. Closed lines
+ * (first point repeated last) include the corner at the closing vertex.
+ */
+export function miterRatios(points: PlanPoint[], closed: boolean): number[] {
+  const pts = closed && points.length > 1 && samePoint(points[0], points[points.length - 1]) ? points.slice(0, -1) : points;
+  const n = pts.length;
+  const ratios: number[] = [];
+  const first = closed ? 0 : 1;
+  const last = closed ? n : n - 1;
+  for (let i = first; i < last; i++) {
+    const prev = pts[(i - 1 + n) % n];
+    const cur = pts[i];
+    const next = pts[(i + 1) % n];
+    const ux = cur.x - prev.x;
+    const uy = cur.y - prev.y;
+    const vx = next.x - cur.x;
+    const vy = next.y - cur.y;
+    const lu = Math.hypot(ux, uy);
+    const lv = Math.hypot(vx, vy);
+    if (lu === 0 || lv === 0) continue;
+    const cosTurn = (ux * vx + uy * vy) / (lu * lv);
+    const half = (1 + cosTurn) / 2;
+    ratios.push(half <= COLLINEAR_EPSILON ? Infinity : 1 / Math.sqrt(half));
+  }
+  return ratios;
+}
+
+/** Every stroked polyline of a draw operation with whether it is closed. */
+export function strokedLines(op: DrawOp): { points: PlanPoint[]; closed: boolean }[] {
+  if (op.kind === 'stroke') {
+    return op.lines.map((points) => ({ points, closed: points.length > 2 && samePoint(points[0], points[points.length - 1]) }));
+  }
+  return op.pen ? op.rings.map((points) => ({ points: [...points, points[0]], closed: true })) : [];
 }
 
 // ============================================================================

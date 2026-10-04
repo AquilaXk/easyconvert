@@ -676,7 +676,7 @@ describe('SVG document model for metafile encoders', () => {
       ['paint-order', R('paint-order="stroke"')],
       ['vector-effect', R('vector-effect="non-scaling-stroke"')],
       ['mix-blend-mode', `<style>rect { mix-blend-mode: multiply }</style>${R('')}`],
-      ['stroke-miterlimit', R('stroke="#000" stroke-miterlimit="10"')],
+      ['stroke-miterlimit', R('stroke="#000" stroke-miterlimit="0.5"')],
     ];
     for (const [property, body] of rejected) {
       it(`rejects ${property} it cannot draw with a typed error naming it`, () => {
@@ -829,6 +829,51 @@ describe('SVG document model for metafile encoders', () => {
       for (const d of ['M0 0 L10 10 X 5 5 Z', 'M0 0 L10$10 L0 10 Z', 'M0 0 L10 10 L0 10 Z;', 'M0 0 L Infinity 10 L0 10 Z']) {
         expect(() => encodeEmf(svgDoc(`<path d="${d}" fill="#000"/>`)), d).toThrow(CadGeometryUnavailableError);
       }
+    });
+  });
+
+  describe('pens and miter limits', () => {
+    // A corner of a 30 degree spike has a miter ratio 1/sin(15deg) = 3.86; 20 degrees gives 5.76; 8 degrees 14.3.
+    const spike = (deg: number, extra = '') => {
+      const half = (deg / 2) * (Math.PI / 180);
+      const tip = { x: 50, y: 10 };
+      const len = 60;
+      const a = { x: tip.x - len * Math.sin(half), y: tip.y + len * Math.cos(half) };
+      const b = { x: tip.x + len * Math.sin(half), y: tip.y + len * Math.cos(half) };
+      return `<polyline points="${a.x},${a.y} ${tip.x},${tip.y} ${b.x},${b.y}" fill="none" stroke="#000" stroke-width="2" ${extra}/>`;
+    };
+
+    it('creates EMF pens with EMR_EXTCREATEPEN and sets the SVG miter limit', () => {
+      for (const [extra, limit] of [['', 4], ['stroke-miterlimit="7"', 7]] as const) {
+        const buf = encodeEmf(svgDoc(spike(90, extra)));
+        const types: number[] = [];
+        for (let off = buf.readUInt32LE(4); off < buf.length; off += buf.readUInt32LE(off + 4)) types.push(buf.readUInt32LE(off));
+        expect(types).not.toContain(38); // no EMR_CREATEPEN
+        expect(types).toContain(95);
+        expect(types.indexOf(58)).toBeLessThan(types.indexOf(87)); // limit set before drawing
+        const stroked = emfShapes(spike(90, extra)).filter((s) => s.pen !== null);
+        expect(stroked.map((s) => s.miterLimit)).toEqual([limit]);
+        const PS_GEOMETRIC = 0x00010000;
+        expect(stroked[0].pen!.style & PS_GEOMETRIC).toBe(PS_GEOMETRIC);
+        expect(stroked[0].pen!.width).toBe(2);
+      }
+    });
+
+    it('rejects a fractional miter limit EMF cannot store', () => {
+      expect(() => encodeEmf(svgDoc(spike(90, 'stroke-miterlimit="4.5"')))).toThrow(UnsupportedOptionError);
+    });
+
+    it('rejects WMF miter corners where SVG and the fixed GDI miter limit of 10 disagree', () => {
+      expect(() => encodeWmf(svgDoc(spike(20)))).toThrow(/miter/); // ratio 5.76: SVG bevels, GDI miters
+      expect(() => encodeWmf(svgDoc(spike(8, 'stroke-miterlimit="20"')))).toThrow(/miter/); // 14.3: SVG miters, GDI bevels
+      expect(wmfShapes(spike(30)).filter((s) => s.pen !== null)).toHaveLength(1); // 3.86 within both limits
+      expect(wmfShapes(spike(8)).filter((s) => s.pen !== null)).toHaveLength(1); // 14.3 beyond both: both bevel
+      expect(wmfShapes(spike(20, 'stroke-linejoin="round"')).filter((s) => s.pen !== null)).toHaveLength(1);
+    });
+
+    it('rejects CGM miter corners beyond the SVG miter limit', () => {
+      expect(() => encodeCgm(svgDoc(spike(20)))).toThrow(/miter/);
+      expect(() => encodeCgm(svgDoc(spike(30)))).not.toThrow();
     });
   });
 });

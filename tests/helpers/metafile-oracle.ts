@@ -124,6 +124,14 @@ export function parseEmfBinary(buffer: Buffer): {
       }
       penColors.push(buffer.readUInt32LE(offset + 24));
     }
+    if (recType === 95) {
+      // EMR_EXTCREATEPEN (MS-EMF 2.3.7.9): ihPen, offBmi, cbBmi, offBits, cbBits, LogPenEx
+      hasCreatePen = true;
+      maxObjectIndex = Math.max(maxObjectIndex, buffer.readUInt32LE(offset + 8));
+      const numStyleEntries = buffer.readUInt32LE(offset + 48);
+      expect(recSize).toBe(52 + 4 * numStyleEntries);
+      penColors.push(buffer.readUInt32LE(offset + 40));
+    }
     if (recType === 39) {
       // EMR_CREATEBRUSHINDIRECT
       hasCreateBrush = true;
@@ -489,6 +497,8 @@ export interface PlaybackShape {
   brush: number | null;
   /** 1 = ALTERNATE (even-odd), 2 = WINDING (nonzero). */
   fillMode: number;
+  /** Miter limit in effect (EMR_SETMITERLIMIT), or null when never set. */
+  miterLimit: number | null;
 }
 
 interface GdiPen {
@@ -554,6 +564,7 @@ export function playbackEmf(buffer: Buffer): PlaybackShape[] {
   let pen: GdiPen = { type: 'pen', color: 0, width: 1, style: 0 };
   let brush: GdiBrush = { type: 'brush', color: 0xffffff };
   let fillMode = 1;
+  let miterLimit: number | null = null;
   const m: MappingState = {
     mapMode: MM_TEXT,
     windowOrg: { x: 0, y: 0 },
@@ -570,6 +581,7 @@ export function playbackEmf(buffer: Buffer): PlaybackShape[] {
       pen: pen.color === null ? null : { color: pen.color, width: pen.width * scale, style: pen.style },
       brush: kind === 'polygon' ? brush.color : null,
       fillMode,
+      miterLimit,
     });
   };
   const readPoints16 = (at: number, count: number): PlaybackPoint[] => {
@@ -624,6 +636,25 @@ export function playbackEmf(buffer: Buffer): PlaybackShape[] {
         });
         break;
       }
+      case 95: {
+        // EMR_EXTCREATEPEN: no DIB pattern; LogPenEx = PenStyle, Width, BrushStyle, Color, BrushHatch, NumStyleEntries
+        expect([12, 16, 20, 24].map((o) => buffer.readUInt32LE(offset + o))).toEqual([0, 0, 0, 0]);
+        const style = buffer.readUInt32LE(offset + 28);
+        const BS_SOLID = 0;
+        expect(buffer.readUInt32LE(offset + 36)).toBe(BS_SOLID);
+        const PS_NULL = 5;
+        objects.set(buffer.readUInt32LE(offset + 8), {
+          type: 'pen',
+          color: (style & 0xf) === PS_NULL ? null : colorRefToRgb(buffer.readUInt32LE(offset + 40)),
+          width: buffer.readUInt32LE(offset + 32),
+          style,
+        });
+        break;
+      }
+      case 58: // EMR_SETMITERLIMIT: MiterLimit (unsigned integer, MS-EMF 2.3.11.21)
+        expect(size).toBe(12);
+        miterLimit = buffer.readUInt32LE(offset + 8);
+        break;
       case 39: {
         // EMR_CREATEBRUSHINDIRECT: LogBrush32 = BrushStyle, Color, BrushHatch
         const style = buffer.readUInt32LE(offset + 12);
@@ -721,6 +752,7 @@ export function playbackWmf(buffer: Buffer): PlaybackShape[] {
       pen: pen.color === null ? null : { color: pen.color, width: pen.width * toPx, style: pen.style },
       brush: kind === 'polygon' ? brush.color : null,
       fillMode,
+      miterLimit: null,
     });
   };
 
