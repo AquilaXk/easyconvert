@@ -367,4 +367,62 @@ describe('SVG document model for metafile encoders', () => {
       );
     });
   });
+
+  describe('16-bit coordinate range', () => {
+    const BIG_ROOT = 'width="40000" height="20000"';
+    const BIG_RECT = '<rect x="30000" y="10000" width="5000" height="5000" fill="#ff0000" stroke="#0000ff" stroke-width="100"/>';
+    const EXPECTED = [[30000, 10000], [35000, 10000], [35000, 15000], [30000, 15000]];
+    const TOLERANCE_PX = 2;
+
+    function expectCornersNear(actual: [number, number][], expected: number[][]) {
+      expect(actual).toHaveLength(expected.length);
+      actual.forEach(([x, y], i) => {
+        expect(Math.abs(x - expected[i][0])).toBeLessThanOrEqual(TOLERANCE_PX);
+        expect(Math.abs(y - expected[i][1])).toBeLessThanOrEqual(TOLERANCE_PX);
+      });
+    }
+
+    it('scales the EMF logical space uniformly instead of clamping, keeping the frame size', () => {
+      const buf = encodeEmf(svgDoc(BIG_RECT, BIG_ROOT));
+      const header = parseEmfBinary(buf).header;
+      expect([header.bounds.right, header.bounds.bottom]).toEqual([40000, 20000]);
+      expect(header.frame.right).toBe(Math.round((40000 * 2540) / 96));
+      const filled = filledShapes(playbackEmf(buf));
+      expectCornersNear(corners(filled[0].rings[0]), EXPECTED);
+      expect(Math.abs(filled[0].pen!.width - 100)).toBeLessThanOrEqual(TOLERANCE_PX);
+    });
+
+    it('scales the WMF logical space via the placeable header units per inch', () => {
+      const buf = encodeWmf(svgDoc(BIG_RECT, BIG_ROOT));
+      const inch = buf.readUInt16LE(14);
+      expect(inch).toBeLessThan(96);
+      // Physical size is preserved: bbox / inch = 40000 px / 96 DPI
+      expect(Math.abs(buf.readInt16LE(10) / inch - 40000 / 96)).toBeLessThan(0.02);
+      const filled = filledShapes(playbackWmf(buf));
+      expectCornersNear(corners(filled[0].rings[0]), EXPECTED);
+      expect(Math.abs(filled[0].pen!.width - 100)).toBeLessThanOrEqual(TOLERANCE_PX);
+    });
+
+    it('scales CGM VDC coordinates into the 16-bit integer range', () => {
+      const doc = parseClearTextCgm(encodeCgm(svgDoc(BIG_RECT, BIG_ROOT)).toString('utf-8'));
+      const [lowerLeft, upperRight] = doc.vdcExtent;
+      expect(lowerLeft.x).toBe(0);
+      expect(upperRight.y).toBe(0);
+      expect(upperRight.x).toBeLessThanOrEqual(32767);
+      const scale = upperRight.x / 40000;
+      expect(Math.abs(lowerLeft.y - 20000 * scale)).toBeLessThanOrEqual(1);
+      const polygon = doc.body.find((e) => e.name === 'POLYGON')!;
+      const pts = parseCgmPoints(polygon.params).map((p) => [Math.round(p.x / scale), Math.round(p.y / scale)] as [number, number]);
+      expectCornersNear(corners(pts.map(([x, y]) => ({ x, y }))), EXPECTED);
+    });
+
+    it('keeps far off-canvas geometry in place rather than clamping it', () => {
+      const shapes = emfShapes('<rect x="-50000" y="10" width="10" height="10" fill="#000"/><rect x="10" y="10" width="10" height="10" fill="#000"/>');
+      expectCornersNear(corners(filledShapes(shapes)[0].rings[0]), [[-50000, 10], [-49990, 10], [-49990, 20], [-50000, 20]]);
+    });
+
+    it('rejects coordinates too large to represent with a typed error', () => {
+      expect(() => encodeWmf(svgDoc('<rect x="0" y="0" width="1e9" height="10" fill="#000"/>'))).toThrow(CadGeometryUnavailableError);
+    });
+  });
 });

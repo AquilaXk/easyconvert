@@ -54,6 +54,9 @@ const EMR_POLYPOLYGON16 = 91;
 const EMF_BS_SOLID = 0;
 const EMF_POLYFILL_ALTERNATE = 1;
 const EMF_MM_TEXT = 1;
+const EMF_MM_ANISOTROPIC = 8;
+const EMR_SETWINDOWEXTEX = 9;
+const EMR_SETVIEWPORTEXTEX = 11;
 const EMF_BK_TRANSPARENT = 1;
 const EMF_POLYFILL_WINDING = 2;
 const EMF_STOCK_NULL_BRUSH = 0x80000005;
@@ -71,15 +74,84 @@ const MM_PER_INCH = 25.4;
 const HUNDREDTHS_MM_PER_PX = (MM_PER_INCH * 100) / CSS_PX_PER_INCH;
 const INT16_MAX = 32767;
 
-function clampInt16(value: number): number {
-  return Math.max(-INT16_MAX, Math.min(INT16_MAX, Math.round(value)));
+/** Rounds to a signed 16-bit value; the logical space is pre-scaled so this never clamps. */
+function toInt16(value: number): number {
+  const v = Math.round(value);
+  if (v < -INT16_MAX || v > INT16_MAX) {
+    throw new CadGeometryUnavailableError(`Coordinate ${v} does not fit the 16-bit metafile coordinate range.`);
+  }
+  return v;
 }
 
-function createEmfStateRecords(): Buffer[] {
+/**
+ * Logical coordinate space for 16-bit metafile formats. When device
+ * coordinates exceed the int16 range, logical units are scaled uniformly by
+ * unitsPerInch / 96 so the physical picture size stays unchanged.
+ */
+interface LogicalSpace {
+  unitsPerInch: number;
+  scale: number;
+}
+
+function computeLogicalSpace(ops: DrawOp[], width: number, height: number): LogicalSpace {
+  let maxAbs = Math.max(width, height);
+  for (const op of ops) {
+    const groups = op.kind === 'fill' ? op.rings : op.lines;
+    for (const pts of groups) {
+      for (const p of pts) maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y));
+    }
+  }
+  if (maxAbs <= INT16_MAX) return { unitsPerInch: CSS_PX_PER_INCH, scale: 1 };
+  const unitsPerInch = Math.floor((CSS_PX_PER_INCH * INT16_MAX) / maxAbs);
+  if (unitsPerInch < 1) {
+    throw new CadGeometryUnavailableError(
+      `Drawing extent of ${Math.round(maxAbs)} px is too large for the 16-bit metafile coordinate range.`
+    );
+  }
+  return { unitsPerInch, scale: unitsPerInch / CSS_PX_PER_INCH };
+}
+
+function scalePoints(points: PlanPoint[], s: number): PlanPoint[] {
+  return points.map((p) => ({ x: p.x * s, y: p.y * s }));
+}
+
+/** Maps planned operations into the logical space (coordinates and pen widths). */
+function scaleOps(ops: DrawOp[], s: number): DrawOp[] {
+  if (s === 1) return ops;
+  return ops.map((op) => {
+    if (op.kind === 'stroke') {
+      return { ...op, lines: op.lines.map((l) => scalePoints(l, s)), pen: { ...op.pen, width: op.pen.width * s } };
+    }
+    return { ...op, rings: op.rings.map((r) => scalePoints(r, s)), pen: op.pen ? { ...op.pen, width: op.pen.width * s } : null };
+  });
+}
+
+function planDocument(doc: ParsedSvgVectorDocument): DrawOp[] {
+  return doc.elements.flatMap((el) => planElement(el));
+}
+
+function emfPairRecord(type: number, x: number, y: number): Buffer {
+  const rec = Buffer.alloc(16);
+  rec.writeUInt32LE(type, 0);
+  rec.writeUInt32LE(16, 4);
+  rec.writeInt32LE(x, 8);
+  rec.writeInt32LE(y, 12);
+  return rec;
+}
+
+function createEmfStateRecords(space: LogicalSpace): Buffer[] {
+  const scaled = space.scale !== 1;
   const mapModeRec = Buffer.alloc(12);
   mapModeRec.writeUInt32LE(EMR_SETMAPMODE, 0);
   mapModeRec.writeUInt32LE(12, 4);
-  mapModeRec.writeUInt32LE(EMF_MM_TEXT, 8);
+  mapModeRec.writeUInt32LE(scaled ? EMF_MM_ANISOTROPIC : EMF_MM_TEXT, 8);
+  // unitsPerInch logical units map onto 96 device pixels, isotropically
+  const mapping = scaled
+    ? [
+        emfPairRecord(EMR_SETWINDOWEXTEX, space.unitsPerInch, space.unitsPerInch),
+        emfPairRecord(EMR_SETVIEWPORTEXTEX, CSS_PX_PER_INCH, CSS_PX_PER_INCH),
+      ]
+    : [];
 
   const bkModeRec = Buffer.alloc(12);
   bkModeRec.writeUInt32LE(EMR_SETBKMODE, 0);
@@ -91,7 +163,7 @@ function createEmfStateRecords(): Buffer[] {
   fillModeRec.writeUInt32LE(12, 4);
   fillModeRec.writeUInt32LE(EMF_POLYFILL_WINDING, 8);
 
-  return [mapModeRec, bkModeRec, fillModeRec];
+  return [mapModeRec, ...mapping, bkModeRec, fillModeRec];
 }
 
 function computeBounds(pts: { x: number; y: number }[]): { minX: number; minY: number; maxX: number; maxY: number } {
@@ -153,41 +225,42 @@ function emitEmfBrush(fill: RgbColor, out: Buffer[]): void {
   out.push(brushRec, emfSelect(EMF_BRUSH_HANDLE));
 }
 
-function writeEmfBounds(rec: Buffer, points: PlanPoint[]): void {
+/** Record Bounds are in device units; logical points are divided by the logical scale. */
+function writeEmfBounds(rec: Buffer, points: PlanPoint[], scale: number): void {
   const bounds = computeBounds(points);
-  rec.writeInt32LE(Math.round(bounds.minX), 8);
-  rec.writeInt32LE(Math.round(bounds.minY), 12);
-  rec.writeInt32LE(Math.round(bounds.maxX), 16);
-  rec.writeInt32LE(Math.round(bounds.maxY), 20);
+  rec.writeInt32LE(Math.round(bounds.minX / scale), 8);
+  rec.writeInt32LE(Math.round(bounds.minY / scale), 12);
+  rec.writeInt32LE(Math.round(bounds.maxX / scale), 16);
+  rec.writeInt32LE(Math.round(bounds.maxY / scale), 20);
 }
 
 function writePoints16(rec: Buffer, at: number, points: PlanPoint[]): void {
   points.forEach((pt, i) => {
-    rec.writeInt16LE(clampInt16(pt.x), at + i * 4);
-    rec.writeInt16LE(clampInt16(pt.y), at + i * 4 + 2);
+    rec.writeInt16LE(toInt16(pt.x), at + i * 4);
+    rec.writeInt16LE(toInt16(pt.y), at + i * 4 + 2);
   });
 }
 
 /** EMR_POLYGON16 / EMR_POLYLINE16 (MS-EMF 2.3.5.35 / 2.3.5.37). */
-function emfPoly16(type: number, points: PlanPoint[]): Buffer {
+function emfPoly16(type: number, points: PlanPoint[], scale: number): Buffer {
   const recSize = 28 + 4 * points.length;
   const rec = Buffer.alloc(recSize);
   rec.writeUInt32LE(type, 0);
   rec.writeUInt32LE(recSize, 4);
-  writeEmfBounds(rec, points);
+  writeEmfBounds(rec, points, scale);
   rec.writeUInt32LE(points.length, 24);
   writePoints16(rec, 28, points);
   return rec;
 }
 
 /** EMR_POLYPOLYGON16 (MS-EMF 2.3.5.31): one fill area made of several rings. */
-function emfPolyPolygon16(rings: PlanPoint[][]): Buffer {
+function emfPolyPolygon16(rings: PlanPoint[][], scale: number): Buffer {
   const all = rings.flat();
   const recSize = 32 + 4 * rings.length + 4 * all.length;
   const rec = Buffer.alloc(recSize);
   rec.writeUInt32LE(EMR_POLYPOLYGON16, 0);
   rec.writeUInt32LE(recSize, 4);
-  writeEmfBounds(rec, all);
+  writeEmfBounds(rec, all, scale);
   rec.writeUInt32LE(rings.length, 24);
   rec.writeUInt32LE(all.length, 28);
   rings.forEach((r, i) => rec.writeUInt32LE(r.length, 32 + i * 4));
@@ -213,13 +286,14 @@ function emfPolyFillMode(mode: number): Buffer {
 
 interface EmfState {
   fillMode: number;
+  scale: number;
 }
 
 function encodeEmfOp(op: DrawOp, state: EmfState, out: Buffer[]): void {
   if (op.kind === 'stroke') {
     emitEmfPen(op.pen, out);
     out.push(emfSelect(EMF_STOCK_NULL_BRUSH));
-    for (const line of op.lines) out.push(emfPoly16(EMR_POLYLINE16, line));
+    for (const line of op.lines) out.push(emfPoly16(EMR_POLYLINE16, line, state.scale));
     out.push(deleteEmfObject(EMF_PEN_HANDLE));
     return;
   }
@@ -230,7 +304,7 @@ function encodeEmfOp(op: DrawOp, state: EmfState, out: Buffer[]): void {
   }
   const createdPen = emitEmfPen(op.pen, out);
   emitEmfBrush(op.fill, out);
-  out.push(op.rings.length === 1 ? emfPoly16(EMR_POLYGON16, op.rings[0]) : emfPolyPolygon16(op.rings));
+  out.push(op.rings.length === 1 ? emfPoly16(EMR_POLYGON16, op.rings[0], state.scale) : emfPolyPolygon16(op.rings, state.scale));
   if (createdPen) out.push(deleteEmfObject(EMF_PEN_HANDLE));
   out.push(deleteEmfObject(EMF_BRUSH_HANDLE));
 }
@@ -274,12 +348,12 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
   const width = Math.max(1, Math.round(doc.width));
   const height = Math.max(1, Math.round(doc.height));
 
-  const records: Buffer[] = [...createEmfStateRecords()];
+  const deviceOps = planDocument(doc);
+  const space = computeLogicalSpace(deviceOps, width, height);
+  const records: Buffer[] = [...createEmfStateRecords(space)];
 
-  const state: EmfState = { fillMode: EMF_POLYFILL_WINDING };
-  for (const el of doc.elements) {
-    for (const op of planElement(el)) encodeEmfOp(op, state, records);
-  }
+  const state: EmfState = { fillMode: EMF_POLYFILL_WINDING, scale: space.scale };
+  for (const op of scaleOps(deviceOps, space.scale)) encodeEmfOp(op, state, records);
 
   // EMR_EOF
   const eofRec = Buffer.alloc(EMF_EOF_SIZE);
@@ -439,15 +513,15 @@ function encodeWmfOp(op: DrawOp, state: WmfState, out: Buffer[]): void {
   out.push(deleteWmfObject(WMF_PEN_SLOT), deleteWmfObject(WMF_BRUSH_SLOT));
 }
 
-function buildAldusHeader(width: number, height: number): Buffer {
+function buildAldusHeader(width: number, height: number, unitsPerInch: number): Buffer {
   const aldusHeader = Buffer.alloc(22);
   aldusHeader.writeUInt32LE(WMF_PLACEABLE_KEY, 0);
   aldusHeader.writeUInt16LE(0, 4); // Handle
   aldusHeader.writeInt16LE(0, 6); // Left
   aldusHeader.writeInt16LE(0, 8); // Top
-  aldusHeader.writeInt16LE(clampInt16(width), 10); // Right
-  aldusHeader.writeInt16LE(clampInt16(height), 12); // Bottom
-  aldusHeader.writeUInt16LE(CSS_PX_PER_INCH, 14); // Inch: logical units per inch
+  aldusHeader.writeInt16LE(toInt16(width), 10); // Right
+  aldusHeader.writeInt16LE(toInt16(height), 12); // Bottom
+  aldusHeader.writeUInt16LE(unitsPerInch, 14); // Inch: logical units per inch
   aldusHeader.writeUInt32LE(0, 16); // Reserved
 
   let checksum = 0;
@@ -466,6 +540,12 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   const width = Math.max(1, Math.round(doc.width));
   const height = Math.max(1, Math.round(doc.height));
 
+  const deviceOps = planDocument(doc);
+  const space = computeLogicalSpace(deviceOps, width, height);
+  const logicalOps = scaleOps(deviceOps, space.scale);
+  const logicalWidth = Math.round(width * space.scale);
+  const logicalHeight = Math.round(height * space.scale);
+
   const records: Buffer[] = [];
 
   // Window Org & Ext
@@ -478,16 +558,14 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   const setExt = Buffer.alloc(10);
   setExt.writeUInt32LE(5, 0);
   setExt.writeUInt16LE(META_SETWINDOWEXT, 4);
-  setExt.writeInt16LE(clampInt16(height), 6);
-  setExt.writeInt16LE(clampInt16(width), 8);
+  setExt.writeInt16LE(toInt16(logicalHeight), 6);
+  setExt.writeInt16LE(toInt16(logicalWidth), 8);
 
   records.push(setOrg, setExt);
 
   // GDI starts with ALTERNATE; META_SETPOLYFILLMODE is written before the first shape that needs WINDING.
   const state: WmfState = { fillMode: WMF_POLYFILL_ALTERNATE };
-  for (const el of doc.elements) {
-    for (const op of planElement(el)) encodeWmfOp(op, state, records);
-  }
+  for (const op of logicalOps) encodeWmfOp(op, state, records);
 
   const eofRec = Buffer.alloc(6);
   eofRec.writeUInt32LE(3, 0);
@@ -512,7 +590,7 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   stdHeader.writeUInt32LE(maxRecordWords, 12);
   stdHeader.writeUInt16LE(0, 16);
 
-  const aldusHeader = buildAldusHeader(width, height);
+  const aldusHeader = buildAldusHeader(logicalWidth, logicalHeight, space.unitsPerInch);
   return Buffer.concat([aldusHeader, stdHeader, ...records]);
 }
 
@@ -530,7 +608,7 @@ function quoteCgmString(str: string): string {
 }
 
 function formatCgmPoints(points: { x: number; y: number }[]): string {
-  return points.map((p) => `(${Math.round(p.x)},${Math.round(p.y)})`).join(' ');
+  return points.map((p) => `(${toInt16(p.x)},${toInt16(p.y)})`).join(' ');
 }
 
 /** Direct colour specifier: three colour components separated by spaces. */
@@ -548,7 +626,7 @@ function cgmClosingPolyline(ring: PlanPoint[]): string {
  */
 function formatCgmPolygonSet(rings: PlanPoint[][]): string {
   const parts = rings.flatMap((ring) =>
-    ring.map((p, i) => `(${Math.round(p.x)},${Math.round(p.y)}) ${i === ring.length - 1 ? 'CLOSEVIS' : 'VIS'}`)
+    ring.map((p, i) => `(${toInt16(p.x)},${toInt16(p.y)}) ${i === ring.length - 1 ? 'CLOSEVIS' : 'VIS'}`)
   );
   return `POLYGONSET ${parts.join(' ')};`;
 }
@@ -594,6 +672,12 @@ export function encodeCgm(svgBuffer: Buffer, baseName: string = 'drawing'): Buff
   const height = Math.max(1, Math.round(doc.height));
   const quotedName = quoteCgmString(baseName || 'drawing');
 
+  // VDC integers are 16-bit by default, so large drawings use a scaled VDC space.
+  const deviceOps = planDocument(doc);
+  const space = computeLogicalSpace(deviceOps, width, height);
+  const vdcWidth = Math.round(width * space.scale);
+  const vdcHeight = Math.round(height * space.scale);
+
   // VDC space has its y axis pointing up; listing the bottom-left corner as
   // (0,height) and the top-right as (width,0) keeps SVG coordinates unmirrored.
   const lines: string[] = [
@@ -605,14 +689,12 @@ export function encodeCgm(svgBuffer: Buffer, baseName: string = 'drawing'): Buff
     'COLRMODE DIRECT;',
     // Line widths are absolute VDC lengths, matching device-scaled SVG stroke widths
     'LINEWIDTHMODE ABS;',
-    `VDCEXT (0,${height}) (${width},0);`,
+    `VDCEXT (0,${vdcHeight}) (${vdcWidth},0);`,
     'BEGPICBODY;',
     'INTSTYLE SOLID;',
   ];
 
-  for (const el of doc.elements) {
-    for (const op of planElement(el)) formatCgmOp(op, lines);
-  }
+  for (const op of scaleOps(deviceOps, space.scale)) formatCgmOp(op, lines);
 
   lines.push('ENDPIC;', 'ENDMF;', '');
   return Buffer.from(lines.join('\n'), 'utf-8');
