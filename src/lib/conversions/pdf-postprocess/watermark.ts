@@ -3,7 +3,6 @@ import {
   rgb,
   degrees,
   StandardFonts,
-  PDFName,
   type PDFPage,
   type PDFFont,
   type PDFImage,
@@ -115,6 +114,137 @@ function reorderContentStreamUnder(page: PDFPage): void {
   }
 }
 
+interface RenderImageWatermarkParams {
+  page: PDFPage;
+  image: PDFImage;
+  position: PdfWatermarkPosition;
+  scale: number;
+  opacity: number;
+  rotationDegrees: number;
+}
+
+function renderImageWatermarkOnPage({
+  page,
+  image,
+  position,
+  scale,
+  opacity,
+  rotationDegrees,
+}: RenderImageWatermarkParams): void {
+  const { width: pageWidth, height: pageHeight } = page.getSize();
+  const imgWidth = image.width * scale;
+  const imgHeight = image.height * scale;
+
+  if (position === 'tile') {
+    const stepX = Math.max(imgWidth + 60, 150);
+    const stepY = Math.max(imgHeight + 60, 150);
+    for (let x = 30; x < pageWidth; x += stepX) {
+      for (let y = 30; y < pageHeight; y += stepY) {
+        page.drawImage(image, {
+          x,
+          y,
+          width: imgWidth,
+          height: imgHeight,
+          opacity,
+          rotate: degrees(rotationDegrees),
+        });
+      }
+    }
+    return;
+  }
+
+  const { x, y } = calculateWatermarkCoordinates(position, pageWidth, pageHeight, imgWidth, imgHeight);
+  page.drawImage(image, {
+    x,
+    y,
+    width: imgWidth,
+    height: imgHeight,
+    opacity,
+    rotate: degrees(rotationDegrees),
+  });
+}
+
+interface RenderTextWatermarkParams {
+  page: PDFPage;
+  text: string;
+  font: PDFFont;
+  fontSize: number;
+  textColor: ReturnType<typeof rgb>;
+  position: PdfWatermarkPosition;
+  opacity: number;
+  rotationDegrees: number;
+}
+
+function calculateRotatedTextCoordinates(
+  position: PdfWatermarkPosition,
+  pageWidth: number,
+  pageHeight: number,
+  textWidth: number,
+  textHeight: number,
+  rotationDegrees: number
+): { x: number; y: number } {
+  let { x, y } = calculateWatermarkCoordinates(position, pageWidth, pageHeight, textWidth, textHeight);
+  if (rotationDegrees !== 0 && position === 'center') {
+    const rad = (rotationDegrees * Math.PI) / 180;
+    x = (pageWidth - (textWidth * Math.cos(rad) - textHeight * Math.sin(rad))) / 2;
+    y = (pageHeight - (textWidth * Math.sin(rad) + textHeight * Math.cos(rad))) / 2;
+  }
+  return { x, y };
+}
+
+function renderTextWatermarkOnPage({
+  page,
+  text,
+  font,
+  fontSize,
+  textColor,
+  position,
+  opacity,
+  rotationDegrees,
+}: RenderTextWatermarkParams): void {
+  const { width: pageWidth, height: pageHeight } = page.getSize();
+  const textWidth = font.widthOfTextAtSize(text, fontSize);
+  const textHeight = font.heightAtSize(fontSize);
+
+  if (position === 'tile') {
+    const stepX = Math.max(textWidth + 80, 200);
+    const stepY = Math.max(textHeight + 100, 200);
+    for (let x = 40; x < pageWidth; x += stepX) {
+      for (let y = 40; y < pageHeight; y += stepY) {
+        page.drawText(text, {
+          x,
+          y,
+          size: fontSize,
+          font,
+          color: textColor,
+          opacity,
+          rotate: degrees(rotationDegrees),
+        });
+      }
+    }
+    return;
+  }
+
+  const { x, y } = calculateRotatedTextCoordinates(
+    position,
+    pageWidth,
+    pageHeight,
+    textWidth,
+    textHeight,
+    rotationDegrees
+  );
+
+  page.drawText(text, {
+    x,
+    y,
+    size: fontSize,
+    font,
+    color: textColor,
+    opacity,
+    rotate: degrees(rotationDegrees),
+  });
+}
+
 /**
  * Apply text or image watermarking to a PDF document with configurable positioning,
  * rotation, opacity, page range selection, and over/under layering.
@@ -170,6 +300,7 @@ export async function applyPdfWatermark(
   const watermarkText = options.text || (isImageWatermark ? '' : 'CONFIDENTIAL');
   const textColor = parseRgbColor(options.fontColor);
   const fontSize = options.fontSize ?? 48;
+  const scale = options.scale ?? 1.0;
 
   const pages = doc.getPages();
 
@@ -180,83 +311,27 @@ export async function applyPdfWatermark(
     }
 
     const page = pages[pageIdx];
-    const { width: pageWidth, height: pageHeight } = page.getSize();
-
-    if (layer === 'under') {
-      (page as any).getContentStream(false);
-    }
 
     if (isImageWatermark && embeddedImage) {
-      const scale = options.scale ?? 1.0;
-      const imgWidth = embeddedImage.width * scale;
-      const imgHeight = embeddedImage.height * scale;
-
-      if (position === 'tile') {
-        const stepX = Math.max(imgWidth + 60, 150);
-        const stepY = Math.max(imgHeight + 60, 150);
-        for (let x = 30; x < pageWidth; x += stepX) {
-          for (let y = 30; y < pageHeight; y += stepY) {
-            page.drawImage(embeddedImage, {
-              x,
-              y,
-              width: imgWidth,
-              height: imgHeight,
-              opacity,
-              rotate: degrees(rotationDegrees),
-            });
-          }
-        }
-      } else {
-        const { x, y } = calculateWatermarkCoordinates(position, pageWidth, pageHeight, imgWidth, imgHeight);
-        page.drawImage(embeddedImage, {
-          x,
-          y,
-          width: imgWidth,
-          height: imgHeight,
-          opacity,
-          rotate: degrees(rotationDegrees),
-        });
-      }
+      renderImageWatermarkOnPage({
+        page,
+        image: embeddedImage,
+        position,
+        scale,
+        opacity,
+        rotationDegrees,
+      });
     } else if (embeddedFont && watermarkText) {
-      const textWidth = embeddedFont.widthOfTextAtSize(watermarkText, fontSize);
-      const textHeight = embeddedFont.heightAtSize(fontSize);
-
-      if (position === 'tile') {
-        const stepX = Math.max(textWidth + 80, 200);
-        const stepY = Math.max(textHeight + 100, 200);
-        for (let x = 40; x < pageWidth; x += stepX) {
-          for (let y = 40; y < pageHeight; y += stepY) {
-            page.drawText(watermarkText, {
-              x,
-              y,
-              size: fontSize,
-              font: embeddedFont,
-              color: textColor,
-              opacity,
-              rotate: degrees(rotationDegrees),
-            });
-          }
-        }
-      } else {
-        // Approximate center offset when rotated
-        let { x, y } = calculateWatermarkCoordinates(position, pageWidth, pageHeight, textWidth, textHeight);
-        if (rotationDegrees !== 0 && position === 'center') {
-          // Adjust center for rotation around the text origin
-          const rad = (rotationDegrees * Math.PI) / 180;
-          x = (pageWidth - (textWidth * Math.cos(rad) - textHeight * Math.sin(rad))) / 2;
-          y = (pageHeight - (textWidth * Math.sin(rad) + textHeight * Math.cos(rad))) / 2;
-        }
-
-        page.drawText(watermarkText, {
-          x,
-          y,
-          size: fontSize,
-          font: embeddedFont,
-          color: textColor,
-          opacity,
-          rotate: degrees(rotationDegrees),
-        });
-      }
+      renderTextWatermarkOnPage({
+        page,
+        text: watermarkText,
+        font: embeddedFont,
+        fontSize,
+        textColor,
+        position,
+        opacity,
+        rotationDegrees,
+      });
     }
 
     if (layer === 'under') {

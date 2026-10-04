@@ -181,19 +181,22 @@ export async function processGraphNodeJob(
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
-        for (const inputKey of inputArtifacts) {
-          attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
-          if (!stored) {
-            throw new Error(`Input artifact "${inputKey}" not found in storage`);
-          }
-          const watermarkOpts = (node.options?.watermark || node.options || {}) as any;
-          const watermarkedBuf = await applyPdfWatermark(stored.buffer, watermarkOpts);
-          const outFilename = stored.filename || path.basename(inputKey);
-          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-          effectiveStorage.saveObject(outKey, watermarkedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
-          outputKeys.push(outKey);
-        }
+        const watermarkOpts = (node.options?.watermark || node.options || {}) as any;
+        const processedKeys = await Promise.all(
+          inputArtifacts.map(async (inputKey) => {
+            attemptSignal.throwIfAborted();
+            const stored = effectiveStorage.getObject(inputKey);
+            if (!stored) {
+              throw new Error(`Input artifact "${inputKey}" not found in storage`);
+            }
+            const watermarkedBuf = await applyPdfWatermark(stored.buffer, watermarkOpts);
+            const outFilename = stored.filename || path.basename(inputKey);
+            const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+            effectiveStorage.saveObject(outKey, watermarkedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+            return outKey;
+          })
+        );
+        outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied watermark to ${inputArtifacts.length} artifact(s)`);
         break;
       }
@@ -203,19 +206,22 @@ export async function processGraphNodeJob(
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
-        for (const inputKey of inputArtifacts) {
-          attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
-          if (!stored) {
-            throw new Error(`Input artifact "${inputKey}" not found in storage`);
-          }
-          const protectOpts = (node.options?.protect || node.options || {}) as any;
-          const protectedBuf = await protectPdf(stored.buffer, protectOpts);
-          const outFilename = stored.filename || path.basename(inputKey);
-          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-          effectiveStorage.saveObject(outKey, protectedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
-          outputKeys.push(outKey);
-        }
+        const protectOpts = (node.options?.protect || node.options || {}) as any;
+        const processedKeys = await Promise.all(
+          inputArtifacts.map(async (inputKey) => {
+            attemptSignal.throwIfAborted();
+            const stored = effectiveStorage.getObject(inputKey);
+            if (!stored) {
+              throw new Error(`Input artifact "${inputKey}" not found in storage`);
+            }
+            const protectedBuf = await protectPdf(stored.buffer, protectOpts);
+            const outFilename = stored.filename || path.basename(inputKey);
+            const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+            effectiveStorage.saveObject(outKey, protectedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+            return outKey;
+          })
+        );
+        outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied protection to ${inputArtifacts.length} artifact(s)`);
         break;
       }
