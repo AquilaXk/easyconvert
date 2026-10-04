@@ -145,10 +145,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const arrayBuffer = await req.arrayBuffer();
-      const chunkBuffer = Buffer.from(arrayBuffer);
-
-      if (chunkBuffer.length === 0) {
+      if (!req.body) {
         return createProblemDetailsResponse(
           400,
           'Chunk payload is empty (0 bytes).',
@@ -156,24 +153,24 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      if (chunkBuffer.length > MAX_PART_BYTES) {
+      try {
+        const partResult = await s3Storage.uploadPartStream(
+          uploadId,
+          partNumber,
+          req.body,
+          MAX_PART_BYTES,
+          maxAllowedBytes,
+          currentSessionBytes
+        );
+        return NextResponse.json({ success: true, ...partResult });
+      } catch (err: any) {
+        const statusCode = err?.statusCode || (err?.message?.includes('exceeds') ? 413 : 400);
         return createProblemDetailsResponse(
-          413,
-          `Part size ${chunkBuffer.length} bytes exceeds maximum allowed part size of ${MAX_PART_BYTES} bytes (64 MiB).`,
+          statusCode,
+          err?.message || 'Error processing multipart chunk',
           instanceUri
         );
       }
-
-      if (currentSessionBytes + chunkBuffer.length > maxAllowedBytes) {
-        return createProblemDetailsResponse(
-          413,
-          `Total upload size ${currentSessionBytes + chunkBuffer.length} bytes exceeds maximum allowed size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
-          instanceUri
-        );
-      }
-
-      const partResult = s3Storage.uploadPart(uploadId, partNumber, chunkBuffer);
-      return NextResponse.json({ success: true, ...partResult });
     }
 
     // 3. Complete Multipart Upload
