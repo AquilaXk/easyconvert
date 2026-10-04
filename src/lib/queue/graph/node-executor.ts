@@ -499,6 +499,12 @@ function urlImportMaxBytes(): number {
 }
 
 /** Streams a public URL into intermediate storage, refusing internal targets and oversized bodies. */
+/** Origin and path of a user-supplied URL, so query-string tokens stay out of job errors and logs. */
+function redactUrl(url: string): string {
+  const parsed = new URL(url);
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
 async function importUrlArtifact(
   storage: IStorageBackend,
   graphId: string,
@@ -510,13 +516,13 @@ async function importUrlArtifact(
   const response = await safeFetch(url, { headers, signal });
   if (!response.ok || !response.body) {
     await response.body?.cancel();
-    throw new ConversionFailedError(`Failed to fetch URL ${url}: HTTP ${response.status}`);
+    throw new ConversionFailedError(`Failed to fetch URL ${redactUrl(url)}: HTTP ${response.status}`);
   }
   const maxBytes = urlImportMaxBytes();
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
     await response.body.cancel();
-    throw new ConversionFailedError(`Remote file at ${url} is ${declared} bytes, above the ${maxBytes}-byte import limit`);
+    throw new ConversionFailedError(`Remote file at ${redactUrl(url)} is ${declared} bytes, above the ${maxBytes}-byte import limit`);
   }
 
   let received = 0;
@@ -525,7 +531,7 @@ async function importUrlArtifact(
     transform(chunk: Buffer, _enc, done) {
       received += chunk.length;
       if (received > maxBytes) {
-        done(new ConversionFailedError(`Remote file at ${url} exceeds the ${maxBytes}-byte import limit`));
+        done(new ConversionFailedError(`Remote file at ${redactUrl(url)} exceeds the ${maxBytes}-byte import limit`));
         return;
       }
       done(null, chunk);
