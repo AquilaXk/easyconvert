@@ -159,7 +159,7 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
         '--cpu=60',
       ]);
 
-      const emptyArgs = buildPrlimitArgs(cap, { asBytes: 0, fsizeBytes: 0, nproc: 0, cpuSeconds: 0 });
+      const emptyArgs = buildPrlimitArgs(cap, { asBytes: -1, fsizeBytes: 0, nproc: -10, cpuSeconds: 0 });
       expect(emptyArgs.length).toBe(0);
       expect(emptyArgs).toEqual([]);
     });
