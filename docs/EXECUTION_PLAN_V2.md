@@ -700,15 +700,3 @@ subtitles?: { mode: 'burn' | 'soft' | 'extract'; input?: NodeId; streamIndex?: n
 | 오케스트레이션 | 다이아몬드/팬아웃 그래프 경합 50회에서 중복 실행 0 | WP-31 테스트 |
 | 도메인 | 각 WP의 독립 오라클 기준(ffprobe, poppler, qpdf, 7z, LibreOffice 렌더 SSIM, libraw PSNR, ALTO XSD) 통과 | WP-40~48 테스트 |
 | 인프라 | SYS_ADMIN 없음, RO rootfs, 자식 netns 차단 + 부모 Redis 정상 | `verify-worker-container.sh` 출력 |
-
-
-작업 계획서 기반으로 작업 진행해줘 /boost 규정대로 merge 까지 전부 진행이야
-</USER_REQUEST>
-<ADDITIONAL_METADATA>
-The current local time is: 2026-10-03T22:24:16+09:00.
-
-The user has mentioned some items in the form @[ITEM]. Here is extra information about the items that were mentioned by the user, in the order that they appear:
-
-/boost is a [Slash Command]:
-<ORCHESTRATOR>
-For every incoming request, you must first decide which routine to follow: **Solo** or **Delegation**.
