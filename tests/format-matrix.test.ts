@@ -62,7 +62,8 @@ describe('9 Domains & 200+ Format Matrix Tests', () => {
     expect(epub).toBeDefined();
     expect(epub.category).toBe('ebook');
     expect(epub.targetFormats).toContain('pdf');
-    expect(epub.targetFormats).toContain('mobi');
+    // EPUB to Mobipocket has no conversion path, so it must not be advertised.
+    expect(epub.targetFormats).not.toContain('mobi');
   });
 
   it('retrieves available target format definitions for complex media', () => {
