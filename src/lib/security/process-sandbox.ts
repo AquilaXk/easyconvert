@@ -284,16 +284,16 @@ export function buildPrlimitArgs(
   rlimits: SandboxedRlimitsOptions
 ): string[] {
   const args: string[] = [];
-  if (rlimits.asBytes !== undefined && rlimits.asBytes > 0) {
+  if (rlimits.asBytes && rlimits.asBytes > 0) {
     args.push(`--as=${Math.round(rlimits.asBytes)}`);
   }
-  if (rlimits.fsizeBytes !== undefined && rlimits.fsizeBytes > 0) {
+  if (rlimits.fsizeBytes && rlimits.fsizeBytes > 0) {
     args.push(`--fsize=${Math.round(rlimits.fsizeBytes)}`);
   }
-  if (rlimits.nproc !== undefined && rlimits.nproc > 0) {
+  if (rlimits.nproc && rlimits.nproc > 0) {
     args.push(`--nproc=${Math.round(rlimits.nproc)}`);
   }
-  if (rlimits.cpuSeconds !== undefined && rlimits.cpuSeconds > 0) {
+  if (rlimits.cpuSeconds && rlimits.cpuSeconds > 0) {
     args.push(`--cpu=${Math.round(rlimits.cpuSeconds)}`);
   }
   return args;

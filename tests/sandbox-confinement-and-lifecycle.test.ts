@@ -158,6 +158,10 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
         '--nproc=128',
         '--cpu=60',
       ]);
+
+      const emptyArgs = buildPrlimitArgs(cap, { asBytes: 0, fsizeBytes: 0, nproc: 0, cpuSeconds: 0 });
+      expect(emptyArgs.length).toBe(0);
+      expect(emptyArgs).toEqual([]);
     });
 
     it('resolves sandboxed command with memoryLimitMb mapped to address space rlimit', () => {
