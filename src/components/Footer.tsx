@@ -43,7 +43,6 @@ const DIRECTORY_CATEGORIES: DirectoryCategory[] = [
     links: [
       { label: 'PDF to WORD', href: '/pdf-to-docx' },
       { label: 'EPUB to PDF', href: '/epub-to-pdf' },
-      { label: 'EPUB to MOBI', href: '/epub-to-mobi' },
       { label: 'Document Converter', href: '/document-converter' },
     ],
   },
