@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MultipartUploadInit, UploadedPart, MultipartUploadComplete } from '../types';
+import { presignSigV4QueryUrl } from './sigv4-presigner';
 import { secureShredBuffer } from '../security/memory-shredder';
 import {
   ObjectStat,
@@ -82,6 +83,19 @@ export interface IStorageBackend {
   sweepExpiredObjects?(now?: number): number;
   stopGc?(): void;
   generatePresignedUploadUrl?(key: string, partNumber: number, uploadId: string, expiresInSeconds?: number): PresignedUrlResult;
+  generatePresignedUploadPartUrl?(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds?: number,
+    localEmulation?: boolean
+  ): PresignedUrlResult;
+  generatePresignedHmacPartUrl?(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds?: number
+  ): PresignedUrlResult;
   generatePresignedDownloadUrl?(key: string, expiresInSeconds?: number): PresignedUrlResult;
   verifyPresignedSignature?(
     method: 'GET' | 'PUT',
@@ -91,6 +105,7 @@ export interface IStorageBackend {
     uploadId?: string,
     partNumber?: number
   ): boolean;
+  getSigningSecret?(): string;
 }
 
 import { globalSharedObjects } from './shared-store';
@@ -741,6 +756,65 @@ export class OciObjectStorageService implements IStorageBackend {
       return false;
     }
   }
+
+  getSigningSecret(): string {
+    return this.signingSecret;
+  }
+
+  generatePresignedUploadPartUrl(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds: number = 900,
+    localEmulation: boolean = false
+  ): PresignedUrlResult {
+    const region = this.config.region || 'us-east-1';
+    const accessKeyId = 'DEV_ACCESS_KEY_ID';
+    const endpoint = localEmulation
+      ? (process.env.APP_URL || 'http://localhost:3000') + '/api/v1/uploads/direct/part'
+      : (this.config.endpoint || 'https://storage.easyconvert.app') + `/${key}`;
+
+    const queryParams: Record<string, string | number> = {
+      uploadId,
+      partNumber,
+    };
+    if (localEmulation) {
+      queryParams.key = key;
+    }
+
+    const res = presignSigV4QueryUrl({
+      method: 'PUT',
+      url: endpoint,
+      queryParams,
+      credentials: {
+        accessKeyId,
+        secretAccessKey: this.signingSecret,
+        region,
+        service: 's3',
+      },
+      expiresInSeconds,
+    });
+
+    return {
+      url: res.url,
+      expiresAt: res.expiresAt,
+      signature: res.signature,
+    };
+  }
+
+  generatePresignedHmacPartUrl(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds: number = 900
+  ): PresignedUrlResult {
+    const expiresAt = Date.now() + expiresInSeconds * 1000;
+    const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
+    const signature = crypto.createHmac('sha256', this.signingSecret).update(stringToSign).digest('hex');
+    const baseUrl = (process.env.APP_URL || 'http://localhost:3000') + '/api/v1/uploads/direct/part';
+    const url = `${baseUrl}?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&key=${encodeURIComponent(key)}&expiresAt=${expiresAt}&signature=${signature}`;
+    return { url, expiresAt, signature };
+  }
 }
 
 /**
@@ -844,6 +918,29 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
     partNumber?: number
   ): boolean {
     return this.backend.verifyPresignedSignature(method, key, expiresAt, signature, uploadId, partNumber);
+  }
+
+  getSigningSecret(): string {
+    return this.backend.getSigningSecret();
+  }
+
+  generatePresignedUploadPartUrl(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds?: number,
+    localEmulation?: boolean
+  ): PresignedUrlResult {
+    return this.backend.generatePresignedUploadPartUrl(key, uploadId, partNumber, expiresInSeconds, localEmulation);
+  }
+
+  generatePresignedHmacPartUrl(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds?: number
+  ): PresignedUrlResult {
+    return this.backend.generatePresignedHmacPartUrl(key, uploadId, partNumber, expiresInSeconds);
   }
 }
 

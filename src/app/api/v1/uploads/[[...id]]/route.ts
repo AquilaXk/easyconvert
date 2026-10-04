@@ -12,6 +12,10 @@ import {
   TusNotFoundError,
 } from '@/lib/storage/tus-engine';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { POST as directPostHandler } from '../direct/route';
+import { PUT as directPartPutHandler } from '../direct/part/route';
+import { POST as directCompletePostHandler } from '../direct/complete/route';
+import { DELETE as directDeleteHandler } from '../direct/[id]/route';
 
 export const dynamic = 'force-dynamic';
 
@@ -224,6 +228,13 @@ export async function POST(
   req: NextRequest,
   context: { params?: { id?: string[] } } = {}
 ) {
+  if (context.params?.id?.[0] === 'direct') {
+    if (context.params.id[1] === 'complete') {
+      return directCompletePostHandler(req);
+    }
+    return directPostHandler(req);
+  }
+
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
   const sessionId = resolveSessionId(context.params);
 
@@ -546,10 +557,24 @@ export async function PATCH(
   }
 }
 
+export async function PUT(
+  req: NextRequest,
+  context: { params?: { id?: string[] } } = {}
+) {
+  if (context.params?.id?.[0] === 'direct' && context.params.id[1] === 'part') {
+    return directPartPutHandler(req);
+  }
+  return new NextResponse('Method Not Allowed', { status: 405 });
+}
+
 export async function DELETE(
   req: NextRequest,
   context: { params?: { id?: string[] } } = {}
 ) {
+  if (context.params?.id?.[0] === 'direct' && context.params.id[1]) {
+    return directDeleteHandler(req, { params: { id: context.params.id[1] } });
+  }
+
   const versionMismatch = checkTusVersion(req);
   if (versionMismatch) return versionMismatch;
 

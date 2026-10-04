@@ -1,0 +1,21 @@
+{
+  "description": "SigV4 Presigned Multipart Upload PUT Part Query Authentication Test Vector",
+  "method": "PUT",
+  "url": "https://storage.easyconvert.app/conversions/user_123/video.mp4",
+  "queryParams": {
+    "partNumber": 1,
+    "uploadId": "mp_session_999888"
+  },
+  "credentials": {
+    "accessKeyId": "AKIAIOSFODNN7EXAMPLE",
+    "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "region": "us-east-1",
+    "service": "s3"
+  },
+  "expiresInSeconds": 900,
+  "timestamp": "2026-10-04T12:00:00.000Z",
+  "expectedCanonicalRequest": "PUT\n/conversions/user_123/video.mp4\nX-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261004%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261004T120000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&partNumber=1&uploadId=mp_session_999888\nhost:storage.easyconvert.app\n\nhost\nUNSIGNED-PAYLOAD",
+  "expectedStringToSign": "AWS4-HMAC-SHA256\n20261004T120000Z\n20261004/us-east-1/s3/aws4_request\n5ac5bcf0b64a58f607e30f12cb8be9894bdbb28d25c7430362e10ced190af258",
+  "expectedSignature": "ec4994714d2fbdf91d7b5c971453fcc812e1b2ccbb5f4aa2adcffcb19e3e5e7e",
+  "expectedUrl": "https://storage.easyconvert.app/conversions/user_123/video.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261004%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261004T120000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&partNumber=1&uploadId=mp_session_999888&X-Amz-Signature=ec4994714d2fbdf91d7b5c971453fcc812e1b2ccbb5f4aa2adcffcb19e3e5e7e"
+}

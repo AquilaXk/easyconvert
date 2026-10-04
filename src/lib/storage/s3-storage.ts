@@ -18,6 +18,7 @@ import {
   StoredObjectMissingError,
   getMaxInMemoryBytes,
 } from './oci-storage';
+import { presignSigV4QueryUrl, verifySigV4QueryUrl } from './sigv4-presigner';
 
 export * from './oci-storage';
 
@@ -93,7 +94,8 @@ export class S3ObjectStorageService implements IStorageBackend {
     filename: string,
     mimeType: string,
     totalSize: number,
-    ownerUserId?: string
+    ownerUserId?: string,
+    partSize?: number
   ): MultipartUploadInit {
     const timestamp = Date.now();
     const randomHex = crypto.randomBytes(8).toString('hex');
@@ -103,8 +105,8 @@ export class S3ObjectStorageService implements IStorageBackend {
       ? `conversions/${ownerUserId}/${timestamp}_${randomHex}_${sanitizedFilename}`
       : `uploads/${timestamp}_${randomHex}_${sanitizedFilename}`;
 
-    const partSize = this.DEFAULT_PART_SIZE;
-    const totalParts = Math.max(1, Math.ceil(totalSize / partSize));
+    const resolvedPartSize = partSize && partSize > 0 ? partSize : this.DEFAULT_PART_SIZE;
+    const totalParts = Math.max(1, Math.ceil(totalSize / resolvedPartSize));
 
     const sessionDir = path.join(this.baseUploadDir, uploadId);
     try {
@@ -119,7 +121,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       filename,
       mimeType,
       totalSize,
-      partSize,
+      partSize: resolvedPartSize,
       totalParts,
       createdAt: timestamp,
       diskDir: sessionDir,
@@ -132,7 +134,7 @@ export class S3ObjectStorageService implements IStorageBackend {
     return {
       uploadId,
       key,
-      partSize,
+      partSize: resolvedPartSize,
       totalParts,
       expiresAt: timestamp + 24 * 60 * 60 * 1000,
     };
@@ -607,15 +609,26 @@ export class S3ObjectStorageService implements IStorageBackend {
     return this.objects.size;
   }
 
+  getSigningSecret(): string {
+    return this.signingSecret;
+  }
+
   generatePresignedUploadUrl(
     key: string,
     partNumber: number,
     uploadId: string,
     expiresInSeconds: number = 900
   ): PresignedUrlResult {
-    const expiresAt = Date.now() + expiresInSeconds * 1000;
-    const nowIso = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
-    const dateStamp = nowIso.slice(0, 8);
+    return this.generatePresignedUploadPartUrl(key, uploadId, partNumber, expiresInSeconds, false);
+  }
+
+  generatePresignedUploadPartUrl(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds: number = 900,
+    localEmulation: boolean = false
+  ): PresignedUrlResult {
     const region = process.env.AWS_REGION || process.env.S3_REGION || 'us-east-1';
     const accessKeyId = process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID;
 
@@ -623,25 +636,54 @@ export class S3ObjectStorageService implements IStorageBackend {
       throw new Error('Missing required AWS_ACCESS_KEY_ID or S3_ACCESS_KEY_ID environment variable in production');
     }
     const resolvedKeyId = accessKeyId || 'DEV_ACCESS_KEY_ID';
-    const credential = `${resolvedKeyId}/${dateStamp}/${region}/s3/aws4_request`;
 
+    const baseUrl = localEmulation
+      ? (process.env.APP_URL || 'http://localhost:3000') + '/api/v1/uploads/direct/part'
+      : (process.env.S3_ENDPOINT || 'https://storage.easyconvert.app') + `/${key}`;
+
+    const queryParams: Record<string, string | number> = {
+      uploadId,
+      partNumber,
+    };
+    if (localEmulation) {
+      queryParams.key = key;
+    }
+
+    const res = presignSigV4QueryUrl({
+      method: 'PUT',
+      url: baseUrl,
+      queryParams,
+      credentials: {
+        accessKeyId: resolvedKeyId,
+        secretAccessKey: this.signingSecret,
+        region,
+        service: 's3',
+      },
+      expiresInSeconds,
+    });
+
+    return {
+      url: res.url,
+      expiresAt: res.expiresAt,
+      signature: res.signature,
+    };
+  }
+
+  generatePresignedHmacPartUrl(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds: number = 900
+  ): PresignedUrlResult {
+    const expiresAt = Date.now() + expiresInSeconds * 1000;
     const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
     const signature = crypto
       .createHmac('sha256', this.signingSecret)
       .update(stringToSign)
       .digest('hex');
 
-    const endpoint = process.env.S3_ENDPOINT || 'https://storage.easyconvert.app';
-    const url =
-      `${endpoint}/${key}?` +
-      `X-Amz-Algorithm=AWS4-HMAC-SHA256&` +
-      `X-Amz-Credential=${encodeURIComponent(credential)}&` +
-      `X-Amz-Date=${nowIso}&` +
-      `X-Amz-Expires=${expiresInSeconds}&` +
-      `X-Amz-SignedHeaders=host&` +
-      `partNumber=${partNumber}&` +
-      `uploadId=${encodeURIComponent(uploadId)}&` +
-      `X-Amz-Signature=${signature}`;
+    const baseUrl = (process.env.APP_URL || 'http://localhost:3000') + '/api/v1/uploads/direct/part';
+    const url = `${baseUrl}?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&key=${encodeURIComponent(key)}&expiresAt=${expiresAt}&signature=${signature}`;
 
     return {
       url,
@@ -714,11 +756,64 @@ export class S3ObjectStorageService implements IStorageBackend {
     try {
       const sigBuf = Buffer.from(signature, 'hex');
       const expectedBuf = Buffer.from(expectedSig, 'hex');
-      if (sigBuf.length !== expectedBuf.length) return false;
-      return crypto.timingSafeEqual(sigBuf, expectedBuf);
-    } catch {
-      return false;
-    }
+      if (sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+        return true;
+      }
+    } catch {}
+
+    return this.verifySigV4Fallback(method, key, expiresAt, signature, uploadId, partNumber);
+  }
+
+  private verifySigV4Fallback(
+    method: 'GET' | 'PUT',
+    key: string,
+    expiresAt: number,
+    signature: string,
+    uploadId?: string,
+    partNumber?: number
+  ): boolean {
+    try {
+      const region = process.env.AWS_REGION || process.env.S3_REGION || 'us-east-1';
+      const accessKeyId = process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID || 'DEV_ACCESS_KEY_ID';
+      const endpoint = process.env.S3_ENDPOINT || 'https://storage.easyconvert.app';
+      const fullUrl = `${endpoint}/${key}`;
+
+      for (const expiresInSec of [900, 3600]) {
+        const estimatedTimestamp = new Date(expiresAt - expiresInSec * 1000);
+        const queryParams: Record<string, string | number> = {};
+        if (uploadId) queryParams.uploadId = uploadId;
+        if (partNumber !== undefined) queryParams.partNumber = partNumber;
+
+        const res = presignSigV4QueryUrl({
+          method,
+          url: fullUrl,
+          queryParams: Object.keys(queryParams).length > 0 ? queryParams : undefined,
+          credentials: {
+            accessKeyId,
+            secretAccessKey: this.signingSecret,
+            region,
+            service: 's3',
+          },
+          expiresInSeconds: expiresInSec,
+          timestamp: estimatedTimestamp,
+        });
+
+        const sigBuf = Buffer.from(signature.toLowerCase(), 'hex');
+        const expectedBuf = Buffer.from(res.signature.toLowerCase(), 'hex');
+        if (sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+          return true;
+        }
+      }
+    } catch {}
+
+    return false;
+  }
+
+  verifySigV4Url(urlStr: string, method: string = 'PUT'): ReturnType<typeof verifySigV4QueryUrl> {
+    return verifySigV4QueryUrl(urlStr, {
+      secretAccessKey: this.signingSecret,
+      expectedMethod: method,
+    });
   }
 
   sweepExpiredObjects(now: number = Date.now()): number {
