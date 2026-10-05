@@ -61,13 +61,32 @@ const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map([
   ['apos', "'"],
 ]);
 
-const COMMENT_PATTERN = /<!--[\s\S]*?-->/g;
-// Element start tags: attribute values may contain '>' inside quotes.
-const TAG_PATTERN = /<(font|font-face|missing-glyph|glyph)(?=[\s/>])((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
+const COMMENT_OPEN = '<!--';
+const COMMENT_CLOSE = '-->';
+/**
+ * Names of the elements the engine reads, matched at a fixed position right after '<' (sticky), so
+ * the cost of a candidate tag never depends on what follows it. Longer names come first.
+ */
+const ELEMENT_NAME_PATTERN = /(font-face|missing-glyph|glyph|font)(?=[ \t\r\n/>])/y;
 const FONT_END_PATTERN = /<\/font\s*>/;
-const ATTRIBUTE_PATTERN = /([^\s=/>"']+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
-const NUMBER_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+// Digits, an optional fraction and an optional exponent, written without overlapping alternatives so
+// that a long run of digits followed by junk fails in linear time.
+const NUMBER_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 const ENTITY_PATTERN =/&([^&;]*)(;?)/g;
+
+const FONT_ELEMENT: ReadonlySet<string> = new Set(['font']);
+const READ_ELEMENTS: ReadonlySet<string> = new Set(['font-face', 'missing-glyph', 'glyph']);
+
+const CODE_LESS_THAN = 0x3c;
+const CODE_GREATER_THAN = 0x3e;
+const CODE_DOUBLE_QUOTE = 0x22;
+const CODE_SINGLE_QUOTE = 0x27;
+const CODE_EQUALS = 0x3d;
+const CODE_SLASH = 0x2f;
+/** XML 1.0 white space (production S): space, tab, carriage return and line feed. */
+const XML_WHITESPACE = new Set([0x20, 0x09, 0x0d, 0x0a]);
+/** Characters that end an attribute name. */
+const ATTRIBUTE_NAME_STOPS = new Set([CODE_EQUALS, CODE_SLASH, CODE_GREATER_THAN, CODE_DOUBLE_QUOTE, CODE_SINGLE_QUOTE]);
 
 /** XML 1.0 Char production: the code points a document may contain, directly or as a reference. */
 export function isXmlCharacter(codePoint: number): boolean {
@@ -101,14 +120,115 @@ function decodeEntities(value: string, attribute: string): string {
   });
 }
 
+function isAttributeNameCode(code: number): boolean {
+  return !XML_WHITESPACE.has(code) && !ATTRIBUTE_NAME_STOPS.has(code);
+}
+
+/**
+ * Reads name="value" and name='value' pairs from the inside of a start tag in one pass: the first
+ * value of a repeated name wins, and quoted text that is not the value of an attribute is skipped.
+ * The tag scanner has already checked that every quote in `source` is closed.
+ */
 function readAttributes(source: string): Map<string, string> {
   const attributes = new Map<string, string>();
-  for (const match of source.matchAll(ATTRIBUTE_PATTERN)) {
-    const name = match[1];
-    if (attributes.has(name)) continue;
-    attributes.set(name, decodeEntities(match[2] ?? match[3] ?? '', name));
+  const length = source.length;
+  let pos = 0;
+  while (pos < length) {
+    const code = source.charCodeAt(pos);
+    if (code === CODE_DOUBLE_QUOTE || code === CODE_SINGLE_QUOTE) {
+      const close = source.indexOf(source[pos], pos + 1);
+      pos = close === -1 ? length : close + 1;
+      continue;
+    }
+    if (!isAttributeNameCode(code)) {
+      pos++;
+      continue;
+    }
+    let nameEnd = pos + 1;
+    while (nameEnd < length && isAttributeNameCode(source.charCodeAt(nameEnd))) nameEnd++;
+    let cursor = nameEnd;
+    while (cursor < length && XML_WHITESPACE.has(source.charCodeAt(cursor))) cursor++;
+    if (source.charCodeAt(cursor) === CODE_EQUALS) {
+      cursor++;
+      while (cursor < length && XML_WHITESPACE.has(source.charCodeAt(cursor))) cursor++;
+      const quote = source.charCodeAt(cursor);
+      if (quote === CODE_DOUBLE_QUOTE || quote === CODE_SINGLE_QUOTE) {
+        const close = source.indexOf(source[cursor], cursor + 1);
+        if (close !== -1) {
+          const name = source.slice(pos, nameEnd);
+          if (!attributes.has(name)) attributes.set(name, decodeEntities(source.slice(cursor + 1, close), name));
+          pos = close + 1;
+          continue;
+        }
+      }
+    }
+    pos = nameEnd;
   }
   return attributes;
+}
+
+/** Removes <!-- ... --> comments in one pass; a comment that is never closed is a format error. */
+function stripComments(text: string): string {
+  let open = text.indexOf(COMMENT_OPEN);
+  if (open === -1) return text;
+  const kept: string[] = [];
+  let from = 0;
+  while (open !== -1) {
+    const close = text.indexOf(COMMENT_CLOSE, open + COMMENT_OPEN.length);
+    if (close === -1) throw new SvgFontFormatError('SVG font document has a comment that is never closed.');
+    kept.push(text.slice(from, open));
+    from = close + COMMENT_CLOSE.length;
+    open = text.indexOf(COMMENT_OPEN, from);
+  }
+  kept.push(text.slice(from));
+  return kept.join('');
+}
+
+interface StartTag {
+  name: string;
+  attributes: Map<string, string>;
+  /** Index just past the closing '>'. */
+  end: number;
+}
+
+/**
+ * Yields the start tags of the wanted elements in document order. Each character is visited a
+ * bounded number of times: attribute values are skipped with indexOf up to their closing quote, a
+ * '>' inside a value does not end the tag, and a '<' outside a value (not well-formed XML) or a tag
+ * or value that is never closed throws SvgFontFormatError.
+ */
+function* startTags(text: string, wanted: ReadonlySet<string>): Generator<StartTag> {
+  let open = text.indexOf('<');
+  while (open !== -1) {
+    ELEMENT_NAME_PATTERN.lastIndex = open + 1;
+    const named = ELEMENT_NAME_PATTERN.exec(text);
+    if (named === null || !wanted.has(named[1])) {
+      open = text.indexOf('<', open + 1);
+      continue;
+    }
+    const name = named[1];
+    const insideStart = open + 1 + name.length;
+    let pos = insideStart;
+    for (;;) {
+      if (pos >= text.length) {
+        throw new SvgFontFormatError(`SVG font <${name}> tag is not closed: the document ends before its '>'.`);
+      }
+      const code = text.charCodeAt(pos);
+      if (code === CODE_GREATER_THAN) break;
+      if (code === CODE_LESS_THAN) {
+        throw new SvgFontFormatError(`SVG font <${name}> tag contains a '<' before its closing '>'.`);
+      }
+      if (code === CODE_DOUBLE_QUOTE || code === CODE_SINGLE_QUOTE) {
+        const close = text.indexOf(text[pos], pos + 1);
+        if (close === -1) throw new SvgFontFormatError(`SVG font <${name}> tag has an attribute value whose closing quote is missing.`);
+        pos = close + 1;
+      } else {
+        pos++;
+      }
+    }
+    yield { name, attributes: readAttributes(text.slice(insideStart, pos)), end: pos + 1 };
+    open = text.indexOf('<', pos + 1);
+  }
 }
 
 function numberAttribute(attributes: Map<string, string>, name: string): number | null {
@@ -143,7 +263,7 @@ function describeGlyph(index: number, name: string | null, unicode: string | nul
  * element at all. Glyphs meant only for vertical text are skipped.
  */
 export function parseSvgFontDocument(source: string): SvgFont | null {
-  const text = (source.startsWith(BYTE_ORDER_MARK) ? source.slice(1) : source).replace(COMMENT_PATTERN, '');
+  const text = stripComments(source.startsWith(BYTE_ORDER_MARK) ? source.slice(1) : source);
 
   let fontAttributes: Map<string, string> | null = null;
   let fontFaceAttributes: Map<string, string> | null = null;
@@ -154,10 +274,9 @@ export function parseSvgFontDocument(source: string): SvgFont | null {
   let missingTag: Map<string, string> | null = null;
   let bodyStart = 0;
 
-  for (const match of text.matchAll(TAG_PATTERN)) {
-    if (match[1] !== 'font') continue;
-    fontAttributes = readAttributes(match[2]);
-    bodyStart = (match.index as number) + match[0].length;
+  for (const tag of startTags(text, FONT_ELEMENT)) {
+    fontAttributes = tag.attributes;
+    bodyStart = tag.end;
     const tail = text.slice(bodyStart);
     const end = FONT_END_PATTERN.exec(tail);
     fontEnd = end === null ? text.length : bodyStart + end.index;
@@ -167,13 +286,12 @@ export function parseSvgFontDocument(source: string): SvgFont | null {
 
   fontAdvance = advanceAttribute(fontAttributes, 0, 'font element');
   const body = text.slice(bodyStart, fontEnd);
-  for (const match of body.matchAll(TAG_PATTERN)) {
-    const attributes = readAttributes(match[2]);
-    if (match[1] === 'font-face') {
+  for (const { name, attributes } of startTags(body, READ_ELEMENTS)) {
+    if (name === 'font-face') {
       if (fontFaceAttributes === null) fontFaceAttributes = attributes;
-    } else if (match[1] === 'missing-glyph') {
+    } else if (name === 'missing-glyph') {
       if (missingTag === null) missingTag = attributes;
-    } else if (match[1] === 'glyph') {
+    } else if (name === 'glyph') {
       if (attributes.get('orientation') === 'v') continue;
       glyphTags.push({ attributes });
       if (glyphTags.length > MAX_SVG_FONT_GLYPHS) {
