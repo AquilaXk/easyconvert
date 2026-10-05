@@ -3029,13 +3029,13 @@ async function convertImageToPdf(
   return new Promise((resolve, reject) => {
     const isLandscape =
       options.orientation === 'landscape' || (imgWidth > imgHeight && !options.orientation);
+    // The size is already [width, height] in the final orientation, so no layout swap is applied.
     const doc = new PDFDocument({
       size: [
         isLandscape ? Math.max(imgWidth, imgHeight) : imgWidth,
         isLandscape ? Math.min(imgWidth, imgHeight) : imgHeight,
       ],
       margin: 0,
-      layout: isLandscape ? 'landscape' : 'portrait',
     });
 
     const chunks: Buffer[] = [];
