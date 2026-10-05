@@ -15,6 +15,7 @@ import {
   ZSTD_SECURITY_LIMITS,
   FastStreamingXxHash64,
   encodeZstdSingleSegmentHeader,
+  exceedsZstdRatioGuard,
 } from './zstd';
 import { LL_BASELINE, LL_BITS, ML_BASELINE, ML_BITS } from './zstd-tables';
 
@@ -984,10 +985,7 @@ export function decompressWithZstdDict(
         `Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
-    if (
-      compressedBuffer.length > 0 &&
-      totalUncompressedSize / compressedBuffer.length > ZSTD_SECURITY_LIMITS.MAX_RATIO
-    ) {
+    if (exceedsZstdRatioGuard(totalUncompressedSize, compressedBuffer.length)) {
       throw new Error(
         `Archive bomb detected: compression ratio (${(
           totalUncompressedSize / compressedBuffer.length

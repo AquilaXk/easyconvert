@@ -6,7 +6,7 @@ import {
   createFrameDecodeState,
   decodeCompressedBlock,
 } from './zstd-decoder';
-import { ZstdBlockEncoder, getZstdLevelParams, zstdBlocksBound } from './zstd-encoder';
+import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
 import {
   ZSTD_BLOCK_SIZE_MAX,
   ZSTD_DECODER_WINDOW_SIZE_MAX,
@@ -34,10 +34,27 @@ import {
 export const ZSTD_MAGIC_NUMBER = 0xfd2fb528;
 export const ZSTD_MAGIC_LE = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
+/**
+ * The 100:1 ratio guard only applies once the decoded output is larger than this. Highly repetitive
+ * but legitimate data (sparse files, repeated log lines) compresses past 100:1 at small sizes; a
+ * real bomb has to grow beyond this floor to do harm, and the absolute cap still applies below it.
+ */
+export const ZSTD_RATIO_GUARD_FLOOR_BYTES = 32 * 1024 * 1024;
+
 export const ZSTD_SECURITY_LIMITS = {
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB
   MAX_RATIO: 100, // 100:1
+  RATIO_GUARD_FLOOR_BYTES: ZSTD_RATIO_GUARD_FLOOR_BYTES,
 };
+
+/** True when `uncompressedBytes` from `compressedBytes` is past the floor and beyond the maximum ratio. */
+export function exceedsZstdRatioGuard(uncompressedBytes: number, compressedBytes: number): boolean {
+  return (
+    uncompressedBytes > ZSTD_RATIO_GUARD_FLOOR_BYTES &&
+    compressedBytes > 0 &&
+    uncompressedBytes / compressedBytes > ZSTD_SECURITY_LIMITS.MAX_RATIO
+  );
+}
 
 let resolvedZstdPath: string | null = null;
 export function getZstdBinaryPath(): string | null {
@@ -358,14 +375,13 @@ const WINDOW_MANTISSA_STEPS = 8;
 const BLOCK_HEADER_BYTES = 3;
 const BLOCK_TYPE_RAW = 0;
 const BLOCK_TYPE_RLE = 1;
+const BLOCK_TYPE_COMPRESSED = 2;
 const SKIPPABLE_FRAME_MAGIC_MIN = 0x184d2a50;
 const SKIPPABLE_FRAME_MAGIC_MAX = 0x184d2a5f;
 const SKIPPABLE_HEADER_BYTES = 8;
 const CONTENT_CHECKSUM_BYTES = 4;
 /** Largest input the encoder accepts: match positions are stored as signed 32-bit integers. */
 export const ZSTD_ENCODER_INPUT_MAX = 2 ** 30;
-const DECODER_INITIAL_CAPACITY_MAX = 32 * 1024 * 1024;
-const DECODER_INITIAL_EXPANSION = 3;
 
 function bombSizeError(): ConversionFailedError {
   return new ConversionFailedError(
@@ -471,10 +487,7 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
   }
 
   const src = inputBuffer;
-  const out = new ZstdOutputBuffer(
-    Math.min(src.length * DECODER_INITIAL_EXPANSION, DECODER_INITIAL_CAPACITY_MAX),
-    ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE + ZSTD_BLOCK_SIZE_MAX
-  );
+  const out = new ZstdOutputBuffer(ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE + ZSTD_BLOCK_SIZE_MAX);
   let offset = 0;
 
   while (offset < src.length) {
@@ -513,12 +526,18 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
         `Zstandard frame requires dictionary ${frameHeader.dictionaryId}; use the dictionary decoder.`
       );
     }
-    if (frameHeader.frameContentSize !== null && frameHeader.frameContentSize > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw bombSizeError();
+    const declaredSize = frameHeader.frameContentSize;
+    if (declaredSize !== null) {
+      // Reject a declared size that the guards would reject anyway before reserving memory for it.
+      if (out.length + declaredSize > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) throw bombSizeError();
+      if (exceedsZstdRatioGuard(out.length + declaredSize, src.length)) {
+        throw bombRatioError(out.length + declaredSize, src.length);
+      }
+      out.reserve(declaredSize);
     }
 
     const frameStart = out.length;
-    const state = createFrameDecodeState(frameHeader.windowSize);
+    const state = createFrameDecodeState(frameHeader.windowSize, declaredSize);
 
     let isLast = false;
     while (!isLast) {
@@ -537,6 +556,11 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
       }
       if (blockSize > state.blockMaxSize) {
         throw new ConversionFailedError('Malformed Zstandard block: size exceeds the block maximum.');
+      }
+      if (declaredSize !== null && blockType !== BLOCK_TYPE_COMPRESSED && out.length - frameStart + blockSize > declaredSize) {
+        throw new ConversionFailedError(
+          `Zstandard frame content size mismatch: header declares ${declaredSize}, blocks decode to more.`
+        );
       }
 
       if (blockType === BLOCK_TYPE_RAW) {
@@ -566,9 +590,10 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
       if (out.length > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
         throw bombSizeError();
       }
-      if (src.length > 0 && out.length / src.length > ZSTD_SECURITY_LIMITS.MAX_RATIO) {
+      if (exceedsZstdRatioGuard(out.length, src.length)) {
         throw bombRatioError(out.length, src.length);
       }
+      out.projectedTotal = Math.ceil((out.length * src.length) / offset);
     }
 
     const frameLength = out.length - frameStart;
@@ -593,7 +618,7 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
     }
   }
 
-  return Buffer.from(out.data.buffer, out.data.byteOffset, out.length);
+  return out.toBuffer();
 }
 
 /**
@@ -638,7 +663,8 @@ export interface ZstdCompressOptions {
   checksum?: boolean;
 }
 
-const FRAME_HEADER_MAX_BYTES = 14;
+/** Spare output capacity above 1/8 of the result triggers a right-sizing copy. */
+const OUTPUT_SPARE_DENOMINATOR = 8;
 
 /**
  * Encodes a frame header. A null windowLog selects single-segment form (window = content size);
@@ -706,21 +732,21 @@ export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions =
   const windowSize = singleSegment ? inputLen : declaredWindow;
   const header = encodeZstdFrameHeader(inputLen, singleSegment ? null : params.windowLog, checksum);
 
-  const out = new Uint8Array(
-    ZSTD_MAGIC_LE.length + FRAME_HEADER_MAX_BYTES + zstdBlocksBound(inputLen) + CONTENT_CHECKSUM_BYTES
-  );
-  let pos = 0;
-  out.set(ZSTD_MAGIC_LE, pos);
-  pos += ZSTD_MAGIC_LE.length;
-  out.set(header, pos);
-  pos += header.length;
-
-  pos = new ZstdBlockEncoder(inputBuffer, params, windowSize).encodeAll(out, pos);
-
+  const prefix = Buffer.concat([ZSTD_MAGIC_LE, header]);
+  const trailerBytes = checksum ? CONTENT_CHECKSUM_BYTES : 0;
+  const encoded = new ZstdBlockEncoder(inputBuffer, params, windowSize).encodeAll(prefix, trailerBytes);
+  let end = encoded.length;
   if (checksum) {
-    const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
-    view.setUint32(pos, computeZstdChecksum(inputBuffer), true);
-    pos += CONTENT_CHECKSUM_BYTES;
+    new DataView(encoded.data.buffer, encoded.data.byteOffset, encoded.data.byteLength).setUint32(
+      end,
+      computeZstdChecksum(inputBuffer),
+      true
+    );
+    end += CONTENT_CHECKSUM_BYTES;
   }
-  return Buffer.from(out.subarray(0, pos));
+  // Hand back a view when the spare capacity is small (incompressible input); otherwise right-size
+  // with one copy of the (much smaller) compressed bytes so a large scratch buffer is not retained.
+  const spare = encoded.data.length - end;
+  if (spare * OUTPUT_SPARE_DENOMINATOR > end) return Buffer.from(encoded.data.subarray(0, end));
+  return Buffer.from(encoded.data.buffer, encoded.data.byteOffset, end);
 }

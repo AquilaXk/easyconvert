@@ -5,8 +5,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { compressZstd, decompressZstd, getZstdBinaryPath, ZSTD_MAGIC_LE } from '../src/lib/conversions/zstd';
+import { convertArchive, extractTarArchive } from '../src/lib/conversions/archive';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
+import { buildFrame, buildRleBombFrame, rawBlock, referenceXxh64 } from './helpers/zstd-frames';
 
 // ---------------------------------------------------------------------------
 // Deterministic corpora (generated here so the suite never depends on repo files)
@@ -190,63 +192,6 @@ function assertFrameStructure(frame: Buffer, input: Buffer): ParsedFrame {
   return parsed;
 }
 
-/** Straightforward BigInt XXH64 (seed 0) written from the public algorithm description. */
-function referenceXxh64(data: Buffer): bigint {
-  const mask = 0xffffffffffffffffn;
-  const p1 = 11400714785074694791n;
-  const p2 = 14029467366897019727n;
-  const p3 = 1609587929392839161n;
-  const p4 = 9650029242287828579n;
-  const p5 = 2870177450012600261n;
-  const rotl = (x: bigint, r: bigint): bigint => ((x << r) | (x >> (64n - r))) & mask;
-  const round = (acc: bigint, input: bigint): bigint => (rotl((acc + input * p2) & mask, 31n) * p1) & mask;
-  const merge = (acc: bigint, val: bigint): bigint => (((acc ^ round(0n, val)) * p1) + p4) & mask;
-  let pos = 0;
-  let hash: bigint;
-  if (data.length >= 32) {
-    let v1 = (p1 + p2) & mask;
-    let v2 = p2;
-    let v3 = 0n;
-    let v4 = (0n - p1) & mask;
-    while (pos + 32 <= data.length) {
-      v1 = round(v1, data.readBigUInt64LE(pos));
-      v2 = round(v2, data.readBigUInt64LE(pos + 8));
-      v3 = round(v3, data.readBigUInt64LE(pos + 16));
-      v4 = round(v4, data.readBigUInt64LE(pos + 24));
-      pos += 32;
-    }
-    hash = (rotl(v1, 1n) + rotl(v2, 7n) + rotl(v3, 12n) + rotl(v4, 18n)) & mask;
-    hash = merge(hash, v1);
-    hash = merge(hash, v2);
-    hash = merge(hash, v3);
-    hash = merge(hash, v4);
-  } else {
-    hash = p5;
-  }
-  hash = (hash + BigInt(data.length)) & mask;
-  while (pos + 8 <= data.length) {
-    hash ^= round(0n, data.readBigUInt64LE(pos));
-    hash = (rotl(hash, 27n) * p1 + p4) & mask;
-    pos += 8;
-  }
-  if (pos + 4 <= data.length) {
-    hash ^= (BigInt(data.readUInt32LE(pos)) * p1) & mask;
-    hash = (rotl(hash, 23n) * p2 + p3) & mask;
-    pos += 4;
-  }
-  while (pos < data.length) {
-    hash ^= (BigInt(data[pos]) * p5) & mask;
-    hash = (rotl(hash, 11n) * p1) & mask;
-    pos++;
-  }
-  hash ^= hash >> 33n;
-  hash = (hash * p2) & mask;
-  hash ^= hash >> 29n;
-  hash = (hash * p3) & mask;
-  hash ^= hash >> 32n;
-  return hash;
-}
-
 function zstdBinary(): string {
   const bin = getZstdBinaryPath();
   if (!bin) throw new Error('zstd CLI path unavailable although the oracle precondition passed.');
@@ -402,12 +347,12 @@ describe('compressZstd', () => {
       }
     }
 
-    it('compresses an all-zero megabyte to a tiny frame that the bomb guard refuses to expand', () => {
+    it('round-trips an all-zero megabyte through its tiny frame', () => {
       const zeros = Buffer.alloc(MIB);
       const frame = compressZstd(zeros, { level: 3 });
       assertFrameStructure(frame, zeros);
       expect(frame.length).toBeLessThan(64);
-      expect(() => decompressZstd(frame)).toThrow(/Archive bomb detected/);
+      expect(Buffer.compare(decompressZstd(frame), zeros)).toBe(0);
     });
   });
 });
@@ -581,25 +526,104 @@ describe('decompressZstd', () => {
     expect(() => decompressZstd(tampered)).toThrow(/content size mismatch/i);
   });
 
-  oracleTest('rejects tampered CLI frames in agreement with zstd -t', ['zstd'], () => {
-    const input = englishLikeText(120 * 1024, 900, 93);
-    const frame = cliCompress(input, 7);
+  oracleTest('never accepts a checksum-free mutated frame the CLI rejects, and decodes identically when both accept', ['zstd'], () => {
+    // Without a content checksum a corrupted frame is only caught by structural parsing, so this
+    // compares the repo decoder's block/FSE/Huffman validation against the reference decoder's.
+    // The repo decoder may be stricter: the reference does not flag a Huffman or sequence bitstream
+    // that was over-read, which the repo rejects as corrupt.
+    const input = englishLikeText(100 * 1024, 900, 93);
+    const frame = cliCompress(input, 7, ['--no-check']);
     const rng = makeRng(4242);
-    let agreed = 0;
-    for (let i = 0; i < 40; i++) {
+    const iterations = 160;
+    let bothAccepted = 0;
+    let cliRejected = 0;
+    for (let i = 0; i < iterations; i++) {
       const mutated = Buffer.from(frame);
-      mutated[8 + Math.floor(rng() * (mutated.length - 8))] ^= 1 << Math.floor(rng() * 8);
-      const cliAccepts = cliTestPasses(mutated);
-      let repoAccepts = true;
+      const flips = 1 + Math.floor(rng() * 3);
+      for (let k = 0; k < flips; k++) {
+        mutated[8 + Math.floor(rng() * (mutated.length - 8))] ^= 1 << Math.floor(rng() * 8);
+      }
+      let cliOutput: Buffer | null = null;
       try {
-        decompressZstd(mutated);
+        cliOutput = cliDecompress(mutated);
+      } catch {
+        cliOutput = null;
+      }
+      let repoOutput: Buffer | null = null;
+      try {
+        repoOutput = decompressZstd(mutated);
       } catch (error) {
         expect(error).toBeInstanceOf(ConversionFailedError);
-        repoAccepts = false;
       }
-      expect(repoAccepts).toBe(cliAccepts);
-      agreed++;
+      if (cliOutput === null) {
+        expect(repoOutput, `iteration ${i}: CLI rejected but repo accepted`).toBeNull();
+        cliRejected++;
+      } else if (repoOutput !== null) {
+        expect(Buffer.compare(repoOutput, cliOutput), `iteration ${i}: decoded bytes`).toBe(0);
+        bothAccepted++;
+      }
     }
-    expect(agreed).toBe(40);
+    // Both outcomes must occur, otherwise the comparison above proves nothing about one side.
+    expect(cliRejected).toBeGreaterThan(20);
+    expect(bothAccepted).toBeGreaterThan(5);
+  });
+});
+
+describe('decompression bomb guard', () => {
+  const MIB_32 = 32 * MIB;
+  const BLOCKS_AT_FLOOR = MIB_32 / BLOCK_MAX;
+
+  /** The three highly compressible shapes that real archives produce. */
+  function repetitiveShapes(): Array<[string, Buffer]> {
+    const header = noiseBytes(512, 17);
+    const logLine = '2024-05-01T12:00:00Z INFO worker-3 handled request id=42 status=200 in 12ms\n';
+    const csvRow = 'sku-1001,Widget,19.99,EUR,in-stock,warehouse-7\n';
+    return [
+      ['tar-like 512 B header + 1 MiB of zeros', Buffer.concat([header, Buffer.alloc(MIB)])],
+      ['1 MB of one repeated log line', Buffer.from(logLine.repeat(Math.ceil(MIB / logLine.length)).slice(0, MIB))],
+      ['686 KB of one repeated CSV row', Buffer.from(csvRow.repeat(Math.ceil((686 * 1024) / csvRow.length)).slice(0, 686 * 1024))],
+    ];
+  }
+
+  for (const [name, input] of repetitiveShapes()) {
+    it(`round-trips ${name} below the ratio-guard floor`, () => {
+      const frame = compressZstd(input);
+      assertFrameStructure(frame, input);
+      expect(input.length / frame.length).toBeGreaterThan(100);
+      const restored = decompressZstd(frame);
+      expect(restored.length).toBe(input.length);
+      expect(Buffer.compare(restored, input)).toBe(0);
+    });
+
+    it(`round-trips ${name} through tar -> tar.zst -> extraction`, async () => {
+      const created = await convertArchive(input, 'txt', 'tar.zst', {}, 'sparse.txt');
+      const tar = await convertArchive(created.buffer, 'tar.zst', 'tar', {}, 'sparse.tar.zst');
+      const files = extractTarArchive(tar.buffer);
+      expect(files).toHaveLength(1);
+      expect(files[0].filename).toBe('sparse.txt');
+      expect(Buffer.compare(files[0].buffer, input)).toBe(0);
+    });
+  }
+
+  it('accepts exactly 32 MiB of output at a 32768:1 ratio, then rejects one byte-block more', () => {
+    const atFloor = decompressZstd(buildRleBombFrame(BLOCKS_AT_FLOOR));
+    expect(atFloor.length).toBe(MIB_32);
+    expect(atFloor.every((b) => b === 0)).toBe(true);
+    expect(() => decompressZstd(buildRleBombFrame(BLOCKS_AT_FLOOR + 1))).toThrow(ConversionFailedError);
+    expect(() => decompressZstd(buildRleBombFrame(BLOCKS_AT_FLOOR + 1))).toThrow(
+      /Archive bomb detected: compression ratio \(\d+\.\d:1\) exceeds 100:1 limit/
+    );
+  });
+
+  it('reports the real ratio in the bomb error', () => {
+    const frame = buildRleBombFrame(BLOCKS_AT_FLOOR + 1);
+    const expected = (((BLOCKS_AT_FLOOR + 1) * BLOCK_MAX) / frame.length).toFixed(1);
+    expect(() => decompressZstd(frame)).toThrow(`compression ratio (${expected}:1)`);
+  });
+
+  it('still enforces the absolute 500 MB cap on a declared content size, at any ratio', () => {
+    const frame = buildFrame([rawBlock(Buffer.alloc(0))], { windowLog: 17, contentSize: 600 * MIB });
+    expect(() => decompressZstd(frame)).toThrow(ConversionFailedError);
+    expect(() => decompressZstd(frame)).toThrow(/Archive bomb detected: uncompressed size exceeds limit of 524288000 bytes/);
   });
 });

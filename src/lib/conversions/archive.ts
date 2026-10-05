@@ -18,7 +18,7 @@ import {
   ArchiveEntryCollisionError,
 } from '../types';
 import { compressBzip2, decompressBzip2 } from './bzip2';
-import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
+import { compressZstd, decompressZstd, exceedsZstdRatioGuard, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
   compressLzma2,
@@ -3447,7 +3447,9 @@ export async function inspectArchive(
     try {
       const decompressed = decompressZstd(archiveBuffer);
       return inspectTarBuffer(decompressed, 'tar.zst');
-    } catch {
+    } catch (err) {
+      // Typed decoder errors (bomb guard, malformed frame) already say what went wrong.
+      if (err instanceof ConversionFailedError) throw err;
       throw new ConversionFailedError('Failed to decompress zstd archive.');
     }
   }
@@ -3644,9 +3646,10 @@ export async function convertArchive(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
-    if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-      throw new Error(
-        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+    // Same rule as the decoder: the ratio only counts once the output is past the guard floor.
+    if (exceedsZstdRatioGuard(uncompressed.length, effectiveBuffer.length)) {
+      throw new ConversionFailedError(
+        `Archive bomb detected: compression ratio (${(uncompressed.length / effectiveBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
     }
     if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {

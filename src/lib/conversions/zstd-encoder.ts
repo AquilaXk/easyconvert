@@ -132,6 +132,7 @@ const LITERAL_BITS_MIN = 1;
 const LITERAL_RUN_DEPTH_SHIFT = 8;
 const LITERAL_RUN_DEPTH_SHIFT_MAX = 6;
 const NO_POSITION = -1;
+const OUTPUT_MIN_INITIAL_BYTES = 1024;
 const MIN_TABLE_LOG = 8;
 const RLE_BLOCK_MIN_LENGTH = 8;
 const HUFFMAN_MIN_LITERALS = 32;
@@ -574,6 +575,8 @@ export class ZstdBlockEncoder {
   private readonly ofHistogram = new Uint32Array(ZSTD_OF_MAX_CODE + 1);
   private readonly literalHistogram = new Uint32Array(256);
   private readonly blockHistogram = new Uint32Array(256);
+  private out = new Uint8Array(0);
+  private outBound = 0;
   private committedRep1: number = ZSTD_REP_OFFSET_INITIAL[0];
   private committedRep2: number = ZSTD_REP_OFFSET_INITIAL[1];
   private committedRep3: number = ZSTD_REP_OFFSET_INITIAL[2];
@@ -588,22 +591,43 @@ export class ZstdBlockEncoder {
     this.ofCodes = new Uint8Array(capacity);
   }
 
-  /** Encodes the whole input as a sequence of blocks starting at out[pos]. Returns the end position. */
-  public encodeAll(out: Uint8Array, startPos: number): number {
-    const data = this.data;
-    const length = data.length;
-    let pos = startPos;
+  /**
+   * Encodes the whole input as blocks after `prefix`, leaving `trailerBytes` of spare room for the
+   * caller. The output buffer starts at roughly half the input size (compressible data never
+   * outgrows that) and grows toward the raw-block bound only if the data turns out incompressible.
+   */
+  public encodeAll(prefix: Uint8Array, trailerBytes: number): { data: Uint8Array; length: number } {
+    const length = this.data.length;
+    const fixed = prefix.length + trailerBytes;
+    const bound = fixed + zstdBlocksBound(length);
+    const initial = Math.min(bound, fixed + Math.max(OUTPUT_MIN_INITIAL_BYTES, Math.ceil(length / 2)));
+    this.out = new Uint8Array(initial);
+    this.out.set(prefix);
+    this.outBound = bound;
+    let pos = prefix.length;
     if (length === 0) {
-      out[pos++] = 1;
-      out[pos++] = 0;
-      out[pos++] = 0;
-      return pos;
+      this.reserve(pos, BLOCK_HEADER_BYTES);
+      this.out[pos++] = 1;
+      this.out[pos++] = 0;
+      this.out[pos++] = 0;
     }
     for (let blockStart = 0; blockStart < length; blockStart += ZSTD_BLOCK_SIZE_MAX) {
       const blockEnd = Math.min(blockStart + ZSTD_BLOCK_SIZE_MAX, length);
-      pos = this.encodeBlock(blockStart, blockEnd, blockEnd === length, out, pos);
+      this.reserve(pos, BLOCK_HEADER_BYTES + (blockEnd - blockStart) + trailerBytes);
+      pos = this.encodeBlock(blockStart, blockEnd, blockEnd === length, this.out, pos);
     }
-    return pos;
+    this.reserve(pos, trailerBytes);
+    return { data: this.out, length: pos };
+  }
+
+  /** Guarantees `extra` writable bytes after `pos`, growing (doubling, capped at the bound) if needed. */
+  private reserve(pos: number, extra: number): void {
+    if (pos + extra <= this.out.length) return;
+    const capacity = Math.min(this.outBound, Math.max(this.out.length * 2, pos + extra));
+    if (capacity < pos + extra) throw new Error('Zstandard encoder output exceeded its worst-case bound.');
+    const grown = new Uint8Array(capacity);
+    grown.set(this.out.subarray(0, pos));
+    this.out = grown;
   }
 
   private writeBlockHeader(out: Uint8Array, pos: number, last: boolean, type: number, size: number): void {
