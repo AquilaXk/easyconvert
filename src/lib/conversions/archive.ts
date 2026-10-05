@@ -29,6 +29,7 @@ import {
   inspectedKindOf,
   listingBufferLimit,
   parse7zTechnicalListing,
+  cleanupDirectoryTree,
   sanitizeLeafFilename,
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
@@ -182,6 +183,8 @@ export function resolveArchiveEntryCollisions(
 
   // policy === 'rename'
   const seen = new Set<string>();
+  // Next number to try per original name, so n duplicates cost O(n) rather than O(n^2) probing.
+  const nextSuffix = new Map<string, number>();
   const result: { filename: string; buffer: Buffer }[] = [];
 
   for (const f of files) {
@@ -196,12 +199,13 @@ export function resolveArchiveEntryCollisions(
     const dir = path.dirname(norm);
     const baseStem = path.basename(norm, ext);
 
-    let counter = 1;
+    let counter = nextSuffix.get(norm) ?? 1;
     let candidate = dir === '.' || dir === '' ? `${baseStem}-${counter}${ext}` : `${dir}/${baseStem}-${counter}${ext}`;
     while (seen.has(candidate)) {
       counter++;
       candidate = dir === '.' || dir === '' ? `${baseStem}-${counter}${ext}` : `${dir}/${baseStem}-${counter}${ext}`;
     }
+    nextSuffix.set(norm, counter + 1);
     seen.add(candidate);
     result.push({ filename: candidate, buffer: f.buffer });
   }
@@ -472,7 +476,7 @@ export async function extractZipArchive(
         }
         return results;
       } finally {
-        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+        cleanupDirectoryTree(workDir);
       }
     } else {
       throw new ConversionFailedError('Cannot extract encrypted ZIP archive: 7-Zip binary not available.');
@@ -662,12 +666,6 @@ export function extractTarArchive(
   let totalUncompressedSize = 0;
 
   while (offset + 512 <= tarBuffer.length) {
-    if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-      throw new Error(
-        `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
-      );
-    }
-
     const header = tarBuffer.subarray(offset, offset + 512);
     offset += 512;
 
@@ -691,6 +689,10 @@ export function extractTarArchive(
     const sanitizedName = sanitizeArchivePath(rawName);
     if (sanitizedName) {
       if (matchArchiveGlob(sanitizedName, options.entries)) {
+        // Checked when an entry is about to be added, so exactly MAX_FILES entries plus the end marker pass.
+        if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+          throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+        }
         const fileBuf = tarBuffer.subarray(offset, offset + size);
         files.push({ filename: sanitizedName, buffer: Buffer.from(fileBuf) });
       }
@@ -1769,9 +1771,7 @@ export function convertWithNative7z(
     }
     return null;
   } finally {
-    try {
-      fs.rmSync(workDir, { recursive: true, force: true });
-    } catch {}
+    cleanupDirectoryTree(workDir);
   }
 }
 
@@ -1814,7 +1814,7 @@ export async function extractWithSpannedStream7z(
 
   const typeSwitch = SPANNED_ARCHIVE_TYPE_SWITCHES[metadata.format];
   const uniqueSuffix = crypto.randomBytes(6).toString('hex');
-  const tempDiskFile = path.join(os.tmpdir(), `spanned_stitch_${Date.now()}_${uniqueSuffix}_${path.basename(metadata.baseFilename)}`);
+  const tempDiskFile = path.join(os.tmpdir(), `spanned_stitch_${Date.now()}_${uniqueSuffix}`);
   try {
     await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
     const tree = await extractArchiveContained({

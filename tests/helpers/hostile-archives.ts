@@ -113,13 +113,19 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
         info = zipfile.ZipInfo(e['name'])
         info.create_system = 3
         info.external_attr = int(e.get('mode', 0o100644)) << 16
+        if 'comment' in e:
+            info.comment = e['comment'].encode()
         z.writestr(info, e.get('data', ''))
 `;
 
 const PY_TAR_ENTRIES = `
 import sys, tarfile, io, json
 out, spec = sys.argv[1], json.loads(sys.argv[2])
-with tarfile.open(out, 'w:gz' if out.endswith(('.gz', '.tgz')) else 'w') as t:
+mode = 'w'
+if out.endswith(('.gz', '.tgz')): mode = 'w:gz'
+if out.endswith(('.bz2', '.tbz2')): mode = 'w:bz2'
+if out.endswith(('.xz', '.txz')): mode = 'w:xz'
+with tarfile.open(out, mode) as t:
     for e in spec:
         info = tarfile.TarInfo(e['name'])
         kind = e.get('kind', 'file')
@@ -161,6 +167,23 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
         z.writestr('f%05d.txt' % i, 'x')
 `;
 
+const PY_COMPRESS_FILE = `
+import sys, gzip, bz2, lzma
+out, data = sys.argv[1], sys.argv[2].encode()
+opener = gzip.open if out.endswith('.gz') else bz2.open if out.endswith('.bz2') else lzma.open
+with opener(out, 'wb') as f:
+    f.write(data)
+`;
+
+const PY_DEEP_TAR = `
+import sys, tarfile, io
+out, depth = sys.argv[1], int(sys.argv[2])
+with tarfile.open(out, 'w') as t:
+    info = tarfile.TarInfo('d/' * depth + 'leaf.txt')
+    info.size = 4
+    t.addfile(info, io.BytesIO(b'leaf'))
+`;
+
 const PY_MANY_ENTRIES_TAR = `
 import sys, tarfile, io, os
 out, count = sys.argv[1], int(sys.argv[2])
@@ -176,6 +199,8 @@ export interface ZipEntrySpec {
   data?: string;
   /** Unix st_mode including the file-type bits, e.g. 0o120777 for a symlink. */
   mode?: number;
+  /** Per-entry comment, written to the central directory (may hold line breaks). */
+  comment?: string;
 }
 
 /** A ZIP whose entry names and unix modes are written verbatim by Python's zipfile. */
@@ -339,5 +364,36 @@ export function build7zZeroBomb(outPath: string, stageDir: string, mib: number):
   fs.closeSync(fs.openSync(zeroPath, 'w'));
   fs.truncateSync(zeroPath, mib * MIB);
   run7z(['a', '-t7z', '-mx=1', '-y', outPath, 'zeros.bin'], stageDir);
+  return outPath;
+}
+
+/** A single-stream compressed file (.gz, .bz2 or .xz by suffix) holding `content`, written by Python. */
+export function buildCompressedFile(outPath: string, content: string): string {
+  runPython(PY_COMPRESS_FILE, [outPath, content]);
+  return outPath;
+}
+
+/** A TAR holding one file under `depth` nested directories. */
+export function buildDeepTar(outPath: string, depth: number): string {
+  runPython(PY_DEEP_TAR, [outPath, String(depth)]);
+  return outPath;
+}
+
+/** A 7z archive with encrypted content and, when `encryptHeaders` is set, encrypted entry names. */
+export function build7zEncrypted(
+  outPath: string,
+  stageDir: string,
+  password: string,
+  files: Array<{ name: string; data: string }>,
+  encryptHeaders: boolean
+): string {
+  fs.mkdirSync(stageDir, { recursive: true });
+  for (const file of files) {
+    fs.writeFileSync(path.join(stageDir, file.name), file.data);
+  }
+  run7z(
+    ['a', '-t7z', `-mhe=${encryptHeaders ? 'on' : 'off'}`, `${AES_PASSWORD_SWITCH_PREFIX}${password}`, '-y', outPath, ...files.map((f) => f.name)],
+    stageDir
+  );
   return outPath;
 }

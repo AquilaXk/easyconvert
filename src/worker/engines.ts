@@ -49,6 +49,7 @@ import {
 import { ARCHIVE_SECURITY_LIMITS, extractWithSpannedStream7z } from '../lib/conversions/archive';
 import {
   assertArchivePasswordSafe,
+  cleanupDirectoryTree,
   extractArchiveContained,
   sanitizeLeafFilename,
 } from '../lib/conversions/archive-extraction-safety';
@@ -223,11 +224,7 @@ async function withSandboxDir<T>(
   try {
     return await operation(tempDir);
   } finally {
-    try {
-      if (fs.existsSync(tempDir)) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    } catch {}
+    cleanupDirectoryTree(tempDir);
   }
 }
 

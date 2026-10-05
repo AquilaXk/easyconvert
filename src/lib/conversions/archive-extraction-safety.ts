@@ -42,7 +42,9 @@ export type UnsafeArchiveReason =
   | 'uncompressed-size'
   | 'compression-ratio'
   | 'malformed-listing'
-  | 'unsafe-filename';
+  | 'unsafe-filename'
+  | 'path-depth'
+  | 'invalid-entry-filter';
 
 /** An archive or filename that violates the extraction policy. Surfaces as HTTP 400 at the API. */
 export class UnsafeArchiveError extends ConversionFailedError {
@@ -70,6 +72,8 @@ export interface ListedArchiveEntry {
   linkKind: 'symlink' | 'hardlink' | null;
   /** A device, FIFO or socket entry. */
   isSpecial: boolean;
+  /** The single stream of a wrapper format (gz, bz2, xz, ...), whose size 7-Zip may not state. */
+  wrapperPayload?: boolean;
 }
 
 export interface ExtractedFile {
@@ -93,6 +97,14 @@ export class UnreadableArchiveError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'UnreadableArchiveError';
+  }
+}
+
+/** The archive is encrypted and no password was supplied. */
+export class ArchivePasswordRequiredError extends ConversionFailedError {
+  constructor(label: string) {
+    super(`The ${label} is password protected. A password is required to extract.`);
+    this.name = 'ArchivePasswordRequiredError';
   }
 }
 
@@ -123,7 +135,8 @@ const EXCLUDE_WILDCARD_PATTERN = /[*?]/;
 const MAX_LEAF_FILENAME_BYTES = 255;
 const UNIX_MODE_SHIFT = 16;
 
-const LISTING_FIELD_PATTERN = /^(.+?) =(?: (.*))?$/;
+/** `[^\n]` rather than `.`: CR, U+2028 and U+2029 are legal in names and `.` would not match them. */
+const LISTING_FIELD_PATTERN = /^([^\n]+?) =(?: ([^\n]*))?$/;
 const DECIMAL_PATTERN = /^\d+$/;
 const UNIX_SYMLINK_MODE = /^l[-rwxsStT]{9}$/;
 const UNIX_DIRECTORY_MODE = /^d[-rwxsStT]{9}$/;
@@ -133,7 +146,30 @@ const WINDOWS_ATTRIBUTE_LETTERS = /^[RHS8DAdNTsLCOIEV]+$/;
 /** Unix mode in the high 16 bits, printed as hex when 7-Zip cannot render it as `rwx`. */
 const HEX_ATTRIBUTE = /^[0-9A-F]{8}$/;
 const DRIVE_LETTER_PREFIX = /^[A-Za-z]:/;
-const PASSWORD_FAILURE_PATTERN = /Wrong password|Can not open encrypted|Data Error/i;
+const PASSWORD_FAILURE_PATTERN = /Wrong password|Can not open encrypted/i;
+/** Also what a wrong password looks like once an encrypted stream is being decoded; only meaningful when a password was given. */
+const DECODE_ERROR_PATTERN = /Data Error/i;
+/** With no password supplied, 7-Zip prompts for one and aborts when stdin is closed ("Break signaled", exit 255). */
+const PASSWORD_PROMPT_PATTERN = /Break signaled|Enter password/i;
+
+/** Deepest entry path (in segments) an archive may contain or an extraction may produce. */
+export const MAX_ENTRY_PATH_DEPTH = 256;
+const MAX_ENTRY_FILTER_PATTERNS = 1_000;
+const MAX_ENTRY_FILTER_TOTAL_BYTES = 64 * 1024;
+const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
+/** Single-stream wrapper extensions and the suffix 7-Zip's output name gets ("tgz" unpacks to "<name>.tar"). */
+const WRAPPER_EXTENSION_SUFFIXES = new Map<string, string>([
+  ['gz', ''],
+  ['bz2', ''],
+  ['xz', ''],
+  ['lzma', ''],
+  ['zst', ''],
+  ['z', ''],
+  ['tgz', '.tar'],
+  ['tbz2', '.tar'],
+  ['tbz', '.tar'],
+  ['txz', '.tar'],
+]);
 
 /** Output bound for a listing that may hold at most `limits.MAX_FILES` entries. */
 export function listingBufferLimit(limits: ArchiveExtractionLimits): number {
@@ -209,8 +245,8 @@ function classifyAttributeToken(token: string, into: AttributeClassification): v
   }
 }
 
-function buildListedEntry(fields: Map<string, string>): ListedArchiveEntry {
-  const entryPath = fields.get('Path');
+function buildListedEntry(fields: Map<string, string>, payloadName?: string): ListedArchiveEntry {
+  const entryPath = fields.get('Path') ?? payloadName;
   if (entryPath === undefined) {
     throw new UnsafeArchiveError('malformed-listing', 'Archive listing contains an entry without a path.');
   }
@@ -241,19 +277,31 @@ function buildListedEntry(fields: Map<string, string>): ListedArchiveEntry {
     sizeBytes: DECIMAL_PATTERN.test(rawSize) ? Number(rawSize) : null,
     linkKind,
     isSpecial: classification.isSpecial,
+    ...(fields.has('Path') ? {} : { wrapperPayload: true }),
   };
 }
 
+export interface ListingParseOptions {
+  /**
+   * Single-stream wrapper formats (gz, bz2, xz, ...) list their one payload without a `Path`. When the
+   * listing is exactly one such block, it is that payload and takes this name. Otherwise a block
+   * without a path is malformed.
+   */
+  payloadName?: string;
+}
+
 /**
- * Parses `7z l -slt -ba` output. 7-Zip rewrites line breaks inside entry names, so a hostile name
- * cannot forge fields or entry boundaries. Anything that is not `Key = Value` fails closed.
+ * Parses `7z l -slt -ba` output. Anything that is not `Key = Value` fails closed, and so does a block
+ * that repeats a key. Some 7-Zip builds (p7zip 16.02) print raw line breaks from names, comments and
+ * link targets, so a hostile value can carry fake `Key = Value` lines; the repeated key it forges (the
+ * real field is always printed too) is what exposes it. Newer builds rewrite the line breaks.
  */
-export function parse7zTechnicalListing(stdout: string): ListedArchiveEntry[] {
-  const entries: ListedArchiveEntry[] = [];
+export function parse7zTechnicalListing(stdout: string, options: ListingParseOptions = {}): ListedArchiveEntry[] {
+  const blocks: Array<Map<string, string>> = [];
   let fields = new Map<string, string>();
   const flush = (): void => {
     if (fields.size > 0) {
-      entries.push(buildListedEntry(fields));
+      blocks.push(fields);
       fields = new Map<string, string>();
     }
   };
@@ -266,10 +314,15 @@ export function parse7zTechnicalListing(stdout: string): ListedArchiveEntry[] {
     if (!match) {
       throw new UnsafeArchiveError('malformed-listing', 'Archive listing contains an unrecognized line.');
     }
+    if (fields.has(match[1])) {
+      throw new UnsafeArchiveError('malformed-listing', 'Archive listing repeats a field within one entry.');
+    }
     fields.set(match[1], match[2] ?? '');
   }
   flush();
-  return entries;
+
+  const isWrapperPayload = options.payloadName !== undefined && blocks.length === 1 && !blocks[0].has('Path');
+  return blocks.map((block) => buildListedEntry(block, isWrapperPayload ? options.payloadName : undefined));
 }
 
 /** Why an entry name cannot be extracted under the root, or null when it is a plain relative path. */
@@ -287,6 +340,17 @@ function entryPathProblem(rawPath: string): 'path-traversal' | 'absolute-path' |
   return null;
 }
 
+const PATH_SEPARATOR_PATTERN = /[\\/]/;
+
+/** Number of path components, ignoring empty and `.` segments. */
+function entryPathDepth(rawPath: string): number {
+  let depth = 0;
+  for (const segment of rawPath.split(PATH_SEPARATOR_PATTERN)) {
+    if (segment !== '' && segment !== '.') depth++;
+  }
+  return depth;
+}
+
 function assertSafeEntryPath(rawPath: string): void {
   const problem = entryPathProblem(rawPath);
   if (problem === 'invalid-entry-name') {
@@ -297,6 +361,9 @@ function assertSafeEntryPath(rawPath: string): void {
   }
   if (problem === 'path-traversal') {
     throw new UnsafeArchiveError('path-traversal', 'Archive contains an entry that escapes the extraction directory.');
+  }
+  if (entryPathDepth(rawPath) > MAX_ENTRY_PATH_DEPTH) {
+    throw new UnsafeArchiveError('path-depth', `Archive contains an entry nested deeper than ${MAX_ENTRY_PATH_DEPTH} levels.`);
   }
 }
 
@@ -336,13 +403,21 @@ export function assertSafeArchiveListing(
     if (entry.isSpecial) {
       throw new UnsafeArchiveError('special-entry', 'Archive contains a device, FIFO or socket entry.');
     }
-    if (entry.isDirectory) continue;
-    if (entry.sizeBytes === null || !Number.isSafeInteger(entry.sizeBytes)) {
+    if (entry.sizeBytes === null) {
+      // A wrapper's stream size may be unstated; RLIMIT_FSIZE and the post-extraction walk bound it.
+      if (entry.isDirectory || entry.wrapperPayload) continue;
       throw new UnsafeArchiveError('malformed-listing', 'Archive listing is missing a valid size for a file entry.');
     }
+    if (!Number.isSafeInteger(entry.sizeBytes)) {
+      throw new UnsafeArchiveError('malformed-listing', 'Archive listing is missing a valid size for a file entry.');
+    }
+    // Every non-link entry counts, directories included: a patched header can make a "directory" carry data.
     totalBytes += entry.sizeBytes;
     if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
       throw sizeError(limits);
+    }
+    if (entry.isDirectory && entry.sizeBytes > 0) {
+      throw new UnsafeArchiveError('malformed-listing', 'Archive directory entry declares file data.');
     }
   }
   if (skippedLinks.length > 0) {
@@ -358,13 +433,16 @@ export function assertSafeArchiveListing(
   return { entryCount: entries.length, totalBytes, skippedLinks };
 }
 
-const PATH_SLASH_CHAR_CODE = 0x2f;
-
-/** Strips trailing '/' characters in linear time. */
-function trimTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value.charCodeAt(end - 1) === PATH_SLASH_CHAR_CODE) end--;
-  return value.slice(0, end);
+/**
+ * The path an entry occupies once extracted: separators unified, and empty and `.` segments dropped,
+ * so `a`, `./a`, `a/` and `d//b` / `d/./b` compare equal. Linear in the name length.
+ */
+function normalizeEntryKey(name: string): string {
+  const kept: string[] = [];
+  for (const segment of name.split(PATH_SEPARATOR_PATTERN)) {
+    if (segment !== '' && segment !== '.') kept.push(segment);
+  }
+  return kept.join('/');
 }
 
 /**
@@ -375,7 +453,7 @@ export function findEntryCollision(entries: ListedArchiveEntry[]): string | null
   const seen = new Map<string, { count: number; hasNonDirectory: boolean }>();
   for (const entry of entries) {
     if (entry.linkKind !== null) continue;
-    const normalized = trimTrailingSlashes(entry.path.replace(/\\/g, '/'));
+    const normalized = normalizeEntryKey(entry.path);
     const state = seen.get(normalized);
     if (state) {
       state.count++;
@@ -438,8 +516,10 @@ function isInside(realRoot: string, candidate: string): boolean {
 
 /**
  * Walks an extraction root with `lstat` (never following links), rejects any symlink, hard link or
- * special file, `realpath`-checks every entry against the root, and enforces the caps on what was
- * actually written (the listing is only what the archive claimed).
+ * special file, and enforces the caps and the depth limit on what was actually written (the listing
+ * is only what the archive claimed). The root is resolved once; every entry is reached by joining
+ * names onto it, and since `lstat` shows no link below it, nothing can lead outside. A per-entry
+ * `realpath` would re-resolve the whole path each time and make the walk cubic in the nesting depth.
  */
 export function assertExtractionContained(
   root: string,
@@ -450,9 +530,13 @@ export function assertExtractionContained(
   const files: ExtractedFile[] = [];
   let entryCount = 0;
   let totalBytes = 0;
-  const pending: Array<{ abs: string; rel: string }> = [{ abs: root, rel: '' }];
+  const pending: Array<{ abs: string; rel: string; depth: number }> = [{ abs: realRoot, rel: '', depth: 0 }];
 
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const depth = next.depth + 1;
+    if (depth > MAX_ENTRY_PATH_DEPTH) {
+      throw new UnsafeArchiveError('path-depth', `Extraction produced a path nested deeper than ${MAX_ENTRY_PATH_DEPTH} levels.`);
+    }
     for (const name of fs.readdirSync(next.abs)) {
       const abs = path.join(next.abs, name);
       const rel = next.rel === '' ? name : `${next.rel}/${name}`;
@@ -461,7 +545,7 @@ export function assertExtractionContained(
       if (stat.isSymbolicLink()) {
         throw new UnsafeArchiveError('link-entry', 'Extraction produced a symbolic link, which is not allowed.');
       }
-      if (!isInside(realRoot, fs.realpathSync(abs))) {
+      if (!isInside(realRoot, abs)) {
         throw new UnsafeArchiveError('escaped-root', 'Extraction produced an entry outside the extraction directory.');
       }
 
@@ -471,7 +555,7 @@ export function assertExtractionContained(
       }
 
       if (stat.isDirectory()) {
-        pending.push({ abs, rel });
+        pending.push({ abs, rel, depth });
       } else if (stat.isFile()) {
         if (stat.nlink > 1) {
           throw new UnsafeArchiveError('link-entry', 'Extraction produced a hard link, which is not allowed.');
@@ -488,8 +572,42 @@ export function assertExtractionContained(
   }
 
   assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
-  files.sort((a, b) => (a.relPath < b.relPath ? -1 : 1));
+  files.sort((x, y) => (x.relPath < y.relPath ? -1 : 1));
   return { files, entryCount, totalBytes, skippedLinks: [] };
+}
+
+/**
+ * Deletes a directory tree without recursion: `fs.rmSync` recurses once per level and overflows the
+ * stack on trees nested a few thousand levels deep. Links are removed, never followed. Throws when
+ * something cannot be removed.
+ */
+export function removeDirectoryTree(root: string): void {
+  const directories: string[] = [];
+  const pending = [root];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    directories.push(next);
+    for (const entry of fs.readdirSync(next, { withFileTypes: true })) {
+      const abs = path.join(next, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(abs);
+      } else {
+        fs.unlinkSync(abs);
+      }
+    }
+  }
+  for (let i = directories.length - 1; i >= 0; i--) {
+    fs.rmdirSync(directories[i]);
+  }
+}
+
+/** Best-effort cleanup for `finally` blocks: never masks the real error, but a failure is logged, not swallowed. */
+export function cleanupDirectoryTree(root: string): void {
+  if (!fs.existsSync(root)) return;
+  try {
+    removeDirectoryTree(root);
+  } catch (err) {
+    console.error(`[archive] failed to remove temporary directory ${root}:`, err);
+  }
 }
 
 /**
@@ -562,8 +680,38 @@ function passwordArgs(request: ContainedExtractionRequest): { args: string[]; st
   return { args: ['-p'], stdin: Buffer.from(`${request.password}\n`) };
 }
 
+/**
+ * Selective-extraction patterns travel as command-line arguments, so they are bounded in count and total
+ * size (the OS caps the argument block) and must not carry NUL or line breaks.
+ */
+export function assertEntryFilterSafe(patterns: string[] | undefined): void {
+  if (patterns === undefined) return;
+  if (patterns.length > MAX_ENTRY_FILTER_PATTERNS) {
+    throw new UnsafeArchiveError('invalid-entry-filter', `At most ${MAX_ENTRY_FILTER_PATTERNS} entry patterns are accepted.`);
+  }
+  let totalBytes = 0;
+  for (const pattern of patterns) {
+    if (pattern === '' || ENTRY_FILTER_FORBIDDEN_CHARACTERS.test(pattern)) {
+      throw new UnsafeArchiveError('invalid-entry-filter', 'Entry patterns must be non-empty and free of NUL and line breaks.');
+    }
+    totalBytes += Buffer.byteLength(pattern);
+    if (totalBytes > MAX_ENTRY_FILTER_TOTAL_BYTES) {
+      throw new UnsafeArchiveError('invalid-entry-filter', 'The entry patterns are too long.');
+    }
+  }
+}
+
 function includeArgs(request: ContainedExtractionRequest): string[] {
   return (request.includePatterns ?? []).map((pattern) => `-i!${pattern}`);
+}
+
+/** The name 7-Zip gives the payload of a single-stream wrapper (`input.bz2` unpacks to `input`), if the file is one. */
+function wrapperPayloadName(archivePath: string): string | undefined {
+  const base = path.basename(archivePath);
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return undefined;
+  const suffix = WRAPPER_EXTENSION_SUFFIXES.get(base.slice(dot + 1).toLowerCase());
+  return suffix === undefined ? undefined : `${base.slice(0, dot)}${suffix}`;
 }
 
 function typeArgs(request: ContainedExtractionRequest): string[] {
@@ -612,7 +760,13 @@ function classifyRunFailure(err: unknown): RunFailure | null {
  * Maps a failed 7z run to a typed error. Policy errors pass through; infrastructure failures
  * (timeouts, aborts, memory limits) keep their own types so callers can tell them apart.
  */
-function toArchiveFailure(err: unknown, label: string, phase: 'list' | 'extract', limits: ArchiveExtractionLimits): unknown {
+function toArchiveFailure(
+  err: unknown,
+  label: string,
+  phase: 'list' | 'extract',
+  limits: ArchiveExtractionLimits,
+  hasPassword: boolean
+): unknown {
   // The collision error carries a numeric `status` like a child-process failure, so match it explicitly.
   if (err instanceof ConversionFailedError || err instanceof ArchiveEntryCollisionError) {
     return err;
@@ -624,8 +778,14 @@ function toArchiveFailure(err: unknown, label: string, phase: 'list' | 'extract'
   if (failure.kind === 'buffer') {
     return phase === 'list' ? entryCountError(null, limits) : sizeError(limits);
   }
-  if (PASSWORD_FAILURE_PATTERN.test(failure.text)) {
-    return new ConversionFailedError(`Invalid password for encrypted ${label}.`);
+  const passwordFailure =
+    PASSWORD_FAILURE_PATTERN.test(failure.text) ||
+    (hasPassword && DECODE_ERROR_PATTERN.test(failure.text)) ||
+    (!hasPassword && PASSWORD_PROMPT_PATTERN.test(failure.text));
+  if (passwordFailure) {
+    return hasPassword
+      ? new ConversionFailedError(`Invalid password for encrypted ${label}.`)
+      : new ArchivePasswordRequiredError(label);
   }
   return new UnreadableArchiveError(
     `Could not read the archive: 7-Zip rejected the ${label} as malformed or unsupported (exit code ${failure.exitCode ?? 'unknown'}).`
@@ -684,7 +844,7 @@ async function listArchive(request: ContainedExtractionRequest, target: ListTarg
     stdin,
     signal: request.signal,
   });
-  return parse7zTechnicalListing(result.stdout.toString('utf-8'));
+  return parse7zTechnicalListing(result.stdout.toString('utf-8'), { payloadName: wrapperPayloadName(target.archivePath) });
 }
 
 function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): ListedArchiveEntry[] {
@@ -698,7 +858,7 @@ function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget
     input: stdin,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  return parse7zTechnicalListing(stdout.toString('utf-8'));
+  return parse7zTechnicalListing(stdout.toString('utf-8'), { payloadName: wrapperPayloadName(target.archivePath) });
 }
 
 function excludeArgsFor(skippedLinks: string[]): string[] {
@@ -748,7 +908,7 @@ async function vetNestedTar(request: ContainedExtractionRequest, tree: Contained
     // The inner tar is repackaged as a whole, so its links cannot be skipped selectively.
     assertSafeArchiveListing(inner, ratioBytes, request.limits);
   } catch (err) {
-    const failure = toArchiveFailure(err, request.label, 'list', request.limits);
+    const failure = toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
     if (failure instanceof UnreadableArchiveError && !isTar) return;
     throw failure;
   }
@@ -759,6 +919,7 @@ async function vetNestedTar(request: ContainedExtractionRequest, tree: Contained
  * rejects with a typed error; nothing is written before the listing has passed the policy.
  */
 export async function extractArchiveContained(request: ContainedExtractionRequest): Promise<ContainedTree> {
+  assertEntryFilterSafe(request.includePatterns);
   // stat, not lstat: the input archive is trusted storage, and its real size is the ratio's divisor.
   const archiveBytes = fs.statSync(request.archivePath).size;
   const ratioBytes = request.ratioBaseBytes ?? archiveBytes;
@@ -774,7 +935,7 @@ export async function extractArchiveContained(request: ContainedExtractionReques
     }
     assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'list', request.limits);
+    throw toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
   }
 
   try {
@@ -790,7 +951,7 @@ export async function extractArchiveContained(request: ContainedExtractionReques
       signal: request.signal,
     });
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'extract', request.limits);
+    throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));
   }
 
   const tree = withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
@@ -803,6 +964,7 @@ export async function extractArchiveContained(request: ContainedExtractionReques
 
 /** Synchronous twin of {@link extractArchiveContained} for the library's synchronous conversion path. */
 export function extractArchiveContainedSync(request: ContainedExtractionRequest): ContainedTree {
+  assertEntryFilterSafe(request.includePatterns);
   const archiveBytes = fs.statSync(request.archivePath).size;
   const ratioBytes = request.ratioBaseBytes ?? archiveBytes;
   let skippedLinks: string[] = [];
@@ -817,7 +979,7 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
     }
     assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'list', request.limits);
+    throw toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
   }
 
   try {
@@ -835,7 +997,7 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'extract', request.limits);
+    throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));
   }
 
   return withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
@@ -855,7 +1017,7 @@ export function assertListingResourceCaps(
   }
   let totalBytes = 0;
   for (const entry of entries) {
-    if (!entry.isDirectory && entry.sizeBytes !== null && Number.isSafeInteger(entry.sizeBytes)) {
+    if (entry.linkKind === null && entry.sizeBytes !== null && Number.isSafeInteger(entry.sizeBytes)) {
       totalBytes += entry.sizeBytes;
       if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
         throw sizeError(limits);
@@ -891,10 +1053,6 @@ export interface InspectionSafety {
   unextractableReasons: string[];
   /** Per-entry flags, in the order of the input entries. */
   flags: InspectionEntryFlags[];
-}
-
-function normalizeEntryKey(name: string): string {
-  return trimTrailingSlashes(name.replace(/\\/g, '/'));
 }
 
 /**
