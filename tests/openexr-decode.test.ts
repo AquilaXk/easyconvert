@@ -6,11 +6,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { decodeOpenExr } from '../src/lib/conversions/raw-hdr';
-import { MAX_OPENEXR_PIXELS, OpenExrDecodeError, type OpenExrErrorKind } from '../src/lib/conversions/openexr-decode';
+import {
+  MAX_OPENEXR_BLOCK_BYTES,
+  MAX_OPENEXR_CHANNELS,
+  MAX_OPENEXR_PIXELS,
+  MAX_OPENEXR_TOTAL_BYTES,
+  OpenExrDecodeError,
+  type OpenExrErrorKind,
+} from '../src/lib/conversions/openexr-decode';
 import { ConversionFailedError } from '../src/lib/types';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { decodeExrWithFfmpeg } from './helpers/ffmpeg-exr';
 import { oracleTest } from './helpers/oracle-test';
+import { buildUniformLongCodePizPayload, pizFirstBlockStats } from './helpers/exr-piz-tools';
 import { halfBitsToFloat, floatToHalfBits } from './helpers/openexr-writer';
 import {
   assembleExr,
@@ -41,6 +49,16 @@ const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'exr');
 const RGB_COMPONENTS = 3;
 const FLOAT_BYTES = 4;
 const HALF_BYTES = 2;
+const TILEDESC_BYTES = 9;
+const LONG_CODE_WIDTH = 100_000;
+const LONG_CODE_BITS = 30;
+const LONG_CODE_TIME_LIMIT_MS = 1000;
+const BLOCK_CAP_FLOAT_CHANNELS = 32;
+const BLOCK_CAP_WIDTH = 2_100_000;
+const TOTAL_CAP_SIDE = 3000;
+const TOTAL_CAP_EXTRA_CHANNELS = 40;
+const PIZ_WAVELET_16_BIT_THRESHOLD = 2 ** 14;
+const DIRECT_LOOKUP_CODE_BITS = 14;
 const HALF_RELATIVE_TOLERANCE = 2 ** -10;
 const HALF_ABSOLUTE_TOLERANCE = 2 ** -24;
 const REFERENCE_PEAK_MINIMUM = 7;
@@ -61,6 +79,13 @@ interface FixtureEntry {
   sample: 'half' | 'float' | 'uint';
   lossy: boolean;
   channelNames?: string;
+  /** Per-fixture window; absent entries use the manifest-wide size and origin. */
+  width?: number;
+  height?: number;
+  xMin?: number;
+  yMin?: number;
+  /** Fixture whose PIZ block needs the 16-bit wavelet and codes over 14 bits. */
+  wideValues?: boolean;
 }
 
 interface Manifest {
@@ -108,6 +133,14 @@ function expectDecodeError(run: () => unknown, kind: OpenExrErrorKind, message?:
   return failure;
 }
 
+function entryWidth(entry: FixtureEntry): number {
+  return entry.width ?? manifest.width;
+}
+
+function entryHeight(entry: FixtureEntry): number {
+  return entry.height ?? manifest.height;
+}
+
 function fixtureByName(file: string): FixtureEntry {
   const entry = manifest.fixtures.find((candidate) => candidate.file === file);
   if (!entry) throw new Error(`fixture ${file} missing from the manifest`);
@@ -143,9 +176,9 @@ describe('OpenEXR reference corpus', () => {
   it.each(manifest.fixtures.map((entry) => [entry.file, entry] as const))('decodes %s to the reference pixels', (_file, entry) => {
     const decoded = decodeOpenExr(fixture(entry.file));
     const expected = golden(entry.golden);
-    expect(decoded.width).toBe(manifest.width);
-    expect(decoded.height).toBe(manifest.height);
-    expect(decoded.rgb.length).toBe(manifest.width * manifest.height * RGB_COMPONENTS);
+    expect(decoded.width).toBe(entryWidth(entry));
+    expect(decoded.height).toBe(entryHeight(entry));
+    expect(decoded.rgb.length).toBe(entryWidth(entry) * entryHeight(entry) * RGB_COMPONENTS);
     expect(decoded.isHalf).toBe(entry.sample === 'half');
     expect(firstMismatch(decoded.rgb, expected)).toBe(-1);
   });
@@ -162,9 +195,19 @@ describe('OpenEXR reference corpus', () => {
       const file = fixture(entry.file);
       const [first] = exrChunkOffsets(file, 1);
       const stored = file.readInt32LE(first + 4);
-      const raw = manifest.width * perChunk[entry.compression] * bytesPerPixel(entry);
+      const raw = entryWidth(entry) * perChunk[entry.compression] * bytesPerPixel(entry);
       expect(stored, entry.file).toBeLessThan(raw);
     }
+  });
+
+  it('exercises the 16-bit wavelet and Huffman codes over 14 bits in the wide-value PIZ fixture', () => {
+    const wide = manifest.fixtures.filter((entry) => entry.wideValues);
+    expect(wide.map((entry) => entry.file)).toEqual(['scanline-piz-half-wide-values.exr']);
+    const stats = pizFirstBlockStats(fixture(wide[0].file));
+    expect(stats.maxValue).toBeGreaterThanOrEqual(PIZ_WAVELET_16_BIT_THRESHOLD);
+    expect(stats.longestCodeBits).toBeGreaterThan(DIRECT_LOOKUP_CODE_BITS);
+    // The ordinary PIZ fixture stays on the 14-bit wavelet, so the two paths are covered separately.
+    expect(pizFirstBlockStats(fixture('scanline-piz-half.exr')).maxValue).toBeLessThan(PIZ_WAVELET_16_BIT_THRESHOLD);
   });
 
   it('keeps the original header attributes available to callers', () => {
@@ -393,11 +436,15 @@ describe('OpenEXR fail-closed behaviour', () => {
   });
 
   it('rejects a block whose uncompressed size exceeds the block cap', () => {
-    const wideChannels = Array.from({ length: 64 }, (_, i) => ({ name: `c${String(i).padStart(2, '0')}`, pixelType: PIXEL_TYPE_FLOAT }));
+    const wideChannels = Array.from({ length: BLOCK_CAP_FLOAT_CHANNELS }, (_, i) => ({ name: `c${String(i).padStart(2, '0')}`, pixelType: PIXEL_TYPE_FLOAT }));
+    const bytesPerPixel = BLOCK_CAP_FLOAT_CHANNELS * FLOAT_BYTES + RGB_COMPONENTS * HALF_BYTES;
+    // One scanline of this width is above the block cap yet the whole image stays within the total cap.
+    expect(BLOCK_CAP_WIDTH * bytesPerPixel).toBeGreaterThan(MAX_OPENEXR_BLOCK_BYTES);
+    expect(BLOCK_CAP_WIDTH * bytesPerPixel).toBeLessThan(MAX_OPENEXR_TOTAL_BYTES);
     const file = assembleExr({
       channels: [...wideChannels, ...halfRgb],
       compression: COMPRESSION_CODES.none,
-      dataWindow: [0, 0, MAX_OPENEXR_PIXELS - 1, 0],
+      dataWindow: [0, 0, BLOCK_CAP_WIDTH - 1, 0],
       chunks: [],
     });
     expectDecodeError(() => decodeOpenExr(file), 'too-large', /block needs/);
@@ -443,6 +490,60 @@ describe('OpenEXR fail-closed behaviour', () => {
     chunk.writeInt32LE(-1, 4);
     const file = assembleExr({ channels: halfRgb, compression: COMPRESSION_CODES.none, dataWindow: [0, 0, 7, 0], chunks: [chunk] });
     expectDecodeError(() => decodeOpenExr(file), 'malformed', /negative data size/);
+  });
+
+  it('decodes a block of 65537 long Huffman codes in linear time, not by scanning every symbol per code', () => {
+    // All 65537 symbols share one 30-bit length, so canonical codes equal the symbol numbers and the
+    // stream (symbol 65535 plus repeat markers) hits the last entry of the only long-code bucket.
+    const wordCount = LONG_CODE_WIDTH * RGB_COMPONENTS;
+    const payload = buildUniformLongCodePizPayload(wordCount, LONG_CODE_BITS);
+    expect(payload.length).toBeLessThan(wordCount * HALF_BYTES);
+    const file = assembleExr({
+      channels: halfRgb,
+      compression: COMPRESSION_CODES.piz,
+      dataWindow: [0, 0, LONG_CODE_WIDTH - 1, 0],
+      chunks: [scanlineChunk(0, payload)],
+    });
+    const started = performance.now();
+    const decoded = decodeOpenExr(file);
+    const elapsedMs = performance.now() - started;
+    expect(elapsedMs).toBeLessThan(LONG_CODE_TIME_LIMIT_MS);
+    // The block has an empty value bitmap, so every decoded word maps to the implicit zero value.
+    expect(decoded.width).toBe(LONG_CODE_WIDTH);
+    expect(decoded.rgb.length).toBe(LONG_CODE_WIDTH * RGB_COMPONENTS);
+    expect(decoded.rgb.every((sample) => sample === 0)).toBe(true);
+  });
+
+  it('rejects an image whose total decoded size exceeds the total cap before allocating it', () => {
+    const extraChannels = Array.from({ length: TOTAL_CAP_EXTRA_CHANNELS }, (_, i) => ({ name: `f${String(i).padStart(3, '0')}`, pixelType: PIXEL_TYPE_FLOAT }));
+    const bytesPerPixel = TOTAL_CAP_EXTRA_CHANNELS * FLOAT_BYTES + RGB_COMPONENTS * HALF_BYTES;
+    expect(TOTAL_CAP_SIDE * TOTAL_CAP_SIDE).toBeLessThan(MAX_OPENEXR_PIXELS);
+    expect(TOTAL_CAP_SIDE * TOTAL_CAP_SIDE * bytesPerPixel).toBeGreaterThan(MAX_OPENEXR_TOTAL_BYTES);
+    const file = assembleExr({
+      channels: [...extraChannels, ...halfRgb],
+      compression: COMPRESSION_CODES.none,
+      dataWindow: [0, 0, TOTAL_CAP_SIDE - 1, TOTAL_CAP_SIDE - 1],
+      chunks: [],
+    });
+    expectDecodeError(() => decodeOpenExr(file), 'too-large', /total limit/);
+  });
+
+  it('accepts exactly the channel cap and rejects one channel more', () => {
+    const channelsOf = (count: number) => [
+      ...Array.from({ length: count - RGB_COMPONENTS }, (_, i) => ({ name: `c${String(i).padStart(4, '0')}`, pixelType: PIXEL_TYPE_HALF })),
+      ...halfRgb,
+    ];
+    const build = (count: number) => {
+      const channels = channelsOf(count);
+      return assembleExr({
+        channels,
+        compression: COMPRESSION_CODES.none,
+        dataWindow: [0, 0, 0, 0],
+        chunks: [scanlineChunk(0, Buffer.alloc(channels.length * HALF_BYTES))],
+      });
+    };
+    expect(decodeOpenExr(build(MAX_OPENEXR_CHANNELS)).width).toBe(1);
+    expectDecodeError(() => decodeOpenExr(build(MAX_OPENEXR_CHANNELS + 1)), 'too-large', /channels/);
   });
 
   describe('truncated files', () => {
@@ -618,29 +719,27 @@ describe('OpenEXR fail-closed behaviour', () => {
     });
   });
 
-  it('builds a tiled container the decoder can address by tile (assembler self-check)', () => {
-    // A 2x1 tile image with raw (NONE) tiles of 1x1 half pixels: pins tile ordering and edge clipping.
-    const tiles = new Uint8Array([1, 0, 2, 0, 3, 0].map((value) => value));
-    const pixel = (r: number, g: number, b: number) => {
-      const buf = Buffer.alloc(6);
-      // Channel order on disk is B, G, R.
+  it('decodes a hand-assembled two-tile image with 1x1 tiles in tile order', () => {
+    // Raw (NONE) 1x1 tiles at a non-zero window origin; channels sit on disk in B, G, R order.
+    const halfPixel = (r: number, g: number, b: number) => {
+      const buf = Buffer.alloc(3 * HALF_BYTES);
       buf.writeUInt16LE(b, 0);
-      buf.writeUInt16LE(g, 2);
-      buf.writeUInt16LE(r, 4);
+      buf.writeUInt16LE(g, HALF_BYTES);
+      buf.writeUInt16LE(r, 2 * HALF_BYTES);
       return buf;
     };
-    expect(tiles.length).toBe(6);
-    const tileDesc = Buffer.alloc(9);
-    tileDesc.writeUInt32LE(1, 0);
-    tileDesc.writeUInt32LE(1, 4);
-    tileDesc[8] = 0;
+    const tileDesc = Buffer.alloc(TILEDESC_BYTES);
+    tileDesc.writeUInt32LE(1, 0); // xSize
+    tileDesc.writeUInt32LE(1, 4); // ySize
+    tileDesc[8] = 0; // ONE_LEVEL, round down
     const file = assembleExr({
       channels: halfRgb,
       compression: COMPRESSION_CODES.none,
       dataWindow: [3, 5, 4, 5],
       flags: EXR_FLAG_TILED,
       extraAttributes: [{ name: 'tiles', type: 'tiledesc', value: tileDesc }],
-      chunks: [tileChunk(0, 0, 0, 0, pixel(0x3c00, 0x4000, 0x4200)), tileChunk(1, 0, 0, 0, pixel(0x4400, 0x4500, 0x4600))],
+      // Half bit patterns: 0x3c00 = 1, 0x4000 = 2, 0x4200 = 3, 0x4400 = 4, 0x4500 = 5, 0x4600 = 6.
+      chunks: [tileChunk(0, 0, 0, 0, halfPixel(0x3c00, 0x4000, 0x4200)), tileChunk(1, 0, 0, 0, halfPixel(0x4400, 0x4500, 0x4600))],
     });
     const decoded = decodeOpenExr(file);
     expect([decoded.width, decoded.height]).toEqual([2, 1]);

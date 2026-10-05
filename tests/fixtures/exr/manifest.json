@@ -272,10 +272,24 @@
       "levelMode": "one",
       "lossy": false,
       "sample": "float"
+    },
+    {
+      "compression": "piz",
+      "file": "scanline-piz-half-wide-values.exr",
+      "golden": "golden-ramp-half.f32",
+      "height": 33,
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half",
+      "wideValues": true,
+      "width": 600,
+      "xMin": -5,
+      "yMin": 3
     }
   ],
   "goldens": {
     "golden-gray-half.f32": "4a6f09e336cf042f092dc135d39ad6ed06956969e50838bc0d1dcbba97701709",
+    "golden-ramp-half.f32": "d0f922b0a0638d312327cda82d0a1e25ffe7595061354e90ed53ffd49b8f59a9",
     "golden-rgb-float-pxr24.f32": "ebc0c581e82db886d74e3c58a8fc7266cdcdcbec27019de04abc358fe93bad65",
     "golden-rgb-float.f32": "364bacef4b92f247787b9eca1d5d0e540cdc797dd555e90288630f040972a2d0",
     "golden-rgb-half.f32": "e857f42f04f0cfd172246835236bbc58b95a9cc291015053ce0072b8dbb7550c",

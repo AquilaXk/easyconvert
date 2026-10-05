@@ -322,6 +322,55 @@ emit(
     lossy=False,
 )
 
+# --- PIZ image whose half samples need the 16-bit wavelet and Huffman codes over 14 bits ---
+# A ramp of distinct half bit patterns uses more than 2**14 distinct values, which selects the
+# 16-bit (modulo) wavelet instead of the 14-bit one, and its many near-equal symbol frequencies
+# give Huffman codes longer than the 14-bit direct lookup table. The window origin and a height that
+# leaves a partial 32-row block exercise offsets and the short last block.
+WIDE_WIDTH = 600
+WIDE_HEIGHT = 33
+WIDE_X_MIN = -5
+WIDE_Y_MIN = 3
+WIDE_STEP = 29
+HALF_MAX_FINITE_BITS = 0x7BFF
+WIDE_CHANNEL_OFFSETS = (0, 5, 11)
+
+
+def wide_value_ramp():
+    ys, xs = np.mgrid[0:WIDE_HEIGHT, 0:WIDE_WIDTH]
+    bits = np.zeros((WIDE_HEIGHT, WIDE_WIDTH, 3), dtype=np.uint16)
+    for channel, offset in enumerate(WIDE_CHANNEL_OFFSETS):
+        bits[:, :, channel] = np.minimum(xs * WIDE_STEP + ys + offset, HALF_MAX_FINITE_BITS)
+    return bits.view(np.float16)
+
+
+wide_ramp = wide_value_ramp()
+wide_header = base_header(COMPRESSIONS["piz"])
+wide_header["dataWindow"] = (
+    np.array([WIDE_X_MIN, WIDE_Y_MIN], dtype="int32"),
+    np.array([WIDE_X_MIN + WIDE_WIDTH - 1, WIDE_Y_MIN + WIDE_HEIGHT - 1], dtype="int32"),
+)
+wide_header["displayWindow"] = (
+    np.array([0, 0], dtype="int32"),
+    np.array([WIDE_WIDTH - 1, WIDE_HEIGHT - 1], dtype="int32"),
+)
+emit(
+    "scanline-piz-half-wide-values.exr",
+    wide_header,
+    {"RGB": wide_ramp},
+    "ramp-half",
+    expected_source=wide_ramp.astype(np.float32),
+    compression="piz",
+    layout="scanline",
+    sample="half",
+    lossy=False,
+    width=WIDE_WIDTH,
+    height=WIDE_HEIGHT,
+    xMin=WIDE_X_MIN,
+    yMin=WIDE_Y_MIN,
+    wideValues=True,
+)
+
 # --- Inputs the decoder must reject with a typed error ---
 reject = []
 

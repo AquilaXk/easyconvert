@@ -1,6 +1,6 @@
 import { inflateSync } from 'node:zlib';
 import { OpenExrDecodeError } from './openexr-decode-error';
-import { decodePizBlock } from './openexr-decode-piz';
+import { decodePizBlock, PizWorkspace } from './openexr-decode-piz';
 
 export { OpenExrDecodeError } from './openexr-decode-error';
 export type { OpenExrErrorKind } from './openexr-decode-error';
@@ -19,6 +19,10 @@ export type { OpenExrErrorKind } from './openexr-decode-error';
 export const MAX_OPENEXR_PIXELS = 36_000_000;
 /** Upper bound on the uncompressed bytes of one scanline block or tile. */
 export const MAX_OPENEXR_BLOCK_BYTES = 256 * 1024 * 1024;
+/** Upper bound on the uncompressed bytes of the whole dataWindow (width * height * bytes per pixel of all channels). */
+export const MAX_OPENEXR_TOTAL_BYTES = 1024 * 1024 * 1024;
+/** Upper bound on the channels in one image; real multi-layer files stay far below it. */
+export const MAX_OPENEXR_CHANNELS = 1024;
 
 const MAGIC = [0x76, 0x2f, 0x31, 0x01] as const;
 const MAGIC_BYTES = MAGIC.length;
@@ -34,6 +38,8 @@ const KNOWN_FLAGS = FLAG_TILED | FLAG_LONG_NAMES | FLAG_NON_IMAGE | FLAG_MULTIPA
 const MAX_ATTRIBUTE_NAME_BYTES = 255;
 
 const BYTES_PER_INT32 = 4;
+/** Colour components in the decoded output: R, G and B. */
+const RGB_COMPONENTS = 3;
 const BYTES_PER_OFFSET = 8;
 const BOX2I_BYTES = 16;
 const TILEDESC_BYTES = 9;
@@ -249,6 +255,7 @@ function parseChannels(attr: { type: string; val: Buffer } | undefined): ExrChan
     }
     if (xSampling < 1 || ySampling < 1) malformed(`channel "${name.text}" has invalid sampling`);
     if (seen.has(name.text)) malformed(`duplicate channel "${name.text}"`);
+    if (channels.length >= MAX_OPENEXR_CHANNELS) tooLarge(`more than ${MAX_OPENEXR_CHANNELS} channels`);
     seen.add(name.text);
     channels.push({ name: name.text, pixelType, bytesPerSample, xSampling, ySampling });
   }
@@ -367,6 +374,21 @@ function totalTileCount(width: number, height: number, tiles: TileLayout): numbe
 
 // --- Block codecs ---------------------------------------------------------------------------
 
+/** Output buffers shared by every block of one image; a block is fully consumed before the next decodes. */
+class BlockScratch {
+  readonly piz = new PizWorkspace();
+  private readonly slots: Buffer[] = [Buffer.alloc(0), Buffer.alloc(0)];
+
+  /** A buffer of exactly `size` bytes whose contents are unspecified; valid until the next call for the same slot. */
+  slot(index: number, size: number): Buffer {
+    if (this.slots[index].length < size) this.slots[index] = Buffer.allocUnsafe(size);
+    return this.slots[index].subarray(0, size);
+  }
+}
+
+const SCRATCH_STAGE_SLOT = 0;
+const SCRATCH_RESULT_SLOT = 1;
+
 function inflateBlock(data: Buffer, expectedBytes: number, codec: string): Buffer {
   let out: Buffer;
   try {
@@ -378,13 +400,12 @@ function inflateBlock(data: Buffer, expectedBytes: number, codec: string): Buffe
   return out;
 }
 
-/** Undoes the ZIP/RLE byte predictor and the even/odd byte split. */
-function reconstructPredicted(packed: Buffer): Buffer {
+/** Undoes the ZIP/RLE byte predictor (in place on `packed`) and the even/odd byte split into `out`. */
+function reconstructPredicted(packed: Buffer, out: Buffer): Buffer {
   const length = packed.length;
   for (let i = 1; i < length; i++) {
     packed[i] = (packed[i - 1] + packed[i] - PREDICTOR_BIAS) & BYTE_MODULUS_MASK;
   }
-  const out = Buffer.allocUnsafe(length);
   const secondHalf = Math.ceil(length / 2);
   for (let i = 0, first = 0, second = secondHalf; i < length; i += 2) {
     out[i] = packed[first++];
@@ -393,8 +414,8 @@ function reconstructPredicted(packed: Buffer): Buffer {
   return out;
 }
 
-function rleDecode(data: Buffer, expectedBytes: number): Buffer {
-  const out = Buffer.allocUnsafe(expectedBytes);
+function rleDecode(data: Buffer, out: Buffer): Buffer {
+  const expectedBytes = out.length;
   let read = 0;
   let write = 0;
   while (read < data.length) {
@@ -419,14 +440,13 @@ function rleDecode(data: Buffer, expectedBytes: number): Buffer {
 }
 
 /** PXR24: deflated byte planes of per-row 24-bit-truncated floats, 16-bit halves and 32-bit ints, delta coded. */
-function pxr24Decode(data: Buffer, channels: readonly ExrChannel[], width: number, rows: number, expectedBytes: number): Buffer {
+function pxr24Decode(data: Buffer, channels: readonly ExrChannel[], width: number, rows: number, out: Buffer): Buffer {
   let packedBytes = 0;
   for (const channel of channels) {
     const stored = channel.pixelType === PIXEL_TYPE_FLOAT ? PXR24_BYTES_PER_FLOAT : channel.bytesPerSample;
     packedBytes += stored * width * rows;
   }
   const packed = inflateBlock(data, packedBytes, 'PXR24');
-  const out = Buffer.allocUnsafe(expectedBytes);
   let read = 0;
   let write = 0;
   for (let y = 0; y < rows; y++) {
@@ -472,27 +492,40 @@ function pxr24Decode(data: Buffer, channels: readonly ExrChannel[], width: numbe
  * Returns the uncompressed block (rows of channel-major samples). A chunk whose stored size equals
  * the uncompressed size is raw regardless of the compression attribute, as the specification states.
  */
-function decodeBlock(compression: number, chunk: Buffer, channels: readonly ExrChannel[], width: number, rows: number, expectedBytes: number): Buffer {
+function decodeBlock(
+  compression: number,
+  chunk: Buffer,
+  scatter: Scatter,
+  width: number,
+  rows: number,
+  expectedBytes: number
+): Buffer {
+  const { channels, scratch } = scatter;
   if (chunk.length === expectedBytes) return chunk;
   if (chunk.length > expectedBytes) malformed(`chunk of ${chunk.length} bytes exceeds its ${expectedBytes} uncompressed bytes`);
   switch (compression) {
     case COMPRESSION_NONE:
       return truncated(`uncompressed chunk holds ${chunk.length} of ${expectedBytes} bytes`);
     case COMPRESSION_RLE:
-      return reconstructPredicted(rleDecode(chunk, expectedBytes));
+      return reconstructPredicted(
+        rleDecode(chunk, scratch.slot(SCRATCH_STAGE_SLOT, expectedBytes)),
+        scratch.slot(SCRATCH_RESULT_SLOT, expectedBytes)
+      );
     case COMPRESSION_ZIPS:
     case COMPRESSION_ZIP:
-      return reconstructPredicted(inflateBlock(chunk, expectedBytes, 'ZIP'));
+      return reconstructPredicted(inflateBlock(chunk, expectedBytes, 'ZIP'), scratch.slot(SCRATCH_RESULT_SLOT, expectedBytes));
     case COMPRESSION_PXR24:
-      return pxr24Decode(chunk, channels, width, rows, expectedBytes);
+      return pxr24Decode(chunk, channels, width, rows, scratch.slot(SCRATCH_RESULT_SLOT, expectedBytes));
     case COMPRESSION_PIZ: {
-      const out = decodePizBlock(
+      const out = scratch.slot(SCRATCH_RESULT_SLOT, expectedBytes);
+      decodePizBlock(
         chunk,
         width,
         rows,
-        channels.map((channel) => channel.bytesPerSample / BYTES_PER_HALF)
+        channels.map((channel) => channel.bytesPerSample / BYTES_PER_HALF),
+        out,
+        scratch.piz
       );
-      if (out.length !== expectedBytes) malformed(`PIZ block decodes to ${out.length} bytes, expected ${expectedBytes}`);
       return out;
     }
     default:
@@ -535,6 +568,7 @@ interface Scatter {
   mapping: ColorMapping;
   channelByteOffsets: number[];
   bytesPerPixel: number;
+  scratch: BlockScratch;
 }
 
 /** Copies the selected colour channels of one uncompressed block into the interleaved RGB output. */
@@ -543,8 +577,8 @@ function scatterBlock(block: Buffer, scatter: Scatter, x0: number, y0: number, b
   const lineBytes = blockWidth * scatter.bytesPerPixel;
   for (let line = 0; line < rows; line++) {
     const lineStart = line * lineBytes;
-    const outRow = ((y0 + line) * scatter.imageWidth + x0) * 3;
-    for (let component = 0; component < 3; component++) {
+    const outRow = ((y0 + line) * scatter.imageWidth + x0) * RGB_COMPONENTS;
+    for (let component = 0; component < RGB_COMPONENTS; component++) {
       const channel = scatter.channels[scatter.mapping.indices[component]];
       let at = lineStart + scatter.channelByteOffsets[scatter.mapping.indices[component]] * blockWidth;
       let out = outRow + component;
@@ -557,7 +591,7 @@ function scatterBlock(block: Buffer, scatter: Scatter, x0: number, y0: number, b
           scatter.rgb[out] = block.readUInt32LE(at);
         }
         at += channel.bytesPerSample;
-        out += 3;
+        out += RGB_COMPONENTS;
       }
     }
   }
@@ -603,13 +637,16 @@ export function decodeOpenExr(buf: Buffer): DecodedOpenExr {
     bytesPerPixel += channel.bytesPerSample;
   }
 
+  checkTotalBytes(width, height, bytesPerPixel);
+
   const scatter: Scatter = {
-    rgb: new Float32Array(width * height * 3),
+    rgb: new Float32Array(width * height * RGB_COMPONENTS),
     imageWidth: width,
     channels,
     mapping,
     channelByteOffsets,
     bytesPerPixel,
+    scratch: new BlockScratch(),
   };
 
   if (tiles) {
@@ -620,6 +657,14 @@ export function decodeOpenExr(buf: Buffer): DecodedOpenExr {
 
   const isHalf = mapping.indices.some((index) => channels[index].pixelType === PIXEL_TYPE_HALF);
   return { width, height, rgb: scatter.rgb, isHalf, attrs };
+}
+
+/** Rejects images whose decoded channel data would exceed the total cap, before anything is allocated. */
+function checkTotalBytes(width: number, height: number, bytesPerPixel: number): void {
+  const bytes = width * height * bytesPerPixel;
+  if (bytes > MAX_OPENEXR_TOTAL_BYTES) {
+    tooLarge(`${width}x${height} pixels of ${bytesPerPixel} bytes need ${bytes} bytes, above the ${MAX_OPENEXR_TOTAL_BYTES} byte total limit`);
+  }
 }
 
 function checkBlockSize(blockWidth: number, rows: number, bytesPerPixel: number): number {
@@ -643,7 +688,7 @@ function decodeScanlines(buf: Buffer, tableStart: number, compression: number, s
       malformed(`chunk ${index} starts at line ${chunk.fields[0]}, expected ${yMin + firstLine}`);
     }
     const expectedBytes = width * rows * scatter.bytesPerPixel;
-    const block = decodeBlock(compression, chunk.data, scatter.channels, width, rows, expectedBytes);
+    const block = decodeBlock(compression, chunk.data, scatter, width, rows, expectedBytes);
     scatterBlock(block, scatter, 0, firstLine, width, rows);
   }
 }
@@ -670,7 +715,7 @@ function decodeTiled(buf: Buffer, tableStart: number, tiles: TileLayout, compres
       const blockWidth = Math.min(tiles.xSize, width - x0);
       const rows = Math.min(tiles.ySize, height - y0);
       const expectedBytes = blockWidth * rows * scatter.bytesPerPixel;
-      const block = decodeBlock(compression, chunk.data, scatter.channels, blockWidth, rows, expectedBytes);
+      const block = decodeBlock(compression, chunk.data, scatter, blockWidth, rows, expectedBytes);
       scatterBlock(block, scatter, x0, y0, blockWidth, rows);
     }
   }

@@ -11,6 +11,7 @@ import { OpenExrDecodeError } from './openexr-decode-error';
  */
 
 const BYTES_PER_WORD = 2;
+const BYTES_PER_INT32 = 4;
 const VALUE_RANGE = 1 << 16;
 const BITMAP_BYTES = VALUE_RANGE >> 3;
 const BITS_PER_BYTE = 8;
@@ -23,6 +24,8 @@ const HUF_SYMBOL_COUNT = VALUE_RANGE + 1;
 const HUF_DECODE_BITS = 14;
 const HUF_DECODE_SIZE = 1 << HUF_DECODE_BITS;
 const HUF_DECODE_MASK = HUF_DECODE_SIZE - 1;
+/** Codes at most this long resolve through the direct lookup table; longer ones use canonical per-length ranges. */
+const HUF_FIRST_LONG_CODE_BITS = HUF_DECODE_BITS + 1;
 const HUF_HEADER_BYTES = 20;
 const HUF_LENGTH_BITS = 6;
 const HUF_LENGTH_MASK = (1 << HUF_LENGTH_BITS) - 1;
@@ -91,6 +94,11 @@ class BitPeeker {
 interface HuffmanTable {
   lengths: Uint8Array;
   codes: Float64Array;
+  /** First canonical code of each length (the code of the first symbol with that length). */
+  firstCode: Float64Array;
+  /** Number of symbols per code length. */
+  counts: Float64Array;
+  longest: number;
   firstSymbol: number;
   lastSymbol: number;
 }
@@ -147,6 +155,7 @@ function unpackCodeTable(data: Buffer, pos: number, end: number, im: number, iM:
     nextCode[length] = carry;
     carry = half;
   }
+  const firstCode = nextCode.slice();
   const codes = new Float64Array(HUF_SYMBOL_COUNT);
   for (let sym = im; sym <= iM; sym++) {
     const length = lengths[sym];
@@ -155,19 +164,31 @@ function unpackCodeTable(data: Buffer, pos: number, end: number, im: number, iM:
       if (codes[sym] >= 2 ** length) malformed('canonical code overflows its length');
     }
   }
-  return { table: { lengths, codes, firstSymbol: im, lastSymbol: iM }, next: p };
+  return { table: { lengths, codes, firstCode, counts, longest, firstSymbol: im, lastSymbol: iM }, next: p };
 }
 
 interface DecodeTables {
   shortLength: Uint8Array;
   shortSymbol: Int32Array;
-  longSymbols: Map<number, number[]>;
+  /** Marks the 14-bit prefixes owned by a long code, to reject overlapping code tables. */
+  longPrefix: Uint8Array;
+  /** Index of the first symbol of each length inside `longSymbols`. */
+  longOffset: Int32Array;
+  /** Symbols with codes over 14 bits, ordered by code length then symbol (= canonical code order). */
+  longSymbols: Int32Array;
 }
 
 function buildDecodeTables(table: HuffmanTable): DecodeTables {
   const shortLength = new Uint8Array(HUF_DECODE_SIZE);
   const shortSymbol = new Int32Array(HUF_DECODE_SIZE);
-  const longSymbols = new Map<number, number[]>();
+  const longPrefix = new Uint8Array(HUF_DECODE_SIZE);
+  const longOffset = new Int32Array(HUF_MAX_SPEC_CODE_BITS + 1);
+  let longTotal = 0;
+  for (let length = HUF_FIRST_LONG_CODE_BITS; length <= table.longest; length++) {
+    longOffset[length] = longTotal;
+    longTotal += table.counts[length];
+  }
+  const longSymbols = new Int32Array(longTotal);
   for (let sym = table.firstSymbol; sym <= table.lastSymbol; sym++) {
     const length = table.lengths[sym];
     if (length === 0) continue;
@@ -175,28 +196,44 @@ function buildDecodeTables(table: HuffmanTable): DecodeTables {
     if (length > HUF_DECODE_BITS) {
       const prefix = Math.floor(code / 2 ** (length - HUF_DECODE_BITS));
       if (shortLength[prefix] !== 0) malformed('long code shares a prefix with a short code');
-      const list = longSymbols.get(prefix);
-      if (list) {
-        list.push(sym);
-      } else {
-        longSymbols.set(prefix, [sym]);
-      }
+      longPrefix[prefix] = 1;
+      longSymbols[longOffset[length] + (code - table.firstCode[length])] = sym;
     } else {
       const span = 1 << (HUF_DECODE_BITS - length);
       const first = code * span;
       for (let i = 0; i < span; i++) {
-        if (shortLength[first + i] !== 0 || longSymbols.has(first + i)) malformed('overlapping Huffman codes');
+        if (shortLength[first + i] !== 0 || longPrefix[first + i] !== 0) malformed('overlapping Huffman codes');
         shortLength[first + i] = length;
         shortSymbol[first + i] = sym;
       }
     }
   }
-  return { shortLength, shortSymbol, longSymbols };
+  return { shortLength, shortSymbol, longPrefix, longOffset, longSymbols };
+}
+
+/** Length in bits of the code matched by the last successful decodeLongCode call. */
+let matchedLength = 0;
+
+/**
+ * Resolves a code longer than 14 bits. Canonical codes of one length are consecutive integers, so
+ * each length needs one range test; the cost per symbol is bounded by the number of long lengths.
+ * Returns the symbol and stores its length in `matchedLength`, or -1 when no code matches.
+ */
+function decodeLongCode(tables: DecodeTables, table: HuffmanTable, peeker: BitPeeker, bitPos: number): number {
+  const wide = peeker.peekBits(bitPos, table.longest);
+  for (let length = HUF_FIRST_LONG_CODE_BITS; length <= table.longest; length++) {
+    const relative = Math.floor(wide / 2 ** (table.longest - length)) - table.firstCode[length];
+    if (relative >= 0 && relative < table.counts[length]) {
+      matchedLength = length;
+      return tables.longSymbols[tables.longOffset[length] + relative];
+    }
+  }
+  return -1;
 }
 
 /** Decodes a PIZ Huffman stream into exactly `rawCount` 16-bit words. */
-function huffmanDecode(data: Buffer, start: number, length: number, rawCount: number): Uint16Array {
-  const raw = new Uint16Array(rawCount);
+function huffmanDecode(data: Buffer, start: number, length: number, raw: Uint16Array): Uint16Array {
+  const rawCount = raw.length;
   if (length < HUF_HEADER_BYTES) truncated('Huffman header is incomplete');
   const end = start + length;
   const im = data.readUInt32LE(start);
@@ -221,17 +258,10 @@ function huffmanDecode(data: Buffer, start: number, length: number, rawCount: nu
       symbol = tables.shortSymbol[index];
       bitPos += shortLen;
     } else {
-      const candidates = tables.longSymbols.get(index);
-      if (!candidates) malformed('bit pattern matches no Huffman code');
-      for (const candidate of candidates) {
-        const candidateLength = table.lengths[candidate];
-        if (peeker.peekBits(bitPos, candidateLength) === table.codes[candidate]) {
-          symbol = candidate;
-          bitPos += candidateLength;
-          break;
-        }
-      }
+      if (tables.longPrefix[index] === 0) malformed('bit pattern matches no Huffman code');
+      symbol = decodeLongCode(tables, table, peeker, bitPos);
       if (symbol < 0) malformed('bit pattern matches no Huffman code');
+      bitPos += matchedLength;
     }
     if (bitPos > bitCount) truncated('Huffman code runs past the end of the bit stream');
 
@@ -335,12 +365,26 @@ function waveletDecode(data: Uint16Array, base: number, nx: number, ox: number, 
   }
 }
 
+/** Scratch arrays reused across the blocks of one image so large blocks are not reallocated each time. */
+export class PizWorkspace {
+  readonly bitmap = new Uint8Array(BITMAP_BYTES);
+  readonly lut = new Uint16Array(VALUE_RANGE);
+  private words = new Uint16Array(0);
+
+  /** A view of exactly `count` words; contents are unspecified and must be fully overwritten. */
+  wordsFor(count: number): Uint16Array {
+    if (this.words.length < count) this.words = new Uint16Array(count);
+    return this.words.subarray(0, count);
+  }
+}
+
 /** Builds the reverse value table from the used-value bitmap; returns the highest index in use. */
 function buildReverseLut(bitmap: Uint8Array, lut: Uint16Array): number {
   let count = 0;
   for (let value = 0; value < VALUE_RANGE; value++) {
     if (value === 0 || (bitmap[value >> 3] & (1 << (value & 7))) !== 0) lut[count++] = value;
   }
+  lut.fill(0, count);
   return count - 1;
 }
 
@@ -350,9 +394,17 @@ function buildReverseLut(bitmap: Uint8Array, lut: Uint16Array): number {
  * @param width pixels per row in the block
  * @param rows number of rows in the block
  * @param wordsPerChannel 16-bit words per sample for each channel in file order (1 for HALF, 2 for FLOAT/UINT)
- * @returns the uncompressed block (rows of channel-major little-endian samples)
+ * @param out receives the uncompressed block (rows of channel-major little-endian samples); must be exactly its size
+ * @param workspace reusable scratch arrays
  */
-export function decodePizBlock(input: Buffer, width: number, rows: number, wordsPerChannel: readonly number[]): Buffer {
+export function decodePizBlock(
+  input: Buffer,
+  width: number,
+  rows: number,
+  wordsPerChannel: readonly number[],
+  out: Buffer,
+  workspace: PizWorkspace = new PizWorkspace()
+): void {
   let pos = 0;
   if (input.length < 2 * BYTES_PER_WORD) truncated('block header is incomplete');
   const minNonZero = input.readUInt16LE(pos);
@@ -360,24 +412,26 @@ export function decodePizBlock(input: Buffer, width: number, rows: number, words
   pos += 2 * BYTES_PER_WORD;
   if (maxNonZero >= BITMAP_BYTES) malformed('bitmap range is out of bounds');
 
-  const bitmap = new Uint8Array(BITMAP_BYTES);
+  const bitmap = workspace.bitmap;
+  bitmap.fill(0);
   if (minNonZero <= maxNonZero) {
     const span = maxNonZero - minNonZero + 1;
     if (pos + span > input.length) truncated('bitmap is cut off');
     bitmap.set(input.subarray(pos, pos + span), minNonZero);
     pos += span;
   }
-  const lut = new Uint16Array(VALUE_RANGE);
+  const lut = workspace.lut;
   const maxValue = buildReverseLut(bitmap, lut);
 
-  if (pos + 4 > input.length) truncated('Huffman length is missing');
+  if (pos + BYTES_PER_INT32 > input.length) truncated('Huffman length is missing');
   const huffmanLength = input.readInt32LE(pos);
-  pos += 4;
+  pos += BYTES_PER_INT32;
   if (huffmanLength < 0 || pos + huffmanLength > input.length) truncated('Huffman stream is cut off');
 
   const wordsPerPixel = wordsPerChannel.reduce((sum, words) => sum + words, 0);
   const wordCount = width * rows * wordsPerPixel;
-  const words = huffmanDecode(input, pos, huffmanLength, wordCount);
+  if (out.length !== wordCount * BYTES_PER_WORD) malformed(`output holds ${out.length} bytes, block needs ${wordCount * BYTES_PER_WORD}`);
+  const words = huffmanDecode(input, pos, huffmanLength, workspace.wordsFor(wordCount));
 
   let planeStart = 0;
   const planeStarts: number[] = [];
@@ -390,7 +444,6 @@ export function decodePizBlock(input: Buffer, width: number, rows: number, words
   }
   for (let i = 0; i < words.length; i++) words[i] = lut[words[i]];
 
-  const out = Buffer.alloc(wordCount * BYTES_PER_WORD);
   const cursors = planeStarts.slice();
   let outPos = 0;
   for (let y = 0; y < rows; y++) {
@@ -403,5 +456,4 @@ export function decodePizBlock(input: Buffer, width: number, rows: number, words
       cursors[c] += run;
     }
   }
-  return out;
 }
