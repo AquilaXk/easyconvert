@@ -512,6 +512,8 @@ const RECTANGLE_ELEMENTS = 4;
 /** Calibration values (gains, matrix entries) outside this magnitude cannot come from a camera. */
 const MAX_CALIBRATION_MAGNITUDE = 64;
 const STATISTICS_STEP = 4;
+/** Largest plausible capture ISO to native ISO ratio (6 stops either way). */
+const MAX_ISO_RATIO = 64;
 const SPATIAL_GAIN_MAX_ENTRY = 16;
 
 export interface X3fHeaderInfo {
@@ -696,6 +698,7 @@ export function decodeX3f(file: Buffer): DecodedX3f {
     }
   }
 
+  if (combined.some((value) => !Number.isFinite(value))) throw fail('the combined calibration is not finite');
   const linear = new Float32Array(width * height * RGB_CHANNELS);
   const normalised: number[] = [0, 0, 0];
   for (let y = 0; y < height; y += 1) {
@@ -755,6 +758,11 @@ function sampledLinearExposure(linear: Float32Array, width: number, height: numb
 function isoScale(matrices: Map<string, CamfMatrix>): number {
   const sensor = matrices.get('SensorISO')?.values[0];
   const capture = matrices.get('CaptureISO')?.values[0];
-  if (sensor === undefined || capture === undefined || !(sensor > 0) || !(capture > 0)) return 1;
-  return capture / sensor;
+  if (sensor === undefined || capture === undefined) return 1;
+  if (!Number.isFinite(sensor) || !Number.isFinite(capture) || !(sensor > 0) || !(capture > 0)) {
+    throw fail('the calibration ISO values are not positive finite numbers');
+  }
+  const ratio = capture / sensor;
+  if (ratio < 1 / MAX_ISO_RATIO || ratio > MAX_ISO_RATIO) throw fail(`the capture ISO ${capture} is implausible for a sensor ISO of ${sensor}`);
+  return ratio;
 }
