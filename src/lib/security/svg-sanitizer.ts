@@ -853,6 +853,16 @@ function isHostileStyleValue(raw: string): boolean {
   );
 }
 
+/** True when a value written into a presentation attribute holds an external url(), src() or image-set(). */
+function hasExternalReference(raw: string): boolean {
+  try {
+    return sanitizeCss(raw, false) !== raw;
+  } catch (error) {
+    if (error instanceof SvgSanitizationError) return true;
+    throw error;
+  }
+}
+
 /**
  * True when any `;`-separated item of an animation value is a dangerous URI. Entities are decoded before
  * splitting so an encoded `;` (`&#59;`) cannot hide the item boundary.
@@ -881,6 +891,7 @@ function isHostileAnimation(tag: TagToken): boolean {
   const targetName = localNameOf(normalizeUriText(target.value));
   if (isEventHandlerName(targetName)) return true;
   if (targetName === STYLE_ATTRIBUTE) return hasAnimationValue(tag, isHostileStyleValue);
+  if (PRESENTATION_URL_ATTRIBUTES.has(targetName)) return hasAnimationValue(tag, hasExternalReference);
   if (!LINK_ATTRIBUTES.has(targetName)) return false;
   return hasAnimationValue(tag, hasDangerousUriItem);
 }

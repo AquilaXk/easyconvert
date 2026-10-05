@@ -939,3 +939,57 @@ describe('external references in presentation attributes (issue #403 item 1)', (
     }
   });
 });
+
+describe('animations writing external references into presentation attributes (issue #403 item 2)', () => {
+  const hostile = [
+    '<set attributeName="fill" to="url(http://e/x)"/>',
+    '<animate attributeName="stroke" values="red;url(//e/x)" dur="1s"/>',
+    '<animate attributeName="filter" from="url(#a)" to="url(https://e/x#f)"/>',
+    '<animateTransform attributeName="clip-path" by="url(http://e/x)"/>',
+    '<animateMotion attributeName="mask" to="url(http://e/x)"/>',
+    '<set attributeName="marker-start" to="url(http://e/x)"/>',
+    '<set attributeName="marker-mid" to="url(http://e/x)"/>',
+    '<set attributeName="marker-end" to="url(http://e/x)"/>',
+    '<set attributeName="cursor" to="url(http://e/x), auto"/>',
+    '<SET AttributeName="FILL" TO="url(http://e/x)"/>',
+    '<s:set attributeName="svg:fill" to="url(http://e/x)"/>',
+    '<set attributeName="&#102;ill" to="url(http://e/x)"/>',
+    '<set attributeName=" fill " to="url(http://e/x)"/>',
+    '<set attributeName="fill" to="url(&#104;ttp://e/x)"/>',
+    '<set attributeName="fill" to="u\\72l(//e/x)"/>',
+    '<animate attributeName="fill" values="red&#59;url(http://e/x)"/>',
+  ];
+
+  for (const animation of hostile) {
+    it(`removes ${animation}`, () => {
+      const out = sanitizeSvgString(`<svg><rect>${animation}<circle/></rect></svg>`);
+      expect(presentationLeaks(out)).toEqual([]);
+      expect(out).toBe('<svg><rect><circle/></rect></svg>');
+    });
+  }
+
+  const benign = [
+    '<set attributeName="fill" to="red"/>',
+    '<animate attributeName="fill" values="url(#a);url(#b);#00f" dur="1s"/>',
+    '<animate attributeName="stroke" from="red" to="blue" dur="1s"/>',
+    '<animate attributeName="width" values="1;5" dur="1s"/>',
+    '<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="2s"/>',
+    '<animateMotion path="M0 0L9 9" dur="1s"/>',
+  ];
+
+  for (const animation of benign) {
+    it(`keeps ${animation}`, () => {
+      const input = `<svg><rect>${animation}</rect></svg>`;
+      expect(sanitizeSvgString(input)).toBe(input);
+    });
+  }
+
+  it('removes many hostile animations in linear time', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const unit = '<set attributeName="fill" to="url(http://e/x)"/>';
+    const start = performance.now();
+    const out = sanitizeSvgString(`<svg>${unit.repeat(FIVE_MB / unit.length)}</svg>`);
+    expect(performance.now() - start).toBeLessThan(2000);
+    expect(out).toBe('<svg></svg>');
+  });
+});
