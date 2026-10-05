@@ -4,7 +4,7 @@ import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames, type FrameSelection } from './image-frames';
 import { encodeDecodedAnimation, joinPageTiffs, resizedDimensions, zipPageImages } from './image-frame-output';
-import { assertAnimationBudget, assertOutputPixels, MAX_OUTPUT_DIMENSION } from './image-limits';
+import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import {
@@ -2381,16 +2381,6 @@ const MAX_PALETTE_COLOURS = 256;
 const FULL_DITHER = 1.0;
 const NO_DITHER = 0.0;
 const QUALITY_RANGE = { min: 1, max: 100 } as const;
-
-/** A requested output side: a whole number of pixels from 1 to the container limit. */
-function outputSideOf(value: unknown, name: 'width' | 'height'): number | undefined {
-  if (value === undefined || value === null || value === 0 || value === '') return undefined;
-  const side = Number(value);
-  if (!Number.isInteger(side) || side < 1 || side > MAX_OUTPUT_DIMENSION) {
-    throw new UnsupportedOptionError(`Unsupported ${name} ${JSON.stringify(value)}: use a whole number from 1 to ${MAX_OUTPUT_DIMENSION}`);
-  }
-  return side;
-}
 
 /**
  * Resize parameters for the requested width/height, or null when the request does not resize. The sides are

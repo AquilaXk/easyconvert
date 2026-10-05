@@ -1,4 +1,4 @@
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, UnsupportedOptionError } from '../types';
 
 /**
  * Resource budgets for multi-frame image conversions. They are checked from header metadata before any pixel
@@ -76,6 +76,20 @@ export const MAX_OUTPUT_DIMENSION = 65_535;
 
 /** Most pixels one resized output picture may hold (400 MB as RGBA). */
 export const MAX_OUTPUT_PIXELS = 100_000_000;
+
+/**
+ * A requested output width or height. Undefined, null, 0 and '' mean "not requested"; anything else must be a
+ * whole number from 1 to the largest output side. Shared by every engine that resizes, so raster and vector
+ * sources validate the request the same way.
+ */
+export function outputSideOf(value: unknown, name: 'width' | 'height'): number | undefined {
+  if (value === undefined || value === null || value === 0 || value === '') return undefined;
+  const side = Number(value);
+  if (!Number.isInteger(side) || side < 1 || side > MAX_OUTPUT_DIMENSION) {
+    throw new UnsupportedOptionError(`Unsupported ${name} ${JSON.stringify(value)}: use a whole number from 1 to ${MAX_OUTPUT_DIMENSION}`);
+  }
+  return side;
+}
 
 /** Throws when a resized output of `width` x `height` pixels would hold more pixels than the output limit. */
 export function assertOutputPixels(width: number, height: number): void {

@@ -1,7 +1,9 @@
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError } from '../types';
+import { assertOutputPixels, outputSideOf } from './image-limits';
+import { resizedDimensions } from './image-frame-output';
 import { encodeBmp, encodePostscript } from './image';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 
@@ -291,6 +293,45 @@ export async function convertVectorCad(
   throw new Error(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
 }
 
+/** Density SVG drawings are rendered at unless the request names one. */
+const SVG_RENDER_DENSITY = 300;
+
+/** Targets the SVG converter writes without rendering pixels, so the output size options do not apply. */
+const SVG_NON_RASTER_TARGETS = new Set(['svg', 'emf', 'wmf', 'cgm']);
+
+/**
+ * Size the drawing renders at for `density`, read from the SVG header without rendering it. A drawing that
+ * would render over the output pixel limit is refused before any pixel is allocated.
+ */
+async function assertSvgRenderSize(svg: Buffer, density: number): Promise<{ width: number; height: number }> {
+  let width: number | undefined;
+  let height: number | undefined;
+  try {
+    ({ width, height } = await sharp(svg, { density }).metadata());
+  } catch (error) {
+    throw new ConversionFailedError(`The SVG drawing cannot be rendered at ${density} dpi: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!width || !height) throw new ConversionFailedError('The SVG drawing declares no size');
+  assertOutputPixels(width, height);
+  return { width, height };
+}
+
+/**
+ * Resize parameters for the requested width and height, or null when the request does not resize. The sides
+ * are validated like raster images and the resized box is checked against the output pixel limit before the
+ * drawing is rendered.
+ */
+async function svgResizeOf(svg: Buffer, density: number, options: ConversionOptions): Promise<sharp.ResizeOptions | null> {
+  const width = outputSideOf(options.width, 'width');
+  const height = outputSideOf(options.height, 'height');
+  const rendered = await assertSvgRenderSize(svg, density);
+  if (width === undefined && height === undefined) return null;
+  const resize = { width, height, fit: options.fit || 'contain' };
+  const resized = resizedDimensions(rendered.width, rendered.height, resize);
+  assertOutputPixels(resized.width, resized.height);
+  return { ...resize, background: { r: 255, g: 255, b: 255, alpha: 0 } };
+}
+
 /**
  * Converts SVG to Raster (PNG, JPG, WEBP, AVIF), Vector (DXF), or Document (PDF)
  */
@@ -324,9 +365,12 @@ async function convertSvgSource(
     };
   }
 
+  const density = options.dpi || SVG_RENDER_DENSITY;
+
   // SVG -> PDF
   if (tgt === 'pdf') {
-    const pngBuffer = await sharp(inputBuffer, { density: options.dpi || 300 }).png().toBuffer();
+    await assertSvgRenderSize(inputBuffer, density);
+    const pngBuffer = await sharp(inputBuffer, { density }).png().toBuffer();
     const meta = await sharp(pngBuffer).metadata();
     const width = meta.width || 600;
     const height = meta.height || 400;
@@ -356,15 +400,11 @@ async function convertSvgSource(
   }
 
   // SVG -> Raster Images via Sharp
-  let pipeline = sharp(inputBuffer, { density: options.dpi || 300 });
+  let pipeline = sharp(inputBuffer, { density });
 
-  if (options.width || options.height) {
-    pipeline = pipeline.resize({
-      width: options.width ? Number(options.width) : undefined,
-      height: options.height ? Number(options.height) : undefined,
-      fit: options.fit || 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 0 },
-    });
+  if (!SVG_NON_RASTER_TARGETS.has(tgt)) {
+    const resize = await svgResizeOf(inputBuffer, density, options);
+    if (resize) pipeline = pipeline.resize(resize);
   }
 
   const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : 90;
