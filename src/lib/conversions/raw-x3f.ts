@@ -607,6 +607,10 @@ function decodeCamfBlocks(file: Buffer, start: number, end: number, decodedSize:
   const streamStart = start + CAMF_STREAM_OFFSET;
   if (streamStart > end) throw fail('the CAMF stream is cut short');
   assertCamfSize(decodedSize, end - streamStart, BLOCK_BYTES_PER_VALUE);
+  // The block grid bounds the loop: an empty or undersized grid would spin without producing output.
+  if (blockSize === 0 || blockCount === 0 || blockSize * blockCount * BLOCK_BYTES_PER_VALUE < decodedSize) {
+    throw fail(`the CAMF block grid ${blockSize}x${blockCount} cannot hold ${decodedSize} decoded bytes`);
+  }
   const reader = new BitReader(file, streamStart, end);
   const out = Buffer.alloc(decodedSize);
   const rowStart = [bias, bias, bias, bias];
