@@ -680,12 +680,13 @@ describe('archive password delivery to the real 7z binary', () => {
 
     describe('listing rules (listings captured from the reference CLI, 7-Zip 23.01 and p7zip 16.02)', () => {
       const ZIP_AES_LISTING = [
-        'Path = a.txt', 'Folder = -', 'Size = 3', 'Encrypted = +', '',
-        'Path = empty.txt', 'Folder = -', 'Size = 0', 'Encrypted = +', '',
-        'Path = sub', 'Folder = +', 'Size = 0', 'Encrypted = -', '',
-        'Path = sub/b.txt', 'Folder = -', 'Size = 3', 'Encrypted = +', '',
+        'Path = a.txt', 'Folder = -', 'Size = 3', 'Encrypted = +', 'Method = AES-256 Store', '',
+        'Path = empty.txt', 'Folder = -', 'Size = 0', 'Encrypted = +', 'Method = AES-256 Store', '',
+        'Path = sub', 'Folder = +', 'Size = 0', 'Encrypted = -', 'Method = Store', '',
+        'Path = sub/b.txt', 'Folder = -', 'Size = 3', 'Encrypted = +', 'Method = AES-256 Deflate', '',
       ].join('\n');
       const withListing = (entries: string): string => `Path = out.zip\nType = zip\n\n----------\n${entries}`;
+      const UNVERIFIED = 'Could not verify that the archive is encrypted.';
 
       it('accepts a ZIP whose every file entry is encrypted, folders and empty files included', () => {
         expect(assertListingShowsEncryption('zip', { listing: withListing(ZIP_AES_LISTING) })).toEqual({
@@ -694,8 +695,52 @@ describe('archive password delivery to the real 7z binary', () => {
         });
       });
 
+      it('accepts the listing of an empty ZIP, which has nothing to encrypt', () => {
+        // Captured from `7z l -slt` on a 22-byte archive without entries.
+        const emptyListing = '--\nPath = /tmp/e.zip\nType = zip\nPhysical Size = 22\n\n----------\n';
+        expect(assertListingShowsEncryption('zip', { listing: emptyListing })).toEqual({ protection: 'entries', encryptedEntries: 0 });
+      });
+
+      it('refuses to call a listing it cannot parse encrypted', () => {
+        const unparseable = [
+          '',
+          'Everything is Ok\n',
+          // No entries separator at all.
+          'Path = out.zip\nType = zip\nPhysical Size = 22\n',
+          // A separator followed by text that holds no entry.
+          'Path = out.zip\nType = zip\n\n----------\nunexpected output format\n',
+          // Entries that lost their Path field.
+          withListing('Folder = -\nSize = 3\nEncrypted = -\n\n'),
+        ];
+        for (const listing of unparseable) {
+          expect(() => assertListingShowsEncryption('zip', { listing }), JSON.stringify(listing)).toThrow(UNVERIFIED);
+        }
+      });
+
+      it('requires AES-256 on every ZIP file entry, not just an Encrypted flag', () => {
+        for (const method of ['ZipCrypto Store', 'AES-128 Store', 'AES-192 Deflate', 'Store']) {
+          const weak = ZIP_AES_LISTING.replace('Method = AES-256 Deflate', `Method = ${method}`);
+          expect(weak).not.toBe(ZIP_AES_LISTING);
+          expect(() => assertListingShowsEncryption('zip', { listing: withListing(weak) }), method).toThrow(ArchiveNotEncryptedError);
+        }
+        const noMethod = ZIP_AES_LISTING.replace('Method = AES-256 Deflate\n', '');
+        expect(() => assertListingShowsEncryption('zip', { listing: withListing(noMethod) })).toThrow(ArchiveNotEncryptedError);
+      });
+
+      oracleTest('judges the real listings of the reference CLI: AES-256 passes, ZipCrypto does not', ['7z'], async () => {
+        const aes = oracleListing(buildFixture('zip-aes256', PASSWORD), 'zip', PASSWORD);
+        expect(aes).toMatch(/Method = AES-256/);
+        expect(assertListingShowsEncryption('zip', { listing: aes })).toEqual({ protection: 'entries', encryptedEntries: PLAIN_FILES.length });
+        const zipCrypto = oracleListing(buildFixture('zip-zipcrypto', PASSWORD), 'zip', PASSWORD);
+        expect(zipCrypto).toMatch(/Encrypted = \+/);
+        expect(() => assertListingShowsEncryption('zip', { listing: zipCrypto })).toThrow(ArchiveNotEncryptedError);
+      });
+
       it('rejects a ZIP with one plaintext file entry', () => {
-        const mixed = ZIP_AES_LISTING.replace('Size = 3\nEncrypted = +\n\nPath = empty.txt', 'Size = 3\nEncrypted = -\n\nPath = empty.txt');
+        const mixed = ZIP_AES_LISTING.replace(
+          'Size = 3\nEncrypted = +\nMethod = AES-256 Store\n\nPath = empty.txt',
+          'Size = 3\nEncrypted = -\nMethod = Store\n\nPath = empty.txt'
+        );
         expect(mixed).not.toBe(ZIP_AES_LISTING);
         expect(() => assertListingShowsEncryption('zip', { listing: withListing(mixed) })).toThrow(ArchiveNotEncryptedError);
       });

@@ -220,13 +220,25 @@ export interface EncryptionVerdict {
 
 const LISTING_ENTRY_SEPARATOR = /\r?\n\r?\n/;
 const LISTING_ENTRIES_START = /^-{10}\r?$/m;
+/** Method of a ZIP entry encrypted with AES-256, for example "AES-256 Store" or "AES-256 Deflate". */
+const ZIP_AES256_METHOD = /\bAES-256\b/;
+const UNVERIFIED_ENCRYPTION_MESSAGE = 'Could not verify that the archive is encrypted.';
 
-/** Entries of a `-slt` listing as key/value maps; the archive's own header block is dropped. */
-function parseListingEntries(listing: string): Array<Map<string, string>> {
+interface ParsedListing {
+  entries: Array<Map<string, string>>;
+  /** True when the listing had its entries separator and nothing but whitespace after it. */
+  isExplicitlyEmpty: boolean;
+}
+
+/**
+ * Entries of a `-slt` listing as key/value maps; the archive's own header block is dropped. Returns
+ * null when the listing has no entries separator, so it is not a listing this parser understands.
+ */
+function parseListing(listing: string): ParsedListing | null {
   const start = LISTING_ENTRIES_START.exec(listing);
-  if (!start) return [];
-  return listing
-    .slice(start.index + start[0].length)
+  if (!start) return null;
+  const body = listing.slice(start.index + start[0].length);
+  const entries = body
     .split(LISTING_ENTRY_SEPARATOR)
     .map((block) => {
       const fields = new Map<string, string>();
@@ -237,6 +249,7 @@ function parseListingEntries(listing: string): Array<Map<string, string>> {
       return fields;
     })
     .filter((fields) => fields.has('Path'));
+  return { entries, isExplicitlyEmpty: body.trim() === '' };
 }
 
 /**
@@ -244,9 +257,11 @@ function parseListingEntries(listing: string): Array<Map<string, string>> {
  * A 7-Zip that ignores its password prompt writes a plain archive and still exits 0, so the
  * creation result alone proves nothing. 7z targets are written with a header password (-mhe=on):
  * the file list must then be unreadable, and a listing that succeeds means the names are exposed.
- * ZIP names are never encrypted, so every file entry must report `Encrypted = +` instead; folders
- * carry no data and always report `-`. Anything else, including a listing that failed for another
- * reason, is not proof of encryption and throws.
+ * ZIP names are never encrypted, so every file entry must report `Encrypted = +` with an AES-256
+ * `Method` instead (ZipCrypto is encrypted but not what was asked for); folders carry no data and
+ * always report `-`. A listing with no parsable entry counts only when it is explicitly empty.
+ * Anything else, including a listing that failed for another reason, is not proof of encryption
+ * and throws.
  */
 export function assertListingShowsEncryption(
   format: 'zip' | '7z',
@@ -256,13 +271,19 @@ export function assertListingShowsEncryption(
     if (outcome.failureOutput !== undefined && isArchivePasswordFailure(outcome.failureOutput)) {
       return { protection: 'header', encryptedEntries: 0 };
     }
-    throw new ConversionFailedError('Could not verify that the archive is encrypted.');
+    throw new ConversionFailedError(UNVERIFIED_ENCRYPTION_MESSAGE);
   }
   if (format === '7z') throw new ArchiveNotEncryptedError();
 
-  const files = parseListingEntries(outcome.listing).filter((entry) => entry.get('Folder') !== '+');
+  const parsed = parseListing(outcome.listing);
+  if (!parsed || (parsed.entries.length === 0 && !parsed.isExplicitlyEmpty)) {
+    throw new ConversionFailedError(UNVERIFIED_ENCRYPTION_MESSAGE);
+  }
+  const files = parsed.entries.filter((entry) => entry.get('Folder') !== '+');
   const plaintext = files.filter((entry) => entry.get('Encrypted') !== '+');
   if (plaintext.length > 0) throw new ArchiveNotEncryptedError();
+  const weak = files.filter((entry) => !ZIP_AES256_METHOD.test(entry.get('Method') ?? ''));
+  if (weak.length > 0) throw new ArchiveNotEncryptedError('Archive entries were not encrypted with AES-256.');
   return { protection: 'entries', encryptedEntries: files.length };
 }
 
