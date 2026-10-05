@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
+import { vi } from 'vitest';
 import path from 'node:path';
 import { getOracleToolPath } from './differential-oracle';
 
@@ -65,16 +66,11 @@ export function createHostileWorkspace(): HostileWorkspace {
   };
 
   const withTmpdir = async <T>(operation: () => Promise<T>): Promise<T> => {
-    const previous = process.env.TMPDIR;
-    process.env.TMPDIR = tmpDir;
+    const tmpdirSpy = vi.spyOn(os, 'tmpdir').mockReturnValue(tmpDir);
     try {
       return await operation();
     } finally {
-      if (previous === undefined) {
-        delete process.env.TMPDIR;
-      } else {
-        process.env.TMPDIR = previous;
-      }
+      tmpdirSpy.mockRestore();
     }
   };
 
