@@ -469,3 +469,46 @@ describe('URI and style rewrites apply only to real attributes (issue #401 item 
     expect(out).toBe(`<svg><text>style="fill:url(http://e/x)"</text><rect style="fill:none"/></svg>`);
   });
 });
+
+describe('style-targeting animations (issue #401 item 3)', () => {
+  const hostile = [
+    '<set attributeName="style" to="fill:url(http://e/x)"/>',
+    '<animate attributeName="style" values="fill:red;@import url(x.css)"/>',
+    '<animate attributeName="style" from="a:b" to="background:url(//e/x)"/>',
+    '<animateTransform attributeName="style" by="fill:url(https://e/x)"/>',
+    '<SET AttributeName="STYLE" to="x:expression(alert(1))"/>',
+    '<set attributeName="&#115;tyle" to="fill:url( &quot;http://e/x&quot;)"/>',
+    '<set attributeName="svg:style" to="behavior:javascript:alert(1)"/>',
+    '<set attributeName=" st&#x79;le " to="x: Expression (alert(1))"/>',
+    '<set attributeName="style" to="@\\69mport url(x.css)"/>',
+    '<set attributeName="style" to="u\\72l(http://e/x)"/>',
+    '<set attributeName="style" to="ur/**/l(http://e/x)"/>',
+    '<animateTransform attributeName="onbegin" type="rotate" to="alert(1)"/>',
+    '<animateMotion attributeName="onend" path="M0 0" to="alert(1)"/>',
+    '<animateTransform attributeName="xlink:href" to="javascript:alert(1)"/>',
+    '<animate attributeName="href" values="#a;&#106;avascript:alert(1)"/>',
+    '<animate attributeName="href" values="#a;jav&#x61;script&#58;alert(1)"/>',
+  ];
+
+  for (const animation of hostile) {
+    it(`removes ${animation}`, () => {
+      const out = sanitizeSvgString(`<svg><rect>${animation}<circle/></rect></svg>`);
+      expect(out).toBe('<svg><rect><circle/></rect></svg>');
+    });
+  }
+
+  const benign = [
+    '<set attributeName="style" to="fill:red"/>',
+    '<animate attributeName="style" values="fill:url(#a);fill:url(#b)" dur="1s"/>',
+    '<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="2s"/>',
+    '<animateMotion path="M0 0L9 9" dur="1s"/>',
+    '<set attributeName="class" to="javascript-theme"/>',
+  ];
+
+  for (const animation of benign) {
+    it(`keeps ${animation}`, () => {
+      const input = `<svg><rect>${animation}</rect></svg>`;
+      expect(sanitizeSvgString(input)).toBe(input);
+    });
+  }
+});

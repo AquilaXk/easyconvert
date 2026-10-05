@@ -42,7 +42,7 @@ const DANGEROUS_URI_PREFIXES = [
 ] as const;
 
 /** Animation elements that can retarget an attribute (including event handlers and links) at run time. */
-const ANIMATION_ELEMENTS = new Set(['set', 'animate']);
+const ANIMATION_ELEMENTS = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
 /** Animation attributes carrying the value(s) written into the targeted attribute. */
 const ANIMATION_VALUE_ATTRIBUTES = new Set(['to', 'from', 'by', 'values']);
 const LINK_ATTRIBUTES = new Set(['href', 'src']);
@@ -53,6 +53,10 @@ const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object'
 const VOID_DANGEROUS_ELEMENTS = ['meta', 'link', '!ENTITY'] as const;
 
 const EXTERNAL_CSS_URL_START = /url\s*\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/gi;
+const EXTERNAL_CSS_URL_PROBE = /url\s*\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/i;
+const CSS_IMPORT_PROBE = /@import/i;
+const CSS_EXPRESSION_PROBE = /expression\s*\(/i;
+const SCRIPT_URI_PROBE = 'javascript:';
 const CSS_IMPORT_RULE = /@import[^;]*;?/gi;
 
 const CHAR_TAB = 0x09;
@@ -563,8 +567,43 @@ function localNameOf(qualified: string): string {
   return lowered.slice(lowered.lastIndexOf(':') + 1);
 }
 
+/** True when a value written into `style` would import, fetch externally or execute once parsed as CSS. */
+function isHostileStyleValue(raw: string): boolean {
+  const entityDecoded = decodeHtmlEntities(raw);
+  let text = entityDecoded;
+  try {
+    text = decodeCss(entityDecoded)?.text ?? entityDecoded;
+  } catch (error) {
+    if (error instanceof SvgSanitizationError) return true;
+    throw error;
+  }
+  return (
+    CSS_IMPORT_PROBE.test(text) ||
+    EXTERNAL_CSS_URL_PROBE.test(text) ||
+    CSS_EXPRESSION_PROBE.test(text) ||
+    text.replace(/[\s\x00-\x1f]/g, '').toLowerCase().includes(SCRIPT_URI_PROBE)
+  );
+}
+
 /**
- * True for `<set>` / `<animate>` elements that would write an event handler or a dangerous URI into another
+ * True when any `;`-separated item of an animation value is a dangerous URI. Entities are decoded before
+ * splitting so an encoded `;` (`&#59;`) cannot hide the item boundary.
+ */
+function hasDangerousUriItem(raw: string): boolean {
+  return decodeHtmlEntities(raw)
+    .split(ANIMATION_VALUE_SEPARATOR)
+    .some((item) => isDangerousUri(normalizeUriText(item)));
+}
+
+/** True when `isHostile` accepts the raw value of any to/from/by/values attribute. */
+function hasAnimationValue(tag: TagToken, isHostile: (value: string) => boolean): boolean {
+  return tag.attributes.some(
+    (attribute) => ANIMATION_VALUE_ATTRIBUTES.has(attribute.name.toLowerCase()) && isHostile(attribute.value)
+  );
+}
+
+/**
+ * True for animation elements that would write an event handler or a dangerous URI into another
  * attribute (for example `<set attributeName="onclick" to="alert(1)"/>`).
  */
 function isHostileAnimation(tag: TagToken): boolean {
@@ -573,14 +612,9 @@ function isHostileAnimation(tag: TagToken): boolean {
   if (target === undefined) return false;
   const targetName = localNameOf(normalizeUriText(target.value));
   if (isEventHandlerName(targetName)) return true;
+  if (targetName === STYLE_ATTRIBUTE) return hasAnimationValue(tag, isHostileStyleValue);
   if (!LINK_ATTRIBUTES.has(targetName)) return false;
-  return tag.attributes.some(
-    (attribute) =>
-      ANIMATION_VALUE_ATTRIBUTES.has(attribute.name.toLowerCase()) &&
-      attribute.value
-        .split(ANIMATION_VALUE_SEPARATOR)
-        .some((item) => isDangerousUri(normalizeUriText(item)))
-  );
+  return hasAnimationValue(tag, hasDangerousUriItem);
 }
 
 /**
@@ -632,10 +666,7 @@ function neutralizedAttribute(attribute: TagAttribute): string | null {
     return isDangerousUri(normalizeUriText(attribute.value)) ? 'href="#"' : null;
   }
   if (ANIMATION_VALUE_ATTRIBUTES.has(local)) {
-    const dangerous = attribute.value
-      .split(ANIMATION_VALUE_SEPARATOR)
-      .some((item) => isDangerousUri(normalizeUriText(item)));
-    return dangerous ? `${local}="#"` : null;
+    return hasDangerousUriItem(attribute.value) ? `${local}="#"` : null;
   }
   if (local === STYLE_ATTRIBUTE) {
     // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
