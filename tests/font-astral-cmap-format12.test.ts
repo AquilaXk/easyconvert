@@ -6,7 +6,7 @@ import {
   parseCmapTable,
   convertFont,
   parseFontToSfnt,
-  extractTrueTypeGlyphs,
+  FontOutlinesMissingError,
 } from '../src/lib/conversions/font';
 
 describe('OpenType cmap Format 12 & Astral Unicode Embedding (ISO/IEC 14496-22 ยง5.2.4)', () => {
@@ -171,7 +171,7 @@ describe('OpenType cmap Format 12 & Astral Unicode Embedding (ISO/IEC 14496-22 ย
   });
 
   describe('4. End-to-End Font Conversion with Astral CJK & Emoji', () => {
-    it('converts SVG font containing Astral CJK Ext B and Emoji to genuine TTF and WOFF without mojibake', async () => {
+    it('keeps Astral CJK Ext B and Emoji code points from an SVG font in WOFF output and refuses TTF output without outlines', async () => {
       const svgFontContent = `<?xml version="1.0" standalone="no"?>
         <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
         <svg xmlns="http://www.w3.org/2000/svg">
@@ -191,35 +191,27 @@ describe('OpenType cmap Format 12 & Astral Unicode Embedding (ISO/IEC 14496-22 ย
 
       const svgBuffer = Buffer.from(svgFontContent, 'utf-8');
 
-      // 1. Convert SVG to TTF
-      const ttfResult = await convertFont(svgBuffer, 'svg', 'ttf', {}, 'AstralFont.svg');
-      expect(ttfResult.mimeType).toBe('font/ttf');
-      expect(ttfResult.buffer.length).toBeGreaterThan(100);
+      // 1. The SVG font decoder keeps character mappings but produces no glyf outlines, so a TrueType
+      // file cannot be written for it: the conversion fails closed instead of inventing glyphs.
+      await expect(convertFont(svgBuffer, 'svg', 'ttf', {}, 'AstralFont.svg')).rejects.toThrow(
+        FontOutlinesMissingError
+      );
 
-      // Parse resulting TTF
-      const parsedTtf = parseFontToSfnt(ttfResult.buffer, 'ttf', 'AstralFont');
-      expect(parsedTtf.tables['cmap']).toBeDefined();
+      // 2. Convert SVG to WOFF and check the cmap that was written
+      const woffResult = await convertFont(svgBuffer, 'svg', 'woff', {}, 'AstralFont.svg');
+      expect(woffResult.mimeType).toBe('font/woff');
+      expect(woffResult.buffer.subarray(0, 4).toString('ascii')).toBe('wOFF');
 
-      const cmapData = parsedTtf.tables['cmap'].data;
-      const parsedMap = parseCmapTable(cmapData);
+      const parsedWoff = parseFontToSfnt(woffResult.buffer, 'woff', 'AstralFont');
+      expect(parsedWoff.tables['cmap']).toBeDefined();
+      const parsedMap = parseCmapTable(parsedWoff.tables['cmap'].data);
 
-      // Verify BMP and Astral code points exist in the generated TTF cmap table
+      // Verify BMP and Astral code points exist in the generated cmap table
       expect(parsedMap.get(0x0041)).toBe(1); // 'A'
       expect(parsedMap.get(0x20000)).toBe(2); // CJK Ext B U+20000
       expect(parsedMap.get(0x1f600)).toBe(3); // Emoji U+1F600
 
-      // 2. Extract glyphs with extractTrueTypeGlyphs
-      const extracted = extractTrueTypeGlyphs(parsedTtf);
-      const unicodes = extracted.map((g) => g.unicode);
-
-      expect(unicodes).toContain('A');
-      expect(unicodes).toContain(String.fromCodePoint(0x20000)); // Authentic Astral character
-      expect(unicodes).toContain(String.fromCodePoint(0x1f600)); // Authentic Emoji
-
-      // 3. Convert SVG to WOFF and WOFF2
-      const woffResult = await convertFont(svgBuffer, 'svg', 'woff', {}, 'AstralFont.svg');
-      expect(woffResult.mimeType).toBe('font/woff');
-      expect(woffResult.buffer.subarray(0, 4).toString('ascii')).toBe('wOFF');
+      // 3. WOFF2
 
       const woff2Result = await convertFont(svgBuffer, 'svg', 'woff2', {}, 'AstralFont.svg');
       expect(woff2Result.mimeType).toBe('font/woff2');
