@@ -86,7 +86,14 @@ export interface UltraHdrBuildInput {
    * in both the file and the MPF table, as phones that store several auxiliary images do.
    */
   depthMapBeforeGainMap?: boolean;
+  /** Raw bytes of one more image stored after the gain map and listed last in the MPF table. */
+  trailingImage?: Buffer;
 }
+
+/** MP Entry index of the gain map when `depthMapBeforeGainMap` places a depth map ahead of it. */
+export const GAIN_MAP_ENTRY_INDEX_WITH_DEPTH_MAP = 2;
+/** MP Entry index of the gain map in a plain two-image file. */
+export const GAIN_MAP_ENTRY_INDEX_PLAIN = 1;
 
 export interface UltraHdrParts {
   primaryJpeg: Buffer;
@@ -153,7 +160,7 @@ const THUMBNAIL_QUALITY = 70;
 const THUMBNAIL_GREY = 90;
 const PREVIEW_GREY = 200;
 
-async function tinyJpeg(grey: number): Promise<Buffer> {
+function tinyJpeg(grey: number): Promise<Buffer> {
   return sharp({ create: { width: THUMBNAIL_EDGE, height: THUMBNAIL_EDGE, channels: 3, background: { r: grey, g: grey, b: grey } } })
     .jpeg({ quality: THUMBNAIL_QUALITY })
     .toBuffer();
@@ -195,7 +202,7 @@ const DEPTH_MAP_QUALITY = 85;
 const DEPTH_MAP_LEVELS = 256;
 
 /** A horizontal ramp, grayscale JPEG with no XMP: stands in for a depth map next to the gain map. */
-async function depthMapJpeg(width: number, height: number): Promise<Buffer> {
+function depthMapJpeg(width: number, height: number): Promise<Buffer> {
   const ramp = Buffer.alloc(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) ramp[y * width + x] = Math.floor((x * (DEPTH_MAP_LEVELS - 1)) / Math.max(1, width - 1));
@@ -287,7 +294,8 @@ export async function buildUltraHdrJpeg(input: UltraHdrBuildInput): Promise<Ultr
   const exifSegments = input.exifThumbnailTrap === true ? [app1Segment(await exifThumbnailPayload())] : [];
   const leadingLength = [...exifSegments, xmpSegment].reduce((sum, segment) => sum + segment.length, 0);
   // The MPF segment has a fixed size, so the final primary size is known before it is written.
-  const secondarySizes = depthJpeg ? [depthJpeg.length, gainMapJpeg.length] : [gainMapJpeg.length];
+  const stored = [...(depthJpeg ? [depthJpeg] : []), gainMapJpeg, ...(input.trailingImage ? [input.trailingImage] : [])];
+  const secondarySizes = stored.map((image) => image.length);
   const mpfLength = MARKER_LENGTH_BYTES + MARKER_LENGTH_BYTES + mpfPayload(0, secondarySizes.map((size) => ({ size, offsetFromTiff: 0 }))).length;
   const primarySize = primaryBase.length + leadingLength + mpfLength;
   const mpfSegmentStart = insertionOffset(primaryBase) + leadingLength;
@@ -303,7 +311,7 @@ export async function buildUltraHdrJpeg(input: UltraHdrBuildInput): Promise<Ultr
 
   const primaryJpeg = insertSegments(primaryBase, [...exifSegments, xmpSegment, mpfSegment]);
   if (primaryJpeg.length !== primarySize) throw new Error('primary size mismatch');
-  const file = Buffer.concat([primaryJpeg, ...(depthJpeg ? [depthJpeg] : []), gainMapJpeg]);
+  const file = Buffer.concat([primaryJpeg, ...stored]);
   return { primaryJpeg, gainMapJpeg, depthJpeg, file };
 }
 
@@ -440,9 +448,10 @@ function xmpOf(buf: Buffer, stream: JpegStream): string {
 
 /**
  * Independent parse of an Ultra HDR file: walks both JPEG streams marker by marker, resolves the MPF
- * entries to absolute offsets and checks they land on the SOI of each image.
+ * entries to absolute offsets and checks they land on the SOI of each image. `gainMapEntryIndex` is the
+ * MP Entry the fixture wrote as the gain map.
  */
-export function parseUltraHdrStructure(file: Buffer): UltraHdrStructure {
+export function parseUltraHdrStructure(file: Buffer, gainMapEntryIndex = GAIN_MAP_ENTRY_INDEX_PLAIN): UltraHdrStructure {
   const primary = walkJpeg(file, 0);
   const mpfSegment = primary.segments.find(
     (s) => s.marker === APP2 && s.payload.toString('ascii', 0, MPF_IDENTIFIER_BYTES) === MPF_IDENTIFIER
@@ -451,8 +460,9 @@ export function parseUltraHdrStructure(file: Buffer): UltraHdrStructure {
   const tiffAbsolute = mpfSegment.offset + MARKER_LENGTH_BYTES + MARKER_LENGTH_BYTES + MPF_IDENTIFIER_BYTES;
   const mpf = parseMpf(mpfSegment.payload, tiffAbsolute);
   if (mpf.entries.length < 2) throw new Error('MPF index lists fewer than two images');
-  const candidates = mpf.entries.slice(1).map((entry) => walkJpeg(file, entry.absoluteOffset));
-  const secondary = candidates.find((stream) => xmpOf(file, stream).includes('hdrgm:Version')) ?? candidates[0];
+  if (gainMapEntryIndex < 1 || gainMapEntryIndex >= mpf.entries.length) throw new Error('gain map entry index is not in the MPF table');
+  // The caller knows which entry its fixture wrote as the gain map; no selection rule is re-derived here.
+  const secondary = walkJpeg(file, mpf.entries[gainMapEntryIndex].absoluteOffset);
   return {
     primary,
     secondary,

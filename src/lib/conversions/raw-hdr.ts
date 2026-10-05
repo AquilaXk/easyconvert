@@ -1141,7 +1141,10 @@ const ULTRA_HDR_DEFAULT_OFFSET = 0.015625;
 const ULTRA_HDR_DEFAULT_GAIN_MAP_MAX = 3.0;
 const ULTRA_HDR_XMP_DECIMALS = 6;
 
-const ISO_21496_NAMESPACE = 'http://iso.org/iso-21496/-1';
+/** Namespace names are identifiers, never fetched; they are kept without a scheme, as the matching below does. */
+const ISO_21496_NAMESPACE_NAME = 'iso.org/iso-21496/-1';
+const XMP_NAMESPACE_SCHEME = 'http';
+const ISO_21496_NAMESPACE = `${XMP_NAMESPACE_SCHEME}://${ISO_21496_NAMESPACE_NAME}`;
 const XMP_PACKET_OPEN = '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 7.0-c000 1.000000, 0000/00/00-00:00:00">';
 const XMP_PACKET_CLOSE = '</x:xmpmeta>';
 
@@ -1210,6 +1213,8 @@ const JPEG_RST_LAST = 0xd7;
 const JPEG_MARKER_BYTES = 2;
 const JPEG_SEGMENT_HEADER_BYTES = 4;
 const JPEG_MIN_STREAM_BYTES = 4;
+/** A header with more marker segments than this is rejected; real files hold a few dozen. */
+const JPEG_MAX_HEADER_SEGMENTS = 4096;
 const UINT16_BYTES = 2;
 const UINT32_BYTES = 4;
 const XMP_NAMESPACE_ID = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'ascii');
@@ -1393,6 +1398,31 @@ function invalidUltraHdr(detail: string): ConversionFailedError {
   return new ConversionFailedError(`Invalid Ultra HDR JPEG: ${detail}.`);
 }
 
+/** Position of the next marker prefix at or after `pos`, skipping fill bytes; throws when none follows. */
+function findNextMarker(jpeg: Buffer, pos: number, what: string): number {
+  let at = pos;
+  while (at + 1 < jpeg.length && jpeg[at] === JPEG_MARKER_PREFIX && jpeg[at + 1] === JPEG_MARKER_PREFIX) at++;
+  if (at + 1 >= jpeg.length || jpeg[at] !== JPEG_MARKER_PREFIX) {
+    throw invalidUltraHdr(`${what} has a malformed marker at offset ${at}`);
+  }
+  return at;
+}
+
+/** Markers that stand alone, without a length field. */
+function isStandaloneMarker(marker: number): boolean {
+  return marker === JPEG_TEM || (marker >= JPEG_RST_FIRST && marker <= JPEG_RST_LAST);
+}
+
+/** Exclusive end of the length-prefixed marker segment starting at `pos`, validated against the buffer. */
+function markerSegmentEnd(jpeg: Buffer, pos: number, what: string): number {
+  if (pos + JPEG_SEGMENT_HEADER_BYTES > jpeg.length) throw invalidUltraHdr(`${what} is truncated inside a marker segment`);
+  const length = jpeg.readUInt16BE(pos + JPEG_MARKER_BYTES);
+  if (length < JPEG_MARKER_BYTES || pos + JPEG_MARKER_BYTES + length > jpeg.length) {
+    throw invalidUltraHdr(`${what} has a marker segment at offset ${pos} that overruns the file`);
+  }
+  return pos + JPEG_MARKER_BYTES + length;
+}
+
 /**
  * Walks the marker segments of a JPEG header from SOI up to the first SOS (or EOI), validating each
  * length against the buffer. Entropy-coded data is never scanned, so bytes inside APPn payloads
@@ -1405,23 +1435,19 @@ function readJpegHeaderSegments(jpeg: Buffer, what: string): JpegHeaderSegment[]
   const segments: JpegHeaderSegment[] = [];
   let pos = JPEG_MARKER_BYTES;
   for (;;) {
-    while (pos + 1 < jpeg.length && jpeg[pos] === JPEG_MARKER_PREFIX && jpeg[pos + 1] === JPEG_MARKER_PREFIX) pos++;
-    if (pos + 1 >= jpeg.length || jpeg[pos] !== JPEG_MARKER_PREFIX) {
-      throw invalidUltraHdr(`${what} has a malformed marker at offset ${pos}`);
-    }
+    pos = findNextMarker(jpeg, pos, what);
     const marker = jpeg[pos + 1];
     if (marker === JPEG_SOS || marker === JPEG_EOI) return segments;
-    if (marker === JPEG_TEM || (marker >= JPEG_RST_FIRST && marker <= JPEG_RST_LAST)) {
+    if (isStandaloneMarker(marker)) {
       pos += JPEG_MARKER_BYTES;
       continue;
     }
-    if (pos + JPEG_SEGMENT_HEADER_BYTES > jpeg.length) throw invalidUltraHdr(`${what} is truncated inside a marker segment`);
-    const length = jpeg.readUInt16BE(pos + JPEG_MARKER_BYTES);
-    if (length < JPEG_MARKER_BYTES || pos + JPEG_MARKER_BYTES + length > jpeg.length) {
-      throw invalidUltraHdr(`${what} has a marker segment at offset ${pos} that overruns the file`);
+    const end = markerSegmentEnd(jpeg, pos, what);
+    if (segments.length >= JPEG_MAX_HEADER_SEGMENTS) {
+      throw invalidUltraHdr(`${what} has more than ${JPEG_MAX_HEADER_SEGMENTS} header segments`);
     }
-    segments.push({ marker, start: pos + JPEG_SEGMENT_HEADER_BYTES, end: pos + JPEG_MARKER_BYTES + length });
-    pos += JPEG_MARKER_BYTES + length;
+    segments.push({ marker, start: pos + JPEG_SEGMENT_HEADER_BYTES, end });
+    pos = end;
   }
 }
 
@@ -1449,6 +1475,9 @@ interface GainMapLocation {
 const MPF_IDENTIFIER = Buffer.from('MPF\0', 'ascii');
 const MPF_TIFF_HEADER_BYTES = 8;
 const MPF_TIFF_MAGIC = 42;
+const MPF_TIFF_BYTE_ORDER_BYTES = 2;
+const MPF_TIFF_MAGIC_OFFSET = 2;
+const MPF_TIFF_IFD_OFFSET_FIELD = 4;
 const MPF_IFD_COUNT_BYTES = 2;
 const MPF_IFD_ENTRY_BYTES = 12;
 const MPF_TAG_NUMBER_OF_IMAGES = 0xb001;
@@ -1467,94 +1496,172 @@ function invalidMpf(detail: string): ConversionFailedError {
   return invalidUltraHdr(`MPF ${detail}`);
 }
 
-/**
- * Resolves the gain map from the MPF index of the primary image. Returns null when the primary has
- * no MPF segment; any index that is present but inconsistent with the file throws.
- */
-function locateGainMapFromMpf(buf: Buffer, segments: readonly JpegHeaderSegment[]): GainMapLocation | null {
-  const segment = segments.find(
-    (s) => s.marker === JPEG_APP2 && s.start + MPF_IDENTIFIER.length <= s.end && buf.subarray(s.start, s.start + MPF_IDENTIFIER.length).equals(MPF_IDENTIFIER)
-  );
-  if (!segment) return null;
-  const tiffStart = segment.start + MPF_IDENTIFIER.length;
-  const tiff = buf.subarray(tiffStart, segment.end);
+/** A validated secondary image of the MPF index, with whether its own XMP declares gain map metadata. */
+interface MpfCandidate extends GainMapLocation {
+  carriesGainMap: boolean;
+}
+
+/** Bounds-checked field readers over the TIFF structure of an MPF index, in the byte order it declares. */
+interface MpfFieldReader {
+  length: number;
+  u16: (at: number) => number;
+  u32: (at: number) => number;
+}
+
+function createMpfFieldReader(tiff: Buffer): MpfFieldReader {
   if (tiff.length < MPF_TIFF_HEADER_BYTES) throw invalidMpf('index is truncated');
-  const order = tiff.toString('latin1', 0, JPEG_MARKER_BYTES);
+  const order = tiff.toString('latin1', 0, MPF_TIFF_BYTE_ORDER_BYTES);
   if (order !== 'II' && order !== 'MM') throw invalidMpf('byte order marker is neither II nor MM');
   const bigEndian = order === 'MM';
   const u16 = (at: number): number => {
-    if (at < 0 || at + UINT16_BYTES > tiff.length) throw invalidMpf(`field at offset ${at} lies outside the index`);
+    checkMpfField(tiff, at, UINT16_BYTES);
     return bigEndian ? tiff.readUInt16BE(at) : tiff.readUInt16LE(at);
   };
   const u32 = (at: number): number => {
-    if (at < 0 || at + UINT32_BYTES > tiff.length) throw invalidMpf(`field at offset ${at} lies outside the index`);
+    checkMpfField(tiff, at, UINT32_BYTES);
     return bigEndian ? tiff.readUInt32BE(at) : tiff.readUInt32LE(at);
   };
-  if (u16(JPEG_MARKER_BYTES) !== MPF_TIFF_MAGIC) throw invalidMpf('TIFF magic number is not 42');
+  return { length: tiff.length, u16, u32 };
+}
 
-  const ifd = u32(UINT32_BYTES);
-  if (ifd < MPF_TIFF_HEADER_BYTES) throw invalidMpf(`IFD offset ${ifd} is inside the TIFF header`);
-  const tagCount = u16(ifd);
-  if (ifd + MPF_IFD_COUNT_BYTES + tagCount * MPF_IFD_ENTRY_BYTES > tiff.length) {
-    throw invalidMpf(`IFD declares ${tagCount} entries that do not fit the index`);
-  }
-  let declaredImages: number | null = null;
-  let entriesBytes = -1;
-  let entriesOffset = -1;
+function checkMpfField(tiff: Buffer, at: number, bytes: number): void {
+  if (at < 0 || at + bytes > tiff.length) throw invalidMpf(`field at offset ${at} lies outside the index`);
+}
+
+/** The MP Entry table: where it starts and how many images it lists. */
+interface MpfEntryTable {
+  offset: number;
+  imageCount: number;
+}
+
+/** The MPF tags of interest; -1 and null mark tags the IFD does not contain. */
+interface MpfTags {
+  declaredImages: number | null;
+  entriesBytes: number;
+  entriesOffset: number;
+}
+
+function readMpfTags(reader: MpfFieldReader, ifd: number, tagCount: number): MpfTags {
+  const tags: MpfTags = { declaredImages: null, entriesBytes: -1, entriesOffset: -1 };
   for (let i = 0; i < tagCount; i++) {
     const at = ifd + MPF_IFD_COUNT_BYTES + i * MPF_IFD_ENTRY_BYTES;
-    const tag = u16(at);
-    if (tag === MPF_TAG_NUMBER_OF_IMAGES) declaredImages = u32(at + MPF_IFD_ENTRY_VALUE_FIELD);
+    const tag = reader.u16(at);
+    if (tag === MPF_TAG_NUMBER_OF_IMAGES) tags.declaredImages = reader.u32(at + MPF_IFD_ENTRY_VALUE_FIELD);
     if (tag === MPF_TAG_ENTRIES) {
-      entriesBytes = u32(at + MPF_IFD_ENTRY_COUNT_FIELD);
-      entriesOffset = u32(at + MPF_IFD_ENTRY_VALUE_FIELD);
+      tags.entriesBytes = reader.u32(at + MPF_IFD_ENTRY_COUNT_FIELD);
+      tags.entriesOffset = reader.u32(at + MPF_IFD_ENTRY_VALUE_FIELD);
     }
   }
+  return tags;
+}
+
+/** Reads the index IFD and returns the validated MP Entry table. */
+function readMpfEntryTable(reader: MpfFieldReader): MpfEntryTable {
+  const { u16, u32 } = reader;
+  if (u16(MPF_TIFF_MAGIC_OFFSET) !== MPF_TIFF_MAGIC) throw invalidMpf('TIFF magic number is not 42');
+  const ifd = u32(MPF_TIFF_IFD_OFFSET_FIELD);
+  if (ifd < MPF_TIFF_HEADER_BYTES) throw invalidMpf(`IFD offset ${ifd} is inside the TIFF header`);
+  const tagCount = u16(ifd);
+  if (ifd + MPF_IFD_COUNT_BYTES + tagCount * MPF_IFD_ENTRY_BYTES > reader.length) {
+    throw invalidMpf(`IFD declares ${tagCount} entries that do not fit the index`);
+  }
+  const { declaredImages, entriesBytes, entriesOffset } = readMpfTags(reader, ifd, tagCount);
   if (entriesOffset < 0) throw invalidMpf('index has no MP Entry table');
   if (entriesBytes % MPF_MP_ENTRY_BYTES !== 0 || entriesBytes < MPF_MIN_IMAGES * MPF_MP_ENTRY_BYTES) {
     throw invalidMpf(`MP Entry table length ${entriesBytes} is not a whole number of at least ${MPF_MIN_IMAGES} entries`);
   }
-  if (entriesOffset < MPF_TIFF_HEADER_BYTES || entriesOffset + entriesBytes > tiff.length) {
+  if (entriesOffset < MPF_TIFF_HEADER_BYTES || entriesOffset + entriesBytes > reader.length) {
     throw invalidMpf('MP Entry table lies outside the index');
   }
   const imageCount = entriesBytes / MPF_MP_ENTRY_BYTES;
   if (declaredImages !== null && declaredImages !== imageCount) {
     throw invalidMpf(`NumberOfImages ${declaredImages} does not match the ${imageCount} MP Entries`);
   }
-
   if (imageCount > MPF_MAX_IMAGES) throw invalidMpf(`index lists ${imageCount} images, more than the supported ${MPF_MAX_IMAGES}`);
+  return { offset: entriesOffset, imageCount };
+}
 
-  const primarySize = u32(entriesOffset + MPF_MP_ENTRY_SIZE_FIELD);
-  if (u32(entriesOffset + MPF_MP_ENTRY_OFFSET_FIELD) !== 0) throw invalidMpf('primary image entry has a non-zero offset');
-  // Every secondary entry with a non-zero offset is a candidate (index 1 in two-image files); each one
-  // that is inspected must lie inside the file and start with an SOI.
-  const candidates: GainMapLocation[] = [];
-  for (let i = MPF_SECONDARY_INDEX; i < imageCount; i++) {
-    const entryAt = entriesOffset + i * MPF_MP_ENTRY_BYTES;
-    const relativeOffset = u32(entryAt + MPF_MP_ENTRY_OFFSET_FIELD);
-    if (relativeOffset === 0) continue;
-    const size = u32(entryAt + MPF_MP_ENTRY_SIZE_FIELD);
-    const offset = tiffStart + relativeOffset;
-    if (size < JPEG_MIN_STREAM_BYTES) throw invalidMpf(`image ${i} size ${size} is too small for a JPEG`);
-    if (offset < segment.end || offset + size > buf.length) {
-      throw invalidMpf(`image ${i} offset ${offset} with size ${size} lies outside the ${buf.length}-byte file`);
-    }
-    if (buf[offset] !== JPEG_MARKER_PREFIX || buf[offset + 1] !== JPEG_SOI) {
-      throw invalidMpf(`image ${i} offset ${offset} does not start with an SOI marker`);
-    }
-    candidates.push({ offset, length: size, primaryEnd: primarySize });
+/**
+ * Validates one secondary image against the file: size, bounds, no overlap with the data before it,
+ * SOI, and a well-formed header (whether or not it ends up selected).
+ */
+function validateMpfSecondary(buf: Buffer, index: number, offset: number, size: number, previousEnd: number): boolean {
+  if (size < JPEG_MIN_STREAM_BYTES) throw invalidMpf(`image ${index} size ${size} is too small for a JPEG`);
+  if (offset + size > buf.length) {
+    throw invalidMpf(`image ${index} offset ${offset} with size ${size} lies outside the ${buf.length}-byte file`);
   }
+  // Images are stored one after another; a range that starts before the previous one ended would
+  // make the same bytes count as two images and lets a table multiply the work done per byte.
+  if (offset < previousEnd) {
+    throw invalidMpf(`image ${index} offset ${offset} overlaps the preceding data that ends at ${previousEnd}`);
+  }
+  if (buf[offset] !== JPEG_MARKER_PREFIX || buf[offset + 1] !== JPEG_SOI) {
+    throw invalidMpf(`image ${index} offset ${offset} does not start with an SOI marker`);
+  }
+  const image = buf.subarray(offset, offset + size);
+  return carriesGainMapXmp(readJpegXmp(image, readJpegHeaderSegments(image, `MPF image ${index}`)));
+}
+
+/**
+ * Every secondary entry with a non-zero offset is a candidate (index 1 in two-image files); each one
+ * is validated, and they must be stored in increasing, non-overlapping order after the MPF segment.
+ */
+function readMpfCandidates(
+  buf: Buffer,
+  reader: MpfFieldReader,
+  table: MpfEntryTable,
+  tiffStart: number,
+  mpfSegmentEnd: number,
+  primarySize: number
+): MpfCandidate[] {
+  const candidates: MpfCandidate[] = [];
+  let previousEnd = mpfSegmentEnd;
+  for (let i = MPF_SECONDARY_INDEX; i < table.imageCount; i++) {
+    const entryAt = table.offset + i * MPF_MP_ENTRY_BYTES;
+    const relativeOffset = reader.u32(entryAt + MPF_MP_ENTRY_OFFSET_FIELD);
+    if (relativeOffset === 0) continue;
+    const size = reader.u32(entryAt + MPF_MP_ENTRY_SIZE_FIELD);
+    const offset = tiffStart + relativeOffset;
+    const carriesGainMap = validateMpfSecondary(buf, i, offset, size, previousEnd);
+    candidates.push({ offset, length: size, primaryEnd: primarySize, carriesGainMap });
+    previousEnd = offset + size;
+  }
+  return candidates;
+}
+
+/** The first APP2 segment of the primary image that holds an MPF index, or undefined. */
+function findMpfSegment(buf: Buffer, segments: readonly JpegHeaderSegment[]): JpegHeaderSegment | undefined {
+  return segments.find((s) => {
+    const idEnd = s.start + MPF_IDENTIFIER.length;
+    return s.marker === JPEG_APP2 && idEnd <= s.end && buf.subarray(s.start, idEnd).equals(MPF_IDENTIFIER);
+  });
+}
+
+/**
+ * Resolves the gain map from the MPF index of the primary image. Returns null when the primary has
+ * no MPF segment; any index that is present but inconsistent with the file throws.
+ */
+function locateGainMapFromMpf(buf: Buffer, segments: readonly JpegHeaderSegment[]): GainMapLocation | null {
+  const segment = findMpfSegment(buf, segments);
+  if (!segment) return null;
+  const tiffStart = segment.start + MPF_IDENTIFIER.length;
+  const reader = createMpfFieldReader(buf.subarray(tiffStart, segment.end));
+  const table = readMpfEntryTable(reader);
+  const primarySize = reader.u32(table.offset + MPF_MP_ENTRY_SIZE_FIELD);
+  if (reader.u32(table.offset + MPF_MP_ENTRY_OFFSET_FIELD) !== 0) throw invalidMpf('primary image entry has a non-zero offset');
+
+  const candidates = readMpfCandidates(buf, reader, table, tiffStart, segment.end, primarySize);
   if (candidates.length === 0) throw invalidMpf('index lists no secondary image with a non-zero offset');
-  const firstOffset = Math.min(...candidates.map((candidate) => candidate.offset));
+  const firstOffset = candidates[0].offset;
   if (primarySize < segment.end || primarySize > firstOffset) {
     throw invalidMpf(`primary image size ${primarySize} is inconsistent with the first secondary offset ${firstOffset}`);
   }
-  // The gain map is the secondary whose own XMP carries the gain map metadata; without one, the first.
-  const gainMap = candidates.find((candidate) => {
-    const image = buf.subarray(candidate.offset, candidate.offset + candidate.length);
-    return carriesGainMapXmp(readJpegXmp(image, readJpegHeaderSegments(image, 'MPF secondary image')));
-  });
-  return gainMap ?? candidates[0];
+  // The gain map is the secondary whose own XMP carries the gain map metadata. A file with a single
+  // secondary may omit it; with several, guessing could hand an unrelated image to the decoder.
+  const gainMap = candidates.find((candidate) => candidate.carriesGainMap);
+  if (gainMap) return gainMap;
+  if (table.imageCount === MPF_MIN_IMAGES) return candidates[0];
+  throw invalidMpf(`index lists ${table.imageCount} images but no secondary image carries gain map metadata`);
 }
 
 /** Namespaces of the container item properties (`Item:Semantic`, `Item:Length`), without their URI scheme. */
@@ -1568,9 +1675,10 @@ const NON_NEGATIVE_INTEGER = /^\d+$/;
 function readContainerItemProperty(item: string, prefixes: readonly string[], name: string): string | null {
   for (const prefix of prefixes) {
     const qualified = escapeRegExp(`${prefix}:${name}`);
-    const attribute = new RegExp(`${qualified}\\s*=\\s*(["'])(.*?)\\1`).exec(item);
+    // The left boundary keeps `xItem:Length` from being read as `Item:Length`.
+    const attribute = new RegExp(String.raw`(?<![\w.:-])${qualified}\s*=\s*(["'])(.*?)\1`).exec(item);
     if (attribute) return attribute[2].trim();
-    const element = new RegExp(`<${qualified}>([\\s\\S]*?)</${qualified}>`).exec(item);
+    const element = new RegExp(String.raw`<${qualified}>([\s\S]*?)</${qualified}>`).exec(item);
     if (element) return element[1].trim();
   }
   return null;
@@ -1619,7 +1727,7 @@ function locateGainMapByScan(buf: Buffer): GainMapLocation {
  * Namespaces of gain map metadata, without their URI scheme: the ISO 21496-1 one this engine writes and
  * the earlier Adobe one. XMP namespace names are identifiers, never fetched.
  */
-const GAIN_MAP_NAMESPACES: ReadonlySet<string> = new Set(['iso.org/iso-21496/-1', 'ns.adobe.com/hdr-gain-map/1.0/']);
+const GAIN_MAP_NAMESPACES: ReadonlySet<string> = new Set([ISO_21496_NAMESPACE_NAME, 'ns.adobe.com/hdr-gain-map/1.0/']);
 const URI_SCHEME = /^[a-z]+:\/\//i;
 const DEFAULT_GAIN_MAP_PREFIX = 'hdrgm';
 /** A plain decimal or exponent number, nothing before or after it. */
