@@ -2342,6 +2342,15 @@ async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
   return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
 }
 
+/** Keeps typed conversion errors; wraps any other decoder failure in a ConversionFailedError (HTTP 400). */
+function toImageDecodeError(err: unknown): ConversionFailedError {
+  if (err instanceof ConversionFailedError) return err;
+  const detail = err instanceof Error ? err.message : String(err);
+  const failure = new ConversionFailedError(`Unable to decode the image: ${detail}`);
+  failure.cause = err;
+  return failure;
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -2534,7 +2543,7 @@ export async function convertImage(
         throw new RawEngineRequiredError(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
       }
     } else {
-      throw err;
+      throw toImageDecodeError(err);
     }
   }
 
@@ -2969,26 +2978,22 @@ export async function convertImage(
     }
 
     case 'xps': {
-      let pngBuffer = inputBuffer;
-      let imgMeta: sharp.Metadata | undefined;
+      // Embed the decoded, oriented and resized picture; undecodable input is an error, never a stand-in.
+      let picture: { data: Buffer; info: sharp.OutputInfo };
       try {
-        const s = sharp(inputBuffer);
-        imgMeta = await s.metadata();
-        if (imgMeta.format !== 'png') {
-          pngBuffer = await s.png().toBuffer();
-        }
-      } catch {
-        // If sharp cannot decode directly, fallback to inputBuffer
+        picture = await pipeline.png().toBuffer({ resolveWithObject: true });
+      } catch (err: unknown) {
+        throw toImageDecodeError(err);
       }
       outputBuffer = await buildOpenXpsPackage(
         [
           {
             title: baseName,
             image: {
-              buffer: pngBuffer,
+              buffer: picture.data,
               format: 'png',
-              width: imgMeta?.width || 800,
-              height: imgMeta?.height || 600,
+              width: picture.info.width,
+              height: picture.info.height,
             },
           },
         ],
