@@ -24,6 +24,7 @@ const COMMENT_CLOSE = '-->';
 const COMMENT_OPEN_LENGTH = COMMENT_OPEN.length;
 const DOCTYPE_OPEN = '<!doctype';
 const EVENT_PREFIX = 'on';
+const STYLE_ATTRIBUTE = 'style';
 const ANIMATION_VALUE_SEPARATOR = ';';
 
 /** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
@@ -620,6 +621,60 @@ function stripEventHandlerAttributes(src: string): string {
   return parts.join('');
 }
 
+function attributeLocalName(attributeName: string): string {
+  return localNameOf(attributeName.replace(/^["'=]+/, ''));
+}
+
+/** Replacement for an attribute whose value is a dangerous URI, or null when it is left alone. */
+function neutralizedAttribute(attribute: TagAttribute): string | null {
+  const local = attributeLocalName(attribute.name);
+  if (LINK_ATTRIBUTES.has(local)) {
+    return isDangerousUri(normalizeUriText(attribute.value)) ? 'href="#"' : null;
+  }
+  if (ANIMATION_VALUE_ATTRIBUTES.has(local)) {
+    const dangerous = attribute.value
+      .split(ANIMATION_VALUE_SEPARATOR)
+      .some((item) => isDangerousUri(normalizeUriText(item)));
+    return dangerous ? `${local}="#"` : null;
+  }
+  if (local === STYLE_ATTRIBUTE) {
+    // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
+    return `style="${sanitizeCss(attribute.value).replace(/"/g, '&quot;')}"`;
+  }
+  return null;
+}
+
+/**
+ * Rewrites href/src, animation value and style attributes, but only where the tokenizer finds a real attribute
+ * inside a real tag; text, comments and attribute values that merely mention them are left untouched.
+ */
+function rewriteAttributes(src: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  let search = 0;
+
+  for (;;) {
+    const lt = src.indexOf('<', search);
+    if (lt === -1) break;
+    if (!isTagNameStart(src, lt + 1)) {
+      search = lt + 1;
+      continue;
+    }
+    const tag = readTag(src, lt);
+    for (const attribute of tag.attributes) {
+      const replacement = neutralizedAttribute(attribute);
+      if (replacement === null) continue;
+      parts.push(src.slice(copied, attribute.start), replacement);
+      copied = attribute.end;
+    }
+    search = tag.end;
+  }
+
+  if (copied === 0 && parts.length === 0) return src;
+  parts.push(src.slice(copied));
+  return parts.join('');
+}
+
 /**
  * One pass of dangerous markup removal; callers repeat until stable to defeat split-opener tricks.
  */
@@ -675,40 +730,10 @@ function sanitizePass(input: string): string {
   // 1-3. Strip DOCTYPE/ENTITY declarations, executable and embedding elements, and on* event handlers.
   let result = stripDangerousMarkupPass(input);
 
-  // 4. Sanitize dangerous URI protocols (javascript:, vbscript:, data:text/html, data:image/svg+xml, http:, https:, file:, ftp:, //)
-  result = result.replace(
-    /(?:(?:xlink:)?href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
-    (full, v1, v2, v3) => {
-      const rawVal = v1 !== undefined ? v1 : (v2 !== undefined ? v2 : v3);
-      const decoded = decodeHtmlEntities(rawVal).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
-      if (isDangerousUri(decoded)) {
-        return 'href="#"';
-      }
-      return full;
-    }
-  );
-
-  // 5. Sanitize animation values and attributes (prevent SVG animation script vectors)
-  result = result.replace(
-    /\b(?:values|to|from)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
-    (full, v1, v2, v3) => {
-      const rawVal = v1 !== undefined ? v1 : (v2 !== undefined ? v2 : v3);
-      const decoded = decodeHtmlEntities(rawVal).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
-      if (isDangerousUri(decoded)) {
-        return 'to="#"';
-      }
-      return full;
-    }
-  );
-
-  // 6. Sanitize <style> blocks and inline style attributes against SSRF and data exfiltration
+  // 4-6. Rewrite href-like, animation value and style attributes of real tags against dangerous URIs, SSRF and
+  // data exfiltration, then clean <style> element bodies.
+  result = rewriteAttributes(result);
   result = sanitizeStyleElements(result);
-
-  result = result.replace(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (full, s1, s2, s3) => {
-    const styleBody = s1 !== undefined ? s1 : (s2 !== undefined ? s2 : s3);
-    // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
-    return `style="${sanitizeCss(styleBody).replace(/"/g, '&quot;')}"`;
-  });
 
   return result;
 }

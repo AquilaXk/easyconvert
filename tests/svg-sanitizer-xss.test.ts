@@ -424,3 +424,48 @@ describe('CSS escape and comment obfuscation (issue #401 item 1)', () => {
     }
   });
 });
+
+describe('URI and style rewrites apply only to real attributes (issue #401 item 2)', () => {
+  const inertText: Array<[string, string]> = [
+    ['text content', "<svg><text>style='a' href=javascript:alert(1) to=http://e/x values=https://e/y src=//e/z</text></svg>"],
+    ['quoted attribute value', `<svg><rect title="style='a' href=javascript:1 to=http://e/x"/></svg>`],
+    ['comment', '<svg><!-- style=\'a\' href=javascript:1 --><rect/></svg>'],
+    ['stray angle bracket text', "<svg><text>1 > 0 style='a' href=javascript:1</text></svg>"],
+  ];
+
+  for (const [label, input] of inertText) {
+    it(`leaves ${label} unchanged`, () => {
+      expect(sanitizeSvgString(input)).toBe(input);
+    });
+  }
+
+  it('neutralizes the real attributes while preserving the text next to them', () => {
+    const out = sanitizeSvgString(
+      "<svg><a href=javascript:alert(1)><text>href=javascript:alert(1)</text></a><rect style='fill:red'/></svg>"
+    );
+    expect(out).toBe('<svg><a href="#"><text>href=javascript:alert(1)</text></a><rect style="fill:red"/></svg>');
+  });
+
+  it('neutralizes animation value attributes only inside tags', () => {
+    const out = sanitizeSvgString(
+      '<svg><set attributeName="x" to=http://e/x /><animate values="1;https://e/y" from="//e/z"/><text>to=http://e/x</text></svg>'
+    );
+    expect(out).toBe('<svg><set attributeName="x" to="#" /><animate values="#" from="#"/><text>to=http://e/x</text></svg>');
+  });
+
+  it('neutralizes xlink:href, src and quote-adjacent attributes', () => {
+    const out = sanitizeSvgString(`<svg><use a="b"xlink:href='jav&#x61;script:alert(1)'/><image src="//e/x.png"/></svg>`);
+    expect(parseTags(out).flatMap((tag) => tag.attrs.map((attr) => `${tag.name}:${attr.name}=${attr.value}`))).toEqual([
+      'use:a=b',
+      'use:href=#',
+      'image:href=#',
+    ]);
+  });
+
+  it('sanitizes a style attribute only inside a tag and still cleans it', () => {
+    const out = sanitizeSvgString(
+      `<svg><text>style="fill:url(http://e/x)"</text><rect style="fill:url(http://e/x)"/></svg>`
+    );
+    expect(out).toBe(`<svg><text>style="fill:url(http://e/x)"</text><rect style="fill:none"/></svg>`);
+  });
+});
