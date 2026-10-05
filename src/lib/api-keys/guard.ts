@@ -5,7 +5,7 @@ import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
-import { ClientIpError } from '@/lib/security/client-ip';
+import { ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
 import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 
 export { extractClientIp };
@@ -320,7 +320,9 @@ async function verifyAnonymousAccess(
   clientIp: string,
   requiredUnits: number
 ): Promise<ApiAuthResult> {
-  const anonIdentifier = `rate:anon:${clientIp}`;
+  // Anonymous burst and daily quota buckets: IPv6 clients share their /64.
+  const anonBucket = rateLimitKey(clientIp);
+  const anonIdentifier = `rate:anon:${anonBucket}`;
 
   // 1. Enforce IP burst rate limit
   const burst = await redisKeyStore.checkTokenBucketRateLimit(
@@ -346,7 +348,7 @@ async function verifyAnonymousAccess(
   }
 
   // 2. Check anonymous daily quota
-  const anonUserId = `anon:${clientIp}`;
+  const anonUserId = `anon:${anonBucket}`;
   const quota = await checkQuotaAndReserve(anonUserId, 'anonymous', requiredUnits);
   if (!quota.allowed) {
     if (quota.serviceUnavailable) {

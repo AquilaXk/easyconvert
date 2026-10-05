@@ -3,7 +3,7 @@ import { verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { extractClientIp } from '@/lib/api-keys/ip-utils';
-import { ClientIpError } from '@/lib/security/client-ip';
+import { ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
 import {
   checkLoginRateLimit,
   recordFailedLogin,
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
 
   let clientIp: string;
   try {
-    clientIp = extractClientIp(req);
+    clientIp = rateLimitKey(extractClientIp(req));
   } catch (error) {
     if (!(error instanceof ClientIpError)) throw error;
     return NextResponse.json(

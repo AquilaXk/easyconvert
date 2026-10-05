@@ -133,6 +133,17 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
     expect(countStatuses(forged).limited).toBe(REQUESTS_PER_PROBE - EDGE_BURST_CAPACITY);
   });
 
+  it('rotating addresses inside one IPv6 /64 share a bucket; another /64 keeps its own', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+    const middleware = await loadMiddleware();
+    const responses: Response[] = [];
+    for (let i = 0; i < REQUESTS_PER_PROBE; i++) {
+      responses.push(middleware(apiRequest({ 'x-forwarded-for': `2001:db8:1:2:${i.toString(16)}::${i + 1}` })));
+    }
+    expect(countStatuses(responses).limited).toBe(REQUESTS_PER_PROBE - EDGE_BURST_CAPACITY);
+    expect(middleware(apiRequest({ 'x-forwarded-for': '2001:db8:1:3::1' })).status).toBe(200);
+  });
+
   it('rejects a malformed forwarding chain from a declared proxy with a 400 problem document', async () => {
     vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
     const middleware = await loadMiddleware();

@@ -117,6 +117,29 @@ describe('API-key IP allowlists use the shared trusted-proxy client-IP resolver'
     expect(res.user?.id).toBe('anon:198.51.100.77');
   });
 
+  it('anonymous identity buckets IPv6 clients by /64 while IPv4 keeps the full address', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+    const idFor = async (xff: string): Promise<string | undefined> => {
+      const req = new NextRequest('http://localhost/api/convert', { method: 'POST', headers: { 'x-forwarded-for': xff } });
+      return (await validateApiAccess(req, { requiredUnits: 1, allowAnonymous: true })).user?.id;
+    };
+    expect(await idFor('2001:db8:1:2::1')).toBe('anon:2001:db8:1:2::/64');
+    expect(await idFor('2001:db8:1:2:dead:beef::9')).toBe('anon:2001:db8:1:2::/64');
+    expect(await idFor('2001:db8:1:3::1')).toBe('anon:2001:db8:1:3::/64');
+    expect(await idFor('::ffff:198.51.100.77')).toBe('anon:198.51.100.77');
+  });
+
+  it('an IPv6 allowlist entry still matches on the full address, not the /64 bucket', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+    const { secretKey: v6Key } = await redisKeyStore.generateApiKey(userId, 'V6 Key', {
+      allowedIps: ['2001:db8:1:2::77/128'],
+    });
+    const hit = await validateApiAccess(keyedRequest(v6Key, { 'x-forwarded-for': '2001:db8:1:2::77' }), 0);
+    const sibling = await validateApiAccess(keyedRequest(v6Key, { 'x-forwarded-for': '2001:db8:1:2::78' }), 0);
+    expect(hit.authorized).toBe(true);
+    expect(sibling.status).toBe(403);
+  });
+
   it('the login route answers a malformed forwarding chain with HTTP 400', async () => {
     vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
     const req = new NextRequest('http://localhost:3000/api/auth/login', {

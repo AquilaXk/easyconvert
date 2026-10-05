@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   ClientIpError,
   clientIpKey,
+  rateLimitKey,
   resolveClientIp,
   type ResolvedClientIp,
 } from '@/lib/security/client-ip';
@@ -152,7 +153,7 @@ export function middleware(request: NextRequest) {
     return problemResponse(error.status, 'Internal Server Error', 'Client IP trust configuration is invalid.', pathname);
   }
   if (resolved.source === 'unattributed') warnUnattributedOnce();
-  const clientIp = clientIpKey(resolved);
+  const clientIp = rateLimitKey(clientIpKey(resolved));
 
   // 1. Edge-level IP Rate Limiter
   const edgeRate = checkEdgeIpRateLimit(clientIp);

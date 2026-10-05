@@ -54,6 +54,8 @@ const IPV6_BITS = IPV6_BYTES * BITS_PER_BYTE;
 const IPV4_MAPPED_PREFIX_BITS = IPV6_BITS - IPV4_BITS;
 const IPV4_MAPPED_MARKER_BYTE = 0xff;
 const IPV4_MAPPED_MARKER_INDEX = 10;
+/** IPv6 clients commonly hold a whole /64, so rate limits and quotas bucket on that prefix. */
+export const RATE_LIMIT_IPV6_PREFIX_BITS = 64;
 const MAX_PORT = 65535;
 const MAX_OCTET = 255;
 const HEX_GROUP_MAX_LENGTH = 4;
@@ -630,6 +632,20 @@ const UNATTRIBUTED: ResolvedClientIp = Object.freeze({ ip: null, source: 'unattr
 /** Identity to key rate limits and quotas on. Never an address a client chose. */
 export function clientIpKey(resolved: ResolvedClientIp): string {
   return resolved.ip ?? UNATTRIBUTED_CLIENT_KEY;
+}
+
+/**
+ * Bucket key for rate limits and quotas derived from a client key: IPv6 addresses collapse to their /64
+ * network ("2001:db8:1:2::/64"), IPv4 (including IPv4-mapped IPv6) and the unattributed key are unchanged.
+ * Allowlist checks must keep using the full address.
+ */
+export function rateLimitKey(clientKey: string): string {
+  const address = parseClientAddress(clientKey);
+  if (!address) return clientKey;
+  if (address.family === 4) return formatAddress(address);
+  const network = new Uint8Array(IPV6_BYTES);
+  network.set(address.bytes.subarray(0, RATE_LIMIT_IPV6_PREFIX_BITS / BITS_PER_BYTE));
+  return `${formatAddress({ family: 6, bytes: network })}/${RATE_LIMIT_IPV6_PREFIX_BITS}`;
 }
 
 /** Node-style requests (custom server, Pages API) expose the connection as `socket`; Web Requests do not. */

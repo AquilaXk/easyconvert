@@ -12,6 +12,7 @@ import {
   isAddressInCidr,
   normalizeClientAddress,
   parseClientIpConfig,
+  rateLimitKey,
   resolveClientIp,
   type ClientIpConfig,
 } from '../src/lib/security/client-ip';
@@ -539,5 +540,36 @@ describe('extractClientIp (api-keys facade) and environment loading', () => {
   it('throws ClientIpConfigError when the environment is misconfigured', () => {
     vi.stubEnv('TRUSTED_PROXIES', 'not-a-cidr');
     expect(() => extractClientIp(req())).toThrow(ClientIpConfigError);
+  });
+});
+
+describe('rateLimitKey: IPv6 clients are bucketed by /64', () => {
+  it('maps every address inside one /64 to the same key', () => {
+    const keys = new Set<string>();
+    for (const addr of ['2001:db8:1:2::1', '2001:db8:1:2:aaaa:bbbb:cccc:dddd', '2001:0DB8:0001:0002:ffff:ffff:ffff:ffff', '2001:db8:1:2::']) {
+      keys.add(rateLimitKey(addr));
+    }
+    expect([...keys]).toEqual(['2001:db8:1:2::/64']);
+  });
+
+  it('separates different /64 networks, including ones differing only in the last network bit', () => {
+    expect(rateLimitKey('2001:db8:1:2::1')).toBe('2001:db8:1:2::/64');
+    expect(rateLimitKey('2001:db8:1:3::1')).toBe('2001:db8:1:3::/64');
+    expect(rateLimitKey('2001:db8:1:2::1')).not.toBe(rateLimitKey('2001:db8:1:3::1'));
+    expect(rateLimitKey('2001:db8::1')).toBe('2001:db8::/64');
+  });
+
+  it('keeps IPv4, IPv4-mapped IPv6 and the unattributed key unchanged', () => {
+    expect(rateLimitKey('198.51.100.7')).toBe('198.51.100.7');
+    expect(rateLimitKey(normalizeClientAddress('::ffff:198.51.100.7') as string)).toBe('198.51.100.7');
+    expect(rateLimitKey('::ffff:198.51.100.7')).toBe('198.51.100.7');
+    expect(rateLimitKey(UNATTRIBUTED_CLIENT_KEY)).toBe(UNATTRIBUTED_CLIENT_KEY);
+  });
+
+  it('allowlist matching still sees the full address', () => {
+    const resolved = ipOf({ 'x-forwarded-for': '2001:db8:1:2::77' }, cfg({ trustedProxies: '10.0.0.0/8' }));
+    expect(resolved).toBe('2001:db8:1:2::77');
+    expect(isAddressInCidr(resolved as string, '2001:db8:1:2::77/128')).toBe(true);
+    expect(isAddressInCidr(resolved as string, '2001:db8:1:2::78/128')).toBe(false);
   });
 });
