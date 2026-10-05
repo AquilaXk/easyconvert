@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { StringDecoder } from 'node:string_decoder';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import {
@@ -1498,18 +1497,13 @@ interface TextPdfRoute {
 }
 
 /** Every distinct character of a text file, read and strictly decoded in chunks, whatever the size. */
-function distinctCharactersOfFile(filePath: string, strictText: boolean): string {
+function distinctCharactersOfFile(filePath: string): string {
   const seen = new Set<number>();
   const chunk = Buffer.alloc(TEXT_SCAN_CHUNK_BYTES);
   const fd = fs.openSync(filePath, 'r');
   try {
     let bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
-    const lenient = new StringDecoder('utf8');
-    const strict = strictText ? createTextInputDecoder(chunk.subarray(0, bytesRead)) : null;
-    const decode = (bytes?: Buffer): string => {
-      if (strict) return strict(bytes);
-      return bytes ? lenient.write(bytes) : lenient.end();
-    };
+    const decode = createTextInputDecoder(chunk.subarray(0, bytesRead));
     while (bytesRead > 0) {
       for (const ch of decode(chunk.subarray(0, bytesRead))) seen.add(ch.codePointAt(0) as number);
       bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
@@ -1529,13 +1523,12 @@ function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): strin
     const hwp = parseHwpDocument(readRawInputBuffer(input));
     return [...hwp.paragraphs.map((p) => p.text), ...hwp.tables.flatMap((t) => t.rows.flat())].join('\n');
   }
-  const strictText = src === PLAIN_TEXT_SOURCE;
   const filePath = !Buffer.isBuffer(input) && !input.inputBuffer ? input.inputPath : undefined;
   if (STREAMED_TEXT_SOURCES.has(src) && filePath && fs.existsSync(filePath)) {
-    return distinctCharactersOfFile(filePath, strictText);
+    return distinctCharactersOfFile(filePath);
   }
   const raw = readRawInputBuffer(input);
-  return strictText ? decodeTextInput(raw) : raw.toString('utf-8');
+  return decodeTextInput(raw);
 }
 
 /**
@@ -1564,7 +1557,7 @@ async function planTextPdfRoute(
     assertFontCoverage(Array.from(scriptLetters).join(''));
   }
   const route = planTextPdfEngine(src, text, complexScript, cjk, orientation);
-  if (route.preferNative && HTML_SOURCES.has(src)) assertNoExternalResources(readRawInputBuffer(input).toString('utf-8'));
+  if (route.preferNative && HTML_SOURCES.has(src)) assertNoExternalResources(decodeTextInput(readRawInputBuffer(input)));
   return route;
 }
 
@@ -1630,7 +1623,7 @@ async function convertTextPdfWithHeadlessOffice(
   } else if (src === PLAIN_TEXT_SOURCE) {
     html = Buffer.from(plainTextToHtml(decodeTextInput(raw)), 'utf-8');
   } else if (src === MARKDOWN_SOURCE) {
-    html = Buffer.from(markdownToSafeHtml(raw.toString('utf-8'), originalFilename.replace(/\.[^/.]+$/, '')), 'utf-8');
+    html = Buffer.from(markdownToSafeHtml(decodeTextInput(raw), originalFilename.replace(/\.[^/.]+$/, '')), 'utf-8');
   } else {
     html = (await convertFile(raw, src, HTML_FORMAT, {}, originalFilename)).buffer;
   }

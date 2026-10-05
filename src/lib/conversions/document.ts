@@ -533,7 +533,7 @@ export async function convertDocument(
     textContent = extractTextFromDoc(inputBuffer);
   } else if (src === 'tex') {
     textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
-  } else if (src === 'txt' && tgt === 'pdf') {
+  } else if (STRICT_TEXT_PDF_SOURCES.has(src) && tgt === 'pdf') {
     // Rendered text must be exactly the input text: non-UTF-8 bytes fail instead of becoming mojibake.
     textContent = decodeTextInput(inputBuffer);
   } else {
@@ -717,6 +717,8 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/** Text sources decoded strictly (UTF-8, or UTF-16 with a byte order mark) when rendered to PDF. */
+const STRICT_TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm']);
 /** Source formats parsed as HTML when rendered to PDF. */
 const HTML_SOURCE_FORMATS: ReadonlySet<string> = new Set(['html', 'htm']);
 const MARKDOWN_SOURCE_FORMAT = 'md';

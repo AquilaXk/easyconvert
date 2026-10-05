@@ -984,6 +984,32 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     }
   });
 
+  it('rejects Latin-1 HTML and Markdown with a typed 400 on both the in-process and worker routes', async () => {
+    const latin1Html = Buffer.concat([Buffer.from('<meta charset="iso-8859-1"><p>caf'), Buffer.from([0xe9]), Buffer.from('</p>')]);
+    const latin1Markdown = Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from('\n')]);
+    for (const [label, source, bytes] of [
+      ['html', 'html', latin1Html],
+      ['md', 'md', latin1Markdown],
+    ] as const) {
+      const direct = await settle(convertFile(bytes, source, 'pdf', {}, `latin1.${source}`));
+      const routed = await settle(
+        withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () => executeWorkerConversion(bytes, source, 'pdf', {}, `latin1.${source}`))
+      );
+      expect({ label, direct: (direct.error as Error)?.name, routed: (routed.error as Error)?.name }).toEqual({
+        label,
+        direct: 'ConversionFailedError',
+        routed: 'ConversionFailedError',
+      });
+      expect((routed.error as Error).message).toMatch(/UTF-8/);
+    }
+  });
+
+  oracleTest('decodes UTF-16 HTML with a byte order mark', ['pdftotext'], async () => {
+    const html = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('<p>hello café</p>', 'utf16le')]);
+    const result = await convertFile(html, 'html', 'pdf', {}, 'utf16.html');
+    expect(normalizeText(pdfText(result.buffer))).toBe('hello café');
+  });
+
   it('rejects text that is not valid UTF-8 and has no UTF-16 byte order mark', async () => {
     const eucKr = Buffer.from('C7D1B1B9BEEE20B9AEBCAD', 'hex');
     const { error } = await settle(convertFile(eucKr, 'txt', 'pdf', {}, 'euc-kr.txt'));
