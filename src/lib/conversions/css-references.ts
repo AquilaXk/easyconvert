@@ -1,30 +1,51 @@
+import { ConversionFailedError } from '../types';
+
 /**
- * Finds the resources CSS would load: `url(...)` (quoted or not), strings inside `src()`,
- * `image-set()` and `-webkit-image-set()`, and `@import "..."`. Follows the CSS Syntax tokenizer
- * for the parts that matter (comments, strings, escapes such as `\75 rl(`, case-insensitive
- * names) in one forward pass, so the work is linear in the input; no backtracking pattern runs.
+ * Checks CSS bound for LibreOffice and returns the exact text that was checked. Finds the
+ * resources it would load: `url(...)` (quoted or not), strings inside `src()`, `image()`,
+ * `image-set()`, `-webkit-image-set()` and `cross-fade()` at any depth, and `@import`.
+ *
+ * Readers disagree on CSS escapes, control characters and line breaks, so control characters are
+ * removed first, line breaks become spaces, and any backslash or unterminated string is refused;
+ * comments and `<!--`/`-->` markers become spaces in the returned text, so what LibreOffice reads
+ * is what was scanned. Follows the CSS Syntax tokenizer
+ * for the parts that matter in one forward pass, so the work is linear in the input.
  */
 
-const HEX_RADIX = 16;
-const MAX_HEX_ESCAPE_DIGITS = 6;
-const MAX_CODE_POINT = 0x10ffff;
-const SURROGATE_FIRST = 0xd800;
-const SURROGATE_LAST = 0xdfff;
-const REPLACEMENT_CHARACTER = '�';
 const NON_ASCII = 0x80;
 const URL_FUNCTION = 'url';
 const IMPORT_RULE = 'import';
 /** Functions whose string arguments are URLs. */
-const URL_STRING_FUNCTIONS: ReadonlySet<string> = new Set(['url', 'src', 'image-set', '-webkit-image-set']);
-const DATA_URI = /^data:/i;
-const FRAGMENT_PREFIX = '#';
+const URL_STRING_FUNCTIONS: ReadonlySet<string> = new Set(['url', 'src', 'image', 'image-set', '-webkit-image-set', 'cross-fade']);
+/** Openers of nested groups and the character that closes each. */
+const GROUP_CLOSERS: ReadonlyMap<string, string> = new Map([
+  ['(', ')'],
+  ['[', ']'],
+  ['{', '}'],
+]);
+const GROUP_ENDS: ReadonlySet<string> = new Set([')', ']', '}']);
+/** C0 controls other than tab, line feed, form feed and carriage return, and DEL. */
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000e-\u001f\u007f]/g;
+/** Line breaks, which some readers drop inside CSS (joining `ur` and `l(`): they become spaces before the scan. */
+const LINE_BREAKS = /[\n\r\f]/g;
+const COMMENT_OPEN = '/*';
+const COMMENT_CLOSE = '*/';
+const CDO = '<!--';
+const CDC = '-->';
+const BACKSLASH = '\\';
+const MARKUP_OPEN = '<';
+const IMPORT_REFERENCE = '@import';
+const EMPTY_URL_REFERENCE = 'url()';
+
+export interface CssScan {
+  /** The CSS without control characters, with comments and CDO/CDC markers as spaces: the text checked. */
+  readonly css: string;
+  /** The first URL the CSS would load that is not allowed (anything an `@import` names), or null. */
+  readonly reference: string | null;
+}
 
 function isWhitespace(ch: string | undefined): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f';
-}
-
-function isHexDigit(ch: string | undefined): boolean {
-  return ch !== undefined && /^[0-9a-fA-F]$/.test(ch);
 }
 
 function isNameStart(ch: string | undefined): boolean {
@@ -35,22 +56,25 @@ function isNameChar(ch: string | undefined): boolean {
   return ch !== undefined && (isNameStart(ch) || /^[0-9-]$/.test(ch));
 }
 
-/** A valid escape starts at `i`: a backslash not followed by a newline. */
-function startsEscape(css: string, i: number): boolean {
-  return css[i] === '\\' && i + 1 < css.length && css[i + 1] !== '\n' && css[i + 1] !== '\r' && css[i + 1] !== '\f';
-}
-
 function startsIdentifier(css: string, i: number): boolean {
-  if (css[i] === '-') return isNameStart(css[i + 1]) || css[i + 1] === '-' || startsEscape(css, i + 1);
-  return isNameStart(css[i]) || startsEscape(css, i);
+  if (css[i] === '-') return isNameStart(css[i + 1]) || css[i + 1] === '-';
+  return isNameStart(css[i]);
 }
 
 function lowerAscii(text: string): string {
   return text.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
 }
 
+function refuseMarkup(): never {
+  throw new ConversionFailedError('HTML CSS may not contain "<" outside a <!-- --> marker');
+}
+
+type CssToken = { kind: 'url' | 'function' | 'open' | 'close' | 'string' | 'at' | 'other'; value: string };
+
 class CssScanner {
   private i = 0;
+  private copiedTo = 0;
+  private readonly kept: string[] = [];
 
   constructor(private readonly css: string) {}
 
@@ -58,29 +82,30 @@ class CssScanner {
     return this.i >= this.css.length;
   }
 
-  /** Consumes an escape (the backslash is at the current index) and returns the character it stands for. */
-  private escape(): string {
-    this.i++;
-    const css = this.css;
-    if (!isHexDigit(css[this.i])) return css[this.i++] ?? REPLACEMENT_CHARACTER;
-    const start = this.i;
-    while (this.i - start < MAX_HEX_ESCAPE_DIGITS && isHexDigit(css[this.i])) this.i++;
-    const value = Number.parseInt(css.slice(start, this.i), HEX_RADIX);
-    if (css[this.i] === '\r' && css[this.i + 1] === '\n') this.i += 2;
-    else if (isWhitespace(css[this.i])) this.i++;
-    const invalid = value === 0 || value > MAX_CODE_POINT || (value >= SURROGATE_FIRST && value <= SURROGATE_LAST);
-    return invalid ? REPLACEMENT_CHARACTER : String.fromCodePoint(value);
+  /** The scanned text with every skipped comment or marker replaced by one space. */
+  text(): string {
+    return this.kept.join('') + this.css.slice(this.copiedTo);
   }
 
-  /** Skips whitespace and comments. */
+  private replaceWithSpace(start: number, end: number): void {
+    this.kept.push(this.css.slice(this.copiedTo, start), ' ');
+    this.copiedTo = end;
+  }
+
+  /** Skips whitespace, comments and CDO/CDC markers. */
   skipInsignificant(): void {
     const css = this.css;
     while (this.i < css.length) {
-      if (isWhitespace(css[this.i])) {
+      const start = this.i;
+      if (isWhitespace(css[start])) {
         this.i++;
-      } else if (css[this.i] === '/' && css[this.i + 1] === '*') {
-        const close = css.indexOf('*/', this.i + 2);
-        this.i = close < 0 ? css.length : close + 2;
+      } else if (css.startsWith(COMMENT_OPEN, start)) {
+        const close = css.indexOf(COMMENT_CLOSE, start + COMMENT_OPEN.length);
+        this.i = close < 0 ? css.length : close + COMMENT_CLOSE.length;
+        this.replaceWithSpace(start, this.i);
+      } else if (css.startsWith(CDO, start) || css.startsWith(CDC, start)) {
+        this.i = start + (css[start] === MARKUP_OPEN ? CDO.length : CDC.length);
+        this.replaceWithSpace(start, this.i);
       } else {
         return;
       }
@@ -88,60 +113,55 @@ class CssScanner {
   }
 
   private identifier(): string {
-    let name = '';
-    while (this.i < this.css.length) {
-      if (isNameChar(this.css[this.i])) name += this.css[this.i++];
-      else if (startsEscape(this.css, this.i)) name += this.escape();
-      else break;
-    }
-    return name;
+    const start = this.i;
+    while (this.i < this.css.length && isNameChar(this.css[this.i])) this.i++;
+    return this.css.slice(start, this.i);
   }
 
-  /** A string token; the opening quote is at the current index. */
+  /** A string token; the opening quote is at the current index. An unterminated string is refused. */
   private string(): string {
     const css = this.css;
     const quote = css[this.i++];
-    let value = '';
+    const start = this.i;
     while (this.i < css.length && css[this.i] !== quote) {
-      const ch = css[this.i];
-      if (ch === '\n' || ch === '\r' || ch === '\f') break;
-      if (ch === '\\') {
-        const next = css[this.i + 1];
-        if (next === '\n' || next === '\f') this.i += 2;
-        else if (next === '\r') this.i += css[this.i + 2] === '\n' ? 3 : 2;
-        else value += this.escape();
-        continue;
-      }
-      value += ch;
+      if (css[this.i] === MARKUP_OPEN) refuseMarkup();
       this.i++;
     }
-    if (css[this.i] === quote) this.i++;
-    return value;
+    if (this.i >= css.length) throw new ConversionFailedError('HTML CSS has an unterminated string');
+    return css.slice(start, this.i++);
   }
 
   /** The value of an unquoted url( token; the index is just after `url(` and any whitespace. */
   private unquotedUrl(): string {
     const css = this.css;
-    let value = '';
+    const start = this.i;
     while (this.i < css.length && css[this.i] !== ')' && !isWhitespace(css[this.i])) {
-      if (startsEscape(css, this.i)) value += this.escape();
-      else value += css[this.i++];
+      const ch = css[this.i];
+      if (ch === MARKUP_OPEN) refuseMarkup();
+      if (ch === '"' || ch === "'" || ch === '(') throw new ConversionFailedError('HTML CSS has a malformed url()');
+      this.i++;
     }
+    const value = css.slice(start, this.i);
+    while (isWhitespace(css[this.i])) this.i++;
+    if (this.i < css.length && css[this.i] !== ')') throw new ConversionFailedError('HTML CSS has a malformed url()');
+    this.i++;
     return value;
   }
 
-  /**
-   * The next token that matters: `{ kind: 'url' }` for a URL the CSS loads, `'function'`/`'close'`
-   * for nesting, `'string'`, `'at'` for at-keywords, or `'other'` for anything else.
-   */
-  next(): { kind: 'url' | 'function' | 'close' | 'string' | 'at' | 'other'; value: string } {
+  /** The next significant token. */
+  next(): CssToken {
     const css = this.css;
     const ch = css[this.i];
     if (ch === '"' || ch === "'") return { kind: 'string', value: this.string() };
-    if (ch === ')') {
+    if (GROUP_CLOSERS.has(ch)) {
       this.i++;
-      return { kind: 'close', value: '' };
+      return { kind: 'open', value: ch };
     }
+    if (GROUP_ENDS.has(ch)) {
+      this.i++;
+      return { kind: 'close', value: ch };
+    }
+    if (ch === MARKUP_OPEN) refuseMarkup();
     if (ch === '@' && startsIdentifier(css, this.i + 1)) {
       this.i++;
       return { kind: 'at', value: lowerAscii(this.identifier()) };
@@ -163,32 +183,38 @@ class CssScanner {
 }
 
 /**
- * The first URL the CSS would load from outside itself (anything but a data: URI or a
- * same-document `#fragment`), or null. Covers `url()`, `@import`, `src()` and `image-set()`.
+ * Scans CSS for the resources it would load. Throws ConversionFailedError for a backslash, a
+ * stray "<" or a malformed url(); returns the checked text and the first URL `isAllowedUrl`
+ * rejects (an `@import` is always reported, whatever it names).
  */
-export function findCssExternalReference(css: string): string | null {
+export function scanCss(source: string, isAllowedUrl: (url: string) => boolean): CssScan {
+  const css = source.replace(CONTROL_CHARACTERS, '').replace(LINE_BREAKS, ' ');
+  if (css.includes(BACKSLASH)) {
+    throw new ConversionFailedError('HTML CSS with a backslash escape is not supported; CSS readers disagree on escapes');
+  }
   const scanner = new CssScanner(css);
-  const functions: string[] = [];
-  let afterImport = false;
-  const external = (url: string): string | null => {
-    const trimmed = url.trim();
-    const inDocument = trimmed.length === 0 || trimmed.startsWith(FRAGMENT_PREFIX) || DATA_URI.test(trimmed);
-    return inDocument ? null : trimmed;
-  };
+  /** Closing characters of the open groups and functions, and whether each is a URL function. */
+  const groups: Array<{ closer: string; url: boolean }> = [];
+  let urlGroups = 0;
+  let importPending = false;
   for (scanner.skipInsignificant(); !scanner.done; scanner.skipInsignificant()) {
     const token = scanner.next();
-    let found: string | null = null;
-    if (token.kind === 'url') {
-      found = external(token.value);
-    } else if (token.kind === 'string' && (afterImport || URL_STRING_FUNCTIONS.has(functions[functions.length - 1] ?? ''))) {
-      found = external(token.value);
-    } else if (token.kind === 'function') {
-      functions.push(token.value);
-    } else if (token.kind === 'close') {
-      functions.pop();
+    const isUrl = token.kind === 'url' || (token.kind === 'string' && (urlGroups > 0 || importPending));
+    if (isUrl && (importPending || !isAllowedUrl(token.value.trim()))) {
+      return { css, reference: token.value.trim() || (importPending ? IMPORT_REFERENCE : EMPTY_URL_REFERENCE) };
     }
-    if (found) return found;
-    afterImport = token.kind === 'at' && token.value === IMPORT_RULE;
+    if (importPending && !(token.kind === 'function' && token.value === URL_FUNCTION)) {
+      return { css, reference: IMPORT_REFERENCE };
+    }
+    if (token.kind === 'function' || token.kind === 'open') {
+      const url = token.kind === 'function' && URL_STRING_FUNCTIONS.has(token.value);
+      groups.push({ closer: token.kind === 'function' ? ')' : (GROUP_CLOSERS.get(token.value) as string), url });
+      if (url) urlGroups++;
+    } else if (token.kind === 'close' && groups.length > 0 && groups[groups.length - 1].closer === token.value) {
+      if ((groups.pop() as { url: boolean }).url) urlGroups--;
+    }
+    importPending = token.kind === 'at' ? token.value === IMPORT_RULE : importPending;
   }
-  return null;
+  if (importPending) return { css, reference: IMPORT_REFERENCE };
+  return { css: scanner.text(), reference: null };
 }

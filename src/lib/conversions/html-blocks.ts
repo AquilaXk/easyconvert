@@ -2,7 +2,6 @@ import sharp from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
-import { findCssExternalReference } from './css-references';
 
 /**
  * Parses HTML into the PDF block model: headings, paragraphs, lists, tables, links, preformatted
@@ -10,13 +9,21 @@ import { findCssExternalReference } from './css-references';
  * cannot draw is refused with a typed error instead of being dropped.
  */
 
-interface HtmlElement {
+export interface HtmlElement {
   readonly tag: string;
   readonly attrs: ReadonlyMap<string, string>;
   readonly children: HtmlNode[];
+  /** Inside SVG or MathML, where `/>` closes an element. */
+  readonly foreign?: boolean;
 }
 
-type HtmlNode = HtmlElement | string;
+export type HtmlNode = HtmlElement | string;
+
+/** A parsed document: the element tree and the text of its <title>. */
+export interface ParsedHtmlDocument {
+  readonly root: HtmlElement;
+  readonly title?: string;
+}
 
 export interface HtmlDocumentBlocks {
   /** Text of the <title> element, for PDF metadata. */
@@ -33,10 +40,15 @@ const SURROGATE_FIRST = 0xd800;
 const SURROGATE_LAST = 0xdfff;
 const DEFAULT_LIST_START = 1;
 const STYLE_ELEMENT = 'style';
+const TITLE_ELEMENT = 'title';
+/** Raw-text elements whose content is kept as text: textarea decodes character references, xmp does not. */
+const TEXTAREA_ELEMENT = 'textarea';
+const XMP_ELEMENT = 'xmp';
+/** Roots of foreign content (SVG, MathML), where a start tag ending in `/>` has no content. */
+const FOREIGN_ROOTS: ReadonlySet<string> = new Set(['svg', 'math']);
 /** Largest colspan honoured, as in HTML (larger values are clamped). */
 const MAX_COLUMN_SPAN = 1000;
 const COMMENT_OPEN = '<!--';
-const COMMENT_CLOSE = '-->';
 
 const VOID_ELEMENTS: ReadonlySet<string> = new Set([
   'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
@@ -184,7 +196,12 @@ class HtmlTreeBuilder {
     }
   }
 
-  start(tag: string, attrs: Map<string, string>): void {
+  /** Whether a start tag `tag` here would be foreign content. */
+  isForeign(tag: string): boolean {
+    return FOREIGN_ROOTS.has(tag) || this.current.foreign === true;
+  }
+
+  start(tag: string, attrs: Map<string, string>, selfClosing = false): void {
     if (PARAGRAPH_CLOSERS.has(tag)) this.closeOpen(PARAGRAPH, PARAGRAPH_SCOPE);
     if (HEADING_ELEMENTS.has(tag) && HEADING_ELEMENTS.has(this.current.tag)) this.stack.pop();
     if (tag === 'li') this.closeOpen(LIST_ITEM, LIST_ELEMENTS);
@@ -194,9 +211,10 @@ class HtmlTreeBuilder {
     if (TABLE_CELL_ELEMENTS.has(tag)) this.closeOpen(TABLE_CELL_ELEMENTS, TABLE_CELL_SCOPE);
     if (tag === 'option') this.closeOpen(OPTION, SELECT);
 
-    const element: HtmlElement = { tag, attrs, children: [] };
+    const foreign = this.isForeign(tag);
+    const element: HtmlElement = { tag, attrs, children: [], foreign };
     this.current.children.push(element);
-    if (VOID_ELEMENTS.has(tag)) return;
+    if (VOID_ELEMENTS.has(tag) || (selfClosing && foreign)) return;
     if (this.stack.length >= MAX_NESTING_DEPTH) {
       throw new ConversionFailedError(`HTML nests elements deeper than ${MAX_NESTING_DEPTH} levels`);
     }
@@ -204,12 +222,16 @@ class HtmlTreeBuilder {
   }
 
   rawText(tag: string, attrs: Map<string, string>, content: string): void {
-    if (tag === 'title' && this.title === undefined) {
+    if (tag === TITLE_ELEMENT && this.title === undefined && !this.isForeign(tag)) {
       this.title = decodeHtmlCharacterReferences(content).replace(HTML_WHITESPACE, ' ').trim();
     }
     this.start(tag, attrs);
-    // Style sheets are kept as raw text (never drawn) so their url() and @import references can be checked.
-    if (tag === STYLE_ELEMENT && content.length > 0) this.current.children.push(content);
+    // Style sheets are kept as raw text (never drawn) so their url() and @import references can be checked;
+    // textarea and xmp content is kept as text, which is all it ever is.
+    if (content.length > 0) {
+      if (tag === STYLE_ELEMENT || tag === XMP_ELEMENT) this.current.children.push(content);
+      else if (tag === TEXTAREA_ELEMENT) this.current.children.push(decodeHtmlCharacterReferences(content));
+    }
     this.end(tag);
   }
 
@@ -227,14 +249,22 @@ class HtmlTreeBuilder {
   }
 }
 
-/** Reads attributes from just after the tag name; returns them with the index of the closing '>'. */
-function parseAttributes(source: string, from: number): { attrs: Map<string, string>; end: number } {
+/**
+ * Reads attributes from just after the tag name; returns them with the index of the closing '>'
+ * and whether the tag ends in a self-closing `/>` (a '/' inside an unquoted value does not count).
+ */
+function parseAttributes(source: string, from: number): { attrs: Map<string, string>; end: number; selfClosing: boolean } {
   const attrs = new Map<string, string>();
   const length = source.length;
   let i = from;
+  let selfClosing = false;
   while (i < length) {
+    const gapStart = i;
     while (i < length && ATTRIBUTE_GAP.test(source[i])) i++;
-    if (i >= length || source[i] === '>') break;
+    if (i >= length || source[i] === '>') {
+      selfClosing = i < length && i > gapStart && source[i - 1] === '/';
+      break;
+    }
     const nameStart = i;
     while (i < length && !ATTRIBUTE_NAME_END.test(source[i])) i++;
     const name = asciiLowerCase(source.slice(nameStart, i));
@@ -257,7 +287,23 @@ function parseAttributes(source: string, from: number): { attrs: Map<string, str
     }
     if (name && !attrs.has(name)) attrs.set(name, decodeHtmlCharacterReferences(value));
   }
-  return { attrs, end: i };
+  return { attrs, end: i, selfClosing };
+}
+
+/**
+ * Index just past the comment whose text starts at `from`, as HTML ends comments: `<!-->` and
+ * `<!--->` are empty comments, and `-->` or `--!>` closes any other. An unclosed comment runs to the end.
+ */
+function commentEnd(html: string, from: number): number {
+  if (html[from] === '>') return from + 1;
+  if (html[from] === '-' && html[from + 1] === '>') return from + 2;
+  let dashes = html.indexOf('--', from);
+  while (dashes >= 0) {
+    if (html[dashes + 2] === '>') return dashes + 3;
+    if (html[dashes + 2] === '!' && html[dashes + 3] === '>') return dashes + 4;
+    dashes = html.indexOf('--', dashes + 1);
+  }
+  return html.length;
 }
 
 /**
@@ -265,7 +311,7 @@ function parseAttributes(source: string, from: number): { attrs: Map<string, str
  * keeping every other character (such as U+0130, whose full lowercase form is two code units)
  * keeps offsets into the lowercased copy valid for the original text.
  */
-function asciiLowerCase(text: string): string {
+export function asciiLowerCase(text: string): string {
   return text.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
 }
 
@@ -282,7 +328,7 @@ function findRawTextEnd(lowerHtml: string, tag: string, from: number): number {
 }
 
 /** Builds an element tree from HTML source with the HTML implied-end-tag rules used for layout. */
-function parseHtmlTree(html: string): HtmlTreeBuilder {
+export function parseHtmlTree(html: string): ParsedHtmlDocument {
   const builder = new HtmlTreeBuilder();
   const lowerHtml = asciiLowerCase(html);
   const length = html.length;
@@ -298,8 +344,7 @@ function parseHtmlTree(html: string): HtmlTreeBuilder {
     const next = html[lt + 1];
     if (html.startsWith(COMMENT_OPEN, lt)) {
       flushText(lt);
-      const close = html.indexOf(COMMENT_CLOSE, lt + COMMENT_OPEN.length);
-      i = close < 0 ? length : close + COMMENT_CLOSE.length;
+      i = commentEnd(html, lt + COMMENT_OPEN.length);
       textStart = i;
       continue;
     }
@@ -320,7 +365,7 @@ function parseHtmlTree(html: string): HtmlTreeBuilder {
     let nameEnd = nameStart;
     while (nameEnd < length && !TAG_NAME_END.test(html[nameEnd])) nameEnd++;
     const tag = lowerHtml.slice(nameStart, nameEnd);
-    const { attrs, end } = parseAttributes(html, nameEnd);
+    const { attrs, end, selfClosing } = parseAttributes(html, nameEnd);
     i = Math.min(end + 1, length);
     textStart = i;
 
@@ -328,7 +373,7 @@ function parseHtmlTree(html: string): HtmlTreeBuilder {
       builder.end(tag);
       continue;
     }
-    if (RAW_TEXT_ELEMENTS.has(tag)) {
+    if (RAW_TEXT_ELEMENTS.has(tag) && !(selfClosing && builder.isForeign(tag))) {
       const contentEnd = findRawTextEnd(lowerHtml, tag, i);
       const stop = contentEnd < 0 ? length : contentEnd;
       builder.rawText(tag, attrs, html.slice(i, stop));
@@ -337,7 +382,7 @@ function parseHtmlTree(html: string): HtmlTreeBuilder {
       textStart = i;
       continue;
     }
-    builder.start(tag, attrs);
+    builder.start(tag, attrs, selfClosing);
   }
   flushText(length);
   return builder;
@@ -738,176 +783,6 @@ async function verifyImages(images: readonly PendingImage[]): Promise<void> {
       throw new ConversionFailedError(`HTML embedded image could not be decoded: ${(err as Error).message}`);
     }
   }
-}
-
-/**
- * Attributes whose value is a URL the document may load, submit to or navigate to. On HTML bound
- * for LibreOffice each must stay inside the document (a data: URI or a `#fragment`); only `<a href>`
- * may also link to the web or mail. Namespaced `*:href` (SVG `xlink:href` under any prefix) counts too.
- */
-const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
-  'src', 'srcset', 'imagesrcset', 'href', 'background', 'poster', 'data', 'codebase', 'action', 'formaction', 'cite',
-  'longdesc', 'lowsrc', 'dynsrc', 'manifest', 'ping', 'archive', 'classid', 'profile', 'usemap', 'icon',
-]);
-/** URL attributes holding a srcset (comma-separated candidates with descriptors). */
-const SRCSET_ATTRIBUTES: ReadonlySet<string> = new Set(['srcset', 'imagesrcset']);
-/** URL attributes holding a whitespace-separated list of URLs. */
-const URL_LIST_ATTRIBUTES: ReadonlySet<string> = new Set(['ping', 'archive', 'profile']);
-/** SVG presentation attributes whose value may be a CSS `url()` paint, filter, mask, marker or cursor reference. */
-const PRESENTATION_URL_ATTRIBUTES: ReadonlySet<string> = new Set([
-  'fill', 'stroke', 'filter', 'clip-path', 'mask', 'marker-start', 'marker-mid', 'marker-end', 'cursor',
-]);
-/** SVG animation elements, which write their to/from/by/values into the attribute they target. */
-const ANIMATION_ELEMENTS: ReadonlySet<string> = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
-const ANIMATION_VALUE_ATTRIBUTES = ['to', 'from', 'by', 'values'] as const;
-const ANIMATION_VALUE_SEPARATOR = ';';
-const ANCHOR_ELEMENT = 'a';
-const ANCHOR_HREF = 'href';
-const NAMESPACED_HREF_SUFFIX = ':href';
-const META_ELEMENT = 'meta';
-const REFRESH_PRAGMA = 'refresh';
-/** The delay and optional `url=` label before the target of a `<meta http-equiv="refresh">`. */
-const REFRESH_TARGET_PREFIX = /^[\s\d.]*[;,]?\s*(?:url\s*=\s*)?/i;
-const QUOTE_CHARACTERS = /^['"]|['"]$/g;
-const STYLE_ATTRIBUTE = 'style';
-const DATA_URI_PREFIX = /^data:/i;
-const FRAGMENT_PREFIX = '#';
-/** Schemes an `<a href>` may link to outside the document; LibreOffice keeps them as links and loads nothing. */
-const ANCHOR_SCHEME = /^(?:https?|mailto):/i;
-/** Tab and newlines, which URL parsers drop from anywhere inside a URL. */
-const URL_IGNORED_CHARACTERS = /[\t\n\r]/g;
-const LAST_C0_OR_SPACE = 0x20;
-const URL_LIST_SEPARATOR = /[ \t\n\f\r]+/;
-
-function isHtmlSpace(ch: string): boolean {
-  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r';
-}
-
-/** Strips leading and trailing C0 controls and spaces, as URL parsers do. */
-function trimUrl(value: string): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value.charCodeAt(start) <= LAST_C0_OR_SPACE) start++;
-  while (end > start && value.charCodeAt(end - 1) <= LAST_C0_OR_SPACE) end--;
-  return value.slice(start, end);
-}
-
-/** The URLs of a srcset: each candidate's URL, skipping its descriptors (data: URIs may contain commas). */
-function srcsetUrls(value: string): string[] {
-  const urls: string[] = [];
-  const length = value.length;
-  let i = 0;
-  while (i < length) {
-    while (i < length && (isHtmlSpace(value[i]) || value[i] === ',')) i++;
-    const start = i;
-    while (i < length && !isHtmlSpace(value[i])) i++;
-    let end = i;
-    if (end > start && value[end - 1] === ',') {
-      while (end > start && value[end - 1] === ',') end--;
-    } else {
-      let depth = 0;
-      for (; i < length && (depth > 0 || value[i] !== ','); i++) {
-        if (value[i] === '(') depth++;
-        else if (value[i] === ')' && depth > 0) depth--;
-      }
-    }
-    if (end > start) urls.push(value.slice(start, end));
-  }
-  return urls;
-}
-
-function isUrlAttribute(name: string): boolean {
-  return URL_ATTRIBUTES.has(name) || name.endsWith(NAMESPACED_HREF_SUFFIX);
-}
-
-/** URLs an attribute names: each srcset candidate, each entry of a URL list, or the single URL. */
-function attributeUrls(name: string, value: string): string[] {
-  if (SRCSET_ATTRIBUTES.has(name)) return srcsetUrls(value);
-  if (URL_LIST_ATTRIBUTES.has(name)) return value.split(URL_LIST_SEPARATOR).filter((url) => url.length > 0);
-  return [value];
-}
-
-/**
- * Whether a URL stays inside the document: empty (the document itself), a `#fragment` or a data:
- * URI; an `<a href>` may also link to http, https or mailto.
- */
-function isAllowedUrl(url: string, isAnchorLink: boolean): boolean {
-  const normalized = trimUrl(url).replace(URL_IGNORED_CHARACTERS, '');
-  if (normalized.length === 0 || normalized.startsWith(FRAGMENT_PREFIX)) return true;
-  return isAnchorLink ? ANCHOR_SCHEME.test(normalized) : DATA_URI_PREFIX.test(normalized);
-}
-
-/** The first URL in an attribute that leaves the document, or null. */
-function findAttributeReference(name: string, value: string, isAnchorLink: boolean): string | null {
-  const external = attributeUrls(name, value).find((url) => !isAllowedUrl(url, isAnchorLink));
-  return external === undefined ? null : trimUrl(external);
-}
-
-/** The target of `<meta http-equiv="refresh" content="5; url=...">`, or null for any other element. */
-function refreshTarget(element: HtmlElement): string | null {
-  if (element.tag !== META_ELEMENT) return null;
-  if (asciiLowerCase(trimUrl(element.attrs.get('http-equiv') ?? '')) !== REFRESH_PRAGMA) return null;
-  const content = element.attrs.get('content') ?? '';
-  return trimUrl(content.replace(REFRESH_TARGET_PREFIX, '')).replace(QUOTE_CHARACTERS, '');
-}
-
-/** A URL an SVG animation would write into a URL or presentation attribute, or null. */
-function findAnimationReference(element: HtmlElement): string | null {
-  const target = asciiLowerCase(trimUrl(element.attrs.get('attributename') ?? ''));
-  const writesUrl = isUrlAttribute(target);
-  if (!writesUrl && !PRESENTATION_URL_ATTRIBUTES.has(target)) return null;
-  for (const attribute of ANIMATION_VALUE_ATTRIBUTES) {
-    for (const value of (element.attrs.get(attribute) ?? '').split(ANIMATION_VALUE_SEPARATOR)) {
-      const reference = writesUrl ? findAttributeReference(target, value, false) : findCssExternalReference(value);
-      if (reference) return reference;
-    }
-  }
-  return null;
-}
-
-/** The first reference in an element's attributes to something outside the document, or null. */
-function findAttributesReference(element: HtmlElement): string | null {
-  for (const [name, value] of element.attrs) {
-    let reference: string | null = null;
-    if (isUrlAttribute(name)) {
-      const isAnchorLink = element.tag === ANCHOR_ELEMENT && (name === ANCHOR_HREF || name.endsWith(NAMESPACED_HREF_SUFFIX));
-      reference = findAttributeReference(name, value, isAnchorLink);
-    } else if (name === STYLE_ATTRIBUTE || PRESENTATION_URL_ATTRIBUTES.has(name)) {
-      reference = findCssExternalReference(value);
-    }
-    if (reference) return reference;
-  }
-  return null;
-}
-
-/** The first reference an element makes to something outside the document, or null. */
-function findElementReference(element: HtmlElement): string | null {
-  const attributeReference = findAttributesReference(element);
-  if (attributeReference) return attributeReference;
-  const refresh = refreshTarget(element);
-  if (refresh && !isAllowedUrl(refresh, false)) return refresh;
-  if (ANIMATION_ELEMENTS.has(element.tag)) return findAnimationReference(element);
-  if (element.tag !== STYLE_ELEMENT) return null;
-  return findCssExternalReference(element.children.filter((child): child is string => typeof child === 'string').join(''));
-}
-
-/**
- * The first reference the document makes to anything outside itself, or null. URL attributes on
- * every element (inline SVG included) must be data: URIs or `#fragment`s, except that `<a href>`
- * may link to http, https or mailto; style attributes, SVG presentation attributes, SVG animations,
- * refresh pragmas and `<style>` sheets are checked too. Used before HTML goes to LibreOffice, which
- * would otherwise try to open, fetch or submit to it.
- */
-export function findExternalResourceReference(html: string): string | null {
-  const pending: HtmlNode[] = [...parseHtmlTree(html.replace(/^﻿/, '')).root.children];
-  while (pending.length > 0) {
-    const node = pending.pop() as HtmlNode;
-    if (typeof node === 'string') continue;
-    const reference = findElementReference(node);
-    if (reference) return reference;
-    appendAll(pending, node.children);
-  }
-  return null;
 }
 
 /**

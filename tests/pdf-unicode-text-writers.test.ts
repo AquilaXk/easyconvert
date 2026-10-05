@@ -780,7 +780,7 @@ describe('Markdown to PDF keeps literal text and structure', () => {
   oracleTest('tokenizes inline Markdown once: no attribute break-out, intact URLs, allowed schemes only', ['pdftotext', 'pdfimages'], async () => {
     const png = buildRgbPng(4, 3).toString('base64');
     const cases: Array<{ markdown: string; text: string; links: string[]; images: number }> = [
-      { markdown: '![ [p](q) ](r)', text: '[p ](r)', links: [], images: 0 },
+      { markdown: '![ [p](q) ](r)', text: '[p](q)', links: [], images: 0 },
       { markdown: '[a](http://x.example/*b*)', text: 'a', links: ['http://x.example/*b*'], images: 0 },
       { markdown: '[x](javascript:void0) and [f](file:///etc/hosts)', text: 'x and f', links: [], images: 0 },
       { markdown: '[x](javascript:alert(1))', text: '[x](javascript:alert(1))', links: [], images: 0 },
@@ -1026,29 +1026,31 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
   it('refuses CSS url(), @import, image-set and background references before LibreOffice could load them', async () => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-css-marker-')), 'invoked');
     const recordingSoffice = failingSoffice(`touch '${marker}'; exit 3`);
+    const external = (reference: string): string => `"${reference}" is an external reference`;
     const cases: Array<[string, string]> = [
-      ['<p style="background:url(file:///etc/hosts)">attribute</p>', 'file:///etc/hosts'],
-      ['<style>@import "http://192.0.2.2:18765/a.css";</style><p>import</p>', 'http://192.0.2.2:18765/a.css'],
-      ['<p style="background:\\75 rl(file:///etc/hosts)">escaped</p>', 'file:///etc/hosts'],
-      ['<style>p { background : /* note */ URL( \'file:///etc/hosts\' ) }</style><p>quoted</p>', 'file:///etc/hosts'],
-      ['<style>@import/* note */url(http://192.0.2.2:18765/b.css);</style><p>import url</p>', 'http://192.0.2.2:18765/b.css'],
-      ['<style>p { background: image-set("file:///etc/hosts" 1x) }</style><p>image-set</p>', 'file:///etc/hosts'],
-      ['<table><tr><td background="file:///etc/hosts">cell</td></tr></table>', 'file:///etc/hosts'],
+      ['<p style="background:url(file:///etc/hosts)">attribute</p>', external('file:///etc/hosts')],
+      ['<style>@import "http://192.0.2.2:18765/a.css";</style><p>import</p>', external('http://192.0.2.2:18765/a.css')],
+      // Any backslash is refused: CSS readers disagree on escapes such as \75 (u).
+      ['<p style="background:\\75 rl(file:///etc/hosts)">escaped</p>', 'backslash escape is not supported'],
+      ['<style>p { background : /* note */ URL( \'file:///etc/hosts\' ) }</style><p>quoted</p>', external('file:///etc/hosts')],
+      ['<style>@import/* note */url(http://192.0.2.2:18765/b.css);</style><p>import url</p>', external('http://192.0.2.2:18765/b.css')],
+      ['<style>p { background: image-set("file:///etc/hosts" 1x) }</style><p>image-set</p>', external('file:///etc/hosts')],
+      ['<table><tr><td background="file:///etc/hosts">cell</td></tr></table>', external('file:///etc/hosts')],
     ];
-    for (const [html, reference] of cases) {
+    for (const [html, message] of cases) {
       const { error } = await settle(
         withEnvValue('SOFFICE_PATH', recordingSoffice, () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css.html'))
       );
       expect({ html, name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ html, name: 'ConversionFailedError', invoked: false });
-      expect((error as Error).message).toContain(`"${reference}" is an external reference`);
+      expect((error as Error).message).toContain(message);
     }
   });
 
-  oracleTest('still sends HTML whose CSS uses only data: URIs to LibreOffice', ['pdftotext'], async () => {
+  oracleTest('still sends HTML whose CSS uses only embedded image data to LibreOffice', ['pdftotext'], async () => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-css-data-')), 'invoked');
     const png = buildRgbPng(2, 2).toString('base64');
     const html =
-      `<style>@import url("data:text/css;base64,cCB7IGNvbG9yOiByZWQgfQ=="); p { background: url('data:image/png;base64,${png}') }</style>` +
+      `<style>p { background: url('data:image/png;base64,${png}') }</style>` +
       `<p style="background-image:url(data:image/png;base64,${png})">data backgrounds</p>`;
     const result = await withEnvValue('SOFFICE_PATH', failingSoffice(`touch '${marker}'; exit 3`), () =>
       executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css-data.html')
@@ -1080,7 +1082,7 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
       ['<p><a href="file:///etc/hosts">local link</a></p>', 'file:///etc/hosts'],
       ['<p><a href="java\tscript:alert(1)">script link</a></p>', 'java\tscript:alert(1)'],
       ['<p><a href="https://example.com/" ping="http://192.0.2.2:18765/ping">ping</a></p>', 'http://192.0.2.2:18765/ping'],
-      ['<p>srcset</p><img srcset="data:image/png;base64,AAAA 1x, file:///etc/hosts 2x">', 'file:///etc/hosts'],
+      [`<p>srcset</p><img srcset="data:image/png;base64,${buildRgbPng(1, 1).toString('base64')} 1x, file:///etc/hosts 2x">`, 'file:///etc/hosts'],
       ['<meta http-equiv="refresh" content="0; url=file:///etc/hosts"><p>refresh</p>', 'file:///etc/hosts'],
     ];
     for (const [html, reference] of cases) {

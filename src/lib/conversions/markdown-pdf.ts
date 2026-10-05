@@ -34,11 +34,22 @@ function renderText(text: string): string {
   return escapeHtml(text).replace(STRONG, '<strong>$1</strong>').replace(EMPHASIS, '<em>$1</em>');
 }
 
-/** A `[label](target)` at `open` (the '[' index), or null when the syntax does not match. */
+/**
+ * A `[label](target)` at `open` (the '[' index), or null when the syntax does not match. The label
+ * may hold balanced brackets, as in `[![badge](badge.png)](https://example.com/)`.
+ */
 function parseLinkAt(text: string, open: number): { label: string; target: string; end: number } | null {
   let close = open + 1;
+  let depth = 0;
   const labelLimit = Math.min(text.length, open + 1 + MAX_LINK_LABEL);
-  while (close < labelLimit && text[close] !== ']' && text[close] !== '\n') close++;
+  for (; close < labelLimit && text[close] !== '\n'; close++) {
+    if (text[close] === '[') {
+      depth++;
+    } else if (text[close] === ']') {
+      if (depth === 0) break;
+      depth--;
+    }
+  }
   if (text[close] !== ']' || text[close + 1] !== '(') return null;
   let end = close + 2;
   while (end < text.length && text[end] !== ')' && text[end] !== '(' && !/\s/.test(text[end])) end++;
@@ -46,8 +57,11 @@ function parseLinkAt(text: string, open: number): { label: string; target: strin
   return { label: text.slice(open + 1, close), target: text.slice(close + 2, end), end: end + 1 };
 }
 
-/** Renders inline Markdown in a single pass: code spans, images, links, then plain text. */
-function renderInline(text: string): string {
+/**
+ * Renders inline Markdown in a single pass: code spans, images, links, then plain text. Inside a
+ * link label only code spans and images are recognised, so links never nest.
+ */
+function renderInline(text: string, insideLink = false): string {
   let html = '';
   let plainStart = 0;
   let i = 0;
@@ -65,7 +79,7 @@ function renderInline(text: string): string {
         plainStart = i;
         continue;
       }
-    } else if (ch === '[' || (ch === '!' && text[i + 1] === '[')) {
+    } else if ((ch === '[' && !insideLink) || (ch === '!' && text[i + 1] === '[')) {
       const isImage = ch === '!';
       const link = parseLinkAt(text, isImage ? i + 1 : i);
       if (link) {
@@ -75,9 +89,9 @@ function renderInline(text: string): string {
             ? `<img alt="${escapeHtml(link.label)}" src="${escapeHtml(link.target)}">`
             : escapeHtml(link.label);
         } else if (LINK_TARGET.test(link.target)) {
-          html += `<a href="${escapeHtml(link.target)}">${renderText(link.label)}</a>`;
+          html += `<a href="${escapeHtml(link.target)}">${renderInline(link.label, true)}</a>`;
         } else {
-          html += renderText(link.label);
+          html += renderInline(link.label, true);
         }
         i = link.end;
         plainStart = i;

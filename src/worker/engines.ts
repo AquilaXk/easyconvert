@@ -31,7 +31,7 @@ import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
-import { findExternalResourceReference } from '../lib/conversions/html-blocks';
+import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -1472,8 +1472,6 @@ const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm
 const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt', 'html', 'htm']);
 /** HTML always prefers LibreOffice, which keeps its full structure. */
 const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
-/** Sources LibreOffice cannot open: converted in-process to HTML, which LibreOffice then renders. */
-const HTML_STAGED_SOURCES: ReadonlySet<string> = new Set(['md', 'hwp']);
 const HTML_FORMAT = 'html';
 const PLAIN_TEXT_SOURCE = 'txt';
 const MARKDOWN_SOURCE = 'md';
@@ -1494,6 +1492,8 @@ interface TextPdfRoute {
   readonly preferNative: boolean;
   /** Page orientation LibreOffice must apply, when one was requested. */
   readonly orientation?: PageOrientation;
+  /** The checked HTML LibreOffice renders, rebuilt from the parsed input (absent when it reads the text file itself). */
+  readonly stagedHtml?: Buffer;
 }
 
 /** Every distinct character of a text file, read and strictly decoded in chunks, whatever the size. */
@@ -1542,6 +1542,7 @@ async function planTextPdfRoute(
   input: Buffer | WorkerVfsPayload,
   src: string,
   tgt: string,
+  originalFilename: string,
   orientation?: PageOrientation
 ): Promise<TextPdfRoute | null> {
   if (tgt !== 'pdf' || !TEXT_PDF_SOURCES.has(src)) return null;
@@ -1557,22 +1558,36 @@ async function planTextPdfRoute(
     assertFontCoverage(Array.from(scriptLetters).join(''));
   }
   const route = planTextPdfEngine(src, text, complexScript, cjk, orientation);
-  if (route.preferNative && HTML_SOURCES.has(src)) assertNoExternalResources(decodeTextInput(readRawInputBuffer(input)));
-  return route;
+  if (!route.preferNative || (src === PLAIN_TEXT_SOURCE && !route.orientation)) return route;
+  // Staged here, before LibreOffice is tried, so a refused reference is a 400 and never a fallback.
+  return { ...route, stagedHtml: await stageTextPdfHtml(input, src, originalFilename, route.orientation) };
 }
 
 /**
- * Refuses HTML whose URLs point outside the document, which LibreOffice could open, fetch or
- * submit to. Embedded data: URIs, `#fragment`s and http/https/mailto `<a href>` links are fine.
+ * The HTML LibreOffice renders for a text source, rebuilt from the parsed document so it reads
+ * only what was checked: HTML as given, Markdown and HWP converted in-process (LibreOffice cannot
+ * open them), and text as one paragraph per line. A requested orientation is a CSS page size.
  */
-function assertNoExternalResources(html: string): void {
-  const reference = findExternalResourceReference(html);
-  if (reference) {
-    throw new ConversionFailedError(
-      `HTML resource "${reference}" is an external reference; external resources are not fetched, so embed it as a data: URI ` +
-        '(only <a href> may link to http, https or mailto)'
-    );
+async function stageTextPdfHtml(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  originalFilename: string,
+  orientation?: PageOrientation
+): Promise<Buffer> {
+  const raw = readRawInputBuffer(input);
+  let html: string;
+  if (HTML_SOURCES.has(src)) {
+    html = decodeTextInput(raw);
+  } else if (src === PLAIN_TEXT_SOURCE) {
+    html = plainTextToHtml(decodeTextInput(raw));
+  } else if (src === MARKDOWN_SOURCE) {
+    html = markdownToSafeHtml(decodeTextInput(raw), originalFilename.replace(/\.[^/.]+$/, ''));
+  } else {
+    html = (await convertFile(raw, src, HTML_FORMAT, {}, originalFilename)).buffer.toString('utf-8');
   }
+  // Appended last so it overrides any @page rule of the document.
+  const pageSize = orientation ? `\n<style>@page { size: ${PAGE_SIZE_CSS[orientation]}; }</style>\n` : '';
+  return Buffer.from(stageHtmlForNativeEngine(html) + pageSize, 'utf-8');
 }
 
 function planTextPdfEngine(
@@ -1600,39 +1615,23 @@ function plainTextToHtml(text: string): string {
 }
 
 /**
- * Renders text or HTML to PDF with LibreOffice. Markdown and HWP, which LibreOffice cannot open,
- * are first converted in-process to HTML; a requested orientation is applied as a CSS page size
- * on HTML staged the same way (text becomes one paragraph per line).
+ * Renders text or HTML to PDF with LibreOffice: the staged HTML when the route has one (HTML,
+ * Markdown, HWP, or text with an orientation), otherwise the text file itself.
  */
 async function convertTextPdfWithHeadlessOffice(
   input: Buffer | WorkerVfsPayload,
   src: string,
   options: WorkerEngineOptions,
   originalFilename: string,
-  orientation?: PageOrientation
+  stagedHtml?: Buffer
 ): Promise<WorkerConversionResult | null> {
-  if (!orientation && !HTML_STAGED_SOURCES.has(src)) {
+  if (!stagedHtml) {
     return convertWithHeadlessOffice(input, src, 'pdf', options, originalFilename);
   }
   if (!resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH)) {
     throw new EngineUnavailableError('soffice', 'LibreOffice binary is not installed or not in PATH');
   }
-  const raw = readRawInputBuffer(input);
-  let html: Buffer;
-  if (HTML_SOURCES.has(src)) {
-    html = raw;
-  } else if (src === PLAIN_TEXT_SOURCE) {
-    html = Buffer.from(plainTextToHtml(decodeTextInput(raw)), 'utf-8');
-  } else if (src === MARKDOWN_SOURCE) {
-    html = Buffer.from(markdownToSafeHtml(decodeTextInput(raw), originalFilename.replace(/\.[^/.]+$/, '')), 'utf-8');
-  } else {
-    html = (await convertFile(raw, src, HTML_FORMAT, {}, originalFilename)).buffer;
-  }
-  if (orientation) {
-    // Appended last so it overrides any @page rule of the document; ASCII keeps any ASCII-based charset intact.
-    html = Buffer.concat([html, Buffer.from(`\n<style>@page { size: ${PAGE_SIZE_CSS[orientation]}; }</style>\n`, 'ascii')]);
-  }
-  const stagedInput: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? html : { inputBuffer: html, outputPath: input.outputPath };
+  const stagedInput: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? stagedHtml : { inputBuffer: stagedHtml, outputPath: input.outputPath };
   return convertWithHeadlessOffice(stagedInput, HTML_FORMAT, 'pdf', options, originalFilename);
 }
 
@@ -1667,7 +1666,7 @@ export async function executeWorkerConversion(
   let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
-  const textPdfRoute = await planTextPdfRoute(input, src, tgt, options.orientation);
+  const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation);
   const isComplexText = Boolean(textPdfRoute?.complexScript);
   const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
@@ -1676,7 +1675,7 @@ export async function executeWorkerConversion(
   if (isNativeTextPdf || isRecalculate || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {
       const officeRes = isNativeTextPdf
-        ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.orientation)
+        ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
         : await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
       if (officeRes) {
         return {
