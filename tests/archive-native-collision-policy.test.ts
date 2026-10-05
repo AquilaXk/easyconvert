@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertWithNative7z as convertWithNative7zWorker } from '../src/worker/engines';
-import { convertWithNative7z, extractZipArchive } from '../src/lib/conversions/archive';
+import { convertArchive, convertWithNative7z, extractZipArchive } from '../src/lib/conversions/archive';
 import { ArchiveEntryCollisionError } from '../src/lib/types';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -239,6 +239,23 @@ describe('extraction collision policy on the native 7z path', () => {
       expect(outcome).toBeInstanceOf(ArchiveEntryCollisionError);
       expect((outcome as Error).message).toMatch(/collisionPolicy 'overwrite' or 'error'/);
     });
+
+    for (const collisionPolicy of [undefined, 'error'] as const) {
+      oracleTest(`keeps the collision type through convertArchive (policy ${collisionPolicy ?? 'default'})`, [...TOOLS], async () => {
+        const zip = duplicateNamedEncryptedZip();
+
+        const outcome = await ws
+          .withTmpdir(() => convertArchive(zip, 'zip', '7z', { password: PASSWORD, collisionPolicy }, 'dup-encrypted.zip'))
+          .then(
+            () => null,
+            (error: unknown) => error
+          );
+
+        expect(outcome).toBeInstanceOf(ArchiveEntryCollisionError);
+        expect((outcome as ArchiveEntryCollisionError).status).toBe(422);
+        expect((outcome as Error).message).toMatch(/first\.txt/);
+      });
+    }
 
     oracleTest("keeps one file per name under policy 'overwrite'", [...TOOLS], async () => {
       const zip = duplicateNamedEncryptedZip();
