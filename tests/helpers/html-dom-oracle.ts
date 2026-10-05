@@ -191,7 +191,8 @@ function canonicalize(node: Node, inPre: boolean): string {
     parts.push(text);
   });
   const attrs = canonicalAttrs(node);
-  return `<${node.tagName}${attrs ? ` ${attrs}` : ''}>${parts.join('')}</${node.tagName}>`;
+  const attrSuffix = attrs ? ` ${attrs}` : '';
+  return `<${node.tagName}${attrSuffix}>${parts.join('')}</${node.tagName}>`;
 }
 
 /** Canonical form of an HTML fragment used to compare two renderings of the same document. */

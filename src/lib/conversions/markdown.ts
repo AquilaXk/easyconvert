@@ -139,39 +139,51 @@ function sanitizeFenceInfo(token: Token): void {
   if (language !== '' && !FENCE_LANGUAGE_PATTERN.test(language)) token.info = '';
 }
 
+function countToken(state: PolicyState): void {
+  state.tokenCount += 1;
+  if (state.tokenCount > MAX_MARKDOWN_TOTAL_TOKENS) {
+    throw new MarkdownSanitizationError(`Markdown document exceeds the ${MAX_MARKDOWN_TOTAL_TOKENS} token limit`);
+  }
+}
+
+function sanitizeTokenAttributes(token: Token, tag: string, allowed: ReadonlySet<string>, state: PolicyState): void {
+  if (!token.attrs) return;
+  const kept: Array<[string, string]> = [];
+  for (const [name, value] of token.attrs) {
+    if (!allowed.has(name)) {
+      throw new MarkdownSanitizationError(`Markdown rendering produced a non-allowlisted attribute ${tag}[${name}]`);
+    }
+    state.attributeChars += value.length;
+    if (state.attributeChars > MAX_MARKDOWN_ATTRIBUTE_CHARS) {
+      throw new MarkdownSanitizationError(
+        `Markdown attribute values exceed the ${MAX_MARKDOWN_ATTRIBUTE_CHARS} character limit`
+      );
+    }
+    const clean = sanitizeAttribute(state, tag, name, value);
+    if (clean !== null) kept.push([name, clean]);
+  }
+  token.attrs = kept;
+}
+
+function applyElementPolicy(token: Token, state: PolicyState): void {
+  const tag = token.tag;
+  if (tag === '') return;
+  const allowed = ALLOWED_ATTRIBUTES.get(tag);
+  if (allowed === undefined) {
+    throw new MarkdownSanitizationError(`Markdown rendering produced a non-allowlisted element <${tag}>`);
+  }
+  sanitizeTokenAttributes(token, tag, allowed, state);
+}
+
 function walkPolicy(tokens: Token[], state: PolicyState): void {
   for (const token of tokens) {
-    state.tokenCount += 1;
-    if (state.tokenCount > MAX_MARKDOWN_TOTAL_TOKENS) {
-      throw new MarkdownSanitizationError(`Markdown document exceeds the ${MAX_MARKDOWN_TOTAL_TOKENS} token limit`);
-    }
+    countToken(state);
     if (HTML_TOKEN_TYPES.has(token.type)) {
       throw new MarkdownSanitizationError(`Markdown rendering produced a raw HTML token (${token.type})`);
     }
     if (token.type === 'fence') sanitizeFenceInfo(token);
     if (token.children) walkPolicy(token.children, state);
-    const tag = token.tag;
-    if (tag === '') continue;
-    const allowed = ALLOWED_ATTRIBUTES.get(tag);
-    if (allowed === undefined) {
-      throw new MarkdownSanitizationError(`Markdown rendering produced a non-allowlisted element <${tag}>`);
-    }
-    if (!token.attrs) continue;
-    const kept: Array<[string, string]> = [];
-    for (const [name, value] of token.attrs) {
-      if (!allowed.has(name)) {
-        throw new MarkdownSanitizationError(`Markdown rendering produced a non-allowlisted attribute ${tag}[${name}]`);
-      }
-      state.attributeChars += value.length;
-      if (state.attributeChars > MAX_MARKDOWN_ATTRIBUTE_CHARS) {
-        throw new MarkdownSanitizationError(
-          `Markdown attribute values exceed the ${MAX_MARKDOWN_ATTRIBUTE_CHARS} character limit`
-        );
-      }
-      const clean = sanitizeAttribute(state, tag, name, value);
-      if (clean !== null) kept.push([name, clean]);
-    }
-    token.attrs = kept;
+    applyElementPolicy(token, state);
   }
 }
 

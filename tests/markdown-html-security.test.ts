@@ -350,7 +350,7 @@ describe('markdown resource budgets', () => {
   it('rejects a source above the size limit and accepts one at the limit', () => {
     expect(() => renderMarkdownFragment('a'.repeat(MAX_MARKDOWN_SOURCE_CHARS + 1))).toThrow(/character limit/);
     const html = renderMarkdownFragment('a'.repeat(MAX_MARKDOWN_SOURCE_CHARS));
-    expect(html.length).toBe(MAX_MARKDOWN_SOURCE_CHARS + '<p></p>\n'.length);
+    expect(html).toHaveLength(MAX_MARKDOWN_SOURCE_CHARS + '<p></p>\n'.length);
   });
 
   it('rejects non-string input with the typed error', () => {
