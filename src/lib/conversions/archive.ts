@@ -58,6 +58,7 @@ import {
   assertEncryptedArchiveInputWithinLimits,
   assertZipPasswordSupported,
   MAX_ENCRYPTION_LISTING_BYTES,
+  SEVEN_ZIP_LISTING_TIMEOUT_MS,
   walkArchiveTreePaths,
   execFileSyncWithPasswordStdin,
   isArchivePasswordError,
@@ -259,7 +260,7 @@ function assertCreatedArchiveEncrypted(p7z: string, archivePath: string, format:
     const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
       cwd,
       env: getSanitizedEnvironment({}, true),
-      timeout: 30000,
+      timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
       maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
       input: sevenZipEncryptionCheckInput(),
     });
@@ -375,6 +376,9 @@ export async function createZipArchive(
     size: content.length,
   };
 }
+
+/** Longest one unrar extraction may run. */
+const UNRAR_EXTRACT_TIMEOUT_MS = 30_000;
 
 export const ARCHIVE_SECURITY_LIMITS = {
   MAX_FILES: 1000,
@@ -904,7 +908,7 @@ export function extractRarArchive(
         const unrarOptions = {
           cwd: extractDir,
           env: getSanitizedEnvironment({}, true),
-          timeout: 30000,
+          timeout: UNRAR_EXTRACT_TIMEOUT_MS,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
         };
         if (options.password) {
@@ -3196,7 +3200,7 @@ async function inspectArchiveVia7zCli(
       const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
         cwd: workDir,
         env: getSanitizedEnvironment({}, true),
-        timeout: 30000,
+        timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
         input: sevenZipReadPasswordInput(password),
       });
       stdoutStr = out.toString('utf-8');

@@ -203,6 +203,9 @@ export function archivePasswordError(
   return new InvalidArchivePasswordError(`Invalid password for encrypted ${request.label}.`);
 }
 
+/** Longest a `7z l` listing may run (verification of a created archive, inspection of an uploaded one). */
+export const SEVEN_ZIP_LISTING_TIMEOUT_MS = 30_000;
+
 /** Most entries an encrypted ZIP or 7z target may hold: its verification listing has to stay readable. */
 export const MAX_ENCRYPTED_ARCHIVE_ENTRIES = 50_000;
 
