@@ -305,28 +305,11 @@ export function isSvg(input: string | Buffer): boolean {
 }
 
 /**
- * Sanitizes an SVG string by stripping dangerous tags, attributes, and script execution vectors.
+ * One full sanitation pass: dangerous markup removal followed by URI and style rewrites.
  */
-export function sanitizeSvgString(svg: string): string {
-  if (!svg || typeof svg !== 'string') return '';
-
-  let result = svg;
-
+function sanitizePass(input: string): string {
   // 1-3. Strip DOCTYPE/ENTITY declarations, executable and embedding elements, and on* event handlers.
-  // Repeat until stable to defeat recursive tag injection such as <scr<script>ipt>; payloads that need more
-  // passes than any real document are rejected (fail closed).
-  let stable = false;
-  for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
-    const next = stripDangerousMarkupPass(result);
-    if (next === result) {
-      stable = true;
-      break;
-    }
-    result = next;
-  }
-  if (!stable) {
-    throw new SvgSanitizationError('SVG contains nested markup that cannot be sanitized safely.');
-  }
+  let result = stripDangerousMarkupPass(input);
 
   // 4. Sanitize dangerous URI protocols (javascript:, vbscript:, data:text/html, data:image/svg+xml, http:, https:, file:, ftp:, //)
   result = result.replace(
@@ -384,6 +367,31 @@ export function sanitizeSvgString(svg: string): string {
     return `style="${sanitizeCss(styleBody)}"`;
   });
 
+  return result;
+}
+
+/**
+ * Sanitizes an SVG string by stripping dangerous tags, attributes, and script execution vectors.
+ */
+export function sanitizeSvgString(svg: string): string {
+  if (!svg || typeof svg !== 'string') return '';
+
+  // Every pass strips dangerous markup and then rewrites URIs and styles. A rewrite can join fragments into
+  // new dangerous markup (for example `<scr@import x;ipt>` inside <style>), so the pipeline repeats until its
+  // output is a fixed point; payloads that need more passes than any real document are rejected (fail closed).
+  let result = svg;
+  let stable = false;
+  for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
+    const next = sanitizePass(result);
+    if (next === result) {
+      stable = true;
+      break;
+    }
+    result = next;
+  }
+  if (!stable) {
+    throw new SvgSanitizationError('SVG contains nested markup that cannot be sanitized safely.');
+  }
   return result.trim();
 }
 
