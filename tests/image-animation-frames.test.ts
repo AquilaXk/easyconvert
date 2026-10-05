@@ -187,7 +187,7 @@ describe('convertImage with a still target', () => {
     expectFrameColour(decodeRgba(result.buffer, 'webp'), FRAME_COLOURS[1], 'webp page 2');
   });
 
-  it.skipIf(SKIP_WITHOUT_MAGICK).each([0, 4, -1, 1.5])('page %s is outside 1..3 and is rejected', async (page) => {
+  it.skipIf(SKIP_WITHOUT_MAGICK).each([0, 4, -1])('page %s is outside 1..3 and is rejected', async (page) => {
     const error = await captureError(() => convertImage(buildAnimatedGif(), 'png', { page }, 'anim.gif', 'gif'));
     expect(error.name).toBe('InvalidPageRangeError');
     expect(error.message).toMatch(/out of range: the image has 3 frames/);

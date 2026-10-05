@@ -305,10 +305,30 @@ export function pageEntryName(baseName: string, pageNumber: number, lastPage: nu
   return `${baseName}-p${String(pageNumber).padStart(padLength, '0')}.${extension}`;
 }
 
+const WHOLE_NUMBER_TEXT = /^-?[0-9]+$/;
+
+/**
+ * The page number a `page` option names, or undefined when it names none (null, undefined, empty or blank
+ * text). Only whole numbers qualify: a number, or text of decimal digits with optional surrounding
+ * whitespace. Exponent and hexadecimal text, fractions, signs other than a minus and non-scalar values are
+ * refused instead of being coerced.
+ */
+function parsePageNumber(page: unknown): number | undefined {
+  if (page === null || page === undefined) return undefined;
+  if (typeof page === 'number' && Number.isSafeInteger(page)) return page;
+  if (typeof page === 'string') {
+    const text = page.trim();
+    if (text === '') return undefined;
+    if (WHOLE_NUMBER_TEXT.test(text) && Number.isSafeInteger(Number(text))) return Number(text);
+  }
+  throw new InvalidPageRangeError(`Invalid page ${JSON.stringify(page)}: use a whole number written in decimal digits`);
+}
+
 /**
  * Resolves the pages a request selects from its `page` (one page) and `pages` (ranges) options, or undefined
- * when it selects none. `null` and an empty string count as absent. When both are given they must select
- * the same single page, otherwise the request is ambiguous and is refused.
+ * when it selects none. `null`, an empty or blank string count as absent, and surrounding whitespace is
+ * ignored in both options. When both are given they must select the same single page, otherwise the request
+ * is ambiguous and is refused.
  */
 export function resolvePageSelection(
   page: number | string | null | undefined,
@@ -316,12 +336,12 @@ export function resolvePageSelection(
   pageCount: number,
   outOfRange: (page: number | string, pageCount: number) => InvalidPageRangeError
 ): number[] | undefined {
-  const ranges = spec === null || spec === '' ? undefined : spec;
-  if (page === null || page === undefined) {
+  const single = parsePageNumber(page);
+  const ranges = typeof spec === 'string' && spec.trim() !== '' ? spec.trim() : undefined;
+  if (single === undefined) {
     return ranges === undefined ? undefined : parsePageRanges(ranges, pageCount);
   }
-  const single = Number(page);
-  if (!Number.isInteger(single) || single < 1 || single > pageCount) throw outOfRange(page, pageCount);
+  if (single < 1 || single > pageCount) throw outOfRange(single, pageCount);
   if (ranges !== undefined) {
     const listed = parsePageRanges(ranges, pageCount);
     if (listed.length !== 1 || listed[0] !== single) {
