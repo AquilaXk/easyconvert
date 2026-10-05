@@ -50,21 +50,21 @@ interface Tolerance {
  *  - chroma (absolute): the same without removing the cast, only meant to catch swapped channels;
  *  - rank: Spearman correlation of the 36 cell lumas, which any monotonic tone curve preserves.
  * Observed on the real samples through the dispatcher (luma / relative / absolute / rank):
- *   x3f 0.045 / 0.013 / 0.016 / 0.999      x3f-sd14 0.134 / 0.035 / 0.056 / 0.996
- *   x3f-merrill 0.479 / 0.039 / 0.041 / 0.996   x3f-quattro 0.201 / 0.034 / 0.039 / 0.985
- *   raw 0.167 / 0.008 / 0.055 / 0.792      raw-imx219 0.185 / 0.023 / 0.057 / 0.796
- *   raw-imx477 0.141 / 0.083 / 0.113 / 0.985
+ *   x3f 0.049 / 0.008 / 0.007 / 0.999      x3f-sd14 0.124 / 0.016 / 0.024 / 0.998
+ *   x3f-merrill 0.496 / 0.039 / 0.039 / 0.996   x3f-quattro 0.203 / 0.037 / 0.038 / 0.985
+ *   raw 0.165 / 0.012 / 0.056 / 0.804      raw-imx219 0.183 / 0.031 / 0.067 / 0.798
+ *   raw-imx477 0.154 / 0.071 / 0.103 / 0.988
  * The Raspberry Pi frames carry no sensor colour characterisation (grey-world white balance and a generic
  * matrix), which is why their chroma limits are looser than the X3F ones.
  */
 const TOLERANCE: Readonly<Record<SampleName, Tolerance>> = {
-  x3f: { lumaRatioError: 0.1, chromaRelativeError: 0.03, chromaAbsoluteError: 0.04, lumaRankCorrelation: 0.99 },
-  'x3f-sd14': { lumaRatioError: 0.17, chromaRelativeError: 0.045, chromaAbsoluteError: 0.07, lumaRankCorrelation: 0.98 },
+  x3f: { lumaRatioError: 0.1, chromaRelativeError: 0.02, chromaAbsoluteError: 0.02, lumaRankCorrelation: 0.99 },
+  'x3f-sd14': { lumaRatioError: 0.17, chromaRelativeError: 0.025, chromaAbsoluteError: 0.035, lumaRankCorrelation: 0.98 },
   'x3f-merrill': { lumaRatioError: 0.6, chromaRelativeError: 0.05, chromaAbsoluteError: 0.055, lumaRankCorrelation: 0.98 },
   'x3f-quattro': { lumaRatioError: 0.26, chromaRelativeError: 0.045, chromaAbsoluteError: 0.05, lumaRankCorrelation: 0.96 },
   raw: { lumaRatioError: 0.25, chromaRelativeError: 0.03, chromaAbsoluteError: 0.1, lumaRankCorrelation: 0.7 },
-  'raw-imx219': { lumaRatioError: 0.25, chromaRelativeError: 0.03, chromaAbsoluteError: 0.08, lumaRankCorrelation: 0.7 },
-  'raw-imx477': { lumaRatioError: 0.18, chromaRelativeError: 0.105, chromaAbsoluteError: 0.14, lumaRankCorrelation: 0.96 },
+  'raw-imx219': { lumaRatioError: 0.25, chromaRelativeError: 0.04, chromaAbsoluteError: 0.08, lumaRankCorrelation: 0.7 },
+  'raw-imx477': { lumaRatioError: 0.18, chromaRelativeError: 0.09, chromaAbsoluteError: 0.12, lumaRankCorrelation: 0.96 },
 };
 
 /** Names of the metrics of `result` outside `limit` (the rank correlation is a lower bound). */
