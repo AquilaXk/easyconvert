@@ -502,6 +502,58 @@ describe('HTML parsing robustness', () => {
   });
 });
 
+describe('Markdown to PDF keeps literal text and structure', () => {
+  oracleTest('keeps angle-bracket text and raw HTML as literal text', ['pdftotext'], async () => {
+    const markdown = 'Use `List<String>` and a<b and c>d then <script>alert(1)</script> x & y';
+    const result = await convertFile(Buffer.from(markdown, 'utf-8'), 'md', 'pdf', {}, 'literal.md');
+    expect(normalizeText(pdfText(result.buffer))).toBe('Use List<String> and a<b and c>d then <script>alert(1)</script> x & y');
+  });
+
+  oracleTest('renders headings, lists, emphasis, links and pipe tables', ['pdftotext'], async () => {
+    const markdown = [
+      '# Release Notes',
+      '',
+      'Intro with **bold**, *emphasis*, snake_case_name, 2 * 3 * 4 and a [reference](https://example.com/notes).',
+      '',
+      '- first item',
+      '- second item',
+      '',
+      '1. step one',
+      '2. step two',
+      '',
+      '| Name | Qty |',
+      '|------|----:|',
+      '| a<b  | 3   |',
+      '',
+      '```',
+      'code <b>kept</b>',
+      '```',
+    ].join('\n');
+    const result = await convertFile(Buffer.from(markdown, 'utf-8'), 'md', 'pdf', {}, 'notes.md');
+    const layout = pdfText(result.buffer, true).split('\n');
+    const heading = lineIndex(layout, /^\s*Release Notes\s*$/, 0);
+    const intro = lineIndex(layout, /Intro with bold, emphasis, snake_case_name, 2 \* 3 \* 4 and a reference\./, heading + 1);
+    const first = lineIndex(layout, /•\s+first item/, intro + 1);
+    const second = lineIndex(layout, /•\s+second item/, first + 1);
+    const stepOne = lineIndex(layout, /1\.\s+step one/, second + 1);
+    const stepTwo = lineIndex(layout, /2\.\s+step two/, stepOne + 1);
+    const header = lineIndex(layout, /Name\s+Qty/, stepTwo + 1);
+    const row = lineIndex(layout, /a<b\s+3/, header + 1);
+    lineIndex(layout, /code <b>kept<\/b>/, row + 1);
+    expect(await linkTargets(result.buffer)).toEqual(['https://example.com/notes']);
+  });
+
+  oracleTest('converts long runs of table pipes in linear time', ['pdftotext'], async () => {
+    const BUDGET_MS = 2000;
+    const pipes = '|'.repeat(40_000);
+    const started = Date.now();
+    const result = await convertFile(Buffer.from(pipes, 'utf-8'), 'md', 'pdf', {}, 'pipes.md');
+    const elapsed = Date.now() - started;
+    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+    expect(withoutWhitespace(pdfText(result.buffer))).toBe(pipes);
+  });
+});
+
 const STRUCTURED_HTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Inventory report</title><style>h1 { color: red; }</style></head>
 <body>

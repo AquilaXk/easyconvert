@@ -44,6 +44,7 @@ import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeTextInput } from './text-input';
+import { markdownToSafeHtml } from './markdown-pdf';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
 
 export {
@@ -749,7 +750,8 @@ async function generatePdfFromText(
   let blocks: PdfBlock[];
   let title = baseName;
   if (HTML_SOURCE_FORMATS.has(sourceType) || sourceType === MARKDOWN_SOURCE_FORMAT) {
-    const html = sourceType === MARKDOWN_SOURCE_FORMAT ? markdownToHtml(text, baseName) : text;
+    // Markdown goes through the escaping renderer: raw HTML and `<...>` text stay literal.
+    const html = sourceType === MARKDOWN_SOURCE_FORMAT ? markdownToSafeHtml(text, baseName) : text;
     const parsed = await parseHtmlToPdfBlocks(html);
     blocks = parsed.blocks;
     title = parsed.title || baseName;

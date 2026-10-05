@@ -30,6 +30,7 @@ import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
+import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -1474,6 +1475,7 @@ const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
 const HTML_STAGED_SOURCES: ReadonlySet<string> = new Set(['md', 'hwp']);
 const HTML_FORMAT = 'html';
 const PLAIN_TEXT_SOURCE = 'txt';
+const MARKDOWN_SOURCE = 'md';
 const TEXT_SCAN_CHUNK_BYTES = 1024 * 1024;
 
 /** CSS page sizes LibreOffice applies to staged HTML (the last @page rule wins). */
@@ -1600,6 +1602,8 @@ async function convertTextPdfWithHeadlessOffice(
     html = raw;
   } else if (src === PLAIN_TEXT_SOURCE) {
     html = Buffer.from(plainTextToHtml(decodeTextInput(raw)), 'utf-8');
+  } else if (src === MARKDOWN_SOURCE) {
+    html = Buffer.from(markdownToSafeHtml(raw.toString('utf-8'), originalFilename.replace(/\.[^/.]+$/, '')), 'utf-8');
   } else {
     html = (await convertFile(raw, src, HTML_FORMAT, {}, originalFilename)).buffer;
   }
