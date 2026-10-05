@@ -189,6 +189,8 @@ describe('TRUE sensor section with hostile 8-bit Huffman tables', () => {
   });
 
   it('rejects a table with more than 256 pairs', () => {
+    // Only 256 distinct 8-bit codes exist, so the 257th pair repeats one: the decoder must reject the
+    // table by its length, before it ever looks for overlapping codes.
     const oversized: Pair[] = Array.from({ length: MAX_TABLE_PAIRS + 1 }, (_, leaf) => ({ length: CODE_BITS, code: leaf % MAX_TABLE_PAIRS }));
     expectRejectedQuickly(sectionWithTable(tableBytes(oversized)), /Huffman table is too long/);
   });

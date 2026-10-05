@@ -1129,7 +1129,7 @@ export function decodeX3f(file: Buffer): DecodedX3f {
 /**
  * Ceiling of the typed arrays a decode holds at once: the stored layer planes plus the 16-bit output.
  * The per-generation pixel caps keep the largest real layouts (Quattro at its cap: about 216 MB) below
- * it; the thread's heap limit does not cover these buffers, so this check is what bounds them.
+ * it; the thread's heap limit does not cover these buffers, so this check backs the caps with one total.
  */
 export const X3F_DECODE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
 

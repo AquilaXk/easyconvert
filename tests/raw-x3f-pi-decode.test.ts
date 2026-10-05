@@ -49,7 +49,8 @@ interface Tolerance {
  *  - chroma (relative): red and blue shares of the cell's total after removing each image's mean cast;
  *  - chroma (absolute): the same without removing the cast, only meant to catch swapped channels;
  *  - rank: Spearman correlation of the 36 cell lumas, which any monotonic tone curve preserves.
- * Observed on the real samples through the dispatcher (luma / relative / absolute / rank):
+ * Observed on the real samples through the dispatcher (luma / relative / absolute / rank), measured after
+ * the 16-bit encode stopped shifting colours through a wide-gamut working profile:
  *   x3f 0.049 / 0.008 / 0.007 / 0.999      x3f-sd14 0.124 / 0.016 / 0.024 / 0.998
  *   x3f-merrill 0.496 / 0.039 / 0.039 / 0.996   x3f-quattro 0.203 / 0.037 / 0.038 / 0.985
  *   raw 0.165 / 0.012 / 0.056 / 0.804      raw-imx219 0.183 / 0.031 / 0.067 / 0.798
