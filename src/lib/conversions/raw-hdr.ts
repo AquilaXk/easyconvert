@@ -1352,8 +1352,12 @@ function extractJpegXmp(jpeg: Buffer): string {
   return rawXmp.subarray(0, endXmp + xmpEnd.length).toString('utf-8');
 }
 
-/** Namespaces of gain map metadata: the ISO 21496-1 one this engine writes and the earlier Adobe one. */
-const GAIN_MAP_NAMESPACES = ['http://iso.org/iso-21496/-1', 'http://ns.adobe.com/hdr-gain-map/1.0/'];
+/**
+ * Namespaces of gain map metadata, without their URI scheme: the ISO 21496-1 one this engine writes and
+ * the earlier Adobe one. XMP namespace names are identifiers, never fetched.
+ */
+const GAIN_MAP_NAMESPACES: ReadonlySet<string> = new Set(['iso.org/iso-21496/-1', 'ns.adobe.com/hdr-gain-map/1.0/']);
+const URI_SCHEME = /^[a-z]+:\/\//i;
 const DEFAULT_GAIN_MAP_PREFIX = 'hdrgm';
 /** A plain decimal or exponent number, nothing before or after it. */
 const XMP_NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
@@ -1371,7 +1375,7 @@ function escapeRegExp(text: string): string {
 function gainMapPrefixes(xmp: string): string[] {
   const prefixes = new Set([DEFAULT_GAIN_MAP_PREFIX]);
   for (const match of xmp.matchAll(/xmlns:([A-Za-z_][\w.-]*)\s*=\s*(["'])(.*?)\2/g)) {
-    if (GAIN_MAP_NAMESPACES.includes(match[3])) prefixes.add(match[1]);
+    if (GAIN_MAP_NAMESPACES.has(match[3].replace(URI_SCHEME, ''))) prefixes.add(match[1]);
   }
   return [...prefixes];
 }
