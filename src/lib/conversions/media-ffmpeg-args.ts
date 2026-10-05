@@ -139,6 +139,55 @@ export const AV1_ALLOWED_PROFILES = new Set(['main', '0']);
 let cachedHwCapabilities: HardwareAccelerationCapabilities | null = null;
 let lastProbeTime = 0;
 const PROBE_CACHE_TTL_MS = 60000;
+const ENCODER_LIST_TIMEOUT_MS = 3000;
+/** Directory that holds the DRM nodes Intel Quick Sync needs. */
+const DRM_DEVICE_DIR = '/dev/dri';
+const DRM_RENDER_NODE = /^renderD\d+$/;
+/** Opening a QSV session is quick on a working device; a hung driver must not stall conversions. */
+const QSV_SESSION_PROBE_TIMEOUT_MS = 5000;
+const QSV_PROBE_FRAME_SIZE = '256x256';
+const QSV_ENCODERS = ['h264_qsv', 'hevc_qsv'];
+const HARDWARE_ENCODER_NAME = /_(nvenc|vaapi|qsv|videotoolbox)$/;
+
+/** Test seam for the host facts the probe reads. */
+export interface HardwareProbeEnvironment {
+  /** Directory scanned for DRM render nodes; defaults to /dev/dri. */
+  drmDir?: string;
+}
+
+function hasDrmRenderNode(drmDir: string): boolean {
+  try {
+    return fs.readdirSync(drmDir).some((entry) => DRM_RENDER_NODE.test(entry));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Encodes one black frame with the QSV encoder to a null sink. Listing an encoder only proves it
+ * was compiled in; a session can still fail (no Intel device, missing driver), so this decides.
+ */
+function canOpenQsvSession(ffmpegPath: string, encoder: string): boolean {
+  try {
+    execFileSync(
+      ffmpegPath,
+      [
+        '-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', `color=c=black:s=${QSV_PROBE_FRAME_SIZE}:r=1:d=1`,
+        '-frames:v', '1', '-c:v', encoder, '-f', 'null', '-',
+      ],
+      { stdio: 'ignore', timeout: QSV_SESSION_PROBE_TIMEOUT_MS }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True when the ffmpeg arguments select a hardware video encoder (nvenc, vaapi, qsv, videotoolbox). */
+export function usesHardwareVideoEncoder(args: readonly string[]): boolean {
+  const idx = args.indexOf('-c:v');
+  return idx >= 0 && idx + 1 < args.length && HARDWARE_ENCODER_NAME.test(args[idx + 1]);
+}
 
 export function resetHardwareAccelerationCache(): void {
   cachedHwCapabilities = null;
@@ -149,7 +198,10 @@ export function resetHardwareAccelerationCache(): void {
  * Dynamically probes FFmpeg binary for hardware-accelerated video encoders.
  * Caches results in-memory with a 60-second TTL to avoid redundant CLI executions.
  */
-export function probeHardwareAcceleration(ffmpegPath?: string | null): HardwareAccelerationCapabilities {
+export function probeHardwareAcceleration(
+  ffmpegPath?: string | null,
+  env: HardwareProbeEnvironment = {}
+): HardwareAccelerationCapabilities {
   const now = Date.now();
   if (cachedHwCapabilities && now - lastProbeTime < PROBE_CACHE_TTL_MS) {
     return cachedHwCapabilities;
@@ -174,7 +226,7 @@ export function probeHardwareAcceleration(ffmpegPath?: string | null): HardwareA
     const output = execFileSync(ffmpegPath, ['-hide_banner', '-encoders'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3000,
+      timeout: ENCODER_LIST_TIMEOUT_MS,
     });
 
     const supported = new Set<string>();
@@ -188,11 +240,17 @@ export function probeHardwareAcceleration(ffmpegPath?: string | null): HardwareA
 
     const hasDri = fs.existsSync('/dev/dri/renderD128') || fs.existsSync('/dev/dri/card0');
     const isDarwin = process.platform === 'darwin';
+    // QSV needs a DRM render node and a session that really opens, not just a compiled-in encoder.
+    const qsvEncoder = QSV_ENCODERS.find((enc) => supported.has(enc));
+    const qsv =
+      qsvEncoder !== undefined &&
+      hasDrmRenderNode(env.drmDir ?? DRM_DEVICE_DIR) &&
+      canOpenQsvSession(ffmpegPath, qsvEncoder);
 
     const caps: HardwareAccelerationCapabilities = {
       nvenc: supported.has('h264_nvenc') || supported.has('hevc_nvenc'),
       vaapi: (supported.has('h264_vaapi') || supported.has('hevc_vaapi')) && hasDri,
-      qsv: supported.has('h264_qsv') || supported.has('hevc_qsv'),
+      qsv,
       videotoolbox: isDarwin && (supported.has('h264_videotoolbox') || supported.has('hevc_videotoolbox')),
       supportedEncoders: supported,
       probedAt: now,
