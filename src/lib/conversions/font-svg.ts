@@ -70,6 +70,9 @@ const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map([
 
 const COMMENT_OPEN = '<!--';
 const COMMENT_CLOSE = '-->';
+const CDATA_OPEN = '<![CDATA[';
+const CDATA_CLOSE = ']]>';
+const DOCTYPE_OPEN = '<!DOCTYPE';
 /**
  * Names of the elements the engine reads, matched at a fixed position right after '<' (sticky), so
  * the cost of a candidate tag never depends on what follows it. Longer names come first.
@@ -89,6 +92,8 @@ const CODE_GREATER_THAN = 0x3e;
 const CODE_DOUBLE_QUOTE = 0x22;
 const CODE_SINGLE_QUOTE = 0x27;
 const CODE_EQUALS = 0x3d;
+const CODE_OPEN_BRACKET = 0x5b;
+const CODE_CLOSE_BRACKET = 0x5d;
 const CODE_SLASH = 0x2f;
 /** XML 1.0 white space (production S): space, tab, carriage return and line feed. */
 const XML_WHITESPACE = new Set([0x20, 0x09, 0x0d, 0x0a]);
@@ -174,18 +179,69 @@ function readAttributes(source: string): Map<string, string> {
   return attributes;
 }
 
-/** Removes <!-- ... --> comments in one pass; a comment that is never closed is a format error. */
-function stripComments(text: string): string {
-  let open = text.indexOf(COMMENT_OPEN);
+/**
+ * Skips a DOCTYPE declaration starting at `start` and returns the index just past its closing '>'.
+ * The internal subset between '[' and ']' may hold quoted literals and comments that contain '>',
+ * '[', ']' or comment openers, so both are stepped over; the declaration is read in one pass.
+ */
+function skipDoctype(text: string, start: number): number {
+  let pos = start + DOCTYPE_OPEN.length;
+  let inSubset = false;
+  while (pos < text.length) {
+    const code = text.charCodeAt(pos);
+    if (code === CODE_DOUBLE_QUOTE || code === CODE_SINGLE_QUOTE) {
+      const close = text.indexOf(text[pos], pos + 1);
+      if (close === -1) throw new SvgFontFormatError('SVG font document has a DOCTYPE with a quoted literal that is never closed.');
+      pos = close + 1;
+    } else if (inSubset && text.startsWith(COMMENT_OPEN, pos)) {
+      const close = text.indexOf(COMMENT_CLOSE, pos + COMMENT_OPEN.length);
+      if (close === -1) throw new SvgFontFormatError('SVG font document has a comment that is never closed.');
+      pos = close + COMMENT_CLOSE.length;
+    } else if (code === CODE_OPEN_BRACKET) {
+      inSubset = true;
+      pos++;
+    } else if (code === CODE_CLOSE_BRACKET) {
+      inSubset = false;
+      pos++;
+    } else if (code === CODE_GREATER_THAN && !inSubset) {
+      return pos + 1;
+    } else {
+      pos++;
+    }
+  }
+  throw new SvgFontFormatError('SVG font document has a DOCTYPE that is never closed.');
+}
+
+/**
+ * Removes the parts of the document that are not element markup, in one pass: <!-- ... --> comments,
+ * <![CDATA[ ... ]]> sections and the DOCTYPE declaration, so that nothing inside them (a comment
+ * opener in a CDATA section or an entity literal, a glyph tag in character data) is read as markup.
+ * A comment, CDATA section or DOCTYPE that is never closed is a format error.
+ */
+function stripNonMarkup(text: string): string {
+  let open = text.indexOf('<!');
   if (open === -1) return text;
   const kept: string[] = [];
   let from = 0;
   while (open !== -1) {
-    const close = text.indexOf(COMMENT_CLOSE, open + COMMENT_OPEN.length);
-    if (close === -1) throw new SvgFontFormatError('SVG font document has a comment that is never closed.');
+    let end: number;
+    if (text.startsWith(COMMENT_OPEN, open)) {
+      const close = text.indexOf(COMMENT_CLOSE, open + COMMENT_OPEN.length);
+      if (close === -1) throw new SvgFontFormatError('SVG font document has a comment that is never closed.');
+      end = close + COMMENT_CLOSE.length;
+    } else if (text.startsWith(CDATA_OPEN, open)) {
+      const close = text.indexOf(CDATA_CLOSE, open + CDATA_OPEN.length);
+      if (close === -1) throw new SvgFontFormatError('SVG font document has a CDATA section that is never closed.');
+      end = close + CDATA_CLOSE.length;
+    } else if (text.startsWith(DOCTYPE_OPEN, open)) {
+      end = skipDoctype(text, open);
+    } else {
+      open = text.indexOf('<!', open + 2);
+      continue;
+    }
     kept.push(text.slice(from, open));
-    from = close + COMMENT_CLOSE.length;
-    open = text.indexOf(COMMENT_OPEN, from);
+    from = end;
+    open = text.indexOf('<!', from);
   }
   kept.push(text.slice(from));
   return kept.join('');
@@ -270,7 +326,7 @@ function describeGlyph(index: number, name: string | null, unicode: string | nul
  * element at all. Glyphs meant only for vertical text are skipped.
  */
 export function parseSvgFontDocument(source: string): SvgFont | null {
-  const text = stripComments(source.startsWith(BYTE_ORDER_MARK) ? source.slice(1) : source);
+  const text = stripNonMarkup(source.startsWith(BYTE_ORDER_MARK) ? source.slice(1) : source);
 
   let fontAttributes: Map<string, string> | null = null;
   let fontFaceAttributes: Map<string, string> | null = null;

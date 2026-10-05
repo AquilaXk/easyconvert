@@ -707,9 +707,12 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
     return buildGlyfFont({ family: 'Amplifier', glyphs });
   }
 
-  it('rejects a small font whose composites expand to tens of millions of points, quickly and without large allocations', () => {
-    const font = amplifierFont(SHARED_COMPONENTS, COMPOSITE_GLYPHS);
-    expect(font.length).toBeLessThan(SMALL_FONT_BYTES); // a few dozen KB would expand to 32 million points
+  it.each([
+    [SHARED_COMPONENTS, COMPOSITE_GLYPHS], // 37 KB expanding to 32 million points
+    [SHARED_COMPONENTS * 2, COMPOSITE_GLYPHS * 3], // 76 KB expanding to 192 million points
+  ])('rejects a small font whose composites expand to tens of millions of points (%i components, %i glyphs), quickly and without large allocations', (shared, composites) => {
+    const font = amplifierFont(shared, composites);
+    expect(font.length).toBeLessThan(SMALL_FONT_BYTES);
     const rssBefore = process.memoryUsage().rss;
     const started = performance.now();
     let caught: unknown;
@@ -724,6 +727,37 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
     expect((caught as Error).message).toMatch(/points|expand/i);
     expect(elapsed).toBeLessThan(FAST_REJECT_MS);
     expect(rssGrowth, `rss grew by ${Math.round(rssGrowth / BYTES_PER_MB)} MB`).toBeLessThan(RSS_GROWTH_LIMIT_BYTES);
+  });
+
+  it('converts a Hangul-style font: 11,172 compact composites of three shared jamo outlines', () => {
+    // Each syllable is 3 components (about 30 bytes) and flattens to 180 points, so the 2.0 million
+    // output points are legitimate: compact composite-heavy fonts must stay within the budget.
+    const JAMO = 60;
+    const JAMO_POINTS = 60;
+    const SYLLABLES = 11172;
+    const JAMO_RADIUS = 300;
+    const jamoRing = (k: number): Array<{ x: number; y: number }> =>
+      Array.from({ length: JAMO_POINTS }, (_, i) => ({
+        x: Math.round(JAMO_RADIUS * Math.cos((i / JAMO_POINTS) * FULL_TURN)) + k,
+        y: Math.round(JAMO_RADIUS * Math.sin((i / JAMO_POINTS) * FULL_TURN)),
+      }));
+    const glyphs: GlyfGlyphSpec[] = [];
+    for (let j = 0; j < JAMO; j++) glyphs.push({ advance: 1000, contours: [jamoRing(j)] });
+    const parts = (syllable: number): number[] => [syllable % JAMO, (syllable * 7) % JAMO, (syllable * 13) % JAMO];
+    for (let sy = 0; sy < SYLLABLES; sy++) {
+      glyphs.push({ advance: 1000, components: parts(sy).map((jamo) => ({ glyphIndex: 1 + jamo, dx: 0, dy: 0 })) });
+    }
+    const out = convertFontToOpenTypeCff(buildGlyfFont({ family: 'Hangul', glyphs })) as Buffer;
+    const tables = readSfntTables(out);
+    expect(readGlyphCount(tables)).toBe(1 + JAMO + SYLLABLES);
+    const cff = decodeCff(requireTable(tables, 'CFF '));
+    const sampled = 5000;
+    const outline = cff.glyphs[1 + JAMO + sampled];
+    expect(outline.contours).toHaveLength(3);
+    parts(sampled).forEach((jamo, c) => {
+      const expected: Cmd[] = jamoRing(jamo).map((pt, i) => [i === 0 ? 'M' : 'L', pt.x, pt.y] as Cmd);
+      expect(hausdorff(flattenCharstringContour(outline.contours[c]), flattenCommands(expected)), `component ${c}`).toBeLessThan(GEOMETRY_TOLERANCE);
+    });
   });
 
   it('still converts a font whose glyphs share a component many times within the budget', () => {

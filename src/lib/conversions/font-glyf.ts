@@ -25,12 +25,14 @@ export const GLYF_MAX_COMPONENT_VISITS = 4096;
 export const GLYF_MAX_POINTS_PER_GLYPH = 0xffff;
 /**
  * Points all glyphs of a font may have after composites are flattened: a floor for small fonts plus
- * a share per byte of glyf (a simple glyph spends at least a byte on each point), so a few KB of
- * composites that reuse one another cannot expand into millions of points. The absolute cap keeps
+ * a share per byte of glyf, so a few KB of composites that reuse one another cannot expand into
+ * millions of points. Composites are compact (a three component syllable is about 30 bytes and
+ * flattens to hundreds of points), so the share is far above the one point per byte of simple
+ * glyphs: a Hangul font with 11,172 syllables needs 4 points per byte. The absolute cap keeps
  * padding from buying a bigger budget; it matches the budget of the CFF to TrueType conversion.
  */
 export const GLYF_BASE_OUTPUT_POINTS = 250_000;
-export const GLYF_OUTPUT_POINTS_PER_TABLE_BYTE = 2;
+export const GLYF_OUTPUT_POINTS_PER_TABLE_BYTE = 8;
 export const GLYF_ABSOLUTE_MAX_OUTPUT_POINTS = 12_000_000;
 
 const LOCA_FORMAT_SHORT = 0;

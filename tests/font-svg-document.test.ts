@@ -129,3 +129,70 @@ describe('SVG font document: the linear scanner reads the same documents as befo
     expectFormatError(error, /comment/i);
   });
 });
+
+describe('SVG font document: CDATA sections and the DOCTYPE are skipped, not read as markup', () => {
+  const GLYPH = '<glyph unicode="A" d="M0 0 H1 V1 Z"/>';
+  const codePoints = (font: SvgFont | null): Array<number | null> => (font as SvgFont).glyphs.map((glyph) => glyph.codePoint);
+
+  it('parses a document whose CDATA section contains a comment opener', () => {
+    const font = parseSvgFontDocument(`<svg><style><![CDATA[ /* <!-- */ ]]></style><defs><font><font-face units-per-em="1000"/>${GLYPH}</font></defs></svg>`);
+    expect(codePoints(font)).toEqual([0x41]);
+  });
+
+  it('parses a document whose DOCTYPE internal subset has a comment opener in an entity literal', () => {
+    const font = parseSvgFontDocument(`<!DOCTYPE svg [ <!ENTITY c "<!--"> ]><svg><defs><font><font-face units-per-em="1000"/>${GLYPH}</font></defs></svg>`);
+    expect(codePoints(font)).toEqual([0x41]);
+  });
+
+  it('parses a DOCTYPE with public and system identifiers and a subset holding a comment and a single-quoted literal', () => {
+    const doctype = `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://example.invalid/svg11.dtd" [ <!-- ] > --> <!ENTITY q '"<font>'> ]>`;
+    const font = parseSvgFontDocument(`<?xml version="1.0"?>${doctype}<svg><font><font-face units-per-em="1000"/>${GLYPH}</font></svg>`);
+    expect(codePoints(font)).toEqual([0x41]);
+  });
+
+  it('does not read glyph, font or comment markup inside CDATA as elements', () => {
+    const cdata = '<![CDATA[ <font><glyph unicode="X" d="M0 0 H9"/></font> <!-- ]]>';
+    const font = parseSvgFontDocument(`<svg><desc>${cdata}</desc><font><font-face units-per-em="1000"/>${cdata}${GLYPH}</font></svg>`);
+    expect(codePoints(font)).toEqual([0x41]);
+  });
+
+  it('rejects a CDATA section that is never closed', () => {
+    const { error } = timed(() => parseSvgFontDocument(wrap('<![CDATA[ <glyph unicode="A" d="M0 0"/>')));
+    expectFormatError(error, /CDATA/);
+  });
+
+  it.each([
+    ['a subset that is never closed', '<!DOCTYPE svg [ <!ENTITY a "x">'],
+    ['a literal that is never closed', '<!DOCTYPE svg [ <!ENTITY a "x> ]>'],
+    ['a DOCTYPE without its closing >', '<!DOCTYPE svg PUBLIC "a" "b"'],
+    ['a comment inside the subset that is never closed', '<!DOCTYPE svg [ <!-- x ]>'],
+  ])('rejects %s', (_name, doctype) => {
+    const { error } = timed(() => parseSvgFontDocument(doctype));
+    expectFormatError(error, /DOCTYPE|comment/i);
+  });
+
+  it('rejects a megabyte of CDATA openers, DOCTYPE openers and subset declarations quickly', () => {
+    const inputs = [
+      wrap('<![CDATA['.repeat(HOSTILE_BYTES / 9)),
+      '<!DOCTYPE '.repeat(HOSTILE_BYTES / 10),
+      wrap(`<!DOCTYPE svg [${'<!ENTITY a "x"> '.repeat(HOSTILE_BYTES / 16)}`),
+      wrap(`<!DOCTYPE svg [${'"'.repeat(HOSTILE_BYTES)}`),
+    ];
+    for (const input of inputs) {
+      const { error, elapsed } = timed(() => parseSvgFontDocument(input));
+      expectFormatError(error, /CDATA|DOCTYPE|comment/i);
+      expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
+    }
+  });
+
+  it('reads a megabyte of CDATA and of DOCTYPE subset full of comment openers quickly', () => {
+    const cdata = `<![CDATA[${'<!-- <glyph '.repeat(HOSTILE_BYTES / 12)}]]>`;
+    const subset = `<!DOCTYPE svg [ <!ENTITY c "${'<!--'.repeat(HOSTILE_BYTES / 4)}"> ]>`;
+    const { result, error, elapsed } = timed(() =>
+      parseSvgFontDocument(`${subset}<svg>${cdata}<font><font-face units-per-em="1000"/>${GLYPH}${cdata}</font></svg>`)
+    );
+    expect(error).toBeNull();
+    expect(codePoints(result)).toEqual([0x41]);
+    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
+  });
+});
