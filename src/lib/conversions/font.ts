@@ -1,9 +1,10 @@
 import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult } from '../types';
+import { parseType1ToSfnt, serializeType1Sfnt } from './font-type1-sfnt';
 
 /**
  * Universal Font Conversion Engine
- * Supports TrueType (TTF), OpenType (OTF), WOFF, WOFF2, EOT, and SVG Fonts.
+ * Supports TrueType (TTF), OpenType (OTF), WOFF, WOFF2, EOT, SVG Fonts, and Adobe Type 1 (PFA/PFB) sources.
  * Adheres strictly to the in-memory zero-retention architecture.
  */
 
@@ -13,6 +14,12 @@ export interface SfntTable {
   offset: number;
   length: number;
   data: Buffer;
+}
+
+/** Orders two table tags by their ASCII byte values, as the SFNT table directory requires. */
+export function compareSfntTags(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
 }
 
 export function formatSfntTag(tag: string): string {
@@ -77,6 +84,9 @@ export interface VariableFontMetadata {
   statValues: StatAxisValue[];
 }
 
+/** Source formats read by the Adobe Type 1 reader. */
+const TYPE1_SOURCE_FORMATS: ReadonlySet<string> = new Set(['pfa', 'pfb']);
+
 export async function convertFont(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -90,6 +100,17 @@ export async function convertFont(
 
   if (!inputBuffer || inputBuffer.length === 0) {
     throw new Error('Font conversion payload is empty (0 bytes).');
+  }
+
+  // Type 1 outlines are cubic, so the TrueType and OpenType targets are built from them directly.
+  if (TYPE1_SOURCE_FORMATS.has(src) && (tgt === 'ttf' || tgt === 'otf')) {
+    const outputBuffer = serializeType1Sfnt(parseType1ToSfnt(inputBuffer, tgt));
+    return {
+      buffer: outputBuffer,
+      mimeType: tgt === 'ttf' ? 'font/ttf' : 'font/otf',
+      filename: `${baseName}.${tgt}`,
+      size: outputBuffer.length,
+    };
   }
 
   // 1. Parse or synthesize canonical SFNT TrueType / OpenType font representation
@@ -151,6 +172,11 @@ export async function convertFont(
  * Parses arbitrary input font stream (TTF, OTF, WOFF, WOFF2, EOT, SVG Font) into canonical SFNT structure
  */
 export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: string): ParsedFont {
+  // Adobe Type 1 (PFA / PFB) is selected by the declared format, never by sniffing.
+  if (TYPE1_SOURCE_FORMATS.has(format)) {
+    return parseType1ToSfnt(buffer, 'ttf');
+  }
+
   // Check WOFF signature ('wOFF' = 0x774F4646)
   if (format === 'woff' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOFF')) {
     return decodeWoff(buffer, defaultName);
@@ -237,7 +263,8 @@ export function decodeSfnt(buffer: Buffer, defaultName: string): ParsedFont {
  * Encodes canonical ParsedFont into standard SFNT (TTF / OTF) binary stream
  */
 export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
-  const tableEntries = Object.values(font.tables).sort((a, b) => a.tag.localeCompare(b.tag));
+  // The OpenType table directory is ordered by the tags' byte values, not by locale collation.
+  const tableEntries = Object.values(font.tables).sort((a, b) => compareSfntTags(a.tag, b.tag));
   const numTables = tableEntries.length;
 
   const searchRange = numTables > 0 ? Math.pow(2, Math.floor(Math.log2(numTables))) * 16 : 0;
@@ -2033,7 +2060,7 @@ export function quadraticToCubicBezier(
 /**
  * Encodes a number into CFF / Type 2 CharString format.
  */
-function encodeCffNumber(val: number): number[] {
+export function encodeCffNumber(val: number): number[] {
   val = Math.round(val);
   if (val >= -107 && val <= 107) {
     return [val + 139];
@@ -2053,7 +2080,7 @@ function encodeCffNumber(val: number): number[] {
 /**
  * Builds a standard CFF INDEX table.
  */
-function buildCffIndex(items: Buffer[]): Buffer {
+export function buildCffIndex(items: Buffer[]): Buffer {
   const count = items.length;
   if (count === 0) {
     return Buffer.from([0x00, 0x00]);

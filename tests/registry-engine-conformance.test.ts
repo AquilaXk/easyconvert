@@ -20,6 +20,7 @@ import { OracleToolMissingError, getOracleToolPath } from './helpers/differentia
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
+import { buildType1Font } from './helpers/type1-font-builder';
 
 /**
  * Registry/engine conformance gate.
@@ -245,6 +246,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // come from independent writers in tests/helpers, not from the engine's own encoders.
   exr: () => buildPatchExr('half'),
   ultrahdr: () => buildPatchUltraHdr(),
+  // Type 1 fonts need a real eexec-encrypted font program; the independent builder writes both containers.
+  pfa: () => buildType1Font().pfa,
+  pfb: () => buildType1Font().pfb,
 };
 
 async function requireDerived(format: string): Promise<Buffer> {
