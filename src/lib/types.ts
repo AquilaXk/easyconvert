@@ -192,6 +192,7 @@ export interface ConversionOptions {
   fastStart?: boolean;
   disableHwaccel?: boolean;
   disableNativeEngine?: boolean;
+  /** @deprecated No-op. No in-process lossy encoder exists; such targets always require FFmpeg. */
   allowPureLossyBitstream?: boolean;
   // Office & PDF export options
   pdfStandard?: 'pdfa' | 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
