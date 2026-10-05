@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
+import { SvgSanitizationError } from '../src/lib/types';
 
 /** Independent quote-aware tag tokenizer used as the oracle; it shares no code with the sanitizer. */
 interface ParsedTag {
@@ -318,4 +319,108 @@ describe('known SVG XSS payload corpus', () => {
       expect(sanitizeSvgString(out)).toBe(out);
     });
   }
+});
+
+/** Independent CSS reader for the oracle: strips comments, then decodes escapes (CSS Syntax 4.3.7). */
+function cssAsParsed(css: string): string {
+  return css
+    .replace(/\/\*[\s\S]*?(?:\*\/|$)/g, '')
+    .replace(/\\(?:[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\r\n|[\n\r\f]|([\s\S]))/g, (whole: string, literal: string | undefined) => {
+      if (literal !== undefined) return literal;
+      const hex = /^\\([0-9a-fA-F]{1,6})/.exec(whole);
+      return hex === null ? '' : String.fromCodePoint(parseInt(hex[1], 16));
+    });
+}
+
+function cssLeaks(out: string): string[] {
+  const found: string[] = [];
+  const bodies = [
+    ...[...out.matchAll(/<(?:[\w.-]+:)?style[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?style\s*>/gi)].map((m) => m[1]),
+    ...[...out.matchAll(/\sstyle="([^"]*)"/g)].map((m) => m[1]),
+  ];
+  for (const body of bodies) {
+    const parsed = cssAsParsed(body);
+    if (/@import/i.test(parsed)) found.push(`@import in ${body}`);
+    if (/url\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/i.test(parsed)) found.push(`external url in ${body}`);
+  }
+  return found;
+}
+
+describe('CSS escape and comment obfuscation (issue #401 item 1)', () => {
+  const obfuscated: Array<[string, string]> = [
+    ['escaped i in @import', '@\\69mport url(http://e/x.css);g{fill:blue}'],
+    ['six-digit escape in @import', '@\\000069mport "http://e/x.css";g{fill:blue}'],
+    ['escape terminated by whitespace', '@\\69 mport url(http://e/x.css);g{fill:blue}'],
+    ['comment inside @import', '@im/**/port url(http://e/x.css);g{fill:blue}'],
+    ['escaped url keyword', 'g{fill:u\\72l(http://e/x)}'],
+    ['escaped first url letter', 'g{fill:\\75rl(http://e/x)}'],
+    ['escaped scheme', 'g{fill:url(\\68ttp://e/x)}'],
+    ['escaped quote and scheme', 'g{fill:url(\\22 http://e/x\\22 )}'],
+    ['comment inside url', 'g{fill:ur/**/l(http://e/x)}'],
+    ['escaped newline inside url', 'g{fill:ur\\\nl(http://e/x)}'],
+    ['escaped slashes', 'g{fill:url(http:\\2f\\2fe/x)}'],
+    ['literal escape of ordinary letter', 'g{fill:\\u\\r\\l(http://e/x)}'],
+  ];
+
+  for (const [label, css] of obfuscated) {
+    it(`neutralizes in a <style> body: ${label}`, () => {
+      const out = sanitizeSvgString(`<svg><style>${css}</style></svg>`);
+      expect(cssLeaks(out)).toEqual([]);
+      expect(out).toContain('g{fill:');
+      expect(sanitizeSvgString(out)).toBe(out);
+    });
+
+    it(`neutralizes in a style attribute: ${label}`, () => {
+      const out = sanitizeSvgString(`<svg><rect style="${css.replace(/"/g, '&quot;')}"/></svg>`);
+      expect(cssLeaks(out)).toEqual([]);
+      expect(sanitizeSvgString(out)).toBe(out);
+    });
+  }
+
+  it('removes the obfuscated rule and keeps the neighbouring rule byte-for-byte', () => {
+    expect(sanitizeSvgString('<svg><style>@\\69mport url(http://e/x.css);g{fill:blue}</style></svg>')).toBe(
+      '<svg><style>g{fill:blue}</style></svg>'
+    );
+    expect(sanitizeSvgString('<svg><style>g{fill:u\\72l(http://e/x)}</style></svg>')).toBe(
+      '<svg><style>g{fill:none}</style></svg>'
+    );
+  });
+
+  it('fails closed on escapes that decode to an invalid code point', () => {
+    for (const bad of ['\\0 x', '\\000000x', '\\110000 x', '\\D800 x', '\\dfff x']) {
+      expect(() => sanitizeSvgString(`<svg><style>g{content:"${bad}"}</style></svg>`)).toThrow(SvgSanitizationError);
+      expect(() => sanitizeSvgString(`<svg><rect style='content:"${bad}"'/></svg>`)).toThrow(SvgSanitizationError);
+    }
+  });
+
+  it('keeps benign CSS (id references, colors, fonts, comments, valid escapes) intact', () => {
+    const css = '/* note */.a{fill:url(#grad);stroke:#fff;font-family:"A\\5FAE Hei",sans-serif}.b::after{content:"\\201C"}';
+    expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(`<svg><style>${css}</style></svg>`);
+    expect(sanitizeSvgString('<svg><rect style="fill:url(#g);stroke:rgb(0,0,0)"/></svg>')).toBe(
+      '<svg><rect style="fill:url(#g);stroke:rgb(0,0,0)"/></svg>'
+    );
+  });
+
+  describe('linear time on 5 MB adversarial CSS', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const BUDGET_MS = 2000;
+    const adversarial: Array<[string, string]> = [
+      ['backslashes', '\\'.repeat(FIVE_MB / 2)],
+      ['escape digits', '\\6'.repeat(FIVE_MB / 3)],
+      ['comment openers', '/*'.repeat(FIVE_MB / 2)],
+      ['closed empty comments', '/**/'.repeat(FIVE_MB / 4)],
+      ['obfuscated imports', '@\\69mport a;'.repeat(Math.floor(FIVE_MB / 13))],
+      ['obfuscated urls', 'u\\72l(http://e/x)'.repeat(Math.floor(FIVE_MB / 18))],
+      ['unterminated urls', 'ur/**/l(http://'.repeat(Math.floor(FIVE_MB / 15))],
+    ];
+
+    for (const [label, css] of adversarial) {
+      it(`handles ${label}`, () => {
+        const start = performance.now();
+        const out = sanitizeSvgString(`<svg><style>${css}</style></svg>`);
+        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+        expect(cssLeaks(out)).toEqual([]);
+      });
+    }
+  });
 });

@@ -52,6 +52,32 @@ const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object'
 const VOID_DANGEROUS_ELEMENTS = ['meta', 'link', '!ENTITY'] as const;
 
 const EXTERNAL_CSS_URL_START = /url\s*\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/gi;
+const CSS_IMPORT_RULE = /@import[^;]*;?/gi;
+
+const CHAR_TAB = 0x09;
+const CHAR_LF = 0x0a;
+const CHAR_FF = 0x0c;
+const CHAR_CR = 0x0d;
+const CHAR_SPACE = 0x20;
+const CHAR_STAR = 0x2a;
+const CHAR_SLASH = 0x2f;
+const CHAR_BACKSLASH = 0x5c;
+const CHAR_DIGIT_0 = 0x30;
+const CHAR_DIGIT_9 = 0x39;
+const CHAR_UPPER_F = 0x46;
+const CHAR_LOWER_A = 0x61;
+const CHAR_LOWER_F = 0x66;
+const HEX_RADIX = 16;
+const HEX_LETTER_OFFSET = 10;
+const CSS_ESCAPE_MAX_HEX_DIGITS = 6;
+const MAX_CODE_POINT = 0x10ffff;
+const BMP_MAX = 0xffff;
+const SURROGATE_MIN = 0xd800;
+const SURROGATE_MAX = 0xdfff;
+const HIGH_SURROGATE_BASE = 0xd800;
+const LOW_SURROGATE_BASE = 0xdc00;
+const SURROGATE_SHIFT = 10;
+const SURROGATE_LOW_MASK = 0x3ff;
 
 /**
  * Lowercases while keeping every index aligned with the original string. Native lowercasing is used when it
@@ -255,27 +281,164 @@ function stripComments(src: string): string {
   return parts.join('');
 }
 
-/**
- * Replaces external CSS url() references with `none`; an unterminated url( swallows the rest of the body.
- */
-function stripExternalCssUrls(css: string): string {
-  let out = '';
-  let last = 0;
-  for (const match of css.matchAll(EXTERNAL_CSS_URL_START)) {
-    if (match.index < last) continue;
-    out += `${css.slice(last, match.index)}none`;
-    const close = css.indexOf(')', match.index + match[0].length);
-    if (close === -1) {
-      last = css.length;
-      break;
-    }
-    last = close + 1;
-  }
-  return out + css.slice(last);
+interface CssEdit {
+  /** Start of the replaced range in the decoded text. */
+  start: number;
+  /** End (exclusive) of the replaced range in the decoded text. */
+  end: number;
+  replacement: string;
 }
 
+/** CSS text with comments removed and escapes decoded, plus the original span of every decoded code unit. */
+interface DecodedCss {
+  text: string;
+  starts: Uint32Array;
+  ends: Uint32Array;
+}
+
+function isHexDigitCode(code: number): boolean {
+  return (
+    (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) ||
+    (code >= CHAR_LOWER_A && code <= CHAR_LOWER_F) ||
+    (code >= ASCII_UPPER_A && code <= CHAR_UPPER_F)
+  );
+}
+
+function hexDigitValue(code: number): number {
+  if (code <= CHAR_DIGIT_9) return code - CHAR_DIGIT_0;
+  if (code >= CHAR_LOWER_A) return code - CHAR_LOWER_A + HEX_LETTER_OFFSET;
+  return code - ASCII_UPPER_A + HEX_LETTER_OFFSET;
+}
+
+function isCssNewlineCode(code: number): boolean {
+  return code === CHAR_LF || code === CHAR_CR || code === CHAR_FF;
+}
+
+function isCssWhitespaceCode(code: number): boolean {
+  return isCssNewlineCode(code) || code === CHAR_SPACE || code === CHAR_TAB;
+}
+
+/** Length of the newline starting at `index` (CRLF counts as one), assuming one is there. */
+function cssNewlineLength(css: string, index: number): number {
+  return css.charCodeAt(index) === CHAR_CR && css.charCodeAt(index + 1) === CHAR_LF ? 2 : 1;
+}
+
+/**
+ * Decodes CSS comments and escapes (CSS Syntax 4.3.7) in one linear pass so keywords can be matched the way a
+ * CSS parser sees them. Returns null when the text has neither, so the caller can match the original directly.
+ * Escapes that decode to NUL, a surrogate or a code point above U+10FFFF throw (fail closed).
+ */
+function decodeCss(css: string): DecodedCss | null {
+  if (!css.includes('\\') && !css.includes('/*')) return null;
+  const length = css.length;
+  const units = new Uint16Array(length);
+  const starts = new Uint32Array(length);
+  const ends = new Uint32Array(length);
+  let count = 0;
+  const push = (unit: number, start: number, end: number): void => {
+    units[count] = unit;
+    starts[count] = start;
+    ends[count] = end;
+    count++;
+  };
+
+  let i = 0;
+  while (i < length) {
+    const code = css.charCodeAt(i);
+    if (code === CHAR_SLASH && css.charCodeAt(i + 1) === CHAR_STAR) {
+      const close = css.indexOf('*/', i + 2);
+      i = close === -1 ? length : close + 2;
+      continue;
+    }
+    if (code !== CHAR_BACKSLASH) {
+      push(code, i, i + 1);
+      i++;
+      continue;
+    }
+
+    const escapeStart = i;
+    i++;
+    if (i >= length) break;
+    const next = css.charCodeAt(i);
+    if (isCssNewlineCode(next)) {
+      i += cssNewlineLength(css, i);
+      continue;
+    }
+    if (!isHexDigitCode(next)) {
+      push(next, escapeStart, i + 1);
+      i++;
+      continue;
+    }
+
+    let codePoint = 0;
+    let digits = 0;
+    while (digits < CSS_ESCAPE_MAX_HEX_DIGITS && i < length && isHexDigitCode(css.charCodeAt(i))) {
+      codePoint = codePoint * HEX_RADIX + hexDigitValue(css.charCodeAt(i));
+      i++;
+      digits++;
+    }
+    if (i < length && isCssWhitespaceCode(css.charCodeAt(i))) {
+      i += isCssNewlineCode(css.charCodeAt(i)) ? cssNewlineLength(css, i) : 1;
+    }
+    const isSurrogate = codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX;
+    if (codePoint === 0 || isSurrogate || codePoint > MAX_CODE_POINT) {
+      throw new SvgSanitizationError('SVG contains a CSS escape that decodes to an invalid code point.');
+    }
+    if (codePoint > BMP_MAX) {
+      const offset = codePoint - BMP_MAX - 1;
+      push(HIGH_SURROGATE_BASE + (offset >> SURROGATE_SHIFT), escapeStart, i);
+      push(LOW_SURROGATE_BASE + (offset & SURROGATE_LOW_MASK), escapeStart, i);
+    } else {
+      push(codePoint, escapeStart, i);
+    }
+  }
+
+  const text = Buffer.from(units.buffer, 0, count * Uint16Array.BYTES_PER_ELEMENT).toString('utf16le');
+  return { text, starts, ends };
+}
+
+/** Finds the `@import` rules and external url() references in already decoded CSS. */
+function collectCssEdits(text: string): CssEdit[] {
+  const imports = [...text.matchAll(CSS_IMPORT_RULE)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    replacement: '',
+  }));
+  const urls: CssEdit[] = [];
+  let urlEnd = 0;
+  for (const match of text.matchAll(EXTERNAL_CSS_URL_START)) {
+    if (match.index < urlEnd) continue;
+    const close = text.indexOf(')', match.index + match[0].length);
+    urlEnd = close === -1 ? text.length : close + 1;
+    urls.push({ start: match.index, end: urlEnd, replacement: 'none' });
+  }
+  const edits: CssEdit[] = [];
+  let lastEnd = 0;
+  for (const edit of [...imports, ...urls].sort((a, b) => a.start - b.start)) {
+    if (edit.start < lastEnd) continue;
+    edits.push(edit);
+    lastEnd = edit.end;
+  }
+  return edits;
+}
+
+/**
+ * Removes `@import` rules and replaces external url() references with `none`. Matching runs on the comment-free,
+ * escape-decoded text, but the edits are applied to the original so benign CSS is returned byte-for-byte.
+ */
 function sanitizeCss(css: string): string {
-  return stripExternalCssUrls(css.replace(/@import[^;]*;?/gi, ''));
+  const decoded = decodeCss(css);
+  const edits = collectCssEdits(decoded === null ? css : decoded.text);
+  if (edits.length === 0) return css;
+  let out = '';
+  let last = 0;
+  for (const edit of edits) {
+    const start = decoded === null ? edit.start : decoded.starts[edit.start];
+    const end = decoded === null ? edit.end : decoded.ends[edit.end - 1];
+    out += css.slice(last, start) + edit.replacement;
+    last = end;
+  }
+  return out + css.slice(last);
 }
 
 /**
