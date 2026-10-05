@@ -662,6 +662,47 @@ async function verifyImages(images: readonly PendingImage[]): Promise<void> {
   }
 }
 
+/** Attributes that make an element load another resource when the document is laid out. */
+const RESOURCE_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
+  ['img', ['src', 'srcset']],
+  ['source', ['src', 'srcset']],
+  ['input', ['src']],
+  ['video', ['src', 'poster']],
+  ['audio', ['src']],
+  ['track', ['src']],
+  ['iframe', ['src']],
+  ['frame', ['src']],
+  ['embed', ['src']],
+  ['object', ['data']],
+  ['link', ['href']],
+]);
+const SRCSET_ATTRIBUTE = 'srcset';
+const DATA_URI_PREFIX = /^data:/i;
+
+/** URLs an attribute loads: one for src-like attributes, each candidate for srcset. */
+function resourceUrls(attribute: string, value: string): string[] {
+  const urls = attribute === SRCSET_ATTRIBUTE ? value.split(',').map((candidate) => candidate.trim().split(/\s+/)[0] ?? '') : [value];
+  return urls.map((url) => url.trim()).filter((url) => url.length > 0);
+}
+
+/**
+ * The first resource the document would load from outside itself (anything but a data: URI), or
+ * null. Used before HTML goes to LibreOffice, which would otherwise try to open or fetch it.
+ */
+export function findExternalResourceReference(html: string): string | null {
+  const pending: HtmlNode[] = [...parseHtmlTree(html.replace(/^\ufeff/, '')).root.children];
+  while (pending.length > 0) {
+    const node = pending.pop() as HtmlNode;
+    if (typeof node === 'string') continue;
+    for (const attribute of RESOURCE_ATTRIBUTES.get(node.tag) ?? []) {
+      const external = resourceUrls(attribute, node.attrs.get(attribute) ?? '').find((url) => !DATA_URI_PREFIX.test(url));
+      if (external) return external;
+    }
+    appendAll(pending, node.children);
+  }
+  return null;
+}
+
 /**
  * Parses HTML into PDF blocks. Throws EngineUnavailableError('soffice') for content only the native
  * engine draws (embedded media, form fields, SVG, MathML, non-PNG/JPEG images) and

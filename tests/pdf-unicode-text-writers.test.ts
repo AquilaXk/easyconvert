@@ -733,7 +733,7 @@ describe('HTML to PDF keeps document structure', () => {
   });
 
   it('refuses embedded media the in-process renderer cannot draw when LibreOffice is absent', async () => {
-    const html = '<p>Clip below</p><video src="clip.mp4"></video>';
+    const html = '<p>Clip below</p><video src="data:video/mp4;base64,AAAAIGZ0eXBpc29t"></video>';
     const error = await withMissingBinary('SOFFICE_PATH', () =>
       executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'media.html')
     ).then(
@@ -813,6 +813,23 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
     expectStructuredLayout(result.buffer);
   }, 60_000);
+
+  it('refuses HTML that references external resources before LibreOffice could fetch them', async () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-marker-')), 'invoked');
+    const recordingSoffice = failingSoffice(`touch '${marker}'; exit 3`);
+    for (const html of [
+      '<p>remote</p><img src="http://192.0.2.2:18765/m.png">',
+      '<p>local</p><img srcset="file:///etc/hosts 1x">',
+      '<p>frame</p><iframe src="http://192.0.2.2:18765/"></iframe>',
+      '<link rel="stylesheet" href="http://192.0.2.2:18765/s.css"><p>styled</p>',
+    ]) {
+      const { error } = await settle(
+        withEnvValue('SOFFICE_PATH', recordingSoffice, () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'remote.html'))
+      );
+      expect({ html, name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ html, name: 'ConversionFailedError', invoked: false });
+      expect((error as Error).message).toMatch(/external reference/);
+    }
+  });
 
   it('reports a LibreOffice failure on complex-script text as EngineUnavailableError (503)', async () => {
     const { error } = await settle(

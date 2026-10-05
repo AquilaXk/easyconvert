@@ -8,6 +8,7 @@ import { PDFDocument } from 'pdf-lib';
 import {
   ConversionOptions,
   ConversionResult,
+  ConversionFailedError,
   ArchiveEncryptionUnavailableError,
   UnsupportedOptionError,
   EngineUnavailableError,
@@ -31,6 +32,7 @@ import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
+import { findExternalResourceReference } from '../lib/conversions/html-blocks';
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -1561,6 +1563,31 @@ async function planTextPdfRoute(
     }
     assertFontCoverage(Array.from(scriptLetters).join(''));
   }
+  const route = planTextPdfEngine(src, text, complexScript, cjk, orientation);
+  if (route.preferNative && HTML_SOURCES.has(src)) assertNoExternalResources(readRawInputBuffer(input).toString('utf-8'));
+  return route;
+}
+
+/**
+ * Refuses HTML that would make LibreOffice open a local file or fetch a URL; the in-process
+ * renderer refuses the same references. Embedded data: URIs are fine.
+ */
+function assertNoExternalResources(html: string): void {
+  const reference = findExternalResourceReference(html);
+  if (reference) {
+    throw new ConversionFailedError(
+      `HTML resource "${reference}" is an external reference; external resources are not fetched, so embed it as a data: URI`
+    );
+  }
+}
+
+function planTextPdfEngine(
+  src: string,
+  text: string,
+  complexScript: boolean,
+  cjk: boolean,
+  orientation?: PageOrientation
+): TextPdfRoute {
   if (complexScript) return { complexScript, preferNative: true, orientation };
   if (orientation) return { complexScript, preferNative: false };
   if (HTML_SOURCES.has(src)) return { complexScript, preferNative: true };
