@@ -723,3 +723,42 @@ describe('comments, CDATA and processing instructions are not tokenized as tags 
     }
   });
 });
+
+describe('</style> inside CDATA does not end the style element (PR #402 review item 2)', () => {
+  it('cleans a rule that follows a CDATA section containing a close tag', () => {
+    const out = sanitizeSvgString('<svg><style><![CDATA[ </style> ]]>{}a{fill:url(http://e/x)}</style></svg>');
+    expect(out).toBe('<svg><style><![CDATA[ </style> ]]>{}a{fill:none}</style></svg>');
+  });
+
+  it('removes an @import that follows such a CDATA section', () => {
+    const out = sanitizeSvgString('<svg><style><![CDATA[ </style> ]]>@import "http://e";a{fill:red}</style></svg>');
+    expect(out).toBe('<svg><style><![CDATA[ </style> ]]>a{fill:red}</style></svg>');
+  });
+
+  it('applies to prefixed style elements and several CDATA sections', () => {
+    const out = sanitizeSvgString(
+      '<svg><s:style><![CDATA[</s:style>]]>a{}<![CDATA[</s:style>]]>@import "http://e";b{fill:url(//e/y)}</s:style></svg>'
+    );
+    expect(out).toBe('<svg><s:style><![CDATA[</s:style>]]>a{}<![CDATA[</s:style>]]>b{fill:none}</s:style></svg>');
+  });
+
+  it('treats an unterminated CDATA as running to the end of the element', () => {
+    const out = sanitizeSvgString('<svg><style><![CDATA[ </style> <rect/>');
+    expect(out).toBe('<svg><style><![CDATA[ </style> <rect/>]]></style>');
+  });
+
+  it('still ends the element at a close tag outside CDATA', () => {
+    const input = '<svg><style><![CDATA[a{}]]></style><rect/></svg>';
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+
+  it('finds the close tag in linear time past many CDATA sections', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const body = '<![CDATA[</style>]]>'.repeat(FIVE_MB / 20);
+    const start = performance.now();
+    const out = sanitizeSvgString(`<svg><style>${body}@import "http://e";</style></svg>`);
+    expect(performance.now() - start).toBeLessThan(2000);
+    expect(out).not.toContain('@import');
+    expect(out.endsWith('</style></svg>')).toBe(true);
+  });
+});

@@ -571,6 +571,34 @@ function sanitizeCss(css: string, cdata: boolean): string {
   return out + css.slice(last);
 }
 
+interface StyleClose {
+  close: [number, number] | null;
+  /** True when the body ends inside a CDATA section that never terminates. */
+  openCdata: boolean;
+}
+
+/**
+ * Finds the close tag of a style element whose body starts at `from`, ignoring close tags inside CDATA
+ * sections. A CDATA section that never terminates runs to the end of input, so no close tag is found. Each
+ * region of the input is searched at most once, so the scan stays linear.
+ */
+function findStyleCloseTag(src: string, lower: string, from: number): StyleClose {
+  let close = findCloseTag(lower, STYLE_ELEMENT, from);
+  let position = from;
+  while (close !== null) {
+    const cdataStart = src.indexOf(CDATA_OPEN, position);
+    if (cdataStart === -1 || close[0] < cdataStart) return { close, openCdata: false };
+    const cdataClose = src.indexOf(CDATA_CLOSE, cdataStart + CDATA_OPEN.length);
+    if (cdataClose === -1) return { close: null, openCdata: true };
+    position = cdataClose + CDATA_CLOSE.length;
+    if (close[0] < position) close = findCloseTag(lower, STYLE_ELEMENT, position);
+  }
+  // No close tag: a CDATA section opened after the last one that was skipped would still be open at the end.
+  const trailingCdata = src.indexOf(CDATA_OPEN, position);
+  const openCdata = trailingCdata !== -1 && src.indexOf(CDATA_CLOSE, trailingCdata + CDATA_OPEN.length) === -1;
+  return { close: null, openCdata };
+}
+
 /**
  * Rewrites every <style> element so its body is sanitized; an unterminated element is closed at end of input.
  */
@@ -597,9 +625,13 @@ function sanitizeStyleElements(src: string): string {
     }
     // The qualified name (including any namespace prefix) is kept so the element stays in its namespace.
     const qualifiedName = src.slice(start + 1, afterName);
-    const close = findCloseTag(lower, STYLE_ELEMENT, tagEnd);
+    const { close, openCdata } = findStyleCloseTag(src, lower, tagEnd);
     const bodyEnd = close === null ? src.length : close[0];
-    parts.push(`<${qualifiedName}>${sanitizeCss(src.slice(tagEnd, bodyEnd), true)}</${qualifiedName}>`);
+    // An unterminated CDATA section is closed so that the output is a fixed point of this rewrite.
+    const cdataTerminator = openCdata ? CDATA_CLOSE : '';
+    parts.push(
+      `<${qualifiedName}>${sanitizeCss(src.slice(tagEnd, bodyEnd), true)}${cdataTerminator}</${qualifiedName}>`
+    );
     copied = close === null ? src.length : close[1];
     search = copied;
   }
