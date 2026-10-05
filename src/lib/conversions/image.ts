@@ -2323,6 +2323,22 @@ function findJpegEnd(buffer: Buffer, start: number): number {
   return -1;
 }
 
+/** Sample depth that sharp reports for 8-bit images. */
+const SHARP_EIGHT_BIT_DEPTH = 'uchar';
+
+/**
+ * Keeps ICC profile and EXIF metadata on the output. Samples deeper than 8 bit that carry no profile are
+ * the exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut working
+ * profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those images
+ * keep only their EXIF block (orientation included) and reach the encoder as plain device RGB, so the
+ * high byte of each sample is what reaches an 8-bit output.
+ */
+async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
+  const meta = await pipeline.metadata();
+  const isDeepWithoutProfile = meta.depth !== SHARP_EIGHT_BIT_DEPTH && !meta.hasProfile;
+  return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -2491,7 +2507,7 @@ export async function convertImage(
 
     // Preserve ICC color profiles and EXIF metadata unless explicitly stripped
     if (options.stripMetadata !== true) {
-      pipeline = pipeline.withMetadata();
+      pipeline = await preserveMetadata(pipeline);
     }
   } catch (err: unknown) {
     if (isRawInput) {
