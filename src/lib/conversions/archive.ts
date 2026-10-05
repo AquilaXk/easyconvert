@@ -52,11 +52,15 @@ import {
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
   archivePasswordError,
+  archiveFailureOutput,
   assertArchivePasswordSafe,
+  assertListingShowsEncryption,
   assertZipPasswordSupported,
+  MAX_ENCRYPTION_LISTING_BYTES,
   execFileSyncWithPasswordStdin,
   isArchivePasswordError,
   sevenZipCreatePasswordInput,
+  sevenZipEncryptionCheckInput,
   sevenZipReadPasswordInput,
 } from './archive-password';
 import {
@@ -242,6 +246,28 @@ export function matchArchiveGlob(filePath: string, patterns?: string[]): boolean
   return false;
 }
 
+/**
+ * Lists a freshly created password-protected archive without its password and throws
+ * ArchiveNotEncryptedError unless it is encrypted, so a plaintext archive is never returned.
+ */
+function assertCreatedArchiveEncrypted(p7z: string, archivePath: string, format: 'zip' | '7z', cwd: string): void {
+  const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', archivePath], { networkIsolated: true });
+  let outcome: { listing?: string; failureOutput?: string };
+  try {
+    const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
+      cwd,
+      env: getSanitizedEnvironment({}, true),
+      timeout: 30000,
+      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+      input: sevenZipEncryptionCheckInput(),
+    });
+    outcome = { listing: out.toString('utf-8') };
+  } catch (err) {
+    outcome = { failureOutput: archiveFailureOutput(err) };
+  }
+  assertListingShowsEncryption(format, outcome);
+}
+
 function createEncryptedArchiveVia7z(
   files: { filename: string; buffer: Buffer }[],
   archiveName: string,
@@ -281,6 +307,7 @@ function createEncryptedArchiveVia7z(
       timeout: 60000,
       input: sevenZipCreatePasswordInput(password),
     });
+    assertCreatedArchiveEncrypted(p7z, outPath, archiveType, stagingDir);
     const content = fs.readFileSync(outPath);
     return {
       buffer: content,
@@ -1748,6 +1775,9 @@ export function convertWithNative7z(
         execFileSyncWithPasswordStdin(rCreate.binary, rCreate.args, { ...createOptions, input: pwCreateInput });
       } else {
         execFileSync(rCreate.binary, rCreate.args, createOptions);
+      }
+      if (options.password && (tgt === 'zip' || tgt === '7z')) {
+        assertCreatedArchiveEncrypted(p7zBin, outputPath, tgt, workDir);
       }
     } else {
       return null;

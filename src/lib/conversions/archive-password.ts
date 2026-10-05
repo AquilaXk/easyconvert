@@ -1,5 +1,6 @@
 import { execFileSync, type ExecFileSyncOptionsWithBufferEncoding } from 'node:child_process';
 import {
+  ArchiveNotEncryptedError,
   ArchivePasswordRequiredError,
   ConversionFailedError,
   InvalidArchivePasswordError,
@@ -145,4 +146,74 @@ export function archivePasswordError(
     return new ArchivePasswordRequiredError(`${subject} is password protected. A password is required to extract.`);
   }
   return new InvalidArchivePasswordError(`Invalid password for encrypted ${request.label}.`);
+}
+
+/** Largest verification listing read; a bigger one cannot prove encryption and fails the creation. */
+export const MAX_ENCRYPTION_LISTING_BYTES = 16 * 1024 * 1024;
+
+/** What `7z l -slt` said about a freshly created archive, listed with an empty password. */
+export interface EncryptionListingOutcome {
+  /** stdout of a listing that succeeded. */
+  listing?: string;
+  /** Message, stderr and stdout of a listing that failed. */
+  failureOutput?: string;
+}
+
+export interface EncryptionVerdict {
+  /** `header`: even the file list needs the password. `entries`: every file entry is encrypted. */
+  protection: 'header' | 'entries';
+  encryptedEntries: number;
+}
+
+const LISTING_ENTRY_SEPARATOR = /\r?\n\r?\n/;
+const LISTING_ENTRIES_START = /^-{10}\r?$/m;
+
+/** Entries of a `-slt` listing as key/value maps; the archive's own header block is dropped. */
+function parseListingEntries(listing: string): Array<Map<string, string>> {
+  const start = LISTING_ENTRIES_START.exec(listing);
+  if (!start) return [];
+  return listing
+    .slice(start.index + start[0].length)
+    .split(LISTING_ENTRY_SEPARATOR)
+    .map((block) => {
+      const fields = new Map<string, string>();
+      for (const line of block.split(/\r?\n/)) {
+        const separator = line.indexOf(' = ');
+        if (separator > 0) fields.set(line.slice(0, separator), line.slice(separator + 3));
+      }
+      return fields;
+    })
+    .filter((fields) => fields.has('Path'));
+}
+
+/**
+ * Decides from an unauthenticated `7z l -slt` whether a password-protected target really is.
+ * A 7-Zip that ignores its password prompt writes a plain archive and still exits 0, so the
+ * creation result alone proves nothing. 7z targets are written with a header password (-mhe=on):
+ * the file list must then be unreadable, and a listing that succeeds means the names are exposed.
+ * ZIP names are never encrypted, so every file entry must report `Encrypted = +` instead; folders
+ * carry no data and always report `-`. Anything else, including a listing that failed for another
+ * reason, is not proof of encryption and throws.
+ */
+export function assertListingShowsEncryption(
+  format: 'zip' | '7z',
+  outcome: EncryptionListingOutcome
+): EncryptionVerdict {
+  if (outcome.listing === undefined) {
+    if (outcome.failureOutput !== undefined && isArchivePasswordFailure(outcome.failureOutput)) {
+      return { protection: 'header', encryptedEntries: 0 };
+    }
+    throw new ConversionFailedError('Could not verify that the archive is encrypted.');
+  }
+  if (format === '7z') throw new ArchiveNotEncryptedError();
+
+  const files = parseListingEntries(outcome.listing).filter((entry) => entry.get('Folder') !== '+');
+  const plaintext = files.filter((entry) => entry.get('Encrypted') !== '+');
+  if (plaintext.length > 0) throw new ArchiveNotEncryptedError();
+  return { protection: 'entries', encryptedEntries: files.length };
+}
+
+/** Stdin for the verification listing: an empty password, so an encrypted header reports "Wrong password". */
+export function sevenZipEncryptionCheckInput(): Buffer {
+  return sevenZipReadPasswordInput(undefined);
 }

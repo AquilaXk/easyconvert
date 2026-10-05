@@ -8,6 +8,7 @@ import {
   ConversionOptions,
   ConversionResult,
   ArchiveEncryptionUnavailableError,
+  ArchiveNotEncryptedError,
   UnsupportedOptionError,
   EngineUnavailableError,
   InvalidPageRangeError,
@@ -49,10 +50,14 @@ import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
   archivePasswordError,
+  MAX_ENCRYPTION_LISTING_BYTES,
+  archiveFailureOutput,
   assertArchivePasswordSafe,
+  assertListingShowsEncryption,
   assertZipPasswordSupported,
   isArchivePasswordError,
   sevenZipCreatePasswordInput,
+  sevenZipEncryptionCheckInput,
   sevenZipReadPasswordInput,
 } from '../lib/conversions/archive-password';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
@@ -662,6 +667,34 @@ interface Package7zArchiveParams {
   options?: WorkerEngineOptions;
 }
 
+/**
+ * Lists the password-protected archive just written, without its password, and throws
+ * ArchiveNotEncryptedError unless it is encrypted: a 7-Zip that ignores its prompt exits 0 with
+ * a plaintext archive.
+ */
+async function assertCreatedArchiveEncrypted(
+  p7zBin: string,
+  archivePath: string,
+  format: 'zip' | '7z',
+  limits: { cwd: string; timeoutMs: number; signal?: AbortSignal }
+): Promise<void> {
+  let outcome: { listing?: string; failureOutput?: string };
+  try {
+    const result = await executeSandboxedBinary(p7zBin, ['l', '-slt', archivePath], {
+      cwd: limits.cwd,
+      timeoutMs: limits.timeoutMs,
+      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+      networkIsolated: true,
+      stdin: sevenZipEncryptionCheckInput(),
+      signal: limits.signal,
+    });
+    outcome = { listing: result.stdout.toString('utf-8') };
+  } catch (err) {
+    outcome = { failureOutput: archiveFailureOutput(err) };
+  }
+  assertListingShowsEncryption(format, outcome);
+}
+
 async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
   const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options } = params;
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
@@ -720,6 +753,13 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
     stdin: pwInput,
     signal: options?.signal,
   });
+  if (options?.password && (tgt === 'zip' || tgt === '7z')) {
+    await assertCreatedArchiveEncrypted(p7zBin, tempOutputPath, tgt, {
+      cwd: tempDir,
+      timeoutMs: timeout,
+      signal: options.signal,
+    });
+  }
   return true;
 }
 
@@ -861,7 +901,7 @@ export async function convertWithNative7z(
     });
   } catch (err) {
     // A password failure is the caller's answer, not a missing engine: never hand it to a fallback.
-    if (options.throwOnUnavailable || isArchivePasswordError(err)) {
+    if (options.throwOnUnavailable || isArchivePasswordError(err) || err instanceof ArchiveNotEncryptedError) {
       throw err;
     }
     return null;

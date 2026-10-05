@@ -18,6 +18,7 @@ import {
   MAX_ARCHIVE_PASSWORD_BYTES,
   MAX_ZIP_PASSWORD_BYTES,
   assertArchivePasswordSafe,
+  assertListingShowsEncryption,
   execFileSyncWithPasswordStdin,
   sevenZipCreatePasswordInput,
   sevenZipReadPasswordInput,
@@ -25,6 +26,7 @@ import {
 import { convertWithNative7z as convertWithWorker7z } from '../src/worker/engines';
 import {
   ArchiveEncryptedHeaderError,
+  ArchiveNotEncryptedError,
   ArchivePasswordRequiredError,
   ConversionFailedError,
   InvalidArchivePasswordError,
@@ -454,6 +456,112 @@ describe('archive password delivery to the real 7z binary', () => {
     }
   });
 
+  describe('encryption verification', () => {
+    /** A 7-Zip that ignores the password prompt: the wrapper drops the bare -p switch before running the real binary. */
+    function installPromptIgnoringWrapper(dir: string): void {
+      const real = get7zBinaryPath();
+      if (!real) throw new Error('7z binary missing');
+      const wrapper = path.join(dir, '7z-ignores-prompt.sh');
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\nfor arg in "$@"; do\n  shift\n  [ "$arg" = "-p" ] || set -- "$@" "$arg"\ndone\nexec '${real}' "$@"\n`
+      );
+      chmodSync(wrapper, 0o755);
+      process.env.P7ZIP_PATH = wrapper;
+    }
+
+    const FILES = PLAIN_FILES.map((file) => ({ filename: file.name, buffer: file.data }));
+
+    oracleTest('a 7-Zip that ignores the prompt never yields a plaintext archive from any creation path', ['7z'], async () => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'archive-password-ignored-'));
+      try {
+        installPromptIgnoringWrapper(dir);
+        // Control: the wrapper really does produce a plaintext archive, which the reference CLI lists as unencrypted.
+        const plainZip = path.join(dir, 'control.zip');
+        execFileSync(process.env.P7ZIP_PATH!, ['a', '-y', '-tzip', '-mem=AES256', '-p', plainZip, '.'], {
+          cwd: dir,
+          input: sevenZipCreatePasswordInput(PASSWORD),
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const controlListing = execFileSync(oracle7z(), ['l', '-slt', plainZip], { env: ORACLE_ENV, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf-8');
+        expect(controlListing).toMatch(/Encrypted = -/);
+        expect(controlListing).not.toMatch(/Encrypted = \+/);
+
+        const zipFromPlain = buildPlainZip();
+        const attempts: Array<[string, () => unknown]> = [
+          ['createZipArchive', () => createZipArchive(FILES, { password: PASSWORD }, 'out.zip')],
+          ['create7zArchive', () => create7zArchive(FILES, { password: PASSWORD }, 'out.7z')],
+          ['lib convertWithNative7z to zip', () => convertWithNative7z(zipFromPlain, 'zip', 'zip', { password: PASSWORD }, 'in.zip')],
+          ['lib convertWithNative7z to 7z', () => convertWithNative7z(zipFromPlain, 'zip', '7z', { password: PASSWORD }, 'in.zip')],
+          ['worker convertWithNative7z to zip', () => convertWithWorker7z(zipFromPlain, 'zip', 'zip', { password: PASSWORD }, 'in.zip')],
+          ['worker convertWithNative7z to 7z', () => convertWithWorker7z(zipFromPlain, 'zip', '7z', { password: PASSWORD, throwOnUnavailable: true }, 'in.zip')],
+        ];
+        for (const [label, attempt] of attempts) {
+          let failure: unknown;
+          try {
+            await attempt();
+          } catch (err) {
+            failure = err;
+          }
+          expect(failure, `${label} returned an archive`).toBeInstanceOf(ArchiveNotEncryptedError);
+          expect((failure as Error).message, label).toBe('Archive was written without encryption.');
+          expect(failure, label).toBeInstanceOf(ConversionFailedError);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    oracleTest('the real 7z passes verification: every created archive is encrypted per the reference CLI', ['7z'], async () => {
+      const zip = await createZipArchive(FILES, { password: PASSWORD }, 'out.zip');
+      const sevenZ = create7zArchive(FILES, { password: PASSWORD }, 'out.7z');
+      expect(oracleListing(zip.buffer, 'zip', PASSWORD)).toMatch(/Encrypted = \+/);
+      expect(oracleOpenFailure(sevenZ.buffer, '7z', undefined)).toMatch(ORACLE_PASSWORD_COMPLAINT);
+    });
+
+    describe('listing rules (listings captured from the reference CLI, 7-Zip 23.01 and p7zip 16.02)', () => {
+      const ZIP_AES_LISTING = [
+        'Path = a.txt', 'Folder = -', 'Size = 3', 'Encrypted = +', '',
+        'Path = empty.txt', 'Folder = -', 'Size = 0', 'Encrypted = +', '',
+        'Path = sub', 'Folder = +', 'Size = 0', 'Encrypted = -', '',
+        'Path = sub/b.txt', 'Folder = -', 'Size = 3', 'Encrypted = +', '',
+      ].join('\n');
+      const withListing = (entries: string): string => `Path = out.zip\nType = zip\n\n----------\n${entries}`;
+
+      it('accepts a ZIP whose every file entry is encrypted, folders and empty files included', () => {
+        expect(assertListingShowsEncryption('zip', { listing: withListing(ZIP_AES_LISTING) })).toEqual({
+          protection: 'entries',
+          encryptedEntries: 3,
+        });
+      });
+
+      it('rejects a ZIP with one plaintext file entry', () => {
+        const mixed = ZIP_AES_LISTING.replace('Size = 3\nEncrypted = +\n\nPath = empty.txt', 'Size = 3\nEncrypted = -\n\nPath = empty.txt');
+        expect(mixed).not.toBe(ZIP_AES_LISTING);
+        expect(() => assertListingShowsEncryption('zip', { listing: withListing(mixed) })).toThrow(ArchiveNotEncryptedError);
+      });
+
+      it('rejects a 7z whose header lists without a password, even when its data is encrypted', () => {
+        const dataOnly = ['Path = sub', 'Size = 0', 'Encrypted = -', '', 'Path = a.txt', 'Size = 3', 'Encrypted = +', ''].join('\n');
+        expect(() => assertListingShowsEncryption('7z', { listing: withListing(dataOnly) })).toThrow(ArchiveNotEncryptedError);
+      });
+
+      it('accepts a 7z whose header needs the password, in both wordings of the tool', () => {
+        for (const failureOutput of [
+          'ERROR: h.7z : Cannot open encrypted archive. Wrong password?',
+          'ERROR: h.7z : Can not open encrypted archive. Wrong password?',
+        ]) {
+          expect(assertListingShowsEncryption('7z', { failureOutput })).toEqual({ protection: 'header', encryptedEntries: 0 });
+        }
+      });
+
+      it('fails closed when the listing breaks for a reason other than the password', () => {
+        expect(() => assertListingShowsEncryption('7z', { failureOutput: 'ERROR: Unexpected end of archive' })).toThrow(ConversionFailedError);
+        expect(() => assertListingShowsEncryption('zip', { failureOutput: 'Break signaled' })).toThrow(ConversionFailedError);
+      });
+    });
+  });
+
   describe('stdin hand-off', () => {
     oracleTest('an unread password never fails a run that succeeded (EPIPE on an unencrypted archive)', ['7z'], async () => {
       const plain = buildPlainZip();
@@ -525,8 +633,8 @@ describe('archive password delivery to the real 7z binary', () => {
 
         const calls = recordedCalls(log);
         const reads = calls.filter((args) => args[0] === 'x' || args[0] === 'l');
-        // Two extractions, two conversions' extractions and one listing went through the wrapper.
-        expect(reads.map((args) => args[0]).sort()).toEqual(['l', 'x', 'x', 'x']);
+        // Three extractions, one inspect listing and the encryption checks of the two converted zips.
+        expect(reads.map((args) => args[0]).sort()).toEqual(['l', 'l', 'l', 'x', 'x', 'x']);
         for (const args of reads) {
           expect(args.filter((arg) => arg.startsWith('-p')), `switches in: ${args.join(' ')}`).toEqual([]);
         }

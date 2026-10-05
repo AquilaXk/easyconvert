@@ -452,6 +452,14 @@ export class ArchiveEncryptionUnavailableError extends ConversionFailedError {
   }
 }
 
+/** A password-protected archive came out of the archiver without encryption and was discarded. */
+export class ArchiveNotEncryptedError extends ConversionFailedError {
+  constructor(message = 'Archive was written without encryption.') {
+    super(message);
+    this.name = 'ArchiveNotEncryptedError';
+  }
+}
+
 /** The archive is encrypted and the request carried no password. */
 export class ArchivePasswordRequiredError extends ConversionFailedError {
   constructor(message: string) {
