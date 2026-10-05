@@ -1521,7 +1521,7 @@ describe('CFF to TrueType: coordinate deltas and amplification limits', () => {
       cff: { defaultWidthX: 600, nominalWidthX: 0, charset: Array.from({ length: 440 }, (_, i) => i + 1), localSubrs: [leaf, middle] },
     });
     expect(font.length).toBeLessThan(40_000);
-    await expectRejected(font, CffCharStringError, /budget of \d+ path segments/);
+    await expectRejected(font, CffCharStringError, /budget of \d+ path segments/, FONT_BUDGET_REJECT_MS);
   });
 
   it('caps the total output points of a small font whose curves each need many quadratics', async () => {
@@ -1538,7 +1538,7 @@ describe('CFF to TrueType: coordinate deltas and amplification limits', () => {
       codePoints: [0x41],
       cff: { defaultWidthX: 600, nominalWidthX: 0, charset: Array.from({ length: 100 }, (_, i) => i + 1), localSubrs: [leaf] },
     });
-    await expectRejected(font, ConversionFailedError, /points in total/);
+    await expectRejected(font, ConversionFailedError, /points in total/, FONT_BUDGET_REJECT_MS);
   });
 
   it('keeps realistic fonts far below the budgets', () => {
@@ -1567,10 +1567,14 @@ describe('SVG font output uses the font metrics', () => {
       cff: { defaultWidthX: 1600, nominalWidthX: 0, fontMatrix: ['0.00048828125', '0', '0', '0.00048828125', '0', '0'] },
     });
     const svg = (await convertFile(otf, 'otf', 'svg', {}, 'em.otf')).buffer.toString('utf8');
-    expect(svg).toContain('<font id="Cff Probe" horiz-adv-x="2048">');
-    expect(svg).toContain('units-per-em="2048" ascent="1638" descent="-410"');
-    expect(svg).toContain('<missing-glyph horiz-adv-x="1024" d="M0 0 L1024 0 L1024 1638 L0 1638 Z" />');
-    expect(svg).toContain('<glyph unicode="A" horiz-adv-x="1600" d="M200 0 L1000 0 L1000 1400 L200 1400 Z" />');
+    const fontElement = /<font id="([^"]*)" horiz-adv-x="(\d+)">/.exec(svg);
+    expect(fontElement?.slice(1)).toEqual(['Cff Probe', '2048']);
+    const fontFace = /units-per-em="(\d+)" ascent="(-?\d+)" descent="(-?\d+)"/.exec(svg);
+    expect(fontFace?.slice(1).map(Number)).toEqual([2048, 1638, -410]);
+    const missing = /<missing-glyph horiz-adv-x="(\d+)" d="([^"]*)"/.exec(svg);
+    expect(missing?.slice(1)).toEqual(['1024', 'M0 0 L1024 0 L1024 1638 L0 1638 Z']);
+    const glyphA = /<glyph unicode="A" horiz-adv-x="(\d+)" d="([^"]*)"/.exec(svg);
+    expect(glyphA?.slice(1)).toEqual(['1600', 'M200 0 L1000 0 L1000 1400 L200 1400 Z']);
   });
 
   it('gives TrueType glyphs past the long metrics the last advance instead of a fixed 1000', () => {
