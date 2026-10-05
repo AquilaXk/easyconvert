@@ -2647,6 +2647,12 @@ export async function convertImage(
     }
   }
 
+  // libvips uses only the first component of a background colour for 1 and 2 band (gray) images; work in
+  // sRGB whenever a background colour is applied so flatten and letterbox bars get the whole colour.
+  if (background !== undefined || isOpaqueTarget) {
+    pipeline = pipeline.pipelineColourspace('srgb');
+  }
+
   // Resize options
   const resizeOptions = resizeOptionsOf(options, background, isOpaqueTarget);
   if (resizeOptions) {
