@@ -609,16 +609,35 @@ describe('archive password delivery to the real 7z binary', () => {
       }
     });
 
+    oracleTest('piping a password into a 7-Zip that never reads it does not fail the run (EPIPE)', ['7z'], async () => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'archive-password-epipe-'));
+      try {
+        installPromptIgnoringWrapper(dir);
+        writeFileSync(path.join(dir, 'a.txt'), 'x');
+        const attempts = 100;
+        for (let i = 0; i < attempts; i += 1) {
+          const archive = path.join(dir, `ignored-${i}.zip`);
+          execFileSyncWithPasswordStdin(process.env.P7ZIP_PATH!, ['a', '-y', '-tzip', '-mem=AES256', '-p', archive, 'a.txt'], {
+            cwd: dir,
+            input: sevenZipCreatePasswordInput(PASSWORD),
+          });
+          expect(readFileSync(archive).subarray(0, 2).toString('latin1'), `archive ${i} starts with the ZIP signature`).toBe('PK');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     oracleTest('a 7-Zip that ignores the prompt never yields a plaintext archive from any creation path', ['7z'], async () => {
       const dir = mkdtempSync(path.join(os.tmpdir(), 'archive-password-ignored-'));
       try {
         installPromptIgnoringWrapper(dir);
         // Control: the wrapper really does produce a plaintext archive, which the reference CLI lists as unencrypted.
         const plainZip = path.join(dir, 'control.zip');
-        execFileSync(process.env.P7ZIP_PATH!, ['a', '-y', '-tzip', '-mem=AES256', '-p', plainZip, '.'], {
+        // The wrapper never reads stdin, so Node may report the unread write as EPIPE; the helper tolerates that.
+        execFileSyncWithPasswordStdin(process.env.P7ZIP_PATH!, ['a', '-y', '-tzip', '-mem=AES256', '-p', plainZip, '.'], {
           cwd: dir,
           input: sevenZipCreatePasswordInput(PASSWORD),
-          stdio: ['pipe', 'pipe', 'pipe'],
         });
         const controlListing = execFileSync(oracle7z(), ['l', '-slt', plainZip], { env: ORACLE_ENV, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf-8');
         expect(controlListing).toMatch(/Encrypted = -/);
