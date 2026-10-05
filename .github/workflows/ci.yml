@@ -54,6 +54,7 @@ jobs:
             tesseract-ocr-kor \
             fonts-nanum \
             fonts-noto-core \
+            fonts-noto-cjk \
             fonts-noto-ui-core \
             fonts-noto-color-emoji \
             unrar \
