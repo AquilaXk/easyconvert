@@ -17,7 +17,7 @@ import {
   resolveClientIp,
   type ClientIpConfig,
 } from '../src/lib/security/client-ip';
-import { extractClientIp } from '../src/lib/api-keys/ip-utils';
+import { extractClientIp, isIpAllowed } from '../src/lib/api-keys/ip-utils';
 
 function req(headers: Record<string, string> = {}): Request {
   return new Request('http://localhost/api/v1/jobs', { headers });
@@ -649,5 +649,31 @@ describe('TRUSTED_PROXIES=none (direct exposure acknowledged)', () => {
     const none = parseClientIpConfig({ trustedProxies: 'none' });
     expect(resolveClientIp(req({ 'x-forwarded-for': '198.51.100.7' }), { config: none })).toEqual({ ip: null, source: 'unattributed' });
     expect(ipOf({ 'x-forwarded-for': '198.51.100.7' }, none, '10.0.0.5')).toBe('10.0.0.5');
+  });
+});
+
+describe('allowlist entries (isIpAllowed) stay backward compatible', () => {
+  it('strips ports and brackets from bare allowlist entries', () => {
+    expect(isIpAllowed('1.2.3.4', ['1.2.3.4:80'])).toBe(true);
+    expect(isIpAllowed('1.2.3.5', ['1.2.3.4:80'])).toBe(false);
+    expect(isIpAllowed('2001:db8::1', ['[2001:db8::1]:443'])).toBe(true);
+    expect(isIpAllowed('2001:db8::1', ['[2001:0db8:0:0:0:0:0:1]'])).toBe(true);
+    expect(isIpAllowed('2001:db8::2', ['[2001:db8::1]:443'])).toBe(false);
+  });
+
+  it('matches host-bit-set CIDRs by their network and ignores garbage entries', () => {
+    expect(isIpAllowed('192.168.1.5', ['192.168.1.77/24'])).toBe(true);
+    expect(isIpAllowed('192.168.2.5', ['192.168.1.77/24'])).toBe(false);
+    expect(isIpAllowed('192.168.1.5', ['not-an-ip', '192.168.1.0/99'])).toBe(false);
+  });
+
+  it('accepts IPv4-mapped spellings on either side', () => {
+    expect(isIpAllowed('::ffff:1.2.3.4', ['1.2.3.4:80'])).toBe(true);
+    expect(isIpAllowed('1.2.3.4', ['::ffff:1.2.3.4'])).toBe(true);
+  });
+
+  it('never matches the unattributed key, except for an explicit wildcard entry', () => {
+    expect(isIpAllowed(UNATTRIBUTED_CLIENT_KEY, ['1.2.3.4', '10.0.0.0/8'])).toBe(false);
+    expect(isIpAllowed(UNATTRIBUTED_CLIENT_KEY, ['*'])).toBe(true);
   });
 });

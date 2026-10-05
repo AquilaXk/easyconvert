@@ -1,5 +1,4 @@
 import {
-  DEFAULT_TRUSTED_PROXY_RANGES,
   clientIpKey,
   isAddressInCidr,
   loadClientIpConfig,
@@ -23,22 +22,6 @@ export function normalizeIp(ip: string): string {
  */
 export function isIpInCidr(ip: string, cidr: string): boolean {
   return isAddressInCidr(ip, cidr);
-}
-
-export const DEFAULT_TRUSTED_PROXIES: readonly string[] = DEFAULT_TRUSTED_PROXY_RANGES;
-
-/**
- * Returns the active list of trusted proxy CIDRs/IPs from environment or defaults.
- */
-export function getTrustedProxies(): string[] {
-  const envVal = process.env.TRUSTED_PROXIES;
-  if (!envVal || !envVal.trim()) {
-    return [...DEFAULT_TRUSTED_PROXIES];
-  }
-  return envVal
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
 }
 
 /**

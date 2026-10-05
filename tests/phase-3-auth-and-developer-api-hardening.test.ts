@@ -5,9 +5,8 @@ import {
   isIpInCidr,
   normalizeIp,
   isIpAllowed,
-  getTrustedProxies,
-  DEFAULT_TRUSTED_PROXIES,
 } from '../src/lib/api-keys/ip-utils';
+import { DEFAULT_TRUSTED_PROXY_RANGES } from '../src/lib/security/client-ip';
 import {
   checkTokenBucketRateLimit,
   redisKeyStore,
@@ -30,10 +29,15 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
   });
 
   describe('Trusted Proxy IP Spoofing Defense (Right-to-Left Traversal)', () => {
-    it('contains standard RFC 1918 and loopback CIDRs in default trusted proxies', () => {
-      expect(DEFAULT_TRUSTED_PROXIES).toContain('127.0.0.1/8');
-      expect(DEFAULT_TRUSTED_PROXIES.length).toBeGreaterThan(0);
-      expect(getTrustedProxies()).toEqual(expect.arrayContaining(['127.0.0.1/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']));
+    it('contains standard RFC 1918 and loopback CIDRs in the default trusted proxies of the shared resolver', () => {
+      expect(DEFAULT_TRUSTED_PROXY_RANGES).toEqual([
+        '127.0.0.1/8',
+        '::1/128',
+        '10.0.0.0/8',
+        '172.16.0.0/12',
+        '192.168.0.0/16',
+        'fc00::/7',
+      ]);
     });
 
     it('identifies valid CIDR ranges correctly', () => {

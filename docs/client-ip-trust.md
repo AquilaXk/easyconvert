@@ -58,6 +58,12 @@ proxy under your control rewrites them, so they are only read under the contract
 | `TRUSTED_CDN` | `cloudflare`. Enables `CF-Connecting-IP` for a verified edge hop. |
 | `TRUSTED_CDN_RANGES` | CIDR list replacing the shipped ranges for the configured CDN. Requires `TRUSTED_CDN`. |
 
+## API-key allowlists
+
+Allowlist entries are matched against the full resolved address (never the /64 rate-limit bucket). Bare
+entries may carry a port or brackets (`1.2.3.4:80`, `[2001:db8::1]:443`), which are ignored. CIDR entries with
+host bits set (`192.168.1.77/24`) match their network. The `unattributed` key matches only a `*` entry.
+
 ## Failure modes
 
 - Malformed forwarding data from a trusted sender (not an address, empty hop, header over 4096 characters, more

@@ -335,7 +335,10 @@ function parseCidr(text: string): ParsedCidr | null {
   if (trimmed.length === 0 || trimmed.length > MAX_CIDR_TEXT_LENGTH) return null;
   const parts = trimmed.split('/');
   if (parts.length > 2) return null;
-  const base = parseBareAddressRaw(parts[0]);
+  // A bare entry may carry a port or brackets ("1.2.3.4:80", "[2001:db8::1]:443"); they are not part of the
+  // address. A ranged entry ("a.b.c.d/n") is taken as written.
+  const baseText = parts.length === 1 ? splitNode(parts[0], false)?.host : parts[0];
+  const base = baseText === undefined ? null : parseBareAddressRaw(baseText);
   if (!base) return null;
 
   let prefix: number;
