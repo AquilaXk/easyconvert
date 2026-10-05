@@ -155,8 +155,9 @@ function readFrameControl(state: ParseState, buffer: Buffer, dataAt: number, len
   if (x + width > state.width || y + height > state.height) {
     throw malformed(`frame ${index} (${width}x${height} at ${x},${y}) does not fit the ${state.width}x${state.height} canvas`);
   }
-  if (state.frames.length === 0 && (width !== state.width || height !== state.height || x !== 0 || y !== 0)) {
-    throw malformed('the first frame must cover the whole canvas');
+  // Only the frame that is also the default image has to cover the canvas (APNG 1.0, "fcTL").
+  if (!state.sawIdat && (width !== state.width || height !== state.height || x !== 0 || y !== 0)) {
+    throw malformed('the default image must cover the whole canvas');
   }
   if (dispose > DISPOSE_PREVIOUS) throw malformed(`frame ${index} has dispose operation ${dispose}`);
   if (blend > BLEND_OVER) throw malformed(`frame ${index} has blend operation ${blend}`);

@@ -189,6 +189,51 @@ describe('APNG default image', () => {
   });
 });
 
+describe('the full-canvas rule applies to the default image only', () => {
+  const CANVAS = 8;
+  const TEAL: readonly [number, number, number, number] = [0, 128, 128, 255];
+  const hiddenWithSmallFirstFrame = (): ApngSpec => ({
+    width: CANVAS,
+    height: CANVAS,
+    hiddenDefault: solid(CANVAS, CANVAS, [255, 0, 255, 255]),
+    frames: [
+      { image: solid(4, 4, TEAL), x: 2, y: 2 },
+      { image: solid(8, 8, [255, 128, 0, 255]) },
+    ],
+  });
+
+  it.skipIf(SKIP_WITHOUT_MAGICK)('a first animation frame may be a sub-rectangle when the default image is hidden', async () => {
+    const result = await convertImage(buildApngFile(hiddenWithSmallFirstFrame()), 'png', { page: 1 }, 'hidden.png', 'png');
+    const image = decodeRgba(result.buffer, 'png');
+    expect([image.width, image.height]).toEqual([CANVAS, CANVAS]);
+    expect(sampleAt(image, 3, 3)).toEqual([...TEAL]);
+    expect(sampleAt(image, 0, 0)[3]).toBe(0);
+    expect(sampleAt(image, CANVAS - 1, CANVAS - 1)[3]).toBe(0);
+    expect(result.frameUsed).toBe(1);
+  });
+
+  it.skipIf(SKIP_WITHOUT_MAGICK)('and the animated output starts with that frame composed on the empty canvas', async () => {
+    const result = await convertImage(buildApngFile(hiddenWithSmallFirstFrame()), 'gif', {}, 'hidden.png', 'png');
+    expect(countFrames(result.buffer, 'gif')).toBe(2);
+    const frames = decodeCoalescedFrames(result.buffer, 'gif');
+    expect(sampleAt(frames[0], 3, 3)[3]).toBe(OPAQUE);
+    expect(sampleAt(frames[0], 0, 0)[3]).toBe(0);
+  });
+
+  it.skipIf(SKIP_WITHOUT_MAGICK)('a visible default image must still cover the canvas', async () => {
+    const spec: ApngSpec = { width: CANVAS, height: CANVAS, frames: [{ image: solid(4, 4, TEAL), x: 2, y: 2 }, { image: solid(8, 8, TEAL) }] };
+    const error = await captureError(() => convertImage(buildApngFile(spec), 'png', {}, 'visible.png', 'png'));
+    expect(error.message).toMatch(/Malformed animated PNG: the default image must cover the whole canvas/);
+  });
+
+  it.skipIf(SKIP_WITHOUT_MAGICK)('later frames still have to fit the canvas', async () => {
+    const spec = hiddenWithSmallFirstFrame();
+    spec.frames[0] = { image: solid(4, 4, TEAL), x: 6, y: 6 };
+    const error = await captureError(() => convertImage(buildApngFile(spec), 'png', {}, 'outside.png', 'png'));
+    expect(error.message).toMatch(/does not fit the 8x8 canvas/);
+  });
+});
+
 describe('APNG pixel formats', () => {
   it.skipIf(SKIP_WITHOUT_MAGICK || SKIP_WITHOUT_FFMPEG)('palette frames with a shared PLTE and tRNS', async () => {
     const palette = Buffer.from([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]);
@@ -298,7 +343,7 @@ describe('malformed APNG input fails closed with a typed error', () => {
     ['a truncated acTL', (c) => { ofType(c, 'acTL').data = ofType(c, 'acTL').data.subarray(0, 3); }],
     ['a frame region outside the canvas', (c) => ofType(c, 'fcTL', 1).data.writeUInt32BE(5, 12)],
     ['a zero-width frame', (c) => ofType(c, 'fcTL', 1).data.writeUInt32BE(0, 4)],
-    ['a first frame that is smaller than the canvas', (c) => ofType(c, 'fcTL', 0).data.writeUInt32BE(4, 4)],
+    ['a default image frame that is smaller than the canvas', (c) => ofType(c, 'fcTL', 0).data.writeUInt32BE(4, 4)],
     ['an unknown dispose operation', (c) => { ofType(c, 'fcTL', 1).data[24] = 3; }],
     ['an unknown blend operation', (c) => { ofType(c, 'fcTL', 1).data[25] = 2; }],
     ['an acTL that announces more frames than the file holds', (c) => ofType(c, 'acTL').data.writeUInt32BE(5, 0)],
