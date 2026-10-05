@@ -88,7 +88,7 @@ describe('bestSnrDb rejects unfaithful decodes', () => {
 
   it('rejects an independently synthesized tone of the same length', () => {
     const tone = sineSamples(SAMPLE_RATE, CHANNELS, SECONDS);
-    expect(tone.length).toBe(source.length);
+    expect(tone).toHaveLength(source.length);
     expect(bestSnrDb(source, tone, CHANNELS)).toBeLessThan(MAX_FAKE_SNR_DB);
   });
 
@@ -133,5 +133,5 @@ describe('bestSnrDb against the reference encoder', () => {
 });
 
 it('sizes the chirp to the requested duration', () => {
-  expect(chirpSamples(SAMPLE_RATE, 1, SECONDS).length).toBe(SAMPLE_RATE * SECONDS);
+  expect(chirpSamples(SAMPLE_RATE, 1, SECONDS)).toHaveLength(SAMPLE_RATE * SECONDS);
 });

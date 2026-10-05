@@ -317,7 +317,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       const decodedAac = decodeAdtsAac(adts);
       expect(decodedAac.sampleRate).toBe(44100);
       expect(decodedAac.channels).toBe(2);
-      expect(decodedAac.samples.length).toBe(frames * 1024 * 2);
+      expect(decodedAac.samples).toHaveLength(frames * 1024 * 2);
 
       const wavRes = await convertMedia(adts, 'aac', 'wav', { disableNativeEngine: true }, 'audio.aac');
       expect(wavRes.mimeType).toBe('audio/wav');
@@ -327,7 +327,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       const finalDec = decodeAudioBuffer(wavRes.buffer, 'wav');
       expect(finalDec.sampleRate).toBe(44100);
       expect(finalDec.channels).toBe(2);
-      expect(finalDec.samples.length).toBe(frames * 1024 * 2);
+      expect(finalDec.samples).toHaveLength(frames * 1024 * 2);
       expect(finalDec.samples.every((v) => v === 0)).toBe(true);
     });
   });

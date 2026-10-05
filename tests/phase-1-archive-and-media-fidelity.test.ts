@@ -263,7 +263,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       expect(decodedAac.sampleRate).toBe(44100);
       expect(decodedAac.channels).toBe(2);
       expect(decodedAac.bitsPerSample).toBe(16);
-      expect(decodedAac.samples.length).toBe(frames * 1024 * 2);
+      expect(decodedAac.samples).toHaveLength(frames * 1024 * 2);
       expect(decodedAac.duration).toBeCloseTo((frames * 1024) / 44100, 6);
 
       // Verify universal decoder auto-detection
@@ -322,7 +322,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       const adts = adtsStream([silentRawDataBlock(2), silentRawDataBlock(2)], 48000, 2);
       const decodedAac = decodeAdtsAac(adts);
       expect(decodedAac.sampleRate).toBe(48000);
-      expect(decodedAac.samples.length).toBe(2 * 1024 * 2);
+      expect(decodedAac.samples).toHaveLength(2 * 1024 * 2);
     });
 
     it('decodes ADTS AAC frames when prefixed by ID3v2 metadata and skips false syncwords', () => {

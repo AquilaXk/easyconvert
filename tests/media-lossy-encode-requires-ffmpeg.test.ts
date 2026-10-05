@@ -238,7 +238,7 @@ describe('lossy encodes with FFmpeg come from FFmpeg and decode back to the sour
         expect(Number(video.height)).toBe(120);
 
         const gray = ffmpegDecodeRaw(result.buffer, 'mp4', ['-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray']);
-        expect(gray.length).toBe(160 * 120);
+        expect(gray).toHaveLength(160 * 120);
         let sum = 0;
         for (const v of gray) sum += v;
         const mean = sum / gray.length;
@@ -260,7 +260,7 @@ describe('lossless pure paths stay faithful', () => {
       const wav = wavFromSamples(source, 44100, channels);
       const result = await convertMedia(wav, 'wav', 'flac', { disableNativeEngine: true }, 'tone.wav');
       const decoded = decodeAudioWithFfmpeg(result.buffer, 'flac', 44100, channels);
-      expect(decoded.length).toBe(source.length);
+      expect(decoded).toHaveLength(source.length);
       expect(Array.from(decoded)).toEqual(Array.from(source));
     }, FFMPEG_CASE_TIMEOUT_MS);
 
@@ -269,7 +269,7 @@ describe('lossless pure paths stay faithful', () => {
       const wav = wavFromSamples(source, 44100, channels);
       const result = await convertMedia(wav, 'wav', 'wav', { disableNativeEngine: true }, 'tone.wav');
       const decoded = decodeAudioWithFfmpeg(result.buffer, 'wav', 44100, channels);
-      expect(decoded.length).toBe(source.length);
+      expect(decoded).toHaveLength(source.length);
       expect(Array.from(decoded)).toEqual(Array.from(source));
     }, FFMPEG_CASE_TIMEOUT_MS);
 
@@ -282,7 +282,7 @@ describe('lossless pure paths stay faithful', () => {
       );
       const result = await convertMedia(flac, 'flac', 'wav', { disableNativeEngine: true }, 'tone.flac');
       const decoded = decodeAudioWithFfmpeg(result.buffer, 'wav', 44100, channels);
-      expect(decoded.length).toBe(source.length);
+      expect(decoded).toHaveLength(source.length);
       expect(Array.from(decoded)).toEqual(Array.from(source));
     }, FFMPEG_CASE_TIMEOUT_MS);
   }
@@ -306,7 +306,7 @@ describe('hand-authored AAC fixtures are valid for the reference decoder', () =>
         expect(Number(info.channels)).toBe(channels);
 
         const decoded = decodeAudioWithFfmpeg(stream, 'aac', 44100, channels);
-        expect(decoded.length).toBe(FIXTURE_FRAMES * SAMPLES_PER_AAC_FRAME * channels);
+        expect(decoded).toHaveLength(FIXTURE_FRAMES * SAMPLES_PER_AAC_FRAME * channels);
         expect(decoded.every((v) => v === 0)).toBe(true);
       }
     );

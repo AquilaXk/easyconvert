@@ -105,7 +105,7 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
 
       const decoded = decodeAdtsAac(adts);
       expect(decoded.channels).toBe(1);
-      expect(decoded.samples.length).toBe(1024);
+      expect(decoded.samples).toHaveLength(1024);
     });
 
     it('encapsulates RFC 7845 compliant OpusHead and OpusTags headers for opus target format and fails closed without authentic encoder', async () => {

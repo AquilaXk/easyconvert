@@ -208,6 +208,25 @@ export function probeStream(buffer: Buffer, extension: string, kind: 'a' | 'v'):
  * count differs from the source by more than the codec delay plus padding is not the source and
  * scores -Infinity, so truncated output cannot pass by matching only its prefix.
  */
+function channelSnrDb(
+  reference: Int16Array,
+  decoded: Int16Array,
+  channels: number,
+  channel: number,
+  lag: number,
+  end: number
+): number {
+  let signal = 0;
+  let noise = 0;
+  for (let i = EDGE_GUARD_SAMPLES; i < end; i++) {
+    const r = reference[i * channels + channel];
+    const d = decoded[(i + lag) * channels + channel];
+    signal += r * r;
+    noise += (r - d) * (r - d);
+  }
+  return noise === 0 ? Infinity : 10 * Math.log10(signal / noise);
+}
+
 export function bestSnrDb(reference: Int16Array, decoded: Int16Array, channels: number): number {
   const refFrames = Math.floor(reference.length / channels);
   const decFrames = Math.floor(decoded.length / channels);
@@ -218,25 +237,16 @@ export function bestSnrDb(reference: Int16Array, decoded: Int16Array, channels: 
     if (end <= EDGE_GUARD_SAMPLES) break;
     let weakest = Infinity;
     for (let c = 0; c < channels; c++) {
-      let signal = 0;
-      let noise = 0;
-      for (let i = EDGE_GUARD_SAMPLES; i < end; i++) {
-        const r = reference[i * channels + c];
-        const d = decoded[(i + lag) * channels + c];
-        signal += r * r;
-        noise += (r - d) * (r - d);
-      }
-      const snr = noise === 0 ? Infinity : 10 * Math.log10(signal / noise);
-      if (snr < weakest) weakest = snr;
+      weakest = Math.min(weakest, channelSnrDb(reference, decoded, channels, c, lag, end));
     }
-    if (weakest > best) best = weakest;
+    best = Math.max(best, weakest);
   }
   return best;
 }
 
 /** Minimal MSB-first bit packer, authored here so the fixtures do not depend on the engine. */
 class FixtureBits {
-  private bits: number[] = [];
+  private readonly bits: number[] = [];
 
   write(value: number, count: number): void {
     for (let i = count - 1; i >= 0; i--) this.bits.push((value >> i) & 1);
