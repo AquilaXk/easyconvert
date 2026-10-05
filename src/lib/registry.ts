@@ -1445,7 +1445,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Portable Network Graphics - Lossless raster format with alpha transparency support.',
     targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpg: {
     id: 'jpg',
@@ -1455,7 +1455,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Joint Photographic Experts Group - Standard lossy image compression for photography.',
     targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpeg: {
     id: 'jpeg',
@@ -1465,7 +1465,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Joint Photographic Experts Group standard image format.',
     targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   webp: {
     id: 'webp',
@@ -1475,7 +1475,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Modern web image format providing superior lossless and lossy compression.',
     targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   avif: {
     id: 'avif',
@@ -1485,7 +1485,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Next-generation AV1 Image File Format delivering state-of-the-art compression.',
     targetFormats: ['png', 'jpg', 'webp', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'hocr', 'alto'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   tiff: {
     id: 'tiff',

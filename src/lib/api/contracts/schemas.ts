@@ -100,6 +100,12 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Remove EXIF, XMP, and color profile metadata.',
     },
+    background: {
+      type: 'string',
+      pattern: '^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$',
+      description:
+        'Background colour as #rgb or #rrggbb. Fills transparency for outputs without alpha (JPEG, BMP, EPS/PS, EXR, Ultra HDR) and the bars of fit "contain"; defaults to white for outputs without alpha.',
+    },
     dpi: {
       type: 'integer',
       minimum: 72,
@@ -225,7 +231,8 @@ export const ConversionOptionsSchema = {
     page: {
       type: 'integer',
       minimum: 1,
-      description: 'Single target page index for rasterization (1-indexed).',
+      description:
+        'Single target page or frame index (1-indexed): the PDF page to rasterize, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output.',
     },
     pages: {
       type: 'string',

@@ -19,6 +19,7 @@ export interface FormatOptionsSchema {
   dimensions?: boolean;
   fit?: boolean;
   stripMetadata?: boolean;
+  background?: boolean;
   dpi?: boolean;
   orientation?: boolean;
   delimiter?: boolean;
@@ -85,6 +86,8 @@ export interface ConversionOptions {
   height?: number;
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
   stripMetadata?: boolean;
+  /** `#rgb` or `#rrggbb`: fills flattened transparency and `fit: 'contain'` bars. Defaults to white for targets without alpha. */
+  background?: string;
   dpi?: number;
   colorDepth?: number;
   colors?: number;

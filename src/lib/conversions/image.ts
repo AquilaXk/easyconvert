@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames } from './image-frames';
-import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground, type ImageConversionOptions } from './image-background';
+import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
@@ -2354,7 +2354,7 @@ function toImageDecodeError(err: unknown): ConversionFailedError {
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
-  options: ImageConversionOptions = {},
+  options: ConversionOptions = {},
   originalFilename: string = 'image.png',
   sourceFormat?: string
 ): Promise<ConversionResult> {

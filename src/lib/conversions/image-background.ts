@@ -1,5 +1,5 @@
 import type sharp from 'sharp';
-import { ConversionOptions, UnsupportedOptionError } from '../types';
+import { UnsupportedOptionError } from '../types';
 
 /**
  * Background colour handling for image output.
@@ -9,12 +9,6 @@ import { ConversionOptions, UnsupportedOptionError } from '../types';
  * `#rrggbb`) and defaults to white. Targets that can store alpha keep transparency and only paint
  * letterbox bars when `background` is given explicitly.
  */
-
-/** Image options on top of the shared conversion options. */
-export interface ImageConversionOptions extends ConversionOptions {
-  /** `#rgb` or `#rrggbb`; fills flattened transparency and `fit: 'contain'` bars. Defaults to white. */
-  background?: string;
-}
 
 /** Targets that store no alpha channel: transparency would otherwise decode as black. */
 export const OPAQUE_IMAGE_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'bmp', 'eps', 'ps', 'exr', 'ultrahdr']);
