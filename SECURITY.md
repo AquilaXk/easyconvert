@@ -10,7 +10,7 @@ Report it privately through GitHub: open the repository's **Security** tab and c
 - a minimal input or request that reproduces the problem
 - the impact you observed (for example code execution, path traversal, data exposure, or resource exhaustion)
 
-You will receive an acknowledgement within 3 business days. Fixes are developed in a private advisory and disclosed after a release is available.
+Reports are acknowledged as soon as possible. Fixes are developed in a private advisory and disclosed after a release is available.
 
 ## Scope
 
