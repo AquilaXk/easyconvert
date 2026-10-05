@@ -151,12 +151,14 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(isOpfsStreamingSupported('bin', 'bin', { allowPassThrough: true })).toBe(true);
     });
 
-    it('executes TSV -> CSV delimited streaming transformer without throwing', () => {
+    it('streams TSV -> CSV with the server output rules (BOM, CRLF, quoting, formula escape)', () => {
       const transformer = resolveChunkTransformer('tsv', 'csv');
-      const sampleTsv = new TextEncoder().encode('col1\tcol2\tcol3\n1\t2\t3\n');
+      const sampleTsv = new TextEncoder().encode('col1\tcol2\tcol3\n1\tx, y\t=2+3\n');
       const transformed = transformer(sampleTsv, 0, sampleTsv.length) as Uint8Array;
-      const csvText = new TextDecoder().decode(transformed);
-      expect(csvText).toBe('col1,col2,col3\n1,2,3\n');
+      // Hand-written expected bytes: UTF-8 BOM, CRLF between records, the comma field quoted, the formula escaped.
+      expect(Buffer.from(transformed).toString('hex')).toBe(
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('col1,col2,col3\r\n1,"x, y","\'=2+3"', 'utf-8')]).toString('hex')
+      );
     });
 
     it('safely routes unsupported large files (>100MB) to L4 Cloud fallback instead of crashing L3 worker', () => {
@@ -183,6 +185,13 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       });
       expect(supportedResolution.tier).toBe('L3');
       expect(supportedResolution.tierName).toBe('Edge L3 (OPFS Stream)');
+
+      // The stream decodes UTF-8 only: a file in another encoding goes to the server, which honours it.
+      const legacyEncoding = resolveConversionTier('csv', 'tsv', largeSize, { encoding: 'shift_jis' }, {
+        hasOpfsSyncAccess: true,
+      });
+      expect(legacyEncoding.tier).toBe('L4');
+      expect(legacyEncoding.isClientEdge).toBe(false);
     });
   });
 

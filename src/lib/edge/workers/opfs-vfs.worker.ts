@@ -8,6 +8,8 @@
  * 4. Memory-bounded processing for 100MB+ ~ 2GB files with peak memory strictly bounded (<50MB).
  */
 
+import { createDelimitedStreamTransformer, isStreamableDelimitedPair } from './delimited-stream';
+
 export const OPFS_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB chunk window
 
 export interface OpfsConversionJob {
@@ -200,25 +202,6 @@ function buildU8PcmTransformer(): ChunkTransformerFn {
   };
 }
 
-function buildCsvTsvTransformer(fromCode: number, toCode: number): ChunkTransformerFn {
-  let inQuotes = false;
-  return (chunk: Uint8Array) => {
-    const out = new Uint8Array(chunk.byteLength);
-    for (let i = 0; i < chunk.byteLength; i++) {
-      const b = chunk[i];
-      if (b === 34) {
-        inQuotes = !inQuotes;
-        out[i] = b;
-      } else if (b === fromCode && !inQuotes) {
-        out[i] = toCode;
-      } else {
-        out[i] = b;
-      }
-    }
-    return out;
-  };
-}
-
 function buildGrayscaleTransformer(): ChunkTransformerFn {
   return (chunk: Uint8Array) => {
     const out = new Uint8Array(chunk.byteLength);
@@ -383,8 +366,7 @@ export function resolveChunkTransformer(
 
   if (isEndianSwapPair(src, tgt)) return buildEndianSwapTransformer();
   if (isU8PcmPair(src, tgt)) return buildU8PcmTransformer();
-  if (src === 'csv' && (tgt === 'tsv' || tgt === 'tab')) return buildCsvTsvTransformer(44, 9);
-  if ((src === 'tsv' || src === 'tab') && tgt === 'csv') return buildCsvTsvTransformer(9, 44);
+  if (isStreamableDelimitedPair(src, tgt)) return createDelimitedStreamTransformer(src, tgt, options);
   if (isGrayscalePair(src, tgt)) return buildGrayscaleTransformer();
   if (src === 'wav' && tgt === 'pcm') return buildWavToPcmTransformer();
   if (src === 'pcm' && tgt === 'wav') return buildPcmToWavTransformer(options);

@@ -41,6 +41,7 @@ import {
 import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMlDocument } from './data-xml';
 import { assertToml10Syntax } from './data-toml';
 import { assertConversionOptionsObject } from './options-guard';
+import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
 
 export { encodeParquet, decodeParquet };
 
@@ -468,28 +469,21 @@ function parseDelimitedTable(inputBuffer: Buffer, src: string, options: Conversi
 // ---------------------------------------------------------------------------
 
 /**
- * Cells a spreadsheet evaluates as a formula: a leading = + - @ TAB or CR. Plain numeric literals
- * (-5, +1.5e3) are values, not formulas, so they are left alone.
- */
-const FORMULA_TRIGGER = /^(?![+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$)[=+\-@\t\r]/;
-const UTF8_BOM_CHAR = '\uFEFF';
-
-/**
- * Writes CSV or TSV. A UTF-8 BOM is on by default for CSV, the format spreadsheet applications
- * open directly and decode as UTF-8 only when the BOM is present; it is off by default for TSV,
- * which mostly feeds data tooling where a BOM would corrupt the first header. Formula cells are
- * prefixed with ' and quoted unless `escapeFormulas` is false.
+ * Writes CSV or TSV under the shared delimited-output rules: a UTF-8 BOM by default for CSV only
+ * (writesBomByDefault), and formula cells (FORMULA_TRIGGER) prefixed with ' and quoted unless
+ * `escapeFormulas` is false.
  */
 function writeDelimited(fields: string[], rows: readonly (readonly unknown[])[], tgt: string, options: ConversionOptions): Buffer {
   const delimiter = tgt === 'tsv' ? '\t' : ',';
   const escapeFormulas = options.escapeFormulas ?? true;
-  const withBom = options.bom ?? tgt === 'csv';
+  const withBom = options.bom ?? writesBomByDefault(tgt);
   const data = rows.map((row) => row.map((cell) => cell ?? ''));
   const text = Papa.unparse(
     { fields, data },
     {
       delimiter,
       escapeFormulae: escapeFormulas ? FORMULA_TRIGGER : false,
+      newline: DELIMITED_RECORD_SEPARATOR,
       // A one-column record whose only value is empty would otherwise be an empty line.
       quotes: (value: unknown) => fields.length === 1 && value === '',
     }

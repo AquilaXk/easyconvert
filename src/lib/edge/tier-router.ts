@@ -11,6 +11,7 @@
 
 import { ConversionOptions } from '../types';
 import { isPureCadConvertible } from './pure/pure-cad';
+import { isStreamableDelimitedPair, isStreamableEncoding } from './workers/delimited-stream';
 import { isPureAudioConvertible } from './pure/pure-audio';
 import { isPureCanvasConvertible, isCanvasSupported } from './pure/pure-canvas';
 
@@ -300,6 +301,10 @@ export function isOpfsStreamingSupported(
   const tgt = targetFormat.toLowerCase();
   if (options?.allowPassThrough && src === tgt) {
     return true;
+  }
+  // The streaming CSV/TSV path decodes UTF-8 only; another input encoding is converted on the server.
+  if (isStreamableDelimitedPair(src, tgt) && !isStreamableEncoding(options?.encoding)) {
+    return false;
   }
   return SUPPORTED_OPFS_STREAMING_CONVERSIONS.has(`${src}:${tgt}`);
 }
