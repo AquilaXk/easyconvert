@@ -505,10 +505,9 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       const res = await convertData(Buffer.from(userXml, 'utf-8'), 'xml', 'json', {}, 'test.xml');
       expect(res.mimeType).toBe('application/json');
       // The JSON output is inert data; dropping these elements would silently lose the user's content.
-      expect(JSON.parse(res.buffer.toString('utf-8'))).toEqual([
-        'root',
-        ['item', ['name', 'Product'], ['script', 'alert(1)'], ['desc', { onclick: 'evil()' }, 'Desc']],
-      ]);
+      expect(JSON.parse(res.buffer.toString('utf-8'))).toEqual({
+        $jsonml: ['root', ['item', ['name', 'Product'], ['script', 'alert(1)'], ['desc', { onclick: 'evil()' }, 'Desc']]],
+      });
     });
 
     it('enforces SVG sanitization in vector-cad conversions', async () => {

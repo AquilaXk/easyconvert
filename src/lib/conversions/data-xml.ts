@@ -5,7 +5,8 @@ import { MAX_DATA_NESTING_DEPTH, isDataObject, setOwn, type DataObject, type Dat
 /**
  * XML for data conversions, parsed by saxes (a conformant, namespace-aware XML 1.0 parser).
  *
- * XML <-> JSON mapping convention: JsonML (http://www.jsonml.org/). An element is the array
+ * XML <-> JSON mapping convention: JsonML (http://www.jsonml.org/), wrapped in the envelope
+ * {"$jsonml": tree} so that it cannot be confused with ordinary JSON arrays. An element is the array
  * [qualifiedName, {attributes}?, ...children]. The attributes object appears only when the
  * element has attributes and keeps their document order; each child is an element array or a
  * string of character data. Adjacent character data (text, CDATA sections, expanded references)
@@ -407,6 +408,9 @@ export function parseXmlDocument(text: string): XmlElement {
 // Tree views: JsonML, text, records
 // ---------------------------------------------------------------------------
 
+/** The single key of the object whose value is a JsonML tree, in both directions. */
+export const JSONML_KEY = '$jsonml';
+
 export function xmlToJsonMl(element: XmlElement): DataValue {
   const node: DataValue[] = [element.name];
   if (element.attributes.length > 0) {
@@ -418,6 +422,13 @@ export function xmlToJsonMl(element: XmlElement): DataValue {
     node.push(typeof child === 'string' ? child : xmlToJsonMl(child));
   }
   return node;
+}
+
+/** The JSON value of an XML document: its JsonML tree in the {"$jsonml": tree} envelope. */
+export function xmlToJsonMlDocument(root: XmlElement): DataObject {
+  const envelope: DataObject = {};
+  setOwn(envelope, JSONML_KEY, xmlToJsonMl(root));
+  return envelope;
 }
 
 /** XPath string-value of the element: all character data of its descendants in document order. */
@@ -524,8 +535,7 @@ type JsonMlElement = [string, ...DataValue[]];
 
 /**
  * Whether a value is JsonML as xmlToJsonMl produces it: [QName, non-empty attributes?, ...children]
- * where children are non-empty strings (never two in a row) or such elements. Any other JSON
- * value is written with the generic mapping.
+ * where children are non-empty strings (never two in a row) or such elements.
  */
 function isJsonMlElement(value: DataValue, depth = 0): value is JsonMlElement {
   if (!Array.isArray(value) || typeof value[0] !== 'string' || !QNAME_PATTERN.test(value[0])) return false;
@@ -610,20 +620,35 @@ function writeGenericElement(value: DataValue, tag: string, out: string[], depth
   out.push('</', tag, '>');
 }
 
+/** The JsonML tree when the value is the {"$jsonml": tree} envelope (an object with that single key). */
+function jsonMlEnvelopeContent(value: DataValue): { tree: DataValue } | null {
+  if (!isDataObject(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== JSONML_KEY) return null;
+  return { tree: value[JSONML_KEY] };
+}
+
 /**
- * Writes XML from data: a JsonML tree (as produced from XML) is written back exactly, any other
- * value through the generic element mapping under <root>. The generic mapping only emits
+ * Writes XML from data: a JsonML tree in its {"$jsonml": tree} envelope (as produced from XML) is
+ * written back exactly, any other value through the generic element mapping under <root>, even
+ * an array that happens to look like JsonML. The generic mapping only emits
  * unprefixed names and escaped, checked character data, so it is well-formed by construction;
  * JsonML names carry prefixes that must be declared, so that output is re-parsed and a namespace
  * problem fails here instead of reaching the user as malformed XML.
  */
 export function serializeDataToXml(value: DataValue): string {
   const out: string[] = [XML_DECLARATION, '\n'];
-  if (!isJsonMlElement(value)) {
+  const envelope = jsonMlEnvelopeContent(value);
+  if (envelope === null) {
     writeGenericElement(value, 'root', out, 0);
     return out.join('');
   }
-  writeJsonMlElement(value, out);
+  if (!isJsonMlElement(envelope.tree)) {
+    throw new DataRepresentationError(
+      `The "${JSONML_KEY}" value is not a JsonML element: [name, {attributes}?, ...children].`
+    );
+  }
+  writeJsonMlElement(envelope.tree, out);
   const xml = out.join('');
   try {
     parseXmlDocument(xml);

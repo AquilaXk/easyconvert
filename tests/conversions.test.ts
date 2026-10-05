@@ -230,9 +230,9 @@ describe('Conversion Engine Integration Tests', () => {
 
       const result = await convertFile(buffer, 'xml', 'json', {}, 'data.xml');
       expect(result.mimeType).toBe('application/json');
-      // JsonML: [name, {attributes}?, ...children] keeps element order and mixed content.
+      // JsonML [name, {attributes}?, ...children] in a {"$jsonml": ...} envelope keeps element order and mixed content.
       const parsed = JSON.parse(result.buffer.toString('utf-8'));
-      expect(parsed).toEqual(['root', ['title', 'EasyConvert'], ['version', '1.0']]);
+      expect(parsed).toEqual({ $jsonml: ['root', ['title', 'EasyConvert'], ['version', '1.0']] });
     });
 
     it('converts XML to plain text without throwing', async () => {

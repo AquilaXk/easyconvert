@@ -24,6 +24,8 @@ import { oracleTest } from './helpers/oracle-test';
 const FIXTURE_DIR = path.resolve(__dirname, 'fixtures/data-text');
 
 type JsonMl = string | [string, ...unknown[]];
+/** The one key of the object that marks its value as a JsonML tree. */
+const JSONML_KEY = '$jsonml';
 
 function withTempFile<T>(content: Buffer | string, suffix: string, use: (file: string) => T): T {
   const file = path.join(os.tmpdir(), `xml-oracle-${randomUUID()}${suffix}`);
@@ -87,11 +89,14 @@ function xpathStringValue(xml: Buffer | string): string {
   return out.slice(0, -1);
 }
 
+/** XML -> JSON output: the JsonML tree inside its {"$jsonml": ...} envelope. */
 async function xmlToJsonMl(xml: Buffer | string): Promise<JsonMl> {
   const input = Buffer.isBuffer(xml) ? xml : Buffer.from(xml, 'utf-8');
   const result = await convertFile(input, 'xml', 'json', {}, 'data.xml');
   expect(result.mimeType).toBe('application/json');
-  return JSON.parse(result.buffer.toString('utf-8')) as JsonMl;
+  const envelope = JSON.parse(result.buffer.toString('utf-8')) as Record<string, JsonMl>;
+  expect(Object.keys(envelope)).toEqual([JSONML_KEY]);
+  return envelope[JSONML_KEY];
 }
 
 async function jsonToXml(value: unknown): Promise<Buffer> {
@@ -201,7 +206,7 @@ describe('XML to JSON follows the JsonML convention', () => {
 describe('XML round trip through JsonML', () => {
   for (const [name, xml] of Object.entries(CORPUS)) {
     oracleTest(`is canonically identical after XML -> JSON -> XML for ${name}`, ['xmllint'], async () => {
-      const output = await jsonToXml(await xmlToJsonMl(xml));
+      const output = await jsonToXml({ [JSONML_KEY]: await xmlToJsonMl(xml) });
       assertWellFormedXml(output);
       expect(canonicalXml(output)).toBe(canonicalXml(xml));
     });
@@ -209,7 +214,7 @@ describe('XML round trip through JsonML', () => {
 
   oracleTest('re-encodes a Shift_JIS document as canonically identical UTF-8', ['xmllint'], async () => {
     const source = readFileSync(path.join(FIXTURE_DIR, 'japanese.shift_jis.xml'));
-    const output = await jsonToXml(await xmlToJsonMl(source));
+    const output = await jsonToXml({ [JSONML_KEY]: await xmlToJsonMl(source) });
     expect(output.subarray(0, 38).toString('utf-8')).toBe('<?xml version="1.0" encoding="UTF-8"?>');
     expect(canonicalXml(output)).toBe(canonicalXml(source));
   });
@@ -230,7 +235,7 @@ describe('XML to YAML and CSV', () => {
     const loaded = withTempFile(result.buffer, '.yaml', (file) =>
       JSON.parse(runOracle('python3', ['-c', 'import json, sys, yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1], encoding="utf-8"))))', file]))
     );
-    expect(loaded).toEqual(minidomJsonMl(CORPUS.catalog));
+    expect(loaded).toEqual({ [JSONML_KEY]: minidomJsonMl(CORPUS.catalog) });
   });
 
   oracleTest('extracts one record per repeated element with attributes and child text', ['python3'], async () => {
@@ -319,6 +324,31 @@ describe('JSON to XML', () => {
       '<?xml version="1.0" encoding="UTF-8"?>\n<root><item><_1st>1</_1st><a_b>x&lt;y&amp;z</a_b><_>true</_>' +
         '<nested><list>1</list><list><item>2</item><item>3</item></list><none/></nested></item><item>tail</item></root>'
     );
+  });
+
+  oracleTest('writes a JsonML-shaped array without the envelope through the generic mapping', ['xmllint'], async () => {
+    const output = await jsonToXml(['r', { a: '1' }, 'text']);
+    assertWellFormedXml(output);
+    expect(output.toString('utf-8')).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?>\n<root><item>r</item><item><a>1</a></item><item>text</item></root>'
+    );
+  });
+
+  it('treats only an object whose single key is $jsonml as JsonML', async () => {
+    const withSibling = await jsonToXml({ [JSONML_KEY]: ['r', 'x'], other: 1 });
+    expect(withSibling.toString('utf-8')).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?>\n<root><_jsonml>r</_jsonml><_jsonml>x</_jsonml><other>1</other></root>'
+    );
+    const enveloped = await jsonToXml({ [JSONML_KEY]: ['r', { a: '1' }, 'text', ['e']] });
+    expect(enveloped.toString('utf-8')).toBe('<?xml version="1.0" encoding="UTF-8"?>\n<r a="1">text<e/></r>');
+  });
+
+  it('rejects a $jsonml envelope that does not hold a JsonML element', async () => {
+    for (const bad of ['r', ['1bad'], ['r', 'a', 'b'], ['r', {}], null]) {
+      const err = await rejection(jsonToXml({ [JSONML_KEY]: bad }));
+      expect(err).toBeInstanceOf(DataRepresentationError);
+      expect(err.message).toBe('The "$jsonml" value is not a JsonML element: [name, {attributes}?, ...children].');
+    }
   });
 
   it('rejects characters that XML 1.0 cannot carry', async () => {

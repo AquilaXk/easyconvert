@@ -81,8 +81,10 @@ endsolid TestModel`;
     const xml = '<users><user><id>1</id><name>Alice</name></user><user><id>2</id><name>Bob</name></user></users>';
     const yamlRes = await convertFile(Buffer.from(xml, 'utf-8'), 'xml', 'yaml', {}, 'data.xml');
     expect(yamlRes.mimeType).toBe('application/x-yaml');
-    // The YAML carries the JsonML tree: [users, [user, [id, "1"], [name, Alice]], ...].
-    expect(yamlRes.buffer.toString('utf-8')).toContain('- - name\n    - Alice');
+    // The YAML carries the JsonML tree under $jsonml: [users, [user, [id, "1"], [name, Alice]], ...].
+    const yamlText = yamlRes.buffer.toString('utf-8');
+    expect(yamlText.startsWith('$jsonml:\n  - users\n')).toBe(true);
+    expect(yamlText).toContain('- - name\n      - Alice');
 
     const csvRes = await convertFile(Buffer.from(xml, 'utf-8'), 'xml', 'csv', {}, 'data.xml');
     expect(csvRes.mimeType).toBe('text/csv');

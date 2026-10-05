@@ -36,7 +36,7 @@ import {
   type DataObject,
   type DataValue,
 } from './data-json';
-import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMl } from './data-xml';
+import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMlDocument } from './data-xml';
 import { assertToml10Syntax } from './data-toml';
 
 export { encodeParquet, decodeParquet };
@@ -683,7 +683,7 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
   }
   if (src === 'xml') {
     const root = parseXmlDocument(decodeXmlText(inputBuffer));
-    return { value: xmlToJsonMl(root), records: () => xmlRecords(root), text: () => xmlStringValue(root) };
+    return { value: xmlToJsonMlDocument(root), records: () => xmlRecords(root), text: () => xmlStringValue(root) };
   }
   if (src === 'parquet') {
     const records = asRecords(
