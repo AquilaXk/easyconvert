@@ -105,6 +105,32 @@ function requireCoveringFonts(text: string): void {
   }
 }
 
+/** Runs `operation` with an environment variable set, restoring the previous value afterwards. */
+async function withEnvValue<T>(name: string, value: string, operation: () => Promise<T>): Promise<T> {
+  const previous = process.env[name];
+  process.env[name] = value;
+  try {
+    return await operation();
+  } finally {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
+}
+
+/**
+ * Writes an executable stand-in for the LibreOffice binary that answers profile warm-up (--help)
+ * and then runs `conversion` for real conversions, so the engine meets a genuine failing process.
+ */
+function failingSoffice(conversion: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'failing-soffice-'));
+  const file = path.join(dir, 'soffice');
+  fs.writeFileSync(file, `#!/bin/sh\ncase "$*" in *--help*) exit 0;; esac\n${conversion}\n`, { mode: 0o755 });
+  return file;
+}
+
+const A4_LANDSCAPE = /Page size:\s+841\.89 x 595\.(?:28|3\d*) pts/;
+const A4_PORTRAIT = /Page size:\s+595\.(?:28|3\d*) x 841\.89 pts/;
+
 /** Settles a promise into its value or its rejection reason. */
 function settle<T>(promise: Promise<T>): Promise<{ value?: T; error?: unknown }> {
   return promise.then(
@@ -594,26 +620,108 @@ describe('CJK and complex-script text routes to LibreOffice when it is installed
     );
   }
 
-  oracleTest(
-    'Korean-only txt routes to LibreOffice rather than the in-process writer',
-    LIBREOFFICE_TOOLS,
-    async () => {
-      requireCoveringFonts(SAMPLES.korean.join(''));
-      const result = await executeWorkerConversion(buildSource('txt', SAMPLES.korean), 'txt', 'pdf', {}, 'korean.txt');
-      expect(result.engineUsed).toMatch(/^native-soffice/);
-      expect(normalizeText(pdfText(result.buffer))).toBe(normalizeText(SAMPLES.korean.join(' ')));
-    },
-    LIBREOFFICE_TIMEOUT_MS
-  );
+  oracleTest('Korean txt that installed fonts cover stays in-process even when LibreOffice is installed', POPPLER_TOOLS, async () => {
+    requireCoveringFonts(SAMPLES.korean.join(''));
+    // A LibreOffice stand-in that would fail: the in-process writer must not even try it.
+    const result = await withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () =>
+      executeWorkerConversion(buildSource('txt', SAMPLES.korean), 'txt', 'pdf', {}, 'korean.txt')
+    );
+    expect(result.engineUsed).toBe('internal-fallback');
+    expect(result.fallbackChain).toBeUndefined();
+    expect(normalizeText(pdfText(result.buffer))).toBe(normalizeText(SAMPLES.korean.join(' ')));
+    expectEmbeddedFontsOnly(result.buffer);
+  });
 
-  oracleTest('Korean txt falls back to the in-process writer, with fonts, when LibreOffice is absent', POPPLER_TOOLS, async () => {
+  oracleTest('Korean HTML falls back to the in-process renderer, with fonts, when LibreOffice is absent', POPPLER_TOOLS, async () => {
     requireCoveringFonts(SAMPLES.korean.join(''));
     const result = await withMissingBinary('SOFFICE_PATH', () =>
-      executeWorkerConversion(buildSource('txt', SAMPLES.korean), 'txt', 'pdf', {}, 'korean.txt')
+      executeWorkerConversion(buildSource('html', SAMPLES.korean), 'html', 'pdf', {}, 'korean.html')
     );
     expect(result.engineUsed).toBe('internal-fallback');
     expect(result.fallbackChain?.some((entry) => entry.startsWith('native-soffice'))).toBe(true);
     expect(normalizeText(pdfText(result.buffer))).toBe(normalizeText(SAMPLES.korean.join(' ')));
     expectEmbeddedFontsOnly(result.buffer);
+  });
+});
+
+describe('LibreOffice failures, page orientation and text encodings', () => {
+  oracleTest('HTML falls back to the in-process renderer when LibreOffice exits with an error', POPPLER_TOOLS, async () => {
+    const result = await withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () =>
+      executeWorkerConversion(Buffer.from(STRUCTURED_HTML, 'utf-8'), 'html', 'pdf', {}, 'report.html')
+    );
+    expect(result.engineUsed).toBe('internal-fallback');
+    expect(result.fallbackChain?.[0]).toMatch(/^native-soffice: /);
+    expectStructuredLayout(result.buffer);
+  });
+
+  oracleTest('HTML falls back to the in-process renderer when LibreOffice times out', POPPLER_TOOLS, async () => {
+    const TIMEOUT_MS = 1500;
+    const BUDGET_MS = 20_000;
+    const started = Date.now();
+    const result = await withEnvValue('SOFFICE_PATH', failingSoffice('exec sleep 60'), () =>
+      executeWorkerConversion(Buffer.from(STRUCTURED_HTML, 'utf-8'), 'html', 'pdf', { timeoutMs: TIMEOUT_MS }, 'report.html')
+    );
+    const elapsed = Date.now() - started;
+    expect(result.engineUsed).toBe('internal-fallback');
+    expect(result.fallbackChain?.[0]).toMatch(/^native-soffice: /);
+    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+    expectStructuredLayout(result.buffer);
+  }, 60_000);
+
+  it('reports a LibreOffice failure on complex-script text as EngineUnavailableError (503)', async () => {
+    const { error } = await settle(
+      withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () =>
+        executeWorkerConversion(Buffer.from(ARABIC_LINE, 'utf-8'), 'txt', 'pdf', {}, 'arabic.txt')
+      )
+    );
+    expect((error as Error)?.name).toBe('EngineUnavailableError');
+    expect((error as EngineUnavailableError).engineName).toBe('soffice');
+  });
+
+  oracleTest('an explicit orientation keeps non-complex-script HTML in-process on landscape pages', ['pdfinfo', 'pdftotext'], async () => {
+    const result = await withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () =>
+      executeWorkerConversion(Buffer.from('<p>Landscape page</p>', 'utf-8'), 'html', 'pdf', { orientation: 'landscape' }, 'wide.html')
+    );
+    expect(result.engineUsed).toBe('internal-fallback');
+    expect(result.fallbackChain).toBeUndefined();
+    expect(runPoppler('pdfinfo', [], result.buffer)).toMatch(A4_LANDSCAPE);
+    expect(normalizeText(pdfText(result.buffer))).toBe('Landscape page');
+  });
+
+  oracleTest(
+    'complex-script text with an orientation renders through LibreOffice on pages of that orientation',
+    LIBREOFFICE_TOOLS,
+    async () => {
+      requireCoveringFonts(ARABIC_LINE);
+      for (const [orientation, pageSize] of [
+        ['landscape', A4_LANDSCAPE],
+        ['portrait', A4_PORTRAIT],
+      ] as const) {
+        const result = await executeWorkerConversion(Buffer.from(`${ARABIC_LINE}\n`, 'utf-8'), 'txt', 'pdf', { orientation }, 'arabic.txt');
+        expect(result.engineUsed).toMatch(/^native-soffice/);
+        expect(runPoppler('pdfinfo', [], result.buffer)).toMatch(pageSize);
+        expect(normalizeText(pdfText(result.buffer))).toBe(normalizeText(ARABIC_LINE));
+      }
+    },
+    LIBREOFFICE_TIMEOUT_MS
+  );
+
+  oracleTest('decodes UTF-16 text with a byte order mark', POPPLER_TOOLS, async () => {
+    requireCoveringFonts(SAMPLES.korean.join(''));
+    const text = SAMPLES.korean.join('\n');
+    for (const [label, bytes] of [
+      ['utf-16le', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')])],
+      ['utf-16be', Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, 'utf16le').swap16()])],
+    ] as const) {
+      const result = await convertFile(bytes, 'txt', 'pdf', {}, `${label}.txt`);
+      expect({ label, text: normalizeText(pdfText(result.buffer)) }).toEqual({ label, text: normalizeText(SAMPLES.korean.join(' ')) });
+    }
+  });
+
+  it('rejects text that is not valid UTF-8 and has no UTF-16 byte order mark', async () => {
+    const eucKr = Buffer.from('C7D1B1B9BEEE20B9AEBCAD', 'hex');
+    const { error } = await settle(convertFile(eucKr, 'txt', 'pdf', {}, 'euc-kr.txt'));
+    expect((error as Error)?.name).toBe('ConversionFailedError');
+    expect((error as Error).message).toMatch(/UTF-8/);
   });
 });

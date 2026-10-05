@@ -43,6 +43,7 @@ import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { parseHtmlToPdfBlocks } from './html-blocks';
+import { decodeTextInput } from './text-input';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
 
 export {
@@ -531,6 +532,9 @@ export async function convertDocument(
     textContent = extractTextFromDoc(inputBuffer);
   } else if (src === 'tex') {
     textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
+  } else if (src === 'txt' && tgt === 'pdf') {
+    // Rendered text must be exactly the input text: non-UTF-8 bytes fail instead of becoming mojibake.
+    textContent = decodeTextInput(inputBuffer);
   } else {
     textContent = inputBuffer.toString('utf-8');
   }
