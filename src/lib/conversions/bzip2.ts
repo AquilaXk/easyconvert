@@ -1,647 +1,915 @@
 /**
- * Pure TypeScript Bzip2 Compressor and Decompressor
- * Strictly zero external dependencies, in-memory ephemeral stream compliant.
+ * Pure TypeScript bzip2 compressor and decompressor.
+ * Zero external dependencies, in-memory, bounded-resource and fail-closed on malformed input.
+ *
+ * Format reference: bzip2 1.0.x stream layout (stream header, 900k-style blocks with initial RLE1,
+ * BWT, MTF + RUNA/RUNB zero-run coding, multi-table Huffman with selectors, block and stream CRCs).
  */
 
-// Bzip2 CRC-32 table (polynomial 0x04C11DB7)
+import { ConversionFailedError } from '../types';
+
+// ---------------------------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------------------------
+
+const BZ_BLOCK_UNIT = 100_000;
+const BZ_MIN_LEVEL = 1;
+const BZ_MAX_LEVEL = 9;
+/** Encoder slack so that one RLE1 run (<= 5 bytes) can always be appended without passing the block size. */
+const BZ_BLOCK_SLACK = 19;
+const BZ_RLE1_MIN_RUN = 4;
+const BZ_RLE1_MAX_RUN = 255;
+const BZ_RLE1_RUN_BYTES = 5;
+const BZ_GROUP_SIZE = 50;
+const BZ_MIN_TREES = 2;
+const BZ_MAX_TREES = 6;
+const BZ_MAX_SELECTORS = 18_002;
+const BZ_ENCODE_MAX_CODE_LEN = 17;
+const BZ_DECODE_MAX_CODE_LEN = 20;
+const BZ_MAX_ALPHA_SIZE = 258;
+const BZ_RUNA = 0;
+const BZ_RUNB = 1;
+const BZ_HUFFMAN_ITERATIONS = 4;
+const BZ_INITIAL_UNUSED_COST = 15;
+const BZ_PEEK_BITS = 20;
+const BZ_ORIG_PTR_BITS = 24;
+const BZ_CRC_POLY = 0x04c11db7;
+const BZ_BYTE_MASK = 0xff;
+
+const BZ_BLOCK_MAGIC = [0x31, 0x41, 0x59, 0x26, 0x53, 0x59];
+const BZ_END_MAGIC = [0x17, 0x72, 0x45, 0x38, 0x50, 0x90];
+const BZ_SIGNATURE = [0x42, 0x5a, 0x68]; // 'B' 'Z' 'h'
+const BZ_DIGIT_ZERO = 0x30;
+
+/** Default cap on decoded output (matches the archive layer's uncompressed-size limit). */
+export const BZIP2_DEFAULT_MAX_OUTPUT_BYTES = 500 * 1024 * 1024;
+
+const OUTPUT_INITIAL_CAPACITY = 64 * 1024;
+const OUTPUT_INITIAL_CAPACITY_MAX = 32 * 1024 * 1024;
+const OUTPUT_EXPECTED_EXPANSION = 4;
+const BZ_ALPHABET = 256;
+const BZ_MAP_GROUPS = 16;
+const BZ_CODE_START_BITS = 5;
+const BZ_TREE_COUNT_BITS = 3;
+const BZ_SELECTOR_COUNT_BITS = 15;
+const BZ_CRC_BITS = 32;
+const BZ_HEADER_MIN_BYTES = 4;
+const BIT_BUFFER_REFILL_THRESHOLD = 23;
+const BYTE_BITS = 8;
+const HALF_WORD_BITS = 16;
+const HALF_WORD_MULTIPLIER = 65_536;
+
+function bzError(message: string): ConversionFailedError {
+  return new ConversionFailedError(`Invalid bzip2 data: ${message}`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// CRC-32 (MSB-first, polynomial 0x04C11DB7)
+// ---------------------------------------------------------------------------------------------
+
 const BZ_CRC_TABLE = new Uint32Array(256);
 for (let i = 0; i < 256; i++) {
   let c = i << 24;
   for (let j = 0; j < 8; j++) {
-    c = (c & 0x80000000) ? ((c << 1) ^ 0x04c11db7) : (c << 1);
+    c = (c & 0x80000000) ? ((c << 1) ^ BZ_CRC_POLY) : (c << 1);
   }
   BZ_CRC_TABLE[i] = c >>> 0;
 }
 
 export function updateBzCrc(crc: number, val: number): number {
-  return ((crc << 8) ^ BZ_CRC_TABLE[((crc >>> 24) ^ val) & 0xff]) >>> 0;
+  return ((crc << 8) ^ BZ_CRC_TABLE[((crc >>> 24) ^ val) & BZ_BYTE_MASK]) >>> 0;
 }
 
 export function computeBzBlockCrc(buf: Uint8Array): number {
   let crc = 0xffffffff;
   for (let i = 0; i < buf.length; i++) {
-    crc = updateBzCrc(crc, buf[i]);
+    crc = ((crc << 8) ^ BZ_CRC_TABLE[((crc >>> 24) ^ buf[i]) & BZ_BYTE_MASK]) >>> 0;
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+function combineCrc(combined: number, blockCrc: number): number {
+  return (((combined << 1) | (combined >>> 31)) ^ blockCrc) >>> 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bit I/O
+// ---------------------------------------------------------------------------------------------
+
 class BitWriter {
-  private buffer: Buffer;
+  private buffer: Uint8Array;
   private bytePos = 0;
-  private bitPos = 0; // 0 to 7 (MSB first)
+  private acc = 0;
+  private accBits = 0;
 
-  constructor(initialCapacity = 65536) {
-    this.buffer = Buffer.alloc(initialCapacity);
+  constructor(initialCapacity: number) {
+    this.buffer = new Uint8Array(Math.max(initialCapacity, 64));
   }
 
-  private ensureCapacity(neededBytes: number) {
-    if (this.bytePos + neededBytes >= this.buffer.length) {
-      const newBuf = Buffer.alloc(Math.max(this.buffer.length * 2, this.buffer.length + neededBytes + 1024));
-      this.buffer.copy(newBuf, 0, 0, this.bytePos + 1);
-      this.buffer = newBuf;
+  private grow(): void {
+    const next = new Uint8Array(this.buffer.length * 2);
+    next.set(this.buffer.subarray(0, this.bytePos));
+    this.buffer = next;
+  }
+
+  /** Writes the low `width` bits of `value`, MSB first. */
+  writeBits(value: number, width: number): void {
+    if (width > HALF_WORD_BITS) {
+      this.writeBits(value >>> HALF_WORD_BITS, width - HALF_WORD_BITS);
+      this.writeBits(value & 0xffff, HALF_WORD_BITS);
+      return;
     }
-  }
-
-  writeBits(val: number, numBits: number) {
-    this.ensureCapacity(Math.ceil(numBits / 8) + 2);
-    for (let i = numBits - 1; i >= 0; i--) {
-      const bit = (val >>> i) & 1;
-      this.buffer[this.bytePos] |= (bit << (7 - this.bitPos));
-      this.bitPos++;
-      if (this.bitPos === 8) {
-        this.bitPos = 0;
-        this.bytePos++;
-      }
+    this.acc = (this.acc << width) | (value & ((1 << width) - 1));
+    this.accBits += width;
+    while (this.accBits >= BYTE_BITS) {
+      if (this.bytePos >= this.buffer.length) this.grow();
+      this.accBits -= BYTE_BITS;
+      this.buffer[this.bytePos++] = (this.acc >>> this.accBits) & BZ_BYTE_MASK;
     }
+    this.acc &= (1 << this.accBits) - 1;
   }
 
-  writeByte(val: number) {
-    this.writeBits(val, 8);
-  }
-
-  writeBytes(bytes: Uint8Array) {
-    for (let i = 0; i < bytes.length; i++) {
-      this.writeByte(bytes[i]);
-    }
+  writeByte(value: number): void {
+    this.writeBits(value, BYTE_BITS);
   }
 
   finish(): Buffer {
-    let len = this.bytePos;
-    if (this.bitPos > 0) {
-      len++; // partial byte has already been written
+    if (this.accBits > 0) {
+      this.writeBits(0, BYTE_BITS - this.accBits);
     }
-    return this.buffer.subarray(0, len);
+    return Buffer.from(this.buffer.subarray(0, this.bytePos));
   }
 }
 
 class BitReader {
-  private buffer: Uint8Array;
-  private bytePos = 0;
-  private bitPos = 0;
+  private bitBuf = 0;
+  private bitCnt = 0;
+  private pos = 0;
+  /** Number of zero bits appended past the end of the data (never legitimately consumable). */
+  private padBits = 0;
 
-  constructor(buffer: Uint8Array) {
-    this.buffer = buffer;
+  constructor(private readonly data: Uint8Array, start: number) {
+    this.pos = start;
   }
 
-  readBits(numBits: number): number {
-    let res = 0;
-    for (let i = 0; i < numBits; i++) {
-      if (this.bytePos >= this.buffer.length) {
-        throw new Error('Unexpected EOF in Bzip2 bitstream.');
+  private fill(): void {
+    while (this.bitCnt <= BIT_BUFFER_REFILL_THRESHOLD) {
+      let byte = 0;
+      if (this.pos < this.data.length) {
+        byte = this.data[this.pos++];
+      } else {
+        this.padBits += BYTE_BITS;
       }
-      const bit = (this.buffer[this.bytePos] >>> (7 - this.bitPos)) & 1;
-      res = (res << 1) | bit;
-      this.bitPos++;
-      if (this.bitPos === 8) {
-        this.bitPos = 0;
-        this.bytePos++;
-      }
+      this.bitBuf = (this.bitBuf << BYTE_BITS) | byte;
+      this.bitCnt += BYTE_BITS;
     }
-    return res >>> 0;
+  }
+
+  /** Returns the next `n` (<= 24) bits without consuming them; bits past the end read as zero. */
+  peek(n: number): number {
+    this.fill();
+    return this.bitBuf >>> (this.bitCnt - n);
+  }
+
+  consume(n: number): void {
+    this.bitCnt -= n;
+    this.bitBuf &= (1 << this.bitCnt) - 1;
+    if (this.padBits > this.bitCnt) {
+      throw bzError('unexpected end of data (truncated stream)');
+    }
+  }
+
+  /** Reads `n` (<= 24) bits. */
+  readBits(n: number): number {
+    const v = this.peek(n);
+    this.consume(n);
+    return v;
   }
 
   readBit(): number {
     return this.readBits(1);
   }
+
+  read32(): number {
+    const hi = this.readBits(HALF_WORD_BITS);
+    const lo = this.readBits(HALF_WORD_BITS);
+    return hi * HALF_WORD_MULTIPLIER + lo;
+  }
+
+  /** Drops bits up to the next byte boundary of the underlying data. */
+  alignToByte(): void {
+    const realBits = this.bitCnt - this.padBits;
+    this.consume(realBits % BYTE_BITS);
+  }
+
+  /** Whole unread bytes of real data left (only meaningful after alignToByte). */
+  bytesRemaining(): number {
+    return ((this.bitCnt - this.padBits) >> 3) + (this.data.length - this.pos);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Encoder: BWT by prefix doubling over cyclic rotations
+// ---------------------------------------------------------------------------------------------
+
+interface BwtResult {
+  lColumn: Uint8Array;
+  origPtr: number;
+}
+
+/** Sorts all cyclic rotations of `block` in O(n log n) (prefix doubling, counting sort). */
+function burrowsWheelerTransform(block: Uint8Array): BwtResult {
+  const n = block.length;
+  const lColumn = new Uint8Array(n);
+  if (n === 1) {
+    lColumn[0] = block[0];
+    return { lColumn, origPtr: 0 };
+  }
+
+  let p = new Int32Array(n);
+  let pn = new Int32Array(n);
+  let c = new Int32Array(n);
+  let cn = new Int32Array(n);
+  const cnt = new Int32Array(Math.max(n, BZ_ALPHABET));
+
+  for (let i = 0; i < n; i++) cnt[block[i]]++;
+  for (let i = 1; i < BZ_ALPHABET; i++) cnt[i] += cnt[i - 1];
+  for (let i = n - 1; i >= 0; i--) p[--cnt[block[i]]] = i;
+
+  let classes = 1;
+  c[p[0]] = 0;
+  for (let i = 1; i < n; i++) {
+    if (block[p[i]] !== block[p[i - 1]]) classes++;
+    c[p[i]] = classes - 1;
+  }
+
+  for (let h = 1; h < n && classes < n; h *= 2) {
+    for (let i = 0; i < n; i++) {
+      const shifted = p[i] - h;
+      pn[i] = shifted < 0 ? shifted + n : shifted;
+    }
+    cnt.fill(0, 0, classes);
+    for (let i = 0; i < n; i++) cnt[c[pn[i]]]++;
+    for (let i = 1; i < classes; i++) cnt[i] += cnt[i - 1];
+    for (let i = n - 1; i >= 0; i--) p[--cnt[c[pn[i]]]] = pn[i];
+
+    cn[p[0]] = 0;
+    classes = 1;
+    for (let i = 1; i < n; i++) {
+      const curA = c[p[i]];
+      const prevA = c[p[i - 1]];
+      let curSecond = p[i] + h;
+      if (curSecond >= n) curSecond -= n;
+      let prevSecond = p[i - 1] + h;
+      if (prevSecond >= n) prevSecond -= n;
+      if (curA !== prevA || c[curSecond] !== c[prevSecond]) classes++;
+      cn[p[i]] = classes - 1;
+    }
+    const swap = c;
+    c = cn;
+    cn = swap;
+  }
+
+  let origPtr = 0;
+  for (let i = 0; i < n; i++) {
+    const idx = p[i];
+    if (idx === 0) origPtr = i;
+    lColumn[i] = block[idx === 0 ? n - 1 : idx - 1];
+  }
+  return { lColumn, origPtr };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Encoder: length-limited Huffman code construction
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Builds Huffman code lengths for `alphaSize` symbols limited to `maxLen`. Frequencies are floored
+ * at one so every symbol receives a code; if the tree is too deep the weights are flattened and
+ * the tree is rebuilt, as the reference encoder does.
+ */
+function makeCodeLengths(freq: Int32Array, alphaSize: number, maxLen: number): Uint8Array {
+  const weights = new Int32Array(alphaSize);
+  for (let i = 0; i < alphaSize; i++) weights[i] = Math.max(1, freq[i]);
+
+  const totalNodes = 2 * alphaSize - 1;
+  const nodeWeight = new Float64Array(totalNodes);
+  const parent = new Int32Array(totalNodes);
+  const depth = new Int32Array(totalNodes);
+  const lengths = new Uint8Array(alphaSize);
+
+  for (;;) {
+    const order = Array.from({ length: alphaSize }, (_, i) => i).sort(
+      (a, b) => weights[a] - weights[b] || a - b
+    );
+    // Leaves are nodes 0..alphaSize-1 in sorted order; internal nodes are appended in creation order.
+    const leafOf = new Int32Array(alphaSize);
+    for (let i = 0; i < alphaSize; i++) {
+      leafOf[i] = order[i];
+      nodeWeight[i] = weights[order[i]];
+    }
+    let leafHead = 0;
+    let internalHead = alphaSize;
+    let internalTail = alphaSize;
+    const takeSmallest = (): number => {
+      const leafAvailable = leafHead < alphaSize;
+      const internalAvailable = internalHead < internalTail;
+      if (leafAvailable && (!internalAvailable || nodeWeight[leafHead] <= nodeWeight[internalHead])) {
+        return leafHead++;
+      }
+      return internalHead++;
+    };
+    for (let made = 0; made < alphaSize - 1; made++) {
+      const a = takeSmallest();
+      const b = takeSmallest();
+      nodeWeight[internalTail] = nodeWeight[a] + nodeWeight[b];
+      parent[a] = internalTail;
+      parent[b] = internalTail;
+      internalTail++;
+    }
+    const root = totalNodes - 1;
+    depth[root] = 0;
+    let deepest = 0;
+    for (let node = root - 1; node >= 0; node--) {
+      depth[node] = depth[parent[node]] + 1;
+    }
+    for (let i = 0; i < alphaSize; i++) {
+      lengths[leafOf[i]] = depth[i];
+      if (depth[i] > deepest) deepest = depth[i];
+    }
+    if (deepest <= maxLen) return lengths;
+    for (let i = 0; i < alphaSize; i++) weights[i] = 1 + (weights[i] >> 1);
+  }
+}
+
+/** Canonical code assignment: shorter lengths first, ties broken by symbol order. */
+function assignCanonicalCodes(lengths: Uint8Array, alphaSize: number): Int32Array {
+  const codes = new Int32Array(alphaSize);
+  let code = 0;
+  for (let len = 1; len <= BZ_ENCODE_MAX_CODE_LEN; len++) {
+    for (let i = 0; i < alphaSize; i++) {
+      if (lengths[i] === len) codes[i] = code++;
+    }
+    code <<= 1;
+  }
+  return codes;
+}
+
+function chooseTreeCount(symbolCount: number): number {
+  if (symbolCount < 200) return 2;
+  if (symbolCount < 600) return 3;
+  if (symbolCount < 1200) return 4;
+  if (symbolCount < 2400) return 5;
+  return 6;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Encoder: one block
+// ---------------------------------------------------------------------------------------------
+
+function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number): void {
+  const n = rle1Block.length;
+  const { lColumn, origPtr } = burrowsWheelerTransform(rle1Block);
+
+  const unseqToSeq = new Int16Array(BZ_ALPHABET).fill(-1);
+  const inUse = new Uint8Array(BZ_ALPHABET);
+  for (let i = 0; i < n; i++) inUse[lColumn[i]] = 1;
+  const seqToUnseq: number[] = [];
+  for (let i = 0; i < BZ_ALPHABET; i++) {
+    if (inUse[i]) {
+      unseqToSeq[i] = seqToUnseq.length;
+      seqToUnseq.push(i);
+    }
+  }
+  const numSymbols = seqToUnseq.length;
+  const eob = numSymbols + 1;
+  const alphaSize = numSymbols + 2;
+
+  // MTF + zero-run coding (RUNA/RUNB bijective base-2 digits).
+  const symbols = new Uint16Array(n + 1);
+  let symCount = 0;
+  const mtf = new Uint8Array(BZ_ALPHABET);
+  for (let i = 0; i < numSymbols; i++) mtf[i] = i;
+  const symFreq = new Int32Array(alphaSize);
+  let zeroRun = 0;
+  const flushZeroRun = (): void => {
+    let z = zeroRun;
+    while (z > 0) {
+      if (z % 2 === 1) {
+        symbols[symCount++] = BZ_RUNA;
+        symFreq[BZ_RUNA]++;
+        z = (z - 1) / 2;
+      } else {
+        symbols[symCount++] = BZ_RUNB;
+        symFreq[BZ_RUNB]++;
+        z = (z - 2) / 2;
+      }
+    }
+    zeroRun = 0;
+  };
+  for (let i = 0; i < n; i++) {
+    const target = unseqToSeq[lColumn[i]];
+    if (mtf[0] === target) {
+      zeroRun++;
+      continue;
+    }
+    if (zeroRun > 0) flushZeroRun();
+    let pos = 1;
+    let prev = mtf[0];
+    let cur = mtf[1];
+    mtf[1] = prev;
+    while (cur !== target) {
+      pos++;
+      prev = cur;
+      cur = mtf[pos];
+      mtf[pos] = prev;
+    }
+    mtf[0] = cur;
+    symbols[symCount++] = pos + 1;
+    symFreq[pos + 1]++;
+  }
+  if (zeroRun > 0) flushZeroRun();
+  symbols[symCount++] = eob;
+  symFreq[eob]++;
+
+  // Multi-table Huffman: iteratively assign 50-symbol groups to the cheapest table.
+  const numTrees = chooseTreeCount(symCount);
+  const treeLengths: Uint8Array[] = Array.from({ length: numTrees }, () => new Uint8Array(alphaSize));
+  let remainingFreq = symCount;
+  let groupStart = 0;
+  for (let part = numTrees; part > 0; part--) {
+    const targetFreq = Math.floor(remainingFreq / part);
+    let groupEnd = groupStart - 1;
+    let accumulated = 0;
+    while (accumulated < targetFreq && groupEnd < alphaSize - 1) {
+      groupEnd++;
+      accumulated += symFreq[groupEnd];
+    }
+    if (groupEnd > groupStart && part !== numTrees && part !== 1 && (numTrees - part) % 2 === 1) {
+      accumulated -= symFreq[groupEnd];
+      groupEnd--;
+    }
+    const lens = treeLengths[part - 1];
+    for (let v = 0; v < alphaSize; v++) {
+      lens[v] = v >= groupStart && v <= groupEnd ? 0 : BZ_INITIAL_UNUSED_COST;
+    }
+    groupStart = groupEnd + 1;
+    remainingFreq -= accumulated;
+  }
+
+  const numSelectors = Math.ceil(symCount / BZ_GROUP_SIZE);
+  const selectors = new Uint8Array(numSelectors);
+  for (let iter = 0; iter < BZ_HUFFMAN_ITERATIONS; iter++) {
+    const treeFreq = Array.from({ length: numTrees }, () => new Int32Array(alphaSize));
+    const costs = new Int32Array(numTrees);
+    for (let g = 0; g < numSelectors; g++) {
+      const start = g * BZ_GROUP_SIZE;
+      const end = Math.min(start + BZ_GROUP_SIZE, symCount);
+      costs.fill(0);
+      for (let t = 0; t < numTrees; t++) {
+        const lens = treeLengths[t];
+        let cost = 0;
+        for (let k = start; k < end; k++) cost += lens[symbols[k]];
+        costs[t] = cost;
+      }
+      let best = 0;
+      for (let t = 1; t < numTrees; t++) {
+        if (costs[t] < costs[best]) best = t;
+      }
+      selectors[g] = best;
+      const freqs = treeFreq[best];
+      for (let k = start; k < end; k++) freqs[symbols[k]]++;
+    }
+    for (let t = 0; t < numTrees; t++) {
+      treeLengths[t] = makeCodeLengths(treeFreq[t], alphaSize, BZ_ENCODE_MAX_CODE_LEN);
+    }
+  }
+  const treeCodes = treeLengths.map((lens) => assignCanonicalCodes(lens, alphaSize));
+
+  // Block header.
+  BZ_BLOCK_MAGIC.forEach((b) => bw.writeByte(b));
+  bw.writeBits(blockCrc, BZ_CRC_BITS);
+  bw.writeBits(0, 1); // not randomised
+  bw.writeBits(origPtr, BZ_ORIG_PTR_BITS);
+
+  // Symbol map: 16 coarse bits, then 16 fine bits per used group.
+  const groupUsed = new Uint8Array(BZ_MAP_GROUPS);
+  for (let g = 0; g < BZ_MAP_GROUPS; g++) {
+    for (let j = 0; j < BZ_MAP_GROUPS; j++) groupUsed[g] |= inUse[g * BZ_MAP_GROUPS + j];
+    bw.writeBits(groupUsed[g], 1);
+  }
+  for (let g = 0; g < BZ_MAP_GROUPS; g++) {
+    if (!groupUsed[g]) continue;
+    for (let j = 0; j < BZ_MAP_GROUPS; j++) bw.writeBits(inUse[g * BZ_MAP_GROUPS + j], 1);
+  }
+
+  // Selectors, MTF-coded and written in unary.
+  bw.writeBits(numTrees, BZ_TREE_COUNT_BITS);
+  bw.writeBits(numSelectors, BZ_SELECTOR_COUNT_BITS);
+  const selectorMtf = Array.from({ length: numTrees }, (_, i) => i);
+  for (let g = 0; g < numSelectors; g++) {
+    const idx = selectorMtf.indexOf(selectors[g]);
+    selectorMtf.splice(idx, 1);
+    selectorMtf.unshift(selectors[g]);
+    for (let k = 0; k < idx; k++) bw.writeBits(1, 1);
+    bw.writeBits(0, 1);
+  }
+
+  // Delta-coded code lengths.
+  for (let t = 0; t < numTrees; t++) {
+    const lens = treeLengths[t];
+    let curLen = lens[0];
+    bw.writeBits(curLen, BZ_CODE_START_BITS);
+    for (let i = 0; i < alphaSize; i++) {
+      while (curLen < lens[i]) {
+        bw.writeBits(0b10, 2);
+        curLen++;
+      }
+      while (curLen > lens[i]) {
+        bw.writeBits(0b11, 2);
+        curLen--;
+      }
+      bw.writeBits(0, 1);
+    }
+  }
+
+  // Payload.
+  for (let g = 0; g < numSelectors; g++) {
+    const lens = treeLengths[selectors[g]];
+    const codes = treeCodes[selectors[g]];
+    const start = g * BZ_GROUP_SIZE;
+    const end = Math.min(start + BZ_GROUP_SIZE, symCount);
+    for (let k = start; k < end; k++) {
+      const sym = symbols[k];
+      bw.writeBits(codes[sym], lens[sym]);
+    }
+  }
 }
 
 /**
- * Compresses an input buffer to standard bzip2 format.
+ * Compresses an input buffer to a standard single-stream bzip2 file (block size 900k).
  */
 export function compressBzip2(input: Buffer): Buffer {
-  if (input.length === 0) {
-    // Empty bzip2 stream
-    const bw = new BitWriter(64);
-    bw.writeByte(0x42); // 'B'
-    bw.writeByte(0x5a); // 'Z'
-    bw.writeByte(0x68); // 'h'
-    bw.writeByte(0x39); // '9' (block size 900k)
-    // End of stream magic: 0x177245385090
-    bw.writeByte(0x17);
-    bw.writeByte(0x72);
-    bw.writeByte(0x45);
-    bw.writeByte(0x38);
-    bw.writeByte(0x50);
-    bw.writeByte(0x90);
-    bw.writeBits(0, 32); // stream CRC
-    return bw.finish();
-  }
+  const level = BZ_MAX_LEVEL;
+  const blockLimit = level * BZ_BLOCK_UNIT - BZ_BLOCK_SLACK;
+  const bw = new BitWriter(Math.ceil(input.length / 2) + 1024);
+  BZ_SIGNATURE.forEach((b) => bw.writeByte(b));
+  bw.writeByte(BZ_DIGIT_ZERO + level);
 
-  const bw = new BitWriter(input.length + 1024);
-  bw.writeByte(0x42); // 'B'
-  bw.writeByte(0x5a); // 'Z'
-  bw.writeByte(0x68); // 'h'
-  bw.writeByte(0x39); // '9'
-
+  const rle1Capacity = Math.min(blockLimit, Math.ceil((input.length * BZ_RLE1_RUN_BYTES) / BZ_RLE1_MIN_RUN)) + BZ_RLE1_RUN_BYTES;
+  const rle1 = new Uint8Array(rle1Capacity);
   let combinedCrc = 0;
-
-  // Process in blocks up to 900,000 bytes
-  const blockSize = 900000;
-  for (let offset = 0; offset < input.length; offset += blockSize) {
-    const chunk = input.subarray(offset, Math.min(input.length, offset + blockSize));
-    const blockCrc = computeBzBlockCrc(chunk);
-    combinedCrc = (((combinedCrc << 1) | (combinedCrc >>> 31)) ^ blockCrc) >>> 0;
-
-    // 1. Burrows-Wheeler Transform (BWT)
-    const n = chunk.length;
-    // Indices 0..n-1
-    const indices = new Int32Array(n);
-    for (let i = 0; i < n; i++) indices[i] = i;
-
-    // Suffix / cyclic shift comparison
-    indices.sort((a, b) => {
-      let i = a;
-      let j = b;
-      for (let k = 0; k < n; k++) {
-        const byteA = chunk[i];
-        const byteB = chunk[j];
-        if (byteA !== byteB) return byteA - byteB;
-        i = (i + 1) % n;
-        j = (j + 1) % n;
-      }
-      return 0;
-    });
-
-    let origPtr = 0;
-    const lColumn = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      const idx = indices[i];
-      if (idx === 0) origPtr = i;
-      lColumn[i] = chunk[(idx + n - 1) % n];
-    }
-
-    // 2. Identify in-use symbols
-    const inUse = new Uint8Array(256);
-    for (let i = 0; i < n; i++) inUse[lColumn[i]] = 1;
-
-    const inUse16 = new Uint8Array(16);
-    for (let i = 0; i < 16; i++) {
-      for (let j = 0; j < 16; j++) {
-        if (inUse[i * 16 + j]) {
-          inUse16[i] = 1;
-          break;
-        }
-      }
-    }
-
-    // Symbol map (0..numSymbols-1)
-    const symMap: number[] = [];
-    for (let i = 0; i < 256; i++) {
-      if (inUse[i]) symMap.push(i);
-    }
-    const numSymbols = symMap.length;
-
-    // 3. Move-To-Front (MTF) transform
-    const mtfList = [...symMap];
-    const mtfValues: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const b = lColumn[i];
-      const pos = mtfList.indexOf(b);
-      mtfValues.push(pos);
-      if (pos > 0) {
-        mtfList.splice(pos, 1);
-        mtfList.unshift(b);
-      }
-    }
-
-    // 4. Run-length encoding of zeros (RUNA/RUNB)
-    // RUNA = 0, RUNB = 1, symbol + 2
-    const rleSymbols: number[] = [];
-    let zeroCount = 0;
-    for (let i = 0; i < mtfValues.length; i++) {
-      const val = mtfValues[i];
-      if (val === 0) {
-        zeroCount++;
+  let pos = 0;
+  while (pos < input.length) {
+    const start = pos;
+    let n = 0;
+    while (pos < input.length && n < blockLimit) {
+      const byte = input[pos];
+      let run = 1;
+      while (run < BZ_RLE1_MAX_RUN && pos + run < input.length && input[pos + run] === byte) run++;
+      pos += run;
+      if (run < BZ_RLE1_MIN_RUN) {
+        for (let k = 0; k < run; k++) rle1[n++] = byte;
       } else {
-        if (zeroCount > 0) {
-          // Output zeroCount using RUNA (0) and RUNB (1)
-          let z = zeroCount;
-          while (z > 0) {
-            if (z % 2 === 1) {
-              rleSymbols.push(0); // RUNA
-              z = (z - 1) / 2;
-            } else {
-              rleSymbols.push(1); // RUNB
-              z = (z - 2) / 2;
-            }
-          }
-          zeroCount = 0;
-        }
-        rleSymbols.push(val + 1);
+        for (let k = 0; k < BZ_RLE1_MIN_RUN; k++) rle1[n++] = byte;
+        rle1[n++] = run - BZ_RLE1_MIN_RUN;
       }
     }
-    if (zeroCount > 0) {
-      let z = zeroCount;
-      while (z > 0) {
-        if (z % 2 === 1) {
-          rleSymbols.push(0);
-          z = (z - 1) / 2;
-        } else {
-          rleSymbols.push(1);
-          z = (z - 2) / 2;
-        }
-      }
-    }
-    // End of block symbol: numSymbols + 1
-    const eobSymbol = numSymbols + 1;
-    rleSymbols.push(eobSymbol);
-
-    const alphaSize = numSymbols + 2;
-
-    // 5. Build Canonical Huffman Tree
-    // Frequency counts
-    const freqs = new Int32Array(alphaSize);
-    for (const sym of rleSymbols) freqs[sym]++;
-
-    // Simple length calculation (Package-Merge or priority queue)
-    interface Node {
-      sym?: number;
-      freq: number;
-      depth: number;
-      left?: Node;
-      right?: Node;
-    }
-    const nodes: Node[] = [];
-    for (let i = 0; i < alphaSize; i++) {
-      nodes.push({ sym: i, freq: Math.max(1, freqs[i]), depth: 0 });
-    }
-
-    while (nodes.length > 1) {
-      nodes.sort((a, b) => a.freq - b.freq);
-      const left = nodes.shift()!;
-      const right = nodes.shift()!;
-      nodes.push({
-        freq: left.freq + right.freq,
-        depth: 0,
-        left,
-        right,
-      });
-    }
-
-    const codeLengths = new Uint8Array(alphaSize);
-    function assignDepths(node: Node, depth: number) {
-      if (node.sym !== undefined) {
-        codeLengths[node.sym] = Math.min(20, Math.max(1, depth));
-        return;
-      }
-      if (node.left) assignDepths(node.left, depth + 1);
-      if (node.right) assignDepths(node.right, depth + 1);
-    }
-    assignDepths(nodes[0], 0);
-
-    // Generate canonical codes from codeLengths
-    const codes = new Uint32Array(alphaSize);
-    let code = 0;
-    for (let len = 1; len <= 20; len++) {
-      for (let i = 0; i < alphaSize; i++) {
-        if (codeLengths[i] === len) {
-          codes[i] = code++;
-        }
-      }
-      code <<= 1;
-    }
-
-    // 6. Write block header
-    // Block magic: 0x314159265359 (PI)
-    bw.writeByte(0x31);
-    bw.writeByte(0x41);
-    bw.writeByte(0x59);
-    bw.writeByte(0x26);
-    bw.writeByte(0x53);
-    bw.writeByte(0x59);
-
-    // Block CRC (32 bits)
-    bw.writeBits(blockCrc, 32);
-
-    // Randomized bit (0)
-    bw.writeBits(0, 1);
-
-    // OrigPtr (24 bits)
-    bw.writeBits(origPtr, 24);
-
-    // InUse bitmaps
-    for (let i = 0; i < 16; i++) {
-      bw.writeBits(inUse16[i], 1);
-    }
-    for (let i = 0; i < 16; i++) {
-      if (inUse16[i]) {
-        for (let j = 0; j < 16; j++) {
-          bw.writeBits(inUse[i * 16 + j], 1);
-        }
-      }
-    }
-
-    // Number of trees: minimum 2 trees required by bzip2 format
-    const numTrees = 2;
-    bw.writeBits(numTrees, 3);
-
-    // Number of selectors
-    const numGroups = Math.ceil(rleSymbols.length / 50);
-    bw.writeBits(numGroups, 15);
-
-    // Write selectors: all select tree 0 (MTF value 0 -> unary 0)
-    for (let i = 0; i < numGroups; i++) {
-      bw.writeBits(0, 1); // 0 in unary
-    }
-
-    // Write code lengths for each tree
-    for (let t = 0; t < numTrees; t++) {
-      let curLen = codeLengths[0];
-      bw.writeBits(curLen, 5);
-      for (let i = 0; i < alphaSize; i++) {
-        const targetLen = codeLengths[i];
-        while (curLen < targetLen) {
-          bw.writeBits(0b10, 2); // increment
-          curLen++;
-        }
-        while (curLen > targetLen) {
-          bw.writeBits(0b11, 2); // decrement
-          curLen--;
-        }
-        bw.writeBits(0, 1); // end of symbol
-      }
-    }
-
-    // Write encoded symbols
-    for (const sym of rleSymbols) {
-      bw.writeBits(codes[sym], codeLengths[sym]);
-    }
+    const blockCrc = computeBzBlockCrc(input.subarray(start, pos));
+    combinedCrc = combineCrc(combinedCrc, blockCrc);
+    encodeBlock(bw, rle1.subarray(0, n), blockCrc);
   }
 
-  // End of stream header: 0x177245385090
-  bw.writeByte(0x17);
-  bw.writeByte(0x72);
-  bw.writeByte(0x45);
-  bw.writeByte(0x38);
-  bw.writeByte(0x50);
-  bw.writeByte(0x90);
-
-  // Combined stream CRC (32 bits)
-  bw.writeBits(combinedCrc, 32);
-
+  BZ_END_MAGIC.forEach((b) => bw.writeByte(b));
+  bw.writeBits(combinedCrc, BZ_CRC_BITS);
   return bw.finish();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Decoder
+// ---------------------------------------------------------------------------------------------
+
+interface HuffmanDecodeTable {
+  minLen: number;
+  maxLen: number;
+  alphaSize: number;
+  limit: Int32Array;
+  base: Int32Array;
+  perm: Uint16Array;
+}
+
+function buildDecodeTable(lengths: Uint8Array, alphaSize: number): HuffmanDecodeTable {
+  let minLen = BZ_DECODE_MAX_CODE_LEN;
+  let maxLen = 1;
+  for (let i = 0; i < alphaSize; i++) {
+    if (lengths[i] > maxLen) maxLen = lengths[i];
+    if (lengths[i] < minLen) minLen = lengths[i];
+  }
+  const limit = new Int32Array(BZ_DECODE_MAX_CODE_LEN + 2);
+  const base = new Int32Array(BZ_DECODE_MAX_CODE_LEN + 2);
+  const perm = new Uint16Array(BZ_MAX_ALPHA_SIZE);
+  const count = new Int32Array(BZ_DECODE_MAX_CODE_LEN + 2);
+  for (let i = 0; i < alphaSize; i++) count[lengths[i]]++;
+
+  let permPos = 0;
+  for (let len = minLen; len <= maxLen; len++) {
+    for (let i = 0; i < alphaSize; i++) {
+      if (lengths[i] === len) perm[permPos++] = i;
+    }
+  }
+  let code = 0;
+  let firstIndex = 0;
+  for (let len = minLen; len <= maxLen; len++) {
+    base[len] = code - firstIndex; // symbol index = code - base
+    code += count[len];
+    firstIndex += count[len];
+    limit[len] = code - 1;
+    code <<= 1;
+  }
+  return { minLen, maxLen, alphaSize, limit, base, perm };
+}
+
+class OutputSink {
+  buffer: Buffer;
+  length = 0;
+
+  constructor(private readonly maxBytes: number, expectedBytes: number) {
+    this.buffer = Buffer.alloc(Math.min(Math.max(expectedBytes, OUTPUT_INITIAL_CAPACITY), maxBytes));
+  }
+
+  /** Grows capacity so `needed` total bytes fit; fails closed past the output limit. */
+  ensure(needed: number): void {
+    if (needed > this.maxBytes) {
+      throw bzError(`decompressed size exceeds the limit of ${this.maxBytes} bytes`);
+    }
+    if (needed <= this.buffer.length) return;
+    const grown = Math.min(Math.max(this.buffer.length * 2, needed), this.maxBytes);
+    const next = Buffer.alloc(grown);
+    this.buffer.copy(next, 0, 0, this.length);
+    this.buffer = next;
+  }
+
+  result(): Buffer {
+    return this.buffer.subarray(0, this.length);
+  }
+}
+
+interface StreamResult {
+  combinedCrc: number;
+}
+
+function decodeSymbol(reader: BitReader, table: HuffmanDecodeTable): number {
+  const window = reader.peek(BZ_PEEK_BITS);
+  let len = table.minLen;
+  let code = window >>> (BZ_PEEK_BITS - len);
+  while (code > table.limit[len]) {
+    len++;
+    if (len > table.maxLen) throw bzError('invalid Huffman code');
+    code = window >>> (BZ_PEEK_BITS - len);
+  }
+  const index = code - table.base[len];
+  if (index < 0 || index >= table.alphaSize) throw bzError('invalid Huffman code');
+  reader.consume(len);
+  return table.perm[index];
+}
+
+function readCodeLengths(reader: BitReader, alphaSize: number): Uint8Array {
+  const lengths = new Uint8Array(alphaSize);
+  let cur = reader.readBits(BZ_CODE_START_BITS);
+  for (let i = 0; i < alphaSize; i++) {
+    for (;;) {
+      if (cur < 1 || cur > BZ_DECODE_MAX_CODE_LEN) throw bzError('code length out of range');
+      if (reader.readBit() === 0) break;
+      cur += reader.readBit() === 0 ? 1 : -1;
+    }
+    lengths[i] = cur;
+  }
+  return lengths;
+}
+
+function readByteMap(reader: BitReader): number[] {
+  const used16: number[] = [];
+  for (let i = 0; i < BZ_MAP_GROUPS; i++) used16.push(reader.readBit());
+  const seqToUnseq: number[] = [];
+  for (let i = 0; i < BZ_MAP_GROUPS; i++) {
+    if (!used16[i]) continue;
+    for (let j = 0; j < BZ_MAP_GROUPS; j++) {
+      if (reader.readBit()) seqToUnseq.push(i * BZ_MAP_GROUPS + j);
+    }
+  }
+  if (seqToUnseq.length === 0) throw bzError('block uses no symbols');
+  return seqToUnseq;
+}
+
+function readSelectors(reader: BitReader, numTrees: number): Uint8Array {
+  const numSelectors = reader.readBits(BZ_SELECTOR_COUNT_BITS);
+  if (numSelectors < 1) throw bzError('block has no selectors');
+  const stored = Math.min(numSelectors, BZ_MAX_SELECTORS);
+  const selectors = new Uint8Array(stored);
+  const order = Array.from({ length: numTrees }, (_, i) => i);
+  for (let i = 0; i < numSelectors; i++) {
+    let j = 0;
+    while (reader.readBit() === 1) {
+      j++;
+      if (j >= numTrees) throw bzError('selector index out of range');
+    }
+    const tree = order[j];
+    order.splice(j, 1);
+    order.unshift(tree);
+    if (i < stored) selectors[i] = tree;
+  }
+  return selectors;
+}
+
 /**
- * Decompresses a standard bzip2 buffer.
+ * Decodes one block into `sink`, returning nothing; verifies the block CRC and returns it via
+ * the caller. `tt` is a reusable work array sized for the stream's declared block size.
  */
-export function decompressBzip2(input: Buffer): Buffer {
-  if (input.length < 14) {
-    throw new Error('Invalid Bzip2 file: buffer too short.');
+function decodeBlock(reader: BitReader, tt: Uint32Array, maxBlock: number, sink: OutputSink): number {
+  const storedCrc = reader.read32();
+  if (reader.readBit() !== 0) {
+    throw bzError('randomised blocks are not supported');
+  }
+  const origPtr = reader.readBits(BZ_ORIG_PTR_BITS);
+  const seqToUnseq = readByteMap(reader);
+  const numSymbols = seqToUnseq.length;
+  const alphaSize = numSymbols + 2;
+  const eob = numSymbols + 1;
+
+  const numTrees = reader.readBits(BZ_TREE_COUNT_BITS);
+  if (numTrees < BZ_MIN_TREES || numTrees > BZ_MAX_TREES) {
+    throw bzError(`invalid tree count ${numTrees}`);
+  }
+  const selectors = readSelectors(reader, numTrees);
+  const tables: HuffmanDecodeTable[] = [];
+  for (let t = 0; t < numTrees; t++) {
+    tables.push(buildDecodeTable(readCodeLengths(reader, alphaSize), alphaSize));
   }
 
-  if (
-    input[0] !== 0x42 || // 'B'
-    input[1] !== 0x5a || // 'Z'
-    input[2] !== 0x68    // 'h'
-  ) {
-    throw new Error('Invalid Bzip2 file signature.');
+  // Huffman + MTF + zero-run decode into tt (low 8 bits hold the BWT last column).
+  const mtf = new Uint8Array(BZ_ALPHABET);
+  for (let i = 0; i < numSymbols; i++) mtf[i] = i;
+  const byteCounts = new Int32Array(BZ_ALPHABET);
+  let nblock = 0;
+  let groupNo = -1;
+  let groupLeft = 0;
+  let table = tables[0];
+  let runLength = 0;
+  let runWeight = 1;
+
+  const flushRun = (): void => {
+    if (runLength === 0) return;
+    const byte = seqToUnseq[mtf[0]];
+    tt.fill(byte, nblock, nblock + runLength);
+    byteCounts[byte] += runLength;
+    nblock += runLength;
+    runLength = 0;
+    runWeight = 1;
+  };
+
+  for (;;) {
+    if (groupLeft === 0) {
+      groupNo++;
+      if (groupNo >= selectors.length) throw bzError('ran out of selectors');
+      table = tables[selectors[groupNo]];
+      groupLeft = BZ_GROUP_SIZE;
+    }
+    groupLeft--;
+    const sym = decodeSymbol(reader, table);
+
+    if (sym === BZ_RUNA || sym === BZ_RUNB) {
+      runLength += runWeight * (sym + 1);
+      runWeight *= 2;
+      if (runLength > maxBlock - nblock) throw bzError('block exceeds the declared block size');
+      continue;
+    }
+    flushRun();
+    if (sym === eob) break;
+
+    if (nblock >= maxBlock) throw bzError('block exceeds the declared block size');
+    const idx = sym - 1;
+    const moved = mtf[idx];
+    mtf.copyWithin(1, 0, idx);
+    mtf[0] = moved;
+    const byte = seqToUnseq[moved];
+    tt[nblock++] = byte;
+    byteCounts[byte]++;
   }
 
-  const reader = new BitReader(input.subarray(4));
-  const outputChunks: Buffer[] = [];
+  if (nblock === 0) throw bzError('empty block');
+  if (origPtr >= nblock) throw bzError('origPtr outside the block');
 
-  while (true) {
-    // Check next 48 bits for block magic or stream end magic
-    const b0 = reader.readBits(8);
-    const b1 = reader.readBits(8);
-    const b2 = reader.readBits(8);
-    const b3 = reader.readBits(8);
-    const b4 = reader.readBits(8);
-    const b5 = reader.readBits(8);
-
-    if (b0 === 0x17 && b1 === 0x72 && b2 === 0x45 && b3 === 0x38 && b4 === 0x50 && b5 === 0x90) {
-      // End of stream
-      break;
-    }
-
-    if (b0 !== 0x31 || b1 !== 0x41 || b2 !== 0x59 || b3 !== 0x26 || b4 !== 0x53 || b5 !== 0x59) {
-      throw new Error(`Invalid Bzip2 block header: ${b0.toString(16)} ${b1.toString(16)}...`);
-    }
-
-    const blockCrc = reader.readBits(32);
-    const randomized = reader.readBit();
-    if (randomized !== 0) {
-      throw new Error('Bzip2 randomized blocks are not supported.');
-    }
-
-    const origPtr = reader.readBits(24);
-
-    // Read in-use bitmap
-    const inUse16 = new Uint8Array(16);
-    for (let i = 0; i < 16; i++) {
-      inUse16[i] = reader.readBit();
-    }
-
-    const inUse = new Uint8Array(256);
-    for (let i = 0; i < 16; i++) {
-      if (inUse16[i]) {
-        for (let j = 0; j < 16; j++) {
-          inUse[i * 16 + j] = reader.readBit();
-        }
-      }
-    }
-
-    const symMap: number[] = [];
-    for (let i = 0; i < 256; i++) {
-      if (inUse[i]) symMap.push(i);
-    }
-    const numSymbols = symMap.length;
-    const alphaSize = numSymbols + 2;
-
-    const numTrees = reader.readBits(3);
-    const numSelectors = reader.readBits(15);
-
-    // MTF list of trees 0..numTrees-1
-    const mtfTrees = Array.from({ length: numTrees }, (_, i) => i);
-    const selectors = new Uint8Array(numSelectors);
-    for (let i = 0; i < numSelectors; i++) {
-      let count = 0;
-      while (reader.readBit() !== 0) count++;
-      const tree = mtfTrees[count];
-      mtfTrees.splice(count, 1);
-      mtfTrees.unshift(tree);
-      selectors[i] = tree;
-    }
-
-    // Read code lengths for each tree
-    const treeLengths: Uint8Array[] = [];
-    for (let t = 0; t < numTrees; t++) {
-      const lengths = new Uint8Array(alphaSize);
-      let curLen = reader.readBits(5);
-      for (let i = 0; i < alphaSize; i++) {
-        while (reader.readBit() !== 0) {
-          if (reader.readBit() === 0) {
-            curLen++;
-          } else {
-            curLen--;
-          }
-        }
-        lengths[i] = curLen;
-      }
-      treeLengths.push(lengths);
-    }
-
-    // Build decoding tables for each tree
-    interface HuffmanTable {
-      minLen: number;
-      maxLen: number;
-      base: Int32Array;
-      limit: Int32Array;
-      perm: Int32Array;
-      permOffset: Int32Array;
-    }
-
-    const tables: HuffmanTable[] = treeLengths.map((lengths) => {
-      let minLen = 32;
-      let maxLen = 0;
-      for (let i = 0; i < alphaSize; i++) {
-        if (lengths[i] > maxLen) maxLen = lengths[i];
-        if (lengths[i] < minLen && lengths[i] > 0) minLen = lengths[i];
-      }
-
-      const base = new Int32Array(maxLen + 2);
-      const limit = new Int32Array(maxLen + 2);
-      const perm = new Int32Array(alphaSize);
-      const permOffset = new Int32Array(maxLen + 2);
-
-      let pp = 0;
-      for (let len = minLen; len <= maxLen; len++) {
-        permOffset[len] = pp;
-        for (let i = 0; i < alphaSize; i++) {
-          if (lengths[i] === len) {
-            perm[pp++] = i;
-          }
-        }
-      }
-
-      let code = 0;
-      for (let len = minLen; len <= maxLen; len++) {
-        base[len] = code;
-        const count = lengths.filter((l) => l === len).length;
-        code += count;
-        limit[len] = code - 1;
-        code <<= 1;
-      }
-
-      return { minLen, maxLen, base, limit, perm, permOffset };
-    });
-
-    // Decode symbols
-    const mtfList = [...symMap];
-    let groupIdx = 0;
-    let groupCount = 0;
-    let curTable = tables[selectors[0]];
-
-    const eob = numSymbols + 1;
-    const decodedBytes: number[] = [];
-
-    while (true) {
-      if (groupCount === 50) {
-        groupIdx++;
-        groupCount = 0;
-        curTable = tables[selectors[groupIdx]];
-      }
-      groupCount++;
-
-      // Read symbol using curTable
-      let len = curTable.minLen;
-      let code = reader.readBits(len);
-      while (len <= curTable.maxLen && code > curTable.limit[len]) {
-        len++;
-        code = (code << 1) | reader.readBit();
-      }
-
-      const sym = curTable.perm[curTable.permOffset[len] + (code - curTable.base[len])];
-      if (sym === eob) break;
-
-      if (sym === 0 || sym === 1) {
-        // RLE of zero
-        let run = 0;
-        let mult = 1;
-        let s = sym;
-        while (true) {
-          if (s === 0) run += 1 * mult;
-          else if (s === 1) run += 2 * mult;
-          mult <<= 1;
-
-          // Peek ahead
-          if (groupCount === 50) {
-            groupIdx++;
-            groupCount = 0;
-            curTable = tables[selectors[groupIdx]];
-          }
-          groupCount++;
-
-          len = curTable.minLen;
-          code = reader.readBits(len);
-          while (len <= curTable.maxLen && code > curTable.limit[len]) {
-            len++;
-            code = (code << 1) | reader.readBit();
-          }
-          s = curTable.perm[curTable.permOffset[len] + (code - curTable.base[len])];
-          if (s !== 0 && s !== 1) {
-            // Non-zero symbol found, stop run
-            break;
-          }
-        }
-        const b = mtfList[0];
-        for (let r = 0; r < run; r++) decodedBytes.push(b);
-        if (s === eob) break;
-        // Process s
-        const val = s - 1;
-        const bReal = mtfList[val];
-        decodedBytes.push(bReal);
-        mtfList.splice(val, 1);
-        mtfList.unshift(bReal);
-      } else {
-        const val = sym - 1;
-        const b = mtfList[val];
-        decodedBytes.push(b);
-        mtfList.splice(val, 1);
-        mtfList.unshift(b);
-      }
-    }
-
-
-    // Inverse BWT
-    const n = decodedBytes.length;
-    const lCol = new Uint8Array(decodedBytes);
-
-    // Compute frequency counts for each byte
-    const count = new Int32Array(256);
-    for (let i = 0; i < n; i++) count[lCol[i]]++;
-
-    // Cumulative sum
-    const base = new Int32Array(256);
-    let sum = 0;
-    for (let i = 0; i < 256; i++) {
-      base[i] = sum;
-      sum += count[i];
-    }
-
-    const tt = new Int32Array(n);
-    for (let i = 0; i < n; i++) {
-      const b = lCol[i];
-      tt[base[b]++] = i;
-    }
-
-    // Reconstruct block
-    const outBuf = Buffer.alloc(n);
-    let ptr = origPtr;
-    for (let i = 0; i < n; i++) {
-      ptr = tt[ptr];
-      outBuf[i] = lCol[ptr];
-    }
-
-    // Verify block CRC
-    const actualCrc = computeBzBlockCrc(outBuf);
-    if (actualCrc !== blockCrc) {
-      throw new Error(`Bzip2 CRC mismatch: expected 0x${blockCrc.toString(16)}, got 0x${actualCrc.toString(16)}`);
-    }
-
-    outputChunks.push(outBuf);
+  // Inverse BWT: pack the forward pointer into the upper 24 bits.
+  const cumulative = new Int32Array(BZ_ALPHABET);
+  let sum = 0;
+  for (let i = 0; i < BZ_ALPHABET; i++) {
+    cumulative[i] = sum;
+    sum += byteCounts[i];
+  }
+  for (let i = 0; i < nblock; i++) {
+    const byte = tt[i] & BZ_BYTE_MASK;
+    tt[cumulative[byte]++] |= i << BYTE_BITS;
   }
 
-  return Buffer.concat(outputChunks);
+  // Walk the permutation and undo the initial RLE1 stage while emitting output.
+  const outStart = sink.length;
+  let out = sink.buffer;
+  let outPos = outStart;
+  let tPos = tt[origPtr] >>> BYTE_BITS;
+  let prev = -1;
+  let runCount = 0;
+  for (let i = 0; i < nblock; i++) {
+    const entry = tt[tPos];
+    const ch = entry & BZ_BYTE_MASK;
+    tPos = entry >>> BYTE_BITS;
+    if (runCount === BZ_RLE1_MIN_RUN) {
+      if (ch > 0) {
+        sink.length = outPos;
+        sink.ensure(outPos + ch);
+        out = sink.buffer;
+        out.fill(prev, outPos, outPos + ch);
+        outPos += ch;
+      }
+      runCount = 0;
+      prev = -1;
+      continue;
+    }
+    if (ch === prev) {
+      runCount++;
+    } else {
+      prev = ch;
+      runCount = 1;
+    }
+    if (outPos >= out.length) {
+      sink.length = outPos;
+      sink.ensure(outPos + 1);
+      out = sink.buffer;
+    }
+    out[outPos++] = ch;
+  }
+  sink.length = outPos;
+
+  const actualCrc = computeBzBlockCrc(out.subarray(outStart, outPos));
+  if (actualCrc !== storedCrc) {
+    throw bzError(`block CRC mismatch (expected 0x${storedCrc.toString(16)}, got 0x${actualCrc.toString(16)})`);
+  }
+  return actualCrc;
+}
+
+function matchesMagic(bytes: number[], expected: number[]): boolean {
+  return bytes.length === expected.length && bytes.every((b, i) => b === expected[i]);
+}
+
+function decodeStream(reader: BitReader, sink: OutputSink): StreamResult {
+  const sig: number[] = [];
+  for (let i = 0; i < BZ_SIGNATURE.length; i++) sig.push(reader.readBits(BYTE_BITS));
+  if (!matchesMagic(sig, BZ_SIGNATURE)) throw bzError('missing BZh signature');
+  const level = reader.readBits(BYTE_BITS) - BZ_DIGIT_ZERO;
+  if (level < BZ_MIN_LEVEL || level > BZ_MAX_LEVEL) throw bzError('invalid block size digit');
+  const maxBlock = level * BZ_BLOCK_UNIT;
+  let tt: Uint32Array | null = null;
+
+  let combined = 0;
+  for (;;) {
+    const magic: number[] = [];
+    for (let i = 0; i < BZ_BLOCK_MAGIC.length; i++) magic.push(reader.readBits(BYTE_BITS));
+    if (matchesMagic(magic, BZ_END_MAGIC)) {
+      const storedCombined = reader.read32();
+      if (storedCombined !== combined) {
+        throw bzError(
+          `stream CRC mismatch (expected 0x${storedCombined.toString(16)}, got 0x${combined.toString(16)})`
+        );
+      }
+      return { combinedCrc: combined };
+    }
+    if (!matchesMagic(magic, BZ_BLOCK_MAGIC)) throw bzError('invalid block header');
+    tt ??= new Uint32Array(maxBlock);
+    combined = combineCrc(combined, decodeBlock(reader, tt, maxBlock, sink));
+  }
+}
+
+/**
+ * Decompresses a standard bzip2 buffer (one or more concatenated streams).
+ *
+ * Fails closed with a `ConversionFailedError` on any structural violation, CRC mismatch, trailing
+ * garbage, or when the decoded output would exceed `maxOutputBytes`.
+ */
+export function decompressBzip2(input: Buffer, maxOutputBytes = BZIP2_DEFAULT_MAX_OUTPUT_BYTES): Buffer {
+  if (input.length < BZ_HEADER_MIN_BYTES) {
+    throw bzError('input too short');
+  }
+  const reader = new BitReader(input, 0);
+  const sink = new OutputSink(
+    maxOutputBytes,
+    Math.min(input.length * OUTPUT_EXPECTED_EXPANSION, OUTPUT_INITIAL_CAPACITY_MAX)
+  );
+  for (;;) {
+    decodeStream(reader, sink);
+    reader.alignToByte();
+    if (reader.bytesRemaining() === 0) break;
+    if (reader.peek(BYTE_BITS) !== BZ_SIGNATURE[0]) {
+      throw bzError('trailing garbage after end of stream');
+    }
+  }
+  return sink.result();
 }
