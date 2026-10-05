@@ -27,6 +27,18 @@ const MS_PER_SECOND = 1000;
 /** Keeps the encoded custom metadata well inside S3's 2 KiB header budget. */
 export const MAX_CUSTOM_METADATA_BYTES = 1024;
 
+/** Longest URL-encoded filename kept in the `filename` attribute; the rest of the 2 KiB header budget is for other attributes. */
+export const MAX_ENCODED_FILENAME_LENGTH = 1024;
+
+/** The filename cut (at a character boundary) so its URL-encoded form fits the attribute budget. */
+export function limitFilename(filename: string): string {
+  let limited = filename;
+  while (limited.length > 0 && encodeURIComponent(limited).length > MAX_ENCODED_FILENAME_LENGTH) {
+    limited = limited.slice(0, Math.max(0, limited.length - Math.ceil(limited.length / 8)));
+  }
+  return limited;
+}
+
 export function basename(key: string): string {
   const slash = key.lastIndexOf('/');
   return slash === -1 ? key : key.slice(slash + 1);
@@ -71,7 +83,7 @@ export function buildPutOptions(
 ): PutObjectOptions {
   const ttlSeconds = metadata?.ttlSeconds ?? defaultTtlSeconds;
   const headers: Record<string, string> = {
-    [META_FILENAME]: encodeURIComponent(metadata?.filename || basename(key)),
+    [META_FILENAME]: encodeURIComponent(limitFilename(metadata?.filename || basename(key))),
     [META_UPLOADED_AT]: String(now),
     [META_EXPIRES_AT]: String(now + ttlSeconds * MS_PER_SECOND),
   };

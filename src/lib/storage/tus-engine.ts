@@ -328,6 +328,8 @@ async function finalizeTusSession(session: TusSession, binPath: string): Promise
       ttlSeconds: objectTtlSeconds(session),
       size: session.uploadLength,
     });
+    // The object store holds the upload now; the staged copy would only occupy local disk.
+    await fs.promises.rm(binPath, { force: true });
     return;
   }
 
@@ -608,7 +610,17 @@ export class TusEngine {
           throw err;
         }
 
-        await finalizeTusSession(session, binPath);
+        try {
+          await finalizeTusSession(session, binPath);
+        } catch (err) {
+          // The object store did not take the upload: rewind the last chunk so the client can resend it.
+          session.completed = false;
+          rollbackChunk(binPath, clientOffset);
+          session.uploadOffset = clientOffset;
+          await this.sessionStore.saveSession(session);
+          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+          throw err;
+        }
       }
 
       await this.sessionStore.saveSession(session);

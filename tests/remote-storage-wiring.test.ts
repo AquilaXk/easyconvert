@@ -272,6 +272,51 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       expect(Buffer.from(await ranged.arrayBuffer()).equals(PNG.subarray(0, 8))).toBe(true);
     });
 
+    it('rewinds the final chunk when the object store refuses the upload, so the client can resend it', async () => {
+      const { cookie, user } = await loadApp();
+      const { serializeTusMetadata } = await import('../src/lib/storage/tus-engine');
+      const { POST, PATCH, HEAD } = await import('../src/app/api/v1/uploads/[[...id]]/route');
+      const created = await POST(
+        new NextRequest(`${BASE_URL}/api/v1/uploads`, {
+          method: 'POST',
+          headers: {
+            'Tus-Resumable': '1.0.0',
+            'Upload-Length': String(PNG.length),
+            'Upload-Metadata': serializeTusMetadata({ filename: 'retry.png', filetype: 'image/png' }),
+            ...cookie,
+          },
+        })
+      );
+      const sessionId = created.headers.get('Location')!.split('/').pop()!;
+      const patch = () =>
+        PATCH(
+          new NextRequest(`${BASE_URL}/api/v1/uploads/${sessionId}`, {
+            method: 'PATCH',
+            headers: { 'Tus-Resumable': '1.0.0', 'Content-Type': 'application/offset+octet-stream', 'Upload-Offset': '0', ...cookie },
+            body: PNG,
+            duplex: 'half',
+          } as never),
+          { params: { id: [sessionId] } }
+        );
+
+      server.faults.push({ match: (req) => req.method === 'PUT', status: 503, code: 'SlowDown', times: Infinity });
+      const failed = await patch();
+      expect(failed.status).toBe(400);
+      expect(failed.headers.get('EasyConvert-Storage-Key')).toBeNull();
+      expect([...server.objects.keys()]).toEqual([]);
+
+      const head = await HEAD(
+        new NextRequest(`${BASE_URL}/api/v1/uploads/${sessionId}`, { method: 'HEAD', headers: { 'Tus-Resumable': '1.0.0', ...cookie } }),
+        { params: { id: [sessionId] } }
+      );
+      expect(head.headers.get('Upload-Offset')).toBe('0');
+
+      server.faults.length = 0;
+      const retried = await patch();
+      expect(retried.status).toBe(204);
+      expect(server.objects.get(`conversions/${user.id}/${sessionId}_retry.png`)?.body.equals(PNG)).toBe(true);
+    });
+
     it('refuses the final chunk with a typed 400 when no format can be determined and stores nothing', async () => {
       const { cookie } = await loadApp();
       const { serializeTusMetadata } = await import('../src/lib/storage/tus-engine');

@@ -221,6 +221,32 @@ describe('RemoteStorageBackend (IStorageBackend over an S3-compatible object sto
       expect(server.requests).toHaveLength(0);
     });
 
+    it.each([
+      ['an empty filename', ['', 'text/plain'], /needs a filename/],
+      ['a non-string filename', [42, 'text/plain'], /needs a filename/],
+      ['a content type with a line break', ['a.txt', 'text/plain\r\nX-Evil: 1'], /printable ASCII content type/],
+      ['a content type over 255 characters', ['a.txt', `text/${'x'.repeat(300)}`], /printable ASCII content type/],
+      ['a non-string content type', ['a.txt', { toString: () => 'text/plain' }], /printable ASCII content type/],
+    ])('refuses to open a session with %s before touching the object store', async (_name, [filename, mimeType], message) => {
+      await expect(
+        backend.initiateMultipartUpload(filename as string, mimeType as string, 10)
+      ).rejects.toThrow(message);
+      expect(server.requests).toHaveLength(0);
+    });
+
+    it('keeps a very long unicode filename within the attribute and token budgets', async () => {
+      const filename = `${'数据'.repeat(400)}.csv`;
+      const init = await backend.initiateMultipartUpload(filename, 'text/csv', 10, 'user_7');
+      expect(init.uploadId.length).toBeLessThan(4096);
+      const create = server.requests.find((r) => r.method === 'POST' && r.query.has('uploads'))!;
+      expect((create.headers['x-amz-meta-filename'] as string).length).toBeLessThanOrEqual(1024);
+      const session = backend.getUploadSession(init.uploadId);
+      expect(session?.filename.length).toBeGreaterThan(0);
+      expect(filename.startsWith(session?.filename ?? 'x')).toBe(true);
+      await backend.uploadPart(init.uploadId, 1, Buffer.from('0123456789'));
+      expect((await backend.completeMultipartUpload(init.uploadId)).size).toBe(10);
+    });
+
     it('accepts a single small part below the 5 MiB minimum', async () => {
       const init = await backend.initiateMultipartUpload('tiny.bin', 'application/octet-stream', 12, undefined, 12);
       expect(init).toMatchObject({ partSize: 12, totalParts: 1 });

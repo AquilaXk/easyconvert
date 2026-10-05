@@ -12,7 +12,7 @@ import {
   StorageSigningSecretMissingError,
   getMaxInMemoryBytes,
 } from './errors';
-import { buildPutOptions, isObjectExpired, toStoredObjectMetadata } from './object-attributes';
+import { buildPutOptions, isObjectExpired, limitFilename, toStoredObjectMetadata } from './object-attributes';
 import type {
   IStorageBackend,
   PresignedUrlResult,
@@ -59,6 +59,8 @@ const DELETE_CONCURRENCY = 8;
 const UPLOAD_TOKEN_VERSION = 'v1';
 const MAX_UPLOAD_TOKEN_LENGTH = 4096;
 const MAX_FILENAME_KEY_LENGTH = 200;
+const MAX_MIME_TYPE_LENGTH = 255;
+const MIME_TYPE_PATTERN = new RegExp(`^[\\x20-\\x7e]{1,${MAX_MIME_TYPE_LENGTH}}$`);
 const STAGED_FILE_SUFFIX = '.staged';
 const STAGED_DIR_MODE = 0o700;
 const STAGED_FILE_MODE = 0o600;
@@ -216,6 +218,12 @@ export class RemoteStorageBackend implements IStorageBackend {
     if (!Number.isSafeInteger(totalSize) || totalSize < 0) {
       throw new StorageAdapterError(`Invalid upload size: ${totalSize}`, this.providerName);
     }
+    if (typeof filename !== 'string' || filename.length === 0) {
+      throw new StorageAdapterError('An upload needs a filename', this.providerName);
+    }
+    if (typeof mimeType !== 'string' || !MIME_TYPE_PATTERN.test(mimeType)) {
+      throw new StorageAdapterError('An upload needs a printable ASCII content type of at most 255 characters', this.providerName);
+    }
     const resolvedPartSize = partSize && partSize > 0 ? Math.floor(partSize) : REMOTE_DEFAULT_PART_BYTES;
     const totalParts = Math.max(1, Math.ceil(totalSize / resolvedPartSize));
     if (totalParts > S3_MAX_PARTS) {
@@ -251,7 +259,7 @@ export class RemoteStorageBackend implements IStorageBackend {
     const uploadId = this.encodeToken({
       u: rawUploadId,
       k: key,
-      f: filename,
+      f: limitFilename(filename),
       m: mimeType,
       t: totalSize,
       p: resolvedPartSize,
