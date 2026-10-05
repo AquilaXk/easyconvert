@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { ConversionFailedError } from '../types';
 
 export interface XpsPageElement {
   text?: string;
@@ -16,8 +17,9 @@ export interface XpsPageInput {
   image?: {
     buffer: Buffer;
     format: 'png' | 'jpeg' | 'jpg' | 'webp';
-    width?: number;
-    height?: number;
+    /** Pixel size of the embedded picture; required because it defines the image brush viewbox. */
+    width: number;
+    height: number;
   };
 }
 
@@ -28,6 +30,15 @@ function escapeXml(unsafe: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function assertImageSize(image: { width?: number; height?: number }, pageNum: number): void {
+  const isPositiveInteger = (value: number | undefined) => Number.isInteger(value) && (value as number) > 0;
+  if (!isPositiveInteger(image.width) || !isPositiveInteger(image.height)) {
+    throw new ConversionFailedError(
+      `XPS image on page ${pageNum} needs a positive integer width and height, got ${String(image.width)}x${String(image.height)}`
+    );
+  }
 }
 
 /**
@@ -150,6 +161,7 @@ ${fdocRelsEntries}
     // Embedded image if any
     let imageXml = '';
     if (page.image && page.image.buffer.length > 0) {
+      assertImageSize(page.image, pageNum);
       const imgExt = page.image.format === 'jpeg' ? 'jpg' : page.image.format;
       const imgPath = `Documents/1/Resources/Images/image${pageNum}.${imgExt}`;
       zip.file(imgPath, page.image.buffer);
@@ -160,8 +172,8 @@ ${fdocRelsEntries}
 </Relationships>`;
       zip.file(`Documents/1/Pages/_rels/${pageNum}.fpage.rels`, pageRelXml);
 
-      const imgW = page.image.width || 800;
-      const imgH = page.image.height || 600;
+      const imgW = page.image.width;
+      const imgH = page.image.height;
       imageXml = `  <Path Data="M 48,90 L 745,90 L 745,1070 L 48,1070 Z">
     <Path.Fill>
       <ImageBrush ImageSource="/${imgPath}" Viewbox="0,0,${imgW},${imgH}" ViewboxUnits="Absolute" Viewport="48,90,697,980" ViewportUnits="Absolute"/>
