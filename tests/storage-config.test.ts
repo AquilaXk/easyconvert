@@ -102,11 +102,11 @@ describe('oci driver configuration', () => {
       region: 'ap-seoul-1',
       bucket: 'easyconvert-internal',
       accessKeyId: OCI_ENV.OCI_ACCESS_KEY_ID,
-      secretAccessKey: OCI_ENV.OCI_SECRET_ACCESS_KEY,
       forcePathStyle: true,
       namespace: 'axyz123namespace',
     });
-    expect(isRemoteStorageConfig(config)).toBe(true);
+    // The secret is a hidden property (see storage-config-secrets.test.ts), read by name.
+    expect(isRemoteStorageConfig(config) && config.secretAccessKey).toBe(OCI_ENV.OCI_SECRET_ACCESS_KEY);
   });
 
   it('accepts the previous bucket variable name', () => {
@@ -273,15 +273,16 @@ describe('deprecated AWS_* fallback', () => {
 
 describe('s3 driver configuration', () => {
   it('reads the S3_* variables, defaults to path-style, and honours S3_FORCE_PATH_STYLE=false', () => {
-    expect(resolveStorageConfig(S3_ENV)).toEqual({
+    const config = resolveStorageConfig(S3_ENV);
+    expect(config).toEqual({
       driver: 's3',
       endpoint: 'https://objects.example.test',
       region: 'eu-west-1',
       bucket: 'internal-bucket',
       accessKeyId: S3_ENV.S3_ACCESS_KEY_ID,
-      secretAccessKey: S3_ENV.S3_SECRET_ACCESS_KEY,
       forcePathStyle: true,
     });
+    expect(isRemoteStorageConfig(config) && config.secretAccessKey).toBe(S3_ENV.S3_SECRET_ACCESS_KEY);
     expect(resolveStorageConfig({ ...S3_ENV, S3_FORCE_PATH_STYLE: 'false' })).toMatchObject({ forcePathStyle: false });
   });
 

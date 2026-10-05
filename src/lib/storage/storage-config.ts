@@ -1,4 +1,5 @@
 import { StorageConfigError } from './errors';
+import { SigV4SigningError, assertValidBucketName, type BucketNameRules } from './s3-sigv4';
 
 /**
  * Storage driver selection and credentials for internal object storage.
@@ -24,6 +25,11 @@ import { StorageConfigError } from './errors';
 
 export type StorageDriver = 'oci' | 's3' | 'local';
 
+/**
+ * The configuration of a remote driver. `secretAccessKey` is a read-only, non-enumerable property:
+ * it is absent from JSON, `Object.keys`, spreads and `util.inspect`, so logging or serializing the
+ * config cannot leak it; code that needs it reads it by name.
+ */
 export interface RemoteStorageConfig {
   driver: 'oci' | 's3';
   /** Origin of the S3-compatible endpoint. */
@@ -242,6 +248,27 @@ function requireHttpUrl(name: string, value: string, env: Env): string {
   return `${parsed.protocol}//${parsed.host}`;
 }
 
+/** The configured bucket must satisfy the naming rules of its driver; the variable is named in the error. */
+function requireValidBucket(variable: string, bucket: string, rules: BucketNameRules): void {
+  try {
+    assertValidBucketName(bucket, rules);
+  } catch (err) {
+    if (err instanceof SigV4SigningError) {
+      throw new StorageConfigError(`${variable} is not a valid ${rules === 'oci' ? 'OCI' : 'S3'} bucket name.`);
+    }
+    throw err;
+  }
+}
+
+function withHiddenSecret(config: Omit<RemoteStorageConfig, 'secretAccessKey'>, secretAccessKey: string): RemoteStorageConfig {
+  return Object.defineProperty(config, 'secretAccessKey', {
+    value: secretAccessKey,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  }) as RemoteStorageConfig;
+}
+
 function missingError(driver: StorageDriver, missing: readonly string[]): StorageConfigError {
   return new StorageConfigError(
     `Storage driver "${driver}" is missing required configuration: ${missing.join(', ')}.`,
@@ -264,6 +291,7 @@ function resolveOciConfig(env: Env, warn: (message: string) => void): RemoteStor
   if (!REGION_PATTERN.test(region)) {
     throw new StorageConfigError(`${OCI_VARIABLES.region} must be lowercase letters, digits and hyphens.`);
   }
+  requireValidBucket(OCI_VARIABLES.bucket[0], values.bucket as string, 'oci');
   if (!DNS_LABEL_PATTERN.test(namespace as string)) {
     throw new StorageConfigError('OCI_NAMESPACE must be a single DNS label (letters, digits and hyphens).');
   }
@@ -278,16 +306,18 @@ function resolveOciConfig(env: Env, warn: (message: string) => void): RemoteStor
     values.deprecatedUsed.map((name) => replacementFor(name, OCI_VARIABLES)),
     warn
   );
-  return {
-    driver: 'oci',
-    endpoint,
-    region,
-    bucket: values.bucket as string,
-    accessKeyId: values.accessKeyId as string,
-    secretAccessKey: values.secretAccessKey as string,
-    forcePathStyle: true,
-    namespace: namespace as string,
-  };
+  return withHiddenSecret(
+    {
+      driver: 'oci',
+      endpoint,
+      region,
+      bucket: values.bucket as string,
+      accessKeyId: values.accessKeyId as string,
+      forcePathStyle: true,
+      namespace: namespace as string,
+    },
+    values.secretAccessKey as string
+  );
 }
 
 function resolveS3Config(env: Env, warn: (message: string) => void): RemoteStorageConfig {
@@ -305,20 +335,23 @@ function resolveS3Config(env: Env, warn: (message: string) => void): RemoteStora
   if (!REGION_PATTERN.test(region)) {
     throw new StorageConfigError(`${S3_VARIABLES.region} must be lowercase letters, digits and hyphens.`);
   }
+  requireValidBucket(S3_VARIABLES.bucket[0], values.bucket as string, 'dns');
   warnAwsFallback(
     values.deprecatedUsed,
     values.deprecatedUsed.map((name) => replacementFor(name, S3_VARIABLES)),
     warn
   );
-  return {
-    driver: 's3',
-    endpoint: requireHttpUrl('S3_ENDPOINT', endpoint as string, env),
-    region,
-    bucket: values.bucket as string,
-    accessKeyId: values.accessKeyId as string,
-    secretAccessKey: values.secretAccessKey as string,
-    forcePathStyle: readVar(env, 'S3_FORCE_PATH_STYLE')?.toLowerCase() !== 'false',
-  };
+  return withHiddenSecret(
+    {
+      driver: 's3',
+      endpoint: requireHttpUrl('S3_ENDPOINT', endpoint as string, env),
+      region,
+      bucket: values.bucket as string,
+      accessKeyId: values.accessKeyId as string,
+      forcePathStyle: readVar(env, 'S3_FORCE_PATH_STYLE')?.toLowerCase() !== 'false',
+    },
+    values.secretAccessKey as string
+  );
 }
 
 function replacementFor(deprecated: string, own: CredentialVariables): string {

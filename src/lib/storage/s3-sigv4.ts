@@ -292,6 +292,8 @@ export interface S3AddressInput {
   /** Custom endpoint origin (scheme and host[:port]); defaults to the regional S3 endpoint. */
   endpoint?: string;
   forcePathStyle?: boolean;
+  /** Which naming rules the bucket must satisfy; defaults to the DNS-style rules. */
+  bucketNameRules?: BucketNameRules;
 }
 
 export interface S3Address {
@@ -301,13 +303,18 @@ export interface S3Address {
   style: 'path' | 'virtual-hosted';
 }
 
+/** Bucket naming rules: generic S3 services use DNS-style names, OCI Object Storage its own wider set. */
+export type BucketNameRules = 'dns' | 'oci';
+
 const BUCKET_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+/** OCI bucket names: letters of both cases, digits, hyphens, underscores and periods; 1 to 256 characters, case-sensitive. */
+const OCI_BUCKET_NAME_PATTERN = /^[A-Za-z0-9._-]{1,256}$/;
 const IPV4_LIKE_PATTERN = /^\d+\.\d+\.\d+\.\d+$/;
 const DOT_SEGMENTS: ReadonlySet<string> = new Set(['.', '..']);
 
 /** Bucket names that can be a DNS label under TLS (no dots, so the wildcard certificate matches). */
 function isVirtualHostableBucket(bucket: string): boolean {
-  return !bucket.includes('.') && !bucket.includes('--');
+  return BUCKET_NAME_PATTERN.test(bucket) && !bucket.includes('.') && !bucket.includes('--');
 }
 
 /** An IP address cannot take a bucket subdomain, so such an endpoint is always path-style. */
@@ -315,7 +322,14 @@ function isIpLiteralHost(endpoint: URL): boolean {
   return net.isIP(endpoint.hostname.replace(/^\[|\]$/g, '')) !== 0;
 }
 
-export function assertValidBucketName(bucket: string): void {
+export function assertValidBucketName(bucket: string, rules: BucketNameRules = 'dns'): void {
+  if (rules === 'oci') {
+    // A name made only of dots would address another path (".." in "/<bucket>/<key>").
+    if (!OCI_BUCKET_NAME_PATTERN.test(bucket) || DOT_SEGMENTS.has(bucket)) {
+      throw new SigV4SigningError(`Invalid bucket name "${bucket}".`);
+    }
+    return;
+  }
   if (!BUCKET_NAME_PATTERN.test(bucket) || IPV4_LIKE_PATTERN.test(bucket) || bucket.includes('..')) {
     throw new SigV4SigningError(`Invalid bucket name "${bucket}".`);
   }
@@ -346,7 +360,7 @@ export function defaultS3Endpoint(region: string): string {
 
 /** Resolves path-style or virtual-hosted-style addressing for an object. */
 export function resolveS3Address(input: S3AddressInput): S3Address {
-  assertValidBucketName(input.bucket);
+  assertValidBucketName(input.bucket, input.bucketNameRules);
   if (input.key !== '') {
     assertValidObjectKey(input.key);
   }

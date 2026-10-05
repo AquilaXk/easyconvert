@@ -58,6 +58,7 @@ import {
   SigV4SigningError,
   UNSIGNED_PAYLOAD,
   assertValidBucketName,
+  type BucketNameRules,
   assertValidObjectKey,
   presignS3Request,
   resolveS3Address,
@@ -119,6 +120,8 @@ export interface S3ObjectClientConfig {
   forcePathStyle?: boolean;
   /** Label used in typed errors, e.g. `oci`. */
   providerName?: string;
+  /** Bucket naming rules: `dns` (default, generic S3) or `oci` (OCI Object Storage names). */
+  bucketNameRules?: BucketNameRules;
   /** Multipart part size; between 5 MiB and 5 GiB. Grows automatically to stay within 10,000 parts. */
   partSizeBytes?: number;
   maxAttempts?: number;
@@ -324,6 +327,7 @@ export class S3ObjectClient {
   private readonly retryBaseDelayMs: number;
   private readonly requestTimeoutMs: number;
   private readonly maxRequestDurationMs: number;
+  private readonly bucketNameRules: BucketNameRules;
 
   constructor(config: S3ObjectClientConfig) {
     this.providerName = config.providerName ?? DEFAULT_PROVIDER;
@@ -334,7 +338,7 @@ export class S3ObjectClient {
       throw new StorageAdapterError('bucket, region, and endpoint are required', this.providerName);
     }
     try {
-      assertValidBucketName(config.bucket);
+      assertValidBucketName(config.bucket, config.bucketNameRules);
     } catch (err) {
       throw new StorageAdapterError(err instanceof Error ? err.message : 'Invalid bucket name', this.providerName, err);
     }
@@ -345,6 +349,7 @@ export class S3ObjectClient {
     this.#secretAccessKey = config.secretAccessKey;
     this.#sessionToken = config.sessionToken || undefined;
     this.forcePathStyle = config.forcePathStyle ?? true;
+    this.bucketNameRules = config.bucketNameRules ?? 'dns';
 
     const partSize = config.partSizeBytes ?? S3_DEFAULT_PART_BYTES;
     if (!isIntegerInRange(partSize, S3_MIN_PART_BYTES, S3_MAX_PART_BYTES)) {
@@ -392,6 +397,7 @@ export class S3ObjectClient {
         region: this.region,
         endpoint: this.endpoint,
         forcePathStyle: this.forcePathStyle,
+        bucketNameRules: this.bucketNameRules,
       });
     } catch (err) {
       if (err instanceof SigV4SigningError) {

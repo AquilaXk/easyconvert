@@ -64,6 +64,7 @@ export class S3CompatibleStorage implements IObjectStorage {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
       forcePathStyle: config.forcePathStyle,
+      bucketNameRules: config.driver === 'oci' ? 'oci' : 'dns',
       providerName: config.driver,
       ...options,
     });

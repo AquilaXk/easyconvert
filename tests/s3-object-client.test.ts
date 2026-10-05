@@ -92,6 +92,21 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
     vi.unstubAllEnvs();
   });
 
+  it('stores and reads an object in an OCI bucket whose name is not DNS-style, and refuses that name for a generic S3 service', async () => {
+    const ociBucket = 'Internal_Objects.v1';
+    const ociServer = await startS3StubServer({ bucket: ociBucket, credentials: { [CREDENTIALS.accessKeyId]: CREDENTIALS.secretAccessKey } });
+    try {
+      const oci = makeClient({ endpoint: ociServer.url, bucket: ociBucket, bucketNameRules: 'oci' });
+      await oci.putBuffer('mixed/Case.txt', Buffer.from('oci bucket'));
+      expect((await readAll((await oci.getObject('mixed/Case.txt'))!.stream)).toString()).toBe('oci bucket');
+      expect(ociServer.requests.map((request) => request.auth.ok)).toEqual([true, true]);
+      expect(ociServer.requests[0].rawUrl).toBe(`/${ociBucket}/mixed/Case.txt`);
+      expect(() => makeClient({ endpoint: ociServer.url, bucket: ociBucket })).toThrow(/Invalid bucket name/);
+    } finally {
+      await ociServer.close();
+    }
+  });
+
   it('authenticates every request with SigV4 as judged by the independent verifier', async () => {
     await client.putBuffer('probe/a.txt', Buffer.from('a'));
     await client.headObject('probe/a.txt');
