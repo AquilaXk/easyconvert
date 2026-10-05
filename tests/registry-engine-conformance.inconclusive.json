@@ -1,9 +1,4 @@
 [
-  "bin->otf",
-  "bin->ttf",
-  "dfont->otf",
-  "dfont->ttf",
-  "dfont->woff",
   "pfa->otf",
   "pfa->ttf",
   "pfb->otf",

@@ -21,6 +21,7 @@ import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './
 const HAS_PDFINFO = isOracleToolAvailable('pdfinfo');
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
+import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 
 /**
@@ -244,6 +245,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   'tar.xz': () => compressXz(TAR_SEED),
   'tar.7z': () => create7zArchive([{ filename: 'probe.tar', buffer: TAR_SEED }]).buffer,
   rar: () => buildStoredRar4([{ name: 'probe.txt', data: PLAIN_TEXT }]),
+  // Macintosh font containers wrapping a hand-built TrueType font.
+  dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
+  bin: () => buildMacBinary({ resourceFork: buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]) }),
   // HDR sources need a structurally valid OpenEXR file and an Ultra HDR JPEG with a gain map; both
   // come from independent writers in tests/helpers, not from the engine's own encoders.
   exr: () => buildPatchExr('half'),
