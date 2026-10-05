@@ -7,9 +7,6 @@
   "exr->tiff",
   "exr->ultrahdr",
   "exr->webp",
-  "gif->mkv",
-  "gif->mov",
-  "gif->mp4",
   "pdf->jpg",
   "pdf->png",
   "pdf->tiff",
@@ -26,8 +23,5 @@
   "ultrahdr->jpg",
   "ultrahdr->png",
   "ultrahdr->tiff",
-  "ultrahdr->webp",
-  "webp->mkv",
-  "webp->mov",
-  "webp->mp4"
+  "ultrahdr->webp"
 ]
