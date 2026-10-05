@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ConversionQueue from '@/components/ConversionQueue';
@@ -1032,13 +1033,13 @@ export default function DynamicConverterPage({ params }: DynamicPageProps) {
       <nav aria-label="Breadcrumb" className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-2">
         <ol className="flex items-center flex-wrap gap-1.5 text-xs text-ink-muted dark:text-neutral-400">
           <li className="inline-flex items-center">
-            <a
+            <Link
               href="/"
               className="inline-flex items-center gap-1 hover:text-brand-700 dark:hover:text-brand-300 transition-colors"
             >
               <Home className="w-3.5 h-3.5" />
               <span>Home</span>
-            </a>
+            </Link>
           </li>
           <ChevronRight className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
           {isCategorySlug ? (
