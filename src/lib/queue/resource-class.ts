@@ -1,5 +1,6 @@
 import type { ConversionOptions, ResourceClass } from '../types';
 import { getFormatByExtension } from '../registry';
+import { RAW_CAMERA_FORMATS } from '../conversions/raw-formats';
 
 export type { ResourceClass };
 export const RESOURCE_CLASSES: readonly ResourceClass[] = ['light', 'cpu', 'memory', 'gpu'] as const;
@@ -35,19 +36,6 @@ const CAD_FORMATS: ReadonlySet<string> = new Set([
   'glb',
   'fbx',
   '3ds',
-]);
-
-const RAW_CAMERA_FORMATS: ReadonlySet<string> = new Set([
-  'dng',
-  'cr2',
-  'cr3',
-  'nef',
-  'arw',
-  'rw2',
-  'orf',
-  'pef',
-  'raf',
-  'raw',
 ]);
 
 const HEAVY_DOC_FORMATS: ReadonlySet<string> = new Set([

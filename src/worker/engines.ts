@@ -14,9 +14,14 @@ import {
   ComplexScriptRequiresNativeEngineError,
   MediaPackagingOptions,
   UnsupportedTargetError,
+  RawDecodeError,
+  UnsupportedRawCompressionError,
+  InvalidRawSensorError,
+  RawEngineRequiredError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
-import { convertFile } from '../lib/conversions';
+import { convertFile, convertImage } from '../lib/conversions';
+import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { hasComplexTextScript } from '../lib/conversions/ctl';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -28,7 +33,14 @@ import {
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
-import { executeSandboxedBinary, SandboxedMemoryLimitError } from './sandbox';
+import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
+import {
+  RAW_DECODE_MAX_OUTPUT_BYTES,
+  assertCompleteDecodedImage,
+  assertWithinPixelCap,
+  hasRepeatedTail,
+  readDecodedTiffLayout,
+} from './raw-decoded-tiff';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
 
@@ -58,7 +70,7 @@ export interface WorkerEngineOptions extends ConversionOptions {
 }
 
 export interface WorkerConversionResult extends ConversionResult {
-  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'internal-fallback';
+  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-raw' | 'internal-fallback';
   executionTimeMs: number;
   filePath?: string;
   metadata?: Record<string, unknown>;
@@ -112,6 +124,12 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/pdftotext',
     '/opt/homebrew/bin/pdftotext',
   ],
+  dcrawEmu: [
+    ...(process.env.DCRAW_EMU_PATH ? [process.env.DCRAW_EMU_PATH] : []),
+    '/usr/bin/dcraw_emu',
+    '/usr/local/bin/dcraw_emu',
+    '/opt/homebrew/bin/dcraw_emu',
+  ],
   tesseract: [
     ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
     '/usr/bin/tesseract',
@@ -155,6 +173,7 @@ export function probeNativeEngines(): {
   pdftoppm: boolean;
   pdftotext: boolean;
   tesseract: boolean;
+  dcrawEmu: boolean;
   hardwareAcceleration?: HardwareAccelerationCapabilities;
 } {
   const ffmpegPath = resolveBinary(BINARY_PATHS.ffmpeg, process.env.FFMPEG_PATH);
@@ -165,6 +184,7 @@ export function probeNativeEngines(): {
     pdftoppm: resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH) !== null,
     pdftotext: resolveBinary(BINARY_PATHS.pdftotext, process.env.PDFTOTEXT_PATH) !== null,
     tesseract: resolveBinary(BINARY_PATHS.tesseract, process.env.TESSERACT_PATH) !== null,
+    dcrawEmu: resolveBinary(BINARY_PATHS.dcrawEmu, process.env.DCRAW_EMU_PATH) !== null,
     hardwareAcceleration: probeHardwareAcceleration(ffmpegPath),
   };
 }
@@ -1283,6 +1303,97 @@ export async function convertWithNativePoppler(
   return null;
 }
 
+/** Targets that package the original camera file instead of rendering its pixels. */
+const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
+const RAW_DECODE_DEFAULT_TIMEOUT_MS = 120_000;
+const RAW_DECODE_MAX_TIMEOUT_MS = 600_000;
+const RAW_DECODE_MAX_STDERR_CHARS = 300;
+/** Address-space ceiling for the decoder: room for the largest sensor plus LibRaw's working buffers. */
+const RAW_DECODE_MEMORY_LIMIT_MB = 4096;
+const RAW_DECODE_UNRECOGNIZED_PATTERN = /unsupported file format|not raw file/i;
+/** dcraw_emu: write a TIFF (-T) with 16-bit samples (-6), camera white balance (-w) in sRGB (-o 1). */
+const RAW_DECODE_FLAGS: readonly string[] = ['-T', '-6', '-w', '-o', '1'];
+
+/**
+ * Decodes camera RAW sensor data natively with LibRaw (`dcraw_emu`) into a 16-bit sRGB TIFF, then
+ * encodes the requested target from it with the in-process image pipeline.
+ */
+export async function convertWithNativeRaw(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult | null> {
+  const src = validateFormat(sourceFormat);
+  const tgt = validateFormat(targetFormat);
+  if (!RAW_CAMERA_FORMATS.has(src) || RAW_PACKAGING_TARGETS.has(tgt)) return null;
+  const dcrawBin = resolveBinary(BINARY_PATHS.dcrawEmu, process.env.DCRAW_EMU_PATH);
+  if (!dcrawBin) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('dcraw_emu', 'dcraw_emu (libraw-bin) is not installed or not in PATH');
+    }
+    return null;
+  }
+
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const startTime = Date.now();
+  const timeout = Math.min(options.timeoutMs || RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_MAX_TIMEOUT_MS);
+
+  return withSandboxDir('easyconvert-raw-', async (tempDir) => {
+    const { inputPath } = resolveInputContext(input, src, tempDir);
+    const decodedPath = path.join(tempDir, 'decoded.tiff');
+    let decoderStderr = '';
+    try {
+      const run = await executeSandboxedBinary(dcrawBin, [...RAW_DECODE_FLAGS, '-Z', decodedPath, inputPath], {
+        cwd: tempDir,
+        timeoutMs: timeout,
+        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
+        maxFileSize: RAW_DECODE_MAX_OUTPUT_BYTES,
+        memoryLimitMb: RAW_DECODE_MEMORY_LIMIT_MB,
+        networkIsolated: true,
+        signal: options.signal,
+      });
+      decoderStderr = run.stderr.toString('utf-8').trim();
+    } catch (err) {
+      if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
+        // The decoder hit its output-size or memory ceiling: the input demands more than the limits allow.
+        throw new RawDecodeError(`Native RAW decoder exceeded its output limit or memory limit on the .${src} file`);
+      }
+      if (err instanceof SandboxedProcessError) {
+        const detail = err.stderr.trim().slice(0, RAW_DECODE_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+        throw new RawDecodeError(
+          `Native RAW decoder rejected the .${src} file${detail ? `: ${detail}` : ''}`,
+          RAW_DECODE_UNRECOGNIZED_PATTERN.test(err.stderr)
+        );
+      }
+      throw err;
+    }
+    if (!fs.existsSync(decodedPath) || fs.statSync(decodedPath).size === 0) {
+      throw new RawDecodeError(`Native RAW decoder produced no image for the .${src} file`);
+    }
+
+    // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
+    if (decoderStderr) {
+      throw new RawDecodeError(
+        `Native RAW decoder reported a problem with the .${src} file: ${decoderStderr.slice(0, RAW_DECODE_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>')}`
+      );
+    }
+    const layout = readDecodedTiffLayout(decodedPath);
+    assertWithinPixelCap(layout);
+    assertCompleteDecodedImage(decodedPath, layout);
+    if (hasRepeatedTail(decodedPath, layout)) {
+      throw new RawDecodeError(`The .${src} file is truncated: the decoded image ends in repeated filler rows`);
+    }
+
+    const converted = await convertImage(fs.readFileSync(decodedPath), tgt, options, originalFilename, 'tiff');
+    const tempOutputPath = path.join(tempDir, `output.${tgt}`);
+    fs.writeFileSync(tempOutputPath, converted.buffer);
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);
+    return createConversionResult(persistedPath, tgt, baseName, 'native-raw', Date.now() - startTime);
+  });
+}
+
 /**
  * Universal Worker Conversion Orchestrator.
  * Dispatches to native container engines first, with fail-closed security and pure TS fallback.
@@ -1426,6 +1537,31 @@ export async function executeWorkerConversion(
     }
   }
 
+  // 1c. Native RAW sensor decode (LibRaw). Formats LibRaw does not recognize may still yield an
+  // embedded preview in-process, but only when the request opted in.
+  if (RAW_CAMERA_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
+    try {
+      const rawRes = await convertWithNativeRaw(input, src, tgt, nativeOptions, originalFilename);
+      if (rawRes) {
+        return {
+          ...rawRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
+    } catch (err) {
+      if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`native-raw: ${err.message}`);
+        fallbackReason = err.message;
+        lastUnavailable = err;
+      } else if (err instanceof RawDecodeError && err.unrecognized && options.allowEmbeddedPreview) {
+        fallbackChain.push(`native-raw: ${err.message}`);
+        fallbackReason = err.message;
+      } else {
+        throw err;
+      }
+    }
+  }
+
   // 2. Native FFmpeg
   const isThumbnailTarget = (tgt === 'jpg' || tgt === 'jpeg' || tgt === 'png') && Boolean(nativeOptions.thumbnail);
   const isSubtitleExtractTarget = (tgt === 'srt' || tgt === 'vtt' || tgt === 'ass') && nativeOptions.subtitles?.mode === 'extract';
@@ -1531,7 +1667,20 @@ export async function executeWorkerConversion(
   } else {
     throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
   }
-  const internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
+  let internalRes: ConversionResult;
+  try {
+    internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
+  } catch (err) {
+    // The in-process engine cannot decode this camera data, yet the native RAW engine could have.
+    const nativeCouldDecode =
+      err instanceof UnsupportedRawCompressionError ||
+      err instanceof InvalidRawSensorError ||
+      err instanceof RawEngineRequiredError;
+    if (lastUnavailable && RAW_CAMERA_FORMATS.has(src) && nativeCouldDecode) {
+      throw new EngineUnavailableError(lastUnavailable.engineName, `${lastUnavailable.reason} (${err.message})`);
+    }
+    throw err;
+  }
   const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
   const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
   let finalPath = desiredOutput;

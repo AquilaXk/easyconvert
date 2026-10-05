@@ -28,7 +28,10 @@ export type ExternalOracleTool =
   | 'magick'
   | 'identify'
   | 'unrar'
-  | 'qpdf';
+  | 'qpdf'
+  | 'python3'
+  | 'raw-identify'
+  | 'dcraw_emu';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;

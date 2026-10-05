@@ -6,15 +6,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import JSZip from 'jszip';
+import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { convertFile } from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { probeNativeEngines } from '../src/worker/engines';
 import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
-import { OracleToolMissingError } from './helpers/differential-oracle';
+import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 
 /**
@@ -69,7 +71,12 @@ function isMediaTranscoderMisroute(source: string, target: string): boolean {
 }
 
 const PROBE_TIMEOUT_MS = 20_000;
+/** Decoding a 39-megapixel RAW sensor and encoding it (AVIF, GIF, PDF) takes far longer than a probe seed. */
+const RAW_PROBE_TIMEOUT_MS = 180_000;
+const RATCHET_TIMEOUT_MS = 1_800_000;
 const CATEGORY_TIMEOUT_MS = 600_000;
+/** Per RAW source: its targets at the probe's per-pair ceiling, with headroom. */
+const RAW_SOURCE_TIMEOUT_MS = 900_000;
 const MEDIA_CATEGORIES = new Set(['audio', 'video']);
 const FIXTURE_ROOT = path.resolve(__dirname, 'fixtures');
 // Real camera-RAW samples are loaded explicitly below from the fetched cache, never by extension.
@@ -135,8 +142,22 @@ for (const entry of RAW_MANIFEST) {
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 /** Strict mode keeps the RAW checks enabled so that missing samples fail instead of skipping. */
 const RAW_CHECKS_ENABLED = STRICT_MODE || RAW_SAMPLES_MISSING.length === 0;
-/** RAW sources whose real sample decodes (sensor data or embedded preview) only with this opt-in. */
-const RAW_SAMPLE_OPTIONS = { allowEmbeddedPreview: true };
+/**
+ * Camera files LibRaw does not recognize at all: a Raspberry Pi frame (JPEG with a trailing Bayer dump)
+ * and Sigma Foveon X3F, which the distribution build of LibRaw omits. Only their embedded preview is
+ * decodable, so their probes opt in; every other RAW source must convert by real sensor decode.
+ */
+/** Hand-authored from the camera families the registry advertises; the manifest must cover exactly these. */
+const RAW_SOURCES = ['3fr', 'arw', 'cr2', 'cr3', 'crw', 'dcr', 'dng', 'erf', 'mos', 'mrw', 'nef', 'orf', 'pef', 'raf', 'raw', 'rw2', 'x3f'];
+const RAW_SOURCE_SET: ReadonlySet<string> = new Set(RAW_SOURCES);
+const RAW_PREVIEW_ONLY_SOURCES: ReadonlySet<string> = new Set(['raw', 'x3f']);
+/** Whether the native RAW engine (LibRaw `dcraw_emu`) is installed. */
+const HAS_NATIVE_RAW_ENGINE = probeNativeEngines().dcrawEmu;
+
+/** Plain options when the native engine can decode the sample, so only real sensor decode resolves a pair. */
+function rawSampleOptions(source: string): Record<string, unknown> {
+  return HAS_NATIVE_RAW_ENGINE && !RAW_PREVIEW_ONLY_SOURCES.has(source) ? {} : { allowEmbeddedPreview: true };
+}
 
 /** Seed formats used to derive a structurally valid probe input for a source format. */
 const DERIVATION_SEEDS: readonly { format: string; buffer: Buffer }[] = [
@@ -207,10 +228,10 @@ async function requireDerived(format: string): Promise<Buffer> {
   return derived;
 }
 
-function withTimeout<T>(promise: Promise<T>): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs = PROBE_TIMEOUT_MS): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('probe timed out')), PROBE_TIMEOUT_MS);
+    timer = setTimeout(() => reject(new Error('probe timed out')), timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -291,10 +312,14 @@ async function probePair(source: string, target: string): Promise<{ outcome: Pai
   let lastError = '';
   const attempts = (await probeInputs(source)).map((input) => ({ input, options: {} as Record<string, unknown> }));
   const rawSample = RAW_SAMPLES.get(source);
-  if (rawSample) attempts.push({ input: rawSample, options: RAW_SAMPLE_OPTIONS });
+  if (rawSample) attempts.push({ input: rawSample, options: rawSampleOptions(source) });
   for (const { input, options } of attempts) {
     try {
-      await withTimeout(convertFile(input, source, target, options, `probe.${source}`));
+      // Camera RAW goes through the dispatcher so the native sensor decode is what resolves the pair.
+      const run = RAW_SAMPLES.has(source) && input === rawSample
+        ? dispatchConversion(input, source, target, options, `probe.${source}`)
+        : convertFile(input, source, target, options, `probe.${source}`);
+      await withTimeout(run, RAW_SAMPLES.has(source) ? RAW_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS);
       return { outcome: 'routed', detail: '' };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -385,7 +410,7 @@ const HAS_OCR_DATA = TESSDATA_DIRS.some(
 );
 /** Whether a pair is decidable depends on the native tools, so the ratchet needs the CI toolchain. */
 const HAS_CI_TOOLCHAIN =
-  HAS_FFMPEG && HAS_OCR_DATA && ['7z', 'soffice', 'pdftoppm', 'tesseract'].every(onPath);
+  HAS_FFMPEG && HAS_OCR_DATA && ['7z', 'soffice', 'pdftoppm', 'tesseract', 'dcraw_emu'].every(onPath);
 const RUN_MEDIA_TRANSCODER_PAIRS = process.env.REGISTRY_CONFORMANCE_MEDIA === '1';
 
 describe('routing-error classifier', () => {
@@ -522,10 +547,22 @@ describe('every advertised registry pair has an engine path', () => {
   const categories = [...new Set(Object.values(FORMAT_REGISTRY).map((def) => def.category))].sort();
 
   for (const category of categories.filter((c) => !MEDIA_CATEGORIES.has(c))) {
+    // Camera RAW sources decode real sensor data per pair, so each gets its own test below.
     it(`${category} sources`, async () => {
-      expect(await findUnroutedPairs(pairsFor((c) => c === category))).toEqual([]);
+      const pairs = pairsFor((c) => c === category).filter(([source]) => !RAW_CHECKS_ENABLED || !RAW_SOURCE_SET.has(source));
+      expect(await findUnroutedPairs(pairs)).toEqual([]);
     }, CATEGORY_TIMEOUT_MS);
   }
+
+  // The probe still dispatches every pair through the real engine; only the grouping differs, so a
+  // slow decode (3FR is 39 megapixels) cannot exhaust the timeout of the whole image category.
+  it.skipIf(!RAW_CHECKS_ENABLED).each(RAW_SOURCES)(
+    'camera RAW source %s',
+    async (source) => {
+      expect(await findUnroutedPairs(pairsFor(() => true).filter(([pairSource]) => pairSource === source))).toEqual([]);
+    },
+    RAW_SOURCE_TIMEOUT_MS
+  );
 
   it('audio and video sources routed outside the media transcoder', async () => {
     const mediaPairs = pairsFor((c, target) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive');
@@ -558,27 +595,19 @@ describe('inconclusive pairs ratchet', () => {
     const current = new Set(inconclusive);
     expect(inconclusive.filter((pair) => !allowed.has(pair))).toEqual([]);
     expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => !current.has(pair))).toEqual([]);
-  }, CATEGORY_TIMEOUT_MS);
+  }, RATCHET_TIMEOUT_MS);
 });
 
 describe('real camera RAW samples', () => {
-  const RAW_TIMEOUT_MS = 120_000;
-  /** Hand-authored from the camera families the registry advertises; the manifest must cover exactly these. */
-  const RAW_SOURCES = ['3fr', 'arw', 'cr2', 'cr3', 'crw', 'dcr', 'dng', 'erf', 'mos', 'mrw', 'nef', 'orf', 'pef', 'raf', 'raw', 'rw2', 'x3f'];
+  const RAW_TIMEOUT_MS = 300_000;
   const SDR_TARGETS = ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'];
   const HDR_TARGETS = ['exr', 'ultrahdr'];
-  /** Pairs whose real sample converts today; every one is checked against an independent decode. */
-  const RAW_CONVERTIBLE: Readonly<Record<string, readonly string[]>> = {
-    cr3: [...SDR_TARGETS, ...HDR_TARGETS],
-    crw: SDR_TARGETS,
-    dcr: SDR_TARGETS,
-    dng: [...SDR_TARGETS, ...HDR_TARGETS],
-    orf: SDR_TARGETS,
-    rw2: SDR_TARGETS,
-    x3f: SDR_TARGETS,
-  };
-  const rawPairs = Object.entries(RAW_CONVERTIBLE).flatMap(([source, targets]) =>
-    targets.map((target) => [source, target] as [string, string])
+  const PACKAGING_TARGETS = ['pdf', 'zip'];
+  /** Every target a RAW source advertises needs a validator below; a new target must add one. */
+  const VALIDATED_TARGETS = new Set([...SDR_TARGETS, ...HDR_TARGETS, ...PACKAGING_TARGETS]);
+  /** Every advertised pair is checked: the real sample must convert to a valid file. */
+  const rawPairs = RAW_SOURCES.flatMap((source) =>
+    FORMAT_REGISTRY[source].targetFormats.map((target) => [source, target] as [string, string])
   );
 
   const MAX_PLAUSIBLE_SIDE = 20_000;
@@ -595,6 +624,8 @@ describe('real camera RAW samples', () => {
   const ODG_MIMETYPE = 'application/vnd.oasis.opendocument.graphics';
   const SHARP_FORMATS: Readonly<Record<string, string>> = { jpg: 'jpeg', png: 'png', tiff: 'tiff', webp: 'webp', avif: 'heif', gif: 'gif', ultrahdr: 'jpeg' };
   const JPEG_START = Buffer.from([0xff, 0xd8, 0xff]);
+  const PDF_MAGIC = '%PDF-';
+  const ASPECT_TOLERANCE = 0.01;
 
   interface Dimensions {
     width: number;
@@ -639,19 +670,35 @@ describe('real camera RAW samples', () => {
     expect(Math.max(...channels.map((c) => c.stdev))).toBeGreaterThan(0);
   }
 
+  const RAW_IDENTIFY = getOracleToolPath('raw-identify');
+  const OUTPUT_SIZE_PATTERN = /Output size:\s+(\d+) x (\d+)/;
+  const rawSamplePath = (source: string) => path.join(RAW_FIXTURE_DIR, '.cache', `${source}.${source}`);
+
   const referenceCache = new Map<string, Promise<Dimensions>>();
+  /**
+   * Expected size of the decoded image. For sensor-decoded sources it is the output size LibRaw's own
+   * identify tool reports; for preview-only sources (and without the tool) it is the size of the
+   * dispatcher's PNG, which the sharp decode of that PNG reports independently.
+   */
   function referenceDimensions(source: string): Promise<Dimensions> {
     let pending = referenceCache.get(source);
     if (!pending) {
-      pending = convertFile(RAW_SAMPLES.get(source)!, source, 'png', RAW_SAMPLE_OPTIONS, `probe.${source}`).then((r) =>
-        decodedDimensions(r.buffer, 'png')
-      );
+      const identified = HAS_NATIVE_RAW_ENGINE && RAW_IDENTIFY && !RAW_PREVIEW_ONLY_SOURCES.has(source);
+      pending = identified
+        ? Promise.resolve(OUTPUT_SIZE_PATTERN.exec(execFileSync(RAW_IDENTIFY, ['-v', rawSamplePath(source)], { encoding: 'utf-8' })))
+            .then((match) => {
+              if (!match) throw new Error(`raw-identify reported no output size for ${source}`);
+              return { width: Number(match[1]), height: Number(match[2]) };
+            })
+        : dispatchConversion(RAW_SAMPLES.get(source)!, source, 'png', rawSampleOptions(source), `probe.${source}`).then((r) =>
+            decodedDimensions(r.buffer, 'png')
+          );
       referenceCache.set(source, pending);
     }
     return pending;
   }
 
-  async function expectValidOutput(buffer: Buffer, target: string, reference: Dimensions): Promise<void> {
+  async function expectValidOutput(buffer: Buffer, target: string, reference: Dimensions, sourceBytes: Buffer): Promise<void> {
     expect(buffer.length).toBeGreaterThan(0);
     if (SHARP_FORMATS[target]) {
       const dims = await decodedDimensions(buffer, target);
@@ -716,10 +763,30 @@ describe('real camera RAW samples', () => {
       expect(dims).toEqual(reference);
       return;
     }
-    // odd: an OpenDocument graphics package. Its drawing body is currently empty (tracked separately).
+    if (target === 'pdf') {
+      expect(buffer.subarray(0, PDF_MAGIC.length).toString('latin1')).toBe(PDF_MAGIC);
+      const pdf = await PDFDocument.load(buffer);
+      expect(pdf.getPageCount()).toBe(1);
+      const { width, height } = pdf.getPage(0).getSize();
+      expect(Math.abs(width / height - reference.width / reference.height)).toBeLessThan(ASPECT_TOLERANCE);
+      return;
+    }
+    if (target === 'zip') {
+      const zip = await JSZip.loadAsync(buffer);
+      const entries = Object.values(zip.files).filter((entry) => !entry.dir);
+      expect(entries).toHaveLength(1);
+      expect((await entries[0].async('nodebuffer')).equals(sourceBytes)).toBe(true);
+      return;
+    }
+    // odd: an OpenDocument graphics package whose page frame references the embedded picture.
     const zip = await JSZip.loadAsync(buffer);
     expect(await zip.file('mimetype')?.async('string')).toBe(ODG_MIMETYPE);
-    expect(zip.file('content.xml')).not.toBeNull();
+    const content = await zip.file('content.xml')!.async('string');
+    const href = /<draw:frame[^>]*>\s*<draw:image[^>]*xlink:href="([^"]+)"/.exec(content);
+    expect(href).not.toBeNull();
+    const picture = await zip.file(href![1])!.async('nodebuffer');
+    expect(await decodedDimensions(picture, 'png')).toEqual(reference);
+    expect(await zip.file('META-INF/manifest.xml')!.async('string')).toContain(`manifest:full-path="${href![1]}"`);
   }
 
   it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
@@ -733,8 +800,8 @@ describe('real camera RAW samples', () => {
     expect([...RAW_SAMPLES.keys()].sort()).toEqual(RAW_SOURCES);
   });
 
-  it('lists only pairs the registry advertises', () => {
-    expect(rawPairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
+  it('has a validator for every target the RAW sources advertise', () => {
+    expect(rawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
   });
 
   it.skipIf(!RAW_CHECKS_ENABLED).each(rawPairs)(
@@ -743,9 +810,13 @@ describe('real camera RAW samples', () => {
       if (!RAW_SAMPLES.has(source)) {
         throw new OracleToolMissingError('raw-fixtures', `RAW sample for ${source} is missing. Run npm run fixtures:raw.`);
       }
-      const result = await convertFile(RAW_SAMPLES.get(source)!, source, target, RAW_SAMPLE_OPTIONS, `probe.${source}`);
+      const sample = RAW_SAMPLES.get(source)!;
+      const result = await dispatchConversion(sample, source, target, rawSampleOptions(source), `probe.${source}`);
+      if (HAS_NATIVE_RAW_ENGINE && !RAW_PREVIEW_ONLY_SOURCES.has(source) && target !== 'zip') {
+        expect(result.engineUsed).toBe('native-raw');
+      }
       expectPlausible(await referenceDimensions(source));
-      await expectValidOutput(result.buffer, target, await referenceDimensions(source));
+      await expectValidOutput(result.buffer, target, await referenceDimensions(source), sample);
     },
     RAW_TIMEOUT_MS
   );

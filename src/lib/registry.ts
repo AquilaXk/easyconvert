@@ -3255,9 +3255,9 @@ export function isFormatCompatibleWithMagicBytes(
   const cfbfFormats = new Set(['doc', 'xls', 'ppt', 'hwp', 'cfbf']);
   const pdfFormats = new Set(['pdf', 'ai']);
   const pngFormats = new Set(['png', 'apng']);
-  const jpegFormats = new Set(['jpg', 'jpeg', 'jpe', 'jfif']);
+  const jpegFormats = new Set(['jpg', 'jpeg', 'jpe', 'jfif', 'raw']);
   const gifFormats = new Set(['gif']);
-  const tiffFormats = new Set(['tif', 'tiff', 'dng', 'cr2', 'nef']);
+  const tiffFormats = new Set(['tif', 'tiff', 'dng', 'cr2', 'nef', 'arw', '3fr', 'dcr', 'erf', 'mos', 'pef']);
   const webpFormats = new Set(['webp']);
   const bmpFormats = new Set(['bmp', 'dib']);
   const mp3Formats = new Set(['mp3']);
@@ -3265,7 +3265,7 @@ export function isFormatCompatibleWithMagicBytes(
   const wavFormats = new Set(['wav']);
   const flacFormats = new Set(['flac']);
   const oggFormats = new Set(['ogg', 'oga', 'ogv', 'opus']);
-  const mp4Formats = new Set(['mp4', 'm4a', 'mov']);
+  const mp4Formats = new Set(['mp4', 'm4a', 'mov', 'cr3']);
   const mkvFormats = new Set(['mkv', 'mk3d', 'mka', 'mks']);
   const webmFormats = new Set(['webm']);
   const aviFormats = new Set(['avi']);
