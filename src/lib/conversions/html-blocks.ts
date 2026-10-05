@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
-import type { PdfBlock, PdfRasterImage } from './pdf-blocks';
+import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
 
 /**
@@ -31,6 +31,8 @@ const REPLACEMENT_CHARACTER = '�';
 const SURROGATE_FIRST = 0xd800;
 const SURROGATE_LAST = 0xdfff;
 const DEFAULT_LIST_START = 1;
+/** Largest colspan honoured, as in HTML (larger values are clamped). */
+const MAX_COLUMN_SPAN = 1000;
 const COMMENT_OPEN = '<!--';
 const COMMENT_CLOSE = '-->';
 
@@ -337,6 +339,13 @@ function decodeImageSource(src: string): Buffer {
   return Buffer.from(body, 'base64');
 }
 
+/** The colspan of a table cell: a whole number from 1 to MAX_COLUMN_SPAN, 1 when absent or invalid. */
+function columnSpan(cell: HtmlElement): number {
+  const span = Number.parseInt(cell.attrs.get('colspan') ?? '', DECIMAL_RADIX);
+  if (!Number.isFinite(span) || span < 1) return 1;
+  return Math.min(span, MAX_COLUMN_SPAN);
+}
+
 interface InlineContext {
   readonly segments: PdfTextSegment[];
   /** Images met inside inline content, drawn after the paragraph that holds them. */
@@ -513,7 +522,7 @@ class HtmlBlockBuilder {
   /** Rows of the table; content placed directly in the table is drawn before it, as browsers do. */
   private table(node: HtmlElement): PdfBlock[] {
     const before: PdfBlock[] = [];
-    const rows: PdfTextSegment[][][] = [];
+    const rows: PdfTableCell[][] = [];
     const visit = (element: HtmlElement): void => {
       for (const child of element.children) {
         if (typeof child === 'string') {
@@ -531,11 +540,11 @@ class HtmlBlockBuilder {
     return rows.length > 0 ? [...before, { kind: 'table', rows }] : before;
   }
 
-  private row(tr: HtmlElement, before: PdfBlock[]): PdfTextSegment[][] {
-    const cells: PdfTextSegment[][] = [];
+  private row(tr: HtmlElement, before: PdfBlock[]): PdfTableCell[] {
+    const cells: PdfTableCell[] = [];
     for (const child of tr.children) {
       if (typeof child !== 'string' && TABLE_CELL_ELEMENTS.has(child.tag)) {
-        cells.push(this.cellContent(child));
+        cells.push({ content: this.cellContent(child), span: columnSpan(child) });
       } else if (typeof child !== 'string' || child.trim().length > 0) {
         before.push(...this.blocks([child]));
       }

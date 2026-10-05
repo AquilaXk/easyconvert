@@ -1,5 +1,5 @@
 import PDFDocument from 'pdfkit';
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, EngineUnavailableError } from '../types';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfTextSegment } from './pdf-fonts';
 
 /**
@@ -12,11 +12,17 @@ export type PdfBlock =
   | { kind: 'paragraph'; content: PdfTextSegment[] }
   | { kind: 'preformatted'; text: string }
   | { kind: 'list'; ordered: boolean; start: number; items: PdfBlock[][] }
-  | { kind: 'table'; rows: PdfTextSegment[][][] }
+  | { kind: 'table'; rows: PdfTableCell[][] }
   | { kind: 'image'; image: PdfRasterImage }
   | { kind: 'quote'; blocks: PdfBlock[] }
   | { kind: 'rule' }
   | { kind: 'pageBreak' };
+
+/** A table cell and the number of columns it spans. */
+export interface PdfTableCell {
+  readonly content: PdfTextSegment[];
+  readonly span: number;
+}
 
 /** A decoded-and-verified PNG or JPEG image with its pixel size. */
 export interface PdfRasterImage {
@@ -50,6 +56,8 @@ const BULLET_MARKER = '•';
 const TABLE_CELL_PADDING = 4;
 const TABLE_BORDER_WIDTH = 0.5;
 const MIN_TABLE_COLUMN_WIDTH = 24;
+/** Narrowest text column left after list and quote indentation. */
+const MIN_TEXT_WIDTH = 72;
 const RULE_SPACING = 6;
 const RULE_WIDTH = 0.75;
 /** CSS pixel to PDF point (96 px per inch, 72 pt per inch). */
@@ -75,6 +83,17 @@ class PdfBlockRenderer {
 
   private get bottom(): number {
     return this.doc.page.maxY();
+  }
+
+  /** Width left for text at this indentation; deep list and quote nesting fails instead of squeezing text out. */
+  private textWidth(indent: number): number {
+    const width = this.contentWidth - indent;
+    if (width < MIN_TEXT_WIDTH) {
+      throw new ConversionFailedError(
+        `Lists and block quotes nest too deeply for the page: ${Math.max(0, Math.floor(width))}pt of text width is left and the in-process PDF renderer needs at least ${MIN_TEXT_WIDTH}pt`
+      );
+    }
+    return width;
   }
 
   render(blocks: readonly PdfBlock[], indent = 0, gapLines = BLOCK_GAP_LINES): void {
@@ -104,6 +123,7 @@ class PdfBlockRenderer {
         this.renderImage(block.image, indent);
         return;
       case 'quote':
+        this.textWidth(indent + QUOTE_INDENT);
         this.render(block.blocks, indent + QUOTE_INDENT, gapLines);
         return;
       case 'rule':
@@ -130,13 +150,14 @@ class PdfBlockRenderer {
   private renderText(content: readonly PdfTextSegment[], size: number, indent: number, gapLines: number): void {
     if (!this.hasText(content)) return;
     this.doc.fontSize(size);
-    this.writer.write(content, { width: this.contentWidth - indent, lineGap: LINE_GAP }, this.left + indent, this.doc.y);
+    this.writer.write(content, { width: this.textWidth(indent), lineGap: LINE_GAP }, this.left + indent, this.doc.y);
     this.doc.x = this.left;
     this.doc.moveDown(gapLines);
   }
 
   private renderList(ordered: boolean, start: number, items: readonly PdfBlock[][], indent: number): void {
     const itemIndent = indent + LIST_MARKER_WIDTH;
+    this.textWidth(itemIndent);
     items.forEach((item, index) => {
       this.doc.fontSize(BODY_FONT_SIZE);
       const lineHeight = this.doc.currentLineHeight(true) + LINE_GAP;
@@ -153,40 +174,51 @@ class PdfBlockRenderer {
     this.doc.moveDown(BLOCK_GAP_LINES);
   }
 
-  private renderTable(rows: readonly PdfTextSegment[][][], indent: number): void {
-    const columnCount = rows.reduce((widest, row) => Math.max(widest, row.length), 0);
+  private renderTable(rows: readonly PdfTableCell[][], indent: number): void {
+    const columnCount = rows.reduce((widest, row) => Math.max(widest, row.reduce((sum, cell) => sum + cell.span, 0)), 0);
     if (columnCount === 0) return;
-    const tableWidth = this.contentWidth - indent;
+    const tableWidth = this.textWidth(indent);
     const columnWidth = tableWidth / columnCount;
     if (columnWidth < MIN_TABLE_COLUMN_WIDTH) {
-      throw new ConversionFailedError(
-        `Table with ${columnCount} columns does not fit the page width; the in-process PDF renderer needs columns of at least ${MIN_TABLE_COLUMN_WIDTH}pt`
+      throw new EngineUnavailableError(
+        'soffice',
+        `a table with ${columnCount} columns does not fit the page width; the in-process PDF renderer needs columns of at least ${MIN_TABLE_COLUMN_WIDTH}pt`
       );
     }
-    const textWidth = columnWidth - TABLE_CELL_PADDING * 2;
     const x0 = this.left + indent;
     this.doc.fontSize(TABLE_FONT_SIZE);
     const minRowHeight = this.doc.currentLineHeight(true) + TABLE_CELL_PADDING * 2;
 
     for (const row of rows) {
       this.doc.fontSize(TABLE_FONT_SIZE);
-      const textHeights = row.map((cell) => (this.hasText(cell) ? this.writer.heightOf(cell, { width: textWidth, lineGap: LINE_GAP }) : 0));
+      let column = 0;
+      const placed = row.map((cell) => {
+        const span = Math.min(cell.span, columnCount - column);
+        const place = { cell, x: x0 + column * columnWidth, width: span * columnWidth };
+        column += span;
+        return place;
+      });
+      const textHeights = placed.map(({ cell, width }) =>
+        this.hasText(cell.content) ? this.writer.heightOf(cell.content, { width: width - TABLE_CELL_PADDING * 2, lineGap: LINE_GAP }) : 0
+      );
       const tallest = textHeights.reduce((max, height) => Math.max(max, height), 0);
       const rowHeight = Math.max(minRowHeight, tallest + TABLE_CELL_PADDING * 2);
       if (rowHeight > this.bottom - this.top) {
-        throw new ConversionFailedError('A table row is taller than a page; the in-process PDF renderer cannot split table cells across pages');
+        throw new EngineUnavailableError(
+          'soffice',
+          'a table row is taller than a page; the in-process PDF renderer cannot split table cells across pages'
+        );
       }
       if (this.doc.y + rowHeight > this.bottom) this.doc.addPage();
       const y = this.doc.y;
-      row.forEach((cell, index) => {
-        if (!this.hasText(cell)) return;
+      for (const { cell, x, width } of placed) {
+        if (!this.hasText(cell.content)) continue;
         this.doc.fontSize(TABLE_FONT_SIZE);
-        this.writer.write(cell, { width: textWidth, lineGap: LINE_GAP }, x0 + index * columnWidth + TABLE_CELL_PADDING, y + TABLE_CELL_PADDING);
-      });
-      this.doc.lineWidth(TABLE_BORDER_WIDTH);
-      for (let index = 0; index < columnCount; index++) {
-        this.doc.rect(x0 + index * columnWidth, y, columnWidth, rowHeight).stroke();
+        this.writer.write(cell.content, { width: width - TABLE_CELL_PADDING * 2, lineGap: LINE_GAP }, x + TABLE_CELL_PADDING, y + TABLE_CELL_PADDING);
       }
+      this.doc.lineWidth(TABLE_BORDER_WIDTH);
+      for (const { x, width } of placed) this.doc.rect(x, y, width, rowHeight).stroke();
+      for (let empty = column; empty < columnCount; empty++) this.doc.rect(x0 + empty * columnWidth, y, columnWidth, rowHeight).stroke();
       this.doc.x = this.left;
       this.doc.y = y + rowHeight;
     }
@@ -197,7 +229,7 @@ class PdfBlockRenderer {
   private renderImage(image: PdfRasterImage, indent: number): void {
     const naturalWidth = image.widthPx * PX_TO_PT;
     const naturalHeight = image.heightPx * PX_TO_PT;
-    const scale = Math.min(1, (this.contentWidth - indent) / naturalWidth, (this.bottom - this.top) / naturalHeight);
+    const scale = Math.min(1, this.textWidth(indent) / naturalWidth, (this.bottom - this.top) / naturalHeight);
     const width = naturalWidth * scale;
     const height = naturalHeight * scale;
     if (this.doc.y + height > this.bottom) this.doc.addPage();

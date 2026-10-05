@@ -337,6 +337,70 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
   });
 });
 
+describe('In-process PDF layout limits', () => {
+  oracleTest('wraps a 1 MB unbroken token in linear time without losing characters', ['pdftotext'], async () => {
+    const TOKEN_BYTES = 1024 * 1024;
+    const BUDGET_MS = 2000;
+    const token = 'a'.repeat(TOKEN_BYTES);
+    const started = Date.now();
+    const result = await convertFile(Buffer.from(token, 'utf-8'), 'txt', 'pdf', {}, 'token.txt');
+    const elapsed = Date.now() - started;
+    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+    const extracted = withoutWhitespace(pdfText(result.buffer));
+    expect(extracted.length).toBe(TOKEN_BYTES);
+    expect(extracted).toBe(token);
+  }, 60_000);
+
+  oracleTest('wraps a long unbroken token inside an HTML paragraph without losing characters', ['pdftotext'], async () => {
+    const BUDGET_MS = 2000;
+    const token = 'x'.repeat(50_000);
+    const started = Date.now();
+    const result = await convertFile(Buffer.from(`<p>start ${token} end</p>`, 'utf-8'), 'html', 'pdf', {}, 'token.html');
+    const elapsed = Date.now() - started;
+    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+    expect(withoutWhitespace(pdfText(result.buffer))).toBe(`start${token}end`);
+  }, 60_000);
+
+  it('refuses list and quote nesting too deep to leave room for text', async () => {
+    for (const [label, html] of [
+      ['blockquote', `${'<blockquote>'.repeat(40)}HelloWorld${'</blockquote>'.repeat(40)}`],
+      ['ul', `${'<ul><li>'.repeat(30)}HelloWorld${'</li></ul>'.repeat(30)}`],
+    ]) {
+      const { error } = await settle(convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'deep.html'));
+      expect({ label, name: (error as Error)?.name }).toEqual({ label, name: 'ConversionFailedError' });
+      expect((error as Error).message).toMatch(/nest/);
+    }
+  });
+
+  oracleTest('keeps every character of moderately nested lists and quotes', ['pdftotext'], async () => {
+    const html = `${'<ul><li>'.repeat(8)}DeepListText${'</li></ul>'.repeat(8)}${'<blockquote>'.repeat(8)}DeepQuoteText${'</blockquote>'.repeat(8)}`;
+    const result = await convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'nested.html');
+    expect(withoutWhitespace(pdfText(result.buffer)).replace(/•/g, '')).toBe('DeepListTextDeepQuoteText');
+  });
+
+  it('hands tables wider or taller than a page to LibreOffice with EngineUnavailableError', async () => {
+    const wideRow = `<tr>${Array.from({ length: 30 }, (_, i) => `<td>c${i}</td>`).join('')}</tr>`;
+    const tallCell = Array.from({ length: 6000 }, (_, i) => `word${i}`).join(' ');
+    for (const [label, html] of [
+      ['wide', `<table>${wideRow}</table>`],
+      ['tall', `<table><tr><td>${tallCell}</td><td>x</td></tr></table>`],
+    ]) {
+      const { error } = await settle(convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, `${label}.html`));
+      expect({ label, name: (error as Error)?.name }).toEqual({ label, name: 'EngineUnavailableError' });
+      expect((error as EngineUnavailableError).engineName).toBe('soffice');
+    }
+  });
+
+  oracleTest('lets a colspan cell use the width of the columns it spans', ['pdftotext'], async () => {
+    const wide = 'Quarterly revenue summary across all regional offices';
+    const html = `<table><tr><td colspan="2">${wide}</td></tr><tr><td>left cell</td><td>right cell</td></tr></table>`;
+    const result = await convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'colspan.html');
+    const layout = pdfText(result.buffer, true).split('\n');
+    const spanning = lineIndex(layout, new RegExp(wide), 0);
+    lineIndex(layout, /left cell\s+right cell/, spanning + 1);
+  });
+});
+
 const STRUCTURED_HTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Inventory report</title><style>h1 { color: red; }</style></head>
 <body>

@@ -74,7 +74,18 @@ const DECIMAL_RADIX = 10;
 const CODE_POINT_HEX_WIDTH = 4;
 
 const LINE_FEED = 0x0a;
+const SPACE = 0x20;
 const TAB_STOP_SPACES = '    ';
+/**
+ * Tokens (runs without spaces or line breaks) at least this long are measured and broken to the
+ * line width before pdfkit sees them: pdfkit re-measures a too-long word once per character it
+ * removes, which is quadratic in the token length.
+ */
+const LONG_TOKEN_CHARS = 64;
+/** Points kept free at the end of a pre-broken line, so kerning never pushes it past the width. */
+const LINE_FIT_MARGIN = 1;
+/** A base character with the combining marks, joiners and variation selectors that follow it. */
+const CLUSTER = /[^\p{M}\u200D\uFE00-\uFE0F][\p{M}\u200D\uFE00-\uFE0F]*|[\p{M}\u200D\uFE00-\uFE0F]+/gu;
 /** Variation selectors: kept after their base character when the font maps the sequence. */
 const VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 /**
@@ -477,12 +488,77 @@ export class PdfUnicodeTextWriter {
     return splitIntoFontRuns(segments, this.customFontPath);
   }
 
+  /** Width lines wrap at for these options, or 0 when the text is not wrapped. */
+  private lineWidth(options: PdfWriterTextOptions, x?: number): number {
+    if (options.lineBreak === false) return 0;
+    if (options.width !== undefined) return options.width;
+    return this.doc.page.width - (x ?? this.doc.x) - this.doc.page.margins.right;
+  }
+
+  /** Breaks one long token into line-width pieces, measuring each character cluster once. */
+  private splitToken(token: string, lineWidth: number, widths: Map<string, number>): string {
+    const limit = lineWidth - LINE_FIT_MARGIN;
+    let out = '';
+    let line = '';
+    let lineWidthSoFar = 0;
+    CLUSTER.lastIndex = 0;
+    for (let match = CLUSTER.exec(token); match; match = CLUSTER.exec(token)) {
+      const cluster = match[0];
+      let width = widths.get(cluster);
+      if (width === undefined) {
+        width = this.doc.widthOfString(cluster);
+        widths.set(cluster, width);
+      }
+      if (line && lineWidthSoFar + width > limit) {
+        out += `${line}\n`;
+        line = '';
+        lineWidthSoFar = 0;
+      }
+      line += cluster;
+      lineWidthSoFar += width;
+    }
+    return out + line;
+  }
+
+  /**
+   * Inserts line breaks into tokens wider than the line, in the run's font, so pdfkit wraps every
+   * piece without its quadratic character-by-character splitting. Linear in the text length.
+   */
+  private breakLongTokens(text: string, lineWidth: number): string {
+    if (text.length < LONG_TOKEN_CHARS || !(lineWidth > 0)) return text;
+    const widths = new Map<string, number>();
+    let out = '';
+    let tokenStart = 0;
+    const flushToken = (end: number): void => {
+      const token = text.slice(tokenStart, end);
+      out += token.length >= LONG_TOKEN_CHARS ? this.splitToken(token, lineWidth, widths) : token;
+    };
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      if (code === SPACE || code === LINE_FEED) {
+        flushToken(i);
+        out += text[i];
+        tokenStart = i + 1;
+      }
+    }
+    flushToken(text.length);
+    return out;
+  }
+
+  /** Runs with long tokens broken to the line width (each run measured in its own font). */
+  private layoutRuns(content: string | readonly PdfTextSegment[], lineWidth: number): PdfFontRun[] {
+    return this.runs(content).map((run) => {
+      this.useFace(run.face);
+      return { ...run, text: this.breakLongTokens(run.text, lineWidth) };
+    });
+  }
+
   /**
    * Writes text at (x, y) or at the current position, switching fonts between runs. Links are
    * drawn underlined with a link annotation.
    */
   write(content: string | readonly PdfTextSegment[], options: PdfWriterTextOptions = {}, x?: number, y?: number): void {
-    const runs = this.runs(content);
+    const runs = this.layoutRuns(content, this.lineWidth(options, x));
     runs.forEach((run, index) => {
       this.useFace(run.face);
       const runOptions: PDFKit.Mixins.TextOptions = {
@@ -505,7 +581,7 @@ export class PdfUnicodeTextWriter {
    */
   heightOf(content: string | readonly PdfTextSegment[], options: PdfWriterTextOptions = {}): number {
     let height = 0;
-    for (const run of this.runs(content)) {
+    for (const run of this.layoutRuns(content, this.lineWidth(options))) {
       this.useFace(run.face);
       height += this.doc.heightOfString(run.text, options);
     }

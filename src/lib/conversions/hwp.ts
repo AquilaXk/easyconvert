@@ -1231,7 +1231,7 @@ async function generatePdfFromHwp(
   }
   for (const tbl of doc.tables ?? []) {
     if (tbl.rows.length === 0) continue;
-    blocks.push({ kind: 'table', rows: tbl.rows.map((row) => row.map((cell) => [{ text: cell }])) });
+    blocks.push({ kind: 'table', rows: tbl.rows.map((row) => row.map((cell) => ({ content: [{ text: cell }], span: 1 }))) });
   }
   return renderPdfBlocks(blocks, { orientation: options.orientation, title });
 }
