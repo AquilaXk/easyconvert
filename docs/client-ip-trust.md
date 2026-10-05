@@ -28,9 +28,14 @@ proxy under your control rewrites them, so they are only read under the contract
      (600 burst, 100/s) instead of one client (60 burst, 10/s). `GET`/`HEAD /api/health` is exempt from it.
    - Login keeps its per-email counter and lockout but skips the per-IP counter, so one client cannot lock out
      everyone.
-   - Anonymous access keeps the burst limiter but has no daily quota, because a shared quota would let one
-     client exhaust it for all. Trade-off: until a trust mode is declared, anonymous callers are limited only
-     by the shared burst bucket. Declare `TRUSTED_PROXIES` to restore per-client daily quotas.
+   - Anonymous access shares one burst bucket (key `rate:anon:unattributed`) sized for site-wide traffic like
+     the edge bucket: 600 burst, 100/s by default, overridable with `ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY` and
+     `ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE`. It is deliberately not the per-client size
+     (`ANONYMOUS_BURST_CAPACITY` / `ANONYMOUS_BURST_REFILL_RATE`, 10 burst, 1/s), which would let one client
+     at 1 request per second block every anonymous user. There is no daily quota for the shared identity,
+     because a shared quota would let one client exhaust it for all. Trade-off: until a trust mode is declared,
+     anonymous callers are limited only by the shared burst bucket. Declare `TRUSTED_PROXIES` to restore
+     per-client burst limits and daily quotas.
    - IP allowlists never match `unattributed`.
 6. When the socket peer is known (`peerIp`), an untrusted peer is the client and its headers are ignored. A
    trusted peer defaults to loopback and private ranges when `TRUSTED_PROXIES` is unset.

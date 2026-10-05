@@ -61,6 +61,29 @@ export function getAnonymousBurstLimit(): BurstLimit {
 
 export const ANONYMOUS_BURST_LIMIT: BurstLimit = getAnonymousBurstLimit();
 
+// The unattributed identity is every anonymous caller whose address cannot be trusted, so its bucket is sized
+// for site-wide traffic like the edge middleware's shared bucket (600 burst, 100/s), not for one client.
+const UNATTRIBUTED_BURST_CAPACITY_DEFAULT = 600;
+const UNATTRIBUTED_BURST_REFILL_RATE_DEFAULT = 100;
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive integer, got "${raw}".`);
+  }
+  return value;
+}
+
+/** Shared anonymous burst limits for the `unattributed` identity (env: ANONYMOUS_UNATTRIBUTED_BURST_*). */
+export function getUnattributedBurstLimit(): BurstLimit {
+  return {
+    capacity: readPositiveIntEnv('ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY', UNATTRIBUTED_BURST_CAPACITY_DEFAULT),
+    refillRate: readPositiveIntEnv('ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE', UNATTRIBUTED_BURST_REFILL_RATE_DEFAULT),
+  };
+}
+
 const API_KEY_RATE_LIMIT_PREFIX = 'apikey:';
 const MIN_RETRY_AFTER_SECONDS = 1;
 const MS_PER_SECOND = 1000;
@@ -341,11 +364,12 @@ async function verifyAnonymousAccess(
   // Anonymous burst and daily quota buckets: IPv6 clients share their /64.
   const anonBucket = rateLimitKey(clientIp);
   const anonIdentifier = `rate:anon:${anonBucket}`;
+  const unattributed = clientIp === UNATTRIBUTED_CLIENT_KEY;
 
-  // 1. Enforce IP burst rate limit
+  // 1. Enforce IP burst rate limit (the shared unattributed identity gets site-wide sizing)
   const burst = await redisKeyStore.checkTokenBucketRateLimit(
     anonIdentifier,
-    getAnonymousBurstLimit()
+    unattributed ? getUnattributedBurstLimit() : getAnonymousBurstLimit()
   );
   if (!burst.allowed) {
     if (burst.serviceUnavailable) {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { validateApiAccess } from '../src/lib/api-keys/guard';
+import { getUnattributedBurstLimit, validateApiAccess } from '../src/lib/api-keys/guard';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import {
   LOGIN_MAX_FAILED_ATTEMPTS_PER_EMAIL,
@@ -14,6 +14,7 @@ const FAILED_LOGINS_ACROSS_USERS = 12;
 const PER_IP_LOGIN_LIMIT = 10;
 const ANON_DAILY_LIMIT = 2;
 const ANON_REQUESTS = 6;
+const PER_CLIENT_HAMMER_REQUESTS = 25;
 
 function login(email: string, headers: Record<string, string> = {}): Promise<Response> {
   return loginHandler(
@@ -89,12 +90,53 @@ describe('unattributed mode must not let one client degrade everyone else', () =
       }
     });
 
-    it('still enforces the burst limiter on the shared unattributed identity', async () => {
+    it('sizes the shared unattributed bucket for site-wide traffic, not for one client', async () => {
+      // Per-client sizing: 3 burst, 1/s. One client sending well past it must not exhaust the shared identity.
+      vi.stubEnv('ANONYMOUS_BURST_CAPACITY', '3');
+      vi.stubEnv('ANONYMOUS_BURST_REFILL_RATE', '1');
+      const hammer: Array<number | undefined> = [];
+      for (let i = 0; i < PER_CLIENT_HAMMER_REQUESTS; i++) {
+        const auth = await validateApiAccess(anonymousRequest({ 'x-forwarded-for': '203.0.113.9' }), {
+          requiredUnits: 1,
+          allowAnonymous: true,
+        });
+        hammer.push(auth.authorized ? 200 : auth.status);
+      }
+      expect(hammer).toEqual(new Array(PER_CLIENT_HAMMER_REQUESTS).fill(200));
+      // A different unattributed caller, still below the shared limit, is not throttled.
+      const bystander = await validateApiAccess(anonymousRequest({ 'x-forwarded-for': '203.0.113.10' }), {
+        requiredUnits: 1,
+        allowAnonymous: true,
+      });
+      expect(bystander.authorized).toBe(true);
+      expect(bystander.user?.id).toBe('anon:unattributed');
+    });
+
+    it('defaults the shared unattributed limits to the edge shared bucket (600 burst, 100/s)', () => {
+      expect(getUnattributedBurstLimit()).toEqual({ capacity: 600, refillRate: 100 });
+    });
+
+    it('still trips the burst limiter when a flood exceeds the shared unattributed limit', async () => {
+      vi.stubEnv('ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY', '3');
+      vi.stubEnv('ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE', '1');
+      const results: Array<number | undefined> = [];
+      for (let i = 0; i < 5; i++) {
+        const auth = await validateApiAccess(anonymousRequest(), { requiredUnits: 1, allowAnonymous: true });
+        results.push(auth.authorized ? 200 : auth.status);
+      }
+      expect(results).toEqual([200, 200, 200, 429, 429]);
+    });
+
+    it('keeps per-client burst sizing for attributed clients', async () => {
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
       vi.stubEnv('ANONYMOUS_BURST_CAPACITY', '3');
       vi.stubEnv('ANONYMOUS_BURST_REFILL_RATE', '1');
       const results: Array<number | undefined> = [];
       for (let i = 0; i < 5; i++) {
-        const auth = await validateApiAccess(anonymousRequest(), { requiredUnits: 1, allowAnonymous: true });
+        const auth = await validateApiAccess(anonymousRequest({ 'x-forwarded-for': '198.51.100.7' }), {
+          requiredUnits: 1,
+          allowAnonymous: true,
+        });
         results.push(auth.authorized ? 200 : auth.status);
       }
       expect(results).toEqual([200, 200, 200, 429, 429]);
