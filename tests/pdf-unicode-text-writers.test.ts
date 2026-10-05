@@ -133,6 +133,23 @@ function failingSoffice(conversion: string): string {
 const A4_LANDSCAPE = /Page size:\s+841\.89 x 595\.(?:28|3\d*) pts/;
 const A4_PORTRAIT = /Page size:\s+595\.(?:28|3\d*) x 841\.89 pts/;
 
+/**
+ * Times `run` on a small and a large input. Growth well under the square of the size ratio shows
+ * the work is linear (a quadratic step would grow by the square); a generous ceiling catches
+ * hangs. Used instead of tight wall-clock budgets, which trip under parallel test load.
+ */
+async function measureGrowth<T>(run: (size: number) => Promise<T>, small: number, large: number): Promise<{ growth: number; largeMs: number; result: T }> {
+  const smallStarted = Date.now();
+  await run(small);
+  const smallMs = Date.now() - smallStarted;
+  const largeStarted = Date.now();
+  const result = await run(large);
+  const largeMs = Date.now() - largeStarted;
+  return { growth: largeMs / Math.max(smallMs, 1), largeMs, result };
+}
+
+const GROWTH_CEILING_MS = 10_000;
+
 /** Settles a promise into its value or its rejection reason. */
 function settle<T>(promise: Promise<T>): Promise<{ value?: T; error?: unknown }> {
   return promise.then(
@@ -405,25 +422,37 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
     expect((error as Error).message).toContain(label);
   });
 
-  oracleTest('settles thousands of distinct uncommon Han characters in seconds, without a font lookup per character', ['pdftotext'], async () => {
+  oracleTest('settles thousands of distinct uncommon Han characters with one font listing, not one per character', ['pdftotext', 'fc-list'], async () => {
     const EXT_B_FIRST = 0x20000;
     const DISTINCT = 3000;
-    const BUDGET_MS = 3000;
+    const realFcList = requireOracleTool('fc-list');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-list-count-'));
+    const spawns = path.join(dir, 'spawns');
+    const wrapper = path.join(dir, 'fc-list');
+    fs.writeFileSync(wrapper, `#!/bin/sh\necho spawn >> '${spawns}'\nexec '${realFcList}' "$@"\n`, { mode: 0o755 });
     let text = 'Han Extension B: ';
     for (let i = 0; i < DISTINCT; i++) text += String.fromCodePoint(EXT_B_FIRST + i);
+
+    vi.resetModules();
+    const fresh = await import('../src/lib/conversions/index');
     const started = Date.now();
-    const { value, error } = await settle(convertFile(Buffer.from(text, 'utf-8'), 'txt', 'pdf', {}, 'ext-b.txt'));
+    const { value, error } = await withEnvValue('FC_LIST_PATH', wrapper, () =>
+      settle(fresh.convertFile(Buffer.from(text, 'utf-8'), 'txt', 'pdf', {}, 'ext-b.txt'))
+    );
     const elapsed = Date.now() - started;
-    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+    vi.resetModules();
+    const spawnCount = fs.readFileSync(spawns, 'utf-8').split('\n').filter(Boolean).length;
+    expect({ spawnCount, underCeiling: elapsed < GROWTH_CEILING_MS, elapsed }).toEqual({ spawnCount: 1, underCeiling: true, elapsed });
     if (value) {
       expect(withoutWhitespace(pdfText(value.buffer))).toBe(withoutWhitespace(text));
     } else {
       expect((error as Error).name).toBe('EngineUnavailableError');
       expect((error as EngineUnavailableError).engineName).toBe('unicode-font');
       const reported = Number.parseInt(/U\+([0-9A-F]{5})/.exec((error as Error).message)?.[1] ?? '0', 16);
-      expect(reported >= EXT_B_FIRST && reported < EXT_B_FIRST + DISTINCT).toBe(true);
+      expect(reported).toBeGreaterThanOrEqual(EXT_B_FIRST);
+      expect(reported).toBeLessThan(EXT_B_FIRST + DISTINCT);
     }
-  }, 60_000);
+  }, 120_000);
 
   oracleTest('renders the golden HWP fixture with its paragraphs and table rows in order', POPPLER_TOOLS, async () => {
     const corpus = synthesizeHwp5CompoundCorpus();
@@ -518,14 +547,21 @@ describe('In-process PDF layout limits', () => {
   });
 
   oracleTest('wraps a long unbroken token inside an HTML paragraph without losing characters', ['pdftotext'], async () => {
-    const BUDGET_MS = 2000;
-    const token = 'x'.repeat(50_000);
-    const started = Date.now();
-    const result = await convertFile(Buffer.from(`<p>start ${token} end</p>`, 'utf-8'), 'html', 'pdf', {}, 'token.html');
-    const elapsed = Date.now() - started;
-    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
-    expect(withoutWhitespace(pdfText(result.buffer))).toBe(`start${token}end`);
-  }, 60_000);
+    // 4x the token must cost well under the 16x a quadratic wrap would.
+    const MAX_GROWTH = 8;
+    const { growth, largeMs, result } = await measureGrowth(
+      (size) => convertFile(Buffer.from(`<p>start ${'x'.repeat(size)} end</p>`, 'utf-8'), 'html', 'pdf', {}, 'token.html'),
+      12_500,
+      50_000
+    );
+    expect({ linear: growth < MAX_GROWTH, underCeiling: largeMs < GROWTH_CEILING_MS, growth, largeMs }).toEqual({
+      linear: true,
+      underCeiling: true,
+      growth,
+      largeMs,
+    });
+    expect(withoutWhitespace(pdfText(result.buffer))).toBe(`start${'x'.repeat(50_000)}end`);
+  }, 120_000);
 
   it('refuses list and quote nesting too deep to leave room for text', async () => {
     for (const [label, html] of [
@@ -589,20 +625,22 @@ describe('HTML parsing robustness', () => {
     const PARAGRAPHS = 150_000;
     const parsed = await parseHtmlToPdfBlocks(`<html><body>${'<p>x</p>'.repeat(PARAGRAPHS)}</body></html>`);
     expect(parsed.blocks.length).toBe(PARAGRAPHS);
-    expect(parsed.blocks.every((block) => block.kind === 'paragraph' && block.content.map((c) => c.text).join('') === 'x')).toBe(true);
+    expect(parsed.blocks.map((block) => (block.kind === 'paragraph' ? block.content.map((c) => c.text).join('') : block.kind))).toEqual(
+      new Array<string>(PARAGRAPHS).fill('x')
+    );
   });
 
   it('refuses an embedded image above the pixel limit from its header, without decoding it', async () => {
     const SIDE = 6000;
-    const BUDGET_MS = 1500;
     const png = await sharp({ create: { width: SIDE, height: SIDE, channels: 3, background: { r: 255, g: 255, b: 255 } } }).png().toBuffer();
     const html = `<p>x</p><img src="data:image/png;base64,${png.toString('base64')}">`;
     const started = Date.now();
     const { error } = await settle(convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'bomb.html'));
     const elapsed = Date.now() - started;
+    // The message carries the header's size: the limit is applied from the header, before decoding.
     expect((error as Error)?.name).toBe('ConversionFailedError');
-    expect((error as Error).message).toMatch(/6000x6000/);
-    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+    expect((error as Error).message).toMatch(/6000x6000 pixels, above the 25000000-pixel limit/);
+    expect({ underCeiling: elapsed < GROWTH_CEILING_MS, elapsed }).toEqual({ underCeiling: true, elapsed });
   });
 
   oracleTest('embeds a plain sRGB baseline JPEG byte for byte', ['pdfimages'], async () => {
@@ -784,14 +822,21 @@ describe('Markdown to PDF keeps literal text and structure', () => {
   );
 
   oracleTest('converts long runs of table pipes in linear time', ['pdftotext'], async () => {
-    const BUDGET_MS = 2000;
-    const pipes = '|'.repeat(40_000);
-    const started = Date.now();
-    const result = await convertFile(Buffer.from(pipes, 'utf-8'), 'md', 'pdf', {}, 'pipes.md');
-    const elapsed = Date.now() - started;
-    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
-    expect(withoutWhitespace(pdfText(result.buffer))).toBe(pipes);
-  });
+    // 4x the pipes must cost well under the 16x the old quadratic table pattern took.
+    const MAX_GROWTH = 8;
+    const { growth, largeMs, result } = await measureGrowth(
+      (size) => convertFile(Buffer.from('|'.repeat(size), 'utf-8'), 'md', 'pdf', {}, 'pipes.md'),
+      10_000,
+      40_000
+    );
+    expect({ linear: growth < MAX_GROWTH, underCeiling: largeMs < GROWTH_CEILING_MS, growth, largeMs }).toEqual({
+      linear: true,
+      underCeiling: true,
+      growth,
+      largeMs,
+    });
+    expect(withoutWhitespace(pdfText(result.buffer))).toBe('|'.repeat(40_000));
+  }, 120_000);
 });
 
 const STRUCTURED_HTML = `<!DOCTYPE html>
@@ -930,7 +975,7 @@ describe('CJK and complex-script text routes to LibreOffice when it is installed
       executeWorkerConversion(buildSource('html', SAMPLES.korean), 'html', 'pdf', {}, 'korean.html')
     );
     expect(result.engineUsed).toBe('internal-fallback');
-    expect(result.fallbackChain?.some((entry) => entry.startsWith('native-soffice'))).toBe(true);
+    expect(result.fallbackChain?.[0]).toMatch(/^native-soffice: /);
     expect(normalizeText(pdfText(result.buffer))).toBe(normalizeText(SAMPLES.korean.join(' ')));
     expectEmbeddedFontsOnly(result.buffer);
   });
@@ -948,7 +993,8 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
 
   oracleTest('HTML falls back to the in-process renderer when LibreOffice times out', POPPLER_TOOLS, async () => {
     const TIMEOUT_MS = 1500;
-    const BUDGET_MS = 20_000;
+    // A ceiling well below the 60 s the stand-in sleeps: the engine gave up at its timeout.
+    const CEILING_MS = 20_000;
     const started = Date.now();
     const result = await withEnvValue('SOFFICE_PATH', failingSoffice('exec sleep 60'), () =>
       executeWorkerConversion(Buffer.from(STRUCTURED_HTML, 'utf-8'), 'html', 'pdf', { timeoutMs: TIMEOUT_MS }, 'report.html')
@@ -956,7 +1002,7 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     const elapsed = Date.now() - started;
     expect(result.engineUsed).toBe('internal-fallback');
     expect(result.fallbackChain?.[0]).toMatch(/^native-soffice: /);
-    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+    expect({ underCeiling: elapsed < CEILING_MS, elapsed }).toEqual({ underCeiling: true, elapsed });
     expectStructuredLayout(result.buffer);
   }, 60_000);
 
