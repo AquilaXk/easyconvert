@@ -16,7 +16,6 @@ export default defineConfig({
       ANONYMOUS_BURST_CAPACITY: '10000',
       ANONYMOUS_BURST_REFILL_RATE: '10000',
       OCI_NAMESPACE: 'axvym6vk8g7i',
-      AWS_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
       STORAGE_SIGNING_SECRET: 'test-secure-storage-signing-secret',
       S3_SIGNING_SECRET: 'test-secure-s3-signing-secret',
     },
