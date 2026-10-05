@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -83,6 +83,71 @@ describe.skipIf(!CHECKS_ENABLED)('native RAW sensor decode through the dispatche
     },
     DECODE_TIMEOUT_MS
   );
+});
+
+const REGION_FORMATS = ['arw', 'nef', 'cr2'];
+const REGION_GRID = 6;
+const REGION_MEAN_TOLERANCE = 12;
+const HALF_SIZE_FLAG = '-h';
+
+/** Per-region channel means of an image, on a grid, as 8-bit values. */
+async function regionMeans(image: sharp.Sharp, width: number, height: number): Promise<number[]> {
+  const cellWidth = Math.floor(width / REGION_GRID);
+  const cellHeight = Math.floor(height / REGION_GRID);
+  const means: number[] = [];
+  for (let row = 0; row < REGION_GRID; row += 1) {
+    for (let column = 0; column < REGION_GRID; column += 1) {
+      const { channels } = await image
+        .clone()
+        .extract({ left: column * cellWidth, top: row * cellHeight, width: cellWidth, height: cellHeight })
+        .stats();
+      means.push(...channels.slice(0, 3).map((channel) => channel.mean));
+    }
+  }
+  return means;
+}
+
+/** Largest per-region channel-mean difference between a decoded PNG and the downscaled -h reference decode. */
+async function worstRegionDifference(format: string, decoded: Buffer): Promise<number> {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'raw-region-ref-'));
+  try {
+    const referencePath = path.join(dir, 'half.tiff');
+    execFileSync(DCRAW_EMU!, [HALF_SIZE_FLAG, '-T', '-6', '-w', '-o', '1', '-Z', referencePath, samplePath(format)]);
+    const { width, height } = await sharp(decoded).metadata();
+    const referencePng = await sharp(referencePath).resize(width, height, { kernel: 'lanczos3' }).removeAlpha().png().toBuffer();
+    const referenceMeans = await regionMeans(sharp(referencePng), width!, height!);
+    const decodedMeans = await regionMeans(sharp(decoded).removeAlpha(), width!, height!);
+    return Math.max(...decodedMeans.map((mean, index) => Math.abs(mean - referenceMeans[index])));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(!CHECKS_ENABLED)('native RAW decode matches an independent half-size decode region by region', () => {
+  it.each(REGION_FORMATS)(
+    '%s: every region of the full decode matches the downscaled -h reference',
+    async (format) => {
+      const full = await dispatchConversion(readFileSync(samplePath(format)), format, 'png', {}, `sample.${format}`);
+      expect(await worstRegionDifference(format, full.buffer)).toBeLessThan(REGION_MEAN_TOLERANCE);
+    },
+    DECODE_TIMEOUT_MS
+  );
+
+  it('the comparison fails an image whose bottom half is flat filler', async () => {
+    const full = await dispatchConversion(readFileSync(samplePath('nef')), 'nef', 'png', {}, 'sample.nef');
+    const { width, height } = await sharp(full.buffer).metadata();
+    const flatBottom = await sharp(full.buffer)
+      .composite([
+        {
+          input: { create: { width: width!, height: Math.floor(height! / 2), channels: 3, background: { r: 128, g: 128, b: 128 } } },
+          left: 0,
+          top: Math.floor(height! / 2),
+        },
+      ])
+      .png()
+      .toBuffer();
+    expect(await worstRegionDifference('nef', flatBottom)).toBeGreaterThan(REGION_MEAN_TOLERANCE);
+  });
 });
 
 describe.skipIf(!CHECKS_ENABLED)('native RAW decode rejects corrupt input', () => {
