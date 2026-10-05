@@ -203,6 +203,55 @@ export function findOptimalRiceParameter(residuals: Int32Array): { k: number; fo
   return { k: bestK, folded };
 }
 
+/** RFC 9639 section 9.1.2: 4-bit sample rate codes that name a rate from the table. */
+const FLAC_TABLE_RATE_CODES: ReadonlyMap<number, number> = new Map([
+  [88200, 1],
+  [176400, 2],
+  [192000, 3],
+  [8000, 4],
+  [16000, 5],
+  [22050, 6],
+  [24000, 7],
+  [32000, 8],
+  [44100, 9],
+  [48000, 10],
+  [96000, 11],
+]);
+const FLAC_RATE_CODE_KHZ = 12;
+const FLAC_RATE_CODE_HZ = 13;
+const FLAC_RATE_CODE_TENS_OF_HZ = 14;
+const FLAC_RATE_CODE_FROM_STREAMINFO = 0;
+const FLAC_MAX_KHZ_FIELD = 255;
+const FLAC_MAX_HZ_FIELD = 65535;
+
+/** Chooses the shortest frame-header encoding of a sample rate. */
+function flacSampleRateCode(sampleRate: number): number {
+  const tableCode = FLAC_TABLE_RATE_CODES.get(sampleRate);
+  if (tableCode !== undefined) return tableCode;
+  if (sampleRate % 1000 === 0 && sampleRate / 1000 <= FLAC_MAX_KHZ_FIELD) return FLAC_RATE_CODE_KHZ;
+  if (sampleRate <= FLAC_MAX_HZ_FIELD) return FLAC_RATE_CODE_HZ;
+  if (sampleRate % 10 === 0 && sampleRate / 10 <= FLAC_MAX_HZ_FIELD) return FLAC_RATE_CODE_TENS_OF_HZ;
+  return FLAC_RATE_CODE_FROM_STREAMINFO;
+}
+
+/**
+ * Frame header coded number: UTF-8 style variable length integer (RFC 9639 section 9.1.5),
+ * one lead byte plus up to five continuation bytes for values below 2^31.
+ */
+function writeFlacUtf8Number(writer: BitWriter, value: number): void {
+  if (value < 0x80) {
+    writer.writeBits(value, 8);
+    return;
+  }
+  let continuationBytes = 1;
+  while (value >= 2 ** (6 * continuationBytes + (6 - continuationBytes))) continuationBytes++;
+  const leadMarker = (0xff00 >> (continuationBytes + 1)) & 0xff;
+  writer.writeBits(leadMarker | Math.floor(value / 2 ** (6 * continuationBytes)), 8);
+  for (let i = continuationBytes - 1; i >= 0; i--) {
+    writer.writeBits(0x80 | (Math.floor(value / 2 ** (6 * i)) & 0x3f), 8);
+  }
+}
+
 /**
  * Encodes PCM samples into an authentic RFC 9639 FLAC audio bitstream
  */
@@ -261,15 +310,7 @@ export function encodeFlacStream(
   let frameNumber = 0;
   let sampleOffset = 0;
 
-  // Map standard sample rates to FLAC 4-bit codes
-  let srCode = 0;
-  if (sampleRate === 44100) srCode = 9;
-  else if (sampleRate === 48000) srCode = 10;
-  else if (sampleRate === 32000) srCode = 8;
-  else if (sampleRate === 22050) srCode = 4;
-  else if (sampleRate === 16000) srCode = 3;
-  else if (sampleRate === 8000) srCode = 1;
-  else srCode = 13; // 16-bit Hz explicit in header
+  const srCode = flacSampleRateCode(sampleRate);
 
   while (sampleOffset < totalSamplesPerChannel) {
     const curBlockSize = Math.min(blockSize, totalSamplesPerChannel - sampleOffset);
@@ -308,12 +349,7 @@ export function encodeFlacStream(
     writer.writeBit(0);
 
     // Frame number (UTF-8 variable length)
-    if (frameNumber < 128) {
-      writer.writeBits(frameNumber, 8);
-    } else {
-      writer.writeBits(0xc0 | (frameNumber >> 6), 8);
-      writer.writeBits(0x80 | (frameNumber & 0x3f), 8);
-    }
+    writeFlacUtf8Number(writer, frameNumber);
 
     // Explicit block size if needed
     if (bsExplicit === 1) {
@@ -322,9 +358,13 @@ export function encodeFlacStream(
       writer.writeBits(curBlockSize - 1, 16);
     }
 
-    // Explicit sample rate if code 13
-    if (srCode === 13) {
+    // Explicit sample rate for the codes that carry one in the header
+    if (srCode === FLAC_RATE_CODE_KHZ) {
+      writer.writeBits(sampleRate / 1000, 8);
+    } else if (srCode === FLAC_RATE_CODE_HZ) {
       writer.writeBits(sampleRate, 16);
+    } else if (srCode === FLAC_RATE_CODE_TENS_OF_HZ) {
+      writer.writeBits(sampleRate / 10, 16);
     }
 
     // Header CRC-8
