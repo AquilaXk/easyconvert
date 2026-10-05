@@ -252,11 +252,12 @@ function readHuffmanTable(file: Buffer, start: number, end: number): { lookup: H
   let at = start;
   for (;;) {
     if (at + 2 > end) throw fail('the Huffman table is not terminated');
-    if (lengths.length >= TRUE_MAX_TABLE_PAIRS) throw fail('the Huffman table is too long');
     const length = file[at];
     const code = file[at + 1];
     at += 2;
     if (length === 0) break;
+    // A table of 256 pairs (every 8-bit pattern its own code) is valid; only a 257th pair is too much.
+    if (lengths.length >= TRUE_MAX_TABLE_PAIRS) throw fail('the Huffman table is too long');
     lengths.push(length);
     codes.push(code);
   }
