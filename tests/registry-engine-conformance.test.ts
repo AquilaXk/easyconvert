@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
+import { OracleToolMissingError } from './helpers/differential-oracle';
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 
 /**
@@ -70,7 +72,8 @@ const PROBE_TIMEOUT_MS = 20_000;
 const CATEGORY_TIMEOUT_MS = 600_000;
 const MEDIA_CATEGORIES = new Set(['audio', 'video']);
 const FIXTURE_ROOT = path.resolve(__dirname, 'fixtures');
-const FIXTURE_SKIP_DIRS = new Set(['sigv4']);
+// Real camera-RAW samples are loaded explicitly below from the fetched cache, never by extension.
+const FIXTURE_SKIP_DIRS = new Set(['sigv4', 'raw']);
 const FIXTURE_SKIP_FILES = new Set(['reference-formats.json', 'corpus-manifest.json']);
 
 const PLAIN_TEXT = Buffer.from('# Probe heading\n\nFirst probe paragraph.\n\nSecond probe paragraph.\n', 'utf-8');
@@ -105,6 +108,35 @@ const ZIP_SEED = FIXTURES.get('zip')![0];
 const STEP_SEED = FIXTURES.get('step')![0];
 const DXF_SEED = FIXTURES.get('dxf')![0];
 const VECTOR_PROBE_CATEGORIES = new Set(['image', 'vector', 'cad']);
+
+/**
+ * Real camera-RAW samples fetched by `npm run fixtures:raw` (public-domain files, verified by
+ * size and SHA-256). A present but corrupt file is a hard error; an absent one is reported
+ * through RAW_SAMPLES_MISSING so the RAW checks skip locally and fail under strict mode.
+ */
+const RAW_FIXTURE_DIR = path.join(FIXTURE_ROOT, 'raw');
+const RAW_MANIFEST: readonly { format: string; filename: string; sha256: string; bytes: number }[] = JSON.parse(
+  readFileSync(path.join(RAW_FIXTURE_DIR, 'manifest.json'), 'utf-8')
+);
+const RAW_SAMPLES = new Map<string, Buffer>();
+const RAW_SAMPLES_MISSING: string[] = [];
+for (const entry of RAW_MANIFEST) {
+  const cached = path.join(RAW_FIXTURE_DIR, '.cache', `${entry.format}.${entry.format}`);
+  if (!existsSync(cached)) {
+    RAW_SAMPLES_MISSING.push(entry.format);
+    continue;
+  }
+  const bytes = readFileSync(cached);
+  if (bytes.length !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
+    throw new Error(`RAW sample ${entry.format} does not match its manifest entry; delete tests/fixtures/raw/.cache and rerun npm run fixtures:raw`);
+  }
+  RAW_SAMPLES.set(entry.format, bytes);
+}
+const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
+/** Strict mode keeps the RAW checks enabled so that missing samples fail instead of skipping. */
+const RAW_CHECKS_ENABLED = STRICT_MODE || RAW_SAMPLES_MISSING.length === 0;
+/** RAW sources whose real sample decodes (sensor data or embedded preview) only with this opt-in. */
+const RAW_SAMPLE_OPTIONS = { allowEmbeddedPreview: true };
 
 /** Seed formats used to derive a structurally valid probe input for a source format. */
 const DERIVATION_SEEDS: readonly { format: string; buffer: Buffer }[] = [
@@ -257,9 +289,12 @@ async function probePair(source: string, target: string): Promise<{ outcome: Pai
     return { outcome: 'unrouted', detail: 'non-media source routed to the media transcoder' };
   }
   let lastError = '';
-  for (const input of await probeInputs(source)) {
+  const attempts = (await probeInputs(source)).map((input) => ({ input, options: {} as Record<string, unknown> }));
+  const rawSample = RAW_SAMPLES.get(source);
+  if (rawSample) attempts.push({ input: rawSample, options: RAW_SAMPLE_OPTIONS });
+  for (const { input, options } of attempts) {
     try {
-      await withTimeout(convertFile(input, source, target, {}, `probe.${source}`));
+      await withTimeout(convertFile(input, source, target, options, `probe.${source}`));
       return { outcome: 'routed', detail: '' };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -517,13 +552,203 @@ describe('inconclusive pairs ratchet', () => {
     expect([...new Set(INCONCLUSIVE_ALLOWLIST)].sort()).toEqual(INCONCLUSIVE_ALLOWLIST);
   });
 
-  it.skipIf(!HAS_CI_TOOLCHAIN)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain)', async () => {
+  it.skipIf(!HAS_CI_TOOLCHAIN || !RAW_CHECKS_ENABLED)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain and RAW samples)', async () => {
     const inconclusive = await findInconclusivePairs(pairsFor((c, t) => !isTranscoderPair(c, t)));
     const allowed = new Set(INCONCLUSIVE_ALLOWLIST);
     const current = new Set(inconclusive);
     expect(inconclusive.filter((pair) => !allowed.has(pair))).toEqual([]);
     expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => !current.has(pair))).toEqual([]);
   }, CATEGORY_TIMEOUT_MS);
+});
+
+describe('real camera RAW samples', () => {
+  const RAW_TIMEOUT_MS = 120_000;
+  /** Hand-authored from the camera families the registry advertises; the manifest must cover exactly these. */
+  const RAW_SOURCES = ['3fr', 'arw', 'cr2', 'cr3', 'crw', 'dcr', 'dng', 'erf', 'mos', 'mrw', 'nef', 'orf', 'pef', 'raf', 'raw', 'rw2', 'x3f'];
+  const SDR_TARGETS = ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'];
+  const HDR_TARGETS = ['exr', 'ultrahdr'];
+  /** Pairs whose real sample converts today; every one is checked against an independent decode. */
+  const RAW_CONVERTIBLE: Readonly<Record<string, readonly string[]>> = {
+    cr3: [...SDR_TARGETS, ...HDR_TARGETS],
+    crw: SDR_TARGETS,
+    dcr: SDR_TARGETS,
+    dng: [...SDR_TARGETS, ...HDR_TARGETS],
+    orf: SDR_TARGETS,
+    rw2: SDR_TARGETS,
+    x3f: SDR_TARGETS,
+  };
+  const rawPairs = Object.entries(RAW_CONVERTIBLE).flatMap(([source, targets]) =>
+    targets.map((target) => [source, target] as [string, string])
+  );
+
+  const MAX_PLAUSIBLE_SIDE = 20_000;
+  const MAX_ICO_SIDE = 256;
+  const ICO_DIR_ENTRY_BYTES = 16;
+  const BMP_DIB_MIN_BYTES = 40;
+  const PSD_HEIGHT_OFFSET = 14;
+  const PSD_WIDTH_OFFSET = 18;
+  const PSD_DEPTH_OFFSET = 22;
+  const BYTE_DEPTH_8 = 8;
+  const EXR_MAGIC = Buffer.from([0x76, 0x2f, 0x31, 0x01]);
+  const EXR_FIRST_ATTRIBUTE_OFFSET = 8;
+  const EXR_BOX2I_BYTES = 16;
+  const ODG_MIMETYPE = 'application/vnd.oasis.opendocument.graphics';
+  const SHARP_FORMATS: Readonly<Record<string, string>> = { jpg: 'jpeg', png: 'png', tiff: 'tiff', webp: 'webp', avif: 'heif', gif: 'gif', ultrahdr: 'jpeg' };
+  const JPEG_START = Buffer.from([0xff, 0xd8, 0xff]);
+
+  interface Dimensions {
+    width: number;
+    height: number;
+  }
+
+  function expectPlausible({ width, height }: Dimensions): void {
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(0);
+    expect(width).toBeLessThanOrEqual(MAX_PLAUSIBLE_SIDE);
+    expect(height).toBeLessThanOrEqual(MAX_PLAUSIBLE_SIDE);
+  }
+
+  /** Reads the dataWindow box2i from the EXR header attribute list. */
+  function exrDimensions(buffer: Buffer): Dimensions {
+    let offset = EXR_FIRST_ATTRIBUTE_OFFSET;
+    while (buffer[offset] !== 0) {
+      const nameEnd = buffer.indexOf(0, offset);
+      const typeEnd = buffer.indexOf(0, nameEnd + 1);
+      const name = buffer.toString('latin1', offset, nameEnd);
+      const size = buffer.readUInt32LE(typeEnd + 1);
+      const valueStart = typeEnd + 5;
+      if (name === 'dataWindow') {
+        expect(size).toBe(EXR_BOX2I_BYTES);
+        const [xMin, yMin, xMax, yMax] = [0, 4, 8, 12].map((delta) => buffer.readInt32LE(valueStart + delta));
+        return { width: xMax - xMin + 1, height: yMax - yMin + 1 };
+      }
+      offset = valueStart + size;
+    }
+    throw new Error('EXR header has no dataWindow attribute');
+  }
+
+  async function decodedDimensions(buffer: Buffer, format: string): Promise<Dimensions> {
+    const meta = await sharp(buffer).metadata();
+    expect(meta.format).toBe(SHARP_FORMATS[format]);
+    return { width: meta.width ?? 0, height: meta.height ?? 0 };
+  }
+
+  /** Output must carry real image content: a uniform raster would pass every header check. */
+  async function expectNonUniform(buffer: Buffer): Promise<void> {
+    const { channels } = await sharp(buffer).stats();
+    expect(Math.max(...channels.map((c) => c.stdev))).toBeGreaterThan(0);
+  }
+
+  const referenceCache = new Map<string, Promise<Dimensions>>();
+  function referenceDimensions(source: string): Promise<Dimensions> {
+    let pending = referenceCache.get(source);
+    if (!pending) {
+      pending = convertFile(RAW_SAMPLES.get(source)!, source, 'png', RAW_SAMPLE_OPTIONS, `probe.${source}`).then((r) =>
+        decodedDimensions(r.buffer, 'png')
+      );
+      referenceCache.set(source, pending);
+    }
+    return pending;
+  }
+
+  async function expectValidOutput(buffer: Buffer, target: string, reference: Dimensions): Promise<void> {
+    expect(buffer.length).toBeGreaterThan(0);
+    if (SHARP_FORMATS[target]) {
+      const dims = await decodedDimensions(buffer, target);
+      expectPlausible(dims);
+      expect(dims).toEqual(reference);
+      await expectNonUniform(buffer);
+      if (target === 'ultrahdr') {
+        // A gain-map JPEG: primary image plus a second embedded JPEG, announced by XMP and an MPF index.
+        expect(buffer.toString('latin1')).toContain('hdrgm');
+        expect(buffer.includes(Buffer.from('MPF\0', 'latin1'))).toBe(true);
+        expect(buffer.indexOf(JPEG_START, JPEG_START.length)).toBeGreaterThan(0);
+      }
+      return;
+    }
+    if (target === 'bmp') {
+      expect(buffer.subarray(0, 2).toString('latin1')).toBe('BM');
+      expect(buffer.readUInt32LE(14)).toBeGreaterThanOrEqual(BMP_DIB_MIN_BYTES);
+      const dims = { width: buffer.readInt32LE(18), height: Math.abs(buffer.readInt32LE(22)) };
+      expectPlausible(dims);
+      expect(dims).toEqual(reference);
+      expect(buffer.length).toBeGreaterThanOrEqual(buffer.readUInt32LE(10) + dims.width * dims.height);
+      return;
+    }
+    if (target === 'ico') {
+      expect([buffer.readUInt16LE(0), buffer.readUInt16LE(2)]).toEqual([0, 1]);
+      const count = buffer.readUInt16LE(4);
+      expect(count).toBeGreaterThan(0);
+      for (let index = 0; index < count; index += 1) {
+        const entry = 6 + index * ICO_DIR_ENTRY_BYTES;
+        // A zero width or height byte encodes 256 in the ICO directory.
+        const entryWidth = buffer[entry] || MAX_ICO_SIDE;
+        const entryHeight = buffer[entry + 1] || MAX_ICO_SIDE;
+        const image = buffer.subarray(buffer.readUInt32LE(entry + 12), buffer.readUInt32LE(entry + 12) + buffer.readUInt32LE(entry + 8));
+        expect(image.length).toBe(buffer.readUInt32LE(entry + 8));
+        const embedded = await decodedDimensions(image, 'png');
+        expect(embedded).toEqual({ width: entryWidth, height: entryHeight });
+      }
+      return;
+    }
+    if (target === 'psd') {
+      expect(buffer.subarray(0, 4).toString('latin1')).toBe('8BPS');
+      expect(buffer.readUInt16BE(4)).toBe(1);
+      const dims = { width: buffer.readUInt32BE(PSD_WIDTH_OFFSET), height: buffer.readUInt32BE(PSD_HEIGHT_OFFSET) };
+      expectPlausible(dims);
+      expect(dims).toEqual(reference);
+      expect(buffer.readUInt16BE(PSD_DEPTH_OFFSET)).toBe(BYTE_DEPTH_8);
+      return;
+    }
+    if (target === 'eps' || target === 'ps') {
+      const text = buffer.toString('latin1');
+      expect(text.startsWith(target === 'eps' ? '%!PS-Adobe-3.0 EPSF-3.0' : '%!PS-Adobe-3.0')).toBe(true);
+      const box = /^%%BoundingBox: 0 0 (\d+) (\d+)$/m.exec(text);
+      expect(box).not.toBeNull();
+      expect({ width: Number(box![1]), height: Number(box![2]) }).toEqual(reference);
+      expect(text.trimEnd().endsWith('%%EOF')).toBe(true);
+      return;
+    }
+    if (target === 'exr') {
+      expect(buffer.subarray(0, EXR_MAGIC.length).equals(EXR_MAGIC)).toBe(true);
+      const dims = exrDimensions(buffer);
+      expectPlausible(dims);
+      expect(dims).toEqual(reference);
+      return;
+    }
+    // odd: an OpenDocument graphics package. Its drawing body is currently empty (tracked separately).
+    const zip = await JSZip.loadAsync(buffer);
+    expect(await zip.file('mimetype')?.async('string')).toBe(ODG_MIMETYPE);
+    expect(zip.file('content.xml')).not.toBeNull();
+  }
+
+  it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
+    if (RAW_SAMPLES_MISSING.length > 0) {
+      throw new OracleToolMissingError(
+        'raw-fixtures',
+        `RAW samples missing for: ${RAW_SAMPLES_MISSING.join(', ')}. Run npm run fixtures:raw.`
+      );
+    }
+    expect(RAW_MANIFEST.map((entry) => entry.format).sort()).toEqual(RAW_SOURCES);
+    expect([...RAW_SAMPLES.keys()].sort()).toEqual(RAW_SOURCES);
+  });
+
+  it('lists only pairs the registry advertises', () => {
+    expect(rawPairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
+  });
+
+  it.skipIf(!RAW_CHECKS_ENABLED).each(rawPairs)(
+    '%s -> %s converts the real sample to a valid file',
+    async (source, target) => {
+      if (!RAW_SAMPLES.has(source)) {
+        throw new OracleToolMissingError('raw-fixtures', `RAW sample for ${source} is missing. Run npm run fixtures:raw.`);
+      }
+      const result = await convertFile(RAW_SAMPLES.get(source)!, source, target, RAW_SAMPLE_OPTIONS, `probe.${source}`);
+      expectPlausible(await referenceDimensions(source));
+      await expectValidOutput(result.buffer, target, await referenceDimensions(source));
+    },
+    RAW_TIMEOUT_MS
+  );
 });
 
 describe('native-engine pairs route through the dispatcher', () => {

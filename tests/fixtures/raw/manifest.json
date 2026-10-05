@@ -1,0 +1,121 @@
+[
+  {
+    "format": "3fr",
+    "filename": "Hasselblad - H3D - 16bit (4:3).3FR",
+    "url": "https://raw.pixls.us/getfile.php/2851/nice/Hasselblad - H3D - 16bit (4:3).3FR",
+    "sha256": "34fdb93cb215e4f419ae0f7252c57b881fa381003124b4f9c143d27741f211b3",
+    "bytes": 53594112
+  },
+  {
+    "format": "arw",
+    "filename": "Sony - ILCE-7S - 14bit 14bit compressed (3:2).ARW",
+    "url": "https://raw.pixls.us/getfile.php/1582/nice/Sony - ILCE-7S - 14bit 14bit compressed (3:2).ARW",
+    "sha256": "a35ebb2fbec929daa5beb20d1ce5c15a8aac7b1a7a231455387f3df8a7442e07",
+    "bytes": 6160384
+  },
+  {
+    "format": "cr2",
+    "filename": "Canon - EOS 40D - sRAW2 (sRAW) (3:2).CR2",
+    "url": "https://raw.pixls.us/getfile.php/2102/nice/Canon - EOS 40D - sRAW2 (sRAW) (3:2).CR2",
+    "sha256": "ba644e7dd2abe74eca260e67f0206ff113bf0f62e710f8130611e964d6be5bf1",
+    "bytes": 5805950
+  },
+  {
+    "format": "cr3",
+    "filename": "Canon - EOS R6 - 3:2.CR3",
+    "url": "https://raw.pixls.us/getfile.php/4659/nice/Canon - EOS R6 - 3:2.CR3",
+    "sha256": "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778",
+    "bytes": 5273174
+  },
+  {
+    "format": "crw",
+    "filename": "Canon - PowerShot G1 - RAW (4:3).crw",
+    "url": "https://raw.pixls.us/getfile.php/2073/nice/Canon - PowerShot G1 - RAW (4:3).crw",
+    "sha256": "f39be5acf14057ce04527fd8d0574e57ec8ed5fed082d7bfaff763075a44ee8a",
+    "bytes": 2300702
+  },
+  {
+    "format": "dcr",
+    "filename": "Kodak - DCS760C - 12bit (3:2).DCR",
+    "url": "https://raw.pixls.us/getfile.php/1347/nice/Kodak - DCS760C - 12bit (3:2).DCR",
+    "sha256": "d0e6bd0a3339daff884e73a08fed8e75b20fe05bba438fc185e3f0bd019d0da8",
+    "bytes": 7547392
+  },
+  {
+    "format": "dng",
+    "filename": "Canon - EOS 60D - 14bit (16:9).dng",
+    "url": "https://raw.pixls.us/getfile.php/2671/nice/Canon - EOS 60D - 14bit (16:9).dng",
+    "sha256": "5d826ccdde8f31569c4f147f97610e423107cba3cbb26edcb89df86055824d97",
+    "bytes": 471476
+  },
+  {
+    "format": "erf",
+    "filename": "Epson - R-D1 - 12bit (3:2).ERF",
+    "url": "https://raw.pixls.us/getfile.php/2680/nice/Epson - R-D1 - 12bit (3:2).ERF",
+    "sha256": "09d8e533d93116294a9f3e161ed868e929454c7b946e083b644bd6bb75bcb5e4",
+    "bytes": 9958994
+  },
+  {
+    "format": "mos",
+    "filename": "Leaf - Aptus 22 - 16bit (4:3).mos",
+    "url": "https://raw.pixls.us/getfile.php/3196/nice/Leaf - Aptus 22 - 16bit (4:3).mos",
+    "sha256": "8a1a101cb3940b0648af54a721d92e6fb8612dd29a0909036ea2753196a00ec2",
+    "bytes": 23423633
+  },
+  {
+    "format": "mrw",
+    "filename": "Minolta - DiMAGE 5 - 4:3.MRW",
+    "url": "https://raw.pixls.us/getfile.php/7795/nice/Minolta - DiMAGE 5 - 4:3.MRW",
+    "sha256": "d60bfd80bcb1f7b9c88b14a5e46ea27885bbf92d990ab30b3939288678fea0d9",
+    "bytes": 6422144
+  },
+  {
+    "format": "nef",
+    "filename": "Nikon - Nikon COOLSCAN IV ED - uncompressed (4:3).nef",
+    "url": "https://raw.pixls.us/getfile.php/4282/nice/Nikon - Nikon COOLSCAN IV ED - uncompressed (4:3).nef",
+    "sha256": "268d9a98920a9f3ea3ebf6a2b9ff68b956df74ac0e46b980bee69e7ef3ebc172",
+    "bytes": 2201849
+  },
+  {
+    "format": "orf",
+    "filename": "Olympus - E-10 - 16bit (4:3).ORF",
+    "url": "https://raw.pixls.us/getfile.php/5424/nice/Olympus - E-10 - 16bit (4:3).ORF",
+    "sha256": "2bfdade72439017a60a47aad1e5bbcb1aca36f2be7a21e94a4257a678fb6f4da",
+    "bytes": 7614592
+  },
+  {
+    "format": "pef",
+    "filename": "Pentax - K10D - 12bit 12bit compressed (3:2).PEF",
+    "url": "https://raw.pixls.us/getfile.php/2239/nice/Pentax - K10D - 12bit 12bit compressed (3:2).PEF",
+    "sha256": "e35ae4154a468be3154f5f462e884ba5941f010d3e8f23d347fbec14809f44d3",
+    "bytes": 9561139
+  },
+  {
+    "format": "raf",
+    "filename": "Fujifilm - FinePix S5000 - 4:3.RAF",
+    "url": "https://raw.pixls.us/getfile.php/2726/nice/Fujifilm - FinePix S5000 - 4:3.RAF",
+    "sha256": "dabd5e74521a6980156be9fd4b88d0c37b0fe4d0e0e6f5c12db8cffff1b76297",
+    "bytes": 6851240
+  },
+  {
+    "format": "raw",
+    "filename": "RaspberryPi - RP_ov5647 - 3:2.raw",
+    "url": "https://raw.pixls.us/getfile.php/4199/nice/RaspberryPi - RP_ov5647 - 3:2.raw",
+    "sha256": "12b4ff3a7f61abc5dd023235f9ea434270a8b111bc16b786696e063e64dd376d",
+    "bytes": 6575416
+  },
+  {
+    "format": "rw2",
+    "filename": "Panasonic - DMC-LX7 - 1:1.RW2",
+    "url": "https://raw.pixls.us/getfile.php/7008/nice/Panasonic - DMC-LX7 - 1:1.RW2",
+    "sha256": "d142a23aca836053ed53e9ce3cb3ed2d434541d734d71a94a6eefadcd08bd31b",
+    "bytes": 3249664
+  },
+  {
+    "format": "x3f",
+    "filename": "Sigma - DP1 - 3:2.X3F",
+    "url": "https://raw.pixls.us/getfile.php/1116/nice/Sigma - DP1 - 3:2.X3F",
+    "sha256": "44508f7df4191aacaecb6461e1841dae002e5b71a4f95a00aa3f52d1c6d6bc5f",
+    "bytes": 10317264
+  }
+]
