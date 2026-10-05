@@ -96,13 +96,17 @@ describe('PR #246 review follow-ups', () => {
   });
 
   describe('burst 429 uses a distinct problem type', () => {
+    const BURST_ATTEMPT_FACTOR = 3;
+
     it('labels a per-key burst rejection as rate-limited, not quota-exceeded', async () => {
       const user = await createUser('burst_type', 'free');
       const key = await redisKeyStore.generateApiKey(user.id, 'burst', { scopes: ['convert:write'] });
       const capacity = API_KEY_BURST_LIMITS.free.capacity;
 
+      // The bucket refills while requests run, so a slow runner can need more than capacity + 1 calls.
+      const maxAttempts = capacity * BURST_ATTEMPT_FACTOR;
       let last: Response | undefined;
-      for (let i = 0; i <= capacity; i++) {
+      for (let i = 0; i < maxAttempts && last?.status !== 429; i++) {
         const formData = new FormData();
         formData.append('file', new File(['a,b\n1,2'], 'burst.csv', { type: 'text/csv' }));
         formData.append('targetFormat', 'json');
