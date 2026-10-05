@@ -38,8 +38,20 @@ export const CFF_MAX_STACK_DEPTH = 48;
 export const CFF_MAX_SUBR_DEPTH = 10;
 /** Interpreter steps (operators and operands) allowed for one glyph. */
 export const CFF_MAX_STEPS_PER_GLYPH = 200_000;
-/** Interpreter steps allowed across all glyphs of one font. */
-export const CFF_MAX_STEPS_PER_FONT = 16_000_000;
+/*
+ * Per-font budgets. A real charstring spends at least one byte per interpreter step and per path
+ * segment, and subroutine reuse multiplies that by a small factor only, so the font-wide budgets
+ * grow with the table size on top of a fixed floor for small fonts. A subroutine tree that expands
+ * far beyond what its table size can justify is rejected long before it costs real CPU or memory.
+ */
+/** Interpreter steps (operators and operands) allowed across all glyphs, before the per-byte share. */
+export const CFF_BASE_STEPS_PER_FONT = 2_000_000;
+/** Extra interpreter steps allowed per byte of CFF table. */
+export const CFF_STEPS_PER_TABLE_BYTE = 4;
+/** Path segments allowed across all glyphs, before the per-byte share. */
+export const CFF_BASE_SEGMENTS_PER_FONT = 250_000;
+/** Extra path segments allowed per byte of CFF table. */
+export const CFF_SEGMENTS_PER_TABLE_BYTE = 2;
 /** Path segments allowed in one glyph before it is rejected. */
 export const CFF_MAX_SEGMENTS_PER_GLYPH = 32_767;
 /** Largest CFF table accepted. */
@@ -76,7 +88,16 @@ const DICT_OPERAND_INT32 = 29;
 const DICT_OPERAND_REAL = 30;
 const DICT_LAST_OPERATOR = 21;
 const BITS_PER_BYTE = 8;
+const NIBBLE_BITS = 4;
+const NIBBLE_MASK = 0x0f;
+const REAL_NIBBLE_MAX_DIGIT = 9;
+const UINT16_MAX = 0xffff;
+const UINT16_BYTES = 2;
 const ISO_ADOBE_LAST_SID = 228;
+// FDSelect format 3 is a u8 format, a u16 range count, then (first u16, fd u8) ranges and a u16 sentinel.
+const FDSELECT_FORMAT_RANGES = 3;
+const FDSELECT_HEADER_BYTES = 3;
+const FDSELECT_RANGE_BYTES = 3;
 const CHARSTRING_TYPE_2 = 2;
 
 // ---------------------------------------------------------------------------
@@ -325,8 +346,8 @@ function decodeRealNumber(data: Buffer, pos: number, end: number, what: string):
   let p = pos;
   while (p < end) {
     const byte = data[p++];
-    for (const nibble of [byte >> 4, byte & 0x0f]) {
-      if (nibble <= 9) {
+    for (const nibble of [byte >> NIBBLE_BITS, byte & NIBBLE_MASK]) {
+      if (nibble <= REAL_NIBBLE_MAX_DIGIT) {
         text += String(nibble);
       } else if (nibble === REAL_NIBBLE_DECIMAL) {
         text += '.';
@@ -453,8 +474,8 @@ function readCharset(data: Buffer, offset: number, numGlyphs: number): Uint16Arr
   let p = offset + 1;
   let g = 1;
   if (format === 0) {
-    for (; g < numGlyphs; g++, p += 2) {
-      charset[g] = readUIntBE(data, p, 2, 'charset');
+    for (; g < numGlyphs; g++, p += UINT16_BYTES) {
+      charset[g] = readUIntBE(data, p, UINT16_BYTES, 'charset');
     }
     return charset;
   }
@@ -463,10 +484,10 @@ function readCharset(data: Buffer, offset: number, numGlyphs: number): Uint16Arr
   }
   const leftBytes = format === 1 ? 1 : 2;
   while (g < numGlyphs) {
-    const first = readUIntBE(data, p, 2, 'charset range');
-    const nLeft = readUIntBE(data, p + 2, leftBytes, 'charset range');
-    p += 2 + leftBytes;
-    if (first + nLeft > 0xffff || g + nLeft + 1 > numGlyphs) {
+    const first = readUIntBE(data, p, UINT16_BYTES, 'charset range');
+    const nLeft = readUIntBE(data, p + UINT16_BYTES, leftBytes, 'charset range');
+    p += UINT16_BYTES + leftBytes;
+    if (first + nLeft > UINT16_MAX || g + nLeft + 1 > numGlyphs) {
       throw new CffFormatError('CFF charset range runs past the glyph count.');
     }
     for (let i = 0; i <= nLeft; i++) charset[g++] = first + i;
@@ -486,17 +507,17 @@ function readFdSelect(data: Buffer, offset: number, numGlyphs: number, fdCount: 
     }
     return select;
   }
-  if (format !== 3) {
+  if (format !== FDSELECT_FORMAT_RANGES) {
     throw new CffFormatError(`CFF FDSelect has the unsupported format ${format}.`);
   }
-  const nRanges = readUIntBE(data, offset + 1, 2, 'FDSelect range count');
+  const nRanges = readUIntBE(data, offset + 1, UINT16_BYTES, 'FDSelect range count');
   if (nRanges === 0) throw new CffFormatError('CFF FDSelect format 3 has no ranges.');
-  let p = offset + 3;
+  let p = offset + FDSELECT_HEADER_BYTES;
   let expectedFirst = 0;
-  for (let r = 0; r < nRanges; r++, p += 3) {
-    const rangeFirst = readUIntBE(data, p, 2, 'FDSelect range');
-    const fd = readUIntBE(data, p + 2, 1, 'FDSelect range');
-    const next = readUIntBE(data, p + 3, 2, 'FDSelect range');
+  for (let r = 0; r < nRanges; r++, p += FDSELECT_RANGE_BYTES) {
+    const rangeFirst = readUIntBE(data, p, UINT16_BYTES, 'FDSelect range');
+    const fd = readUIntBE(data, p + UINT16_BYTES, 1, 'FDSelect range');
+    const next = readUIntBE(data, p + FDSELECT_RANGE_BYTES, UINT16_BYTES, 'FDSelect range');
     if (rangeFirst !== expectedFirst) {
       throw new CffFormatError('CFF FDSelect ranges must start at glyph 0 and be contiguous.');
     }
@@ -602,6 +623,9 @@ export class CffFont {
   readonly charset: Uint16Array | null;
 
   private fontSteps = 0;
+  private fontSegments = 0;
+  private readonly stepBudget: number;
+  private readonly segmentBudget: number;
   private sidToGlyph: Map<number, number> | null = null;
 
   constructor(
@@ -616,15 +640,19 @@ export class CffFont {
     this.numGlyphs = charStrings.count;
     this.charset = charset;
     this.isCidKeyed = isCidKeyed;
+    this.stepBudget = CFF_BASE_STEPS_PER_FONT + CFF_STEPS_PER_TABLE_BYTE * data.length;
+    this.segmentBudget = CFF_BASE_SEGMENTS_PER_FONT + CFF_SEGMENTS_PER_TABLE_BYTE * data.length;
   }
 
-  /** Interprets every glyph; the per-font step budget covers the whole call sequence. */
-  allGlyphs(): CffGlyph[] {
-    const glyphs: CffGlyph[] = [];
-    for (let g = 0; g < this.numGlyphs; g++) glyphs.push(this.glyph(g));
-    return glyphs;
+  /** Interpreter steps spent so far across all glyphs interpreted by this instance. */
+  get stepsExecuted(): number {
+    return this.fontSteps;
   }
 
+  /**
+   * Interprets one glyph. The font-wide step and segment budgets accumulate over every call on this
+   * instance, so callers should convert and release glyphs one at a time instead of keeping them all.
+   */
   glyph(glyphId: number): CffGlyph {
     if (!Number.isInteger(glyphId) || glyphId < 0 || glyphId >= this.numGlyphs) {
       throw new CffCharStringError(`CFF glyph ${glyphId} is outside 0..${this.numGlyphs - 1}.`);
@@ -673,8 +701,8 @@ export class CffFont {
     if (state.steps > CFF_MAX_STEPS_PER_GLYPH) {
       throw new CffCharStringError(`CFF charstring exceeds ${CFF_MAX_STEPS_PER_GLYPH} steps.`);
     }
-    if (this.fontSteps > CFF_MAX_STEPS_PER_FONT) {
-      throw new CffCharStringError(`CFF font exceeds the budget of ${CFF_MAX_STEPS_PER_FONT} charstring steps.`);
+    if (this.fontSteps > this.stepBudget) {
+      throw new CffCharStringError(`CFF font exceeds the budget of ${this.stepBudget} charstring steps.`);
     }
   }
 
@@ -940,6 +968,10 @@ export class CffFont {
     state.segmentCount++;
     if (state.segmentCount > CFF_MAX_SEGMENTS_PER_GLYPH) {
       throw new CffCharStringError(`CFF glyph ${glyphId} has more than ${CFF_MAX_SEGMENTS_PER_GLYPH} segments.`);
+    }
+    this.fontSegments++;
+    if (this.fontSegments > this.segmentBudget) {
+      throw new CffCharStringError(`CFF font exceeds the budget of ${this.segmentBudget} path segments.`);
     }
   }
 

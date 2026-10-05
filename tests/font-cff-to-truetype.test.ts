@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { convertFile } from '../src/lib/conversions';
-import { convertFontToTrueType } from '../src/lib/conversions/font';
+import { convertFontToTrueType, decodeSfnt, encodeSvgFont } from '../src/lib/conversions/font';
 import {
+  CFF_BASE_STEPS_PER_FONT,
   CFF_MAX_SEGMENTS_PER_GLYPH,
   CffCharStringError,
   CffFormatError,
@@ -22,6 +23,7 @@ import {
   type OtfGlyph,
   type OtfSpec,
 } from './helpers/cff-font-builder';
+import { buildTrueTypeFont } from './helpers/mac-font-containers';
 
 /**
  * CFF-flavoured OpenType (OTTO) to TrueType conversion.
@@ -39,9 +41,12 @@ const HAS_CONVERT = spawnSync('convert', ['-version'], { stdio: 'ignore' }).stat
 const HAS_FREETYPE =
   HAS_CONVERT &&
   spawnSync('sh', ['-c', "convert -list format | grep -q 'OTF.*Freetype'"], { stdio: 'ignore' }).status === 0;
-// CI runs the oracles in strict mode: a missing fc-scan must fail there instead of skipping the oracle.
+// CI runs the oracles in strict mode: a missing fc-scan or FreeType renderer must fail there instead of skipping.
 if (process.env.ORACLE_STRICT_MODE === '1' && !HAS_FC_SCAN) {
   throw new Error('ORACLE_STRICT_MODE requires fc-scan (fontconfig) for the CFF to TrueType oracle');
+}
+if (process.env.ORACLE_STRICT_MODE === '1' && !HAS_FREETYPE) {
+  throw new Error('ORACLE_STRICT_MODE requires ImageMagick built with FreeType for the CFF to TrueType render oracle');
 }
 
 const SFNT_TRUETYPE = 0x00010000;
@@ -733,44 +738,6 @@ describe('CFF to TrueType: subroutines, seac, CID-keyed fonts and FontMatrix', (
     expectGlyphMatches(readGlyf(tables, 1), fixture);
   });
 
-  it('composes an accented glyph from its base and accent through the deprecated seac form of endchar', async () => {
-    const base = cs(100, 0, 'rmoveto', 400, 500, -400, 'hlineto', 'endchar');
-    const accent = cs(50, 0, 'rmoveto', 100, 0, 'rlineto', 50, 120, 'rlineto', -100, 0, 'rlineto', 'endchar');
-    // width delta 100, adx 200, ady 500, bchar 65 ('A'), achar 194 (acute) in StandardEncoding
-    const composite = cs(100, 200, 500, 65, 194, 'endchar');
-    const glyphs: OtfGlyph[] = [
-      { charstring: cs('endchar'), advance: 500, lsb: 0 },
-      { charstring: base, advance: DEFAULT_WIDTH_X, lsb: 100 },
-      { charstring: accent, advance: DEFAULT_WIDTH_X, lsb: 50 },
-      { charstring: composite, advance: 600, lsb: 100 },
-    ];
-    const otf = buildOtf({
-      family: 'Seac Probe',
-      glyphs,
-      codePoints: [0x41, 0xb4, 0xc1],
-      cff: {
-        defaultWidthX: DEFAULT_WIDTH_X,
-        nominalWidthX: NOMINAL_WIDTH_X,
-        charset: [sidForAscii('A'), 125, 391],
-        strings: ['Aacute'],
-      },
-    });
-    const tables = readSfntTables(await convertToTtf(otf));
-    const composed: GlyphFixture = {
-      name: 'seac',
-      codePoint: 0xc1,
-      charstring: composite,
-      advance: 600,
-      shape: [
-        [['M', 100, 0], ['L', 500, 0], ['L', 500, 500], ['L', 100, 500]],
-        [['M', 250, 500], ['L', 350, 500], ['L', 400, 620], ['L', 300, 620]],
-      ],
-      exactLines: true,
-    };
-    expectGlyphMatches(readGlyf(tables, 3), composed);
-    expect(tables.get('hmtx')!.readUInt16BE(3 * 4)).toBe(600);
-  });
-
   const cidFixtures = (): { glyphs: OtfGlyph[]; shapes: Shape[] } => ({
     glyphs: [
       { charstring: cs('endchar'), advance: 500, lsb: 0 },
@@ -844,7 +811,7 @@ describe('CFF to TrueType: subroutines, seac, CID-keyed fonts and FontMatrix', (
     expect(font.isCidKeyed).toBe(true);
     expect(font.numGlyphs).toBe(5);
     expect(Array.from(font.charset!)).toEqual([0, 1, 5, 10, 20]);
-    expect(font.allGlyphs().map((g) => g.width)).toEqual([600, 600, 550, 900, 200]);
+    expect(Array.from({ length: font.numGlyphs }, (_, g) => font.glyph(g).width)).toEqual([600, 600, 550, 900, 200]);
   });
 
   it('rebuilds hmtx from the charstring widths when the source font has no hmtx', async () => {
@@ -1357,3 +1324,268 @@ function fanOutFont(glyphCount: number): Buffer {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Charset formats, seac, subroutine bias 32768, real-number Private DICT operands
+// ---------------------------------------------------------------------------
+
+const SEAC_BASE = cs(100, 0, 'rmoveto', 400, 500, -400, 'hlineto', 'endchar');
+const SEAC_ACCENT = cs(50, 0, 'rmoveto', 100, 0, 'rlineto', 50, 120, 'rlineto', -100, 0, 'rlineto', 'endchar');
+// width delta 100, adx 200, ady 500, bchar 65 ('A'), achar 194 (acute), both in StandardEncoding
+const SEAC_COMPOSITE = cs(100, 200, 500, 65, 194, 'endchar');
+const SEAC_COMPOSED: GlyphFixture = {
+  name: 'seac',
+  codePoint: 0xc1,
+  charstring: SEAC_COMPOSITE,
+  advance: 600,
+  shape: [
+    [['M', 100, 0], ['L', 500, 0], ['L', 500, 500], ['L', 100, 500]],
+    [['M', 250, 500], ['L', 350, 500], ['L', 400, 620], ['L', 300, 620]],
+  ],
+  exactLines: true,
+};
+const SEAC_SIDS = [sidForAscii('A'), sidForAscii('B'), sidForAscii('C'), 125, 391];
+
+/** Glyphs: .notdef, A, B, C (SIDs 34-36, one range), acute (SID 125) and the composite (custom SID 391). */
+function seacGlyphs(): OtfGlyph[] {
+  const plain = cs(100, 0, 'rmoveto', 300, 300, -300, 'hlineto', 'endchar');
+  return [
+    { charstring: cs('endchar'), advance: 500, lsb: 0 },
+    { charstring: SEAC_BASE, advance: DEFAULT_WIDTH_X, lsb: 100 },
+    { charstring: plain, advance: DEFAULT_WIDTH_X, lsb: 100 },
+    { charstring: plain, advance: DEFAULT_WIDTH_X, lsb: 100 },
+    { charstring: SEAC_ACCENT, advance: DEFAULT_WIDTH_X, lsb: 50 },
+    { charstring: SEAC_COMPOSITE, advance: 600, lsb: 100 },
+  ];
+}
+
+describe('CFF to TrueType: charset encodings resolve seac components', () => {
+  it.each([0, 1, 2] as const)('charset format %i', async (format) => {
+    const spec = { defaultWidthX: DEFAULT_WIDTH_X, nominalWidthX: NOMINAL_WIDTH_X, charset: SEAC_SIDS, charsetFormat: format, strings: ['Aacute'] };
+    const font = parseCff(buildCff({ fontName: 'Seac', charstrings: seacGlyphs().map((g) => g.charstring), ...spec }));
+    expect(Array.from(font.charset!)).toEqual([0, ...SEAC_SIDS]);
+
+    const otf = buildOtf({ family: 'Seac Probe', glyphs: seacGlyphs(), codePoints: [0x41, 0x42, 0x43, 0xb4, 0xc1], cff: spec });
+    const tables = readSfntTables(await convertToTtf(otf));
+    expectGlyphMatches(readGlyf(tables, 5), SEAC_COMPOSED);
+    expect(tables.get('hmtx')!.readUInt16BE(5 * 4)).toBe(600);
+  });
+
+  it('predefined ISOAdobe charset maps glyph ids to SIDs', async () => {
+    // ISOAdobe: glyph id == SID, so A must be glyph 34 and acute glyph 125.
+    const acuteGid = 125;
+    const composedGid = 126;
+    const glyphs: OtfGlyph[] = Array.from({ length: composedGid + 1 }, () => ({ charstring: cs('endchar'), advance: 500, lsb: 0 }));
+    glyphs[sidForAscii('A')] = { charstring: SEAC_BASE, advance: DEFAULT_WIDTH_X, lsb: 100 };
+    glyphs[acuteGid] = { charstring: SEAC_ACCENT, advance: DEFAULT_WIDTH_X, lsb: 50 };
+    glyphs[composedGid] = { charstring: SEAC_COMPOSITE, advance: 600, lsb: 100 };
+    const cffSpec = { defaultWidthX: DEFAULT_WIDTH_X, nominalWidthX: NOMINAL_WIDTH_X, charsetFormat: 'iso-adobe' as const };
+
+    const parsed = parseCff(buildCff({ fontName: 'Iso', charstrings: glyphs.map((g) => g.charstring), ...cffSpec }));
+    expect(Array.from(parsed.charset!)).toEqual(Array.from({ length: composedGid + 1 }, (_, g) => g));
+
+    const otf = buildOtf({ family: 'Iso Probe', glyphs, codePoints: [0x41], cff: cffSpec });
+    const tables = readSfntTables(await convertToTtf(otf));
+    expectGlyphMatches(readGlyf(tables, composedGid), SEAC_COMPOSED);
+  });
+
+  it('rejects an explicit charset range that runs past the glyph count', () => {
+    const cff = buildCff({
+      fontName: 'Seac',
+      charstrings: seacGlyphs().map((g) => g.charstring),
+      charset: SEAC_SIDS,
+      charsetFormat: 1,
+      strings: ['Aacute'],
+    });
+    // Patch the first range's nLeft (u8) so it claims more glyphs than the font has.
+    const at = cff.indexOf(Buffer.from([1, 0, sidForAscii('A'), 2]));
+    expect(at).toBeGreaterThan(0);
+    cff[at + 3] = 200;
+    expect(() => parseCff(cff)).toThrow(CffFormatError);
+    expect(() => parseCff(cff)).toThrow(/charset range/);
+  });
+});
+
+describe('CFF to TrueType: large subroutine counts and real-number Private DICT operands', () => {
+  it('applies the subroutine bias of 32768 for fonts with 33,900 or more subroutines', async () => {
+    const fixture: GlyphFixture = {
+      name: 'huge subr bias',
+      codePoint: 0x45,
+      charstring: cs(50, 50, 'rmoveto', 0, 'callsubr', 'endchar'),
+      advance: DEFAULT_WIDTH_X,
+      shape: [[['M', 50, 50], ['L', 350, 50], ['L', 350, 250], ['L', 50, 250]]],
+      exactLines: true,
+    };
+    const subrs = Array.from({ length: 33_900 }, (_, i) => (i === 32_768 ? RECT_300x200 : cs('return')));
+    const otf = fixtureFont([fixture], {
+      cff: { defaultWidthX: DEFAULT_WIDTH_X, nominalWidthX: NOMINAL_WIDTH_X, localSubrs: subrs },
+    });
+    const tables = readSfntTables(await convertToTtf(otf));
+    expectGlyphMatches(readGlyf(tables, 1), fixture);
+  });
+
+  it('keeps the medium bias of 1131 just below 33,900 subroutines', async () => {
+    const fixture: GlyphFixture = {
+      name: 'medium subr bias at the limit',
+      codePoint: 0x45,
+      charstring: cs(50, 50, 'rmoveto', 0, 'callsubr', 'endchar'),
+      advance: DEFAULT_WIDTH_X,
+      shape: [[['M', 50, 50], ['L', 350, 50], ['L', 350, 250], ['L', 50, 250]]],
+      exactLines: true,
+    };
+    const subrs = Array.from({ length: 33_899 }, (_, i) => (i === 1131 ? RECT_300x200 : cs('return')));
+    const otf = fixtureFont([fixture], {
+      cff: { defaultWidthX: DEFAULT_WIDTH_X, nominalWidthX: NOMINAL_WIDTH_X, localSubrs: subrs },
+    });
+    const tables = readSfntTables(await convertToTtf(otf));
+    expectGlyphMatches(readGlyf(tables, 1), fixture);
+  });
+
+  const realWidthGlyphs = (): OtfGlyph[] => [
+    { charstring: cs('endchar'), advance: 600, lsb: 0 },
+    // explicit width delta 200 on rmoveto
+    { charstring: cs(200, 0, 0, 'rmoveto', 100, 100, 'rlineto', 'endchar'), advance: 50, lsb: 0 },
+    { charstring: cs(0, 0, 'rmoveto', 100, 100, 'rlineto', 'endchar'), advance: 600, lsb: 0 },
+  ];
+
+  it('reads defaultWidthX and nominalWidthX written as real numbers with exponents', async () => {
+    const spec = { defaultWidthXReal: '6E2', nominalWidthXReal: '-1.5E2' };
+    const font = parseCff(buildCff({ fontName: 'Reals', charstrings: realWidthGlyphs().map((g) => g.charstring), ...spec }));
+    expect([0, 1, 2].map((g) => font.glyph(g).width)).toEqual([600, 50, 600]);
+
+    // Without hmtx the converter takes the advances from these charstring widths.
+    const otf = buildOtf({ family: 'Reals', glyphs: realWidthGlyphs(), codePoints: [0x41, 0x42], omitTables: ['hmtx'], cff: spec });
+    const hmtx = readSfntTables(await convertToTtf(otf)).get('hmtx')!;
+    expect([0, 1, 2].map((g) => hmtx.readUInt16BE(g * 4))).toEqual([600, 50, 600]);
+  });
+
+  it('reads a negative-exponent real number (E-) and fractional widths', () => {
+    const font = parseCff(
+      buildCff({
+        fontName: 'Reals',
+        charstrings: realWidthGlyphs().map((g) => g.charstring),
+        defaultWidthXReal: '2.5E-1',
+        nominalWidthXReal: '12.5',
+      })
+    );
+    expect(font.glyph(0).width).toBe(0.25);
+    expect(font.glyph(1).width).toBe(212.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coordinates, deltas and amplification limits
+// ---------------------------------------------------------------------------
+
+describe('CFF to TrueType: coordinate deltas and amplification limits', () => {
+  it('writes glyphs with large negative coordinates when every delta fits 16 bits', async () => {
+    const wide: GlyphFixture = {
+      name: 'wide negative glyph',
+      codePoint: 0x41,
+      charstring: cs(-30000, -1000, 'rmoveto', 32000, 6000, -32000, 'hlineto', 'endchar'),
+      advance: 700,
+      shape: [[['M', -30000, -1000], ['L', 2000, -1000], ['L', 2000, 5000], ['L', -30000, 5000]]],
+      exactLines: true,
+    };
+    const tables = readSfntTables(await convertToTtf(fixtureFont([wide])));
+    const glyph = readGlyf(tables, 1)!;
+    expect(glyph.bbox).toEqual([-30000, -1000, 2000, 5000]);
+    expectGlyphMatches(glyph, wide);
+    expect(tables.get('hmtx')!.readInt16BE(1 * 4 + 2)).toBe(-30000);
+  });
+
+  it('rejects a coordinate step beyond 16 bits with a typed error instead of a RangeError', async () => {
+    const font = singleGlyphFont(cs(-30000, 0, 'rmoveto', 30000, 30000, 'add', 'hlineto', 10, 'vlineto', 'endchar'));
+    await expectRejected(font, ConversionFailedError, /16-bit coordinate deltas/);
+  });
+
+  it('rejects two contours whose start points are further apart than 16 bits', async () => {
+    const font = singleGlyphFont(
+      cs(-30000, 0, 'rmoveto', 100, 100, -100, 'hlineto', 30000, 30000, 'add', 'hmoveto', 100, 100, -100, 'hlineto', 'endchar')
+    );
+    await expectRejected(font, ConversionFailedError, /16-bit coordinate deltas/);
+  });
+
+  it('does not let a shared subroutine tree expand a small font into a huge outline', async () => {
+    // 28,800 segments per glyph (30 x 20 x 48) from a tiny table; 440 such glyphs are about 12.7 million segments.
+    const leaf = cs(...repeatItems([1], 48), 'hlineto', 'return');
+    const middle = cs(...repeatItems([-107, 'callsubr'], 20), 'return');
+    const glyphs: OtfGlyph[] = [{ charstring: cs('endchar'), advance: 500, lsb: 0 }];
+    for (let g = 0; g < 440; g++) {
+      glyphs.push({ charstring: cs(0, 0, 'rmoveto', ...repeatItems([-106, 'callsubr'], 30), 'endchar'), advance: 600, lsb: 0 });
+    }
+    const font = buildOtf({
+      family: 'SharedTree',
+      glyphs,
+      codePoints: [0x41],
+      cff: { defaultWidthX: 600, nominalWidthX: 0, charset: Array.from({ length: 440 }, (_, i) => i + 1), localSubrs: [leaf, middle] },
+    });
+    expect(font.length).toBeLessThan(40_000);
+    await expectRejected(font, CffCharStringError, /budget of \d+ path segments/);
+  });
+
+  it('caps the total output points of a small font whose curves each need many quadratics', async () => {
+    // One subroutine of eight wide cubic loops (each about 21 quadratic pieces), called 100 times per glyph.
+    const loop = [15000, 15000, -30000, 0, 15000, -15000];
+    const leaf = cs(...repeatItems(loop, 8), 'rrcurveto', 'return');
+    const glyphs: OtfGlyph[] = [{ charstring: cs('endchar'), advance: 500, lsb: 0 }];
+    for (let g = 0; g < 100; g++) {
+      glyphs.push({ charstring: cs(0, 0, 'rmoveto', ...repeatItems([-107, 'callsubr'], 100), 'endchar'), advance: 600, lsb: 0 });
+    }
+    const font = buildOtf({
+      family: 'CurveFlood',
+      glyphs,
+      codePoints: [0x41],
+      cff: { defaultWidthX: 600, nominalWidthX: 0, charset: Array.from({ length: 100 }, (_, i) => i + 1), localSubrs: [leaf] },
+    });
+    await expectRejected(font, ConversionFailedError, /points in total/);
+  });
+
+  it('keeps realistic fonts far below the budgets', () => {
+    const real = parseCff(buildCff({ fontName: 'Probe', charstrings: toOtfGlyphs(BASIC_FIXTURES).map((g) => g.charstring), defaultWidthX: DEFAULT_WIDTH_X, nominalWidthX: NOMINAL_WIDTH_X }));
+    for (let g = 0; g < real.numGlyphs; g++) real.glyph(g);
+    expect(real.stepsExecuted).toBeGreaterThan(100);
+    expect(real.stepsExecuted).toBeLessThan(CFF_BASE_STEPS_PER_FONT / 100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SVG font header and advances come from the font itself
+// ---------------------------------------------------------------------------
+
+describe('SVG font output uses the font metrics', () => {
+  it('writes units-per-em, ascent, descent and advances of a 2048 units-per-em CFF font', async () => {
+    const glyph: GlyphFixture = {
+      name: 'em 2048',
+      codePoint: 0x41,
+      charstring: cs(200, 0, 'rmoveto', 800, 1400, -800, 'hlineto', 'endchar'),
+      advance: 1600,
+      shape: [[['M', 200, 0], ['L', 1000, 0], ['L', 1000, 1400], ['L', 200, 1400]]],
+    };
+    const otf = fixtureFont([glyph], {
+      unitsPerEm: 2048,
+      cff: { defaultWidthX: 1600, nominalWidthX: 0, fontMatrix: ['0.00048828125', '0', '0', '0.00048828125', '0', '0'] },
+    });
+    const svg = (await convertFile(otf, 'otf', 'svg', {}, 'em.otf')).buffer.toString('utf8');
+    expect(svg).toContain('<font id="Cff Probe" horiz-adv-x="2048">');
+    expect(svg).toContain('units-per-em="2048" ascent="1638" descent="-410"');
+    expect(svg).toContain('<missing-glyph horiz-adv-x="1024" d="M0 0 L1024 0 L1024 1638 L0 1638 Z" />');
+    expect(svg).toContain('<glyph unicode="A" horiz-adv-x="1600" d="M200 0 L1000 0 L1000 1400 L200 1400 Z" />');
+  });
+
+  it('gives TrueType glyphs past the long metrics the last advance instead of a fixed 1000', () => {
+    const font = decodeSfnt(buildTrueTypeFont({ family: 'Short Metrics' }), 'Short Metrics');
+    const glyphCount = font.tables['maxp'].data.readUInt16BE(4);
+    // One long metric (advance 640), then left side bearings only.
+    const hmtx = Buffer.alloc(4 + (glyphCount - 1) * 2);
+    hmtx.writeUInt16BE(640, 0);
+    const hhea = Buffer.from(font.tables['hhea'].data);
+    hhea.writeUInt16BE(1, 34);
+    font.tables['hmtx'] = { ...font.tables['hmtx'], data: hmtx, length: hmtx.length };
+    font.tables['hhea'] = { ...font.tables['hhea'], data: hhea };
+
+    const svg = encodeSvgFont(font, 'Short Metrics').toString('utf8');
+    const advances = [...svg.matchAll(/<glyph unicode="[ABC]" horiz-adv-x="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(advances).toEqual([640, 640, 640]);
+  });
+});

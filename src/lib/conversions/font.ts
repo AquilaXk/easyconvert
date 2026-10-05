@@ -854,6 +854,7 @@ export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string
   const numOfHMetrics = hheaTable && hheaTable.data.length >= 36 ? hheaTable.data.readUInt16BE(34) : 1;
 
   const glyphToUnicode = buildGlyphToUnicodeMap(cmapTable);
+  const unitsPerEm = readUnitsPerEm(font);
 
   const glyphs: Array<{ unicode: string; d: string; advWidth: number }> = [];
 
@@ -861,10 +862,7 @@ export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string
     const offset = isShortLoca ? locaTable.data.readUInt16BE(g * 2) * 2 : locaTable.data.readUInt32BE(g * 4);
     const nextOffset = isShortLoca ? locaTable.data.readUInt16BE((g + 1) * 2) * 2 : locaTable.data.readUInt32BE((g + 1) * 4);
 
-    let advWidth = 1000;
-    if (hmtxTable && g < numOfHMetrics && g * 4 + 2 <= hmtxTable.data.length) {
-      advWidth = hmtxTable.data.readUInt16BE(g * 4);
-    }
+    const advWidth = readAdvanceWidth(hmtxTable?.data, numOfHMetrics, g, unitsPerEm);
 
     if (nextOffset > offset && offset < glyfTable.data.length) {
       const contours = parseSimpleGlyph(glyfTable.data, offset);
@@ -875,6 +873,21 @@ export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string
   }
 
   return glyphs;
+}
+
+/** Em size, ascent and descent for the SVG font-face, from head and hhea (descent is negative). */
+function readSvgFontMetrics(font: ParsedFont): { unitsPerEm: number; ascent: number; descent: number } {
+  const unitsPerEm = readUnitsPerEm(font);
+  const hhea = font.tables['hhea'];
+  if (!hhea || hhea.data.length < HHEA_VERTICAL_METRICS_END) {
+    const ascent = Math.round(unitsPerEm * DEFAULT_ASCENT_PER_EM);
+    return { unitsPerEm, ascent, descent: ascent - unitsPerEm };
+  }
+  return {
+    unitsPerEm,
+    ascent: hhea.data.readInt16BE(HHEA_ASCENDER_OFFSET),
+    descent: hhea.data.readInt16BE(HHEA_DESCENDER_OFFSET),
+  };
 }
 
 /**
@@ -898,13 +911,15 @@ export function encodeSvgFont(font: ParsedFont, defaultName: string): Buffer {
     glyphsXml.push(`<glyph unicode="${escapeXml(g.unicode)}" horiz-adv-x="${g.advWidth}" d="${g.d}" />`);
   }
 
+  const { unitsPerEm, ascent, descent } = readSvgFontMetrics(font);
+  const missingAdvance = Math.round(unitsPerEm / 2);
   const svg = `<?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <font id="${escapeXml(family)}" horiz-adv-x="1000">
-      <font-face font-family="${escapeXml(family)}" units-per-em="1000" ascent="800" descent="-200" />
-      <missing-glyph horiz-adv-x="500" d="M0 0 L500 0 L500 800 L0 800 Z" />
+    <font id="${escapeXml(family)}" horiz-adv-x="${unitsPerEm}">
+      <font-face font-family="${escapeXml(family)}" units-per-em="${unitsPerEm}" ascent="${ascent}" descent="${descent}" />
+      <missing-glyph horiz-adv-x="${missingAdvance}" d="M0 0 L${missingAdvance} 0 L${missingAdvance} ${ascent} L0 ${ascent} Z" />
       ${glyphsXml.join('\n      ')}
     </font>
   </defs>
@@ -2317,6 +2332,136 @@ export function buildCffTable(
   ]);
 }
 
+/** One glyph encoded as a simple glyf record, with the statistics maxp, hmtx and head need. */
+export interface EncodedGlyph {
+  data: Buffer;
+  numPoints: number;
+  numContours: number;
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+}
+
+function glyfDelta(value: number, axis: string): number {
+  if (!Number.isInteger(value) || value < INT16_MIN || value > INT16_MAX) {
+    throw new ConversionFailedError(
+      `Cannot write a glyf outline: a ${axis} step of ${value} does not fit the 16-bit coordinate deltas of the glyf format.`
+    );
+  }
+  return value;
+}
+
+function glyfExtents(points: GlyphPoint[]): Pick<EncodedGlyph, 'xMin' | 'yMin' | 'xMax' | 'yMax'> {
+  const extents = { xMin: INT16_MAX, yMin: INT16_MAX, xMax: INT16_MIN, yMax: INT16_MIN };
+  for (const pt of points) {
+    extents.xMin = Math.min(extents.xMin, pt.x);
+    extents.yMin = Math.min(extents.yMin, pt.y);
+    extents.xMax = Math.max(extents.xMax, pt.x);
+    extents.yMax = Math.max(extents.yMax, pt.y);
+  }
+  return extents;
+}
+
+/**
+ * Encodes contours as one simple glyf record (no instructions, 16-bit deltas). Returns null for a
+ * glyph without contours. Coordinates and deltas outside the 16-bit range, and glyphs with more
+ * than 65,535 points, throw a ConversionFailedError.
+ */
+export function encodeGlyfGlyph(contours: GlyphPoint[][]): EncodedGlyph | null {
+  if (contours.length === 0) return null;
+  if (contours.some((contour) => contour.length === 0)) {
+    throw new ConversionFailedError('Cannot write a glyf outline: a contour has no points.');
+  }
+  const points = contours.flat();
+  if (points.length > TRUETYPE_MAX_POINTS_PER_GLYPH) {
+    throw new ConversionFailedError(
+      `Cannot write a glyf outline: ${points.length} points exceed the limit of ${TRUETYPE_MAX_POINTS_PER_GLYPH}.`
+    );
+  }
+  const extents = glyfExtents(points);
+
+  const header = Buffer.alloc(GLYF_HEADER_BYTES);
+  header.writeInt16BE(contours.length, 0);
+  header.writeInt16BE(glyfDelta(extents.xMin, 'x'), 2);
+  header.writeInt16BE(glyfDelta(extents.yMin, 'y'), 4);
+  header.writeInt16BE(glyfDelta(extents.xMax, 'x'), 6);
+  header.writeInt16BE(glyfDelta(extents.yMax, 'y'), 8);
+
+  const endPoints = Buffer.alloc(contours.length * GLYF_COORDINATE_BYTES);
+  let lastPoint = -1;
+  contours.forEach((contour, i) => {
+    lastPoint += contour.length;
+    endPoints.writeUInt16BE(lastPoint, i * GLYF_COORDINATE_BYTES);
+  });
+
+  const flags = Buffer.alloc(points.length);
+  const xBuf = Buffer.alloc(points.length * GLYF_COORDINATE_BYTES);
+  const yBuf = Buffer.alloc(points.length * GLYF_COORDINATE_BYTES);
+  let lastX = 0;
+  let lastY = 0;
+  points.forEach((pt, i) => {
+    flags[i] = pt.onCurve ? GLYF_FLAG_ON_CURVE : 0;
+    xBuf.writeInt16BE(glyfDelta(pt.x - lastX, 'x'), i * GLYF_COORDINATE_BYTES);
+    yBuf.writeInt16BE(glyfDelta(pt.y - lastY, 'y'), i * GLYF_COORDINATE_BYTES);
+    lastX = pt.x;
+    lastY = pt.y;
+  });
+
+  const instructionLength = Buffer.alloc(GLYF_INSTRUCTION_LENGTH_BYTES);
+  const body = Buffer.concat([header, endPoints, instructionLength, flags, xBuf, yBuf]);
+  const padding = Buffer.alloc(body.length % GLYF_ALIGNMENT);
+  return {
+    data: Buffer.concat([body, padding]),
+    numPoints: points.length,
+    numContours: contours.length,
+    ...extents,
+  };
+}
+
+/** Accumulates glyf records one glyph at a time and finishes with glyf, loca (long format) and maxp. */
+class GlyfTableBuilder {
+  private readonly chunks: Buffer[] = [];
+  private readonly offsets: number[] = [0];
+  private glyfLength = 0;
+  private maxPoints = 0;
+  private maxContours = 0;
+  private totalPoints = 0;
+
+  constructor(private readonly pointBudget: number) {}
+
+  /** Adds the next glyph (contours may be empty) and returns its encoding, or null when it is empty. */
+  add(contours: GlyphPoint[][]): EncodedGlyph | null {
+    const encoded = encodeGlyfGlyph(contours);
+    if (encoded !== null) {
+      this.totalPoints += encoded.numPoints;
+      if (this.totalPoints > this.pointBudget) {
+        throw new ConversionFailedError(
+          `Cannot convert the font to TrueType: its outlines need more than ${this.pointBudget} points in total.`
+        );
+      }
+      this.chunks.push(encoded.data);
+      this.glyfLength += encoded.data.length;
+      this.maxPoints = Math.max(this.maxPoints, encoded.numPoints);
+      this.maxContours = Math.max(this.maxContours, encoded.numContours);
+    }
+    this.offsets.push(this.glyfLength);
+    return encoded;
+  }
+
+  finish(): { glyf: Buffer; loca: Buffer; indexToLocFormat: number; maxp: Buffer } {
+    const loca = Buffer.alloc(this.offsets.length * LOCA_LONG_ENTRY_BYTES);
+    this.offsets.forEach((offset, i) => loca.writeUInt32BE(offset, i * LOCA_LONG_ENTRY_BYTES));
+
+    const maxp = Buffer.alloc(MAXP_VERSION_1_BYTES);
+    maxp.writeUInt32BE(MAXP_VERSION_1, 0);
+    maxp.writeUInt16BE(this.offsets.length - 1, MAXP_NUM_GLYPHS_OFFSET);
+    maxp.writeUInt16BE(this.maxPoints, MAXP_MAX_POINTS_OFFSET);
+    maxp.writeUInt16BE(this.maxContours, MAXP_MAX_CONTOURS_OFFSET);
+    return { glyf: Buffer.concat(this.chunks), loca, indexToLocFormat: LOCA_FORMAT_LONG, maxp };
+  }
+}
+
 /**
  * Builds standard TrueType 'glyf' and 'loca' tables from glyph outlines.
  */
@@ -2328,105 +2473,9 @@ export function buildGlyfAndLoca(
   indexToLocFormat: number;
   maxp: Buffer;
 } {
-  const glyfChunks: Buffer[] = [];
-  const offsets: number[] = [0];
-  let curOffset = 0;
-  let maxPoints = 0;
-  let maxContours = 0;
-
-  for (const g of glyphData) {
-    if (!g.contours || g.contours.length === 0) {
-      offsets.push(curOffset);
-      continue;
-    }
-
-    const numberOfContours = g.contours.length;
-    if (numberOfContours > maxContours) maxContours = numberOfContours;
-
-    let totalPoints = 0;
-    let xMin = 32767;
-    let yMin = 32767;
-    let xMax = -32768;
-    let yMax = -32768;
-
-    const endPtsOfContours: number[] = [];
-    for (const c of g.contours) {
-      totalPoints += c.length;
-      endPtsOfContours.push(totalPoints - 1);
-      for (const pt of c) {
-        if (pt.x < xMin) xMin = pt.x;
-        if (pt.y < yMin) yMin = pt.y;
-        if (pt.x > xMax) xMax = pt.x;
-        if (pt.y > yMax) yMax = pt.y;
-      }
-    }
-    if (totalPoints > maxPoints) maxPoints = totalPoints;
-
-    const header = Buffer.alloc(10);
-    header.writeInt16BE(numberOfContours, 0);
-    header.writeInt16BE(xMin, 2);
-    header.writeInt16BE(yMin, 4);
-    header.writeInt16BE(xMax, 6);
-    header.writeInt16BE(yMax, 8);
-
-    const endPts = Buffer.alloc(numberOfContours * 2);
-    endPtsOfContours.forEach((endPt, idx) => {
-      endPts.writeUInt16BE(endPt, idx * 2);
-    });
-
-    const instructionLen = Buffer.from([0x00, 0x00]);
-
-    const flags: number[] = [];
-    const xCoords: number[] = [];
-    const yCoords: number[] = [];
-    let lastX = 0;
-    let lastY = 0;
-
-    for (const c of g.contours) {
-      for (const pt of c) {
-        flags.push(pt.onCurve ? 0x01 : 0x00);
-        xCoords.push(pt.x - lastX);
-        yCoords.push(pt.y - lastY);
-        lastX = pt.x;
-        lastY = pt.y;
-      }
-    }
-
-    const flagsBuf = Buffer.from(flags);
-    const xBuf = Buffer.alloc(xCoords.length * 2);
-    xCoords.forEach((dx, i) => xBuf.writeInt16BE(dx, i * 2));
-    const yBuf = Buffer.alloc(yCoords.length * 2);
-    yCoords.forEach((dy, i) => yBuf.writeInt16BE(dy, i * 2));
-
-    let glyphBuf = Buffer.concat([header, endPts, instructionLen, flagsBuf, xBuf, yBuf]);
-    if (glyphBuf.length % 2 !== 0) {
-      glyphBuf = Buffer.concat([glyphBuf, Buffer.from([0x00])]);
-    }
-
-    glyfChunks.push(glyphBuf);
-    curOffset += glyphBuf.length;
-    offsets.push(curOffset);
-  }
-
-  const glyf = Buffer.concat(glyfChunks);
-
-  const loca = Buffer.alloc(offsets.length * 4);
-  offsets.forEach((off, idx) => {
-    loca.writeUInt32BE(off, idx * 4);
-  });
-
-  const maxp = Buffer.alloc(32);
-  maxp.writeUInt32BE(0x00010000, 0);
-  maxp.writeUInt16BE(glyphData.length, 4);
-  maxp.writeUInt16BE(maxPoints, 6);
-  maxp.writeUInt16BE(maxContours, 8);
-
-  return {
-    glyf,
-    loca,
-    indexToLocFormat: 1,
-    maxp,
-  };
+  const builder = new GlyfTableBuilder(Number.POSITIVE_INFINITY);
+  for (const g of glyphData) builder.add(g.contours ?? []);
+  return builder.finish();
 }
 
 /** The font carries no outlines this engine can read (neither glyf nor a parsable CFF table). */
@@ -2440,21 +2489,42 @@ export class FontOutlinesMissingError extends ConversionFailedError {
 const HEAD_MIN_BYTES = 54;
 const HHEA_MIN_BYTES = 36;
 const MAXP_MIN_BYTES = 6;
+const MAXP_VERSION_1 = 0x00010000;
 const MAXP_VERSION_1_BYTES = 32;
+const MAXP_NUM_GLYPHS_OFFSET = 4;
+const MAXP_MAX_POINTS_OFFSET = 6;
+const MAXP_MAX_CONTOURS_OFFSET = 8;
 const MAXP_MAX_ZONES_OFFSET = 14;
 const MAXP_ZONES_WITHOUT_TWILIGHT = 1;
 const HEAD_UNITS_PER_EM_OFFSET = 18;
+const HEAD_UNITS_PER_EM_END = 20;
 const HEAD_BBOX_OFFSET = 36;
+const HEAD_FIELD_BYTES = 2;
 const HEAD_INDEX_TO_LOC_FORMAT_OFFSET = 50;
 const LOCA_FORMAT_LONG = 1;
+const LOCA_LONG_ENTRY_BYTES = 4;
+const GLYF_HEADER_BYTES = 10;
+const GLYF_COORDINATE_BYTES = 2;
+const GLYF_INSTRUCTION_LENGTH_BYTES = 2;
+const GLYF_FLAG_ON_CURVE = 0x01;
+const GLYF_ALIGNMENT = 2;
+const HHEA_ASCENDER_OFFSET = 4;
+const HHEA_DESCENDER_OFFSET = 6;
+const HHEA_VERTICAL_METRICS_END = 8;
 const HHEA_ADVANCE_WIDTH_MAX_OFFSET = 10;
 const HHEA_MIN_LSB_OFFSET = 12;
 const HHEA_MIN_RSB_OFFSET = 14;
 const HHEA_X_MAX_EXTENT_OFFSET = 16;
 const HHEA_NUMBER_OF_HMETRICS_OFFSET = 34;
+/** hmtx: each long metric is an advance width (u16) and a left side bearing (i16); later glyphs have a bearing only. */
+const HMTX_LONG_METRIC_BYTES = 4;
+const HMTX_BEARING_ONLY_BYTES = 2;
+const HMTX_LSB_OFFSET = 2;
 const MIN_UNITS_PER_EM = 16;
 const MAX_UNITS_PER_EM = 16384;
-const DEFAULT_CFF_UNITS_PER_EM = 1000;
+const DEFAULT_UNITS_PER_EM = 1000;
+/** Ascent as a share of the em when a font has no hhea table to read it from. */
+const DEFAULT_ASCENT_PER_EM = 0.8;
 const TRUETYPE_MAX_POINTS_PER_GLYPH = 0xffff;
 const INT16_MIN = -0x8000;
 const INT16_MAX = 0x7fff;
@@ -2465,6 +2535,12 @@ const CFF_QUADRATIC_TOLERANCE_PER_EM = 0.0005;
 const FEWEST_DISTINCT_POINTS_PER_CONTOUR = 2;
 const FONT_MATRIX_IDENTITY_EPSILON = 1e-9;
 const SVG_PATH_DECIMALS = 100;
+/**
+ * Output points allowed across all glyphs of a CFF conversion: a floor for small fonts plus a share
+ * per byte of CFF table, so a tiny table cannot expand into a huge glyf table.
+ */
+const CFF_BASE_OUTPUT_POINTS = 250_000;
+const CFF_OUTPUT_POINTS_PER_TABLE_BYTE = 2;
 
 function makeSfntTable(tag: string, data: Buffer): SfntTable {
   return { tag, checkSum: calculateTableChecksum(data), offset: 0, length: data.length, data };
@@ -2474,10 +2550,28 @@ function requireTable(font: ParsedFont, tag: string, minBytes: number): Buffer {
   const table = font.tables[tag];
   if (!table || table.data.length < minBytes) {
     throw new ConversionFailedError(
-      `Cannot convert the CFF font to TrueType: the '${tag}' table is missing or shorter than ${minBytes} bytes.`
+      `Cannot convert the font: the '${tag}' table is missing or shorter than ${minBytes} bytes.`
     );
   }
   return table.data;
+}
+
+/** Units per em from head, or the default when the font has no usable head table. */
+function readUnitsPerEm(font: ParsedFont): number {
+  const head = font.tables['head'];
+  if (!head || head.data.length < HEAD_UNITS_PER_EM_END) return DEFAULT_UNITS_PER_EM;
+  return head.data.readUInt16BE(HEAD_UNITS_PER_EM_OFFSET);
+}
+
+/**
+ * Advance width of a glyph from hmtx: glyphs past the long metrics share the last advance. Returns
+ * `fallback` when the font has no usable hmtx entry.
+ */
+function readAdvanceWidth(hmtx: Buffer | undefined, metrics: number, glyphId: number, fallback: number): number {
+  if (!hmtx || metrics < 1) return fallback;
+  const offset = Math.min(glyphId, metrics - 1) * HMTX_LONG_METRIC_BYTES;
+  if (offset + HMTX_BEARING_ONLY_BYTES > hmtx.length) return fallback;
+  return hmtx.readUInt16BE(offset);
 }
 
 /**
@@ -2489,16 +2583,13 @@ function readHorizontalAdvances(font: ParsedFont, numGlyphs: number): number[] |
   if (!hmtx) return null;
   const hhea = requireTable(font, 'hhea', HHEA_MIN_BYTES);
   const metrics = hhea.readUInt16BE(HHEA_NUMBER_OF_HMETRICS_OFFSET);
-  if (metrics < 1 || metrics > numGlyphs || hmtx.data.length < metrics * 4 + (numGlyphs - metrics) * 2) {
+  const requiredBytes = metrics * HMTX_LONG_METRIC_BYTES + (numGlyphs - metrics) * HMTX_BEARING_ONLY_BYTES;
+  if (metrics < 1 || metrics > numGlyphs || hmtx.data.length < requiredBytes) {
     throw new ConversionFailedError(
       `Invalid font: 'hhea' declares ${metrics} horizontal metrics but 'hmtx' (${hmtx.data.length} bytes) cannot hold them for ${numGlyphs} glyphs.`
     );
   }
-  const advances: number[] = [];
-  for (let g = 0; g < numGlyphs; g++) {
-    advances.push(hmtx.data.readUInt16BE(Math.min(g, metrics - 1) * 4));
-  }
-  return advances;
+  return Array.from({ length: numGlyphs }, (_, g) => readAdvanceWidth(hmtx.data, metrics, g, 0));
 }
 
 /**
@@ -2522,14 +2613,58 @@ function transformPoint(pt: { x: number; y: number }, m: CffMatrix | null): { x:
   return { x: m[0] * pt.x + m[2] * pt.y + m[4], y: m[1] * pt.x + m[3] * pt.y + m[5] };
 }
 
-function checkedInt16(value: number, glyphId: number): number {
-  const rounded = Math.round(value);
-  if (!Number.isFinite(rounded) || rounded < INT16_MIN || rounded > INT16_MAX) {
+function roundedGlyphPoint(pt: { x: number; y: number }, onCurve: boolean, glyphId: number): GlyphPoint {
+  const x = Math.round(pt.x);
+  const y = Math.round(pt.y);
+  if (![x, y].every((v) => Number.isFinite(v) && v >= INT16_MIN && v <= INT16_MAX)) {
     throw new ConversionFailedError(
-      `Cannot convert the CFF font to TrueType: glyph ${glyphId} has a coordinate (${value}) outside the 16-bit glyf range.`
+      `Cannot convert the CFF font to TrueType: glyph ${glyphId} has a coordinate (${pt.x}, ${pt.y}) outside the 16-bit glyf range.`
     );
   }
-  return rounded;
+  return { x, y, onCurve };
+}
+
+function sameOnCurvePoint(a: GlyphPoint, b: GlyphPoint): boolean {
+  return a.onCurve && b.onCurve && a.x === b.x && a.y === b.y;
+}
+
+/** Drops consecutive repeated on-curve points and the end point of a subpath that returns to its start. */
+function dropRepeatedPoints(points: GlyphPoint[]): GlyphPoint[] {
+  const kept: GlyphPoint[] = [];
+  for (const pt of points) {
+    const previous = kept.at(-1);
+    if (previous === undefined || !sameOnCurvePoint(previous, pt)) kept.push(pt);
+  }
+  const last = kept.at(-1);
+  if (kept.length > 1 && last !== undefined && sameOnCurvePoint(kept[0], last)) kept.pop();
+  return kept;
+}
+
+/** One CFF subpath as TrueType points: lines stay on-curve points, each cubic becomes a quadratic chain. */
+function cffContourToPoints(contour: CffContour, matrix: CffMatrix | null, tolerance: number, glyphId: number): GlyphPoint[] {
+  const start = transformPoint(contour.start, matrix);
+  const points: GlyphPoint[] = [roundedGlyphPoint(start, true, glyphId)];
+  let current = start;
+  for (const segment of contour.segments) {
+    const to = transformPoint(segment.to, matrix);
+    if (segment.kind === 'line') {
+      points.push(roundedGlyphPoint(to, true, glyphId));
+    } else {
+      const c1 = transformPoint(segment.c1, matrix);
+      const c2 = transformPoint(segment.c2, matrix);
+      for (const piece of cubicToQuadraticBezier(current, c1, c2, to, tolerance)) {
+        points.push(roundedGlyphPoint(piece.q, false, glyphId), roundedGlyphPoint(piece.p, true, glyphId));
+      }
+    }
+    current = to;
+    // Stop early: a hostile glyph must not build millions of points before the size check below.
+    if (points.length > TRUETYPE_MAX_POINTS_PER_GLYPH) {
+      throw new ConversionFailedError(
+        `Cannot convert the CFF font to TrueType: glyph ${glyphId} needs more than ${TRUETYPE_MAX_POINTS_PER_GLYPH} points.`
+      );
+    }
+  }
+  return dropRepeatedPoints(points);
 }
 
 /**
@@ -2538,61 +2673,111 @@ function checkedInt16(value: number, glyphId: number): number {
  * counter-clockwise, TrueType outer contours clockwise; both fill rules are non-zero winding).
  */
 function cffGlyphToTrueTypeContours(glyph: CffGlyph, matrix: CffMatrix | null, tolerance: number): GlyphPoint[][] {
-  const contours: GlyphPoint[][] = [];
-  let totalPoints = 0;
   // A mirroring FontMatrix already turns counter-clockwise outer contours clockwise.
   const flipsOrientation = matrix !== null && matrix[0] * matrix[3] - matrix[1] * matrix[2] < 0;
+  const contours: GlyphPoint[][] = [];
+  let totalPoints = 0;
   for (const contour of glyph.contours) {
-    const start = transformPoint(contour.start, matrix);
-    const raw: GlyphPoint[] = [{ x: start.x, y: start.y, onCurve: true }];
-    let current = start;
-    for (const segment of contour.segments) {
-      const to = transformPoint(segment.to, matrix);
-      if (segment.kind === 'line') {
-        raw.push({ x: to.x, y: to.y, onCurve: true });
-      } else {
-        const pieces = cubicToQuadraticBezier(
-          current,
-          transformPoint(segment.c1, matrix),
-          transformPoint(segment.c2, matrix),
-          to,
-          tolerance
-        );
-        for (const piece of pieces) {
-          raw.push({ x: piece.q.x, y: piece.q.y, onCurve: false });
-          raw.push({ x: piece.p.x, y: piece.p.y, onCurve: true });
-        }
-      }
-      current = to;
-    }
-
-    const points: GlyphPoint[] = [];
-    for (const pt of raw) {
-      const rounded = { x: checkedInt16(pt.x, glyph.glyphId), y: checkedInt16(pt.y, glyph.glyphId), onCurve: pt.onCurve };
-      const previous = points[points.length - 1];
-      const repeatsPrevious = previous && previous.onCurve && rounded.onCurve && previous.x === rounded.x && previous.y === rounded.y;
-      if (!repeatsPrevious) points.push(rounded);
-    }
-    // A subpath that returns to its start closes implicitly; drop the repeated end point.
-    const first = points[0];
-    const last = points[points.length - 1];
-    if (points.length > 1 && last.onCurve && first.x === last.x && first.y === last.y) points.pop();
+    const points = cffContourToPoints(contour, matrix, tolerance, glyph.glyphId);
     if (points.length < FEWEST_DISTINCT_POINTS_PER_CONTOUR) continue;
-
     totalPoints += points.length;
     if (totalPoints > TRUETYPE_MAX_POINTS_PER_GLYPH) {
       throw new ConversionFailedError(
         `Cannot convert the CFF font to TrueType: glyph ${glyph.glyphId} needs more than ${TRUETYPE_MAX_POINTS_PER_GLYPH} points.`
       );
     }
-    contours.push(flipsOrientation ? points : points.reverse());
+    contours.push(flipsOrientation ? points : points.toReversed());
   }
   return contours;
 }
 
 /**
+ * Collects hmtx, hhea and head figures glyph by glyph: each glyph's left side bearing is its xMin,
+ * and the font-wide extents come from the converted points.
+ */
+class HorizontalMetricsBuilder {
+  private readonly hmtx: Buffer;
+  private count = 0;
+  private maxAdvance = 0;
+  private box: GlyphBounds | null = null;
+  private minLsb = INT16_MAX;
+  private minRsb = INT16_MAX;
+  private xMaxExtent = INT16_MIN;
+
+  constructor(numGlyphs: number) {
+    this.hmtx = Buffer.alloc(numGlyphs * HMTX_LONG_METRIC_BYTES);
+  }
+
+  get table(): Buffer {
+    return this.hmtx;
+  }
+
+  get numberOfMetrics(): number {
+    return this.count;
+  }
+
+  add(advance: number, bounds: GlyphBounds | null): void {
+    const offset = this.count * HMTX_LONG_METRIC_BYTES;
+    this.count++;
+    this.hmtx.writeUInt16BE(advance, offset);
+    this.hmtx.writeInt16BE(bounds === null ? 0 : bounds.xMin, offset + HMTX_LSB_OFFSET);
+    this.maxAdvance = Math.max(this.maxAdvance, advance);
+    if (bounds === null) return;
+    this.box = this.box === null ? { ...bounds } : unionBounds(this.box, bounds);
+    this.minLsb = Math.min(this.minLsb, bounds.xMin);
+    this.minRsb = Math.min(this.minRsb, advance - bounds.xMax);
+    this.xMaxExtent = Math.max(this.xMaxExtent, bounds.xMax);
+  }
+
+  /** Writes the collected figures into the head and hhea tables (copies owned by the caller). */
+  applyTo(head: Buffer, hhea: Buffer): void {
+    const box = this.box ?? { xMin: 0, yMin: 0, xMax: 0, yMax: 0 };
+    const rsb = this.box === null ? 0 : this.minRsb;
+    if (rsb < INT16_MIN || rsb > INT16_MAX) {
+      throw new ConversionFailedError('Cannot convert the CFF font to TrueType: a right side bearing exceeds the 16-bit range.');
+    }
+    head.writeInt16BE(box.xMin, HEAD_BBOX_OFFSET);
+    head.writeInt16BE(box.yMin, HEAD_BBOX_OFFSET + HEAD_FIELD_BYTES);
+    head.writeInt16BE(box.xMax, HEAD_BBOX_OFFSET + 2 * HEAD_FIELD_BYTES);
+    head.writeInt16BE(box.yMax, HEAD_BBOX_OFFSET + 3 * HEAD_FIELD_BYTES);
+    head.writeInt16BE(LOCA_FORMAT_LONG, HEAD_INDEX_TO_LOC_FORMAT_OFFSET);
+
+    hhea.writeUInt16BE(this.maxAdvance, HHEA_ADVANCE_WIDTH_MAX_OFFSET);
+    hhea.writeInt16BE(this.box === null ? 0 : this.minLsb, HHEA_MIN_LSB_OFFSET);
+    hhea.writeInt16BE(rsb, HHEA_MIN_RSB_OFFSET);
+    hhea.writeInt16BE(this.box === null ? 0 : this.xMaxExtent, HHEA_X_MAX_EXTENT_OFFSET);
+    hhea.writeUInt16BE(this.count, HHEA_NUMBER_OF_HMETRICS_OFFSET);
+  }
+}
+
+interface GlyphBounds {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+}
+
+function unionBounds(a: GlyphBounds, b: GlyphBounds): GlyphBounds {
+  return {
+    xMin: Math.min(a.xMin, b.xMin),
+    yMin: Math.min(a.yMin, b.yMin),
+    xMax: Math.max(a.xMax, b.xMax),
+    yMax: Math.max(a.yMax, b.yMax),
+  };
+}
+
+function checkedAdvanceWidth(advance: number, glyphId: number): number {
+  if (!Number.isInteger(advance) || advance < 0 || advance > UINT16_MAX) {
+    throw new ConversionFailedError(`Cannot convert the CFF font to TrueType: glyph ${glyphId} has the advance width ${advance}.`);
+  }
+  return advance;
+}
+
+/**
  * Converts an OpenType CFF font to TrueType: interprets every Type 2 charstring, rebuilds
  * glyf/loca/maxp/hmtx from the real outlines, updates head and hhea, and drops the CFF table.
+ * Glyphs are interpreted, converted and encoded one at a time so that memory stays proportional to
+ * the output, which is itself capped.
  */
 function convertCffFontToTrueType(font: ParsedFont): ParsedFont {
   const cffData = font.tables['CFF '].data;
@@ -2605,7 +2790,7 @@ function convertCffFontToTrueType(font: ParsedFont): ParsedFont {
     throw new ConversionFailedError(`Invalid font: head.unitsPerEm ${unitsPerEm} is outside ${MIN_UNITS_PER_EM}-${MAX_UNITS_PER_EM}.`);
   }
   const cff = parseCff(cffData);
-  const declaredGlyphs = maxpSource.readUInt16BE(4);
+  const declaredGlyphs = maxpSource.readUInt16BE(MAXP_NUM_GLYPHS_OFFSET);
   if (cff.numGlyphs !== declaredGlyphs) {
     throw new ConversionFailedError(
       `Invalid font: the CFF table holds ${cff.numGlyphs} glyphs but 'maxp' declares ${declaredGlyphs}.`
@@ -2613,103 +2798,44 @@ function convertCffFontToTrueType(font: ParsedFont): ParsedFont {
   }
 
   const tolerance = unitsPerEm * CFF_QUADRATIC_TOLERANCE_PER_EM;
-  const cffGlyphs = cff.allGlyphs();
-  const glyphs = cffGlyphs.map((glyph) => ({
-    contours: cffGlyphToTrueTypeContours(glyph, fontMatrixToUnits(glyph.matrix, unitsPerEm), tolerance),
-    advWidth: 0,
-  }));
-
   // Advances come from hmtx when the font has one (the OpenType authority), else from the charstrings.
   const hmtxAdvances = readHorizontalAdvances(font, cff.numGlyphs);
-  const advances = cffGlyphs.map((glyph, g) => {
+  const glyf = new GlyfTableBuilder(CFF_BASE_OUTPUT_POINTS + CFF_OUTPUT_POINTS_PER_TABLE_BYTE * cffData.length);
+  const metrics = new HorizontalMetricsBuilder(cff.numGlyphs);
+  for (let g = 0; g < cff.numGlyphs; g++) {
+    const glyph = cff.glyph(g);
+    const contours = cffGlyphToTrueTypeContours(glyph, fontMatrixToUnits(glyph.matrix, unitsPerEm), tolerance);
     const advance = hmtxAdvances === null ? Math.round(glyph.width) : hmtxAdvances[g];
-    if (!Number.isInteger(advance) || advance < 0 || advance > UINT16_MAX) {
-      throw new ConversionFailedError(`Cannot convert the CFF font to TrueType: glyph ${g} has the advance width ${advance}.`);
-    }
-    return advance;
-  });
-  glyphs.forEach((glyph, g) => {
-    glyph.advWidth = advances[g];
-  });
-
-  const { glyf, loca, indexToLocFormat, maxp } = buildGlyfAndLoca(glyphs);
-  if (maxp.length !== MAXP_VERSION_1_BYTES || indexToLocFormat !== LOCA_FORMAT_LONG) {
-    throw new ConversionFailedError('Internal error: unexpected glyf/loca layout from the glyph builder.');
-  }
-  maxp.writeUInt16BE(MAXP_ZONES_WITHOUT_TWILIGHT, MAXP_MAX_ZONES_OFFSET);
-
-  // Per-glyph extents of the converted points drive hmtx left side bearings, hhea and head.
-  const hmtx = Buffer.alloc(glyphs.length * 4);
-  let boxXMin = INT16_MAX;
-  let boxYMin = INT16_MAX;
-  let boxXMax = INT16_MIN;
-  let boxYMax = INT16_MIN;
-  let minLsb = INT16_MAX;
-  let minRsb = INT16_MAX;
-  let xMaxExtent = INT16_MIN;
-  let anyOutline = false;
-  glyphs.forEach((glyph, g) => {
-    const points = glyph.contours.flat();
-    let lsb = 0;
-    if (points.length > 0) {
-      const xs = points.map((p) => p.x);
-      const ys = points.map((p) => p.y);
-      const xMin = Math.min(...xs);
-      const xMax = Math.max(...xs);
-      lsb = xMin;
-      anyOutline = true;
-      boxXMin = Math.min(boxXMin, xMin);
-      boxXMax = Math.max(boxXMax, xMax);
-      boxYMin = Math.min(boxYMin, ...ys);
-      boxYMax = Math.max(boxYMax, ...ys);
-      minLsb = Math.min(minLsb, xMin);
-      minRsb = Math.min(minRsb, glyph.advWidth - xMax);
-      xMaxExtent = Math.max(xMaxExtent, xMax);
-    }
-    hmtx.writeUInt16BE(glyph.advWidth, g * 4);
-    hmtx.writeInt16BE(lsb, g * 4 + 2);
-  });
-  if (!anyOutline) {
-    boxXMin = 0;
-    boxYMin = 0;
-    boxXMax = 0;
-    boxYMax = 0;
-    minLsb = 0;
-    minRsb = 0;
-    xMaxExtent = 0;
-  }
-  if (minRsb < INT16_MIN || minRsb > INT16_MAX) {
-    throw new ConversionFailedError('Cannot convert the CFF font to TrueType: a right side bearing exceeds the 16-bit range.');
+    metrics.add(checkedAdvanceWidth(advance, g), glyf.add(contours));
   }
 
-  head.writeInt16BE(boxXMin, HEAD_BBOX_OFFSET);
-  head.writeInt16BE(boxYMin, HEAD_BBOX_OFFSET + 2);
-  head.writeInt16BE(boxXMax, HEAD_BBOX_OFFSET + 4);
-  head.writeInt16BE(boxYMax, HEAD_BBOX_OFFSET + 6);
-  head.writeInt16BE(indexToLocFormat, HEAD_INDEX_TO_LOC_FORMAT_OFFSET);
-
-  hhea.writeUInt16BE(Math.max(...advances), HHEA_ADVANCE_WIDTH_MAX_OFFSET);
-  hhea.writeInt16BE(minLsb, HHEA_MIN_LSB_OFFSET);
-  hhea.writeInt16BE(minRsb, HHEA_MIN_RSB_OFFSET);
-  hhea.writeInt16BE(xMaxExtent, HHEA_X_MAX_EXTENT_OFFSET);
-  hhea.writeUInt16BE(glyphs.length, HHEA_NUMBER_OF_HMETRICS_OFFSET);
-
-  const tables = { ...font.tables };
-  delete tables['CFF '];
-  delete tables['VORG']; // vertical origins exist only for CFF outlines
-  tables['glyf'] = makeSfntTable('glyf', glyf);
-  tables['loca'] = makeSfntTable('loca', loca);
-  tables['maxp'] = makeSfntTable('maxp', maxp);
-  tables['head'] = makeSfntTable('head', head);
-  tables['hhea'] = makeSfntTable('hhea', hhea);
-  tables['hmtx'] = makeSfntTable('hmtx', hmtx);
+  const tables = glyfTablesFor(glyf.finish());
+  metrics.applyTo(head, hhea);
+  const rebuilt = { ...font.tables };
+  delete rebuilt['CFF '];
+  delete rebuilt['VORG']; // vertical origins exist only for CFF outlines
+  Object.assign(rebuilt, tables, {
+    head: makeSfntTable('head', head),
+    hhea: makeSfntTable('hhea', hhea),
+    hmtx: makeSfntTable('hmtx', metrics.table),
+  });
 
   return {
     ...font,
     sfntVersion: SFNT_VERSION_TRUETYPE,
     flavor: 'TrueType',
-    numTables: Object.keys(tables).length,
-    tables,
+    numTables: Object.keys(rebuilt).length,
+    tables: rebuilt,
+  };
+}
+
+/** glyf, loca and maxp table entries from a finished glyf builder. */
+function glyfTablesFor(built: ReturnType<GlyfTableBuilder['finish']>): Record<string, SfntTable> {
+  built.maxp.writeUInt16BE(MAXP_ZONES_WITHOUT_TWILIGHT, MAXP_MAX_ZONES_OFFSET);
+  return {
+    glyf: makeSfntTable('glyf', built.glyf),
+    loca: makeSfntTable('loca', built.loca),
+    maxp: makeSfntTable('maxp', built.maxp),
   };
 }
 
@@ -2746,8 +2872,7 @@ export function extractCffGlyphs(font: ParsedFont): Array<{ unicode: string; d: 
   const cffTable = font.tables['CFF '];
   if (!cffTable) return [];
   const cff = parseCff(cffTable.data);
-  const head = font.tables['head'];
-  const unitsPerEm = head && head.data.length >= HEAD_MIN_BYTES ? head.data.readUInt16BE(HEAD_UNITS_PER_EM_OFFSET) : DEFAULT_CFF_UNITS_PER_EM;
+  const unitsPerEm = readUnitsPerEm(font);
   const glyphToUnicode = buildGlyphToUnicodeMap(font.tables['cmap']);
   const advances = readHorizontalAdvances(font, cff.numGlyphs);
 
