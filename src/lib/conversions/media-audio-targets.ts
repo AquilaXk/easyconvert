@@ -1,4 +1,4 @@
-import { AudioCodec, ConversionFailedError } from '../types';
+import { AudioCodec, ConversionFailedError, EngineUnavailableError } from '../types';
 
 /**
  * How one audio-only registry target is written by FFmpeg. Every audio target id advertised by
@@ -24,6 +24,14 @@ export interface AudioTargetSpec {
   readonly fixedSampleRate?: number;
   /** The encoder only accepts this channel count; a conflicting request is rejected. */
   readonly fixedChannels?: number;
+  /** Sample rates (Hz) the encoder accepts; an explicit request for any other rate is rejected. */
+  readonly allowedSampleRates?: readonly number[];
+  /** Highest sample rate (Hz) the encoder accepts; an explicit request above it is rejected. */
+  readonly maxSampleRate?: number;
+  /** Rate (Hz) used when the caller sets none, so the input rate never reaches an encoder that rejects it. */
+  readonly defaultSampleRate?: number;
+  /** Most channels the encoder accepts; checked against the request or, failing that, the input. */
+  readonly maxChannels?: number;
 }
 
 const LOSSY_DEFAULT_BITRATE = '192k';
@@ -32,8 +40,18 @@ const OPUS_DEFAULT_BITRATE = '128k';
 const AMR_NB_DEFAULT_BITRATE = '12200';
 const AMR_NB_SAMPLE_RATE_HZ = 8000;
 const MONO = 1;
+/** libopus codes only these rates; 48 kHz is the rate Opus decoders output. */
+const OPUS_SAMPLE_RATES_HZ: readonly number[] = [8000, 12000, 16000, 24000, 48000];
+const OPUS_DEFAULT_SAMPLE_RATE_HZ = 48000;
+/** The AC-3 encoder accepts 1 to 6 channels (5.1) at these rates. */
+const AC3_SAMPLE_RATES_HZ: readonly number[] = [32000, 44100, 48000];
+const AC3_MAX_CHANNELS = 6;
+/** The WMA v2 encoder writes mono or stereo up to 48 kHz. */
+const WMA_MAX_CHANNELS = 2;
+const WMA_MAX_SAMPLE_RATE_HZ = 48000;
 
-const VORBIS_DEFAULT_QUALITY = '5';
+/** libvorbis quality scale value used when no bitrate is requested; a fixed bitrate fails on low-rate mono. */
+export const VORBIS_DEFAULT_QUALITY = '5';
 
 const VORBIS_OGG: AudioTargetSpec = {
   encoder: 'libvorbis',
@@ -58,20 +76,48 @@ export const AUDIO_TARGET_SPECS: Readonly<Record<string, AudioTargetSpec>> = {
   m4b: AAC_IPOD,
   ogg: VORBIS_OGG,
   oga: VORBIS_OGG,
-  opus: { encoder: 'libopus', muxer: 'opus', defaultBitrate: OPUS_DEFAULT_BITRATE, userCodecs: ['opus'] },
-  weba: { encoder: 'libopus', muxer: 'webm', defaultBitrate: OPUS_DEFAULT_BITRATE, userCodecs: ['opus', 'vorbis'] },
+  opus: {
+    encoder: 'libopus',
+    muxer: 'opus',
+    defaultBitrate: OPUS_DEFAULT_BITRATE,
+    userCodecs: ['opus'],
+    allowedSampleRates: OPUS_SAMPLE_RATES_HZ,
+    defaultSampleRate: OPUS_DEFAULT_SAMPLE_RATE_HZ,
+  },
+  weba: {
+    encoder: 'libopus',
+    muxer: 'webm',
+    defaultBitrate: OPUS_DEFAULT_BITRATE,
+    userCodecs: ['opus', 'vorbis'],
+    allowedSampleRates: OPUS_SAMPLE_RATES_HZ,
+    defaultSampleRate: OPUS_DEFAULT_SAMPLE_RATE_HZ,
+  },
   flac: { encoder: 'flac', muxer: 'flac', userCodecs: ['flac'] },
   wav: { encoder: 'pcm_s16le', muxer: 'wav', userCodecs: ['pcm_s16le'] },
   aiff: PCM_BE_AIFF,
   aif: PCM_BE_AIFF,
   // The AIFF muxer writes a FORM/AIFC container (little-endian "sowt" samples) for pcm_s16le.
-  aifc: { encoder: 'pcm_s16le', muxer: 'aiff', userCodecs: [] },
+  aifc: { encoder: 'pcm_s16le', muxer: 'aiff', userCodecs: ['pcm_s16le'] },
   alac: { encoder: 'alac', muxer: 'ipod', userCodecs: [] },
   au: { encoder: 'pcm_s16be', muxer: 'au', userCodecs: [] },
-  caf: { encoder: 'pcm_s16le', muxer: 'caf', userCodecs: [] },
-  voc: { encoder: 'pcm_s16le', muxer: 'voc', userCodecs: [] },
-  ac3: { encoder: 'ac3', muxer: 'ac3', defaultBitrate: LOSSY_DEFAULT_BITRATE, userCodecs: [] },
-  wma: { encoder: 'wmav2', muxer: 'asf', defaultBitrate: LOSSY_DEFAULT_BITRATE, userCodecs: [] },
+  caf: { encoder: 'pcm_s16le', muxer: 'caf', userCodecs: ['pcm_s16le'] },
+  voc: { encoder: 'pcm_s16le', muxer: 'voc', userCodecs: ['pcm_s16le'] },
+  ac3: {
+    encoder: 'ac3',
+    muxer: 'ac3',
+    defaultBitrate: LOSSY_DEFAULT_BITRATE,
+    userCodecs: [],
+    allowedSampleRates: AC3_SAMPLE_RATES_HZ,
+    maxChannels: AC3_MAX_CHANNELS,
+  },
+  wma: {
+    encoder: 'wmav2',
+    muxer: 'asf',
+    defaultBitrate: LOSSY_DEFAULT_BITRATE,
+    userCodecs: [],
+    maxSampleRate: WMA_MAX_SAMPLE_RATE_HZ,
+    maxChannels: WMA_MAX_CHANNELS,
+  },
   amr: {
     encoder: 'libopencore_amrnb',
     muxer: 'amr',
@@ -113,14 +159,13 @@ export function resolveAudioTargetSpec(target: string): AudioTargetSpec {
 }
 
 /**
- * Fails closed when the FFmpeg build lacks the encoder. An empty encoder listing means the binary
- * could not be probed at all; the conversion itself then reports the failure.
+ * Fails closed when the FFmpeg build lacks the encoder, with an engine-unavailable error (HTTP 503)
+ * because the request is valid and another deployment could serve it. An empty encoder listing
+ * means the binary could not be probed at all; the conversion itself then reports the failure.
  */
 export function assertEncoderAvailable(target: string, encoder: string, supportedEncoders: ReadonlySet<string>): void {
   if (supportedEncoders.size === 0 || supportedEncoders.has(encoder)) {
     return;
   }
-  throw new ConversionFailedError(
-    `Cannot write '${target}' audio: this FFmpeg build has no '${encoder}' encoder.`
-  );
+  throw new EngineUnavailableError('ffmpeg', `this build has no '${encoder}' encoder, so '${target}' audio cannot be written`);
 }

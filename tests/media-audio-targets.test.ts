@@ -17,7 +17,7 @@ import {
   probeHardwareAcceleration,
   resetHardwareAccelerationCache,
 } from '../src/lib/conversions/media-ffmpeg-args';
-import { ConversionFailedError, InvalidMediaOptionError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError, InvalidMediaOptionError } from '../src/lib/types';
 
 /**
  * Audio-only targets must write exactly one audio stream in the codec and container the target
@@ -122,6 +122,35 @@ const EXPECTED_MUXER: Readonly<Record<string, string>> = {
   voc: 'voc',
 };
 
+/** ffprobe format_name of each target's container, authored from the container specifications. */
+const MOV_FORMAT = 'mov,mp4,m4a,3gp,3g2,mj2';
+const EXPECTED_FORMAT: Readonly<Record<string, string>> = {
+  mp3: 'mp3',
+  aac: 'aac',
+  m4a: MOV_FORMAT,
+  m4b: MOV_FORMAT,
+  alac: MOV_FORMAT,
+  ogg: 'ogg',
+  oga: 'ogg',
+  opus: 'ogg',
+  weba: 'matroska,webm',
+  wma: 'asf',
+  ac3: 'ac3',
+  amr: 'amr',
+  flac: 'flac',
+  wav: 'wav',
+  aiff: 'aiff',
+  aif: 'aiff',
+  aifc: 'aiff',
+  au: 'au',
+  caf: 'caf',
+  voc: 'voc',
+};
+/** Bytes 8..12 of a FORM file: AIFF for aiff and aif, AIFC (compressed, little-endian "sowt") for aifc. */
+const FORM_TYPE_OFFSET = 8;
+const FORM_TYPE_LENGTH = 4;
+const EXPECTED_FORM_TYPE: Readonly<Record<string, string>> = { aiff: 'AIFF', aif: 'AIFF', aifc: 'AIFC' };
+
 const IDS = Object.keys(EXPECTED);
 
 let workDir: string;
@@ -148,6 +177,15 @@ function ffprobeStreams(file: string): ProbedStream[] {
     timeout: FFMPEG_TIMEOUT_MS,
   }).toString('utf-8');
   return (JSON.parse(out) as { streams: ProbedStream[] }).streams;
+}
+
+function ffprobeFormatName(file: string): string {
+  return execFileSync(getOracleToolPath('ffprobe')!, ['-v', 'error', '-show_entries', 'format=format_name', '-of', 'default=noprint_wrappers=1:nokey=1', file], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: FFMPEG_TIMEOUT_MS,
+  })
+    .toString('utf-8')
+    .trim();
 }
 
 /** Whether the ffmpeg under test lists an encoder, read from `ffmpeg -encoders` independently of the code under test. */
@@ -379,10 +417,10 @@ describe('audio-only argument construction', () => {
     ).toThrow(InvalidMediaOptionError);
   });
 
-  it('fails closed with a ConversionFailedError when the FFmpeg build lacks the encoder', () => {
+  it('fails closed with an EngineUnavailableError (503, not 400) when the FFmpeg build lacks the encoder', () => {
     const bin = makeFfmpegWithout('no-wmav2', 'wmav2');
     const attempt = () => buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.wma', 'mkv', 'wma', {}, bin);
-    expect(attempt).toThrow(ConversionFailedError);
+    expect(attempt).toThrow(EngineUnavailableError);
     expect(attempt).toThrow(/no 'wmav2' encoder/);
     // The same stand-in still encodes a target whose encoder it lists.
     resetHardwareAccelerationCache();
@@ -408,7 +446,7 @@ describe('audio-only conversions decoded with ffmpeg', () => {
         const inputFile = source();
         if (!ffmpegHasEncoder(expected.encoder)) {
           // No substitute codec: a build without the encoder rejects the target.
-          await expect(convertMedia(fs.readFileSync(inputFile), src, id, {}, 'clip')).rejects.toThrow(ConversionFailedError);
+          await expect(convertMedia(fs.readFileSync(inputFile), src, id, {}, 'clip')).rejects.toThrow(EngineUnavailableError);
           await expect(convertMedia(fs.readFileSync(inputFile), src, id, {}, 'clip')).rejects.toThrow(expected.encoder);
           return;
         }
@@ -416,6 +454,11 @@ describe('audio-only conversions decoded with ffmpeg', () => {
         const out = await convertToFile(inputFile, src, id);
         const streams = ffprobeStreams(out);
         expect(streams.map((s) => `${s.codec_type}:${s.codec_name}`)).toEqual([`audio:${expected.codec}`]);
+        expect(ffprobeFormatName(out)).toBe(EXPECTED_FORMAT[id]);
+        const formType = EXPECTED_FORM_TYPE[id];
+        if (formType) {
+          expect(fs.readFileSync(out).toString('latin1', FORM_TYPE_OFFSET, FORM_TYPE_OFFSET + FORM_TYPE_LENGTH)).toBe(formType);
+        }
         if (expected.fixedSampleRate !== undefined) expect(Number(streams[0].sample_rate)).toBe(expected.fixedSampleRate);
         if (expected.fixedChannels !== undefined) expect(streams[0].channels).toBe(expected.fixedChannels);
 
@@ -445,13 +488,104 @@ describe('narrowband mono input', () => {
     oracleTest(`32 kHz mono WAV -> ${id} encodes with the target codec`, ['ffmpeg', 'ffprobe'], async () => {
       const source = lowRateMono();
       if (!ffmpegHasEncoder(expected.encoder)) {
-        await expect(convertMedia(fs.readFileSync(source), 'wav', id, {}, 'clip')).rejects.toThrow(ConversionFailedError);
+        await expect(convertMedia(fs.readFileSync(source), 'wav', id, {}, 'clip')).rejects.toThrow(EngineUnavailableError);
         return;
       }
-      const streams = ffprobeStreams(await convertToFile(source, 'wav', id));
+      const out = await convertToFile(source, 'wav', id);
+      const streams = ffprobeStreams(out);
       expect(streams.map((s) => `${s.codec_type}:${s.codec_name}`)).toEqual([`audio:${expected.codec}`]);
+      expect(ffprobeFormatName(out)).toBe(EXPECTED_FORMAT[id]);
     }, TEST_TIMEOUT_MS);
   }
+});
+
+/** Eight silent channels except one tone: wider than AC-3 and WMA can write. */
+function sevenPointOne(): string {
+  return input('seven-one.wav', (file) => {
+    const silent = `anullsrc=channel_layout=mono:sample_rate=${SAMPLE_RATE}`;
+    const tone = `sine=frequency=${TONE_HZ}:sample_rate=${SAMPLE_RATE}`;
+    ffmpeg([
+      ...[silent, silent, silent, silent, silent, silent, tone, silent].flatMap((src) => ['-f', 'lavfi', '-t', String(CLIP_SECONDS), '-i', src]),
+      '-filter_complex', 'join=inputs=8:channel_layout=7.1', '-c:a', 'pcm_s16le', file,
+    ]);
+  });
+}
+
+describe('explicit codec equal to the target default', () => {
+  for (const id of ['ogg', 'oga', 'weba']) {
+    oracleTest(`32 kHz mono WAV -> ${id} with audio.codec vorbis encodes with libvorbis`, ['ffmpeg', 'ffprobe'], async () => {
+      const source = lowRateMono();
+      const out = await convertToFile(source, 'wav', id, { audio: { codec: 'vorbis' } });
+      expect(ffprobeStreams(out).map((s) => s.codec_name)).toEqual(['vorbis']);
+      expect(ffprobeFormatName(out)).toBe(EXPECTED_FORMAT[id]);
+    }, TEST_TIMEOUT_MS);
+  }
+
+  it('gives an explicit default codec the same quality-based default as an implicit one', () => {
+    const implicit = buildFfmpegArguments('/nonexistent/in.wav', '/tmp/o.ogg', 'wav', 'ogg', {});
+    const explicit = buildFfmpegArguments('/nonexistent/in.wav', '/tmp/o.ogg', 'wav', 'ogg', { audio: { codec: 'vorbis' } });
+    expect(argAfter(explicit, '-q:a')).toBe(argAfter(implicit, '-q:a'));
+    expect(argAfter(explicit, '-q:a')).toBeDefined();
+    expect(explicit).not.toContain('-b:a');
+  });
+
+  it('accepts the target own PCM codec for aifc, caf and voc', () => {
+    for (const id of ['aifc', 'caf', 'voc']) {
+      const args = buildFfmpegArguments('/nonexistent/in.wav', `/tmp/o.${id}`, 'wav', id, { audio: { codec: 'pcm_s16le' } });
+      expect(argAfter(args, '-c:a')).toBe('pcm_s16le');
+      expect(args).not.toContain('-b:a');
+    }
+  });
+});
+
+describe('encoder format limits are rejected before ffmpeg runs', () => {
+  const build = (id: string, options: Parameters<typeof buildFfmpegArguments>[4], input = '/nonexistent/in.wav') =>
+    buildFfmpegArguments(input, `/tmp/o.${id}`, 'wav', id, options);
+
+  it('limits Opus to the rates libopus codes and defaults to 48 kHz', () => {
+    for (const id of ['opus', 'weba']) {
+      expect(() => build(id, { audio: { sampleRate: 44100 } })).toThrow(InvalidMediaOptionError);
+      expect(() => build(id, { audioSampleRate: 32000 })).toThrow(InvalidMediaOptionError);
+      expect(argAfter(build(id, { audio: { sampleRate: 16000 } }), '-ar')).toBe('16000');
+      expect(argAfter(build(id, {}), '-ar')).toBe('48000');
+    }
+  });
+
+  it('limits AC-3 to 32, 44.1 and 48 kHz and at most six channels', () => {
+    expect(() => build('ac3', { audio: { sampleRate: 22050 } })).toThrow(InvalidMediaOptionError);
+    expect(() => build('ac3', { audio: { sampleRate: 96000 } })).toThrow(InvalidMediaOptionError);
+    expect(() => build('ac3', { audio: { channels: 8 } })).toThrow(InvalidMediaOptionError);
+    expect(() => build('ac3', { audioChannels: '7.1' })).toThrow(InvalidMediaOptionError);
+    expect(argAfter(build('ac3', { audio: { sampleRate: 44100, channels: 6 } }), '-ac')).toBe('6');
+  });
+
+  it('limits WMA to stereo and 48 kHz', () => {
+    expect(() => build('wma', { audio: { channels: 6 } })).toThrow(InvalidMediaOptionError);
+    expect(() => build('wma', { audioChannels: '5.1' })).toThrow(InvalidMediaOptionError);
+    expect(() => build('wma', { audio: { sampleRate: 96000 } })).toThrow(InvalidMediaOptionError);
+    expect(argAfter(build('wma', { audio: { channels: 2, sampleRate: 44100 } }), '-ac')).toBe('2');
+  });
+
+  oracleTest('rejects an 8-channel input for AC-3 and WMA unless it is downmixed', ['ffmpeg', 'ffprobe'], async () => {
+    const source = sevenPointOne();
+    for (const id of ['ac3', 'wma']) {
+      expect(() => build(id, {}, source)).toThrow(InvalidMediaOptionError);
+      await expect(convertMedia(fs.readFileSync(source), 'wav', id, {}, 'wide')).rejects.toThrow(InvalidMediaOptionError);
+      const downmixed = await convertToFile(source, 'wav', id, { audio: { channels: 2 } });
+      expect(ffprobeStreams(downmixed)[0].channels).toBe(2);
+    }
+  }, TEST_TIMEOUT_MS);
+
+  oracleTest('writes Opus at 48 kHz from a 44.1 kHz input and rejects an explicit 44.1 kHz request', ['ffmpeg', 'ffprobe'], async () => {
+    const source = input('cd-rate.wav', (file) =>
+      ffmpeg(['-f', 'lavfi', '-i', `sine=frequency=${TONE_HZ}:sample_rate=44100:duration=${CLIP_SECONDS}`, file])
+    );
+    const out = await convertToFile(source, 'wav', 'opus');
+    expect(Number(ffprobeStreams(out)[0].sample_rate)).toBe(SAMPLE_RATE);
+    await expect(convertMedia(fs.readFileSync(source), 'wav', 'opus', { audio: { sampleRate: 44100 } }, 'cd')).rejects.toThrow(
+      InvalidMediaOptionError
+    );
+  }, TEST_TIMEOUT_MS);
 });
 
 describe('audio stream selection', () => {

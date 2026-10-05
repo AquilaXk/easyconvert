@@ -17,6 +17,7 @@ import {
   isAudioOnlyTarget,
   NoAudioStreamError,
   resolveAudioTargetSpec,
+  VORBIS_DEFAULT_QUALITY,
 } from './media-audio-targets';
 
 export interface HardwareAccelerationCapabilities {
@@ -115,11 +116,11 @@ function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): str
 }
 
 /**
- * Number of channels in the first audio stream, or 0 when the file has no audio stream.
+ * Number of channels in the selected audio stream (the first by default), or 0 when the file has no audio stream.
  * Throws when ffprobe cannot read the file instead of reporting a silent input.
  */
-export function probeAudioChannels(filePath: string, ffprobe: FfprobePath): number {
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', 'a:0', '-show_entries', 'stream=channels']);
+export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
+  const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
   if (out === '') {
     return 0;
   }
@@ -156,10 +157,14 @@ const ENCODER_LIST_TIMEOUT_MS = 3000;
 /** Directory that holds the DRM nodes Intel Quick Sync needs. */
 const DRM_DEVICE_DIR = '/dev/dri';
 const DRM_RENDER_NODE = /^renderD\d+$/;
-/** Opening a QSV session is quick on a working device; a hung driver must not stall conversions. */
-const QSV_SESSION_PROBE_TIMEOUT_MS = 5000;
-const QSV_PROBE_FRAME_SIZE = '256x256';
+/** Opening a hardware session is quick on a working device; a hung driver must not stall conversions. */
+const HW_SESSION_PROBE_TIMEOUT_MS = 5000;
+const HW_PROBE_FRAME_SIZE = '256x256';
 const QSV_ENCODERS = ['h264_qsv', 'hevc_qsv'];
+const NVENC_ENCODERS = ['h264_nvenc', 'hevc_nvenc'];
+const VAAPI_ENCODERS = ['h264_vaapi', 'hevc_vaapi'];
+const VAAPI_DEVICES = ['/dev/dri/renderD128', '/dev/dri/card0'];
+const VAAPI_UPLOAD_FILTER = 'format=nv12,hwupload';
 /**
  * One `ffmpeg -encoders` row: a type letter (V, A, S) and five capability flags (F, S, X, B, D or
  * a dot), then the encoder name. Most encoders carry the D (direct rendering) flag.
@@ -182,18 +187,26 @@ function hasDrmRenderNode(drmDir: string): boolean {
 }
 
 /**
- * Encodes one black frame with the QSV encoder to a null sink. Listing an encoder only proves it
- * was compiled in; a session can still fail (no Intel device, missing driver), so this decides.
+ * Encodes one black frame with a hardware encoder to a null sink. Listing an encoder only proves
+ * it was compiled in; a session can still fail (no device, missing driver or libcuda), so this
+ * decides whether the encoder may be selected.
  */
-function canOpenQsvSession(ffmpegPath: string, encoder: string): boolean {
+function canOpenEncoderSession(
+  ffmpegPath: string,
+  encoder: string,
+  deviceArgs: readonly string[] = [],
+  filter?: string
+): boolean {
   try {
     execFileSync(
       ffmpegPath,
       [
-        '-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', `color=c=black:s=${QSV_PROBE_FRAME_SIZE}:r=1:d=1`,
+        '-hide_banner', '-v', 'error', ...deviceArgs,
+        '-f', 'lavfi', '-i', `color=c=black:s=${HW_PROBE_FRAME_SIZE}:r=1:d=1`,
+        ...(filter ? ['-vf', filter] : []),
         '-frames:v', '1', '-c:v', encoder, '-f', 'null', '-',
       ],
-      { stdio: 'ignore', timeout: QSV_SESSION_PROBE_TIMEOUT_MS }
+      { stdio: 'ignore', timeout: HW_SESSION_PROBE_TIMEOUT_MS }
     );
     return true;
   } catch {
@@ -256,18 +269,26 @@ export function probeHardwareAcceleration(
       }
     }
 
-    const hasDri = fs.existsSync('/dev/dri/renderD128') || fs.existsSync('/dev/dri/card0');
+    const vaapiDevice = VAAPI_DEVICES.find((device) => fs.existsSync(device));
     const isDarwin = process.platform === 'darwin';
     // QSV needs a DRM render node and a session that really opens, not just a compiled-in encoder.
     const qsvEncoder = QSV_ENCODERS.find((enc) => supported.has(enc));
     const qsv =
       qsvEncoder !== undefined &&
       hasDrmRenderNode(env.drmDir ?? DRM_DEVICE_DIR) &&
-      canOpenQsvSession(ffmpegPath, qsvEncoder);
+      canOpenEncoderSession(ffmpegPath, qsvEncoder);
+    // NVENC and VAAPI are also only usable when a session really opens (no GPU, no driver, no libcuda).
+    const nvencEncoder = NVENC_ENCODERS.find((enc) => supported.has(enc));
+    const nvenc = nvencEncoder !== undefined && canOpenEncoderSession(ffmpegPath, nvencEncoder);
+    const vaapiEncoder = VAAPI_ENCODERS.find((enc) => supported.has(enc));
+    const vaapi =
+      vaapiEncoder !== undefined &&
+      vaapiDevice !== undefined &&
+      canOpenEncoderSession(ffmpegPath, vaapiEncoder, ['-vaapi_device', vaapiDevice], VAAPI_UPLOAD_FILTER);
 
     const caps: HardwareAccelerationCapabilities = {
-      nvenc: supported.has('h264_nvenc') || supported.has('hevc_nvenc'),
-      vaapi: (supported.has('h264_vaapi') || supported.has('hevc_vaapi')) && hasDri,
+      nvenc,
+      vaapi,
       qsv,
       videotoolbox: isDarwin && (supported.has('h264_videotoolbox') || supported.has('hevc_videotoolbox')),
       supportedEncoders: supported,
@@ -297,19 +318,49 @@ function requestedChannelCount(options: ConversionOptions): number | undefined {
   return undefined;
 }
 
-/** Rejects a sample rate or channel count request that an encoder with a fixed format cannot honour. */
-function assertFixedAudioFormat(tgt: string, spec: AudioTargetSpec, options: ConversionOptions): void {
+/**
+ * Rejects a sample rate or channel count that the target's encoder cannot honour, before ffmpeg
+ * runs. The limits describe the target's own encoder, so they apply unless the caller swaps the codec.
+ */
+function assertEncoderLimits(
+  tgt: string,
+  spec: AudioTargetSpec,
+  options: ConversionOptions,
+  inputPath: string,
+  ffmpegBin?: string | null
+): void {
   const sampleRate = options.audio?.sampleRate ?? options.audioSampleRate;
   if (spec.fixedSampleRate !== undefined && sampleRate !== undefined && sampleRate !== spec.fixedSampleRate) {
     throw new InvalidMediaOptionError(
       `The '${tgt}' target only supports a ${spec.fixedSampleRate} Hz sample rate, but ${sampleRate} Hz was requested.`
     );
   }
-  const channels = requestedChannelCount(options);
+  if (spec.allowedSampleRates && sampleRate !== undefined && !spec.allowedSampleRates.includes(sampleRate)) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target supports the sample rates ${spec.allowedSampleRates.join(', ')} Hz, but ${sampleRate} Hz was requested.`
+    );
+  }
+  if (spec.maxSampleRate !== undefined && sampleRate !== undefined && sampleRate > spec.maxSampleRate) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target supports sample rates up to ${spec.maxSampleRate} Hz, but ${sampleRate} Hz was requested.`
+    );
+  }
+  let channels = requestedChannelCount(options);
   if (spec.fixedChannels !== undefined && channels !== undefined && channels !== spec.fixedChannels) {
     throw new InvalidMediaOptionError(
       `The '${tgt}' target only supports ${spec.fixedChannels} audio channel(s), but ${channels} were requested.`
     );
+  }
+  if (spec.maxChannels !== undefined) {
+    if (channels === undefined && fs.existsSync(inputPath)) {
+      const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
+      channels = probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin), track);
+    }
+    if (channels !== undefined && channels > spec.maxChannels) {
+      throw new InvalidMediaOptionError(
+        `The '${tgt}' target supports at most ${spec.maxChannels} audio channels, but ${channels} would be written; request fewer channels or a downmix.`
+      );
+    }
   }
 }
 
@@ -461,8 +512,11 @@ export function buildFfmpegArguments(
       throw new InvalidMediaOptionError(`The '${tgt}' target does not support the '${ac}' audio codec.`);
     }
   }
-  if (audioSpec) {
-    assertFixedAudioFormat(tgt, audioSpec, options);
+  // The spec's limits describe its own encoder; a caller-selected different codec has other limits.
+  const specEncoderInUse =
+    audioSpec !== undefined && (!options.audio?.codec || AUDIO_CODEC_MAP[options.audio.codec] === audioSpec.encoder);
+  if (audioSpec && specEncoderInUse) {
+    assertEncoderLimits(tgt, audioSpec, options, inputPath, ffmpegBin);
   }
 
   // Stream mapping
@@ -871,12 +925,15 @@ export function buildFfmpegArguments(
     outputArgs.push('-b:a', `${Math.floor(options.audio.bitrateK)}k`);
   } else if (options.audioBitrate && /^\d+[kK]?$/.test(options.audioBitrate)) {
     outputArgs.push('-b:a', options.audioBitrate.toLowerCase().endsWith('k') ? options.audioBitrate : `${options.audioBitrate}k`);
-  } else if (audioSpec && !options.audio?.codec) {
+  } else if (audioSpec && specEncoderInUse) {
     if (audioSpec.defaultBitrate !== undefined) {
       outputArgs.push('-b:a', audioSpec.defaultBitrate);
     } else if (audioSpec.defaultQuality !== undefined) {
       outputArgs.push('-q:a', audioSpec.defaultQuality);
     }
+  } else if (audioSpec && resolvedAudioCodec === 'libvorbis') {
+    // A caller-selected Vorbis codec on another container (webm) needs the same rate-safe default.
+    outputArgs.push('-q:a', VORBIS_DEFAULT_QUALITY);
   } else if (resolvedAudioCodec !== 'flac' && resolvedAudioCodec !== 'pcm_s16le') {
     if (tgt === 'webm' || resolvedAudioCodec === 'libopus') {
       outputArgs.push('-b:a', '128k');
@@ -920,6 +977,8 @@ export function buildFfmpegArguments(
     outputArgs.push('-ar', String(options.audio.sampleRate));
   } else if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
     outputArgs.push('-ar', String(options.audioSampleRate));
+  } else if (audioSpec?.defaultSampleRate !== undefined && specEncoderInUse) {
+    outputArgs.push('-ar', String(audioSpec.defaultSampleRate));
   }
 
   // Audio volume
