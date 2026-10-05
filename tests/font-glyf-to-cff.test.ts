@@ -596,6 +596,45 @@ describe('TrueType to CFF: malformed glyf data is rejected with a typed error', 
   });
 });
 
+describe('TrueType to CFF: advances that do not fit a Type 2 operand are written relative to nominalWidthX', () => {
+  const UNITS_PER_EM = 16384;
+  const WIDE_ADVANCE = 40000;
+  const SQUARE = [[{ x: 0, y: 0 }, { x: 0, y: 100 }, { x: 100, y: 100 }, { x: 100, y: 0 }]];
+
+  function convertedAdvances(advances: number[], notdefAdvance: number): { cffWidths: number[]; hmtxWidths: number[] } {
+    const font = buildGlyfFont({
+      family: 'Wide advances',
+      unitsPerEm: UNITS_PER_EM,
+      notdef: { advance: notdefAdvance },
+      glyphs: advances.map((advance, i) => ({ codePoint: 0x41 + i, advance, contours: SQUARE })),
+    });
+    const tables = readSfntTables(convertFontToOpenTypeCff(font) as Buffer);
+    const cff = decodeCff(requireTable(tables, 'CFF '));
+    const hmtxWidths = cff.glyphs.map((_, g) => readHmtx(tables, g).advance);
+    return { cffWidths: cff.glyphs.map((g) => g.width), hmtxWidths };
+  }
+
+  it('converts an advance of 40000 at 16384 units per em and reads the same width back', () => {
+    const { cffWidths, hmtxWidths } = convertedAdvances([WIDE_ADVANCE, 600, 600], 600);
+    expect(cffWidths).toEqual([600, WIDE_ADVANCE, 600, 600]);
+    expect(hmtxWidths).toEqual(cffWidths);
+  });
+
+  it('keeps every width of a font whose advances are mostly tiny and a few huge', () => {
+    // The median advance (0) is too far from 65000 for a delta; the nominal width must come from the range.
+    const advances = [0, 0, 0, 0, 65000, 65000, 12];
+    const { cffWidths, hmtxWidths } = convertedAdvances(advances, 0);
+    expect(cffWidths).toEqual([0, ...advances]);
+    expect(hmtxWidths).toEqual(cffWidths);
+  });
+
+  it('keeps every width of a font that uses the whole 16-bit advance range up to its limit', () => {
+    const advances = [0, 65534, 32767];
+    const { cffWidths } = convertedAdvances(advances, 0);
+    expect(cffWidths).toEqual([0, ...advances]);
+  });
+});
+
 describe('TrueType to CFF: the glyph count a CFF charset can name', () => {
   /** Custom CFF strings are numbered from SID 391 and a SID is 16 bits: .notdef plus 65,145 named glyphs. */
   const LAST_NAMED_GLYPH_COUNT = 0xffff - FIRST_CUSTOM_SID + 1 + 1;

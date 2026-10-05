@@ -2585,14 +2585,46 @@ function reverseSegments(segments: OutlineSegment[]): OutlineSegment[] {
     .reverse();
 }
 
+interface CffWidthBases {
+  defaultWidthX: number;
+  nominalWidthX: number;
+}
+
+/**
+ * Picks the Private DICT width bases. A charstring stores its advance as a delta from nominalWidthX
+ * and a delta must stay within the Type 2 operand range, so advances from 32768 up (valid in a
+ * font with up to 16384 units per em) need a nominal width near them. Fonts whose advances all fit
+ * keep the fixed bases; otherwise the most frequent advance becomes defaultWidthX and the median
+ * nominalWidthX, or the middle of the range when the median is too far from the extremes.
+ */
+function chooseCffWidthBases(advances: number[]): CffWidthBases {
+  const fixed = { defaultWidthX: CFF_DEFAULT_WIDTH_X, nominalWidthX: CFF_NOMINAL_WIDTH_X };
+  if (advances.every((advance) => Math.abs(advance - fixed.nominalWidthX) < TYPE2_OPERAND_LIMIT)) return fixed;
+  const counts = new Map<number, number>();
+  for (const advance of advances) counts.set(advance, (counts.get(advance) ?? 0) + 1);
+  let defaultWidthX = advances[0];
+  let defaultCount = 0;
+  for (const [advance, count] of counts) {
+    if (count > defaultCount || (count === defaultCount && advance < defaultWidthX)) {
+      defaultWidthX = advance;
+      defaultCount = count;
+    }
+  }
+  const sorted = advances.toSorted((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const fits = (nominal: number): boolean => advances.every((advance) => Math.abs(advance - nominal) < TYPE2_OPERAND_LIMIT);
+  const midrange = Math.floor((sorted[0] + sorted[sorted.length - 1]) / 2);
+  return { defaultWidthX, nominalWidthX: fits(median) ? median : midrange };
+}
+
 /**
  * Encodes glyph outlines as a Type 2 charstring. Quadratics become exact cubics (control points two
  * thirds of the way to the quadratic control). Points are tracked as absolute 16.16 values, so the
  * deltas never accumulate rounding error and every on-curve point lands exactly where the glyf
  * table has it. Contours are reversed: TrueType outer contours run clockwise, CFF counter-clockwise.
  */
-function encodeCharstring(contours: GlyphPoint[][], advWidth: number, subject: string): Buffer {
-  const bytes: number[] = [...encodeType2Operand(advWidth - CFF_NOMINAL_WIDTH_X, subject)];
+function encodeCharstring(contours: GlyphPoint[][], advWidth: number, nominalWidthX: number, subject: string): Buffer {
+  const bytes: number[] = [...encodeType2Operand(advWidth - nominalWidthX, subject)];
   const snap = (value: number): number => Math.round(value * FIXED_16_16_SCALE) / FIXED_16_16_SCALE;
   let penX = 0;
   let penY = 0;
@@ -2655,7 +2687,8 @@ export function buildCffTable(
       `Cannot write the CFF table: a charset names its glyphs with 16-bit string ids, so it holds at most ${CFF_MAX_NAMED_GLYPHS + 1} glyphs (the font has ${glyphData.length}).`
     );
   }
-  const charStrings = glyphData.map((glyph, g) => encodeCharstring(glyph.contours, glyph.advWidth, `glyph ${g}`));
+  const { defaultWidthX, nominalWidthX } = chooseCffWidthBases(glyphData.map((glyph) => glyph.advWidth));
+  const charStrings = glyphData.map((glyph, g) => encodeCharstring(glyph.contours, glyph.advWidth, nominalWidthX, `glyph ${g}`));
   const charStringsIndex = buildCffIndex(charStrings);
 
   // Glyphs after .notdef are named by custom strings, whose string ids start after the standard strings.
@@ -2682,9 +2715,9 @@ export function buildCffTable(
   }
 
   const privateDict = Buffer.from([
-    ...encodeCffNumber(CFF_DEFAULT_WIDTH_X),
+    ...encodeCffNumber(defaultWidthX),
     CFF_DICT_OP_DEFAULT_WIDTH_X,
-    ...encodeCffNumber(CFF_NOMINAL_WIDTH_X),
+    ...encodeCffNumber(nominalWidthX),
     CFF_DICT_OP_NOMINAL_WIDTH_X,
   ]);
 
