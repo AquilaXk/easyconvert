@@ -94,6 +94,19 @@ const SVG_TEXT = Buffer.from(
   'utf-8'
 );
 
+/** A hand-written SVG font whose glyph paths cover lines, a quadratic and a cubic curve and an arc. */
+const SVG_FONT_SEED = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg"><defs><font horiz-adv-x="1000">' +
+    '<font-face font-family="Probe Sans" units-per-em="1000" ascent="800" descent="-200"/>' +
+    '<missing-glyph horiz-adv-x="500" d="M50 0 H450 V700 H50 Z"/>' +
+    '<glyph unicode="A" horiz-adv-x="700" d="M0 0 L350 700 L700 0 Z"/>' +
+    '<glyph unicode="B" horiz-adv-x="700" d="M100 0 V700 Q600 700 600 350 T100 0 Z"/>' +
+    '<glyph unicode="C" horiz-adv-x="700" d="M100 100 C100 700 600 700 600 100 Z"/>' +
+    '<glyph unicode="D" horiz-adv-x="800" d="M0 350 A350 350 0 1 1 700 350 A350 350 0 1 1 0 350 Z"/>' +
+    '</font></defs></svg>',
+  'utf-8'
+);
+
 function collectFixtures(dir: string, out: Map<string, Buffer[]>): void {
   for (const name of readdirSync(dir)) {
     const full = path.join(dir, name);
@@ -242,6 +255,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   txz: () => compressXz(TAR_SEED),
   'tar.xz': () => compressXz(TAR_SEED),
   'tar.7z': () => create7zArchive([{ filename: 'probe.tar', buffer: TAR_SEED }]).buffer,
+  // SVG fonts (also read from the plain svg extension) need glyph paths to become outlines.
+  svg: () => SVG_FONT_SEED,
+  svgfont: () => SVG_FONT_SEED,
   // Macintosh font containers wrapping a hand-built TrueType font.
   dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
   bin: () => buildMacBinary({ resourceFork: buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]) }),

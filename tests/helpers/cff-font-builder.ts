@@ -107,7 +107,7 @@ const FIXED_INT_OPERAND = 29;
 
 /** Standard string id of an ASCII character (space is SID 1 ... asciitilde is SID 95). */
 export function sidForAscii(char: string): number {
-  const code = char.charCodeAt(0);
+  const code = char.codePointAt(0) ?? Number.NaN;
   if (code < 32 || code > 126) throw new Error(`no standard SID for ${char}`);
   return code - 31;
 }
@@ -118,11 +118,15 @@ function dictInt(value: number): number[] {
 
 function dictReal(text: string): number[] {
   const nibbles: number[] = [];
-  for (const ch of text) {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
     if (ch >= '0' && ch <= '9') nibbles.push(Number(ch));
     else if (ch === '.') nibbles.push(0xa);
+    else if (ch === 'E' && text[i + 1] === '-') {
+      nibbles.push(0xc); // E- is one nibble
+      i++;
+    } else if (ch === 'E') nibbles.push(0xb);
     else if (ch === '-') nibbles.push(0xe);
-    else if (ch === 'E') nibbles.push(0xb);
     else throw new Error(`bad real character ${ch}`);
   }
   nibbles.push(0xf);
@@ -150,6 +154,10 @@ export interface CffFdSpec {
   localSubrs?: Buffer[];
   defaultWidthX?: number;
   nominalWidthX?: number;
+  /** Write defaultWidthX as a real number (for example '6E2' or '2.5E-1') instead of an integer. */
+  defaultWidthXReal?: string;
+  /** Write nominalWidthX as a real number (for example '-1.5E2') instead of an integer. */
+  nominalWidthXReal?: string;
   /** FontMatrix real-number text, six entries, for example ['0.001', '0', '0', '0.001', '0', '0']. */
   fontMatrix?: string[];
 }
@@ -160,6 +168,11 @@ export interface CffSpec extends CffFdSpec {
   charstrings: Buffer[];
   /** SID (name-keyed) or CID (CID-keyed) of glyphs 1..n; defaults to 1..n. */
   charset?: number[];
+  /**
+   * Charset encoding: 0 lists every id, 1 and 2 write ranges (u8 and u16 left counts), and
+   * 'iso-adobe' writes no charset data and selects the predefined ISOAdobe charset (glyph id = SID).
+   */
+  charsetFormat?: 0 | 1 | 2 | 'iso-adobe';
   globalSubrs?: Buffer[];
   /** Custom strings, SID 391 onward. */
   strings?: string[];
@@ -186,11 +199,36 @@ export interface CffLayout {
   privateDict: number;
 }
 
+/** Encodes the charset table; ranges group consecutive ids, and 'iso-adobe' needs no data at all. */
+function buildCharsetTable(sids: number[], format: 0 | 1 | 2 | 'iso-adobe'): Buffer {
+  if (format === 'iso-adobe') return Buffer.alloc(0);
+  if (format === 0) {
+    const table = Buffer.alloc(1 + sids.length * 2);
+    sids.forEach((sid, i) => table.writeUInt16BE(sid, 1 + i * 2));
+    return table;
+  }
+  const ranges: Array<[number, number]> = [];
+  for (const sid of sids) {
+    const last = ranges.at(-1);
+    if (last && last[0] + last[1] + 1 === sid) last[1]++;
+    else ranges.push([sid, 0]);
+  }
+  const leftBytes = format;
+  const table = Buffer.alloc(1 + ranges.length * (2 + leftBytes));
+  table[0] = format;
+  ranges.forEach(([first, nLeft], i) => {
+    const at = 1 + i * (2 + leftBytes);
+    table.writeUInt16BE(first, at);
+    table.writeUIntBE(nLeft, at + 2, leftBytes);
+  });
+  return table;
+}
+
 function buildPrivate(fd: CffFdSpec): { dict: Buffer; subrs: Buffer | null } {
   const bytes: number[] = [
-    ...dictInt(fd.defaultWidthX ?? 0),
+    ...(fd.defaultWidthXReal === undefined ? dictInt(fd.defaultWidthX ?? 0) : dictReal(fd.defaultWidthXReal)),
     20,
-    ...dictInt(fd.nominalWidthX ?? 0),
+    ...(fd.nominalWidthXReal === undefined ? dictInt(fd.nominalWidthX ?? 0) : dictReal(fd.nominalWidthXReal)),
     21,
   ];
   let subrs: Buffer | null = null;
@@ -210,8 +248,8 @@ export function buildCffWithLayout(spec: CffSpec): { cff: Buffer; layout: CffLay
   const globalSubrIndex = buildIndex(spec.globalSubrs ?? []);
   const numGlyphs = spec.charstrings.length;
   const sids = spec.charset ?? Array.from({ length: numGlyphs - 1 }, (_, i) => i + 1);
-  const charset = Buffer.alloc(1 + sids.length * 2);
-  sids.forEach((sid, i) => charset.writeUInt16BE(sid, 1 + i * 2));
+  const charsetFormat = spec.charsetFormat ?? 0;
+  const charset = buildCharsetTable(sids, charsetFormat);
   const charStringsIndex = buildIndex(spec.charstrings);
 
   const fdSpecs = spec.cid ? spec.cid.fds : [spec];
@@ -226,7 +264,7 @@ export function buildCffWithLayout(spec: CffSpec): { cff: Buffer; layout: CffLay
     } else {
       const ranges: Array<[number, number]> = [];
       fdOfGlyph.forEach((fd, g) => {
-        if (ranges.length === 0 || ranges[ranges.length - 1][1] !== fd) ranges.push([g, fd]);
+        if (ranges.length === 0 || ranges.at(-1)?.[1] !== fd) ranges.push([g, fd]);
       });
       fdSelect = Buffer.alloc(3 + ranges.length * 3 + 2);
       fdSelect[0] = 3;
@@ -255,7 +293,7 @@ export function buildCffWithLayout(spec: CffSpec): { cff: Buffer; layout: CffLay
       for (const real of spec.fontMatrix) out.push(...dictReal(real));
       out.push(12, 7);
     }
-    out.push(...dictInt(offsets.charset), 15);
+    out.push(...dictInt(charsetFormat === 'iso-adobe' ? 0 : offsets.charset), 15);
     if (spec.cid) {
       out.push(...dictInt(offsets.fdSelect), 12, 37);
     }
