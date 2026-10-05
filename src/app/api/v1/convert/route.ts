@@ -338,7 +338,7 @@ export async function POST(req: NextRequest) {
     const baseName = file.name.replace(/\.[^/.]+$/, '');
     const outFileName = `${baseName}.${targetDef.extension || targetDef.id}`;
     const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
-    storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
+    await storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
     const downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
 
     const userFile = await redisKeyStore.recordUserFile({

@@ -11,7 +11,7 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
   });
 
   describe('1. Unified SSOT Storage Provider Interface', () => {
-    it('shares object state between S3 and OCI storage backends without split-brain', () => {
+    it('shares object state between S3 and OCI storage backends without split-brain', async () => {
       const testKey = `test-shared-${Date.now()}.txt`;
       const content = Buffer.from('Enterprise unified storage content');
 
@@ -25,7 +25,7 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
       expect(retrievedViaOci?.size).toBe(content.length);
 
       // Verify retrieval via unified storageProvider
-      const retrievedViaProvider = storageProvider.getObject(testKey);
+      const retrievedViaProvider = await storageProvider.getObject(testKey);
       expect(retrievedViaProvider).toBeDefined();
       expect(retrievedViaProvider?.buffer.toString('utf-8')).toBe('Enterprise unified storage content');
     });

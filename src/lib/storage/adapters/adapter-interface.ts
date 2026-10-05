@@ -12,6 +12,14 @@ export class StorageAdapterError extends Error {
   }
 }
 
+/** An object key the store cannot address safely (empty, or with "." / ".." path segments). */
+export class StorageInvalidKeyError extends StorageAdapterError {
+  constructor(message: string, provider: string, cause?: unknown) {
+    super(message, provider, cause);
+    this.name = 'StorageInvalidKeyError';
+  }
+}
+
 export class StorageNotFoundError extends StorageAdapterError {
   constructor(path: string, provider: string) {
     super(`Remote object not found: "${path}"`, provider);

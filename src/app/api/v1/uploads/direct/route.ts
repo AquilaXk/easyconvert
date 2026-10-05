@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageProvider } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,30 +87,48 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 3. Initiate multipart upload session in s3Storage
-  const session = s3Storage.initiateMultipartUpload(
-    filename,
-    mimeType,
-    totalSize,
-    auth.user.id,
-    chosenPartSize
-  );
-
-  // 4. Generate presigned part URLs (local storage serves them from this application)
-  const parts = Array.from({ length: totalParts }, (_, idx) => {
-    const partNumber = idx + 1;
-    const presigned = s3Storage.generatePresignedUploadPartUrl(
-      session.key,
-      session.uploadId,
-      partNumber,
-      900
+  const presignPart = storageProvider.generatePresignedUploadPartUrl?.bind(storageProvider);
+  if (!presignPart) {
+    return createProblemDetailsResponse(
+      501,
+      'The configured storage provider cannot issue presigned part URLs.',
+      instanceUri,
+      'Not Implemented'
     );
-    return {
-      partNumber,
-      uploadUrl: presigned.url,
-      expiresAt: presigned.expiresAt,
-    };
-  });
+  }
+
+  // 3. Initiate the multipart upload session
+  let session;
+  try {
+    session = await storageProvider.initiateMultipartUpload(
+      filename,
+      mimeType,
+      totalSize,
+      auth.user.id,
+      chosenPartSize
+    );
+  } catch (err: unknown) {
+    return createProblemDetailsResponse(
+      400,
+      err instanceof Error ? err.message : 'Failed to initiate the multipart upload.',
+      instanceUri,
+      'Bad Request'
+    );
+  }
+
+  // 4. Generate presigned part URLs: object-store URLs for a remote provider, URLs on this
+  // application for local storage
+  const parts = await Promise.all(
+    Array.from({ length: totalParts }, async (_, idx) => {
+      const partNumber = idx + 1;
+      const presigned = await presignPart(session.key, session.uploadId, partNumber, 900);
+      return {
+        partNumber,
+        uploadUrl: presigned.url,
+        expiresAt: presigned.expiresAt,
+      };
+    })
+  );
 
   return NextResponse.json(
     {

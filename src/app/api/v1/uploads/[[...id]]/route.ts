@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { localFsStorage } from '@/lib/storage';
+import { LocalFsStorage, objectStorage } from '@/lib/storage';
 import {
   tusEngine,
   TusOffsetMismatchError,
@@ -109,7 +109,17 @@ async function handlePartUpload(
     return createProblemDetailsResponse(400, 'Empty part payload body.', instanceUri);
   }
 
-  const part = await localFsStorage.savePartStream(uploadId, partNumber, req.body);
+  // Against an object store the client PUTs each part straight to its presigned object-store URL;
+  // only local storage receives parts through this application.
+  if (!(objectStorage instanceof LocalFsStorage)) {
+    return createProblemDetailsResponse(
+      404,
+      'Parts are uploaded directly to the object store through the presigned URLs.',
+      instanceUri
+    );
+  }
+
+  const part = await objectStorage.savePartStream(uploadId, partNumber, req.body);
   return NextResponse.json({ success: true, part });
 }
 
@@ -147,14 +157,14 @@ async function handleInitiateUpload(
   }
 
   const safeFilename = path.basename(filename);
-  const session = await localFsStorage.createMultipart(`uploads/${safeFilename}`, {
+  const session = await objectStorage.createMultipart(`uploads/${safeFilename}`, {
     contentType: mimeType,
     filename: safeFilename,
   });
 
   const pregenLimit = Math.min(totalParts, 100);
   const presignedPromises = Array.from({ length: pregenLimit }, (_, idx) =>
-    localFsStorage.presignPart(session.key, session.uploadId, idx + 1, 86400)
+    objectStorage.presignPart(session.key, session.uploadId, idx + 1, 86400)
   );
   const presignedUrls = await Promise.all(presignedPromises);
 
@@ -184,7 +194,7 @@ async function handleCompleteUpload(
     );
   }
 
-  const completedObject = await localFsStorage.completeMultipart(key, uploadId, parts, expectedSize);
+  const completedObject = await objectStorage.completeMultipart(key, uploadId, parts, expectedSize);
 
   return NextResponse.json({
     success: true,
@@ -206,7 +216,7 @@ async function handleAbortUpload(
     return createProblemDetailsResponse(400, 'Missing "uploadId" or "key" in abort payload.', instanceUri);
   }
 
-  const aborted = await localFsStorage.abortMultipart(key, uploadId);
+  const aborted = await objectStorage.abortMultipart(key, uploadId);
   return NextResponse.json({ success: true, aborted });
 }
 

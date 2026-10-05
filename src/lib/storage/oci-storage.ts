@@ -59,6 +59,11 @@ export interface StoredObject {
   expiresAt: number;
   filePath?: string;
   metadata?: Record<string, string>;
+  /**
+   * Frees resources held for this read, such as a scratch file a remote backend staged for it. The
+   * object itself stays in storage. Absent when there is nothing to free (local backends).
+   */
+  release?: () => Promise<void>;
 }
 
 export type OciStoredObject = StoredObject;
@@ -69,44 +74,105 @@ export interface PresignedUrlResult {
   signature: string;
 }
 
+/** A result that a local backend returns directly and a remote backend returns after a network call. */
+export type MaybePromise<T> = T | Promise<T>;
+
+/** What callers may know about an open multipart upload session. */
+export interface UploadSessionInfo {
+  uploadId: string;
+  key: string;
+  filename: string;
+  mimeType: string;
+  totalSize: number;
+  partSize: number;
+  totalParts: number;
+  createdAt: number;
+  ownerUserId?: string;
+}
+
+/**
+ * Job-oriented storage used by the API routes, the queue, and the worker. `kind` says where the
+ * bytes live: `local` backends keep them on this host's disk and answer synchronously; `remote`
+ * backends keep them in the S3-compatible object store and answer asynchronously. Every caller
+ * must `await` the results, which is a no-op for a local backend.
+ */
 export interface IStorageBackend {
   readonly providerName: string;
-  initiateMultipartUpload(filename: string, mimeType: string, totalSize: number, ownerUserId?: string): MultipartUploadInit;
-  uploadPart(uploadId: string, partNumber: number, buffer: Buffer): UploadedPart;
-  completeMultipartUpload(uploadId: string, expectedParts?: { partNumber: number; etag?: string }[]): MultipartUploadComplete;
-  abortMultipartUpload(uploadId: string): boolean;
-  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): StoredObject;
-  saveObjectFromFile?(key: string, filePath: string, mimeType: string, filename: string, ttlMs?: number): StoredObject;
+  readonly kind: 'local' | 'remote';
+  initiateMultipartUpload(
+    filename: string,
+    mimeType: string,
+    totalSize: number,
+    ownerUserId?: string,
+    partSize?: number
+  ): MaybePromise<MultipartUploadInit>;
+  uploadPart(uploadId: string, partNumber: number, buffer: Buffer): MaybePromise<UploadedPart>;
+  /** Receives one part from a request body; the limits throw an error with `statusCode` 413. */
+  uploadPartStream?(
+    uploadId: string,
+    partNumber: number,
+    stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
+    maxPartBytes?: number,
+    maxTotalBytes?: number,
+    currentSessionBytes?: number
+  ): Promise<UploadedPart>;
+  completeMultipartUpload(
+    uploadId: string,
+    expectedParts?: { partNumber: number; etag?: string }[]
+  ): MaybePromise<MultipartUploadComplete>;
+  abortMultipartUpload(uploadId: string): MaybePromise<boolean>;
+  getUploadSession?(uploadId: string): MaybePromise<UploadSessionInfo | undefined>;
+  getUploadOwner?(uploadId: string): MaybePromise<string | undefined>;
+  /** Parts received so far for an open session, in any order; undefined when the session is unknown. */
+  getUploadedParts?(
+    uploadId: string
+  ): MaybePromise<Array<{ partNumber: number; etag: string; size: number }> | undefined>;
+  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): MaybePromise<StoredObject>;
+  saveObjectFromFile?(
+    key: string,
+    filePath: string,
+    mimeType: string,
+    filename: string,
+    ttlMs?: number
+  ): MaybePromise<StoredObject>;
   saveObjectFromStream(
     key: string,
     stream: NodeJS.ReadableStream,
     meta: { filename: string; mimeType: string; size?: number },
     ttlMs?: number
   ): Promise<StoredObject>;
-  getObject(key: string): StoredObject | undefined;
-  stat(key: string): ObjectStat | null;
-  openReadStream(key: string, range?: { start: number; end: number }): NodeJS.ReadableStream | null;
-  getObjectStream?(key: string, range?: { start: number; end: number }): fs.ReadStream | null;
-  deleteObject(key: string): boolean;
-  deleteByPrefix?(prefix: string): number;
-  getActiveSessionsCount(): number;
-  getObjectsCount(): number;
+  getObject(key: string): MaybePromise<StoredObject | undefined>;
+  /** Size, ETag, type and name of an object without reading it. */
+  stat(key: string): MaybePromise<ObjectStat | null>;
+  openReadStream(key: string, range?: { start: number; end: number }): MaybePromise<NodeJS.ReadableStream | null>;
+  getObjectStream?(key: string, range?: { start: number; end: number }): MaybePromise<NodeJS.ReadableStream | null>;
+  deleteObject(key: string): MaybePromise<boolean>;
+  deleteByPrefix?(prefix: string): MaybePromise<number>;
+  /** Open upload sessions, or null when the backend cannot count them (sessions live on the object store). */
+  getActiveSessionsCount(): MaybePromise<number | null>;
+  /** Stored objects, or null when the backend cannot count them cheaply. */
+  getObjectsCount(): MaybePromise<number | null>;
   sweepExpiredObjects?(now?: number): number;
   stopGc?(): void;
-  generatePresignedUploadUrl?(key: string, partNumber: number, uploadId: string, expiresInSeconds?: number): PresignedUrlResult;
+  generatePresignedUploadUrl?(
+    key: string,
+    partNumber: number,
+    uploadId: string,
+    expiresInSeconds?: number
+  ): MaybePromise<PresignedUrlResult>;
   generatePresignedUploadPartUrl?(
     key: string,
     uploadId: string,
     partNumber: number,
     expiresInSeconds?: number
-  ): PresignedUrlResult;
+  ): MaybePromise<PresignedUrlResult>;
   generatePresignedHmacPartUrl?(
     key: string,
     uploadId: string,
     partNumber: number,
     expiresInSeconds?: number
   ): PresignedUrlResult;
-  generatePresignedDownloadUrl?(key: string, expiresInSeconds?: number): PresignedUrlResult;
+  generatePresignedDownloadUrl?(key: string, expiresInSeconds?: number): MaybePromise<PresignedUrlResult>;
   verifyPresignedSignature?(
     method: 'GET' | 'PUT',
     key: string,
@@ -127,6 +193,7 @@ import { globalSharedObjects } from './shared-store';
  */
 export class OciObjectStorageService implements IStorageBackend {
   readonly providerName: string = 'oci';
+  readonly kind = 'local' as const;
   private sessions = new Map<string, OciMultipartSession>();
   private objects = new Map<string, OciStoredObject>();
   readonly config: OciStorageConfig;
@@ -821,6 +888,7 @@ export class OciObjectStorageService implements IStorageBackend {
  */
 export class S3CompatibleStorageBackend implements IStorageBackend {
   readonly providerName: string = 's3-compatible';
+  readonly kind = 'local' as const;
   private backend: OciObjectStorageService;
 
   constructor() {
@@ -944,9 +1012,16 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
   }
 }
 
-export const ociStorage: IStorageBackend = new OciObjectStorageService();
+/**
+ * The local-disk OCI-shaped backend. It never talks to OCI, so it must not demand an OCI namespace
+ * of a deployment that stores objects elsewhere (STORAGE_DRIVER=s3) or on local disk.
+ */
+const LOCAL_BACKEND_NAMESPACE = 'local';
+export const ociStorage = new OciObjectStorageService({
+  namespace: process.env.OCI_NAMESPACE || LOCAL_BACKEND_NAMESPACE,
+});
 // Backward-compatible alias
-export const s3Storage: IStorageBackend = ociStorage;
+export const s3Storage = ociStorage;
 
 /**
  * Factory for resolving storage backend provider.

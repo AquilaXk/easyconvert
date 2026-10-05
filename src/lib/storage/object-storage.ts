@@ -10,6 +10,8 @@ export interface ObjectMetadata {
   filename?: string;
   customMetadata?: Record<string, string>;
   ttlSeconds?: number;
+  /** Total byte length when known; lets an object store send a small stream as one request. */
+  size?: number;
 }
 
 export interface StoredObjectMetadata {

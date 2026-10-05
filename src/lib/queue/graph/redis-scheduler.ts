@@ -18,7 +18,7 @@ import {
 } from './lua-scripts';
 import { cancelGraphNodeJob, enqueueGraphNodeJob } from './node-jobs';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
-import { s3Storage } from '../../storage/s3-storage';
+import { storageProvider } from '../../storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
 
@@ -339,8 +339,8 @@ export class RedisGraphScheduler implements IGraphScheduler {
 
   async cleanupIntermediates(graphId: string): Promise<number> {
     const prefix = `intermediate/${graphId}/`;
-    if (typeof s3Storage.deleteByPrefix === 'function') {
-      return s3Storage.deleteByPrefix(prefix);
+    if (typeof storageProvider.deleteByPrefix === 'function') {
+      return storageProvider.deleteByPrefix(prefix);
     }
     return 0;
   }

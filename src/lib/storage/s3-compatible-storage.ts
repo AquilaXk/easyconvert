@@ -12,77 +12,29 @@ import type {
   StoredObjectMetadata,
 } from './object-storage';
 import {
-  S3ObjectClient,
-  type ObjectHead,
-  type PutObjectOptions,
-  type S3ObjectClientConfig,
-} from './s3-object-client';
+  DEFAULT_OBJECT_TTL_SECONDS,
+  buildPutOptions,
+  isObjectExpired,
+  toStoredObjectMetadata,
+} from './object-attributes';
+import { S3ObjectClient, type PutObjectOptions, type S3ObjectClientConfig } from './s3-object-client';
 import type { RemoteStorageConfig } from './storage-config';
 
 /**
  * Object storage on an S3-compatible service: OCI Object Storage through its S3 compatibility
  * endpoint in production, or any other S3-compatible server. Objects, multipart sessions and
  * presigned URLs all live on the service and are signed with its credentials; nothing is spooled
- * to local disk and no state is held in process memory.
- *
- * Per-object attributes that S3 has no field for travel as `x-amz-meta-*` headers:
- *   filename    URL-encoded original filename
- *   expires-at  epoch milliseconds after which the object counts as gone
- *   uploaded-at epoch milliseconds of the upload
- *   custom      URL-encoded JSON of the caller's custom metadata
- * Expiry is enforced on read (an expired object reads as missing and is deleted); a bucket
- * lifecycle rule must still remove abandoned and expired objects and incomplete multipart uploads.
+ * to local disk and no state is held in process memory. Per-object attributes (filename, expiry,
+ * custom metadata) travel as `x-amz-meta-*` headers, see object-attributes.ts.
  */
 
 const PROVIDER = 's3-compatible';
-const DEFAULT_TTL_SECONDS = 3600;
 const MULTIPART_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const MS_PER_SECOND = 1000;
-const META_FILENAME = 'filename';
-const META_EXPIRES_AT = 'expires-at';
-const META_UPLOADED_AT = 'uploaded-at';
-const META_CUSTOM = 'custom';
-/** Keeps the encoded custom metadata well inside S3's 2 KiB header budget. */
-const MAX_CUSTOM_METADATA_BYTES = 1024;
-const DEFAULT_MIME_TYPE = 'application/octet-stream';
 
 export interface S3CompatibleStorageConfig extends Omit<S3ObjectClientConfig, 'bucket'> {
   bucketName: string;
   defaultTtlSeconds?: number;
-}
-
-function basename(key: string): string {
-  const slash = key.lastIndexOf('/');
-  return slash === -1 ? key : key.slice(slash + 1);
-}
-
-function parseEpochMs(value: string | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
-}
-
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function parseCustomMetadata(raw: string | undefined): Record<string, string> | undefined {
-  if (raw === undefined) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(safeDecode(raw));
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-    const result: Record<string, string> = {};
-    for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === 'string') result[name] = value;
-    }
-    return result;
-  } catch {
-    return undefined;
-  }
 }
 
 export class S3CompatibleStorage implements IObjectStorage {
@@ -100,7 +52,7 @@ export class S3CompatibleStorage implements IObjectStorage {
     this.endpoint = this.client.endpoint;
     this.region = this.client.region;
     this.bucketName = bucketName;
-    this.defaultTtlSeconds = defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
+    this.defaultTtlSeconds = defaultTtlSeconds ?? DEFAULT_OBJECT_TTL_SECONDS;
   }
 
   /** Builds the provider from validated `STORAGE_DRIVER=oci|s3` configuration. */
@@ -118,52 +70,6 @@ export class S3CompatibleStorage implements IObjectStorage {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Metadata mapping
-  // ---------------------------------------------------------------------------------------------
-
-  private putOptions(key: string, metadata: ObjectMetadata | undefined, now: number): PutObjectOptions {
-    const ttlSeconds = metadata?.ttlSeconds ?? this.defaultTtlSeconds;
-    const headers: Record<string, string> = {
-      [META_FILENAME]: encodeURIComponent(metadata?.filename || basename(key)),
-      [META_UPLOADED_AT]: String(now),
-      [META_EXPIRES_AT]: String(now + ttlSeconds * MS_PER_SECOND),
-    };
-    if (metadata?.customMetadata && Object.keys(metadata.customMetadata).length > 0) {
-      const encoded = encodeURIComponent(JSON.stringify(metadata.customMetadata));
-      if (encoded.length > MAX_CUSTOM_METADATA_BYTES) {
-        throw new StorageAdapterError(
-          `Custom metadata exceeds ${MAX_CUSTOM_METADATA_BYTES} encoded bytes`,
-          this.providerName
-        );
-      }
-      headers[META_CUSTOM] = encoded;
-    }
-    return { contentType: metadata?.contentType || DEFAULT_MIME_TYPE, metadata: headers };
-  }
-
-  private toStored(head: ObjectHead, now: number): StoredObjectMetadata {
-    const uploadedAt = parseEpochMs(head.metadata[META_UPLOADED_AT]) ?? head.lastModified?.getTime() ?? now;
-    const stored: StoredObjectMetadata = {
-      key: head.key,
-      size: head.size,
-      etag: `"${head.etag}"`,
-      mimeType: head.contentType || DEFAULT_MIME_TYPE,
-      filename: safeDecode(head.metadata[META_FILENAME] ?? basename(head.key)),
-      uploadedAt,
-      expiresAt: parseEpochMs(head.metadata[META_EXPIRES_AT]) ?? 0,
-    };
-    const custom = parseCustomMetadata(head.metadata[META_CUSTOM]);
-    if (custom) stored.metadata = custom;
-    return stored;
-  }
-
-  /** Objects without an `expires-at` attribute were not written by this provider and never expire here. */
-  private isExpired(head: ObjectHead, now: number): boolean {
-    const expiresAt = parseEpochMs(head.metadata[META_EXPIRES_AT]);
-    return expiresAt !== undefined && expiresAt <= now;
-  }
-
-  // ---------------------------------------------------------------------------------------------
   // IObjectStorage
   // ---------------------------------------------------------------------------------------------
 
@@ -173,14 +79,14 @@ export class S3CompatibleStorage implements IObjectStorage {
     metadata?: ObjectMetadata
   ): Promise<StoredObjectMetadata> {
     const now = Date.now();
-    const options = this.putOptions(key, metadata, now);
-    const result = await this.client.putStream(key, stream, options);
+    const options = buildPutOptions(this.providerName, key, metadata, now, this.defaultTtlSeconds);
+    const result = await this.client.putStream(key, stream, { ...options, size: metadata?.size });
     return this.storedFromPut(key, result.size, result.etag, options, now);
   }
 
   async putBuffer(key: string, buffer: Buffer, metadata?: ObjectMetadata): Promise<StoredObjectMetadata> {
     const now = Date.now();
-    const options = this.putOptions(key, metadata, now);
+    const options = buildPutOptions(this.providerName, key, metadata, now, this.defaultTtlSeconds);
     const result = await this.client.putBuffer(key, buffer, options);
     return this.storedFromPut(key, result.size, result.etag, options, now);
   }
@@ -192,7 +98,7 @@ export class S3CompatibleStorage implements IObjectStorage {
     options: PutObjectOptions,
     now: number
   ): StoredObjectMetadata {
-    return this.toStored(
+    return toStoredObjectMetadata(
       {
         key,
         size,
@@ -209,14 +115,14 @@ export class S3CompatibleStorage implements IObjectStorage {
     const result = await this.client.getObject(key, range);
     if (!result) return null;
     const now = Date.now();
-    if (this.isExpired(result, now)) {
+    if (isObjectExpired(result, now)) {
       result.stream.destroy();
       await this.client.deleteObject(key).catch(() => undefined);
       return null;
     }
     return {
       stream: result.stream,
-      metadata: this.toStored(result, now),
+      metadata: toStoredObjectMetadata(result, now),
       range: result.range ? { start: result.range.start, end: result.range.end } : undefined,
     };
   }
@@ -247,11 +153,11 @@ export class S3CompatibleStorage implements IObjectStorage {
     const head = await this.client.headObject(key);
     if (!head) return null;
     const now = Date.now();
-    if (this.isExpired(head, now)) {
+    if (isObjectExpired(head, now)) {
       await this.client.deleteObject(key).catch(() => undefined);
       return null;
     }
-    return this.toStored(head, now);
+    return toStoredObjectMetadata(head, now);
   }
 
   async delete(key: string): Promise<boolean> {
@@ -260,7 +166,13 @@ export class S3CompatibleStorage implements IObjectStorage {
 
   async createMultipart(key: string, metadata?: ObjectMetadata): Promise<MultipartSession> {
     const now = Date.now();
-    const uploadId = await this.client.createMultipartUpload(key, this.putOptions(key, metadata, now));
+    // The object's expiry is fixed when the upload opens, so it must cover the longest open
+    // session plus the time the finished object is meant to live.
+    const ttlSeconds = (metadata?.ttlSeconds ?? this.defaultTtlSeconds) + MULTIPART_SESSION_TTL_MS / MS_PER_SECOND;
+    const uploadId = await this.client.createMultipartUpload(
+      key,
+      buildPutOptions(this.providerName, key, { ...metadata, ttlSeconds }, now, this.defaultTtlSeconds)
+    );
     return {
       uploadId,
       key,
@@ -276,7 +188,7 @@ export class S3CompatibleStorage implements IObjectStorage {
     key: string,
     uploadId: string,
     partNumber: number,
-    expiresInSeconds: number = DEFAULT_TTL_SECONDS
+    expiresInSeconds: number = DEFAULT_OBJECT_TTL_SECONDS
   ): Promise<StoragePresignedUrlResult> {
     const presigned = this.client.presignUploadPartUrl(key, uploadId, partNumber, expiresInSeconds);
     return {
@@ -310,7 +222,7 @@ export class S3CompatibleStorage implements IObjectStorage {
         this.providerName
       );
     }
-    return this.toStored(head, Date.now());
+    return toStoredObjectMetadata(head, Date.now());
   }
 
   async abortMultipart(key: string, uploadId: string): Promise<boolean> {
@@ -318,7 +230,7 @@ export class S3CompatibleStorage implements IObjectStorage {
     return true;
   }
 
-  async presignGet(key: string, expiresInSeconds: number = DEFAULT_TTL_SECONDS): Promise<StoragePresignedUrlResult> {
+  async presignGet(key: string, expiresInSeconds: number = DEFAULT_OBJECT_TTL_SECONDS): Promise<StoragePresignedUrlResult> {
     const presigned = this.client.presignGetUrl(key, expiresInSeconds);
     return {
       url: presigned.url,

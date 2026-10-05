@@ -4,6 +4,8 @@ const nextConfig = {
   outputFileTracing: false,
   experimental: {
     serverComponentsExternalPackages: ['sharp', 'pdfkit'],
+    // Loads src/instrumentation.ts at server start so storage misconfiguration stops the server.
+    instrumentationHook: true,
   },
 };
 

@@ -143,10 +143,8 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
       const resultKey = `results/${job.id}/${convRes.filename}`;
       ociStorage.saveObject(resultKey, convRes.buffer, convRes.mimeType, convRes.filename, 3600000);
 
-      let downloadUrl = `/api/storage/file/${resultKey}`;
-      if (typeof ociStorage.generatePresignedDownloadUrl === 'function') {
-        downloadUrl = ociStorage.generatePresignedDownloadUrl(resultKey, 3600).url;
-      }
+      // Local storage has no object-store host to presign for, so results download through the application.
+      const downloadUrl = `/api/storage/file/${resultKey}`;
 
       const jobResult: ConversionJobResult = {
         jobId: job.id,

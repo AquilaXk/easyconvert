@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageProvider } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,8 +36,17 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     );
   }
 
+  if (!storageProvider.getUploadSession) {
+    return createProblemDetailsResponse(
+      501,
+      'The configured storage provider does not support upload sessions.',
+      instanceUri,
+      'Not Implemented'
+    );
+  }
+
   // 2. Session and ownership verification (fail-closed against cross-user enumeration)
-  const session = s3Storage.getUploadSession(uploadId);
+  const session = await storageProvider.getUploadSession(uploadId);
   if (!session) {
     return createProblemDetailsResponse(
       404,
@@ -57,7 +66,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   }
 
   // 3. Abort multipart session and purge temporary files
-  const aborted = s3Storage.abortMultipartUpload(uploadId);
+  const aborted = await storageProvider.abortMultipartUpload(uploadId);
   if (!aborted) {
     return createProblemDetailsResponse(
       404,

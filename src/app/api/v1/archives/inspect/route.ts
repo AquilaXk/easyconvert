@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
       filename = typeof body.filename === 'string' ? body.filename : undefined;
 
       if (body.storageKey) {
-        const stored = storageProvider.getObject(body.storageKey);
+        const stored = await storageProvider.getObject(body.storageKey);
         if (!stored) {
           return createProblemDetailsResponse(
             404,

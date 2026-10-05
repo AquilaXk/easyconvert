@@ -649,7 +649,7 @@ export async function pipeStreamToStorageMultipart(
   assertNotSpoofedFile(initialBuffer, sourceExtension, filename);
 
   // 2. Initiate multipart session in storage
-  const init = storage.initiateMultipartUpload(filename, mimeType, expectedTotalSize);
+  const init = await storage.initiateMultipartUpload(filename, mimeType, expectedTotalSize, undefined, partSizeBytes);
   const uploadId = init.uploadId;
 
   const hasher = crypto.createHash('sha256');
@@ -681,7 +681,7 @@ export async function pipeStreamToStorageMultipart(
         const partBuffer = currentPartChunks.length === 1
           ? currentPartChunks[0]
           : Buffer.concat(currentPartChunks);
-        storage.uploadPart(uploadId, partNumber++, partBuffer);
+        await storage.uploadPart(uploadId, partNumber++, partBuffer);
 
         // Clear references immediately to keep heap consumption bounded to O(1)
         currentPartChunks = [];
@@ -694,12 +694,12 @@ export async function pipeStreamToStorageMultipart(
       const finalPartBuffer = currentPartChunks.length === 1
         ? currentPartChunks[0]
         : Buffer.concat(currentPartChunks);
-      storage.uploadPart(uploadId, partNumber++, finalPartBuffer);
+      await storage.uploadPart(uploadId, partNumber++, finalPartBuffer);
       currentPartChunks = [];
       currentPartBytes = 0;
     }
 
-    const completed = storage.completeMultipartUpload(uploadId);
+    const completed = await storage.completeMultipartUpload(uploadId);
     const elapsedMs = Math.max(1, Date.now() - startTime);
     const sha256Digest = hasher.digest('hex');
     const peakHeapDeltaBytes = Math.max(0, peakHeap - initialHeap);
@@ -715,7 +715,7 @@ export async function pipeStreamToStorageMultipart(
     };
   } catch (err) {
     try {
-      storage.abortMultipartUpload(uploadId);
+      await storage.abortMultipartUpload(uploadId);
     } catch {}
     throw err;
   }

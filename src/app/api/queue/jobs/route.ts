@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageProvider } from '@/lib/storage';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
@@ -63,9 +63,9 @@ export async function POST(req: NextRequest) {
         fileSize = file.size;
         const arrayBuffer = await file.arrayBuffer();
         // Save to S3 chunk storage directly
-        const init = s3Storage.initiateMultipartUpload(file.name, file.type, file.size);
-        s3Storage.uploadPart(init.uploadId, 1, Buffer.from(arrayBuffer));
-        const completed = s3Storage.completeMultipartUpload(init.uploadId);
+        const init = await storageProvider.initiateMultipartUpload(file.name, file.type, file.size);
+        await storageProvider.uploadPart(init.uploadId, 1, Buffer.from(arrayBuffer));
+        const completed = await storageProvider.completeMultipartUpload(init.uploadId);
         storageKey = completed.key;
       }
     } else {

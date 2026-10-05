@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { s3Storage } from '@/lib/storage/s3-storage';
-import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
+import { storageProvider } from '@/lib/storage';
+import { readObjectHeader } from '@/lib/storage/object-header';
+import { assertNotSpoofedFile } from '@/lib/registry';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
 
 export const dynamic = 'force-dynamic';
@@ -50,8 +51,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (!storageProvider.getUploadSession) {
+    return createProblemDetailsResponse(
+      501,
+      'The configured storage provider does not support upload sessions.',
+      instanceUri,
+      'Not Implemented'
+    );
+  }
+
   // 3. Session & Ownership validation (fail-closed against cross-user discovery)
-  const session = s3Storage.getUploadSession(uploadId);
+  const session = await storageProvider.getUploadSession(uploadId);
   if (!session) {
     return createProblemDetailsResponse(
       404,
@@ -74,9 +84,9 @@ export async function POST(req: NextRequest) {
   const sessionMimeType = session.mimeType;
 
   // 4. Assemble multipart stream
-  let completedObject: ReturnType<typeof s3Storage.completeMultipartUpload>;
+  let completedObject: Awaited<ReturnType<typeof storageProvider.completeMultipartUpload>>;
   try {
-    completedObject = s3Storage.completeMultipartUpload(uploadId, parts);
+    completedObject = await storageProvider.completeMultipartUpload(uploadId, parts);
   } catch (err: any) {
     return createProblemDetailsResponse(
       400,
@@ -86,10 +96,22 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 5. Verify magic bytes on assembled file using assertNotSpoofedFilePath on first 64 KiB
-  const stored = s3Storage.getObject(completedObject.key);
-  if (!stored?.filePath) {
-    s3Storage.deleteObject(completedObject.key);
+  // Parts of an object-store upload go straight to the store, past this application's size
+  // limits, so the assembled object must be exactly the size that was declared.
+  if (storageProvider.kind === 'remote' && completedObject.size !== session.totalSize) {
+    await storageProvider.deleteObject(completedObject.key);
+    return createProblemDetailsResponse(
+      400,
+      `Uploaded size ${completedObject.size} bytes does not match the declared totalSize ${session.totalSize} bytes.`,
+      instanceUri,
+      'Bad Request'
+    );
+  }
+
+  // 5. Verify magic bytes on the assembled object (first 64 KiB)
+  const header = await readObjectHeader(storageProvider, completedObject.key);
+  if (!header) {
+    await storageProvider.deleteObject(completedObject.key);
     return createProblemDetailsResponse(
       500,
       'Assembled file not found in storage. Operation failed closed.',
@@ -100,10 +122,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const declaredFormat = resolveDeclaredFormat(sessionFilename, sessionMimeType);
-    assertNotSpoofedFilePath(stored.filePath, declaredFormat, sessionFilename);
+    assertNotSpoofedFile(header, declaredFormat, sessionFilename);
   } catch (err: unknown) {
     // Purge the assembled object immediately: it matches no declared format
-    s3Storage.deleteObject(completedObject.key);
+    await storageProvider.deleteObject(completedObject.key);
 
     if (err instanceof UnknownDeclaredFormatError) {
       return createProblemDetailsResponse(

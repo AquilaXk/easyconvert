@@ -8,6 +8,7 @@ import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversio
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
+import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
@@ -472,12 +473,12 @@ export async function POST(req: NextRequest) {
         const decodedBuf = Buffer.from(inputBufferBase64, 'base64');
         assertNotSpoofedFile(decodedBuf, sourceDef.extension, originalFilename);
       } else if (storageKey) {
-        const stored = s3Storage.getObject(storageKey);
-        if (!stored) {
+        const info = await s3Storage.stat(storageKey);
+        if (!info) {
           return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
         }
         if (!fileSize) {
-          fileSize = stored.size;
+          fileSize = info.size;
         }
         const userTier = auth.user.tier || 'free';
         const tierMaxBytes = STORAGE_TIER_PAYLOAD_LIMITS[userTier] || STORAGE_TIER_PAYLOAD_LIMITS.free;
@@ -488,24 +489,37 @@ export async function POST(req: NextRequest) {
             'Payload Too Large'
           );
         }
-        if (stored.filePath) {
-          if (!fs.existsSync(stored.filePath)) {
-            console.error(`Storage file missing on disk: "${stored.filePath}"`);
+        if (s3Storage.kind === 'remote') {
+          // The object lives in the object store: check its first bytes without downloading the rest.
+          const header = await readObjectHeader(s3Storage, storageKey);
+          if (!header) {
             return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
           }
-          assertNotSpoofedFilePath(stored.filePath, sourceDef.extension, originalFilename);
+          assertNotSpoofedFile(header, sourceDef.extension, originalFilename);
         } else {
-          if (stored.size > 512 * 1024 * 1024) {
-            return await failWithRollback(
-              413,
-              `Storage object size (${stored.size} bytes) exceeds in-memory buffer limit without a backing file path.`,
-              'Payload Too Large'
-            );
+          const stored = await s3Storage.getObject(storageKey);
+          if (!stored) {
+            return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
           }
-          if (stored.buffer && stored.buffer.length > 0) {
-            assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
+          if (stored.filePath) {
+            if (!fs.existsSync(stored.filePath)) {
+              console.error(`Storage file missing on disk: "${stored.filePath}"`);
+              return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
+            }
+            assertNotSpoofedFilePath(stored.filePath, sourceDef.extension, originalFilename);
           } else {
-            return await failWithRollback(400, `Storage object for key "${storageKey}" contains empty or unreadable file data.`, 'Empty Storage Object');
+            if (stored.size > 512 * 1024 * 1024) {
+              return await failWithRollback(
+                413,
+                `Storage object size (${stored.size} bytes) exceeds in-memory buffer limit without a backing file path.`,
+                'Payload Too Large'
+              );
+            }
+            if (stored.buffer && stored.buffer.length > 0) {
+              assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
+            } else {
+              return await failWithRollback(400, `Storage object for key "${storageKey}" contains empty or unreadable file data.`, 'Empty Storage Object');
+            }
           }
         }
       }
@@ -519,9 +533,9 @@ export async function POST(req: NextRequest) {
 
     // Persist multipart upload into S3 staging storage only after magic byte validation passes
     if (uploadedBuffer && fileMeta && !storageKey) {
-      const init = s3Storage.initiateMultipartUpload(fileMeta.name, fileMeta.type, fileMeta.size);
-      s3Storage.uploadPart(init.uploadId, 1, uploadedBuffer);
-      const completed = s3Storage.completeMultipartUpload(init.uploadId);
+      const init = await s3Storage.initiateMultipartUpload(fileMeta.name, fileMeta.type, fileMeta.size);
+      await s3Storage.uploadPart(init.uploadId, 1, uploadedBuffer);
+      const completed = await s3Storage.completeMultipartUpload(init.uploadId);
       storageKey = completed.key;
     }
 

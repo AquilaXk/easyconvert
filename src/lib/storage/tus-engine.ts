@@ -4,7 +4,8 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable, PassThrough } from 'node:stream';
 import Redis from 'ioredis';
-import { localFsStorage } from './index';
+import { localFsStorage } from './local-fs-storage';
+import { objectStorage, storageProvider } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { resolveDeclaredFormat } from './declared-format';
@@ -313,7 +314,23 @@ function rollbackChunk(binPath: string, clientOffset: number): void {
   }
 }
 
+/** Remaining lifetime of a finished upload's object, but never less than an hour. */
+function objectTtlSeconds(session: TusSession): number {
+  return Math.max(3600, Math.floor((session.expiresAt - Date.now()) / 1000));
+}
+
 async function finalizeTusSession(session: TusSession, binPath: string): Promise<void> {
+  if (storageProvider.kind === 'remote') {
+    // The staged file is the only copy until the object store has it; a failed store fails the upload.
+    await objectStorage.putStream(session.key, fs.createReadStream(binPath), {
+      contentType: session.mimeType,
+      filename: session.filename,
+      ttlSeconds: objectTtlSeconds(session),
+      size: session.uploadLength,
+    });
+    return;
+  }
+
   const { metaPath, binPath: targetBinPath } = localFsStorage.getPathsForKey(session.key);
   try {
     const parentDir = path.dirname(targetBinPath);
@@ -366,7 +383,7 @@ async function finalizeTusSession(session: TusSession, binPath: string): Promise
     await localFsStorage.putStream(session.key, readStream, {
       contentType: session.mimeType,
       filename: session.filename,
-      ttlSeconds: Math.max(3600, Math.floor((session.expiresAt - Date.now()) / 1000)),
+      ttlSeconds: objectTtlSeconds(session),
     });
   }
 }

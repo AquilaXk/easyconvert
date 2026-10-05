@@ -5,6 +5,7 @@ import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'und
 import {
   StorageAdapterError,
   StorageAuthenticationError,
+  StorageInvalidKeyError,
   StorageNotFoundError,
   StorageServiceError,
   StorageTimeoutError,
@@ -403,7 +404,7 @@ export class S3ObjectClient {
     try {
       assertValidObjectKey(key);
     } catch (err) {
-      throw new StorageAdapterError(err instanceof Error ? err.message : 'Invalid object key', this.providerName, err);
+      throw new StorageInvalidKeyError(err instanceof Error ? err.message : 'Invalid object key', this.providerName, err);
     }
   }
 

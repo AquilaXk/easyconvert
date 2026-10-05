@@ -55,6 +55,7 @@ import { globalSharedObjects } from './shared-store';
  */
 export class S3ObjectStorageService implements IStorageBackend {
   readonly providerName: string = 's3';
+  readonly kind = 'local' as const;
   private readonly sessions = new Map<string, S3MultipartSession>();
   private readonly objects = new Map<string, StoredObject>();
   private gcTimer: NodeJS.Timeout | null = null;
@@ -148,6 +149,16 @@ export class S3ObjectStorageService implements IStorageBackend {
 
   getUploadOwner(uploadId: string): string | undefined {
     return this.sessions.get(uploadId)?.ownerUserId;
+  }
+
+  getUploadedParts(uploadId: string): Array<{ partNumber: number; etag: string; size: number }> | undefined {
+    const session = this.sessions.get(uploadId);
+    if (!session) return undefined;
+    return Array.from(session.parts.entries()).map(([partNumber, part]) => ({
+      partNumber,
+      etag: part.etag,
+      size: part.size,
+    }));
   }
 
   uploadPart(
