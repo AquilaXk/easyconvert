@@ -28,13 +28,18 @@ const STYLE_ATTRIBUTE = 'style';
 const STYLE_ELEMENT = 'style';
 const ANIMATION_VALUE_SEPARATOR = ';';
 
-/** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
-const DANGEROUS_URI_PREFIXES = [
+/** Lowercase, whitespace-free prefixes of URIs that execute or render active content. */
+const SCRIPT_URI_PREFIXES = [
   'javascript:',
   'vbscript:',
   'data:text/html',
   'data:image/svg+xml',
   'data:application/javascript',
+] as const;
+
+/** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
+const DANGEROUS_URI_PREFIXES = [
+  ...SCRIPT_URI_PREFIXES,
   'http:',
   'https:',
   'file:',
@@ -47,6 +52,18 @@ const ANIMATION_ELEMENTS = new Set(['set', 'animate', 'animatetransform', 'anima
 /** Animation attributes carrying the value(s) written into the targeted attribute. */
 const ANIMATION_VALUE_ATTRIBUTES = new Set(['to', 'from', 'by', 'values']);
 const LINK_ATTRIBUTES = new Set(['href', 'src']);
+/** Presentation attributes whose value is a paint, filter, mask, marker or cursor reference that may fetch a URL. */
+const PRESENTATION_URL_ATTRIBUTES = new Set([
+  'fill',
+  'stroke',
+  'filter',
+  'clip-path',
+  'mask',
+  'marker-start',
+  'marker-mid',
+  'marker-end',
+  'cursor',
+]);
 
 /** Elements removed together with their content when a matching close tag exists. */
 const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed'] as const;
@@ -141,6 +158,11 @@ function isWordCharAt(str: string, index: number): boolean {
   const isUpper = code >= ASCII_UPPER_A && code <= ASCII_UPPER_Z;
   const isLower = code >= 0x61 && code <= 0x7a;
   return isDigit || isUpper || isLower || code === 0x5f;
+}
+
+/** Takes a URI after entity decoding, whitespace/control removal and lowercasing; true for script-capable URIs. */
+function isScriptUri(normalized: string): boolean {
+  return SCRIPT_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
 /** Takes a URI after entity decoding, whitespace/control removal and lowercasing. */
@@ -841,6 +863,16 @@ function isHostileStyleValue(raw: string): boolean {
   );
 }
 
+/** True when a value written into a presentation attribute holds an external url(), src() or image-set(). */
+function hasExternalReference(raw: string): boolean {
+  try {
+    return sanitizeCss(raw, false) !== raw;
+  } catch (error) {
+    if (error instanceof SvgSanitizationError) return true;
+    throw error;
+  }
+}
+
 /**
  * True when any `;`-separated item of an animation value is a dangerous URI. Entities are decoded before
  * splitting so an encoded `;` (`&#59;`) cannot hide the item boundary.
@@ -849,6 +881,13 @@ function hasDangerousUriItem(raw: string): boolean {
   return decodeHtmlEntities(raw)
     .split(ANIMATION_VALUE_SEPARATOR)
     .some((item) => isDangerousUri(normalizeUriText(item)));
+}
+
+/** True when any `;`-separated item of an animation value is a script-capable URI, whatever attribute it targets. */
+function hasScriptUriItem(raw: string): boolean {
+  return decodeHtmlEntities(raw)
+    .split(ANIMATION_VALUE_SEPARATOR)
+    .some((item) => isScriptUri(normalizeUriText(item)));
 }
 
 /** True when `isHostile` accepts the raw value of any to/from/by/values attribute. */
@@ -865,12 +904,15 @@ function hasAnimationValue(tag: TagToken, isHostile: (value: string) => boolean)
 function isHostileAnimation(tag: TagToken): boolean {
   if (!ANIMATION_ELEMENTS.has(localNameOf(tag.name))) return false;
   const target = tag.attributes.find((attribute) => attribute.name.toLowerCase() === 'attributename');
-  if (target === undefined) return false;
+  if (target === undefined) return hasAnimationValue(tag, hasScriptUriItem);
   const targetName = localNameOf(normalizeUriText(target.value));
   if (isEventHandlerName(targetName)) return true;
   if (targetName === STYLE_ATTRIBUTE) return hasAnimationValue(tag, isHostileStyleValue);
-  if (!LINK_ATTRIBUTES.has(targetName)) return false;
-  return hasAnimationValue(tag, hasDangerousUriItem);
+  if (PRESENTATION_URL_ATTRIBUTES.has(targetName)) {
+    return hasAnimationValue(tag, (value) => hasExternalReference(value) || hasScriptUriItem(value));
+  }
+  if (LINK_ATTRIBUTES.has(targetName)) return hasAnimationValue(tag, hasDangerousUriItem);
+  return hasAnimationValue(tag, hasScriptUriItem);
 }
 
 /**
@@ -929,6 +971,11 @@ function neutralizedAttribute(attribute: TagAttribute): string | null {
   if (ANIMATION_VALUE_ATTRIBUTES.has(local)) {
     return hasDangerousUriItem(attribute.value) ? `${local}="#"` : null;
   }
+  if (PRESENTATION_URL_ATTRIBUTES.has(local)) {
+    const sanitized = sanitizeCss(attribute.value, false);
+    if (sanitized === attribute.value) return null;
+    return `${attribute.name}="${sanitized.replace(/"/g, '&quot;')}"`;
+  }
   if (local === STYLE_ATTRIBUTE) {
     // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
     return `style="${sanitizeCss(attribute.value, false).replace(/"/g, '&quot;')}"`;
@@ -937,7 +984,7 @@ function neutralizedAttribute(attribute: TagAttribute): string | null {
 }
 
 /**
- * Rewrites href/src, animation value and style attributes, but only where the tokenizer finds a real attribute
+ * Rewrites href/src, animation value, presentation and style attributes, but only where the tokenizer finds a real attribute
  * inside a real tag; text, comments and attribute values that merely mention them are left untouched.
  */
 function rewriteAttributes(src: string): string {

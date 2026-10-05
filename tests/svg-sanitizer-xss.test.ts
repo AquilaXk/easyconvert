@@ -828,3 +828,217 @@ describe('external CSS reference forms (PR #402 review item 3)', () => {
     }
   });
 });
+
+const PRESENTATION_URL_ATTRS = new Set(['fill', 'stroke', 'filter', 'clip-path', 'mask', 'marker-start', 'marker-mid', 'marker-end', 'cursor']);
+const ANIMATION_TAGS = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
+const ANIMATION_VALUE_ATTRS = new Set(['to', 'from', 'by', 'values']);
+
+/** Oracle: true when a value, read as a browser reads it, holds an external url()/src()/image-set(). */
+function hasExternalReference(value: string): boolean {
+  const flat = cssAsParsed(xmlEntitiesDecoded(value)).replace(/[\t\n\r]/g, '');
+  return (
+    /(?:url|src)\(\s*['"]?\s*(?:https?:|file:|ftp:|\/\/|\\\\|\/\\)/i.test(flat) ||
+    /image-set\([^)]*?['"(\s,](?:https?:|file:|ftp:|\/\/)/i.test(flat)
+  );
+}
+
+/** Oracle: external references in presentation attributes, and animations writing them. */
+function presentationLeaks(out: string): string[] {
+  const found: string[] = [];
+  for (const tag of parseTags(out)) {
+    const local = tag.name.replace(LOCAL_NAME, '').toLowerCase();
+    const attrs = tag.attrs.map((attr) => ({ local: attr.name.replace(LOCAL_NAME, '').toLowerCase(), value: attr.value }));
+    for (const attr of attrs) {
+      if (PRESENTATION_URL_ATTRS.has(attr.local) && hasExternalReference(attr.value)) found.push(`${tag.name}@${attr.local}=${attr.value}`);
+    }
+    if (!ANIMATION_TAGS.has(local)) continue;
+    const target = attrs.find((attr) => attr.local === 'attributename');
+    if (target === undefined || !PRESENTATION_URL_ATTRS.has(xmlEntitiesDecoded(target.value).trim().replace(LOCAL_NAME, '').toLowerCase())) continue;
+    for (const attr of attrs) {
+      if (ANIMATION_VALUE_ATTRS.has(attr.local) && hasExternalReference(attr.value)) found.push(`animation:${attr.local}=${attr.value}`);
+    }
+  }
+  return found;
+}
+
+describe('external references in presentation attributes (issue #403 item 1)', () => {
+  const hostile: Array<[string, string]> = [
+    ['fill', '<rect fill="url(http://e/x)"/>'],
+    ['stroke single-quoted', "<rect stroke='url(https://e/x)'/>"],
+    ['unquoted fill', '<rect fill=url(//e/x)/>'],
+    ['filter', '<rect filter="url(//e/x#f)"/>'],
+    ['clip-path', '<rect clip-path="url(http://e/x#c)"/>'],
+    ['mask', '<rect mask="url(http://e/x#m)"/>'],
+    ['marker-start', '<path marker-start="url(http://e/x#m)"/>'],
+    ['marker-mid', '<path marker-mid="url(http://e/x#m)"/>'],
+    ['marker-end', '<path marker-end="url(http://e/x#m)"/>'],
+    ['cursor', '<rect cursor="url(http://e/x.cur), auto"/>'],
+    ['mixed-case name', '<rect FiLl="url(http://e/x)"/>'],
+    ['prefixed name', '<rect svg:fill="url(http://e/x)"/>'],
+    ['decimal entity', '<rect fill="url(&#104;ttp://e)"/>'],
+    ['hex entity', '<rect fill="url(&#x68;ttp://e)"/>'],
+    ['css escape', '<rect fill="u\\72l(//e/x)"/>'],
+    ['css comment', '<rect fill="ur/**/l(http://e/x)"/>'],
+    ['quoted target', '<rect fill="url(&quot;http://e/x&quot;)"/>'],
+    ['tab in scheme', '<rect fill="url(ht&#9;tp://e/x)"/>'],
+    ['fallback colour', '<rect fill="url(http://e/x) red"/>'],
+    ['attribute after quote', '<rect id="a"fill="url(http://e/x)"/>'],
+  ];
+
+  for (const [label, markup] of hostile) {
+    it(`neutralizes: ${label}`, () => {
+      const out = sanitizeSvgString(`<svg>${markup}</svg>`);
+      expect(presentationLeaks(out)).toEqual([]);
+      expect(out).toContain('none');
+      expect(out).not.toContain('e/x');
+    });
+  }
+
+  it('replaces only the external reference', () => {
+    expect(sanitizeSvgString('<svg><rect fill="url(http://e/x) red" stroke="blue"/></svg>')).toBe(
+      '<svg><rect fill="none red" stroke="blue"/></svg>'
+    );
+  });
+
+  const benign = [
+    '<rect fill="url(#grad)"/>',
+    '<rect fill="url(#grad) red" stroke="#336699"/>',
+    '<rect fill="red" stroke="rgb(1,2,3)" filter="url(#f)"/>',
+    '<rect clip-path="url(&quot;#c&quot;)" mask="url(#m)"/>',
+    '<path marker-start="url(#a)" marker-mid="url(#a)" marker-end="url(#a)"/>',
+    '<rect cursor="pointer"/>',
+    '<rect fill="url(/rel/x.png)" title="url(http://e/x)"/>',
+  ];
+
+  for (const markup of benign) {
+    it(`keeps ${markup}`, () => {
+      const input = `<svg>${markup}</svg>`;
+      expect(sanitizeSvgString(input)).toBe(input);
+    });
+  }
+
+  it('does not rewrite text, comments or CDATA that mention a presentation attribute', () => {
+    const input = '<svg><text>fill="url(http://e/x)"</text><!-- <rect fill="url(http://e/x)"/> --></svg>';
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+
+  describe('linear time on 5 MB adversarial attributes', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const BUDGET_MS = 2000;
+    const adversarial: Array<[string, string]> = [
+      ['url openers', `<rect fill="${'url('.repeat(FIVE_MB / 4)}"/>`],
+      ['many attributes', `<rect ${'fill="url(http://e/x)" '.repeat(FIVE_MB / 24)}/>`],
+      ['many elements', '<rect fill="url(http://e/x)"/>'.repeat(FIVE_MB / 30)],
+    ];
+    for (const [label, body] of adversarial) {
+      it(`handles ${label}`, () => {
+        const start = performance.now();
+        sanitizeSvgString(`<svg>${body}</svg>`);
+        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+      });
+    }
+  });
+});
+
+describe('animations writing external references into presentation attributes (issue #403 item 2)', () => {
+  const hostile = [
+    '<set attributeName="fill" to="url(http://e/x)"/>',
+    '<animate attributeName="stroke" values="red;url(//e/x)" dur="1s"/>',
+    '<animate attributeName="filter" from="url(#a)" to="url(https://e/x#f)"/>',
+    '<animateTransform attributeName="clip-path" by="url(http://e/x)"/>',
+    '<animateMotion attributeName="mask" to="url(http://e/x)"/>',
+    '<set attributeName="marker-start" to="url(http://e/x)"/>',
+    '<set attributeName="marker-mid" to="url(http://e/x)"/>',
+    '<set attributeName="marker-end" to="url(http://e/x)"/>',
+    '<set attributeName="cursor" to="url(http://e/x), auto"/>',
+    '<SET AttributeName="FILL" TO="url(http://e/x)"/>',
+    '<s:set attributeName="svg:fill" to="url(http://e/x)"/>',
+    '<set attributeName="&#102;ill" to="url(http://e/x)"/>',
+    '<set attributeName=" fill " to="url(http://e/x)"/>',
+    '<set attributeName="fill" to="url(&#104;ttp://e/x)"/>',
+    '<set attributeName="fill" to="u\\72l(//e/x)"/>',
+    '<animate attributeName="fill" values="red&#59;url(http://e/x)"/>',
+  ];
+
+  for (const animation of hostile) {
+    it(`removes ${animation}`, () => {
+      const out = sanitizeSvgString(`<svg><rect>${animation}<circle/></rect></svg>`);
+      expect(presentationLeaks(out)).toEqual([]);
+      expect(out).toBe('<svg><rect><circle/></rect></svg>');
+    });
+  }
+
+  const benign = [
+    '<set attributeName="fill" to="red"/>',
+    '<animate attributeName="fill" values="url(#a);url(#b);#00f" dur="1s"/>',
+    '<animate attributeName="stroke" from="red" to="blue" dur="1s"/>',
+    '<animate attributeName="width" values="1;5" dur="1s"/>',
+    '<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="2s"/>',
+    '<animateMotion path="M0 0L9 9" dur="1s"/>',
+  ];
+
+  for (const animation of benign) {
+    it(`keeps ${animation}`, () => {
+      const input = `<svg><rect>${animation}</rect></svg>`;
+      expect(sanitizeSvgString(input)).toBe(input);
+    });
+  }
+
+  it('removes many hostile animations in linear time', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const unit = '<set attributeName="fill" to="url(http://e/x)"/>';
+    const start = performance.now();
+    const out = sanitizeSvgString(`<svg>${unit.repeat(FIVE_MB / unit.length)}</svg>`);
+    expect(performance.now() - start).toBeLessThan(2000);
+    expect(out).toBe('<svg></svg>');
+  });
+});
+
+describe('animations writing dangerous URIs into any attribute (issue #403 item 3)', () => {
+  const hostile = [
+    '<set attributeName="fill" to="javascript:alert(1)"/>',
+    '<set attributeName="data" to="data:text/html,<b>x</b>"/>',
+    '<animate attributeName="d" values="M0 0;vbscript:msgbox(1)"/>',
+    '<animate attributeName="title" from="a" to="data:image/svg+xml,x"/>',
+    '<animateTransform attributeName="transform" by="javascript:alert(1)"/>',
+    '<animateMotion attributeName="path" values="data:text/html;base64,AAAA"/>',
+    '<SET AttributeName="Anything" TO="JavaScript:alert(1)"/>',
+    '<set attributeName="x" to="jav&#x61;script&#58;alert(1)"/>',
+    '<set attributeName="x" to="java&#9;script:alert(1)"/>',
+    '<set attributeName="x" to=" java script:alert(1)"/>',
+    '<s:animate attributeName="x" values="a&#59;javascript:alert(1)"/>',
+    '<set to="javascript:alert(1)"/>',
+  ];
+
+  for (const animation of hostile) {
+    it(`removes ${animation}`, () => {
+      const out = sanitizeSvgString(`<svg><rect>${animation}<circle/></rect></svg>`);
+      expect(executableConstructs(out)).toEqual([]);
+      expect(out).toBe('<svg><rect><circle/></rect></svg>');
+    });
+  }
+
+  const benign = [
+    '<set attributeName="fill" to="red"/>',
+    '<set attributeName="class" to="javascript-theme"/>',
+    '<set attributeName="title" to="data: a note"/>',
+    '<animate attributeName="d" values="M0 0;M1 1" dur="1s"/>',
+    '<animate attributeName="opacity" from="0" to="1" dur="1s"/>',
+  ];
+
+  for (const animation of benign) {
+    it(`keeps ${animation}`, () => {
+      const input = `<svg><rect>${animation}</rect></svg>`;
+      expect(sanitizeSvgString(input)).toBe(input);
+    });
+  }
+
+  it('removes many hostile animations in linear time', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const unit = '<set attributeName="x" to="javascript:alert(1)"/>';
+    const start = performance.now();
+    const out = sanitizeSvgString(`<svg>${unit.repeat(FIVE_MB / unit.length)}</svg>`);
+    expect(performance.now() - start).toBeLessThan(2000);
+    expect(out).toBe('<svg></svg>');
+  });
+});
