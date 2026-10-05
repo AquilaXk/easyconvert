@@ -12,6 +12,11 @@ export interface DataObject {
 
 /** Deepest array/object nesting accepted from any structured-data input. */
 export const MAX_DATA_NESTING_DEPTH = 512;
+/**
+ * Longest integer literal read as an exact BigInt. Decimal BigInt parsing and printing grow
+ * faster than linearly (5 million digits take seconds), and no real identifier needs more.
+ */
+export const MAX_INTEGER_LITERAL_DIGITS = 4096;
 
 const NEWLINE = 0x0a;
 
@@ -97,13 +102,15 @@ class LosslessJsonReader {
     return value;
   }
 
+  /** Line (counted from firstLine) and column of a text index. */
+  private locate(index: number): { line: number; column: number } {
+    const position = positionOf(this.text, index);
+    return { line: position.line + this.firstLine - 1, column: position.column };
+  }
+
   private fail(reason: string): never {
-    const position = positionOf(this.text, this.pos);
-    const line = position.line + this.firstLine - 1;
-    throw new DataParseError(`${this.label} parsing failed: ${reason} at line ${line}, column ${position.column}.`, {
-      line,
-      column: position.column,
-    });
+    const { line, column } = this.locate(this.pos);
+    throw new DataParseError(`${this.label} parsing failed: ${reason} at line ${line}, column ${column}.`, { line, column });
   }
 
   private skipWhitespace(): void {
@@ -235,10 +242,12 @@ class LosslessJsonReader {
   private readNumber(): number | bigint {
     const start = this.pos;
     if (this.text.charCodeAt(this.pos) === CHAR.minus) this.pos++;
+    let integerDigits = 1;
     if (this.text.charCodeAt(this.pos) === CHAR.zero) {
       this.pos++;
-    } else if (this.readDigits() === 0) {
-      this.fail('invalid number');
+    } else {
+      integerDigits = this.readDigits();
+      if (integerDigits === 0) this.fail('invalid number');
     }
     let integer = true;
     if (this.text.charCodeAt(this.pos) === CHAR.dot) {
@@ -257,7 +266,14 @@ class LosslessJsonReader {
     const literal = this.text.slice(start, this.pos);
     const value = Number(literal);
     if (integer) {
-      return Number.isSafeInteger(value) ? value : BigInt(literal);
+      if (Number.isSafeInteger(value)) return value;
+      if (integerDigits > MAX_INTEGER_LITERAL_DIGITS) {
+        const { line, column } = this.locate(start);
+        throw new DataLimitExceededError(
+          `${this.label} integer literal at line ${line}, column ${column} has more than ${MAX_INTEGER_LITERAL_DIGITS} digits.`
+        );
+      }
+      return BigInt(literal);
     }
     if (!Number.isFinite(value)) {
       throw new DataRepresentationError(

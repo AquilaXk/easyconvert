@@ -27,6 +27,7 @@ import { encodeParquet, decodeParquet } from './parquet';
 import { assertNoComplexScript } from './ctl';
 import {
   MAX_DATA_NESTING_DEPTH,
+  MAX_INTEGER_LITERAL_DIGITS,
   isDataObject,
   normalizeDataValue,
   parseJsonLossless,
@@ -479,6 +480,10 @@ const MAX_YAML_ALIAS_COUNT = 100;
 const YAML_EXPANSION_FACTOR = 10;
 /** Values every YAML document may expand to regardless of its own size. */
 const YAML_MIN_EXPANDED_VALUES = 100_000;
+/** Sign and radix prefix (0x, 0o, 0b) of a YAML integer literal, which are not digits. */
+const YAML_INTEGER_PREFIX = /^[-+]?(?:0[xob])?/;
+/** Characters of a literal that can hold its sign and radix prefix. */
+const YAML_INTEGER_PREFIX_MAX_LENGTH = 3;
 const INT64_MIN = -(BigInt(2) ** BigInt(63));
 const INT64_MAX = BigInt(2) ** BigInt(63) - BigInt(1);
 /** Leading bytes searched for the XML declaration's encoding pseudo-attribute. */
@@ -574,6 +579,18 @@ function assertYamlKeysUnique(map: YAMLMap, text: string): void {
   }
 }
 
+/** Rejects integer literals longer than MAX_INTEGER_LITERAL_DIGITS before they are copied or printed. */
+function assertYamlIntegerLength(scalar: YamlScalar, text: string): void {
+  if (typeof scalar.value !== 'bigint' || !scalar.range) return;
+  const [start, end] = scalar.range;
+  const prefix = YAML_INTEGER_PREFIX.exec(text.slice(start, start + YAML_INTEGER_PREFIX_MAX_LENGTH))?.[0] ?? '';
+  if (end - start - prefix.length <= MAX_INTEGER_LITERAL_DIGITS) return;
+  const { line, column } = positionOf(text, start);
+  throw new DataLimitExceededError(
+    `YAML integer literal at line ${line}, column ${column} has more than ${MAX_INTEGER_LITERAL_DIGITS} digits.`
+  );
+}
+
 function parseYamlText(text: string): DataValue {
   const document = parseYamlDocument(text, { intAsBigInt: true, merge: true, uniqueKeys: false });
   // Warnings include tags that could not be resolved (!!int abc, unknown !tags); guessing a value would be silent.
@@ -586,8 +603,9 @@ function parseYamlText(text: string): DataValue {
       aliases++;
       sourceValues++;
     },
-    Scalar() {
+    Scalar(_key, scalar) {
       sourceValues++;
+      assertYamlIntegerLength(scalar, text);
     },
     Seq() {
       sourceValues++;

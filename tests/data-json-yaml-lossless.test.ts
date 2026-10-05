@@ -115,6 +115,27 @@ describe('JSON numbers beyond 2^53 stay exact', () => {
     expect(err).toBeInstanceOf(DataRepresentationError);
     expect(err.message).toMatch(/1e400/);
   });
+
+  oracleTest('keeps a 4096-digit integer exact (jq reads the output)', ['jq'], async () => {
+    const literal = `-${'7'.repeat(4096)}`;
+    const result = await convertFile(Buffer.from(`{"x": ${literal}}`, 'utf-8'), 'json', 'txt', {}, 'long.json');
+    expect(jqLiterals(result.buffer, '.x')).toEqual([literal]);
+  });
+
+  it('rejects integer literals longer than 4096 digits before converting them', async () => {
+    const tooLong = '7'.repeat(4097);
+    const json = await rejection(convertFile(Buffer.from(`{"a": 1,\n "x": -${tooLong}}`, 'utf-8'), 'json', 'yaml', {}, 'long.json'));
+    expect(json).toBeInstanceOf(DataLimitExceededError);
+    expect(json.message).toBe('JSON integer literal at line 2, column 7 has more than 4096 digits.');
+
+    const yaml = await rejection(convertFile(Buffer.from(`a: 1\nx: ${tooLong}\n`, 'utf-8'), 'yaml', 'json', {}, 'long.yaml'));
+    expect(yaml).toBeInstanceOf(DataLimitExceededError);
+    expect(yaml.message).toBe('YAML integer literal at line 2, column 4 has more than 4096 digits.');
+
+    const hex = await rejection(convertFile(Buffer.from(`x: 0x${'f'.repeat(4097)}\n`, 'utf-8'), 'yaml', 'json', {}, 'hex.yaml'));
+    expect(hex).toBeInstanceOf(DataLimitExceededError);
+    expect(hex.message).toBe('YAML integer literal at line 1, column 4 has more than 4096 digits.');
+  });
 });
 
 describe('JSON to CSV flattens nested values', () => {
