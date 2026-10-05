@@ -1,4 +1,3 @@
-import { crc32 } from 'node:zlib';
 
 /**
  * Writes a RAR 4.x archive whose entries are stored (method 0x30, no compression), following the RAR
@@ -32,6 +31,19 @@ const DOS_TIME = ((2024 - 1980) << 25) | (1 << 21) | (1 << 16);
 /** Unix mode 0100644 (regular file, rw-r--r--). */
 const UNIX_REGULAR_FILE_MODE = 0o100644;
 const CRC16_MASK = 0xffff;
+/** CRC-32 (IEEE 802.3, reflected polynomial 0xEDB88320), the checksum RAR 4.x uses for headers and data. */
+const CRC32_POLYNOMIAL = 0xedb88320;
+const CRC32_TABLE = Array.from({ length: 256 }, (_, byte) => {
+  let value = byte;
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? (value >>> 1) ^ CRC32_POLYNOMIAL : value >>> 1;
+  return value >>> 0;
+});
+
+function crc32(data: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of data) crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
 function sealHeader(header: Buffer): Buffer {
   header.writeUInt16LE(crc32(header.subarray(2)) & CRC16_MASK, 0);

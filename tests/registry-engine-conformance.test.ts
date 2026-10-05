@@ -16,8 +16,9 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
-import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
+import { OracleToolMissingError, getOracleToolPath, isOracleToolAvailable } from './helpers/differential-oracle';
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
+const HAS_PDFINFO = isOracleToolAvailable('pdfinfo');
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
@@ -1062,7 +1063,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     }
   }
 
-  it.skipIf(!HAS_PDFTOPPM || !HAS_PDFTOCAIRO).each(pdfToImage)(
+  it.skipIf(!HAS_PDFTOPPM || !HAS_PDFTOCAIRO || !HAS_PDFINFO).each(pdfToImage)(
     '%s -> %s renders the page with Poppler (needs pdftoppm, pdftocairo, pdfinfo)',
     async (source, target) => {
       const pdf = realInput(source);
@@ -1070,13 +1071,19 @@ describe('native-engine pairs route through the dispatcher', () => {
       expect(result.engineUsed).toBe('native-poppler');
       const meta = await sharp(result.buffer).metadata();
       expect(meta.format).toBe(target === 'jpg' ? 'jpeg' : target);
+      const { width, height } = meta;
+      if (width === undefined || height === undefined) throw new Error(`the ${target} render reports no dimensions`);
       const expected = pdfinfoPagePixels(pdf, PDF_RASTER_DPI);
-      expect(Math.abs(meta.width! - expected.width)).toBeLessThanOrEqual(1);
-      expect(Math.abs(meta.height! - expected.height)).toBeLessThanOrEqual(1);
+      expect(Math.abs(width - expected.width)).toBeLessThanOrEqual(1);
+      expect(Math.abs(height - expected.height)).toBeLessThanOrEqual(1);
       // Same page from an independent rasterizer: the two renders must agree pixel for pixel on average.
-      const size = { width: meta.width!, height: meta.height! };
+      const oracleRender = cairoRender(pdf, PDF_RASTER_DPI);
+      const oracleMeta = await sharp(oracleRender).metadata();
+      expect(Math.abs((oracleMeta.width ?? 0) - expected.width)).toBeLessThanOrEqual(1);
+      expect(Math.abs((oracleMeta.height ?? 0) - expected.height)).toBeLessThanOrEqual(1);
+      const size = { width, height };
       const rendered = await sharp(result.buffer).removeAlpha().resize(size).raw().toBuffer();
-      const oracle = await sharp(cairoRender(pdf, PDF_RASTER_DPI)).removeAlpha().resize({ ...size, fit: 'fill' }).raw().toBuffer();
+      const oracle = await sharp(oracleRender).removeAlpha().resize({ ...size, fit: 'fill' }).raw().toBuffer();
       let total = 0;
       for (let i = 0; i < rendered.length; i += 1) total += Math.abs(rendered[i] - oracle[i]);
       expect(total / rendered.length).toBeLessThan(RENDERER_MEAN_DIFF_MAX);
