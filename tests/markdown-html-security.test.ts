@@ -4,6 +4,8 @@ import { convertFile } from '../src/lib/conversions/index';
 import {
   MAX_MARKDOWN_ATTRIBUTE_CHARS,
   MAX_MARKDOWN_BLOCK_TOKENS,
+  MAX_MARKDOWN_NESTING,
+  MAX_MARKDOWN_SOURCE_LINES,
   MAX_MARKDOWN_SOURCE_CHARS,
   MAX_MARKDOWN_TOTAL_TOKENS,
   MarkdownSanitizationError,
@@ -353,6 +355,40 @@ describe('markdown resource budgets', () => {
     expect(html).toHaveLength(MAX_MARKDOWN_SOURCE_CHARS + '<p></p>\n'.length);
   });
 
+  it('rejects lazy continuation lines under deeply nested block quotes by line count', () => {
+    // 500,000 lines under 20 levels of ">" used to cost about 4 s and 740 MB while staying under the size limit.
+    const source = '> '.repeat(20) + 'a\n' + 'a\n'.repeat(500_000);
+    expect(source.length).toBeLessThan(MAX_MARKDOWN_SOURCE_CHARS);
+    expect(() => renderMarkdownFragment(source)).toThrow(`Markdown source exceeds the ${MAX_MARKDOWN_SOURCE_LINES} line limit`);
+  }, 5000);
+
+  it('counts LF, CR and CRLF line breaks and accepts a document exactly at the line limit', () => {
+    const over = MAX_MARKDOWN_SOURCE_LINES + 1;
+    expect(() => renderMarkdownFragment('a\n'.repeat(over))).toThrow(/line limit/);
+    expect(() => renderMarkdownFragment('a\r'.repeat(over))).toThrow(/line limit/);
+    expect(() => renderMarkdownFragment('a\r\n'.repeat(over))).toThrow(/line limit/);
+    // MAX lines means MAX - 1 line breaks; a CRLF pair is one break.
+    const html = renderMarkdownFragment('> a\r\n'.repeat(MAX_MARKDOWN_SOURCE_LINES - 1) + 'a');
+    expect(html).toContain('<blockquote>');
+  }, 10_000);
+
+  it('rejects nesting that markdown-it would silently truncate, and renders the deepest allowed nesting', () => {
+    // At this depth markdown-it itself drops the rest of the container; the converter must not emit that.
+    expect(() => renderMarkdownFragment('> '.repeat(MAX_MARKDOWN_NESTING) + 'deep')).toThrow(
+      `Markdown nesting exceeds the ${MAX_MARKDOWN_NESTING} level limit`
+    );
+    const html = renderMarkdownFragment('> '.repeat(MAX_MARKDOWN_NESTING - 1) + 'deep');
+    expect(html.split('<blockquote>')).toHaveLength(MAX_MARKDOWN_NESTING);
+    expect(collectText(html)).toContain('deep');
+    // Each list level costs two nesting levels (the list and its item).
+    const lists = (levels: number): string =>
+      Array.from({ length: levels }, (_, i) => `${'  '.repeat(i)}- item${i}`).join('\n');
+    expect(() => renderMarkdownFragment(lists(MAX_MARKDOWN_NESTING / 2))).toThrow(/nesting exceeds/);
+    expect(collectText(renderMarkdownFragment(lists(MAX_MARKDOWN_NESTING / 2 - 1)))).toContain(
+      `item${MAX_MARKDOWN_NESTING / 2 - 2}`
+    );
+  });
+
   it('rejects non-string input with the typed error', () => {
     expect(() => renderMarkdownFragment(42 as unknown as string)).toThrow(MarkdownSanitizationError);
   });
@@ -366,9 +402,11 @@ describe('markdown resource budgets', () => {
   });
 
   it('rejects too many inline tokens', () => {
-    // Two inline tokens per line (text and hard break) inside one paragraph.
-    const lines = Math.ceil(MAX_MARKDOWN_TOTAL_TOKENS / 2) + 10;
-    const source = 'a  \n'.repeat(lines);
+    // About eight inline tokens per line (two emphasis runs, a space and a hard break) inside one paragraph.
+    const tokensPerLine = 8;
+    const lines = Math.ceil(MAX_MARKDOWN_TOTAL_TOKENS / tokensPerLine) + 1000;
+    const source = '*a* *b*  \n'.repeat(lines);
+    expect(lines).toBeLessThan(MAX_MARKDOWN_SOURCE_LINES);
     expect(source.length).toBeLessThan(MAX_MARKDOWN_SOURCE_CHARS);
     expect(() => renderMarkdownFragment(source)).toThrow(/token limit/);
   });

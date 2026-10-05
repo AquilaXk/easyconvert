@@ -39,6 +39,20 @@ const MIB = KIB * KIB;
 
 /** Largest accepted Markdown source, in UTF-16 code units. */
 export const MAX_MARKDOWN_SOURCE_CHARS = MIB;
+/**
+ * Largest number of source lines. Lazy continuation lines under nested containers are re-sliced into
+ * per-level arrays by the block parser, so memory grows with lines x nesting, not only with source size.
+ * Measured at nesting 20 with one-character lines: 100,000 lines take about 1.2 s and 163 MB;
+ * 500,000 lines (a 1 MB document) took 4.3 s and 743 MB.
+ */
+export const MAX_MARKDOWN_SOURCE_LINES = 100_000;
+/**
+ * Container nesting depth (block quotes and list items count one level each, a list counts one more)
+ * at which markdown-it stops parsing. It is markdown-it's CommonMark default, set explicitly because the
+ * policy pass depends on it: markdown-it silently discards the rest of a container that would open at
+ * this depth, so such documents are rejected instead of being rendered truncated.
+ */
+export const MAX_MARKDOWN_NESTING = 20;
 /** Largest number of block-level tokens, enforced while block parsing is still running. */
 export const MAX_MARKDOWN_BLOCK_TOKENS = 100_000;
 /** Largest number of tokens including inline children. */
@@ -62,6 +76,7 @@ const FENCE_INFO_SEPARATOR = /\s+/;
 const TABLE_ALIGN_STYLE_PATTERN = /^text-align:(?:left|right|center)$/;
 const ORDERED_START_PATTERN = /^\d{1,9}$/;
 const HTML_TOKEN_TYPES: ReadonlySet<string> = new Set(['html_block', 'html_inline']);
+const NESTING_CONTAINER_TYPES: ReadonlySet<string> = new Set(['blockquote_open', 'list_item_open']);
 
 type UrlKind = 'link' | 'image';
 
@@ -165,6 +180,14 @@ function sanitizeTokenAttributes(token: Token, tag: string, allowed: ReadonlySet
   token.attrs = kept;
 }
 
+// A container opened at token.level has its content parsed at token.level + 1. markdown-it discards that
+// content when the level has reached the nesting limit, so fail closed instead of emitting a truncated document.
+function assertNotTruncatedByNesting(token: Token): void {
+  if (NESTING_CONTAINER_TYPES.has(token.type) && token.level + 1 >= MAX_MARKDOWN_NESTING) {
+    throw new MarkdownSanitizationError(`Markdown nesting exceeds the ${MAX_MARKDOWN_NESTING} level limit`);
+  }
+}
+
 function applyElementPolicy(token: Token, state: PolicyState): void {
   const tag = token.tag;
   if (tag === '') return;
@@ -181,6 +204,7 @@ function walkPolicy(tokens: Token[], state: PolicyState): void {
     if (HTML_TOKEN_TYPES.has(token.type)) {
       throw new MarkdownSanitizationError(`Markdown rendering produced a raw HTML token (${token.type})`);
     }
+    assertNotTruncatedByNesting(token);
     if (token.type === 'fence') sanitizeFenceInfo(token);
     if (token.children) walkPolicy(token.children, state);
     applyElementPolicy(token, state);
@@ -196,7 +220,14 @@ export function applyTokenPolicy(tokens: Token[]): void {
 }
 
 function createParser(): MarkdownIt {
-  const parser = new MarkdownIt('commonmark', { html: false, linkify: false, typographer: false, breaks: false });
+  const parser = new MarkdownIt('commonmark', {
+    html: false,
+    linkify: false,
+    typographer: false,
+    breaks: false,
+  });
+  // Pin the limit the policy pass relies on; markdown-it reads it but its Options type does not declare it.
+  Object.assign(parser.options, { maxNesting: MAX_MARKDOWN_NESTING });
   parser.enable(['table', 'strikethrough']);
   // markdown-it calls this for links, images and autolinks, without saying which; accept the union here
   // and let the token policy apply the per-element rule.
@@ -220,6 +251,23 @@ function createParser(): MarkdownIt {
 
 const parser = createParser();
 
+const LINE_FEED = 0x0a;
+const CARRIAGE_RETURN = 0x0d;
+
+/** Counts lines the way the parser splits them (LF, CR and CRLF), stopping early once past the limit. */
+function countLines(source: string): number {
+  let lines = 1;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    const isCrOfCrlf = code === CARRIAGE_RETURN && source.charCodeAt(index + 1) === LINE_FEED;
+    if ((code === LINE_FEED || code === CARRIAGE_RETURN) && !isCrOfCrlf) {
+      lines += 1;
+      if (lines > MAX_MARKDOWN_SOURCE_LINES) return lines;
+    }
+  }
+  return lines;
+}
+
 /**
  * Renders Markdown to an HTML fragment containing only allowlisted elements, attributes and URLs.
  * Throws MarkdownSanitizationError for out-of-policy parse trees and for inputs that exceed a budget.
@@ -230,6 +278,9 @@ export function renderMarkdownFragment(markdown: string): string {
   }
   if (markdown.length > MAX_MARKDOWN_SOURCE_CHARS) {
     throw new MarkdownSanitizationError(`Markdown source exceeds the ${MAX_MARKDOWN_SOURCE_CHARS} character limit`);
+  }
+  if (countLines(markdown) > MAX_MARKDOWN_SOURCE_LINES) {
+    throw new MarkdownSanitizationError(`Markdown source exceeds the ${MAX_MARKDOWN_SOURCE_LINES} line limit`);
   }
   let html: string;
   try {
