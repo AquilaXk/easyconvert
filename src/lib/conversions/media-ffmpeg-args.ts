@@ -245,7 +245,7 @@ export function resetHardwareAccelerationCache(): void {
 
 /**
  * Dynamically probes FFmpeg binary for hardware-accelerated video encoders.
- * Caches results in-memory with a 60-second TTL to avoid redundant CLI executions.
+ * Caches results in-memory with a 10-minute TTL to avoid redundant CLI executions.
  */
 export function probeHardwareAcceleration(
   ffmpegPath?: string | null,
@@ -353,6 +353,57 @@ function requestedChannelCount(options: ConversionOptions): number | undefined {
   return undefined;
 }
 
+function assertSampleRateLimits(tgt: string, spec: AudioTargetSpec, sampleRate: number | undefined): void {
+  if (sampleRate === undefined) return;
+  if (spec.fixedSampleRate !== undefined && sampleRate !== spec.fixedSampleRate) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target only supports a ${spec.fixedSampleRate} Hz sample rate, but ${sampleRate} Hz was requested.`
+    );
+  }
+  if (spec.allowedSampleRates && !spec.allowedSampleRates.includes(sampleRate)) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target supports the sample rates ${spec.allowedSampleRates.join(', ')} Hz, but ${sampleRate} Hz was requested.`
+    );
+  }
+  if (spec.maxSampleRate !== undefined && sampleRate > spec.maxSampleRate) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target supports sample rates up to ${spec.maxSampleRate} Hz, but ${sampleRate} Hz was requested.`
+    );
+  }
+}
+
+function assertFixedChannels(tgt: string, spec: AudioTargetSpec, channels: number | undefined): void {
+  if (spec.fixedChannels !== undefined && channels !== undefined && channels !== spec.fixedChannels) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target only supports ${spec.fixedChannels} audio channel(s), but ${channels} were requested.`
+    );
+  }
+}
+
+/** Requested channel count, or the selected input track's own count when the caller set none. */
+function channelsToWrite(options: ConversionOptions, inputPath: string, ffmpegBin?: string | null): number | undefined {
+  const requested = requestedChannelCount(options);
+  if (requested !== undefined || !fs.existsSync(inputPath)) return requested;
+  const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
+  return probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin), track);
+}
+
+function assertMaxChannels(
+  tgt: string,
+  spec: AudioTargetSpec,
+  options: ConversionOptions,
+  inputPath: string,
+  ffmpegBin?: string | null
+): void {
+  if (spec.maxChannels === undefined) return;
+  const channels = channelsToWrite(options, inputPath, ffmpegBin);
+  if (channels !== undefined && channels > spec.maxChannels) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target supports at most ${spec.maxChannels} audio channels, but ${channels} would be written; request fewer channels or a downmix.`
+    );
+  }
+}
+
 /**
  * Rejects a sample rate or channel count that the target's encoder cannot honour, before ffmpeg
  * runs. The limits describe the target's own encoder, so they apply unless the caller swaps the codec.
@@ -364,39 +415,9 @@ function assertEncoderLimits(
   inputPath: string,
   ffmpegBin?: string | null
 ): void {
-  const sampleRate = options.audio?.sampleRate ?? options.audioSampleRate;
-  if (spec.fixedSampleRate !== undefined && sampleRate !== undefined && sampleRate !== spec.fixedSampleRate) {
-    throw new InvalidMediaOptionError(
-      `The '${tgt}' target only supports a ${spec.fixedSampleRate} Hz sample rate, but ${sampleRate} Hz was requested.`
-    );
-  }
-  if (spec.allowedSampleRates && sampleRate !== undefined && !spec.allowedSampleRates.includes(sampleRate)) {
-    throw new InvalidMediaOptionError(
-      `The '${tgt}' target supports the sample rates ${spec.allowedSampleRates.join(', ')} Hz, but ${sampleRate} Hz was requested.`
-    );
-  }
-  if (spec.maxSampleRate !== undefined && sampleRate !== undefined && sampleRate > spec.maxSampleRate) {
-    throw new InvalidMediaOptionError(
-      `The '${tgt}' target supports sample rates up to ${spec.maxSampleRate} Hz, but ${sampleRate} Hz was requested.`
-    );
-  }
-  let channels = requestedChannelCount(options);
-  if (spec.fixedChannels !== undefined && channels !== undefined && channels !== spec.fixedChannels) {
-    throw new InvalidMediaOptionError(
-      `The '${tgt}' target only supports ${spec.fixedChannels} audio channel(s), but ${channels} were requested.`
-    );
-  }
-  if (spec.maxChannels !== undefined) {
-    if (channels === undefined && fs.existsSync(inputPath)) {
-      const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
-      channels = probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin), track);
-    }
-    if (channels !== undefined && channels > spec.maxChannels) {
-      throw new InvalidMediaOptionError(
-        `The '${tgt}' target supports at most ${spec.maxChannels} audio channels, but ${channels} would be written; request fewer channels or a downmix.`
-      );
-    }
-  }
+  assertSampleRateLimits(tgt, spec, options.audio?.sampleRate ?? options.audioSampleRate);
+  assertFixedChannels(tgt, spec, requestedChannelCount(options));
+  assertMaxChannels(tgt, spec, options, inputPath, ffmpegBin);
 }
 
 /**
@@ -1143,11 +1164,11 @@ export function buildHlsDashArguments(
   }
 
   // Video codec
-  const videoCodecKey = (packaging.videoCodec || 'h264').toLowerCase();
+  const videoCodecKey = resolveVideoCodec((packaging.videoCodec || 'h264').toLowerCase());
   const vEncoder = PACKAGING_VIDEO_ENCODERS[videoCodecKey];
   if (!vEncoder) {
     throw new InvalidMediaOptionError(
-      `Unsupported video codec "${packaging.videoCodec}". Allowed: h264, hevc, vp9, av1.`
+      `Unsupported video codec "${packaging.videoCodec}". Allowed: h264, hevc (h265), vp9, av1.`
     );
   }
 
