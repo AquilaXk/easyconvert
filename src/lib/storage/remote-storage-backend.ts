@@ -628,6 +628,13 @@ export class RemoteStorageBackend implements IStorageBackend {
     if (session.k !== key) {
       throw new Error('Key does not belong to this multipart upload session.');
     }
+    // The part URLs a session can hand out are bounded by the size it declared at initiation.
+    if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > session.n) {
+      throw new StorageInputError(
+        `Part number ${partNumber} is outside the ${session.n} part(s) declared for this upload.`,
+        this.providerName
+      );
+    }
     const presigned = this.client.presignUploadPartUrl(session.k, session.u, partNumber, expiresInSeconds);
     return { url: presigned.url, expiresAt: presigned.expiresAt, signature: presigned.signature };
   }

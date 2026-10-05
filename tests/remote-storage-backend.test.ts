@@ -299,7 +299,15 @@ describe('RemoteStorageBackend (IStorageBackend over an S3-compatible object sto
       expect(() => backend.generatePresignedUploadUrl(init.key, 1, 'v1.forged.forged', 300)).toThrow(
         /Invalid or expired multipart upload session/
       );
-      expect(backend.generatePresignedUploadUrl(init.key, 2, init.uploadId, 300).url).toContain('partNumber=2');
+      // A 4-byte upload declared one part, so no URL exists for any other part number.
+      for (const partNumber of [0, 2, 1.5, 10_000]) {
+        expect(() => backend.generatePresignedUploadUrl(init.key, partNumber, init.uploadId, 300)).toThrow(
+          /outside the 1 part\(s\) declared for this upload/
+        );
+      }
+      const wide = await backend.initiateMultipartUpload('wide.bin', 'application/octet-stream', 12 * 1024 * 1024, 'user_7', 5 * 1024 * 1024);
+      expect(wide.totalParts).toBe(3);
+      expect(backend.generatePresignedUploadUrl(wide.key, 3, wide.uploadId, 300).url).toContain('partNumber=3');
     });
   });
 
