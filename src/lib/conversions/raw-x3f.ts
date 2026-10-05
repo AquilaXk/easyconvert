@@ -922,10 +922,10 @@ function decodeLayers(file: Buffer, sensor: X3fImageSection, variant: SensorVari
 
 /**
  * The Merrill and Quattro generations record no saturation level; their sensors clip a little below the
- * converter's full scale (Merrill 4075 of 4095, Quattro 16383 of 16383), so a layer counts as saturated
- * from this share of the full scale of the CAMF ImageDepth.
+ * converter's full scale (Merrill 4073..4077 of 4095, Quattro 16383 of 16383), so a layer counts as
+ * saturated from this share of the full scale of the CAMF ImageDepth.
  */
-const SENSOR_CLIP_FRACTION = 0.995;
+const SENSOR_CLIP_FRACTION = 0.99;
 const IMAGE_DEPTH_MIN = 8;
 const IMAGE_DEPTH_MAX = 16;
 
@@ -949,6 +949,7 @@ function usableRange(variant: SensorVariant, matrices: Map<string, CamfMatrix>, 
 }
 
 const XYZ_ELEMENTS = 9;
+const TEMPERATURE_GAIN_ENTRY = 'TempGainFact';
 /** XYZ (D65) to linear sRGB primaries, IEC 61966-2-1. */
 const XYZ_D65_TO_SRGB: Matrix3x3 = [3.2404542, -1.5371385, -0.4985314, -0.969266, 1.8760108, 0.041556, 0.0556434, -0.2040259, 1.0572252];
 
@@ -971,10 +972,13 @@ function colourMatrix(variant: SensorVariant, matrices: Map<string, CamfMatrix>,
   }
   const gains = requireMatrix(matrices, findWhiteBalanceEntry(matrices, whiteBalance, 'WBGain'), GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
   const colour = requireMatrix(matrices, findWhiteBalanceEntry(matrices, whiteBalance, 'CCMatrix'), MATRIX_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
-  // Colour matrix x diag(white balance gain x ISO factor / usable range).
+  // Sensor temperature compensation, when the calibration lists one.
+  const temperature = matrices.has(TEMPERATURE_GAIN_ENTRY) ? requireMatrix(matrices, TEMPERATURE_GAIN_ENTRY, GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE) : [1, 1, 1];
+  if (temperature.some((value) => !(value > 0))) throw fail(`the calibration entry ${TEMPERATURE_GAIN_ENTRY} holds a non-positive gain`);
+  // Colour matrix x diag(white balance gain x temperature gain x ISO factor / usable range).
   for (let row = 0; row < RGB_CHANNELS; row += 1) {
     for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
-      combined.push((colour[row * RGB_CHANNELS + layer] * gains[layer] * isoFactor) / range[layer]);
+      combined.push((colour[row * RGB_CHANNELS + layer] * gains[layer] * temperature[layer] * isoFactor) / range[layer]);
     }
   }
   return combined;
