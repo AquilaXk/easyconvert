@@ -239,6 +239,74 @@ describe('SVG path data: arcs become cubic Bezier curves (implementation notes F
   });
 });
 
+describe('SVG path data: arcs with extreme radii or end points stay finite (implementation notes F.6.5, F.6.6)', () => {
+  const HUGE_RADIUS = '1e78';
+  const TINY_RADIUS = '1e-154';
+  const TINY_CHORD = 1e-200;
+  const NEAR_LINE_TOLERANCE = 1e-6;
+  const CHORD_LENGTH = 10;
+  const CIRCLE_CHORD_LENGTH = 100;
+
+  function allPoints(subpath: SvgSubpath): Pt[] {
+    const points: Pt[] = [subpath.start];
+    for (const segment of subpath.segments) {
+      if (segment.kind === 'cubic') points.push(segment.c1, segment.c2);
+      points.push(segment.to);
+    }
+    return points;
+  }
+
+  it('turns radii of 1e78 into a near straight line instead of dropping the arc', () => {
+    // Radius 1e78 over a chord of 10: the sagitta is 1e-77, so every sample lies on the chord y = 0.
+    for (const sweep of [0, 1]) {
+      const [path] = parse(`M0 0 A${HUGE_RADIUS} ${HUGE_RADIUS} 0 0 ${sweep} ${CHORD_LENGTH} 0`);
+      expect(path.segments.length).toBeGreaterThan(0);
+      for (const pt of sampleSubpath(path)) {
+        expect(Number.isFinite(pt.x) && Number.isFinite(pt.y)).toBe(true);
+        expect(Math.abs(pt.y)).toBeLessThan(NEAR_LINE_TOLERANCE);
+        expect(pt.x).toBeGreaterThan(-NEAR_LINE_TOLERANCE);
+        expect(pt.x).toBeLessThan(CHORD_LENGTH + NEAR_LINE_TOLERANCE);
+      }
+      expect(path.segments[path.segments.length - 1].to).toEqual({ x: CHORD_LENGTH, y: 0 });
+    }
+  });
+
+  it('scales radii of 1e-154 up to the semicircle through both end points', () => {
+    const [path] = parse(`M0 0 A${TINY_RADIUS} ${TINY_RADIUS} 0 0 1 ${CIRCLE_CHORD_LENGTH} 0`);
+    const samples = sampleSubpath(path);
+    expect(samples.length).toBeGreaterThan(2);
+    for (const pt of samples) {
+      expect(Math.abs(Math.hypot(pt.x - CIRCLE_CHORD_LENGTH / 2, pt.y) - CIRCLE_CHORD_LENGTH / 2)).toBeLessThan(CIRCLE_RADIUS_TOLERANCE);
+    }
+    const apex = samples.reduce((best, pt) => (Math.abs(pt.y) > Math.abs(best.y) ? pt : best));
+    expect(apex.y).toBeCloseTo(-CIRCLE_CHORD_LENGTH / 2, 1); // sweep-flag 1 bulges to y < 0
+  });
+
+  it('keeps an arc whose end points differ by 1e-200 as a finite, vanishingly short curve', () => {
+    const [path] = parse(`M0 0 A10 10 0 0 1 ${TINY_CHORD} 0`);
+    expect(path.segments.length).toBeGreaterThan(0);
+    for (const pt of allPoints(path)) {
+      expect(Number.isFinite(pt.x) && Number.isFinite(pt.y)).toBe(true);
+      expect(Math.abs(pt.x)).toBeLessThan(1e-190);
+      expect(Math.abs(pt.y)).toBeLessThan(1e-190);
+    }
+    expect(path.segments[path.segments.length - 1].to).toEqual({ x: TINY_CHORD, y: 0 });
+  });
+
+  it('rejects an arc that cannot be converted instead of dropping it', () => {
+    // A large arc of radius 1e78 is a circle that big: no 256 cubic pieces approximate it within the tolerance.
+    for (const d of [`M0 0 A${HUGE_RADIUS} ${HUGE_RADIUS} 0 1 1 ${CHORD_LENGTH} 0`, 'M0 0 A1e300 1e300 0 1 0 1e-300 1e-300']) {
+      let caught: unknown;
+      try {
+        parse(d);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, d).toBeInstanceOf(SvgPathDataError);
+    }
+  });
+});
+
 describe('SVG path data: malformed input is rejected with a typed error', () => {
   const MALFORMED: Array<[string, string, RegExp]> = [
     ['a path that does not start with M', 'L10 10', /moveto|start/i],

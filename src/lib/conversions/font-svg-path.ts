@@ -118,37 +118,54 @@ function arcToSegments(
   const x1p = cosPhi * halfDx + sinPhi * halfDy;
   const y1p = -sinPhi * halfDx + cosPhi * halfDy;
 
-  // F.6.6: radii that cannot span the end points are scaled up uniformly.
-  const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
-  if (lambda > 1) {
-    const scale = Math.sqrt(lambda);
-    rx *= scale;
-    ry *= scale;
+  // The F.6.5 formulas are evaluated on the end point offsets measured in radii (u = x1' / rx,
+  // v = y1' / ry), so squaring huge or tiny radii and coordinates can neither overflow nor underflow.
+  // With h = |(u, v)| (half the chord of the unit circle the ellipse maps to):
+  //   F.6.6: h > 1 means the radii cannot span the end points; scaling them by h makes h = 1.
+  //   F.6.5: the center lies at distance q = sqrt(1 - h^2) from the chord, on the side picked by the flags.
+  let u = x1p / rx;
+  let v = y1p / ry;
+  let h = Math.hypot(u, v);
+  if (h === 0) {
+    // The chord vanishes next to the radii at double precision: a minor arc is a point-like line, but a
+    // large arc would be a full circle of unknown orientation, which cannot be drawn.
+    if (largeArc) throw new SvgPathDataError('Cannot convert an elliptical arc: its end points are indistinguishable but it is a large arc.');
+    return [{ kind: 'line', to }];
   }
-
-  const rx2 = rx * rx;
-  const ry2 = ry * ry;
-  const numerator = rx2 * ry2 - rx2 * y1p * y1p - ry2 * x1p * x1p;
-  const denominator = rx2 * y1p * y1p + ry2 * x1p * x1p;
-  const magnitude = Math.sqrt(Math.max(0, numerator / denominator));
-  const coefficient = largeArc === sweep ? -magnitude : magnitude;
-  const cxp = (coefficient * rx * y1p) / ry;
-  const cyp = (-coefficient * ry * x1p) / rx;
+  if (h > 1) {
+    rx *= h;
+    ry *= h;
+    u /= h;
+    v /= h;
+    h = 1;
+  }
+  if (!Number.isFinite(rx) || !Number.isFinite(ry)) {
+    throw new SvgPathDataError('Cannot convert an elliptical arc: its scaled radii are not finite.');
+  }
+  const q = h < 1 ? Math.sqrt((1 - h) * (1 + h)) : 0;
+  const side = largeArc === sweep ? -1 : 1;
+  const chordU = u / h;
+  const chordV = v / h;
+  // Center in the rotated frame (F.6.5 step 2) and the angles of both end points around it (step 4).
+  const cxp = side * q * chordV * rx;
+  const cyp = -side * q * chordU * ry;
   const cx = cosPhi * cxp - sinPhi * cyp + (from.x + to.x) / 2;
   const cy = sinPhi * cxp + cosPhi * cyp + (from.y + to.y) / 2;
 
-  const ux = (x1p - cxp) / rx;
-  const uy = (y1p - cyp) / ry;
-  const vx = (-x1p - cxp) / rx;
-  const vy = (-y1p - cyp) / ry;
-  const startAngle = Math.atan2(uy, ux);
-  let sweepAngle = Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+  const startAngle = Math.atan2(v + side * q * chordU, u - side * q * chordV);
+  // Angle between the two radius vectors, formed from q and h directly: the vectors differ by only
+  // h in the unit circle, so the cross and dot products of the vectors themselves would cancel.
+  let sweepAngle = Math.atan2(2 * side * q * h, q * q - h * h);
   if (sweep && sweepAngle < 0) sweepAngle += FULL_TURN;
   if (!sweep && sweepAngle > 0) sweepAngle -= FULL_TURN;
+  if (!Number.isFinite(startAngle) || !Number.isFinite(sweepAngle)) {
+    throw new SvgPathDataError('Cannot convert an elliptical arc: its angles are not finite.');
+  }
 
   const radius = Math.max(rx, ry);
   let pieces = Math.max(1, Math.ceil(Math.abs(sweepAngle) / ARC_MAX_PIECE_ANGLE));
-  while (arcPieceError(Math.abs(sweepAngle) / pieces, radius) > tolerance) {
+  // Written so that a NaN error also counts as exceeding the tolerance.
+  while (!(arcPieceError(Math.abs(sweepAngle) / pieces, radius) <= tolerance)) {
     pieces++;
     if (pieces > ARC_MAX_PIECES) {
       throw new SvgPathDataError(
