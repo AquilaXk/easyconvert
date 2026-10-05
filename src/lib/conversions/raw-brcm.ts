@@ -103,6 +103,11 @@ function fail(detail: string): RawDecodeError {
   return new RawDecodeError(`Raspberry Pi RAW frame is malformed: ${detail}`);
 }
 
+/** A layout this decoder does not handle (as opposed to a damaged file): the preview fallback applies. */
+function unsupported(detail: string): RawDecodeError {
+  return new RawDecodeError(`Raspberry Pi RAW frame is not supported: ${detail}`, true);
+}
+
 /**
  * Offset of the trailing "BRCM" block, or -1 when the file is not a Pi frame. The block is the last
  * thing in the file, so candidates are tried from the end. A candidate is recognised by its magic
@@ -143,7 +148,7 @@ export function parseBrcmHeader(file: Buffer, trailer: number): BrcmFrame {
   }
   const sensor = readSensorName(file, trailer);
   const calibration = sensorOf(sensor);
-  if (calibration === undefined) throw fail(`no calibration is known for the "${sensor}" sensor`);
+  if (calibration === undefined) throw unsupported(`no calibration is known for the "${sensor}" sensor`);
 
   const width = file.readUInt16LE(trailer + OFFSET_WIDTH);
   const height = file.readUInt16LE(trailer + OFFSET_HEIGHT);
@@ -160,7 +165,7 @@ export function parseBrcmHeader(file: Buffer, trailer: number): BrcmFrame {
   const rowBytes = (width / PIXELS_PER_GROUP) * BYTES_PER_GROUP;
   const stride = file.readUInt32LE(trailer + OFFSET_STRIDE);
   if (stride !== alignUp(rowBytes, STRIDE_ALIGNMENT_BYTES)) {
-    throw fail(`the row stride ${stride} does not match packed 10-bit rows of ${width} pixels`);
+    throw unsupported(`the row stride ${stride} does not match packed 10-bit rows of ${width} pixels`);
   }
   const order = file[trailer + OFFSET_BAYER_ORDER];
   if (order >= BAYER_ORDERS.length) throw fail(`unknown Bayer order ${order}`);

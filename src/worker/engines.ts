@@ -1599,12 +1599,21 @@ export async function executeWorkerConversion(
 
   // 1c. In-process sensor decode for the camera files LibRaw cannot open (Sigma X3F, Raspberry Pi frames).
   if (IN_PROCESS_RAW_SENSOR_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
-    const sensorRes = await convertWithInProcessRawSensor(input, src, tgt, nativeOptions, originalFilename);
-    if (sensorRes) {
-      return {
-        ...sensorRes,
-        fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-      };
+    try {
+      const sensorRes = await convertWithInProcessRawSensor(input, src, tgt, nativeOptions, originalFilename);
+      if (sensorRes) {
+        return {
+          ...sensorRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
+    } catch (err) {
+      if (err instanceof RawDecodeError && err.unrecognized && options.allowEmbeddedPreview) {
+        fallbackChain.push(`native-raw: ${err.message}`);
+        fallbackReason = err.message;
+      } else {
+        throw err;
+      }
     }
   }
 

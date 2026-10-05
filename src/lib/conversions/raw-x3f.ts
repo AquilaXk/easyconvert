@@ -119,7 +119,7 @@ export function readX3fDirectory(file: Buffer): X3fSection[] {
   if (file.length < HEADER_VERSION_OFFSET + 4 + DIRECTORY_POINTER_BYTES) throw fail('the header is cut short');
   const version = file.readUInt32LE(HEADER_VERSION_OFFSET);
   if (version >>> VERSION_MAJOR_SHIFT !== SUPPORTED_MAJOR_VERSION) {
-    throw new RawDecodeError(`Sigma X3F version ${version >>> VERSION_MAJOR_SHIFT}.${version & 0xffff} is not supported`);
+    throw new RawDecodeError(`Sigma X3F version ${version >>> VERSION_MAJOR_SHIFT}.${version & 0xffff} is not supported`, true);
   }
   const directoryOffset = file.readUInt32LE(file.length - DIRECTORY_POINTER_BYTES);
   requireRange(file, directoryOffset, DIRECTORY_HEADER_BYTES, 'the section directory');
@@ -338,7 +338,7 @@ export function decodeCamfBytes(file: Buffer, section: X3fSection): Buffer {
   if (type === CAMF_TYPE_XOR) return decodeCamfXor(file.subarray(dataStart, dataEnd), fourth);
   if (type === CAMF_TYPE_BLOCK_HUFFMAN) return decodeCamfBlocks(file, dataStart, dataEnd, first, second, third, fourth);
   if (type === CAMF_TYPE_BYTE_HUFFMAN) return decodeCamfBytesHuffman(file, dataStart, dataEnd, first, second);
-  throw new RawDecodeError(`Sigma X3F CAMF encoding ${type} is not supported`);
+  throw new RawDecodeError(`Sigma X3F CAMF encoding ${type} is not supported`, true);
 }
 
 const CAMF_XOR_MULTIPLIER = 1597;
@@ -666,7 +666,7 @@ export function decodeX3f(file: Buffer): DecodedX3f {
   const sensor = images.find((image) => image.imageType === IMAGE_TYPE_RAW);
   if (!sensor) throw fail('the file holds no sensor data section');
   if (sensor.format !== IMAGE_FORMAT_TRUE) {
-    throw new RawDecodeError(`Sigma X3F sensor data format 0x${sensor.format.toString(16)} is not supported`);
+    throw new RawDecodeError(`Sigma X3F sensor data format 0x${sensor.format.toString(16)} is not supported`, true);
   }
   const camf = sections.find((section) => section.type === 'CAMF');
   if (!camf) throw fail('the file holds no CAMF calibration section');
