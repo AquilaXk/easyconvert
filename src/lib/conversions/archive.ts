@@ -911,7 +911,7 @@ export function extractRarArchive(
           execFileSync(resolved.binary, resolved.args, unrarOptions);
         }
       } catch (err: any) {
-        throw archivePasswordError(err, { password: options.password, label: 'RAR archive' }) ?? err;
+        throw archivePasswordError(err, { password: options.password, label: 'RAR archive', tool: 'unrar' }) ?? err;
       }
 
       const extracted: { filename: string; buffer: Buffer }[] = [];

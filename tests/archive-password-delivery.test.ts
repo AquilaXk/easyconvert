@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,6 +35,7 @@ import {
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { buildStoredRar4 } from './helpers/rar4-stored';
+import { buildEncryptedRar5 } from './helpers/rar5-encrypted';
 
 /**
  * Archive passwords reach 7-Zip on stdin, never in argv (issue #490). Every test here runs the real
@@ -369,6 +370,65 @@ describe('archive password delivery to the real 7z binary', () => {
       );
       expect(() => convertWithNative7z(rar, 'rar', 'zip', {}, 'in.rar')).toThrow(ArchivePasswordRequiredError);
     });
+  });
+
+  describe('RAR5 extraction', () => {
+    const RAR5_FILES: readonly PlainFile[] = [
+      { name: 'secret.txt', data: Buffer.from('rar5 payload bytes: 0123456789abcdef\n', 'utf-8') },
+      { name: 'second.csv', data: Buffer.from('id,value\n1,alpha\n2,beta\n', 'utf-8') },
+    ];
+    /** unrar exits with 11 (RARX_BADPWD) when the password does not decrypt the archive. */
+    const UNRAR_BAD_PASSWORD_STATUS = 11;
+    const VARIANTS = [
+      { label: 'encrypted data', headerEncrypted: false },
+      { label: 'encrypted headers', headerEncrypted: true },
+    ] as const;
+
+    for (const variant of VARIANTS) {
+      const encryptedRar5 = (): Buffer => buildEncryptedRar5(RAR5_FILES, { password: PASSWORD, headerEncrypted: variant.headerEncrypted });
+
+      oracleTest(`the RAR5 fixture with ${variant.label} is accepted by unrar with the password only`, ['unrar'], async () => {
+        const unrar = getOracleToolPath('unrar')!;
+        withTempDir((dir) => {
+          const file = path.join(dir, 'fixture.rar');
+          writeFileSync(file, encryptedRar5());
+          expect(execFileSync(unrar, ['t', `-p${PASSWORD}`, file], { encoding: 'utf-8' })).toContain('All OK');
+          for (const entry of RAR5_FILES) {
+            expect(execFileSync(unrar, ['p', '-inul', `-p${PASSWORD}`, file, entry.name]).equals(entry.data), entry.name).toBe(true);
+          }
+          const wrong = spawnSync(unrar, ['t', `-p${WRONG_PASSWORD}`, file], { encoding: 'utf-8' });
+          expect(wrong.status).toBe(UNRAR_BAD_PASSWORD_STATUS);
+          expect(wrong.stdout + wrong.stderr).toMatch(/Incorrect password|password is incorrect/);
+          expect(spawnSync(unrar, ['t', '-p-', file], { encoding: 'utf-8' }).status).toBe(UNRAR_BAD_PASSWORD_STATUS);
+        });
+      });
+
+      oracleTest(`extractRarArchive decrypts RAR5 ${variant.label} with the right password`, ['unrar'], async () => {
+        expectFilesMatch(extractRarArchive(encryptedRar5(), { password: PASSWORD }), RAR5_FILES);
+      });
+
+      oracleTest(`extractRarArchive rejects a wrong password for RAR5 ${variant.label} with InvalidArchivePasswordError`, ['unrar'], async () => {
+        expect(() => extractRarArchive(encryptedRar5(), { password: WRONG_PASSWORD })).toThrow(InvalidArchivePasswordError);
+      });
+
+      oracleTest(`extractRarArchive without a password throws ArchivePasswordRequiredError for RAR5 ${variant.label}`, ['unrar'], async () => {
+        expect(() => extractRarArchive(encryptedRar5(), {})).toThrow(ArchivePasswordRequiredError);
+      });
+
+      oracleTest(`convertArchive keeps the typed password errors for RAR5 ${variant.label}`, ['unrar'], async () => {
+        const rar = encryptedRar5();
+        await expect(convertArchive(rar, 'rar', 'zip', { password: WRONG_PASSWORD }, 'in.rar')).rejects.toThrow(InvalidArchivePasswordError);
+        await expect(convertArchive(rar, 'rar', 'zip', {}, 'in.rar')).rejects.toThrow(ArchivePasswordRequiredError);
+        const converted = await convertArchive(rar, 'rar', 'zip', { password: PASSWORD }, 'in.rar');
+        expectPlainFiles(unpackWithOracle(converted.buffer, 'zip', PASSWORD), RAR5_FILES);
+      });
+
+      oracleTest(`convertWithNative7z types both password failures for RAR5 ${variant.label}`, ['7z', 'unrar'], async () => {
+        const rar = encryptedRar5();
+        expect(() => convertWithNative7z(rar, 'rar', 'zip', { password: WRONG_PASSWORD }, 'in.rar')).toThrow(InvalidArchivePasswordError);
+        expect(() => convertWithNative7z(rar, 'rar', 'zip', {}, 'in.rar')).toThrow(ArchivePasswordRequiredError);
+      });
+    }
   });
 
   describe('creation', () => {

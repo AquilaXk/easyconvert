@@ -37,12 +37,17 @@ export const MAX_ZIP_PASSWORD_BYTES = 99;
 /** A line break or NUL would end the password early or answer a later prompt. */
 const PASSWORD_FORBIDDEN_CHARACTERS = /[\r\n\0]/;
 
+/** unrar exit status RARX_BADPWD: a RAR5 archive's password check value rejected the password. */
+export const UNRAR_BAD_PASSWORD_EXIT_STATUS = 11;
+
 /**
  * What a failed decryption reports on stderr: 7-Zip ("Wrong password", "Cannot open encrypted
  * archive. Wrong password?", "Data Error in encrypted file. Wrong password?", identical across
- * p7zip 16.02 and 7-Zip 21.07 to 23.01) and unrar ("Corrupt file or wrong password").
+ * p7zip 16.02 and 7-Zip 21.07 to 23.01) and unrar ("Corrupt file or wrong password" for RAR 4,
+ * "Incorrect password for <name>" and "The specified password is incorrect." for RAR5).
  */
-const ARCHIVE_TOOL_PASSWORD_FAILURE = /wrong password|Can(?: )?not open encrypted/i;
+const ARCHIVE_TOOL_PASSWORD_FAILURE =
+  /wrong password|Can(?: )?not open encrypted|incorrect password|specified password is incorrect/i;
 
 export function assertArchivePasswordSafe(password: string | undefined): void {
   if (!password) return;
@@ -127,6 +132,13 @@ export function archiveFailureOutput(err: unknown): string {
     .join('\n');
 }
 
+/** Exit status of a failed child, whichever shape the caller's runner throws. */
+function archiveFailureExitStatus(err: unknown): number | null {
+  const failure = err as { status?: unknown; exitCode?: unknown } | null;
+  const status = failure?.status ?? failure?.exitCode;
+  return typeof status === 'number' ? status : null;
+}
+
 export function isArchivePasswordError(err: unknown): err is ArchivePasswordRequiredError | InvalidArchivePasswordError {
   return err instanceof ArchivePasswordRequiredError || err instanceof InvalidArchivePasswordError;
 }
@@ -138,9 +150,10 @@ export function isArchivePasswordError(err: unknown): err is ArchivePasswordRequ
  */
 export function archivePasswordError(
   err: unknown,
-  request: { password: string | undefined; label: string }
+  request: { password: string | undefined; label: string; tool?: 'unrar' }
 ): ConversionFailedError | null {
-  if (!isArchivePasswordFailure(archiveFailureOutput(err))) return null;
+  const badPasswordStatus = request.tool === 'unrar' && archiveFailureExitStatus(err) === UNRAR_BAD_PASSWORD_EXIT_STATUS;
+  if (!badPasswordStatus && !isArchivePasswordFailure(archiveFailureOutput(err))) return null;
   if (!request.password) {
     const subject = request.label.charAt(0).toUpperCase() + request.label.slice(1);
     return new ArchivePasswordRequiredError(`${subject} is password protected. A password is required to extract.`);
