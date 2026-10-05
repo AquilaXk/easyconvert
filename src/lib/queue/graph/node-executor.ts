@@ -10,7 +10,7 @@ import type { ConversionEnginePort } from '../engine-port';
 import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { safeFetch } from '../../security/safe-fetch';
-import { redactUrl } from '../../security/redact';
+import { redactText, redactUrl, scrubError } from '../../security/redact';
 import { graphNodeJobId } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import {
@@ -501,10 +501,12 @@ export async function processGraphNodeJob(
       durationMs,
     };
   } catch (err: any) {
+    // Whatever an SDK or a remote quoted into the error, it leaves this node run masked.
+    scrubError(err);
     // A retry may still succeed, and a cancelled attempt is not a failure: only the last
     // failed attempt fails the node (and, under fail_fast, the graph).
     if (!attemptSignal.aborted && job.attemptsMade >= (job.opts?.attempts ?? 1)) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = redactText(err instanceof Error ? err.message : String(err));
       await graphScheduler.onNodeFailed(graphId, nodeId, errorMsg);
     }
     throw err;

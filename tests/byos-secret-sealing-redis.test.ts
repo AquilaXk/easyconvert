@@ -6,6 +6,7 @@ import { Worker } from '../src/lib/queue/bullmq-engine';
 import { allConversionQueues, processConversionJob } from '../src/lib/queue/conversion-queue';
 import { graphScheduler, type JobGraph } from '../src/lib/queue/graph';
 import { SEALED_PREFIX } from '../src/lib/security/job-secret-seal';
+import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import {
   CUSTOMER_ACCESS_KEY,
@@ -42,6 +43,7 @@ const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
 const GRAPH_TIMEOUT_MS = 30_000;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 const QUERY_TOKEN = 'qt-7f3a91c04be25d68';
+const PASSWORD = 'pw-4e8a1c7d93b2';
 const BEARER = 'bt-0c4e88a1d7b2f395';
 
 function uniqueId(label: string): string {
@@ -174,5 +176,38 @@ describe.skipIf(!REDIS_URL)('BYOS secrets on a real Redis server', () => {
     ]);
 
     expectNoSecretsInKeyspace(await dumpKeyspace(redis), secrets);
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('masks failure reasons, stack traces, logs and dead-letter entries in Redis after a failed run', async () => {
+    customer.stub.objects.set('in/people.csv', { body: Buffer.from(CSV_INPUT), contentType: 'text/csv', etag: '"x"' });
+    const importAuth = signCustomerRequest('GET', 'in/people.csv', EMPTY_PAYLOAD_SHA256);
+    const graphId = uniqueId('byos-redis-fail');
+    const graph: JobGraph = {
+      failurePolicy: 'fail_fast',
+      nodes: {
+        in: { op: 'import.url', url: importAuth.url, headers: importAuth.headers },
+        out: { op: 'export.internal', input: 'in' },
+      },
+    };
+    // Storage fails the way an SDK or a remote might: quoting the request it made.
+    const leaky = `upstream rejected https://deploy:${PASSWORD}@h.example/obj?X-Amz-Signature=${QUERY_TOKEN} with Authorization: Bearer ${BEARER}`;
+    vi.spyOn(s3Storage, 'saveObjectFromStream').mockImplementation(async (_key, stream) => {
+      (stream as NodeJS.ReadableStream).resume();
+      throw new Error(leaky);
+    });
+    workers.push(new Worker([...allConversionQueues], processConversionJob, { concurrency: 2 }));
+    await graphScheduler.initGraph(graphId, graph, { ownerUserId: 'user-byos-redis' });
+
+    const state = await waitForTerminal(graphId);
+    expect(state.status).toBe('failed');
+
+    const masked = 'upstream rejected https://***@h.example/obj?*** with Authorization: ***';
+    const dump = await dumpKeyspace(redis);
+    expectNoSecretsInKeyspace(dump, [PASSWORD, QUERY_TOKEN, BEARER]);
+    const deadLetters = [...dump].filter(([key, text]) => key.endsWith(':dlq') && text.includes(`${graphId}:in`));
+    expect(deadLetters).toHaveLength(1);
+    expect(JSON.parse((JSON.parse(deadLetters[0][1]) as string[])[0])).toMatchObject({ jobId: `${graphId}:in`, failedReason: masked });
+    const jobKey = [...dump].find(([key]) => key.endsWith(`${graphId}:in`) && key.includes('job'));
+    expect(JSON.parse(jobKey![1])).toMatchObject({ state: 'failed', failedReason: masked });
   }, GRAPH_TIMEOUT_MS + 10_000);
 });

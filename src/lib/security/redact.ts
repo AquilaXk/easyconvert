@@ -149,6 +149,30 @@ export function redactText(text: string): string {
   return redactKeyValuePairs(withoutBearer);
 }
 
+/** Longest chain of `cause` errors `scrubError` follows. */
+export const MAX_ERROR_CAUSE_DEPTH = 8;
+
+/**
+ * Masks the message and stack of an error, and of its `cause` chain, in place, so that every later
+ * reader of the same error (a log line, an event listener, a rethrow) sees the masked text. Values
+ * that are not errors are returned unchanged.
+ */
+export function scrubError<T>(error: T): T {
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_ERROR_CAUSE_DEPTH && current instanceof Error; depth++) {
+    try {
+      current.message = redactText(current.message);
+      if (current.stack) {
+        current.stack = redactText(current.stack);
+      }
+    } catch {
+      // A frozen error cannot be edited; callers also mask the text they copy out of it.
+    }
+    current = current.cause;
+  }
+  return error;
+}
+
 interface WalkState {
   nodes: number;
   ancestors: Set<object>;

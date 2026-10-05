@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  MAX_ERROR_CAUSE_DEPTH,
   MAX_REDACTION_DEPTH,
   MAX_REDACTION_NODES,
   REDACTION_MASK,
@@ -9,6 +10,7 @@ import {
   redactSecrets,
   redactText,
   redactUrl,
+  scrubError,
 } from '../src/lib/security/redact';
 
 /**
@@ -115,6 +117,36 @@ describe('redactText', () => {
   it('returns text without secrets unchanged', () => {
     const text = 'Node "n1" converted 2 artifact(s) to json in 14ms';
     expect(redactText(text)).toBe(text);
+  });
+});
+
+describe('scrubError', () => {
+  it('masks the message and stack of an error in place, and of its cause chain', () => {
+    const root = new Error('root saw https://u:p@h.example/x?sig=1');
+    const outer = new Error('outer: Authorization: Bearer abc.def-ghi_jkl123', { cause: root });
+    const returned = scrubError(outer);
+    expect(returned).toBe(outer);
+    expect(outer.message).toBe('outer: Authorization: ***');
+    expect(outer.stack).not.toContain('abc.def');
+    expect(root.message).toBe('root saw https://***@h.example/x?***');
+    expect(root.stack).toContain('root saw https://***@h.example/x?***');
+  });
+
+  it('returns values that are not errors unchanged', () => {
+    expect(scrubError('password=hunter2')).toBe('password=hunter2');
+    expect(scrubError(undefined)).toBeUndefined();
+  });
+
+  it('stops following a cause chain at the depth limit', () => {
+    let error = new Error('https://u:p@h.example/leaf?sig=1');
+    for (let i = 0; i < MAX_ERROR_CAUSE_DEPTH; i++) error = new Error(`wrap ${i}`, { cause: error });
+    const leaf = (() => {
+      let current: Error = error;
+      while (current.cause instanceof Error) current = current.cause;
+      return current;
+    })();
+    scrubError(error);
+    expect(leaf.message).toBe('https://u:p@h.example/leaf?sig=1');
   });
 });
 
