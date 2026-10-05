@@ -219,7 +219,7 @@ function rms(samples: Int16Array): number {
 
 /** Signal-to-noise ratio in dB of `decoded` against `reference`; Infinity for identical samples. */
 function snrDb(reference: Int16Array, decoded: Int16Array): number {
-  expect(decoded.length).toBe(reference.length);
+  expect(decoded).toHaveLength(reference.length);
   let signal = 0;
   let noise = 0;
   for (let i = 0; i < reference.length; i++) {
@@ -667,5 +667,20 @@ describe('audio stream selection', () => {
       await expect(attempt).rejects.toThrow(ConversionFailedError);
       await expect(attempt).rejects.toThrow(/no audio stream/);
     }
+  }, TEST_TIMEOUT_MS);
+});
+
+describe('video codec aliases', () => {
+  oracleTest('videoCodec h265 writes a real HEVC stream', ['ffmpeg', 'ffprobe'], async () => {
+    const encoders = execFileSync(getOracleToolPath('ffmpeg')!, ['-hide_banner', '-encoders'], { encoding: 'utf8' });
+    if (!/\blibx265\b/.test(encoders)) {
+      throw new Error('The installed ffmpeg has no libx265 encoder, which the h265 alias requires.');
+    }
+    const source = input('h265-source.mp4', (file) => ffmpeg([...VIDEO_SOURCE, '-c:v', 'mpeg4', '-an', file]));
+    const out = await convertToFile(source, 'mp4', 'mp4', { disableHwaccel: true, videoCodec: 'h265' });
+    const videoCodecs = ffprobeStreams(out)
+      .filter((s) => s.codec_type === 'video')
+      .map((s) => s.codec_name);
+    expect(videoCodecs).toEqual(['hevc']);
   }, TEST_TIMEOUT_MS);
 });
