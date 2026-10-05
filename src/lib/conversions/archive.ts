@@ -16,6 +16,7 @@ import {
   ArchiveInspectResponse,
   ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
+  ArchivePasswordRequiredError,
 } from '../types';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
@@ -48,6 +49,16 @@ import {
   resolveSandboxedCommand,
   getSanitizedEnvironment,
 } from '../security/process-sandbox';
+import {
+  SEVEN_ZIP_ASK_PASSWORD_SWITCH,
+  archivePasswordError,
+  assertArchivePasswordSafe,
+  assertZipPasswordSupported,
+  execFileSyncWithPasswordStdin,
+  isArchivePasswordError,
+  sevenZipCreatePasswordInput,
+  sevenZipReadPasswordInput,
+} from './archive-password';
 import {
   compressWithZstdDict,
   decompressWithZstdDict,
@@ -241,9 +252,8 @@ function createEncryptedArchiveVia7z(
 ): ConversionResult | null {
   const p7z = get7zBinaryPath();
   if (!p7z || !password) return null;
-  if (/[\r\n\0]/.test(password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(password);
+  if (archiveType === 'zip') assertZipPasswordSupported(password);
 
   const resolvedFiles = resolveArchiveEntryCollisions(files, collisionPolicy || 'rename');
   const tmpDir = os.tmpdir();
@@ -260,16 +270,16 @@ function createEncryptedArchiveVia7z(
     }
     const outPath = path.join(workDir, archiveName);
     const extraArgs = archiveType === '7z'
-      ? ['-t7z', '-mhe=on', '-p']
-      : ['-tzip', '-mem=AES256', '-p'];
+      ? ['-t7z', '-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH]
+      : ['-tzip', '-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH];
     const resolved = resolveSandboxedCommand(p7z, ['a', '-y', ...extraArgs, outPath, '.'], {
       networkIsolated: true,
     });
-    execFileSync(resolved.binary, resolved.args, {
+    execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
       cwd: stagingDir,
       env: getSanitizedEnvironment({}, true),
       timeout: 60000,
-      input: Buffer.from(`${password}\n${password}\n`),
+      input: sevenZipCreatePasswordInput(password),
     });
     const content = fs.readFileSync(outPath);
     return {
@@ -395,14 +405,12 @@ export async function extractZipArchive(
   zipBuffer: Buffer,
   options: { password?: string; entries?: string[] } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   const isEncrypted = isZipBufferEncrypted(zipBuffer);
   if (isEncrypted) {
     if (!options.password) {
-      throw new ConversionFailedError('ZIP archive is password protected. A password is required to extract.');
+      throw new ArchivePasswordRequiredError('ZIP archive is password protected. A password is required to extract.');
     }
     const p7z = get7zBinaryPath();
     if (p7z) {
@@ -416,24 +424,22 @@ export async function extractZipArchive(
         const extractDir = path.join(workDir, 'out');
         fs.mkdirSync(extractDir, { recursive: true });
         try {
-          const pwArgs = options.password ? ['-p'] : [];
           await executeSandboxedBinary(
             p7z,
-            ['x', '-y', ...pwArgs, `-o${extractDir}`, zipPath],
+            ['x', '-y', `-o${extractDir}`, zipPath],
             {
               cwd: workDir,
               timeoutMs: 60000,
               maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
               networkIsolated: true,
-              stdin: options.password ? Buffer.from(options.password + '\n') : undefined,
+              stdin: sevenZipReadPasswordInput(options.password),
             }
           );
         } catch (err: any) {
-          const msg = (err?.message || '') + (err?.stderr?.toString() || '');
-          if (msg.includes('Wrong password') || msg.includes('Can not open encrypted') || msg.includes('Data Error')) {
-            throw new ConversionFailedError('Invalid password for encrypted ZIP archive.');
-          }
-          throw new ConversionFailedError(`Failed to decrypt ZIP archive: ${err.message}`);
+          throw (
+            archivePasswordError(err, { password: options.password, label: 'ZIP archive' }) ??
+            new ConversionFailedError(`Failed to decrypt ZIP archive: ${err.message}`)
+          );
         }
 
         const results: { filename: string; buffer: Buffer }[] = [];
@@ -844,9 +850,7 @@ export function extractRarArchive(
     throw new Error('Invalid RAR archive: signature mismatch');
   }
 
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   // If unrar binary is available on the system, execute under defensive limits
   const unrarBin = getUnrarBinaryPath();
@@ -861,22 +865,26 @@ export function extractRarArchive(
     try {
       const pwArgs = options.password ? ['-p'] : ['-p-'];
       try {
-        const resolved = resolveSandboxedCommand(unrarBin, ['x', '-inul', '-y', ...pwArgs, tmpFile, extractDir], {
+        // -idq keeps error text on stderr so a password failure can be told from other failures.
+        const resolved = resolveSandboxedCommand(unrarBin, ['x', '-idq', '-y', ...pwArgs, tmpFile, extractDir], {
           networkIsolated: true,
         });
-        execFileSync(resolved.binary, resolved.args, {
+        const unrarOptions = {
           cwd: extractDir,
           env: getSanitizedEnvironment({}, true),
           timeout: 30000,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          input: options.password ? Buffer.from(options.password + '\n') : undefined,
-        });
-      } catch (err: any) {
-        const msg = (err?.message || '') + (err?.stderr?.toString() || '');
-        if (msg.includes('password') || msg.includes('CRC error')) {
-          throw new ConversionFailedError('Invalid password for encrypted RAR archive.');
+        };
+        if (options.password) {
+          execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
+            ...unrarOptions,
+            input: Buffer.from(`${options.password}\n`, 'utf-8'),
+          });
+        } else {
+          execFileSync(resolved.binary, resolved.args, unrarOptions);
         }
-        throw err;
+      } catch (err: any) {
+        throw archivePasswordError(err, { password: options.password, label: 'RAR archive' }) ?? err;
       }
 
       const extracted: { filename: string; buffer: Buffer }[] = [];
@@ -1577,13 +1585,12 @@ export function convertWithNative7z(
   originalFilename = 'file'
 ): ConversionResult | null {
   const tgt = targetFormat.toLowerCase();
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
+  if (tgt === 'zip') assertZipPasswordSupported(options.password);
 
   const p7zBin = get7zBinaryPath();
   if (!p7zBin) {
@@ -1635,29 +1642,20 @@ export function convertWithNative7z(
     const extractDir = path.join(workDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
-    if (options.password && /[\r\n\0]/.test(options.password)) {
-      throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-    }
-
-    const pwExtractArgs = options.password ? ['-p'] : [];
     if (supportedExtract.has(src)) {
       try {
-        const resolved = resolveSandboxedCommand(p7zBin, ['x', '-y', ...pwExtractArgs, `-o${extractDir}`, inputPath], {
+        const resolved = resolveSandboxedCommand(p7zBin, ['x', '-y', `-o${extractDir}`, inputPath], {
           networkIsolated: true,
         });
-        execFileSync(resolved.binary, resolved.args, {
+        execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
           cwd: workDir,
           env: getSanitizedEnvironment({}, true),
           timeout: 60000,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          input: options.password ? Buffer.from(options.password + '\n') : undefined,
+          input: sevenZipReadPasswordInput(options.password),
         });
       } catch (err: any) {
-        const msg = (err?.message || '') + (err?.stderr?.toString() || '');
-        if (msg.includes('Wrong password') || msg.includes('Can not open encrypted') || msg.includes('Data Error')) {
-          throw new ConversionFailedError(`Invalid password for encrypted ${src.toUpperCase()} archive.`);
-        }
-        throw err;
+        throw archivePasswordError(err, { password: options.password, label: `${src.toUpperCase()} archive` }) ?? err;
       }
 
       // If extracting a compressed tarball (tar.gz, tar.bz2, tar.xz, tgz, etc.), 7-Zip produces an intermediate .tar archive
@@ -1715,14 +1713,14 @@ export function convertWithNative7z(
     const pwCreateArgs: string[] = [];
     if (options.password) {
       if (tgt === '7z') {
-        pwCreateArgs.push('-mhe=on', '-p');
+        pwCreateArgs.push('-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
       } else if (tgt === 'zip') {
-        pwCreateArgs.push('-mem=AES256', '-p');
+        pwCreateArgs.push('-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
       }
     }
     const pwCreateInput =
       options.password && (tgt === 'zip' || tgt === '7z')
-        ? Buffer.from(`${options.password}\n${options.password}\n`)
+        ? sevenZipCreatePasswordInput(options.password)
         : undefined;
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
@@ -1745,12 +1743,12 @@ export function convertWithNative7z(
       execFileSync(rXz.binary, rXz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
     } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
       const rCreate = resolveSandboxedCommand(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { networkIsolated: true });
-      execFileSync(rCreate.binary, rCreate.args, {
-        cwd: extractDir,
-        env: getSanitizedEnvironment({}, true),
-        timeout: 60000,
-        input: pwCreateInput,
-      });
+      const createOptions = { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 };
+      if (pwCreateInput) {
+        execFileSyncWithPasswordStdin(rCreate.binary, rCreate.args, { ...createOptions, input: pwCreateInput });
+      } else {
+        execFileSync(rCreate.binary, rCreate.args, createOptions);
+      }
     } else {
       return null;
     }
@@ -1811,7 +1809,7 @@ export async function extractWithSpannedStream7z(
 
   const timeoutMs = options.timeoutMs ?? 60000;
   const maxBuffer = options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
-  const passwordArgs = options.password ? ['-p'] : [];
+  assertArchivePasswordSafe(options.password);
   const formatMap: Record<string, string> = {
     tar: 'tar',
     zip: 'zip',
@@ -1820,7 +1818,8 @@ export async function extractWithSpannedStream7z(
   };
   const typeFlag = formatMap[metadata.format] ? [`-t${formatMap[metadata.format]}`] : [];
 
-  const isStreamableFormat = metadata.format === 'tar' || metadata.format === 'numeric';
+  // The archive itself occupies stdin in streaming mode, so a password has no channel there.
+  const isStreamableFormat = !options.password && (metadata.format === 'tar' || metadata.format === 'numeric');
   let extractionSuccess = false;
 
   // Strategy 1: Stdin streaming extraction via 7z x -si{baseFilename} for streamable archive formats
@@ -1829,7 +1828,7 @@ export async function extractWithSpannedStream7z(
       const { stream } = createVirtualSpannedStream(sortedParts);
       await executeSandboxedBinary(
         p7zBin,
-        ['x', '-y', `-si${metadata.baseFilename}`, ...typeFlag, `-o${resolvedExtractDir}`, ...passwordArgs],
+        ['x', '-y', `-si${metadata.baseFilename}`, ...typeFlag, `-o${resolvedExtractDir}`],
         {
           cwd: resolvedExtractDir,
           stdin: stream,
@@ -1859,17 +1858,21 @@ export async function extractWithSpannedStream7z(
     const tempDiskFile = path.join(tmpDir, `spanned_stitch_${Date.now()}_${uniqueSuffix}_${metadata.baseFilename}`);
     try {
       await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
-      await executeSandboxedBinary(
-        p7zBin,
-        ['x', '-y', ...typeFlag, `-o${resolvedExtractDir}`, tempDiskFile, ...passwordArgs],
-        {
-          cwd: resolvedExtractDir,
-          stdin: options.password ? Buffer.from(options.password + '\n') : undefined,
-          timeoutMs,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
+      try {
+        await executeSandboxedBinary(
+          p7zBin,
+          ['x', '-y', ...typeFlag, `-o${resolvedExtractDir}`, tempDiskFile],
+          {
+            cwd: resolvedExtractDir,
+            stdin: sevenZipReadPasswordInput(options.password),
+            timeoutMs,
+            maxBuffer,
+            networkIsolated: true,
+          }
+        );
+      } catch (err) {
+        throw archivePasswordError(err, { password: options.password, label: 'multi-volume archive' }) ?? err;
+      }
     } finally {
       try {
         if (fs.existsSync(tempDiskFile)) {
@@ -3145,17 +3148,17 @@ async function inspectArchiveVia7zCli(
     const archivePath = path.join(workDir, `archive.${format}`);
     fs.writeFileSync(archivePath, buffer);
 
-    const pwArgs = password ? ['-p' + password] : ['-p-'];
-    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', ...pwArgs, archivePath], {
+    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', archivePath], {
       networkIsolated: true,
     });
 
     let stdoutStr = '';
     try {
-      const out = execFileSync(resolved.binary, resolved.args, {
+      const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
         cwd: workDir,
         env: getSanitizedEnvironment({}, true),
         timeout: 30000,
+        input: sevenZipReadPasswordInput(password),
       });
       stdoutStr = out.toString('utf-8');
     } catch (err: any) {
@@ -3170,10 +3173,6 @@ async function inspectArchiveVia7zCli(
         throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
       }
       throw new ConversionFailedError(`Failed to inspect ${format} archive: ${err.message}`);
-    }
-
-    if (stdoutStr.includes('Enter password (will not be echoed):')) {
-      throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
     }
 
     const entries: ArchiveEntryMetadata[] = [];
@@ -3511,9 +3510,7 @@ export async function convertArchive(
     };
   }
 
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
@@ -3544,6 +3541,7 @@ export async function convertArchive(
     try {
       files = await extractZipArchive(effectiveBuffer, options);
     } catch (err) {
+      if (isArchivePasswordError(err)) throw err;
       throw new ConversionFailedError(
         `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -3599,6 +3597,7 @@ export async function convertArchive(
         files = files.filter((f) => matchArchiveGlob(f.filename, options.entries));
       }
     } catch (err: any) {
+      if (isArchivePasswordError(err)) throw err;
       throw new ConversionFailedError(
         `Failed to extract RAR archive '${effectiveFilename}': ${err?.message || String(err)}`
       );

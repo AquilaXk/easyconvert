@@ -452,6 +452,22 @@ export class ArchiveEncryptionUnavailableError extends ConversionFailedError {
   }
 }
 
+/** The archive is encrypted and the request carried no password. */
+export class ArchivePasswordRequiredError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArchivePasswordRequiredError';
+  }
+}
+
+/** The request carried a password that does not decrypt the archive. */
+export class InvalidArchivePasswordError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidArchivePasswordError';
+  }
+}
+
 export class UnsupportedOptionError extends ConversionFailedError {
   constructor(message: string) {
     super(message);

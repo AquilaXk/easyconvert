@@ -46,6 +46,15 @@ import {
   readDecodedTiffLayout,
 } from './raw-decoded-tiff';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
+import {
+  SEVEN_ZIP_ASK_PASSWORD_SWITCH,
+  archivePasswordError,
+  assertArchivePasswordSafe,
+  assertZipPasswordSupported,
+  isArchivePasswordError,
+  sevenZipCreatePasswordInput,
+  sevenZipReadPasswordInput,
+} from '../lib/conversions/archive-password';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
@@ -693,14 +702,14 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   const pwArgs: string[] = [];
   if (options?.password) {
     if (tgt === '7z') {
-      pwArgs.push('-mhe=on', '-p');
+      pwArgs.push('-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
     } else if (tgt === 'zip') {
-      pwArgs.push('-mem=AES256', '-p');
+      pwArgs.push('-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
     }
   }
   const pwInput =
     options?.password && (tgt === 'zip' || tgt === '7z')
-      ? Buffer.from(`${options.password}\n${options.password}\n`)
+      ? sevenZipCreatePasswordInput(options.password)
       : undefined;
 
   await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...pwArgs, tempOutputPath, '.'], {
@@ -733,22 +742,25 @@ async function extractSourceArchive(params: ExtractArchiveParams): Promise<void>
       password: options.password,
     });
   } else {
-    const pwArgs = options?.password ? ['-p'] : [];
     const includeArgs = (options?.entries && options.entries.length > 0)
       ? options.entries.map((p) => `-i!${p}`)
       : [];
-    await executeSandboxedBinary(
-      p7zBin,
-      ['x', '-y', ...pwArgs, `-o${extractDir}`, inputPath, ...includeArgs],
-      {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer,
-        networkIsolated: true,
-        stdin: options?.password ? Buffer.from(options.password + '\n') : undefined,
-        signal: options?.signal,
-      }
-    );
+    try {
+      await executeSandboxedBinary(
+        p7zBin,
+        ['x', '-y', `-o${extractDir}`, inputPath, ...includeArgs],
+        {
+          cwd: tempDir,
+          timeoutMs: timeout,
+          maxBuffer,
+          networkIsolated: true,
+          stdin: sevenZipReadPasswordInput(options?.password),
+          signal: options?.signal,
+        }
+      );
+    } catch (err) {
+      throw archivePasswordError(err, { password: options?.password, label: 'archive' }) ?? err;
+    }
   }
 }
 
@@ -768,9 +780,11 @@ export async function convertWithNative7z(
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
+  assertArchivePasswordSafe(options.password);
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
+  if (tgt === 'zip') assertZipPasswordSupported(options.password);
 
   const p7zBin = resolveBinary(BINARY_PATHS.p7zip, process.env.P7ZIP_PATH);
   if (!p7zBin) {
@@ -846,7 +860,8 @@ export async function convertWithNative7z(
       );
     });
   } catch (err) {
-    if (options.throwOnUnavailable) {
+    // A password failure is the caller's answer, not a missing engine: never hand it to a fallback.
+    if (options.throwOnUnavailable || isArchivePasswordError(err)) {
       throw err;
     }
     return null;
