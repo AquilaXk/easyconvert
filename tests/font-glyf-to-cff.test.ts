@@ -19,6 +19,7 @@ import {
   readUnitsPerEm,
   renderGlyph,
   requireStrictFcScan,
+  requireStrictFreeType,
   requireTable,
   signedArea,
   withFontFile,
@@ -39,6 +40,7 @@ import { assembleSfnt } from './helpers/mac-font-containers';
  */
 
 requireStrictFcScan('TrueType to CFF');
+requireStrictFreeType('TrueType to CFF');
 
 const SFNT_OTTO = 0x4f54544f;
 const MAXP_VERSION_05 = 0x00005000;

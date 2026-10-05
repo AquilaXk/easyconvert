@@ -42,6 +42,13 @@ export function requireStrictFcScan(suite: string): void {
   }
 }
 
+/** CI runs the oracles in strict mode: a missing FreeType renderer (ImageMagick) must fail there instead of skipping the oracle. */
+export function requireStrictFreeType(suite: string): void {
+  if (process.env.ORACLE_STRICT_MODE === '1' && !HAS_FREETYPE) {
+    throw new Error(`ORACLE_STRICT_MODE requires ImageMagick built with FreeType for the ${suite} render oracle`);
+  }
+}
+
 export interface Pt {
   x: number;
   y: number;

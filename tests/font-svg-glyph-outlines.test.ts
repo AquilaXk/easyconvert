@@ -24,6 +24,7 @@ import {
   readUnitsPerEm,
   renderGlyph,
   requireStrictFcScan,
+  requireStrictFreeType,
   requireTable,
   signedArea,
   unwrapEot,
@@ -46,6 +47,7 @@ import { buildGlyfFont } from './helpers/glyf-font-builder';
  */
 
 requireStrictFcScan('SVG font');
+requireStrictFreeType('SVG font');
 
 const UNITS_PER_EM = 2048;
 const ASCENT = 1600;
