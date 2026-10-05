@@ -17,6 +17,7 @@ import {
   RawDecodeError,
   UnsupportedRawCompressionError,
   InvalidRawSensorError,
+  RawEngineRequiredError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
@@ -1674,7 +1675,10 @@ export async function executeWorkerConversion(
     internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
   } catch (err) {
     // The in-process engine cannot decode this camera data, yet the native RAW engine could have.
-    const nativeCouldDecode = err instanceof UnsupportedRawCompressionError || err instanceof InvalidRawSensorError;
+    const nativeCouldDecode =
+      err instanceof UnsupportedRawCompressionError ||
+      err instanceof InvalidRawSensorError ||
+      err instanceof RawEngineRequiredError;
     if (lastUnavailable && RAW_SOURCE_FORMATS.has(src) && nativeCouldDecode) {
       throw new EngineUnavailableError(lastUnavailable.engineName, `${lastUnavailable.reason} (${err.message})`);
     }
