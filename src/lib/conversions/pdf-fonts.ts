@@ -62,6 +62,8 @@ const PLACEHOLDER_FONT_FAMILY = /unifont|last\s*resort/i;
 const FONTCONFIG_BINARY_CANDIDATES: readonly string[] = ['/usr/bin/fc-list', '/usr/local/bin/fc-list', '/opt/homebrew/bin/fc-list'];
 const FONTCONFIG_TIMEOUT_MS = 10_000;
 const FONTCONFIG_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+/** A failed fontconfig listing (missing, failing or timed-out fc-list) is retried after this long. */
+const FONTCONFIG_RETRY_MS = 60_000;
 const FONTCONFIG_FIELD_SEPARATOR = '\t';
 /** One line per installed face: file, face index, format, colour flag, first family name, character set. */
 const FONTCONFIG_FORMAT = ['%{file}', '%{index}', '%{fontformat}', '%{color}', '%{family[0]}', '%{charset}'].join(FONTCONFIG_FIELD_SEPARATOR) + '\n';
@@ -166,6 +168,8 @@ let wellKnownFacesLoaded = false;
 /** Installed faces from one fontconfig listing; null until loadFontCoverageIndex has run. */
 let fontconfigIndex: readonly IndexedFontFace[] | null = null;
 let fontconfigIndexLoad: Promise<void> | null = null;
+/** When the last fontconfig listing failed, or null when it succeeded or never ran. */
+let fontconfigFailedAt: number | null = null;
 /** System face per code point, once the fontconfig index is loaded. */
 const coverageCache = new Map<number, PdfFontFace | null>();
 
@@ -258,28 +262,35 @@ function parseFontconfigListing(listing: string): IndexedFontFace[] {
   return faces;
 }
 
-/** Lists installed fonts once with fontconfig; resolves to [] when fc-list is missing, fails or times out. */
-function queryFontconfig(): Promise<IndexedFontFace[]> {
+/** Lists installed fonts with fontconfig; null when fc-list is missing, fails or times out. */
+function queryFontconfig(): Promise<IndexedFontFace[] | null> {
   const binary = resolveBinaryPath('FC_LIST_PATH', [...FONTCONFIG_BINARY_CANDIDATES], 'fc-list');
-  if (!binary) return Promise.resolve([]);
+  if (!binary) return Promise.resolve(null);
   return new Promise((resolve) => {
     execFile(
       binary,
       ['--format', FONTCONFIG_FORMAT],
       { encoding: 'utf-8', timeout: FONTCONFIG_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: FONTCONFIG_MAX_OUTPUT_BYTES, windowsHide: true },
-      (error, stdout) => resolve(error ? [] : parseFontconfigListing(stdout))
+      (error, stdout) => resolve(error ? null : parseFontconfigListing(stdout))
     );
   });
 }
 
 /**
- * Loads the fontconfig coverage index once per process. Writers await it before drawing so that
- * fonts outside the well-known paths are found; without fontconfig only the well-known files count.
+ * Loads the fontconfig coverage index: once per process when the listing succeeds, and again at
+ * most every FONTCONFIG_RETRY_MS after a failed listing. Concurrent callers share one fc-list run.
+ * Writers await it before drawing so that fonts outside the well-known paths are found; while no
+ * listing has succeeded only the well-known files count.
  */
 export function loadFontCoverageIndex(): Promise<void> {
-  if (!fontconfigIndexLoad) {
+  const retryDue = fontconfigFailedAt !== null && Date.now() - fontconfigFailedAt >= FONTCONFIG_RETRY_MS;
+  if (!fontconfigIndexLoad || retryDue) {
+    fontconfigFailedAt = null;
     fontconfigIndexLoad = queryFontconfig().then((faces) => {
-      fontconfigIndex = faces;
+      fontconfigIndex = faces ?? [];
+      fontconfigFailedAt = faces ? null : Date.now();
+      // Misses recorded against an earlier listing may now be covered.
+      coverageCache.clear();
     });
   }
   return fontconfigIndexLoad;

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString } from 'pdf-lib';
@@ -336,6 +336,49 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
     expect(csvText).toContain('설명');
     expect(csvText).toContain('사과');
     expectEmbeddedFontsOnly(csv.buffer);
+  });
+
+  oracleTest('lists installed fonts once for concurrent first calls and retries a failed listing later', ['fc-list'], async () => {
+    const RETRY_AFTER_MS = 60_000;
+    const realFcList = requireOracleTool('fc-list');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-list-wrapper-'));
+    const spawns = path.join(dir, 'spawns');
+    const wrapper = path.join(dir, 'fc-list');
+    const writeWrapper = (body: string): void => fs.writeFileSync(wrapper, `#!/bin/sh\necho spawn >> '${spawns}'\n${body}\n`, { mode: 0o755 });
+    const spawnCount = (): number => (fs.existsSync(spawns) ? fs.readFileSync(spawns, 'utf-8').split('\n').filter(Boolean).length : 0);
+
+    vi.resetModules();
+    const fonts = await import('../src/lib/conversions/pdf-fonts');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await withEnvValue('FC_LIST_PATH', wrapper, async () => {
+        writeWrapper('exit 1');
+        await Promise.all(Array.from({ length: 5 }, () => fonts.loadFontCoverageIndex()));
+        await fonts.loadFontCoverageIndex();
+        const afterFailure = spawnCount();
+
+        writeWrapper(`exec '${realFcList}' "$@"`);
+        await fonts.loadFontCoverageIndex();
+        const beforeRetryInterval = spawnCount();
+
+        vi.setSystemTime(Date.now() + RETRY_AFTER_MS + 1);
+        await Promise.all(Array.from({ length: 5 }, () => fonts.loadFontCoverageIndex()));
+        const afterRetry = spawnCount();
+        await fonts.loadFontCoverageIndex();
+        vi.setSystemTime(Date.now() + RETRY_AFTER_MS + 1);
+        await fonts.loadFontCoverageIndex();
+
+        expect({ afterFailure, beforeRetryInterval, afterRetry, afterSuccess: spawnCount() }).toEqual({
+          afterFailure: 1,
+          beforeRetryInterval: 1,
+          afterRetry: 2,
+          afterSuccess: 2,
+        });
+      });
+    } finally {
+      vi.useRealTimers();
+      vi.resetModules();
+    }
   });
 
   it('rejects unassigned, private-use and noncharacter code points with ConversionFailedError (400)', async () => {
