@@ -23,7 +23,7 @@ const BUDGET = /decoded animation limit/;
 const FRAME_LIMIT = new RegExp(`over the limit of ${MAX_ANIMATION_FRAMES} frames`);
 const OVER_FRAME_LIMIT = MAX_ANIMATION_FRAMES + 1;
 const HUGE_CANVAS = 8000;
-const COMFORTABLE_CANVAS = 5000;
+const COMFORTABLE_CANVAS = 4000;
 const OPAQUE_PIXEL = [10, 20, 30, 255] as const;
 
 /** An APNG whose header announces a big canvas but whose frame data is a single pixel (never decoded when refused). */
@@ -51,7 +51,7 @@ describe('working-set accounting', () => {
     expect(error.message).toMatch(BUDGET);
   });
 
-  it('lets a 5000x5000 canvas past the budget (it then fails on the forged frame data, not on memory)', async () => {
+  it('lets a 4000x4000 canvas past the budget (it then fails on the forged frame data, not on memory)', async () => {
     const error = await captureError(() => convertImage(forgedCanvasApng(COMFORTABLE_CANVAS), 'gif', {}, 'big.png', 'png'));
     expect(error.message).not.toMatch(BUDGET);
     expect(error.message).toMatch(/Malformed animated PNG/);

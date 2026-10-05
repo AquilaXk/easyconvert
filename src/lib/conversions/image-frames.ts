@@ -2,7 +2,14 @@ import sharp from 'sharp';
 import { ConversionFailedError, InvalidPageRangeError } from '../types';
 import { ApngCompositor, parseApng, type ApngAnimation } from './image-apng';
 import type { AnimationMetadata, FrameSource, RawFrame } from './image-animation';
-import { assertAggregatePagePixels, assertAnimationBudget, assertFrameCount, COMPOSED_MEMORY, RGBA_BYTES_PER_PIXEL } from './image-limits';
+import {
+  assertAggregatePagePixels,
+  assertAnimationBudget,
+  assertFrameCount,
+  COMPOSED_MEMORY,
+  orientedMemory,
+  RGBA_BYTES_PER_PIXEL,
+} from './image-limits';
 import { EXIF_ORIENTATION_NORMAL, orientRgbaFrame, withUprightOrientation } from './image-orientation';
 import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './page-range';
 
@@ -172,7 +179,7 @@ function orientedAnimation(buffer: Buffer, meta: sharp.Metadata, frames: number,
   if (delaysMs.length !== frames) {
     throw new ConversionFailedError(`The image reports ${delaysMs.length} frame delays for ${frames} frames`);
   }
-  assertAnimationBudget(storedWidth, storedHeight, frames, 'The oriented animation');
+  assertAnimationBudget(storedWidth, storedHeight, frames, 'The oriented animation', orientedMemory(frames));
   const frameBytes = storedWidth * storedHeight * RGBA_BYTES_PER_PIXEL;
   let stack: Buffer | undefined;
   const metadata: AnimationMetadata = {};

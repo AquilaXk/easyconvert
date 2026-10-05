@@ -30,10 +30,20 @@ export const STACKED_WORKING_COPIES = 4;
 
 /**
  * Frame-sized buffers alive at once while frames are composed one by one: the canvas, the decoded frame, the
- * decoder's own image, the encoder's copies and buffers freed but not yet collected. Measured on 5000 x 5000
- * and 4000 x 4000 animated PNGs, where peak memory above the process baseline was about five frames.
+ * decoder's own image, the encoder's copies and buffers freed but not yet collected. Measured as VmHWM above
+ * the pre-conversion baseline on 5000 x 5000 (546 to 578 MiB) and 4000 x 4000 (355 to 384 MiB) animated
+ * PNGs of two frames: between 5.5 and 6 frames' worth, rounded up.
  */
-export const COMPOSED_WORKING_COPIES = 5;
+export const COMPOSED_WORKING_COPIES = 7;
+
+/**
+ * Frame-sized buffers alive at once, besides the stack, while an oriented animation is converted. Orienting
+ * decodes the stack through the raw-pixel path and then turns and encodes frame by frame, so freed
+ * intermediates pile up before they are collected. Measured as VmHWM above the baseline on 2000 x 2000 x 10
+ * (490 to 534 MiB), 2000 x 2000 x 14 (617), 3000 x 3000 x 5 (685) and 2000 x 2000 x 6 noise (473): the
+ * stack plus about 22 frames' worth at its worst. Oriented animations of 3000 x 3000 and up are refused.
+ */
+export const ORIENTED_WORKING_COPIES = 22;
 
 /** How many frame-sized buffers a conversion keeps in memory at the same time. */
 export interface AnimationMemory {
@@ -47,6 +57,12 @@ export interface AnimationMemory {
 export const stackedMemory = (frames: number): AnimationMemory => ({
   residentFrames: frames * STACK_DECODE_COPIES,
   workingCopies: STACKED_WORKING_COPIES,
+});
+
+/** Memory shape of an oriented animation of `frames` frames: the stack stays resident while frames are turned. */
+export const orientedMemory = (frames: number): AnimationMemory => ({
+  residentFrames: frames,
+  workingCopies: ORIENTED_WORKING_COPIES,
 });
 
 /** Memory shape of frames that are composed and encoded one at a time. */
