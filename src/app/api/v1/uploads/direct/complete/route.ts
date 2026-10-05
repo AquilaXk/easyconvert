@@ -91,7 +91,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (session.ownerUserId && session.ownerUserId !== auth.user.id) {
+  // A session without an owner belongs to server-side code, never to a caller.
+  if (session.ownerUserId !== auth.user.id) {
     return createProblemDetailsResponse(
       404,
       `Upload session "${uploadId}" not found.`,

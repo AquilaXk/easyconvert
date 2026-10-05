@@ -6,6 +6,7 @@ import { storageProvider } from '@/lib/storage';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 
 export const dynamic = 'force-dynamic';
 
@@ -131,6 +132,8 @@ export async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
+    const storageProblem = storageErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
+    if (storageProblem) return storageProblem;
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Job enqueue error' },
       { status: 500 }

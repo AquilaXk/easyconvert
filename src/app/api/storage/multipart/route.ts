@@ -6,6 +6,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import type { UserTier } from '@/lib/auth/types';
+import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
 
 export const dynamic = 'force-dynamic';
@@ -20,9 +21,6 @@ const TIER_MAX_MULTIPART_BYTES: Record<UserTier | 'anonymous', number> = {
 };
 
 const MAX_MULTIPART_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
-
-/** A presigned download URL is a bearer capability for the object, so it lives only as long as a download needs. */
-const DOWNLOAD_PRESIGN_MAX_SECONDS = 15 * 60;
 
 /** The session operations the multipart actions need; every shipped backend provides them. */
 type MultipartCapableStorage = IStorageBackend &
@@ -308,6 +306,16 @@ export async function POST(req: NextRequest) {
       }
 
       const completeResult = await storage.completeMultipartUpload(uploadId, parts);
+      // Parts can be added to an open session between the listing above and the completion, so
+      // the size that was actually assembled is checked again, and an object over the cap is removed.
+      if (completeResult.size > maxAllowedBytes) {
+        await storage.deleteObject(completeResult.key);
+        return createProblemDetailsResponse(
+          400,
+          `Completed upload size ${completeResult.size} bytes exceeds maximum allowed upload size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
+          instanceUri
+        );
+      }
       return NextResponse.json({ success: true, ...completeResult });
     }
 
@@ -365,7 +373,12 @@ export async function POST(req: NextRequest) {
         }
 
         if (storage.generatePresignedUploadUrl) {
-          const presigned = await storage.generatePresignedUploadUrl(key, partNumber, uploadId, expiresInSeconds);
+          const presigned = await storage.generatePresignedUploadUrl(
+            key,
+            partNumber,
+            uploadId,
+            Math.min(expiresInSeconds ?? PART_URL_TTL_SECONDS, PART_URL_TTL_SECONDS)
+          );
           return NextResponse.json({ success: true, ...presigned });
         }
       } else if (type === 'download') {

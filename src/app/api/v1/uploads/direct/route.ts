@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { storageProvider } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -10,8 +11,6 @@ const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB S3 minimum
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
 const MAX_TOTAL_SIZE = 10 * 1024 * 1024 * 1024; // 10 GiB
 const MAX_PARTS_COUNT = 10000;
-/** Presigned part URLs are good for 15 minutes. */
-const PART_URL_TTL_SECONDS = 900;
 
 interface DirectUploadInitiateBody {
   filename?: string;

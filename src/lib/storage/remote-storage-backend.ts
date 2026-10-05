@@ -25,6 +25,7 @@ import {
   StorageSigningSecretMissingError,
   getMaxInMemoryBytes,
 } from './errors';
+import { PART_URL_TTL_SECONDS } from './presign-limits';
 import { buildPutOptions, isObjectExpired, isValidContentType, limitFilename, toStoredObjectMetadata } from './object-attributes';
 import type {
   IStorageBackend,
@@ -77,7 +78,6 @@ const STAGED_DIR_MODE = 0o700;
 const STAGED_FILE_MODE = 0o600;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_BAD_REQUEST = 400;
-const DEFAULT_PRESIGN_PART_SECONDS = 900;
 const DEFAULT_PRESIGN_SECONDS = 3600;
 
 interface UploadToken {
@@ -183,7 +183,7 @@ export class RemoteStorageBackend implements IStorageBackend {
   private requireSession(uploadId: string): UploadToken {
     const token = this.decodeToken(uploadId);
     if (!token) {
-      throw new Error(`Invalid or expired multipart upload session: ${uploadId}`);
+      throw new StorageInputError(`Invalid or expired multipart upload session: ${uploadId}`, this.providerName);
     }
     return token;
   }
@@ -327,32 +327,32 @@ export class RemoteStorageBackend implements IStorageBackend {
     const session = this.requireSession(uploadId);
     const listed = await this.client.listParts(session.k, session.u);
     if (listed.length === 0) {
-      throw new Error(`Cannot complete empty multipart upload session: ${uploadId}`);
+      throw new StorageInputError(`Cannot complete empty multipart upload session: ${uploadId}`, this.providerName);
     }
     const byNumber = new Map(listed.map((part) => [part.partNumber, part]));
 
     let selected = [...listed].sort((a, b) => a.partNumber - b.partNumber);
     if (expectedParts !== undefined) {
       if (!Array.isArray(expectedParts) || expectedParts.length === 0) {
-        throw new Error(`Cannot complete multipart upload with zero parts: ${uploadId}`);
+        throw new StorageInputError(`Cannot complete multipart upload with zero parts: ${uploadId}`, this.providerName);
       }
       const seen = new Set<number>();
       selected = [];
       for (const expected of expectedParts) {
         const number = expected?.partNumber;
         if (!Number.isInteger(number) || number < 1 || number > S3_MAX_PARTS) {
-          throw new Error(`Invalid part number ${number} in expected parts list.`);
+          throw new StorageInputError(`Invalid part number ${number} in expected parts list.`, this.providerName);
         }
         if (seen.has(number)) {
-          throw new Error(`Part number ${number} is listed twice.`);
+          throw new StorageInputError(`Part number ${number} is listed twice.`, this.providerName);
         }
         seen.add(number);
         const part = byNumber.get(number);
         if (!part) {
-          throw new Error(`Missing part number ${number} in multipart upload session: ${uploadId}`);
+          throw new StorageInputError(`Missing part number ${number} in multipart upload session: ${uploadId}`, this.providerName);
         }
         if (expected.etag && stripEtagQuotes(expected.etag) !== stripEtagQuotes(part.etag)) {
-          throw new Error(`ETag mismatch for part number ${number}: expected ${expected.etag}, got ${part.etag}`);
+          throw new StorageInputError(`ETag mismatch for part number ${number}: expected ${expected.etag}, got ${part.etag}`, this.providerName);
         }
         selected.push(part);
       }
@@ -663,11 +663,11 @@ export class RemoteStorageBackend implements IStorageBackend {
     key: string,
     uploadId: string,
     partNumber: number,
-    expiresInSeconds: number = DEFAULT_PRESIGN_PART_SECONDS
+    expiresInSeconds: number = PART_URL_TTL_SECONDS
   ): PresignedUrlResult {
     const session = this.requireSession(uploadId);
     if (session.k !== key) {
-      throw new Error('Key does not belong to this multipart upload session.');
+      throw new StorageInputError('Key does not belong to this multipart upload session.', this.providerName);
     }
     // The part URLs a session can hand out are bounded by the size it declared at initiation.
     if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > session.n) {

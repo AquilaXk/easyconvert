@@ -16,6 +16,7 @@ import {
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -41,7 +42,6 @@ const MAX_TOTAL_SIZE = 10 * 1024 * 1024 * 1024; // 10 GiB
 const MAX_PARTS_COUNT = 10000;
 /** Part URLs handed out with an initiate response: at most this many parts, each good for 15 minutes. */
 const MAX_PREGENERATED_PART_URLS = 100;
-const PART_URL_TTL_SECONDS = 900;
 const LOCAL_KEY_RANDOM_BYTES = 8;
 
 interface InitiateUploadBody {
@@ -224,7 +224,7 @@ async function completeRemoteUpload(
     return createProblemDetailsResponse(400, 'Missing "uploadId" or "parts" array in complete payload.', instanceUri);
   }
   const session = await storageProvider.getUploadSession?.(uploadId);
-  if (!session || (session.ownerUserId && session.ownerUserId !== userId)) {
+  if (session?.ownerUserId !== userId) {
     return createProblemDetailsResponse(404, 'Upload session not found or has expired.', instanceUri);
   }
   if (key !== undefined && key !== session.key) {
