@@ -2351,6 +2351,17 @@ function toImageDecodeError(err: unknown): ConversionFailedError {
   return failure;
 }
 
+const RGB_CHANNEL_COUNT = 3;
+
+/** The EPS, EXR and Ultra HDR encoders read three bytes per pixel; any other layout would shear the picture. */
+function assertRgbSamples(info: sharp.OutputInfo, target: string): void {
+  if (info.channels !== RGB_CHANNEL_COUNT) {
+    throw new ConversionFailedError(
+      `Cannot encode .${target}: expected 3 colour channels per pixel but the decoded image has ${info.channels}`
+    );
+  }
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -2740,6 +2751,7 @@ export async function convertImage(
           const { data, info } = await pipeline
             .raw()
             .toBuffer({ resolveWithObject: true });
+          assertRgbSamples(info, fmt);
           const floatPix = new Float32Array(info.width * info.height * 3);
           for (let i = 0; i < data.length; i++) {
             floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
@@ -2764,6 +2776,7 @@ export async function convertImage(
         const { data, info } = await pipeline
           .raw()
           .toBuffer({ resolveWithObject: true });
+        assertRgbSamples(info, fmt);
         const floatPix = new Float32Array(info.width * info.height * 3);
         for (let i = 0; i < data.length; i++) {
           floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
@@ -2964,6 +2977,7 @@ export async function convertImage(
       const { data: rawRgb, info } = await pipeline
         .raw()
         .toBuffer({ resolveWithObject: true });
+      assertRgbSamples(info, fmt);
       outputBuffer = encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
       mimeType = 'application/postscript';
       break;
