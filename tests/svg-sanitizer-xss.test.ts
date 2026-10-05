@@ -828,3 +828,114 @@ describe('external CSS reference forms (PR #402 review item 3)', () => {
     }
   });
 });
+
+const PRESENTATION_URL_ATTRS = new Set(['fill', 'stroke', 'filter', 'clip-path', 'mask', 'marker-start', 'marker-mid', 'marker-end', 'cursor']);
+const ANIMATION_TAGS = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
+const ANIMATION_VALUE_ATTRS = new Set(['to', 'from', 'by', 'values']);
+
+/** Oracle: true when a value, read as a browser reads it, holds an external url()/src()/image-set(). */
+function hasExternalReference(value: string): boolean {
+  const flat = cssAsParsed(xmlEntitiesDecoded(value)).replace(/[\t\n\r]/g, '');
+  return (
+    /(?:url|src)\(\s*['"]?\s*(?:https?:|file:|ftp:|\/\/|\\\\|\/\\)/i.test(flat) ||
+    /image-set\([^)]*?['"(\s,](?:https?:|file:|ftp:|\/\/)/i.test(flat)
+  );
+}
+
+/** Oracle: external references in presentation attributes, and animations writing them. */
+function presentationLeaks(out: string): string[] {
+  const found: string[] = [];
+  for (const tag of parseTags(out)) {
+    const local = tag.name.replace(LOCAL_NAME, '').toLowerCase();
+    const attrs = tag.attrs.map((attr) => ({ local: attr.name.replace(LOCAL_NAME, '').toLowerCase(), value: attr.value }));
+    for (const attr of attrs) {
+      if (PRESENTATION_URL_ATTRS.has(attr.local) && hasExternalReference(attr.value)) found.push(`${tag.name}@${attr.local}=${attr.value}`);
+    }
+    if (!ANIMATION_TAGS.has(local)) continue;
+    const target = attrs.find((attr) => attr.local === 'attributename');
+    if (target === undefined || !PRESENTATION_URL_ATTRS.has(xmlEntitiesDecoded(target.value).trim().replace(LOCAL_NAME, '').toLowerCase())) continue;
+    for (const attr of attrs) {
+      if (ANIMATION_VALUE_ATTRS.has(attr.local) && hasExternalReference(attr.value)) found.push(`animation:${attr.local}=${attr.value}`);
+    }
+  }
+  return found;
+}
+
+describe('external references in presentation attributes (issue #403 item 1)', () => {
+  const hostile: Array<[string, string]> = [
+    ['fill', '<rect fill="url(http://e/x)"/>'],
+    ['stroke single-quoted', "<rect stroke='url(https://e/x)'/>"],
+    ['unquoted fill', '<rect fill=url(//e/x)/>'],
+    ['filter', '<rect filter="url(//e/x#f)"/>'],
+    ['clip-path', '<rect clip-path="url(http://e/x#c)"/>'],
+    ['mask', '<rect mask="url(http://e/x#m)"/>'],
+    ['marker-start', '<path marker-start="url(http://e/x#m)"/>'],
+    ['marker-mid', '<path marker-mid="url(http://e/x#m)"/>'],
+    ['marker-end', '<path marker-end="url(http://e/x#m)"/>'],
+    ['cursor', '<rect cursor="url(http://e/x.cur), auto"/>'],
+    ['mixed-case name', '<rect FiLl="url(http://e/x)"/>'],
+    ['prefixed name', '<rect svg:fill="url(http://e/x)"/>'],
+    ['decimal entity', '<rect fill="url(&#104;ttp://e)"/>'],
+    ['hex entity', '<rect fill="url(&#x68;ttp://e)"/>'],
+    ['css escape', '<rect fill="u\\72l(//e/x)"/>'],
+    ['css comment', '<rect fill="ur/**/l(http://e/x)"/>'],
+    ['quoted target', '<rect fill="url(&quot;http://e/x&quot;)"/>'],
+    ['tab in scheme', '<rect fill="url(ht&#9;tp://e/x)"/>'],
+    ['fallback colour', '<rect fill="url(http://e/x) red"/>'],
+    ['attribute after quote', '<rect id="a"fill="url(http://e/x)"/>'],
+  ];
+
+  for (const [label, markup] of hostile) {
+    it(`neutralizes: ${label}`, () => {
+      const out = sanitizeSvgString(`<svg>${markup}</svg>`);
+      expect(presentationLeaks(out)).toEqual([]);
+      expect(out).toContain('none');
+      expect(out).not.toContain('e/x');
+    });
+  }
+
+  it('replaces only the external reference', () => {
+    expect(sanitizeSvgString('<svg><rect fill="url(http://e/x) red" stroke="blue"/></svg>')).toBe(
+      '<svg><rect fill="none red" stroke="blue"/></svg>'
+    );
+  });
+
+  const benign = [
+    '<rect fill="url(#grad)"/>',
+    '<rect fill="url(#grad) red" stroke="#336699"/>',
+    '<rect fill="red" stroke="rgb(1,2,3)" filter="url(#f)"/>',
+    '<rect clip-path="url(&quot;#c&quot;)" mask="url(#m)"/>',
+    '<path marker-start="url(#a)" marker-mid="url(#a)" marker-end="url(#a)"/>',
+    '<rect cursor="pointer"/>',
+    '<rect fill="url(/rel/x.png)" title="url(http://e/x)"/>',
+  ];
+
+  for (const markup of benign) {
+    it(`keeps ${markup}`, () => {
+      const input = `<svg>${markup}</svg>`;
+      expect(sanitizeSvgString(input)).toBe(input);
+    });
+  }
+
+  it('does not rewrite text, comments or CDATA that mention a presentation attribute', () => {
+    const input = '<svg><text>fill="url(http://e/x)"</text><!-- <rect fill="url(http://e/x)"/> --></svg>';
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+
+  describe('linear time on 5 MB adversarial attributes', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const BUDGET_MS = 2000;
+    const adversarial: Array<[string, string]> = [
+      ['url openers', `<rect fill="${'url('.repeat(FIVE_MB / 4)}"/>`],
+      ['many attributes', `<rect ${'fill="url(http://e/x)" '.repeat(FIVE_MB / 24)}/>`],
+      ['many elements', '<rect fill="url(http://e/x)"/>'.repeat(FIVE_MB / 30)],
+    ];
+    for (const [label, body] of adversarial) {
+      it(`handles ${label}`, () => {
+        const start = performance.now();
+        sanitizeSvgString(`<svg>${body}</svg>`);
+        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+      });
+    }
+  });
+});

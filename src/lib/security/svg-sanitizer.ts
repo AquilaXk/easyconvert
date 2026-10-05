@@ -47,6 +47,18 @@ const ANIMATION_ELEMENTS = new Set(['set', 'animate', 'animatetransform', 'anima
 /** Animation attributes carrying the value(s) written into the targeted attribute. */
 const ANIMATION_VALUE_ATTRIBUTES = new Set(['to', 'from', 'by', 'values']);
 const LINK_ATTRIBUTES = new Set(['href', 'src']);
+/** Presentation attributes whose value is a paint, filter, mask, marker or cursor reference that may fetch a URL. */
+const PRESENTATION_URL_ATTRIBUTES = new Set([
+  'fill',
+  'stroke',
+  'filter',
+  'clip-path',
+  'mask',
+  'marker-start',
+  'marker-mid',
+  'marker-end',
+  'cursor',
+]);
 
 /** Elements removed together with their content when a matching close tag exists. */
 const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed'] as const;
@@ -929,6 +941,11 @@ function neutralizedAttribute(attribute: TagAttribute): string | null {
   if (ANIMATION_VALUE_ATTRIBUTES.has(local)) {
     return hasDangerousUriItem(attribute.value) ? `${local}="#"` : null;
   }
+  if (PRESENTATION_URL_ATTRIBUTES.has(local)) {
+    const sanitized = sanitizeCss(attribute.value, false);
+    if (sanitized === attribute.value) return null;
+    return `${attribute.name}="${sanitized.replace(/"/g, '&quot;')}"`;
+  }
   if (local === STYLE_ATTRIBUTE) {
     // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
     return `style="${sanitizeCss(attribute.value, false).replace(/"/g, '&quot;')}"`;
@@ -937,7 +954,7 @@ function neutralizedAttribute(attribute: TagAttribute): string | null {
 }
 
 /**
- * Rewrites href/src, animation value and style attributes, but only where the tokenizer finds a real attribute
+ * Rewrites href/src, animation value, presentation and style attributes, but only where the tokenizer finds a real attribute
  * inside a real tag; text, comments and attribute values that merely mention them are left untouched.
  */
 function rewriteAttributes(src: string): string {
