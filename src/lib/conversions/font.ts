@@ -894,6 +894,18 @@ function readSvgFontMetrics(font: ParsedFont): { unitsPerEm: number; ascent: num
  * Encodes ParsedFont into W3C SVG Font representation
  */
 export function encodeSvgFont(font: ParsedFont, defaultName: string): Buffer {
+  try {
+    return encodeSvgFontDocument(font, defaultName);
+  } catch (error) {
+    // The runtime refuses strings past its length limit with a RangeError; report it as a conversion failure.
+    if (error instanceof RangeError) {
+      throw new ConversionFailedError('Cannot write an SVG font: the glyph outlines are too large for one document.');
+    }
+    throw error;
+  }
+}
+
+function encodeSvgFontDocument(font: ParsedFont, defaultName: string): Buffer {
   const family = font.fontFamily || defaultName || 'EasyConvertFont';
 
   // Real outlines only: TrueType glyf, or the CFF charstrings of an OpenType CFF font.
@@ -906,14 +918,22 @@ export function encodeSvgFont(font: ParsedFont, defaultName: string): Buffer {
       'Cannot write an SVG font: the font has no extractable glyph outlines (no non-empty glyf glyphs or cmap-mapped CFF glyphs).'
     );
   }
+  const { unitsPerEm, ascent, descent } = readSvgFontMetrics(font);
+  const missingAdvance = Math.round(unitsPerEm / 2);
+  return Buffer.from(renderSvgFont(extracted, family, { unitsPerEm, ascent, descent, missingAdvance }), 'utf-8');
+}
+
+function renderSvgFont(
+  extracted: Array<{ unicode: string; d: string; advWidth: number }>,
+  family: string,
+  metrics: { unitsPerEm: number; ascent: number; descent: number; missingAdvance: number }
+): string {
+  const { unitsPerEm, ascent, descent, missingAdvance } = metrics;
   const glyphsXml: string[] = [];
   for (const g of extracted) {
     glyphsXml.push(`<glyph unicode="${escapeXml(g.unicode)}" horiz-adv-x="${g.advWidth}" d="${g.d}" />`);
   }
-
-  const { unitsPerEm, ascent, descent } = readSvgFontMetrics(font);
-  const missingAdvance = Math.round(unitsPerEm / 2);
-  const svg = `<?xml version="1.0" standalone="no"?>
+  return `<?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -924,8 +944,6 @@ export function encodeSvgFont(font: ParsedFont, defaultName: string): Buffer {
     </font>
   </defs>
 </svg>`;
-
-  return Buffer.from(svg, 'utf-8');
 }
 
 export interface SequentialMapGroup {
@@ -2541,6 +2559,19 @@ const SVG_PATH_DECIMALS = 100;
  */
 const CFF_BASE_OUTPUT_POINTS = 250_000;
 const CFF_OUTPUT_POINTS_PER_TABLE_BYTE = 2;
+/**
+ * Output points allowed whatever the table size (padding must not buy a bigger budget). The largest
+ * real CFF tables measured need about 4.5 million; 12 million points are a 60 MB glyf table.
+ */
+const CFF_ABSOLUTE_MAX_OUTPUT_POINTS = 12_000_000;
+/**
+ * Characters of SVG path data allowed across all glyphs of a CFF to SVG conversion. The largest real
+ * font measured (4.1 million line segments) writes about 50 million; the cap keeps the document far
+ * below the string length limit of the runtime.
+ */
+export const CFF_SVG_MAX_PATH_CHARS = 96_000_000;
+/** Coordinates beyond this magnitude are not written to an SVG path (no exponent notation, no overflow). */
+const SVG_MAX_COORDINATE_MAGNITUDE = 1e9;
 
 function makeSfntTable(tag: string, data: Buffer): SfntTable {
   return { tag, checkSum: calculateTableChecksum(data), offset: 0, length: data.length, data };
@@ -2768,7 +2799,7 @@ function unionBounds(a: GlyphBounds, b: GlyphBounds): GlyphBounds {
 
 function checkedAdvanceWidth(advance: number, glyphId: number): number {
   if (!Number.isInteger(advance) || advance < 0 || advance > UINT16_MAX) {
-    throw new ConversionFailedError(`Cannot convert the CFF font to TrueType: glyph ${glyphId} has the advance width ${advance}.`);
+    throw new ConversionFailedError(`Cannot convert the CFF font: glyph ${glyphId} has the advance width ${advance}.`);
   }
   return advance;
 }
@@ -2800,7 +2831,11 @@ function convertCffFontToTrueType(font: ParsedFont): ParsedFont {
   const tolerance = unitsPerEm * CFF_QUADRATIC_TOLERANCE_PER_EM;
   // Advances come from hmtx when the font has one (the OpenType authority), else from the charstrings.
   const hmtxAdvances = readHorizontalAdvances(font, cff.numGlyphs);
-  const glyf = new GlyfTableBuilder(CFF_BASE_OUTPUT_POINTS + CFF_OUTPUT_POINTS_PER_TABLE_BYTE * cffData.length);
+  const pointBudget = Math.min(
+    CFF_BASE_OUTPUT_POINTS + CFF_OUTPUT_POINTS_PER_TABLE_BYTE * cffData.length,
+    CFF_ABSOLUTE_MAX_OUTPUT_POINTS
+  );
+  const glyf = new GlyfTableBuilder(pointBudget);
   const metrics = new HorizontalMetricsBuilder(cff.numGlyphs);
   for (let g = 0; g < cff.numGlyphs; g++) {
     const glyph = cff.glyph(g);
@@ -2840,6 +2875,9 @@ function glyfTablesFor(built: ReturnType<GlyfTableBuilder['finish']>): Record<st
 }
 
 function formatSvgNumber(value: number): string {
+  if (!Number.isFinite(value) || Math.abs(value) > SVG_MAX_COORDINATE_MAGNITUDE) {
+    throw new ConversionFailedError(`Cannot write an SVG path: the coordinate ${value} is not a usable finite number.`);
+  }
   return String(Math.round(value * SVG_PATH_DECIMALS) / SVG_PATH_DECIMALS);
 }
 
@@ -2868,7 +2906,10 @@ function cffContoursToSvgPath(contours: CffContour[], matrix: CffMatrix | null):
  * Extracts real vector glyphs from the CFF table of an OpenType font. Only glyphs the cmap maps to
  * a character are returned, since an SVG font addresses glyphs by character.
  */
-export function extractCffGlyphs(font: ParsedFont): Array<{ unicode: string; d: string; advWidth: number }> {
+export function extractCffGlyphs(
+  font: ParsedFont,
+  maxPathChars = CFF_SVG_MAX_PATH_CHARS
+): Array<{ unicode: string; d: string; advWidth: number }> {
   const cffTable = font.tables['CFF '];
   if (!cffTable) return [];
   const cff = parseCff(cffTable.data);
@@ -2877,13 +2918,20 @@ export function extractCffGlyphs(font: ParsedFont): Array<{ unicode: string; d: 
   const advances = readHorizontalAdvances(font, cff.numGlyphs);
 
   const result: Array<{ unicode: string; d: string; advWidth: number }> = [];
+  let pathChars = 0;
   for (let g = 0; g < cff.numGlyphs; g++) {
     const unicode = glyphToUnicode.get(g);
     if (unicode === undefined) continue;
     const glyph = cff.glyph(g);
     const d = cffContoursToSvgPath(glyph.contours, fontMatrixToUnits(glyph.matrix, unitsPerEm));
-    const advWidth = advances === null ? Math.round(glyph.width) : advances[g];
-    result.push({ unicode, d, advWidth });
+    pathChars += d.length;
+    if (pathChars > maxPathChars) {
+      throw new ConversionFailedError(
+        `Cannot write an SVG font: the glyph outlines need more than ${maxPathChars} characters of path data.`
+      );
+    }
+    const advance = advances === null ? Math.round(glyph.width) : advances[g];
+    result.push({ unicode, d, advWidth: checkedAdvanceWidth(advance, g) });
   }
   return result;
 }

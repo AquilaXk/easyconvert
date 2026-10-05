@@ -490,4 +490,55 @@ export function buildOtf(spec: OtfSpec): Buffer {
   return assembleSfnt(OTTO, tables);
 }
 
+/** Appends zero bytes to a CFF table; nothing refers to them, so only the table size grows. */
+export function padCff(cff: Buffer, totalBytes: number): Buffer {
+  return cff.length >= totalBytes ? cff : Buffer.concat([cff, Buffer.alloc(totalBytes - cff.length)]);
+}
+
+function wideIndex(items: Buffer[]): Buffer {
+  return buildIndex(items, 4);
+}
+
+/**
+ * A CID-keyed CFF table with `fontDictCount` font DICTs whose Private DICT ranges all start one byte
+ * apart inside `rangeBytes` of zero padding, so every range is distinct yet they overlap almost fully.
+ */
+export function buildOverlappingPrivateCff(rangeBytes: number, fontDictCount: number): Buffer {
+  const header = Buffer.from([1, 0, 4, 4]);
+  const nameIndex = wideIndex([Buffer.from('Overlap')]);
+  const stringIndex = wideIndex([]);
+  const globalSubrs = wideIndex([]);
+  const charStrings = wideIndex([cs('endchar'), cs('endchar')]);
+  const fdSelect = Buffer.from([0, 0, 0]);
+  const topLength = (): number => 5 * 3 + 2 + 5 + 2 + 5 + 1 + 5 + 2;
+  const topIndexLength = wideIndex([Buffer.alloc(topLength())]).length;
+  const charStringsOffset = header.length + nameIndex.length + topIndexLength + stringIndex.length + globalSubrs.length;
+  const fdSelectOffset = charStringsOffset + charStrings.length;
+  const fdArrayOffset = fdSelectOffset + fdSelect.length;
+  const fdDictLength = 5 + 5 + 1;
+  const fdArrayLength = wideIndex(Array.from({ length: fontDictCount }, () => Buffer.alloc(fdDictLength))).length;
+  const paddingOffset = fdArrayOffset + fdArrayLength;
+  const privateSize = rangeBytes - fontDictCount - 8;
+  const fontDicts = Array.from({ length: fontDictCount }, (_, i) =>
+    Buffer.from([...dictInt(privateSize), ...dictInt(paddingOffset + i), 18])
+  );
+  const topDict = Buffer.from([
+    ...dictInt(391), ...dictInt(392), ...dictInt(0), 12, 30,
+    ...dictInt(fdSelectOffset), 12, 37,
+    ...dictInt(charStringsOffset), 17,
+    ...dictInt(fdArrayOffset), 12, 36,
+  ]);
+  return Buffer.concat([
+    header,
+    nameIndex,
+    wideIndex([topDict]),
+    stringIndex,
+    globalSubrs,
+    charStrings,
+    fdSelect,
+    wideIndex(fontDicts),
+    Buffer.alloc(rangeBytes),
+  ]);
+}
+
 export { STANDARD_STRING_COUNT };
