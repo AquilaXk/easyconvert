@@ -1043,12 +1043,17 @@ export function decodeHtmlEntities(str: string): string {
     .replace(/&amp;/gi, '&');
 }
 
+/** How much of a payload `isSvg` inspects: large binary images must not be decoded into strings. */
+const SVG_SNIFF_BYTES = 256 * 1024;
+const SVG_SNIFF_CHARS = SVG_SNIFF_BYTES;
+
 /**
  * Checks whether the given buffer or text represents an SVG document.
  */
 export function isSvg(input: string | Buffer): boolean {
   if (!input) return false;
-  const str = typeof input === 'string' ? input : input.toString('utf-8');
+  // The root element follows only an XML declaration, comments and a doctype, so the start decides.
+  const str = typeof input === 'string' ? input.slice(0, SVG_SNIFF_CHARS) : input.toString('utf-8', 0, SVG_SNIFF_BYTES);
 
   // Guard against binary files
   if (typeof input !== 'string') {
