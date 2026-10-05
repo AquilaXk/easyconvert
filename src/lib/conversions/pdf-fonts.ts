@@ -87,7 +87,7 @@ const LONG_TOKEN_CHARS = 64;
 /** Points kept free at the end of a pre-broken line, so kerning never pushes it past the width. */
 const LINE_FIT_MARGIN = 1;
 /** Characters that stay with the preceding character when a token is broken: marks, joiners, selectors. */
-const CLUSTER_EXTENDER = /[\p{M}\u200D\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
+const CLUSTER_EXTENDER = /\p{M}|\u200D|[\uFE00-\uFE0F]|[\u{E0100}-\u{E01EF}]/u;
 /** First code point that can extend a cluster (U+0300 COMBINING GRAVE ACCENT). */
 const FIRST_CLUSTER_EXTENDER = 0x300;
 const ASCII_LIMIT = 0x80;

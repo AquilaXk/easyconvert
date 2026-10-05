@@ -42,7 +42,7 @@ const SAMPLES = {
 
 const ARABIC_LINE = 'مرحبا بكم في اختبار تحويل المستندات';
 const BRANDING = /EasyConvert|Generated with/i;
-const BIDI_CONTROLS = /[‎‏‪-‮⁦-⁩]/g;
+const BIDI_CONTROLS = /[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 const POPPLER_TOOLS: ExternalOracleTool[] = ['pdftotext', 'pdffonts', 'pdfinfo', 'fc-list'];
 const LIBREOFFICE_TOOLS: ExternalOracleTool[] = ['soffice', ...POPPLER_TOOLS];
 const LIBREOFFICE_TIMEOUT_MS = 180_000;
