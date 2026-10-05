@@ -23,6 +23,7 @@ const COMMENT_OPEN = '<!--';
 const COMMENT_CLOSE = '-->';
 const COMMENT_OPEN_LENGTH = COMMENT_OPEN.length;
 const DOCTYPE_OPEN = '<!doctype';
+const EVENT_PREFIX = 'on';
 
 /** Elements removed together with their content when a matching close tag exists. */
 const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed'] as const;
@@ -256,6 +257,119 @@ function sanitizeStyleElements(src: string): string {
   return parts.join('');
 }
 
+interface TagAttribute {
+  name: string;
+  /** Index of the first character of the attribute name. */
+  start: number;
+  /** Index just past the attribute value (or name when it has none); the input length when a quote is unterminated. */
+  end: number;
+  /** Raw value without surrounding quotes. */
+  value: string;
+}
+
+interface TagToken {
+  name: string;
+  attributes: TagAttribute[];
+  /** Index just past the closing '>', or the input length when the tag is unterminated. */
+  end: number;
+  terminated: boolean;
+}
+
+function isTagNameStart(src: string, index: number): boolean {
+  const ch = src.charAt(index);
+  return ch === '_' || ch === ':' || /[A-Za-z]/.test(ch);
+}
+
+function skipWhitespace(src: string, from: number): number {
+  let i = from;
+  while (i < src.length && isWhitespaceAt(src, i)) i++;
+  return i;
+}
+
+/**
+ * Tokenizes the tag opening at `lt` the way an HTML/XML parser does: whitespace, '/' and the end of a quoted
+ * value all separate attributes, so `<svg/onload=x>` and `<svg a="b"onload=x>` expose an `onload` attribute.
+ * Runs in time linear in the tag length.
+ */
+function readTag(src: string, lt: number): TagToken {
+  const length = src.length;
+  let i = lt + 1;
+  while (i < length && !isWhitespaceAt(src, i) && src[i] !== '/' && src[i] !== '>') i++;
+  const name = src.slice(lt + 1, i);
+  const attributes: TagAttribute[] = [];
+
+  for (;;) {
+    while (i < length && (isWhitespaceAt(src, i) || src[i] === '/')) i++;
+    if (i >= length) return { name, attributes, end: length, terminated: false };
+    if (src[i] === '>') return { name, attributes, end: i + 1, terminated: true };
+
+    const start = i;
+    i++;
+    while (i < length && !isWhitespaceAt(src, i) && src[i] !== '/' && src[i] !== '>' && src[i] !== '=') i++;
+    const attrName = src.slice(start, i);
+    const afterName = skipWhitespace(src, i);
+    if (src[afterName] !== '=') {
+      attributes.push({ name: attrName, start, end: i, value: '' });
+      continue;
+    }
+
+    const valueStart = skipWhitespace(src, afterName + 1);
+    const quote = src.charAt(valueStart);
+    if (quote === '"' || quote === "'") {
+      const close = src.indexOf(quote, valueStart + 1);
+      if (close === -1) {
+        attributes.push({ name: attrName, start, end: length, value: src.slice(valueStart + 1) });
+        return { name, attributes, end: length, terminated: false };
+      }
+      attributes.push({ name: attrName, start, end: close + 1, value: src.slice(valueStart + 1, close) });
+      i = close + 1;
+    } else {
+      let valueEnd = valueStart;
+      while (valueEnd < length && !isWhitespaceAt(src, valueEnd) && src[valueEnd] !== '>') valueEnd++;
+      attributes.push({ name: attrName, start, end: valueEnd, value: src.slice(valueStart, valueEnd) });
+      i = valueEnd;
+    }
+  }
+}
+
+function isEventHandlerName(attributeName: string): boolean {
+  const lowered = attributeName.replace(/^["'=]+/, '').toLowerCase();
+  const local = lowered.slice(lowered.lastIndexOf(':') + 1);
+  return local.length > EVENT_PREFIX.length && local.startsWith(EVENT_PREFIX);
+}
+
+/**
+ * Removes every on* attribute from every tag in linear time, wherever the attribute sits in the tag
+ * (after whitespace, '/', or the closing quote of the previous value). Text outside tags is untouched.
+ */
+function stripEventHandlerAttributes(src: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  let search = 0;
+
+  for (;;) {
+    const lt = src.indexOf('<', search);
+    if (lt === -1) break;
+    if (!isTagNameStart(src, lt + 1)) {
+      search = lt + 1;
+      continue;
+    }
+    const tag = readTag(src, lt);
+    for (const attribute of tag.attributes) {
+      if (!isEventHandlerName(attribute.name)) continue;
+      let removeStart = attribute.start;
+      while (removeStart > copied && isWhitespaceAt(src, removeStart - 1)) removeStart--;
+      parts.push(src.slice(copied, removeStart));
+      copied = attribute.end;
+    }
+    search = tag.end;
+  }
+
+  if (copied === 0 && parts.length === 0) return src;
+  parts.push(src.slice(copied));
+  return parts.join('');
+}
+
 /**
  * One pass of dangerous markup removal; callers repeat until stable to defeat split-opener tricks.
  */
@@ -263,7 +377,7 @@ function stripDangerousMarkupPass(input: string): string {
   let result = stripDoctype(input);
   for (const name of PAIRED_DANGEROUS_ELEMENTS) result = stripElement(result, name, true);
   for (const name of VOID_DANGEROUS_ELEMENTS) result = stripElement(result, name, false);
-  return result.replace(/\son[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  return stripEventHandlerAttributes(result);
 }
 
 /**

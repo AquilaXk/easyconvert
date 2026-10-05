@@ -121,3 +121,55 @@ describe('inline style rewrite keeps quote structure (item 3)', () => {
     );
   });
 });
+
+describe('on* attribute stripping without leading whitespace (item 4)', () => {
+  const payloads: Array<[string, string]> = [
+    ['slash separator', '<svg/onload=alert(1)>'],
+    ['quote-adjacent attribute', '<svg a="b"onload=alert(1)>'],
+    ['single-quote-adjacent attribute', "<svg a='b'onload=alert(1)>"],
+    ['slash before quoted value', '<svg/onload="alert(1)"><rect/></svg>'],
+    ['mixed case', '<svg a="b"/OnLoAd=alert(1)>'],
+    ['whitespace around equals', '<svg\nonload\n=\n"alert(1)">'],
+    ['namespaced handler', '<svg xmlns:x="u" x:onload="alert(1)">'],
+  ];
+
+  for (const [label, payload] of payloads) {
+    it(`strips the handler: ${label}`, () => {
+      const out = sanitizeSvgString(payload);
+      expect(executableConstructs(out)).toEqual([]);
+      expect(out.toLowerCase()).not.toContain('alert(1)');
+    });
+  }
+
+  it('keeps the other attributes of a tag whose handler was stripped', () => {
+    const out = sanitizeSvgString('<svg a="b"onload=alert(1) c="d"><rect/></svg>');
+    expect(parseTags(out)[0].attrs).toEqual([
+      { name: 'a', value: 'b', quote: '"' },
+      { name: 'c', value: 'd', quote: '"' },
+    ]);
+  });
+
+  it('does not alter text content or attribute values that merely mention on* names', () => {
+    const input = '<svg><text title="see onload=1">press onclick=now, then a/onload=x</text></svg>';
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+
+  it('keeps names that only start with on inside other words intact', () => {
+    const input = '<svg><rect data-onion="1" fill="red"/></svg>';
+    expect(sanitizeSvgString(input)).toBe('<svg><rect data-onion="1" fill="red"/></svg>');
+  });
+
+  it('removes an unterminated quoted handler through the end of input', () => {
+    const out = sanitizeSvgString('<svg a="b"onload="alert(1)');
+    expect(out).toBe('<svg a="b"');
+  });
+
+  it('strips handlers on a large tag in linear time', () => {
+    const attrs = ' a="1"onload=x'.repeat(20000);
+    const start = performance.now();
+    const out = sanitizeSvgString(`<svg${attrs}>`);
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(out.startsWith('<svg a="1" a="1"')).toBe(true);
+    expect(out).not.toContain('onload');
+  });
+});
