@@ -356,7 +356,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
           key: session.key,
         },
         credentials: {
-          accessKeyId: 'DEV_ACCESS_KEY_ID',
+          accessKeyId: 'local-emulation',
           secretAccessKey: s3Storage.getSigningSecret(),
           region: 'us-east-1',
           service: 's3',
@@ -446,7 +446,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
           key: session.key,
         },
         credentials: {
-          accessKeyId: 'DEV_ACCESS_KEY_ID',
+          accessKeyId: 'local-emulation',
           secretAccessKey: s3Storage.getSigningSecret(),
           region: 'us-east-1',
           service: 's3',
@@ -502,7 +502,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
           'x-custom-token': 'secret-token-value',
         },
         credentials: {
-          accessKeyId: 'DEV_ACCESS_KEY_ID',
+          accessKeyId: 'local-emulation',
           secretAccessKey: s3Storage.getSigningSecret(),
           region: 'us-east-1',
           service: 's3',

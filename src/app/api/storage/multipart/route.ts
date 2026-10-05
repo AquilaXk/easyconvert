@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { s3Storage } from '@/lib/storage/s3-storage';
+import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
@@ -309,8 +310,9 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        if (s3Storage.generatePresignedUploadUrl) {
-          const presigned = s3Storage.generatePresignedUploadUrl(key, partNumber, uploadId, expiresInSeconds);
+        const presigner: IStorageBackend = s3Storage;
+        if (presigner.generatePresignedUploadUrl) {
+          const presigned = presigner.generatePresignedUploadUrl(key, partNumber, uploadId, expiresInSeconds);
           return NextResponse.json({ success: true, ...presigned });
         }
       } else if (type === 'download') {
@@ -323,8 +325,9 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        if (s3Storage.generatePresignedDownloadUrl) {
-          const presigned = s3Storage.generatePresignedDownloadUrl(key, expiresInSeconds);
+        const presigner: IStorageBackend = s3Storage;
+        if (presigner.generatePresignedDownloadUrl) {
+          const presigned = presigner.generatePresignedDownloadUrl(key, expiresInSeconds);
           return NextResponse.json({ success: true, ...presigned });
         }
       }

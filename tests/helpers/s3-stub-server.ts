@@ -120,6 +120,8 @@ export async function startS3StubServer(options: {
 }): Promise<S3StubServer> {
   const objects = new Map<string, StoredStubObject>();
   const uploads = new Map<string, Map<number, Buffer>>();
+  /** Content-Type and `x-amz-meta-*` given at CreateMultipartUpload, which S3 applies to the assembled object. */
+  const uploadInfo = new Map<string, { contentType: string; metadata: Record<string, string> }>();
   const requests: StubRequestRecord[] = [];
   const faults: StubFault[] = [];
   const complete: StubCompleteBehavior = {};
@@ -220,6 +222,10 @@ export async function startS3StubServer(options: {
       uploadCounter += 1;
       const id = `stub-upload-${uploadCounter}`;
       uploads.set(id, new Map());
+      uploadInfo.set(id, {
+        contentType: String(record.headers['content-type'] ?? 'binary/octet-stream'),
+        metadata: metadataFrom(record.headers),
+      });
       send(res, 200, `<InitiateMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${record.key}</Key><UploadId>${id}</UploadId></InitiateMultipartUploadResult>`);
       return;
     }
@@ -269,6 +275,7 @@ export async function startS3StubServer(options: {
       }
       case 'DELETE':
         uploads.delete(uploadId);
+        uploadInfo.delete(uploadId);
         send(res, 204);
         return;
       case 'POST':
@@ -309,8 +316,15 @@ export async function startS3StubServer(options: {
     // S3 multipart ETag: MD5 of the concatenated binary part MD5s, then "-<part count>".
     const partDigests = Buffer.concat(ordered.map((part) => s3EtagMd5(part)));
     const etag = `"${s3EtagMd5(partDigests).toString('hex')}-${ordered.length}"`;
-    objects.set(key, { body: Buffer.concat(ordered), contentType: 'application/octet-stream', etag });
+    const info = uploadInfo.get(uploadId);
+    objects.set(key, {
+      body: Buffer.concat(ordered),
+      contentType: info?.contentType ?? 'application/octet-stream',
+      etag,
+      metadata: info?.metadata ?? {},
+    });
     uploads.delete(uploadId);
+    uploadInfo.delete(uploadId);
     complete.afterComplete?.(key);
     if (complete.failAfterComplete) {
       const { status, code } = complete.failAfterComplete;

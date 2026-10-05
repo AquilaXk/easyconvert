@@ -53,8 +53,8 @@ export interface StoragePresignedUrlResult {
 
 /**
  * Universal Async Stream-First Object Storage Interface.
- * Standardizes storage abstraction across local filesystem spooling, AWS S3,
- * OCI Object Storage S3 Compatibility, and MinIO backends.
+ * Standardizes storage abstraction across the local filesystem and S3-compatible object stores
+ * (OCI Object Storage S3 Compatibility API, MinIO, and other S3-compatible services).
  */
 export interface IObjectStorage {
   readonly providerName: string;
@@ -133,9 +133,11 @@ export interface IObjectStorage {
   presignGet(key: string, expiresInSeconds?: number): Promise<StoragePresignedUrlResult>;
 
   /**
-   * Validates authenticity and expiration of a presigned signature.
+   * Validates authenticity and expiration of a signature this provider minted itself. Only a
+   * provider that serves its own URLs implements it; a remote object store verifies its own
+   * presigned URLs, so an S3-compatible provider has nothing to check here.
    */
-  verifyPresignedSignature(
+  verifyPresignedSignature?(
     method: string,
     key: string,
     expiresAt: number,

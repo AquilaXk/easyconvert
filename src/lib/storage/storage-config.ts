@@ -43,6 +43,16 @@ export interface LocalStorageConfig {
 
 export type StorageConfig = RemoteStorageConfig | LocalStorageConfig;
 
+/**
+ * Local-emulation URLs are served and verified by this application with its signing secret, so
+ * their SigV4 credential scope is a label that carries no authority: it is not an object store
+ * credential, and such URLs never leave the application's own origin.
+ */
+export const LOCAL_EMULATION_ACCESS_KEY_ID = 'local-emulation';
+export const LOCAL_EMULATION_REGION = 'local';
+/** Route that receives parts of a local multipart session. */
+export const LOCAL_DIRECT_PART_PATH = '/api/v1/uploads/direct/part';
+
 const STORAGE_DRIVERS: ReadonlySet<string> = new Set<StorageDriver>(['oci', 's3', 'local']);
 const PRODUCTION = 'production';
 const PRODUCTION_BUILD_PHASE = 'phase-production-build';
@@ -82,7 +92,14 @@ const AWS_FALLBACK_VARIABLES: CredentialVariables = {
   bucket: ['AWS_BUCKET_NAME'],
 };
 
-const SIGNING_SECRET_VARIABLES: readonly string[] = ['STORAGE_SIGNING_SECRET', 'S3_SIGNING_SECRET', 'OCI_SIGNING_SECRET'];
+/** Variables that may hold the signing secret, in order of precedence; each backend reads its own subset. */
+export const ANY_SIGNING_SECRET_VARIABLES: readonly string[] = [
+  'STORAGE_SIGNING_SECRET',
+  'S3_SIGNING_SECRET',
+  'OCI_SIGNING_SECRET',
+];
+export const S3_SIGNING_SECRET_VARIABLES: readonly string[] = ['S3_SIGNING_SECRET', 'STORAGE_SIGNING_SECRET'];
+export const OCI_SIGNING_SECRET_VARIABLES: readonly string[] = ['STORAGE_SIGNING_SECRET', 'OCI_SIGNING_SECRET'];
 
 let awsFallbackWarned = false;
 let localInProductionWarned = false;
@@ -122,8 +139,11 @@ export function isProductionRuntime(env: Env = process.env): boolean {
  * tokens). It is distinct from the object store credentials. Returns undefined when none is set;
  * callers must refuse to sign then, never invent a secret.
  */
-export function resolveSigningSecret(env: Env = process.env): string | undefined {
-  return firstVar(env, SIGNING_SECRET_VARIABLES)?.value;
+export function resolveSigningSecret(
+  env: Env = process.env,
+  names: readonly string[] = ANY_SIGNING_SECRET_VARIABLES
+): string | undefined {
+  return firstVar(env, names)?.value;
 }
 
 /**

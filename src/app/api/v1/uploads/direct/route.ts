@@ -96,21 +96,14 @@ export async function POST(req: NextRequest) {
     chosenPartSize
   );
 
-  // 4. Generate presigned part URLs
-  const isLocal =
-    process.env.STORAGE_EMULATION === 'true' ||
-    req.nextUrl?.hostname === 'localhost' ||
-    req.nextUrl?.hostname === '127.0.0.1' ||
-    !process.env.S3_ENDPOINT;
-
+  // 4. Generate presigned part URLs (local storage serves them from this application)
   const parts = Array.from({ length: totalParts }, (_, idx) => {
     const partNumber = idx + 1;
     const presigned = s3Storage.generatePresignedUploadPartUrl(
       session.key,
       session.uploadId,
       partNumber,
-      900,
-      isLocal
+      900
     );
     return {
       partNumber,

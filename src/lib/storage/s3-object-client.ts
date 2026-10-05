@@ -316,7 +316,8 @@ export class S3ObjectClient {
   readonly #secretAccessKey: string;
   readonly #sessionToken?: string;
   private readonly forcePathStyle: boolean;
-  private readonly partSizeBytes: number;
+  /** Multipart part size used when streaming an upload of unknown size. */
+  readonly partSizeBytes: number;
   private readonly maxAttempts: number;
   private readonly retryBaseDelayMs: number;
   private readonly requestTimeoutMs: number;

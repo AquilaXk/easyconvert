@@ -90,13 +90,3 @@ export class StorageSigningSecretMissingError extends Error {
     this.name = 'StorageSigningSecretMissingError';
   }
 }
-
-/** The configured storage backend cannot mint the requested kind of URL. */
-export class StoragePresignUnavailableError extends Error {
-  readonly code = 'STORAGE_PRESIGN_UNAVAILABLE';
-
-  constructor(message: string) {
-    super(message);
-    this.name = 'StoragePresignUnavailableError';
-  }
-}

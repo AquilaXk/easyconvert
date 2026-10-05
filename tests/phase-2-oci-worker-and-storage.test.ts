@@ -21,7 +21,8 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
 
       if (typeof ociStorage.generatePresignedUploadUrl === 'function') {
         const presigned = ociStorage.generatePresignedUploadUrl(init.key, 1, init.uploadId, 3600);
-        expect(presigned.url).toContain('https://');
+        // Local storage mints URLs that point back at this application, never at a remote host.
+        expect(new URL(presigned.url).pathname).toBe('/api/v1/uploads/direct/part');
         expect(presigned.url).toContain(init.uploadId);
         expect(presigned.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
       }
