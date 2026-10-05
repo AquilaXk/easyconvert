@@ -5,7 +5,12 @@ import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
-import { ClientIpError, UNATTRIBUTED_CLIENT_KEY, rateLimitKey } from '@/lib/security/client-ip';
+import {
+  CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+  ClientIpError,
+  UNATTRIBUTED_CLIENT_KEY,
+  rateLimitKey,
+} from '@/lib/security/client-ip';
 import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 
 export { extractClientIp };
@@ -311,6 +316,7 @@ function resolveClientIpForAuth(request: Request): { clientIp: string } | { reje
         authorized: false,
         error: malformed ? CLIENT_IP_INVALID_ERROR_MESSAGE : CLIENT_IP_CONFIG_ERROR_MESSAGE,
         status: error.status,
+        ...(malformed ? {} : { retryAfterSeconds: CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS }),
       },
     };
   }

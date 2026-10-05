@@ -197,12 +197,15 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
     expect(body.instance).toBe(PROBE_PATH);
   });
 
-  it('fails closed with a 500 problem document when TRUSTED_PROXIES is misconfigured', async () => {
+  it('fails closed with a 503 problem document and Retry-After when TRUSTED_PROXIES is misconfigured', async () => {
     vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/33');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const middleware = await loadMiddleware();
     const res = middleware(apiRequest({ 'x-forwarded-for': '198.51.100.7' }));
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(503);
     expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
+    vi.restoreAllMocks();
   });
 
   describe('production must declare its trust mode', () => {

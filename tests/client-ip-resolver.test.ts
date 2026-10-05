@@ -23,7 +23,9 @@ function req(headers: Record<string, string> = {}): Request {
   return new Request('http://localhost/api/v1/jobs', { headers });
 }
 
-function cfg(raw: { trustedProxies?: string; trustedCdn?: string } = {}): ClientIpConfig {
+function cfg(
+  raw: { trustedProxies?: string; trustedCdn?: string; trustedProxyHeader?: string } = {}
+): ClientIpConfig {
   return parseClientIpConfig(raw);
 }
 
@@ -176,12 +178,34 @@ describe('parseClientIpConfig', () => {
     expect(c.cdnRanges).toBeNull();
   });
 
-  it.each(['10.0.0.0/33', 'abc', '10.0.0.0/8/9', '10.0.0.0/x', '2001:db8::/129', '10.0.0.0/8,,'])(
+  it.each(['10.0.0.0/33', 'abc', '10.0.0.0/8/9', '10.0.0.0/x', '2001:db8::/129'])(
     'throws ClientIpConfigError for malformed TRUSTED_PROXIES entry list %j',
     (raw) => {
       expect(() => parseClientIpConfig({ trustedProxies: raw })).toThrow(ClientIpConfigError);
     }
   );
+
+  it('ignores empty entries (trailing commas, stray spaces) in a TRUSTED_PROXIES list', () => {
+    const c = parseClientIpConfig({ trustedProxies: ' 10.0.0.0/8 , ,192.168.0.0/16,, ' });
+    expect(c.trustedProxies).toHaveLength(2);
+    expect(ipOf({ 'x-forwarded-for': '198.51.100.7, 192.168.4.4' }, c)).toBe('198.51.100.7');
+  });
+
+  it('treats a list with no entries at all as undeclared rather than as "none"', () => {
+    const c = parseClientIpConfig({ trustedProxies: ' , ,' });
+    expect(c.trustedProxies).toBeNull();
+    expect(isClientIpTrustDeclared(c)).toBe(false);
+  });
+
+  it('maps configuration errors to HTTP 503', () => {
+    try {
+      parseClientIpConfig({ trustedProxies: 'abc' });
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ClientIpConfigError);
+      expect((error as ClientIpConfigError).status).toBe(503);
+    }
+  });
 
   it('bounds the number of trusted ranges', () => {
     const tooMany = Array.from({ length: MAX_TRUSTED_RANGES + 1 }, (_, i) => `10.0.${i % 256}.${Math.floor(i / 256)}`).join(',');
@@ -395,15 +419,15 @@ describe('resolveClientIp: malformed chains throw typed errors', () => {
   });
 });
 
-describe('resolveClientIp: RFC 7239 Forwarded header', () => {
-  const proxies = cfg({ trustedProxies: '10.0.0.0/8,2001:db8:cafe::/48' });
+describe('resolveClientIp: RFC 7239 Forwarded header (TRUSTED_PROXY_HEADER=forwarded)', () => {
+  const proxies = cfg({ trustedProxies: '10.0.0.0/8,2001:db8:cafe::/48', trustedProxyHeader: 'forwarded' });
 
   it('walks for= parameters from the right, skipping trusted proxies', () => {
     expect(ipOf({ forwarded: 'for=203.0.113.50, for=198.51.100.7;proto=https, for=10.0.0.4' }, proxies)).toBe('198.51.100.7');
   });
 
   it('parses the RFC 7239 examples (sections 4 and 7.1)', () => {
-    const open = cfg({ trustedProxies: '198.51.100.0/24' });
+    const open = cfg({ trustedProxies: '198.51.100.0/24', trustedProxyHeader: 'forwarded' });
     expect(ipOf({ forwarded: 'for=192.0.2.60;proto=http;by=203.0.113.43' }, open)).toBe('192.0.2.60');
     expect(ipOf({ forwarded: 'For="[2001:db8:cafe::17]:4711"' }, open)).toBe('2001:db8:cafe::17');
     expect(
@@ -446,16 +470,43 @@ describe('resolveClientIp: RFC 7239 Forwarded header', () => {
     expect(ipOf({ forwarded: 'for=10.0.0.1' }, proxies, '203.0.113.99')).toBe('203.0.113.99');
   });
 
-  it('when X-Forwarded-For and Forwarded name different clients the request is unattributed', () => {
-    expect(
-      ipOf({ 'x-forwarded-for': '198.51.100.7', forwarded: 'for=198.51.100.8' }, proxies)
-    ).toBeNull();
+  it('X-Forwarded-For is ignored entirely when Forwarded is the declared header', () => {
+    expect(ipOf({ 'x-forwarded-for': '198.51.100.7', forwarded: 'for=198.51.100.8' }, proxies)).toBe('198.51.100.8');
+    expect(ipOf({ 'x-forwarded-for': 'garbage' }, proxies)).toBeNull();
+  });
+});
+
+describe('resolveClientIp: TRUSTED_PROXY_HEADER selects the one header that is read', () => {
+  const xffDefault = cfg({ trustedProxies: '10.0.0.0/8' });
+
+  it('defaults to x-forwarded-for and ignores a different or malformed Forwarded header', () => {
+    expect(ipOf({ 'x-forwarded-for': '198.51.100.7', forwarded: 'for=198.51.100.8' }, xffDefault)).toBe('198.51.100.7');
+    expect(ipOf({ 'x-forwarded-for': '198.51.100.7', forwarded: 'for=banana' }, xffDefault)).toBe('198.51.100.7');
+    expect(ipOf({ forwarded: 'for=198.51.100.8' }, xffDefault)).toBeNull();
   });
 
-  it('when X-Forwarded-For and Forwarded agree the shared client is used', () => {
-    expect(
-      ipOf({ 'x-forwarded-for': '198.51.100.7, 10.0.0.1', forwarded: 'for=198.51.100.7;by=10.0.0.1' }, proxies)
-    ).toBe('198.51.100.7');
+  it('accepts either value case-insensitively and rejects anything else', () => {
+    expect(parseClientIpConfig({ trustedProxies: '10.0.0.0/8', trustedProxyHeader: ' Forwarded ' }).forwardingHeader).toBe(
+      'forwarded'
+    );
+    expect(parseClientIpConfig({ trustedProxies: '10.0.0.0/8', trustedProxyHeader: 'X-Forwarded-For' }).forwardingHeader).toBe(
+      'x-forwarded-for'
+    );
+    expect(parseClientIpConfig({ trustedProxies: '10.0.0.0/8' }).forwardingHeader).toBe('x-forwarded-for');
+    expect(() => parseClientIpConfig({ trustedProxies: '10.0.0.0/8', trustedProxyHeader: 'x-real-ip' })).toThrow(
+      ClientIpConfigError
+    );
+  });
+
+  it('is read from the TRUSTED_PROXY_HEADER environment variable', () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+    vi.stubEnv('TRUSTED_CDN', '');
+    vi.stubEnv('TRUSTED_PROXY_HEADER', 'forwarded');
+    const headers = { 'x-forwarded-for': '198.51.100.7', forwarded: 'for=198.51.100.8' };
+    expect(extractClientIp(req(headers))).toBe('198.51.100.8');
+    vi.stubEnv('TRUSTED_PROXY_HEADER', 'x-forwarded-for');
+    expect(extractClientIp(req(headers))).toBe('198.51.100.7');
+    vi.unstubAllEnvs();
   });
 });
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
   ClientIpError,
   UNATTRIBUTED_CLIENT_KEY,
   clientIpKey,
@@ -22,9 +23,8 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const HTTP_BAD_REQUEST = 400;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
-const PROBLEM_INTERNAL_ERROR = 'https://api.easyconvert.io/problems/internal-server-error';
+const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
 const PROBLEM_TRUST_UNCONFIGURED = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
-const TRUST_UNCONFIGURED_RETRY_AFTER_SECONDS = 60;
 
 // Liveness endpoint: stays reachable in degraded (unattributed or undeclared) trust modes.
 const HEALTH_PATH = '/api/health';
@@ -193,7 +193,7 @@ export function middleware(request: NextRequest) {
         'Service Unavailable',
         'Client IP trust mode is not configured. Set TRUSTED_PROXIES to the proxy CIDR list, or to "none" when this server is exposed directly.',
         pathname,
-        { 'Retry-After': String(TRUST_UNCONFIGURED_RETRY_AFTER_SECONDS) }
+        { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) }
       );
     }
     resolved = resolveClientIp(request, { config });
@@ -211,10 +211,11 @@ export function middleware(request: NextRequest) {
     console.error(`[edge] ${error.message}`);
     return problemResponse(
       error.status,
-      PROBLEM_INTERNAL_ERROR,
-      'Internal Server Error',
+      PROBLEM_SERVICE_UNAVAILABLE,
+      'Service Unavailable',
       'Client IP trust configuration is invalid.',
-      pathname
+      pathname,
+      { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) }
     );
   }
   if (resolved.source === 'unattributed') {

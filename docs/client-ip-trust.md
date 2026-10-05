@@ -37,8 +37,10 @@ proxy under your control rewrites them, so they are only read under the contract
 7. `CF-Connecting-IP` is honoured only with `TRUSTED_CDN=cloudflare` and only when the nearest hop is inside the
    Cloudflare ranges (shipped in `CLOUDFLARE_IP_RANGES`; override with `TRUSTED_CDN_RANGES`). Cloudflare edge
    addresses are also treated as skippable hops while walking `X-Forwarded-For`.
-8. If both `X-Forwarded-For` and `Forwarded` (RFC 7239) are present they must agree on the client, otherwise the
-   request is unattributed. Placeholder hops (`unknown`, obfuscated `_token`) also yield `unattributed`.
+8. Only one forwarding header is read: `TRUSTED_PROXY_HEADER=x-forwarded-for` (default) or `forwarded`
+   (RFC 7239). The other header is client-writable behind a proxy that does not maintain it, so it is ignored
+   (never parsed, never compared). Placeholder hops (`unknown`, obfuscated `_token`) in the declared header
+   yield `unattributed`.
 
 ## Operator checklist
 
@@ -52,6 +54,7 @@ proxy under your control rewrites them, so they are only read under the contract
 | Variable | Meaning |
 | --- | --- |
 | `TRUSTED_PROXIES` | Comma-separated CIDRs or addresses of trusted hops (at most 256), or `none` for direct exposure. Required in production. |
+| `TRUSTED_PROXY_HEADER` | `x-forwarded-for` (default) or `forwarded`: the single header your proxy maintains. |
 | `TRUSTED_CDN` | `cloudflare`. Enables `CF-Connecting-IP` for a verified edge hop. |
 | `TRUSTED_CDN_RANGES` | CIDR list replacing the shipped ranges for the configured CDN. Requires `TRUSTED_CDN`. |
 
@@ -59,6 +62,7 @@ proxy under your control rewrites them, so they are only read under the contract
 
 - Malformed forwarding data from a trusted sender (not an address, empty hop, header over 4096 characters, more
   than 32 hops) is rejected with HTTP 400 (`InvalidForwardingHeaderError`).
-- Malformed trust configuration is rejected with HTTP 500 (`ClientIpConfigError`) and logged.
+- Malformed trust configuration is rejected with HTTP 503 and `Retry-After` (`ClientIpConfigError`) by the
+  middleware, API guard and login route, and logged. Empty list entries (trailing commas, spaces) are ignored.
 - Addresses are validated and canonicalised (ports and brackets stripped, IPv4-mapped IPv6 folded to IPv4, IPv6
   in RFC 5952 form) so alternate spellings share one rate-limit identity.

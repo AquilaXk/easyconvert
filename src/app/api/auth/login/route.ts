@@ -3,7 +3,12 @@ import { verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { extractClientIp } from '@/lib/api-keys/ip-utils';
-import { ClientIpError, UNATTRIBUTED_CLIENT_KEY, rateLimitKey } from '@/lib/security/client-ip';
+import {
+  CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+  ClientIpError,
+  UNATTRIBUTED_CLIENT_KEY,
+  rateLimitKey,
+} from '@/lib/security/client-ip';
 import {
   checkLoginRateLimit,
   recordFailedLogin,
@@ -11,6 +16,8 @@ import {
 } from '@/lib/auth/login-rate-limiter';
 
 export const dynamic = 'force-dynamic';
+
+const HTTP_SERVICE_UNAVAILABLE = 503;
 
 // Static dummy hash/salt to prevent email enumeration timing attacks
 const DUMMY_HASH = '0'.repeat(128);
@@ -36,7 +43,10 @@ export async function POST(req: NextRequest) {
     if (!(error instanceof ClientIpError)) throw error;
     return NextResponse.json(
       { success: false, error: 'Client address could not be determined from the request headers.' },
-      { status: error.status }
+      {
+        status: error.status,
+        headers: error.status === HTTP_SERVICE_UNAVAILABLE ? { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) } : {},
+      }
     );
   }
 

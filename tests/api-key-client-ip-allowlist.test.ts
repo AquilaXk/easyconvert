@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { validateApiAccess } from '../src/lib/api-keys/guard';
+import { authErrorHeaders, validateApiAccess } from '../src/lib/api-keys/guard';
 import { userStore } from '../src/lib/auth/user-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { POST as loginHandler } from '../src/app/api/auth/login/route';
@@ -14,6 +14,10 @@ function keyedRequest(secretKey: string, headers: Record<string, string>): NextR
   return new NextRequest('http://localhost/api/v1/convert', {
     headers: { 'x-api-key': secretKey, ...headers },
   });
+}
+
+function anonymousPost(headers: Record<string, string>): NextRequest {
+  return new NextRequest('http://localhost/api/convert', { method: 'POST', headers });
 }
 
 describe('API-key IP allowlists use the shared trusted-proxy client-IP resolver', () => {
@@ -138,6 +142,30 @@ describe('API-key IP allowlists use the shared trusted-proxy client-IP resolver'
     const sibling = await validateApiAccess(keyedRequest(v6Key, { 'x-forwarded-for': '2001:db8:1:2::78' }), 0);
     expect(hit.authorized).toBe(true);
     expect(sibling.status).toBe(403);
+  });
+
+  it('a misconfigured trust list answers 503 with a retry hint instead of attributing by guess', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', 'definitely-not-a-cidr');
+    const res = await validateApiAccess(keyedRequest(secretKey, { 'x-forwarded-for': ALLOWED_CLIENT }), 0);
+    expect(res.authorized).toBe(false);
+    expect(res.status).toBe(503);
+    expect(res.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+    expect(authErrorHeaders(res)['Retry-After']).toBe(String(res.retryAfterSeconds));
+
+    const anon = await validateApiAccess(anonymousPost({}), { requiredUnits: 1, allowAnonymous: true });
+    expect(anon.status).toBe(503);
+  });
+
+  it('the login route answers a misconfigured trust list with 503 and Retry-After', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', 'definitely-not-a-cidr');
+    const req = new NextRequest('http://localhost:3000/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'a@example.com', password: 'whatever' }),
+    });
+    const res = await loginHandler(req);
+    expect(res.status).toBe(503);
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
   });
 
   it('the login route answers a malformed forwarding chain with HTTP 400', async () => {

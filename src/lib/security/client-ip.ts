@@ -11,23 +11,25 @@
  *  1. The socket peer is the only address a client cannot forge. Next.js middleware and App Router route
  *     handlers cannot see it, so on those paths the peer is unknown unless the caller passes `peerIp`
  *     (custom server, Node-style request exposing `socket.remoteAddress`).
- *  2. Forwarding headers (`X-Forwarded-For`, `Forwarded`) are honoured only when their sender is trusted:
+ *  2. Forwarding data is honoured only when its sender is trusted, and only from the ONE header the operator
+ *     declares with `TRUSTED_PROXY_HEADER` (`x-forwarded-for`, the default, or `forwarded`); the other
+ *     header is client-writable and never read:
  *       - peer known: the peer must be in `TRUSTED_PROXIES` (default when unset: loopback and private
  *         ranges, see DEFAULT_TRUSTED_PROXY_RANGES). An untrusted peer IS the client; its headers are ignored.
  *       - peer unknown (edge middleware, App Router): the operator must DECLARE a front proxy by setting
  *         `TRUSTED_PROXIES` (CIDR list) and/or `TRUSTED_CDN`. The declaration asserts that the origin only
  *         accepts connections from those hops and that the nearest hop appends the address it saw to
- *         `X-Forwarded-For`. The chain is then walked right to left, skipping trusted hops; the first
+ *         declared header. The chain is then walked right to left, skipping trusted hops; the first
  *         untrusted address is the client. Everything left of it is attacker-controlled and never read.
- *  3. Nothing declared and no peer known (the default): the request is UNATTRIBUTED. Callers must key rate
- *     limits and quotas on UNATTRIBUTED_CLIENT_KEY (one shared conservative bucket), never on a header, and
- *     IP allowlists never match it. This is fail-closed: an unconfigured production deployment is
- *     throttled as one client rather than trusting spoofable headers.
+ *  3. Nothing declared, or `TRUSTED_PROXIES=none` (direct exposure acknowledged), and no peer known: the
+ *     request is UNATTRIBUTED. Callers key rate limits on UNATTRIBUTED_CLIENT_KEY (one shared degraded
+ *     bucket), never on a header, must not run per-client counters or quotas on it, and IP allowlists never
+ *     match it. Production must declare a mode (the edge middleware answers 503 otherwise).
  *  4. `CF-Connecting-IP` is honoured only with `TRUSTED_CDN=cloudflare` AND when the nearest hop (the peer,
  *     or the rightmost forwarding entry when the peer is unknown) lies in the Cloudflare ranges
  *     (override with `TRUSTED_CDN_RANGES`). `X-Real-IP` and `request.ip` are never consulted.
  *  5. Malformed forwarding data from a trusted sender throws InvalidForwardingHeaderError (HTTP 400);
- *     malformed trust configuration throws ClientIpConfigError (HTTP 500). Header size and hop count are
+ *     malformed trust configuration throws ClientIpConfigError (HTTP 503). Header size and hop count are
  *     bounded by MAX_FORWARDING_HEADER_LENGTH and MAX_FORWARDING_HOPS.
  */
 
@@ -58,7 +60,6 @@ const IPV4_MAPPED_MARKER_INDEX = 10;
 export const RATE_LIMIT_IPV6_PREFIX_BITS = 64;
 const MAX_PORT = 65535;
 const MAX_OCTET = 255;
-const HEX_GROUP_MAX_LENGTH = 4;
 const BYTE_MASK = 0xff;
 
 /** Loopback and private ranges, used as the trusted-proxy set only when a peer address is known. */
@@ -103,7 +104,9 @@ const CDN_PROVIDER_RANGES: ReadonlyMap<string, readonly string[]> = new Map([['c
 const NO_TRUSTED_PROXIES = 'none';
 
 const HTTP_BAD_REQUEST = 400;
-const HTTP_INTERNAL_ERROR = 500;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+/** Retry hint (seconds) callers attach to a 503 caused by invalid trust configuration. */
+export const CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS = 60;
 
 export class ClientIpError extends Error {
   readonly status: number;
@@ -123,10 +126,10 @@ export class InvalidForwardingHeaderError extends ClientIpError {
   }
 }
 
-/** The operator's trust configuration (or the supplied peer address) is invalid. Maps to HTTP 500. */
+/** The operator's trust configuration (or the supplied peer address) is invalid. Maps to HTTP 503 (operator must fix it; retry afterwards). */
 export class ClientIpConfigError extends ClientIpError {
   constructor(message: string) {
-    super(message, HTTP_INTERNAL_ERROR);
+    super(message, HTTP_SERVICE_UNAVAILABLE);
     this.name = 'ClientIpConfigError';
   }
 }
@@ -386,7 +389,13 @@ function inAnyRange(address: ParsedAddress, ranges: readonly ParsedCidr[]): bool
 // Configuration
 // ---------------------------------------------------------------------------------------------------------
 
+export type ForwardingHeader = 'x-forwarded-for' | 'forwarded';
+const FORWARDING_HEADERS: ReadonlySet<string> = new Set<string>(['x-forwarded-for', 'forwarded']);
+const DEFAULT_FORWARDING_HEADER: ForwardingHeader = 'x-forwarded-for';
+
 export interface ClientIpConfig {
+  /** The one forwarding header the trusted proxy writes; the other is never read. */
+  forwardingHeader: ForwardingHeader;
   /** Explicit trusted-proxy ranges; null when the operator declared none. */
   trustedProxies: readonly ParsedCidr[] | null;
   /** Trusted CDN edge ranges; null when no CDN is configured. */
@@ -397,6 +406,8 @@ export interface ClientIpConfigInput {
   trustedProxies?: string | readonly string[] | null;
   trustedCdn?: string | null;
   trustedCdnRanges?: string | null;
+  /** `x-forwarded-for` (default) or `forwarded`: the single header the trusted proxy maintains. */
+  trustedProxyHeader?: string | null;
 }
 
 function parseCidrEntries(entries: readonly string[], label: string): ParsedCidr[] {
@@ -416,8 +427,12 @@ function parseCidrList(raw: string, label: string): ParsedCidr[] {
   if (raw.length > MAX_TRUST_LIST_LENGTH) {
     throw new ClientIpConfigError(`${label} is longer than ${MAX_TRUST_LIST_LENGTH} characters.`);
   }
+  // Empty entries (trailing commas, stray spaces) are ignored.
   return parseCidrEntries(
-    raw.split(',').map((s) => s.trim()),
+    raw
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== ''),
     label
   );
 }
@@ -441,10 +456,13 @@ export function parseClientIpConfig(input: ClientIpConfigInput): ClientIpConfig 
     trustedProxies = parseCidrEntries(input.trustedProxies, 'TRUSTED_PROXIES');
   } else if (typeof input.trustedProxies === 'string' && !isBlank(input.trustedProxies)) {
     // "none" acknowledges direct exposure: an explicit, empty trusted set.
-    trustedProxies =
-      input.trustedProxies.trim().toLowerCase() === NO_TRUSTED_PROXIES
-        ? []
-        : parseCidrList(input.trustedProxies, 'TRUSTED_PROXIES');
+    if (input.trustedProxies.trim().toLowerCase() === NO_TRUSTED_PROXIES) {
+      trustedProxies = [];
+    } else {
+      const listed = parseCidrList(input.trustedProxies, 'TRUSTED_PROXIES');
+      // A list holding only separators declares nothing.
+      trustedProxies = listed.length > 0 ? listed : null;
+    }
   }
 
   let cdnRanges: ParsedCidr[] | null = null;
@@ -458,12 +476,22 @@ export function parseClientIpConfig(input: ClientIpConfigInput): ClientIpConfig 
     if (!shipped) {
       throw new ClientIpConfigError(`TRUSTED_CDN must be one of: ${[...CDN_PROVIDER_RANGES.keys()].join(', ')}.`);
     }
-    cdnRanges = isBlank(input.trustedCdnRanges)
-      ? parseCidrEntries(shipped, 'TRUSTED_CDN')
+    const overrides = isBlank(input.trustedCdnRanges)
+      ? []
       : parseCidrList(input.trustedCdnRanges as string, 'TRUSTED_CDN_RANGES');
+    cdnRanges = overrides.length > 0 ? overrides : parseCidrEntries(shipped, 'TRUSTED_CDN');
   }
 
-  return { trustedProxies, cdnRanges };
+  let forwardingHeader = DEFAULT_FORWARDING_HEADER;
+  if (!isBlank(input.trustedProxyHeader)) {
+    const requested = (input.trustedProxyHeader as string).trim().toLowerCase();
+    if (!FORWARDING_HEADERS.has(requested)) {
+      throw new ClientIpConfigError('TRUSTED_PROXY_HEADER must be "x-forwarded-for" or "forwarded".');
+    }
+    forwardingHeader = requested as ForwardingHeader;
+  }
+
+  return { forwardingHeader, trustedProxies, cdnRanges };
 }
 
 let cachedConfig: { key: string; config: ClientIpConfig } | null = null;
@@ -475,8 +503,14 @@ export function loadClientIpConfig(): ClientIpConfig {
     trustedProxies: env.TRUSTED_PROXIES,
     trustedCdn: env.TRUSTED_CDN,
     trustedCdnRanges: env.TRUSTED_CDN_RANGES,
+    trustedProxyHeader: env.TRUSTED_PROXY_HEADER,
   };
-  const key = [raw.trustedProxies ?? '', raw.trustedCdn ?? '', raw.trustedCdnRanges ?? ''].join('\u0000');
+  const key = [
+    raw.trustedProxies ?? '',
+    raw.trustedCdn ?? '',
+    raw.trustedCdnRanges ?? '',
+    raw.trustedProxyHeader ?? '',
+  ].join('\u0000');
   if (cachedConfig && cachedConfig.key === key) return cachedConfig.config;
   const config = parseClientIpConfig(raw);
   cachedConfig = { key, config };
@@ -613,14 +647,13 @@ function readForwarded(value: string): Chain {
   return { entries, forwardedSyntax: true, header };
 }
 
-function readChains(headers: Headers | undefined): Chain[] {
-  const chains: Chain[] = [];
-  if (!headers || typeof headers.get !== 'function') return chains;
-  const xff = headers.get('x-forwarded-for');
-  if (xff !== null && xff.trim() !== '') chains.push(readXForwardedFor(xff));
-  const forwarded = headers.get('forwarded');
-  if (forwarded !== null && forwarded.trim() !== '') chains.push(readForwarded(forwarded));
-  return chains;
+/** Reads only the header the operator declared; the other one is attacker-controlled and never parsed. */
+function readChain(headers: Headers | undefined, which: ForwardingHeader): Chain {
+  const value = headers && typeof headers.get === 'function' ? headers.get(which) : null;
+  if (value === null || value.trim() === '') {
+    return { entries: [], forwardedSyntax: which === 'forwarded', header: which };
+  }
+  return which === 'forwarded' ? readForwarded(value) : readXForwardedFor(value);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -721,7 +754,7 @@ function resolveChain(
 /**
  * Resolves the client address of a request under the trusted-proxy contract documented at the top of this
  * file. Throws InvalidForwardingHeaderError (HTTP 400) for malformed forwarding data from a trusted sender
- * and ClientIpConfigError (HTTP 500) for invalid trust configuration.
+ * and ClientIpConfigError (HTTP 503) for invalid trust configuration.
  */
 export function resolveClientIp(
   request: { headers?: Headers } | Request,
@@ -741,15 +774,6 @@ export function resolveClientIp(
   if (peer && !inAnyRange(peer, trusted)) return { ip: formatAddress(peer), source: 'peer' };
 
   const headers = (request as { headers?: Headers } | null | undefined)?.headers;
-  const chains = readChains(headers);
-  if (chains.length === 0) chains.push({ entries: [], forwardedSyntax: false, header: 'X-Forwarded-For' });
-
-  const results = chains.map((chain) => resolveChain(chain, peer, trusted, config.cdnRanges, headers));
-  if (results.length === 1) return results[0];
-
-  // X-Forwarded-For and Forwarded both present: one of them may be client-written (the proxy only maintains
-  // one), so they must agree on the client or the request is unattributed.
-  const [first, second] = results;
-  if (first.ip === null || first.ip !== second.ip) return UNATTRIBUTED;
-  return first;
+  const chain = readChain(headers, config.forwardingHeader);
+  return resolveChain(chain, peer, trusted, config.cdnRanges, headers);
 }
