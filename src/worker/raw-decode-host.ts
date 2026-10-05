@@ -15,6 +15,8 @@ export const RAW_DECODE_THREAD_TIMEOUT_MS = 120_000;
 const THREAD_HEAP_LIMIT_MB = 512;
 const THREAD_YOUNG_LIMIT_MB = 64;
 const WORKER_FILE = 'raw-decode-worker';
+/** Built at run time so the Next.js bundler does not follow it: only the source-mode thread needs tsx. */
+const TSX_REGISTER_SPECIFIER = ['tsx', 'cjs', 'api'].join('/');
 
 interface WorkerReply {
   ok: boolean;
@@ -47,7 +49,7 @@ export function decodeRawInThread(
   if (fs.existsSync(compiled)) {
     worker = new Worker(compiled, { workerData, transferList: [bytes.buffer], resourceLimits });
   } else {
-    const tsxApi = createRequire(path.join(process.cwd(), 'package.json')).resolve('tsx/cjs/api');
+    const tsxApi = createRequire(path.join(process.cwd(), 'package.json')).resolve(TSX_REGISTER_SPECIFIER);
     const source = path.join(__dirname, `${WORKER_FILE}.ts`);
     const bootstrap = `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});`;
     worker = new Worker(bootstrap, { eval: true, workerData, transferList: [bytes.buffer], resourceLimits });
