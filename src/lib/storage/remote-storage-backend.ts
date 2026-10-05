@@ -4,8 +4,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { MultipartUploadComplete, MultipartUploadInit, UploadedPart } from '../types';
-import { StorageAdapterError, StorageInputError, StorageInvalidKeyError } from './adapters/adapter-interface';
-import { S3_MAX_PART_BYTES, S3_MAX_PARTS, S3_MIN_PART_BYTES, toNodeReadable } from './adapters/s3';
+import {
+  StorageAdapterError,
+  StorageInputError,
+  StorageInvalidKeyError,
+  StorageServiceError,
+} from './adapters/adapter-interface';
+import {
+  NO_SUCH_UPLOAD_CODE,
+  S3_MAX_PART_BYTES,
+  S3_MAX_PARTS,
+  S3_MIN_PART_BYTES,
+  UNCONFIRMED_COMPLETION_CODE,
+  expectedMultipartEtag,
+  toNodeReadable,
+} from './adapters/s3';
 import {
   ObjectStat,
   PayloadTooLargeForMemoryError,
@@ -348,18 +361,48 @@ export class RemoteStorageBackend implements IStorageBackend {
       selected.sort((a, b) => a.partNumber - b.partNumber);
     }
 
-    const { etag } = await this.client.completeMultipartUpload(
-      session.k,
-      session.u,
-      selected.map((part) => ({ partNumber: part.partNumber, etag: part.etag }))
-    );
     const size = selected.reduce((sum, part) => sum + part.size, 0);
+    let etag: string;
+    try {
+      ({ etag } = await this.client.completeMultipartUpload(
+        session.k,
+        session.u,
+        selected.map((part) => ({ partNumber: part.partNumber, etag: part.etag }))
+      ));
+    } catch (err) {
+      etag = await this.recoverLostCompletion(session.k, selected, size, err);
+    }
     return {
       location: `/api/storage/file/${encodeURIComponent(session.k)}`,
       key: session.k,
       size,
       etag: `"${etag}"`,
     };
+  }
+
+  /**
+   * A completion the store carried out but whose answer was lost (a 5xx after the work was done)
+   * reads as NoSuchUpload on the retry. If the object at the key is exactly the one these parts
+   * assemble to (size and the ETag S3 derives from the part ETags), the upload did finish and its
+   * ETag is returned; anything else, including another writer's object, rethrows the original error.
+   */
+  private async recoverLostCompletion(
+    key: string,
+    parts: ReadonlyArray<{ etag: string }>,
+    size: number,
+    error: unknown
+  ): Promise<string> {
+    const ambiguous =
+      error instanceof StorageServiceError &&
+      (error.code === NO_SUCH_UPLOAD_CODE || error.code === UNCONFIRMED_COMPLETION_CODE);
+    const expected = ambiguous ? expectedMultipartEtag(parts.map((part) => part.etag)) : undefined;
+    if (expected !== undefined) {
+      const head = await this.client.headObject(key).catch(() => null);
+      if (head?.size === size && stripEtagQuotes(head.etag).toLowerCase() === expected) {
+        return expected;
+      }
+    }
+    throw error;
   }
 
   async abortMultipartUpload(uploadId: string): Promise<boolean> {

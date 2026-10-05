@@ -183,6 +183,48 @@ describe('RemoteStorageBackend (IStorageBackend over an S3-compatible object sto
       expect(server.objects.get(init.key)?.body.toString()).toBe('abcd');
     });
 
+    describe('a completion whose answer was lost', () => {
+      async function sessionWithOnePart() {
+        const part = crypto.randomBytes(S3_MIN_PART_BYTES + 17);
+        const init = await backend.initiateMultipartUpload('lost.bin', 'application/octet-stream', part.length, 'user_7');
+        const uploaded = await backend.uploadPart(init.uploadId, 1, part);
+        return { init, part, uploaded };
+      }
+
+      it('recognises its own finished object when the store completed the upload but answered 500', async () => {
+        const { init, part, uploaded } = await sessionWithOnePart();
+        server.complete.failAfterComplete = { status: 500, code: 'InternalError' };
+        const done = await backend.completeMultipartUpload(init.uploadId, [{ partNumber: 1, etag: uploaded.etag }]);
+        const expectedEtag = s3EtagMd5(s3EtagMd5(part)).toString('hex');
+        expect(done).toEqual({
+          location: `/api/storage/file/${encodeURIComponent(init.key)}`,
+          key: init.key,
+          size: part.length,
+          etag: `"${expectedEtag}-1"`,
+        });
+        expect(server.objects.get(init.key)?.body.equals(part)).toBe(true);
+      });
+
+      it('does not take another writer\'s object at the key for its own', async () => {
+        const { init, uploaded } = await sessionWithOnePart();
+        server.complete.failAfterComplete = { status: 500, code: 'InternalError' };
+        server.complete.afterComplete = (key) => {
+          server.objects.set(key, { ...server.objects.get(key)!, body: Buffer.from('replaced by someone else') });
+        };
+        await expect(backend.completeMultipartUpload(init.uploadId, [{ partNumber: 1, etag: uploaded.etag }])).rejects.toThrow(
+          /no longer exists/
+        );
+        server.complete.afterComplete = undefined;
+      });
+
+      it('still reports a vanished session as gone when no object was finished', async () => {
+        const { init, uploaded } = await sessionWithOnePart();
+        server.uploads.clear();
+        await expect(backend.completeMultipartUpload(init.uploadId, [{ partNumber: 1, etag: uploaded.etag }])).rejects.toThrow();
+        expect(server.objects.has(init.key)).toBe(false);
+      });
+    });
+
     it.each([
       ['a part that was never uploaded', [{ partNumber: 2 }], /Missing part number 2/],
       ['a wrong ETag', [{ partNumber: 1, etag: '"deadbeef"' }], /ETag mismatch for part number 1/],
