@@ -17,7 +17,7 @@ const BYTE_MAX = 255;
 const TEXTURE_STRIDE = 7;
 const DEFAULT_QUALITY_MIN_PSNR_DB = 42;
 const HIGH_QUALITY = 95;
-const HIGH_QUALITY_MIN_PSNR_DB = 45;
+const HIGH_QUALITY_MIN_PSNR_DB = 47;
 const FTYP_BRAND_OFFSET = 4;
 const FTYP_BRAND = 'ftypavif';
 
