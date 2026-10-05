@@ -1,9 +1,11 @@
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult } from '../types';
+import { ConversionFailedError, ConversionOptions, ConversionResult } from '../types';
+import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 
 /**
  * Universal Font Conversion Engine
- * Supports TrueType (TTF), OpenType (OTF), WOFF, WOFF2, EOT, and SVG Fonts.
+ * Supports TrueType (TTF), OpenType (OTF), WOFF, WOFF2, EOT, and SVG Fonts, plus Macintosh
+ * DFONT and MacBinary containers that wrap an SFNT font.
  * Adheres strictly to the in-memory zero-retention architecture.
  */
 
@@ -148,9 +150,18 @@ export async function convertFont(
 }
 
 /**
- * Parses arbitrary input font stream (TTF, OTF, WOFF, WOFF2, EOT, SVG Font) into canonical SFNT structure
+ * Parses arbitrary input font stream (TTF, OTF, WOFF, WOFF2, EOT, SVG Font, DFONT, MacBinary) into canonical SFNT structure
  */
 export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: string): ParsedFont {
+  // Mac containers are selected by declared format before any magic sniffing: a MacBinary filename
+  // field can contain arbitrary bytes that would otherwise look like another container's signature.
+  if (format === 'dfont') {
+    return decodeSfnt(extractSfntFromResourceFork(buffer), defaultName);
+  }
+  if (format === 'bin') {
+    return decodeSfnt(extractSfntFromMacBinary(buffer), defaultName);
+  }
+
   // Check WOFF signature ('wOFF' = 0x774F4646)
   if (format === 'woff' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOFF')) {
     return decodeWoff(buffer, defaultName);
@@ -171,42 +182,46 @@ export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: str
     return decodeSvgFont(buffer, defaultName);
   }
 
-  // Standard SFNT (TTF / OTF / DFONT / PFA / PFB / BIN)
-  if (buffer.length >= 12) {
-    const version = buffer.readUInt32BE(0);
-    // 0x00010000 = TrueType 1.0, 0x4F54544F = 'OTTO' (OpenType with CFF), 0x74727565 = 'true' (Apple TrueType)
-    if (version === 0x00010000 || version === 0x4f54544f || version === 0x74727565 || version === 0x74797031) {
-      return decodeSfnt(buffer, defaultName);
-    }
+  // Standard SFNT (TTF / OTF). DFONT and MacBinary containers are unwrapped above; PFA / PFB are not handled here.
+  if (looksLikeSfnt(buffer)) {
+    return decodeSfnt(buffer, defaultName);
   }
 
   // Fail-closed: invalid or non-SFNT container must throw error
   throw new Error('Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font.');
 }
 
+const SFNT_HEADER_BYTES = 12;
+const SFNT_TABLE_RECORD_BYTES = 16;
+
 /**
- * Decodes standard SFNT (TTF / OTF) buffer
+ * Decodes standard SFNT (TTF / OTF) buffer. A directory or table that does not fit the buffer is
+ * rejected rather than clipped.
  */
 export function decodeSfnt(buffer: Buffer, defaultName: string): ParsedFont {
   if (buffer.length < 12) {
-    throw new Error('Invalid SFNT font buffer: length is less than 12 bytes.');
+    throw new ConversionFailedError('Invalid SFNT font buffer: length is less than 12 bytes.');
   }
 
   const sfntVersion = buffer.readUInt32BE(0);
   const numTables = buffer.readUInt16BE(4);
   const tables: Record<string, SfntTable> = {};
+  if (SFNT_HEADER_BYTES + numTables * SFNT_TABLE_RECORD_BYTES > buffer.length) {
+    throw new ConversionFailedError(`Invalid SFNT font: the directory of ${numTables} tables is cut short.`);
+  }
 
-  let offset = 12;
+  let offset = SFNT_HEADER_BYTES;
   for (let i = 0; i < numTables; i++) {
-    if (offset + 16 > buffer.length) break;
 
     const tag = buffer.toString('ascii', offset, offset + 4);
     const checkSum = buffer.readUInt32BE(offset + 4);
     const tableOffset = buffer.readUInt32BE(offset + 8);
     const tableLength = buffer.readUInt32BE(offset + 12);
 
-    const end = Math.min(buffer.length, tableOffset + tableLength);
-    const data = tableOffset < buffer.length ? buffer.subarray(tableOffset, end) : Buffer.alloc(0);
+    if (tableOffset + tableLength > buffer.length) {
+      throw new ConversionFailedError(`Invalid SFNT font: table '${tag}' extends past the end of the font.`);
+    }
+    const data = buffer.subarray(tableOffset, tableOffset + tableLength);
 
     tables[tag] = {
       tag,
@@ -216,7 +231,7 @@ export function decodeSfnt(buffer: Buffer, defaultName: string): ParsedFont {
       data: Buffer.from(data),
     };
 
-    offset += 16;
+    offset += SFNT_TABLE_RECORD_BYTES;
   }
 
   let fontFamily = defaultName;

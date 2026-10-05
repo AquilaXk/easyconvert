@@ -29,6 +29,7 @@ import {
   isCfbfContainer,
 } from '../src/lib/conversions/hwp';
 import { synthesizeVariableFontCorpus } from './helpers/corpus-synthesizer';
+import { ConversionFailedError } from '../src/lib/types';
 
 // ============================================================================
 // Adversarial Mutator Primitives
@@ -302,8 +303,9 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       truncatedFont.writeUInt32BE(0x00010000, 0); // TrueType
       truncatedFont.writeUInt16BE(10, 4); // numTables = 10 (needs 12 + 10*16 = 172 bytes)
 
-      const meta = inspectVariableFont(truncatedFont);
-      expect(meta.isVariableFont).toBe(false);
+      // Fail closed: a directory that does not fit is rejected instead of read as a font without tables.
+      expect(() => inspectVariableFont(truncatedFont)).toThrow(ConversionFailedError);
+      expect(() => inspectVariableFont(truncatedFont)).toThrow(/directory of 10 tables is cut short/);
     });
 
     it('fails closed when fvar axisSize is less than minimum 20 bytes', () => {
