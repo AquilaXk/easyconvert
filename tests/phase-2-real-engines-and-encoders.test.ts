@@ -17,8 +17,11 @@ import {
   checkFfmpeg,
   type BayerSensorData,
 } from '../src/lib/conversions/index';
+import { FontOutlinesMissingError } from '../src/lib/conversions/font';
 import { ConversionFailedError } from '../src/lib/types';
 import { buildOtf, cs } from './helpers/cff-font-builder';
+import { decodeCff, flattenCharstringContour, readSfntTables, requireTable, signedArea } from './helpers/font-oracles';
+import { assembleSfnt, buildTrueTypeFont } from './helpers/mac-font-containers';
 
 /** An OpenType CFF font whose glyph 1 is the 400 x 700 rectangle at (100, 0). */
 function buildRectangleOtf(): Buffer {
@@ -103,35 +106,37 @@ describe('Phase 2 Real Engines & Encoders Verification Testnet', () => {
     });
 
     it('transcodes TrueType (TTF) to OpenType (OTF) with valid CFF table', () => {
-      // Build a minimal TTF containing 'glyf' and 'loca' tables
-      const sfntHeader = Buffer.alloc(12);
-      sfntHeader.writeUInt32BE(0x00010000, 0); // TrueType tag
-      sfntHeader.writeUInt16BE(2, 4); // 2 tables
-
-      const glyfPayload = Buffer.from([0, 1, 0, 0, 0, 0, 10, 10]);
-      const locaPayload = Buffer.from([0, 0, 0, 0, 0, 8]);
-
-      const rec1 = Buffer.alloc(16);
-      rec1.write('glyf', 0);
-      rec1.writeUInt32BE(0, 4);
-      rec1.writeUInt32BE(44, 8);
-      rec1.writeUInt32BE(glyfPayload.length, 12);
-
-      const rec2 = Buffer.alloc(16);
-      rec2.write('loca', 0);
-      rec2.writeUInt32BE(0, 4);
-      rec2.writeUInt32BE(44 + glyfPayload.length, 8);
-      rec2.writeUInt32BE(locaPayload.length, 12);
-
-      const ttfBuffer = Buffer.concat([sfntHeader, rec1, rec2, glyfPayload, locaPayload]);
+      // A TrueType font with real glyf outlines from the independent test writer: glyph 1 is the
+      // 500 x 700 rectangle at (50, 0), glyph 2 a triangle, glyph 3 two rectangles.
+      const ttfBuffer = buildTrueTypeFont({ family: 'Phase Two Sans' });
       const otfBuffer = convertFontToOpenTypeCff(ttfBuffer);
 
-      // Verify OpenType OTTO tag and CFF table presence
       expect(otfBuffer.subarray(0, 4).toString('ascii')).toBe('OTTO');
-      const otfStr = otfBuffer.toString('binary');
-      expect(otfStr).toContain('CFF ');
-      expect(otfStr).not.toContain('glyf');
-      expect(otfStr).not.toContain('loca');
+      const tables = readSfntTables(otfBuffer);
+      expect(tables.has('CFF ')).toBe(true);
+      expect(tables.has('glyf')).toBe(false);
+      expect(tables.has('loca')).toBe(false);
+
+      const cff = decodeCff(requireTable(tables, 'CFF '));
+      expect(cff.numGlyphs).toBe(4);
+      expect(cff.glyphs.map((g) => g.width)).toEqual([600, 600, 600, 600]);
+      // TrueType rectangles run clockwise; the charstring draws them counter-clockwise.
+      const rectangle = flattenCharstringContour(cff.glyphs[1].contours[0]);
+      expect(signedArea(rectangle)).toBe(500 * 700);
+      expect(rectangle).toContainEqual({ x: 50, y: 0 });
+      expect(rectangle).toContainEqual({ x: 550, y: 700 });
+      const triangle = flattenCharstringContour(cff.glyphs[2].contours[0]);
+      expect(signedArea(triangle)).toBe((500 * 700) / 2);
+      expect(cff.glyphs[3].contours).toHaveLength(2);
+    });
+
+    it('rejects a TrueType font without outlines instead of inventing a glyph', () => {
+      const tables: Record<string, Buffer> = {};
+      for (const [tag, data] of readSfntTables(buildTrueTypeFont({ family: 'Hollow' }))) {
+        if (tag !== 'glyf' && tag !== 'loca') tables[tag] = Buffer.from(data);
+      }
+      const hollow = assembleSfnt(0x00010000, tables);
+      expect(() => convertFontToOpenTypeCff(hollow)).toThrow(FontOutlinesMissingError);
     });
 
     it('integrates with convertFont pipeline for TTF <-> OTF', async () => {
