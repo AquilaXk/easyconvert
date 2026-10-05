@@ -55,6 +55,11 @@ async function csvToRecords(input: Buffer, name: string, options: Record<string,
   return JSON.parse(result.buffer.toString('utf-8')) as CsvRecord[];
 }
 
+/** The bytes GNU iconv produces for UTF-8 text in another encoding (an independent encoder). */
+function iconvEncode(text: string, encoding: string): Buffer {
+  return execFileSync(requireOracleTool('iconv'), ['-f', 'UTF-8', '-t', encoding], { input: Buffer.from(text, 'utf-8') });
+}
+
 async function rejection(promise: Promise<unknown>): Promise<Error> {
   try {
     await promise;
@@ -114,11 +119,62 @@ describe('CSV input encoding detection', () => {
     }
   });
 
+  oracleTest('detects ISO-8859-1 text as Windows-1252, its WHATWG decoder', ['python3'], async () => {
+    const records = await csvToRecords(fixture('latin1.iso-8859-1.csv'), 'latin1.csv');
+    expect(records).toEqual(pythonCsvRecords('latin1.utf8.csv'));
+  });
+
+  oracleTest('detects Windows-1252 punctuation and the euro sign', ['iconv'], async () => {
+    const bytes = iconvEncode('label,price\n\u201cbest\u201d,\u20ac5\n\u2018ok\u2019,\u20ac7\n', 'WINDOWS-1252');
+    const expected = [
+      { label: '\u201cbest\u201d', price: '\u20ac5' },
+      { label: '\u2018ok\u2019', price: '\u20ac7' },
+    ];
+    expect(await csvToRecords(bytes, 'quotes.csv')).toEqual(expected);
+    // The explicit label decodes 0x80-0x9F as Windows-1252 too, not as ISO-8859-1 C1 controls.
+    for (const encoding of ['windows-1252', 'latin1']) {
+      expect(await csvToRecords(bytes, 'quotes.csv', { encoding })).toEqual(expected);
+    }
+  });
+
+  oracleTest('detects Big5 traditional Chinese', ['iconv'], async () => {
+    const bytes = iconvEncode('姓名,年齡\n張三,30\n李四,25\n', 'BIG5');
+    expect(await csvToRecords(bytes, 'big5.csv')).toEqual([
+      { 姓名: '張三', 年齡: '30' },
+      { 姓名: '李四', 年齡: '25' },
+    ]);
+  });
+
+  oracleTest('decodes Big5-HKSCS characters under the WHATWG big5 label without dropping any', ['iconv'], async () => {
+    const bytes = iconvEncode('村,邨\n香港,1\n', 'BIG5-HKSCS');
+    expect(await csvToRecords(bytes, 'hk.csv', { encoding: 'big5' })).toEqual([{ 村: '香港', 邨: '1' }]);
+  });
+
+  oracleTest('detects Hanja-only EUC-KR text as Korean, not as GB 18030', ['iconv'], async () => {
+    // The GB 18030 reading of these bytes holds private-use characters, which real Chinese text does not.
+    const bytes = iconvEncode('漢字,字\n水,火\n', 'EUC-KR');
+    expect(bytes.toString('hex')).toBe('f9d3edae2cedae0ae2a92cfbfd0a');
+    expect(await csvToRecords(bytes, 'hanja.csv')).toEqual([{ 漢字: '水', 字: '火' }]);
+  });
+
+  oracleTest('asks for the encoding when too few non-ASCII characters support a legacy guess', ['iconv'], async () => {
+    for (const [text, encoding] of [['a,b\n가,1\n', 'EUC-KR'], ['name\nCafé Müller\n', 'ISO-8859-1'], ['x,y\nー,名前\n', 'SHIFT_JIS']]) {
+      const err = await rejection(csvToRecords(iconvEncode(text, encoding), 'short.csv'));
+      expect(err).toBeInstanceOf(DataEncodingError);
+      expect(err.message).toMatch(
+        /^Too little non-ASCII text \([1-3] characters, at least 4 needed\) to detect the text encoding; pass the "encoding" option\.$/
+      );
+    }
+  });
+
   it('rejects input that no candidate encoding decodes with a typed error', async () => {
-    const err = await rejection(csvToRecords(fixture('latin1.iso-8859-1.csv'), 'latin1.csv'));
+    // 0x81 0x01 is no legacy CJK sequence, and Windows-1252 text has no C0 or C1 control characters.
+    const err = await rejection(csvToRecords(Buffer.from([0x61, 0x2c, 0x62, 0x0a, 0x81, 0x01, 0x2c, 0x63, 0x0a]), 'bin.csv'));
     expect(err).toBeInstanceOf(DataEncodingError);
     expect(err).toBeInstanceOf(ConversionFailedError);
-    expect(err.message).toMatch(/encoding/i);
+    expect(err.message).toBe(
+      'Could not detect the text encoding (tried UTF-8, UTF-16, EUC-KR/CP949, Shift_JIS, GBK, Big5 and Windows-1252); pass the "encoding" option.'
+    );
   });
 
   oracleTest('decodes with an explicit encoding option', ['python3'], async () => {

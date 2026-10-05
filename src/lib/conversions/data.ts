@@ -66,72 +66,146 @@ const ASCII_LIMIT = 0x80;
 const REPLACEMENT_CHARACTER = 0xfffd;
 
 /**
- * Decoding tables for the WHATWG legacy CJK encodings, whose decoders are CP949, Windows-31J and
- * GB 18030. Node's ICU TextDecoder does not implement them: its "euc-kr" lacks the CP949
- * extension rows and turns their lead bytes into C1 controls, and its "gbk" drops some valid
- * sequences, both without throwing in fatal mode. iconv-lite's tables match glibc iconv for
- * every CP949 and CP932 double-byte sequence.
+ * iconv-lite decoding tables for WHATWG legacy encodings that Node's TextDecoder gets wrong
+ * without throwing in fatal mode: its "euc-kr" lacks the CP949 extension rows and turns their
+ * lead bytes into C1 controls, its "gbk" drops some valid sequences, its "big5" drops HKSCS
+ * characters, and its "windows-1252" (also the decoder of the latin1 and iso-8859-1 labels)
+ * decodes 0x80-0x9F as ISO-8859-1 C1 controls instead of curly quotes, dashes and the euro sign.
+ * iconv-lite's tables match glibc iconv for every sequence used here; Windows-1252's five
+ * unassigned bytes are rejected rather than read as C1 controls.
  */
-const LEGACY_CJK_TABLES: ReadonlyMap<string, string> = new Map([
+const LEGACY_TABLES: ReadonlyMap<string, string> = new Map([
   ['euc-kr', 'cp949'],
   ['shift_jis', 'cp932'],
   ['gbk', 'gb18030'],
   ['gb18030', 'gb18030'],
+  ['big5', 'big5hkscs'],
+  ['windows-1252', 'cp1252'],
 ]);
 
-interface LegacyEncodingCandidate {
-  /** WHATWG encoding name, a key of LEGACY_CJK_TABLES. */
-  encoding: string;
-  /** Lead and trail byte ranges of the encoding's everyday repertoire. */
-  leadBytes: readonly ByteRange[];
-  trailBytes: readonly ByteRange[];
+/** One block of a double-byte code space: a lead byte range by its trail byte ranges. */
+interface DoubleByteBlock {
+  leads: ByteRange;
+  trails: readonly ByteRange[];
 }
+
+interface LegacyEncodingCandidate {
+  /** WHATWG encoding name, a key of LEGACY_TABLES. */
+  encoding: string;
+  /**
+   * iconv-lite table used for detection. Big5 is detected with plain CP950: Big5-HKSCS maps
+   * user-defined pairs onto ordinary characters, which would make byte soup look like Big5.
+   * Big5 text that needs HKSCS characters is decoded with the explicit "big5" encoding option.
+   */
+  table: string;
+  /** The encoding's standard character set, without vendor extensions or user-defined rows. */
+  standard: readonly DoubleByteBlock[];
+  /** The part of the standard set that everyday text mostly uses; it breaks ties on `standard`. */
+  core: readonly DoubleByteBlock[];
+}
+
+const KS_X_1001_TRAILS: readonly ByteRange[] = [[0xa1, 0xfe]];
+const SHIFT_JIS_TRAILS: readonly ByteRange[] = [[0x40, 0x7e], [0x80, 0xfc]];
+const GB_2312_TRAILS: readonly ByteRange[] = [[0xa1, 0xfe]];
+const BIG5_TRAILS: readonly ByteRange[] = [[0x40, 0x7e], [0xa1, 0xfe]];
 
 /**
  * Legacy CJK encodings tried, in tie-break order, when the input is neither BOM-marked, UTF-16
- * nor valid UTF-8. Every one of them decodes most byte soup without error, so each candidate is
- * also scored by how much of its decoded text falls inside the repertoire that real text in that
- * encoding uses: KS X 1001 symbols and the 2,350 common Hangul syllables, JIS X 0208 symbols,
- * kana and level-1 kanji, and GB 2312. Korean text decoded as GBK also lands inside GB 2312, so
- * EUC-KR comes before GBK; Japanese text decoded as GBK lands inside GBK's extension rows instead.
+ * nor valid UTF-8. Each of them decodes most byte soup without error, so a candidate is dropped
+ * when its reading holds private-use characters (user-defined rows real text does not use) and is
+ * otherwise scored by the share of its non-ASCII characters inside the encoding's standard set
+ * (KS X 1001 symbols, Hangul and Hanja; JIS X 0208; GB 2312; Big5 levels 1 and 2), then by the
+ * share inside its everyday core (KS X 1001 symbols and the 2,350 Hangul syllables; JIS X 0208
+ * symbols, kana and level-1 kanji; GB 2312 symbols and level-1 hanzi; Big5 symbols and level 1).
+ * Korean Hangul also reads as GB 2312 level-1 hanzi with equal scores, so EUC-KR comes first;
+ * Chinese reads as a Hangul/Hanja mix whose core share is lower than GB 2312's.
  */
 const LEGACY_ENCODING_CANDIDATES: readonly LegacyEncodingCandidate[] = [
-  { encoding: 'euc-kr', leadBytes: [[0xa1, 0xac], [0xb0, 0xc8]], trailBytes: [[0xa1, 0xfe]] },
-  { encoding: 'shift_jis', leadBytes: [[0x81, 0x98]], trailBytes: [[0x40, 0x7e], [0x80, 0xfc]] },
-  { encoding: 'gbk', leadBytes: [[0xa1, 0xf7]], trailBytes: [[0xa1, 0xfe]] },
+  {
+    encoding: 'euc-kr',
+    table: 'cp949',
+    standard: [
+      { leads: [0xa1, 0xac], trails: KS_X_1001_TRAILS },
+      { leads: [0xb0, 0xc8], trails: KS_X_1001_TRAILS },
+      { leads: [0xca, 0xfd], trails: KS_X_1001_TRAILS },
+    ],
+    core: [
+      { leads: [0xa1, 0xac], trails: KS_X_1001_TRAILS },
+      { leads: [0xb0, 0xc8], trails: KS_X_1001_TRAILS },
+    ],
+  },
+  {
+    encoding: 'shift_jis',
+    table: 'cp932',
+    standard: [
+      { leads: [0x81, 0x84], trails: SHIFT_JIS_TRAILS },
+      { leads: [0x88, 0x9f], trails: SHIFT_JIS_TRAILS },
+      { leads: [0xe0, 0xea], trails: SHIFT_JIS_TRAILS },
+    ],
+    core: [{ leads: [0x81, 0x98], trails: SHIFT_JIS_TRAILS }],
+  },
+  {
+    encoding: 'gbk',
+    table: 'gb18030',
+    standard: [
+      { leads: [0xa1, 0xa9], trails: GB_2312_TRAILS },
+      { leads: [0xb0, 0xf7], trails: GB_2312_TRAILS },
+    ],
+    core: [
+      { leads: [0xa1, 0xa9], trails: GB_2312_TRAILS },
+      { leads: [0xb0, 0xd7], trails: GB_2312_TRAILS },
+    ],
+  },
+  {
+    encoding: 'big5',
+    table: 'cp950',
+    standard: [
+      { leads: [0xa1, 0xc6], trails: BIG5_TRAILS },
+      { leads: [0xc9, 0xf9], trails: BIG5_TRAILS },
+    ],
+    core: [{ leads: [0xa1, 0xc6], trails: BIG5_TRAILS }],
+  },
 ];
 
-/** Minimum share of non-ASCII characters that must fall in a candidate's everyday repertoire. */
+/** iconv-lite table of the single-byte encoding tried when no CJK candidate qualifies (Windows-1252). */
+const SINGLE_BYTE_FALLBACK_TABLE = 'cp1252';
+/** C0 controls other than tab, LF and CR: not text. */
+const SINGLE_BYTE_CONTROL = /[\x00-\x08\x0B\x0C\x0E-\x1F]/;
+/** Private-use characters: a legacy reading that needs user-defined rows is not real text. */
+const PRIVATE_USE = /[-]/;
+/** Minimum share of non-ASCII characters that must fall in a candidate's standard set. */
 const LEGACY_REPERTOIRE_MIN_SHARE = 0.5;
+/** Non-ASCII characters a legacy guess needs before it is trusted; fewer cannot tell the encodings apart. */
+const MIN_LEGACY_EVIDENCE_CHARS = 4;
+const DETECTED_ENCODINGS_LABEL = 'UTF-8, UTF-16, EUC-KR/CP949, Shift_JIS, GBK, Big5 and Windows-1252';
 
-const legacyRepertoireCache = new Map<string, ReadonlySet<number>>();
+const legacyRepertoireCache = new Map<readonly DoubleByteBlock[], ReadonlySet<number>>();
 
-/** Decodes with a legacy CJK table; null when any sequence is invalid (the table emits U+FFFD for it). */
-function decodeLegacyCjk(bytes: Uint8Array, encoding: string): string | null {
-  const table = LEGACY_CJK_TABLES.get(encoding);
-  if (!table) return null;
+/** Decodes with an iconv-lite table; null when any sequence is invalid (the table emits U+FFFD for it). */
+function decodeWithTable(bytes: Uint8Array, table: string): string | null {
   const text = iconv.decode(bytes, table, { stripBOM: false });
   return text.includes(String.fromCodePoint(REPLACEMENT_CHARACTER)) ? null : text;
 }
 
-/** Code points of a candidate's everyday repertoire, decoded once from its byte ranges. */
-function legacyRepertoire(candidate: LegacyEncodingCandidate): ReadonlySet<number> {
-  const cached = legacyRepertoireCache.get(candidate.encoding);
+/** Code points of a set of double-byte blocks, decoded once per block list. */
+function legacyRepertoire(table: string, blocks: readonly DoubleByteBlock[]): ReadonlySet<number> {
+  const cached = legacyRepertoireCache.get(blocks);
   if (cached) return cached;
   const repertoire = new Set<number>();
   const pair = new Uint8Array(2);
-  for (const [leadFirst, leadLast] of candidate.leadBytes) {
-    for (let lead = leadFirst; lead <= leadLast; lead++) {
-      for (const [trailFirst, trailLast] of candidate.trailBytes) {
+  for (const { leads, trails } of blocks) {
+    for (let lead = leads[0]; lead <= leads[1]; lead++) {
+      for (const [trailFirst, trailLast] of trails) {
         for (let trail = trailFirst; trail <= trailLast; trail++) {
           pair[0] = lead;
           pair[1] = trail;
-          const decoded = decodeLegacyCjk(pair, candidate.encoding);
+          const decoded = decodeWithTable(pair, table);
           const codePoint = decoded?.codePointAt(0);
           if (
             decoded &&
             codePoint !== undefined &&
             codePoint >= ASCII_LIMIT &&
+            !PRIVATE_USE.test(decoded) &&
             decoded.length === String.fromCodePoint(codePoint).length
           ) {
             repertoire.add(codePoint);
@@ -140,20 +214,44 @@ function legacyRepertoire(candidate: LegacyEncodingCandidate): ReadonlySet<numbe
       }
     }
   }
-  legacyRepertoireCache.set(candidate.encoding, repertoire);
+  legacyRepertoireCache.set(blocks, repertoire);
   return repertoire;
 }
 
-function repertoireShare(text: string, repertoire: ReadonlySet<number>): number {
+interface LegacyGuess {
+  text: string;
+  nonAscii: number;
+  standardShare: number;
+  coreShare: number;
+}
+
+function scoreLegacyCandidate(bytes: Uint8Array, candidate: LegacyEncodingCandidate): LegacyGuess | null {
+  const text = decodeWithTable(bytes, candidate.table);
+  if (text === null || PRIVATE_USE.test(text)) return null;
+  const standard = legacyRepertoire(candidate.table, candidate.standard);
+  const core = legacyRepertoire(candidate.table, candidate.core);
   let nonAscii = 0;
-  let inRepertoire = 0;
+  let inStandard = 0;
+  let inCore = 0;
   for (const char of text) {
     const codePoint = char.codePointAt(0) ?? 0;
     if (codePoint < ASCII_LIMIT) continue;
     nonAscii++;
-    if (repertoire.has(codePoint)) inRepertoire++;
+    if (standard.has(codePoint)) inStandard++;
+    if (core.has(codePoint)) inCore++;
   }
-  return nonAscii === 0 ? 0 : inRepertoire / nonAscii;
+  if (nonAscii === 0) return null;
+  return { text, nonAscii, standardShare: inStandard / nonAscii, coreShare: inCore / nonAscii };
+}
+
+function decodeSingleByteFallback(bytes: Uint8Array): LegacyGuess | null {
+  const text = decodeWithTable(bytes, SINGLE_BYTE_FALLBACK_TABLE);
+  if (text === null || SINGLE_BYTE_CONTROL.test(text)) return null;
+  let nonAscii = 0;
+  for (const char of text) {
+    if ((char.codePointAt(0) ?? 0) >= ASCII_LIMIT) nonAscii++;
+  }
+  return { text, nonAscii, standardShare: 1, coreShare: 1 };
 }
 
 function sniffBom(bytes: Uint8Array): string | null {
@@ -184,8 +282,9 @@ function sniffUtf16ByNulPattern(bytes: Uint8Array): string | null {
 
 /** Decodes with a canonical WHATWG encoding name; invalid input throws instead of yielding U+FFFD. */
 function decodeStrict(bytes: Uint8Array, encoding: string): string {
-  if (LEGACY_CJK_TABLES.has(encoding)) {
-    const text = decodeLegacyCjk(bytes, encoding);
+  const table = LEGACY_TABLES.get(encoding);
+  if (table !== undefined) {
+    const text = decodeWithTable(bytes, table);
     if (text === null) throw new DataEncodingError(`Input is not valid ${encoding} text.`);
     return text;
   }
@@ -205,24 +304,41 @@ function canonicalEncoding(label: string): string {
   }
 }
 
-function detectLegacyCjkText(bytes: Uint8Array): string | null {
-  let best: { text: string; share: number } | null = null;
+/**
+ * The best-scoring legacy reading of bytes that are not UTF-8: CJK candidates first (a strictly
+ * higher standard share wins, then a strictly higher core share, then candidate order), then
+ * Windows-1252. A guess backed by fewer than MIN_LEGACY_EVIDENCE_CHARS non-ASCII characters is
+ * refused: the caller must name the encoding.
+ */
+function detectLegacyText(bytes: Uint8Array): string {
+  let best: LegacyGuess | null = null;
   for (const candidate of LEGACY_ENCODING_CANDIDATES) {
-    const text = decodeLegacyCjk(bytes, candidate.encoding);
-    if (text === null) continue;
-    const share = repertoireShare(text, legacyRepertoire(candidate));
-    // Strictly greater: on a tie the earlier candidate keeps its place.
-    if (share >= LEGACY_REPERTOIRE_MIN_SHARE && (!best || share > best.share)) {
-      best = { text, share };
-    }
+    const guess = scoreLegacyCandidate(bytes, candidate);
+    if (!guess || guess.standardShare < LEGACY_REPERTOIRE_MIN_SHARE) continue;
+    const better =
+      !best ||
+      guess.standardShare > best.standardShare ||
+      (guess.standardShare === best.standardShare && guess.coreShare > best.coreShare);
+    if (better) best = guess;
   }
-  return best ? best.text : null;
+  const guess = best ?? decodeSingleByteFallback(bytes);
+  if (!guess) {
+    throw new DataEncodingError(
+      `Could not detect the text encoding (tried ${DETECTED_ENCODINGS_LABEL}); pass the "encoding" option.`
+    );
+  }
+  if (guess.nonAscii < MIN_LEGACY_EVIDENCE_CHARS) {
+    throw new DataEncodingError(
+      `Too little non-ASCII text (${guess.nonAscii} characters, at least ${MIN_LEGACY_EVIDENCE_CHARS} needed) to detect the text encoding; pass the "encoding" option.`
+    );
+  }
+  return guess.text;
 }
 
 /**
  * Decodes delimited-text bytes: a BOM decides first, then an explicit `encoding` option, then the
  * NUL pattern of BOM-less UTF-16, then strict UTF-8 (TextDecoder, fatal), then the scored legacy
- * CJK candidates. Every decode is strict, so undecodable bytes raise a DataEncodingError instead
+ * candidates. Every decode is strict, so undecodable bytes raise a DataEncodingError instead
  * of turning into U+FFFD.
  */
 function decodeDelimitedText(bytes: Uint8Array, requestedEncoding?: string): string {
@@ -236,13 +352,7 @@ function decodeDelimitedText(bytes: Uint8Array, requestedEncoding?: string): str
   } catch {
     // Not UTF-8: fall through to the legacy candidates.
   }
-  const legacy = detectLegacyCjkText(bytes);
-  if (legacy === null) {
-    throw new DataEncodingError(
-      'Could not detect the text encoding (tried UTF-8, UTF-16, EUC-KR/CP949, Shift_JIS and GBK); pass the "encoding" option.'
-    );
-  }
-  return legacy;
+  return detectLegacyText(bytes);
 }
 
 // ---------------------------------------------------------------------------
