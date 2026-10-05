@@ -2,7 +2,7 @@ import zlib from 'node:zlib';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
@@ -775,13 +775,13 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
 } {
   const { width, height, pattern, data, whiteBalance, colorMatrix, applySrgbGamma } = sensor;
   if (width < 2 || height < 2 || (width & 1) !== 0 || (height & 1) !== 0) {
-    throw new Error(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 with even dimensions required.`);
+    throw new InvalidRawSensorError(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 with even dimensions required.`);
   }
   if (!['RGGB', 'BGGR', 'GRBG', 'GBRG'].includes(pattern)) {
     throw new Error(`Unsupported Bayer CFA pattern: '${pattern}'. Expected RGGB, BGGR, GRBG, or GBRG.`);
   }
   if (!data || data.length < width * height) {
-    throw new Error(`Bayer sensor buffer underflow: expected at least ${width * height} samples, got ${data ? data.length : 0}.`);
+    throw new InvalidRawSensorError(`Bayer sensor buffer underflow: expected at least ${width * height} samples, got ${data ? data.length : 0}.`);
   }
 
   // Determine normalization factor

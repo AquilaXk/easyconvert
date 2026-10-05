@@ -539,6 +539,14 @@ export class UnsupportedRawCompressionError extends ConversionFailedError {
   }
 }
 
+/** Sensor data of a camera RAW file is malformed: impossible dimensions or a truncated sample buffer. */
+export class InvalidRawSensorError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidRawSensorError';
+  }
+}
+
 export class InvalidMediaOptionError extends UnsupportedOptionError {
   readonly status = 422;
   constructor(message: string) {

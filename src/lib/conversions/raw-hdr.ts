@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import {
   ConversionOptions,
   UnsupportedRawCompressionError,
+  InvalidRawSensorError,
 } from '../types';
 import {
   BayerPattern,
@@ -260,7 +261,7 @@ export function demosaicRcdBayerCfa(sensor: BayerSensorData): {
 } {
   const { width, height, pattern, data } = sensor;
   if (width < 2 || height < 2 || (width & 1) !== 0 || (height & 1) !== 0) {
-    throw new Error(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 with even dimensions required.`);
+    throw new InvalidRawSensorError(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 with even dimensions required.`);
   }
   if (!['RGGB', 'BGGR', 'GRBG', 'GBRG'].includes(pattern)) {
     throw new UnsupportedRawCompressionError(
@@ -268,7 +269,7 @@ export function demosaicRcdBayerCfa(sensor: BayerSensorData): {
     );
   }
   if (!data || data.length < width * height) {
-    throw new Error(`Bayer sensor buffer underflow: expected at least ${width * height} samples.`);
+    throw new InvalidRawSensorError(`Bayer sensor buffer underflow: expected at least ${width * height} samples.`);
   }
 
   // Calibration validation & black/white level normalization to Float32 [0.0, 1.0]
