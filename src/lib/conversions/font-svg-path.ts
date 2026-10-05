@@ -34,10 +34,18 @@ export interface SvgPathOptions {
   arcTolerance: number;
   /** Commands allowed in the path, counting every implicit repetition. */
   maxCommands?: number;
+  /** Segments allowed in the path; an arc contributes one per cubic piece it is split into. */
+  maxSegments?: number;
 }
 
 /** Upper bound on path commands per glyph; a glyph with more is rejected, not truncated. */
 export const MAX_SVG_PATH_COMMANDS_PER_GLYPH = 4096;
+/**
+ * Upper bound on segments per glyph, counting each cubic piece of an arc. A glyf outline has at
+ * most 65,535 points and every segment adds at least one, so a glyph beyond this cannot be written;
+ * the cap stops arcs (up to 256 pieces each) from multiplying the command limit into millions.
+ */
+export const MAX_SVG_PATH_SEGMENTS_PER_GLYPH = 0xffff;
 
 /** The path data is malformed, or exceeds the command limit. */
 export class SvgPathDataError extends ConversionFailedError {
@@ -300,11 +308,15 @@ class PathReader {
 export function parseSvgPathData(d: string, options: SvgPathOptions): SvgSubpath[] {
   const { arcTolerance } = options;
   const maxCommands = options.maxCommands ?? MAX_SVG_PATH_COMMANDS_PER_GLYPH;
+  const maxSegments = options.maxSegments ?? MAX_SVG_PATH_SEGMENTS_PER_GLYPH;
   if (!Number.isFinite(arcTolerance) || arcTolerance <= 0) {
     throw new ConversionFailedError('Cannot parse SVG path data: the arc tolerance must be a positive finite number.');
   }
   if (!Number.isInteger(maxCommands) || maxCommands < 1) {
     throw new ConversionFailedError('Cannot parse SVG path data: the command limit must be a positive integer.');
+  }
+  if (!Number.isInteger(maxSegments) || maxSegments < 1) {
+    throw new ConversionFailedError('Cannot parse SVG path data: the segment limit must be a positive integer.');
   }
 
   const reader = new PathReader(d);
@@ -316,6 +328,7 @@ export function parseSvgPathData(d: string, options: SvgPathOptions): SvgSubpath
   let lastQuadControl: SvgPoint | null = null;
   let command: string | null = null;
   let commandCount = 0;
+  let segmentCount = 0;
   let started = false;
 
   const finishSubpath = (): void => {
@@ -329,6 +342,10 @@ export function parseSvgPathData(d: string, options: SvgPathOptions): SvgSubpath
   const target = (relative: boolean, x: number, y: number): SvgPoint =>
     checked(relative ? { x: cursor.x + x, y: cursor.y + y } : { x, y });
   const draw = (segment: SvgSegment): void => {
+    segmentCount++;
+    if (segmentCount > maxSegments) {
+      throw new SvgPathDataError(`SVG path data has too many segments: the limit is ${maxSegments} per glyph, counting the pieces of arcs.`);
+    }
     if (open.subpath === null) open.subpath = { start: cursor, segments: [], closed: false };
     open.subpath.segments.push(segment);
     cursor = segment.to;

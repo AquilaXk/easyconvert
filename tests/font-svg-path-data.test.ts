@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_SVG_PATH_COMMANDS_PER_GLYPH,
+  MAX_SVG_PATH_SEGMENTS_PER_GLYPH,
   SvgPathDataError,
   parseSvgPathData,
   type SvgSegment,
@@ -343,6 +344,27 @@ describe('SVG path data: malformed input is rejected with a typed error', () => 
     expect(() => parse(overLimit)).toThrow(SvgPathDataError);
     const implicit = `M0 0 L${'1 1 '.repeat(MAX_SVG_PATH_COMMANDS_PER_GLYPH)}`;
     expect(() => parse(implicit)).toThrow(/limit|too many/i);
+  });
+
+  it('rejects arcs that split into more cubic pieces than the segment limit, although the command limit holds', () => {
+    // Each arc below needs dozens of cubic pieces at this tolerance (a full-turn arc of radius 12,000), so
+    // 2,048 commands stay below the command limit but pass the 65,535 segments of the segment limit.
+    const arcs = `M0 0${' a12000 12000 0 1 1 1 0'.repeat(MAX_SVG_PATH_COMMANDS_PER_GLYPH / 2)}`;
+    let caught: unknown;
+    try {
+      parseSvgPathData(arcs, { arcTolerance: 1e-6 });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SvgPathDataError);
+    expect((caught as Error).message).toContain(`limit is ${MAX_SVG_PATH_SEGMENTS_PER_GLYPH}`);
+  });
+
+  it('honours an explicit segment limit exactly', () => {
+    const lines = `M0 0${' L1 1'.repeat(5)}`;
+    expect(parseSvgPathData(lines, { arcTolerance: ARC_TOLERANCE, maxSegments: 5 })[0].segments).toHaveLength(5);
+    expect(() => parseSvgPathData(lines, { arcTolerance: ARC_TOLERANCE, maxSegments: 4 })).toThrow(/too many segments/);
+    expect(() => parseSvgPathData(lines, { arcTolerance: ARC_TOLERANCE, maxSegments: 0 })).toThrow(ConversionFailedError);
   });
 
   it('rejects an invalid arc tolerance', () => {

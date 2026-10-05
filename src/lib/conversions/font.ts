@@ -1282,15 +1282,25 @@ export interface CanonicalFontOutlines {
 
 /** Largest deviation of an SVG arc from the true ellipse, per em, so 0.1 font units at 1000 units per em. */
 const SVG_ARC_TOLERANCE_PER_EM = 0.0001;
+/** A quadratic piece adds its off-curve control point and its on-curve end point. */
+const QUAD_SEGMENT_POINTS = 2;
+
+/** Output points that the glyphs of one SVG font may still produce, shared by every glyph of the font. */
+interface SvgPointBudget {
+  pointsLeft: number;
+}
 
 /**
  * Turns SVG path data into TrueType contours: lines and exact quadratics are kept, cubics and arcs
  * become chains of quadratics within the quadratic tolerance, and every point lands on the integer grid.
+ * Points are counted as they are produced, so a glyph that passes the glyf limit of 65,535 points, or
+ * a font that passes the shared budget, stops converting at once instead of after every glyph is built.
  */
 function svgPathToContours(
   d: string | null,
   label: string,
-  tolerances: { quadratic: number; arc: number }
+  tolerances: { quadratic: number; arc: number },
+  budget: SvgPointBudget
 ): GlyphPoint[][] {
   if (d === null || d.trim() === '') return [];
   let subpaths: SvgSubpath[];
@@ -1302,17 +1312,34 @@ function svgPathToContours(
   }
   const subject = `Cannot convert the SVG font to TrueType: ${label}`;
   const contours: GlyphPoint[][] = [];
+  let glyphPoints = 0;
+  const spend = (count: number): void => {
+    glyphPoints += count;
+    budget.pointsLeft -= count;
+    if (glyphPoints > TRUETYPE_MAX_POINTS_PER_GLYPH) {
+      throw new ConversionFailedError(`${subject} needs more than ${TRUETYPE_MAX_POINTS_PER_GLYPH} points.`);
+    }
+    if (budget.pointsLeft < 0) {
+      throw new ConversionFailedError(
+        `Cannot convert the SVG font to TrueType: its glyphs need more than ${SVG_FONT_MAX_TOTAL_POINTS} points together (reached at ${label}).`
+      );
+    }
+  };
   for (const subpath of subpaths) {
     const points: GlyphPoint[] = [roundedGlyphPoint(subpath.start, true, subject)];
+    spend(1);
     let current: BezierPoint = subpath.start;
     for (const segment of subpath.segments) {
       if (segment.kind === 'line') {
         points.push(roundedGlyphPoint(segment.to, true, subject));
+        spend(1);
       } else if (segment.kind === 'quad') {
         points.push(roundedGlyphPoint(segment.c, false, subject), roundedGlyphPoint(segment.to, true, subject));
+        spend(QUAD_SEGMENT_POINTS);
       } else {
         for (const piece of cubicToQuadraticBezier(current, segment.c1, segment.c2, segment.to, tolerances.quadratic)) {
           points.push(roundedGlyphPoint(piece.q, false, subject), roundedGlyphPoint(piece.p, true, subject));
+          spend(QUAD_SEGMENT_POINTS);
         }
       }
       current = segment.to;
@@ -1345,19 +1372,20 @@ export function decodeSvgFont(buffer: Buffer, defaultName: string): ParsedFont {
     arc: unitsPerEm * SVG_ARC_TOLERANCE_PER_EM,
   };
 
+  const budget: SvgPointBudget = { pointsLeft: SVG_FONT_MAX_TOTAL_POINTS };
   const glyphs: CanonicalFontOutlines['glyphs'] = [];
   const glyphNames: string[] = [''];
   const mappings: Array<{ charCode: number; glyphId: number }> = [];
   const mapped = new Set<number>();
   const notdef = svg.missingGlyph;
   glyphs.push({
-    contours: notdef === null ? [] : svgPathToContours(notdef.d, 'missing-glyph', tolerances),
+    contours: notdef === null ? [] : svgPathToContours(notdef.d, 'missing-glyph', tolerances, budget),
     advWidth: notdef === null ? svg.advance : notdef.advance,
   });
   svg.glyphs.forEach((glyph) => {
     const glyphId = glyphs.length;
     glyphs.push({
-      contours: svgPathToContours(glyph.d, glyph.label, tolerances),
+      contours: svgPathToContours(glyph.d, glyph.label, tolerances, budget),
       advWidth: glyph.advance,
     });
     glyphNames.push(glyph.glyphName ?? '');
