@@ -4,7 +4,7 @@ import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assert
 import { ConversionOptions, ConversionFailedError, EngineUnavailableError } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
-import { tierMaxPages } from '@/lib/conversions/page-range';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
 import { frameMetadataHeaders } from '@/lib/api/frame-headers';
 
@@ -122,7 +122,6 @@ export async function POST(req: NextRequest) {
     }
 
     if (options) {
-      options.maxPages = tierMaxPages(auth.user?.tier);
       if (!options.pages && options.page) {
         options.pages = String(options.page);
       }
@@ -153,7 +152,7 @@ export async function POST(req: NextRequest) {
       inputBuffer,
       detectedDef.extension,
       tgt,
-      options,
+      withTierPageCap(options, tierMaxPages(auth.user?.tier)),
       file.name
     );
 

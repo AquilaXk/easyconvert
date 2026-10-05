@@ -245,6 +245,39 @@ export function tierMaxPages(userTier = 'free'): number {
   return TIER_MAX_PAGES[userTier.toLowerCase()] ?? TIER_MAX_PAGES.free;
 }
 
+/** The largest page limit of any tier: no caller-supplied limit can go beyond it. */
+export const MAX_TIER_PAGES = Math.max(...Object.values(TIER_MAX_PAGES));
+
+/**
+ * Key of the page limit a conversion runs under. It is a symbol, so it cannot come out of request JSON:
+ * only server code that knows the caller's tier sets it, with `withTierPageCap`. Options sent by a client
+ * (including a `maxPages` field) never reach it.
+ */
+export const TIER_PAGE_CAP = Symbol.for('easyconvert.tierPageCap');
+
+export interface TierPageCapped {
+  [TIER_PAGE_CAP]?: number;
+}
+
+/** Copy of `options` that carries `maxPages` as the page limit of the conversion; any client `maxPages` is dropped. */
+export function withTierPageCap<T extends object>(options: T | undefined, maxPages: number): T & TierPageCapped {
+  const { maxPages: _clientValue, ...rest } = (options ?? {}) as T & { maxPages?: unknown };
+  return { ...(rest as T), [TIER_PAGE_CAP]: maxPages };
+}
+
+/**
+ * The page limit a conversion runs under: the limit set by server code, held to the largest tier's limit,
+ * or the free tier's limit when none was set. A set limit that is not a positive integer is refused.
+ */
+export function resolvePageLimit(options: TierPageCapped | undefined): number {
+  const set = options?.[TIER_PAGE_CAP];
+  if (set === undefined) return TIER_MAX_PAGES.free;
+  if (typeof set !== 'number' || !Number.isInteger(set) || set <= 0) {
+    throw new InvalidPageRangeError(`Invalid page limit ${String(set)}: expected a positive whole number of pages`);
+  }
+  return Math.min(set, MAX_TIER_PAGES);
+}
+
 export function validateTierPageLimit(spec: string, userTier = 'free'): void {
   const normalizedTier = userTier.toLowerCase();
   const maxAllowed = TIER_MAX_PAGES[normalizedTier] ?? TIER_MAX_PAGES.free;

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import JSZip from 'jszip';
 import { NextRequest } from 'next/server';
 import { convertImage } from '../src/lib/conversions/image';
+import { withTierPageCap } from '../src/lib/conversions/page-range';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { POST as convertPost } from '../src/app/api/convert/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -195,7 +196,7 @@ describe('page limits', () => {
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('a higher limit from the caller lets every page through', async () => {
-    const result = await convertImage(manyPages(), 'png', { maxPages: 100 }, 'many.tif', 'tiff');
+    const result = await convertImage(manyPages(), 'png', withTierPageCap({}, 100), 'many.tif', 'tiff');
     const zip = await JSZip.loadAsync(result.buffer);
     expect(Object.keys(zip.files)).toHaveLength(OVER_FREE_TIER_PAGES);
     expect(result.sourceFrameCount).toBe(OVER_FREE_TIER_PAGES);

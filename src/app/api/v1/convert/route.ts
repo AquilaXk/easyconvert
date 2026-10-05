@@ -4,7 +4,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
-import { tierMaxPages } from '@/lib/conversions/page-range';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
@@ -178,9 +178,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // The page limit follows the caller's tier whatever the request body says.
-    options.maxPages = tierMaxPages(auth.user.tier);
-
     const webhookUrlParam = ((formData.get('webhookUrl') as string) || '').trim() || undefined;
     const webhookSecretParam = ((formData.get('webhookSecret') as string) || '').trim() || undefined;
 
@@ -329,7 +326,7 @@ export async function POST(req: NextRequest) {
       inputBuffer,
       sourceDef.id,
       targetDef.id,
-      options,
+      withTierPageCap(options, tierMaxPages(auth.user.tier)),
       file.name
     );
 

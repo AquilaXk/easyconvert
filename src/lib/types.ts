@@ -116,8 +116,6 @@ export interface ConversionOptions {
   // Document & PDF options
   page?: number;
   pages?: string;
-  /** Most pages one request may convert. Set by the API from the caller's tier; a client-supplied value is overwritten. */
-  maxPages?: number;
   multiPageOutput?: 'zip' | 'first';
   pageCount?: number;
   password?: string;

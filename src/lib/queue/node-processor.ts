@@ -16,6 +16,7 @@ import { isUploadKey } from '../storage/key-namespace';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
+import { pageCappedEngine, pageLimitForOwner } from './page-cap';
 import { frameMetadataFields } from '../api/frame-headers';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
@@ -115,13 +116,15 @@ function removeJobInput(jobId: string, storageKey: string, storage: IStorageBack
  */
 export async function processNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
-  engine: ConversionEnginePort = dispatchEngine,
+  baseEngine: ConversionEnginePort = dispatchEngine,
   storage: IStorageBackend = s3Storage
 ): Promise<ConversionJobResult> {
   // If this job is part of an orchestrated DAG JobGraph, route directly to the graph node executor
   if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
-    return processGraphNodeJob(job, engine, storage);
+    return processGraphNodeJob(job, baseEngine, storage);
   }
+  // Every conversion of the job runs under the page limit of its owner's tier.
+  const engine = pageCappedEngine(baseEngine, await pageLimitForOwner(job.data.userId));
 
   const startTime = Date.now();
   const attemptSignal = job.signal;

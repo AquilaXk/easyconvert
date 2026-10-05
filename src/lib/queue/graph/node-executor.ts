@@ -27,6 +27,7 @@ import {
 import { ConversionFailedError, GraphExportError } from '../../types';
 import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
 import { ARCHIVE_CREATE_FORMATS, MERGE_FORMATS, THUMBNAIL_FORMATS, requestedTargetFormat } from '../../jobs/graph-operations';
+import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
 
 async function processIntermediatePdfArtifacts(
   graphId: string,
@@ -83,7 +84,7 @@ export async function processGraphNodeJob(
   const nodeId = job.data.graphNodeId!;
   const node = job.data.graphNode as any;
   const effectiveStorage: IStorageBackend = storage || s3Storage;
-  const effectiveEngine: ConversionEnginePort = engine || dispatchEngine;
+  const effectiveEngine: ConversionEnginePort = pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId));
 
   await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
   await job.updateProgress(10);

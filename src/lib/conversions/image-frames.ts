@@ -4,7 +4,7 @@ import { ApngCompositor, parseApng, type ApngAnimation } from './image-apng';
 import type { AnimationMetadata, FrameSource, RawFrame } from './image-animation';
 import { assertAggregatePagePixels, assertAnimationBudget, RGBA_BYTES_PER_PIXEL } from './image-limits';
 import { EXIF_ORIENTATION_NORMAL, orientRgbaFrame, withUprightOrientation } from './image-orientation';
-import { resolvePageSelection, TIER_MAX_PAGES } from './page-range';
+import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './page-range';
 
 /**
  * Frame and page selection for multi-frame image sources.
@@ -38,17 +38,12 @@ const SINGLE_FRAME = 1;
 const PLAY_ONCE = 1;
 const FIRST_QUARTER_TURN_ORIENTATION = 5;
 
-/** Pages a tier may convert when the caller does not name one (the free tier's limit). */
-const DEFAULT_MAX_PAGES = TIER_MAX_PAGES.free;
-
 /** Selection-relevant options. */
-export interface FrameOptions {
+export interface FrameOptions extends TierPageCapped {
   page?: number | string | null;
   pages?: string | null;
   multiPageOutput?: 'zip' | 'first';
   stripMetadata?: boolean;
-  /** Most pages one request may convert; set by the API from the caller's tier. */
-  maxPages?: number;
 }
 
 /** An animation whose frames are decoded and composed one by one, in order. */
@@ -255,9 +250,9 @@ async function selectDocumentPages(
   targetFormat: string,
   options: FrameOptions
 ): Promise<FrameSelection> {
+  const cap = resolvePageLimit(options);
   const requested = resolveRequestedPages(options, pageCount);
   const pages = requested ?? Array.from({ length: pageCount }, (_unused, index) => index + 1);
-  const cap = options.maxPages ?? DEFAULT_MAX_PAGES;
   if (pages.length > cap) {
     throw new InvalidPageRangeError(
       `This image has ${pages.length} pages to convert, over the limit of ${cap} pages per request; select pages with the "page" or "pages" option`
