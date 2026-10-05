@@ -466,6 +466,37 @@ describe('resolveClientIp: RFC 7239 Forwarded header (TRUSTED_PROXY_HEADER=forwa
     expect(() => resolveClientIp(req({ forwarded: value }), { config: proxies })).toThrow(InvalidForwardingHeaderError);
   });
 
+  it('tolerates leading semicolons, optional whitespace and empty elements', () => {
+    expect(ipOf({ forwarded: ';for=198.51.100.7' }, proxies)).toBe('198.51.100.7');
+    expect(ipOf({ forwarded: 'proto=https ;\tfor=198.51.100.7 ; by=10.0.0.9' }, proxies)).toBe('198.51.100.7');
+    expect(ipOf({ forwarded: 'for=198.51.100.7,, ,' }, proxies)).toBe('198.51.100.7');
+  });
+
+  it('unescapes quoted pairs, including an escaped backslash, without ending the string early', () => {
+    expect(ipOf({ forwarded: 'by="a\\\\b";for=198.51.100.7' }, proxies)).toBe('198.51.100.7');
+    expect(ipOf({ forwarded: 'for="\\198.51.100.7"' }, proxies)).toBe('198.51.100.7');
+  });
+
+  it.each([
+    ['a trailing backslash inside an unterminated quoted string', 'for="198.51.100.7\\'],
+    ['text glued to the closing quote', 'for="198.51.100.7"x'],
+    ['an empty quoted value', 'for=""'],
+    ['a parameter with no name', '=198.51.100.7'],
+    ['a name with no equals sign', 'for'],
+    ['a name followed by whitespace before equals', 'for =198.51.100.7'],
+    ['a repeated for= within one element', 'for=198.51.100.7;for=198.51.100.8'],
+    ['a value ending at a non-token character', 'for=198.51.100.7 x'],
+  ])('rejects %s', (_label, value) => {
+    expect(() => resolveClientIp(req({ forwarded: value }), { config: proxies })).toThrow(InvalidForwardingHeaderError);
+  });
+
+  it('counts hops across elements and rejects more than the hop limit', () => {
+    const many = new Array(33).fill('for=198.51.100.7').join(', ');
+    expect(() => resolveClientIp(req({ forwarded: many }), { config: proxies })).toThrow(InvalidForwardingHeaderError);
+    const atLimit = new Array(32).fill('for=10.0.0.1').join(', ');
+    expect(ipOf({ forwarded: atLimit }, proxies)).toBe('10.0.0.1');
+  });
+
   it('is ignored from an untrusted peer', () => {
     expect(ipOf({ forwarded: 'for=10.0.0.1' }, proxies, '203.0.113.99')).toBe('203.0.113.99');
   });

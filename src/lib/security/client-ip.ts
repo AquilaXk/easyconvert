@@ -170,7 +170,7 @@ function parseIPv4(text: string): Uint8Array | null {
 }
 
 function parseIPv6(input: string): Uint8Array | null {
-  if (input.indexOf(':') < 0 || !IPV6_CHARS.test(input)) return null;
+  if (!input.includes(':') || !IPV6_CHARS.test(input)) return null;
   let text = input;
 
   if (text.includes('.')) {
@@ -200,7 +200,7 @@ function parseIPv6(input: string): Uint8Array | null {
   const bytes = new Uint8Array(IPV6_BYTES);
   for (let i = 0; i < IPV6_GROUPS; i++) {
     if (!HEX_GROUP.test(groups[i])) return null;
-    const value = parseInt(groups[i], 16);
+    const value = Number.parseInt(groups[i], 16);
     bytes[i * 2] = value >> BITS_PER_BYTE;
     bytes[i * 2 + 1] = value & BYTE_MASK;
   }
@@ -291,7 +291,7 @@ function splitNode(text: string, allowObfuscatedPort: boolean): NodeParts | null
       port = rest.slice(1);
     }
     // Brackets are IPv6-only.
-    if (host.indexOf(':') < 0) return null;
+    if (!host.includes(':')) return null;
   } else {
     const firstColon = node.indexOf(':');
     if (firstColon >= 0 && firstColon === node.lastIndexOf(':')) {
@@ -514,7 +514,7 @@ export function loadClientIpConfig(): ClientIpConfig {
     raw.trustedCdnRanges ?? '',
     raw.trustedProxyHeader ?? '',
   ].join('\u0000');
-  if (cachedConfig && cachedConfig.key === key) return cachedConfig.config;
+  if (cachedConfig?.key === key) return cachedConfig.config;
   const config = parseClientIpConfig(raw);
   cachedConfig = { key, config };
   return config;
@@ -568,6 +568,91 @@ function isOws(char: string): boolean {
   return char === ' ' || char === '\t';
 }
 
+/** Read position shared by the Forwarded tokenizer helpers. */
+interface ForwardedCursor {
+  value: string;
+  i: number;
+}
+
+function skipOws(cursor: ForwardedCursor): void {
+  while (cursor.i < cursor.value.length && isOws(cursor.value[cursor.i])) cursor.i++;
+}
+
+/** Reads a quoted-string starting at its opening quote; backslash escapes the next character (RFC 7230 3.2.6). */
+function readQuotedString(cursor: ForwardedCursor, header: string): string {
+  const { value } = cursor;
+  cursor.i++;
+  let quoted = '';
+  while (cursor.i < value.length) {
+    const char = value[cursor.i];
+    if (char === '\\' && cursor.i + 1 < value.length) {
+      quoted += value[cursor.i + 1];
+      cursor.i += 2;
+    } else if (char === '"') {
+      cursor.i++;
+      return quoted;
+    } else {
+      quoted += char;
+      cursor.i++;
+    }
+  }
+  throw invalidHeader(header, 'has an unterminated quoted string');
+}
+
+function readTokenRun(cursor: ForwardedCursor): string {
+  const start = cursor.i;
+  while (cursor.i < cursor.value.length && TCHAR.test(cursor.value[cursor.i])) cursor.i++;
+  return cursor.value.slice(start, cursor.i);
+}
+
+/** Reads one `name=value` pair (value a token or quoted-string) and the delimiter that must follow it. */
+function readForwardedParameter(cursor: ForwardedCursor, header: string): { name: string; pairValue: string } {
+  const name = readTokenRun(cursor).toLowerCase();
+  if (name === '' || cursor.value[cursor.i] !== '=') throw invalidHeader(header, 'has a malformed parameter');
+  cursor.i++;
+
+  let pairValue: string;
+  if (cursor.value[cursor.i] === '"') {
+    pairValue = readQuotedString(cursor, header);
+  } else {
+    pairValue = readTokenRun(cursor);
+    if (pairValue === '') throw invalidHeader(header, 'has an empty parameter value');
+  }
+
+  skipOws(cursor);
+  const next = cursor.value[cursor.i];
+  if (cursor.i < cursor.value.length && next !== ';' && next !== ',') {
+    throw invalidHeader(header, 'has a malformed parameter');
+  }
+  return { name, pairValue };
+}
+
+/**
+ * Reads one forwarded-element: pairs separated by ';', ending at ',' or end of input (left unconsumed).
+ * Returns whether any pair was seen and the raw `for` value, if present.
+ */
+function readForwardedElement(cursor: ForwardedCursor, header: string): { sawPair: boolean; forValue: string | undefined } {
+  let sawPair = false;
+  let forValue: string | undefined;
+
+  for (;;) {
+    skipOws(cursor);
+    if (cursor.i >= cursor.value.length || cursor.value[cursor.i] === ',') break;
+    if (cursor.value[cursor.i] === ';') {
+      cursor.i++;
+      continue;
+    }
+
+    const { name, pairValue } = readForwardedParameter(cursor, header);
+    sawPair = true;
+    if (name === 'for') {
+      if (forValue !== undefined) throw invalidHeader(header, 'repeats for= within one element');
+      forValue = pairValue;
+    }
+  }
+  return { sawPair, forValue };
+}
+
 /**
  * Tokenizes an RFC 7239 `Forwarded` header into one entry per element (the raw `for` value, or undefined
  * when the element has none). Quoted strings may contain commas, semicolons and backslash escapes.
@@ -576,75 +661,15 @@ function readForwarded(value: string): Chain {
   const header = 'Forwarded';
   if (value.length > MAX_FORWARDING_HEADER_LENGTH) throw invalidHeader(header, 'is too long');
   const entries: Array<string | undefined> = [];
-  const length = value.length;
-  let i = 0;
+  const cursor: ForwardedCursor = { value, i: 0 };
 
-  const skipOws = (): void => {
-    while (i < length && isOws(value[i])) i++;
-  };
-
-  while (i < length) {
-    let sawPair = false;
-    let forValue: string | undefined;
-
-    // One forwarded-element: pairs separated by ';', element ends at ',' or end of input.
-    for (;;) {
-      skipOws();
-      if (i >= length || value[i] === ',') break;
-      if (value[i] === ';') {
-        i++;
-        continue;
-      }
-
-      const nameStart = i;
-      while (i < length && TCHAR.test(value[i])) i++;
-      const name = value.slice(nameStart, i).toLowerCase();
-      if (name === '' || value[i] !== '=') throw invalidHeader(header, 'has a malformed parameter');
-      i++;
-
-      let pairValue: string;
-      if (value[i] === '"') {
-        i++;
-        let quoted = '';
-        let closed = false;
-        while (i < length) {
-          const char = value[i];
-          if (char === '\\' && i + 1 < length) {
-            quoted += value[i + 1];
-            i += 2;
-          } else if (char === '"') {
-            closed = true;
-            i++;
-            break;
-          } else {
-            quoted += char;
-            i++;
-          }
-        }
-        if (!closed) throw invalidHeader(header, 'has an unterminated quoted string');
-        pairValue = quoted;
-      } else {
-        const valueStart = i;
-        while (i < length && TCHAR.test(value[i])) i++;
-        pairValue = value.slice(valueStart, i);
-        if (pairValue === '') throw invalidHeader(header, 'has an empty parameter value');
-      }
-
-      skipOws();
-      if (i < length && value[i] !== ';' && value[i] !== ',') throw invalidHeader(header, 'has a malformed parameter');
-
-      sawPair = true;
-      if (name === 'for') {
-        if (forValue !== undefined) throw invalidHeader(header, 'repeats for= within one element');
-        forValue = pairValue;
-      }
-    }
-
-    if (sawPair) {
-      entries.push(forValue);
+  while (cursor.i < value.length) {
+    const element = readForwardedElement(cursor, header);
+    if (element.sawPair) {
+      entries.push(element.forValue);
       if (entries.length > MAX_FORWARDING_HOPS) throw invalidHeader(header, 'lists too many hops');
     }
-    if (i < length && value[i] === ',') i++;
+    if (cursor.i < value.length && value[cursor.i] === ',') cursor.i++;
   }
 
   return { entries, forwardedSyntax: true, header };
@@ -734,7 +759,7 @@ function resolveChain(
   // Nearest hop: the peer when known, otherwise the address the closest proxy recorded (rightmost entry).
   let nearest: Hop = peer;
   if (nearest === null && chain.entries.length > 0) {
-    nearest = parseHop(chain, chain.entries[chain.entries.length - 1]);
+    nearest = parseHop(chain, chain.entries.at(-1));
   }
 
   if (cdnRanges && nearest && inAnyRange(nearest, cdnRanges)) {
