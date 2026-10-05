@@ -3,7 +3,12 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { createWorkerSandboxDir } from './sandbox';
-import { executeSandboxedBinary, SandboxedExecutionOptions, SandboxedExecutionResult } from '../lib/security/process-sandbox';
+import {
+  executeSandboxedBinary,
+  SandboxedExecutionOptions,
+  SandboxedExecutionResult,
+  SandboxedTimeoutError,
+} from '../lib/security/process-sandbox';
 import { EngineUnavailableError } from '../lib/types';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
@@ -11,11 +16,44 @@ import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 export const LIBREOFFICE_POOL_ENGINE_NAME = 'libreoffice-pool';
 
 /**
- * Upper bound for the one-time readiness probe. A healthy soffice converts the probe document in a
- * couple of seconds; anything slower means the UNO listener or the sandbox is broken, and the pool
- * must report that instead of letting every job wait for its full execution timeout.
+ * Default upper bound for the one-time readiness probe. A cold profile plus a PDF export can take
+ * several seconds on a slow CI host; anything beyond this means the UNO listener or the sandbox is
+ * broken, and the pool must report that instead of letting every job wait for its full timeout.
  */
-export const LIBREOFFICE_READINESS_TIMEOUT_MS = 20_000;
+export const LIBREOFFICE_READINESS_TIMEOUT_MS = 30_000;
+
+/** Environment variable that overrides the readiness probe budget (milliseconds). */
+export const LIBREOFFICE_READINESS_TIMEOUT_ENV = 'LIBREOFFICE_POOL_READINESS_TIMEOUT_MS';
+
+/** Bounds for the override; the maximum stays below the 45 s default job timeout. */
+export const LIBREOFFICE_READINESS_TIMEOUT_MIN_MS = 5_000;
+export const LIBREOFFICE_READINESS_TIMEOUT_MAX_MS = 40_000;
+
+/** How long a failed readiness probe is remembered before the next job may probe again. */
+export const LIBREOFFICE_READINESS_FAILURE_TTL_MS = 60_000;
+
+const DECIMAL_INTEGER_REGEX = /^\d+$/;
+
+/**
+ * Resolves the readiness probe budget from the environment. A malformed or out-of-range override
+ * fails closed with a typed error instead of silently using the default.
+ */
+export function resolveReadinessTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[LIBREOFFICE_READINESS_TIMEOUT_ENV];
+  if (raw === undefined || raw === '') return LIBREOFFICE_READINESS_TIMEOUT_MS;
+  const value = DECIMAL_INTEGER_REGEX.test(raw) ? Number(raw) : Number.NaN;
+  if (
+    !Number.isSafeInteger(value) ||
+    value < LIBREOFFICE_READINESS_TIMEOUT_MIN_MS ||
+    value > LIBREOFFICE_READINESS_TIMEOUT_MAX_MS
+  ) {
+    throw new EngineUnavailableError(
+      LIBREOFFICE_POOL_ENGINE_NAME,
+      `${LIBREOFFICE_READINESS_TIMEOUT_ENV} must be an integer between ${LIBREOFFICE_READINESS_TIMEOUT_MIN_MS} and ${LIBREOFFICE_READINESS_TIMEOUT_MAX_MS} milliseconds`
+    );
+  }
+  return value;
+}
 
 const READINESS_PROBE_INPUT_NAME = 'probe.txt';
 const READINESS_PROBE_OUTPUT_NAME = 'probe.pdf';
@@ -168,7 +206,7 @@ export class LibreOfficePoolManager {
   private executor: SandboxedProcessRunner;
   private daemonMode: boolean;
   private readinessProbe: boolean;
-  private readinessCheck: { sofficePath: string; promise: Promise<void> } | null = null;
+  private readinessCheck: { sofficePath: string; promise: Promise<void>; failedAt: number | null } | null = null;
 
   private isShuttingDown = false;
   private totalJobsProcessed = 0;
@@ -235,7 +273,7 @@ export class LibreOfficePoolManager {
     const workDir = createWorkerSandboxDir(`libreoffice_work_${id}_`);
     // A named pipe needs no network interface, so it also works inside the sandbox's network
     // namespace, where loopback is down and a TCP listener could never bind.
-    const unoPipeName = `ec_${id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const unoPipeName = `ec_${process.pid}_${id.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const unoAccept = `pipe,name=${unoPipeName};urp;`;
 
     const worker: LibreOfficeWorker = {
@@ -286,59 +324,92 @@ export class LibreOfficePoolManager {
 
   /**
    * Runs one bounded conversion with the exact daemon arguments and sandbox the jobs use, so a
-   * broken listener or namespace surfaces as a typed error right away. Success is cached per
-   * soffice binary; a failure is not cached, so a transient fault does not disable the pool.
+   * broken listener or namespace surfaces as a typed error right away. The outcome is shared per
+   * soffice binary: success is kept, a failure is kept for LIBREOFFICE_READINESS_FAILURE_TTL_MS so
+   * a broken pool does not make every job re-pay the probe budget, then the next job probes again.
    */
   private ensureReady(): Promise<void> {
     const sofficePath = this.sofficePath;
     if (!this.readinessProbe || !sofficePath) return Promise.resolve();
-    if (this.readinessCheck && this.readinessCheck.sofficePath === sofficePath) {
-      return this.readinessCheck.promise;
+    const current = this.readinessCheck;
+    if (current && current.sofficePath === sofficePath) {
+      const failureExpired =
+        current.failedAt !== null && Date.now() - current.failedAt >= LIBREOFFICE_READINESS_FAILURE_TTL_MS;
+      if (!failureExpired) {
+        return current.promise;
+      }
     }
     const promise = this.runReadinessProbe(sofficePath);
-    const check = { sofficePath, promise };
+    const check = { sofficePath, promise, failedAt: null as number | null };
     this.readinessCheck = check;
     promise.catch(() => {
-      if (this.readinessCheck === check) {
-        this.readinessCheck = null;
-      }
+      check.failedAt = Date.now();
     });
     return promise;
   }
 
-  private async runReadinessProbe(sofficePath: string): Promise<void> {
-    const probeId = crypto.randomUUID().slice(0, 8);
-    const profileDir = createWorkerSandboxDir(`libreoffice_probe_profile_${probeId}_`);
-    const workDir = createWorkerSandboxDir(`libreoffice_probe_work_${probeId}_`);
-    const inputPath = path.join(workDir, READINESS_PROBE_INPUT_NAME);
-    const outputPath = path.join(workDir, READINESS_PROBE_OUTPUT_NAME);
-    const args = [
-      '--headless',
-      '--norestore',
-      '--nofirststartwizard',
-      '--nologo',
-      `-env:UserInstallation=file://${profileDir}`,
-    ];
-    if (this.daemonMode) {
-      args.push(`--accept=pipe,name=ec_probe_${probeId};urp;`);
+  /** Waits for a shared promise without tying it to one caller's abort signal. */
+  private waitUnlessAborted(shared: Promise<void>, signal?: AbortSignal): Promise<void> {
+    if (!signal) return shared;
+    if (signal.aborted) {
+      return Promise.reject(signal.reason || new Error('The operation was aborted'));
     }
-    args.push('--convert-to', 'pdf', '--outdir', workDir, inputPath);
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason || new Error('The operation was aborted'));
+      signal.addEventListener('abort', onAbort, { once: true });
+      shared.then(
+        () => {
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        },
+        (err) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(err);
+        }
+      );
+    });
+  }
+
+  private async runReadinessProbe(sofficePath: string): Promise<void> {
+    const timeoutMs = resolveReadinessTimeoutMs();
+    const probeId = crypto.randomUUID().slice(0, 8);
+    let profileDir: string | undefined;
+    let workDir: string | undefined;
 
     try {
+      profileDir = createWorkerSandboxDir(`libreoffice_probe_profile_${probeId}_`);
+      workDir = createWorkerSandboxDir(`libreoffice_probe_work_${probeId}_`);
+      const inputPath = path.join(workDir, READINESS_PROBE_INPUT_NAME);
+      const outputPath = path.join(workDir, READINESS_PROBE_OUTPUT_NAME);
+      const args = [
+        '--headless',
+        '--norestore',
+        '--nofirststartwizard',
+        '--nologo',
+        `-env:UserInstallation=file://${profileDir}`,
+      ];
+      if (this.daemonMode) {
+        args.push(`--accept=pipe,name=ec_probe_${process.pid}_${probeId};urp;`);
+      }
+      args.push('--convert-to', 'pdf', '--outdir', workDir, inputPath);
+
       fs.writeFileSync(inputPath, READINESS_PROBE_TEXT);
       try {
         await this.executor(sofficePath, args, {
           cwd: workDir,
-          timeoutMs: LIBREOFFICE_READINESS_TIMEOUT_MS,
+          timeoutMs,
           env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
         });
       } catch (err) {
+        if (err instanceof SandboxedTimeoutError) {
+          throw new EngineUnavailableError(
+            LIBREOFFICE_POOL_ENGINE_NAME,
+            `readiness probe did not finish within ${timeoutMs}ms`
+          );
+        }
         const detail = err instanceof Error ? err.message : String(err);
-        throw new EngineUnavailableError(
-          LIBREOFFICE_POOL_ENGINE_NAME,
-          `readiness probe failed within ${LIBREOFFICE_READINESS_TIMEOUT_MS}ms: ${detail}`
-        );
+        throw new EngineUnavailableError(LIBREOFFICE_POOL_ENGINE_NAME, `readiness probe failed: ${detail}`);
       }
       const produced = fs.existsSync(outputPath) ? fs.readFileSync(outputPath) : null;
       if (!produced || produced.subarray(0, PDF_MAGIC.length).toString('latin1') !== PDF_MAGIC) {
@@ -348,8 +419,8 @@ export class LibreOfficePoolManager {
         );
       }
     } finally {
-      fs.rmSync(profileDir, { recursive: true, force: true });
-      fs.rmSync(workDir, { recursive: true, force: true });
+      if (profileDir) fs.rmSync(profileDir, { recursive: true, force: true });
+      if (workDir) fs.rmSync(workDir, { recursive: true, force: true });
     }
   }
 
@@ -593,7 +664,7 @@ export class LibreOfficePoolManager {
       return null;
     }
 
-    await this.ensureReady();
+    await this.waitUnlessAborted(this.ensureReady(), options.signal);
 
     const worker = await this.acquireWorker(options.timeoutMs, options.signal);
     let hasError = false;

@@ -302,10 +302,10 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
 
       await pool.init();
 
-      // Pre-warm call: should include --accept=pipe,name=ec_worker_<id>;urp;
+      // Pre-warm call: should include --accept=pipe,name=ec_<pid>_worker_<id>;urp;
       expect(recordedCalls.length).toBeGreaterThanOrEqual(1);
       const prewarm = recordedCalls[0];
-      expect(prewarm.args.some((a) => a.startsWith('--accept=pipe,name=ec_worker_'))).toBe(true);
+      expect(prewarm.args.some((a) => /^--accept=pipe,name=ec_\d+_worker_[0-9a-f]{8};urp;$/.test(a))).toBe(true);
 
       // Conversion call: should also include --accept=pipe...
       const result = await pool.convert(Buffer.from('doc content'), 'docx', 'pdf');
@@ -313,7 +313,7 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
 
       expect(recordedCalls.length).toBeGreaterThanOrEqual(2);
       const conv = recordedCalls[1];
-      expect(conv.args.some((a) => a.startsWith('--accept=pipe,name=ec_worker_'))).toBe(true);
+      expect(conv.args.some((a) => /^--accept=pipe,name=ec_\d+_worker_[0-9a-f]{8};urp;$/.test(a))).toBe(true);
       expect(conv.args).toContain('--convert-to');
       expect(conv.args).toContain('pdf');
     });
