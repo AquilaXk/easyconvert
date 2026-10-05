@@ -924,17 +924,37 @@ describe('external references in presentation attributes (issue #403 item 1)', (
 
   describe('linear time on 5 MB adversarial attributes', () => {
     const FIVE_MB = 5 * 1024 * 1024;
-    const BUDGET_MS = 2000;
-    const adversarial: Array<[string, string]> = [
-      ['url openers', `<rect fill="${'url('.repeat(FIVE_MB / 4)}"/>`],
-      ['many attributes', `<rect ${'fill="url(http://e/x)" '.repeat(FIVE_MB / 24)}/>`],
-      ['many elements', '<rect fill="url(http://e/x)"/>'.repeat(FIVE_MB / 30)],
+    /**
+     * Linear work grows about 4x when the input grows 4x; quadratic work grows 16x. Comparing the two
+     * sizes on the same machine keeps the check independent of how busy the runner is; the absolute
+     * cap only stops a pathological run.
+     */
+    const SIZE_FACTOR = 4;
+    const MAX_GROWTH = 8;
+    const ABSOLUTE_CAP_MS = 20_000;
+    /** Timer resolution floor, so a very fast small run cannot inflate the ratio. */
+    const MIN_MEASURED_MS = 5;
+    const RUNS = 2;
+    const adversarial: Array<[string, (bytes: number) => string]> = [
+      ['url openers', (bytes) => `<rect fill="${'url('.repeat(bytes / 4)}"/>`],
+      ['many attributes', (bytes) => `<rect ${'fill="url(http://e/x)" '.repeat(Math.floor(bytes / 24))}/>`],
+      ['many elements', (bytes) => '<rect fill="url(http://e/x)"/>'.repeat(Math.floor(bytes / 30))],
     ];
-    for (const [label, body] of adversarial) {
-      it(`handles ${label}`, () => {
+    const fastest = (body: string): number => {
+      let best = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < RUNS; run += 1) {
         const start = performance.now();
         sanitizeSvgString(`<svg>${body}</svg>`);
-        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+        best = Math.min(best, performance.now() - start);
+      }
+      return best;
+    };
+    for (const [label, build] of adversarial) {
+      it(`handles ${label}`, () => {
+        const small = fastest(build(FIVE_MB / SIZE_FACTOR));
+        const large = fastest(build(FIVE_MB));
+        expect(large).toBeLessThan(ABSOLUTE_CAP_MS);
+        expect(large / Math.max(small, MIN_MEASURED_MS)).toBeLessThan(MAX_GROWTH);
       });
     }
   });
