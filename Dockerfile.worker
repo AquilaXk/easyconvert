@@ -48,7 +48,7 @@ RUN apt-get update \
         arm64) SEVEN_ZIP_ARCH=arm64; SEVEN_ZIP_SHA256="${SEVEN_ZIP_SHA256_ARM64}" ;; \
         *) echo "No pinned 7-Zip build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
     esac \
-    && curl --fail --silent --show-error --location --retry 3 \
+    && curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
         --output /tmp/7zip.tar.xz \
         "https://github.com/ip7z/7zip/releases/download/${SEVEN_ZIP_VERSION}/7z${SEVEN_ZIP_RELEASE}-linux-${SEVEN_ZIP_ARCH}.tar.xz" \
     && echo "${SEVEN_ZIP_SHA256}  /tmp/7zip.tar.xz" | sha256sum --check --strict - \
