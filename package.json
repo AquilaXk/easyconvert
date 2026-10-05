@@ -11,6 +11,7 @@
     "start": "next start",
     "lint": "next lint",
     "guard:anti-cheat": "tsx scripts/guard-anti-cheat.ts",
+    "fixtures:raw": "node scripts/fetch-raw-fixtures.mjs",
     "pretest": "npm run guard:anti-cheat",
     "test": "vitest run",
     "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/job-graph-redis-e2e.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",

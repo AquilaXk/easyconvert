@@ -62,3 +62,6 @@ CLAUDE.local.md
 # Test temp fixtures & soak telemetry
 tests/fixtures/soak-telemetry.json
 tests/fixtures/golden-testnet-temp/
+
+# Camera-RAW samples fetched on demand (npm run fixtures:raw)
+tests/fixtures/raw/.cache/
