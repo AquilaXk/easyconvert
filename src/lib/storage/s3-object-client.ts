@@ -599,7 +599,23 @@ export class S3ObjectClient {
     }
   }
 
+  /**
+   * Sends a request with its retries. A request body that is a stream is consumed by the first
+   * attempt and cannot be replayed, so when the request fails for good the stream is closed here:
+   * a caller that handed over a file stream would otherwise leak its descriptor.
+   */
   private async send(request: S3Request): Promise<S3Response> {
+    try {
+      return await this.sendWithRetries(request);
+    } catch (err) {
+      if (request.body instanceof Readable && !request.body.destroyed) {
+        request.body.destroy();
+      }
+      throw err;
+    }
+  }
+
+  private async sendWithRetries(request: S3Request): Promise<S3Response> {
     const address = this.address(request.key);
     let lastError: StorageAdapterError | null = null;
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {

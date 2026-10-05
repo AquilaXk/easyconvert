@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import {
@@ -422,6 +423,66 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
       const result = await client.putStream('stream/small.bin', Readable.from([body]));
       expect(result).toMatchObject({ size: body.length, etag: s3EtagMd5(body).toString('hex') });
       expect(server.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
+    });
+
+    describe('a source stream that cannot be replayed is closed when the upload fails', () => {
+      const ATTEMPT_ONCE = 1;
+      const LARGE_SOURCE_BYTES = 6 * MIB;
+      let spoolDir: string;
+
+      beforeEach(() => {
+        spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-source-stream-'));
+      });
+
+      afterEach(() => {
+        fs.rmSync(spoolDir, { recursive: true, force: true });
+      });
+
+      async function expectClosed(stream: Readable): Promise<void> {
+        await new Promise<void>((resolve) => {
+          if (stream.closed) resolve();
+          else stream.once('close', () => resolve());
+        });
+        expect(stream.destroyed).toBe(true);
+      }
+
+      for (const [status, code] of [
+        [503, 'SlowDown'],
+        [403, 'AccessDenied'],
+      ] as const) {
+        it(`closes a file stream after the store answers ${status}`, async () => {
+          const file = path.join(spoolDir, 'source.bin');
+          // Large enough that the store answers before the body has been read to its end.
+          fs.writeFileSync(file, Buffer.alloc(LARGE_SOURCE_BYTES, 7));
+          server.faults.push({ match: (req) => req.method === 'PUT', status, code, times: Infinity });
+          const source = fs.createReadStream(file);
+          await expect(
+            makeClient({ maxAttempts: ATTEMPT_ONCE }).putStream('stream/fail.bin', source, { size: LARGE_SOURCE_BYTES })
+          ).rejects.toBeInstanceOf(
+            StorageAdapterError
+          );
+          await expectClosed(source);
+        });
+      }
+
+      it('closes a file stream when the store cannot be reached at all', async () => {
+        const file = path.join(spoolDir, 'source.bin');
+        fs.writeFileSync(file, Buffer.alloc(1000, 7));
+        const source = fs.createReadStream(file);
+        const unreachable = makeClient({ endpoint: 'http://127.0.0.1:1', maxAttempts: ATTEMPT_ONCE });
+        await expect(unreachable.putStream('stream/fail.bin', source, { size: 1000 })).rejects.toBeInstanceOf(StorageAdapterError);
+        await expectClosed(source);
+      });
+
+      it('closes a part stream the store refused', async () => {
+        const upload = await client.createMultipartUpload('stream/part.bin');
+        const file = path.join(spoolDir, 'part.bin');
+        fs.writeFileSync(file, Buffer.alloc(2000, 7));
+        const source = fs.createReadStream(file);
+        server.faults.push({ match: (req) => req.method === 'PUT', status: 403, code: 'AccessDenied', times: Infinity });
+        await expect(client.uploadPart('stream/part.bin', upload, 1, source, 2000)).rejects.toBeInstanceOf(StorageAuthenticationError);
+        await expectClosed(source);
+      });
     });
 
     it('stores an empty stream as an empty object', async () => {
