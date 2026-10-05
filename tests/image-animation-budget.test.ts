@@ -14,7 +14,7 @@ import {
  * (512 MiB of RGBA) and the measured number of frame-sized buffers alive at once, so a change to either
  * shows up as a moved boundary:
  *  - composed frames (APNG): 7 buffers;
- *  - oriented stacked frames (EXIF orientation on GIF/WebP): the stack itself plus 22 buffers;
+ *  - oriented stacked frames (EXIF orientation on GIF/WebP): the stack decoded twice plus 20 buffers;
  *  - plain stacked frames: the stack decoded twice plus 4 buffers.
  */
 
@@ -24,21 +24,21 @@ const RGBA = 4;
 describe('constants', () => {
   it('pins the measured working copies and the budget', () => {
     expect(MAX_DECODED_ANIMATION_BYTES).toBe(BUDGET_BYTES);
-    expect(ORIENTED_WORKING_COPIES).toBe(22);
+    expect(ORIENTED_WORKING_COPIES).toBe(20);
     expect(COMPOSED_WORKING_COPIES).toBe(7);
     expect(COMPOSED_MEMORY).toEqual({ residentFrames: 0, workingCopies: 7 });
-    expect(orientedMemory(10)).toEqual({ residentFrames: 10, workingCopies: 22 });
+    expect(orientedMemory(10)).toEqual({ residentFrames: 20, workingCopies: 20 });
     expect(stackedMemory(10)).toEqual({ residentFrames: 20, workingCopies: 4 });
   });
 });
 
 describe('oriented stacked animations', () => {
-  // 134217728 / (10 + 22) = 4194304 pixels = 2048 x 2048 exactly.
-  const EXACT_FRAMES = 10;
+  // 134217728 / (2 * 6 + 20) = 4194304 pixels = 2048 x 2048 exactly.
+  const EXACT_FRAMES = 6;
   const EXACT_SIDE = 2048;
 
-  it('admits the exact boundary: 10 frames of 2048 x 2048 use precisely 512 MiB at their peak', () => {
-    expect((EXACT_FRAMES + ORIENTED_WORKING_COPIES) * EXACT_SIDE * EXACT_SIDE * RGBA).toBe(BUDGET_BYTES);
+  it('admits the exact boundary: 6 frames of 2048 x 2048 use precisely 512 MiB at their peak', () => {
+    expect((2 * EXACT_FRAMES + ORIENTED_WORKING_COPIES) * EXACT_SIDE * EXACT_SIDE * RGBA).toBe(BUDGET_BYTES);
     expect(() => assertAnimationBudget(EXACT_SIDE, EXACT_SIDE, EXACT_FRAMES, 'The oriented animation', orientedMemory(EXACT_FRAMES))).not.toThrow();
   });
 
@@ -55,12 +55,14 @@ describe('oriented stacked animations', () => {
   });
 
   it.each([
-    ['2000x2000 x 11 frames', 2000, 11, true],
-    ['2000x2000 x 12 frames (measured 617 MiB at 14 frames)', 2000, 12, false],
-    ['2000x2000 x 14 frames', 2000, 14, false],
+    ['2000x2000 x 6 frames (measured 471 MiB gif, 472 MiB webp at 10)', 2000, 6, true],
+    ['2000x2000 x 7 frames (measured 482 MiB)', 2000, 7, false],
+    ['2000x2000 x 10 frames (measured 565 MiB)', 2000, 10, false],
+    ['2000x2000 x 14 frames (measured 617 MiB)', 2000, 14, false],
     ['3000x3000 x 5 frames (measured 685 MiB)', 3000, 5, false],
     ['3000x3000 x 2 frames', 3000, 2, false],
-    ['1500x1500 x 20 frames', 1500, 20, true],
+    ['1500x1500 x 19 frames', 1500, 19, true],
+    ['1500x1500 x 20 frames', 1500, 20, false],
   ])('%s is %s by the oriented model', (_label, side, frames, admitted) => {
     const run = () => assertAnimationBudget(side, side, frames, 'The oriented animation', orientedMemory(frames));
     if (admitted) expect(run).not.toThrow();
@@ -69,7 +71,7 @@ describe('oriented stacked animations', () => {
 
   it('reports the modelled peak in MiB', () => {
     expect(() => assertAnimationBudget(3000, 3000, 5, 'The oriented animation', orientedMemory(5))).toThrow(
-      '5 frames of 3000x3000 pixels (927 MiB as RGBA at its peak)'
+      '5 frames of 3000x3000 pixels (1030 MiB as RGBA at its peak)'
     );
   });
 });

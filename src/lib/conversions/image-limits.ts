@@ -37,13 +37,14 @@ export const STACKED_WORKING_COPIES = 4;
 export const COMPOSED_WORKING_COPIES = 7;
 
 /**
- * Frame-sized buffers alive at once, besides the stack, while an oriented animation is converted. Orienting
- * decodes the stack through the raw-pixel path and then turns and encodes frame by frame, so freed
- * intermediates pile up before they are collected. Measured as VmHWM above the baseline on 2000 x 2000 x 10
- * (490 to 534 MiB), 2000 x 2000 x 14 (617), 3000 x 3000 x 5 (685) and 2000 x 2000 x 6 noise (473): the
- * stack plus about 22 frames' worth at its worst. Oriented animations of 3000 x 3000 and up are refused.
+ * Frame-sized buffers alive at once, besides the stack decoded twice (`STACK_DECODE_COPIES`), while an
+ * oriented animation is converted. Orienting decodes the stack through the raw-pixel path and then turns and
+ * encodes frame by frame, so freed intermediates pile up before they are collected. Measured as VmHWM above
+ * the baseline on 2000 x 2000 oriented animations (GIF: 471 MiB at 6 frames, 482 at 7, 518 at 8, 565 at 10,
+ * 591 at 11; WebP: 472 at 10), 2000 x 2000 x 14 (617) and 3000 x 3000 x 5 (685): the peaks fit
+ * (2 * frames + 19) frames' worth, rounded up to 20. 2000 x 2000 is admitted up to 6 frames.
  */
-export const ORIENTED_WORKING_COPIES = 22;
+export const ORIENTED_WORKING_COPIES = 20;
 
 /** How many frame-sized buffers a conversion keeps in memory at the same time. */
 export interface AnimationMemory {
@@ -59,9 +60,9 @@ export const stackedMemory = (frames: number): AnimationMemory => ({
   workingCopies: STACKED_WORKING_COPIES,
 });
 
-/** Memory shape of an oriented animation of `frames` frames: the stack stays resident while frames are turned. */
+/** Memory shape of an oriented animation of `frames` frames: the stack is decoded twice and stays resident. */
 export const orientedMemory = (frames: number): AnimationMemory => ({
-  residentFrames: frames,
+  residentFrames: frames * STACK_DECODE_COPIES,
   workingCopies: ORIENTED_WORKING_COPIES,
 });
 
