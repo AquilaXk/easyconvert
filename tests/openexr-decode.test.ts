@@ -53,6 +53,8 @@ const TILEDESC_BYTES = 9;
 const LONG_CODE_WIDTH = 100_000;
 const LONG_CODE_BITS = 30;
 const LONG_CODE_TIME_LIMIT_MS = 1000;
+const NUL_RUN_LENGTH = 200_000;
+const NUL_RUN_TIME_LIMIT_MS = 1000;
 const BLOCK_CAP_FLOAT_CHANNELS = 32;
 const BLOCK_CAP_WIDTH = 2_100_000;
 const TOTAL_CAP_SIDE = 3000;
@@ -178,7 +180,7 @@ describe('OpenEXR reference corpus', () => {
     const expected = golden(entry.golden);
     expect(decoded.width).toBe(entryWidth(entry));
     expect(decoded.height).toBe(entryHeight(entry));
-    expect(decoded.rgb.length).toBe(entryWidth(entry) * entryHeight(entry) * RGB_COMPONENTS);
+    expect(decoded.rgb).toHaveLength(entryWidth(entry) * entryHeight(entry) * RGB_COMPONENTS);
     expect(decoded.isHalf).toBe(entry.sample === 'half');
     expect(firstMismatch(decoded.rgb, expected)).toBe(-1);
   });
@@ -386,6 +388,32 @@ describe('OpenEXR fail-closed behaviour', () => {
     expectDecodeError(() => decodeOpenExr(assembleExr({ ...base, extraAttributes: [deepType] })), 'unsupported', /deep/);
   });
 
+  describe('image type attribute with long NUL runs', () => {
+    const typeFile = (typeValue: string): Buffer =>
+      assembleExr({
+        channels: halfRgb,
+        compression: COMPRESSION_CODES.none,
+        dataWindow: [0, 0, 0, 0],
+        extraAttributes: [{ name: 'type', type: 'string', value: Buffer.from(typeValue, 'latin1') }],
+        chunks: [scanlineChunk(0, Buffer.alloc(RGB_COMPONENTS * HALF_BYTES))],
+      });
+
+    it('trims trailing NULs in linear time when a long NUL run is followed by another byte', () => {
+      // A backtracking pattern such as /\0+$/ takes quadratic time on this input.
+      const adversarial = typeFile(`${'\0'.repeat(NUL_RUN_LENGTH)}x`);
+      const started = performance.now();
+      const decoded = decodeOpenExr(adversarial);
+      expect(performance.now() - started).toBeLessThan(NUL_RUN_TIME_LIMIT_MS);
+      expect([decoded.width, decoded.height]).toEqual([1, 1]);
+    });
+
+    it('still recognises a deep type padded with a long NUL run', () => {
+      const started = performance.now();
+      expectDecodeError(() => decodeOpenExr(typeFile(`deepscanline${'\0'.repeat(NUL_RUN_LENGTH)}`)), 'unsupported', /deep/);
+      expect(performance.now() - started).toBeLessThan(NUL_RUN_TIME_LIMIT_MS);
+    });
+  });
+
   it('rejects sub-sampled channels', () => {
     const channels = [...halfRgb, { name: 'Z', pixelType: PIXEL_TYPE_FLOAT, xSampling: 2, ySampling: 2 }];
     const file = assembleExr({
@@ -510,7 +538,7 @@ describe('OpenEXR fail-closed behaviour', () => {
     expect(elapsedMs).toBeLessThan(LONG_CODE_TIME_LIMIT_MS);
     // The block has an empty value bitmap, so every decoded word maps to the implicit zero value.
     expect(decoded.width).toBe(LONG_CODE_WIDTH);
-    expect(decoded.rgb.length).toBe(LONG_CODE_WIDTH * RGB_COMPONENTS);
+    expect(decoded.rgb).toHaveLength(LONG_CODE_WIDTH * RGB_COMPONENTS);
     expect(decoded.rgb.every((sample) => sample === 0)).toBe(true);
   });
 

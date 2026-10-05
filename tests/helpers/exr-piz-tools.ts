@@ -34,30 +34,24 @@ export interface PizBlockStats {
   longestCodeBits: number;
 }
 
-/** Measures the first chunk of a PIZ scanline file. */
-export function pizFirstBlockStats(file: Buffer): PizBlockStats {
-  const [first] = exrChunkOffsets(file, 1);
-  let pos = first + SCANLINE_CHUNK_HEADER_BYTES;
-  const minNonZero = file.readUInt16LE(pos);
-  const maxNonZero = file.readUInt16LE(pos + 2);
-  pos += 4;
-
-  let usedValues = 0;
-  if (minNonZero <= maxNonZero) {
-    for (let index = 0; index <= maxNonZero - minNonZero; index++) {
-      const byte = file[pos + index];
-      for (let bit = 0; bit < BITMAP_VALUES_PER_BYTE; bit++) {
-        const value = (minNonZero + index) * BITMAP_VALUES_PER_BYTE + bit;
-        if (value !== 0 && (byte & (1 << bit)) !== 0) usedValues++;
-      }
+/** Counts the values marked in the used-value bitmap; value 0 is implicit and never counted. */
+function countBitmapValues(file: Buffer, pos: number, minNonZero: number, maxNonZero: number): number {
+  let used = 0;
+  for (let index = 0; index <= maxNonZero - minNonZero; index++) {
+    const byte = file[pos + index];
+    for (let bit = 0; bit < BITMAP_VALUES_PER_BYTE; bit++) {
+      const value = (minNonZero + index) * BITMAP_VALUES_PER_BYTE + bit;
+      if (value !== 0 && (byte & (1 << bit)) !== 0) used++;
     }
-    pos += maxNonZero - minNonZero + 1;
   }
-  pos += BYTES_PER_INT32; // Huffman stream length
+  return used;
+}
 
-  const firstSymbol = file.readUInt32LE(pos);
-  const lastSymbol = file.readUInt32LE(pos + 4);
-  let bitPos = (pos + HUFFMAN_HEADER_BYTES) * BITS_PER_BYTE;
+/** Longest code length in the run-length-packed table of 6-bit lengths that follows the Huffman header. */
+function longestTableCodeLength(file: Buffer, huffmanStart: number): number {
+  const firstSymbol = file.readUInt32LE(huffmanStart);
+  const lastSymbol = file.readUInt32LE(huffmanStart + 4);
+  let bitPos = (huffmanStart + HUFFMAN_HEADER_BYTES) * BITS_PER_BYTE;
   const readBits = (count: number): number => {
     let value = 0;
     for (let i = 0; i < count; i++) {
@@ -70,14 +64,36 @@ export function pizFirstBlockStats(file: Buffer): PizBlockStats {
   let longest = 0;
   for (let symbol = firstSymbol; symbol <= lastSymbol; symbol++) {
     const length = readBits(HUFFMAN_LENGTH_BITS);
-    if (length >= SHORT_ZERO_RUN) {
-      const run = length === LONG_ZERO_RUN ? readBits(RUN_COUNT_BITS) + SHORTEST_LONG_RUN : length - SHORT_ZERO_RUN + 2;
-      symbol += run - 1;
-    } else if (length > longest) {
-      longest = length;
+    if (length < SHORT_ZERO_RUN) {
+      longest = Math.max(longest, length);
+    } else {
+      symbol += zeroRun(length, readBits) - 1;
     }
   }
-  return { maxValue: usedValues, longestCodeBits: longest };
+  return longest;
+}
+
+/** Symbols skipped by a zero-run marker (59..63). */
+function zeroRun(marker: number, readBits: (count: number) => number): number {
+  if (marker === LONG_ZERO_RUN) return readBits(RUN_COUNT_BITS) + SHORTEST_LONG_RUN;
+  return marker - SHORT_ZERO_RUN + 2;
+}
+
+/** Measures the first chunk of a PIZ scanline file. */
+export function pizFirstBlockStats(file: Buffer): PizBlockStats {
+  const [first] = exrChunkOffsets(file, 1);
+  let pos = first + SCANLINE_CHUNK_HEADER_BYTES;
+  const minNonZero = file.readUInt16LE(pos);
+  const maxNonZero = file.readUInt16LE(pos + 2);
+  pos += 4;
+
+  let usedValues = 0;
+  if (minNonZero <= maxNonZero) {
+    usedValues = countBitmapValues(file, pos, minNonZero, maxNonZero);
+    pos += maxNonZero - minNonZero + 1;
+  }
+  pos += BYTES_PER_INT32; // Huffman stream length
+  return { maxValue: usedValues, longestCodeBits: longestTableCodeLength(file, pos) };
 }
 
 class BitWriter {

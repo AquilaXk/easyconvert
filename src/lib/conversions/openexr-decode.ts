@@ -50,6 +50,7 @@ const TILE_CHUNK_HEADER_BYTES = 5 * BYTES_PER_INT32;
 const PIXEL_TYPE_UINT = 0;
 const PIXEL_TYPE_HALF = 1;
 const PIXEL_TYPE_FLOAT = 2;
+const KNOWN_PIXEL_TYPES: ReadonlySet<number> = new Set([PIXEL_TYPE_UINT, PIXEL_TYPE_HALF, PIXEL_TYPE_FLOAT]);
 const BYTES_PER_HALF = 2;
 const BYTES_PER_FLOAT = 4;
 const PXR24_BYTES_PER_FLOAT = 3;
@@ -197,7 +198,8 @@ function readCString(buf: Buffer, pos: number, what: string): { text: string; ne
   return { text: buf.toString('latin1', pos, end), next: end + 1 };
 }
 
-function parseHeader(buf: Buffer): ParsedHeader {
+/** Validates the magic number and version field; returns the flag bits. */
+function readVersionFlags(buf: Buffer): number {
   if (buf.length < PREAMBLE_BYTES) truncated('file is shorter than the magic and version fields');
   for (let i = 0; i < MAGIC_BYTES; i++) {
     if (buf[i] !== MAGIC[i]) throw new OpenExrDecodeError('Invalid OpenEXR magic header bytes', 'malformed');
@@ -209,30 +211,61 @@ function parseHeader(buf: Buffer): ParsedHeader {
   if ((flags & ~KNOWN_FLAGS) !== 0) unsupported(`unknown version flags 0x${flags.toString(16)}`);
   if ((flags & FLAG_MULTIPART) !== 0) unsupported('multipart files');
   if ((flags & FLAG_NON_IMAGE) !== 0) unsupported('deep data');
+  return flags;
+}
 
+interface RawAttribute {
+  name: string;
+  type: string;
+  val: Buffer;
+  /** Offset just past the attribute value. */
+  next: number;
+}
+
+/** Reads one typed attribute (name, type, size, value) starting at `pos`. */
+function readAttribute(buf: Buffer, pos: number): RawAttribute {
+  const name = readCString(buf, pos, 'attribute name');
+  const type = readCString(buf, name.next, 'attribute type');
+  if (type.next + BYTES_PER_INT32 > buf.length) truncated('attribute size is cut off');
+  const size = buf.readUInt32LE(type.next);
+  const valueStart = type.next + BYTES_PER_INT32;
+  if (valueStart + size > buf.length) truncated(`attribute "${name.text}" value is cut off`);
+  return { name: name.text, type: type.text, val: buf.subarray(valueStart, valueStart + size), next: valueStart + size };
+}
+
+function parseHeader(buf: Buffer): ParsedHeader {
+  const flags = readVersionFlags(buf);
   const attrs: Record<string, { type: string; val: Buffer }> = Object.create(null);
   let pos = PREAMBLE_BYTES;
   for (;;) {
     if (pos >= buf.length) truncated('header ends before its terminator');
-    if (buf[pos] === 0) {
-      pos++;
-      break;
-    }
-    const name = readCString(buf, pos, 'attribute name');
-    const type = readCString(buf, name.next, 'attribute type');
-    if (type.next + BYTES_PER_INT32 > buf.length) truncated('attribute size is cut off');
-    const size = buf.readUInt32LE(type.next);
-    const valueStart = type.next + BYTES_PER_INT32;
-    if (valueStart + size > buf.length) truncated(`attribute "${name.text}" value is cut off`);
-    if (name.text in attrs) malformed(`duplicate attribute "${name.text}"`);
-    attrs[name.text] = { type: type.text, val: buf.subarray(valueStart, valueStart + size) };
-    pos = valueStart + size;
+    if (buf[pos] === 0) break;
+    const attribute = readAttribute(buf, pos);
+    if (attribute.name in attrs) malformed(`duplicate attribute "${attribute.name}"`);
+    attrs[attribute.name] = { type: attribute.type, val: attribute.val };
+    pos = attribute.next;
   }
-  return { attrs, flags, end: pos };
+  return { attrs, flags, end: pos + 1 };
+}
+
+/** Reads one channel list entry: name, pixel type, pLinear and reserved bytes, x and y sampling. */
+function readChannelEntry(list: Buffer, pos: number): { channel: ExrChannel; next: number } {
+  const name = readCString(list, pos, 'channel name');
+  if (name.next + CHLIST_ENTRY_FIXED_BYTES > list.length) truncated('channel entry is cut off');
+  const pixelType = list.readInt32LE(name.next);
+  const xSampling = list.readInt32LE(name.next + 8);
+  const ySampling = list.readInt32LE(name.next + 12);
+  if (!KNOWN_PIXEL_TYPES.has(pixelType)) malformed(`channel "${name.text}" has unknown pixel type ${pixelType}`);
+  if (xSampling < 1 || ySampling < 1) malformed(`channel "${name.text}" has invalid sampling`);
+  const bytesPerSample = pixelType === PIXEL_TYPE_HALF ? BYTES_PER_HALF : BYTES_PER_FLOAT;
+  return {
+    channel: { name: name.text, pixelType, bytesPerSample, xSampling, ySampling },
+    next: name.next + CHLIST_ENTRY_FIXED_BYTES,
+  };
 }
 
 function parseChannels(attr: { type: string; val: Buffer } | undefined): ExrChannel[] {
-  if (!attr || attr.type !== 'chlist') malformed('missing channels attribute');
+  if (attr?.type !== 'chlist') malformed('missing channels attribute');
   const list = attr.val;
   const channels: ExrChannel[] = [];
   const seen = new Set<string>();
@@ -240,24 +273,12 @@ function parseChannels(attr: { type: string; val: Buffer } | undefined): ExrChan
   for (;;) {
     if (pos >= list.length) truncated('channel list is not terminated');
     if (list[pos] === 0) break;
-    const name = readCString(list, pos, 'channel name');
-    pos = name.next;
-    if (pos + CHLIST_ENTRY_FIXED_BYTES > list.length) truncated('channel entry is cut off');
-    const pixelType = list.readInt32LE(pos);
-    const xSampling = list.readInt32LE(pos + 8);
-    const ySampling = list.readInt32LE(pos + 12);
-    pos += CHLIST_ENTRY_FIXED_BYTES;
-    let bytesPerSample = BYTES_PER_FLOAT;
-    if (pixelType === PIXEL_TYPE_HALF) {
-      bytesPerSample = BYTES_PER_HALF;
-    } else if (pixelType !== PIXEL_TYPE_UINT && pixelType !== PIXEL_TYPE_FLOAT) {
-      malformed(`channel "${name.text}" has unknown pixel type ${pixelType}`);
-    }
-    if (xSampling < 1 || ySampling < 1) malformed(`channel "${name.text}" has invalid sampling`);
-    if (seen.has(name.text)) malformed(`duplicate channel "${name.text}"`);
+    const entry = readChannelEntry(list, pos);
+    if (seen.has(entry.channel.name)) malformed(`duplicate channel "${entry.channel.name}"`);
     if (channels.length >= MAX_OPENEXR_CHANNELS) tooLarge(`more than ${MAX_OPENEXR_CHANNELS} channels`);
-    seen.add(name.text);
-    channels.push({ name: name.text, pixelType, bytesPerSample, xSampling, ySampling });
+    seen.add(entry.channel.name);
+    channels.push(entry.channel);
+    pos = entry.next;
   }
   if (channels.length === 0) malformed('channel list is empty');
   return channels;
@@ -302,14 +323,14 @@ function selectColorChannels(channels: readonly ExrChannel[]): ColorMapping {
 }
 
 function parseBox2i(attr: { type: string; val: Buffer } | undefined): { xMin: number; yMin: number; xMax: number; yMax: number } {
-  if (!attr || attr.type !== 'box2i' || attr.val.length !== BOX2I_BYTES) malformed('missing or corrupt dataWindow attribute');
+  if (attr?.type !== 'box2i' || attr.val.length !== BOX2I_BYTES) malformed('missing or corrupt dataWindow attribute');
   const box = { xMin: attr.val.readInt32LE(0), yMin: attr.val.readInt32LE(4), xMax: attr.val.readInt32LE(8), yMax: attr.val.readInt32LE(12) };
   if (box.xMax < box.xMin || box.yMax < box.yMin) malformed('dataWindow is empty or inverted');
   return box;
 }
 
 function parseCompression(attr: { type: string; val: Buffer } | undefined): number {
-  if (!attr || attr.type !== 'compression' || attr.val.length !== 1) malformed('missing or corrupt compression attribute');
+  if (attr?.type !== 'compression' || attr.val.length !== 1) malformed('missing or corrupt compression attribute');
   const code = attr.val[0];
   const name = UNSUPPORTED_COMPRESSION_NAMES.get(code);
   if (name) unsupported(`${name} compression`);
@@ -318,7 +339,7 @@ function parseCompression(attr: { type: string; val: Buffer } | undefined): numb
 }
 
 function parseTiles(attr: { type: string; val: Buffer } | undefined): TileLayout {
-  if (!attr || attr.type !== 'tiledesc' || attr.val.length !== TILEDESC_BYTES) malformed('tiled image without a valid tiles attribute');
+  if (attr?.type !== 'tiledesc' || attr.val.length !== TILEDESC_BYTES) malformed('tiled image without a valid tiles attribute');
   const xSize = attr.val.readUInt32LE(0);
   const ySize = attr.val.readUInt32LE(BYTES_PER_INT32);
   const mode = attr.val[2 * BYTES_PER_INT32];
@@ -414,75 +435,98 @@ function reconstructPredicted(packed: Buffer, out: Buffer): Buffer {
   return out;
 }
 
+/** Copies `count` literal bytes of an RLE stream; returns nothing, the caller advances both cursors. */
+function rleCopyLiteral(data: Buffer, read: number, count: number, out: Buffer, write: number): void {
+  if (read + count > data.length) truncated('RLE literal run is cut off');
+  if (write + count > out.length) malformed('RLE block decodes to more data than expected');
+  data.copy(out, write, read, read + count);
+}
+
+/** Expands one repeated byte of an RLE stream. */
+function rleFillRepeat(data: Buffer, read: number, count: number, out: Buffer, write: number): void {
+  if (read >= data.length) truncated('RLE repeat run is cut off');
+  if (write + count > out.length) malformed('RLE block decodes to more data than expected');
+  out.fill(data[read], write, write + count);
+}
+
 function rleDecode(data: Buffer, out: Buffer): Buffer {
-  const expectedBytes = out.length;
   let read = 0;
   let write = 0;
   while (read < data.length) {
     const control = (data[read++] << BYTE_SHIFT_24) >> BYTE_SHIFT_24;
     if (control < 0) {
-      const count = -control;
-      if (read + count > data.length) truncated('RLE literal run is cut off');
-      if (write + count > expectedBytes) malformed('RLE block decodes to more data than expected');
-      data.copy(out, write, read, read + count);
-      read += count;
-      write += count;
+      rleCopyLiteral(data, read, -control, out, write);
+      read += -control;
+      write += -control;
     } else {
-      const count = control + RLE_REPEAT_BASE;
-      if (read >= data.length) truncated('RLE repeat run is cut off');
-      if (write + count > expectedBytes) malformed('RLE block decodes to more data than expected');
-      out.fill(data[read++], write, write + count);
-      write += count;
+      rleFillRepeat(data, read, control + RLE_REPEAT_BASE, out, write);
+      read += 1;
+      write += control + RLE_REPEAT_BASE;
     }
   }
-  if (write !== expectedBytes) malformed(`RLE block decodes to ${write} bytes, expected ${expectedBytes}`);
+  if (write !== out.length) malformed(`RLE block decodes to ${write} bytes, expected ${out.length}`);
   return out;
+}
+
+/** Packed PXR24 bytes per sample: floats are stored truncated to 24 bits. */
+function pxr24StoredBytes(channel: ExrChannel): number {
+  if (channel.pixelType === PIXEL_TYPE_FLOAT) return PXR24_BYTES_PER_FLOAT;
+  return channel.bytesPerSample;
+}
+
+/** Undoes the delta coding of one row of a HALF channel stored as high-byte and low-byte planes. */
+function pxr24HalfRow(packed: Buffer, read: number, width: number, out: Buffer, write: number): void {
+  const second = read + width;
+  let pixel = 0;
+  for (let x = 0; x < width; x++) {
+    pixel = (pixel + ((packed[read + x] << BYTE_SHIFT_8) | packed[second + x])) & WORD_MASK;
+    out.writeUInt16LE(pixel, write + x * BYTES_PER_HALF);
+  }
+}
+
+/** Undoes the delta coding of one row of a FLOAT channel stored as three byte planes (low byte dropped). */
+function pxr24FloatRow(packed: Buffer, read: number, width: number, out: Buffer, write: number): void {
+  const second = read + width;
+  const third = second + width;
+  let pixel = 0;
+  for (let x = 0; x < width; x++) {
+    const diff = ((packed[read + x] << BYTE_SHIFT_24) | (packed[second + x] << BYTE_SHIFT_16) | (packed[third + x] << BYTE_SHIFT_8)) >>> 0;
+    pixel = (pixel + diff) >>> 0;
+    out.writeUInt32LE(pixel, write + x * BYTES_PER_FLOAT);
+  }
+}
+
+/** Undoes the delta coding of one row of a UINT channel stored as four byte planes. */
+function pxr24UintRow(packed: Buffer, read: number, width: number, out: Buffer, write: number): void {
+  const second = read + width;
+  const third = second + width;
+  const fourth = third + width;
+  let pixel = 0;
+  for (let x = 0; x < width; x++) {
+    const diff = ((packed[read + x] << BYTE_SHIFT_24) | (packed[second + x] << BYTE_SHIFT_16) | (packed[third + x] << BYTE_SHIFT_8) | packed[fourth + x]) >>> 0;
+    pixel = (pixel + diff) >>> 0;
+    out.writeUInt32LE(pixel, write + x * BYTES_PER_FLOAT);
+  }
 }
 
 /** PXR24: deflated byte planes of per-row 24-bit-truncated floats, 16-bit halves and 32-bit ints, delta coded. */
 function pxr24Decode(data: Buffer, channels: readonly ExrChannel[], width: number, rows: number, out: Buffer): Buffer {
   let packedBytes = 0;
-  for (const channel of channels) {
-    const stored = channel.pixelType === PIXEL_TYPE_FLOAT ? PXR24_BYTES_PER_FLOAT : channel.bytesPerSample;
-    packedBytes += stored * width * rows;
-  }
+  for (const channel of channels) packedBytes += pxr24StoredBytes(channel) * width * rows;
   const packed = inflateBlock(data, packedBytes, 'PXR24');
   let read = 0;
   let write = 0;
   for (let y = 0; y < rows; y++) {
     for (const channel of channels) {
-      let pixel = 0;
       if (channel.pixelType === PIXEL_TYPE_HALF) {
-        const second = read + width;
-        for (let x = 0; x < width; x++) {
-          pixel = (pixel + ((packed[read + x] << BYTE_SHIFT_8) | packed[second + x])) & WORD_MASK;
-          out.writeUInt16LE(pixel, write);
-          write += BYTES_PER_HALF;
-        }
-        read = second + width;
+        pxr24HalfRow(packed, read, width, out, write);
       } else if (channel.pixelType === PIXEL_TYPE_FLOAT) {
-        const second = read + width;
-        const third = second + width;
-        for (let x = 0; x < width; x++) {
-          const diff = ((packed[read + x] << BYTE_SHIFT_24) | (packed[second + x] << BYTE_SHIFT_16) | (packed[third + x] << BYTE_SHIFT_8)) >>> 0;
-          pixel = (pixel + diff) >>> 0;
-          out.writeUInt32LE(pixel, write);
-          write += BYTES_PER_FLOAT;
-        }
-        read = third + width;
+        pxr24FloatRow(packed, read, width, out, write);
       } else {
-        const second = read + width;
-        const third = second + width;
-        const fourth = third + width;
-        for (let x = 0; x < width; x++) {
-          const diff =
-            ((packed[read + x] << BYTE_SHIFT_24) | (packed[second + x] << BYTE_SHIFT_16) | (packed[third + x] << BYTE_SHIFT_8) | packed[fourth + x]) >>> 0;
-          pixel = (pixel + diff) >>> 0;
-          out.writeUInt32LE(pixel, write);
-          write += BYTES_PER_FLOAT;
-        }
-        read = fourth + width;
+        pxr24UintRow(packed, read, width, out, write);
       }
+      read += pxr24StoredBytes(channel) * width;
+      write += channel.bytesPerSample * width;
     }
   }
   return out;
@@ -597,6 +641,13 @@ function scatterBlock(block: Buffer, scatter: Scatter, x0: number, y0: number, b
   }
 }
 
+/** Removes trailing NUL characters in one linear pass (a regex here would backtrack quadratically on long NUL runs). */
+function trimTrailingNuls(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0) end--;
+  return text.slice(0, end);
+}
+
 /**
  * Decodes an OpenEXR buffer to linear float RGB. Throws OpenExrDecodeError (a ConversionFailedError)
  * for malformed, truncated, oversized or unsupported input; it never returns partial pixels.
@@ -607,7 +658,7 @@ export function decodeOpenExr(buf: Buffer): DecodedOpenExr {
 
   const imageType = attrs.type;
   if (imageType) {
-    const typeName = imageType.val.toString('latin1').replace(/\0+$/, '');
+    const typeName = trimTrailingNuls(imageType.val.toString('latin1'));
     if (typeName === 'deepscanline' || typeName === 'deeptile') unsupported('deep data');
   }
 
