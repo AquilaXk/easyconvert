@@ -16,6 +16,7 @@ import {
   AudioTargetSpec,
   isAudioOnlyTarget,
   NoAudioStreamError,
+  resampleRateFor,
   resolveAudioTargetSpec,
   VORBIS_DEFAULT_QUALITY,
 } from './media-audio-targets';
@@ -135,6 +136,19 @@ export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, strea
 export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): number {
   const out = runFfprobe(ffprobe, filePath, ['-select_streams', 'a', '-show_entries', 'stream=index']);
   return out === '' ? 0 : out.split('\n').length;
+}
+
+/** Sample rate in Hz of the selected audio stream (the first by default), or 0 when it has none. */
+export function probeAudioSampleRate(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
+  const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
+  if (out === '') {
+    return 0;
+  }
+  const parsed = Number.parseInt(out, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new ConversionFailedError(`ffprobe reported an invalid audio sample rate: "${out}"`);
+  }
+  return parsed;
 }
 
 /** Transfer characteristic of the first video stream (e.g. `bt709`, `smpte2084`), or '' when unknown. */
@@ -979,6 +993,13 @@ export function buildFfmpegArguments(
     outputArgs.push('-ar', String(options.audioSampleRate));
   } else if (audioSpec?.defaultSampleRate !== undefined && specEncoderInUse) {
     outputArgs.push('-ar', String(audioSpec.defaultSampleRate));
+  } else if (audioSpec && specEncoderInUse && (audioSpec.allowedSampleRates || audioSpec.maxSampleRate) && fs.existsSync(inputPath)) {
+    // The caller set no rate: bring an input the encoder cannot code into its supported set.
+    const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
+    const resampleRate = resampleRateFor(audioSpec, probeAudioSampleRate(inputPath, resolveFfprobeBinary(ffmpegBin), track));
+    if (resampleRate !== undefined) {
+      outputArgs.push('-ar', String(resampleRate));
+    }
   }
 
   // Audio volume

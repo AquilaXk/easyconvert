@@ -588,6 +588,52 @@ describe('encoder format limits are rejected before ffmpeg runs', () => {
   }, TEST_TIMEOUT_MS);
 });
 
+/** A mono tone at an arbitrary sample rate, for inputs outside an encoder's supported set. */
+function toneAtRate(rate: number): string {
+  return input(`tone-${rate}.wav`, (file) =>
+    ffmpeg(['-f', 'lavfi', '-i', `sine=frequency=${TONE_HZ}:sample_rate=${rate}:duration=${CLIP_SECONDS}`, '-ac', '1', file])
+  );
+}
+
+describe('inputs outside the encoder sample rate set', () => {
+  const HIGH_RATE = 96000;
+  const WMA_MAX_RATE = 48000;
+  const LOW_RATE = 22050;
+  const AC3_LOWEST_RATE = 32000;
+
+  oracleTest('resamples a 96 kHz input to 48 kHz for WMA and AC-3', ['ffmpeg', 'ffprobe'], async () => {
+    const source = toneAtRate(HIGH_RATE);
+    for (const id of ['wma', 'ac3']) {
+      const out = await convertToFile(source, 'wav', id);
+      const stream = ffprobeStreams(out)[0];
+      expect(stream.codec_name).toBe(EXPECTED[id].codec);
+      expect(Number(stream.sample_rate)).toBe(WMA_MAX_RATE);
+      const decoded = decodePcm(out);
+      expect(rms(decoded.samples)).toBeGreaterThan(MIN_TONE_RMS);
+      expect(Math.abs(decoded.samples.length / decoded.sampleRate - CLIP_SECONDS)).toBeLessThanOrEqual(
+        EXPECTED[id].frameSamples! / decoded.sampleRate
+      );
+    }
+  }, TEST_TIMEOUT_MS);
+
+  oracleTest('resamples a 22.05 kHz input up to the lowest AC-3 rate and keeps a supported WMA rate', ['ffmpeg', 'ffprobe'], async () => {
+    const source = toneAtRate(LOW_RATE);
+    expect(Number(ffprobeStreams(await convertToFile(source, 'wav', 'ac3'))[0].sample_rate)).toBe(AC3_LOWEST_RATE);
+    expect(Number(ffprobeStreams(await convertToFile(source, 'wav', 'wma'))[0].sample_rate)).toBe(LOW_RATE);
+  }, TEST_TIMEOUT_MS);
+
+  oracleTest('emits the resample rate only when the input rate is unsupported and the caller set none', ['ffmpeg', 'ffprobe'], () => {
+    const high = toneAtRate(HIGH_RATE);
+    const build = (file: string, id: string, options = {}) =>
+      buildFfmpegArguments(file, path.join(workDir, `o.${id}`), 'wav', id, options, getOracleToolPath('ffmpeg'));
+    expect(argAfter(build(high, 'wma'), '-ar')).toBe(String(WMA_MAX_RATE));
+    expect(argAfter(build(high, 'ac3'), '-ar')).toBe(String(WMA_MAX_RATE));
+    expect(argAfter(build(toneAtRate(LOW_RATE), 'wma'), '-ar')).toBeUndefined();
+    expect(argAfter(build(high, 'wma', { audio: { sampleRate: 44100 } }), '-ar')).toBe('44100');
+    expect(argAfter(build(high, 'flac'), '-ar')).toBeUndefined();
+  });
+});
+
 describe('audio stream selection', () => {
   oracleTest('maps the first audio stream by default and the requested one on demand', ['ffmpeg', 'ffprobe'], async () => {
     const source = twoTrackVideo();

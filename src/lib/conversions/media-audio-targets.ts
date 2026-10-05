@@ -169,3 +169,22 @@ export function assertEncoderAvailable(target: string, encoder: string, supporte
   }
   throw new EngineUnavailableError('ffmpeg', `this build has no '${encoder}' encoder, so '${target}' audio cannot be written`);
 }
+
+/**
+ * Sample rate to resample an input to when the caller set none and the input rate lies outside the
+ * encoder's supported set: the nearest supported rate at or below the input, else the lowest one
+ * above it. Undefined when the input rate is supported or the spec has no rate limits.
+ */
+export function resampleRateFor(spec: AudioTargetSpec, inputRate: number): number | undefined {
+  if (spec.allowedSampleRates) {
+    if (spec.allowedSampleRates.includes(inputRate)) {
+      return undefined;
+    }
+    const below = spec.allowedSampleRates.filter((rate) => rate < inputRate);
+    return below.length > 0 ? Math.max(...below) : Math.min(...spec.allowedSampleRates);
+  }
+  if (spec.maxSampleRate !== undefined && inputRate > spec.maxSampleRate) {
+    return spec.maxSampleRate;
+  }
+  return undefined;
+}
