@@ -218,10 +218,14 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
     });
 
     it('handles multi-block data spanning beyond single block limit (128KB)', () => {
-      // 300KB random binary pattern
+      // 300KB of xorshift32 noise: incompressible, so it stays below the 100:1 bomb ratio and spans 3 blocks
       const largeData = Buffer.alloc(300 * 1024);
+      let noiseState = 0x9e3779b9;
       for (let i = 0; i < largeData.length; i++) {
-        largeData[i] = (i * 37 + 13) & 0xff;
+        noiseState ^= noiseState << 13;
+        noiseState ^= noiseState >>> 17;
+        noiseState ^= noiseState << 5;
+        largeData[i] = noiseState & 0xff;
       }
 
       const compressed = compressZstd(largeData);
