@@ -12,7 +12,6 @@
 import {
   ZSTD_MAGIC_LE,
   computeZstdChecksum,
-  ZSTD_SECURITY_LIMITS,
   FastStreamingXxHash64,
   encodeZstdSingleSegmentHeader,
   decompressZstdWithDictionary,
@@ -216,9 +215,8 @@ export function getOFCode(
   offset: number
 ): { code: number; extra: number; bits: number } {
   const offsetVal = offset + 3;
-  const code = Math.floor(Math.log2(offsetVal));
-  const base = 1 << code;
-  const extra = offsetVal - base;
+  const code = 31 - Math.clz32(offsetVal);
+  const extra = offsetVal - 2 ** code;
   return { code, extra, bits: code };
 }
 
@@ -255,6 +253,30 @@ function buildTransitionTable(table: FseTableEntry[], maxSymbol: number, maxStat
 const LL_TRANS = buildTransitionTable(LL_DEFAULT_TABLE, 36, 64);
 const ML_TRANS = buildTransitionTable(ML_DEFAULT_TABLE, 53, 64);
 const OF_TRANS = buildTransitionTable(OF_DEFAULT_TABLE, 32, 32);
+
+const BITS_PER_BYTE = 8;
+const BYTE_BIT_MASK = 7;
+
+/**
+ * Writes the low `bits` (up to 32) bits of `value` LSB-first at `bitPos`, whole bytes at a time,
+ * so a field wider than 24 bits (offset codes of 22 and more) never loses its upper bits.
+ * Arithmetic, not bit operators, splits the value, so it is exact up to 2^53. Returns the next bit position.
+ */
+function writeBitField(out: Buffer, bitPos: number, value: number, bits: number): number {
+  let remaining = value;
+  let left = bits;
+  let position = bitPos;
+  while (left > 0) {
+    const shift = position & BYTE_BIT_MASK;
+    const take = Math.min(left, BITS_PER_BYTE - shift);
+    const radix = 2 ** take;
+    out[position >> 3] |= (remaining % radix) << shift;
+    remaining = Math.floor(remaining / radix);
+    position += take;
+    left -= take;
+  }
+  return position;
+}
 
 /**
  * Encodes sequences into a backward-readable FSE bitstream per RFC 8878 Section 3.1.1.3.
@@ -334,20 +356,8 @@ export function encodeSequencesFSE(seqs: ZstdSequence[]): Buffer {
   let bitPos = 0;
   for (let i = chunks.length - 1; i >= 0; i--) {
     const c = chunks[i];
-    const val = c.val;
-    const bits = c.bits;
-    if (bits === 0) continue;
-
-    const byteIdx = bitPos >> 3;
-    const shift = bitPos & 7;
-    const word = val << shift;
-
-    outBuf[byteIdx] |= word & 0xff;
-    outBuf[byteIdx + 1] |= (word >> 8) & 0xff;
-    if (bits + shift > 16) {
-      outBuf[byteIdx + 2] |= (word >> 16) & 0xff;
-    }
-    bitPos += bits;
+    if (c.bits === 0) continue;
+    bitPos = writeBitField(outBuf, bitPos, c.val, c.bits);
   }
   // Stop bit 1 and alignment to byte boundary
   outBuf[bitPos >> 3] |= 1 << (bitPos & 7);
@@ -355,6 +365,12 @@ export function encodeSequencesFSE(seqs: ZstdSequence[]): Buffer {
   const numBytes = Math.ceil(bitPos / 8);
   return outBuf.subarray(0, numBytes);
 }
+
+/**
+ * Most recent positions examined per 3-byte key. Without a bound, repetitive input makes the
+ * candidate lists as long as the block and the search quadratic.
+ */
+const DICTIONARY_MATCH_CANDIDATE_LIMIT = 32;
 
 /**
  * Searches for repetitive match sequences against dictionary and previous uncompressed history.
@@ -389,10 +405,11 @@ export function findZstdDictionarySequences(
     let bestMatchLen = 0;
     let bestOffset = 0;
 
-    // Check prior input matches
+    // Check prior input matches (newest first, bounded)
     const inputMatches = inputTable.get(key);
     if (inputMatches) {
-      for (const pos of inputMatches) {
+      for (let c = inputMatches.length - 1; c >= 0 && c >= inputMatches.length - DICTIONARY_MATCH_CANDIDATE_LIMIT; c--) {
+        const pos = inputMatches[c];
         let len = 0;
         while (inPos + len < input.length && input[pos + len] === input[inPos + len]) {
           len++;
@@ -407,7 +424,8 @@ export function findZstdDictionarySequences(
     // Check dictionary matches
     const dictMatches = dictTable.get(key);
     if (dictMatches) {
-      for (const pos of dictMatches) {
+      for (let c = dictMatches.length - 1; c >= 0 && c >= dictMatches.length - DICTIONARY_MATCH_CANDIDATE_LIMIT; c--) {
+        const pos = dictMatches[c];
         let len = 0;
         while (
           inPos + len < input.length &&
@@ -629,11 +647,8 @@ export interface ZstdDictionaryStreamOptions {
   windowLog?: number;
 }
 
-export interface ZstdDictionaryDecompressOptions {
-  dictionary?: Buffer;
-  expectedDictId?: number;
-}
-
+const STREAM_WINDOW_LOG_DEFAULT = 20;
+const STREAM_WINDOW_LOG_MIN = 17;
 const STREAM_HASH_BITS = 14;
 const STREAM_HASH_SIZE = 1 << STREAM_HASH_BITS;
 const STREAM_HASH_SHIFT = 32 - STREAM_HASH_BITS;
@@ -686,7 +701,8 @@ export class ZstdDictionaryStreamCompressor {
       this.dictId = ZSTD_DICT_MAGIC;
     }
 
-    this.windowLog = options.windowLog || 20; // 1MB window by default
+    // 1 MiB window by default; never smaller than one block so a block can always reach its own bytes.
+    this.windowLog = Math.max(STREAM_WINDOW_LOG_MIN, options.windowLog || STREAM_WINDOW_LOG_DEFAULT);
   }
 
   public getDictionaryId(): number {
@@ -733,6 +749,9 @@ export class ZstdDictionaryStreamCompressor {
 
     // 2. Feed chunk into streaming xxHash-64 hasher
     this.hasher.update(chunk);
+    // The dictionary precedes the whole frame, so a dictionary match is that much farther away
+    // in every block after the first.
+    const precedingBytes = this.totalUncompressedSize;
     this.totalUncompressedSize += chunk.length;
 
     // 3. Fast dictionary sequence finding with direct memory copy
@@ -753,9 +772,13 @@ export class ZstdDictionaryStreamCompressor {
       let bestMatchLen = 0;
       let bestOffset = 0;
 
-      // Check dictionary match
+      // Check dictionary match; the dictionary stops being reachable once it is farther than the window
       const dPos = this.dictIndex[h];
-      if (dPos >= 0 && this.rawDict.readInt32LE(dPos) === v) {
+      if (
+        dPos >= 0 &&
+        precedingBytes + inPos + (this.rawDict.length - dPos) <= 2 ** this.windowLog &&
+        this.rawDict.readInt32LE(dPos) === v
+      ) {
         let l = 4;
         while (
           inPos + l + 4 <= inputLen &&
@@ -768,7 +791,7 @@ export class ZstdDictionaryStreamCompressor {
           l++;
         }
         bestMatchLen = l;
-        bestOffset = inPos + (this.rawDict.length - dPos);
+        bestOffset = precedingBytes + inPos + (this.rawDict.length - dPos);
       }
 
       // Check input history match within chunk
@@ -926,167 +949,6 @@ export class ZstdDictionaryStreamCompressor {
 }
 
 /**
- * Real-time RFC 8878 streaming decompressor with dictionary assistance.
- */
-export class ZstdDictionaryStreamDecompressor {
-  private dictionary: Buffer;
-  private expectedDictId?: number;
-  private bufferAccumulator = Buffer.alloc(0);
-  private headerParsed = false;
-  private contentChecksumFlag = 1;
-  private uncompressedChunks: Buffer[] = [];
-  private totalUncompressedSize = 0;
-  private streamFinished = false;
-
-  constructor(options: ZstdDictionaryDecompressOptions = {}) {
-    this.dictionary = options.dictionary || DATA_DICTIONARY_JSON_CSV;
-    this.expectedDictId = options.expectedDictId;
-  }
-
-  public write(chunk: Buffer): Buffer {
-    if (!chunk || chunk.length === 0) return Buffer.alloc(0);
-
-    this.bufferAccumulator = Buffer.concat([this.bufferAccumulator, chunk]);
-    const decompressedOutputs: Buffer[] = [];
-
-    let offset = 0;
-
-    // 1. Parse Frame Header if not yet done
-    if (!this.headerParsed) {
-      if (this.bufferAccumulator.length < 10) {
-        return Buffer.alloc(0); // Need more bytes to parse frame header
-      }
-
-      if (!this.bufferAccumulator.subarray(0, 4).equals(ZSTD_MAGIC_LE)) {
-        throw new ConversionFailedError('Invalid Zstandard frame: missing magic number 0xFD2FB527');
-      }
-      offset += 4;
-
-      const fhd = this.bufferAccumulator[offset++];
-      const dictIdFlag = fhd & 3;
-      this.contentChecksumFlag = (fhd >> 2) & 1;
-      const singleSegment = (fhd >> 5) & 1;
-      const fcsField = (fhd >> 6) & 3;
-
-      if (singleSegment === 0) {
-        if (offset >= this.bufferAccumulator.length) return Buffer.alloc(0);
-        offset++; // Skip Window_Descriptor
-      }
-
-      let embeddedDictId = 0;
-      if (dictIdFlag === 1) {
-        if (offset + 1 > this.bufferAccumulator.length) return Buffer.alloc(0);
-        embeddedDictId = this.bufferAccumulator.readUInt8(offset);
-        offset += 1;
-      } else if (dictIdFlag === 2) {
-        if (offset + 2 > this.bufferAccumulator.length) return Buffer.alloc(0);
-        embeddedDictId = this.bufferAccumulator.readUInt16LE(offset);
-        offset += 2;
-      } else if (dictIdFlag === 3) {
-        if (offset + 4 > this.bufferAccumulator.length) return Buffer.alloc(0);
-        embeddedDictId = this.bufferAccumulator.readUInt32LE(offset);
-        offset += 4;
-      }
-
-      if (this.expectedDictId !== undefined && embeddedDictId !== this.expectedDictId) {
-        throw new ConversionFailedError(
-          `Zstandard dictionary ID mismatch: stream expects 0x${embeddedDictId.toString(
-            16
-          )}, provided 0x${this.expectedDictId.toString(16)}`
-        );
-      }
-
-      const fcsBytes = fcsField === 0 ? (singleSegment === 1 ? 1 : 0) : fcsField === 1 ? 2 : fcsField === 2 ? 4 : 8;
-      if (offset + fcsBytes > this.bufferAccumulator.length) return Buffer.alloc(0);
-      offset += fcsBytes;
-
-      this.headerParsed = true;
-    }
-
-    // 2. Decode Blocks
-    const checksumLength = this.contentChecksumFlag === 1 ? 4 : 0;
-
-    while (offset + 3 <= this.bufferAccumulator.length && !this.streamFinished) {
-      const b0 = this.bufferAccumulator[offset];
-      const b1 = this.bufferAccumulator[offset + 1];
-      const b2 = this.bufferAccumulator[offset + 2];
-      const headerVal = b0 | (b1 << 8) | (b2 << 16);
-      const isLastBlock = (headerVal & 1) === 1;
-      const blockType = (headerVal >> 1) & 3;
-      const blockSize = headerVal >> 3;
-
-      if (blockSize > ZSTD_BLOCK_SIZE_MAX) {
-        throw new ConversionFailedError(
-          `Malformed Zstandard block: size ${blockSize} exceeds the ${ZSTD_BLOCK_SIZE_MAX} byte block maximum.`
-        );
-      }
-      const totalRequired = offset + 3 + blockSize + (isLastBlock ? checksumLength : 0);
-      if (this.bufferAccumulator.length < totalRequired) {
-        break; // Wait for more data in the next chunk
-      }
-
-      offset += 3;
-      let blockData: Buffer;
-
-      if (blockType === 0) {
-        // Raw block
-        blockData = Buffer.from(this.bufferAccumulator.subarray(offset, offset + blockSize));
-        offset += blockSize;
-      } else if (blockType === 1) {
-        // RLE block
-        const rleByte = this.bufferAccumulator[offset++];
-        blockData = Buffer.alloc(blockSize, rleByte);
-      } else if (blockType === 2) {
-        // Compressed block
-        const compSlice = this.bufferAccumulator.subarray(offset, offset + blockSize);
-        offset += blockSize;
-        blockData = decodeZstdCompressedBlockWithDict(compSlice, this.dictionary, []);
-      } else {
-        throw new ConversionFailedError(`Reserved block type ${blockType}`);
-      }
-
-      if (blockData.length > 0) {
-        this.uncompressedChunks.push(blockData);
-        this.totalUncompressedSize += blockData.length;
-        decompressedOutputs.push(blockData);
-      }
-
-      if (this.totalUncompressedSize > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new ConversionFailedError(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes`
-        );
-      }
-
-      if (isLastBlock) {
-        this.streamFinished = true;
-        if (this.contentChecksumFlag === 1) {
-          const expectedChecksum = this.bufferAccumulator.readUInt32LE(offset);
-          offset += 4;
-          const fullUncompressed = Buffer.concat(this.uncompressedChunks);
-          const actualChecksum = computeZstdChecksum(fullUncompressed);
-          if (actualChecksum !== expectedChecksum) {
-            throw new ConversionFailedError(
-              `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(
-                16
-              )}, got 0x${actualChecksum.toString(16)}`
-            );
-          }
-        }
-        break;
-      }
-    }
-
-    this.bufferAccumulator = Buffer.from(this.bufferAccumulator.subarray(offset));
-    return Buffer.concat(decompressedOutputs);
-  }
-
-  public end(): Buffer {
-    const trailing = this.write(Buffer.alloc(0));
-    return trailing;
-  }
-}
-
-/**
  * Creates a standard W3C TransformStream for streaming RFC 8878 Zstandard dictionary compression.
  */
 export function createZstdDictionaryTransformStream(
@@ -1103,30 +965,6 @@ export function createZstdDictionaryTransformStream(
     },
     flush(controller) {
       const out = compressor.end();
-      if (out.length > 0) {
-        controller.enqueue(new Uint8Array(out));
-      }
-    },
-  });
-}
-
-/**
- * Creates a standard W3C TransformStream for streaming RFC 8878 Zstandard dictionary decompression.
- */
-export function createZstdDictionaryDecompressTransformStream(
-  options: ZstdDictionaryDecompressOptions = {}
-): TransformStream<Uint8Array | Buffer, Uint8Array> {
-  const decompressor = new ZstdDictionaryStreamDecompressor(options);
-  return new TransformStream<Uint8Array | Buffer, Uint8Array>({
-    transform(chunk, controller) {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const out = decompressor.write(buf);
-      if (out.length > 0) {
-        controller.enqueue(new Uint8Array(out));
-      }
-    },
-    flush(controller) {
-      const out = decompressor.end();
       if (out.length > 0) {
         controller.enqueue(new Uint8Array(out));
       }

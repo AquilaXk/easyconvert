@@ -5,17 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { POST as convertRoute } from '../src/app/api/convert/route';
-import { convertArchive } from '../src/lib/conversions/archive';
+import { convertArchive, extractTarArchive } from '../src/lib/conversions/archive';
 import {
   compressWithZstdDict,
   DATA_DICTIONARY_JSON_CSV,
   getRawDictionaryContent,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   decodeZstdCompressedBlockWithDict,
   decompressWithZstdDict,
   OFFICE_XML_DICTIONARY,
   ZSTD_DICT_MAGIC,
+  ZSTD_OFFICE_DICT_MAGIC,
 } from '../src/lib/conversions/zstd-dict';
 import { decompressZstd, getZstdBinaryPath, ZSTD_SECURITY_LIMITS } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
@@ -68,6 +68,17 @@ function denseFrame(blockCount: number): Buffer {
   const blocks: TestBlock[] = [];
   for (let i = 0; i < blockCount; i++) blocks.push(compressedBlock(block));
   return buildFrame(blocks, { windowLog: 17 });
+}
+
+function withDictionaryFile<T>(content: Buffer, action: (file: string) => T): T {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zstd-dict-file-'));
+  try {
+    const file = path.join(dir, 'content.dict');
+    fs.writeFileSync(file, content);
+    return action(file);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe('dictionary frames decode through the bounded block decoder', () => {
@@ -209,6 +220,64 @@ describe('dictionary compression stays inside the 128 KiB block maximum', () => 
     });
   }
 
+  describe('large inputs (offsets and bit fields wider than 21 bits)', () => {
+    const ROW = '{"id":10,"name":"alpha","ok":true}'.padEnd(39, ' ') + '\n';
+    const RAW_DICTIONARY = Buffer.from(ROW.repeat(4));
+
+    function repeatedRows(size: number): Buffer {
+      return Buffer.from(ROW.repeat(Math.ceil(size / ROW.length)).slice(0, size));
+    }
+
+    it('the fixture dictionary is 160 bytes of 40-byte rows', () => {
+      expect(ROW.length).toBe(40);
+      expect(RAW_DICTIONARY.length).toBe(160);
+    });
+
+    oracleTest('round-trips 2 MiB - 1, 2 MiB, 3,000,000 and 4 MiB with the CLI as the decoder oracle', ['zstd'], () => {
+      const bin = getZstdBinaryPath();
+      if (!bin) throw new Error('zstd CLI path unavailable although the oracle precondition passed.');
+      withDictionaryFile(RAW_DICTIONARY, (dictFile) => {
+        for (const size of [2 * MIB - 1, 2 * MIB, 3_000_000, 4 * MIB]) {
+          const input = repeatedRows(size);
+          const frame = compressWithZstdDict(input, RAW_DICTIONARY, { dictId: 0 });
+          assertFrameChecksum(frame, input);
+          const viaCli = execFileSync(bin, ['-d', '-D', dictFile, '-c', '-q'], { input: frame, maxBuffer: 64 * MIB });
+          expect(Buffer.compare(viaCli, input), `${size} bytes: CLI`).toBe(0);
+          expect(Buffer.compare(decompressWithZstdDict(frame, RAW_DICTIONARY), input), `${size} bytes: repo`).toBe(0);
+        }
+      });
+    });
+
+    oracleTest('dictionary matches at offsets of 2^22 and more decode under the CLI', ['zstd'], () => {
+      const bin = getZstdBinaryPath();
+      if (!bin) throw new Error('zstd CLI path unavailable although the oracle precondition passed.');
+      withDictionaryFile(RAW_DICTIONARY, (dictFile) => {
+        // 4.5 MiB of zeros (RLE blocks) put the rows that follow more than 2^22 bytes after the dictionary.
+        const input = Buffer.concat([Buffer.alloc(4 * MIB + 512 * 1024), repeatedRows(200 * 1024)]);
+        const frame = compressWithZstdDict(input, RAW_DICTIONARY, { dictId: 0 });
+        assertFrameChecksum(frame, input);
+        const viaCli = execFileSync(bin, ['-d', '-D', dictFile, '-c', '-q'], { input: frame, maxBuffer: 64 * MIB });
+        expect(Buffer.compare(viaCli, input)).toBe(0);
+        expect(Buffer.compare(decompressWithZstdDict(frame, RAW_DICTIONARY), input)).toBe(0);
+        // The rows after the zeros were coded as dictionary matches, not stored as literals.
+        expect(frame.length).toBeLessThan(MIB / 16);
+      });
+    });
+  });
+
+  it('bounds the match search so low-entropy input does not make compression quadratic', () => {
+    const rng = makeRng(2024);
+    const input = Buffer.alloc(256 * 1024);
+    for (let i = 0; i < input.length; i++) input[i] = rng() < 0.5 ? 0x30 : 0x31;
+    let frame: Buffer = Buffer.alloc(0);
+    const ms = elapsedMs(() => {
+      frame = compressWithZstdDict(input, DATA_DICTIONARY_JSON_CSV);
+    });
+    assertFrameChecksum(frame, input);
+    expect(Buffer.compare(decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV), input)).toBe(0);
+    expect(ms).toBeLessThan(2000);
+  });
+
   oracleTest('the zstd CLI decodes multi-block frames made against a raw-content dictionary', ['zstd'], () => {
     const bin = getZstdBinaryPath();
     if (!bin) throw new Error('zstd CLI path unavailable although the oracle precondition passed.');
@@ -228,13 +297,11 @@ describe('dictionary compression stays inside the 128 KiB block maximum', () => 
     }
   });
 
-  it('the stream compressor splits a large write into blocks its decompressor accepts', () => {
+  it('the stream compressor splits a large write into blocks the frame decoder accepts', () => {
     const input = jsonRows(300 * 1024, 77);
     const compressor = new ZstdDictionaryStreamCompressor({ dictionary: DATA_DICTIONARY_JSON_CSV });
     const frame = Buffer.concat([compressor.write(input), compressor.end()]);
-    const decompressor = new ZstdDictionaryStreamDecompressor({ dictionary: DATA_DICTIONARY_JSON_CSV });
-    const decoded = Buffer.concat([decompressor.write(frame), decompressor.end()]);
-    expect(Buffer.compare(decoded, input)).toBe(0);
+    expect(Buffer.compare(decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV), input)).toBe(0);
   });
 });
 
@@ -291,6 +358,29 @@ describe('dictionary frames produced by the zstd CLI', () => {
     });
   });
 
+  oracleTest('decodes multi-block CLI frames over 256 KiB whose matches reach back across blocks', ['zstd'], () => {
+    withTempDir((dir) => {
+      const content = Buffer.concat(sampleRecords(40));
+      const dictFile = path.join(dir, 'raw.dict');
+      fs.writeFileSync(dictFile, content);
+      // Unique records, then a copy of the first 60 KB more than 256 KiB later: the copy only
+      // compresses if the decoder keeps every earlier block as history.
+      const unique = Buffer.concat(sampleRecords(2400).map((record, index) => Buffer.concat([record, Buffer.from(`#${index * 7919}\n`)])));
+      expect(unique.length).toBeGreaterThan(256 * 1024);
+      const head = unique.subarray(0, 60 * 1024);
+      const payload = Buffer.concat([unique, head]);
+      for (const level of [3, 19]) {
+        const frame = zstd([`-${level}`, '-D', dictFile, '-c', '-q'], payload);
+        const withoutCopy = zstd([`-${level}`, '-D', dictFile, '-c', '-q'], unique);
+        expect(payload.length).toBeGreaterThan(256 * 1024);
+        expect(frame.length - withoutCopy.length, `level ${level}: the far copy is a match`).toBeLessThan(2048);
+        const decoded = decompressWithZstdDict(frame, content);
+        expect(decoded.length).toBe(payload.length);
+        expect(Buffer.compare(decoded, payload), `level ${level}`).toBe(0);
+      }
+    });
+  });
+
   oracleTest('decodes frames made with a trained dictionary (entropy tables, repeat offsets and content)', ['zstd'], () => {
     withTempDir((dir) => {
       const samples = sampleRecords(800);
@@ -330,12 +420,24 @@ describe('dictionary frames produced by the zstd CLI', () => {
 describe('archive conversion maps dictionary failures to typed errors', () => {
   it('round-trips a dictionary-compressed archive and auto-detects the dictionary from the frame id', async () => {
     const content = Buffer.from('{"id":7,"status":"active","name":"alpha"}\n'.repeat(200));
-    const created = await convertArchive(content, 'json', 'zst', { zstdDict: 'data' }, 'records.json');
-    expect(created.buffer.readUInt32LE(5 + 1)).not.toBe(0);
-    const extracted = await convertArchive(created.buffer, 'zst', 'tar', {}, 'records.json.zst');
-    expect(extracted.size).toBeGreaterThan(0);
-    const viaOption = await convertArchive(created.buffer, 'zst', 'tar', { zstdDict: 'data' }, 'records.json.zst');
-    expect(viaOption.size).toBe(extracted.size);
+    for (const [name, dictionary, expectedId] of [
+      ['data', DATA_DICTIONARY_JSON_CSV, ZSTD_DICT_MAGIC],
+      ['office', OFFICE_XML_DICTIONARY, ZSTD_OFFICE_DICT_MAGIC],
+    ] as const) {
+      const created = await convertArchive(content, 'json', 'zst', { zstdDict: name }, 'records.json');
+      // Frame_Header_Descriptor bit 5 is the single-segment flag; without it a window byte precedes the id.
+      const idOffset = 5 + ((created.buffer[4] & 0x20) === 0 ? 1 : 0);
+      expect(created.buffer[4] & 0x03, 'dictionary id field is four bytes').toBe(3);
+      expect(created.buffer.readUInt32LE(idOffset)).toBe(expectedId);
+      expect(Buffer.compare(decompressWithZstdDict(created.buffer, dictionary), content)).toBe(0);
+
+      for (const options of [{}, { zstdDict: name }]) {
+        const extracted = await convertArchive(created.buffer, 'zst', 'tar', options, 'records.json.zst');
+        const files = extractTarArchive(extracted.buffer);
+        expect(files.map((file) => file.filename)).toEqual(['records.json']);
+        expect(Buffer.compare(files[0].buffer, content), `${name} ${JSON.stringify(options)}`).toBe(0);
+      }
+    }
   });
 
   it('wraps dictionary bombs and malformed dictionary frames in ConversionFailedError', async () => {
