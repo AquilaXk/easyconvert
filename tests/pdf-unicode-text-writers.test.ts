@@ -24,6 +24,7 @@ import {
   type ExternalOracleTool,
 } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
+import { synthesizeHwp5CompoundCorpus } from './helpers/corpus-synthesizer';
 
 /**
  * In-process text writers (txt, md, html, hwp to PDF) must embed fonts that really cover the text,
@@ -353,6 +354,18 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
       expect(reported >= EXT_B_FIRST && reported < EXT_B_FIRST + DISTINCT).toBe(true);
     }
   }, 60_000);
+
+  oracleTest('renders the golden HWP fixture with its paragraphs and table rows in order', POPPLER_TOOLS, async () => {
+    const corpus = synthesizeHwp5CompoundCorpus();
+    const expected = [
+      ...corpus.doc.paragraphs.map((paragraph) => paragraph.text),
+      ...corpus.doc.tables.flatMap((table) => table.rows.flat()),
+    ].join('');
+    const result = await convertFile(corpus.buffer, 'hwp', 'pdf', {}, 'enterprise-compound-document.hwp');
+    expect(withoutWhitespace(pdfText(result.buffer, true))).toBe(withoutWhitespace(expected));
+    expectEmbeddedFontsOnly(result.buffer);
+    expectNoBranding(result.buffer);
+  });
 
   it('keeps refusing Arabic in the in-process writer, which cannot shape it', async () => {
     const error = await convertFile(buildSource('hwp', [ARABIC_LINE]), 'hwp', 'pdf', {}, 'arabic.hwp').then(
