@@ -204,9 +204,13 @@ describe.skipIf(!REDIS_URL)('BYOS secrets on a real Redis server', () => {
     const masked = 'upstream rejected https://***@h.example/obj?*** with Authorization: ***';
     const dump = await dumpKeyspace(redis);
     expectNoSecretsInKeyspace(dump, [PASSWORD, QUERY_TOKEN, BEARER]);
-    const deadLetters = [...dump].filter(([key, text]) => key.endsWith(':dlq') && text.includes(`${graphId}:in`));
-    expect(deadLetters).toHaveLength(1);
-    expect(JSON.parse((JSON.parse(deadLetters[0][1]) as string[])[0])).toMatchObject({ jobId: `${graphId}:in`, failedReason: masked });
+    // The dead-letter list is shared by every run, so pick this run's entry by its job id.
+    const deadLetterEntries = [...dump]
+      .filter(([key]) => key.endsWith(':dlq'))
+      .flatMap(([, text]) => (JSON.parse(text) as string[]).map((raw) => JSON.parse(raw) as { jobId: string; failedReason: string }));
+    expect(deadLetterEntries.filter((entry) => entry.jobId === `${graphId}:in`)).toEqual([
+      expect.objectContaining({ jobId: `${graphId}:in`, failedReason: masked }),
+    ]);
     const jobKey = [...dump].find(([key]) => key.endsWith(`${graphId}:in`) && key.includes('job'));
     expect(JSON.parse(jobKey![1])).toMatchObject({ state: 'failed', failedReason: masked });
   }, GRAPH_TIMEOUT_MS + 10_000);
