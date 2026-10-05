@@ -59,3 +59,44 @@ export interface ObjectStat {
   filename: string;
   filePath?: string;
 }
+
+/**
+ * The storage driver or its credentials are not configured. Thrown at startup so a deployment
+ * never runs on a fallback it did not choose; `missing` names every variable that was absent.
+ */
+export class StorageConfigError extends Error {
+  readonly code = 'STORAGE_CONFIG_INVALID';
+  readonly missing: readonly string[];
+
+  constructor(message: string, missing: readonly string[] = []) {
+    super(message);
+    this.name = 'StorageConfigError';
+    this.missing = missing;
+  }
+}
+
+/**
+ * A signing secret is required to mint or check a signature but none is configured. Signing with
+ * a per-process random secret would give every process its own, unverifiable signatures.
+ */
+export class StorageSigningSecretMissingError extends Error {
+  readonly code = 'STORAGE_SIGNING_SECRET_MISSING';
+
+  constructor(message?: string) {
+    super(
+      message ??
+        'No storage signing secret is configured. Set STORAGE_SIGNING_SECRET (or S3_SIGNING_SECRET / OCI_SIGNING_SECRET).'
+    );
+    this.name = 'StorageSigningSecretMissingError';
+  }
+}
+
+/** The configured storage backend cannot mint the requested kind of URL. */
+export class StoragePresignUnavailableError extends Error {
+  readonly code = 'STORAGE_PRESIGN_UNAVAILABLE';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'StoragePresignUnavailableError';
+  }
+}
