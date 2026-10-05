@@ -4,7 +4,7 @@ import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames, type FrameSelection } from './image-frames';
 import { encodeDecodedAnimation, joinPageTiffs, resizedDimensions, zipPageImages } from './image-frame-output';
-import { assertAnimationBudget } from './image-limits';
+import { assertAnimationBudget, assertOutputPixels, MAX_OUTPUT_DIMENSION } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import {
@@ -2374,22 +2374,40 @@ function toImageFailure(err: unknown, target: string): unknown {
 
 const RGB_CHANNEL_COUNT = 3;
 const DEFAULT_QUALITY = 85;
+/** First EXIF orientation that turns the picture a quarter turn (width and height swap). */
+const FIRST_QUARTER_TURN_ORIENTATION = 5;
 const MIN_PALETTE_COLOURS = 2;
 const MAX_PALETTE_COLOURS = 256;
 const FULL_DITHER = 1.0;
 const NO_DITHER = 0.0;
 const QUALITY_RANGE = { min: 1, max: 100 } as const;
 
-/** Resize parameters for the requested width/height, or null when the request does not resize. */
+/** A requested output side: a whole number of pixels from 1 to the container limit. */
+function outputSideOf(value: unknown, name: 'width' | 'height'): number | undefined {
+  if (value === undefined || value === null || value === 0 || value === '') return undefined;
+  const side = Number(value);
+  if (!Number.isInteger(side) || side < 1 || side > MAX_OUTPUT_DIMENSION) {
+    throw new UnsupportedOptionError(`Unsupported ${name} ${JSON.stringify(value)}: use a whole number from 1 to ${MAX_OUTPUT_DIMENSION}`);
+  }
+  return side;
+}
+
+/**
+ * Resize parameters for the requested width/height, or null when the request does not resize. The sides are
+ * validated here, before sharp sees them, and a box over the output pixel limit is refused.
+ */
 function resizeOptionsOf(
   options: ConversionOptions,
   background: ReturnType<typeof parseBackground>,
   isOpaqueTarget: boolean
 ): sharp.ResizeOptions | null {
-  if (!options.width && !options.height) return null;
+  const width = outputSideOf(options.width, 'width');
+  const height = outputSideOf(options.height, 'height');
+  if (width === undefined && height === undefined) return null;
+  if (width !== undefined && height !== undefined) assertOutputPixels(width, height);
   return {
-    width: options.width ? Number(options.width) : undefined,
-    height: options.height ? Number(options.height) : undefined,
+    width,
+    height,
     fit: options.fit || 'contain',
     background: letterboxColour(background, isOpaqueTarget),
   };
@@ -2684,6 +2702,15 @@ export async function convertImage(
     if (canvas) {
       const resized = resizedDimensions(canvas.width, canvas.height, resizeOptions);
       assertAnimationBudget(resized.width, resized.height, canvas.frames, 'The resized animation');
+    } else {
+      const source = await pipeline.metadata();
+      const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
+      const sourceWidth = (swapsSides ? source.height : source.width) ?? 0;
+      const sourceHeight = (swapsSides ? source.width : source.height) ?? 0;
+      if (sourceWidth > 0 && sourceHeight > 0) {
+        const resized = resizedDimensions(sourceWidth, sourceHeight, resizeOptions);
+        assertOutputPixels(resized.width, resized.height);
+      }
     }
     pipeline = pipeline.resize(resizeOptions);
   }

@@ -58,6 +58,19 @@ export const MAX_AGGREGATE_PAGE_PIXELS = 400_000_000;
 /** Largest output side accepted for `width` and `height` (the JPEG and TIFF container limit). */
 export const MAX_OUTPUT_DIMENSION = 65_535;
 
+/** Most pixels one resized output picture may hold (400 MB as RGBA). */
+export const MAX_OUTPUT_PIXELS = 100_000_000;
+
+/** Throws when a resized output of `width` x `height` pixels would hold more pixels than the output limit. */
+export function assertOutputPixels(width: number, height: number): void {
+  const pixels = width * height;
+  if (!(pixels <= MAX_OUTPUT_PIXELS)) {
+    throw new ConversionFailedError(
+      `The resized image would be ${width}x${height} pixels (${pixels} pixels), over the limit of ${MAX_OUTPUT_PIXELS} pixels`
+    );
+  }
+}
+
 /** Bytes of `frames` RGBA frames of `width` x `height` pixels. */
 export function rgbaBytes(width: number, height: number, frames: number): number {
   return width * height * frames * RGBA_BYTES_PER_PIXEL;
