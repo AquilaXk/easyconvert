@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { encodeFlacStream } from '../src/lib/conversions/media-encoder';
+import { FlacInputError } from '../src/lib/conversions/flac-encoder';
+import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import {
   flacCliTest,
@@ -105,5 +107,44 @@ describe('FLAC STREAMINFO is exact', () => {
     const MD5_OFFSET = 42 - 16;
     tampered[MD5_OFFSET] ^= 0xff;
     expect(flacCliTest(tampered).ok).toBe(false);
+  });
+});
+
+describe('FLAC encoder fails closed on unsupported input', () => {
+  it.each([0, 3, 6, 8, -1, 1.5, Number.NaN])('rejects %s channels with a typed error', (channels) => {
+    expect(() => encodeFlacStream(new Int16Array(24), 44100, channels)).toThrow(FlacInputError);
+  });
+
+  it.each([0, -44100, 44100.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 20])(
+    'rejects sample rate %s',
+    (rate) => {
+      expect(() => encodeFlacStream(ramp(100, 1), rate, 1)).toThrow(FlacInputError);
+    }
+  );
+
+  it.each([0, 7, 15, 32, 64])('rejects %i bits per sample', (bitsPerSample) => {
+    expect(() => encodeFlacStream(ramp(100, 1), 44100, 1, { bitsPerSample })).toThrow(FlacInputError);
+  });
+
+  it('rejects interleaved data that is not a whole number of frames', () => {
+    expect(() => encodeFlacStream(new Int16Array(101), 44100, 2)).toThrow(FlacInputError);
+  });
+
+  it('errors are ConversionFailedError so the API maps them to HTTP 400', () => {
+    try {
+      encodeFlacStream(new Int16Array(24), 44100, 3);
+      expect.unreachable('encoder must throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConversionFailedError);
+      expect((err as Error).name).toBe('FlacInputError');
+      expect((err as Error).message).toMatch(/3 channels/);
+    }
+  });
+
+  it('still encodes the supported combinations', () => {
+    const parsed = parseFlacStructure(encodeFlacStream(ramp(100, 2), 192000, 2, { bitsPerSample: 16 }));
+    expect(parsed.streamInfo.sampleRate).toBe(192000);
+    expect(parsed.streamInfo.channels).toBe(2);
+    expect(parsed.streamInfo.bitsPerSample).toBe(16);
   });
 });

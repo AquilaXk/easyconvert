@@ -12,6 +12,11 @@ import crypto from 'node:crypto';
 import { encodePureMp3 as pureEncodeMp3 } from '../edge/pure/pure-audio';
 import { ConversionFailedError } from '../types';
 import {
+  FLAC_DEFAULT_BITS_PER_SAMPLE,
+  validateFlacInput,
+  type FlacEncodeOptions,
+} from './flac-encoder';
+import {
   AAC_SWB_OFFSET_1024_48,
   decodeScalefactorDiff,
   decodeSpectralBand,
@@ -278,17 +283,12 @@ function writeFlacUtf8Number(writer: BitWriter, value: number): void {
 export function encodeFlacStream(
   samples: Int16Array,
   sampleRate: number,
-  channels: number
+  channels: number,
+  options: FlacEncodeOptions = {}
 ): Buffer {
-  // The subframe writer below only implements the independent mono and stereo layouts; clamping
-  // a wider layout would interleave its channels into a scrambled stereo stream.
-  if (channels !== 1 && channels !== 2) {
-    throw new ConversionFailedError(
-      `FLAC encoder supports only mono and stereo input, received ${channels} channels (Fail-Closed).`
-    );
-  }
+  const bitsPerSample = options.bitsPerSample ?? FLAC_DEFAULT_BITS_PER_SAMPLE;
+  const totalSamplesPerChannel = validateFlacInput(samples, sampleRate, channels, bitsPerSample);
   const chCount = channels;
-  const totalSamplesPerChannel = Math.floor(samples.length / chCount);
 
   // 1. STREAMINFO Metadata Block (42 bytes: 4 bytes "fLaC" marker + 4 bytes header + 34 bytes payload)
   const streamInfo = Buffer.alloc(42);
