@@ -3,7 +3,8 @@ import type { DefaultTreeAdapterMap } from 'parse5';
 
 /**
  * Independent HTML oracle built on parse5 (a WHATWG-compliant HTML parser that is
- * not part of the code under test). Both helpers work on the parsed DOM, never on regexes.
+ * not part of the code under test). The helpers work on the parsed DOM, never on regexes, and URL
+ * destinations are judged with the WHATWG URL parser rather than patterns copied from the renderer.
  */
 
 type Node = DefaultTreeAdapterMap['node'];
@@ -22,6 +23,9 @@ const FORBIDDEN_ELEMENTS = new Set([
   'base',
   'form',
   'foreignobject',
+  'math',
+  'template',
+  'noscript',
 ]);
 
 // The converter's own document shell legitimately carries a charset <meta>, a Content-Security-Policy
@@ -29,13 +33,17 @@ const FORBIDDEN_ELEMENTS = new Set([
 // <meta http-equiv> does anything other than declare a Content-Security-Policy (e.g. refresh).
 const BODY_ONLY_FORBIDDEN_ELEMENTS = new Set(['meta', 'link', 'style']);
 
-const URL_ATTRIBUTES = new Set(['href', 'src', 'xlink:href', 'action', 'formaction', 'poster', 'data', 'srcset']);
+const URL_ATTRIBUTES = new Set(['href', 'src', 'xlink:href', 'action', 'formaction', 'poster', 'data']);
+// srcdoc embeds a whole document; no generated element may ever carry it.
+const FORBIDDEN_ATTRIBUTES = new Set(['srcdoc']);
+const DANGEROUS_STYLE_TOKENS = ['url(', 'expression(', 'javascript:', '@import', 'behavior:', '-moz-binding'];
 
-// Browsers drop ASCII control characters, whitespace and newlines from a URL before reading its scheme.
-// eslint-disable-next-line no-control-regex
-const URL_NOISE = /[\u0000- \u007f-\u009f]+/g;
-const SCHEME = /^([a-z][a-z0-9+.-]*):/i;
-const ALLOWED_DATA_IMAGE = /^data:image\/(png|gif|jpe?g|webp)[;,]/i;
+// Navigation protocols a rendered document may use. Everything else (javascript:, vbscript:, data:,
+// blob:, file:, unknown schemes) is a violation. The WHATWG URL parser applies the same
+// tab/newline/control-character stripping a browser does before it reads the scheme.
+const SAFE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+const SAFE_DATA_IMAGE_TYPES = new Set(['image/png', 'image/gif', 'image/jpeg', 'image/webp']);
+const RESOLUTION_BASE = 'https://oracle-base.invalid/';
 
 export interface DomViolation {
   kind: 'element' | 'event-handler' | 'url';
@@ -57,6 +65,21 @@ function walk(node: Node, visit: (el: Element, inBody: boolean) => void, inBody 
   for (const child of childNodesOf(node)) walk(child, visit, nowInBody);
 }
 
+function isSafeUrl(tag: string, attribute: string, value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value, RESOLUTION_BASE);
+  } catch {
+    // An unparseable destination is not something a browser should be asked to interpret.
+    return false;
+  }
+  if (SAFE_PROTOCOLS.has(url.protocol)) return true;
+  if (url.protocol === 'data:' && tag === 'img' && attribute === 'src') {
+    return SAFE_DATA_IMAGE_TYPES.has(url.pathname.split(/[;,]/)[0].toLowerCase());
+  }
+  return false;
+}
+
 /** Returns every dangerous construct found in the parsed document; empty means clean. */
 export function findDangerousConstructs(html: string): DomViolation[] {
   const violations: DomViolation[] = [];
@@ -74,12 +97,13 @@ export function findDangerousConstructs(html: string): DomViolation[] {
       if (name.startsWith('on')) {
         violations.push({ kind: 'event-handler', detail: `${tag}[${name}]` });
       }
-      if (!URL_ATTRIBUTES.has(name)) continue;
-      const compact = attr.value.replace(URL_NOISE, '');
-      const scheme = SCHEME.exec(compact)?.[1]?.toLowerCase();
-      if (scheme === undefined) continue;
-      const isAllowedImage = tag === 'img' && name === 'src' && ALLOWED_DATA_IMAGE.test(compact);
-      if (scheme === 'javascript' || scheme === 'vbscript' || (scheme === 'data' && !isAllowedImage)) {
+      if (FORBIDDEN_ATTRIBUTES.has(name)) {
+        violations.push({ kind: 'element', detail: `${tag}[${name}]` });
+      }
+      if (name === 'style' && DANGEROUS_STYLE_TOKENS.some((token) => attr.value.toLowerCase().includes(token))) {
+        violations.push({ kind: 'url', detail: `${tag}[style]=${attr.value.slice(0, 40)}` });
+      }
+      if (URL_ATTRIBUTES.has(name) && !isSafeUrl(tag, name, attr.value)) {
         violations.push({ kind: 'url', detail: `${tag}[${name}]=${attr.value.slice(0, 40)}` });
       }
     }
@@ -87,15 +111,28 @@ export function findDangerousConstructs(html: string): DomViolation[] {
   return violations;
 }
 
-/** All text node content of the document, in order. */
-export function collectText(html: string): string {
+function textOf(root: Node): string {
   const chunks: string[] = [];
   const visitText = (node: Node): void => {
     if (node.nodeName === '#text') chunks.push((node as TextNode).value);
     for (const child of childNodesOf(node)) visitText(child);
   };
-  visitText(parse(html));
+  visitText(root);
   return chunks.join('');
+}
+
+/** All text node content of the document, in order. */
+export function collectText(html: string): string {
+  return textOf(parse(html));
+}
+
+/** Text content of the document body only (excludes the head, title and style text). */
+export function collectBodyText(html: string): string {
+  let bodyText = '';
+  walk(parse(html), (el) => {
+    if (el.tagName === 'body' && bodyText === '') bodyText = textOf(el);
+  });
+  return bodyText;
 }
 
 /** Collects `[tag, attribute, value]` triples for the given attribute names. */
@@ -119,6 +156,11 @@ function isBlock(node: Node | undefined): boolean {
   return node !== undefined && isElement(node) && BLOCK_ELEMENTS.has(node.tagName);
 }
 
+// Text is compared in escaped form so that visible markup text (&lt;b&gt;) never equals a real element (<b>).
+function escapeText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function canonicalAttrs(el: Element): string {
   return el.attrs
     .map((a) => `${a.name}=${JSON.stringify(a.value)}`)
@@ -128,7 +170,7 @@ function canonicalAttrs(el: Element): string {
 
 function canonicalize(node: Node, inPre: boolean): string {
   if (node.nodeName === '#text') {
-    return (node as TextNode).value;
+    return escapeText((node as TextNode).value);
   }
   if (node.nodeName === '#comment') return '';
   if (!isElement(node)) return childNodesOf(node).map((c) => canonicalize(c, inPre)).join('');
@@ -141,7 +183,7 @@ function canonicalize(node: Node, inPre: boolean): string {
       parts.push(canonicalize(child, pre));
       return;
     }
-    let text = (child as TextNode).value.replace(/[ \t\r\n]+/g, ' ');
+    let text = escapeText((child as TextNode).value).replace(/[ \t\r\n]+/g, ' ');
     const prev = kids[index - 1];
     const next = kids[index + 1];
     if (index === 0 || isBlock(prev)) text = text.replace(/^ /, '');
