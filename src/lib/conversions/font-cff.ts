@@ -90,13 +90,23 @@ const DICT_LAST_OPERATOR = 21;
 const BITS_PER_BYTE = 8;
 const NIBBLE_BITS = 4;
 const NIBBLE_MASK = 0x0f;
-const REAL_NIBBLE_MAX_DIGIT = 9;
 const UINT16_MAX = 0xffff;
 const UINT16_BYTES = 2;
+const UINT8_BYTES = 1;
+const INT32_BYTES = 4;
+const ROS_OPERANDS = 3;
 const ISO_ADOBE_LAST_SID = 228;
-// FDSelect format 3 is a u8 format, a u16 range count, then (first u16, fd u8) ranges and a u16 sentinel.
+// Charset: predefined ids in the Top DICT operand, then explicit formats 0 (SID array), 1 and 2 (ranges).
+const CHARSET_ISO_ADOBE = 0;
+const CHARSET_EXPERT = 1;
+const CHARSET_EXPERT_SUBSET = 2;
+const CHARSET_FORMAT_ARRAY = 0;
+const CHARSET_FORMAT_RANGES_BYTE = 1;
+const CHARSET_FORMAT_RANGES_WORD = 2;
+// FDSelect: format byte, then a glyph-to-FD byte array (0) or ranges of (first u16, fd u8) plus a u16 sentinel (3).
+const FDSELECT_FORMAT_ARRAY = 0;
 const FDSELECT_FORMAT_RANGES = 3;
-const FDSELECT_HEADER_BYTES = 3;
+const FDSELECT_FORMAT_BYTES = 1;
 const FDSELECT_RANGE_BYTES = 3;
 const CHARSTRING_TYPE_2 = 2;
 
@@ -335,11 +345,11 @@ function decodeSharedOperand(
 
 type DictMap = Map<number, number[]>;
 
-const REAL_NIBBLE_DECIMAL = 0xa;
-const REAL_NIBBLE_EXPONENT = 0xb;
-const REAL_NIBBLE_NEGATIVE_EXPONENT = 0xc;
-const REAL_NIBBLE_MINUS = 0xe;
 const REAL_NIBBLE_END = 0xf;
+/** Text of each real-number nibble: digits, decimal point, E, E-, a reserved slot and the minus sign. */
+const REAL_NIBBLE_TEXT: readonly (string | undefined)[] = [
+  '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', 'E', 'E-', undefined, '-',
+];
 
 function decodeRealNumber(data: Buffer, pos: number, end: number, what: string): { value: number; next: number } {
   let text = '';
@@ -347,28 +357,41 @@ function decodeRealNumber(data: Buffer, pos: number, end: number, what: string):
   while (p < end) {
     const byte = data[p++];
     for (const nibble of [byte >> NIBBLE_BITS, byte & NIBBLE_MASK]) {
-      if (nibble <= REAL_NIBBLE_MAX_DIGIT) {
-        text += String(nibble);
-      } else if (nibble === REAL_NIBBLE_DECIMAL) {
-        text += '.';
-      } else if (nibble === REAL_NIBBLE_EXPONENT) {
-        text += 'E';
-      } else if (nibble === REAL_NIBBLE_NEGATIVE_EXPONENT) {
-        text += 'E-';
-      } else if (nibble === REAL_NIBBLE_MINUS) {
-        text += '-';
-      } else if (nibble === REAL_NIBBLE_END) {
+      if (nibble === REAL_NIBBLE_END) {
         const value = Number(text);
         if (text === '' || !Number.isFinite(value)) {
           throw new CffFormatError(`CFF ${what} contains a malformed real number.`);
         }
         return { value, next: p };
-      } else {
+      }
+      const piece = REAL_NIBBLE_TEXT[nibble];
+      if (piece === undefined) {
         throw new CffFormatError(`CFF ${what} contains a reserved real-number nibble.`);
       }
+      text += piece;
     }
   }
   throw new CffFormatError(`CFF ${what} ends inside a real number.`);
+}
+
+/** Reads the DICT operator that starts at byte `b0` (already consumed); two-byte operators are 1200 + the second byte. */
+function readDictOperator(data: Buffer, b0: number, pos: number, end: number, what: string): { op: number; next: number } {
+  if (b0 !== DICT_ESCAPE) return { op: b0, next: pos };
+  if (pos >= end) throw new CffFormatError(`CFF ${what} ends inside an escape operator.`);
+  return { op: DICT_ESCAPE_BASE + data[pos], next: pos + 1 };
+}
+
+/** Reads one DICT operand introduced by byte `b0` (already consumed). */
+function readDictOperand(data: Buffer, b0: number, pos: number, end: number, what: string): { value: number; next: number } {
+  const failDict = (message: string): Error => new CffFormatError(`CFF ${what} ${message}`);
+  const shared = decodeSharedOperand(data, b0, pos, end, failDict);
+  if (shared !== null) return shared;
+  if (b0 === DICT_OPERAND_INT32) {
+    if (pos + INT32_BYTES > end) throw failDict('ends inside a 32-bit operand.');
+    return { value: data.readInt32BE(pos), next: pos + INT32_BYTES };
+  }
+  if (b0 === DICT_OPERAND_REAL) return decodeRealNumber(data, pos, end, what);
+  throw failDict(`contains the reserved byte ${b0}.`);
 }
 
 function parseDict(data: Buffer, range: Range, what: string): DictMap {
@@ -378,36 +401,18 @@ function parseDict(data: Buffer, range: Range, what: string): DictMap {
   while (p < range.end) {
     const b0 = data[p++];
     if (b0 <= DICT_LAST_OPERATOR) {
-      let op = b0;
-      if (b0 === DICT_ESCAPE) {
-        if (p >= range.end) throw new CffFormatError(`CFF ${what} ends inside an escape operator.`);
-        op = DICT_ESCAPE_BASE + data[p++];
-      }
-      dict.set(op, operands);
+      const operator = readDictOperator(data, b0, p, range.end, what);
+      dict.set(operator.op, operands);
       operands = [];
+      p = operator.next;
       continue;
     }
-    const failDict = (message: string): Error => new CffFormatError(`CFF ${what} ${message}`);
-    let value: number;
-    const shared = decodeSharedOperand(data, b0, p, range.end, failDict);
-    if (shared !== null) {
-      value = shared.value;
-      p = shared.next;
-    } else if (b0 === DICT_OPERAND_INT32) {
-      if (p + 4 > range.end) throw failDict('ends inside a 32-bit operand.');
-      value = data.readInt32BE(p);
-      p += 4;
-    } else if (b0 === DICT_OPERAND_REAL) {
-      const real = decodeRealNumber(data, p, range.end, what);
-      value = real.value;
-      p = real.next;
-    } else {
-      throw new CffFormatError(`CFF ${what} contains the reserved byte ${b0}.`);
-    }
+    const operand = readDictOperand(data, b0, p, range.end, what);
+    p = operand.next;
     if (operands.length >= MAX_DICT_OPERANDS) {
       throw new CffFormatError(`CFF ${what} exceeds ${MAX_DICT_OPERANDS} operands before an operator.`);
     }
-    operands.push(value);
+    operands.push(operand.value);
   }
   if (operands.length > 0) {
     throw new CffFormatError(`CFF ${what} ends with operands that have no operator.`);
@@ -459,30 +464,18 @@ function composeMatrices(outer: CffMatrix, inner: CffMatrix): CffMatrix {
 // Charset, FDSelect, Private DICT
 // ---------------------------------------------------------------------------
 
-/** Returns the SID (or CID) of every glyph, or null for the predefined Expert charsets. */
-function readCharset(data: Buffer, offset: number, numGlyphs: number): Uint16Array | null {
-  const charset = new Uint16Array(numGlyphs);
-  if (offset === 0) {
-    if (numGlyphs - 1 > ISO_ADOBE_LAST_SID) {
-      throw new CffFormatError('CFF ISOAdobe charset cannot cover more than 229 glyphs.');
-    }
-    for (let g = 0; g < numGlyphs; g++) charset[g] = g;
-    return charset;
+function readCharsetArray(data: Buffer, start: number, charset: Uint16Array): Uint16Array {
+  let p = start;
+  for (let g = 1; g < charset.length; g++, p += UINT16_BYTES) {
+    charset[g] = readUIntBE(data, p, UINT16_BYTES, 'charset');
   }
-  if (offset === 1 || offset === 2) return null;
-  const format = readUIntBE(data, offset, 1, 'charset format');
-  let p = offset + 1;
+  return charset;
+}
+
+function readCharsetRanges(data: Buffer, start: number, charset: Uint16Array, leftBytes: number): Uint16Array {
+  const numGlyphs = charset.length;
+  let p = start;
   let g = 1;
-  if (format === 0) {
-    for (; g < numGlyphs; g++, p += UINT16_BYTES) {
-      charset[g] = readUIntBE(data, p, UINT16_BYTES, 'charset');
-    }
-    return charset;
-  }
-  if (format !== 1 && format !== 2) {
-    throw new CffFormatError(`CFF charset has the unsupported format ${format}.`);
-  }
-  const leftBytes = format === 1 ? 1 : 2;
   while (g < numGlyphs) {
     const first = readUIntBE(data, p, UINT16_BYTES, 'charset range');
     const nLeft = readUIntBE(data, p + UINT16_BYTES, leftBytes, 'charset range');
@@ -495,28 +488,50 @@ function readCharset(data: Buffer, offset: number, numGlyphs: number): Uint16Arr
   return charset;
 }
 
-function readFdSelect(data: Buffer, offset: number, numGlyphs: number, fdCount: number): Uint8Array {
-  const select = new Uint8Array(numGlyphs);
-  const format = readUIntBE(data, offset, 1, 'FDSelect format');
-  if (format === 0) {
-    if (offset + 1 + numGlyphs > data.length) throw new CffFormatError('CFF FDSelect format 0 is cut short.');
-    for (let g = 0; g < numGlyphs; g++) {
-      const fd = data[offset + 1 + g];
-      if (fd >= fdCount) throw new CffFormatError(`CFF FDSelect names font DICT ${fd} of ${fdCount}.`);
-      select[g] = fd;
+/** Returns the SID (or CID) of every glyph, or null for the predefined Expert charsets. */
+function readCharset(data: Buffer, offset: number, numGlyphs: number): Uint16Array | null {
+  const charset = new Uint16Array(numGlyphs);
+  if (offset === CHARSET_ISO_ADOBE) {
+    if (numGlyphs - 1 > ISO_ADOBE_LAST_SID) {
+      throw new CffFormatError('CFF ISOAdobe charset cannot cover more than 229 glyphs.');
     }
-    return select;
+    return charset.map((_, g) => g);
   }
-  if (format !== FDSELECT_FORMAT_RANGES) {
-    throw new CffFormatError(`CFF FDSelect has the unsupported format ${format}.`);
+  if (offset === CHARSET_EXPERT || offset === CHARSET_EXPERT_SUBSET) return null;
+  const format = readUIntBE(data, offset, UINT8_BYTES, 'charset format');
+  const start = offset + UINT8_BYTES;
+  switch (format) {
+    case CHARSET_FORMAT_ARRAY:
+      return readCharsetArray(data, start, charset);
+    case CHARSET_FORMAT_RANGES_BYTE:
+      return readCharsetRanges(data, start, charset, UINT8_BYTES);
+    case CHARSET_FORMAT_RANGES_WORD:
+      return readCharsetRanges(data, start, charset, UINT16_BYTES);
+    default:
+      throw new CffFormatError(`CFF charset has the unsupported format ${format}.`);
   }
-  const nRanges = readUIntBE(data, offset + 1, UINT16_BYTES, 'FDSelect range count');
+}
+
+function readFdSelectArray(data: Buffer, start: number, numGlyphs: number, fdCount: number): Uint8Array {
+  if (start + numGlyphs > data.length) throw new CffFormatError('CFF FDSelect format 0 is cut short.');
+  const select = new Uint8Array(numGlyphs);
+  for (let g = 0; g < numGlyphs; g++) {
+    const fd = data[start + g];
+    if (fd >= fdCount) throw new CffFormatError(`CFF FDSelect names font DICT ${fd} of ${fdCount}.`);
+    select[g] = fd;
+  }
+  return select;
+}
+
+function readFdSelectRanges(data: Buffer, start: number, numGlyphs: number, fdCount: number): Uint8Array {
+  const select = new Uint8Array(numGlyphs);
+  const nRanges = readUIntBE(data, start, UINT16_BYTES, 'FDSelect range count');
   if (nRanges === 0) throw new CffFormatError('CFF FDSelect format 3 has no ranges.');
-  let p = offset + FDSELECT_HEADER_BYTES;
+  let p = start + UINT16_BYTES;
   let expectedFirst = 0;
   for (let r = 0; r < nRanges; r++, p += FDSELECT_RANGE_BYTES) {
     const rangeFirst = readUIntBE(data, p, UINT16_BYTES, 'FDSelect range');
-    const fd = readUIntBE(data, p + UINT16_BYTES, 1, 'FDSelect range');
+    const fd = readUIntBE(data, p + UINT16_BYTES, UINT8_BYTES, 'FDSelect range');
     const next = readUIntBE(data, p + FDSELECT_RANGE_BYTES, UINT16_BYTES, 'FDSelect range');
     if (rangeFirst !== expectedFirst) {
       throw new CffFormatError('CFF FDSelect ranges must start at glyph 0 and be contiguous.');
@@ -532,6 +547,14 @@ function readFdSelect(data: Buffer, offset: number, numGlyphs: number, fdCount: 
     throw new CffFormatError('CFF FDSelect sentinel must equal the glyph count.');
   }
   return select;
+}
+
+function readFdSelect(data: Buffer, offset: number, numGlyphs: number, fdCount: number): Uint8Array {
+  const format = readUIntBE(data, offset, FDSELECT_FORMAT_BYTES, 'FDSelect format');
+  const start = offset + FDSELECT_FORMAT_BYTES;
+  if (format === FDSELECT_FORMAT_ARRAY) return readFdSelectArray(data, start, numGlyphs, fdCount);
+  if (format === FDSELECT_FORMAT_RANGES) return readFdSelectRanges(data, start, numGlyphs, fdCount);
+  throw new CffFormatError(`CFF FDSelect has the unsupported format ${format}.`);
 }
 
 interface PrivateData {
@@ -614,6 +637,43 @@ interface Frame {
 interface RunResult {
   width: number;
   contours: CffContour[];
+}
+
+function createStackState(): StackState {
+  return {
+    stack: [],
+    steps: 0,
+    nStems: 0,
+    haveWidth: false,
+    widthDelta: null,
+    x: 0,
+    y: 0,
+    contours: [],
+    current: null,
+    segmentCount: 0,
+    transient: new Array<number>(TRANSIENT_ARRAY_SIZE).fill(0),
+  };
+}
+
+function translatePoint(pt: CffPoint, dx: number, dy: number): CffPoint {
+  return { x: pt.x + dx, y: pt.y + dy };
+}
+
+function translateSegment(segment: CffSegment, dx: number, dy: number): CffSegment {
+  if (segment.kind === 'line') return { kind: 'line', to: translatePoint(segment.to, dx, dy) };
+  return {
+    kind: 'curve',
+    c1: translatePoint(segment.c1, dx, dy),
+    c2: translatePoint(segment.c2, dx, dy),
+    to: translatePoint(segment.to, dx, dy),
+  };
+}
+
+function translateContour(contour: CffContour, dx: number, dy: number): CffContour {
+  return {
+    start: translatePoint(contour.start, dx, dy),
+    segments: contour.segments.map((segment) => translateSegment(segment, dx, dy)),
+  };
 }
 
 export class CffFont {
@@ -707,142 +767,146 @@ export class CffFont {
   }
 
   private run(glyphId: number, allowSeac: boolean): RunResult {
-    const fontDict = this.fontDictFor(glyphId);
-    const priv = fontDict.privateData;
-    const state: StackState = {
-      stack: [],
-      steps: 0,
-      nStems: 0,
-      haveWidth: false,
-      widthDelta: null,
-      x: 0,
-      y: 0,
-      contours: [],
-      current: null,
-      segmentCount: 0,
-      transient: new Array<number>(TRANSIENT_ARRAY_SIZE).fill(0),
-    };
-    const data = this.data;
-    const entry = indexEntry(data, this.charStrings, glyphId);
+    const privateData = this.fontDictFor(glyphId).privateData;
+    const state = createStackState();
+    const entry = indexEntry(this.data, this.charStrings, glyphId);
     const frames: Frame[] = [{ ip: entry.start, end: entry.end }];
 
-    const widthOf = (): number =>
-      state.widthDelta === null ? priv.defaultWidthX : priv.nominalWidthX + state.widthDelta;
-
     for (;;) {
-      const frame = frames[frames.length - 1];
-      if (frame.ip >= frame.end) {
-        const inSubr = frames.length > 1;
-        const missing = inSubr ? 'return' : 'endchar';
-        throw new CffCharStringError(
-          `CFF glyph ${glyphId} runs off the end of its ${inSubr ? 'subroutine' : 'charstring'} without ${missing}.`
-        );
-      }
+      const frame = frames.at(-1) as Frame;
+      this.requireByte(frame, frames.length, glyphId);
       this.tick(state);
-      const b0 = data[frame.ip++];
-
+      const b0 = this.data[frame.ip++];
       if (b0 >= OPERAND_ONE_BYTE_FIRST || b0 === OPERAND_INT16) {
         this.pushNumber(state, frame, b0);
-        continue;
+      } else if (b0 === CS_ENDCHAR) {
+        return this.endChar(state, glyphId, allowSeac, privateData);
+      } else {
+        this.executeOperator(b0, state, frames, privateData, glyphId);
       }
+    }
+  }
 
-      switch (b0) {
-        case CS_HSTEM:
-        case CS_VSTEM:
-        case CS_HSTEMHM:
-        case CS_VSTEMHM:
-          this.stemHints(state, glyphId);
-          break;
+  private requireByte(frame: Frame, depth: number, glyphId: number): void {
+    if (frame.ip < frame.end) return;
+    const [place, missing] = depth > 1 ? ['subroutine', 'return'] : ['charstring', 'endchar'];
+    throw new CffCharStringError(`CFF glyph ${glyphId} runs off the end of its ${place} without ${missing}.`);
+  }
 
-        case CS_HINTMASK:
-        case CS_CNTRMASK: {
-          this.stemHints(state, glyphId, true);
-          const maskBytes = Math.ceil(state.nStems / BITS_PER_BYTE);
-          if (frame.ip + maskBytes > frame.end) {
-            throw new CffCharStringError(`CFF glyph ${glyphId} has a hint mask that runs past its charstring.`);
-          }
-          frame.ip += maskBytes;
-          break;
+  /** Executes one non-operand, non-endchar operator that begins at the last byte consumed from the top frame. */
+  private executeOperator(
+    b0: number,
+    state: StackState,
+    frames: Frame[],
+    privateData: PrivateData,
+    glyphId: number
+  ): void {
+    const frame = frames.at(-1) as Frame;
+    switch (b0) {
+      case CS_HSTEM:
+      case CS_VSTEM:
+      case CS_HSTEMHM:
+      case CS_VSTEMHM:
+        this.stemHints(state, glyphId);
+        return;
+      case CS_HINTMASK:
+      case CS_CNTRMASK:
+        this.hintMask(state, frame, glyphId);
+        return;
+      case CS_CALLSUBR:
+        this.callSubroutine(state, frames, glyphId, privateData.subrs, privateData.subrBias);
+        return;
+      case CS_CALLGSUBR:
+        this.callSubroutine(state, frames, glyphId, this.globalSubrs, subrBias(this.globalSubrs.count));
+        return;
+      case CS_RETURN:
+        if (frames.length === 1) {
+          throw new CffCharStringError(`CFF glyph ${glyphId} executes return outside a subroutine.`);
         }
-
-        case CS_RMOVETO:
-          this.moveTo(state, glyphId, 2, (a) => [a[0], a[1]]);
-          break;
-        case CS_HMOVETO:
-          this.moveTo(state, glyphId, 1, (a) => [a[0], 0]);
-          break;
-        case CS_VMOVETO:
-          this.moveTo(state, glyphId, 1, (a) => [0, a[0]]);
-          break;
-
-        case CS_RLINETO:
-          this.rlineto(state, glyphId);
-          break;
-        case CS_HLINETO:
-        case CS_VLINETO:
-          this.hvlineto(state, glyphId, b0 === CS_HLINETO);
-          break;
-        case CS_RRCURVETO:
-          this.rrcurveto(state, glyphId);
-          break;
-        case CS_RCURVELINE:
-          this.rcurveline(state, glyphId);
-          break;
-        case CS_RLINECURVE:
-          this.rlinecurve(state, glyphId);
-          break;
-        case CS_HHCURVETO:
-        case CS_VVCURVETO:
-          this.hhvvcurveto(state, glyphId, b0 === CS_HHCURVETO);
-          break;
-        case CS_HVCURVETO:
-        case CS_VHCURVETO:
-          this.hvvhcurveto(state, glyphId, b0 === CS_HVCURVETO);
-          break;
-
-        case CS_CALLSUBR:
-        case CS_CALLGSUBR: {
-          const subrs = b0 === CS_CALLSUBR ? priv.subrs : this.globalSubrs;
-          const bias = b0 === CS_CALLSUBR ? priv.subrBias : subrBias(this.globalSubrs.count);
-          const selector = this.popNumber(state, glyphId);
-          if (subrs === null || !Number.isInteger(selector)) {
-            throw new CffCharStringError(`CFF glyph ${glyphId} calls a subroutine that does not exist.`);
-          }
-          const subrIndex = selector + bias;
-          if (subrIndex < 0 || subrIndex >= subrs.count) {
-            throw new CffCharStringError(`CFF glyph ${glyphId} calls subroutine ${subrIndex} of ${subrs.count}.`);
-          }
-          if (frames.length > CFF_MAX_SUBR_DEPTH) {
-            throw new CffCharStringError(
-              `CFF glyph ${glyphId} nests subroutines deeper than ${CFF_MAX_SUBR_DEPTH}.`
-            );
-          }
-          const subr = indexEntry(data, subrs, subrIndex);
-          frames.push({ ip: subr.start, end: subr.end });
-          break;
+        frames.pop();
+        return;
+      case CS_ESCAPE:
+        if (frame.ip >= frame.end) {
+          throw new CffCharStringError(`CFF glyph ${glyphId} ends inside an escape operator.`);
         }
-
-        case CS_RETURN:
-          if (frames.length === 1) {
-            throw new CffCharStringError(`CFF glyph ${glyphId} executes return outside a subroutine.`);
-          }
-          frames.pop();
-          break;
-
-        case CS_ENDCHAR:
-          return this.endChar(state, glyphId, allowSeac, widthOf);
-
-        case CS_ESCAPE: {
-          if (frame.ip >= frame.end) {
-            throw new CffCharStringError(`CFF glyph ${glyphId} ends inside an escape operator.`);
-          }
-          this.escapeOperator(state, glyphId, data[frame.ip++]);
-          break;
-        }
-
-        default:
+        this.escapeOperator(state, glyphId, this.data[frame.ip++]);
+        return;
+      default:
+        if (!this.pathOperator(b0, state, glyphId)) {
           throw new CffCharStringError(`CFF glyph ${glyphId} uses the reserved operator ${b0}.`);
-      }
+        }
+    }
+  }
+
+  private hintMask(state: StackState, frame: Frame, glyphId: number): void {
+    this.stemHints(state, glyphId, true);
+    const maskBytes = Math.ceil(state.nStems / BITS_PER_BYTE);
+    if (frame.ip + maskBytes > frame.end) {
+      throw new CffCharStringError(`CFF glyph ${glyphId} has a hint mask that runs past its charstring.`);
+    }
+    frame.ip += maskBytes;
+  }
+
+  private callSubroutine(
+    state: StackState,
+    frames: Frame[],
+    glyphId: number,
+    subrs: CffIndex | null,
+    bias: number
+  ): void {
+    const selector = this.popNumber(state, glyphId);
+    if (subrs === null || !Number.isInteger(selector)) {
+      throw new CffCharStringError(`CFF glyph ${glyphId} calls a subroutine that does not exist.`);
+    }
+    const subrIndex = selector + bias;
+    if (subrIndex < 0 || subrIndex >= subrs.count) {
+      throw new CffCharStringError(`CFF glyph ${glyphId} calls subroutine ${subrIndex} of ${subrs.count}.`);
+    }
+    if (frames.length > CFF_MAX_SUBR_DEPTH) {
+      throw new CffCharStringError(`CFF glyph ${glyphId} nests subroutines deeper than ${CFF_MAX_SUBR_DEPTH}.`);
+    }
+    const subr = indexEntry(this.data, subrs, subrIndex);
+    frames.push({ ip: subr.start, end: subr.end });
+  }
+
+  /** Executes a moveto, lineto or curveto operator. Returns false when `b0` is none of them. */
+  private pathOperator(b0: number, state: StackState, glyphId: number): boolean {
+    switch (b0) {
+      case CS_RMOVETO:
+        this.moveTo(state, glyphId, 2, (a) => [a[0], a[1]]);
+        return true;
+      case CS_HMOVETO:
+        this.moveTo(state, glyphId, 1, (a) => [a[0], 0]);
+        return true;
+      case CS_VMOVETO:
+        this.moveTo(state, glyphId, 1, (a) => [0, a[0]]);
+        return true;
+      case CS_RLINETO:
+        this.rlineto(state, glyphId);
+        return true;
+      case CS_HLINETO:
+      case CS_VLINETO:
+        this.hvlineto(state, glyphId, b0 === CS_HLINETO);
+        return true;
+      case CS_RRCURVETO:
+        this.rrcurveto(state, glyphId);
+        return true;
+      case CS_RCURVELINE:
+        this.rcurveline(state, glyphId);
+        return true;
+      case CS_RLINECURVE:
+        this.rlinecurve(state, glyphId);
+        return true;
+      case CS_HHCURVETO:
+      case CS_VVCURVETO:
+        this.hhvvcurveto(state, glyphId, b0 === CS_HHCURVETO);
+        return true;
+      case CS_HVCURVETO:
+      case CS_VHCURVETO:
+        this.hvvhcurveto(state, glyphId, b0 === CS_HVCURVETO);
+        return true;
+      default:
+        return false;
     }
   }
 
@@ -1077,16 +1141,12 @@ export class CffFont {
     a.length = 0;
   }
 
-  private endChar(
-    state: StackState,
-    glyphId: number,
-    allowSeac: boolean,
-    widthOf: () => number
-  ): RunResult {
+  private endChar(state: StackState, glyphId: number, allowSeac: boolean, privateData: PrivateData): RunResult {
     this.takeWidth(state, glyphId, [0, SEAC_ARGUMENTS], 'endchar');
     this.closeContour(state);
+    const width = state.widthDelta === null ? privateData.defaultWidthX : privateData.nominalWidthX + state.widthDelta;
     if (state.stack.length === 0) {
-      return { width: widthOf(), contours: state.contours };
+      return { width, contours: state.contours };
     }
     if (!allowSeac) {
       throw new CffCharStringError(`CFF glyph ${glyphId} nests a seac accent inside a seac component.`);
@@ -1099,23 +1159,8 @@ export class CffFont {
     }
     const base = this.run(this.glyphForStandardCode(bchar), false);
     const accent = this.run(this.glyphForStandardCode(achar), false);
-    const shifted = accent.contours.map(
-      (contour): CffContour => ({
-        start: { x: contour.start.x + adx, y: contour.start.y + ady },
-        segments: contour.segments.map((segment): CffSegment => {
-          if (segment.kind === 'line') {
-            return { kind: 'line', to: { x: segment.to.x + adx, y: segment.to.y + ady } };
-          }
-          return {
-            kind: 'curve',
-            c1: { x: segment.c1.x + adx, y: segment.c1.y + ady },
-            c2: { x: segment.c2.x + adx, y: segment.c2.y + ady },
-            to: { x: segment.to.x + adx, y: segment.to.y + ady },
-          };
-        }),
-      })
-    );
-    return { width: widthOf(), contours: [...base.contours, ...shifted] };
+    const shifted = accent.contours.map((contour) => translateContour(contour, adx, ady));
+    return { width, contours: [...base.contours, ...shifted] };
   }
 
   private binary(state: StackState, glyphId: number, op: (a: number, b: number) => number): void {
@@ -1320,7 +1365,7 @@ export function parseCff(data: Buffer): CffFont {
   }
 }
 
-function parseCffUnchecked(data: Buffer): CffFont {
+function validateCffHeader(data: Buffer): number {
   if (data.length < HEADER_MIN_BYTES) {
     throw new CffFormatError('CFF table is shorter than its 4-byte header.');
   }
@@ -1338,6 +1383,55 @@ function parseCffUnchecked(data: Buffer): CffFont {
   if (headerOffSize < INDEX_MIN_OFFSET_SIZE || headerOffSize > INDEX_MAX_OFFSET_SIZE) {
     throw new CffFormatError(`CFF header offSize ${headerOffSize} must be 1 to 4.`);
   }
+  return hdrSize;
+}
+
+/** Returns the Private DICT data a font DICT (or the Top DICT) refers to; absent references mean empty defaults. */
+function readPrivateFor(data: Buffer, dict: DictMap, what: string, cache: Map<string, PrivateData>): PrivateData {
+  const reference = privateReference(dict, what);
+  if (reference === null) return EMPTY_PRIVATE;
+  const key = `${reference.offset}:${reference.size}`;
+  let privateData = cache.get(key);
+  if (privateData === undefined) {
+    privateData = readPrivate(data, reference.size, reference.offset, what);
+    cache.set(key, privateData);
+  }
+  return privateData;
+}
+
+function readCidFontDicts(
+  data: Buffer,
+  topDict: DictMap,
+  topMatrix: CffMatrix | null,
+  numGlyphs: number
+): { fontDicts: FontDictInfo[]; fdSelect: Uint8Array } {
+  if (topDict.get(OP_ROS)?.length !== ROS_OPERANDS) {
+    throw new CffFormatError('CFF ROS operator needs three operands.');
+  }
+  const fdArrayOffset = dictInteger(topDict, OP_FD_ARRAY, 'Top DICT');
+  const fdSelectOffset = dictInteger(topDict, OP_FD_SELECT, 'Top DICT');
+  if (fdArrayOffset === undefined || fdSelectOffset === undefined) {
+    throw new CffFormatError('A CID-keyed CFF font needs both FDArray and FDSelect.');
+  }
+  const fdArray = readIndex(data, fdArrayOffset, 'FDArray');
+  if (fdArray.count === 0 || fdArray.count > MAX_FONT_DICTS) {
+    throw new CffFormatError(`CFF FDArray holds ${fdArray.count} font DICTs.`);
+  }
+  const privateCache = new Map<string, PrivateData>();
+  const fontDicts: FontDictInfo[] = [];
+  for (let i = 0; i < fdArray.count; i++) {
+    const what = `font DICT ${i}`;
+    const fdDict = parseDict(data, indexEntry(data, fdArray, i), what);
+    const fdMatrix = dictMatrix(fdDict, what);
+    let matrix: CffMatrix | null = fdMatrix ?? topMatrix;
+    if (fdMatrix !== null && topMatrix !== null) matrix = composeMatrices(topMatrix, fdMatrix);
+    fontDicts.push({ privateData: readPrivateFor(data, fdDict, what, privateCache), matrix });
+  }
+  return { fontDicts, fdSelect: readFdSelect(data, fdSelectOffset, numGlyphs, fontDicts.length) };
+}
+
+function parseCffUnchecked(data: Buffer): CffFont {
+  const hdrSize = validateCffHeader(data);
 
   const nameIndex = readIndex(data, hdrSize, 'Name');
   const topDictIndex = readIndex(data, nameIndex.end, 'Top DICT');
@@ -1362,55 +1456,15 @@ function parseCffUnchecked(data: Buffer): CffFont {
     throw new CffFormatError(`CFF CharStrings INDEX holds ${charStrings.count} glyphs.`);
   }
 
-  const charsetOffset = dictInteger(topDict, OP_CHARSET, 'Top DICT') ?? 0;
-  const charset = readCharset(data, charsetOffset, charStrings.count);
-
+  const charset = readCharset(data, dictInteger(topDict, OP_CHARSET, 'Top DICT') ?? CHARSET_ISO_ADOBE, charStrings.count);
   const isCidKeyed = topDict.has(OP_ROS);
   const topMatrix = dictMatrix(topDict, 'Top DICT');
-  const fontDicts: FontDictInfo[] = [];
-  let fdSelect: Uint8Array | null = null;
 
   if (isCidKeyed) {
-    if (topDict.get(OP_ROS)?.length !== 3) {
-      throw new CffFormatError('CFF ROS operator needs three operands.');
-    }
-    const fdArrayOffset = dictInteger(topDict, OP_FD_ARRAY, 'Top DICT');
-    const fdSelectOffset = dictInteger(topDict, OP_FD_SELECT, 'Top DICT');
-    if (fdArrayOffset === undefined || fdSelectOffset === undefined) {
-      throw new CffFormatError('A CID-keyed CFF font needs both FDArray and FDSelect.');
-    }
-    const fdArray = readIndex(data, fdArrayOffset, 'FDArray');
-    if (fdArray.count === 0 || fdArray.count > MAX_FONT_DICTS) {
-      throw new CffFormatError(`CFF FDArray holds ${fdArray.count} font DICTs.`);
-    }
-    const privateCache = new Map<string, PrivateData>();
-    for (let i = 0; i < fdArray.count; i++) {
-      const what = `font DICT ${i}`;
-      const fdDict = parseDict(data, indexEntry(data, fdArray, i), what);
-      const reference = privateReference(fdDict, what);
-      let privateData = EMPTY_PRIVATE;
-      if (reference !== null) {
-        const key = `${reference.offset}:${reference.size}`;
-        const cached = privateCache.get(key);
-        if (cached === undefined) {
-          privateData = readPrivate(data, reference.size, reference.offset, what);
-          privateCache.set(key, privateData);
-        } else {
-          privateData = cached;
-        }
-      }
-      const fdMatrix = dictMatrix(fdDict, what);
-      let matrix: CffMatrix | null = fdMatrix ?? topMatrix;
-      if (fdMatrix !== null && topMatrix !== null) matrix = composeMatrices(topMatrix, fdMatrix);
-      fontDicts.push({ privateData, matrix });
-    }
-    fdSelect = readFdSelect(data, fdSelectOffset, charStrings.count, fontDicts.length);
-  } else {
-    const reference = privateReference(topDict, 'Top DICT');
-    const privateData =
-      reference === null ? EMPTY_PRIVATE : readPrivate(data, reference.size, reference.offset, 'Top DICT');
-    fontDicts.push({ privateData, matrix: topMatrix });
+    const { fontDicts, fdSelect } = readCidFontDicts(data, topDict, topMatrix, charStrings.count);
+    return new CffFont(data, charStrings, globalSubrs, fontDicts, fdSelect, charset, true);
   }
-
-  return new CffFont(data, charStrings, globalSubrs, fontDicts, fdSelect, charset, isCidKeyed);
+  const privateData = readPrivateFor(data, topDict, 'Top DICT', new Map());
+  const fontDicts: FontDictInfo[] = [{ privateData, matrix: topMatrix }];
+  return new CffFont(data, charStrings, globalSubrs, fontDicts, null, charset, false);
 }

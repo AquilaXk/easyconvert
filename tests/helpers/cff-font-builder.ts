@@ -107,7 +107,7 @@ const FIXED_INT_OPERAND = 29;
 
 /** Standard string id of an ASCII character (space is SID 1 ... asciitilde is SID 95). */
 export function sidForAscii(char: string): number {
-  const code = char.charCodeAt(0);
+  const code = char.codePointAt(0) ?? Number.NaN;
   if (code < 32 || code > 126) throw new Error(`no standard SID for ${char}`);
   return code - 31;
 }
@@ -264,7 +264,7 @@ export function buildCffWithLayout(spec: CffSpec): { cff: Buffer; layout: CffLay
     } else {
       const ranges: Array<[number, number]> = [];
       fdOfGlyph.forEach((fd, g) => {
-        if (ranges.length === 0 || ranges[ranges.length - 1][1] !== fd) ranges.push([g, fd]);
+        if (ranges.length === 0 || ranges.at(-1)?.[1] !== fd) ranges.push([g, fd]);
       });
       fdSelect = Buffer.alloc(3 + ranges.length * 3 + 2);
       fdSelect[0] = 3;

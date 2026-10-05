@@ -634,7 +634,7 @@ describe('CFF to TrueType: outlines are converted, not replaced by placeholder g
     // head: 32-bit loca offsets, loca sized for numGlyphs + 1 entries, box covering all glyphs.
     const head = tables.get('head')!;
     expect(head.readInt16BE(HEAD_INDEX_TO_LOC_FORMAT_OFFSET)).toBe(1);
-    expect(tables.get('loca')!.length).toBe((numGlyphs + 1) * 4);
+    expect(tables.get('loca')!).toHaveLength((numGlyphs + 1) * 4);
     const glyphs = Array.from({ length: numGlyphs }, (_, g) => readGlyf(tables, g));
     const present = glyphs.filter((g): g is TtGlyph => g !== null);
     expect([
@@ -651,7 +651,7 @@ describe('CFF to TrueType: outlines are converted, not replaced by placeholder g
 
     // maxp version 1.0 with counts that describe the real glyphs.
     const maxp = tables.get('maxp')!;
-    expect(maxp.length).toBe(32);
+    expect(maxp).toHaveLength(32);
     expect(maxp.readUInt32BE(0)).toBe(0x00010000);
     expect(maxp.readUInt16BE(4)).toBe(numGlyphs);
     expect(maxp.readUInt16BE(6)).toBe(Math.max(...present.map((g) => g.contours.flat().length)));
@@ -669,7 +669,7 @@ describe('CFF to TrueType: outlines are converted, not replaced by placeholder g
       const glyph = glyphs[g];
       expect(hmtx.readInt16BE(g * 4 + 2)).toBe(glyph === null ? 0 : glyph.bbox[0]);
     }
-    expect(hmtx.length).toBe(metrics * 4 + (numGlyphs - metrics) * 2);
+    expect(hmtx).toHaveLength(metrics * 4 + (numGlyphs - metrics) * 2);
     expect(hhea.readUInt16BE(10)).toBe(Math.max(...BASIC_FIXTURES.map((f) => f.advance), 500));
 
     // Identity tables travel unchanged.
@@ -677,7 +677,7 @@ describe('CFF to TrueType: outlines are converted, not replaced by placeholder g
       expect(tables.get(tag)!.equals(input.get(tag)!), tag).toBe(true);
     }
     // The glyphs are not the old placeholders (a 700-unit square or the fixed triangle).
-    expect(glyphs[2]!.contours.length).toBe(2);
+    expect(glyphs[2]!.contours).toHaveLength(2);
     expect(glyphs[1]!.bbox).toEqual([100, 0, 500, 700]);
   });
 
@@ -993,7 +993,7 @@ describe.skipIf(!HAS_FREETYPE)('CFF to TrueType: FreeType renders the output lik
         const char = String.fromCodePoint(fixture.codePoint);
         const before = renderGlyph(otfFile, char);
         const after = renderGlyph(ttfFile, char);
-        expect(after.length).toBe(before.length);
+        expect(after).toHaveLength(before.length);
         const inkBefore = before.filter((v) => v < INK_THRESHOLD).length;
         expect(inkBefore, `${fixture.name}: input renders ink`).toBeGreaterThan(100);
         let union = 0;
