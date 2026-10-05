@@ -30,6 +30,8 @@ import { oracleTest } from './helpers/oracle-test';
 const UTF8_BOM = [0xef, 0xbb, 0xbf];
 const LARGE_FILE_BYTES = 150 * 1024 * 1024;
 const STREAM_CHUNK_BYTES = 4 * 1024 * 1024;
+/** Generous bound for streaming 4 MiB of quoted CR-only records; a quadratic line count takes tens of seconds. */
+const LINEAR_TIME_BOUND_MS = 2000;
 
 const CSV_INPUT =
   'name,formula,note\r\n"Kim, Min",=SUM(A1:A2),"says ""hi"""\r\n이름,-5,"line1\nline2"\r\n"Tab\there",@cmd,+1.5e3\r\n';
@@ -212,7 +214,10 @@ describe('streamed CSV <-> TSV matches the server parser', () => {
     expect(crlfOut.toString('utf-8')).toBe('a\tb\r\n"x\ny"\t1\r\nz\t2');
     // A CR file: a bare LF is data.
     const cr = 'a\tb\rx\t1\ry\nz\t2\r';
-    await expectServerParity(cr, 'tsv', 'csv', everyCut(Buffer.byteLength(cr)));
+    const crOut = await expectServerParity(cr, 'tsv', 'csv', everyCut(Buffer.byteLength(cr)));
+    // Hand-written bytes and an independent reader, so a wrong line-break guess is caught, not mirrored.
+    expect(crOut.toString('utf-8')).toBe('\uFEFFa,b\r\nx,1\r\n"y\nz",2');
+    expect(pythonRows(crOut, ',')).toEqual([['a', 'b'], ['x', '1'], ['y\nz', '2']]);
   });
 
   it('accepts whitespace between a closing quote and the delimiter or line break, like the server', async () => {
@@ -238,11 +243,34 @@ describe('streamed CSV <-> TSV matches the server parser', () => {
       expect(server).toBeInstanceOf(DataParseError);
       for (const cuts of everyCut(bytes.byteLength)) {
         const streamed = await rejection(convertStreamed(bytes, 'csv', 'tsv', {}, cuts));
-        const describe = (err: Error) => [err.constructor.name, err.message, (err as DataParseError).row, (err as DataParseError).line];
-        expect({ input, cuts, error: describe(streamed) }).toEqual({ input, cuts, error: describe(server) });
+        const errorSummary = (err: Error) => [err.constructor.name, err.message, (err as DataParseError).row, (err as DataParseError).line];
+        expect({ input, cuts, error: errorSummary(streamed) }).toEqual({ input, cuts, error: errorSummary(server) });
       }
     }
   });
+
+  it('ends a header-only output with a record separator, like the server, at every cut point', async () => {
+    for (const [input, src, tgt, expected] of [
+      ['a,b\n', 'csv', 'tsv', 'a\tb\r\n'],
+      ['a,b', 'csv', 'tsv', 'a\tb\r\n'],
+      ['a\tb\r\n\r\n', 'tsv', 'csv', '\uFEFFa,b\r\n'],
+    ] as const) {
+      const server = await expectServerParity(input, src, tgt, everyCut(Buffer.byteLength(input)));
+      expect(server.toString('utf-8')).toBe(expected);
+    }
+  });
+
+  it('records the line of quoted fields in linear time', async () => {
+    // A CR-only file holds no LF, so every quoted field asks for the line of a position with no LF after it.
+    const record = '"a","b"\r';
+    const input = new TextEncoder().encode(`h1,h2\r${record.repeat(Math.floor((4 * 1024 * 1024) / record.length))}`);
+    const transformer = resolveChunkTransformer('csv', 'tsv', { delimiter: ',' });
+    const started = performance.now();
+    const out = transformer(input, 0, input.byteLength) as Uint8Array;
+    const elapsedMs = performance.now() - started;
+    expect(out.byteLength).toBeGreaterThan(input.byteLength / 2);
+    expect(elapsedMs).toBeLessThan(LINEAR_TIME_BOUND_MS);
+  }, 120_000);
 
   it('refuses to buffer a delimiter sample beyond its cap', async () => {
     const transformer = resolveChunkTransformer('csv', 'tsv', {});

@@ -42,13 +42,7 @@ import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlTo
 import { assertToml10Syntax } from './data-toml';
 import { assertConversionOptionsObject } from './options-guard';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
-import {
-  DELIMITER_CANDIDATES,
-  detectDelimiter,
-  guessLineBreak,
-  nominalDelimiter,
-  renameDuplicateHeaders,
-} from './delimited-detect';
+import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords } from './delimited-detect';
 
 export { encodeParquet, decodeParquet };
 
@@ -368,8 +362,6 @@ function decodeDelimitedText(bytes: Uint8Array, requestedEncoding?: string): str
 // Delimited text: delimiter detection and parsing
 // ---------------------------------------------------------------------------
 
-/** Papa counts quote-error rows from 0 over every line, blank ones included; our rows are 1-based. */
-const QUOTE_ERROR_ROW_OFFSET = 1;
 
 interface DelimitedTable {
   fields: string[];
@@ -410,66 +402,14 @@ function assertDataOptions(options: unknown): asserts options is ConversionOptio
   }
 }
 
-function delimitedParseError(error: Papa.ParseError, text: string, src: string): DataParseError {
-  const row = typeof error.row === 'number' ? error.row + QUOTE_ERROR_ROW_OFFSET : undefined;
-  const line = typeof error.index === 'number' ? positionOf(text, error.index).line : undefined;
-  const where = [row !== undefined ? `row ${row}` : '', line !== undefined ? `line ${line}` : ''].filter(Boolean).join(', ');
-  return new DataParseError(
-    `Failed to parse ${src.toUpperCase()}: ${error.message}${where ? ` (${where})` : ''}.`,
-    { row, line }
-  );
-}
-
-function isBlankRow(row: readonly string[]): boolean {
-  return row.length === 1 && row[0] === '';
-}
-
-/** The first record whose field count differs from the header's, numbered over every line like quote errors. */
-function firstFieldMismatch(rows: readonly string[][], src: string): DataParseError | null {
-  let width: number | null = null;
-  for (let index = 0; index < rows.length; index++) {
-    const row = rows[index];
-    if (isBlankRow(row)) continue;
-    if (width === null) {
-      width = row.length;
-    } else if (row.length !== width) {
-      const amount = row.length > width ? 'many' : 'few';
-      const rowNumber = index + 1;
-      return new DataParseError(
-        `Failed to parse ${src.toUpperCase()}: Too ${amount} fields: expected ${width} fields but parsed ${row.length} (row ${rowNumber}).`,
-        { row: rowNumber }
-      );
-    }
-  }
-  return null;
-}
-
 /**
- * Decodes and parses delimited text with a header record; any parse error fails closed. Rows are
- * parsed as arrays (on the line break guessLineBreak picks, as the browser stream does) and keyed
- * with own properties, so a column named __proto__ or constructor keeps its values; duplicate
- * header names are renamed (a, a_1, ...) and blank lines skipped.
+ * Decodes and parses delimited text with a header record (parseDelimitedRecords, shared with the
+ * browser paths); any parse error fails closed.
  */
 function parseDelimitedTable(inputBuffer: Buffer, src: string, options: ConversionOptions): DelimitedTable {
   const text = decodeDelimitedText(inputBuffer, options.encoding);
   const delimiter = resolveDelimiter(text, src, options.delimiter);
-  const parsed = Papa.parse<string[]>(text, { skipEmptyLines: false, delimiter, newline: guessLineBreak(text) });
-  // Quote errors come first, so on a tie the quote problem is the one reported.
-  const errors = parsed.errors.map((error) => delimitedParseError(error, text, src));
-  const mismatch = firstFieldMismatch(parsed.data, src);
-  if (mismatch) errors.push(mismatch);
-  if (errors.length > 0) {
-    errors.sort((a, b) => (a.row ?? Number.MAX_SAFE_INTEGER) - (b.row ?? Number.MAX_SAFE_INTEGER));
-    throw errors[0];
-  }
-  const rows = parsed.data.filter((row) => !isBlankRow(row));
-  if (rows.length === 0) return { fields: [], records: [], text, delimiter };
-  const fields = renameDuplicateHeaders(rows[0]);
-  const records = rows.slice(1).map((row) => {
-    const record: DataObject = {};
-    fields.forEach((field, index) => setOwn(record, field, row[index]));
-    return record;
-  });
+  const { fields, records } = parseDelimitedRecords(text, delimiter, src);
   return { fields, records, text, delimiter };
 }
 

@@ -126,11 +126,14 @@ export function createDelimitedStreamTransformer(
   let carry = '';
   /** Line (counted by LF, as the server's positions are) where the current quoted field's text starts. */
   let quotedFieldLine = 1;
-  // Line counting over the current chunk: lines before `lineScan` are already counted in `line`.
+  // Line counting over the current chunk: `line` is the line at every position up to and including
+  // `nextLineFeed`, the next LF not yet counted (the chunk length when there is none).
   let chunkText = '';
-  let lineScan = 0;
+  let nextLineFeed = 0;
   let line = 1;
   let wroteRecord = false;
+  /** Whether a record after the header was written; a header-only output ends with a separator. */
+  let wroteDataRecord = false;
   let finished = false;
 
   const mismatchError = (reason: string, row: number): DataParseError =>
@@ -144,14 +147,22 @@ export function createDelimitedStreamTransformer(
     });
   };
 
-  /** Line number at a position of the current chunk; positions must not go backwards within a chunk. */
+  /** The next LF at or after `from` in the current chunk, or the chunk length when there is none. */
+  const findLineFeed = (from: number): number => {
+    const found = chunkText.indexOf(LINE_FEED, from);
+    return found === -1 ? chunkText.length : found;
+  };
+
+  /**
+   * Line number at a position of the current chunk. Each LF is found once per chunk (the cached
+   * `nextLineFeed` is only advanced past positions already asked for), so counting stays linear
+   * however many quoted fields ask; positions must not go backwards within a chunk.
+   */
   const lineAt = (index: number): number => {
-    let next = chunkText.indexOf(LINE_FEED, lineScan);
-    while (next !== -1 && next < index) {
+    while (nextLineFeed < index) {
       line++;
-      next = chunkText.indexOf(LINE_FEED, next + 1);
+      nextLineFeed = findLineFeed(nextLineFeed + 1);
     }
-    lineScan = Math.max(lineScan, index);
     return line;
   };
 
@@ -195,7 +206,10 @@ export function createDelimitedStreamTransformer(
       const amount = fields.length > headerFieldCount ? 'many' : 'few';
       throw mismatchError(`Too ${amount} fields: expected ${headerFieldCount} fields but parsed ${fields.length}`, rawRows);
     }
-    if (wroteRecord) out.push(DELIMITED_RECORD_SEPARATOR);
+    if (wroteRecord) {
+      out.push(DELIMITED_RECORD_SEPARATOR);
+      wroteDataRecord = true;
+    }
     out.push(written.map((value) => writeField(value, written.length)).join(outDelimiter));
     wroteRecord = true;
   };
@@ -316,6 +330,8 @@ export function createDelimitedStreamTransformer(
       throw quoteError('Trailing quote on quoted field is malformed');
     }
     if (state !== 'fieldStart' || record.length > 0) endRecord(out);
+    // The server writes a header with no records as one terminated line.
+    if (wroteRecord && !wroteDataRecord) out.push(DELIMITED_RECORD_SEPARATOR);
   };
 
   /** Parses one decoded piece, holding back a CR that may pair with an LF in the next chunk. */
@@ -327,7 +343,7 @@ export function createDelimitedStreamTransformer(
       piece = piece.slice(0, -1);
     }
     chunkText = piece;
-    lineScan = 0;
+    nextLineFeed = findLineFeed(0);
     parse(piece, out);
     lineAt(piece.length);
   };

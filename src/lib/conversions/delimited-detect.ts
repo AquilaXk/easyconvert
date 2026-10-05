@@ -1,9 +1,11 @@
 import Papa from 'papaparse';
+import { DataParseError } from '../types';
+import { positionOf, setOwn, type DataObject } from './data-json';
 
 /**
- * Delimiter detection and header naming for delimited-text input, shared by the server data
- * engine and the browser streaming path so both read a file the same way. Browser-safe: it
- * depends only on papaparse.
+ * Reading delimited-text input (delimiter detection, line-break guess, header naming, records),
+ * shared by the server data engine, the browser streaming path and the pure data module so all
+ * of them read a file the same way. Browser-safe: it depends only on papaparse and data-json.
  */
 
 /** Delimiters tried, in tie-break order, after the source format's own delimiter. */
@@ -113,4 +115,73 @@ export function renameDuplicateHeaders(headers: readonly string[]): string[] {
     used.add(header);
     return name;
   });
+}
+
+/** papaparse counts quote-error rows from 0 over every line, blank ones included; our rows are 1-based. */
+const QUOTE_ERROR_ROW_OFFSET = 1;
+
+function quoteParseError(error: Papa.ParseError, text: string, src: string): DataParseError {
+  const row = typeof error.row === 'number' ? error.row + QUOTE_ERROR_ROW_OFFSET : undefined;
+  const line = typeof error.index === 'number' ? positionOf(text, error.index).line : undefined;
+  const where = [row !== undefined ? `row ${row}` : '', line !== undefined ? `line ${line}` : ''].filter(Boolean).join(', ');
+  return new DataParseError(
+    `Failed to parse ${src.toUpperCase()}: ${error.message}${where ? ` (${where})` : ''}.`,
+    { row, line }
+  );
+}
+
+function isBlankRow(row: readonly string[]): boolean {
+  return row.length === 1 && row[0] === '';
+}
+
+/** The first record whose field count differs from the header's, numbered over every line like quote errors. */
+function firstFieldMismatch(rows: readonly string[][], src: string): DataParseError | null {
+  let width: number | null = null;
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (isBlankRow(row)) continue;
+    if (width === null) {
+      width = row.length;
+    } else if (row.length !== width) {
+      const amount = row.length > width ? 'many' : 'few';
+      const rowNumber = index + 1;
+      return new DataParseError(
+        `Failed to parse ${src.toUpperCase()}: Too ${amount} fields: expected ${width} fields but parsed ${row.length} (row ${rowNumber}).`,
+        { row: rowNumber }
+      );
+    }
+  }
+  return null;
+}
+
+export interface DelimitedRecords {
+  fields: string[];
+  records: DataObject[];
+}
+
+/**
+ * Parses decoded delimited text with a header record. Rows are read as arrays on the line break
+ * guessLineBreak picks (as the browser stream does) and keyed with own properties, so a column
+ * named __proto__ or constructor keeps its values; duplicate header names are renamed (a, a_1,
+ * ...) and blank lines skipped. Any quote or field-count problem throws the DataParseError with
+ * the lowest row (a quote error first on a tie).
+ */
+export function parseDelimitedRecords(text: string, delimiter: string, src: string): DelimitedRecords {
+  const parsed = Papa.parse<string[]>(text, { skipEmptyLines: false, delimiter, newline: guessLineBreak(text) });
+  const errors = parsed.errors.map((error) => quoteParseError(error, text, src));
+  const mismatch = firstFieldMismatch(parsed.data, src);
+  if (mismatch) errors.push(mismatch);
+  if (errors.length > 0) {
+    errors.sort((a, b) => (a.row ?? Number.MAX_SAFE_INTEGER) - (b.row ?? Number.MAX_SAFE_INTEGER));
+    throw errors[0];
+  }
+  const rows = parsed.data.filter((row) => !isBlankRow(row));
+  if (rows.length === 0) return { fields: [], records: [] };
+  const fields = renameDuplicateHeaders(rows[0]);
+  const records = rows.slice(1).map((row) => {
+    const record: DataObject = {};
+    fields.forEach((field, index) => setOwn(record, field, row[index]));
+    return record;
+  });
+  return { fields, records };
 }
