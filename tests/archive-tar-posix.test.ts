@@ -539,10 +539,15 @@ describe('TAR reader: archives produced by GNU tar', () => {
       padTo(local),
       craftHeader({ name: 'first', typeflag: '0', size: 1 }),
       padTo(Buffer.from('1')),
+      // no local header: this second entry must receive the global path record
+      craftHeader({ name: 'second', typeflag: '0', size: 1 }),
+      padTo(Buffer.from('2')),
       END_OF_ARCHIVE,
     ]);
-    expect(run(gnuTar(), ['-tf', '-'], { input: archive }).stdout.toString('utf8').trim()).toBe(KOREAN_NAME);
-    expect(readTarEntries(archive).map((e) => e.filename)).toEqual([KOREAN_NAME]);
+    const expected = [KOREAN_NAME, 'ignored-by-local-override.txt'];
+    const listed = run(gnuTar(), ['--quoting-style=literal', '-tf', '-'], { input: archive }).stdout.toString('utf8');
+    expect(listed.split('\n').filter(Boolean)).toEqual(expected);
+    expect(readTarEntries(archive).map((e) => e.filename)).toEqual(expected);
   });
 
   it('honours GNU long name (L) and long link (K) records', () => {
