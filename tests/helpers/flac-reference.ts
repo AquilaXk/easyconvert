@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getOracleToolPath } from './differential-oracle';
+import { getOracleToolPath, OracleToolMissingError } from './differential-oracle';
 
 /**
  * Independent oracles for FLAC output (RFC 9639): a hand-written structural parser that walks
@@ -554,4 +554,45 @@ export function ffmpegLavfiPcm(
   const out = new Int16Array(raw.length >> 1);
   for (let i = 0; i < out.length; i++) out[i] = raw.readInt16LE(i * 2);
   return out;
+}
+
+const MUSIC_SECONDS = 20;
+const MUSIC_SAMPLE_RATE = 44100;
+const SPEECH_TEXT =
+  'The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump.';
+const NOISE_SEED = 7;
+
+/** Plucked-chord style stereo music with a pink noise floor, from ffmpeg lavfi sources. */
+export function generateMusicStereo(): Int16Array {
+  const note = (freq: number, amp: number, phase: number, period: number, offset: number, decay: number) =>
+    `${amp}*sin(2*PI*${freq}*t+${phase})*exp(-mod(t+${offset},${period})*${decay})`;
+  const left = [
+    note(220, 0.3, 0, 0.5, 0, 3),
+    note(330, 0.2, 0, 0.7, 0.2, 2.5),
+    note(660, 0.12, 0, 0.5, 0, 5),
+    note(1320.5, 0.08, 0, 0.25, 0, 8),
+  ].join('+');
+  const right = [
+    note(220, 0.28, 0.4, 0.5, 0, 3),
+    note(392, 0.22, 0, 0.6, 0.1, 2.5),
+    note(784, 0.1, 0, 0.5, 0, 5),
+  ].join('+');
+  return ffmpegLavfiPcm(`aevalsrc='${left}|${right}':s=${MUSIC_SAMPLE_RATE}:d=${MUSIC_SECONDS}`, {
+    sampleRate: MUSIC_SAMPLE_RATE,
+    channels: 2,
+    extraInputs: [`anoisesrc=d=${MUSIC_SECONDS}:c=pink:a=0.01:r=${MUSIC_SAMPLE_RATE}:seed=${NOISE_SEED}`],
+    filterComplex: '[1:a]pan=stereo|c0=c0|c1=c0[n];[0:a][n]amix=inputs=2:weights=1 1:normalize=0',
+  });
+}
+
+/** Synthesised speech (flite voice) resampled to 44.1 kHz mono; skips when ffmpeg lacks flite. */
+export function generateSpeechMono(): Int16Array {
+  const filters = execFileSync(requireTool('ffmpeg'), ['-hide_banner', '-filters'], {
+    encoding: 'utf-8',
+    timeout: TOOL_TIMEOUT_MS,
+  });
+  if (!/\bflite\b/.test(filters)) {
+    throw new OracleToolMissingError('ffmpeg-flite', 'ffmpeg built without the flite speech source');
+  }
+  return ffmpegLavfiPcm(`flite=text='${SPEECH_TEXT}':voice=kal16`, { sampleRate: MUSIC_SAMPLE_RATE, channels: 1 });
 }

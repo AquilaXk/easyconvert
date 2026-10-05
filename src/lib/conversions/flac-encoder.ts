@@ -137,15 +137,28 @@ const TYPE_CODE_LPC = 32;
 export const FLAC_MAX_LPC_ORDER = 12;
 /** Blocks shorter than this use fixed predictors only; warm-up and coefficients would cost more. */
 const LPC_MIN_BLOCK_SAMPLES = 32;
+/** Prediction sums below this magnitude cannot overflow int32 arithmetic. */
+const INT32_SUM_LIMIT = 2 ** 31;
+const LPC_TAPS_SMALL = 4;
+const LPC_TAPS_MEDIUM = 8;
+const LPC_TAPS_LARGE = 12;
+/**
+ * Fixed predictors are coded for real only when their estimated size is within this factor of
+ * the best LPC estimate: LPC quantisation costs accuracy on very smooth signals, where exact
+ * integer fixed coefficients can win, but far-worse estimates cannot catch up.
+ */
+const FIXED_CANDIDATE_RATIO = 1.1;
+/** Estimates are unreliable near zero residual; below this rate fixed predictors are always tried. */
+const FIXED_ALWAYS_BELOW_BITS_PER_SAMPLE = 0.5;
 const MIN_QLP_PRECISION = 5;
 const MAX_QLP_PRECISION = 15;
 const QLP_PRECISION_FIELD_BITS = 4;
 const QLP_SHIFT_FIELD_BITS = 5;
 const MAX_QLP_SHIFT = 15;
 /** Coefficient precisions tried above the default, stopping at the first that does not help. */
-const QLP_PRECISION_SEARCH_STEPS = 2;
+const QLP_PRECISION_SEARCH_STEPS = 1;
 /** Orders, ranked by estimated bits, that are coded for real and compared. */
-const LPC_EXACT_ORDER_CANDIDATES = 2;
+const LPC_EXACT_ORDER_CANDIDATES = 1;
 const SLOT_LEFT = 0;
 const SLOT_RIGHT = 1;
 const SLOT_MID = 2;
@@ -403,6 +416,10 @@ const partitionMaxima = new Float64Array(PARTITION_SCRATCH_ENTRIES);
 /** Out-parameter of riceEstimate and refineRiceParameter. */
 let chosenRiceParameter = 0;
 
+/** 2^-k for k = 0..30, so estimates multiply instead of divide. */
+const INVERSE_POWERS_OF_TWO = new Float64Array(RICE2_MAX_PARAM + 1);
+for (let k = 0; k <= RICE2_MAX_PARAM; k++) INVERSE_POWERS_OF_TWO[k] = 2 ** -k;
+
 /** Bit width of the largest folded value, i.e. the signed width that holds every residual. */
 function escapeWidth(maxFolded: number): number {
   return maxFolded === 0 ? 0 : 32 - Math.clz32(maxFolded);
@@ -424,8 +441,9 @@ function riceEstimate(sum: number, count: number): number {
   const high = Math.min(RICE2_MAX_PARAM, centre + 1);
   let bestBits = Number.POSITIVE_INFINITY;
   let bestK = 0;
+  const halfCount = count / 2;
   for (let k = low; k <= high; k++) {
-    const quotients = Math.max(0, sum / (1 << k) - count / 2);
+    const quotients = Math.max(0, sum * INVERSE_POWERS_OF_TWO[k] - halfCount);
     const bits = count * (k + 1) + quotients;
     if (bits < bestBits) {
       bestBits = bits;
@@ -492,9 +510,58 @@ function refineRiceParameter(folded: Uint32Array, start: number, end: number, es
 }
 
 /**
+ * Chooses a parameter (or an escape) for every partition of one partition order from the
+ * per-partition sums and maxima in the scratch tree, and totals the residual bits. With
+ * `exact` the parameters are counted against the data; otherwise the estimate is used.
+ */
+function materializePartitions(
+  folded: Uint32Array,
+  blockSize: number,
+  order: number,
+  partitionOrder: number,
+  coding: ResidualCoding,
+  exact: boolean
+): number {
+  const parts = 1 << partitionOrder;
+  const size = blockSize >> partitionOrder;
+  let payloadBits = 0;
+  let maxParam = 0;
+  let index = 0;
+  for (let p = 0; p < parts; p++) {
+    const count = p === 0 ? size - order : size;
+    const end = index + count;
+    let riceBits = riceEstimate(partitionSums[parts + p], count);
+    let k = chosenRiceParameter;
+    if (exact) {
+      riceBits = refineRiceParameter(folded, index, end, k);
+      k = chosenRiceParameter;
+    } else {
+      riceBits = Math.ceil(riceBits);
+    }
+    const width = escapeWidth(partitionMaxima[parts + p]);
+    const escapeBits = ESCAPE_WIDTH_BITS + count * width;
+    if (width <= ESCAPE_MAX_WIDTH && escapeBits < riceBits) {
+      coding.params[p] = ESCAPE_MARK;
+      coding.escapeWidths[p] = width;
+      payloadBits += escapeBits;
+    } else {
+      coding.params[p] = k;
+      payloadBits += riceBits;
+      if (k > maxParam) maxParam = k;
+    }
+    index = end;
+  }
+  coding.method = maxParam > RICE_MAX_PARAM ? 1 : 0;
+  coding.partitionOrder = partitionOrder;
+  const paramBits = coding.method === 0 ? RICE_PARAM_BITS : RICE2_PARAM_BITS;
+  coding.bits = RESIDUAL_HEADER_BITS + parts * paramBits + payloadBits;
+  return coding.bits;
+}
+
+/**
  * Folds `residual[0, n - order)` into `folded`, searches partition orders 0-8 on estimated
- * costs, then fixes the parameters of the winning order exactly (choosing an escape partition
- * where raw residual width is cheaper). Returns the total residual bits.
+ * costs and picks estimated parameters (or escapes) for the winning order. Returns the
+ * estimated residual bits; refineResidual makes them exact once a candidate has won.
  */
 function codeResidual(
   residual: Int32Array,
@@ -557,37 +624,32 @@ function codeResidual(
       bestPo = po;
     }
   }
+  return materializePartitions(folded, blockSize, order, bestPo, coding, false);
+}
 
-  // Exact parameters for the winning order.
-  const parts = 1 << bestPo;
-  const size = blockSize >> bestPo;
-  let payloadBits = 0;
-  let maxParam = 0;
-  index = 0;
+/**
+ * Makes the parameters of an already folded residual exact (nearest-neighbour search on real
+ * quotient counts, escape where raw width is cheaper) at its chosen partition order.
+ * Returns the exact residual bits.
+ */
+function refineResidual(folded: Uint32Array, blockSize: number, order: number, coding: ResidualCoding): number {
+  const partitionOrder = coding.partitionOrder;
+  const parts = 1 << partitionOrder;
+  const size = blockSize >> partitionOrder;
+  let index = 0;
   for (let p = 0; p < parts; p++) {
-    const count = p === 0 ? size - order : size;
-    const end = index + count;
-    riceEstimate(partitionSums[parts + p], count);
-    const riceBits = refineRiceParameter(folded, index, end, chosenRiceParameter);
-    const k = chosenRiceParameter;
-    const width = escapeWidth(partitionMaxima[parts + p]);
-    const escapeBits = ESCAPE_WIDTH_BITS + count * width;
-    if (width <= ESCAPE_MAX_WIDTH && escapeBits < riceBits) {
-      coding.params[p] = ESCAPE_MARK;
-      coding.escapeWidths[p] = width;
-      payloadBits += escapeBits;
-    } else {
-      coding.params[p] = k;
-      payloadBits += riceBits;
-      if (k > maxParam) maxParam = k;
+    const length = p === 0 ? size - order : size;
+    let sum = 0;
+    let max = 0;
+    for (let j = 0; j < length; j++) {
+      const u = folded[index++];
+      sum += u;
+      if (u > max) max = u;
     }
-    index = end;
+    partitionSums[parts + p] = sum;
+    partitionMaxima[parts + p] = max;
   }
-  coding.method = maxParam > RICE_MAX_PARAM ? 1 : 0;
-  coding.partitionOrder = bestPo;
-  const paramBits = coding.method === 0 ? RICE_PARAM_BITS : RICE2_PARAM_BITS;
-  coding.bits = RESIDUAL_HEADER_BITS + parts * paramBits + payloadBits;
-  return coding.bits;
+  return materializePartitions(folded, blockSize, order, partitionOrder, coding, true);
 }
 
 function writeResidual(
@@ -738,6 +800,7 @@ function fixedResidual(x: Int32Array, n: number, order: number, out: Int32Array)
 }
 
 const fixedErrorSums = new Float64Array(MAX_FIXED_ORDER + 1);
+const fixedScratch = new Int32Array(SMALL_BLOCK_SAMPLES);
 
 /** Sums of |residual| for fixed orders 0-4 over samples 4..n-1 in one pass. */
 function fixedErrorSumsLong(x: Int32Array, n: number): void {
@@ -797,15 +860,38 @@ function defaultQlpPrecision(bitsPerSample: number, n: number): number {
   return QLP_PRECISION_LARGE_BLOCK;
 }
 
-/** Windowed autocorrelation for lags 0..maxLag into ws.autoc. */
+/** Windowed autocorrelation for lags 0..maxLag into ws.autoc, four lags per pass. */
 function autocorrelate(ws: EncoderWorkspace, x: Int32Array, n: number, maxLag: number): void {
   const window = ws.windowFor(n);
   const w = ws.windowed;
+  const autoc = ws.autoc;
   for (let i = 0; i < n; i++) w[i] = x[i] * window[i];
-  for (let lag = 0; lag <= maxLag; lag++) {
+  let lag = 0;
+  for (; lag + 3 <= maxLag; lag += 4) {
+    let s0 = 0;
+    let s1 = 0;
+    let s2 = 0;
+    let s3 = 0;
+    for (let i = lag + 3; i < n; i++) {
+      const v = w[i];
+      s0 += v * w[i - lag];
+      s1 += v * w[i - lag - 1];
+      s2 += v * w[i - lag - 2];
+      s3 += v * w[i - lag - 3];
+    }
+    // Terms with i < lag + 3 that the unrolled loop skipped.
+    s0 += w[lag] * w[0] + w[lag + 1] * w[1] + w[lag + 2] * w[2];
+    s1 += w[lag + 1] * w[0] + w[lag + 2] * w[1];
+    s2 += w[lag + 2] * w[0];
+    autoc[lag] = s0;
+    autoc[lag + 1] = s1;
+    autoc[lag + 2] = s2;
+    autoc[lag + 3] = s3;
+  }
+  for (; lag <= maxLag; lag++) {
     let sum = 0;
     for (let i = lag; i < n; i++) sum += w[i] * w[i - lag];
-    ws.autoc[lag] = sum;
+    autoc[lag] = sum;
   }
 }
 
@@ -867,7 +953,75 @@ function quantizeWeights(
     plan.coefs[j] = q;
     ws.quantized[j] = q;
   }
+  for (let j = order; j < FLAC_MAX_LPC_ORDER; j++) plan.coefs[j] = 0;
   return shift;
+}
+
+/**
+ * Residual of a quantised predictor whose sums provably fit int32 (maxAbs * sum|q| < 2^31),
+ * so products can use Math.imul. Coefficients are zero-padded to 4, 8 or 12 taps and the
+ * loop is unrolled to that width.
+ */
+function lpcResidualInt(x: Int32Array, n: number, order: number, c: Int32Array, shift: number, out: Int32Array): void {
+  let taps = LPC_TAPS_LARGE;
+  if (order <= LPC_TAPS_SMALL) taps = LPC_TAPS_SMALL;
+  else if (order <= LPC_TAPS_MEDIUM) taps = LPC_TAPS_MEDIUM;
+  const head = Math.min(n, taps);
+  for (let i = order; i < head; i++) {
+    let sum = 0;
+    for (let j = 0; j < order; j++) sum += Math.imul(c[j], x[i - 1 - j]);
+    out[i - order] = x[i] - (sum >> shift);
+  }
+  const c0 = c[0];
+  const c1 = c[1];
+  const c2 = c[2];
+  const c3 = c[3];
+  if (taps === LPC_TAPS_SMALL) {
+    for (let i = head; i < n; i++) {
+      const sum = Math.imul(c0, x[i - 1]) + Math.imul(c1, x[i - 2]) + Math.imul(c2, x[i - 3]) + Math.imul(c3, x[i - 4]);
+      out[i - order] = x[i] - (sum >> shift);
+    }
+    return;
+  }
+  const c4 = c[4];
+  const c5 = c[5];
+  const c6 = c[6];
+  const c7 = c[7];
+  if (taps === LPC_TAPS_MEDIUM) {
+    for (let i = head; i < n; i++) {
+      const sum =
+        Math.imul(c0, x[i - 1]) +
+        Math.imul(c1, x[i - 2]) +
+        Math.imul(c2, x[i - 3]) +
+        Math.imul(c3, x[i - 4]) +
+        Math.imul(c4, x[i - 5]) +
+        Math.imul(c5, x[i - 6]) +
+        Math.imul(c6, x[i - 7]) +
+        Math.imul(c7, x[i - 8]);
+      out[i - order] = x[i] - (sum >> shift);
+    }
+    return;
+  }
+  const c8 = c[8];
+  const c9 = c[9];
+  const c10 = c[10];
+  const c11 = c[11];
+  for (let i = head; i < n; i++) {
+    const sum =
+      Math.imul(c0, x[i - 1]) +
+      Math.imul(c1, x[i - 2]) +
+      Math.imul(c2, x[i - 3]) +
+      Math.imul(c3, x[i - 4]) +
+      Math.imul(c4, x[i - 5]) +
+      Math.imul(c5, x[i - 6]) +
+      Math.imul(c6, x[i - 7]) +
+      Math.imul(c7, x[i - 8]) +
+      Math.imul(c8, x[i - 9]) +
+      Math.imul(c9, x[i - 10]) +
+      Math.imul(c10, x[i - 11]) +
+      Math.imul(c11, x[i - 12]);
+    out[i - order] = x[i] - (sum >> shift);
+  }
 }
 
 /** Residual of the quantised predictor: x[i] - floor(sum(q[j] * x[i-1-j]) / 2^shift). */
@@ -909,7 +1063,11 @@ function tryLpc(
   for (let j = 0; j < order; j++) weightSum += Math.abs(ws.quantized[j]);
   if (maxAbs * (weightSum * 2 ** -shift + 1) >= MAX_RESIDUAL_MAGNITUDE) return Number.POSITIVE_INFINITY;
 
-  lpcResidual(slot.samples, n, order, ws.quantized, shift, trial.residual);
+  if (maxAbs * weightSum < INT32_SUM_LIMIT) {
+    lpcResidualInt(slot.samples, n, order, trial.coefs, shift, trial.residual);
+  } else {
+    lpcResidual(slot.samples, n, order, ws.quantized, shift, trial.residual);
+  }
   const residualBits = codeResidual(trial.residual, trial.folded, n, order, trial.coding);
   const bits =
     SUBFRAME_HEADER_BITS +
@@ -951,7 +1109,7 @@ function estimatedBitsPerSample(error: number, n: number, wasted: number): numbe
 
 /**
  * Fills ws.orderBits with the estimated size of each usable LPC order (residual plus warm-up
- * and coefficients) and returns the best estimate over those orders and "no prediction".
+ * and coefficients) and returns the lowest of them (Infinity without usable orders).
  */
 function estimateOrderBits(
   ws: EncoderWorkspace,
@@ -961,7 +1119,7 @@ function estimateOrderBits(
   wasted: number
 ): number {
   const basePrecision = defaultQlpPrecision(ws.bitsPerSample, n);
-  let best = n * estimatedBitsPerSample(slot.energy, n, wasted);
+  let best = Number.POSITIVE_INFINITY;
   for (let o = 1; o <= slot.usable; o++) {
     const bits = estimatedBitsPerSample(slot.errors[o - 1], n, wasted) * (n - o) + o * (basePrecision + bps);
     ws.orderBits[o - 1] = bits;
@@ -972,7 +1130,8 @@ function estimateOrderBits(
 
 /** Estimated subframe size of an analysed channel, used to choose a stereo assignment. */
 function estimateChannelBits(ws: EncoderWorkspace, slot: ChannelSlot, n: number, bps: number): number {
-  return SUBFRAME_HEADER_BITS + estimateOrderBits(ws, slot, n, bps, 0);
+  const noPrediction = n * estimatedBitsPerSample(slot.energy, n, 0);
+  return SUBFRAME_HEADER_BITS + Math.min(noPrediction, estimateOrderBits(ws, slot, n, bps, 0));
 }
 
 /** Orders are ranked by estimated bits; the best few are coded for real. */
@@ -1002,7 +1161,9 @@ function planLpc(
     ws.orderBits[order - 1] = Number.POSITIVE_INFINITY;
 
     let bestCost = Number.POSITIVE_INFINITY;
-    const lastPrecision = Math.min(MAX_QLP_PRECISION, basePrecision + QLP_PRECISION_SEARCH_STEPS);
+    // Only the best-ranked order gets the precision search; runners-up use the default.
+    const steps = attempt === 0 ? QLP_PRECISION_SEARCH_STEPS : 0;
+    const lastPrecision = Math.min(MAX_QLP_PRECISION, basePrecision + steps);
     for (let precision = Math.max(MIN_QLP_PRECISION, basePrecision); precision <= lastPrecision; precision++) {
       const cost = tryLpc(ws, slot, n, bps, wasted, maxAbs, order, precision);
       if (cost < bestCost) bestCost = cost;
@@ -1054,9 +1215,27 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
   best.bps = bps;
   best.bits = SUBFRAME_HEADER_BITS + wasted + n * bps;
 
+  const lpcEstimate = slot.usable > 0 ? estimateOrderBits(ws, slot, n, bps, wasted) : Number.POSITIVE_INFINITY;
+  const fixedOrder = chooseFixedOrder(slot.samples, n, bps);
+  const lowRate = lpcEstimate <= n * FIXED_ALWAYS_BELOW_BITS_PER_SAMPLE;
+  if (lowRate || fixedEstimateBits <= FIXED_CANDIDATE_RATIO * lpcEstimate) planFixed(ws, slot, n, bps, wasted, fixedOrder);
+  planLpc(ws, slot, n, bps, wasted, maxAbs);
+
+  const chosen = slot.best;
+  if (chosen.kind === SUBFRAME_FIXED || chosen.kind === SUBFRAME_LPC) {
+    const estimated = chosen.coding.bits;
+    chosen.bits += refineResidual(chosen.folded, n, chosen.order, chosen.coding) - estimated;
+  }
+}
+
+/** Estimated size of the best fixed predictor, left in fixedEstimateBits by chooseFixedOrder. */
+let fixedEstimateBits = 0;
+
+/** Picks the fixed order (0-4) with the smallest residual magnitude and estimates its size. */
+function chooseFixedOrder(x: Int32Array, n: number, bps: number): number {
   const maxOrder = Math.min(MAX_FIXED_ORDER, n - 1);
   if (n <= SMALL_BLOCK_SAMPLES) {
-    fixedErrorSumsShort(x, n, maxOrder, trial.residual);
+    fixedErrorSumsShort(x, n, maxOrder, fixedScratch);
   } else {
     fixedErrorSumsLong(x, n);
   }
@@ -1071,8 +1250,22 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
       order = o;
     }
   }
+  fixedEstimateBits = bestEstimate;
+  return order;
+}
 
-  fixedResidual(x, n, order, trial.residual);
+/** Codes the given fixed predictor order as a candidate subframe. */
+function planFixed(
+  ws: EncoderWorkspace,
+  slot: ChannelSlot,
+  n: number,
+  bps: number,
+  wasted: number,
+  order: number
+): void {
+  const best = slot.best;
+  const trial = ws.trial;
+  fixedResidual(slot.samples, n, order, trial.residual);
   const residualBits = codeResidual(trial.residual, trial.folded, n, order, trial.coding);
   const fixedBits = SUBFRAME_HEADER_BITS + wasted + order * bps + residualBits;
   if (fixedBits < best.bits) {
@@ -1084,8 +1277,6 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
     ws.trial = best;
     slot.best = trial;
   }
-
-  planLpc(ws, slot, n, bps, wasted, maxAbs);
 }
 
 function writeSubframe(writer: FlacBitWriter, plan: SubframePlan, x: Int32Array, n: number): void {
@@ -1316,9 +1507,8 @@ function planStereo(
 
   const firstSlot = ws.slots[STEREO_FIRST_SLOT[assignment]];
   const secondSlot = ws.slots[STEREO_SECOND_SLOT[assignment]];
-  for (const slot of [firstSlot, secondSlot]) {
-    planChannel(ws, slot, n, slot === side ? sideBps : bitsPerSample);
-  }
+  planChannel(ws, firstSlot, n, firstSlot === side ? sideBps : bitsPerSample);
+  planChannel(ws, secondSlot, n, secondSlot === side ? sideBps : bitsPerSample);
   return assignment;
 }
 
