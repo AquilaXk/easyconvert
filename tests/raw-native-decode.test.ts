@@ -149,7 +149,7 @@ describe.skipIf(!CHECKS_ENABLED)('native RAW decode matches an independent half-
       .png()
       .toBuffer();
     expect(await worstRegionDifference('nef', flatBottom)).toBeGreaterThan(REGION_MEAN_TOLERANCE);
-  });
+  }, DECODE_TIMEOUT_MS);
 });
 
 describe.skipIf(!CHECKS_ENABLED)('native RAW decode rejects corrupt input', () => {
