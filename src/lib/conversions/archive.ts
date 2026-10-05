@@ -3554,6 +3554,7 @@ export async function convertArchive(
         },
       });
     } catch (err) {
+      if (err instanceof ArchiveEntryCollisionError) throw err;
       throw new ConversionFailedError(
         `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -3562,6 +3563,7 @@ export async function convertArchive(
     try {
       files = extractTarArchive(effectiveBuffer, options);
     } catch (err) {
+      if (err instanceof ArchiveEntryCollisionError) throw err;
       throw new ConversionFailedError(
         `Failed to extract TAR archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
