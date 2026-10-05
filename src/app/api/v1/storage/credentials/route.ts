@@ -127,6 +127,9 @@ export async function GET(req: NextRequest) {
       credentials: list,
     });
   } catch (err: unknown) {
+    if (err instanceof CredentialsVaultPersistenceError) {
+      return createProblemDetailsResponse(503, err.message, instanceUri);
+    }
     const message = err instanceof Error ? err.message : 'Failed to retrieve credentials';
     return createProblemDetailsResponse(500, message, instanceUri);
   }

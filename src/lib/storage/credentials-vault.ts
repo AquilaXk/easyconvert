@@ -98,15 +98,20 @@ interface StoredCredentialEnvelope {
 const VAULT_PREFIX = 'vault:cred:';
 
 /**
- * Credentials could not be written to the shared store. They are not kept in process memory
- * instead: a copy that other instances cannot see would pass for saved and then vanish on the
- * next request or restart.
+ * The shared credential store could not be reached. With Redis configured it is the only store:
+ * credentials are not kept in process memory instead (a copy other instances cannot see would pass
+ * for saved and then vanish on the next request or restart), and a read, list or delete never
+ * falls back to such a copy or reports success it could not confirm.
  */
 export class CredentialsVaultPersistenceError extends Error {
   readonly code = 'CREDENTIALS_VAULT_UNAVAILABLE';
 
-  constructor(options?: { cause?: unknown }) {
-    super('Credential storage is unavailable; the credentials were not saved.');
+  constructor(options?: { cause?: unknown; saving?: boolean }) {
+    super(
+      options?.saving === false
+        ? 'Credential storage is unavailable; the request was not completed.'
+        : 'Credential storage is unavailable; the credentials were not saved.'
+    );
     this.name = 'CredentialsVaultPersistenceError';
     if (options?.cause !== undefined) {
       this.cause = options.cause;
@@ -144,32 +149,21 @@ function getVaultMasterKey(): Buffer {
 export class CredentialsVault {
   private readonly inMemoryStore = new Map<string, StoredCredentialEnvelope>();
   private readonly redisClient: Redis | null = null;
-  private redisConnected = false;
 
   constructor(redisClient?: Redis) {
     if (redisClient) {
       this.redisClient = redisClient;
-      this.redisConnected = true;
     } else if (process.env.REDIS_URL) {
-      try {
-        const client = new Redis(process.env.REDIS_URL, {
-          lazyConnect: true,
-          maxRetriesPerRequest: 1,
-          enableOfflineQueue: false,
-        });
-        client.on('connect', () => {
-          this.redisConnected = true;
-        });
-        client.on('error', () => {
-          this.redisConnected = false;
-        });
-        client.connect().catch(() => {
-          this.redisConnected = false;
-        });
-        this.redisClient = client;
-      } catch {
-        this.redisConnected = false;
-      }
+      const client = new Redis(process.env.REDIS_URL, {
+        lazyConnect: true,
+        maxRetriesPerRequest: 1,
+        enableOfflineQueue: false,
+      });
+      // Failures surface on the operation that needs Redis (as a CredentialsVaultPersistenceError);
+      // the listener only keeps a connection error from becoming an unhandled event.
+      client.on('error', () => undefined);
+      client.connect().catch(() => undefined);
+      this.redisClient = client;
     }
   }
 
@@ -237,6 +231,17 @@ export class CredentialsVault {
     return id;
   }
 
+  /** The stored envelope, or null when none exists; an unreachable or unreadable store is a typed error. */
+  private async readEnvelope(redis: Redis, credentialRef: string): Promise<StoredCredentialEnvelope | null> {
+    try {
+      const serialized = await redis.get(`${VAULT_PREFIX}${credentialRef}`);
+      return serialized ? (JSON.parse(serialized) as StoredCredentialEnvelope) : null;
+    } catch (err) {
+      console.error('[CredentialsVault] Redis read failed:', err);
+      throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
+    }
+  }
+
   /**
    * Retrieves and decrypts customer storage credentials by reference.
    * Optionally enforces tenancy boundary by verifying matching userId.
@@ -246,20 +251,9 @@ export class CredentialsVault {
       return null;
     }
 
-    let envelope: StoredCredentialEnvelope | null = null;
-
-    if (this.redisClient && this.redisConnected) {
-      try {
-        const serialized = await this.redisClient.get(`${VAULT_PREFIX}${credentialRef}`);
-        if (serialized) {
-          envelope = JSON.parse(serialized) as StoredCredentialEnvelope;
-        }
-      } catch {
-        // Fall back to in-memory check
-      }
-    }
-
-    envelope ??= this.inMemoryStore.get(credentialRef) || null;
+    const envelope = this.redisClient
+      ? await this.readEnvelope(this.redisClient, credentialRef)
+      : (this.inMemoryStore.get(credentialRef) ?? null);
 
     if (!envelope) {
       return null;
@@ -303,30 +297,23 @@ export class CredentialsVault {
       return false;
     }
 
-    let envelope = this.inMemoryStore.get(credentialRef);
-    if (!envelope && this.redisClient && this.redisConnected) {
-      try {
-        const raw = await this.redisClient.get(`${VAULT_PREFIX}${credentialRef}`);
-        if (raw) {
-          envelope = JSON.parse(raw);
-        }
-      } catch {
-        // ignore
-      }
-    }
+    const envelope = this.redisClient
+      ? await this.readEnvelope(this.redisClient, credentialRef)
+      : this.inMemoryStore.get(credentialRef);
 
     if (envelope && userId && envelope.userId !== userId) {
       return false;
     }
 
-    this.inMemoryStore.delete(credentialRef);
-
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
       try {
         await this.redisClient.del(`${VAULT_PREFIX}${credentialRef}`);
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error('[CredentialsVault] Redis delete failed:', err);
+        throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
       }
+    } else {
+      this.inMemoryStore.delete(credentialRef);
     }
 
     return true;
@@ -341,7 +328,7 @@ export class CredentialsVault {
     const results: CredentialSummary[] = [];
     const now = Date.now();
 
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
       try {
         const keys = await this.redisClient.keys(`${VAULT_PREFIX}*`);
         for (const k of keys) {
@@ -361,8 +348,9 @@ export class CredentialsVault {
           }
         }
         return results;
-      } catch {
-        // Fall back to in-memory store
+      } catch (err) {
+        console.error('[CredentialsVault] Redis list failed:', err);
+        throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
       }
     }
 
