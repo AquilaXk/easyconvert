@@ -23,7 +23,8 @@ import {
  * - Magic byte detection (0xFD2FB528) and skippable frames (0x184D2A50..0x184D2A5F)
  * - Frame header parsing (single segment, window descriptor, dictionary ID, FCS) with a window-size cap
  * - Raw, RLE, and Compressed block decoding (Huffman literals, FSE sequences, repeat offsets)
- * - Compression levels 1-19: LZ77 hash-chain match finding, lazy matching, Huffman/FSE entropy coding
+ * - Compression levels 1-19: hash-chain match finding with lazy matching (levels 1-15) or binary-tree
+ *   optimal parsing (levels 16-19), Huffman/FSE entropy coding
  * - Multi-frame streaming decoding
  * - XXH64 32-bit Content Checksum calculation & verification
  * - Archive bomb protection: 100:1 ratio and 500MB cumulative limit

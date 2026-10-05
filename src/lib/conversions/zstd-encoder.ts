@@ -14,6 +14,7 @@ import {
   estimateHuffmanBits,
   writeHuffmanTableDescription,
 } from './zstd-huffman';
+import { ConversionFailedError } from '../types';
 import { OptimalParser, type ZstdOptimalParams } from './zstd-optimal';
 import { SequenceStore, llCodeOf, mlCodeOf } from './zstd-sequences';
 import {
@@ -121,6 +122,10 @@ export function getZstdLevelParams(level: number): ZstdLevelParams {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+/** Optimal-parsed blocks that compress below this share of their size are re-checked against the lazy parser. */
+const LAZY_GUARD_RATIO_PERCENT = 8;
+const LAZY_GUARD_LEVEL = 15;
 
 const HASH_MULTIPLIER_A = 2654435761;
 const HASH_MULTIPLIER_B = 2246822519;
@@ -518,7 +523,7 @@ function chooseSymbolMode(
     };
   }
   if (!Number.isFinite(predefinedBits)) {
-    throw new Error('Zstandard encoder: no feasible sequence table mode.');
+    throw new ConversionFailedError('Zstandard encoder: no feasible sequence table mode.');
   }
   return { mode: MODE_PREDEFINED, table: predefined.table, rleSymbol: 0, description: new Uint8Array(0) };
 }
@@ -528,6 +533,10 @@ export class ZstdBlockEncoder {
   /** Hash-chain parser for levels 1-15; null when the optimal parser serves the level. */
   private readonly finder: MatchFinder | null;
   private readonly optimal: OptimalParser | null;
+  /** Level-15 parser, built on the first block the optimal parser leaves suspiciously large. */
+  private lazyFallback: MatchFinder | null = null;
+  private fallbackScratch: Uint8Array | null = null;
+  private readonly windowSize: number;
   private readonly store: SequenceStore;
   private readonly literals = new Uint8Array(ZSTD_BLOCK_SIZE_MAX);
   private readonly llCodes: Uint8Array;
@@ -546,6 +555,7 @@ export class ZstdBlockEncoder {
 
   constructor(data: Uint8Array, params: ZstdLevelParams, windowSize: number) {
     this.data = data;
+    this.windowSize = windowSize;
     if (params.optimal === null) {
       this.finder = new MatchFinder(data, params, windowSize);
       this.optimal = null;
@@ -593,7 +603,7 @@ export class ZstdBlockEncoder {
   private reserve(pos: number, extra: number): void {
     if (pos + extra <= this.out.length) return;
     const capacity = Math.min(this.outBound, Math.max(this.out.length * 2, pos + extra));
-    if (capacity < pos + extra) throw new Error('Zstandard encoder output exceeded its worst-case bound.');
+    if (capacity < pos + extra) throw new ConversionFailedError('Zstandard encoder output exceeded its worst-case bound.');
     const grown = new Uint8Array(capacity);
     grown.set(this.out.subarray(0, pos));
     this.out = grown;
@@ -639,7 +649,7 @@ export class ZstdBlockEncoder {
     }
 
     const parser = this.finder ?? this.optimal;
-    if (parser === null) throw new Error('Zstandard encoder: no block parser configured.');
+    if (parser === null) throw new ConversionFailedError('Zstandard encoder: no block parser configured.');
     if (this.finder !== null) this.finder.literalBits = this.estimateLiteralBits(blockStart, blockEnd);
     parser.rep1 = this.committedRep1;
     parser.rep2 = this.committedRep2;
@@ -648,17 +658,69 @@ export class ZstdBlockEncoder {
     const payloadStart = pos + BLOCK_HEADER_BYTES;
     // A compressed block is only worth emitting when it is strictly smaller than the raw payload.
     const cap = payloadStart + size - 1;
-    const end = this.emitCompressedPayload(blockStart, blockEnd, trailing, out, payloadStart, cap);
+    let end = this.emitCompressedPayload(blockStart, blockEnd, trailing, out, payloadStart, cap);
+    let rep1 = parser.rep1;
+    let rep2 = parser.rep2;
+    let rep3 = parser.rep3;
+    if (this.optimal !== null && this.looksUnderCompressed(end - payloadStart, size)) {
+      const alternative = this.encodeLazyAlternative(blockStart, blockEnd, out, payloadStart, end);
+      if (alternative !== null) {
+        end = alternative.end;
+        rep1 = alternative.rep1;
+        rep2 = alternative.rep2;
+        rep3 = alternative.rep3;
+      }
+    }
     if (end >= 0) {
-      this.committedRep1 = parser.rep1;
-      this.committedRep2 = parser.rep2;
-      this.committedRep3 = parser.rep3;
+      this.committedRep1 = rep1;
+      this.committedRep2 = rep2;
+      this.committedRep3 = rep3;
       this.writeBlockHeader(out, pos, last, BLOCK_TYPE_COMPRESSED, end - payloadStart);
       return end;
     }
     this.writeBlockHeader(out, pos, last, BLOCK_TYPE_RAW, size);
     out.set(this.data.subarray(blockStart, blockEnd), payloadStart);
     return payloadStart + size;
+  }
+
+  /**
+   * Highly repetitive blocks are where the price model of the optimal parser can settle on a poor
+   * plan (it cannot see that taking one explicit offset now makes every later repeat cheap), so only
+   * those blocks are worth a second opinion. Blocks that stayed raw are incompressible, not poorly parsed.
+   */
+  private looksUnderCompressed(payloadBytes: number, rawBytes: number): boolean {
+    return payloadBytes >= 0 && payloadBytes * 100 < rawBytes * LAZY_GUARD_RATIO_PERCENT;
+  }
+
+  /**
+   * Re-parses the block with the level-15 hash-chain parser and returns its encoding when that is
+   * strictly smaller than the `bestEnd - payloadStart` bytes already written, else null (the
+   * optimal encoding stays in `out`).
+   */
+  private encodeLazyAlternative(
+    blockStart: number,
+    blockEnd: number,
+    out: Uint8Array,
+    payloadStart: number,
+    bestEnd: number
+  ): { end: number; rep1: number; rep2: number; rep3: number } | null {
+    if (this.lazyFallback === null) {
+      this.lazyFallback = new MatchFinder(this.data, getZstdLevelParams(LAZY_GUARD_LEVEL), this.windowSize);
+      this.fallbackScratch = new Uint8Array(ZSTD_BLOCK_SIZE_MAX);
+    }
+    const scratch = this.fallbackScratch;
+    if (scratch === null) throw new ConversionFailedError('Zstandard encoder: lazy fallback scratch buffer missing.');
+    const finder = this.lazyFallback;
+    finder.literalBits = this.estimateLiteralBits(blockStart, blockEnd);
+    finder.rep1 = this.committedRep1;
+    finder.rep2 = this.committedRep2;
+    finder.rep3 = this.committedRep3;
+    const trailing = finder.parseBlock(blockStart, blockEnd, this.store);
+    const written = bestEnd - payloadStart;
+    const end = this.emitCompressedPayload(blockStart, blockEnd, trailing, scratch, 0, written - 1);
+    if (end < 0) return null;
+    out.set(scratch.subarray(0, end), payloadStart);
+    return { end: payloadStart + end, rep1: finder.rep1, rep2: finder.rep2, rep3: finder.rep3 };
   }
 
   /** Writes literals + sequences sections at out[pos..cap]. Returns the end position or -1. */

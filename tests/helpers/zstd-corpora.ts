@@ -12,6 +12,7 @@ const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx']);
 const RUN_LENGTH_SPAN = 20000;
 const RUN_VALUE_COUNT = 4;
 const MUTATION_SPACING = 4096;
+const BYTE_VALUES = 256;
 
 export function makeRng(seed: number): () => number {
   let state = seed >>> 0 || 1;
@@ -143,5 +144,45 @@ export function periodic(length: number, period: number, seed: number): Buffer {
   const out = Buffer.alloc(length);
   for (let i = 0; i < length; i++) out[i] = pattern[i % period];
   for (let k = 0; k < length / MUTATION_SPACING; k++) out[Math.floor(rng() * length)] ^= 0xff;
+  return out;
+}
+
+/** Zeros with one random non-zero byte every `step` bytes: long overlapping matches broken by unique literals. */
+export function perturbedZeros(length: number, step: number, seed: number): Buffer {
+  const rng = makeRng(seed);
+  const out = Buffer.alloc(length);
+  for (let i = step; i < length; i += step) out[i] = 1 + Math.floor(rng() * (BYTE_VALUES - 1));
+  return out;
+}
+
+/** A random pattern repeated end to end with a random XOR applied every `step` bytes. */
+export function mutatedPeriodic(length: number, period: number, step: number, seed: number): Buffer {
+  const rng = makeRng(seed);
+  const pattern = noiseBytes(period, seed + 1);
+  const out = Buffer.alloc(length);
+  for (let i = 0; i < length; i++) out[i] = pattern[i % period];
+  for (let i = step; i < length; i += step) out[i] ^= 1 + Math.floor(rng() * (BYTE_VALUES - 1));
+  return out;
+}
+
+/** The cyclic de Bruijn sequence B(alphabet, order) (Fredricksen-Kessler-Maiorana), repeated to `length`. */
+export function deBruijnSequence(alphabet: number, order: number, length: number): Buffer {
+  const work = new Array<number>(alphabet * order).fill(0);
+  const sequence: number[] = [];
+  const generate = (t: number, p: number): void => {
+    if (t > order) {
+      if (order % p === 0) for (let j = 1; j <= p; j++) sequence.push(work[j]);
+      return;
+    }
+    work[t] = work[t - p];
+    generate(t + 1, p);
+    for (let j = work[t - p] + 1; j < alphabet; j++) {
+      work[t] = j;
+      generate(t + 1, t);
+    }
+  };
+  generate(1, 1);
+  const out = Buffer.alloc(length);
+  for (let i = 0; i < length; i++) out[i] = sequence[i % sequence.length];
   return out;
 }

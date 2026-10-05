@@ -1,3 +1,4 @@
+import { ConversionFailedError } from '../types';
 import { highBit32 } from './zstd-fse';
 import { SequenceStore, llCodeOf, mlCodeOf } from './zstd-sequences';
 import {
@@ -80,6 +81,9 @@ const LOG2_TABLE_SIZE = STAT_SUM_LIMIT + 1;
 const LITERAL_SCALE_TARGET = 1 << 12;
 const SYMBOL_SCALE_TARGET = 1 << 11;
 const LITERAL_ALPHABET = 256;
+/** Candidates this much shorter than the longest match are still compared by price when a long match ends the search. */
+const LONG_MATCH_GAP_MAX = 16;
+const LITERAL_COST_MIN = PRICE_UNIT;
 const LL_LENGTH_CLAMP = ZSTD_BLOCK_SIZE_MAX - 1;
 /** Literal and match lengths below these limits are priced from direct tables. */
 const LL_SMALL_LIMIT = 64;
@@ -342,6 +346,8 @@ export class OptimalParser {
       this.walkTree(idx, false, TREE_UPDATE_INITIAL_BEST);
       idx += this.skipAhead;
     }
+    // The skip never jumps over p itself: p is about to be searched and must be able to see the repeat.
+    if (idx > stop) idx = stop;
     if (idx > this.nextInsert) this.nextInsert = idx;
   }
 
@@ -467,7 +473,11 @@ export class OptimalParser {
     const llBase = lg[this.llSum];
     const mlBase = lg[this.mlSum];
     const ofBase = lg[this.ofSum];
-    for (let b = 0; b < LITERAL_ALPHABET; b++) this.litCost[b] = litBase - lg[this.litFreq[b]];
+    // A Huffman-coded literal never costs less than one bit, however skewed the histogram is.
+    for (let b = 0; b < LITERAL_ALPHABET; b++) {
+      const cost = litBase - lg[this.litFreq[b]];
+      this.litCost[b] = cost > LITERAL_COST_MIN ? cost : LITERAL_COST_MIN;
+    }
     for (let c = 0; c <= ZSTD_LL_MAX_CODE; c++) this.llCost[c] = LL_BITS[c] * PRICE_UNIT + llBase - lg[this.llFreq[c]];
     for (let c = 0; c <= ZSTD_ML_MAX_CODE; c++) this.mlCost[c] = ML_BITS[c] * PRICE_UNIT + mlBase - lg[this.mlFreq[c]];
     for (let c = 0; c <= ZSTD_OF_MAX_CODE; c++) this.ofCost[c] = c * PRICE_UNIT + ofBase - lg[this.ofFreq[c]];
@@ -600,7 +610,8 @@ export class OptimalParser {
 
       const longestFirst = matchLen[first - 1];
       if (longestFirst > sufficient) {
-        this.commitPath(anchor, 0, longestFirst, matchOff[first - 1], store);
+        const pick = this.pickLongMatch(first, p);
+        this.commitPath(anchor, 0, matchLen[pick], matchOff[pick], store);
         anchor = this.anchorOut;
         p = anchor;
         continue;
@@ -667,8 +678,9 @@ export class OptimalParser {
         if (found === 0) continue;
         const longest = matchLen[found - 1];
         if (longest > sufficient || cur + longest >= ZSTD_OPTIMAL_WINDOW || here + longest >= blockEnd) {
-          tailLen = longest;
-          tailOff = matchOff[found - 1];
+          const pick = this.pickLongMatch(found, here);
+          tailLen = matchLen[pick];
+          tailOff = matchOff[pick];
           tailCur = cur;
           break;
         }
@@ -709,6 +721,33 @@ export class OptimalParser {
   }
 
   /**
+   * Chooses the match to take outright when the longest candidate is long enough to end the search.
+   * A slightly shorter candidate with a much cheaper offset (typically a repeat offset) wins when
+   * the bytes it leaves over cost less as literals than the offset difference saves.
+   */
+  private pickLongMatch(found: number, here: number): number {
+    const matchLen = this.matchLen;
+    const matchOff = this.matchOff;
+    const ofCost = this.ofCost;
+    const litCost = this.litCost;
+    const d = this.data;
+    const longest = matchLen[found - 1];
+    let best = found - 1;
+    let bestPrice = ofCost[highBit32(matchOff[best])];
+    for (let k = found - 2; k >= 0; k--) {
+      const gap = longest - matchLen[k];
+      if (gap > LONG_MATCH_GAP_MAX) break;
+      let price = ofCost[highBit32(matchOff[k])];
+      for (let i = 0; i < gap; i++) price += litCost[d[here + matchLen[k] + i]];
+      if (price < bestPrice) {
+        best = k;
+        bestPrice = price;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Stores the cheapest plan that reaches window position `cur`, plus an optional final match that
    * starts there (after the literals pending at `cur`). Literals pending at the end of a plan without
    * a final match stay unstored and become the next window's leading literals.
@@ -741,7 +780,7 @@ export class OptimalParser {
     while (q > 0) {
       const len = optMlen[q];
       if (len < MIN_MATCH_LENGTH || count >= SEQUENCES_PER_WINDOW_MAX) {
-        throw new Error('Zstandard encoder: optimal parse produced an inconsistent plan.');
+        throw new ConversionFailedError('Zstandard encoder: optimal parse produced an inconsistent plan.');
       }
       const start = q - len;
       const lit = optLitlen[start];
@@ -759,7 +798,7 @@ export class OptimalParser {
       const offBase = seqOff[i];
       // A sequence spans at least three block bytes, so the store cannot fill up unless the plan is broken.
       if (store.count >= store.litLen.length) {
-        throw new Error('Zstandard encoder: optimal parse overflowed the block sequence store.');
+        throw new ConversionFailedError('Zstandard encoder: optimal parse overflowed the block sequence store.');
       }
       this.updateStats(cursor, lit, len, offBase);
       const slot = store.count++;

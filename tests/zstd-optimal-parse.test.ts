@@ -8,11 +8,14 @@ import { compressZstd, decompressZstd, getZstdBinaryPath } from '../src/lib/conv
 import { oracleTest } from './helpers/oracle-test';
 import {
   MIB,
+  deBruijnSequence,
   englishLikeText,
   jsonRecords,
   longRuns,
   makeRng,
+  mutatedPeriodic,
   noiseBytes,
+  perturbedZeros,
   periodic,
   twoSymbolRandom,
   typescriptSourceCorpus,
@@ -41,6 +44,20 @@ const GOLDEN_INPUT_BYTES = 160 * 1024;
 const MIN_GAIN_OVER_LEVEL_15 = 0.97;
 /** Adjacent optimal levels differ by a few hundredths of a percent on some corpora; allow that much noise. */
 const MONOTONE_SLACK = 1.005;
+/** Levels 16-19 may not be worse than level 15 by more than this on structured adversarial inputs. */
+const MAX_SIZE_FACTOR_VS_LEVEL_15 = 1.01;
+/** Reference-relative bound for the structured inputs, where the reference itself is erratic across levels. */
+const MAX_STRUCTURED_FACTOR_VS_CLI = 1.05;
+const ZEROS_PERTURB_STEP = 64;
+const DE_BRUIJN_ALPHABET = 4;
+const DE_BRUIJN_ORDER = 10;
+const MUTATED_PERIOD = 61;
+const MUTATED_STEP = 63;
+const WINDOW_LOG = 23;
+const WINDOW_BYTES = 2 ** WINDOW_LOG;
+const WINDOW_EDGE_TAIL_BYTES = 4096;
+/** A tail that is one match costs a handful of bytes; literals would cost the whole tail. */
+const WINDOW_EDGE_MATCH_FRAME_SLACK = 512;
 const FUZZ_CASES = 24;
 const FUZZ_SEED = 20240497;
 const FUZZ_LENGTH_MAX = 200 * 1024;
@@ -257,6 +274,68 @@ function fuzzInput(rng: () => number): Buffer {
       return periodic(length, 1 + pick(5000), seed);
   }
 }
+
+function structuredCorpora(): Array<[string, Buffer]> {
+  return [
+    ['zeros with a random byte every 64', perturbedZeros(MIB, ZEROS_PERTURB_STEP, 21)],
+    ['de Bruijn B(4,10)', deBruijnSequence(DE_BRUIJN_ALPHABET, DE_BRUIJN_ORDER, MIB)],
+    ['period 61 mutated every 63', mutatedPeriodic(MIB, MUTATED_PERIOD, MUTATED_STEP, 22)],
+  ];
+}
+
+describe('optimal parsing on structured inputs', () => {
+  oracleTest(
+    'levels 16-19 stay within 1% of level 15 and 5% of the CLI, and every frame validates',
+    ['zstd'],
+    () => {
+      for (const [name, input] of structuredCorpora()) {
+        const lazy = compressZstd(input, { level: 15 }).length;
+        for (const level of OPTIMAL_LEVELS) {
+          const frame = compressZstd(input, { level });
+          assertValidFrame(`${name} level ${level}`, frame, input);
+          expect(frame.length / lazy, `${name} level ${level}: ${frame.length} B vs level 15 ${lazy} B`).toBeLessThanOrEqual(
+            MAX_SIZE_FACTOR_VS_LEVEL_15
+          );
+          const reference = cliCompress(input, level).length;
+          expect(
+            frame.length / reference,
+            `${name} level ${level}: ${frame.length} B vs CLI ${reference} B`
+          ).toBeLessThanOrEqual(MAX_STRUCTURED_FACTOR_VS_CLI);
+        }
+      }
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+describe('optimal parsing at the window edge', () => {
+  oracleTest(
+    'a repeat at distance 2^23-1, 2^23 and 2^23+1 decodes through the CLI; in-window distances are matched',
+    ['zstd'],
+    () => {
+      for (const level of [16, 19]) {
+        for (const distance of [WINDOW_BYTES - 1, WINDOW_BYTES, WINDOW_BYTES + 1]) {
+          const input = Buffer.alloc(distance + WINDOW_EDGE_TAIL_BYTES);
+          noiseBytes(distance, 31).copy(input);
+          input.copy(input, distance, 0, WINDOW_EDGE_TAIL_BYTES);
+          const frame = compressZstd(input, { level });
+          assertValidFrame(`distance ${distance} level ${level}`, frame, input);
+          const tailCost = frame.length - distance;
+          if (distance <= WINDOW_BYTES) {
+            expect(tailCost, `distance ${distance} level ${level}: tail cost`).toBeLessThan(
+              WINDOW_EDGE_MATCH_FRAME_SLACK
+            );
+          } else {
+            expect(tailCost, `distance ${distance} level ${level}: tail is out of reach`).toBeGreaterThan(
+              WINDOW_EDGE_TAIL_BYTES / 2
+            );
+          }
+        }
+      }
+    },
+    TEST_TIMEOUT_MS * 2
+  );
+});
 
 describe('optimal parsing fuzz', () => {
   oracleTest(
