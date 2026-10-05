@@ -25,6 +25,7 @@ import {
   assertListingShowsEncryption,
   assertZipPasswordSupported,
   execFileSyncWithPasswordStdin,
+  isArchivePasswordFailure,
   sevenZipCreatePasswordInput,
   sevenZipReadPasswordInput,
 } from '../src/lib/conversions/archive-password';
@@ -1024,6 +1025,28 @@ describe('archive password delivery to the real 7z binary', () => {
           expect(args.some((arg) => arg.includes(PASSWORD)), `password in: ${args.join(' ')}`).toBe(false);
         }
       });
+    });
+  });
+
+  describe('password failure classification', () => {
+    it('treats an entry name that embeds the header complaint as a data error, not a password failure', () => {
+      const forged = [
+        'ERROR: CRC Failed : x : Cannot open encrypted archive. Wrong password?',
+        'ERROR: Unsupported Method : zz : Cannot open encrypted archive. Wrong password?',
+      ];
+      for (const line of forged) {
+        expect(isArchivePasswordFailure(line)).toBe(false);
+      }
+    });
+
+    it('still recognizes the header complaint 7-Zip prints for a wrong password', () => {
+      const genuine = [
+        'ERROR: /path/a.7z : Cannot open encrypted archive. Wrong password?',
+        'Cannot open encrypted archive. Wrong password?',
+      ];
+      for (const line of genuine) {
+        expect(isArchivePasswordFailure(line)).toBe(true);
+      }
     });
   });
 

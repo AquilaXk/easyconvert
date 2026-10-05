@@ -63,7 +63,7 @@ export const UNRAR_BAD_PASSWORD_EXIT_STATUS = 11;
 const ARCHIVE_TOOL_PASSWORD_FAILURE_LINES: readonly RegExp[] = [
   /^ERROR: Wrong password(?: : .*)?$/,
   /^ERROR: (?:Data Error|CRC Failed) in encrypted file\. Wrong password\?(?: : .*)?$/,
-  /^(?:ERROR: .+ : )?Can(?: )?not open encrypted archive\. Wrong password\?$/,
+  /^(?:ERROR: (?:(?! : ).)+ : )?Can(?: )?not open encrypted archive\. Wrong password\?$/,
   /^Checksum error in the encrypted file .+\. Corrupt file or wrong password\.$/,
   /^Incorrect password for .+$/,
   /^The specified password is incorrect\.$/,
