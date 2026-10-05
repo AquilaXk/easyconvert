@@ -57,16 +57,16 @@ describe('output size limits', () => {
 
   it('bounds a one-sided resize by the aspect ratio of the source', async () => {
     const square = await captureError(() => convertImage(SQUARE, 'png', { width: 40000 }, 'a.png', 'png'));
-    expect(square.message).toContain('1600000000 pixels');
+    expect(square.message).toMatch(/\(1600000000 pixels\)/);
     // 100 x 10 scaled to 40000 wide is 40000 x 4000 = 160 Mpx.
     const wide = await captureError(() => convertImage(WIDE, 'png', { width: 40000 }, 'wide.png', 'png'));
-    expect(wide.message).toContain('160000000 pixels');
+    expect(wide.message).toMatch(/\(160000000 pixels\)/);
   });
 
   it('bounds the rotated source the same way', async () => {
     const tall = encodePng({ width: 10, height: 100, colourType: COLOUR_TYPE.gray, bitDepth: 8, pixels: Buffer.alloc(1000, 90) });
     const error = await captureError(() => convertImage(tall, 'png', { height: 40000 }, 'tall.png', 'png'));
-    expect(error.message).toContain('160000000 pixels');
+    expect(error.message).toMatch(/\(160000000 pixels\)/);
   });
 
   it('still resizes within the limits', async () => {
