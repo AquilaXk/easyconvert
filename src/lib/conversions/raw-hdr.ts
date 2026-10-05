@@ -1141,26 +1141,23 @@ const ULTRA_HDR_DEFAULT_OFFSET = 0.015625;
 const ULTRA_HDR_DEFAULT_GAIN_MAP_MAX = 3.0;
 const ULTRA_HDR_XMP_DECIMALS = 6;
 
+const ISO_21496_NAMESPACE = 'http://iso.org/iso-21496/-1';
+const XMP_PACKET_OPEN = '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 7.0-c000 1.000000, 0000/00/00-00:00:00">';
+const XMP_PACKET_CLOSE = '</x:xmpmeta>';
+
 /**
- * Builds ISO 21496-1 compliant XMP metadata packet for Ultra HDR JPEG gain map.
+ * Builds the XMP packet of the primary image: the Container directory that locates the gain map
+ * and the `hdrgm:Version` marker. The gain map parameters live in the gain map image's own XMP.
  */
-export function buildIso21496Xmp(gainMapByteLength: number, gainMapMax: number = 3.0): string {
-  return `<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 7.0-c000 1.000000, 0000/00/00-00:00:00">
+export function buildIso21496Xmp(gainMapByteLength: number): string {
+  return `${XMP_PACKET_OPEN}
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about=""
-      xmlns:hdrgm="http://iso.org/iso-21496/-1"
-      hdrgm:Version="1.0"
-      hdrgm:GainMapMin="0.000000"
-      hdrgm:GainMapMax="${gainMapMax.toFixed(6)}"
-      hdrgm:Gamma="1.000000"
-      hdrgm:OffsetSDR="${ULTRA_HDR_DEFAULT_OFFSET.toFixed(ULTRA_HDR_XMP_DECIMALS)}"
-      hdrgm:OffsetHDR="${ULTRA_HDR_DEFAULT_OFFSET.toFixed(ULTRA_HDR_XMP_DECIMALS)}"
-      hdrgm:HDRCapacityMin="0.000000"
-      hdrgm:HDRCapacityMax="${gainMapMax.toFixed(6)}"
-      hdrgm:BaseRenditionIsHDR="False"/>
+      xmlns:hdrgm="${ISO_21496_NAMESPACE}"
+      hdrgm:Version="1.0"/>
     <rdf:Description rdf:about=""
-      xmlns:Container="http://schemas.google.com/photos/1.0/container/"
-      xmlns:Item="http://schemas.google.com/photos/1.0/container/item/">
+      xmlns:Container="http://ns.google.com/photos/1.0/container/"
+      xmlns:Item="http://ns.google.com/photos/1.0/container/item/">
       <Container:Directory>
         <rdf:Seq>
           <rdf:li rdf:parseType="Resource">
@@ -1179,7 +1176,53 @@ export function buildIso21496Xmp(gainMapByteLength: number, gainMapMax: number =
       </Container:Directory>
     </rdf:Description>
   </rdf:RDF>
-</x:xmpmeta>`;
+${XMP_PACKET_CLOSE}`;
+}
+
+/** Builds the XMP packet stored in the gain map image itself: the ISO 21496-1 gain map parameters. */
+export function buildIso21496GainMapXmp(gainMapMax: number = ULTRA_HDR_DEFAULT_GAIN_MAP_MAX): string {
+  return `${XMP_PACKET_OPEN}
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+      xmlns:hdrgm="${ISO_21496_NAMESPACE}"
+      hdrgm:Version="1.0"
+      hdrgm:GainMapMin="0.000000"
+      hdrgm:GainMapMax="${gainMapMax.toFixed(ULTRA_HDR_XMP_DECIMALS)}"
+      hdrgm:Gamma="1.000000"
+      hdrgm:OffsetSDR="${ULTRA_HDR_DEFAULT_OFFSET.toFixed(ULTRA_HDR_XMP_DECIMALS)}"
+      hdrgm:OffsetHDR="${ULTRA_HDR_DEFAULT_OFFSET.toFixed(ULTRA_HDR_XMP_DECIMALS)}"
+      hdrgm:HDRCapacityMin="0.000000"
+      hdrgm:HDRCapacityMax="${gainMapMax.toFixed(ULTRA_HDR_XMP_DECIMALS)}"
+      hdrgm:BaseRenditionIsHDR="False"/>
+  </rdf:RDF>
+${XMP_PACKET_CLOSE}`;
+}
+
+const JPEG_MARKER_PREFIX = 0xff;
+const JPEG_SOI = 0xd8;
+const JPEG_EOI = 0xd9;
+const JPEG_SOS = 0xda;
+const JPEG_APP1 = 0xe1;
+const JPEG_APP2 = 0xe2;
+const JPEG_TEM = 0x01;
+const JPEG_RST_FIRST = 0xd0;
+const JPEG_RST_LAST = 0xd7;
+const JPEG_MARKER_BYTES = 2;
+const JPEG_SEGMENT_HEADER_BYTES = 4;
+const JPEG_MIN_STREAM_BYTES = 4;
+const UINT16_BYTES = 2;
+const UINT32_BYTES = 4;
+const XMP_NAMESPACE_ID = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'ascii');
+
+/** Builds an APP1 XMP segment (marker, length, namespace id, packet) for a JPEG header. */
+function buildXmpApp1Segment(xmpPacket: string): Buffer {
+  const payload = Buffer.concat([XMP_NAMESPACE_ID, Buffer.from(xmpPacket, 'utf-8')]);
+  const segment = Buffer.alloc(JPEG_SEGMENT_HEADER_BYTES + payload.length);
+  segment[0] = JPEG_MARKER_PREFIX;
+  segment[1] = JPEG_APP1;
+  segment.writeUInt16BE(payload.length + JPEG_MARKER_BYTES, JPEG_MARKER_BYTES);
+  payload.copy(segment, JPEG_SEGMENT_HEADER_BYTES);
+  return segment;
 }
 
 /**
@@ -1232,12 +1275,17 @@ export async function encodeUltraHdrJpeg(
     gainMapBytes[i] = Math.round(normGain * 255.0);
   }
 
-  // 3. Encode Secondary Gain Map JPEG
-  const secondaryJpeg = await sharp(gainMapBytes, {
+  // 3. Encode Secondary Gain Map JPEG; its own XMP carries the ISO 21496-1 gain map parameters.
+  const gainMapBase = await sharp(gainMapBytes, {
     raw: { width, height, channels: 1 },
   })
     .jpeg({ quality: Math.min(85, quality), mozjpeg: true })
     .toBuffer();
+  const secondaryJpeg = Buffer.concat([
+    gainMapBase.subarray(0, JPEG_MARKER_BYTES),
+    buildXmpApp1Segment(buildIso21496GainMapXmp(gainMapMax)),
+    gainMapBase.subarray(JPEG_MARKER_BYTES),
+  ]);
 
   // 4. Encode Primary SDR JPEG
   const primaryJpeg = await sharp(sdrBuffer, {
@@ -1246,15 +1294,8 @@ export async function encodeUltraHdrJpeg(
     .jpeg({ quality, mozjpeg: true })
     .toBuffer();
 
-  // 5. Construct ISO 21496-1 XMP Marker (APP1)
-  const xmpString = buildIso21496Xmp(secondaryJpeg.length, gainMapMax);
-  const xmpNs = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'ascii');
-  const xmpPayload = Buffer.concat([xmpNs, Buffer.from(xmpString, 'utf-8')]);
-  const app1 = Buffer.alloc(4 + xmpPayload.length);
-  app1[0] = 0xff;
-  app1[1] = 0xe1;
-  app1.writeUInt16BE(xmpPayload.length + 2, 2);
-  xmpPayload.copy(app1, 4);
+  // 5. Construct the primary XMP Marker (APP1): Container directory and hdrgm:Version
+  const app1 = buildXmpApp1Segment(buildIso21496Xmp(secondaryJpeg.length));
 
   // 6. Construct CIPA DC-007 Multi-Picture Format (MPF) Marker (APP2)
   // APP2 header 'MPF\0' + Little Endian TIFF header
@@ -1340,16 +1381,224 @@ export interface UltraHdrGainMapParams {
   offsetHdr: number;
 }
 
-/** Returns the XMP packet stored in the first APP1 XMP segment of a JPEG stream, or '' when absent. */
-function extractJpegXmp(jpeg: Buffer): string {
-  const xmpMarker = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'ascii');
-  const xmpIdx = jpeg.indexOf(xmpMarker);
-  if (xmpIdx === -1) return '';
-  const rawXmp = jpeg.subarray(xmpIdx + xmpMarker.length);
-  const xmpEnd = '</x:xmpmeta>';
-  const endXmp = rawXmp.indexOf(xmpEnd);
-  if (endXmp === -1) return '';
-  return rawXmp.subarray(0, endXmp + xmpEnd.length).toString('utf-8');
+/** A marker segment of a JPEG header; `start`..`end` bound its payload (the length field excluded). */
+interface JpegHeaderSegment {
+  marker: number;
+  start: number;
+  end: number;
+}
+
+/** Fails closed on a JPEG stream that is not a well-formed Ultra HDR container part. */
+function invalidUltraHdr(detail: string): ConversionFailedError {
+  return new ConversionFailedError(`Invalid Ultra HDR JPEG: ${detail}.`);
+}
+
+/**
+ * Walks the marker segments of a JPEG header from SOI up to the first SOS (or EOI), validating each
+ * length against the buffer. Entropy-coded data is never scanned, so bytes inside APPn payloads
+ * (an EXIF thumbnail, say) cannot be mistaken for image boundaries.
+ */
+function readJpegHeaderSegments(jpeg: Buffer, what: string): JpegHeaderSegment[] {
+  if (jpeg.length < JPEG_MIN_STREAM_BYTES || jpeg[0] !== JPEG_MARKER_PREFIX || jpeg[1] !== JPEG_SOI) {
+    throw invalidUltraHdr(`${what} does not start with an SOI marker`);
+  }
+  const segments: JpegHeaderSegment[] = [];
+  let pos = JPEG_MARKER_BYTES;
+  for (;;) {
+    while (pos + 1 < jpeg.length && jpeg[pos] === JPEG_MARKER_PREFIX && jpeg[pos + 1] === JPEG_MARKER_PREFIX) pos++;
+    if (pos + 1 >= jpeg.length || jpeg[pos] !== JPEG_MARKER_PREFIX) {
+      throw invalidUltraHdr(`${what} has a malformed marker at offset ${pos}`);
+    }
+    const marker = jpeg[pos + 1];
+    if (marker === JPEG_SOS || marker === JPEG_EOI) return segments;
+    if (marker === JPEG_TEM || (marker >= JPEG_RST_FIRST && marker <= JPEG_RST_LAST)) {
+      pos += JPEG_MARKER_BYTES;
+      continue;
+    }
+    if (pos + JPEG_SEGMENT_HEADER_BYTES > jpeg.length) throw invalidUltraHdr(`${what} is truncated inside a marker segment`);
+    const length = jpeg.readUInt16BE(pos + JPEG_MARKER_BYTES);
+    if (length < JPEG_MARKER_BYTES || pos + JPEG_MARKER_BYTES + length > jpeg.length) {
+      throw invalidUltraHdr(`${what} has a marker segment at offset ${pos} that overruns the file`);
+    }
+    segments.push({ marker, start: pos + JPEG_SEGMENT_HEADER_BYTES, end: pos + JPEG_MARKER_BYTES + length });
+    pos += JPEG_MARKER_BYTES + length;
+  }
+}
+
+/** Returns the XMP packet stored in the first APP1 XMP segment of a JPEG header, or '' when absent. */
+function readJpegXmp(jpeg: Buffer, segments: readonly JpegHeaderSegment[]): string {
+  for (const segment of segments) {
+    const idEnd = segment.start + XMP_NAMESPACE_ID.length;
+    if (segment.marker === JPEG_APP1 && idEnd <= segment.end && jpeg.subarray(segment.start, idEnd).equals(XMP_NAMESPACE_ID)) {
+      return jpeg.subarray(idEnd, segment.end).toString('utf-8');
+    }
+  }
+  return '';
+}
+
+/** Byte range of the gain map JPEG inside an Ultra HDR file. */
+interface GainMapLocation {
+  offset: number;
+  /** Number of bytes in the gain map image; the legacy scan has none and runs to the end of the file. */
+  length: number;
+}
+
+// CIPA DC-007 Multi-Picture Format index (APP2 "MPF\0" followed by a TIFF structure).
+const MPF_IDENTIFIER = Buffer.from('MPF\0', 'ascii');
+const MPF_TIFF_HEADER_BYTES = 8;
+const MPF_TIFF_MAGIC = 42;
+const MPF_IFD_COUNT_BYTES = 2;
+const MPF_IFD_ENTRY_BYTES = 12;
+const MPF_TAG_NUMBER_OF_IMAGES = 0xb001;
+const MPF_TAG_ENTRIES = 0xb002;
+const MPF_MP_ENTRY_BYTES = 16;
+const MPF_MP_ENTRY_SIZE_FIELD = 4;
+const MPF_MP_ENTRY_OFFSET_FIELD = 8;
+const MPF_IFD_ENTRY_COUNT_FIELD = 4;
+const MPF_IFD_ENTRY_VALUE_FIELD = 8;
+const MPF_MIN_IMAGES = 2;
+const MPF_SECONDARY_INDEX = 1;
+
+function invalidMpf(detail: string): ConversionFailedError {
+  return invalidUltraHdr(`MPF ${detail}`);
+}
+
+/**
+ * Resolves the gain map from the MPF index of the primary image. Returns null when the primary has
+ * no MPF segment; any index that is present but inconsistent with the file throws.
+ */
+function locateGainMapFromMpf(buf: Buffer, segments: readonly JpegHeaderSegment[]): GainMapLocation | null {
+  const segment = segments.find(
+    (s) => s.marker === JPEG_APP2 && s.start + MPF_IDENTIFIER.length <= s.end && buf.subarray(s.start, s.start + MPF_IDENTIFIER.length).equals(MPF_IDENTIFIER)
+  );
+  if (!segment) return null;
+  const tiffStart = segment.start + MPF_IDENTIFIER.length;
+  const tiff = buf.subarray(tiffStart, segment.end);
+  if (tiff.length < MPF_TIFF_HEADER_BYTES) throw invalidMpf('index is truncated');
+  const order = tiff.toString('latin1', 0, JPEG_MARKER_BYTES);
+  if (order !== 'II' && order !== 'MM') throw invalidMpf('byte order marker is neither II nor MM');
+  const bigEndian = order === 'MM';
+  const u16 = (at: number): number => {
+    if (at < 0 || at + UINT16_BYTES > tiff.length) throw invalidMpf(`field at offset ${at} lies outside the index`);
+    return bigEndian ? tiff.readUInt16BE(at) : tiff.readUInt16LE(at);
+  };
+  const u32 = (at: number): number => {
+    if (at < 0 || at + UINT32_BYTES > tiff.length) throw invalidMpf(`field at offset ${at} lies outside the index`);
+    return bigEndian ? tiff.readUInt32BE(at) : tiff.readUInt32LE(at);
+  };
+  if (u16(JPEG_MARKER_BYTES) !== MPF_TIFF_MAGIC) throw invalidMpf('TIFF magic number is not 42');
+
+  const ifd = u32(UINT32_BYTES);
+  if (ifd < MPF_TIFF_HEADER_BYTES) throw invalidMpf(`IFD offset ${ifd} is inside the TIFF header`);
+  const tagCount = u16(ifd);
+  if (ifd + MPF_IFD_COUNT_BYTES + tagCount * MPF_IFD_ENTRY_BYTES > tiff.length) {
+    throw invalidMpf(`IFD declares ${tagCount} entries that do not fit the index`);
+  }
+  let declaredImages: number | null = null;
+  let entriesBytes = -1;
+  let entriesOffset = -1;
+  for (let i = 0; i < tagCount; i++) {
+    const at = ifd + MPF_IFD_COUNT_BYTES + i * MPF_IFD_ENTRY_BYTES;
+    const tag = u16(at);
+    if (tag === MPF_TAG_NUMBER_OF_IMAGES) declaredImages = u32(at + MPF_IFD_ENTRY_VALUE_FIELD);
+    if (tag === MPF_TAG_ENTRIES) {
+      entriesBytes = u32(at + MPF_IFD_ENTRY_COUNT_FIELD);
+      entriesOffset = u32(at + MPF_IFD_ENTRY_VALUE_FIELD);
+    }
+  }
+  if (entriesOffset < 0) throw invalidMpf('index has no MP Entry table');
+  if (entriesBytes % MPF_MP_ENTRY_BYTES !== 0 || entriesBytes < MPF_MIN_IMAGES * MPF_MP_ENTRY_BYTES) {
+    throw invalidMpf(`MP Entry table length ${entriesBytes} is not a whole number of at least ${MPF_MIN_IMAGES} entries`);
+  }
+  if (entriesOffset < MPF_TIFF_HEADER_BYTES || entriesOffset + entriesBytes > tiff.length) {
+    throw invalidMpf('MP Entry table lies outside the index');
+  }
+  const imageCount = entriesBytes / MPF_MP_ENTRY_BYTES;
+  if (declaredImages !== null && declaredImages !== imageCount) {
+    throw invalidMpf(`NumberOfImages ${declaredImages} does not match the ${imageCount} MP Entries`);
+  }
+
+  const primarySize = u32(entriesOffset + MPF_MP_ENTRY_SIZE_FIELD);
+  if (u32(entriesOffset + MPF_MP_ENTRY_OFFSET_FIELD) !== 0) throw invalidMpf('primary image entry has a non-zero offset');
+  // The gain map is the first secondary entry with a non-zero offset (index 1 in two-image files).
+  let relativeOffset = 0;
+  let size = 0;
+  for (let i = MPF_SECONDARY_INDEX; i < imageCount && relativeOffset === 0; i++) {
+    const entryAt = entriesOffset + i * MPF_MP_ENTRY_BYTES;
+    relativeOffset = u32(entryAt + MPF_MP_ENTRY_OFFSET_FIELD);
+    size = u32(entryAt + MPF_MP_ENTRY_SIZE_FIELD);
+  }
+  if (relativeOffset === 0) throw invalidMpf('index lists no secondary image with a non-zero offset');
+  const offset = tiffStart + relativeOffset;
+  if (size < JPEG_MIN_STREAM_BYTES) throw invalidMpf(`gain map size ${size} is too small for a JPEG`);
+  if (offset < segment.end || offset + size > buf.length) {
+    throw invalidMpf(`gain map offset ${offset} with size ${size} lies outside the ${buf.length}-byte file`);
+  }
+  if (buf[offset] !== JPEG_MARKER_PREFIX || buf[offset + 1] !== JPEG_SOI) {
+    throw invalidMpf(`gain map offset ${offset} does not start with an SOI marker`);
+  }
+  if (primarySize < segment.end || primarySize > offset) {
+    throw invalidMpf(`primary image size ${primarySize} is inconsistent with the gain map offset ${offset}`);
+  }
+  return { offset, length: size };
+}
+
+/** Namespaces of the container item properties (`Item:Semantic`, `Item:Length`), without their URI scheme. */
+const CONTAINER_ITEM_NAMESPACES: ReadonlySet<string> = new Set(['ns.google.com/photos/1.0/container/item/']);
+const DEFAULT_CONTAINER_ITEM_PREFIX = 'Item';
+const GAIN_MAP_ITEM_SEMANTIC = 'GainMap';
+const CONTAINER_LIST_ITEM = /<(?:[\w.-]+:)?li\b[\s\S]*?<\/(?:[\w.-]+:)?li>/g;
+const NON_NEGATIVE_INTEGER = /^\d+$/;
+
+/** Raw text of a container item property, written as an attribute or a simple element. */
+function readContainerItemProperty(item: string, prefixes: readonly string[], name: string): string | null {
+  for (const prefix of prefixes) {
+    const qualified = escapeRegExp(`${prefix}:${name}`);
+    const attribute = new RegExp(`${qualified}\\s*=\\s*(["'])(.*?)\\1`).exec(item);
+    if (attribute) return attribute[2].trim();
+    const element = new RegExp(`<${qualified}>([\\s\\S]*?)</${qualified}>`).exec(item);
+    if (element) return element[1].trim();
+  }
+  return null;
+}
+
+/**
+ * Resolves the gain map from the XMP container directory of the primary image: the GainMap item's
+ * Item:Length counted back from the end of the file. Returns null when the directory lists no GainMap item.
+ */
+function locateGainMapFromXmpDirectory(buf: Buffer, primaryXmp: string): GainMapLocation | null {
+  const prefixes = new Set([DEFAULT_CONTAINER_ITEM_PREFIX]);
+  for (const match of primaryXmp.matchAll(/xmlns:([A-Za-z_][\w.-]*)\s*=\s*(["'])(.*?)\2/g)) {
+    if (CONTAINER_ITEM_NAMESPACES.has(match[3].replace(URI_SCHEME, ''))) prefixes.add(match[1]);
+  }
+  for (const [chunk] of primaryXmp.matchAll(CONTAINER_LIST_ITEM)) {
+    if (readContainerItemProperty(chunk, [...prefixes], 'Semantic') !== GAIN_MAP_ITEM_SEMANTIC) continue;
+    const rawLength = readContainerItemProperty(chunk, [...prefixes], 'Length');
+    if (rawLength === null || !NON_NEGATIVE_INTEGER.test(rawLength)) {
+      throw invalidUltraHdr('the XMP container directory lists a GainMap item without a valid Item:Length');
+    }
+    const length = Number(rawLength);
+    const offset = buf.length - length;
+    if (length < JPEG_MIN_STREAM_BYTES || offset < JPEG_MIN_STREAM_BYTES) {
+      throw invalidUltraHdr(`the XMP container directory declares a GainMap of ${length} bytes in a ${buf.length}-byte file`);
+    }
+    if (buf[offset] !== JPEG_MARKER_PREFIX || buf[offset + 1] !== JPEG_SOI) {
+      throw invalidUltraHdr(`the GainMap item of the XMP container directory (offset ${offset}) does not start with an SOI marker`);
+    }
+    return { offset, length };
+  }
+  return null;
+}
+
+/** Last resort for files without an index: the first EOI directly followed by an SOI ends the primary image. */
+function locateGainMapByScan(buf: Buffer): GainMapLocation {
+  for (let i = JPEG_MARKER_BYTES; i < buf.length - JPEG_MARKER_BYTES; i++) {
+    if (buf[i] === JPEG_MARKER_PREFIX && buf[i + 1] === JPEG_EOI && buf[i + 2] === JPEG_MARKER_PREFIX && buf[i + 3] === JPEG_SOI) {
+      const offset = i + JPEG_MARKER_BYTES;
+      return { offset, length: buf.length - offset };
+    }
+  }
+  throw invalidUltraHdr('secondary gain map JPEG not detected');
 }
 
 /**
@@ -1450,6 +1699,10 @@ function resolveGainMapParams(gainMapXmp: string, primaryXmp: string): UltraHdrG
 
 /**
  * Extracts and decodes ISO 21496-1 gain map and SDR base image from an Ultra HDR JPEG.
+ *
+ * The gain map is located, in order of authority, by the MPF index of the primary image, by the GainMap
+ * item of the XMP container directory, and last by scanning for an EOI directly followed by an SOI.
+ * An index that is present but inconsistent with the file throws instead of falling back.
  */
 export function decodeUltraHdrJpeg(buf: Buffer): {
   primaryJpeg: Buffer;
@@ -1458,26 +1711,15 @@ export function decodeUltraHdrJpeg(buf: Buffer): {
   gainMapMax: number;
   gainMapParams: UltraHdrGainMapParams;
 } {
-  // Find first JPEG EOI (0xFF, 0xD9) marking the end of primary image
-  let eoiPos = -1;
-  for (let i = 2; i < buf.length - 2; i++) {
-    if (buf[i] === 0xff && buf[i + 1] === 0xd9) {
-      if (i + 2 < buf.length && buf[i + 2] === 0xff && buf[i + 3] === 0xd8) {
-        eoiPos = i + 2;
-        break;
-      }
-    }
-  }
+  const headerSegments = readJpegHeaderSegments(buf, 'primary image');
+  const xmp = readJpegXmp(buf, headerSegments);
+  const location =
+    locateGainMapFromMpf(buf, headerSegments) ?? locateGainMapFromXmpDirectory(buf, xmp) ?? locateGainMapByScan(buf);
 
-  if (eoiPos === -1) {
-    throw new Error('Invalid Ultra HDR JPEG: secondary gain map JPEG not detected.');
-  }
-
-  const primaryJpeg = buf.subarray(0, eoiPos);
-  const secondaryJpeg = buf.subarray(eoiPos);
-
-  const xmp = extractJpegXmp(primaryJpeg);
-  const gainMapParams = resolveGainMapParams(extractJpegXmp(secondaryJpeg), xmp);
+  const primaryJpeg = buf.subarray(0, location.offset);
+  const secondaryJpeg = buf.subarray(location.offset, location.offset + location.length);
+  const gainMapXmp = readJpegXmp(secondaryJpeg, readJpegHeaderSegments(secondaryJpeg, 'gain map image'));
+  const gainMapParams = resolveGainMapParams(gainMapXmp, xmp);
 
   return { primaryJpeg, secondaryJpeg, xmp, gainMapMax: gainMapParams.gainMapMax, gainMapParams };
 }

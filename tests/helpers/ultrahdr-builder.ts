@@ -75,6 +75,12 @@ export interface UltraHdrBuildInput {
   mirrorGainMapMaxInPrimary?: boolean;
   /** Rewrites the gain map XMP text before it is packed, to build malformed or alternative metadata forms. */
   editGainMapXmp?: (xmp: string) => string;
+  /**
+   * Insert an EXIF APP1 segment into the primary image whose payload carries an embedded thumbnail JPEG
+   * immediately followed by a second JPEG (an EOI directly followed by an SOI inside the segment), the
+   * way cameras pack a thumbnail next to a preview. A scan for "EOI then SOI" would split the file there.
+   */
+  exifThumbnailTrap?: boolean;
 }
 
 export interface UltraHdrParts {
@@ -130,6 +136,52 @@ function appSegment(marker: number, payload: Buffer): Buffer {
   const header = Buffer.from([MARKER_PREFIX, marker, 0, 0]);
   header.writeUInt16BE(payload.length + MARKER_LENGTH_BYTES, 2);
   return Buffer.concat([header, payload]);
+}
+
+const EXIF_IDENTIFIER = 'Exif\0\0';
+const EXIF_TAG_JPEG_INTERCHANGE_FORMAT = 0x0201;
+const EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH = 0x0202;
+const THUMBNAIL_EDGE = 8;
+const THUMBNAIL_QUALITY = 70;
+const THUMBNAIL_GREY = 90;
+const PREVIEW_GREY = 200;
+
+async function tinyJpeg(grey: number): Promise<Buffer> {
+  return sharp({ create: { width: THUMBNAIL_EDGE, height: THUMBNAIL_EDGE, channels: 3, background: { r: grey, g: grey, b: grey } } })
+    .jpeg({ quality: THUMBNAIL_QUALITY })
+    .toBuffer();
+}
+
+/**
+ * EXIF APP1 payload (little-endian TIFF, empty IFD0, IFD1 pointing at a thumbnail JPEG) whose thumbnail
+ * is directly followed by another complete JPEG, so the bytes FF D9 FF D8 occur inside the segment.
+ */
+async function exifThumbnailPayload(): Promise<Buffer> {
+  const thumbnail = await tinyJpeg(THUMBNAIL_GREY);
+  const preview = await tinyJpeg(PREVIEW_GREY);
+  const ifd0Offset = TIFF_HEADER_BYTES;
+  const ifd1Offset = ifd0Offset + UINT16_BYTES + UINT32_BYTES;
+  const ifd1Entries = 2;
+  const thumbnailOffset = ifd1Offset + UINT16_BYTES + ifd1Entries * IFD_ENTRY_BYTES + UINT32_BYTES;
+  const tiff = Buffer.alloc(thumbnailOffset);
+  tiff.write('II', 0, 'ascii');
+  tiff.writeUInt16LE(TIFF_MAGIC, 2);
+  tiff.writeUInt32LE(ifd0Offset, 4);
+  tiff.writeUInt16LE(0, ifd0Offset); // IFD0 carries no entries
+  tiff.writeUInt32LE(ifd1Offset, ifd0Offset + UINT16_BYTES);
+  let pos = ifd1Offset;
+  tiff.writeUInt16LE(ifd1Entries, pos);
+  pos += UINT16_BYTES;
+  tiff.writeUInt16LE(EXIF_TAG_JPEG_INTERCHANGE_FORMAT, pos);
+  tiff.writeUInt16LE(TIFF_TYPE_LONG, pos + 2);
+  tiff.writeUInt32LE(1, pos + 4);
+  tiff.writeUInt32LE(thumbnailOffset, pos + 8);
+  pos += IFD_ENTRY_BYTES;
+  tiff.writeUInt16LE(EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH, pos);
+  tiff.writeUInt16LE(TIFF_TYPE_LONG, pos + 2);
+  tiff.writeUInt32LE(1, pos + 4);
+  tiff.writeUInt32LE(thumbnail.length, pos + 8);
+  return Buffer.concat([Buffer.from(EXIF_IDENTIFIER, 'binary'), tiff, thumbnail, preview]);
 }
 
 /** Offset just after SOI and an optional leading JFIF APP0 segment: where extra APPn data goes. */
@@ -207,15 +259,17 @@ export async function buildUltraHdrJpeg(input: UltraHdrBuildInput): Promise<Ultr
     .jpeg({ quality: PRIMARY_JPEG_QUALITY })
     .toBuffer();
   const xmpSegment = app1Segment(primaryXmp(gainMapJpeg.length, input.metadata, input.mirrorGainMapMaxInPrimary === true));
+  const exifSegments = input.exifThumbnailTrap === true ? [app1Segment(await exifThumbnailPayload())] : [];
+  const leadingLength = [...exifSegments, xmpSegment].reduce((sum, segment) => sum + segment.length, 0);
   // The MPF segment has a fixed size, so the final primary size is known before it is written.
   const mpfLength = MARKER_LENGTH_BYTES + MARKER_LENGTH_BYTES + mpfPayload(0, 0, 0).length;
-  const primarySize = primaryBase.length + xmpSegment.length + mpfLength;
-  const mpfSegmentStart = insertionOffset(primaryBase) + xmpSegment.length;
+  const primarySize = primaryBase.length + leadingLength + mpfLength;
+  const mpfSegmentStart = insertionOffset(primaryBase) + leadingLength;
   const tiffStart = mpfSegmentStart + MARKER_LENGTH_BYTES + MARKER_LENGTH_BYTES + MPF_IDENTIFIER_BYTES;
   const mpfSegment = appSegment(APP2, mpfPayload(primarySize, gainMapJpeg.length, primarySize - tiffStart));
   if (mpfSegment.length !== mpfLength) throw new Error('MPF segment size changed between passes');
 
-  const primaryJpeg = insertSegments(primaryBase, [xmpSegment, mpfSegment]);
+  const primaryJpeg = insertSegments(primaryBase, [...exifSegments, xmpSegment, mpfSegment]);
   if (primaryJpeg.length !== primarySize) throw new Error('primary size mismatch');
   return { primaryJpeg, gainMapJpeg, file: Buffer.concat([primaryJpeg, gainMapJpeg]) };
 }

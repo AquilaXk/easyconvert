@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
+import { decodeUltraHdrJpeg } from '../src/lib/conversions/raw-hdr';
 import { ConversionFailedError } from '../src/lib/types';
 import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR, probeExr } from './helpers/ffmpeg-exr';
 import { floatToHalfBits, halfBitsToFloat } from './helpers/openexr-writer';
@@ -346,5 +347,180 @@ describe('malformed HDR sources fail closed', () => {
     const source = buildPatchExr('half');
     source[0] = 0x00;
     await expect(convertFile(source, 'exr', 'png', {}, 'bad.exr')).rejects.toThrow(/Invalid OpenEXR magic header/);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// Ultra HDR container split: the MPF index decides where the gain map starts.
+// ----------------------------------------------------------------------------
+
+const JPEG_EOI_SOI = Buffer.from([0xff, 0xd9, 0xff, 0xd8]);
+const MPF_TIFF_HEADER_BYTES = 8;
+const MPF_SEGMENT_HEADER_BYTES = 8;
+const MPF_IFD_ENTRY_BYTES = 12;
+const MPF_TAG_NUMBER_OF_IMAGES = 0xb001;
+const MPF_TAG_ENTRIES = 0xb002;
+const MP_ENTRY_BYTES = 16;
+const SEGMENT_HEADER_BYTES = 4;
+const UINT32_MAX = 0xffffffff;
+const UINT16_MAX = 0xffff;
+const HOSTILE_DECODE_BUDGET_MS = 2000;
+const HUGE_OFFSET = 0xfffffff0;
+
+interface MpfLayout {
+  /** Absolute offset of the MPF TIFF header. */
+  tiff: number;
+  /** Absolute offset of the IFD entry-count field. */
+  ifd: number;
+  /** Absolute offset of the 0xB001 and 0xB002 IFD entries. */
+  numberOfImagesEntry: number;
+  entriesEntry: number;
+  /** Absolute offset of the first MP Entry (the primary image); the gain map entry follows. */
+  firstMpEntry: number;
+  bigEndian: boolean;
+}
+
+/** Locates the MPF fields to corrupt using the independent structural parser, not the engine. */
+function locateMpf(file: Buffer): MpfLayout {
+  const parsed = parseUltraHdrStructure(file);
+  const segment = parsed.primary.segments.find((s) => s.marker === 0xe2)!;
+  const tiff = segment.offset + MPF_SEGMENT_HEADER_BYTES;
+  const bigEndian = file.toString('ascii', tiff, tiff + 2) === 'MM';
+  const u16 = (at: number) => (bigEndian ? file.readUInt16BE(at) : file.readUInt16LE(at));
+  const u32 = (at: number) => (bigEndian ? file.readUInt32BE(at) : file.readUInt32LE(at));
+  const ifd = tiff + u32(tiff + 4);
+  let numberOfImagesEntry = -1;
+  let entriesEntry = -1;
+  for (let i = 0; i < u16(ifd); i++) {
+    const at = ifd + 2 + i * MPF_IFD_ENTRY_BYTES;
+    if (u16(at) === MPF_TAG_NUMBER_OF_IMAGES) numberOfImagesEntry = at;
+    if (u16(at) === MPF_TAG_ENTRIES) entriesEntry = at;
+  }
+  expect(numberOfImagesEntry).toBeGreaterThan(0);
+  expect(entriesEntry).toBeGreaterThan(0);
+  return { tiff, ifd, numberOfImagesEntry, entriesEntry, firstMpEntry: tiff + u32(entriesEntry + 8), bigEndian };
+}
+
+function writeU32(file: Buffer, layout: MpfLayout, at: number, value: number): void {
+  if (layout.bigEndian) file.writeUInt32BE(value, at);
+  else file.writeUInt32LE(value, at);
+}
+
+function writeU16(file: Buffer, layout: MpfLayout, at: number, value: number): void {
+  if (layout.bigEndian) file.writeUInt16BE(value, at);
+  else file.writeUInt16LE(value, at);
+}
+
+/** Removes the first APP2 MPF segment from the primary image. */
+function withoutMpfSegment(file: Buffer): Buffer {
+  const segment = parseUltraHdrStructure(file).primary.segments.find((s) => s.marker === 0xe2)!;
+  const end = segment.offset + SEGMENT_HEADER_BYTES + segment.payload.length;
+  return Buffer.concat([file.subarray(0, segment.offset), file.subarray(end)]);
+}
+
+describe('Ultra HDR container split follows the MPF index', () => {
+  let trapFile: Buffer;
+
+  beforeAll(async () => {
+    trapFile = await buildPatchUltraHdr(false, ULTRA_HDR_METADATA, undefined, true);
+  }, 60_000);
+
+  it('builds a primary whose EXIF thumbnail puts an EOI+SOI pair before the real end of the primary image', () => {
+    const parsed = parseUltraHdrStructure(trapFile);
+    const decoy = trapFile.indexOf(JPEG_EOI_SOI, 2);
+    expect(decoy).toBeGreaterThan(0);
+    expect(decoy).toBeLessThan(parsed.primary.end - JPEG_EOI_SOI.length);
+    const exif = parsed.primary.segments.find((s) => s.marker === 0xe1 && s.payload.toString('latin1', 0, 4) === 'Exif')!;
+    expect(decoy).toBeGreaterThan(exif.offset);
+    expect(decoy).toBeLessThan(exif.offset + SEGMENT_HEADER_BYTES + exif.payload.length);
+    expect(parsed.mpf.entries[1].absoluteOffset).toBe(parsed.primary.end);
+  });
+
+  it('splits at the gain map entry of the MPF index, not at an EOI+SOI pair inside EXIF', () => {
+    const parsed = parseUltraHdrStructure(trapFile);
+    const decoded = decodeUltraHdrJpeg(trapFile);
+    expect(decoded.primaryJpeg.length).toBe(parsed.primary.end);
+    expect(decoded.primaryJpeg.equals(parsed.primaryJpeg)).toBe(true);
+    expect(decoded.secondaryJpeg.equals(parsed.gainMapJpeg)).toBe(true);
+    expect(decoded.gainMapParams).toMatchObject(ULTRA_HDR_METADATA);
+  });
+
+  it.skipIf(!HAS_FFMPEG_EXR)('ultrahdr -> exr reconstructs the spec formula for a primary with an EXIF thumbnail', async () => {
+    const result = await convertFile(trapFile, 'ultrahdr', 'exr', {}, 'patches.jpg');
+    expectHdrReconstruction(result.buffer, ULTRA_HDR_METADATA);
+  });
+
+  it('falls back to the XMP container directory (gain map length from the end) when there is no MPF index', () => {
+    const parsed = parseUltraHdrStructure(trapFile);
+    const stripped = withoutMpfSegment(trapFile);
+    expect(stripped.includes(Buffer.from('MPF\0', 'ascii'))).toBe(false);
+    const decoded = decodeUltraHdrJpeg(stripped);
+    expect(decoded.secondaryJpeg.equals(parsed.gainMapJpeg)).toBe(true);
+    expect(decoded.primaryJpeg.length).toBe(stripped.length - parsed.gainMapJpeg.length);
+    expect(decoded.gainMapParams).toMatchObject(ULTRA_HDR_METADATA);
+  });
+
+  it('falls back to the legacy EOI+SOI scan when neither MPF nor a container directory is present', async () => {
+    const plain = await buildPatchUltraHdr();
+    const parsed = parseUltraHdrStructure(plain);
+    // Same-length rename keeps every segment length valid while hiding the GainMap item.
+    const noDirectory = Buffer.from(withoutMpfSegment(plain).toString('latin1').replace('Item:Semantic="GainMap"', 'Item:Semantic="Gainmap"'), 'latin1');
+    const decoded = decodeUltraHdrJpeg(noDirectory);
+    expect(decoded.secondaryJpeg.equals(parsed.gainMapJpeg)).toBe(true);
+  });
+
+  it('rejects a container directory whose GainMap length does not fit the file', () => {
+    const stripped = withoutMpfSegment(trapFile);
+    const length = parseUltraHdrStructure(trapFile).gainMapJpeg.length;
+    const text = stripped.toString('latin1').replace(`Item:Length="${length}"`, `Item:Length="${stripped.length * 4}"`);
+    expect(() => decodeUltraHdrJpeg(Buffer.from(text, 'latin1'))).toThrow(ConversionFailedError);
+  });
+
+  describe('hostile MPF indexes fail closed with a typed error', () => {
+    const corruptions: ReadonlyArray<[string, (file: Buffer, layout: MpfLayout) => void, RegExp]> = [
+      ['a gain map offset past the end of the file', (f, l) => writeU32(f, l, l.firstMpEntry + MP_ENTRY_BYTES + 8, f.length), /offset/i],
+      ['a gain map offset of 0xFFFFFFF0', (f, l) => writeU32(f, l, l.firstMpEntry + MP_ENTRY_BYTES + 8, HUGE_OFFSET), /offset/i],
+      ['a gain map size of 0xFFFFFFFF', (f, l) => writeU32(f, l, l.firstMpEntry + MP_ENTRY_BYTES + 4, UINT32_MAX), /size/i],
+      ['a gain map offset that does not land on an SOI', (f, l) => {
+        // Shift the start by one byte and shrink the size so the range still fits inside the file.
+        const entry = l.firstMpEntry + MP_ENTRY_BYTES;
+        const read = (at: number) => (l.bigEndian ? f.readUInt32BE(at) : f.readUInt32LE(at));
+        writeU32(f, l, entry + 8, read(entry + 8) + 1);
+        writeU32(f, l, entry + 4, read(entry + 4) - 1);
+      }, /SOI/],
+      ['a zero gain map size', (f, l) => writeU32(f, l, l.firstMpEntry + MP_ENTRY_BYTES + 4, 0), /size/i],
+      ['a primary size beyond the gain map offset', (f, l) => writeU32(f, l, l.firstMpEntry + 4, UINT32_MAX), /primary/i],
+      ['a huge MP Entry table length', (f, l) => writeU32(f, l, l.entriesEntry + 4, HUGE_OFFSET), /entr/i],
+      ['an MP Entry table placed past the segment', (f, l) => writeU32(f, l, l.entriesEntry + 8, HUGE_OFFSET), /entr/i],
+      ['a huge IFD entry count', (f, l) => writeU16(f, l, l.ifd, UINT16_MAX), /IFD/i],
+      ['an NumberOfImages that disagrees with the entry table', (f, l) => writeU32(f, l, l.numberOfImagesEntry + 8, 7), /NumberOfImages|images/i],
+      ['a wrong byte order marker', (f, l) => f.write('XX', l.tiff, 'ascii'), /byte order/i],
+      ['a wrong TIFF magic', (f, l) => writeU16(f, l, l.tiff + 2, 43), /magic|TIFF/i],
+    ];
+
+    it.each(corruptions)('rejects %s', (_label, corrupt, message) => {
+      const file = Buffer.from(trapFile);
+      corrupt(file, locateMpf(trapFile));
+      const started = performance.now();
+      let thrown: unknown;
+      try {
+        decodeUltraHdrJpeg(file);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(performance.now() - started).toBeLessThan(HOSTILE_DECODE_BUDGET_MS);
+      expect(thrown).toBeInstanceOf(ConversionFailedError);
+      expect((thrown as Error).message).toMatch(/MPF/);
+      expect((thrown as Error).message).toMatch(message);
+    });
+
+    it('surfaces the typed error through convertFile', async () => {
+      const file = Buffer.from(trapFile);
+      const layout = locateMpf(trapFile);
+      writeU32(file, layout, layout.firstMpEntry + MP_ENTRY_BYTES + 8, file.length);
+      const run = convertFile(file, 'ultrahdr', 'exr', {}, 'bad.jpg');
+      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+      await expect(run).rejects.toThrow(/MPF gain map offset \d+ with size \d+ lies outside the \d+-byte file/);
+    });
   });
 });
