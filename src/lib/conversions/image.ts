@@ -1,7 +1,6 @@
 import zlib from 'node:zlib';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
-import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -25,6 +24,7 @@ import {
 } from './color-quantizer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
+import { buildOdgPackage } from './odg';
 import {
   demosaicRcdBayerCfa,
   processFloat32LinearPipeline,
@@ -2884,14 +2884,9 @@ export async function convertImage(
     }
 
     case 'odd': {
-      // OpenDocument Drawing XML package
-      const zip = new JSZip();
-      zip.file('mimetype', 'application/vnd.oasis.opendocument.graphics');
-      zip.file(
-        'content.xml',
-        '<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"><office:body><office:drawing/></office:body></office:document-content>'
-      );
-      outputBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      // OpenDocument Drawing package embedding the picture as a full-page frame
+      const { data: pngPicture, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
+      outputBuffer = await buildOdgPackage(pngPicture, info.width, info.height);
       mimeType = 'application/vnd.oasis.opendocument.graphics';
       break;
     }
