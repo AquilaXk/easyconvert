@@ -332,7 +332,7 @@ export class LibreOfficePoolManager {
     const sofficePath = this.sofficePath;
     if (!this.readinessProbe || !sofficePath) return Promise.resolve();
     const current = this.readinessCheck;
-    if (current && current.sofficePath === sofficePath) {
+    if (current?.sofficePath === sofficePath) {
       const failureExpired =
         current.failedAt !== null && Date.now() - current.failedAt >= LIBREOFFICE_READINESS_FAILURE_TTL_MS;
       if (!failureExpired) {
@@ -412,7 +412,7 @@ export class LibreOfficePoolManager {
         throw new EngineUnavailableError(LIBREOFFICE_POOL_ENGINE_NAME, `readiness probe failed: ${detail}`);
       }
       const produced = fs.existsSync(outputPath) ? fs.readFileSync(outputPath) : null;
-      if (!produced || produced.subarray(0, PDF_MAGIC.length).toString('latin1') !== PDF_MAGIC) {
+      if (produced?.subarray(0, PDF_MAGIC.length).toString('latin1') !== PDF_MAGIC) {
         throw new EngineUnavailableError(
           LIBREOFFICE_POOL_ENGINE_NAME,
           'readiness probe exited without producing a PDF document'
