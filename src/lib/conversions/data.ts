@@ -40,6 +40,7 @@ import {
 } from './data-json';
 import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMlDocument } from './data-xml';
 import { assertToml10Syntax } from './data-toml';
+import { assertConversionOptionsObject } from './options-guard';
 
 export { encodeParquet, decodeParquet };
 
@@ -421,9 +422,7 @@ function optionError(name: string, expectation: string, value: unknown): Unsuppo
  * a typed 400, never a TypeError deep in a parser.
  */
 function assertDataOptions(options: unknown): asserts options is ConversionOptions {
-  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
-    throw new UnsupportedOptionError('Conversion options must be an object.');
-  }
+  assertConversionOptionsObject(options);
   const { delimiter, encoding } = options as Record<string, unknown>;
   if (delimiter !== undefined && (typeof delimiter !== 'string' || !ALLOWED_DELIMITERS.has(delimiter))) {
     throw optionError('delimiter', 'one of ",", ";", TAB or "|"', delimiter);

@@ -357,7 +357,7 @@ describe('data conversion options are type-checked', () => {
   it('rejects options that are not an object', async () => {
     const err = await rejection(convertData(Buffer.from('[{"a":1}]'), 'json', 'csv', null as never, 'x.json'));
     expect(err).toBeInstanceOf(UnsupportedOptionError);
-    expect(err.message).toMatch(/options must be an object/);
+    expect(err.message).toBe('Conversion options must be a JSON object.');
   });
 
   it('declares encoding, bom and escapeFormulas with their types in the v1 options contract', () => {

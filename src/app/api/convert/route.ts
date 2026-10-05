@@ -5,6 +5,7 @@ import { ConversionOptions, ConversionFailedError, EngineUnavailableError } from
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
+import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -109,14 +110,19 @@ export async function POST(req: NextRequest) {
 
     let options: ConversionOptions = {};
     if (optionsRaw) {
+      let parsed: unknown;
       try {
-        options = JSON.parse(optionsRaw);
+        parsed = JSON.parse(optionsRaw);
       } catch {
         return NextResponse.json(
           { success: false, error: 'Invalid JSON format for "options" parameter.' },
           { status: 400 }
         );
       }
+      if (!isConversionOptionsObject(parsed)) {
+        return await failWithRollback(400, 'The "options" field must be a JSON object.');
+      }
+      options = parsed;
     }
 
     if (options) {
