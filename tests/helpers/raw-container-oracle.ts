@@ -68,19 +68,27 @@ export function readX3fContainer(file: Buffer): ContainerInfo {
   };
 }
 
-/** Raspberry Pi: JPEG, then a 32768-byte "BRCM" block whose mode name ("2592x1944Slow") gives the frame size. */
+/** Raspberry Pi: JPEG, then a 32768-byte "BRCM" block that gives the frame size. */
 export function readPiFrame(file: Buffer): ContainerInfo & { stride: number } {
-  const trailer = file.indexOf('BRCM', 0, 'latin1');
+  // The JPEG preview may itself contain the letters "BRCM" (maker notes): the block is the occurrence
+  // whose length word (offset 8) is the header size minus the magic.
+  let trailer = file.indexOf('BRCM', 0, 'latin1');
+  while (trailer >= 0 && file.readUInt32LE(trailer + 8) !== 32764) trailer = file.indexOf('BRCM', trailer + 1, 'latin1');
   if (trailer < 0) throw new Error('no BRCM block');
+  // Frame size: named in the mode string for the older sensors ("2592x1944Slow"); otherwise the two
+  // copies of the geometry in the block (0xd0/0xd2 and 0x10e/0x110) must agree.
   const mode = /^(\d+)x(\d+)/.exec(file.toString('latin1', trailer + 0xb0, trailer + 0xb0 + 32));
-  if (!mode) throw new Error('BRCM block has no mode name');
+  const width = file.readUInt16LE(trailer + 0xd0);
+  const height = file.readUInt16LE(trailer + 0xd2);
+  if (width !== file.readUInt16LE(trailer + 0x10e) || height !== file.readUInt16LE(trailer + 0x110)) throw new Error('BRCM geometry copies disagree');
+  if (mode && (Number(mode[1]) !== width || Number(mode[2]) !== height)) throw new Error('BRCM mode name disagrees with the geometry');
   const stride = file.readUInt32LE(trailer + 0xa0);
   return {
     previewJpeg: file.subarray(0, trailer),
-    declaredWidth: Number(mode[1]),
-    declaredHeight: Number(mode[2]),
-    sensorWidth: Number(mode[1]),
-    sensorHeight: Number(mode[2]),
+    declaredWidth: width,
+    declaredHeight: height,
+    sensorWidth: width,
+    sensorHeight: height,
     sensorDataOffset: trailer + 32768,
     stride,
   };
