@@ -1135,6 +1135,11 @@ export function decodeOpenExr(buf: Buffer): {
 // Ultra HDR JPEG (ISO 21496-1 Gain Map) Container
 // ============================================================================
 
+/** Gain map formula offset for SDR and HDR linear values; the Ultra HDR default of 1/64. */
+const ULTRA_HDR_DEFAULT_OFFSET = 0.015625;
+const ULTRA_HDR_DEFAULT_GAIN_MAP_MAX = 3.0;
+const ULTRA_HDR_XMP_DECIMALS = 6;
+
 /**
  * Builds ISO 21496-1 compliant XMP metadata packet for Ultra HDR JPEG gain map.
  */
@@ -1147,8 +1152,8 @@ export function buildIso21496Xmp(gainMapByteLength: number, gainMapMax: number =
       hdrgm:GainMapMin="0.000000"
       hdrgm:GainMapMax="${gainMapMax.toFixed(6)}"
       hdrgm:Gamma="1.000000"
-      hdrgm:OffsetSDR="0.015625"
-      hdrgm:OffsetHDR="0.015625"
+      hdrgm:OffsetSDR="${ULTRA_HDR_DEFAULT_OFFSET.toFixed(ULTRA_HDR_XMP_DECIMALS)}"
+      hdrgm:OffsetHDR="${ULTRA_HDR_DEFAULT_OFFSET.toFixed(ULTRA_HDR_XMP_DECIMALS)}"
       hdrgm:HDRCapacityMin="0.000000"
       hdrgm:HDRCapacityMax="${gainMapMax.toFixed(6)}"
       hdrgm:BaseRenditionIsHDR="False"/>
@@ -1204,7 +1209,8 @@ export async function encodeUltraHdrJpeg(
   // 2. Compute 8-bit log2 Gain Map between HDR radiance and SDR luminance
   const totalPixels = width * height;
   const gainMapBytes = Buffer.alloc(totalPixels);
-  const eps = 1e-4;
+  // The offset written to the XMP metadata, so a decoder applying the metadata inverts this exactly.
+  const eps = ULTRA_HDR_DEFAULT_OFFSET;
 
   for (let i = 0; i < totalPixels; i++) {
     const idx = i * 3;
@@ -1325,6 +1331,56 @@ export async function encodeUltraHdrJpeg(
   ]);
 }
 
+export interface UltraHdrGainMapParams {
+  gainMapMin: number;
+  gainMapMax: number;
+  gamma: number;
+  offsetSdr: number;
+  offsetHdr: number;
+}
+
+/** Returns the XMP packet stored in the first APP1 XMP segment of a JPEG stream, or '' when absent. */
+function extractJpegXmp(jpeg: Buffer): string {
+  const xmpMarker = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'ascii');
+  const xmpIdx = jpeg.indexOf(xmpMarker);
+  if (xmpIdx === -1) return '';
+  const rawXmp = jpeg.subarray(xmpIdx + xmpMarker.length);
+  const xmpEnd = '</x:xmpmeta>';
+  const endXmp = rawXmp.indexOf(xmpEnd);
+  if (endXmp === -1) return '';
+  return rawXmp.subarray(0, endXmp + xmpEnd.length).toString('utf-8');
+}
+
+function readHdrgmNumber(xmp: string, name: string): number | null {
+  const match = new RegExp(`hdrgm:${name}="([^"]+)"`).exec(xmp);
+  if (!match) return null;
+  const value = Number.parseFloat(match[1]);
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid Ultra HDR JPEG: hdrgm:${name} is not a finite number.`);
+  }
+  return value;
+}
+
+/**
+ * Resolves the gain map parameters. The gain map image's own XMP is authoritative (that is where
+ * the Ultra HDR layout stores them); the primary XMP is consulted for packets that repeat them.
+ */
+function resolveGainMapParams(gainMapXmp: string, primaryXmp: string): UltraHdrGainMapParams {
+  const read = (name: string, fallback: number): number =>
+    readHdrgmNumber(gainMapXmp, name) ?? readHdrgmNumber(primaryXmp, name) ?? fallback;
+  const params: UltraHdrGainMapParams = {
+    gainMapMin: read('GainMapMin', 0),
+    gainMapMax: read('GainMapMax', ULTRA_HDR_DEFAULT_GAIN_MAP_MAX),
+    gamma: read('Gamma', 1),
+    offsetSdr: read('OffsetSDR', ULTRA_HDR_DEFAULT_OFFSET),
+    offsetHdr: read('OffsetHDR', ULTRA_HDR_DEFAULT_OFFSET),
+  };
+  if (params.gamma <= 0) {
+    throw new Error('Invalid Ultra HDR JPEG: hdrgm:Gamma must be positive.');
+  }
+  return params;
+}
+
 /**
  * Extracts and decodes ISO 21496-1 gain map and SDR base image from an Ultra HDR JPEG.
  */
@@ -1333,6 +1389,7 @@ export function decodeUltraHdrJpeg(buf: Buffer): {
   secondaryJpeg: Buffer;
   xmp: string;
   gainMapMax: number;
+  gainMapParams: UltraHdrGainMapParams;
 } {
   // Find first JPEG EOI (0xFF, 0xD9) marking the end of primary image
   let eoiPos = -1;
@@ -1352,25 +1409,10 @@ export function decodeUltraHdrJpeg(buf: Buffer): {
   const primaryJpeg = buf.subarray(0, eoiPos);
   const secondaryJpeg = buf.subarray(eoiPos);
 
-  // Parse XMP string from primary APP1
-  let xmp = '';
-  const xmpMarker = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'ascii');
-  const xmpIdx = primaryJpeg.indexOf(xmpMarker);
-  if (xmpIdx !== -1) {
-    const rawXmp = primaryJpeg.subarray(xmpIdx + xmpMarker.length);
-    const endXmp = rawXmp.indexOf('</x:xmpmeta>');
-    if (endXmp !== -1) {
-      xmp = rawXmp.subarray(0, endXmp + 12).toString('utf-8');
-    }
-  }
+  const xmp = extractJpegXmp(primaryJpeg);
+  const gainMapParams = resolveGainMapParams(extractJpegXmp(secondaryJpeg), xmp);
 
-  let gainMapMax = 3.0;
-  const match = xmp.match(/GainMapMax="([^"]+)"/);
-  if (match && match[1]) {
-    gainMapMax = parseFloat(match[1]);
-  }
-
-  return { primaryJpeg, secondaryJpeg, xmp, gainMapMax };
+  return { primaryJpeg, secondaryJpeg, xmp, gainMapMax: gainMapParams.gainMapMax, gainMapParams };
 }
 
 /**
@@ -1384,7 +1426,8 @@ export async function reconstructUltraHdr(buf: Buffer): Promise<{
   height: number;
   gainMapMax: number;
 }> {
-  const { primaryJpeg, secondaryJpeg, gainMapMax } = decodeUltraHdrJpeg(buf);
+  const { primaryJpeg, secondaryJpeg, gainMapParams } = decodeUltraHdrJpeg(buf);
+  const { gainMapMin, gainMapMax, gamma, offsetSdr, offsetHdr } = gainMapParams;
 
   // Decode primary SDR JPEG
   const { data: sdrData, info: sdrInfo } = await sharp(primaryJpeg)
@@ -1404,11 +1447,11 @@ export async function reconstructUltraHdr(buf: Buffer): Promise<{
 
   const totalPixels = width * height;
   const rgbFloat = new Float32Array(totalPixels * 3);
-  const eps = 1e-4;
 
   for (let i = 0; i < totalPixels; i++) {
     const gmNorm = (gmBuffer[i] !== undefined ? gmBuffer[i] : 0) / 255.0;
-    const logGain = gmNorm * gainMapMax;
+    // HDR = (SDR + offsetSDR) * 2^(min + gain^(1/gamma) * (max - min)) - offsetHDR
+    const logGain = gainMapMin + Math.pow(gmNorm, 1.0 / gamma) * (gainMapMax - gainMapMin);
     const ratio = Math.pow(2.0, logGain);
 
     const idx = i * 3;
@@ -1416,9 +1459,9 @@ export async function reconstructUltraHdr(buf: Buffer): Promise<{
     const gLinSdr = inverseIec61966SrgbGamma(sdrData[idx + 1] / 255.0);
     const bLinSdr = inverseIec61966SrgbGamma(sdrData[idx + 2] / 255.0);
 
-    rgbFloat[idx] = (rLinSdr + eps) * ratio - eps;
-    rgbFloat[idx + 1] = (gLinSdr + eps) * ratio - eps;
-    rgbFloat[idx + 2] = (bLinSdr + eps) * ratio - eps;
+    rgbFloat[idx] = (rLinSdr + offsetSdr) * ratio - offsetHdr;
+    rgbFloat[idx + 1] = (gLinSdr + offsetSdr) * ratio - offsetHdr;
+    rgbFloat[idx + 2] = (bLinSdr + offsetSdr) * ratio - offsetHdr;
   }
 
   return { rgbFloat, sdrRgb: sdrData, width, height, gainMapMax };
