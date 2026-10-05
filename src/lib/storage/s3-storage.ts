@@ -19,11 +19,11 @@ import {
   getMaxInMemoryBytes,
 } from './oci-storage';
 import { StorageSigningSecretMissingError } from './errors';
+import { lazySingleton } from './lazy-singleton';
 import {
   LOCAL_DIRECT_PART_PATH,
   LOCAL_EMULATION_ACCESS_KEY_ID,
   LOCAL_EMULATION_REGION,
-  S3_SIGNING_SECRET_VARIABLES,
   isProductionRuntime,
   resolveAppBaseUrl,
   resolveSigningSecret,
@@ -65,9 +65,9 @@ export class S3ObjectStorageService implements IStorageBackend {
   private readonly baseUploadDir: string;
 
   constructor(options?: { signingSecret?: string; baseUploadDir?: string }) {
-    const secret = options?.signingSecret || resolveSigningSecret(process.env, S3_SIGNING_SECRET_VARIABLES);
+    const secret = options?.signingSecret || resolveSigningSecret();
     if (!secret && isProductionRuntime()) {
-      throw new Error('Missing required S3_SIGNING_SECRET or STORAGE_SIGNING_SECRET environment variable in production');
+      throw new Error('Missing required STORAGE_SIGNING_SECRET environment variable in production');
     }
     this.configuredSigningSecret = secret;
 
@@ -779,4 +779,7 @@ export class S3ObjectStorageService implements IStorageBackend {
   }
 }
 
-export const s3Storage = new S3ObjectStorageService();
+export const s3Storage: S3ObjectStorageService = lazySingleton(
+  S3ObjectStorageService.prototype,
+  () => new S3ObjectStorageService()
+);

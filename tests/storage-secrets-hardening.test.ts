@@ -20,9 +20,10 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
       process.env.NODE_ENV = 'production';
       delete process.env.S3_SIGNING_SECRET;
       delete process.env.STORAGE_SIGNING_SECRET;
+      delete process.env.OCI_SIGNING_SECRET;
 
       expect(() => new S3ObjectStorageService()).toThrow(
-        /Missing required S3_SIGNING_SECRET or STORAGE_SIGNING_SECRET environment variable in production/
+        /Missing required STORAGE_SIGNING_SECRET environment variable in production/
       );
     });
 
@@ -132,10 +133,11 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
       process.env.NODE_ENV = 'production';
       process.env.OCI_NAMESPACE = 'tenant-oci-namespace';
       delete process.env.STORAGE_SIGNING_SECRET;
+      delete process.env.S3_SIGNING_SECRET;
       delete process.env.OCI_SIGNING_SECRET;
 
       expect(() => new OciObjectStorageService()).toThrow(
-        /Missing required STORAGE_SIGNING_SECRET or OCI_SIGNING_SECRET environment variable in production/
+        /Missing required STORAGE_SIGNING_SECRET environment variable in production/
       );
     });
 

@@ -12,11 +12,11 @@ import {
   StorageSigningSecretMissingError,
   getMaxInMemoryBytes,
 } from './errors';
+import { lazySingleton } from './lazy-singleton';
 import {
   LOCAL_DIRECT_PART_PATH,
   LOCAL_EMULATION_ACCESS_KEY_ID,
   LOCAL_EMULATION_REGION,
-  OCI_SIGNING_SECRET_VARIABLES,
   isProductionRuntime,
   resolveAppBaseUrl,
   resolveSigningSecret,
@@ -224,9 +224,9 @@ export class OciObjectStorageService implements IStorageBackend {
       endpoint,
     };
 
-    const secret = options?.signingSecret || resolveSigningSecret(process.env, OCI_SIGNING_SECRET_VARIABLES);
+    const secret = options?.signingSecret || resolveSigningSecret();
     if (!secret && isProductionRuntime()) {
-      throw new Error('Missing required STORAGE_SIGNING_SECRET or OCI_SIGNING_SECRET environment variable in production');
+      throw new Error('Missing required STORAGE_SIGNING_SECRET environment variable in production');
     }
     this.configuredSigningSecret = secret;
 
@@ -1017,9 +1017,10 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
  * of a deployment that stores objects elsewhere (STORAGE_DRIVER=s3) or on local disk.
  */
 const LOCAL_BACKEND_NAMESPACE = 'local';
-export const ociStorage = new OciObjectStorageService({
-  namespace: process.env.OCI_NAMESPACE || LOCAL_BACKEND_NAMESPACE,
-});
+export const ociStorage: OciObjectStorageService = lazySingleton(
+  OciObjectStorageService.prototype,
+  () => new OciObjectStorageService({ namespace: process.env.OCI_NAMESPACE || LOCAL_BACKEND_NAMESPACE })
+);
 // Backward-compatible alias
 export const s3Storage = ociStorage;
 

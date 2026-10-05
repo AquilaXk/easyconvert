@@ -92,14 +92,16 @@ const AWS_FALLBACK_VARIABLES: CredentialVariables = {
   bucket: ['AWS_BUCKET_NAME'],
 };
 
-/** Variables that may hold the signing secret, in order of precedence; each backend reads its own subset. */
-export const ANY_SIGNING_SECRET_VARIABLES: readonly string[] = [
+/**
+ * Variables that may hold the signing secret, in order of precedence. Every backend reads them in
+ * this one order, so an API instance and a worker of one deployment always sign and verify with the
+ * same secret.
+ */
+export const SIGNING_SECRET_VARIABLES: readonly string[] = [
   'STORAGE_SIGNING_SECRET',
   'S3_SIGNING_SECRET',
   'OCI_SIGNING_SECRET',
 ];
-export const S3_SIGNING_SECRET_VARIABLES: readonly string[] = ['S3_SIGNING_SECRET', 'STORAGE_SIGNING_SECRET'];
-export const OCI_SIGNING_SECRET_VARIABLES: readonly string[] = ['STORAGE_SIGNING_SECRET', 'OCI_SIGNING_SECRET'];
 
 let awsFallbackWarned = false;
 let localInProductionWarned = false;
@@ -139,11 +141,8 @@ export function isProductionRuntime(env: Env = process.env): boolean {
  * tokens). It is distinct from the object store credentials. Returns undefined when none is set;
  * callers must refuse to sign then, never invent a secret.
  */
-export function resolveSigningSecret(
-  env: Env = process.env,
-  names: readonly string[] = ANY_SIGNING_SECRET_VARIABLES
-): string | undefined {
-  return firstVar(env, names)?.value;
+export function resolveSigningSecret(env: Env = process.env): string | undefined {
+  return firstVar(env, SIGNING_SECRET_VARIABLES)?.value;
 }
 
 /**

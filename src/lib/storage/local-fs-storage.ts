@@ -14,6 +14,7 @@ import type {
   StoredObjectMetadata,
 } from './object-storage';
 import { StorageSigningSecretMissingError } from './errors';
+import { lazySingleton } from './lazy-singleton';
 import { isProductionRuntime, resolveSigningSecret } from './storage-config';
 
 export interface LocalFsStorageOptions {
@@ -544,5 +545,5 @@ export class LocalFsStorage implements IObjectStorage {
   }
 }
 
-export const localFsStorage = new LocalFsStorage();
+export const localFsStorage: LocalFsStorage = lazySingleton(LocalFsStorage.prototype, () => new LocalFsStorage());
 
