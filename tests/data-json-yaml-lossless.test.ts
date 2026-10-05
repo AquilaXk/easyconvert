@@ -221,6 +221,121 @@ describe('YAML expansion is capped', () => {
     expect((err as DataParseError).line).toBeGreaterThanOrEqual(2);
     expect(err.message).toMatch(/^YAML parsing failed/);
   });
+
+  it('allows exactly 100 aliases and rejects the 101st', async () => {
+    const withAliases = (count: number): Buffer =>
+      Buffer.from(`base: &b {x: 1}\nrefs: [${Array(count).fill('*b').join(', ')}]\n`, 'utf-8');
+    const ok = await convertFile(withAliases(100), 'yaml', 'json', {}, 'ok.yaml');
+    expect(JSON.parse(ok.buffer.toString('utf-8')).refs).toHaveLength(100);
+    const err = await rejection(convertFile(withAliases(101), 'yaml', 'json', {}, 'many.yaml'));
+    expect(err).toBeInstanceOf(DataLimitExceededError);
+    expect(err.message).toBe('YAML document uses 101 aliases; at most 100 are allowed.');
+  });
+
+  it('reports an unresolved alias as a parse error', async () => {
+    const err = await rejection(convertFile(Buffer.from('a: *nowhere\n', 'utf-8'), 'yaml', 'json', {}, 'alias.yaml'));
+    expect(err).toBeInstanceOf(DataParseError);
+    expect(err.message).toMatch(/nowhere/);
+  });
+});
+
+describe('YAML keys are checked in linear time', () => {
+  const SMALL_KEY_COUNT = 25_000;
+  const LARGE_KEY_COUNT = 100_000;
+  /**
+   * 4x the keys may cost at most 8x the time: linear work scales by about 4, the pairwise
+   * uniqueness check this replaces scaled by 16 (19 s at 40,000 keys, 147 s at 100,000).
+   */
+  const MAX_SCALING_RATIO = 8;
+  /** Ceiling for 100,000 keys on a loaded runner; the pairwise check needed minutes. */
+  const LARGE_KEYS_CEILING_MS = 10_000;
+  const TIMING_RUNS = 2;
+
+  async function fastestConversionMs(keyCount: number): Promise<number> {
+    const yamlText = Buffer.from(Array.from({ length: keyCount }, (_, i) => `k${i}: ${i}`).join('\n'), 'utf-8');
+    let fastest = Number.POSITIVE_INFINITY;
+    for (let run = 0; run < TIMING_RUNS; run++) {
+      const started = performance.now();
+      const result = await convertFile(yamlText, 'yaml', 'json', {}, 'keys.yaml');
+      fastest = Math.min(fastest, performance.now() - started);
+      const parsed = JSON.parse(result.buffer.toString('utf-8')) as Record<string, number>;
+      expect(Object.keys(parsed)).toHaveLength(keyCount);
+      expect(parsed[`k${keyCount - 1}`]).toBe(keyCount - 1);
+    }
+    return fastest;
+  }
+
+  it('converts YAML maps in time linear in their key count', async () => {
+    const small = await fastestConversionMs(SMALL_KEY_COUNT);
+    const large = await fastestConversionMs(LARGE_KEY_COUNT);
+    expect(large / small).toBeLessThan(MAX_SCALING_RATIO);
+    expect(large).toBeLessThan(LARGE_KEYS_CEILING_MS);
+  }, 60_000);
+
+  const DUPLICATES: readonly [label: string, yamlText: string, line: number][] = [
+    ['a repeated key', 'a: 1\nb: 2\na: 3\n', 3],
+    ['keys equal after stringification (1 and "1")', '1: a\n"1": b\n', 2],
+    ['a null key and an empty-string key', '~: a\n"": b\n', 2],
+    ['a repeated key inside a nested map', 'outer:\n  x: 1\n  x: 2\n', 3],
+  ];
+  for (const [label, yamlText, line] of DUPLICATES) {
+    it(`rejects ${label}`, async () => {
+      const err = await rejection(convertFile(Buffer.from(yamlText, 'utf-8'), 'yaml', 'json', {}, 'dup.yaml'));
+      expect(err).toBeInstanceOf(DataParseError);
+      expect(err.message).toMatch(/duplicate key/i);
+      expect((err as DataParseError).line).toBe(line);
+    });
+  }
+
+  it('rejects a key that is not a scalar', async () => {
+    const err = await rejection(convertFile(Buffer.from('? [a, b]\n: 1\n', 'utf-8'), 'yaml', 'json', {}, 'complex.yaml'));
+    expect(err).toBeInstanceOf(DataParseError);
+    expect(err.message).toMatch(/scalar/);
+  });
+
+  it('keeps merge-key semantics: explicit keys override merged ones', async () => {
+    const yamlText = 'base: &b {x: 1, y: 2}\nd:\n  <<: *b\n  x: 9\n';
+    const result = await convertFile(Buffer.from(yamlText, 'utf-8'), 'yaml', 'json', {}, 'merge.yaml');
+    expect(JSON.parse(result.buffer.toString('utf-8'))).toEqual({ base: { x: 1, y: 2 }, d: { x: 9, y: 2 } });
+  });
+});
+
+describe('YAML input diagnostics', () => {
+  it('rejects tags it cannot resolve instead of guessing', async () => {
+    const err = await rejection(convertFile(Buffer.from('a: !!int abc\n', 'utf-8'), 'yaml', 'json', {}, 'tag.yaml'));
+    expect(err).toBeInstanceOf(DataParseError);
+    expect(err.message).toMatch(/^YAML parsing failed/);
+  });
+
+  it('describes a multi-document stream without library API names', async () => {
+    const err = await rejection(convertFile(Buffer.from('a: 1\n---\nb: 2\n', 'utf-8'), 'yaml', 'json', {}, 'multi.yaml'));
+    expect(err).toBeInstanceOf(DataParseError);
+    expect(err.message).toBe('YAML parsing failed: the input holds more than one document; convert one document at a time.');
+  });
+
+  it('decodes BOM-less UTF-16 YAML from its NUL pattern', async () => {
+    const utf16 = Buffer.from('name: alpha\ncount: 2\n', 'utf16le');
+    const result = await convertFile(utf16, 'yaml', 'json', {}, 'utf16.yaml');
+    expect(JSON.parse(result.buffer.toString('utf-8'))).toEqual({ name: 'alpha', count: 2 });
+  });
+
+  it('names BOM-less UTF-16 JSON and TOML as the wrong encoding', async () => {
+    const json = await rejection(convertFile(Buffer.from('{"a": 1}', 'utf16le'), 'json', 'yaml', {}, 'utf16.json'));
+    expect(json).toBeInstanceOf(DataEncodingError);
+    expect(json.message).toBe('JSON input must be UTF-8, but it is UTF-16 text without a byte-order mark.');
+    const toml = await rejection(convertFile(Buffer.from('a = 1\n', 'utf16le'), 'toml', 'json', {}, 'utf16.toml'));
+    expect(toml).toBeInstanceOf(DataEncodingError);
+    expect(toml.message).toBe('TOML input must be UTF-8, but it is UTF-16 text without a byte-order mark.');
+  });
+});
+
+describe('YAML output for YAML 1.1 readers', () => {
+  oracleTest('quotes "=", "<<" and strings carrying U+FEFF so PyYAML reads them back', ['python3'], async () => {
+    const json = JSON.stringify({ '=': '=', '﻿key': 'value﻿', '<<': '<<', plain: 'ok' });
+    const result = await convertFile(Buffer.from(json, 'utf-8'), 'json', 'yaml', {}, 'keys.json');
+    expect(result.buffer.toString('utf-8')).not.toContain('﻿');
+    expect(pythonYamlEqualsJson(result.buffer, json)).toBe(true);
+  });
 });
 
 describe('parquet to parquet', () => {

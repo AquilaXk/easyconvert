@@ -5,9 +5,12 @@ import { parse as parseToml, stringify as stringifyToml, TomlError } from 'smol-
 import {
   Document as YamlDocument,
   Scalar as YamlScalar,
+  isScalar as isYamlScalar,
   parseDocument as parseYamlDocument,
   visit as visitYaml,
   type ScalarTag,
+  type YAMLError,
+  type YAMLMap,
 } from 'yaml';
 import {
   ConversionOptions,
@@ -27,6 +30,7 @@ import {
   isDataObject,
   normalizeDataValue,
   parseJsonLossless,
+  positionOf,
   setOwn,
   stringifyJsonLossless,
   type DataObject,
@@ -468,7 +472,7 @@ function tableStrings(table: DataTable): string[][] {
 // Structured sources: JSON, NDJSON, YAML, TOML, XML, parquet, delimited text
 // ---------------------------------------------------------------------------
 
-/** Alias resolutions per YAML document (the yaml library's default); more indicates an expansion attack. */
+/** Aliases one YAML document may use (inclusive); exponential expansion is bounded by the value cap below. */
 const MAX_YAML_ALIAS_COUNT = 100;
 /** Values a YAML document may expand to per value written in its source. */
 const YAML_EXPANSION_FACTOR = 10;
@@ -504,6 +508,9 @@ function decodeUtf8Text(bytes: Uint8Array, format: string): string {
   if (bom !== null && bom !== 'utf-8') {
     throw new DataEncodingError(`${format} input must be UTF-8, but it starts with a ${bom} byte-order mark.`);
   }
+  if (bom === null && sniffUtf16ByNulPattern(bytes) !== null) {
+    throw new DataEncodingError(`${format} input must be UTF-8, but it is UTF-16 text without a byte-order mark.`);
+  }
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
@@ -529,35 +536,87 @@ function decodeXmlText(bytes: Uint8Array): string {
   return decodeStrict(bytes, encoding);
 }
 
-function parseYamlText(text: string): DataValue {
-  const document = parseYamlDocument(text, { intAsBigInt: true, merge: true, uniqueKeys: true });
-  const [first] = document.errors;
-  if (first) {
-    const position = first.linePos?.[0];
-    throw new DataParseError(`YAML parsing failed: ${first.message.split('\n')[0]}`, {
-      line: position?.line,
-      column: position?.col,
-    });
+function yamlParseError(error: YAMLError): DataParseError {
+  const position = error.linePos?.[0];
+  const reason =
+    error.code === 'MULTIPLE_DOCS'
+      ? 'the input holds more than one document; convert one document at a time.'
+      : error.message.split('\n')[0];
+  return new DataParseError(`YAML parsing failed: ${reason}`, { line: position?.line, column: position?.col });
+}
+
+/**
+ * Map keys must be scalars and unique after conversion to JSON property names, where 1 and "1"
+ * (or ~ and "") become the same key. One Set per map keeps this linear; the yaml library's own
+ * uniqueKeys check compares every pair and took minutes for 100,000 keys. Merge keys (<<) are
+ * exempt, so explicit keys still override merged ones.
+ */
+function assertYamlKeysUnique(map: YAMLMap, text: string): void {
+  const seen = new Set<string>();
+  // The position is computed only for the error: scanning for it on every key would be quadratic.
+  const locate = (key: unknown): { line?: number; column?: number } => {
+    const offset = (key as { range?: [number, number, number] } | null)?.range?.[0];
+    return offset === undefined ? {} : positionOf(text, offset);
+  };
+  for (const pair of map.items) {
+    const key = pair.key;
+    if (key !== null && !isYamlScalar(key)) {
+      throw new DataParseError('YAML parsing failed: map keys must be scalars to become JSON property names.', locate(key));
+    }
+    const value = key === null ? null : key.value;
+    if (typeof value === 'symbol') continue;
+    const name = value === null ? '' : String(value);
+    if (seen.has(name)) {
+      throw new DataParseError(`YAML parsing failed: duplicate key ${JSON.stringify(name)} in a map.`, locate(key));
+    }
+    seen.add(name);
   }
+}
+
+function parseYamlText(text: string): DataValue {
+  const document = parseYamlDocument(text, { intAsBigInt: true, merge: true, uniqueKeys: false });
+  // Warnings include tags that could not be resolved (!!int abc, unknown !tags); guessing a value would be silent.
+  const [first] = [...document.errors, ...document.warnings];
+  if (first) throw yamlParseError(first);
   let sourceValues = 0;
+  let aliases = 0;
   visitYaml(document, {
-    Node() {
+    Alias() {
+      aliases++;
       sourceValues++;
     },
+    Scalar() {
+      sourceValues++;
+    },
+    Seq() {
+      sourceValues++;
+    },
+    Map(_key, map) {
+      sourceValues++;
+      assertYamlKeysUnique(map, text);
+    },
   });
+  if (aliases > MAX_YAML_ALIAS_COUNT) {
+    throw new DataLimitExceededError(`YAML document uses ${aliases} aliases; at most ${MAX_YAML_ALIAS_COUNT} are allowed.`);
+  }
   let raw: unknown;
   try {
-    raw = document.toJS({ maxAliasCount: MAX_YAML_ALIAS_COUNT });
+    // Aliases resolve to shared objects; the value cap below bounds their expansion.
+    raw = document.toJS({ maxAliasCount: -1 });
   } catch (err) {
-    if (err instanceof ReferenceError) {
-      throw new DataLimitExceededError(`YAML alias expansion exceeds the cap of ${MAX_YAML_ALIAS_COUNT} aliases: ${err.message}.`);
-    }
     throw new DataParseError(`YAML parsing failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return normalizeDataValue(raw, {
-    maxValues: Math.max(YAML_MIN_EXPANDED_VALUES, sourceValues * YAML_EXPANSION_FACTOR),
-    label: 'YAML document',
-  });
+  try {
+    return normalizeDataValue(raw, {
+      maxValues: Math.max(YAML_MIN_EXPANDED_VALUES, sourceValues * YAML_EXPANSION_FACTOR),
+      label: 'YAML document',
+    });
+  } catch (err) {
+    if (err instanceof DataLimitExceededError && aliases > 0 && /expands to more than/.test(err.message)) {
+      throw new DataLimitExceededError(err.message.replace(/\.$/, ' through its aliases.'));
+    }
+    throw err;
+  }
 }
 
 function parseTomlText(text: string): DataValue {
@@ -609,8 +668,9 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
     return { value: records, records: () => records, text: () => stringifyJsonLossless(records, JSON_INDENT) };
   }
   if (src === 'yaml' || src === 'yml') {
-    const bom = sniffBom(inputBuffer);
-    const text = decodeStrict(inputBuffer, bom ?? 'utf-8');
+    // YAML 1.2 (5.2) allows UTF-16 and detects it from a BOM or the NUL pattern of its first characters.
+    const encoding = sniffBom(inputBuffer) ?? sniffUtf16ByNulPattern(inputBuffer) ?? 'utf-8';
+    const text = decodeStrict(inputBuffer, encoding);
     const value = parseYamlText(text);
     return { value, records: () => asRecords(value), text: () => text };
   }
@@ -640,7 +700,9 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
  * Characters a YAML stream may carry only as escapes (outside c-printable: C0 and C1 controls,
  * DEL, unpaired surrogates, U+FFFE/U+FFFF), plus NEL, LS and PS, which YAML 1.1 reads as line breaks.
  */
-const YAML_ESCAPE_ONLY = /[\0-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u2028\u2029\uFFFE\uFFFF\uD800-\uDFFF]/u;
+const YAML_ESCAPE_ONLY = /[\0-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u2028\u2029\uFEFF\uFFFE\uFFFF\uD800-\uDFFF]/u;
+/** Plain scalars YAML 1.1 reads as something other than a string: the value key and the merge key. */
+const YAML_11_SPECIAL_SCALARS: ReadonlySet<string> = new Set(['=', '<<']);
 const YAML_ESCAPE_ONLY_ALL = new RegExp(YAML_ESCAPE_ONLY.source, 'gu');
 const YAML_NAMED_ESCAPES: ReadonlyMap<number, string> = new Map([
   [0x85, '\\N'],
@@ -694,7 +756,11 @@ function writeYamlText(value: DataValue): string {
   visitYaml(document, {
     Scalar(_key, node) {
       // YAML 1.1 readers also reject a tab inside a plain scalar, which YAML 1.2 allows.
-      if (typeof node.value === 'string' && (node.value.includes('\t') || YAML_ESCAPE_ONLY.test(node.value))) {
+      const text = node.value;
+      if (
+        typeof text === 'string' &&
+        (text.includes('\t') || YAML_ESCAPE_ONLY.test(text) || YAML_11_SPECIAL_SCALARS.has(text))
+      ) {
         node.type = YamlScalar.QUOTE_DOUBLE;
       }
     },
