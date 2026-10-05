@@ -90,20 +90,22 @@ function frameControl(sequence: number, width: number, height: number, delayCent
  * Builds an APNG from same-sized still PNGs: the first PNG is the default image and frame 1, every later
  * PNG contributes its IDAT data as fdAT of the following frames (APNG 1.0 specification).
  */
-export function buildApng(framePngs: Buffer[], delayCentiseconds = 10): Buffer {
+export function buildApng(framePngs: Buffer[], delayCentiseconds: number | number[] = 10, plays = 0): Buffer {
+  const delayOf = (index: number) => (Array.isArray(delayCentiseconds) ? delayCentiseconds[index] : delayCentiseconds);
   const [first, ...rest] = framePngs.map(readPngChunks);
   const ihdr = first.find((chunk) => chunk.type === 'IHDR');
   if (!ihdr) throw new Error('PNG without IHDR');
   const width = ihdr.data.readUInt32BE(0);
   const height = ihdr.data.readUInt32BE(4);
   const actl = Buffer.alloc(8);
-  actl.writeUInt32BE(framePngs.length, 0); // num_frames; num_plays 0 = forever
+  actl.writeUInt32BE(framePngs.length, 0);
+  actl.writeUInt32BE(plays, 4); // num_plays; 0 = forever
   const out: Buffer[] = [PNG_SIGNATURE, pngChunk('IHDR', ihdr.data), pngChunk('acTL', actl)];
   let sequence = 0;
-  out.push(frameControl(sequence++, width, height, delayCentiseconds));
+  out.push(frameControl(sequence++, width, height, delayOf(0)));
   first.filter((chunk) => chunk.type === 'IDAT').forEach((chunk) => out.push(pngChunk('IDAT', chunk.data)));
-  rest.forEach((chunks) => {
-    out.push(frameControl(sequence++, width, height, delayCentiseconds));
+  rest.forEach((chunks, restIndex) => {
+    out.push(frameControl(sequence++, width, height, delayOf(restIndex + 1)));
     chunks
       .filter((chunk) => chunk.type === 'IDAT')
       .forEach((chunk) => {

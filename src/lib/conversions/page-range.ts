@@ -258,3 +258,11 @@ export function validateTierPageLimit(spec: string, userTier = 'free'): void {
     );
   }
 }
+
+const MIN_PAGE_DIGITS = 3;
+
+/** ZIP entry name for page `pageNumber` of a multi-page output: `<name>-p001.<ext>`, padded to the last page's width. */
+export function pageEntryName(baseName: string, pageNumber: number, lastPage: number, extension: string): string {
+  const padLength = Math.max(MIN_PAGE_DIGITS, String(lastPage).length);
+  return `${baseName}-p${String(pageNumber).padStart(padLength, '0')}.${extension}`;
+}

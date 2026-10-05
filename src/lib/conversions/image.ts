@@ -2,7 +2,8 @@ import zlib from 'node:zlib';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
-import { selectFrames } from './image-frames';
+import { selectFrames, type FrameSelection } from './image-frames';
+import { encodeDecodedAnimation, zipPageImages } from './image-frame-output';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -2346,12 +2347,42 @@ async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
 function toImageDecodeError(err: unknown): ConversionFailedError {
   if (err instanceof ConversionFailedError) return err;
   const detail = err instanceof Error ? err.message : String(err);
-  const failure = new ConversionFailedError(`Unable to decode the image: ${detail}`);
+  const failure = new ConversionFailedError(`Invalid image: it could not be decoded (${detail})`);
   failure.cause = err;
   return failure;
 }
 
 const RGB_CHANNEL_COUNT = 3;
+const DEFAULT_QUALITY = 85;
+
+/** Resize parameters for the requested width/height, or null when the request does not resize. */
+function resizeOptionsOf(
+  options: ConversionOptions,
+  background: ReturnType<typeof parseBackground>,
+  isOpaqueTarget: boolean
+): sharp.ResizeOptions | null {
+  if (!options.width && !options.height) return null;
+  return {
+    width: options.width ? Number(options.width) : undefined,
+    height: options.height ? Number(options.height) : undefined,
+    fit: options.fit || 'contain',
+    background: letterboxColour(background, isOpaqueTarget),
+  };
+}
+
+/** File extension of a target format's output (Ultra HDR is a JPEG). */
+function outputExtensionOf(fmt: string): string {
+  return fmt === 'ultrahdr' ? 'jpg' : fmt;
+}
+
+/** The custom quantizers work on a single frame; applying them to a stacked animation would merge its frames. */
+function assertAnimatableOptions(options: ConversionOptions): void {
+  if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma' || options.ditherMethod === 'blue-noise') {
+    throw new UnsupportedOptionError(
+      'The oklab quantizer, riemersma and blue-noise dithering work on one frame and cannot be applied to an animated GIF; remove them or select a single frame with the "page" option'
+    );
+  }
+}
 
 /** The EPS, EXR and Ultra HDR encoders read three bytes per pixel; any other layout would shear the picture. */
 function assertRgbSamples(info: sharp.OutputInfo, target: string): void {
@@ -2449,7 +2480,56 @@ export async function convertImage(
   }
 
   let pipeline: sharp.Sharp;
-  let keepsAnimation = false;
+  let frameSelection: FrameSelection | undefined;
+
+  /** Package outputs that are not one image of the pipeline: assembled animations and per-page ZIPs. */
+  const packageMultiFrameSource = async (selection: FrameSelection): Promise<ConversionResult | null> => {
+    const frameFields = { sourceFrameCount: selection.sourceFrameCount, frameUsed: selection.frameUsed };
+    if (selection.animation) {
+      assertAnimatableOptions(options);
+      const colours = Math.min(256, Math.max(2, options.colors || 256));
+      const animated = await encodeDecodedAnimation(
+        selection.animation,
+        fmt as 'gif' | 'webp',
+        resizeOptionsOf(options, background, false),
+        {
+          quality: options.quality ? Math.max(1, Math.min(100, options.quality)) : DEFAULT_QUALITY,
+          colours,
+          dither: options.dither !== false ? 1.0 : 0.0,
+        }
+      );
+      return {
+        buffer: animated,
+        mimeType: fmt === 'gif' ? 'image/gif' : 'image/webp',
+        filename: `${baseName}.${fmt}`,
+        size: animated.length,
+        ...frameFields,
+      };
+    }
+    if (selection.zipPages) {
+      const zipped = await zipPageImages(
+        selection.zipPages,
+        (page) =>
+          convertImage(
+            inputBuffer,
+            targetFormat,
+            { ...options, page, pages: undefined, multiPageOutput: undefined },
+            originalFilename,
+            sourceFormat
+          ),
+        baseName,
+        outputExtensionOf(fmt)
+      );
+      return {
+        buffer: zipped,
+        mimeType: 'application/zip',
+        filename: `${baseName}.zip`,
+        size: zipped.length,
+        ...frameFields,
+      };
+    }
+    return null;
+  };
 
   try {
     if (rawDemosaiced) {
@@ -2525,10 +2605,12 @@ export async function convertImage(
         raw: { width: uHdr.width, height: uHdr.height, channels: 3 },
       });
     } else {
-      // Multi-frame sources keep every frame for animated targets; still targets need `options.page`.
-      const frames = await selectFrames(activeBuffer, fmt, options.page);
-      keepsAnimation = frames.keepsAnimation;
-      pipeline = sharp(activeBuffer, frames.input);
+      // Multi-frame sources: animated targets keep every frame, still targets take frame 1 (or `page`),
+      // multi-page documents become one image per page.
+      frameSelection = await selectFrames(activeBuffer, fmt, options);
+      const packaged = await packageMultiFrameSource(frameSelection);
+      if (packaged) return packaged;
+      pipeline = sharp(frameSelection.source, frameSelection.input);
     }
 
     if (isRawInput) {
@@ -2559,13 +2641,9 @@ export async function convertImage(
   }
 
   // Resize options
-  if (options.width || options.height) {
-    pipeline = pipeline.resize({
-      width: options.width ? Number(options.width) : undefined,
-      height: options.height ? Number(options.height) : undefined,
-      fit: options.fit || 'contain',
-      background: letterboxColour(background, isOpaqueTarget),
-    });
+  const resizeOptions = resizeOptionsOf(options, background, isOpaqueTarget);
+  if (resizeOptions) {
+    pipeline = pipeline.resize(resizeOptions);
   }
 
   // Targets without an alpha channel would turn transparent pixels black: flatten them onto the background.
@@ -2574,7 +2652,7 @@ export async function convertImage(
   }
 
 
-  const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : 85;
+  const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : DEFAULT_QUALITY;
 
   let outputBuffer: Buffer;
   let mimeType: string;
@@ -2794,10 +2872,8 @@ export async function convertImage(
         options.ditherMethod === 'riemersma' ||
         options.ditherMethod === 'blue-noise'
       ) {
-        if (keepsAnimation) {
-          throw new UnsupportedOptionError(
-            'The oklab quantizer, riemersma and blue-noise dithering work on one frame and cannot be applied to an animated GIF; remove them or select a single frame with the "page" option'
-          );
+        if (frameSelection?.keepsAnimation) {
+          assertAnimatableOptions(options);
         }
         const { data, info } = await pipeline
           .ensureAlpha()
@@ -3021,14 +3097,59 @@ export async function convertImage(
       throw new Error(`Unsupported image target format: ${targetFormat}`);
   }
 
-  const outExt = fmt === 'ultrahdr' ? 'jpg' : fmt;
+  const outExt = outputExtensionOf(fmt);
   return {
     buffer: outputBuffer,
     mimeType,
     filename: `${baseName}.${outExt}`,
     size: outputBuffer.length,
     isEmbeddedPreview: isEmbeddedPreview || undefined,
+    ...(frameSelection?.sourceFrameCount === undefined
+      ? {}
+      : { sourceFrameCount: frameSelection.sourceFrameCount, frameUsed: frameSelection.frameUsed }),
   };
+}
+
+/** One PDF page: the oriented picture as PNG plus its pixel size. */
+interface PdfPageImage {
+  png: Buffer;
+  width: number;
+  height: number;
+}
+
+/** Decodes the pages a PDF is built from: BMP/ICO payloads directly, anything else through the frame rules. */
+async function decodePdfPages(
+  activeBuffer: Buffer,
+  options: ConversionOptions,
+  sourceFormat: string | undefined
+): Promise<{ pages: PdfPageImage[]; sourceFrameCount?: number; frameUsed?: number }> {
+  const toPage = async (pipeline: sharp.Sharp): Promise<PdfPageImage> => {
+    const { data, info } = await pipeline.rotate().png().toBuffer({ resolveWithObject: true });
+    return { png: data, width: info.width, height: info.height };
+  };
+
+  if (sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
+    const decoded = decodeBmp(activeBuffer);
+    return { pages: [await toPage(sharp(decoded.raw, { raw: { width: decoded.width, height: decoded.height, channels: 4 } }))] };
+  }
+  if (
+    sourceFormat === 'ico' ||
+    (activeBuffer.length >= 4 && activeBuffer[0] === 0 && activeBuffer[1] === 0 && activeBuffer[2] === 1 && activeBuffer[3] === 0)
+  ) {
+    return { pages: [await toPage(sharp(decodeIco(activeBuffer)))] };
+  }
+
+  // A PDF holds several pages, so a multi-page source keeps all of them here (pdf is not a tiff target).
+  const selection = await selectFrames(activeBuffer, 'pdf', options);
+  const frameFields = { sourceFrameCount: selection.sourceFrameCount, frameUsed: selection.frameUsed };
+  if (selection.zipPages) {
+    const pages: PdfPageImage[] = [];
+    for (const page of selection.zipPages) {
+      pages.push(await toPage(sharp(activeBuffer, { page: page - 1 })));
+    }
+    return { pages, ...frameFields };
+  }
+  return { pages: [await toPage(sharp(selection.source, selection.input))], ...frameFields };
 }
 
 async function convertImageToPdf(
@@ -3042,35 +3163,24 @@ async function convertImageToPdf(
     activeBuffer = sanitizeSvgBuffer(activeBuffer);
   }
 
-  let pipeline: sharp.Sharp;
-
-  if (sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
-    const decoded = decodeBmp(activeBuffer);
-    pipeline = sharp(decoded.raw, {
-      raw: { width: decoded.width, height: decoded.height, channels: 4 },
-    });
-  } else if (
-    sourceFormat === 'ico' ||
-    (activeBuffer.length >= 4 &&
-      activeBuffer[0] === 0 &&
-      activeBuffer[1] === 0 &&
-      activeBuffer[2] === 1 &&
-      activeBuffer[3] === 0)
-  ) {
-    const payload = decodeIco(activeBuffer);
-    pipeline = sharp(payload);
-  } else {
-    pipeline = sharp(activeBuffer);
+  let decodedPages: Awaited<ReturnType<typeof decodePdfPages>>;
+  try {
+    decodedPages = await decodePdfPages(activeBuffer, options, sourceFormat);
+  } catch (err: unknown) {
+    throw toImageDecodeError(err);
   }
-
-  const metadata = await pipeline.metadata();
-  const imgWidth = metadata.width || 595.28;
-  const imgHeight = metadata.height || 841.89;
+  const { pages, sourceFrameCount, frameUsed } = decodedPages;
+  const frameFields = sourceFrameCount === undefined ? {} : { sourceFrameCount, frameUsed };
 
   // If OCR is requested, generate an authentic Searchable PDF with invisible text layer
   if (options.ocrEnabled) {
-    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
-    const searchablePdf = await generateSearchablePdf(inputBuffer, ocrResult, options, baseName);
+    if (pages.length !== 1) {
+      throw new ConversionFailedError(
+        `OCR reads one page at a time but this image has ${pages.length} pages: select one with the "page" option`
+      );
+    }
+    const ocrResult = await performOcr(pages[0].png, options.ocrLanguage);
+    const searchablePdf = await generateSearchablePdf(pages[0].png, ocrResult, options, baseName);
     return {
       buffer: searchablePdf,
       mimeType: 'application/pdf',
@@ -3078,23 +3188,17 @@ async function convertImageToPdf(
       size: searchablePdf.length,
       ocrExtractedText: ocrResult.text,
       ocrConfidence: ocrResult.confidence,
+      ...frameFields,
     };
   }
 
-  // Convert to PNG buffer first to ensure pdfkit can embed it reliably
-  const pngBuffer = await pipeline.png().toBuffer();
-
   return new Promise((resolve, reject) => {
-    const isLandscape =
-      options.orientation === 'landscape' || (imgWidth > imgHeight && !options.orientation);
-    // The size is already [width, height] in the final orientation, so no layout swap is applied.
-    const doc = new PDFDocument({
-      size: [
-        isLandscape ? Math.max(imgWidth, imgHeight) : imgWidth,
-        isLandscape ? Math.min(imgWidth, imgHeight) : imgHeight,
-      ],
-      margin: 0,
-    });
+    const pageSize = (page: PdfPageImage): [number, number] => {
+      const isLandscape = options.orientation === 'landscape' || (page.width > page.height && !options.orientation);
+      // The size is already [width, height] in the final orientation, so no layout swap is applied.
+      return isLandscape ? [Math.max(page.width, page.height), Math.min(page.width, page.height)] : [page.width, page.height];
+    };
+    const doc = new PDFDocument({ size: pageSize(pages[0]), margin: 0 });
 
     const chunks: Buffer[] = [];
     doc.on('data', (chunk) => chunks.push(chunk));
@@ -3105,14 +3209,18 @@ async function convertImageToPdf(
         mimeType: 'application/pdf',
         filename: `${baseName}.pdf`,
         size: buffer.length,
+        ...frameFields,
       });
     });
     doc.on('error', (err) => reject(err));
 
-    doc.image(pngBuffer, 0, 0, {
-      fit: [doc.page.width, doc.page.height],
-      align: 'center',
-      valign: 'center',
+    pages.forEach((page, index) => {
+      if (index > 0) doc.addPage({ size: pageSize(page), margin: 0 });
+      doc.image(page.png, 0, 0, {
+        fit: [doc.page.width, doc.page.height],
+        align: 'center',
+        valign: 'center',
+      });
     });
     doc.end();
   });

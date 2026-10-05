@@ -337,6 +337,10 @@ export interface ConversionResult {
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
+  /** Frames (animated GIF/WebP/APNG) or pages (multi-page TIFF/HEIF) the source image holds; set only when more than one. */
+  sourceFrameCount?: number;
+  /** 1-based frame or page a still output was taken from: frame 1 by default, or the requested `page`. */
+  frameUsed?: number;
 }
 
 // S3 Chunked Upload Types
@@ -418,6 +422,8 @@ export interface ConversionJobResult {
   size: number;
   durationMs: number;
   ocrExtracted?: boolean;
+  sourceFrameCount?: number;
+  frameUsed?: number;
 }
 
 export class ConversionFailedError extends Error {

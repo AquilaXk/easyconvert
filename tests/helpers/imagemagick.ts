@@ -101,11 +101,28 @@ export function frameDelaysMs(encoded: Buffer, extension: string): number[] {
   );
 }
 
-/** Decodes every frame of an animated image, composited onto the full canvas (`-coalesce`), to RGBA. */
-export function decodeCoalescedFrames(encoded: Buffer, extension: string): DecodedRgba[] {
+/** ImageMagick names of EXIF orientations 1 to 8, indexed by the EXIF value minus one. */
+export const IMAGEMAGICK_ORIENTATIONS = [
+  'top-left',
+  'top-right',
+  'bottom-right',
+  'bottom-left',
+  'left-top',
+  'right-top',
+  'right-bottom',
+  'left-bottom',
+] as const;
+
+/**
+ * Decodes every frame of an animated image, composited onto the full canvas (`-coalesce`), to RGBA.
+ * `orientation` (an ImageMagick orientation name) is set on every frame and applied with `-auto-orient`, for
+ * containers whose EXIF block ImageMagick does not read (WebP).
+ */
+export function decodeCoalescedFrames(encoded: Buffer, extension: string, orientation?: string): DecodedRgba[] {
   return withTempImage(encoded, extension, (file) => {
     const dir = path.dirname(file);
-    execFileSync(requireMagick(), convertArgs([file, '-coalesce', '+adjoin', path.join(dir, 'frame-%d.png')]), {
+    const orient = orientation === undefined ? [] : ['-orient', orientation, '-auto-orient'];
+    execFileSync(requireMagick(), convertArgs([file, '-coalesce', ...orient, '+adjoin', path.join(dir, 'frame-%d.png')]), {
       maxBuffer: MAX_DECODE_BYTES,
     });
     const frames: DecodedRgba[] = [];

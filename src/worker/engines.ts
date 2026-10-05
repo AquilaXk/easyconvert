@@ -29,7 +29,7 @@ import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasComplexTextScript } from '../lib/conversions/ctl';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
+import { parsePageRanges, groupConsecutiveRanges, pageEntryName, PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -1074,10 +1074,9 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
   // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
   const zip = new JSZip();
   const maxPage = requestedPages.at(-1) ?? 1;
-  const padLen = Math.max(3, String(maxPage).length);
 
   for (const item of resolvedFiles) {
-    const entryName = `${baseName}-p${String(item.pageNum).padStart(padLen, '0')}.${tgt}`;
+    const entryName = pageEntryName(baseName, item.pageNum, maxPage, tgt);
     const fileBytes = fs.readFileSync(path.join(tempDir, item.file));
     zip.file(entryName, fileBytes);
   }

@@ -31,8 +31,8 @@ describe('buildOpenXpsPackage image dimensions', () => {
     const buffer = await buildOpenXpsPackage([pageWith({ width: 41, height: 23 })], 'doc');
     const zip = await JSZip.loadAsync(buffer);
     const fpage = await zip.file(PAGE_PART)!.async('string');
-    expect(fpage).toContain('Viewbox="0,0,41,23"');
-    expect(fpage).not.toContain('Viewbox="0,0,800,600"');
+    const viewboxes = [...fpage.matchAll(/Viewbox="([^"]+)"/g)].map((match) => match[1]);
+    expect(viewboxes).toEqual(['0,0,41,23']);
   });
 
   it.each([
@@ -52,6 +52,8 @@ describe('buildOpenXpsPackage image dimensions', () => {
   it('still builds text-only pages without an image', async () => {
     const buffer = await buildOpenXpsPackage([{ title: 't', lines: ['hello'] }], 'doc');
     const zip = await JSZip.loadAsync(buffer);
-    expect(await zip.file(PAGE_PART)!.async('string')).not.toContain('ImageBrush');
+    const fpage = await zip.file(PAGE_PART)!.async('string');
+    expect([...fpage.matchAll(/<ImageBrush/g)]).toHaveLength(0);
+    expect([...fpage.matchAll(/UnicodeString="([^"]*)"/g)].map((match) => match[1])).toEqual(['t', 'hello']);
   });
 });
