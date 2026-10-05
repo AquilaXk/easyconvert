@@ -55,8 +55,10 @@ import {
   archiveFailureStderr,
   assertArchivePasswordSafe,
   assertListingShowsEncryption,
+  assertEncryptedArchiveInputWithinLimits,
   assertZipPasswordSupported,
   MAX_ENCRYPTION_LISTING_BYTES,
+  walkArchiveTreePaths,
   execFileSyncWithPasswordStdin,
   isArchivePasswordError,
   sevenZipCreatePasswordInput,
@@ -282,6 +284,7 @@ function createEncryptedArchiveVia7z(
   if (archiveType === 'zip') assertZipPasswordSupported(password);
 
   const resolvedFiles = resolveArchiveEntryCollisions(files, collisionPolicy || 'rename');
+  assertEncryptedArchiveInputWithinLimits(resolvedFiles.map((f) => sanitizeArchivePath(f.filename) || path.basename(f.filename)));
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
@@ -1739,6 +1742,9 @@ export function convertWithNative7z(
     }
 
 
+    if (options.password && (tgt === 'zip' || tgt === '7z')) {
+      assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
+    }
     const pwCreateArgs: string[] = [];
     if (options.password) {
       if (tgt === '7z') {

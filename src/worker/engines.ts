@@ -54,11 +54,13 @@ import {
   archiveFailureStderr,
   assertArchivePasswordSafe,
   assertListingShowsEncryption,
+  assertEncryptedArchiveInputWithinLimits,
   assertZipPasswordSupported,
   isArchivePasswordError,
   sevenZipCreatePasswordInput,
   sevenZipEncryptionCheckInput,
   sevenZipReadPasswordInput,
+  walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
 
@@ -732,6 +734,9 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   const archiveType = get7zArchiveType(tgt);
   if (!archiveType) return false;
 
+  if (options?.password && (tgt === 'zip' || tgt === '7z')) {
+    assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
+  }
   const pwArgs: string[] = [];
   if (options?.password) {
     if (tgt === '7z') {

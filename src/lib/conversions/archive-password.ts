@@ -1,4 +1,6 @@
 import { execFileSync, type ExecFileSyncOptionsWithBufferEncoding } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   ArchiveNotEncryptedError,
   ArchivePasswordRequiredError,
@@ -201,8 +203,56 @@ export function archivePasswordError(
   return new InvalidArchivePasswordError(`Invalid password for encrypted ${request.label}.`);
 }
 
+/** Most entries an encrypted ZIP or 7z target may hold: its verification listing has to stay readable. */
+export const MAX_ENCRYPTED_ARCHIVE_ENTRIES = 50_000;
+
+/**
+ * Room reserved per entry in the verification listing. `7z l -slt` prints about 330 bytes of fields
+ * for an entry plus its path (twice for a symlink target); 1 KiB covers paths of 255 bytes.
+ */
+export const ENCRYPTION_LISTING_BYTES_PER_ENTRY = 1024;
+
 /** Largest verification listing read; a bigger one cannot prove encryption and fails the creation. */
-export const MAX_ENCRYPTION_LISTING_BYTES = 16 * 1024 * 1024;
+export const MAX_ENCRYPTION_LISTING_BYTES = MAX_ENCRYPTED_ARCHIVE_ENTRIES * ENCRYPTION_LISTING_BYTES_PER_ENTRY;
+
+/** Bytes of fields `7z l -slt` prints per entry besides its path (about 330 measured), rounded up. */
+const ENCRYPTION_LISTING_FIELD_BYTES = 512;
+
+/**
+ * Throws before any archive is written when an encrypted target would be too big to verify: more
+ * entries than MAX_ENCRYPTED_ARCHIVE_ENTRIES, or entry paths long enough that the verification
+ * listing would pass MAX_ENCRYPTION_LISTING_BYTES. Without it the creation runs to the end and only
+ * the check afterwards fails. Stops reading `entryPaths` at the first violation.
+ */
+export function assertEncryptedArchiveInputWithinLimits(entryPaths: Iterable<string>): void {
+  let entries = 0;
+  let listingBytes = 0;
+  for (const entryPath of entryPaths) {
+    entries += 1;
+    if (entries > MAX_ENCRYPTED_ARCHIVE_ENTRIES) {
+      throw new ConversionFailedError(`Encrypted archives support at most ${MAX_ENCRYPTED_ARCHIVE_ENTRIES} entries.`);
+    }
+    listingBytes += ENCRYPTION_LISTING_FIELD_BYTES + Buffer.byteLength(entryPath, 'utf-8');
+    if (listingBytes > MAX_ENCRYPTION_LISTING_BYTES) {
+      throw new ConversionFailedError(
+        `The encryption check listing would exceed ${MAX_ENCRYPTION_LISTING_BYTES} bytes. Use shorter entry paths or fewer entries.`
+      );
+    }
+  }
+}
+
+/** Paths, relative to `root`, of every file, folder and link below it. Symbolic links are not followed. */
+export function* walkArchiveTreePaths(root: string): Generator<string> {
+  const pending: string[] = [''];
+  while (pending.length > 0) {
+    const relativeDir = pending.pop() as string;
+    for (const entry of fs.readdirSync(path.join(root, relativeDir), { withFileTypes: true })) {
+      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+      yield relativePath;
+      if (entry.isDirectory()) pending.push(relativePath);
+    }
+  }
+}
 
 /** What `7z l -slt` said about a freshly created archive, listed with an empty password. */
 export interface EncryptionListingOutcome {

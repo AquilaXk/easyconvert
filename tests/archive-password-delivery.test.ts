@@ -15,8 +15,12 @@ import {
   inspectArchive,
 } from '../src/lib/conversions/archive';
 import {
+  ENCRYPTION_LISTING_BYTES_PER_ENTRY,
   MAX_ARCHIVE_PASSWORD_BYTES,
+  MAX_ENCRYPTED_ARCHIVE_ENTRIES,
+  MAX_ENCRYPTION_LISTING_BYTES,
   MAX_ZIP_PASSWORD_BYTES,
+  assertEncryptedArchiveInputWithinLimits,
   assertArchivePasswordSafe,
   assertListingShowsEncryption,
   assertZipPasswordSupported,
@@ -188,7 +192,12 @@ function oracleListing(archive: Buffer, extension: string, password: string): st
   return withTempDir((dir) => {
     const file = path.join(dir, `listing.${extension}`);
     writeFileSync(file, archive);
-    return execFileSync(oracle7z(), ['l', '-slt', `-p${password}`, file], { encoding: 'utf-8', env: ORACLE_ENV, stdio: 'pipe' });
+    return execFileSync(oracle7z(), ['l', '-slt', `-p${password}`, file], {
+      encoding: 'utf-8',
+      env: ORACLE_ENV,
+      stdio: 'pipe',
+      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+    });
   });
 }
 
@@ -782,6 +791,95 @@ describe('archive password delivery to the real 7z binary', () => {
         expect(() => assertListingShowsEncryption('zip', { failureOutput: 'Break signaled' })).toThrow(ConversionFailedError);
       });
     });
+  });
+
+  describe('entry limits of encrypted archives', () => {
+    const EMPTY = Buffer.alloc(0);
+    const NAME_BYTES = 255;
+    /** Unique entry name of exactly NAME_BYTES bytes. */
+    const longName = (index: number): string => `${String(index).padStart(6, '0')}${'n'.repeat(NAME_BYTES - 6)}`;
+    const LONG_RUN_TIMEOUT_MS = 300_000;
+
+    /** Records every 7z invocation, one first argument per line, then runs the real binary. */
+    function installCallLog(dir: string): string {
+      const real = get7zBinaryPath();
+      if (!real) throw new Error('7z binary missing');
+      const log = path.join(dir, 'calls.log');
+      writeFileSync(log, '');
+      const wrapper = path.join(dir, '7z-call-log.sh');
+      writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$1" >> '${log}'\nexec '${real}' "$@"\n`);
+      chmodSync(wrapper, 0o755);
+      process.env.P7ZIP_PATH = wrapper;
+      return log;
+    }
+
+    const calledCommands = (log: string): string[] => readFileSync(log, 'utf-8').split('\n').filter(Boolean);
+
+    it('derives the listing cap from the entry limit so a full archive of long names verifies', () => {
+      expect(MAX_ENCRYPTED_ARCHIVE_ENTRIES).toBe(50_000);
+      expect(MAX_ENCRYPTION_LISTING_BYTES).toBe(MAX_ENCRYPTED_ARCHIVE_ENTRIES * ENCRYPTION_LISTING_BYTES_PER_ENTRY);
+      // `7z l -slt` prints about 330 bytes of fields per entry plus its path; 255-byte names fit in 1 KiB.
+      expect(ENCRYPTION_LISTING_BYTES_PER_ENTRY).toBeGreaterThanOrEqual(2 * NAME_BYTES + 330);
+    });
+
+    it('counts entries and their listing size before any archive is written', () => {
+      const names = (count: number, name = 'f.txt'): string[] => Array.from({ length: count }, () => name);
+      expect(() => assertEncryptedArchiveInputWithinLimits(names(MAX_ENCRYPTED_ARCHIVE_ENTRIES + 1))).toThrow(
+        `Encrypted archives support at most ${MAX_ENCRYPTED_ARCHIVE_ENTRIES} entries.`
+      );
+      expect(() => assertEncryptedArchiveInputWithinLimits(names(MAX_ENCRYPTED_ARCHIVE_ENTRIES))).not.toThrow(ConversionFailedError);
+      // Deep paths make each listing block bigger than the per-entry allowance.
+      const deep = 'd/'.repeat(1900);
+      expect(() => assertEncryptedArchiveInputWithinLimits(names(MAX_ENCRYPTED_ARCHIVE_ENTRIES, deep))).toThrow(
+        /listing would exceed/
+      );
+    });
+
+    oracleTest('creation refuses more entries than the limit before 7-Zip runs', ['7z'], async () => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'archive-password-limit-'));
+      try {
+        const log = installCallLog(dir);
+        const files = Array.from({ length: MAX_ENCRYPTED_ARCHIVE_ENTRIES + 1 }, (_, i) => ({ filename: `f${i}.txt`, buffer: EMPTY }));
+        await expect(createZipArchive(files, { password: PASSWORD }, 'out.zip')).rejects.toThrow(ConversionFailedError);
+        expect(() => create7zArchive(files, { password: PASSWORD }, 'out.7z')).toThrow(ConversionFailedError);
+        expect(calledCommands(log), '7-Zip was started').toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, LONG_RUN_TIMEOUT_MS);
+
+    oracleTest('a conversion with more source entries than the limit is refused before the archive is written', ['7z'], async () => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'archive-password-limit-'));
+      try {
+        const source = path.join(dir, 'src');
+        mkdirSync(source);
+        for (let i = 0; i <= MAX_ENCRYPTED_ARCHIVE_ENTRIES; i += 1) writeFileSync(path.join(source, `f${i}.txt`), '');
+        execFileSync(oracle7z(), ['a', '-y', '-tzip', path.join(dir, 'many.zip'), '.'], { cwd: source, stdio: 'pipe' });
+        const many = readFileSync(path.join(dir, 'many.zip'));
+        const log = installCallLog(dir);
+        for (const target of ['zip', '7z'] as const) {
+          expect(() => convertWithNative7z(many, 'zip', target, { password: PASSWORD }, 'many.zip'), `lib ${target}`).toThrow(
+            `Encrypted archives support at most ${MAX_ENCRYPTED_ARCHIVE_ENTRIES} entries.`
+          );
+          await expect(
+            convertWithWorker7z(many, 'zip', target, { password: PASSWORD, throwOnUnavailable: true }, 'many.zip'),
+            `worker ${target}`
+          ).rejects.toThrow(`Encrypted archives support at most ${MAX_ENCRYPTED_ARCHIVE_ENTRIES} entries.`);
+        }
+        // Only the four extractions ran; no creation (`a`) or verification listing (`l`) started.
+        expect(calledCommands(log)).toEqual(['x', 'x', 'x', 'x']);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, LONG_RUN_TIMEOUT_MS);
+
+    oracleTest('the largest allowed archive of 255-byte names is created and verified', ['7z'], async () => {
+      const files = Array.from({ length: MAX_ENCRYPTED_ARCHIVE_ENTRIES }, (_, i) => ({ filename: longName(i), buffer: EMPTY }));
+      const created = await createZipArchive(files, { password: PASSWORD }, 'full.zip');
+      const listing = oracleListing(created.buffer, 'zip', PASSWORD);
+      expect(listing.match(/^Path = /gm)?.length, 'entries listed by the reference CLI').toBe(MAX_ENCRYPTED_ARCHIVE_ENTRIES + 1);
+      expect(listing.match(/^Encrypted = \+/gm)?.length).toBe(MAX_ENCRYPTED_ARCHIVE_ENTRIES);
+    }, LONG_RUN_TIMEOUT_MS);
   });
 
   describe('stdin hand-off', () => {
