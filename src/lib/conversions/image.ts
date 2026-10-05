@@ -2,7 +2,7 @@ import zlib from 'node:zlib';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
@@ -2329,7 +2329,7 @@ export async function convertImage(
 
   if (isRawInput && !rawDemosaiced) {
     if (!options.allowEmbeddedPreview) {
-      throw new ConversionFailedError(
+      throw new RawEngineRequiredError(
         `Unable to decode RAW camera sensor data for .${src} without external raw engine. To extract the embedded preview JPEG instead, enable allowEmbeddedPreview.`
       );
     }
@@ -2461,7 +2461,7 @@ export async function convertImage(
           raw: { width: demosaiced.width, height: demosaiced.height, channels: 3 },
         });
       } else {
-        throw new ConversionFailedError(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
+        throw new RawEngineRequiredError(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
       }
     } else {
       throw err;

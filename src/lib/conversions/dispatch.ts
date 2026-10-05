@@ -5,6 +5,7 @@ import {
   EngineUnavailableError,
   OcrEngineUnavailableError,
   OcrLanguageUnavailableError,
+  RawEngineRequiredError,
   UnsupportedTargetError,
 } from '../types';
 import { applyPdfPostProcessing, assertPdfPostProcessOptions } from './index';
@@ -75,11 +76,14 @@ function assertAdvertised(src: string, tgt: string, options: WorkerEngineOptions
 /**
  * Engine-missing conditions that engines raise as other typed errors surface as
  * EngineUnavailableError (HTTP 503): complex-script rendering needs LibreOffice, OCR needs
- * Tesseract. A missing OCR language stays a client error.
+ * Tesseract, camera RAW sensor decoding needs LibRaw (`dcraw_emu`). A missing OCR language stays a client error.
  */
 function toEngineUnavailable(err: unknown): unknown {
   if (err instanceof ComplexScriptRequiresNativeEngineError) {
     return new EngineUnavailableError('soffice', err.message);
+  }
+  if (err instanceof RawEngineRequiredError) {
+    return new EngineUnavailableError('dcraw_emu', err.message);
   }
   if (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError)) {
     return new EngineUnavailableError('tesseract', err.message);

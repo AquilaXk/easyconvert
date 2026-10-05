@@ -547,6 +547,25 @@ export class InvalidRawSensorError extends ConversionFailedError {
   }
 }
 
+/** The native RAW decoder rejected the file: corrupt, truncated or an unsupported camera format. */
+export class RawDecodeError extends ConversionFailedError {
+  /** Whether the decoder does not recognize the file as RAW at all (as opposed to failing mid-decode). */
+  readonly unrecognized: boolean;
+  constructor(message: string, unrecognized = false) {
+    super(message);
+    this.name = 'RawDecodeError';
+    this.unrecognized = unrecognized;
+  }
+}
+
+/** The in-process engine cannot decode this camera RAW sensor data; only the native RAW engine can. */
+export class RawEngineRequiredError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RawEngineRequiredError';
+  }
+}
+
 export class InvalidMediaOptionError extends UnsupportedOptionError {
   readonly status = 422;
   constructor(message: string) {
