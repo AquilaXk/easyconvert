@@ -11,7 +11,7 @@ import { encodeBmp, encodePostscript } from './image';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { assertNoComplexScript } from './ctl';
-import { PdfUnicodeTextWriter, preferredUnicodeFontPath } from './pdf-fonts';
+import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 
 export { buildOpenXpsPackage };
 
@@ -29,6 +29,8 @@ export async function convertOffice(
   const baseName = (originalFilename || 'document').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
+  // PDF and raster writers draw text with installed fonts found through the coverage index.
+  await loadFontCoverageIndex();
 
   // 1. DOCX Source
   if (src === 'docx') {

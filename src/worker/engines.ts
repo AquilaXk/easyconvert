@@ -28,7 +28,7 @@ import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
-import { assertFontCoverage } from '../lib/conversions/pdf-fonts';
+import { assertFontCoverage, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -1520,8 +1520,9 @@ function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): strin
  * Both engines draw with the installed fonts, so CJK or complex-script letters that no installed
  * font covers fail first with EngineUnavailableError instead of rendering as empty boxes.
  */
-function planTextPdfRoute(input: Buffer | WorkerVfsPayload, src: string, tgt: string): TextPdfRoute | null {
+async function planTextPdfRoute(input: Buffer | WorkerVfsPayload, src: string, tgt: string): Promise<TextPdfRoute | null> {
   if (tgt !== 'pdf' || !TEXT_PDF_SOURCES.has(src)) return null;
+  await loadFontCoverageIndex();
   const text = textForPdfRouting(input, src);
   const complexScript = hasComplexTextScript(text);
   const cjk = hasCjkScript(text);
@@ -1589,7 +1590,7 @@ export async function executeWorkerConversion(
   let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
-  const textPdfRoute = planTextPdfRoute(input, src, tgt);
+  const textPdfRoute = await planTextPdfRoute(input, src, tgt);
   const isComplexText = Boolean(textPdfRoute?.complexScript);
   const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');

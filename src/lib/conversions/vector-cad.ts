@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
 import { encodeBmp, encodePostscript } from './image';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
+import { loadFontCoverageIndex } from './pdf-fonts';
 
 import {
   tessellateCadBuffer,
@@ -224,6 +225,7 @@ export async function convertVectorCad(
   const baseName = (originalFilename || 'model').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase().replace(/^\./, '').trim();
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  if (tgt === 'pdf') await loadFontCoverageIndex();
 
   if (!inputBuffer || inputBuffer.length === 0) {
     throw new Error('Vector/CAD conversion payload is empty (0 bytes).');

@@ -1,13 +1,18 @@
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
-import { EngineUnavailableError } from '../types';
+import { execFile } from 'node:child_process';
+import { ConversionFailedError, EngineUnavailableError } from '../types';
+import { resolveBinaryPath } from './pdf-postprocess/utils';
 
 /**
  * Unicode font coverage for the in-process PDF writers (pdfkit).
  *
  * Every text run is drawn with an embedded font that has a real glyph for each of its characters:
  * a run whose characters no installed font covers fails with EngineUnavailableError instead of
- * being drawn as empty boxes or with glyphs from the wrong script.
+ * being drawn as empty boxes or with glyphs from the wrong script. Code points no font can render
+ * (unassigned, private-use, noncharacters) fail with ConversionFailedError.
+ *
+ * Installed fonts are found through the well-known files below, then through one fontconfig
+ * listing per process (loadFontCoverageIndex) that records each font's character set.
  */
 
 /** Engine name reported when no installed font covers some characters of the text. */
@@ -15,8 +20,8 @@ export const UNICODE_FONT_ENGINE = 'unicode-font';
 
 /**
  * Well-known font files, in preference order: Latin/Greek/Cyrillic fonts first so Latin text keeps
- * Latin typography, then fonts covering Hangul, Kana and Han. Fonts found through fontconfig are
- * appended after these when a character is still uncovered.
+ * Latin typography, then fonts covering Hangul, Kana and Han. Fonts from the fontconfig index are
+ * used after these when a character is still uncovered.
  */
 const CANDIDATE_FONT_FILES: readonly string[] = [
   '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
@@ -54,18 +59,31 @@ const COLOR_GLYPH_TABLES: readonly string[] = ['CBDT', 'sbix', 'COLR', 'SVG '];
 /** Font families that draw a code-point box for characters they do not really support. */
 const PLACEHOLDER_FONT_FAMILY = /unifont|last\s*resort/i;
 
-const FONTCONFIG_LIST_BINARY = 'fc-list';
-const FONTCONFIG_TIMEOUT_MS = 5000;
-const FONTCONFIG_FIELD_SEPARATOR = '|';
+const FONTCONFIG_BINARY_CANDIDATES: readonly string[] = ['/usr/bin/fc-list', '/usr/local/bin/fc-list', '/opt/homebrew/bin/fc-list'];
+const FONTCONFIG_TIMEOUT_MS = 10_000;
+const FONTCONFIG_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+const FONTCONFIG_FIELD_SEPARATOR = '\t';
+/** One line per installed face: file, face index, format, colour flag, first family name, character set. */
+const FONTCONFIG_FORMAT = ['%{file}', '%{index}', '%{fontformat}', '%{color}', '%{family[0]}', '%{charset}'].join(FONTCONFIG_FIELD_SEPARATOR) + '\n';
+const FONTCONFIG_FIELD_COUNT = 6;
+/** fontconfig formats pdfkit can embed. */
+const EMBEDDABLE_FONTCONFIG_FORMATS: ReadonlySet<string> = new Set(['TrueType', 'CFF']);
+const FONTCONFIG_TRUE = 'True';
 const HEX_RADIX = 16;
 const DECIMAL_RADIX = 10;
-const UNCOVERED_PREVIEW_LIMIT = 8;
 const CODE_POINT_HEX_WIDTH = 4;
 
 const LINE_FEED = 0x0a;
 const TAB_STOP_SPACES = '    ';
-/** Invisible characters with no glyph of their own: controls other than line feed, and default ignorables. */
-const NON_RENDERING_CHARACTERS = /[\p{Default_Ignorable_Code_Point}\p{Cc}]/gu;
+/** Variation selectors: kept after their base character when the font maps the sequence. */
+const VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
+/**
+ * Invisible characters with no glyph of their own: controls other than line feed, and default
+ * ignorables other than variation selectors.
+ */
+const NON_RENDERING_CHARACTERS = /(?![\uFE00-\uFE0F\u{E0100}-\u{E01EF}])[\p{Default_Ignorable_Code_Point}\p{Cc}]/gu;
+/** Code points no font can render: unassigned (including noncharacters), private-use and lone surrogates. */
+const NON_FONTABLE_CODE_POINT = /[\p{Cn}\p{Co}\p{Cs}]/u;
 
 /** Minimal surface of the fontkit font objects that pdfkit itself uses. */
 interface FontkitFace {
@@ -73,6 +91,8 @@ interface FontkitFace {
   familyName?: string;
   directory: { tables: Record<string, unknown> };
   hasGlyphForCodePoint(codePoint: number): boolean;
+  /** fontkit's cmap processor; getVariationSelector resolves format-14 variation sequences. */
+  _cmapProcessor?: { getVariationSelector?(codePoint: number, selector: number): number };
 }
 
 interface FontkitCollection {
@@ -110,14 +130,24 @@ export interface PdfTextSegment {
   readonly link?: string;
 }
 
+/** An installed face from the fontconfig listing with its character set as sorted [first, last] pairs. */
+interface IndexedFontFace {
+  readonly path: string;
+  readonly index: number;
+  readonly ranges: Uint32Array;
+}
+
 let faceCounter = 0;
 /** Faces by `path#index`; null marks a file or face that cannot be embedded. */
 const faceCache = new Map<string, PdfFontFace | null>();
 /** Faces that cover text, in preference order: well-known files first, then fontconfig discoveries. */
 const systemFaces: PdfFontFace[] = [];
 let wellKnownFacesLoaded = false;
-/** Code points already looked up through fontconfig. */
-const fontconfigProbed = new Set<number>();
+/** Installed faces from one fontconfig listing; null until loadFontCoverageIndex has run. */
+let fontconfigIndex: readonly IndexedFontFace[] | null = null;
+let fontconfigIndexLoad: Promise<void> | null = null;
+/** System face per code point, once the fontconfig index is loaded. */
+const coverageCache = new Map<number, PdfFontFace | null>();
 
 function isCollection(value: FontkitFace | FontkitCollection): value is FontkitCollection {
   return Array.isArray((value as FontkitCollection).fonts);
@@ -167,43 +197,92 @@ function ensureWellKnownFaces(): void {
   }
 }
 
-/** Asks fontconfig for installed fonts covering a code point; returns [] when fc-list is unavailable. */
-function fontconfigCandidates(codePoint: number): Array<{ path: string; index: number }> {
-  let listing: string;
-  try {
-    listing = execFileSync(
-      FONTCONFIG_LIST_BINARY,
-      ['--format', `%{file}${FONTCONFIG_FIELD_SEPARATOR}%{index}\\n`, `:charset=${codePoint.toString(HEX_RADIX)}`],
-      { encoding: 'utf-8', timeout: FONTCONFIG_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-  } catch {
-    return [];
-  }
-  const candidates: Array<{ path: string; index: number }> = [];
-  for (const line of listing.split('\n')) {
-    const separator = line.lastIndexOf(FONTCONFIG_FIELD_SEPARATOR);
-    if (separator <= 0) continue;
-    const index = Number.parseInt(line.slice(separator + 1), DECIMAL_RADIX);
-    candidates.push({ path: line.slice(0, separator), index: Number.isFinite(index) ? index : 0 });
-  }
-  return candidates;
+/** Parses fontconfig character-set text ("20-7e a0-17f 2022") into sorted [first, last] pairs. */
+function parseCharset(charset: string): Uint32Array {
+  const tokens = charset.trim().split(/\s+/).filter((token) => token.length > 0);
+  const ranges = new Uint32Array(tokens.length * 2);
+  tokens.forEach((token, i) => {
+    const dash = token.indexOf('-');
+    const first = Number.parseInt(dash < 0 ? token : token.slice(0, dash), HEX_RADIX);
+    const last = dash < 0 ? first : Number.parseInt(token.slice(dash + 1), HEX_RADIX);
+    ranges[i * 2] = first;
+    ranges[i * 2 + 1] = last;
+  });
+  return ranges;
 }
 
-/** Finds a system face covering the code point, consulting fontconfig once per code point. */
+function rangesContain(ranges: Uint32Array, codePoint: number): boolean {
+  let low = 0;
+  let high = ranges.length / 2 - 1;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    if (codePoint < ranges[mid * 2]) high = mid - 1;
+    else if (codePoint > ranges[mid * 2 + 1]) low = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
+/** Keeps embeddable outline faces that are neither colour nor placeholder-box fonts. */
+function parseFontconfigListing(listing: string): IndexedFontFace[] {
+  const faces: IndexedFontFace[] = [];
+  for (const line of listing.split('\n')) {
+    const fields = line.split(FONTCONFIG_FIELD_SEPARATOR);
+    if (fields.length !== FONTCONFIG_FIELD_COUNT) continue;
+    const [file, index, format, color, family, charset] = fields;
+    if (!EMBEDDABLE_FONT_FILE.test(file) || !EMBEDDABLE_FONTCONFIG_FORMATS.has(format)) continue;
+    if (color === FONTCONFIG_TRUE || PLACEHOLDER_FONT_FAMILY.test(family)) continue;
+    const faceIndex = Number.parseInt(index, DECIMAL_RADIX);
+    faces.push({ path: file, index: Number.isFinite(faceIndex) ? faceIndex : 0, ranges: parseCharset(charset) });
+  }
+  return faces;
+}
+
+/** Lists installed fonts once with fontconfig; resolves to [] when fc-list is missing, fails or times out. */
+function queryFontconfig(): Promise<IndexedFontFace[]> {
+  const binary = resolveBinaryPath('FC_LIST_PATH', [...FONTCONFIG_BINARY_CANDIDATES], 'fc-list');
+  if (!binary) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    execFile(
+      binary,
+      ['--format', FONTCONFIG_FORMAT],
+      { encoding: 'utf-8', timeout: FONTCONFIG_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: FONTCONFIG_MAX_OUTPUT_BYTES, windowsHide: true },
+      (error, stdout) => resolve(error ? [] : parseFontconfigListing(stdout))
+    );
+  });
+}
+
+/**
+ * Loads the fontconfig coverage index once per process. Writers await it before drawing so that
+ * fonts outside the well-known paths are found; without fontconfig only the well-known files count.
+ */
+export function loadFontCoverageIndex(): Promise<void> {
+  if (!fontconfigIndexLoad) {
+    fontconfigIndexLoad = queryFontconfig().then((faces) => {
+      fontconfigIndex = faces;
+    });
+  }
+  return fontconfigIndexLoad;
+}
+
+/** Finds a system face covering the code point: well-known files first, then the fontconfig index. */
 function systemFaceFor(codePoint: number): PdfFontFace | null {
+  const cached = coverageCache.get(codePoint);
+  if (cached !== undefined) return cached;
   ensureWellKnownFaces();
-  const known = systemFaces.find((face) => face.font.hasGlyphForCodePoint(codePoint));
-  if (known) return known;
-  if (fontconfigProbed.has(codePoint)) return null;
-  fontconfigProbed.add(codePoint);
-  for (const candidate of fontconfigCandidates(codePoint)) {
-    const face = loadFace(candidate.path, candidate.index);
+  let found = systemFaces.find((face) => face.font.hasGlyphForCodePoint(codePoint)) ?? null;
+  for (const entry of found ? [] : fontconfigIndex ?? []) {
+    if (!rangesContain(entry.ranges, codePoint)) continue;
+    const face = loadFace(entry.path, entry.index);
     if (face && face.font.hasGlyphForCodePoint(codePoint)) {
       if (!systemFaces.includes(face)) systemFaces.push(face);
-      return face;
+      found = face;
+      break;
     }
   }
-  return null;
+  // Before the index is loaded a miss is not final, so only hits are remembered.
+  if (found || fontconfigIndex) coverageCache.set(codePoint, found);
+  return found;
 }
 
 function orderedFaces(customFontPath?: string): PdfFontFace[] {
@@ -219,7 +298,7 @@ function faceFor(codePoint: number, customFontPath?: string): PdfFontFace | null
 
 /**
  * Prepares text for drawing: normalises line breaks, expands tabs (fonts have no tab glyph) and
- * removes invisible characters that have no glyph of their own (controls, BOM, joiners, selectors).
+ * removes invisible characters that have no glyph of their own (controls, BOM, joiners).
  */
 export function toDrawableText(text: string): string {
   return text
@@ -228,66 +307,110 @@ export function toDrawableText(text: string): string {
     .replace(NON_RENDERING_CHARACTERS, (ch) => (ch.codePointAt(0) === LINE_FEED ? ch : ''));
 }
 
+function isVariationSelector(codePoint: number): boolean {
+  return VARIATION_SELECTOR.test(String.fromCodePoint(codePoint));
+}
+
 function needsGlyph(codePoint: number): boolean {
-  return codePoint !== LINE_FEED;
+  return codePoint !== LINE_FEED && !isVariationSelector(codePoint);
 }
 
 function formatCodePoint(codePoint: number): string {
   return `U+${codePoint.toString(HEX_RADIX).toUpperCase().padStart(CODE_POINT_HEX_WIDTH, '0')}`;
 }
 
-function uncoveredError(uncovered: number[]): EngineUnavailableError {
-  const preview = uncovered.slice(0, UNCOVERED_PREVIEW_LIMIT).map((cp) => `${formatCodePoint(cp)} '${String.fromCodePoint(cp)}'`);
-  const more = uncovered.length > UNCOVERED_PREVIEW_LIMIT ? ` and ${uncovered.length - UNCOVERED_PREVIEW_LIMIT} more` : '';
+/** Throws ConversionFailedError for a code point no font can render. */
+function assertFontable(codePoint: number): void {
+  if (NON_FONTABLE_CODE_POINT.test(String.fromCodePoint(codePoint))) {
+    throw new ConversionFailedError(
+      `Text contains ${formatCodePoint(codePoint)}, an unassigned, private-use or noncharacter code point that no font can render`
+    );
+  }
+}
+
+function uncoveredError(codePoint: number): EngineUnavailableError {
   return new EngineUnavailableError(
     UNICODE_FONT_ENGINE,
-    `No installed font has glyphs for ${preview.join(', ')}${more}; install a font covering these characters (for Chinese, Japanese and Korean text, Noto Sans CJK)`
+    `No installed font has a glyph for ${formatCodePoint(codePoint)} '${String.fromCodePoint(codePoint)}'; install a font covering this script (for Chinese, Japanese and Korean text, Noto Sans CJK)`
   );
 }
 
-/** Code points of drawable text that need a glyph. */
-function glyphCodePoints(text: string): Set<number> {
+/** Distinct code points of drawable text that need a glyph; rejects code points no font can render. */
+function glyphCodePoints(text: string): number[] {
   const codePoints = new Set<number>();
   for (const ch of text) {
     const cp = ch.codePointAt(0) as number;
     if (needsGlyph(cp)) codePoints.add(cp);
   }
-  return codePoints;
+  const distinct = Array.from(codePoints);
+  distinct.forEach(assertFontable);
+  return distinct;
 }
 
 /**
- * Throws EngineUnavailableError when some character of the text has no glyph in any installed font.
+ * Throws ConversionFailedError for code points no font can render and EngineUnavailableError for
+ * the first character no installed font covers.
  */
 export function assertFontCoverage(text: string, customFontPath?: string): void {
-  const uncovered: number[] = [];
   for (const cp of glyphCodePoints(toDrawableText(text))) {
-    if (!faceFor(cp, customFontPath)) uncovered.push(cp);
+    if (!faceFor(cp, customFontPath)) throw uncoveredError(cp);
   }
-  if (uncovered.length > 0) throw uncoveredError(uncovered);
+}
+
+/** Code point of the first character no installed font covers, or null when all are covered. */
+export function findUncoveredCodePoint(text: string, customFontPath?: string): number | null {
+  for (const cp of glyphCodePoints(toDrawableText(text))) {
+    if (!faceFor(cp, customFontPath)) return cp;
+  }
+  return null;
 }
 
 /** First face, in preference order, that covers every code point; null when no single face does. */
-function singleCoveringFace(codePoints: Set<number>, customFontPath?: string): PdfFontFace | null {
-  const needed = Array.from(codePoints);
-  return orderedFaces(customFontPath).find((face) => needed.every((cp) => face.font.hasGlyphForCodePoint(cp))) ?? null;
+function singleCoveringFace(codePoints: readonly number[], customFontPath?: string): PdfFontFace | null {
+  return orderedFaces(customFontPath).find((face) => codePoints.every((cp) => face.font.hasGlyphForCodePoint(cp))) ?? null;
+}
+
+function supportsVariationSequence(face: PdfFontFace, base: number, selector: number): boolean {
+  if (face.font.hasGlyphForCodePoint(selector)) return true;
+  return (face.font._cmapProcessor?.getVariationSelector?.(base, selector) ?? 0) !== 0;
+}
+
+/** Drops variation selectors the run's font cannot apply to the preceding character. */
+function withSupportedSelectors(text: string, face: PdfFontFace): string {
+  if (!VARIATION_SELECTOR.test(text)) return text;
+  let out = '';
+  let base = -1;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) as number;
+    if (!isVariationSelector(cp)) {
+      base = cp;
+      out += ch;
+    } else if (base >= 0 && supportsVariationSequence(face, base, cp)) {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function pushRun(runs: PdfFontRun[], text: string, face: PdfFontFace, link: string | undefined): void {
+  const kept = withSupportedSelectors(text, face);
+  if (kept) runs.push({ text: kept, face, link });
 }
 
 /**
  * Splits drawable segments into runs, one font per run. A segment whose characters one face
  * covers is a single run; otherwise each character takes the current run's face when it covers
- * the character, else the first face that does. Throws EngineUnavailableError for uncovered
- * characters.
+ * the character, else the first face that does. Throws ConversionFailedError for code points no
+ * font can render and EngineUnavailableError at the first character no installed font covers.
  */
 export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFontPath?: string): PdfFontRun[] {
   const runs: PdfFontRun[] = [];
-  const uncovered = new Set<number>();
   for (const segment of segments) {
     const text = toDrawableText(segment.text);
     if (text.length === 0) continue;
-    const codePoints = glyphCodePoints(text);
-    const single = singleCoveringFace(codePoints, customFontPath);
+    const single = singleCoveringFace(glyphCodePoints(text), customFontPath);
     if (single) {
-      runs.push({ text, face: single, link: segment.link });
+      pushRun(runs, text, single, segment.link);
       continue;
     }
     let current: PdfFontFace | null = null;
@@ -299,17 +422,13 @@ export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFon
         continue;
       }
       const face = faceFor(cp, customFontPath);
-      if (!face) {
-        uncovered.add(cp);
-        continue;
-      }
-      if (current && buffer) runs.push({ text: buffer, face: current, link: segment.link });
+      if (!face) throw uncoveredError(cp);
+      if (current && buffer) pushRun(runs, buffer, current, segment.link);
       buffer = current ? ch : buffer + ch;
       current = face;
     }
-    if (current && buffer) runs.push({ text: buffer, face: current, link: segment.link });
+    if (current && buffer) pushRun(runs, buffer, current, segment.link);
   }
-  if (uncovered.size > 0) throw uncoveredError(Array.from(uncovered));
   return runs;
 }
 

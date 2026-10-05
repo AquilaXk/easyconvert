@@ -6,7 +6,7 @@ import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } fro
 import { sanitizeSvgString } from '../security/svg-sanitizer';
 import { encodeParquet, decodeParquet } from './parquet';
 import { assertNoComplexScript } from './ctl';
-import { PdfUnicodeTextWriter } from './pdf-fonts';
+import { PdfUnicodeTextWriter, loadFontCoverageIndex } from './pdf-fonts';
 
 export { encodeParquet, decodeParquet };
 
@@ -20,6 +20,7 @@ export async function convertData(
   const baseName = originalFilename.replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
+  if (tgt === 'pdf') await loadFontCoverageIndex();
 
   // PARQUET -> Target
   if (src === 'parquet') {

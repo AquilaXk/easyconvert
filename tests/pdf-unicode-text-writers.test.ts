@@ -73,30 +73,42 @@ function withoutWhitespace(text: string): string {
   return text.normalize('NFC').replace(BIDI_CONTROLS, '').replace(/\s+/g, '');
 }
 
+/** Whether fontconfig lists an embeddable outline font (not colour, not a placeholder-box font) for the code point. */
+function hasUsableInstalledFont(codePoint: number): boolean {
+  const fcList = requireOracleTool('fc-list');
+  const listing = execFileSync(fcList, ['--format', '%{fontformat}|%{color}|%{family}|%{file}\\n', `:charset=${codePoint.toString(16)}`], {
+    encoding: 'utf-8',
+  });
+  return listing.split('\n').some((line) => {
+    const [format, color, family, file] = line.split('|');
+    return (
+      (format === 'TrueType' || format === 'CFF') &&
+      color !== 'True' &&
+      !/unifont|last\s*resort/i.test(family ?? '') &&
+      /\.(ttf|otf|ttc)$/i.test(file ?? '')
+    );
+  });
+}
+
 /** Skips (strict mode: fails) unless fontconfig lists an embeddable outline font for every character. */
 function requireCoveringFonts(text: string): void {
-  const fcList = requireOracleTool('fc-list');
   const uncovered: string[] = [];
   for (const ch of new Set(Array.from(text))) {
     if (/\s/u.test(ch)) continue;
-    const codePoint = (ch.codePointAt(0) as number).toString(16);
-    const listing = execFileSync(fcList, ['--format', '%{fontformat}|%{color}|%{family}|%{file}\\n', `:charset=${codePoint}`], {
-      encoding: 'utf-8',
-    });
-    const usable = listing.split('\n').some((line) => {
-      const [format, color, family, file] = line.split('|');
-      return (
-        (format === 'TrueType' || format === 'CFF') &&
-        color !== 'True' &&
-        !/unifont|last\s*resort/i.test(family ?? '') &&
-        /\.(ttf|otf|ttc)$/i.test(file ?? '')
-      );
-    });
-    if (!usable) uncovered.push(`U+${codePoint.toUpperCase()}`);
+    const codePoint = ch.codePointAt(0) as number;
+    if (!hasUsableInstalledFont(codePoint)) uncovered.push(`U+${codePoint.toString(16).toUpperCase()}`);
   }
   if (uncovered.length > 0) {
     throw new OracleToolMissingError('font', `No installed outline font covers ${uncovered.slice(0, 8).join(', ')}`);
   }
+}
+
+/** Settles a promise into its value or its rejection reason. */
+function settle<T>(promise: Promise<T>): Promise<{ value?: T; error?: unknown }> {
+  return promise.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error })
+  );
 }
 
 function buildSource(source: TextSource, lines: readonly string[]): Buffer {
@@ -270,22 +282,49 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
     expectEmbeddedFontsOnly(csv.buffer);
   });
 
-  oracleTest('fails with EngineUnavailableError when no installed font has a glyph for a character', ['fc-list'], async () => {
-    const fcList = requireOracleTool('fc-list');
-    const listing = execFileSync(fcList, ['--format', '%{family}\\n', ':charset=378'], { encoding: 'utf-8' });
-    const coveringFamilies = listing.split('\n').filter((family) => family && !/unifont|last\s*resort/i.test(family));
-    if (coveringFamilies.length > 0) {
-      throw new OracleToolMissingError('font', `A real font covers unassigned U+0378: ${coveringFamilies[0]}`);
+  it('rejects unassigned, private-use and noncharacter code points with ConversionFailedError (400)', async () => {
+    for (const [label, ch] of [
+      ['U+0378', UNASSIGNED_CODE_POINT],
+      ['U+E000', '\ue000'],
+      ['U+FFFF', '\uffff'],
+    ]) {
+      const { error } = await settle(convertFile(Buffer.from(`Latin text then ${ch} then more`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt'));
+      expect({ label, name: (error as Error)?.name }).toEqual({ label, name: 'ConversionFailedError' });
+      expect((error as Error).message).toContain(label);
     }
-    const input = Buffer.from(`Latin text then ${UNASSIGNED_CODE_POINT} then more`, 'utf-8');
-    const error = await convertFile(input, 'txt', 'pdf', {}, 'gap.txt').then(
-      () => null,
-      (err: unknown) => err
-    );
-    expect(error).toBeInstanceOf(EngineUnavailableError);
-    expect((error as EngineUnavailableError).engineName).toBe('unicode-font');
-    expect((error as Error).message).toContain('U+0378');
   });
+
+  oracleTest('fails with EngineUnavailableError when no installed font has a glyph for an assigned character', ['fc-list'], async () => {
+    // Assigned characters of historic scripts; the first one no installed outline font covers is used.
+    const candidates = [0x13000, 0x12000, 0x17000, 0x1b170, 0x16e40, 0x10d00, 0x11400, 0x1e900, 0x10000];
+    const uncovered = candidates.find((codePoint) => !hasUsableInstalledFont(codePoint));
+    if (uncovered === undefined) throw new OracleToolMissingError('font', 'Every candidate historic-script character has an installed font');
+    const label = `U+${uncovered.toString(16).toUpperCase()}`;
+    const { error } = await settle(convertFile(Buffer.from(`Latin ${String.fromCodePoint(uncovered)} text`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt'));
+    expect((error as Error).name).toBe('EngineUnavailableError');
+    expect((error as EngineUnavailableError).engineName).toBe('unicode-font');
+    expect((error as Error).message).toContain(label);
+  });
+
+  oracleTest('settles thousands of distinct uncommon Han characters in seconds, without a font lookup per character', ['pdftotext'], async () => {
+    const EXT_B_FIRST = 0x20000;
+    const DISTINCT = 3000;
+    const BUDGET_MS = 3000;
+    let text = 'Han Extension B: ';
+    for (let i = 0; i < DISTINCT; i++) text += String.fromCodePoint(EXT_B_FIRST + i);
+    const started = Date.now();
+    const { value, error } = await settle(convertFile(Buffer.from(text, 'utf-8'), 'txt', 'pdf', {}, 'ext-b.txt'));
+    const elapsed = Date.now() - started;
+    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+    if (value) {
+      expect(withoutWhitespace(pdfText(value.buffer))).toBe(withoutWhitespace(text));
+    } else {
+      expect((error as Error).name).toBe('EngineUnavailableError');
+      expect((error as EngineUnavailableError).engineName).toBe('unicode-font');
+      const reported = Number.parseInt(/U\+([0-9A-F]{5})/.exec((error as Error).message)?.[1] ?? '0', 16);
+      expect(reported >= EXT_B_FIRST && reported < EXT_B_FIRST + DISTINCT).toBe(true);
+    }
+  }, 60_000);
 
   it('keeps refusing Arabic in the in-process writer, which cannot shape it', async () => {
     const error = await convertFile(buildSource('hwp', [ARABIC_LINE]), 'hwp', 'pdf', {}, 'arabic.hwp').then(

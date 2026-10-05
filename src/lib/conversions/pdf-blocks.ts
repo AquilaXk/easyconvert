@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { ConversionFailedError } from '../types';
-import { PdfUnicodeTextWriter, type PdfTextSegment } from './pdf-fonts';
+import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfTextSegment } from './pdf-fonts';
 
 /**
  * Structured document model drawn by the in-process PDF writers (HTML, Markdown, plain text and
@@ -228,7 +228,8 @@ class PdfBlockRenderer {
  * Draws the blocks into an A4 PDF. Fails with EngineUnavailableError when no installed font
  * covers some text, and with ConversionFailedError for content the renderer cannot place.
  */
-export function renderPdfBlocks(blocks: readonly PdfBlock[], options: PdfBlockDocumentOptions = {}): Promise<Buffer> {
+export async function renderPdfBlocks(blocks: readonly PdfBlock[], options: PdfBlockDocumentOptions = {}): Promise<Buffer> {
+  await loadFontCoverageIndex();
   return new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({
       size: PAGE_SIZE,

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions';
-import { EngineUnavailableError } from '../src/lib/types';
+import { ConversionFailedError } from '../src/lib/types';
 import {
   evaluateDrawingMlGuideFormula,
   parseDrawingMlGuides,
@@ -570,17 +570,17 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       expect(pdf.length).toBeGreaterThan(200);
     });
 
-    it('fails closed with EngineUnavailableError instead of drawing boxes when no installed font covers a character', () => {
-      // U+0378 is unassigned: no real font maps it (placeholder-box fonts are never used).
+    it('fails closed with ConversionFailedError instead of drawing a box for an unassigned code point', () => {
+      // U+0378 is unassigned: no font can render it, so the input itself is rejected (HTTP 400).
       const doc = new PDFDocument();
       let thrown: unknown = null;
       try {
-        renderSafePdfText(doc, 'Order ͸ 100', true);
+        renderSafePdfText(doc, 'Order \u0378 100', true);
       } catch (err) {
         thrown = err;
       }
-      expect(thrown).toBeInstanceOf(EngineUnavailableError);
-      expect((thrown as EngineUnavailableError).engineName).toBe('unicode-font');
+      expect(thrown).toBeInstanceOf(ConversionFailedError);
+      expect((thrown as Error).name).toBe('ConversionFailedError');
       expect((thrown as Error).message).toContain('U+0378');
     });
 
