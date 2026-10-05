@@ -11,6 +11,7 @@ import {
   TusUploadExceededLengthError,
   TusNotFoundError,
 } from '@/lib/storage/tus-engine';
+import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
@@ -354,6 +355,11 @@ export async function POST(
             'Tus-Resumable': TUS_RESUMABLE_VERSION,
           });
         }
+        if (err instanceof UnknownDeclaredFormatError) {
+          return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE, {
+            'Tus-Resumable': TUS_RESUMABLE_VERSION,
+          });
+        }
         return createProblemDetailsResponse(
           400,
           err?.message || 'Error processing creation-with-upload chunk',
@@ -548,6 +554,11 @@ export async function PATCH(
     }
     if (err instanceof TusUploadExceededLengthError) {
       return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
+        'Tus-Resumable': TUS_RESUMABLE_VERSION,
+      });
+    }
+    if (err instanceof UnknownDeclaredFormatError) {
+      return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE, {
         'Tus-Resumable': TUS_RESUMABLE_VERSION,
       });
     }

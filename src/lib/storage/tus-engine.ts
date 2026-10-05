@@ -7,7 +7,7 @@ import Redis from 'ioredis';
 import { localFsStorage } from './index';
 import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
-import { FORMAT_REGISTRY } from '../registry';
+import { resolveDeclaredFormat } from './declared-format';
 
 export class TusOffsetMismatchError extends Error {
   constructor(public readonly expectedOffset: number) {
@@ -578,23 +578,9 @@ export class TusEngine {
         isComplete = true;
         session.completed = true;
 
-        // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath)
-        const ext = path.extname(session.filename);
-        let declaredFormat = ext ? ext.replace(/^\./, '').toLowerCase().trim() : '';
-        if (!declaredFormat && session.mimeType) {
-          const found = Object.values(FORMAT_REGISTRY).find((f) => f.mimeType === session.mimeType);
-          if (found) {
-            declaredFormat = found.extension;
-          } else {
-            const sub = session.mimeType.split('/').pop()?.toLowerCase().trim();
-            declaredFormat = sub || 'bin';
-          }
-        }
-        if (!declaredFormat) {
-          declaredFormat = 'bin';
-        }
-
+        // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath) against the declared format
         try {
+          const declaredFormat = resolveDeclaredFormat(session.filename, session.mimeType);
           assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
         } catch (err) {
           session.completed = false;

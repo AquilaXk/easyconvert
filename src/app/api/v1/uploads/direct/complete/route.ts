@@ -1,10 +1,9 @@
-import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { s3Storage } from '@/lib/storage/s3-storage';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
-import { FileExtensionSpoofError, FORMAT_REGISTRY } from '@/lib/registry';
+import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
 
 export const dynamic = 'force-dynamic';
 
@@ -100,27 +99,21 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const ext = sessionFilename
-      ? path.extname(sessionFilename).replace(/^\./, '').toLowerCase().trim()
-      : '';
-    let declaredFormat = ext;
-    if (!declaredFormat && sessionMimeType && sessionMimeType !== 'application/octet-stream') {
-      const found = Object.values(FORMAT_REGISTRY).find((f) => f.mimeType === sessionMimeType);
-      if (found) {
-        declaredFormat = found.extension;
-      } else {
-        const subtype = sessionMimeType.split('/').pop()?.toLowerCase().trim();
-        declaredFormat = subtype || 'bin';
-      }
-    }
-    if (!declaredFormat) {
-      declaredFormat = 'bin';
-    }
-
+    const declaredFormat = resolveDeclaredFormat(sessionFilename, sessionMimeType);
     assertNotSpoofedFilePath(stored.filePath, declaredFormat, sessionFilename);
   } catch (err: unknown) {
-    // Purge spoofed file immediately
+    // Purge the assembled object immediately: it matches no declared format
     s3Storage.deleteObject(completedObject.key);
+
+    if (err instanceof UnknownDeclaredFormatError) {
+      return createProblemDetailsResponse(
+        400,
+        err.message,
+        instanceUri,
+        'Unknown Format',
+        UNKNOWN_FORMAT_PROBLEM_TYPE
+      );
+    }
 
     const errorMessage = err instanceof Error ? err.message : 'File content magic bytes mismatch.';
     return createProblemDetailsResponse(
