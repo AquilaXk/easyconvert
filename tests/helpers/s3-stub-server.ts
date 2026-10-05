@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { verifySigV4Request, type SigV4VerifyResult } from './sigv4-verifier';
+import { verifySigV4Query, verifySigV4Request, type SigV4VerifyResult } from './sigv4-verifier';
 
 /**
  * Minimal path-style S3 endpoint for adapter tests. Every request is authenticated with the
@@ -55,6 +55,8 @@ export interface StoredStubObject {
   body: Buffer;
   contentType: string;
   etag: string;
+  /** `x-amz-meta-*` headers sent with the PUT, keyed without the prefix. */
+  metadata?: Record<string, string>;
 }
 
 export interface S3StubServer {
@@ -90,9 +92,31 @@ function send(res: http.ServerResponse, status: number, body = '', headers: Reco
   res.end(body);
 }
 
+const META_PREFIX = 'x-amz-meta-';
+const LAST_MODIFIED = 'Wed, 01 Oct 2026 10:00:00 GMT';
+const DEFAULT_MAX_KEYS = 1000;
+const DEFAULT_MAX_PARTS = 1000;
+const RANGE_PATTERN = /^bytes=(\d+)-(\d*)$/;
+
+function xmlEscape(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function metadataFrom(headers: http.IncomingHttpHeaders): Record<string, string> {
+  const metadata: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.startsWith(META_PREFIX) && typeof value === 'string') {
+      metadata[name.slice(META_PREFIX.length)] = value;
+    }
+  }
+  return metadata;
+}
+
 export async function startS3StubServer(options: {
   bucket: string;
   credentials: Record<string, string>;
+  /** Clock for presigned-URL validity; defaults to the real time. */
+  now?: () => Date;
 }): Promise<S3StubServer> {
   const objects = new Map<string, StoredStubObject>();
   const uploads = new Map<string, Map<number, Buffer>>();
@@ -118,13 +142,21 @@ export async function startS3StubServer(options: {
         query: parsed.searchParams,
         headers: req.headers,
         bodyLength: body.length,
-        auth: verifySigV4Request({
-          method: req.method ?? 'GET',
-          rawUrl,
-          headers: req.headers,
-          body,
-          secretFor: (id) => options.credentials[id],
-        }),
+        auth: parsed.searchParams.has('X-Amz-Signature')
+          ? verifySigV4Query({
+              method: req.method ?? 'GET',
+              rawUrl,
+              headers: req.headers,
+              secretFor: (id) => options.credentials[id],
+              now: (options.now ?? (() => new Date()))(),
+            })
+          : verifySigV4Request({
+              method: req.method ?? 'GET',
+              rawUrl,
+              headers: req.headers,
+              body,
+              secretFor: (id) => options.credentials[id],
+            }),
       };
       requests.push(record);
 
@@ -196,6 +228,10 @@ export async function startS3StubServer(options: {
       handleUpload(record, body, bucket, uploadId, res);
       return;
     }
+    if (record.key === '' && record.method === 'GET' && record.query.get('list-type') === '2') {
+      handleListObjects(record, bucket, res);
+      return;
+    }
     handleObject(record, body, res);
   }
 
@@ -212,8 +248,23 @@ export async function startS3StubServer(options: {
         send(res, 200, '', { etag: md5Etag(body) });
         return;
       case 'GET': {
-        const listed = [...parts.keys()].sort((a, b) => a - b).map((n) => `<Part><PartNumber>${n}</PartNumber></Part>`);
-        send(res, 200, `<ListPartsResult><UploadId>${uploadId}</UploadId>${listed.join('')}</ListPartsResult>`);
+        const marker = Number(record.query.get('part-number-marker') ?? '0');
+        const maxParts = Number(record.query.get('max-parts') ?? DEFAULT_MAX_PARTS);
+        const remaining = [...parts.keys()].sort((a, b) => a - b).filter((n) => n > marker);
+        const page = remaining.slice(0, maxParts);
+        const truncated = remaining.length > page.length;
+        const entries = page.map((n) => {
+          const part = parts.get(n) as Buffer;
+          return `<Part><PartNumber>${n}</PartNumber><LastModified>2026-10-01T10:00:00.000Z</LastModified><ETag>${md5Etag(part).replace(/"/g, '&quot;')}</ETag><Size>${part.length}</Size></Part>`;
+        });
+        send(
+          res,
+          200,
+          `<ListPartsResult><Bucket>${bucket}</Bucket><Key>${xmlEscape(record.key)}</Key><UploadId>${uploadId}</UploadId>` +
+            `<PartNumberMarker>${marker}</PartNumberMarker>` +
+            `<NextPartNumberMarker>${page.length > 0 ? page[page.length - 1] : marker}</NextPartNumberMarker>` +
+            `<MaxParts>${maxParts}</MaxParts><IsTruncated>${truncated}</IsTruncated>${entries.join('')}</ListPartsResult>`
+        );
         return;
       }
       case 'DELETE':
@@ -301,7 +352,12 @@ export async function startS3StubServer(options: {
     switch (method) {
       case 'PUT': {
         const etag = md5Etag(body);
-        objects.set(key, { body, contentType: String(record.headers['content-type'] ?? 'binary/octet-stream'), etag });
+        objects.set(key, {
+          body,
+          contentType: String(record.headers['content-type'] ?? 'binary/octet-stream'),
+          etag,
+          metadata: metadataFrom(record.headers),
+        });
         send(res, 200, '', { etag });
         return;
       }
@@ -310,15 +366,14 @@ export async function startS3StubServer(options: {
           send(res, 404, errorXml('NoSuchKey', 'The specified key does not exist.'));
           return;
         }
-        res.writeHead(200, { 'content-type': object.contentType, 'content-length': String(object.body.length), etag: object.etag });
-        res.end(object.body);
+        serveObject(record, object, res);
         return;
       case 'HEAD':
         if (!object) {
           send(res, 404);
           return;
         }
-        res.writeHead(200, { 'content-type': object.contentType, 'content-length': String(object.body.length), etag: object.etag, 'last-modified': 'Wed, 01 Oct 2026 10:00:00 GMT' });
+        res.writeHead(200, { ...objectHeaders(object), 'content-length': String(object.body.length) });
         res.end();
         return;
       case 'DELETE':
@@ -328,6 +383,70 @@ export async function startS3StubServer(options: {
       default:
         send(res, 405, errorXml('MethodNotAllowed', 'Method not allowed'));
     }
+  }
+
+  function objectHeaders(object: StoredStubObject): Record<string, string> {
+    const headers: Record<string, string> = {
+      'content-type': object.contentType,
+      etag: object.etag,
+      'last-modified': LAST_MODIFIED,
+    };
+    for (const [name, value] of Object.entries(object.metadata ?? {})) {
+      headers[`${META_PREFIX}${name}`] = value;
+    }
+    return headers;
+  }
+
+  /** GetObject with RFC 9110 single-range support: 206 for a satisfiable range, 416 past the end. */
+  function serveObject(record: StubRequestRecord, object: StoredStubObject, res: http.ServerResponse): void {
+    const rangeHeader = record.headers.range;
+    const match = typeof rangeHeader === 'string' ? RANGE_PATTERN.exec(rangeHeader) : null;
+    if (!match) {
+      res.writeHead(200, { ...objectHeaders(object), 'content-length': String(object.body.length) });
+      res.end(object.body);
+      return;
+    }
+    const size = object.body.length;
+    const start = Number(match[1]);
+    const end = Math.min(match[2] === '' ? size - 1 : Number(match[2]), size - 1);
+    if (start >= size || end < start) {
+      send(res, 416, errorXml('InvalidRange', 'The requested range is not satisfiable'), {
+        'content-range': `bytes */${size}`,
+      });
+      return;
+    }
+    const slice = object.body.subarray(start, end + 1);
+    res.writeHead(206, {
+      ...objectHeaders(object),
+      'content-length': String(slice.length),
+      'content-range': `bytes ${start}-${end}/${size}`,
+    });
+    res.end(slice);
+  }
+
+  /** ListObjectsV2: lexicographic keys, `prefix`, `max-keys`, and an opaque continuation token. */
+  function handleListObjects(record: StubRequestRecord, bucket: string, res: http.ServerResponse): void {
+    const prefix = record.query.get('prefix') ?? '';
+    const maxKeys = Number(record.query.get('max-keys') ?? DEFAULT_MAX_KEYS);
+    const token = record.query.get('continuation-token');
+    const after = token ? Buffer.from(token, 'base64url').toString('utf-8') : '';
+    const matching = [...objects.keys()]
+      .filter((key) => key.startsWith(prefix) && key > after)
+      .sort();
+    const page = matching.slice(0, maxKeys);
+    const truncated = matching.length > page.length;
+    const next = truncated ? Buffer.from(page[page.length - 1], 'utf-8').toString('base64url') : '';
+    const entries = page.map((key) => {
+      const object = objects.get(key) as StoredStubObject;
+      return `<Contents><Key>${xmlEscape(key)}</Key><LastModified>2026-10-01T10:00:00.000Z</LastModified><ETag>${object.etag.replace(/"/g, '&quot;')}</ETag><Size>${object.body.length}</Size><StorageClass>STANDARD</StorageClass></Contents>`;
+    });
+    send(
+      res,
+      200,
+      `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>${bucket}</Name><Prefix>${xmlEscape(prefix)}</Prefix>` +
+        (truncated ? `<NextContinuationToken>${next}</NextContinuationToken>` : '') +
+        `<KeyCount>${page.length}</KeyCount><MaxKeys>${maxKeys}</MaxKeys><IsTruncated>${truncated}</IsTruncated>${entries.join('')}</ListBucketResult>`
+    );
   }
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

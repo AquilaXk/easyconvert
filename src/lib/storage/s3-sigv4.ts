@@ -33,6 +33,7 @@ const UNSIGNABLE_HEADERS: ReadonlySet<string> = new Set([
   'transfer-encoding',
 ]);
 const SEGMENT_SEPARATOR = '/';
+const MS_PER_SECOND = 1000;
 
 export class SigV4SigningError extends Error {
   constructor(message: string) {
@@ -114,13 +115,17 @@ function parseOrigin(origin: string): URL {
   return parsed;
 }
 
-function assertSignableInput(input: SignedRequestInput): void {
-  if (!input.credentials.accessKeyId || !input.credentials.secretAccessKey) {
+function assertSignableCredentials(credentials: SigV4RequestCredentials, region: string): void {
+  if (!credentials.accessKeyId || !credentials.secretAccessKey) {
     throw new SigV4SigningError('Access key id and secret access key are required.');
   }
-  if (!REGION_PATTERN.test(input.region)) {
+  if (!REGION_PATTERN.test(region)) {
     throw new SigV4SigningError('Region must be lowercase letters, digits, and hyphens.');
   }
+}
+
+function assertSignableInput(input: SignedRequestInput): void {
+  assertSignableCredentials(input.credentials, input.region);
   if (input.payloadHash !== UNSIGNED_PAYLOAD && !SHA256_HEX_PATTERN.test(input.payloadHash)) {
     throw new SigV4SigningError('Payload hash must be lowercase hex SHA-256 or UNSIGNED-PAYLOAD.');
   }
@@ -187,6 +192,97 @@ export function signS3Request(input: SignedRequestInput): SignedRequest {
     stringToSign,
     signature,
     signedHeaders,
+  };
+}
+
+/** SigV4 query-string authentication allows 1 second to 7 days (AWS "Authenticating requests: query parameters"). */
+export const PRESIGN_MIN_EXPIRES_SECONDS = 1;
+export const PRESIGN_MAX_EXPIRES_SECONDS = 604_800;
+
+export interface PresignedRequestInput {
+  method: string;
+  /** Scheme and authority only; any path is ignored. */
+  origin: string;
+  /** Raw, decoded path beginning with "/"; each segment is URI-encoded once. */
+  path: string;
+  /** Extra query parameters that become part of the signature (e.g. `uploadId`, `partNumber`). */
+  query?: ReadonlyArray<readonly [string, string]>;
+  credentials: SigV4RequestCredentials;
+  region: string;
+  service?: string;
+  expiresInSeconds: number;
+  now?: Date;
+}
+
+export interface PresignedRequest {
+  url: string;
+  /** Millisecond epoch time after which the URL is rejected. */
+  expiresAt: number;
+  signature: string;
+  canonicalRequest: string;
+  stringToSign: string;
+}
+
+/**
+ * Builds a SigV4 query-string presigned URL. Only the `host` header is signed and the payload is
+ * `UNSIGNED-PAYLOAD`, so the holder of the URL can upload any body (or none) to exactly this
+ * method, path and query until it expires.
+ */
+export function presignS3Request(input: PresignedRequestInput): PresignedRequest {
+  assertSignableCredentials(input.credentials, input.region);
+  if (
+    !Number.isInteger(input.expiresInSeconds) ||
+    input.expiresInSeconds < PRESIGN_MIN_EXPIRES_SECONDS ||
+    input.expiresInSeconds > PRESIGN_MAX_EXPIRES_SECONDS
+  ) {
+    throw new SigV4SigningError(
+      `Presign expiry must be an integer between ${PRESIGN_MIN_EXPIRES_SECONDS} and ${PRESIGN_MAX_EXPIRES_SECONDS} seconds.`
+    );
+  }
+  const origin = parseOrigin(input.origin);
+  const service = input.service ?? S3_SERVICE;
+  const now = input.now ?? new Date();
+  const { requestDate, dateStamp } = formatSigV4Date(now);
+  const credentialScope = `${dateStamp}/${input.region}/${service}/aws4_request`;
+
+  const { canonicalHeaders, signedHeaders } = getCanonicalHeaders({ host: origin.host });
+  const query: Array<readonly [string, string]> = [
+    ...(input.query ?? []),
+    ['X-Amz-Algorithm', SIGV4_ALGORITHM],
+    ['X-Amz-Credential', `${input.credentials.accessKeyId}/${credentialScope}`],
+    ['X-Amz-Date', requestDate],
+    ['X-Amz-Expires', String(input.expiresInSeconds)],
+    ['X-Amz-SignedHeaders', signedHeaders],
+  ];
+  if (input.credentials.sessionToken) {
+    query.push(['X-Amz-Security-Token', input.credentials.sessionToken]);
+  }
+
+  const canonicalUri = encodeS3Path(input.path);
+  const canonicalQueryString = encodeS3Query(query);
+  const canonicalRequest = buildCanonicalRequest({
+    method: input.method,
+    canonicalUri,
+    canonicalQueryString,
+    canonicalHeaders,
+    signedHeaders,
+    hashedPayload: UNSIGNED_PAYLOAD,
+  });
+  const stringToSign = buildStringToSign({
+    algorithm: SIGV4_ALGORITHM,
+    requestDate,
+    credentialScope,
+    canonicalRequest,
+  });
+  const signingKey = deriveSigningKey(input.credentials.secretAccessKey, dateStamp, input.region, service);
+  const signature = calculateSignature(signingKey, stringToSign);
+
+  return {
+    url: `${origin.protocol}//${origin.host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`,
+    expiresAt: now.getTime() + input.expiresInSeconds * MS_PER_SECOND,
+    signature,
+    canonicalRequest,
+    stringToSign,
   };
 }
 
