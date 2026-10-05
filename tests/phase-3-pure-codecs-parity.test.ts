@@ -36,13 +36,11 @@ import {
 import {
   BitWriter,
   BitReader,
-  encodeAacLcFramePayload,
   decodeAacLcFramePayload,
 } from '../src/lib/conversions/media-encoder';
 import {
   computeOggCrc,
   createOggPage,
-  encodeAacContainer,
   encodeOpusContainer,
   encodeOggContainer,
   convertMedia,
@@ -52,6 +50,8 @@ import {
   decodeOgg,
   decodeAudioBuffer,
 } from '../src/lib/conversions/media-decoder';
+import { EngineUnavailableError } from '../src/lib/types';
+import { adtsStream, silentRawDataBlock } from './helpers/media-lossy-oracle';
 
 function createSineWavBuffer(sampleRate: number, channels: number, durationSec: number): Buffer {
   const totalSamplesPerChannel = Math.floor(sampleRate * durationSec);
@@ -274,88 +274,61 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
   // 3. AAC LC Raw Data Block & ADTS Container Fidelity
   // ==========================================================================
   describe('3. AAC LC Raw Data Block & ADTS Container Fidelity', () => {
-    it('encodes and decodes Single Channel Element (ID_SCE = 0x0) mono AAC LC payloads', () => {
-      const monoSamples = new Int16Array(1024);
-      for (let i = 0; i < 1024; i++) {
-        monoSamples[i] = Math.round(Math.sin((2 * Math.PI * 440 * i) / 44100) * 15000);
-      }
-
-      const payload = encodeAacLcFramePayload(monoSamples, 0, 1);
-      expect(payload.length).toBeGreaterThan(10);
+    it('decodes a hand-authored Single Channel Element (ID_SCE = 0x0) block to one frame of silence', () => {
+      const payload = silentRawDataBlock(1);
       // Bit 0-2 of ID_SCE must be 000
       expect((payload[0] >> 5) & 0x07).toBe(0);
 
       const decoded = decodeAacLcFramePayload(payload, 1);
       expect(decoded).not.toBeNull();
       expect(decoded!).toHaveLength(1024);
-
-      let sumSq = 0;
-      for (let i = 0; i < decoded!.length; i++) {
-        sumSq += decoded![i] * decoded![i];
-      }
-      const rms = Math.sqrt(sumSq / decoded!.length);
-      expect(rms).toBeGreaterThan(100);
+      expect(decoded!.every((v) => v === 0)).toBe(true);
     });
 
-    it('encodes and decodes Channel Pair Element (ID_CPE = 0x1) stereo AAC LC payloads', () => {
-      const stereoSamples = new Int16Array(2048);
-      for (let i = 0; i < 1024; i++) {
-        stereoSamples[i * 2] = Math.round(Math.sin((2 * Math.PI * 440 * i) / 44100) * 14000);
-        stereoSamples[i * 2 + 1] = Math.round(Math.cos((2 * Math.PI * 880 * i) / 44100) * 14000);
-      }
-
-      const payload = encodeAacLcFramePayload(stereoSamples, 0, 2);
-      expect(payload.length).toBeGreaterThan(20);
+    it('decodes a hand-authored Channel Pair Element (ID_CPE = 0x1) block to one frame of silence', () => {
+      const payload = silentRawDataBlock(2);
       // Bit 0-2 of ID_CPE must be 001
       expect((payload[0] >> 5) & 0x07).toBe(1);
 
       const decoded = decodeAacLcFramePayload(payload, 2);
       expect(decoded).not.toBeNull();
       expect(decoded!).toHaveLength(2048);
-
-      let sumSq = 0;
-      for (let i = 0; i < decoded!.length; i++) {
-        sumSq += decoded![i] * decoded![i];
-      }
-      const rms = Math.sqrt(sumSq / decoded!.length);
-      expect(rms).toBeGreaterThan(100);
+      expect(decoded!.every((v) => v === 0)).toBe(true);
     });
 
-    it('performs end-to-end WAV -> AAC -> WAV conversion and verifies ADTS bitstream header structure', async () => {
+    it('refuses to encode AAC without the native engine and re-wraps a hand-authored ADTS stream as WAV', async () => {
       const wav = createSineWavBuffer(44100, 2, 0.25);
-      const aacRes = await convertMedia(wav, 'wav', 'aac', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'audio.wav');
-      expect(aacRes.mimeType).toBe('audio/aac');
-      expect(aacRes.buffer.length).toBeGreaterThan(100);
+      const encodeError = await convertMedia(
+        wav,
+        'wav',
+        'aac',
+        { disableNativeEngine: true, allowPureLossyBitstream: true },
+        'audio.wav'
+      ).catch((err: unknown) => err);
+      expect(encodeError).toBeInstanceOf(EngineUnavailableError);
 
-      // Verify ADTS syncword (0xFFF) and 7-byte header fields
-      expect(aacRes.buffer[0]).toBe(0xff);
-      expect(aacRes.buffer[1] & 0xf0).toBe(0xf0);
-      // MPEG-4 Audio (bit 3 = 0), Layer 0 (bits 1-2 = 00), Protection absent (bit 0 = 1)
-      expect(aacRes.buffer[1] & 0x0f).toBe(0x01);
-      // Profile: AAC LC = 01
-      expect((aacRes.buffer[2] >> 6) & 0x03).toBe(1);
-      // Sample rate: 44.1kHz = idx 4
-      expect((aacRes.buffer[2] >> 2) & 0x0f).toBe(4);
+      const frames = 4;
+      const adts = adtsStream(new Array(frames).fill(silentRawDataBlock(2)), 44100, 2);
+      // ADTS header fields: MPEG-4, layer 0, protection absent; AAC LC; 44.1 kHz = index 4
+      expect(adts[1] & 0x0f).toBe(0x01);
+      expect((adts[2] >> 6) & 0x03).toBe(1);
+      expect((adts[2] >> 2) & 0x0f).toBe(4);
 
-      // Decode using decodeAdtsAac
-      const decodedAac = decodeAdtsAac(aacRes.buffer);
+      const decodedAac = decodeAdtsAac(adts);
       expect(decodedAac.sampleRate).toBe(44100);
       expect(decodedAac.channels).toBe(2);
-      expect(decodedAac.samples.length).toBeGreaterThan(1024);
+      expect(decodedAac.samples.length).toBe(frames * 1024 * 2);
 
-      // Roundtrip back to WAV
-      const wavRes = await convertMedia(aacRes.buffer, 'aac', 'wav', { disableNativeEngine: true }, 'audio.aac');
+      const wavRes = await convertMedia(adts, 'aac', 'wav', { disableNativeEngine: true }, 'audio.aac');
       expect(wavRes.mimeType).toBe('audio/wav');
       expect(wavRes.buffer.toString('ascii', 0, 4)).toBe('RIFF');
       expect(wavRes.buffer.toString('ascii', 8, 12)).toBe('WAVE');
 
       const finalDec = decodeAudioBuffer(wavRes.buffer, 'wav');
-      let sumSq = 0;
-      for (let i = 0; i < finalDec.samples.length; i++) {
-        sumSq += finalDec.samples[i] * finalDec.samples[i];
-      }
-      const rms = Math.sqrt(sumSq / finalDec.samples.length);
-      expect(rms).toBeGreaterThan(100);
+      expect(finalDec.sampleRate).toBe(44100);
+      expect(finalDec.channels).toBe(2);
+      expect(finalDec.samples.length).toBe(frames * 1024 * 2);
+      expect(finalDec.samples.every((v) => v === 0)).toBe(true);
     });
   });
 
@@ -592,12 +565,7 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
     });
 
     it('rejects multi-channel audio (> 2 channels) and invalid channels with fail-closed errors', () => {
-      const samples = new Int16Array(1024 * 6); // 6 channels (5.1 surround)
       const packets = [Buffer.from([0xc0, 0x01, 0x02])];
-      expect(() => encodeAacContainer(samples, 44100, 6, 'surround')).toThrow(/Unsupported channel configuration for AAC LC/i);
-      expect(() => encodeAacContainer(samples, 44100, 0, 'invalid')).toThrow(/Unsupported channel configuration for AAC LC/i);
-      expect(() => encodeAacLcFramePayload(samples, 0, 6)).toThrow(/Unsupported channel count for AAC LC/i);
-      expect(() => encodeAacLcFramePayload(samples, 0, 0)).toThrow(/Unsupported channel count for AAC LC/i);
       expect(() => encodeOpusContainer(packets, 48000, 6, 'surround')).toThrow(/Unsupported channel configuration for Ogg Opus/i);
       expect(() => encodeOpusContainer(packets, 48000, 0, 'invalid')).toThrow(/Unsupported channel configuration for Ogg Opus/i);
       expect(() => encodeOggContainer(packets, 44100, 6, 'surround')).toThrow(/Unsupported channel configuration for Ogg Vorbis/i);
@@ -628,11 +596,9 @@ describe('Phase 3: Pure TypeScript Codecs Parity (ISO/IEC 13818-7 AAC LC & RFC 7
       // Reader overrun must cause decodeAacLcFramePayload to return null
       expect(decodeAacLcFramePayload(truncatedBuf, 1)).toBeNull();
 
-      // 2. Synthesize complete SCE payload with corrupt ID_END (tag 0 instead of 7)
-      const validPayload = encodeAacLcFramePayload(new Int16Array(1024), 0, 1);
-      const tamperedEnd = Buffer.from(validPayload);
-      // Flip the bits containing ID_END (111 -> 000)
-      tamperedEnd[tamperedEnd.length - 1] &= ~0x1c;
+      // 2. Complete hand-authored SCE payload decodes, but the same block with a corrupt ID_END (000 instead of 111) does not
+      expect(decodeAacLcFramePayload(silentRawDataBlock(1), 1)).not.toBeNull();
+      const tamperedEnd = silentRawDataBlock(1, 4, 0);
       expect(decodeAacLcFramePayload(tamperedEnd, 1)).toBeNull();
     });
 

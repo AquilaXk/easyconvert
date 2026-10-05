@@ -9,14 +9,26 @@ import {
   HardwareAccelerationCapabilities,
 } from '../src/lib/conversions/media-ffmpeg-args';
 import { probeNativeEngines, executeWorkerConversion } from '../src/worker/engines';
-import { encodePureH264Mp4 } from '../src/lib/conversions/media-encoder';
 import { convertMedia } from '../src/lib/conversions/media';
+import { EngineUnavailableError } from '../src/lib/types';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import {
   verifyAudioBitstreamWithFfprobe,
   verifyVideoBitstreamWithFfprobe,
 } from './helpers/differential-oracle';
+import {
+  bestSnrDb,
+  decodeAudioWithFfmpeg,
+  ffmpegTestVideoMp4,
+  probeStream,
+  sineSamples,
+  topLevelBoxTypes,
+  toArrayBuffer,
+  wavFromSamples,
+} from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+
+const MIN_ROUNDTRIP_SNR_DB = 25;
 
 describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Verification (#131)', () => {
   beforeEach(() => {
@@ -155,53 +167,31 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
   });
 
   // ==========================================================================
-  // 3. Pure TypeScript Faststart MP4 Container Hierarchy
+  // 3. Faststart MP4 Container Hierarchy (reference-authored fixtures)
   // ==========================================================================
-  describe('3. Pure TS MP4 Container Faststart Layout', () => {
-    it('generates compliant Faststart MP4 with moov atom placed before mdat', () => {
-      const pcm = new Int16Array(44100 * 0.5); // 0.5 sec mono
-      for (let i = 0; i < pcm.length; i++) {
-        pcm[i] = Math.round(Math.sin((i / 44100) * 440 * 2 * Math.PI) * 10000);
-      }
+  describe('3. MP4 Container Faststart Layout', () => {
+    oracleTest('demuxes a faststart MP4 whose moov box precedes mdat', ['ffmpeg', 'ffprobe'], () => {
+      const mp4 = ffmpegTestVideoMp4({ width: 160, height: 120, fps: 25, seconds: 1, gop: 25, faststart: true });
+      const boxes = topLevelBoxTypes(mp4);
+      expect(boxes.indexOf('moov')).toBeGreaterThan(-1);
+      expect(boxes.indexOf('moov')).toBeLessThan(boxes.indexOf('mdat'));
 
-      // Faststart layout (default)
-      const mp4Fast = encodePureH264Mp4(pcm, 44100, 1, { videoFps: 30, fastStart: true }, 'Faststart Video');
-      const moovIdx = mp4Fast.indexOf('moov');
-      const mdatIdx = mp4Fast.indexOf('mdat');
-
-      expect(moovIdx).toBeGreaterThan(0);
-      expect(mdatIdx).toBeGreaterThan(0);
-      expect(moovIdx).toBeLessThan(mdatIdx); // 'moov' precedes 'mdat' for instant web playback
-
-      // Verify stco chunk offset points accurately into mdat data
-      const stcoIdx = mp4Fast.indexOf('stco');
-      expect(stcoIdx).toBeGreaterThan(0);
-      const firstChunkOffset = mp4Fast.readUInt32BE(stcoIdx + 12);
-      expect(firstChunkOffset).toBe(mdatIdx + 4); // mdatIdx + 4 points past the 4-byte 'mdat' tag (8 bytes from box start)
-    });
-
-    it('generates standard layout when fastStart is explicitly set to false', () => {
-      const pcm = new Int16Array(44100 * 0.25);
-      const mp4Std = encodePureH264Mp4(pcm, 44100, 1, { videoFps: 30, fastStart: false }, 'Standard Video');
-      const moovIdx = mp4Std.indexOf('moov');
-      const mdatIdx = mp4Std.indexOf('mdat');
-
-      expect(moovIdx).toBeGreaterThan(0);
-      expect(mdatIdx).toBeGreaterThan(0);
-      expect(mdatIdx).toBeLessThan(moovIdx); // 'mdat' precedes 'moov' in non-faststart
-    });
-
-    it('demuxes both faststart and standard MP4 containers flawlessly', () => {
-      const pcm = new Int16Array(44100 * 0.5);
-      const mp4Fast = encodePureH264Mp4(pcm, 44100, 1, { videoFps: 25, fastStart: true }, 'Fast Demux');
-      const ab = mp4Fast.buffer.slice(mp4Fast.byteOffset, mp4Fast.byteOffset + mp4Fast.byteLength);
-
-      const track = demuxMp4(ab);
-      expect(track).not.toBeNull();
+      const track = demuxMp4(toArrayBuffer(mp4));
       expect(track?.type).toBe('video');
       expect(track?.codec).toBe('avc1');
-      expect(track?.samples.length).toBeGreaterThan(10);
+      expect(track?.samples.length).toBe(25);
       expect(track?.samples[0].isKeyFrame).toBe(true);
+    });
+
+    oracleTest('demuxes a standard-layout MP4 whose mdat precedes moov', ['ffmpeg', 'ffprobe'], () => {
+      const mp4 = ffmpegTestVideoMp4({ width: 160, height: 120, fps: 25, seconds: 1, gop: 25, faststart: false });
+      const boxes = topLevelBoxTypes(mp4);
+      expect(boxes.indexOf('mdat')).toBeGreaterThan(-1);
+      expect(boxes.indexOf('mdat')).toBeLessThan(boxes.indexOf('moov'));
+
+      const track = demuxMp4(toArrayBuffer(mp4));
+      expect(track?.type).toBe('video');
+      expect(track?.samples.length).toBe(25);
     });
   });
 
@@ -209,28 +199,20 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
   // 4. Differential Oracle Bitstream Verifiers
   // ==========================================================================
   describe('4. Differential Oracle Bitstream Verification', () => {
-    oracleTest('verifies audio bitstream integrity for WAV and AAC containers', ['ffmpeg', 'ffprobe'], () => {
-      const wav = createSyntheticWav(44100, 2, 0.2);
-      const wavVerif = verifyAudioBitstreamWithFfprobe(wav, 'wav', 'pcm_s16le');
-      expect(wavVerif.valid).toBe(true);
-      expect(wavVerif.codecName).toBe('pcm_s16le');
+    oracleTest('decodes WAV and AAC outputs with the reference decoder', ['ffmpeg', 'ffprobe'], async () => {
+      const source = sineSamples(44100, 2, 1);
+      const wav = wavFromSamples(source, 44100, 2);
+      const wavStream = probeStream(wav, 'wav', 'a');
+      expect(wavStream.codec_name).toBe('pcm_s16le');
+      expect(Number(wavStream.channels)).toBe(2);
 
-      const aacConv = convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'test-audio');
-      return aacConv.then((res) => {
-        const aacVerif = verifyAudioBitstreamWithFfprobe(res.buffer, 'aac', 'aac');
-        expect(aacVerif.valid).toBe(true);
-      });
-    });
-
-    oracleTest('verifies video bitstream integrity and detects faststart layout', ['ffprobe'], () => {
-      const wav = createSyntheticWav(44100, 2, 0.3);
-      const pcm = new Int16Array(44100 * 0.3);
-      const mp4 = encodePureH264Mp4(pcm, 44100, 1, { videoFps: 30, fastStart: true }, 'Fast Video');
-
-      const verif = verifyVideoBitstreamWithFfprobe(mp4, 'mp4', 'h264');
-      expect(verif.valid).toBe(true);
-      expect(verif.isFastStart).toBe(true);
-      expect(verif.codecName).toBe('h264');
+      const aacConv = await convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'test-audio');
+      const aacStream = probeStream(aacConv.buffer, 'aac', 'a');
+      expect(aacStream.codec_name).toBe('aac');
+      expect(Number(aacStream.sample_rate)).toBe(44100);
+      expect(bestSnrDb(source, decodeAudioWithFfmpeg(aacConv.buffer, 'aac', 44100, 2), 2)).toBeGreaterThanOrEqual(
+        MIN_ROUNDTRIP_SNR_DB
+      );
     });
 
     it('gracefully rejects truncated or invalid media buffers', () => {
@@ -247,43 +229,41 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
   // 5. End-to-End Media Conversions & Worker Dispatch
   // ==========================================================================
   describe('5. End-to-End Media Pipeline Integration', () => {
-    it('converts synthetic WAV to MP4, FLAC, and MP3 via pure TS pipeline, and enforces Fail-Closed on Opus/OGG without native engine', async () => {
-      const wav = createSyntheticWav(44100, 2, 0.25);
+    oracleTest('converts WAV to FLAC bit-exactly without the native engine', ['ffmpeg'], async () => {
+      const source = sineSamples(44100, 2, 0.25);
+      const wav = wavFromSamples(source, 44100, 2);
 
-      const [mp4Res, flacRes, mp3Res] = await Promise.all([
-        convertMedia(wav, 'wav', 'mp4', { allowPureLossyBitstream: true }, 'test.wav'),
-        convertMedia(wav, 'wav', 'flac', {}, 'test.wav'),
-        convertMedia(wav, 'wav', 'mp3', { allowPureLossyBitstream: true }, 'test.wav'),
-      ]);
-
-      expect(mp4Res.buffer.indexOf('ftyp')).toBe(4);
-      expect(mp4Res.buffer.indexOf('moov')).toBeGreaterThan(0);
-      expect(mp4Res.mimeType).toBe('video/mp4');
-
+      const flacRes = await convertMedia(wav, 'wav', 'flac', { disableNativeEngine: true }, 'test.wav');
       expect(flacRes.buffer.indexOf('fLaC')).toBe(0);
       expect(flacRes.mimeType).toBe('audio/flac');
-
-      expect(mp3Res.buffer.indexOf('ID3')).toBe(0);
-      expect(mp3Res.mimeType).toBe('audio/mpeg');
-
-      // Fail-Closed on lossy Opus and OGG without native FFmpeg
-      await expect(
-        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'test.wav')
-      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OPUS compression/i);
-
-      await expect(
-        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'test.wav')
-      ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
+      expect(Array.from(decodeAudioWithFfmpeg(flacRes.buffer, 'flac', 44100, 2))).toEqual(Array.from(source));
     });
 
-    it('executes worker media conversion dispatching to native ffmpeg or internal fallback', async () => {
-      const wav = createSyntheticWav(44100, 1, 0.15);
-      const workerRes = await executeWorkerConversion(wav, 'wav', 'mp3', { audioBitrate: '192k', allowPureLossyBitstream: true }, 'test.wav');
+    it('fails closed with EngineUnavailableError on every lossy target without the native engine', async () => {
+      const wav = wavFromSamples(sineSamples(44100, 2, 0.25), 44100, 2);
 
+      for (const target of ['mp4', 'mp3', 'aac', 'opus', 'ogg']) {
+        const error = await convertMedia(
+          wav,
+          'wav',
+          target,
+          { allowPureLossyBitstream: true, disableNativeEngine: true },
+          'test.wav'
+        ).catch((err: unknown) => err);
+        expect(error).toBeInstanceOf(EngineUnavailableError);
+        expect((error as EngineUnavailableError).engineName).toBe('ffmpeg');
+        expect((error as EngineUnavailableError).message).toMatch(
+          new RegExp(`Native FFmpeg engine is required for authentic lossy ${target.toUpperCase()} compression`, 'i')
+        );
+      }
+    });
 
-      expect(workerRes).toBeDefined();
-      expect(workerRes.buffer.length).toBeGreaterThan(50);
-      expect(['native-ffmpeg', 'internal-fallback']).toContain(workerRes.engineUsed);
+    oracleTest('dispatches worker media conversion to native ffmpeg', ['ffmpeg', 'ffprobe'], async () => {
+      const wav = wavFromSamples(sineSamples(44100, 1, 1), 44100, 1);
+      const workerRes = await executeWorkerConversion(wav, 'wav', 'mp3', { audioBitrate: '192k' }, 'test.wav');
+
+      expect(workerRes.engineUsed).toBe('native-ffmpeg');
+      expect(probeStream(workerRes.buffer, 'mp3', 'a').codec_name).toBe('mp3');
       expect(workerRes.executionTimeMs).toBeGreaterThanOrEqual(0);
     });
   });
