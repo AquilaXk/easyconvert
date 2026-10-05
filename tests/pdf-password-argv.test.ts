@@ -5,9 +5,10 @@ import { execFileSync } from 'node:child_process';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { ConversionFailedError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError, UnsupportedOptionError } from '../src/lib/types';
 import { executeWorkerConversion, getPdfPageCount } from '../src/worker/engines';
 import { withDecryptedPdf } from '../src/worker/pdf-decrypt';
+import { SandboxedTimeoutError } from '../src/worker/sandbox';
 import { getOracleToolPath, type ExternalOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 
@@ -123,6 +124,8 @@ interface Fixture {
   plain: Buffer;
   unicodeEncryptedPath: string;
   longEncryptedPath: string;
+  /** Encrypted PDF whose pages carry no text layer. */
+  blankEncryptedPath: string;
 }
 
 let fixturePromise: Promise<Fixture> | undefined;
@@ -150,9 +153,16 @@ function getFixture(): Promise<Fixture> {
     execFileSync(tool('qpdf'), ['--encrypt', UNICODE_PASSWORD, OWNER_PASSWORD, KEY_LENGTH_BITS, '--', plainPath, unicodeEncryptedPath]);
     const longEncryptedPath = path.join(dir, 'encrypted-long.pdf');
     execFileSync(tool('qpdf'), ['--encrypt', LONG_PASSWORD, OWNER_PASSWORD, KEY_LENGTH_BITS, '--', plainPath, longEncryptedPath]);
+    const blankDoc = await PDFDocument.create();
+    blankDoc.addPage([PAGE_WIDTH_PT, PAGE_HEIGHT_PT]);
+    const blankPath = path.join(dir, 'blank.pdf');
+    fs.writeFileSync(blankPath, await blankDoc.save());
+    const blankEncryptedPath = path.join(dir, 'blank-encrypted.pdf');
+    execFileSync(tool('qpdf'), ['--encrypt', USER_PASSWORD, OWNER_PASSWORD, KEY_LENGTH_BITS, '--', blankPath, blankEncryptedPath]);
     return {
       dir,
       plainPath,
+      blankEncryptedPath,
       encryptedPath,
       unicodeEncryptedPath,
       longEncryptedPath,
@@ -182,6 +192,21 @@ async function recordSpawns<T>(
 function fulfilled<T>(outcome: PromiseSettledResult<T>): T {
   if (outcome.status === 'rejected') throw outcome.reason;
   return outcome.value;
+}
+
+/** Runs `operation` with an environment variable set, then restores the previous value. */
+async function withEnv<T>(name: string, value: string, operation: () => Promise<T>): Promise<T> {
+  const previous = process.env[name];
+  process.env[name] = value;
+  try {
+    return await operation();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = previous;
+    }
+  }
 }
 
 function binariesSpawned(calls: SpawnRecord[]): Set<string> {
@@ -545,6 +570,188 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
 
       expect(passwordLeaks(calls, USER_PASSWORD)).toEqual([]);
       expect(result.buffer.equals(oracleRasterPage(fixture.plainPath, 1))).toBe(true);
+    }, TEST_TIMEOUT_MS);
+  });
+  describe('password requests never reach an engine that cannot honour them', () => {
+    const TARGETS = ['txt', 'png', 'svg'] as const;
+    const PASSWORDS = [
+      { label: 'correct', value: USER_PASSWORD },
+      { label: 'wrong', value: 'Wrong-Canary-0000' },
+    ];
+
+    for (const target of TARGETS) {
+      for (const { label, value } of PASSWORDS) {
+        oracleTest(`rejects pdf->${target} with EngineUnavailableError(qpdf) when qpdf is missing (${label} password)`, REQUIRED_TOOLS, async () => {
+          const fixture = await getFixture();
+          const { outcome, calls } = await withEnv('QPDF_PATH', '', () =>
+            recordSpawns(() => executeWorkerConversion(fixture.encrypted, 'pdf', target, { password: value }, 'secret.pdf'))
+          );
+
+          expect(outcome.status).toBe('rejected');
+          const error = (outcome as PromiseRejectedResult).reason as EngineUnavailableError;
+          expect(error).toBeInstanceOf(EngineUnavailableError);
+          expect(error.engineName).toBe('qpdf');
+          // Nothing may run: not a Poppler tool on the encrypted file, and no empty in-process result.
+          expect(calls).toEqual([]);
+        }, TEST_TIMEOUT_MS);
+      }
+    }
+
+    oracleTest('rejects the same request when the in-process fallback is explicitly disabled', REQUIRED_TOOLS, async () => {
+      const fixture = await getFixture();
+      const { outcome } = await withEnv('QPDF_PATH', '', () =>
+        recordSpawns(() =>
+          executeWorkerConversion(fixture.encrypted, 'pdf', 'txt', { password: USER_PASSWORD, inProcessFallback: false }, 'secret.pdf')
+        )
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(((outcome as PromiseRejectedResult).reason as EngineUnavailableError).engineName).toBe('qpdf');
+    }, TEST_TIMEOUT_MS);
+
+    oracleTest('refuses OCR fallback for a protected PDF without a text layer instead of returning empty text', REQUIRED_TOOLS, async () => {
+      const fixture = await getFixture();
+      const blank = fs.readFileSync(fixture.blankEncryptedPath);
+      const { outcome } = await recordSpawns(() =>
+        executeWorkerConversion(blank, 'pdf', 'txt', { password: USER_PASSWORD }, 'scan.pdf')
+      );
+
+      expect(outcome.status).toBe('rejected');
+      const error = (outcome as PromiseRejectedResult).reason as Error;
+      expect(error).toBeInstanceOf(UnsupportedOptionError);
+      expect(error.message).toMatch(/password-protected/i);
+    }, TEST_TIMEOUT_MS);
+  });
+
+  describe('qpdf aborted, timed out or over its write limit', () => {
+    const STUB_POLL_MS = 25;
+    const STUB_START_DEADLINE_MS = 10_000;
+    const PROCESS_EXIT_DEADLINE_MS = 5_000;
+    const STUB_TIMEOUT_MS = 1_000;
+    const STUB_SLEEP_SECONDS = 60;
+    const OVERSIZE_WRITE_MIB = 8;
+    const STUB_MODE = 0o755;
+    const HAS_STUB_TOOLS = fs.existsSync('/bin/sh') && fs.existsSync('/usr/bin/prlimit');
+
+    interface SlowQpdf {
+      jobDir: string;
+      inputPath: string;
+      pidFile: string;
+      stubPath: string;
+    }
+
+    /** Builds a stub qpdf that records its pid and then sleeps; the caller points QPDF_PATH at it. */
+    function createSlowQpdf(): SlowQpdf {
+      const dir = makeWorkDir('easyconvert-pdfpw-stub-');
+      const pidFile = path.join(dir, 'stub.pid');
+      const stubPath = path.join(dir, 'qpdf-stub.sh');
+      fs.writeFileSync(stubPath, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep ${STUB_SLEEP_SECONDS}\n`, { mode: STUB_MODE });
+      const inputPath = path.join(dir, 'input.pdf');
+      fs.writeFileSync(inputPath, '%PDF-1.7\n');
+      return { jobDir: makeWorkDir('easyconvert-pdfpw-stubjob-'), inputPath, pidFile, stubPath };
+    }
+
+    async function waitForPid(pidFile: string): Promise<number> {
+      const deadline = Date.now() + STUB_START_DEADLINE_MS;
+      while (Date.now() < deadline) {
+        if (fs.existsSync(pidFile)) {
+          const pid = Number.parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+          if (Number.isInteger(pid)) return pid;
+        }
+        await new Promise((resolve) => setTimeout(resolve, STUB_POLL_MS));
+      }
+      throw new Error('stub qpdf never started');
+    }
+
+    function isAlive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function expectProcessGone(pid: number): Promise<void> {
+      const deadline = Date.now() + PROCESS_EXIT_DEADLINE_MS;
+      while (isAlive(pid) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, STUB_POLL_MS));
+      }
+      expect(isAlive(pid)).toBe(false);
+    }
+
+    it.skipIf(!HAS_STUB_TOOLS)('aborting during qpdf kills it and leaves no password file, decrypted copy or process', async () => {
+      const stub = createSlowQpdf();
+      const controller = new AbortController();
+      const reason = new Error('client went away during decrypt');
+
+      await withEnv('QPDF_PATH', stub.stubPath, async () => {
+        const settled = withDecryptedPdf(
+          { inputPath: stub.inputPath, tempDir: stub.jobDir, password: USER_PASSWORD, timeoutMs: PDF_TOOL_TIMEOUT_MS, signal: controller.signal },
+          async () => 'unreachable'
+        ).then(
+          () => 'resolved',
+          (e: unknown) => e
+        );
+        const pid = await waitForPid(stub.pidFile);
+        // While qpdf runs the credential exists only as an owner-only file in the job directory.
+        const during = fs.readdirSync(stub.jobDir).filter((f) => f.startsWith('qpdf-password-'));
+        expect(during).toHaveLength(1);
+        expect(fs.statSync(path.join(stub.jobDir, during[0])).mode & 0o777).toBe(PASSWORD_FILE_MODE);
+
+        controller.abort(reason);
+        expect(await settled).toBe(reason);
+        expect(fs.readdirSync(stub.jobDir)).toEqual([]);
+        await expectProcessGone(pid);
+      });
+    }, TEST_TIMEOUT_MS);
+
+    it.skipIf(!HAS_STUB_TOOLS)('a qpdf timeout raises SandboxedTimeoutError and leaves nothing behind', async () => {
+      const stub = createSlowQpdf();
+
+      await withEnv('QPDF_PATH', stub.stubPath, async () => {
+        const settled = withDecryptedPdf(
+          { inputPath: stub.inputPath, tempDir: stub.jobDir, password: USER_PASSWORD, timeoutMs: STUB_TIMEOUT_MS },
+          async () => 'unreachable'
+        ).then(
+          () => 'resolved',
+          (e: unknown) => e
+        );
+        const pid = await waitForPid(stub.pidFile);
+        const error = await settled;
+
+        expect(error).toBeInstanceOf(SandboxedTimeoutError);
+        expect((error as SandboxedTimeoutError).timeoutMs).toBe(STUB_TIMEOUT_MS);
+        expect(fs.readdirSync(stub.jobDir)).toEqual([]);
+        await expectProcessGone(pid);
+      });
+    }, TEST_TIMEOUT_MS);
+
+    it.skipIf(!HAS_STUB_TOOLS)('a decrypted output beyond the size limit fails closed and leaves nothing behind', async () => {
+      const dir = makeWorkDir('easyconvert-pdfpw-oversize-');
+      const stubPath = path.join(dir, 'qpdf-stub.sh');
+      // Writes far more than max(4 x input, 1 MiB) into the output path, which is the last argument.
+      fs.writeFileSync(stubPath, `#!/bin/sh\nfor last; do :; done\nexec dd if=/dev/zero of="$last" bs=1048576 count=${OVERSIZE_WRITE_MIB}\n`, {
+        mode: STUB_MODE,
+      });
+      const inputPath = path.join(dir, 'input.pdf');
+      fs.writeFileSync(inputPath, '%PDF-1.7\n');
+      const jobDir = makeWorkDir('easyconvert-pdfpw-oversizejob-');
+
+      const { outcome } = await withEnv('QPDF_PATH', stubPath, () =>
+        recordSpawns(() =>
+          withDecryptedPdf(
+            { inputPath, tempDir: jobDir, password: USER_PASSWORD, timeoutMs: PDF_TOOL_TIMEOUT_MS },
+            async () => 'unreachable'
+          )
+        )
+      );
+
+      expect(outcome.status).toBe('rejected');
+      const error = (outcome as PromiseRejectedResult).reason as Error;
+      expect(error).toBeInstanceOf(ConversionFailedError);
+      expect(error.message).toMatch(/exceeds the allowed size/);
+      expect(fs.readdirSync(jobDir)).toEqual([]);
     }, TEST_TIMEOUT_MS);
   });
 });

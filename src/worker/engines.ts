@@ -38,7 +38,7 @@ import {
 } from '../lib/conversions/media-ffmpeg-args';
 import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
 import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
-import { toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES,
   assertCompleteDecodedImage,
@@ -1610,6 +1610,9 @@ export async function executeWorkerConversion(
         }
       }
     } catch (err) {
+      if (isPasswordHandlingUnavailable(err, options.password)) {
+        throw err;
+      }
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`office-poppler-chain: ${err.message}`);
         fallbackReason = err.message;
@@ -1704,6 +1707,12 @@ export async function executeWorkerConversion(
       if (popplerRes && isPdfTextTarget && options.inProcessFallback !== false && !hasNonWhitespaceText(popplerRes.buffer)) {
         // No text layer: scanned pages need the in-process engine's OCR. Drop the empty output first.
         discardPersistedOutput(popplerRes.filePath, input, options);
+        if (options.password) {
+          // The in-process engine would receive the still-encrypted original and cannot honour the password.
+          throw new UnsupportedOptionError(
+            'OCR of a password-protected PDF is not supported: the PDF has no text layer and the in-process OCR engine cannot decrypt it.'
+          );
+        }
         fallbackChain.push('native-poppler: pdftotext found no text layer');
       } else if (popplerRes) {
         return {
@@ -1712,6 +1721,10 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      if (isPasswordHandlingUnavailable(err, options.password)) {
+        // Only qpdf can open the document; falling back would convert an unreadable file.
+        throw err;
+      }
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-poppler: ${err.message}`);
         fallbackReason = err.message;
@@ -1749,6 +1762,10 @@ export async function executeWorkerConversion(
       throw lastUnavailable;
     }
     throw new UnsupportedTargetError(`No native engine route converts ${src} to ${tgt}`);
+  }
+  if (src === 'pdf' && options.password && lastUnavailable) {
+    // The in-process engine ignores PDF passwords, so it must not run for a request a native engine could not serve.
+    throw lastUnavailable;
   }
   if (options.pdfStandard) {
     throw new UnsupportedOptionError(

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ConversionFailedError, EngineUnavailableError } from '../lib/types';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/protect';
-import { executeSandboxedBinary, SandboxedProcessError } from './sandbox';
+import { executeSandboxedBinary, SandboxedBufferLimitError, SandboxedProcessError } from './sandbox';
 
 /**
  * Password-protected PDFs are decrypted once with qpdf into a private copy that the Poppler tools
@@ -20,12 +20,22 @@ const QPDF_MAX_OUTPUT_BYTES = 1024 * 1024;
 const QPDF_INVALID_PASSWORD_PATTERN = /invalid password/i;
 /** Poppler tools report a missing or rejected password as "Command Line Error: Incorrect password". */
 const POPPLER_INCORRECT_PASSWORD_PATTERN = /incorrect password/i;
+/**
+ * qpdf only strips encryption, so the decrypted copy stays close to the input size. The write limit
+ * is a named multiple of the input (with a floor for tiny files) and stops a hostile document from
+ * making qpdf fill the disk.
+ */
+const QPDF_OUTPUT_SIZE_FACTOR = 4;
+const QPDF_MIN_OUTPUT_BYTES = 1024 * 1024;
 /** `--password-file` uses only the first line, so a line break would silently shorten the password. */
 const PASSWORD_FILE_UNSAFE_CHARS = /[\r\n\0]/;
 
+/** Engine name carried by the EngineUnavailableError raised when qpdf is not installed. */
+export const QPDF_ENGINE_NAME = 'qpdf';
 export const PDF_PASSWORD_REJECTED_MESSAGE = 'PDF is password-protected: the password is missing or incorrect.';
 export const PDF_PASSWORD_UNSAFE_MESSAGE = 'PDF password contains invalid newline or null characters.';
 export const PDF_DECRYPT_FAILED_MESSAGE = 'PDF could not be decrypted: the file is malformed or uses an unsupported encryption.';
+export const PDF_DECRYPT_TOO_LARGE_MESSAGE = 'PDF could not be decrypted: the decrypted document exceeds the allowed size.';
 
 export interface PdfDecryptRequest {
   /** Absolute or process-relative path of the (possibly encrypted) PDF. */
@@ -49,6 +59,14 @@ export function toPopplerPasswordError(err: unknown): ConversionFailedError | nu
   return null;
 }
 
+/**
+ * True when a password was supplied but qpdf, the only component that can honour it, is missing.
+ * No other engine can open the document, so callers must not fall back to one.
+ */
+export function isPasswordHandlingUnavailable(err: unknown, password: string | undefined): err is EngineUnavailableError {
+  return Boolean(password) && err instanceof EngineUnavailableError && err.engineName === QPDF_ENGINE_NAME;
+}
+
 function removeQuietly(filePath: string): void {
   try {
     fs.rmSync(filePath, { force: true });
@@ -58,6 +76,9 @@ function removeQuietly(filePath: string): void {
 }
 
 function toDecryptError(err: unknown): unknown {
+  if (err instanceof SandboxedBufferLimitError) {
+    return new ConversionFailedError(PDF_DECRYPT_TOO_LARGE_MESSAGE);
+  }
   if (!(err instanceof SandboxedProcessError)) {
     return err;
   }
@@ -69,6 +90,7 @@ function toDecryptError(err: unknown): unknown {
 
 async function decryptIntoFile(qpdf: string, request: PdfDecryptRequest, password: string, decryptedPath: string, nonce: string): Promise<void> {
   const passwordFile = path.join(request.tempDir, `qpdf-password-${nonce}.txt`);
+  const maxFileSize = Math.max(fs.statSync(request.inputPath).size * QPDF_OUTPUT_SIZE_FACTOR, QPDF_MIN_OUTPUT_BYTES);
   try {
     fs.writeFileSync(passwordFile, password, { mode: PRIVATE_FILE_MODE, flag: 'wx' });
     await executeSandboxedBinary(
@@ -78,6 +100,7 @@ async function decryptIntoFile(qpdf: string, request: PdfDecryptRequest, passwor
         cwd: request.tempDir,
         timeoutMs: request.timeoutMs,
         maxBuffer: QPDF_MAX_OUTPUT_BYTES,
+        maxFileSize,
         networkIsolated: true,
         signal: request.signal,
       }
@@ -116,7 +139,7 @@ export async function withDecryptedPdf<T>(
   }
   const qpdf = getQpdfBinaryPath();
   if (!qpdf) {
-    throw new EngineUnavailableError('qpdf', 'qpdf binary is not installed or not in PATH');
+    throw new EngineUnavailableError(QPDF_ENGINE_NAME, 'qpdf binary is not installed or not in PATH');
   }
 
   const nonce = crypto.randomUUID();
