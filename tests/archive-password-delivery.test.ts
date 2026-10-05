@@ -40,7 +40,7 @@ import {
   UnsupportedOptionError,
 } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
-import { getOracleToolPath } from './helpers/differential-oracle';
+import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { buildEncryptedRar5 } from './helpers/rar5-encrypted';
 
@@ -201,6 +201,20 @@ function oracleListing(archive: Buffer, extension: string, password: string): st
   });
 }
 
+/** Formats a 7-Zip build lists with `7z i`: a RAR reader shows up as a "Rar" or "Rar5" row. */
+const RAR_FORMAT_ROW = /^\s*\d+\s+\S+\s+Rar5?\s/m;
+
+/**
+ * Throws OracleToolMissingError (an explicit skip, a failure under ORACLE_STRICT_MODE=1) when the
+ * given 7-Zip build cannot read RAR archives, as some distribution builds cannot.
+ */
+function requireSevenZipRarCodec(binary: string): void {
+  const formats = execFileSync(binary, ['i'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (!RAR_FORMAT_ROW.test(formats)) {
+    throw new OracleToolMissingError('7z (RAR codec)', `${binary} lists no Rar format, so it cannot read RAR archives.`);
+  }
+}
+
 describe('archive password delivery to the real 7z binary', () => {
   const originalP7zipPath = process.env.P7ZIP_PATH;
   afterEach(() => {
@@ -341,6 +355,28 @@ describe('archive password delivery to the real 7z binary', () => {
     });
   });
 
+  describe('RAR codec requirement', () => {
+    it('reports a 7-Zip build without a RAR reader as a missing tool instead of a null result', () => {
+      withTempDir((dir) => {
+        const noRar = path.join(dir, '7z-no-rar.sh');
+        // Format table of a build that reads 7z and zip only, in the layout of `7z i`.
+        writeFileSync(
+          noRar,
+          "#!/bin/sh\ncat <<'EOF'\nFormats:\n0  ...F..................  7z       7z\n0  ...F..................  zip      zip jar\nEOF\n"
+        );
+        chmodSync(noRar, 0o755);
+        let failure: unknown;
+        try {
+          requireSevenZipRarCodec(noRar);
+        } catch (err) {
+          failure = err;
+        }
+        expect(failure).toBeInstanceOf(OracleToolMissingError);
+        expect((failure as OracleToolMissingError).tool).toBe('7z (RAR codec)');
+      });
+    });
+  });
+
   describe('RAR extraction', () => {
     const RAR_FILES: readonly PlainFile[] = [
       { name: 'secret.txt', data: Buffer.from('rar payload bytes: 0123456789abcdef!!\n', 'utf-8') },
@@ -374,9 +410,11 @@ describe('archive password delivery to the real 7z binary', () => {
     });
 
     oracleTest('7z reads the encrypted RAR with the right password and types both failures', ['7z', 'unrar'], async () => {
+      requireSevenZipRarCodec(get7zBinaryPath()!);
       const rar = encryptedRar();
       const converted = convertWithNative7z(rar, 'rar', 'zip', { password: PASSWORD }, 'in.rar');
-      expectPlainFiles(unpackWithOracle(converted!.buffer, 'zip', PASSWORD), RAR_FILES);
+      if (!converted) throw new Error('convertWithNative7z returned no archive for an encrypted RAR with the right password');
+      expectPlainFiles(unpackWithOracle(converted.buffer, 'zip', PASSWORD), RAR_FILES);
       expect(() => convertWithNative7z(rar, 'rar', 'zip', { password: WRONG_PASSWORD }, 'in.rar')).toThrow(
         InvalidArchivePasswordError
       );
@@ -436,6 +474,7 @@ describe('archive password delivery to the real 7z binary', () => {
       });
 
       oracleTest(`convertWithNative7z types both password failures for RAR5 ${variant.label}`, ['7z', 'unrar'], async () => {
+        requireSevenZipRarCodec(get7zBinaryPath()!);
         const rar = encryptedRar5();
         expect(() => convertWithNative7z(rar, 'rar', 'zip', { password: WRONG_PASSWORD }, 'in.rar')).toThrow(InvalidArchivePasswordError);
         expect(() => convertWithNative7z(rar, 'rar', 'zip', {}, 'in.rar')).toThrow(ArchivePasswordRequiredError);
