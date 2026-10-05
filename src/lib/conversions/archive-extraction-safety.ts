@@ -153,8 +153,10 @@ const DECODE_ERROR_PATTERN = /Data Error/i;
 const PASSWORD_PROMPT_PATTERN = /Break signaled|Enter password/i;
 
 /**
- * Every `-slt` key 7-Zip 16.02, 21.07, 22.01 and 23.01 print for the archives in the test corpus, plus the
- * remaining per-item property names 7-Zip defines. A key outside this set can only come from a forged value
+ * Every `-slt` key 7-Zip 16.02, 21.07, 22.01 and 23.01 print for the archives in the test corpus and for the
+ * real source containers in tests/fixtures/archive-sources (ISO, UDF, CAB, ARJ, LZH, RPM, DEB, CPIO, WIM, DMG,
+ * HFS+, ext4, FAT, VHD, CHM, SquashFS, MSI, NSIS, Z, LZMA; 'Metadata Changed' comes from UDF and HFS+), plus
+ * the remaining per-item property names 7-Zip defines. A key outside this set can only come from a forged value
  * (p7zip 16.02 prints raw line breaks), so the listing is rejected.
  */
 const KNOWN_LISTING_KEYS = new Set([
@@ -164,7 +166,7 @@ const KNOWN_LISTING_KEYS = new Set([
   'Link', 'Hard Link', 'Symbolic Link', 'Links', 'iNode', 'Mode', 'User', 'Group', 'User ID', 'Group ID',
   'Device Major', 'Device Minor', 'Dev Major', 'Dev Minor', 'Short Name', 'Alternate Stream', 'Alternate Streams',
   'NT Security', 'Stream ID', 'Checksum', 'SHA-1', 'SHA-256', 'BLAKE2sp', 'MD5', 'XXH64', 'Commented', 'Deleted',
-  'Path Prefix', 'Local Name', 'Provider', 'Aux', 'Tree', 'Type',
+  'Path Prefix', 'Local Name', 'Provider', 'Aux', 'Tree', 'Type', 'Metadata Changed',
 ]);
 
 /** Deepest entry path (in segments) an archive may contain or an extraction may produce. */
