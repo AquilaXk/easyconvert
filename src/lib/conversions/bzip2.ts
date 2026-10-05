@@ -888,8 +888,16 @@ function decodeStream(reader: BitReader, sink: OutputSink): StreamResult {
   }
 }
 
+function isZeroPadding(input: Buffer, from: number): boolean {
+  for (let i = from; i < input.length; i += 1) {
+    if (input[i] !== 0) return false;
+  }
+  return true;
+}
+
 /**
- * Decompresses a standard bzip2 buffer (one or more concatenated streams).
+ * Decompresses a standard bzip2 buffer (one or more concatenated streams). Zero bytes after the
+ * last stream are accepted as padding.
  *
  * Fails closed with a `ConversionFailedError` on any structural violation, CRC mismatch, trailing
  * garbage, or when the decoded output would exceed `maxOutputBytes`.
@@ -907,6 +915,8 @@ export function decompressBzip2(input: Buffer, maxOutputBytes = BZIP2_DEFAULT_MA
     decodeStream(reader, sink);
     reader.alignToByte();
     if (reader.bytesRemaining() === 0) break;
+    // Block-device and tape writers pad files with zero bytes; that padding carries no data.
+    if (isZeroPadding(input, input.length - reader.bytesRemaining())) break;
     if (reader.peek(BYTE_BITS) !== BZ_SIGNATURE[0]) {
       throw bzError('trailing garbage after end of stream');
     }

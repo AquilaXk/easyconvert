@@ -285,6 +285,12 @@ describe('bzip2 decoder rejects hostile input with a typed error', () => {
     expectFastTypedFailure(Buffer.concat([reference, Buffer.from('garbage')]), /trailing/i);
   });
 
+  it.skipIf(!HAS_BZIP2)('accepts zero padding after the last stream', () => {
+    const reference = systemBzip2(['-c'], payload);
+    const padded = Buffer.concat([reference, Buffer.alloc(512)]);
+    expect(decompressBzip2(padded).equals(payload)).toBe(true);
+  });
+
   it.skipIf(!HAS_BZIP2)('rejects a block-size digit outside 1..9', () => {
     for (const digit of ['0', 'A', '/']) {
       const reference = Buffer.from(systemBzip2(['-c'], payload));
