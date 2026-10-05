@@ -65,7 +65,11 @@ const CHAR_LF = 0x0a;
 const CHAR_FF = 0x0c;
 const CHAR_CR = 0x0d;
 const CHAR_SPACE = 0x20;
+const CHAR_AMPERSAND = 0x26;
 const CHAR_STAR = 0x2a;
+const CHAR_HASH = 0x23;
+const CHAR_SEMICOLON = 0x3b;
+const CHAR_LOWER_X = 0x78;
 const CHAR_SLASH = 0x2f;
 const CHAR_BACKSLASH = 0x5c;
 const CHAR_DIGIT_0 = 0x30;
@@ -74,6 +78,19 @@ const CHAR_UPPER_F = 0x46;
 const CHAR_LOWER_A = 0x61;
 const CHAR_LOWER_F = 0x66;
 const HEX_RADIX = 16;
+const DECIMAL_RADIX = 10;
+const XML_VALUE_SATURATION = 0x110000;
+const XML_NAME_MAX_LENGTH = 4;
+const CDATA_OPEN = '<![CDATA[';
+const CDATA_CLOSE = ']]>';
+/** Predefined XML entities mapped to their code points. */
+const XML_PREDEFINED_ENTITIES = new Map<string, number>([
+  ['amp', 0x26],
+  ['lt', 0x3c],
+  ['gt', 0x3e],
+  ['quot', 0x22],
+  ['apos', 0x27],
+]);
 const HEX_LETTER_OFFSET = 10;
 const CSS_ESCAPE_MAX_HEX_DIGITS = 6;
 const MAX_CODE_POINT = 0x10ffff;
@@ -329,6 +346,47 @@ function cssNewlineLength(css: string, index: number): number {
   return css.charCodeAt(index) === CHAR_CR && css.charCodeAt(index + 1) === CHAR_LF ? 2 : 1;
 }
 
+/** Fixed-capacity buffer of decoded UTF-16 units that remembers the source span of every unit. */
+class DecodeBuffer {
+  private readonly units: Uint16Array;
+  private readonly starts: Uint32Array;
+  private readonly ends: Uint32Array;
+  private count = 0;
+
+  constructor(capacity: number) {
+    this.units = new Uint16Array(capacity);
+    this.starts = new Uint32Array(capacity);
+    this.ends = new Uint32Array(capacity);
+  }
+
+  push(unit: number, start: number, end: number): void {
+    this.units[this.count] = unit;
+    this.starts[this.count] = start;
+    this.ends[this.count] = end;
+    this.count++;
+  }
+
+  /** Appends a code point (two units when astral). Invalid code points fail closed. */
+  pushCodePoint(codePoint: number, start: number, end: number, what: string): void {
+    const isSurrogate = codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX;
+    if (codePoint === 0 || isSurrogate || codePoint > MAX_CODE_POINT) {
+      throw new SvgSanitizationError(`SVG contains ${what} that decodes to an invalid code point.`);
+    }
+    if (codePoint <= BMP_MAX) {
+      this.push(codePoint, start, end);
+      return;
+    }
+    const offset = codePoint - BMP_MAX - 1;
+    this.push(HIGH_SURROGATE_BASE + (offset >> SURROGATE_SHIFT), start, end);
+    this.push(LOW_SURROGATE_BASE + (offset & SURROGATE_LOW_MASK), start, end);
+  }
+
+  finish(): DecodedCss {
+    const text = Buffer.from(this.units.buffer, 0, this.count * Uint16Array.BYTES_PER_ELEMENT).toString('utf16le');
+    return { text, starts: this.starts.subarray(0, this.count), ends: this.ends.subarray(0, this.count) };
+  }
+}
+
 /**
  * Decodes CSS comments and escapes (CSS Syntax 4.3.7) in one linear pass so keywords can be matched the way a
  * CSS parser sees them. Returns null when the text has neither, so the caller can match the original directly.
@@ -337,16 +395,7 @@ function cssNewlineLength(css: string, index: number): number {
 function decodeCss(css: string): DecodedCss | null {
   if (!css.includes('\\') && !css.includes('/*')) return null;
   const length = css.length;
-  const units = new Uint16Array(length);
-  const starts = new Uint32Array(length);
-  const ends = new Uint32Array(length);
-  let count = 0;
-  const push = (unit: number, start: number, end: number): void => {
-    units[count] = unit;
-    starts[count] = start;
-    ends[count] = end;
-    count++;
-  };
+  const out = new DecodeBuffer(length);
 
   let i = 0;
   while (i < length) {
@@ -357,7 +406,7 @@ function decodeCss(css: string): DecodedCss | null {
       continue;
     }
     if (code !== CHAR_BACKSLASH) {
-      push(code, i, i + 1);
+      out.push(code, i, i + 1);
       i++;
       continue;
     }
@@ -371,7 +420,7 @@ function decodeCss(css: string): DecodedCss | null {
       continue;
     }
     if (!isHexDigitCode(next)) {
-      push(next, escapeStart, i + 1);
+      out.push(next, escapeStart, i + 1);
       i++;
       continue;
     }
@@ -386,21 +435,94 @@ function decodeCss(css: string): DecodedCss | null {
     if (i < length && isCssWhitespaceCode(css.charCodeAt(i))) {
       i += isCssNewlineCode(css.charCodeAt(i)) ? cssNewlineLength(css, i) : 1;
     }
-    const isSurrogate = codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX;
-    if (codePoint === 0 || isSurrogate || codePoint > MAX_CODE_POINT) {
-      throw new SvgSanitizationError('SVG contains a CSS escape that decodes to an invalid code point.');
-    }
-    if (codePoint > BMP_MAX) {
-      const offset = codePoint - BMP_MAX - 1;
-      push(HIGH_SURROGATE_BASE + (offset >> SURROGATE_SHIFT), escapeStart, i);
-      push(LOW_SURROGATE_BASE + (offset & SURROGATE_LOW_MASK), escapeStart, i);
-    } else {
-      push(codePoint, escapeStart, i);
-    }
+    out.pushCodePoint(codePoint, escapeStart, i, 'a CSS escape');
   }
+  return out.finish();
+}
 
-  const text = Buffer.from(units.buffer, 0, count * Uint16Array.BYTES_PER_ELEMENT).toString('utf16le');
-  return { text, starts, ends };
+/**
+ * Parses an XML character reference or predefined entity whose `&` is at `amp`. Returns the code point and the
+ * index just past the `;`, or null when the text there is not a well-formed reference (it then stays literal).
+ * A numeric value is saturated above the Unicode range so huge digit runs stay linear and are rejected later.
+ */
+function readXmlReference(text: string, amp: number): { codePoint: number; end: number } | null {
+  const length = text.length;
+  let i = amp + 1;
+  if (text.charCodeAt(i) === CHAR_HASH) {
+    i++;
+    const hex = text.charCodeAt(i) === CHAR_LOWER_X;
+    if (hex) i++;
+    const digitsStart = i;
+    let value = 0;
+    while (i < length) {
+      const code = text.charCodeAt(i);
+      const isDigit = hex ? isHexDigitCode(code) : code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9;
+      if (!isDigit) break;
+      value = Math.min(value * (hex ? HEX_RADIX : DECIMAL_RADIX) + hexDigitValue(code), XML_VALUE_SATURATION);
+      i++;
+    }
+    if (i === digitsStart || text.charCodeAt(i) !== CHAR_SEMICOLON) return null;
+    return { codePoint: value, end: i + 1 };
+  }
+  // Bounded look-ahead: an unbounded indexOf here would rescan the rest of the text for every '&'.
+  const nameLimit = Math.min(i + XML_NAME_MAX_LENGTH, length - 1);
+  let semicolon = i;
+  while (semicolon <= nameLimit && text.charCodeAt(semicolon) !== CHAR_SEMICOLON) semicolon++;
+  if (semicolon > nameLimit) return null;
+  const replacement = XML_PREDEFINED_ENTITIES.get(text.slice(i, semicolon));
+  return replacement === undefined ? null : { codePoint: replacement, end: semicolon + 1 };
+}
+
+/**
+ * Resolves XML character and predefined entity references the way a parser does for element text or an
+ * attribute value, in one linear pass. With `cdata`, `<![CDATA[ ... ]]>` sections are literal (markers removed,
+ * content copied verbatim). Returns null when there is nothing to resolve.
+ */
+function decodeXmlText(text: string, cdata: boolean): DecodedCss | null {
+  const hasCdata = cdata && text.includes(CDATA_OPEN);
+  if (!hasCdata && !text.includes('&')) return null;
+  const length = text.length;
+  const out = new DecodeBuffer(length);
+
+  let i = 0;
+  while (i < length) {
+    if (hasCdata && text.startsWith(CDATA_OPEN, i)) {
+      const contentStart = i + CDATA_OPEN.length;
+      const close = text.indexOf(CDATA_CLOSE, contentStart);
+      const contentEnd = close === -1 ? length : close;
+      for (let k = contentStart; k < contentEnd; k++) out.push(text.charCodeAt(k), k, k + 1);
+      i = close === -1 ? length : close + CDATA_CLOSE.length;
+      continue;
+    }
+    const code = text.charCodeAt(i);
+    const reference = code === CHAR_AMPERSAND ? readXmlReference(text, i) : null;
+    if (reference === null) {
+      out.push(code, i, i + 1);
+      i++;
+      continue;
+    }
+    out.pushCodePoint(reference.codePoint, i, reference.end, 'an XML character reference');
+    i = reference.end;
+  }
+  return out.finish();
+}
+
+/**
+ * Decodes what a browser sees: XML references first, then CSS comments and escapes. The result maps every
+ * decoded unit back to its span in the original text. Returns null when the text needs no decoding.
+ */
+function decodeForMatching(raw: string, cdata: boolean): DecodedCss | null {
+  const entities = decodeXmlText(raw, cdata);
+  const css = decodeCss(entities === null ? raw : entities.text);
+  if (css === null) return entities;
+  if (entities === null) return css;
+  const starts = new Uint32Array(css.starts.length);
+  const ends = new Uint32Array(css.ends.length);
+  for (let k = 0; k < starts.length; k++) {
+    starts[k] = entities.starts[css.starts[k]];
+    ends[k] = entities.ends[css.ends[k] - 1];
+  }
+  return { text: css.text, starts, ends };
 }
 
 /** Finds the `@import` rules and external url() references in already decoded CSS. */
@@ -432,8 +554,8 @@ function collectCssEdits(text: string): CssEdit[] {
  * Removes `@import` rules and replaces external url() references with `none`. Matching runs on the comment-free,
  * escape-decoded text, but the edits are applied to the original so benign CSS is returned byte-for-byte.
  */
-function sanitizeCss(css: string): string {
-  const decoded = decodeCss(css);
+function sanitizeCss(css: string, cdata: boolean): string {
+  const decoded = decodeForMatching(css, cdata);
   const edits = collectCssEdits(decoded === null ? css : decoded.text);
   if (edits.length === 0) return css;
   let out = '';
@@ -475,7 +597,7 @@ function sanitizeStyleElements(src: string): string {
     const qualifiedName = src.slice(start + 1, afterName);
     const close = findCloseTag(lower, STYLE_ELEMENT, tagEnd);
     const bodyEnd = close === null ? src.length : close[0];
-    parts.push(`<${qualifiedName}>${sanitizeCss(src.slice(tagEnd, bodyEnd))}</${qualifiedName}>`);
+    parts.push(`<${qualifiedName}>${sanitizeCss(src.slice(tagEnd, bodyEnd), true)}</${qualifiedName}>`);
     copied = close === null ? src.length : close[1];
     search = copied;
   }
@@ -573,10 +695,9 @@ function localNameOf(qualified: string): string {
 
 /** True when a value written into `style` would import, fetch externally or execute once parsed as CSS. */
 function isHostileStyleValue(raw: string): boolean {
-  const entityDecoded = decodeHtmlEntities(raw);
-  let text = entityDecoded;
+  let text = raw;
   try {
-    text = decodeCss(entityDecoded)?.text ?? entityDecoded;
+    text = decodeForMatching(raw, false)?.text ?? raw;
   } catch (error) {
     if (error instanceof SvgSanitizationError) return true;
     throw error;
@@ -674,7 +795,7 @@ function neutralizedAttribute(attribute: TagAttribute): string | null {
   }
   if (local === STYLE_ATTRIBUTE) {
     // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
-    return `style="${sanitizeCss(attribute.value).replace(/"/g, '&quot;')}"`;
+    return `style="${sanitizeCss(attribute.value, false).replace(/"/g, '&quot;')}"`;
   }
   return null;
 }

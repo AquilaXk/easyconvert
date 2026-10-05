@@ -332,16 +332,32 @@ function cssAsParsed(css: string): string {
     });
 }
 
+const XML_NAMED = new Map([['amp', '&'], ['lt', '<'], ['gt', '>'], ['quot', '"'], ['apos', "'"]]);
+
+/** XML character and predefined entity references, as an XML parser resolves them in text or attribute values. */
+function xmlEntitiesDecoded(text: string): string {
+  return text.replace(/&(?:#x([0-9a-fA-F]+)|#([0-9]+)|(amp|lt|gt|quot|apos));/g, (_, hex?: string, dec?: string, name?: string) =>
+    name === undefined ? String.fromCodePoint(hex === undefined ? Number(dec) : parseInt(hex, 16)) : (XML_NAMED.get(name) as string)
+  );
+}
+
+/** Text of a <style> element as a parser sees it: CDATA content is literal, everything else has entities resolved. */
+function elementTextAsParsed(body: string): string {
+  return body
+    .split(/(<!\[CDATA\[[\s\S]*?\]\]>)/)
+    .map((segment) => (segment.startsWith('<![CDATA[') ? segment.slice('<![CDATA['.length, -']]>'.length) : xmlEntitiesDecoded(segment)))
+    .join('');
+}
+
 function cssLeaks(out: string): string[] {
   const found: string[] = [];
   const bodies = [
-    ...[...out.matchAll(/<(?:[\w.-]+:)?style[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?style\s*>/gi)].map((m) => m[1]),
-    ...[...out.matchAll(/\sstyle="([^"]*)"/g)].map((m) => m[1]),
+    ...[...out.matchAll(/<(?:[\w.-]+:)?style[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?style\s*>/gi)].map((m) => cssAsParsed(elementTextAsParsed(m[1]))),
+    ...[...out.matchAll(/\sstyle="([^"]*)"/g)].map((m) => cssAsParsed(xmlEntitiesDecoded(m[1]))),
   ];
-  for (const body of bodies) {
-    const parsed = cssAsParsed(body);
-    if (/@import/i.test(parsed)) found.push(`@import in ${body}`);
-    if (/url\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/i.test(parsed)) found.push(`external url in ${body}`);
+  for (const parsed of bodies) {
+    if (/@import/i.test(parsed)) found.push(`@import in ${parsed}`);
+    if (/url\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/i.test(parsed)) found.push(`external url in ${parsed}`);
   }
   return found;
 }
@@ -547,5 +563,96 @@ describe('namespace-prefixed <style> elements (issue #401 item 4)', () => {
     const start = performance.now();
     sanitizeSvgString(payload);
     expect(performance.now() - start).toBeLessThan(1000);
+  });
+});
+
+describe('XML entity layer before CSS matching (issue #401 entity follow-up)', () => {
+  const encoded: Array<[string, string]> = [
+    ['hex reference for @', '&#x40;import url(http://e/x.css);g{fill:blue}'],
+    ['decimal reference for @', '&#64;import url(http://e/x.css);g{fill:blue}'],
+    ['padded reference', '&#x000040;import url(http://e/x.css);g{fill:blue}'],
+    ['reference inside url keyword', 'g{fill:u&#114;l(http://e/x)}'],
+    ['reference inside scheme', 'g{fill:url(h&#x74;tp://e/x)}'],
+    ['reference producing a CSS escape', '@&#92;69mport url(http://e/x.css);g{fill:blue}'],
+    ['hex backslash reference', '@&#x5c;000069mport "http://e/x.css";g{fill:blue}'],
+    ['reference producing a comment', 'g{fill:ur&#47;**&#47;l(http://e/x)}'],
+    ['reference producing an escaped newline', 'g{fill:ur&#92;&#10;l(http://e/x)}'],
+    ['astral reference beside a hit', 'g{content:"&#x1F600;"}&#64;import "http://e/x";'],
+  ];
+
+  for (const [label, css] of encoded) {
+    it(`neutralizes in a <style> body: ${label}`, () => {
+      const out = sanitizeSvgString(`<svg><style>${css}</style></svg>`);
+      expect(cssLeaks(out)).toEqual([]);
+      expect(sanitizeSvgString(out)).toBe(out);
+    });
+
+    it(`neutralizes in a style attribute: ${label}`, () => {
+      const out = sanitizeSvgString(`<svg><rect style='${css}'/></svg>`);
+      expect(cssLeaks(out)).toEqual([]);
+      expect(sanitizeSvgString(out)).toBe(out);
+    });
+  }
+
+  it('removes only the encoded rule and keeps the rest byte-for-byte', () => {
+    expect(sanitizeSvgString('<svg><style>&#x40;import url(http://e/x.css);g{fill:blue}</style></svg>')).toBe(
+      '<svg><style>g{fill:blue}</style></svg>'
+    );
+    expect(sanitizeSvgString('<svg><style>g{fill:u&#114;l(http://e/x)}h{fill:red}</style></svg>')).toBe(
+      '<svg><style>g{fill:none}h{fill:red}</style></svg>'
+    );
+  });
+
+  it('treats CDATA content in <style> as literal for entities but still cleans real rules', () => {
+    const literal = '<svg><style><![CDATA[&#x40;import x;g{fill:blue}]]></style></svg>';
+    expect(sanitizeSvgString(literal)).toBe(literal);
+    expect(sanitizeSvgString('<svg><style><![CDATA[@import url(http://e/x.css);g{fill:blue}]]></style></svg>')).toBe(
+      '<svg><style><![CDATA[g{fill:blue}]]></style></svg>'
+    );
+    expect(cssLeaks(sanitizeSvgString('<svg><style><![CDATA[@\\69mport "http://e/x";]]>&#64;import "http://e/y";</style></svg>'))).toEqual([]);
+    expect(() => sanitizeSvgString('<svg><style><![CDATA[&#0;]]></style></svg>')).not.toThrow(SvgSanitizationError);
+  });
+
+  it('fails closed on numeric references to invalid code points', () => {
+    for (const bad of ['&#0;', '&#x0;', '&#xD800;', '&#55296;', '&#x110000;', '&#99999999999999999999;', '&#92;110000 ']) {
+      expect(() => sanitizeSvgString(`<svg><style>g{content:"${bad}"}</style></svg>`)).toThrow(SvgSanitizationError);
+      expect(() => sanitizeSvgString(`<svg><rect style='content:"${bad}"'/></svg>`)).toThrow(SvgSanitizationError);
+    }
+  });
+
+  it('keeps benign entities, malformed references and valid CSS intact', () => {
+    const css = 'g{content:"a &amp; b &lt; c &#x41; &#66; & &# &#x; &foo;";fill:url(#a)}';
+    expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(`<svg><style>${css}</style></svg>`);
+  });
+
+  describe('linear time on 5 MB adversarial entity input', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const BUDGET_MS = 2000;
+    const adversarial: Array<[string, string]> = [
+      ['bare reference openers', '&#'.repeat(FIVE_MB / 2)],
+      ['unterminated hex run', `&#x${'0'.repeat(FIVE_MB)}`],
+      ['unterminated decimal runs', '&#1'.repeat(FIVE_MB / 3)],
+      ['ampersands', '&'.repeat(FIVE_MB)],
+      ['encoded imports', '&#x40;import a;'.repeat(Math.floor(FIVE_MB / 15))],
+      ['encoded backslash imports', '@&#92;69mport a;'.repeat(Math.floor(FIVE_MB / 16))],
+      ['encoded urls', 'u&#114;l(http://e/x)'.repeat(Math.floor(FIVE_MB / 20))],
+      ['CDATA openers', '<![CDATA['.repeat(FIVE_MB / 9)],
+      ['CDATA pairs', '<![CDATA[&#]]>'.repeat(Math.floor(FIVE_MB / 14))],
+    ];
+
+    for (const [label, css] of adversarial) {
+      for (const [place, wrap] of [
+        ['a <style> body', (c: string) => `<svg><style>${c}</style></svg>`],
+        ['a style attribute', (c: string) => `<svg><rect style='${c.replace(/'/g, '&apos;')}'/></svg>`],
+      ] as Array<[string, (c: string) => string]>) {
+        it(`handles ${label} in ${place}`, () => {
+          const start = performance.now();
+          const out = sanitizeSvgString(wrap(css));
+          expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+          // The oracle's own CDATA splitter is not linear, so the output scan skips the CDATA-heavy inputs.
+          if (!label.startsWith('CDATA')) expect(cssLeaks(out)).toEqual([]);
+        });
+      }
+    }
   });
 });
