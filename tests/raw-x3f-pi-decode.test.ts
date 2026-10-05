@@ -59,7 +59,7 @@ describe.skipIf(!ENABLED)('Sigma X3F and Raspberry Pi RAW decode through the dis
       const file = load(format);
       const container = format === 'x3f' ? readX3fContainer(file) : readPiFrame(file);
       const result = await dispatchConversion(file, format, target, {}, `sample.${format}`);
-      expect(result.engineUsed).toBe('native-raw');
+      expect(result.engineUsed).toBe('in-process-raw');
 
       const meta = await sharp(result.buffer).metadata();
       expect(meta.format).toBe(target === 'jpg' ? 'jpeg' : 'png');
@@ -83,7 +83,7 @@ describe.skipIf(!ENABLED)('Sigma X3F and Raspberry Pi RAW decode through the dis
     'decodes %s without LibRaw installed',
     async (format) => {
       const result = await withMissingBinary('DCRAW_EMU_PATH', () => dispatchConversion(load(format), format, 'png', {}, `sample.${format}`));
-      expect(result.engineUsed).toBe('native-raw');
+      expect(result.engineUsed).toBe('in-process-raw');
       const { channels } = await sharp(result.buffer).stats();
       expect(Math.max(...channels.map((channel) => channel.stdev))).toBeGreaterThan(10);
     },

@@ -820,7 +820,9 @@ describe('real camera RAW samples', () => {
       }
       const sample = RAW_SAMPLES.get(source)!;
       const result = await dispatchConversion(sample, source, target, rawSampleOptions(source), `probe.${source}`);
-      if ((HAS_NATIVE_RAW_ENGINE || IN_PROCESS_RAW_SOURCES.has(source)) && target !== 'zip') {
+      if (IN_PROCESS_RAW_SOURCES.has(source) && target !== 'zip') {
+        expect(result.engineUsed).toBe('in-process-raw');
+      } else if (HAS_NATIVE_RAW_ENGINE && target !== 'zip') {
         expect(result.engineUsed).toBe('native-raw');
       }
       expectPlausible(await referenceDimensions(source));
