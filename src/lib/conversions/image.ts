@@ -2277,6 +2277,10 @@ export function decodeRawBayerSensor(
   return null;
 }
 
+const RAW_CAMERA_FORMATS: ReadonlySet<string> = new Set([
+  'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'pef', 'orf', 'srw', 'kdc',
+  '3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f', 'raw',
+]);
 const JPEG_SOI_MARKER = Buffer.from([0xff, 0xd8, 0xff]);
 const JPEG_MARKER_PREFIX = 0xff;
 const JPEG_EOI = 0xd9;
@@ -2335,6 +2339,11 @@ export async function convertImage(
 
   // Special case: Image to PDF
   if (fmt === 'pdf') {
+    if (RAW_CAMERA_FORMATS.has(src)) {
+      // Camera files are not readable as a picture: decode to PNG first, then place that on the page.
+      const decoded = await convertImage(inputBuffer, 'png', options, originalFilename, src);
+      return convertImageToPdf(decoded.buffer, options, baseName, 'png');
+    }
     return convertImageToPdf(inputBuffer, options, baseName, src);
   }
 
@@ -2363,11 +2372,7 @@ export async function convertImage(
   }
 
   // Handle RAW camera inputs by decoding true RAW sensor Bayer/LJ92 data first
-  const rawExtensions = [
-    'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'pef', 'orf', 'srw', 'kdc',
-    '3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f', 'raw'
-  ];
-  const isRawInput = rawExtensions.includes(src);
+  const isRawInput = RAW_CAMERA_FORMATS.has(src);
 
   let isEmbeddedPreview = false;
   let rawDemosaiced = isRawInput ? decodeRawBayerSensor(activeBuffer, src, options) : null;

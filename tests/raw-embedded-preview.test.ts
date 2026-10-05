@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
 
@@ -35,5 +36,12 @@ describe('embedded RAW preview extraction', () => {
     const { data } = await sharp(result.buffer).removeAlpha().raw().toBuffer({ resolveWithObject: true });
     expect(Math.abs(data[0] - 200)).toBeLessThan(COLOUR_TOLERANCE);
     expect(Math.abs(data[2] - 40)).toBeLessThan(COLOUR_TOLERANCE);
+  });
+
+  it('places the main preview on a PDF page of its own size', async () => {
+    const result = await convertFile(await jpegWithExifThumbnail(), 'raw', 'pdf', { allowEmbeddedPreview: true }, 'frame.raw');
+    const pdf = await PDFDocument.load(result.buffer);
+    expect(pdf.getPageCount()).toBe(1);
+    expect(pdf.getPage(0).getSize()).toEqual({ width: MAIN_WIDTH, height: MAIN_HEIGHT });
   });
 });
