@@ -24,6 +24,27 @@ const COMMENT_CLOSE = '-->';
 const COMMENT_OPEN_LENGTH = COMMENT_OPEN.length;
 const DOCTYPE_OPEN = '<!doctype';
 const EVENT_PREFIX = 'on';
+const ANIMATION_VALUE_SEPARATOR = ';';
+
+/** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
+const DANGEROUS_URI_PREFIXES = [
+  'javascript:',
+  'vbscript:',
+  'data:text/html',
+  'data:image/svg+xml',
+  'data:application/javascript',
+  'http:',
+  'https:',
+  'file:',
+  'ftp:',
+  '//',
+] as const;
+
+/** Animation elements that can retarget an attribute (including event handlers and links) at run time. */
+const ANIMATION_ELEMENTS = new Set(['set', 'animate']);
+/** Animation attributes carrying the value(s) written into the targeted attribute. */
+const ANIMATION_VALUE_ATTRIBUTES = new Set(['to', 'from', 'by', 'values']);
+const LINK_ATTRIBUTES = new Set(['href', 'src']);
 
 /** Elements removed together with their content when a matching close tag exists. */
 const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed'] as const;
@@ -51,6 +72,15 @@ function isWordCharAt(str: string, index: number): boolean {
   return isDigit || isUpper || isLower || code === 0x5f;
 }
 
+/** Takes a URI after entity decoding, whitespace/control removal and lowercasing. */
+function isDangerousUri(normalized: string): boolean {
+  return DANGEROUS_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function normalizeUriText(raw: string): string {
+  return decodeHtmlEntities(raw).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
+}
+
 function isWhitespaceAt(str: string, index: number): boolean {
   return /\s/.test(str.charAt(index));
 }
@@ -72,42 +102,68 @@ function findTagEnd(src: string, from: number): number {
   return -1;
 }
 
+function isPrefixCharAt(str: string, index: number): boolean {
+  const ch = str.charAt(index);
+  return isWordCharAt(str, index) || ch === '-' || ch === '.';
+}
+
 /**
- * Finds `</name\s*>` at or after `from` in the lowercase view. Returns [start, end) or null.
+ * Given the index of an element's local name, returns the index of the '<' that opens it, accepting an
+ * optional `prefix:` between the '<' (or '</' when `closing`) and the name. Returns -1 when the name is not
+ * at the start of a (possibly namespace-prefixed) tag name. The walk-back only crosses prefix characters, so
+ * it stays linear over the whole input.
+ */
+function tagOpenBefore(src: string, nameIndex: number, closing: boolean): number {
+  let nameStart = nameIndex;
+  if (src[nameIndex - 1] === ':') {
+    let prefixStart = nameIndex - 1;
+    while (prefixStart > 0 && isPrefixCharAt(src, prefixStart - 1)) prefixStart--;
+    if (prefixStart === nameIndex - 1) return -1;
+    nameStart = prefixStart;
+  }
+  if (closing) return src[nameStart - 1] === '/' && src[nameStart - 2] === '<' ? nameStart - 2 : -1;
+  return src[nameStart - 1] === '<' ? nameStart - 1 : -1;
+}
+
+/**
+ * Finds `</name\s*>` (optionally namespace-prefixed) at or after `from` in the lowercase view.
+ * Returns [start, end) or null.
  */
 function findCloseTag(lower: string, lowerName: string, from: number): [number, number] | null {
-  const needle = `</${lowerName}`;
   let search = from;
   for (;;) {
-    const start = lower.indexOf(needle, search);
-    if (start === -1) return null;
-    let end = start + needle.length;
-    while (end < lower.length && isWhitespaceAt(lower, end)) end++;
-    if (lower[end] === '>') return [start, end + 1];
-    search = start + 1;
+    const nameIndex = lower.indexOf(lowerName, search);
+    if (nameIndex === -1) return null;
+    const start = tagOpenBefore(lower, nameIndex, true);
+    if (start >= from) {
+      let end = nameIndex + lowerName.length;
+      while (end < lower.length && isWhitespaceAt(lower, end)) end++;
+      if (lower[end] === '>') return [start, end + 1];
+    }
+    search = nameIndex + 1;
   }
 }
 
 /**
- * Removes every `<name ...>` element in linear time. Paired elements are removed through their close
- * tag; an opener without a close tag is removed alone; an opening tag that never terminates is removed
- * through the end of input (fail closed).
+ * Removes every `<name ...>` or `<prefix:name ...>` element in linear time. Paired elements are removed
+ * through their close tag; an opener without a close tag is removed alone; an opening tag that never
+ * terminates is removed through the end of input (fail closed).
  */
 function stripElement(src: string, name: string, paired: boolean): string {
   const lowerName = lowerKeepingLength(name);
   const lower = lowerKeepingLength(src);
-  const open = `<${lowerName}`;
   const parts: string[] = [];
   let copied = 0;
   let search = 0;
   let closeMissing = false;
 
   for (;;) {
-    const start = lower.indexOf(open, search);
-    if (start === -1) break;
-    const afterName = start + open.length;
-    if (isWordCharAt(src, afterName)) {
-      search = start + 1;
+    const nameIndex = lower.indexOf(lowerName, search);
+    if (nameIndex === -1) break;
+    const start = tagOpenBefore(lower, nameIndex, false);
+    const afterName = nameIndex + lowerName.length;
+    if (start < copied || isWordCharAt(src, afterName)) {
+      search = nameIndex + 1;
       continue;
     }
     parts.push(src.slice(copied, start));
@@ -219,7 +275,7 @@ function stripExternalCssUrls(css: string): string {
 }
 
 function sanitizeCss(css: string): string {
-  return stripExternalCssUrls(css.replace(/@import\s+[^;]+;?/gi, ''));
+  return stripExternalCssUrls(css.replace(/@import[^;]*;?/gi, ''));
 }
 
 /**
@@ -338,8 +394,33 @@ function isEventHandlerName(attributeName: string): boolean {
   return local.length > EVENT_PREFIX.length && local.startsWith(EVENT_PREFIX);
 }
 
+function localNameOf(qualified: string): string {
+  const lowered = qualified.toLowerCase();
+  return lowered.slice(lowered.lastIndexOf(':') + 1);
+}
+
 /**
- * Removes every on* attribute from every tag in linear time, wherever the attribute sits in the tag
+ * True for `<set>` / `<animate>` elements that would write an event handler or a dangerous URI into another
+ * attribute (for example `<set attributeName="onclick" to="alert(1)"/>`).
+ */
+function isHostileAnimation(tag: TagToken): boolean {
+  if (!ANIMATION_ELEMENTS.has(localNameOf(tag.name))) return false;
+  const target = tag.attributes.find((attribute) => attribute.name.toLowerCase() === 'attributename');
+  if (target === undefined) return false;
+  const targetName = localNameOf(normalizeUriText(target.value));
+  if (isEventHandlerName(targetName)) return true;
+  if (!LINK_ATTRIBUTES.has(targetName)) return false;
+  return tag.attributes.some(
+    (attribute) =>
+      ANIMATION_VALUE_ATTRIBUTES.has(attribute.name.toLowerCase()) &&
+      attribute.value
+        .split(ANIMATION_VALUE_SEPARATOR)
+        .some((item) => isDangerousUri(normalizeUriText(item)))
+  );
+}
+
+/**
+ * Removes every on* attribute (and every animation element retargeting one) from every tag in linear time, wherever the attribute sits in the tag
  * (after whitespace, '/', or the closing quote of the previous value). Text outside tags is untouched.
  */
 function stripEventHandlerAttributes(src: string): string {
@@ -355,6 +436,12 @@ function stripEventHandlerAttributes(src: string): string {
       continue;
     }
     const tag = readTag(src, lt);
+    if (isHostileAnimation(tag)) {
+      parts.push(src.slice(copied, lt));
+      copied = tag.end;
+      search = tag.end;
+      continue;
+    }
     for (const attribute of tag.attributes) {
       if (!isEventHandlerName(attribute.name)) continue;
       let removeStart = attribute.start;
@@ -431,18 +518,7 @@ function sanitizePass(input: string): string {
     (full, v1, v2, v3) => {
       const rawVal = v1 !== undefined ? v1 : (v2 !== undefined ? v2 : v3);
       const decoded = decodeHtmlEntities(rawVal).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
-      if (
-        decoded.startsWith('javascript:') ||
-        decoded.startsWith('vbscript:') ||
-        decoded.startsWith('data:text/html') ||
-        decoded.startsWith('data:image/svg+xml') ||
-        decoded.startsWith('data:application/javascript') ||
-        decoded.startsWith('http:') ||
-        decoded.startsWith('https:') ||
-        decoded.startsWith('file:') ||
-        decoded.startsWith('ftp:') ||
-        decoded.startsWith('//')
-      ) {
+      if (isDangerousUri(decoded)) {
         return 'href="#"';
       }
       return full;
@@ -455,18 +531,7 @@ function sanitizePass(input: string): string {
     (full, v1, v2, v3) => {
       const rawVal = v1 !== undefined ? v1 : (v2 !== undefined ? v2 : v3);
       const decoded = decodeHtmlEntities(rawVal).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
-      if (
-        decoded.startsWith('javascript:') ||
-        decoded.startsWith('vbscript:') ||
-        decoded.startsWith('data:text/html') ||
-        decoded.startsWith('data:image/svg+xml') ||
-        decoded.startsWith('data:application/javascript') ||
-        decoded.startsWith('http:') ||
-        decoded.startsWith('https:') ||
-        decoded.startsWith('file:') ||
-        decoded.startsWith('ftp:') ||
-        decoded.startsWith('//')
-      ) {
+      if (isDangerousUri(decoded)) {
         return 'to="#"';
       }
       return full;

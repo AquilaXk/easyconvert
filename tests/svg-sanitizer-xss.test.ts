@@ -173,3 +173,67 @@ describe('on* attribute stripping without leading whitespace (item 4)', () => {
     expect(out).not.toContain('onload');
   });
 });
+
+describe('@import, namespaced elements and animation targets (item 5)', () => {
+  it('strips @import without whitespace before the target', () => {
+    const out = sanitizeSvgString('<svg><style>@import"http://e/x.css";rect{fill:red}@import\'http://e/y.css\';</style></svg>');
+    expect(out).toBe('<svg><style>rect{fill:red}</style></svg>');
+  });
+
+  it('strips @import url() without whitespace', () => {
+    const out = sanitizeSvgString('<svg><style>@import url(http://e/x.css);g{fill:blue}</style></svg>');
+    expect(out).toBe('<svg><style>g{fill:blue}</style></svg>');
+  });
+
+  it('strips namespace-prefixed dangerous elements with their content', () => {
+    const out = sanitizeSvgString(
+      '<svg xmlns:s="http://www.w3.org/2000/svg"><s:script>alert(1)</s:script><x:foreignObject><p/></x:foreignObject><rect/></svg>'
+    );
+    expect(out).toBe('<svg xmlns:s="http://www.w3.org/2000/svg"><rect/></svg>');
+  });
+
+  it('strips prefixed openers that have no close tag and mixed-case prefixes', () => {
+    const out = sanitizeSvgString('<svg><S:IFrame src="x"><rect/></svg>');
+    expect(out).toBe('<svg><rect/></svg>');
+    expect(sanitizeSvgString('<svg><a.b-c:embed/><rect/></svg>')).toBe('<svg><rect/></svg>');
+  });
+
+  it('keeps prefixed names that only contain a dangerous word', () => {
+    const input = '<svg><s:scripted/><xlink:objects/><rect xlink:script="1"/></svg>';
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+
+  it('strips many distinct prefixed openers in linear time', () => {
+    const payload = `<svg>${Array.from({ length: 20000 }, (_, i) => `<p${i}:script>`).join('')}</svg>`;
+    const start = performance.now();
+    const out = sanitizeSvgString(payload);
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(out).toBe('<svg></svg>');
+  });
+
+  const hostileAnimations = [
+    '<set attributeName="onmouseover" to="alert(1)"/>',
+    '<animate attributeName="onclick" values="alert(1)"/>',
+    '<SET AttributeName="OnBegin" to="alert(1)"></SET>',
+    '<set attributeName="&#111;nclick" to="alert(1)"/>',
+    '<set attributeName="xlink:href" to="javascript:alert(1)"/>',
+    '<animate attributeName="href" values="#a;javascript:alert(1)"/>',
+    '<s:set attributeName="onfocus" to="alert(1)"/>',
+  ];
+
+  for (const animation of hostileAnimations) {
+    it(`removes the hostile animation ${animation}`, () => {
+      const out = sanitizeSvgString(`<svg><a>${animation}<rect/></a></svg>`);
+      expect(out).not.toContain('attributeName');
+      expect(out.toLowerCase()).not.toContain('attributename');
+      expect(out).not.toContain('alert(1)');
+      expect(out).toContain('<rect/>');
+      expect(executableConstructs(out)).toEqual([]);
+    });
+  }
+
+  it('keeps benign animations', () => {
+    const input = '<svg><rect><set attributeName="fill" to="red"/><animate attributeName="width" values="1;5" dur="1s"/></rect></svg>';
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+});
