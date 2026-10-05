@@ -57,7 +57,8 @@ jobs:
             fonts-noto-ui-core \
             fonts-noto-color-emoji \
             unrar \
-            qpdf
+            qpdf \
+            libraw-bin
           # Pre-stage Tesseract traineddata assets for offline inference
           find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
 
