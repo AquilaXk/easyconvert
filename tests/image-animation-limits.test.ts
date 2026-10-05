@@ -73,7 +73,8 @@ describe('decoded animation budget', () => {
 describe('animated resize budget', () => {
   const SMALL_SIDE = 64;
   const SMALL_FRAMES = 6;
-  const HUGE_TARGET = 16000;
+  /** 64 Mpx per frame is under the output pixel limit, but six of them are 1.5 GiB of RGBA. */
+  const HUGE_TARGET = 8000;
 
   async function smallAnimation(orientation?: number): Promise<Buffer> {
     return buildAnimatedWebpFromStill(await flatStill(SMALL_SIDE, SMALL_SIDE), {
@@ -87,7 +88,7 @@ describe('animated resize budget', () => {
   it.each([
     ['oriented', ROTATED_QUARTER_TURN],
     ['plain', undefined],
-  ])('refuses a %s animation resized to %i-pixel frames before processing a frame', async (_label, orientation) => {
+  ])('refuses a %s animation resized to huge frames before processing a frame', async (_label, orientation) => {
     const animation = await smallAnimation(orientation);
     const started = Date.now();
     const error = await captureError(() =>
