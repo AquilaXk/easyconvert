@@ -50,9 +50,13 @@ services:
       - NODE_ENV=production
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # STORAGE_DRIVER=local keeps objects on the shared volume below. For oci, set every OCI_* value
-      # (no defaults: a missing one stops startup); for s3, set the S3_* values instead.
+      # STORAGE_DRIVER=local keeps objects on the shared volume below and passes production start-up
+      # validation (it logs one warning). For oci, set every OCI_* value (no defaults: a missing one
+      # stops startup); for s3, set the S3_* values instead.
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
+      # Public origin of the application (https://...). NODE_ENV=production has no fallback origin, so
+      # building a local multipart upload URL stops with a configuration error while this is empty.
+      - APP_URL=${APP_URL:-}
       - OCI_NAMESPACE=${OCI_NAMESPACE:-}
       - OCI_REGION=${OCI_REGION:-}
       - OCI_BUCKET=${OCI_BUCKET:-}
@@ -116,9 +120,13 @@ services:
       - NODE_ENV=production
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # STORAGE_DRIVER=local keeps objects on the shared volume below. For oci, set every OCI_* value
-      # (no defaults: a missing one stops startup); for s3, set the S3_* values instead.
+      # STORAGE_DRIVER=local keeps objects on the shared volume below and passes production start-up
+      # validation (it logs one warning). For oci, set every OCI_* value (no defaults: a missing one
+      # stops startup); for s3, set the S3_* values instead.
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
+      # Public origin of the application (https://...). NODE_ENV=production has no fallback origin, so
+      # building a local multipart upload URL stops with a configuration error while this is empty.
+      - APP_URL=${APP_URL:-}
       - OCI_NAMESPACE=${OCI_NAMESPACE:-}
       - OCI_REGION=${OCI_REGION:-}
       - OCI_BUCKET=${OCI_BUCKET:-}
