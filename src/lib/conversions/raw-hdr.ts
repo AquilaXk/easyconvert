@@ -1,6 +1,7 @@
 import zlib from 'node:zlib';
 import sharp from 'sharp';
 import {
+  ConversionFailedError,
   ConversionOptions,
   UnsupportedRawCompressionError,
   InvalidRawSensorError,
@@ -1351,23 +1352,75 @@ function extractJpegXmp(jpeg: Buffer): string {
   return rawXmp.subarray(0, endXmp + xmpEnd.length).toString('utf-8');
 }
 
-function readHdrgmNumber(xmp: string, name: string): number | null {
-  const match = new RegExp(`hdrgm:${name}="([^"]+)"`).exec(xmp);
-  if (!match) return null;
-  const value = Number.parseFloat(match[1]);
-  if (!Number.isFinite(value)) {
-    throw new Error(`Invalid Ultra HDR JPEG: hdrgm:${name} is not a finite number.`);
+/** Namespaces of gain map metadata: the ISO 21496-1 one this engine writes and the earlier Adobe one. */
+const GAIN_MAP_NAMESPACES = ['http://iso.org/iso-21496/-1', 'http://ns.adobe.com/hdr-gain-map/1.0/'];
+const DEFAULT_GAIN_MAP_PREFIX = 'hdrgm';
+/** A plain decimal or exponent number, nothing before or after it. */
+const XMP_NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+/** Plausible ranges: gains of at most 2^32 either way, a gamma within 1/16..16, offsets within one SDR unit. */
+const GAIN_MAP_MAX_ABS_LOG2 = 32;
+const GAIN_MAP_MAX_GAMMA = 16;
+const GAIN_MAP_MIN_GAMMA = 1 / GAIN_MAP_MAX_GAMMA;
+const GAIN_MAP_MAX_OFFSET = 1;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Prefixes bound to a gain map namespace in `xmp`, plus the conventional `hdrgm`. */
+function gainMapPrefixes(xmp: string): string[] {
+  const prefixes = new Set([DEFAULT_GAIN_MAP_PREFIX]);
+  for (const match of xmp.matchAll(/xmlns:([A-Za-z_][\w.-]*)\s*=\s*(["'])(.*?)\2/g)) {
+    if (GAIN_MAP_NAMESPACES.includes(match[3])) prefixes.add(match[1]);
+  }
+  return [...prefixes];
+}
+
+/** Raw text of a gain map property, written as an attribute (either quote) or a simple element. */
+function readGainMapProperty(xmp: string, name: string): string | null {
+  for (const prefix of gainMapPrefixes(xmp)) {
+    const qualified = escapeRegExp(`${prefix}:${name}`);
+    const attribute = new RegExp(`${qualified}\\s*=\\s*(["'])(.*?)\\1`).exec(xmp);
+    if (attribute) return attribute[2].trim();
+    const element = new RegExp(`<${qualified}>([\\s\\S]*?)</${qualified}>`).exec(xmp);
+    if (element) {
+      if (element[1].includes('<')) {
+        throw new ConversionFailedError(`Unsupported Ultra HDR JPEG: per-channel ${prefix}:${name} values are not supported.`);
+      }
+      return element[1].trim();
+    }
+  }
+  return null;
+}
+
+function readGainMapNumber(xmp: string, name: string): number | null {
+  const raw = readGainMapProperty(xmp, name);
+  if (raw === null) return null;
+  const value = Number(raw);
+  if (!XMP_NUMBER.test(raw) || !Number.isFinite(value)) {
+    throw new ConversionFailedError(`Invalid Ultra HDR JPEG: ${name} "${raw}" is not a finite number.`);
   }
   return value;
+}
+
+function requireRange(name: string, value: number, min: number, max: number): void {
+  if (value < min || value > max) {
+    throw new ConversionFailedError(`Invalid Ultra HDR JPEG: ${name} ${value} is outside ${min}..${max}.`);
+  }
 }
 
 /**
  * Resolves the gain map parameters. The gain map image's own XMP is authoritative (that is where
  * the Ultra HDR layout stores them); the primary XMP is consulted for packets that repeat them.
+ * Values that are present but malformed or implausible are rejected rather than replaced by defaults.
  */
 function resolveGainMapParams(gainMapXmp: string, primaryXmp: string): UltraHdrGainMapParams {
   const read = (name: string, fallback: number): number =>
-    readHdrgmNumber(gainMapXmp, name) ?? readHdrgmNumber(primaryXmp, name) ?? fallback;
+    readGainMapNumber(gainMapXmp, name) ?? readGainMapNumber(primaryXmp, name) ?? fallback;
+  const baseIsHdr = readGainMapProperty(gainMapXmp, 'BaseRenditionIsHDR') ?? readGainMapProperty(primaryXmp, 'BaseRenditionIsHDR');
+  if (baseIsHdr !== null && baseIsHdr.toLowerCase() === 'true') {
+    throw new ConversionFailedError('Unsupported Ultra HDR JPEG: BaseRenditionIsHDR="True" (an HDR base rendition) is not supported.');
+  }
   const params: UltraHdrGainMapParams = {
     gainMapMin: read('GainMapMin', 0),
     gainMapMax: read('GainMapMax', ULTRA_HDR_DEFAULT_GAIN_MAP_MAX),
@@ -1375,9 +1428,19 @@ function resolveGainMapParams(gainMapXmp: string, primaryXmp: string): UltraHdrG
     offsetSdr: read('OffsetSDR', ULTRA_HDR_DEFAULT_OFFSET),
     offsetHdr: read('OffsetHDR', ULTRA_HDR_DEFAULT_OFFSET),
   };
-  if (params.gamma <= 0) {
-    throw new Error('Invalid Ultra HDR JPEG: hdrgm:Gamma must be positive.');
+  requireRange('GainMapMin', params.gainMapMin, -GAIN_MAP_MAX_ABS_LOG2, GAIN_MAP_MAX_ABS_LOG2);
+  requireRange('GainMapMax', params.gainMapMax, -GAIN_MAP_MAX_ABS_LOG2, GAIN_MAP_MAX_ABS_LOG2);
+  if (params.gainMapMin > params.gainMapMax) {
+    throw new ConversionFailedError(
+      `Invalid Ultra HDR JPEG: GainMapMin ${params.gainMapMin} is above GainMapMax ${params.gainMapMax}.`
+    );
   }
+  if (params.gamma <= 0) {
+    throw new ConversionFailedError('Invalid Ultra HDR JPEG: Gamma must be positive.');
+  }
+  requireRange('Gamma', params.gamma, GAIN_MAP_MIN_GAMMA, GAIN_MAP_MAX_GAMMA);
+  requireRange('OffsetSDR', params.offsetSdr, 0, GAIN_MAP_MAX_OFFSET);
+  requireRange('OffsetHDR', params.offsetHdr, 0, GAIN_MAP_MAX_OFFSET);
   return params;
 }
 

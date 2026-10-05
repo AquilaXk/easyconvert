@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
+import { ConversionFailedError } from '../src/lib/types';
 import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR, probeExr } from './helpers/ffmpeg-exr';
 import { floatToHalfBits, halfBitsToFloat } from './helpers/openexr-writer';
 import { parseUltraHdrStructure, readHdrgmAttribute, type UltraHdrGainMapMetadata } from './helpers/ultrahdr-builder';
@@ -297,6 +298,48 @@ describe('malformed HDR sources fail closed', () => {
   it('rejects an Ultra HDR JPEG whose gain map declares a non-positive Gamma', async () => {
     const source = await buildPatchUltraHdr(false, { ...ULTRA_HDR_METADATA, gamma: 0 });
     await expect(convertFile(source, 'ultrahdr', 'exr', {}, 'bad.jpg')).rejects.toThrow(/Gamma must be positive/);
+  });
+
+  /** Builds the patch file with one gain map XMP attribute replaced by raw text. */
+  const withAttribute = (name: string, raw: string) =>
+    buildPatchUltraHdr(false, ULTRA_HDR_METADATA, (xmp) => {
+      const pattern = new RegExp(`hdrgm:${name}="[^"]*"`);
+      if (!pattern.test(xmp)) throw new Error(`the builder wrote no hdrgm:${name}`);
+      return xmp.replace(pattern, raw);
+    });
+
+  it.each([
+    ['an out-of-range GainMapMax', 'GainMapMax', 'hdrgm:GainMapMax="1e308"', /GainMapMax/],
+    ['GainMapMin above GainMapMax', 'GainMapMin', 'hdrgm:GainMapMin="5.0"', /GainMapMin.*GainMapMax/],
+    ['a Gamma too close to zero', 'Gamma', 'hdrgm:Gamma="1e-300"', /Gamma/],
+    ['an OffsetSDR above 1', 'OffsetSDR', 'hdrgm:OffsetSDR="4.0"', /OffsetSDR/],
+    ['a number with trailing text', 'GainMapMax', 'hdrgm:GainMapMax="2abc"', /GainMapMax/],
+    ['a NaN value', 'GainMapMax', 'hdrgm:GainMapMax="NaN"', /GainMapMax/],
+    ['per-channel values', 'GainMapMax', '', /per-channel|GainMapMax/],
+    ['an HDR base rendition', 'BaseRenditionIsHDR', 'hdrgm:BaseRenditionIsHDR="True"', /BaseRenditionIsHDR/],
+  ])('rejects gain map metadata with %s', async (_label, name, raw, message) => {
+    const source = raw === ''
+      ? await buildPatchUltraHdr(false, ULTRA_HDR_METADATA, (xmp) =>
+          xmp
+            .replace(/ hdrgm:GainMapMax="[^"]*"/, '')
+            .replace('/>', '><hdrgm:GainMapMax><rdf:Seq><rdf:li>1</rdf:li><rdf:li>2</rdf:li><rdf:li>3</rdf:li></rdf:Seq></hdrgm:GainMapMax></rdf:Description>'))
+      : await withAttribute(name, raw);
+    const run = convertFile(source, 'ultrahdr', 'exr', {}, 'bad.jpg');
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.toThrow(message);
+  });
+
+  it.skipIf(!HAS_FFMPEG_EXR).each([
+    ['single-quoted attributes', (xmp: string) => xmp.replace(/hdrgm:(\w+)="([^"]*)"/g, "hdrgm:$1='$2'")],
+    ['element-form values', (xmp: string) => {
+      const max = /hdrgm:GainMapMax="([^"]*)"/.exec(xmp)![1];
+      return xmp.replace(/ hdrgm:GainMapMax="[^"]*"/, '').replace('/>', `><hdrgm:GainMapMax>${max}</hdrgm:GainMapMax></rdf:Description>`);
+    }],
+    ['another namespace prefix', (xmp: string) => xmp.replace(/hdrgm:/g, 'gm:').replace('xmlns:hdrgm=', 'xmlns:gm=')],
+  ])('reads gain map metadata written as %s', async (_label, edit) => {
+    const source = await buildPatchUltraHdr(false, ULTRA_HDR_METADATA, edit);
+    const result = await convertFile(source, 'ultrahdr', 'exr', {}, 'patches.jpg');
+    expectHdrReconstruction(result.buffer, ULTRA_HDR_METADATA);
   });
 
   it('rejects an OpenEXR file that does not start with the EXR magic number', async () => {

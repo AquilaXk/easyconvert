@@ -136,7 +136,8 @@ export function ultraHdrExpectedLinear(
 /** The patch image as an Ultra HDR JPEG built by the independent builder. */
 export async function buildPatchUltraHdr(
   mirrorGainMapMaxInPrimary = false,
-  metadata: UltraHdrGainMapMetadata = ULTRA_HDR_METADATA
+  metadata: UltraHdrGainMapMetadata = ULTRA_HDR_METADATA,
+  editGainMapXmp?: (xmp: string) => string
 ): Promise<Buffer> {
   const sdr = Buffer.alloc(HDR_IMAGE_WIDTH * HDR_IMAGE_HEIGHT * 3);
   const gain = Buffer.alloc(HDR_IMAGE_WIDTH * HDR_IMAGE_HEIGHT);
@@ -158,6 +159,7 @@ export async function buildPatchUltraHdr(
     gainMap: gain,
     metadata,
     mirrorGainMapMaxInPrimary,
+    editGainMapXmp,
   });
   return built.file;
 }

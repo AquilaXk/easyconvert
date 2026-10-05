@@ -73,6 +73,8 @@ export interface UltraHdrBuildInput {
    * the range only in the gain map image's XMP.
    */
   mirrorGainMapMaxInPrimary?: boolean;
+  /** Rewrites the gain map XMP text before it is packed, to build malformed or alternative metadata forms. */
+  editGainMapXmp?: (xmp: string) => string;
 }
 
 export interface UltraHdrParts {
@@ -86,8 +88,8 @@ function xmpPacket(body: string): Buffer {
   return Buffer.concat([Buffer.from(XMP_NAMESPACE_ID, 'ascii'), Buffer.from(packet, 'utf8')]);
 }
 
-function gainMapXmp(meta: UltraHdrGainMapMetadata): Buffer {
-  return xmpPacket(
+function gainMapXmpText(meta: UltraHdrGainMapMetadata): string {
+  return (
     `<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` +
       `<rdf:Description rdf:about="" xmlns:hdrgm="${HDRGM_NAMESPACE}" hdrgm:Version="1.0"` +
       ` hdrgm:GainMapMin="${meta.gainMapMin.toFixed(6)}" hdrgm:GainMapMax="${meta.gainMapMax.toFixed(6)}"` +
@@ -96,6 +98,11 @@ function gainMapXmp(meta: UltraHdrGainMapMetadata): Buffer {
       ` hdrgm:HDRCapacityMax="${meta.gainMapMax.toFixed(6)}" hdrgm:BaseRenditionIsHDR="False"/>` +
       `</rdf:RDF></x:xmpmeta>`
   );
+}
+
+function gainMapXmp(meta: UltraHdrGainMapMetadata, edit?: (xmp: string) => string): Buffer {
+  const text = gainMapXmpText(meta);
+  return xmpPacket(edit ? edit(text) : text);
 }
 
 /** Primary XMP: the Container directory describing both items, plus the `hdrgm:` version marker. */
@@ -194,7 +201,7 @@ export async function buildUltraHdrJpeg(input: UltraHdrBuildInput): Promise<Ultr
     .toColourspace('b-w')
     .jpeg({ quality: GAIN_MAP_JPEG_QUALITY })
     .toBuffer();
-  const gainMapJpeg = insertSegments(gainMapBase, [app1Segment(gainMapXmp(input.metadata))]);
+  const gainMapJpeg = insertSegments(gainMapBase, [app1Segment(gainMapXmp(input.metadata, input.editGainMapXmp))]);
 
   const primaryBase = await sharp(input.sdrRgb, { raw: { width, height, channels: 3 } })
     .jpeg({ quality: PRIMARY_JPEG_QUALITY })
