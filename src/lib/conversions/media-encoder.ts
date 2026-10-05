@@ -8,6 +8,7 @@
  * (no window switching, no overlap-add) that fails closed on streams it cannot parse.
  */
 
+import crypto from 'node:crypto';
 import { encodePureMp3 as pureEncodeMp3 } from '../edge/pure/pure-audio';
 import { ConversionFailedError } from '../types';
 import {
@@ -201,6 +202,25 @@ export function findOptimalRiceParameter(residuals: Int32Array): { k: number; fo
   }
 
   return { k: bestK, folded };
+}
+
+const FLAC_MIN_BLOCK_SIZE = 16;
+const STREAMINFO_MD5_OFFSET = 26;
+const MD5_CHUNK_SAMPLES = 1 << 16;
+const BYTES_PER_PCM16_SAMPLE = 2;
+
+/** MD5 over the little-endian signed 16-bit interleaved samples (RFC 9639 section 8.2). */
+function flacPcmMd5(samples: Int16Array): Buffer {
+  const hash = crypto.createHash('md5');
+  const chunk = Buffer.alloc(MD5_CHUNK_SAMPLES * BYTES_PER_PCM16_SAMPLE);
+  for (let start = 0; start < samples.length; start += MD5_CHUNK_SAMPLES) {
+    const count = Math.min(MD5_CHUNK_SAMPLES, samples.length - start);
+    for (let i = 0; i < count; i++) {
+      chunk.writeInt16LE(samples[start + i], i * BYTES_PER_PCM16_SAMPLE);
+    }
+    hash.update(chunk.subarray(0, count * BYTES_PER_PCM16_SAMPLE));
+  }
+  return hash.digest();
 }
 
 /** RFC 9639 section 9.1.2: 4-bit sample rate codes that name a rate from the table. */
@@ -440,6 +460,22 @@ export function encodeFlacStream(
     frameNumber++;
     sampleOffset += curBlockSize;
   }
+
+  // Exact STREAMINFO bounds (RFC 9639 section 8.2): the minimum block size excludes the last block.
+  let minFrameSize = 0;
+  let maxFrameSize = 0;
+  for (const frame of frames) {
+    if (minFrameSize === 0 || frame.length < minFrameSize) minFrameSize = frame.length;
+    if (frame.length > maxFrameSize) maxFrameSize = frame.length;
+  }
+  streamInfo.writeUIntBE(minFrameSize, 12, 3);
+  streamInfo.writeUIntBE(maxFrameSize, 15, 3);
+  const lastBlockSize = totalSamplesPerChannel - (frames.length - 1) * blockSize;
+  const maxBlockSize = frames.length > 1 ? blockSize : lastBlockSize;
+  const minBlockSize = frames.length > 1 ? blockSize : lastBlockSize;
+  streamInfo.writeUInt16BE(Math.max(FLAC_MIN_BLOCK_SIZE, minBlockSize), 8);
+  streamInfo.writeUInt16BE(Math.max(FLAC_MIN_BLOCK_SIZE, maxBlockSize), 10);
+  flacPcmMd5(samples).copy(streamInfo, STREAMINFO_MD5_OFFSET);
 
   return Buffer.concat([streamInfo, ...frames]);
 }

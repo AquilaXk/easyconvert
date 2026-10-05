@@ -1,9 +1,12 @@
+import crypto from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { encodeFlacStream } from '../src/lib/conversions/media-encoder';
 import { oracleTest } from './helpers/oracle-test';
 import {
   flacCliTest,
+  metaflacMd5,
   parseFlacStructure,
+  pcmLittleEndianBytes,
 } from './helpers/flac-reference';
 
 /** RFC 9639 section 9.1.2: 4-bit sample rate codes with a table entry. */
@@ -59,5 +62,48 @@ describe('FLAC frame headers follow RFC 9639', () => {
     const stream = encodeFlacStream(new Int16Array(frames), 44100, 1);
     const result = flacCliTest(stream);
     expect(result.ok, result.stderr.slice(0, 300)).toBe(true);
+  });
+});
+
+describe('FLAC STREAMINFO is exact', () => {
+  const CASES: ReadonlyArray<readonly [string, number, number]> = [
+    ['mono, one short block', 1, 300],
+    ['stereo, several blocks with a short tail', 2, 3 * SAMPLES_PER_FRAME + 123],
+    ['mono, exact block multiple', 1, 2 * SAMPLES_PER_FRAME],
+  ];
+
+  it.each(CASES)('records the MD5 of the little-endian PCM (%s)', (_name, channels, frames) => {
+    const pcm = ramp(frames, channels);
+    const expected = crypto.createHash('md5').update(pcmLittleEndianBytes(pcm, 2)).digest('hex');
+    const parsed = parseFlacStructure(encodeFlacStream(pcm, 44100, channels));
+    expect(parsed.streamInfo.md5).toBe(expected);
+  });
+
+  it.each(CASES)('records exact frame and block size bounds (%s)', (_name, channels, frames) => {
+    const parsed = parseFlacStructure(encodeFlacStream(ramp(frames, channels), 44100, channels));
+    const sizes = parsed.frames.map((f) => f.size);
+    const blocks = parsed.frames.map((f) => f.blockSize);
+    expect(parsed.streamInfo.minFrameSize).toBe(Math.min(...sizes));
+    expect(parsed.streamInfo.maxFrameSize).toBe(Math.max(...sizes));
+    expect(parsed.streamInfo.maxBlockSize).toBe(Math.max(...blocks));
+    const nonLast = blocks.slice(0, -1);
+    const expectedMin = nonLast.length > 0 ? Math.min(...nonLast) : blocks[0];
+    expect(parsed.streamInfo.minBlockSize).toBe(expectedMin);
+    expect(parsed.streamInfo.totalSamples).toBe(frames);
+  });
+
+  oracleTest('metaflac reads the same MD5 and flac -t verifies it', ['flac', 'metaflac'], () => {
+    const pcm = ramp(2 * SAMPLES_PER_FRAME + 77, 2);
+    const stream = encodeFlacStream(pcm, 44100, 2);
+    const expected = crypto.createHash('md5').update(pcmLittleEndianBytes(pcm, 2)).digest('hex');
+    expect(metaflacMd5(stream)).toBe(expected);
+    const result = flacCliTest(stream);
+    expect(result.ok, result.stderr.slice(0, 300)).toBe(true);
+
+    // Negative control: the oracle really checks the signature when it is present.
+    const tampered = Buffer.from(stream);
+    const MD5_OFFSET = 42 - 16;
+    tampered[MD5_OFFSET] ^= 0xff;
+    expect(flacCliTest(tampered).ok).toBe(false);
   });
 });
