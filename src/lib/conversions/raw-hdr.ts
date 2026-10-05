@@ -1441,6 +1441,8 @@ interface GainMapLocation {
   offset: number;
   /** Number of bytes in the gain map image; the legacy scan has none and runs to the end of the file. */
   length: number;
+  /** Exclusive end of the primary image: the gain map offset unless other images sit between them. */
+  primaryEnd: number;
 }
 
 // CIPA DC-007 Multi-Picture Format index (APP2 "MPF\0" followed by a TIFF structure).
@@ -1458,6 +1460,8 @@ const MPF_IFD_ENTRY_COUNT_FIELD = 4;
 const MPF_IFD_ENTRY_VALUE_FIELD = 8;
 const MPF_MIN_IMAGES = 2;
 const MPF_SECONDARY_INDEX = 1;
+/** Upper bound on listed images; real files hold a handful (primary, gain map, depth, ...). */
+const MPF_MAX_IMAGES = 64;
 
 function invalidMpf(detail: string): ConversionFailedError {
   return invalidUltraHdr(`MPF ${detail}`);
@@ -1518,29 +1522,39 @@ function locateGainMapFromMpf(buf: Buffer, segments: readonly JpegHeaderSegment[
     throw invalidMpf(`NumberOfImages ${declaredImages} does not match the ${imageCount} MP Entries`);
   }
 
+  if (imageCount > MPF_MAX_IMAGES) throw invalidMpf(`index lists ${imageCount} images, more than the supported ${MPF_MAX_IMAGES}`);
+
   const primarySize = u32(entriesOffset + MPF_MP_ENTRY_SIZE_FIELD);
   if (u32(entriesOffset + MPF_MP_ENTRY_OFFSET_FIELD) !== 0) throw invalidMpf('primary image entry has a non-zero offset');
-  // The gain map is the first secondary entry with a non-zero offset (index 1 in two-image files).
-  let relativeOffset = 0;
-  let size = 0;
-  for (let i = MPF_SECONDARY_INDEX; i < imageCount && relativeOffset === 0; i++) {
+  // Every secondary entry with a non-zero offset is a candidate (index 1 in two-image files); each one
+  // that is inspected must lie inside the file and start with an SOI.
+  const candidates: GainMapLocation[] = [];
+  for (let i = MPF_SECONDARY_INDEX; i < imageCount; i++) {
     const entryAt = entriesOffset + i * MPF_MP_ENTRY_BYTES;
-    relativeOffset = u32(entryAt + MPF_MP_ENTRY_OFFSET_FIELD);
-    size = u32(entryAt + MPF_MP_ENTRY_SIZE_FIELD);
+    const relativeOffset = u32(entryAt + MPF_MP_ENTRY_OFFSET_FIELD);
+    if (relativeOffset === 0) continue;
+    const size = u32(entryAt + MPF_MP_ENTRY_SIZE_FIELD);
+    const offset = tiffStart + relativeOffset;
+    if (size < JPEG_MIN_STREAM_BYTES) throw invalidMpf(`image ${i} size ${size} is too small for a JPEG`);
+    if (offset < segment.end || offset + size > buf.length) {
+      throw invalidMpf(`image ${i} offset ${offset} with size ${size} lies outside the ${buf.length}-byte file`);
+    }
+    if (buf[offset] !== JPEG_MARKER_PREFIX || buf[offset + 1] !== JPEG_SOI) {
+      throw invalidMpf(`image ${i} offset ${offset} does not start with an SOI marker`);
+    }
+    candidates.push({ offset, length: size, primaryEnd: primarySize });
   }
-  if (relativeOffset === 0) throw invalidMpf('index lists no secondary image with a non-zero offset');
-  const offset = tiffStart + relativeOffset;
-  if (size < JPEG_MIN_STREAM_BYTES) throw invalidMpf(`gain map size ${size} is too small for a JPEG`);
-  if (offset < segment.end || offset + size > buf.length) {
-    throw invalidMpf(`gain map offset ${offset} with size ${size} lies outside the ${buf.length}-byte file`);
+  if (candidates.length === 0) throw invalidMpf('index lists no secondary image with a non-zero offset');
+  const firstOffset = Math.min(...candidates.map((candidate) => candidate.offset));
+  if (primarySize < segment.end || primarySize > firstOffset) {
+    throw invalidMpf(`primary image size ${primarySize} is inconsistent with the first secondary offset ${firstOffset}`);
   }
-  if (buf[offset] !== JPEG_MARKER_PREFIX || buf[offset + 1] !== JPEG_SOI) {
-    throw invalidMpf(`gain map offset ${offset} does not start with an SOI marker`);
-  }
-  if (primarySize < segment.end || primarySize > offset) {
-    throw invalidMpf(`primary image size ${primarySize} is inconsistent with the gain map offset ${offset}`);
-  }
-  return { offset, length: size };
+  // The gain map is the secondary whose own XMP carries the gain map metadata; without one, the first.
+  const gainMap = candidates.find((candidate) => {
+    const image = buf.subarray(candidate.offset, candidate.offset + candidate.length);
+    return carriesGainMapXmp(readJpegXmp(image, readJpegHeaderSegments(image, 'MPF secondary image')));
+  });
+  return gainMap ?? candidates[0];
 }
 
 /** Namespaces of the container item properties (`Item:Semantic`, `Item:Length`), without their URI scheme. */
@@ -1585,7 +1599,7 @@ function locateGainMapFromXmpDirectory(buf: Buffer, primaryXmp: string): GainMap
     if (buf[offset] !== JPEG_MARKER_PREFIX || buf[offset + 1] !== JPEG_SOI) {
       throw invalidUltraHdr(`the GainMap item of the XMP container directory (offset ${offset}) does not start with an SOI marker`);
     }
-    return { offset, length };
+    return { offset, length, primaryEnd: offset };
   }
   return null;
 }
@@ -1595,7 +1609,7 @@ function locateGainMapByScan(buf: Buffer): GainMapLocation {
   for (let i = JPEG_MARKER_BYTES; i < buf.length - JPEG_MARKER_BYTES; i++) {
     if (buf[i] === JPEG_MARKER_PREFIX && buf[i + 1] === JPEG_EOI && buf[i + 2] === JPEG_MARKER_PREFIX && buf[i + 3] === JPEG_SOI) {
       const offset = i + JPEG_MARKER_BYTES;
-      return { offset, length: buf.length - offset };
+      return { offset, length: buf.length - offset, primaryEnd: offset };
     }
   }
   throw invalidUltraHdr('secondary gain map JPEG not detected');
@@ -1618,6 +1632,14 @@ const GAIN_MAP_MAX_OFFSET = 1;
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** True when an image's XMP binds a gain map namespace or declares a gain map `Version`. */
+function carriesGainMapXmp(xmp: string): boolean {
+  for (const match of xmp.matchAll(/xmlns:([A-Za-z_][\w.-]*)\s*=\s*(["'])(.*?)\2/g)) {
+    if (GAIN_MAP_NAMESPACES.has(match[3].replace(URI_SCHEME, ''))) return true;
+  }
+  return readGainMapProperty(xmp, 'Version') !== null;
 }
 
 /** Prefixes bound to a gain map namespace in `xmp`, plus the conventional `hdrgm`. */
@@ -1716,7 +1738,7 @@ export function decodeUltraHdrJpeg(buf: Buffer): {
   const location =
     locateGainMapFromMpf(buf, headerSegments) ?? locateGainMapFromXmpDirectory(buf, xmp) ?? locateGainMapByScan(buf);
 
-  const primaryJpeg = buf.subarray(0, location.offset);
+  const primaryJpeg = buf.subarray(0, location.primaryEnd);
   const secondaryJpeg = buf.subarray(location.offset, location.offset + location.length);
   const gainMapXmp = readJpegXmp(secondaryJpeg, readJpegHeaderSegments(secondaryJpeg, 'gain map image'));
   const gainMapParams = resolveGainMapParams(gainMapXmp, xmp);

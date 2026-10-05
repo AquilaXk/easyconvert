@@ -5,7 +5,7 @@ import { decodeUltraHdrJpeg } from '../src/lib/conversions/raw-hdr';
 import { ConversionFailedError } from '../src/lib/types';
 import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR, probeExr } from './helpers/ffmpeg-exr';
 import { floatToHalfBits, halfBitsToFloat } from './helpers/openexr-writer';
-import { parseUltraHdrStructure, readHdrgmAttribute, type UltraHdrGainMapMetadata } from './helpers/ultrahdr-builder';
+import { parseUltraHdrStructure, readHdrgmAttribute, walkJpeg, type UltraHdrGainMapMetadata } from './helpers/ultrahdr-builder';
 import {
   buildPatchExr,
   buildPatchUltraHdr,
@@ -422,7 +422,7 @@ describe('Ultra HDR container split follows the MPF index', () => {
   let trapFile: Buffer;
 
   beforeAll(async () => {
-    trapFile = await buildPatchUltraHdr(false, ULTRA_HDR_METADATA, undefined, true);
+    trapFile = await buildPatchUltraHdr(false, ULTRA_HDR_METADATA, undefined, { exifThumbnailTrap: true });
   }, 60_000);
 
   it('builds a primary whose EXIF thumbnail puts an EOI+SOI pair before the real end of the primary image', () => {
@@ -520,7 +520,71 @@ describe('Ultra HDR container split follows the MPF index', () => {
       writeU32(file, layout, layout.firstMpEntry + MP_ENTRY_BYTES + 8, file.length);
       const run = convertFile(file, 'ultrahdr', 'exr', {}, 'bad.jpg');
       await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-      await expect(run).rejects.toThrow(/MPF gain map offset \d+ with size \d+ lies outside the \d+-byte file/);
+      await expect(run).rejects.toThrow(/MPF image 1 offset \d+ with size \d+ lies outside the \d+-byte file/);
     });
+  });
+});
+
+describe('Ultra HDR gain map selection among several MPF images', () => {
+  let depthFile: Buffer;
+
+  beforeAll(async () => {
+    depthFile = await buildPatchUltraHdr(false, ULTRA_HDR_METADATA, undefined, { depthMapBeforeGainMap: true });
+  }, 60_000);
+
+  it('builds a three-image MPF whose first secondary is a depth map without hdrgm XMP', () => {
+    const parsed = parseUltraHdrStructure(depthFile);
+    expect(parsed.mpf.numberOfImages).toBe(3);
+    expect(parsed.mpf.entries).toHaveLength(3);
+    const depth = walkJpeg(depthFile, parsed.mpf.entries[1].absoluteOffset);
+    expect(depth.start).toBe(parsed.primary.end);
+    expect(depth.end).toBe(parsed.mpf.entries[2].absoluteOffset);
+    expect(depthFile.subarray(depth.start, depth.end).includes(Buffer.from('hdrgm', 'ascii'))).toBe(false);
+    expect(parsed.secondary.start).toBe(parsed.mpf.entries[2].absoluteOffset);
+    expect(parsed.secondary.end).toBe(depthFile.length);
+    expect(readHdrgmAttribute(parsed.gainMapXmp, 'Version')).toBe('1.0');
+  });
+
+  it('selects the secondary image that carries the hdrgm XMP, not the first secondary', () => {
+    const parsed = parseUltraHdrStructure(depthFile);
+    const depthBytes = depthFile.subarray(parsed.primary.end, parsed.mpf.entries[2].absoluteOffset);
+    const decoded = decodeUltraHdrJpeg(depthFile);
+    expect(decoded.secondaryJpeg.equals(parsed.gainMapJpeg)).toBe(true);
+    expect(decoded.secondaryJpeg.equals(depthBytes)).toBe(false);
+    expect(decoded.primaryJpeg.length).toBe(parsed.primary.end);
+    expect(decoded.gainMapParams).toMatchObject(ULTRA_HDR_METADATA);
+  });
+
+  it.skipIf(!HAS_FFMPEG_EXR)('ultrahdr -> exr reconstructs the spec formula with a depth map ahead of the gain map', async () => {
+    const result = await convertFile(depthFile, 'ultrahdr', 'exr', {}, 'patches.jpg');
+    expectHdrReconstruction(result.buffer, ULTRA_HDR_METADATA);
+  });
+
+  it('falls back to the first valid secondary when no image carries gain map XMP', () => {
+    const parsed = parseUltraHdrStructure(depthFile);
+    // Same-length renames hide both the namespace binding and the Version property.
+    const hidden = Buffer.from(
+      depthFile.toString('latin1').replaceAll('hdr-gain-map/1.0', 'hdr-gain-mop/1.0').replaceAll('hdrgm:Version', 'hdrgm:Versiom'),
+      'latin1'
+    );
+    const decoded = decodeUltraHdrJpeg(hidden);
+    expect(decoded.secondaryJpeg.equals(hidden.subarray(parsed.primary.end, parsed.mpf.entries[2].absoluteOffset))).toBe(true);
+  });
+
+  it('rejects an auxiliary entry that lies outside the file even when the gain map entry is valid', () => {
+    const file = Buffer.from(depthFile);
+    const layout = locateMpf(depthFile);
+    writeU32(file, layout, layout.firstMpEntry + MP_ENTRY_BYTES + 8, file.length);
+    expect(() => decodeUltraHdrJpeg(file)).toThrow(ConversionFailedError);
+    expect(() => decodeUltraHdrJpeg(file)).toThrow(/MPF image 1 offset \d+ with size \d+ lies outside/);
+  });
+
+  it('rejects an auxiliary entry that does not start with an SOI marker', () => {
+    const file = Buffer.from(depthFile);
+    const layout = locateMpf(depthFile);
+    const depthStart = parseUltraHdrStructure(depthFile).primary.end;
+    file[depthStart] = 0x00;
+    expect(layout.firstMpEntry).toBeGreaterThan(0);
+    expect(() => decodeUltraHdrJpeg(file)).toThrow(/MPF image 1 offset \d+ does not start with an SOI marker/);
   });
 });
