@@ -63,12 +63,34 @@ export function isDelimiterSampleComplete(prefix: string, lineBreakWindowChars: 
   });
 }
 
+/** papaparse guesses the line break from the first 1 MiB of text. */
+export const LINE_BREAK_GUESS_WINDOW_CHARS = 1024 * 1024;
+/** Quoted spans, removed before counting line breaks (papaparse's lazy quote-to-quote match). */
+const QUOTED_SPAN = /"([^]*?)"/gm;
+
+/**
+ * The one line break a delimited text uses, guessed exactly as papaparse guesses it: over the
+ * first 1 MiB with quoted spans removed, LF when there is no CR or an LF comes before the first
+ * CR; otherwise CRLF when at least half of the CR-separated pieces start with LF, else CR. The
+ * server passes it to the parser and the stream splits records on it, so both read the same rows.
+ */
+export function guessLineBreak(text: string): '\n' | '\r\n' | '\r' {
+  const window = text.substring(0, LINE_BREAK_GUESS_WINDOW_CHARS).replace(QUOTED_SPAN, '');
+  const byCr = window.split('\r');
+  const byLf = window.split('\n');
+  const lfAppearsFirst = byLf.length > 1 && byLf[0].length < byCr[0].length;
+  if (byCr.length === 1 || lfAppearsFirst) return '\n';
+  const piecesStartingWithLf = byCr.filter((piece) => piece[0] === '\n').length;
+  return piecesStartingWithLf >= byCr.length / 2 ? '\r\n' : '\r';
+}
+
 const BOM = '﻿';
 
 /**
- * Header names as the server parser (papaparse with `header: true`) gives them: a leading BOM is
- * stripped from each, and a repeated name becomes name_N with the first N that is not already a
- * header (a, a, a_1 -> a, a_2, a_1).
+ * Header names for both the server parser and the stream, following papaparse's `header: true`
+ * naming: a leading BOM is stripped from each, and a repeated name becomes name_N with the first
+ * N that is not already a header (a, a, a_1 -> a, a_2, a_1). Callers key records with own
+ * properties, so names such as __proto__ stay ordinary columns.
  */
 export function renameDuplicateHeaders(headers: readonly string[]): string[] {
   const seenCount = new Map<string, number>();

@@ -25,7 +25,9 @@ import {
 } from '../../conversions/delimited-rules';
 import {
   DELIMITER_CANDIDATES,
+  LINE_BREAK_GUESS_WINDOW_CHARS,
   detectDelimiter,
+  guessLineBreak,
   isDelimiterSampleComplete,
   nominalDelimiter,
   renameDuplicateHeaders,
@@ -36,8 +38,9 @@ import { DataEncodingError, DataLimitExceededError, DataParseError, UnsupportedO
 export const MAX_STREAMED_RECORD_CHARS = 16 * 1024 * 1024;
 /** Text buffered at most while the delimiter sample (the first 50 records) is incomplete. */
 export const MAX_DELIMITER_SAMPLE_CHARS = 2 * MAX_STREAMED_RECORD_CHARS;
-/** papaparse guesses the line break from the first 1 MiB of text, so the sample covers it too. */
-const PAPA_LINE_BREAK_WINDOW_CHARS = 1024 * 1024;
+const LINE_FEED = '\n';
+/** Whitespace String.prototype.trim removes; the server parser skips it after a closing quote. */
+const TRIMMED_WHITESPACE = /\s/;
 
 const QUOTE = '"';
 const ESCAPED_QUOTE = '""';
@@ -47,7 +50,7 @@ const NEEDS_QUOTING = /["\r\n﻿]/;
 const ALLOWED_DELIMITERS: ReadonlySet<string> = new Set(DELIMITER_CANDIDATES);
 const STREAMABLE_SOURCES: ReadonlySet<string> = new Set(['csv', 'tsv', 'tab']);
 
-type ParseState = 'fieldStart' | 'unquoted' | 'quoted' | 'quoteInQuoted';
+type ParseState = 'fieldStart' | 'unquoted' | 'quoted' | 'quoteInQuoted' | 'afterQuoteSpace';
 
 export interface DelimitedStreamOptions {
   delimiter?: unknown;
@@ -114,14 +117,43 @@ export function createDelimitedStreamTransformer(
   let field = '';
   let record: string[] = [];
   let recordChars = 0;
-  let skipLineFeed = false;
-  let recordNumber = 0;
+  /** Records ended so far, blank lines included: rows are numbered over every line, as on the server. */
+  let rawRows = 0;
   let headerFieldCount: number | null = null;
+  /** The line break the server would guess; set from the first 1 MiB (or the whole input). */
+  let lineBreak: string | undefined;
+  /** A CR held back at a chunk end until the next chunk shows whether it starts a CRLF. */
+  let carry = '';
+  /** Line (counted by LF, as the server's positions are) where the current quoted field's text starts. */
+  let quotedFieldLine = 1;
+  // Line counting over the current chunk: lines before `lineScan` are already counted in `line`.
+  let chunkText = '';
+  let lineScan = 0;
+  let line = 1;
   let wroteRecord = false;
   let finished = false;
 
-  const parseError = (reason: string, row: number): DataParseError =>
+  const mismatchError = (reason: string, row: number): DataParseError =>
     new DataParseError(`Failed to parse ${label}: ${reason} (row ${row}).`, { row });
+  /** A quote error of the record being read, located like the server's: its row and the quoted field's line. */
+  const quoteError = (reason: string): DataParseError => {
+    const row = rawRows + 1;
+    return new DataParseError(`Failed to parse ${label}: ${reason} (row ${row}, line ${quotedFieldLine}).`, {
+      row,
+      line: quotedFieldLine,
+    });
+  };
+
+  /** Line number at a position of the current chunk; positions must not go backwards within a chunk. */
+  const lineAt = (index: number): number => {
+    let next = chunkText.indexOf(LINE_FEED, lineScan);
+    while (next !== -1 && next < index) {
+      line++;
+      next = chunkText.indexOf(LINE_FEED, next + 1);
+    }
+    lineScan = Math.max(lineScan, index);
+    return line;
+  };
 
   const writeField = (value: string, recordLength: number): string => {
     let text = value;
@@ -152,19 +184,16 @@ export function createDelimitedStreamTransformer(
     record = [];
     recordChars = 0;
     state = 'fieldStart';
+    rawRows++;
     // A blank line is skipped, as the server parser does.
     if (fields.length === 1 && fields[0] === '') return;
-    recordNumber++;
     let written = fields;
     if (headerFieldCount === null) {
       headerFieldCount = fields.length;
       written = renameDuplicateHeaders(fields);
     } else if (fields.length !== headerFieldCount) {
       const amount = fields.length > headerFieldCount ? 'many' : 'few';
-      throw parseError(
-        `Too ${amount} fields: expected ${headerFieldCount} fields but parsed ${fields.length}`,
-        recordNumber
-      );
+      throw mismatchError(`Too ${amount} fields: expected ${headerFieldCount} fields but parsed ${fields.length}`, rawRows);
     }
     if (wroteRecord) out.push(DELIMITED_RECORD_SEPARATOR);
     out.push(written.map((value) => writeField(value, written.length)).join(outDelimiter));
@@ -180,25 +209,21 @@ export function createDelimitedStreamTransformer(
     }
   };
 
-  // The delimiter is one of , ; TAB | (checked or detected); escaped for the character class.
-  let boundary = /[\r\n]/g;
-  /** Index of the next delimiter, CR or LF at or after `from`, or the text length. */
+  /** Matches the delimiter or the first character of the line break; set once both are known. */
+  let boundary = /$^/g;
+  /** Index of the next delimiter or line-break start at or after `from`, or the text length. */
   const nextBoundary = (text: string, from: number): number => {
     boundary.lastIndex = from;
     return boundary.exec(text)?.index ?? text.length;
   };
-  const adoptDelimiter = (delimiter: string): void => {
-    inDelimiter = delimiter;
-    boundary = new RegExp(`[\\${delimiter}\\r\\n]`, 'g');
-  };
-  if (inDelimiter !== undefined) adoptDelimiter(inDelimiter);
 
   /**
-   * Text ready to parse once the delimiter is known; null while the sample is still incomplete.
-   * Detection runs on the same records the server samples, so both pick the same delimiter.
+   * Text ready to parse once the delimiter and the line break are known; null while the sample is
+   * incomplete. Both are decided on the text the server decides them on: the line break on the
+   * first 1 MiB, the delimiter on the first 50 records (unless the `delimiter` option names it).
    */
   const takeParsableText = (text: string, last: boolean): string | null => {
-    if (inDelimiter !== undefined) return text;
+    if (lineBreak !== undefined) return text;
     sample += text;
     if (!last) {
       if (sample.length > MAX_DELIMITER_SAMPLE_CHARS) {
@@ -206,25 +231,26 @@ export function createDelimitedStreamTransformer(
           `The first ${label} records exceed ${MAX_DELIMITER_SAMPLE_CHARS} characters before the delimiter can be detected; pass the "delimiter" option.`
         );
       }
-      if (!isDelimiterSampleComplete(sample, PAPA_LINE_BREAK_WINDOW_CHARS)) return null;
+      const ready =
+        inDelimiter === undefined
+          ? isDelimiterSampleComplete(sample, LINE_BREAK_GUESS_WINDOW_CHARS)
+          : sample.length >= LINE_BREAK_GUESS_WINDOW_CHARS;
+      if (!ready) return null;
     }
-    adoptDelimiter(detectDelimiter(sample, nominalDelimiter(src)));
+    inDelimiter ??= detectDelimiter(sample, nominalDelimiter(src));
+    lineBreak = guessLineBreak(sample);
+    // The delimiter is one of , ; TAB | and the line break starts with CR or LF; escaped for the class.
+    boundary = new RegExp(`[\\${inDelimiter}\\${lineBreak === '\n' ? 'n' : 'r'}]`, 'g');
     const buffered = sample;
     sample = '';
     return buffered;
   };
 
   const parse = (text: string, out: string[]): void => {
+    const delimiter = inDelimiter as string;
+    const recordEnd = lineBreak as string;
     let index = 0;
     while (index < text.length) {
-      const c = text[index];
-      if (skipLineFeed) {
-        skipLineFeed = false;
-        if (c === '\n') {
-          index++;
-          continue;
-        }
-      }
       if (state === 'quoted') {
         const close = text.indexOf(QUOTE, index);
         const end = close === -1 ? text.length : close;
@@ -237,33 +263,44 @@ export function createDelimitedStreamTransformer(
         }
         continue;
       }
-      if (state === 'quoteInQuoted') {
-        if (c === QUOTE) {
+      const c = text[index];
+      if (state === 'quoteInQuoted' || state === 'afterQuoteSpace') {
+        if (state === 'quoteInQuoted' && c === QUOTE) {
+          // An escaped quote inside the quoted field.
           countChars(1);
           field += QUOTE;
           state = 'quoted';
           index++;
           continue;
         }
-        if (c !== inDelimiter && c !== '\r' && c !== '\n') {
-          throw parseError('Trailing quote on quoted field is malformed', recordNumber + 1);
+        if (c !== delimiter && !text.startsWith(recordEnd, index)) {
+          // Whitespace may separate the closing quote from the delimiter or line break.
+          if (!TRIMMED_WHITESPACE.test(c)) throw quoteError('Trailing quote on quoted field is malformed');
+          state = 'afterQuoteSpace';
+          index++;
+          continue;
         }
       } else if (state === 'fieldStart' && c === QUOTE) {
+        quotedFieldLine = lineAt(index);
         state = 'quoted';
         index++;
         continue;
       }
-      if (c === inDelimiter) {
+      if (c === delimiter) {
         endField();
         state = 'fieldStart';
         index++;
-      } else if (c === '\r' || c === '\n') {
+      } else if (text.startsWith(recordEnd, index)) {
         endRecord(out);
-        skipLineFeed = c === '\r';
-        index++;
+        index += recordEnd.length;
       } else {
-        // Unquoted text runs to the next delimiter or line break; a quote inside it is literal.
-        const end = nextBoundary(text, index);
+        // Unquoted text runs to the next delimiter or line break; a quote or another line-break
+        // character inside it (a bare CR in an LF file) is data.
+        // The character at `index` is neither, so the run includes it.
+        let end = nextBoundary(text, index + 1);
+        while (end < text.length && text[end] !== delimiter && !text.startsWith(recordEnd, end)) {
+          end = nextBoundary(text, end + 1);
+        }
         countChars(end - index);
         field += text.slice(index, end);
         state = 'unquoted';
@@ -273,8 +310,26 @@ export function createDelimitedStreamTransformer(
   };
 
   const finish = (out: string[]): void => {
-    if (state === 'quoted') throw parseError('Quoted field unterminated', recordNumber + 1);
+    if (state === 'quoted') throw quoteError('Quoted field unterminated');
+    if (state === 'afterQuoteSpace') {
+      // The server reports both; the trailing-quote error comes first.
+      throw quoteError('Trailing quote on quoted field is malformed');
+    }
     if (state !== 'fieldStart' || record.length > 0) endRecord(out);
+  };
+
+  /** Parses one decoded piece, holding back a CR that may pair with an LF in the next chunk. */
+  const parseChunk = (text: string, last: boolean, out: string[]): void => {
+    let piece = carry + text;
+    carry = '';
+    if (!last && lineBreak === '\r\n' && piece.endsWith('\r')) {
+      carry = '\r';
+      piece = piece.slice(0, -1);
+    }
+    chunkText = piece;
+    lineScan = 0;
+    parse(piece, out);
+    lineAt(piece.length);
   };
 
   return (chunk: Uint8Array, offset: number, totalSize: number): Uint8Array => {
@@ -291,7 +346,7 @@ export function createDelimitedStreamTransformer(
     const out: string[] = [];
     if (withBom && offset === 0) out.push(UTF8_BOM_CHAR);
     const parsable = takeParsableText(text, last);
-    if (parsable !== null) parse(parsable, out);
+    if (parsable !== null) parseChunk(parsable, last, out);
     if (last) {
       finish(out);
       finished = true;

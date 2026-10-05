@@ -194,6 +194,56 @@ describe('streamed CSV <-> TSV matches the server parser', () => {
     expect(server.toString('utf-8')).toBe('a\ta_2\ta_1\tb\ta_3\tc\r\n1\t2\t3\t4\t5\t6');
   });
 
+  it('keeps columns named like Object.prototype members, like the server, at every cut point', async () => {
+    const risky = '__proto__,constructor,prototype,name\r\n1,2,3,Alice\r\n4,5,6,Bob\r\n';
+    const server = await expectServerParity(risky, 'csv', 'tsv', everyCut(Buffer.byteLength(risky)));
+    expect(server.toString('utf-8')).toBe('__proto__\tconstructor\tprototype\tname\r\n1\t2\t3\tAlice\r\n4\t5\t6\tBob');
+  });
+
+  oracleTest('uses the single line-break style the server guesses, at every cut point', ['python3'], async () => {
+    // An LF file: a bare CR inside an unquoted field is data, not a record end.
+    const lf = 'a,b\nx\ry,1\nz,2\n';
+    const lfOut = await expectServerParity(lf, 'csv', 'tsv', everyCut(Buffer.byteLength(lf)));
+    expect(lfOut.toString('utf-8')).toBe('a\tb\r\n"x\ry"\t1\r\nz\t2');
+    expect(pythonRows(lfOut, '\t')).toEqual([['a', 'b'], ['x\ry', '1'], ['z', '2']]);
+    // A CRLF file: a bare LF inside an unquoted field is data; CR and LF split across chunks still pair up.
+    const crlf = 'a,b\r\nx\ny,1\r\nz,2\r\n';
+    const crlfOut = await expectServerParity(crlf, 'csv', 'tsv', everyCut(Buffer.byteLength(crlf)));
+    expect(crlfOut.toString('utf-8')).toBe('a\tb\r\n"x\ny"\t1\r\nz\t2');
+    // A CR file: a bare LF is data.
+    const cr = 'a\tb\rx\t1\ry\nz\t2\r';
+    await expectServerParity(cr, 'tsv', 'csv', everyCut(Buffer.byteLength(cr)));
+  });
+
+  it('accepts whitespace between a closing quote and the delimiter or line break, like the server', async () => {
+    // An LF file: a CR after a closing quote is whitespace too.
+    const spaced = 'h1,h2\n"a"  ,b\n"c"\t,"d" \n"e",f\n"g" \r,h\n';
+    const server = await expectServerParity(spaced, 'csv', 'tsv', everyCut(Buffer.byteLength(spaced)));
+    expect(server.toString('utf-8')).toBe('h1\th2\r\na\tb\r\nc\td\r\ne\tf\r\ng\th');
+  });
+
+  it('reports malformed input with the same error, row and line as the server', async () => {
+    const malformed = [
+      'a,b\n\n"x,1\n',
+      'a,b\n1,2\n\n3,4,5\n',
+      'a,b,c\n\n\n1,2\n',
+      'a,b\n"x"y,1\n',
+      'a,b\n1,"open\nstill open',
+      'a,b\n1,"done"  ',
+      'a,b\n1,"x" z\n2,y\n',
+    ];
+    for (const input of malformed) {
+      const bytes = Buffer.from(input, 'utf-8');
+      const server = await rejection(convertFile(bytes, 'csv', 'tsv', {}, 'bad.csv'));
+      expect(server).toBeInstanceOf(DataParseError);
+      for (const cuts of everyCut(bytes.byteLength)) {
+        const streamed = await rejection(convertStreamed(bytes, 'csv', 'tsv', {}, cuts));
+        const describe = (err: Error) => [err.constructor.name, err.message, (err as DataParseError).row, (err as DataParseError).line];
+        expect({ input, cuts, error: describe(streamed) }).toEqual({ input, cuts, error: describe(server) });
+      }
+    }
+  });
+
   it('refuses to buffer a delimiter sample beyond its cap', async () => {
     const transformer = resolveChunkTransformer('csv', 'tsv', {});
     const huge = new TextEncoder().encode(`a\n"${'x'.repeat(32 * 1024 * 1024 + 1)}`);
@@ -282,10 +332,10 @@ describe('streamed CSV <-> TSV fails closed', () => {
 
     const open = await rejection(convertStreamed('a,b\n"x,1\n', 'csv', 'tsv'));
     expect(open).toBeInstanceOf(DataParseError);
-    expect(open.message).toBe('Failed to parse CSV: Quoted field unterminated (row 2).');
+    expect(open.message).toBe('Failed to parse CSV: Quoted field unterminated (row 2, line 2).');
 
     const trailing = await rejection(convertStreamed('a,b\n"x"y,1\n', 'csv', 'tsv'));
-    expect(trailing.message).toBe('Failed to parse CSV: Trailing quote on quoted field is malformed (row 2).');
+    expect(trailing.message).toBe('Failed to parse CSV: Trailing quote on quoted field is malformed (row 2, line 2).');
   });
 
   it('caps the size of one record so streaming memory stays bounded', async () => {
