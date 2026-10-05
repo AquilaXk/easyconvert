@@ -24,6 +24,8 @@ const COMMENT_CLOSE = '-->';
 const COMMENT_OPEN_LENGTH = COMMENT_OPEN.length;
 const DOCTYPE_OPEN = '<!doctype';
 const EVENT_PREFIX = 'on';
+const STYLE_ATTRIBUTE = 'style';
+const STYLE_ELEMENT = 'style';
 const ANIMATION_VALUE_SEPARATOR = ';';
 
 /** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
@@ -41,7 +43,7 @@ const DANGEROUS_URI_PREFIXES = [
 ] as const;
 
 /** Animation elements that can retarget an attribute (including event handlers and links) at run time. */
-const ANIMATION_ELEMENTS = new Set(['set', 'animate']);
+const ANIMATION_ELEMENTS = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
 /** Animation attributes carrying the value(s) written into the targeted attribute. */
 const ANIMATION_VALUE_ATTRIBUTES = new Set(['to', 'from', 'by', 'values']);
 const LINK_ATTRIBUTES = new Set(['href', 'src']);
@@ -51,7 +53,76 @@ const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object'
 /** Elements removed as a single opening tag. */
 const VOID_DANGEROUS_ELEMENTS = ['meta', 'link', '!ENTITY'] as const;
 
-const EXTERNAL_CSS_URL_START = /url\s*\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/gi;
+/** ASCII tab and newlines, which URL parsers drop from anywhere inside a URL. */
+const URL_IGNORED_CHARS = '[\\t\\n\\r]*';
+
+/** Matches `word` with optional ignored characters between its letters. */
+function spaced(word: string): string {
+  return [...word].join(URL_IGNORED_CHARS);
+}
+
+/** An external target: an http(s)/file/ftp scheme, or a network-path reference (`//`, `/\\`, `\\/`, `\\\\`). */
+const EXTERNAL_TARGET_SOURCE =
+  `(?:${['https', 'http', 'file', 'ftp'].map(spaced).join('|')})${URL_IGNORED_CHARS}:` +
+  `|[/\\\\]${URL_IGNORED_CHARS}[/\\\\]`;
+/** Sticky: tested at the position right after the opening parenthesis of url()/src(). */
+const EXTERNAL_FUNCTION_TARGET = new RegExp(`\\s*(?:['"]\\s*)?(?:${EXTERNAL_TARGET_SOURCE})`, 'iy');
+/** Tested on the arguments of an image-set(): an external target after the opening parenthesis, a quote, a comma or whitespace. */
+const EXTERNAL_IMAGE_SET_TARGET = new RegExp(`(?:^|[\\s'",(])(?:${EXTERNAL_TARGET_SOURCE})`, 'i');
+const CSS_URL_FUNCTION_START = /(url|src|(?:-webkit-)?image-set)\s*\(/gi;
+const IMAGE_SET_SUFFIX = 'image-set';
+const CHAR_DOUBLE_QUOTE = 0x22;
+const CHAR_SINGLE_QUOTE = 0x27;
+const CHAR_OPEN_PAREN = 0x28;
+const CHAR_CLOSE_PAREN = 0x29;
+const CSS_EXPRESSION_PROBE = /expression\s*\(/i;
+const SCRIPT_URI_PROBE = 'javascript:';
+const CSS_IMPORT_RULE = /@import[^;]*;?/gi;
+
+const CHAR_TAB = 0x09;
+const CHAR_LF = 0x0a;
+const CHAR_FF = 0x0c;
+const CHAR_CR = 0x0d;
+const CHAR_SPACE = 0x20;
+const CHAR_AMPERSAND = 0x26;
+const CHAR_STAR = 0x2a;
+const CHAR_HASH = 0x23;
+const CHAR_SEMICOLON = 0x3b;
+const CHAR_LOWER_X = 0x78;
+const CHAR_UPPER_X = 0x58;
+const CHAR_SLASH = 0x2f;
+const CHAR_BACKSLASH = 0x5c;
+const CHAR_DIGIT_0 = 0x30;
+const CHAR_DIGIT_9 = 0x39;
+const CHAR_UPPER_F = 0x46;
+const CHAR_LOWER_A = 0x61;
+const CHAR_LOWER_F = 0x66;
+const HEX_RADIX = 16;
+const DECIMAL_RADIX = 10;
+const XML_VALUE_SATURATION = 0x110000;
+const XML_NAME_MAX_LENGTH = 4;
+const CDATA_OPEN = '<![CDATA[';
+const CDATA_CLOSE = ']]>';
+const PI_OPEN = '<?';
+const PI_CLOSE = '?>';
+/** Predefined XML entities mapped to their code points. */
+const XML_PREDEFINED_ENTITIES = new Map<string, number>([
+  ['amp', 0x26],
+  ['lt', 0x3c],
+  ['gt', 0x3e],
+  ['quot', 0x22],
+  ['apos', 0x27],
+]);
+const HEX_LETTER_OFFSET = 10;
+const CSS_ESCAPE_MAX_HEX_DIGITS = 6;
+const MAX_CODE_POINT = 0x10ffff;
+const BMP_MAX = 0xffff;
+const SURROGATE_MIN = 0xd800;
+const SURROGATE_MAX = 0xdfff;
+const HIGH_SURROGATE_BASE = 0xd800;
+const LOW_SURROGATE_BASE = 0xdc00;
+const SURROGATE_SHIFT = 10;
+const SURROGATE_LOW_MASK = 0x3ff;
 
 /**
  * Lowercases while keeping every index aligned with the original string. Native lowercasing is used when it
@@ -255,27 +326,346 @@ function stripComments(src: string): string {
   return parts.join('');
 }
 
+interface CssEdit {
+  /** Start of the replaced range in the decoded text. */
+  start: number;
+  /** End (exclusive) of the replaced range in the decoded text. */
+  end: number;
+  replacement: string;
+}
+
+/** CSS text with comments removed and escapes decoded, plus the original span of every decoded code unit. */
+interface DecodedCss {
+  text: string;
+  starts: Uint32Array;
+  ends: Uint32Array;
+  /** 1 for a unit produced by a CSS escape: it never acts as a quote or parenthesis in the CSS. */
+  escaped: Uint8Array;
+}
+
+function isHexDigitCode(code: number): boolean {
+  return (
+    (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) ||
+    (code >= CHAR_LOWER_A && code <= CHAR_LOWER_F) ||
+    (code >= ASCII_UPPER_A && code <= CHAR_UPPER_F)
+  );
+}
+
+function hexDigitValue(code: number): number {
+  if (code <= CHAR_DIGIT_9) return code - CHAR_DIGIT_0;
+  if (code >= CHAR_LOWER_A) return code - CHAR_LOWER_A + HEX_LETTER_OFFSET;
+  return code - ASCII_UPPER_A + HEX_LETTER_OFFSET;
+}
+
+function isCssNewlineCode(code: number): boolean {
+  return code === CHAR_LF || code === CHAR_CR || code === CHAR_FF;
+}
+
+function isCssWhitespaceCode(code: number): boolean {
+  return isCssNewlineCode(code) || code === CHAR_SPACE || code === CHAR_TAB;
+}
+
+/** Length of the newline starting at `index` (CRLF counts as one), assuming one is there. */
+function cssNewlineLength(css: string, index: number): number {
+  return css.charCodeAt(index) === CHAR_CR && css.charCodeAt(index + 1) === CHAR_LF ? 2 : 1;
+}
+
+/** Fixed-capacity buffer of decoded UTF-16 units that remembers the source span of every unit. */
+class DecodeBuffer {
+  private readonly units: Uint16Array;
+  private readonly starts: Uint32Array;
+  private readonly ends: Uint32Array;
+  private readonly escaped: Uint8Array;
+  private count = 0;
+
+  constructor(capacity: number) {
+    this.units = new Uint16Array(capacity);
+    this.starts = new Uint32Array(capacity);
+    this.ends = new Uint32Array(capacity);
+    this.escaped = new Uint8Array(capacity);
+  }
+
+  push(unit: number, start: number, end: number, escaped = false): void {
+    this.units[this.count] = unit;
+    this.starts[this.count] = start;
+    this.ends[this.count] = end;
+    this.escaped[this.count] = escaped ? 1 : 0;
+    this.count++;
+  }
+
+  /** Appends a code point (two units when astral). Invalid code points fail closed. */
+  pushCodePoint(codePoint: number, start: number, end: number, what: string, escaped = false): void {
+    const isSurrogate = codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX;
+    if (codePoint === 0 || isSurrogate || codePoint > MAX_CODE_POINT) {
+      throw new SvgSanitizationError(`SVG contains ${what} that decodes to an invalid code point.`);
+    }
+    if (codePoint <= BMP_MAX) {
+      this.push(codePoint, start, end, escaped);
+      return;
+    }
+    const offset = codePoint - BMP_MAX - 1;
+    this.push(HIGH_SURROGATE_BASE + (offset >> SURROGATE_SHIFT), start, end, escaped);
+    this.push(LOW_SURROGATE_BASE + (offset & SURROGATE_LOW_MASK), start, end, escaped);
+  }
+
+  finish(): DecodedCss {
+    const text = Buffer.from(this.units.buffer, 0, this.count * Uint16Array.BYTES_PER_ELEMENT).toString('utf16le');
+    return {
+      text,
+      starts: this.starts.subarray(0, this.count),
+      ends: this.ends.subarray(0, this.count),
+      escaped: this.escaped.subarray(0, this.count),
+    };
+  }
+}
+
 /**
- * Replaces external CSS url() references with `none`; an unterminated url( swallows the rest of the body.
+ * Decodes CSS comments and escapes (CSS Syntax 4.3.7) in one linear pass so keywords can be matched the way a
+ * CSS parser sees them. Returns null when the text has neither, so the caller can match the original directly.
+ * Escapes that decode to NUL, a surrogate or a code point above U+10FFFF throw (fail closed).
  */
-function stripExternalCssUrls(css: string): string {
+function decodeCss(css: string): DecodedCss | null {
+  if (!css.includes('\\') && !css.includes('/*')) return null;
+  const length = css.length;
+  const out = new DecodeBuffer(length);
+
+  let i = 0;
+  while (i < length) {
+    const code = css.charCodeAt(i);
+    if (code === CHAR_SLASH && css.charCodeAt(i + 1) === CHAR_STAR) {
+      const close = css.indexOf('*/', i + 2);
+      i = close === -1 ? length : close + 2;
+      continue;
+    }
+    if (code !== CHAR_BACKSLASH) {
+      out.push(code, i, i + 1);
+      i++;
+      continue;
+    }
+
+    const escapeStart = i;
+    i++;
+    if (i >= length) break;
+    const next = css.charCodeAt(i);
+    if (isCssNewlineCode(next)) {
+      i += cssNewlineLength(css, i);
+      continue;
+    }
+    if (!isHexDigitCode(next)) {
+      out.push(next, escapeStart, i + 1, true);
+      i++;
+      continue;
+    }
+
+    let codePoint = 0;
+    let digits = 0;
+    while (digits < CSS_ESCAPE_MAX_HEX_DIGITS && i < length && isHexDigitCode(css.charCodeAt(i))) {
+      codePoint = codePoint * HEX_RADIX + hexDigitValue(css.charCodeAt(i));
+      i++;
+      digits++;
+    }
+    if (i < length && isCssWhitespaceCode(css.charCodeAt(i))) {
+      i += isCssNewlineCode(css.charCodeAt(i)) ? cssNewlineLength(css, i) : 1;
+    }
+    out.pushCodePoint(codePoint, escapeStart, i, 'a CSS escape', true);
+  }
+  return out.finish();
+}
+
+/**
+ * Parses an XML character reference or predefined entity whose `&` is at `amp`. Returns the code point and the
+ * index just past the `;`, or null when the text there is not a well-formed reference (it then stays literal).
+ * A numeric value is saturated above the Unicode range so huge digit runs stay linear and are rejected later.
+ */
+function readXmlReference(text: string, amp: number): { codePoint: number; end: number } | null {
+  const length = text.length;
+  let i = amp + 1;
+  if (text.charCodeAt(i) === CHAR_HASH) {
+    i++;
+    const hex = text.charCodeAt(i) === CHAR_LOWER_X || text.charCodeAt(i) === CHAR_UPPER_X;
+    if (hex) i++;
+    const digitsStart = i;
+    let value = 0;
+    while (i < length) {
+      const code = text.charCodeAt(i);
+      const isDigit = hex ? isHexDigitCode(code) : code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9;
+      if (!isDigit) break;
+      value = Math.min(value * (hex ? HEX_RADIX : DECIMAL_RADIX) + hexDigitValue(code), XML_VALUE_SATURATION);
+      i++;
+    }
+    if (i === digitsStart || text.charCodeAt(i) !== CHAR_SEMICOLON) return null;
+    return { codePoint: value, end: i + 1 };
+  }
+  // Bounded look-ahead: an unbounded indexOf here would rescan the rest of the text for every '&'.
+  const nameLimit = Math.min(i + XML_NAME_MAX_LENGTH, length - 1);
+  let semicolon = i;
+  while (semicolon <= nameLimit && text.charCodeAt(semicolon) !== CHAR_SEMICOLON) semicolon++;
+  if (semicolon > nameLimit) return null;
+  const replacement = XML_PREDEFINED_ENTITIES.get(text.slice(i, semicolon));
+  return replacement === undefined ? null : { codePoint: replacement, end: semicolon + 1 };
+}
+
+/**
+ * Resolves XML character and predefined entity references the way a parser does for element text or an
+ * attribute value, in one linear pass. With `cdata`, `<![CDATA[ ... ]]>` sections are literal (markers removed,
+ * content copied verbatim). Returns null when there is nothing to resolve.
+ */
+function decodeXmlText(text: string, cdata: boolean): DecodedCss | null {
+  const hasCdata = cdata && text.includes(CDATA_OPEN);
+  if (!hasCdata && !text.includes('&')) return null;
+  const length = text.length;
+  const out = new DecodeBuffer(length);
+
+  let i = 0;
+  while (i < length) {
+    if (hasCdata && text.startsWith(CDATA_OPEN, i)) {
+      const contentStart = i + CDATA_OPEN.length;
+      const close = text.indexOf(CDATA_CLOSE, contentStart);
+      const contentEnd = close === -1 ? length : close;
+      for (let k = contentStart; k < contentEnd; k++) out.push(text.charCodeAt(k), k, k + 1);
+      i = close === -1 ? length : close + CDATA_CLOSE.length;
+      continue;
+    }
+    const code = text.charCodeAt(i);
+    const reference = code === CHAR_AMPERSAND ? readXmlReference(text, i) : null;
+    if (reference === null) {
+      out.push(code, i, i + 1);
+      i++;
+      continue;
+    }
+    out.pushCodePoint(reference.codePoint, i, reference.end, 'an XML character reference');
+    i = reference.end;
+  }
+  return out.finish();
+}
+
+/**
+ * Decodes what a browser sees: XML references first, then CSS comments and escapes. The result maps every
+ * decoded unit back to its span in the original text. Returns null when the text needs no decoding.
+ */
+function decodeForMatching(raw: string, cdata: boolean): DecodedCss | null {
+  const entities = decodeXmlText(raw, cdata);
+  const css = decodeCss(entities === null ? raw : entities.text);
+  if (css === null) return entities;
+  if (entities === null) return css;
+  const starts = new Uint32Array(css.starts.length);
+  const ends = new Uint32Array(css.ends.length);
+  for (let k = 0; k < starts.length; k++) {
+    starts[k] = entities.starts[css.starts[k]];
+    ends[k] = entities.ends[css.ends[k] - 1];
+  }
+  return { text: css.text, starts, ends, escaped: css.escaped };
+}
+
+/**
+ * Index just past the parenthesis closing the one opened right before `from`, or the end of text when it never
+ * closes. Quoted strings are skipped; quotes and parentheses produced by CSS escapes are plain characters.
+ */
+function findClosingParen(text: string, from: number, escaped: Uint8Array | null): number {
+  let depth = 1;
+  let quote = 0;
+  for (let i = from; i < text.length; i++) {
+    if (escaped !== null && escaped[i] === 1) continue;
+    const code = text.charCodeAt(i);
+    if (quote !== 0) {
+      if (code === quote) quote = 0;
+    } else if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) {
+      quote = code;
+    } else if (code === CHAR_OPEN_PAREN) {
+      depth++;
+    } else if (code === CHAR_CLOSE_PAREN && --depth === 0) {
+      return i + 1;
+    }
+  }
+  return text.length;
+}
+
+/** Replacements for external url(), src() and image-set() references; a reference swallows what it contains. */
+function collectExternalReferenceEdits(text: string, escaped: Uint8Array | null): CssEdit[] {
+  const edits: CssEdit[] = [];
+  let scanned = 0;
+  for (const match of text.matchAll(CSS_URL_FUNCTION_START)) {
+    if (match.index < scanned) continue;
+    const argsStart = match.index + match[0].length;
+    if (match[1].toLowerCase().endsWith(IMAGE_SET_SUFFIX)) {
+      const end = findClosingParen(text, argsStart, escaped);
+      scanned = end;
+      if (EXTERNAL_IMAGE_SET_TARGET.test(text.slice(argsStart, end))) {
+        edits.push({ start: match.index, end, replacement: 'none' });
+      }
+      continue;
+    }
+    EXTERNAL_FUNCTION_TARGET.lastIndex = argsStart;
+    if (!EXTERNAL_FUNCTION_TARGET.test(text)) continue;
+    const close = text.indexOf(')', argsStart);
+    scanned = close === -1 ? text.length : close + 1;
+    edits.push({ start: match.index, end: scanned, replacement: 'none' });
+  }
+  return edits;
+}
+
+/** Finds the `@import` rules and external references in already decoded CSS. */
+function collectCssEdits(text: string, escaped: Uint8Array | null): CssEdit[] {
+  const imports = [...text.matchAll(CSS_IMPORT_RULE)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    replacement: '',
+  }));
+  const edits: CssEdit[] = [];
+  let lastEnd = 0;
+  for (const edit of [...imports, ...collectExternalReferenceEdits(text, escaped)].sort((a, b) => a.start - b.start)) {
+    if (edit.start < lastEnd) continue;
+    edits.push(edit);
+    lastEnd = edit.end;
+  }
+  return edits;
+}
+
+/**
+ * Removes `@import` rules and replaces external url() references with `none`. Matching runs on the comment-free,
+ * escape-decoded text, but the edits are applied to the original so benign CSS is returned byte-for-byte.
+ */
+function sanitizeCss(css: string, cdata: boolean): string {
+  const decoded = decodeForMatching(css, cdata);
+  const edits = collectCssEdits(decoded === null ? css : decoded.text, decoded === null ? null : decoded.escaped);
+  if (edits.length === 0) return css;
   let out = '';
   let last = 0;
-  for (const match of css.matchAll(EXTERNAL_CSS_URL_START)) {
-    if (match.index < last) continue;
-    out += `${css.slice(last, match.index)}none`;
-    const close = css.indexOf(')', match.index + match[0].length);
-    if (close === -1) {
-      last = css.length;
-      break;
-    }
-    last = close + 1;
+  for (const edit of edits) {
+    const start = decoded === null ? edit.start : decoded.starts[edit.start];
+    const end = decoded === null ? edit.end : decoded.ends[edit.end - 1];
+    out += css.slice(last, start) + edit.replacement;
+    last = end;
   }
   return out + css.slice(last);
 }
 
-function sanitizeCss(css: string): string {
-  return stripExternalCssUrls(css.replace(/@import[^;]*;?/gi, ''));
+interface StyleClose {
+  close: [number, number] | null;
+  /** True when the body ends inside a CDATA section that never terminates. */
+  openCdata: boolean;
+}
+
+/**
+ * Finds the close tag of a style element whose body starts at `from`, ignoring close tags inside CDATA
+ * sections. A CDATA section that never terminates runs to the end of input, so no close tag is found. Each
+ * region of the input is searched at most once, so the scan stays linear.
+ */
+function findStyleCloseTag(src: string, lower: string, from: number): StyleClose {
+  let close = findCloseTag(lower, STYLE_ELEMENT, from);
+  let position = from;
+  while (close !== null) {
+    const cdataStart = src.indexOf(CDATA_OPEN, position);
+    if (cdataStart === -1 || close[0] < cdataStart) return { close, openCdata: false };
+    const cdataClose = src.indexOf(CDATA_CLOSE, cdataStart + CDATA_OPEN.length);
+    if (cdataClose === -1) return { close: null, openCdata: true };
+    position = cdataClose + CDATA_CLOSE.length;
+    if (close[0] < position) close = findCloseTag(lower, STYLE_ELEMENT, position);
+  }
+  // No close tag: a CDATA section opened after the last one that was skipped would still be open at the end.
+  const trailingCdata = src.indexOf(CDATA_OPEN, position);
+  const openCdata = trailingCdata !== -1 && src.indexOf(CDATA_CLOSE, trailingCdata + CDATA_OPEN.length) === -1;
+  return { close: null, openCdata };
 }
 
 /**
@@ -288,11 +678,12 @@ function sanitizeStyleElements(src: string): string {
   let search = 0;
 
   for (;;) {
-    const start = lower.indexOf('<style', search);
-    if (start === -1) break;
-    const afterName = start + '<style'.length;
-    if (isWordCharAt(src, afterName)) {
-      search = start + 1;
+    const nameIndex = lower.indexOf(STYLE_ELEMENT, search);
+    if (nameIndex === -1) break;
+    const start = tagOpenBefore(lower, nameIndex, false);
+    const afterName = nameIndex + STYLE_ELEMENT.length;
+    if (start < copied || isWordCharAt(src, afterName)) {
+      search = nameIndex + 1;
       continue;
     }
     parts.push(src.slice(copied, start));
@@ -301,9 +692,15 @@ function sanitizeStyleElements(src: string): string {
       copied = src.length;
       break;
     }
-    const close = findCloseTag(lower, 'style', tagEnd);
+    // The qualified name (including any namespace prefix) is kept so the element stays in its namespace.
+    const qualifiedName = src.slice(start + 1, afterName);
+    const { close, openCdata } = findStyleCloseTag(src, lower, tagEnd);
     const bodyEnd = close === null ? src.length : close[0];
-    parts.push(`<style>${sanitizeCss(src.slice(tagEnd, bodyEnd))}</style>`);
+    // An unterminated CDATA section is closed so that the output is a fixed point of this rewrite.
+    const cdataTerminator = openCdata ? CDATA_CLOSE : '';
+    parts.push(
+      `<${qualifiedName}>${sanitizeCss(src.slice(tagEnd, bodyEnd), true)}${cdataTerminator}</${qualifiedName}>`
+    );
     copied = close === null ? src.length : close[1];
     search = copied;
   }
@@ -388,6 +785,32 @@ function readTag(src: string, lt: number): TagToken {
   }
 }
 
+/**
+ * When the markup at `lt` is a comment, CDATA section or processing instruction, returns the index just past
+ * its terminator (the end of input when unterminated), so its contents are never tokenized as tags. Returns -1
+ * for anything else. The HTML-only shorthands `<!-->` and `<!--->` are parsed differently by XML and HTML
+ * parsers, so they are rejected (fail closed).
+ */
+function skipNonTagMarkup(src: string, lt: number): number {
+  if (src.startsWith(COMMENT_OPEN, lt)) {
+    const bodyStart = lt + COMMENT_OPEN_LENGTH;
+    if (src.startsWith('>', bodyStart) || src.startsWith('->', bodyStart)) {
+      throw new SvgSanitizationError('SVG contains a malformed comment that parsers disagree on.');
+    }
+    const close = src.indexOf(COMMENT_CLOSE, bodyStart);
+    return close === -1 ? src.length : close + COMMENT_CLOSE.length;
+  }
+  if (src.startsWith(CDATA_OPEN, lt)) {
+    const close = src.indexOf(CDATA_CLOSE, lt + CDATA_OPEN.length);
+    return close === -1 ? src.length : close + CDATA_CLOSE.length;
+  }
+  if (src.startsWith(PI_OPEN, lt)) {
+    const close = src.indexOf(PI_CLOSE, lt + PI_OPEN.length);
+    return close === -1 ? src.length : close + PI_CLOSE.length;
+  }
+  return -1;
+}
+
 function isEventHandlerName(attributeName: string): boolean {
   const lowered = attributeName.replace(/^["'=]+/, '').toLowerCase();
   const local = lowered.slice(lowered.lastIndexOf(':') + 1);
@@ -399,8 +822,44 @@ function localNameOf(qualified: string): string {
   return lowered.slice(lowered.lastIndexOf(':') + 1);
 }
 
+/** True when a value written into `style` would import, fetch externally or execute once parsed as CSS. */
+function isHostileStyleValue(raw: string): boolean {
+  let text = raw;
+  let hasCssReference = false;
+  try {
+    const decoded = decodeForMatching(raw, false);
+    text = decoded?.text ?? raw;
+    hasCssReference = collectCssEdits(text, decoded === null ? null : decoded.escaped).length > 0;
+  } catch (error) {
+    if (error instanceof SvgSanitizationError) return true;
+    throw error;
+  }
+  return (
+    hasCssReference ||
+    CSS_EXPRESSION_PROBE.test(text) ||
+    text.replace(/[\s\x00-\x1f]/g, '').toLowerCase().includes(SCRIPT_URI_PROBE)
+  );
+}
+
 /**
- * True for `<set>` / `<animate>` elements that would write an event handler or a dangerous URI into another
+ * True when any `;`-separated item of an animation value is a dangerous URI. Entities are decoded before
+ * splitting so an encoded `;` (`&#59;`) cannot hide the item boundary.
+ */
+function hasDangerousUriItem(raw: string): boolean {
+  return decodeHtmlEntities(raw)
+    .split(ANIMATION_VALUE_SEPARATOR)
+    .some((item) => isDangerousUri(normalizeUriText(item)));
+}
+
+/** True when `isHostile` accepts the raw value of any to/from/by/values attribute. */
+function hasAnimationValue(tag: TagToken, isHostile: (value: string) => boolean): boolean {
+  return tag.attributes.some(
+    (attribute) => ANIMATION_VALUE_ATTRIBUTES.has(attribute.name.toLowerCase()) && isHostile(attribute.value)
+  );
+}
+
+/**
+ * True for animation elements that would write an event handler or a dangerous URI into another
  * attribute (for example `<set attributeName="onclick" to="alert(1)"/>`).
  */
 function isHostileAnimation(tag: TagToken): boolean {
@@ -409,14 +868,9 @@ function isHostileAnimation(tag: TagToken): boolean {
   if (target === undefined) return false;
   const targetName = localNameOf(normalizeUriText(target.value));
   if (isEventHandlerName(targetName)) return true;
+  if (targetName === STYLE_ATTRIBUTE) return hasAnimationValue(tag, isHostileStyleValue);
   if (!LINK_ATTRIBUTES.has(targetName)) return false;
-  return tag.attributes.some(
-    (attribute) =>
-      ANIMATION_VALUE_ATTRIBUTES.has(attribute.name.toLowerCase()) &&
-      attribute.value
-        .split(ANIMATION_VALUE_SEPARATOR)
-        .some((item) => isDangerousUri(normalizeUriText(item)))
-  );
+  return hasAnimationValue(tag, hasDangerousUriItem);
 }
 
 /**
@@ -431,6 +885,11 @@ function stripEventHandlerAttributes(src: string): string {
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
+    const skipTo = skipNonTagMarkup(src, lt);
+    if (skipTo !== -1) {
+      search = skipTo;
+      continue;
+    }
     if (!isTagNameStart(src, lt + 1)) {
       search = lt + 1;
       continue;
@@ -447,6 +906,62 @@ function stripEventHandlerAttributes(src: string): string {
       let removeStart = attribute.start;
       while (removeStart > copied && isWhitespaceAt(src, removeStart - 1)) removeStart--;
       parts.push(src.slice(copied, removeStart));
+      copied = attribute.end;
+    }
+    search = tag.end;
+  }
+
+  if (copied === 0 && parts.length === 0) return src;
+  parts.push(src.slice(copied));
+  return parts.join('');
+}
+
+function attributeLocalName(attributeName: string): string {
+  return localNameOf(attributeName.replace(/^["'=]+/, ''));
+}
+
+/** Replacement for an attribute whose value is a dangerous URI, or null when it is left alone. */
+function neutralizedAttribute(attribute: TagAttribute): string | null {
+  const local = attributeLocalName(attribute.name);
+  if (LINK_ATTRIBUTES.has(local)) {
+    return isDangerousUri(normalizeUriText(attribute.value)) ? 'href="#"' : null;
+  }
+  if (ANIMATION_VALUE_ATTRIBUTES.has(local)) {
+    return hasDangerousUriItem(attribute.value) ? `${local}="#"` : null;
+  }
+  if (local === STYLE_ATTRIBUTE) {
+    // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
+    return `style="${sanitizeCss(attribute.value, false).replace(/"/g, '&quot;')}"`;
+  }
+  return null;
+}
+
+/**
+ * Rewrites href/src, animation value and style attributes, but only where the tokenizer finds a real attribute
+ * inside a real tag; text, comments and attribute values that merely mention them are left untouched.
+ */
+function rewriteAttributes(src: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  let search = 0;
+
+  for (;;) {
+    const lt = src.indexOf('<', search);
+    if (lt === -1) break;
+    const skipTo = skipNonTagMarkup(src, lt);
+    if (skipTo !== -1) {
+      search = skipTo;
+      continue;
+    }
+    if (!isTagNameStart(src, lt + 1)) {
+      search = lt + 1;
+      continue;
+    }
+    const tag = readTag(src, lt);
+    for (const attribute of tag.attributes) {
+      const replacement = neutralizedAttribute(attribute);
+      if (replacement === null) continue;
+      parts.push(src.slice(copied, attribute.start), replacement);
       copied = attribute.end;
     }
     search = tag.end;
@@ -512,40 +1027,10 @@ function sanitizePass(input: string): string {
   // 1-3. Strip DOCTYPE/ENTITY declarations, executable and embedding elements, and on* event handlers.
   let result = stripDangerousMarkupPass(input);
 
-  // 4. Sanitize dangerous URI protocols (javascript:, vbscript:, data:text/html, data:image/svg+xml, http:, https:, file:, ftp:, //)
-  result = result.replace(
-    /(?:(?:xlink:)?href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
-    (full, v1, v2, v3) => {
-      const rawVal = v1 !== undefined ? v1 : (v2 !== undefined ? v2 : v3);
-      const decoded = decodeHtmlEntities(rawVal).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
-      if (isDangerousUri(decoded)) {
-        return 'href="#"';
-      }
-      return full;
-    }
-  );
-
-  // 5. Sanitize animation values and attributes (prevent SVG animation script vectors)
-  result = result.replace(
-    /\b(?:values|to|from)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
-    (full, v1, v2, v3) => {
-      const rawVal = v1 !== undefined ? v1 : (v2 !== undefined ? v2 : v3);
-      const decoded = decodeHtmlEntities(rawVal).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
-      if (isDangerousUri(decoded)) {
-        return 'to="#"';
-      }
-      return full;
-    }
-  );
-
-  // 6. Sanitize <style> blocks and inline style attributes against SSRF and data exfiltration
+  // 4-6. Rewrite href-like, animation value and style attributes of real tags against dangerous URIs, SSRF and
+  // data exfiltration, then clean <style> element bodies.
+  result = rewriteAttributes(result);
   result = sanitizeStyleElements(result);
-
-  result = result.replace(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (full, s1, s2, s3) => {
-    const styleBody = s1 !== undefined ? s1 : (s2 !== undefined ? s2 : s3);
-    // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
-    return `style="${sanitizeCss(styleBody).replace(/"/g, '&quot;')}"`;
-  });
 
   return result;
 }
