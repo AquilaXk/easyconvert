@@ -1,0 +1,314 @@
+{
+  "fixtures": [
+    {
+      "compression": "none",
+      "file": "scanline-none-half.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "none",
+      "file": "scanline-none-float.exr",
+      "golden": "golden-rgb-float.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "float"
+    },
+    {
+      "compression": "rle",
+      "file": "scanline-rle-half.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "rle",
+      "file": "scanline-rle-float.exr",
+      "golden": "golden-rgb-float.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "float"
+    },
+    {
+      "compression": "zips",
+      "file": "scanline-zips-half.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "zips",
+      "file": "scanline-zips-float.exr",
+      "golden": "golden-rgb-float.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "float"
+    },
+    {
+      "compression": "zip",
+      "file": "scanline-zip-half.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "zip",
+      "file": "scanline-zip-float.exr",
+      "golden": "golden-rgb-float.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "float"
+    },
+    {
+      "compression": "pxr24",
+      "file": "scanline-pxr24-half.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "pxr24",
+      "file": "scanline-pxr24-float.exr",
+      "golden": "golden-rgb-float-pxr24.f32",
+      "layout": "scanline",
+      "lossy": true,
+      "sample": "float"
+    },
+    {
+      "compression": "piz",
+      "file": "scanline-piz-half.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "piz",
+      "file": "scanline-piz-float.exr",
+      "golden": "golden-rgb-float.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "float"
+    },
+    {
+      "compression": "zip",
+      "file": "scanline-zip-uint.exr",
+      "golden": "golden-rgb-uint.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "uint"
+    },
+    {
+      "compression": "piz",
+      "file": "scanline-piz-uint.exr",
+      "golden": "golden-rgb-uint.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "uint"
+    },
+    {
+      "compression": "pxr24",
+      "file": "scanline-pxr24-uint.exr",
+      "golden": "golden-rgb-uint.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "uint"
+    },
+    {
+      "channelNames": "A,B,G,R,Z,id",
+      "compression": "none",
+      "file": "scanline-none-mixed-channels.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "channelNames": "A,B,G,R,Z,id",
+      "compression": "zip",
+      "file": "scanline-zip-mixed-channels.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "channelNames": "A,B,G,R,Z,id",
+      "compression": "pxr24",
+      "file": "scanline-pxr24-mixed-channels.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "channelNames": "A,B,G,R,Z,id",
+      "compression": "piz",
+      "file": "scanline-piz-mixed-channels.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "channelNames": "A,diffuse.B,diffuse.G,diffuse.R",
+      "compression": "piz",
+      "file": "scanline-piz-layered.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "channelNames": "Y",
+      "compression": "zip",
+      "file": "scanline-zip-gray.exr",
+      "golden": "golden-gray-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "channelNames": "Y",
+      "compression": "piz",
+      "file": "scanline-piz-gray.exr",
+      "golden": "golden-gray-half.f32",
+      "layout": "scanline",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "none",
+      "file": "tiled-none-half-one-level.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "tiled",
+      "levelMode": "one",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "rle",
+      "file": "tiled-rle-half-one-level.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "tiled",
+      "levelMode": "one",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "zips",
+      "file": "tiled-zips-half-one-level.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "tiled",
+      "levelMode": "one",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "zip",
+      "file": "tiled-zip-half-one-level.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "tiled",
+      "levelMode": "one",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "pxr24",
+      "file": "tiled-pxr24-half-one-level.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "tiled",
+      "levelMode": "one",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "piz",
+      "file": "tiled-piz-half-one-level.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "tiled",
+      "levelMode": "one",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "zip",
+      "file": "tiled-zip-float-mipmap.exr",
+      "golden": "golden-rgb-float.f32",
+      "layout": "tiled",
+      "levelMode": "mipmap",
+      "lossy": false,
+      "sample": "float"
+    },
+    {
+      "compression": "piz",
+      "file": "tiled-piz-half-mipmap.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "tiled",
+      "levelMode": "mipmap",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "zip",
+      "file": "tiled-zip-half-ripmap.exr",
+      "golden": "golden-rgb-half.f32",
+      "layout": "tiled",
+      "levelMode": "ripmap",
+      "lossy": false,
+      "sample": "half"
+    },
+    {
+      "compression": "piz",
+      "file": "tiled-piz-float-20x12.exr",
+      "golden": "golden-rgb-float.f32",
+      "layout": "tiled",
+      "levelMode": "one",
+      "lossy": false,
+      "sample": "float"
+    }
+  ],
+  "goldens": {
+    "golden-gray-half.f32": "4a6f09e336cf042f092dc135d39ad6ed06956969e50838bc0d1dcbba97701709",
+    "golden-rgb-float-pxr24.f32": "ebc0c581e82db886d74e3c58a8fc7266cdcdcbec27019de04abc358fe93bad65",
+    "golden-rgb-float.f32": "364bacef4b92f247787b9eca1d5d0e540cdc797dd555e90288630f040972a2d0",
+    "golden-rgb-half.f32": "e857f42f04f0cfd172246835236bbc58b95a9cc291015053ce0072b8dbb7550c",
+    "golden-rgb-uint.f32": "e452411cf3c80a08d04cc1783310a8eee41774f87ad0e6f9e8ac90b9125b18ad"
+  },
+  "height": 45,
+  "reject": [
+    {
+      "file": "reject-dwaa.exr",
+      "reason": "dwaa"
+    },
+    {
+      "file": "reject-dwab.exr",
+      "reason": "dwab"
+    },
+    {
+      "file": "reject-b44.exr",
+      "reason": "b44"
+    },
+    {
+      "file": "reject-b44a.exr",
+      "reason": "b44a"
+    },
+    {
+      "file": "reject-luma-chroma.exr",
+      "reason": "luma-chroma"
+    },
+    {
+      "file": "reject-no-color.exr",
+      "reason": "no-color"
+    }
+  ],
+  "width": 37,
+  "xMin": -7,
+  "yMin": 11
+}
