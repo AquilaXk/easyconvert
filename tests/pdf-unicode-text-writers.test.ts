@@ -1023,6 +1023,43 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     }
   });
 
+  it('refuses CSS url(), @import, image-set and background references before LibreOffice could load them', async () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-css-marker-')), 'invoked');
+    const recordingSoffice = failingSoffice(`touch '${marker}'; exit 3`);
+    const cases: Array<[string, string]> = [
+      ['<p style="background:url(file:///etc/hosts)">attribute</p>', 'file:///etc/hosts'],
+      ['<style>@import "http://192.0.2.2:18765/a.css";</style><p>import</p>', 'http://192.0.2.2:18765/a.css'],
+      ['<p style="background:\\75 rl(file:///etc/hosts)">escaped</p>', 'file:///etc/hosts'],
+      ['<style>p { background : /* note */ URL( \'file:///etc/hosts\' ) }</style><p>quoted</p>', 'file:///etc/hosts'],
+      ['<style>@import/* note */url(http://192.0.2.2:18765/b.css);</style><p>import url</p>', 'http://192.0.2.2:18765/b.css'],
+      ['<style>p { background: image-set("file:///etc/hosts" 1x) }</style><p>image-set</p>', 'file:///etc/hosts'],
+      ['<table><tr><td background="file:///etc/hosts">cell</td></tr></table>', 'file:///etc/hosts'],
+    ];
+    for (const [html, reference] of cases) {
+      const { error } = await settle(
+        withEnvValue('SOFFICE_PATH', recordingSoffice, () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css.html'))
+      );
+      expect({ html, name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ html, name: 'ConversionFailedError', invoked: false });
+      expect((error as Error).message).toContain(`"${reference}" is an external reference`);
+    }
+  });
+
+  oracleTest('still sends HTML whose CSS uses only data: URIs to LibreOffice', ['pdftotext'], async () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-css-data-')), 'invoked');
+    const png = buildRgbPng(2, 2).toString('base64');
+    const html =
+      `<style>@import url("data:text/css;base64,cCB7IGNvbG9yOiByZWQgfQ=="); p { background: url('data:image/png;base64,${png}') }</style>` +
+      `<p style="background-image:url(data:image/png;base64,${png})">data backgrounds</p>`;
+    const result = await withEnvValue('SOFFICE_PATH', failingSoffice(`touch '${marker}'; exit 3`), () =>
+      executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css-data.html')
+    );
+    expect({ invoked: fs.existsSync(marker), engine: result.engineUsed, text: normalizeText(pdfText(result.buffer)) }).toEqual({
+      invoked: true,
+      engine: 'internal-fallback',
+      text: 'data backgrounds',
+    });
+  });
+
   it('reports a LibreOffice failure on complex-script text as EngineUnavailableError (503)', async () => {
     const { error } = await settle(
       withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () =>

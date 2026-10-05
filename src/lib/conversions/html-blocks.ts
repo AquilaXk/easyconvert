@@ -2,6 +2,7 @@ import sharp from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
+import { findCssExternalReference } from './css-references';
 
 /**
  * Parses HTML into the PDF block model: headings, paragraphs, lists, tables, links, preformatted
@@ -31,6 +32,7 @@ const REPLACEMENT_CHARACTER = '�';
 const SURROGATE_FIRST = 0xd800;
 const SURROGATE_LAST = 0xdfff;
 const DEFAULT_LIST_START = 1;
+const STYLE_ELEMENT = 'style';
 /** Largest colspan honoured, as in HTML (larger values are clamped). */
 const MAX_COLUMN_SPAN = 1000;
 const COMMENT_OPEN = '<!--';
@@ -206,6 +208,8 @@ class HtmlTreeBuilder {
       this.title = decodeHtmlCharacterReferences(content).replace(HTML_WHITESPACE, ' ').trim();
     }
     this.start(tag, attrs);
+    // Style sheets are kept as raw text (never drawn) so their url() and @import references can be checked.
+    if (tag === STYLE_ELEMENT && content.length > 0) this.current.children.push(content);
     this.end(tag);
   }
 
@@ -751,6 +755,9 @@ const RESOURCE_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
   ['link', ['href']],
 ]);
 const SRCSET_ATTRIBUTE = 'srcset';
+/** The legacy background attribute (body, table, tr, td, th) loads an image on any element LibreOffice reads. */
+const BACKGROUND_ATTRIBUTE = 'background';
+const STYLE_ATTRIBUTE = 'style';
 const DATA_URI_PREFIX = /^data:/i;
 
 /** URLs an attribute loads: one for src-like attributes, each candidate for srcset. */
@@ -761,17 +768,23 @@ function resourceUrls(attribute: string, value: string): string[] {
 
 /**
  * The first resource the document would load from outside itself (anything but a data: URI), or
- * null. Used before HTML goes to LibreOffice, which would otherwise try to open or fetch it.
+ * null: element references, legacy background attributes, and url()/@import/image-set() in style
+ * attributes and <style> sheets. Used before HTML goes to LibreOffice, which would otherwise try
+ * to open or fetch it.
  */
 export function findExternalResourceReference(html: string): string | null {
   const pending: HtmlNode[] = [...parseHtmlTree(html.replace(/^\ufeff/, '')).root.children];
   while (pending.length > 0) {
     const node = pending.pop() as HtmlNode;
     if (typeof node === 'string') continue;
-    for (const attribute of RESOURCE_ATTRIBUTES.get(node.tag) ?? []) {
+    for (const attribute of [...(RESOURCE_ATTRIBUTES.get(node.tag) ?? []), BACKGROUND_ATTRIBUTE]) {
       const external = resourceUrls(attribute, node.attrs.get(attribute) ?? '').find((url) => !DATA_URI_PREFIX.test(url));
       if (external) return external;
     }
+    const inlineStyle = node.attrs.get(STYLE_ATTRIBUTE);
+    const styleSheet = node.tag === STYLE_ELEMENT ? node.children.filter((child): child is string => typeof child === 'string').join('') : '';
+    const cssReference = (inlineStyle && findCssExternalReference(inlineStyle)) || (styleSheet && findCssExternalReference(styleSheet));
+    if (cssReference) return cssReference;
     appendAll(pending, node.children);
   }
   return null;
