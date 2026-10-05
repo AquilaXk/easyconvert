@@ -3,6 +3,7 @@ import { verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { extractClientIp } from '@/lib/api-keys/ip-utils';
+import { ClientIpError } from '@/lib/security/client-ip';
 import {
   checkLoginRateLimit,
   recordFailedLogin,
@@ -26,7 +27,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const clientIp = extractClientIp(req);
+  let clientIp: string;
+  try {
+    clientIp = extractClientIp(req);
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    return NextResponse.json(
+      { success: false, error: 'Client address could not be determined from the request headers.' },
+      { status: error.status }
+    );
+  }
 
   try {
     const email = typeof body.email === 'string' ? body.email.trim() : '';

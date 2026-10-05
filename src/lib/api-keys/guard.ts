@@ -5,6 +5,7 @@ import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
+import { ClientIpError } from '@/lib/security/client-ip';
 import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 
 export { extractClientIp };
@@ -32,6 +33,7 @@ export interface ValidateApiAccessOptions {
 }
 
 const WILDCARD_SCOPE = '*';
+const HTTP_BAD_REQUEST = 400;
 
 type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
 
@@ -291,11 +293,33 @@ async function verifyKeyAccess(
   };
 }
 
+const CLIENT_IP_CONFIG_ERROR_MESSAGE = 'Server misconfiguration: client IP trust settings are invalid.';
+const CLIENT_IP_INVALID_ERROR_MESSAGE = 'Bad Request: malformed client address in forwarding headers.';
+
+/**
+ * Resolves the client identity through the shared trusted-proxy resolver. A malformed forwarding chain
+ * becomes a 400 rejection and invalid trust configuration a 500, so no request is ever attributed by guess.
+ */
+function resolveClientIpForAuth(request: Request): { clientIp: string } | { rejection: ApiAuthResult } {
+  try {
+    return { clientIp: extractClientIp(request) };
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    const malformed = error.status === HTTP_BAD_REQUEST;
+    return {
+      rejection: {
+        authorized: false,
+        error: malformed ? CLIENT_IP_INVALID_ERROR_MESSAGE : CLIENT_IP_CONFIG_ERROR_MESSAGE,
+        status: error.status,
+      },
+    };
+  }
+}
+
 async function verifyAnonymousAccess(
-  request: Request,
+  clientIp: string,
   requiredUnits: number
 ): Promise<ApiAuthResult> {
-  const clientIp = extractClientIp(request);
   const anonIdentifier = `rate:anon:${clientIp}`;
 
   // 1. Enforce IP burst rate limit
@@ -383,10 +407,11 @@ export async function validateApiAccess(
     allowAnonymous = Boolean(optionsOrUnits.allowAnonymous);
   }
 
-  const clientIp = extractClientIp(request);
   const apiKeySecret = extractApiKeySecret(request);
   if (apiKeySecret) {
-    return verifyKeyAccess(apiKeySecret, requiredUnits, requiredScope, clientIp);
+    const resolved = resolveClientIpForAuth(request);
+    if ('rejection' in resolved) return resolved.rejection;
+    return verifyKeyAccess(apiKeySecret, requiredUnits, requiredScope, resolved.clientIp);
   }
 
   const sessionUser = await getSessionFromRequest(request);
@@ -421,7 +446,9 @@ export async function validateApiAccess(
   }
 
   if (allowAnonymous) {
-    return verifyAnonymousAccess(request, requiredUnits);
+    const resolved = resolveClientIpForAuth(request);
+    if ('rejection' in resolved) return resolved.rejection;
+    return verifyAnonymousAccess(resolved.clientIp, requiredUnits);
   }
 
   return {

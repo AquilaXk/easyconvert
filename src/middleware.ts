@@ -1,4 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  ClientIpError,
+  clientIpKey,
+  resolveClientIp,
+  type ResolvedClientIp,
+} from '@/lib/security/client-ip';
 
 /**
  * Next.js Edge-compatible Centralized Middleware
@@ -8,6 +14,10 @@ import { NextRequest, NextResponse } from 'next/server';
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+const HTTP_BAD_REQUEST = 400;
+const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
+const PROBLEM_INTERNAL_ERROR = 'https://api.easyconvert.io/problems/internal-server-error';
 
 // Fast Edge-compatible in-memory rate limiter per Edge worker instance
 interface EdgeRateBucket {
@@ -52,6 +62,30 @@ function checkEdgeIpRateLimit(clientIp: string): { allowed: boolean; retryAfterS
   const needed = 1 - bucket.tokens;
   const retryAfterSec = Math.max(1, Math.ceil(needed / EDGE_REFILL_RATE));
   return { allowed: false, retryAfterSec };
+}
+
+function problemResponse(status: number, title: string, detail: string, instance: string): NextResponse {
+  return new NextResponse(
+    JSON.stringify({
+      type: status === HTTP_BAD_REQUEST ? PROBLEM_BAD_REQUEST : PROBLEM_INTERNAL_ERROR,
+      title,
+      status,
+      detail,
+      instance,
+    }),
+    { status, headers: { 'Content-Type': 'application/problem+json' } }
+  );
+}
+
+let warnedUnattributed = false;
+
+function warnUnattributedOnce(): void {
+  if (warnedUnattributed) return;
+  warnedUnattributed = true;
+  console.warn(
+    '[edge] Client IP cannot be attributed: set TRUSTED_PROXIES (and/or TRUSTED_CDN) to declare the proxy in ' +
+      'front of this server. Until then every request shares one rate-limit bucket.'
+  );
 }
 
 function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean {
@@ -103,11 +137,22 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Extract client IP for Edge barrier
-  const cfIp = request.headers.get('cf-connecting-ip');
-  const realIp = request.headers.get('x-real-ip');
-  const forwardedFor = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-  const clientIp = cfIp || realIp || forwardedFor || request.ip || '127.0.0.1';
+  // Edge barrier identity. The middleware cannot see the socket peer, so attribution follows the deployment
+  // contract in src/lib/security/client-ip.ts: forwarding headers count only behind a declared proxy, and an
+  // unattributed request shares one conservative bucket instead of a header-chosen key.
+  let resolved: ResolvedClientIp;
+  try {
+    resolved = resolveClientIp(request);
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    if (error.status === HTTP_BAD_REQUEST) {
+      return problemResponse(error.status, 'Bad Request', 'Malformed client address in forwarding headers.', pathname);
+    }
+    console.error(`[edge] ${error.message}`);
+    return problemResponse(error.status, 'Internal Server Error', 'Client IP trust configuration is invalid.', pathname);
+  }
+  if (resolved.source === 'unattributed') warnUnattributedOnce();
+  const clientIp = clientIpKey(resolved);
 
   // 1. Edge-level IP Rate Limiter
   const edgeRate = checkEdgeIpRateLimit(clientIp);
