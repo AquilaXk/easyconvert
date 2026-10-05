@@ -24,6 +24,34 @@ function binarySorted(tags: string[]): string[] {
   return [...tags].sort((a, b) => Buffer.compare(Buffer.from(a, 'latin1'), Buffer.from(b, 'latin1')));
 }
 
+/** OpenType: the uint32 sum of the whole font, checkSumAdjustment included, is this constant. */
+const SFNT_CHECKSUM_MAGIC = 0xb1b0afba;
+const HEAD_ADJUSTMENT_OFFSET = 8;
+
+function uint32Sum(data: Buffer): number {
+  const padded = Buffer.concat([data, Buffer.alloc((4 - (data.length % 4)) % 4)]);
+  let sum = 0;
+  for (let i = 0; i < padded.length; i += 4) sum = (sum + padded.readUInt32BE(i)) >>> 0;
+  return sum;
+}
+
+describe('font checksums', () => {
+  it.each(['ttf', 'otf'])('woff2 -> %s carries a whole-font checksum and per-table checksums that verify', async (target) => {
+    const font = (await convertFile(SOURCE, 'woff2', target, {}, 'sample.woff2')).buffer;
+    expect(uint32Sum(font)).toBe(SFNT_CHECKSUM_MAGIC);
+    const count = font.readUInt16BE(4);
+    for (let i = 0; i < count; i += 1) {
+      const entry = SFNT_HEADER_BYTES + i * SFNT_ENTRY_BYTES;
+      const tag = font.toString('latin1', entry, entry + TAG_BYTES);
+      const offset = font.readUInt32BE(entry + 8);
+      const table = Buffer.from(font.subarray(offset, offset + font.readUInt32BE(entry + 12)));
+      // The 'head' checksum is defined with checkSumAdjustment set to zero.
+      if (tag === 'head') table.writeUInt32BE(0, HEAD_ADJUSTMENT_OFFSET);
+      expect([tag, font.readUInt32BE(entry + 4)]).toEqual([tag, uint32Sum(table)]);
+    }
+  });
+});
+
 describe('font table directory order', () => {
   it.each(['ttf', 'otf'])('woff2 -> %s lists tables in ascending binary tag order', async (target) => {
     const result = await convertFile(SOURCE, 'woff2', target, {}, 'sample.woff2');
