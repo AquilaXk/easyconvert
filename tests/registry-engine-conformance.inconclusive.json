@@ -1,14 +1,6 @@
 [
-  "pdf->jpg",
-  "pdf->png",
-  "pdf->tiff",
   "pfa->otf",
   "pfa->ttf",
   "pfb->otf",
-  "pfb->ttf",
-  "rar->7z",
-  "rar->tar",
-  "rar->tar.bz2",
-  "rar->tar.gz",
-  "rar->zip"
+  "pfb->ttf"
 ]
