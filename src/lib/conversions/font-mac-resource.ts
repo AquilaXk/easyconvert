@@ -212,7 +212,6 @@ export function parseResourceFork(
   const resources: MacResource[] = [];
   const typesPresent: string[] = [];
   const dataRanges: ByteRange[] = [];
-  const nameListStart = nameListOffset;
   for (const entry of entries) {
     if (!typesPresent.includes(entry.type)) typesPresent.push(entry.type);
     for (let r = 0; r < entry.refCount; r++) {
@@ -239,7 +238,7 @@ export function parseResourceFork(
         data: fork.subarray(payloadStart, payloadStart + length),
       };
       if (nameOffset !== NO_NAME_OFFSET) {
-        resource.name = readPascalName(map, nameListStart, nameOffset);
+        resource.name = readPascalName(map, nameListOffset, nameOffset);
       }
       resources.push(resource);
     }
@@ -250,8 +249,9 @@ export function parseResourceFork(
 }
 
 /**
- * Extracts the first 'sfnt' resource (resource-map order) from a resource fork; a .dfont is exactly a bare resource fork stored in the data fork. Throws a typed
- * error for bitmap-only (NFNT/FONT/FOND) forks and for forks without any outline font.
+ * Extracts the first 'sfnt' resource (resource-map order) from a resource fork. A .dfont is exactly
+ * a bare resource fork stored in the data fork. Throws a typed error for bitmap-only (NFNT/FONT/FOND)
+ * forks and for forks without any outline font.
  */
 export function extractSfntFromResourceFork(fork: Buffer): Buffer {
   const { resources, typesPresent } = parseResourceFork(fork, new Set([SFNT_TYPE]));
@@ -291,8 +291,8 @@ export interface MacBinaryForks {
 
 /**
  * Validates a MacBinary I/II/III header and returns the data and resource forks. MacBinary II/III
- * (writer version byte >= 129) must carry a matching CRC-16/XMODEM of header bytes 0..123; the
- * The MacBinary III 'mBIN' signature is optional and not required. Fork lengths must lie inside the file.
+ * (writer version byte >= 129) must carry a matching CRC-16/XMODEM of header bytes 0..123. The
+ * MacBinary III 'mBIN' signature is not required. Fork lengths must lie inside the file.
  */
 export function parseMacBinary(buffer: Buffer): MacBinaryForks {
   if (buffer.length < MACBINARY_HEADER_SIZE) {

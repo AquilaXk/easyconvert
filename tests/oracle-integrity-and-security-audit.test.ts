@@ -31,6 +31,7 @@ import {
 import { sanitizeArchivePath, ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
 import { sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { decodeSfnt } from '../src/lib/conversions/font';
+import { ConversionFailedError } from '../src/lib/types';
 
 // ============================================================================
 // Synthetic Authentic Bitstream Builders
@@ -702,9 +703,9 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       const truncatedTableBuf = Buffer.alloc(20);
       truncatedTableBuf.writeUInt32BE(0x00010000, 0); // version
       truncatedTableBuf.writeUInt16BE(50, 4); // claims 50 tables but only 20 bytes total
-      const parsed = decodeSfnt(truncatedTableBuf, 'TruncatedTables');
-      expect(parsed).toBeDefined();
-      expect(Object.keys(parsed.tables).length).toBe(0); // stops safely without out-of-bounds read
+      // Fail closed: a directory that does not fit is rejected, not decoded as an empty font.
+      expect(() => decodeSfnt(truncatedTableBuf, 'TruncatedTables')).toThrow(ConversionFailedError);
+      expect(() => decodeSfnt(truncatedTableBuf, 'TruncatedTables')).toThrow(/directory of 50 tables is cut short/);
     });
   });
 });

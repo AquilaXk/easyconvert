@@ -20,6 +20,10 @@ import {
 
 const FIXTURE_OTF = path.join(__dirname, 'fixtures/golden/font/variable-geometric.otf');
 const HAS_FC_SCAN = spawnSync('fc-scan', ['--version'], { stdio: 'ignore' }).status === 0;
+// CI runs the oracles in strict mode: a missing fc-scan must fail there instead of skipping the oracle.
+if (process.env.ORACLE_STRICT_MODE === '1' && !HAS_FC_SCAN) {
+  throw new Error('ORACLE_STRICT_MODE requires fc-scan (fontconfig) for the font container oracle');
+}
 
 const SFNT_TRUETYPE = 0x00010000;
 const SFNT_CFF_TAG = 'OTTO';
@@ -391,6 +395,22 @@ describe('hostile dfont resource forks are rejected with a typed error', () => {
 
   it('rejects a truncated header', async () => {
     await expectContainerRejection(valid.subarray(0, 10), 'dfont', /truncated header/);
+  });
+
+  it('rejects an sfnt resource whose table directory is cut short', async () => {
+    const hollow = Buffer.alloc(SFNT_HEADER_SIZE);
+    hollow.writeUInt32BE(SFNT_TRUETYPE, 0);
+    hollow.writeUInt16BE(50, 4);
+    const run = convert(buildDfont([hollow]), 'dfont', 'ttf');
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.toThrow(/directory of 50 tables is cut short/);
+  });
+
+  it('rejects an sfnt resource whose table extends past its end', async () => {
+    const clipped = ALPHA_TTF.subarray(0, ALPHA_TTF.length - 8);
+    const run = convert(buildDfont([clipped]), 'dfont', 'ttf');
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.toThrow(/extends past the end of the font/);
   });
 
   it('rejects every truncation of the fork, which always cuts into the resource map', async () => {
