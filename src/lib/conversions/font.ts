@@ -1,9 +1,11 @@
 import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult } from '../types';
+import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 
 /**
  * Universal Font Conversion Engine
- * Supports TrueType (TTF), OpenType (OTF), WOFF, WOFF2, EOT, and SVG Fonts.
+ * Supports TrueType (TTF), OpenType (OTF), WOFF, WOFF2, EOT, and SVG Fonts, plus Macintosh
+ * DFONT and MacBinary containers that wrap an SFNT font.
  * Adheres strictly to the in-memory zero-retention architecture.
  */
 
@@ -148,9 +150,18 @@ export async function convertFont(
 }
 
 /**
- * Parses arbitrary input font stream (TTF, OTF, WOFF, WOFF2, EOT, SVG Font) into canonical SFNT structure
+ * Parses arbitrary input font stream (TTF, OTF, WOFF, WOFF2, EOT, SVG Font, DFONT, MacBinary) into canonical SFNT structure
  */
 export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: string): ParsedFont {
+  // Mac containers are selected by declared format before any magic sniffing: a MacBinary filename
+  // field can contain arbitrary bytes that would otherwise look like another container's signature.
+  if (format === 'dfont') {
+    return decodeSfnt(extractSfntFromResourceFork(buffer), defaultName);
+  }
+  if (format === 'bin') {
+    return decodeSfnt(extractSfntFromMacBinary(buffer), defaultName);
+  }
+
   // Check WOFF signature ('wOFF' = 0x774F4646)
   if (format === 'woff' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOFF')) {
     return decodeWoff(buffer, defaultName);
@@ -171,13 +182,9 @@ export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: str
     return decodeSvgFont(buffer, defaultName);
   }
 
-  // Standard SFNT (TTF / OTF / DFONT / PFA / PFB / BIN)
-  if (buffer.length >= 12) {
-    const version = buffer.readUInt32BE(0);
-    // 0x00010000 = TrueType 1.0, 0x4F54544F = 'OTTO' (OpenType with CFF), 0x74727565 = 'true' (Apple TrueType)
-    if (version === 0x00010000 || version === 0x4f54544f || version === 0x74727565 || version === 0x74797031) {
-      return decodeSfnt(buffer, defaultName);
-    }
+  // Standard SFNT (TTF / OTF). DFONT and MacBinary containers are unwrapped above; PFA / PFB are not handled here.
+  if (looksLikeSfnt(buffer)) {
+    return decodeSfnt(buffer, defaultName);
   }
 
   // Fail-closed: invalid or non-SFNT container must throw error

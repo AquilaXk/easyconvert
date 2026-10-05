@@ -19,6 +19,7 @@ import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
+import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
 
 /**
  * Registry/engine conformance gate.
@@ -240,6 +241,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   txz: () => compressXz(TAR_SEED),
   'tar.xz': () => compressXz(TAR_SEED),
   'tar.7z': () => create7zArchive([{ filename: 'probe.tar', buffer: TAR_SEED }]).buffer,
+  // Macintosh font containers wrapping a hand-built TrueType font.
+  dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
+  bin: () => buildMacBinary({ resourceFork: buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]) }),
 };
 
 async function requireDerived(format: string): Promise<Buffer> {
