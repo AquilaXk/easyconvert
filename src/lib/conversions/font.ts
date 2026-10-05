@@ -234,10 +234,18 @@ export function decodeSfnt(buffer: Buffer, defaultName: string): ParsedFont {
 }
 
 /**
+ * Orders table records as the OpenType and WOFF specifications require: ascending by the four tag
+ * bytes as written ('OS/2' before 'cmap'), not by locale collation.
+ */
+function compareSfntTags(a: { tag: string }, b: { tag: string }): number {
+  return Buffer.compare(Buffer.from(formatSfntTag(a.tag), 'latin1'), Buffer.from(formatSfntTag(b.tag), 'latin1'));
+}
+
+/**
  * Encodes canonical ParsedFont into standard SFNT (TTF / OTF) binary stream
  */
 export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
-  const tableEntries = Object.values(font.tables).sort((a, b) => a.tag.localeCompare(b.tag));
+  const tableEntries = Object.values(font.tables).sort(compareSfntTags);
   const numTables = tableEntries.length;
 
   const searchRange = numTables > 0 ? Math.pow(2, Math.floor(Math.log2(numTables))) * 16 : 0;
@@ -282,7 +290,7 @@ export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
  * Tables are deflated using zlib and encapsulated with 44-byte WOFF header.
  */
 export function encodeWoff(font: ParsedFont): Buffer {
-  const tableEntries = Object.values(font.tables).sort((a, b) => a.tag.localeCompare(b.tag));
+  const tableEntries = Object.values(font.tables).sort(compareSfntTags);
   const numTables = tableEntries.length;
 
   const woffHeaderSize = 44;
