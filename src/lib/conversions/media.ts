@@ -12,8 +12,8 @@ import {
   MediaPackagingOptions,
 } from '../types';
 export { ConversionFailedError };
-import { executeSandboxedBinary } from '../security/process-sandbox';
-import { buildFfmpegArguments, buildHlsDashArguments } from './media-ffmpeg-args';
+import { executeSandboxedBinary, SandboxedProcessError } from '../security/process-sandbox';
+import { buildFfmpegArguments, buildHlsDashArguments, usesHardwareVideoEncoder } from './media-ffmpeg-args';
 import { encodePureMp3, encodePureH264Mp4, encodeFlacStream, encodeAacLcFramePayload } from './media-encoder';
 import {
   decodeAudioBuffer,
@@ -318,11 +318,34 @@ async function executeFfmpegTranscode(
     const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin);
     const durationSeconds = probeMediaDuration(inputPath, options);
     const timeoutMs = computeMediaTimeoutMs(durationSeconds, options.timeoutMs);
-    await executeSandboxedBinary(ffmpegBin, args, {
-      timeoutMs,
-      maxBuffer: 50 * 1024 * 1024,
-      networkIsolated: true,
-    });
+    const runFfmpeg = (ffmpegArgs: string[]) =>
+      executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
+        timeoutMs,
+        maxBuffer: 50 * 1024 * 1024,
+        networkIsolated: true,
+        signal: options.signal,
+      });
+    try {
+      await runFfmpeg(args);
+    } catch (err) {
+      // An advertised hardware encoder can still fail at runtime (missing device or driver).
+      // Retry exactly once in software; every other failure, and a failed retry, reports the original error.
+      // Any non-zero exit counts: driver and device messages differ across vendors and versions, so
+      // matching them would miss real hardware failures. The cost is a second run for an input that
+      // fails in software too, which then reports the original error. A cancelled job is never retried.
+      const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
+      if (!hardwareEncoderFailed || options.signal?.aborted) {
+        throw err;
+      }
+      const softwareArgs = buildFfmpegArguments(
+        inputPath, outputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin
+      );
+      try {
+        await runFfmpeg(softwareArgs);
+      } catch {
+        throw err;
+      }
+    }
 
     const outputBuffer = fs.readFileSync(outputPath);
     if (outputBuffer.length === 0) {
