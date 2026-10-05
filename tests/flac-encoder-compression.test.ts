@@ -23,7 +23,9 @@ import crypto from 'node:crypto';
 const RATE = 44100;
 const MAX_SIZE_RATIO_VS_LEVEL_5 = 1.03;
 const MAX_SIZE_RATIO_VS_LEVEL_8 = 1.08;
-const MIN_THROUGHPUT_MB_PER_SECOND = 15;
+// Regression floor, not a benchmark: about 17 MB/s on a quiet machine and 2.8 MB/s for the
+// replaced encoder, so shared CI runners keep headroom while a fall back to the old path fails.
+const MIN_THROUGHPUT_MB_PER_SECOND = 6;
 const THROUGHPUT_RUNS = 5;
 const BYTES_PER_MB = 1e6;
 const NS_PER_SECOND = 1e9;
