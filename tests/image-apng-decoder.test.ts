@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
+import { parseApng } from '../src/lib/conversions/image-apng';
 import {
   COLOUR_TYPE,
   buildApngFile,
@@ -394,5 +395,27 @@ describe('APNG budgets', () => {
     const error = await captureError(() => convertImage(apng, 'gif', {}, 'big.png', 'png'));
     expect(error.name).toBe('ConversionFailedError');
     expect(error.message).toMatch(/decoded animation limit/);
+  });
+});
+
+describe('APNG frame count while parsing', () => {
+  const FRAME_LIMIT = 4096;
+  const ANNOUNCED_FRAMES = 2;
+  const oneByOne = (index: number) => ({ image: solid(1, 1, [index % 256, 0, 0, 255]) });
+  const framesOf = (count: number) => Array.from({ length: count }, (_unused, index) => oneByOne(index));
+
+  it('stops at the frame control chunk that exceeds the limit, whatever the acTL announces', async () => {
+    const apng = buildApngFile({ width: 1, height: 1, frames: framesOf(FRAME_LIMIT + 1) }, (chunks) => {
+      chunks.find((chunk) => chunk.type === 'acTL')!.data.writeUInt32BE(ANNOUNCED_FRAMES, 0);
+    });
+    const error = await captureError(async () => parseApng(apng));
+    expect(error.name).toBe('ConversionFailedError');
+    expect(error.message).toBe(`The animated PNG has ${FRAME_LIMIT + 1} frames, over the limit of ${FRAME_LIMIT} frames`);
+  });
+
+  it('parses an animation with exactly the limit of frames', () => {
+    const animation = parseApng(buildApngFile({ width: 1, height: 1, frames: framesOf(FRAME_LIMIT) }));
+    expect(animation?.frameCount).toBe(FRAME_LIMIT);
+    expect(animation?.frames).toHaveLength(FRAME_LIMIT);
   });
 });

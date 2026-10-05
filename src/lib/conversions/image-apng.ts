@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { ConversionFailedError } from '../types';
 import { crc32 } from './archive';
-import { RGBA_BYTES_PER_PIXEL } from './image-limits';
+import { assertFrameCount, RGBA_BYTES_PER_PIXEL } from './image-limits';
 
 /**
  * Animated PNG (APNG 1.0) decoding in process.
@@ -210,6 +210,7 @@ function readTypedChunk(state: ParseState, buffer: Buffer, type: string, pos: nu
       return;
     case 'fcTL': {
       if (!state.sawActl) throw malformed('fcTL chunk before acTL');
+      assertFrameCount(state.frames.length + 1, 'The animated PNG');
       const frame = readFrameControl(state, buffer, dataAt, length);
       if (!state.sawIdat && state.frames.length > 0) throw malformed('a second fcTL before the first IDAT');
       state.frames.push(frame);
