@@ -23,23 +23,6 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
-      # Independent S3-compatible server for the real-server storage tests (they verify SigV4 and
-      # multipart semantics with an implementation this repository did not write). The image is the
-      # last Bitnami-packaged MinIO release, pinned by digest, because the upstream minio/minio images
-      # are no longer pullable anonymously and a service container cannot pass `server /data`.
-      minio:
-        image: bitnamilegacy/minio:2025.7.23@sha256:8935e75fa5d11295c17171e4aa49efe390a1193cd7f12e4d21b92af9ffef09d7
-        env:
-          MINIO_ROOT_USER: ci-minio-access-key
-          MINIO_ROOT_PASSWORD: ci-minio-secret-key
-          MINIO_DEFAULT_BUCKETS: easyconvert-client-test
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -fsS http://localhost:9000/minio/health/ready"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 12
 
     steps:
       - name: Checkout repository
@@ -95,18 +78,37 @@ jobs:
       - name: Fetch RAW samples
         run: npm run fixtures:raw
 
-      - name: Check the MinIO test bucket
+      # Independent S3-compatible server for the real-server storage tests: they verify SigV4 and
+      # multipart semantics against an implementation this repository did not write. Official images
+      # are started by hand because a service container cannot pass `server /data`.
+      - name: Start MinIO
+        env:
+          MINIO_IMAGE: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+          MINIO_ROOT_USER: ci-minio-access-key
+          MINIO_ROOT_PASSWORD: ci-minio-secret-key
         run: |
-          # MINIO_DEFAULT_BUCKETS creates the bucket at startup; wait until MinIO answers and the
-          # storage tests' own idempotent bucket creation will find it ready.
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD \
+            "$MINIO_IMAGE" server /data
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
               exit 0
             fi
             sleep 2
           done
-          echo "MinIO did not become ready" >&2
+          echo "MinIO did not become live within 60 seconds" >&2
+          docker logs minio >&2
           exit 1
+
+      - name: Create the MinIO test bucket
+        env:
+          MC_IMAGE: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+          MINIO_ROOT_USER: ci-minio-access-key
+          MINIO_ROOT_PASSWORD: ci-minio-secret-key
+        run: |
+          docker run --rm --network host --entrypoint /bin/sh \
+            -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD "$MC_IMAGE" \
+            -c 'mc alias set ci http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc mb --ignore-existing ci/easyconvert-client-test'
 
       - name: Run unit and integration tests
         env:
