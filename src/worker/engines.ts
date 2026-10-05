@@ -1587,7 +1587,7 @@ async function stageTextPdfHtml(
   }
   // Appended last so it overrides any @page rule of the document.
   const pageSize = orientation ? `\n<style>@page { size: ${PAGE_SIZE_CSS[orientation]}; }</style>\n` : '';
-  return Buffer.from(stageHtmlForNativeEngine(html) + pageSize, 'utf-8');
+  return Buffer.from((await stageHtmlForNativeEngine(html)) + pageSize, 'utf-8');
 }
 
 function planTextPdfEngine(

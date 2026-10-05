@@ -1,6 +1,15 @@
-import { ConversionFailedError } from '../types';
+import sharp from 'sharp';
+import { ConversionFailedError, EngineUnavailableError } from '../types';
 import { scanCss } from './css-references';
-import { asciiLowerCase, parseHtmlTree, type HtmlElement, type HtmlNode } from './html-blocks';
+import {
+  asciiLowerCase,
+  MAX_DOCUMENT_IMAGE_PIXELS,
+  MAX_IMAGE_PIXELS,
+  MAX_IMAGES_PER_DOCUMENT,
+  parseHtmlTree,
+  type HtmlElement,
+  type HtmlNode,
+} from './html-blocks';
 
 /**
  * Rebuilds HTML bound for LibreOffice from the parsed tree, so LibreOffice reads exactly what was
@@ -9,8 +18,10 @@ import { asciiLowerCase, parseHtmlTree, type HtmlElement, type HtmlNode } from '
  * comments, doctypes, processing instructions and CDATA never are; every text node and attribute
  * value is escaped. Any URL that leaves the document is refused with a typed 400 first: on every
  * element (inline SVG included) URL attributes must be data: URIs or `#fragment`s, image sources
- * must be base64 PNG, JPEG or GIF data whose bytes match, and only `<a href>` may link to http,
- * https or mailto.
+ * must be base64 PNG, JPEG or GIF data that decodes, and only `<a href>` may link to http, https
+ * or mailto. Content LibreOffice would not draw here (embedded media, frames with content, SVG,
+ * form controls) is refused with EngineUnavailableError rather than dropped; only elements that
+ * render nothing (scripts, templates, fallbacks, head metadata) are left out silently.
  */
 
 /** C0 controls other than tab, line feed, form feed and carriage return, and DEL. */
@@ -27,14 +38,23 @@ const WRITTEN_ELEMENTS: ReadonlySet<string> = new Set([
   'td', 'tfoot', 'th', 'thead', 'time', 'tr', 'tt', 'u', 'ul', 'var', 'wbr',
 ]);
 const WRITTEN_VOID_ELEMENTS: ReadonlySet<string> = new Set(['br', 'col', 'hr', 'img', 'wbr']);
-/** Elements dropped with their content: scripts, frames, embedded media, form controls, SVG and head metadata. */
+/** Elements that render nothing, dropped with their content: scripts, templates, fallbacks and head metadata. */
 const DROPPED_ELEMENTS: ReadonlySet<string> = new Set([
-  'script', 'noscript', 'template', 'iframe', 'frame', 'frameset', 'noembed', 'noframes', 'object', 'embed',
-  'applet', 'svg', 'canvas', 'video', 'audio', 'source', 'track', 'link', 'meta', 'base', 'param', 'input', 'select',
-  'datalist', 'area', 'bgsound', 'portal', 'title',
+  'script', 'noscript', 'template', 'noembed', 'noframes', 'source', 'track', 'link', 'meta', 'base', 'param',
+  'datalist', 'area', 'bgsound', 'title',
 ]);
+/** Elements whose content would be lost: refused, as the in-process renderer refuses them. */
+const UNRENDERED_ELEMENTS: ReadonlySet<string> = new Set([
+  'svg', 'canvas', 'video', 'audio', 'applet', 'frame', 'frameset', 'select', 'textarea',
+]);
+/** Frames, refused when they have a source or inline document. */
+const FRAME_ELEMENTS: ReadonlySet<string> = new Set(['iframe', 'portal']);
+const INPUT_ELEMENT = 'input';
+const HIDDEN_INPUT_TYPE = 'hidden';
+const EMBED_ELEMENT = 'embed';
+const OBJECT_ELEMENT = 'object';
 /** Raw-text elements whose content is written as escaped preformatted text. */
-const PREFORMATTED_TEXT_ELEMENTS: ReadonlySet<string> = new Set(['textarea', 'xmp']);
+const PREFORMATTED_TEXT_ELEMENTS: ReadonlySet<string> = new Set(['xmp']);
 const DOCUMENT_ELEMENT = 'html';
 const BODY_ELEMENT = 'body';
 const STYLE_ELEMENT = 'style';
@@ -197,10 +217,13 @@ function isAllowedUrl(url: string, kind: UrlKind): boolean {
   return kind === 'anchor' ? ANCHOR_SCHEME.test(url) : DATA_URI_PREFIX.test(url);
 }
 
-/** CSS may name fragments (SVG paint servers) and embedded raster images only. */
-function isAllowedCssUrl(url: string): boolean {
+/** CSS may name fragments (SVG paint servers) and embedded raster images only; the images are collected. */
+function isAllowedCssUrl(url: string, images?: Set<string>): boolean {
   const normalized = normalizeUrl(url);
-  return normalized.length === 0 || normalized.startsWith(FRAGMENT_PREFIX) || isEmbeddedRasterImage(normalized);
+  if (normalized.length === 0 || normalized.startsWith(FRAGMENT_PREFIX)) return true;
+  if (!isEmbeddedRasterImage(normalized)) return false;
+  images?.add(normalized);
+  return true;
 }
 
 function preview(reference: string): string {
@@ -226,9 +249,9 @@ function assertUrlsAllowed(urls: readonly string[], kind: UrlKind): void {
   }
 }
 
-/** Checks CSS and returns the text that was checked. */
-function checkedCss(css: string): string {
-  const scan = scanCss(css, isAllowedCssUrl);
+/** Checks CSS and returns the text that was checked, collecting the images it embeds. */
+function checkedCss(css: string, images?: Set<string>): string {
+  const scan = scanCss(css, (url) => isAllowedCssUrl(url, images));
   if (scan.reference !== null) throw refusal(scan.reference);
   return scan.css;
 }
@@ -238,10 +261,82 @@ function textContent(element: HtmlElement): string {
 }
 
 /** A `<style>` element's CSS, checked. Character references are refused: readers disagree on decoding them there. */
-function checkedStyleSheet(element: HtmlElement): string {
+function checkedStyleSheet(element: HtmlElement, images?: Set<string>): string {
   const css = stripControls(textContent(element));
   if (css.includes('&')) throw new ConversionFailedError('HTML style sheets may not contain "&" (character references)');
-  return checkedCss(css);
+  return checkedCss(css, images);
+}
+
+function hasValue(element: HtmlElement, name: string): boolean {
+  return trimUrl(element.attrs.get(name) ?? '').length > 0;
+}
+
+/** Whether an element has content of its own: a child element or text other than whitespace. */
+function hasContent(element: HtmlElement): boolean {
+  return element.children.some((child) => typeof child !== 'string' || child.trim().length > 0);
+}
+
+/** Whether staging would lose what the element draws: media, SVG, form controls, frames and objects with content. */
+function isUnrendered(element: HtmlElement): boolean {
+  const tag = element.tag;
+  if (UNRENDERED_ELEMENTS.has(tag)) return true;
+  if (tag === INPUT_ELEMENT) return asciiLowerCase(trimUrl(element.attrs.get('type') ?? '')) !== HIDDEN_INPUT_TYPE;
+  if (FRAME_ELEMENTS.has(tag)) return hasValue(element, 'src') || hasValue(element, 'srcdoc');
+  if (tag === EMBED_ELEMENT) return hasValue(element, 'src');
+  if (tag === OBJECT_ELEMENT) return hasValue(element, 'data') || hasContent(element);
+  return false;
+}
+
+function unrendered(tag: string): EngineUnavailableError {
+  return new EngineUnavailableError(
+    'soffice',
+    `HTML <${tag}> cannot be drawn on the native LibreOffice route; embedded media, frames, SVG and form controls are not converted`
+  );
+}
+
+/** The bytes and declared format of a checked image data: URI. */
+function imageData(url: string): { bytes: Buffer; format: string } {
+  const match = IMAGE_DATA_URI.exec(url) as RegExpExecArray;
+  return { bytes: Buffer.from(url.slice(match[0].length).replace(ASCII_WHITESPACE, ''), 'base64'), format: asciiLowerCase(match[1]) };
+}
+
+/**
+ * Proves every image LibreOffice will read decodes as the format it declares, within the
+ * in-process renderer's limits: headers first (format, size, pixel budget), then one full decode.
+ */
+async function verifyEmbeddedImages(urls: ReadonlySet<string>): Promise<void> {
+  if (urls.size > MAX_IMAGES_PER_DOCUMENT) {
+    throw new ConversionFailedError(`HTML embeds ${urls.size} images; at most ${MAX_IMAGES_PER_DOCUMENT} per document are converted`);
+  }
+  const images = Array.from(urls, imageData);
+  let totalPixels = 0;
+  for (const { bytes, format } of images) {
+    let metadata: sharp.Metadata;
+    try {
+      metadata = await sharp(bytes, { limitInputPixels: false }).metadata();
+    } catch (err) {
+      throw new ConversionFailedError(`HTML embedded image could not be read: ${(err as Error).message}`);
+    }
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (metadata.format !== format || width <= 0 || height <= 0) {
+      throw new ConversionFailedError(`HTML embedded image is not a valid ${format.toUpperCase()} image`);
+    }
+    if (width * height > MAX_IMAGE_PIXELS) {
+      throw new ConversionFailedError(`HTML embedded image is ${width}x${height} pixels, above the ${MAX_IMAGE_PIXELS}-pixel limit`);
+    }
+    totalPixels += width * height;
+  }
+  if (totalPixels > MAX_DOCUMENT_IMAGE_PIXELS) {
+    throw new ConversionFailedError(`HTML embeds images totalling ${totalPixels} pixels, above the ${MAX_DOCUMENT_IMAGE_PIXELS}-pixel limit per document`);
+  }
+  for (const { bytes } of images) {
+    try {
+      await sharp(bytes, { limitInputPixels: MAX_IMAGE_PIXELS }).raw().toBuffer();
+    } catch (err) {
+      throw new ConversionFailedError(`HTML embedded image could not be decoded: ${(err as Error).message}`);
+    }
+  }
 }
 
 /** The target of `<meta http-equiv="refresh" content="5; url=...">`, or null for any other element. */
@@ -290,6 +385,8 @@ function assertTreeStaysInDocument(root: HtmlElement): void {
 
 /** Writes the allowlisted part of a checked tree as escaped HTML. */
 class StagedHtmlWriter {
+  /** The image data: URIs the written document embeds. */
+  readonly images = new Set<string>();
   private readonly body: string[] = [];
   private readonly styles: string[] = [];
   private documentAttributes: string | undefined;
@@ -317,9 +414,10 @@ class StagedHtmlWriter {
       return;
     }
     const tag = node.tag;
+    if (isUnrendered(node)) throw unrendered(tag);
     if (DROPPED_ELEMENTS.has(tag)) return;
     if (tag === STYLE_ELEMENT) {
-      this.styles.push(checkedStyleSheet(node));
+      this.styles.push(checkedStyleSheet(node, this.images));
       return;
     }
     if (PREFORMATTED_TEXT_ELEMENTS.has(tag)) {
@@ -349,7 +447,7 @@ class StagedHtmlWriter {
 
   /** The value written for an attribute, or null when it is not written. */
   private attributeValue(element: HtmlElement, name: string, value: string): string | null {
-    if (name === STYLE_ATTRIBUTE) return checkedCss(value);
+    if (name === STYLE_ATTRIBUTE) return checkedCss(value, this.images);
     const linksOut = name === HREF_ATTRIBUTE && element.tag === ANCHOR_ELEMENT;
     const embedsImage = name === SRC_ATTRIBUTE && element.tag === IMAGE_ELEMENT;
     if (linksOut || embedsImage) {
@@ -357,6 +455,7 @@ class StagedHtmlWriter {
       if (url.length === 0) return null;
       const kind: UrlKind = linksOut ? 'anchor' : 'image';
       if (!isAllowedUrl(url, kind)) throw refusal(url);
+      if (embedsImage) this.images.add(url);
       return url;
     }
     return WRITTEN_ATTRIBUTES.has(name) ? stripControls(value) : null;
@@ -365,11 +464,15 @@ class StagedHtmlWriter {
 
 /**
  * Checks HTML bound for LibreOffice and rebuilds it from the parsed tree as UTF-8 HTML. Throws
- * ConversionFailedError (400) for any reference outside the document and for CSS that is not
- * allowed (escapes, imports, a stray "<"), and for documents nested too deeply.
+ * ConversionFailedError (400) for any reference outside the document, for CSS that is not allowed
+ * (escapes, imports, non-ASCII outside strings, a stray "<"), for images that do not decode and
+ * for documents nested too deeply; EngineUnavailableError for content it would have to drop.
  */
-export function stageHtmlForNativeEngine(html: string): string {
+export async function stageHtmlForNativeEngine(html: string): Promise<string> {
   const document = parseHtmlTree(stripControls(html.replace(BYTE_ORDER_MARK, '')));
   assertTreeStaysInDocument(document.root);
-  return new StagedHtmlWriter(document.title).write(document.root);
+  const writer = new StagedHtmlWriter(document.title);
+  const staged = writer.write(document.root);
+  await verifyEmbeddedImages(writer.images);
+  return staged;
 }

@@ -1110,8 +1110,8 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
       text: 'jump web plain mail self Target',
     });
 
-    // Inline SVG that refers only to its own fragments and data: images also reaches LibreOffice; the
-    // in-process renderer cannot draw SVG, so the stand-in's failure then surfaces as the engine being unavailable.
+    // Inline SVG that refers only to its own fragments and data: images passes the reference check (no 400),
+    // but no engine draws inline SVG, so it is refused as unavailable before LibreOffice runs instead of being dropped.
     const svgMarker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-svg-allowed-')), 'invoked');
     const svg =
       `<p>shapes</p><svg xmlns:xlink="http://www.w3.org/1999/xlink"><defs><rect id="r" width="4" height="4" fill="url(#g)"/></defs>` +
@@ -1121,7 +1121,7 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
         executeWorkerConversion(Buffer.from(svg, 'utf-8'), 'html', 'pdf', {}, 'shapes.html')
       )
     );
-    expect({ invoked: fs.existsSync(svgMarker), name: (error as Error)?.name }).toEqual({ invoked: true, name: 'EngineUnavailableError' });
+    expect({ invoked: fs.existsSync(svgMarker), name: (error as Error)?.name }).toEqual({ invoked: false, name: 'EngineUnavailableError' });
   });
 
   it('reports a LibreOffice failure on complex-script text as EngineUnavailableError (503)', async () => {

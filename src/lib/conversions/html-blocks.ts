@@ -98,7 +98,7 @@ const BLOCK_ELEMENTS: ReadonlySet<string> = new Set([
 ]);
 const ALLOWED_IMAGE_FORMATS: ReadonlySet<string> = new Set(['png', 'jpeg']);
 /** Largest embedded image, in pixels, the in-process renderer decodes. */
-const MAX_IMAGE_PIXELS = 25_000_000;
+export const MAX_IMAGE_PIXELS = 25_000_000;
 const JPEG_REENCODE_QUALITY = 95;
 /** An inline style that hides the element (CSS display: none). */
 const DISPLAY_NONE = /(?:^|;)\s*display\s*:\s*none\s*(?:!\s*important\s*)?(?:;|$)/i;
@@ -143,7 +143,23 @@ const NAMED_ENTITY_TABLE =
   'prop:221d infin:221e ang:2220 and:2227 or:2228 cap:2229 cup:222a int:222b there4:2234 sim:223c cong:2245 ' +
   'asymp:2248 ne:2260 equiv:2261 le:2264 ge:2265 sub:2282 sup:2283 nsub:2284 sube:2286 supe:2287 oplus:2295 ' +
   'otimes:2297 perp:22a5 sdot:22c5 lceil:2308 rceil:2309 lfloor:230a rfloor:230b lang:27e8 rang:27e9 loz:25ca ' +
-  'spades:2660 clubs:2663 hearts:2665 diams:2666';
+  'spades:2660 clubs:2663 hearts:2665 diams:2666 AMP:26 COPY:a9 GT:3e LT:3c QUOT:22 REG:ae';
+
+/** Names HTML also decodes without a semicolon (the legacy references of the HTML named character reference table). */
+const LEGACY_ENTITY_NAMES: ReadonlySet<string> = new Set(
+  (
+    'AElig AMP Aacute Acirc Agrave Aring Atilde Auml COPY Ccedil ETH Eacute Ecirc Egrave Euml GT Iacute Icirc Igrave ' +
+    'Iuml LT Ntilde Oacute Ocirc Ograve Oslash Otilde Ouml QUOT REG THORN Uacute Ucirc Ugrave Uuml Yacute aacute acirc ' +
+    'acute aelig agrave amp aring atilde auml brvbar ccedil cedil cent copy curren deg divide eacute ecirc egrave eth ' +
+    'euml frac12 frac14 frac34 gt iacute icirc iexcl igrave iquest iuml laquo lt macr micro middot nbsp not ntilde ' +
+    'oacute ocirc ograve ordf ordm oslash otilde ouml para plusmn pound quot raquo reg sect shy sup1 sup2 sup3 szlig ' +
+    'thorn times uacute ucirc ugrave uml uuml yacute yen yuml'
+  ).split(' ')
+);
+const MIN_LEGACY_NAME_LENGTH = 2;
+const MAX_LEGACY_NAME_LENGTH = 6;
+/** A character after a semicolon-less reference in an attribute value that keeps it literal. */
+const ATTRIBUTE_REFERENCE_GUARD = /^[=A-Za-z0-9]$/;
 
 const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map(
   NAMED_ENTITY_TABLE.split(' ').map((entry) => {
@@ -152,7 +168,7 @@ const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map(
   })
 );
 
-const CHARACTER_REFERENCE = /&(?:#[xX]([0-9a-fA-F]{1,8});?|#([0-9]{1,10});?|([A-Za-z][A-Za-z0-9]{1,31});)/g;
+const CHARACTER_REFERENCE = /&(?:#[xX]([0-9a-fA-F]{1,8});?|#([0-9]{1,10});?|([A-Za-z][A-Za-z0-9]{1,31})(;?))/g;
 
 function decodeCodePoint(value: number): string {
   if (value === 0 || value > MAX_CODE_POINT || (value >= SURROGATE_FIRST && value <= SURROGATE_LAST)) {
@@ -161,14 +177,35 @@ function decodeCodePoint(value: number): string {
   return String.fromCodePoint(value);
 }
 
+/**
+ * A named reference as HTML reads it: the full name when it ends in a semicolon, otherwise the
+ * longest legacy name it starts with (`&copy2025` is ©2025, `&notit` is ¬it). In an attribute value
+ * a semicolon-less reference followed by '=' or a letter or digit stays literal (`?a=1&copy=2`).
+ */
+function decodeNamedReference(match: string, name: string, semicolon: string, following: string | undefined, inAttribute: boolean): string {
+  if (semicolon && NAMED_ENTITIES.has(name)) return NAMED_ENTITIES.get(name) as string;
+  for (let length = Math.min(name.length, MAX_LEGACY_NAME_LENGTH); length >= MIN_LEGACY_NAME_LENGTH; length--) {
+    const legacy = name.slice(0, length);
+    if (!LEGACY_ENTITY_NAMES.has(legacy)) continue;
+    const next = length < name.length ? name[length] : semicolon || following;
+    if (inAttribute && next !== undefined && ATTRIBUTE_REFERENCE_GUARD.test(next)) return match;
+    return (NAMED_ENTITIES.get(legacy) as string) + name.slice(length) + semicolon;
+  }
+  return match;
+}
+
 /** Decodes numeric and named character references; unknown names stay literal, as in HTML. */
-export function decodeHtmlCharacterReferences(text: string): string {
+export function decodeHtmlCharacterReferences(text: string, inAttribute = false): string {
   if (!text.includes('&')) return text;
-  return text.replace(CHARACTER_REFERENCE, (match: string, hex?: string, decimal?: string, name?: string) => {
-    if (hex !== undefined) return decodeCodePoint(Number.parseInt(hex, HEX_RADIX));
-    if (decimal !== undefined) return decodeCodePoint(Number.parseInt(decimal, DECIMAL_RADIX));
-    return (name !== undefined && NAMED_ENTITIES.get(name)) || match;
-  });
+  return text.replace(
+    CHARACTER_REFERENCE,
+    (match: string, hex: string | undefined, decimal: string | undefined, name: string | undefined, semicolon: string | undefined, offset: number) => {
+      if (hex !== undefined) return decodeCodePoint(Number.parseInt(hex, HEX_RADIX));
+      if (decimal !== undefined) return decodeCodePoint(Number.parseInt(decimal, DECIMAL_RADIX));
+      if (name === undefined) return match;
+      return decodeNamedReference(match, name, semicolon ?? '', text[offset + match.length], inAttribute);
+    }
+  );
 }
 
 class HtmlTreeBuilder {
@@ -285,7 +322,7 @@ function parseAttributes(source: string, from: number): { attrs: Map<string, str
         value = source.slice(valueStart, i);
       }
     }
-    if (name && !attrs.has(name)) attrs.set(name, decodeHtmlCharacterReferences(value));
+    if (name && !attrs.has(name)) attrs.set(name, decodeHtmlCharacterReferences(value, true));
   }
   return { attrs, end: i, selfClosing };
 }
@@ -689,8 +726,8 @@ const EIGHT_BIT_DEPTH = 'uchar';
 const UPRIGHT_ORIENTATION = 1;
 const LOSSLESS_JPEG_QUALITY = 100;
 /** Most images one document may embed, and the most pixels they may hold together. */
-const MAX_IMAGES_PER_DOCUMENT = 64;
-const MAX_DOCUMENT_IMAGE_PIXELS = 100_000_000;
+export const MAX_IMAGES_PER_DOCUMENT = 64;
+export const MAX_DOCUMENT_IMAGE_PIXELS = 100_000_000;
 
 /** The frame marker of a JPEG (0xC0 for baseline...), or null when none is found. */
 function jpegFrameMarker(data: Buffer): number | null {

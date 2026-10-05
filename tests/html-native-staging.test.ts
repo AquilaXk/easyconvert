@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFString } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions/index';
 import { stageHtmlForNativeEngine } from '../src/lib/conversions/html-native-staging';
+import { markdownToSafeHtml } from '../src/lib/conversions/markdown-pdf';
 import { executeWorkerConversion, libreOfficePool } from '../src/worker/engines';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool, type ExternalOracleTool } from './helpers/differential-oracle';
@@ -93,9 +94,34 @@ async function withSoffice<T>(binary: string, operation: () => Promise<T>): Prom
   }
 }
 
+/** Stages HTML, whether staging returns the document or a promise of it. */
+async function stage(html: string): Promise<string> {
+  return stageHtmlForNativeEngine(html);
+}
+
+function errorOutcome(error: unknown): { name?: string; message: string } {
+  return { name: (error as Error | undefined)?.name, message: (error as Error | undefined)?.message ?? '' };
+}
+
 function convertHtml(html: string): Promise<{ value?: Awaited<ReturnType<typeof executeWorkerConversion>>; error?: unknown }> {
   return settle(executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'payload.html'));
 }
+
+/** Code points some CSS readers skip inside or around names, so `u<c>rl(` or `<c>url(` still reads as url(. */
+const IGNORABLE_CODE_POINTS = [
+  0x85, 0xa0, 0xad, 0x34f, 0x61c, 0x115f, 0x180e, 0x2000, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x2028, 0x2029,
+  0x202f, 0x205f, 0x2060, 0x2061, 0x3000, 0x3164, 0xfeff, 0xfff9, 0xfffd, 0xe0001, 0x1d173,
+];
+
+/** Legacy character references without a semicolon, decoded in text and kept before '=' or a letter in attributes. */
+const ENTITY_HTML =
+  '<p>Caf&eacute; &copy 2025 &amp more &notit &AMP; end&nbsp;x ' +
+  '<a href="https://example.com/?a=1&copy=2&amp=3&nbspx&amp;b=4">link</a></p>';
+const ENTITY_TEXT = 'Caf\u00e9 \u00a9 2025 & more \u00acit & end x link';
+const ENTITY_LINK = 'https://example.com/?a=1&copy=2&amp=3&nbspx&b=4';
+
+/** A PNG signature followed by bytes that are no PNG. */
+const FAKE_PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('not an image at all')]).toString('base64');
 
 const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'staging-fixture-'));
 const LOCAL_IMAGE = path.join(fixtureDir, 'local.png');
@@ -149,7 +175,8 @@ describe('HTML bound for LibreOffice is rebuilt from the parsed tree', () => {
       async () => {
         const { value, error } = await convertHtml(html);
         if (error !== undefined) {
-          expect((error as Error).name).toBe('ConversionFailedError');
+          // Refused before LibreOffice: a disallowed reference (400) or an element no engine renders (503).
+          expect(['ConversionFailedError', 'EngineUnavailableError']).toContain((error as Error).name);
           return;
         }
         const pdf = value!.buffer;
@@ -164,6 +191,54 @@ describe('HTML bound for LibreOffice is rebuilt from the parsed tree', () => {
       LIBREOFFICE_TIMEOUT_MS
     );
   }
+
+  const nonAsciiCss: Array<[string, string]> = [
+    ['U+200B before url(', `<p style="background:${String.fromCodePoint(0x200b)}url(${LOCAL_URL}); height:60px">zero width</p>`],
+    ['U+E0001 inside url', `<p style="background:u${String.fromCodePoint(0xe0001)}rl(${LOCAL_URL}); height:60px">tag</p>`],
+    ['U+3000 before url( in a style sheet', `<style>p { background:${String.fromCodePoint(0x3000)}url(${LOCAL_URL}); height:60px }</style><p>ideographic</p>`],
+  ];
+  for (const [name, html] of nonAsciiCss) {
+    oracleTest(
+      `refuses CSS with ${name} on the LibreOffice route`,
+      LIBREOFFICE_TOOLS,
+      async () => {
+        const { value, error } = await convertHtml(html);
+        expect({ name: errorOutcome(error).name, images: value ? embeddedImageCount(value.buffer) : 0 }).toEqual({
+          name: 'ConversionFailedError',
+          images: 0,
+        });
+      },
+      LIBREOFFICE_TIMEOUT_MS
+    );
+  }
+
+  oracleTest(
+    'refuses a fake PNG data: image instead of letting LibreOffice drop it',
+    LIBREOFFICE_TOOLS,
+    async () => {
+      const { value, error } = await convertHtml(`<p>fake image</p><img src="data:image/png;base64,${FAKE_PNG}">`);
+      expect({ name: errorOutcome(error).name, images: value ? embeddedImageCount(value.buffer) : 0 }).toEqual({
+        name: 'ConversionFailedError',
+        images: 0,
+      });
+    },
+    LIBREOFFICE_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'decodes legacy character references through LibreOffice and keeps them in link targets',
+    LIBREOFFICE_TOOLS,
+    async () => {
+      const { value, error } = await convertHtml(ENTITY_HTML);
+      expect(error).toBeUndefined();
+      expect({
+        engine: NATIVE_ENGINE.test(value!.engineUsed),
+        text: normalizedText(value!.buffer),
+        links: (await linkTargets(value!.buffer)).filter((uri) => !uri.startsWith('#')),
+      }).toEqual({ engine: true, text: ENTITY_TEXT, links: [ENTITY_LINK] });
+    },
+    LIBREOFFICE_TIMEOUT_MS
+  );
 
   oracleTest(
     'a plain document keeps its text, web link and embedded PNG through LibreOffice',
@@ -214,8 +289,8 @@ describe('CSS checks before LibreOffice', () => {
 });
 
 describe('stageHtmlForNativeEngine', () => {
-  it('escapes every text node and attribute value and drops C0 controls', () => {
-    const staged = stageHtmlForNativeEngine(
+  it('escapes every text node and attribute value and drops C0 controls', async () => {
+    const staged = await stage(
       '<p title="a&quot;b&lt;c&#39;d&gt;e&amp;f">x &lt;y&gt; &amp; "z" \'w\' a\u0001b\u0000c\u007fd\te&#1;f</p>'
     );
     expect(staged).toBe(
@@ -223,45 +298,49 @@ describe('stageHtmlForNativeEngine', () => {
     );
   });
 
-  it('never emits comments, doctypes, processing instructions or attributes outside the allowlist', () => {
-    const staged = stageHtmlForNativeEngine(
+  it('never emits comments, doctypes, processing instructions or attributes outside the allowlist', async () => {
+    const staged = await stage(
       '<!DOCTYPE html><!-- note --><?xml-stylesheet href="x.css"?><![CDATA[ cdata ]]>' +
         '<p onclick="go()" data-src="x.png" class="lead" style="color: red /* c */">t</p>'
     );
     expect(staged).toBe(`${STAGED_PREFIX}<p class="lead" style="color: red  ">t</p>${STAGED_SUFFIX}`);
   });
 
-  it('emits raw-text content as escaped text and drops script, template and frame fallbacks', () => {
-    const staged = stageHtmlForNativeEngine(
-      '<title>A &lt;b&gt; title</title><textarea><img src="x.png"></textarea><xmp><b>bold</b></xmp>' +
+  it('emits raw-text content as escaped text and drops script, template and frame fallbacks', async () => {
+    const staged = await stage(
+      '<title>A &lt;b&gt; title</title><xmp><b>bold</b></xmp>' +
         '<script>alert(1)</script><noscript><p>no script</p></noscript><template><p>tpl</p></template>' +
         '<noframes><p>frames</p></noframes><noembed><p>embed</p></noembed><iframe><p>frame</p></iframe><p>kept</p>'
     );
     expect(staged).toBe(
       '<html><head><meta charset="utf-8"><title>A &lt;b&gt; title</title></head><body>' +
-        '<pre>&lt;img src=&quot;x.png&quot;&gt;</pre><pre>&lt;b&gt;bold&lt;/b&gt;</pre><p>kept</p>' +
+        '<pre>&lt;b&gt;bold&lt;/b&gt;</pre><p>kept</p>' +
         STAGED_SUFFIX
     );
   });
 
-  it('honours self-closing SVG children, so 300 paths are not 300 nesting levels', () => {
-    const staged = stageHtmlForNativeEngine(`<p>before</p><svg>${'<path d="M0 0"/>'.repeat(300)}</svg><p>after</p>`);
+  it('honours self-closing MathML children, so 300 of them are not 300 nesting levels', async () => {
+    const staged = await stage(`<p>before</p><math>${'<mspace width="1em"/>'.repeat(300)}</math><p>after</p>`);
     expect(staged).toBe(`${STAGED_PREFIX}<p>before</p><p>after</p>${STAGED_SUFFIX}`);
   });
 
-  it('sends an inline SVG with 300 self-closed paths on to LibreOffice', async () => {
+  it('refuses an inline SVG with 300 self-closed paths as unsupported, not as nested too deeply', async () => {
     const soffice = recordingSoffice();
     const html = `<p>before</p><svg>${'<path d="M0 0"/>'.repeat(300)}</svg><p>after</p>`;
     const { error } = await withSoffice(soffice.binary, () => convertHtml(html));
-    // The stand-in fails and the in-process renderer cannot draw SVG: LibreOffice was the engine tried.
-    expect({ name: (error as Error)?.name, invoked: soffice.invoked() }).toEqual({ name: 'EngineUnavailableError', invoked: true });
+    expect({ name: (error as Error)?.name, nesting: /nests/.test(errorOutcome(error).message), invoked: soffice.invoked() }).toEqual({
+      name: 'EngineUnavailableError',
+      nesting: false,
+      invoked: false,
+    });
   });
 
-  it('keeps web, mail and fragment links, and PNG, JPEG and GIF data images', () => {
+  it('keeps web, mail and fragment links, and PNG, JPEG and GIF data images', async () => {
     const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
     const gif = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-    const jpeg = `data:image/jpeg;base64,${Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]).toString('base64')}`;
-    const staged = stageHtmlForNativeEngine(
+    const jpegBytes = await sharp({ create: { width: 3, height: 2, channels: 3, background: { r: 9, g: 99, b: 199 } } }).jpeg().toBuffer();
+    const jpeg = `data:image/jpeg;base64,${jpegBytes.toString('base64')}`;
+    const staged = await stage(
       `<a href=" HTTPS://example.com/a?b=1&amp;c=2 ">w</a><a href="mailto:x@example.com">m</a><a href="#t">f</a>` +
         `<img src="${png}" alt="p"><img src="${gif}"><img src="${jpeg}" width="2">`
     );
@@ -269,6 +348,113 @@ describe('stageHtmlForNativeEngine', () => {
       `${STAGED_PREFIX}<a href="HTTPS://example.com/a?b=1&amp;c=2">w</a><a href="mailto:x@example.com">m</a><a href="#t">f</a>` +
         `<img src="${png}" alt="p"><img src="${gif}"><img src="${jpeg}" width="2">${STAGED_SUFFIX}`
     );
+  });
+});
+
+describe('elements no engine renders', () => {
+  it('refuses media, frames with content, SVG and form controls with EngineUnavailableError', async () => {
+    const documents = [
+      '<p>t</p><svg><rect width="4" height="4"/></svg>',
+      '<p>t</p><video src="data:video/mp4;base64,AAAA"></video>',
+      '<p>t</p><audio src="data:audio/mpeg;base64,AAAA"></audio>',
+      '<p>t</p><canvas width="4" height="4"></canvas>',
+      '<p>t</p><iframe srcdoc="&lt;p&gt;inner&lt;/p&gt;"></iframe>',
+      '<p>t</p><object data="data:text/plain;base64,aGk="></object>',
+      '<p>t</p><object><p>fallback</p></object>',
+      '<p>t</p><embed src="data:text/plain;base64,aGk=">',
+      '<p>t</p><select><option>a</option></select>',
+      '<p>t</p><textarea>typed</textarea>',
+      '<p>t</p><input type="text" value="typed">',
+      '<frameset><frame src="data:text/html,x"></frameset>',
+    ];
+    const outcomes = await Promise.all(
+      documents.map(async (html) => {
+        const { error } = await settle(stage(html));
+        return { html, name: errorOutcome(error).name, engine: (error as { engineName?: string } | undefined)?.engineName };
+      })
+    );
+    expect(outcomes).toEqual(documents.map((html) => ({ html, name: 'EngineUnavailableError', engine: 'soffice' })));
+  });
+
+  it('drops only elements that render nothing', async () => {
+    const staged = await stage(
+      '<script>x()</script><noscript><p>n</p></noscript><template><p>t</p></template><iframe></iframe><object></object>' +
+        '<input type="hidden" name="h" value="v"><p>kept</p>'
+    );
+    expect(staged).toBe(`${STAGED_PREFIX}<p>kept</p>${STAGED_SUFFIX}`);
+  });
+});
+
+describe('CSS outside quoted strings is ASCII only', () => {
+  for (const codePoint of IGNORABLE_CODE_POINTS) {
+    const label = `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
+    it(`refuses ${label} before, inside and after url in style attributes and sheets`, async () => {
+      const c = String.fromCodePoint(codePoint);
+      const declarations = [`background:${c}url(file:///etc/hosts)`, `background:u${c}rl(file:///etc/hosts)`, `background:url${c}(file:///etc/hosts)`];
+      const documents = declarations.flatMap((declaration) => [`<p style="${declaration}">t</p>`, `<style>p { ${declaration} }</style><p>t</p>`]);
+      const outcomes = await Promise.all(
+        documents.map(async (html) => {
+          const { error } = await settle(stage(html));
+          return { html, name: errorOutcome(error).name, nonAscii: /non-ASCII/.test(errorOutcome(error).message) };
+        })
+      );
+      expect(outcomes).toEqual(documents.map((html) => ({ html, name: 'ConversionFailedError', nonAscii: true })));
+    });
+  }
+
+  it('keeps non-ASCII text inside quoted CSS strings', async () => {
+    const korean = '\ub9d1\uc740 \uace0\ub515';
+    const japanese = '\u30d2\u30e9\u30ae\u30ce';
+    const staged = await stage(
+      `<style>p { font-family: "Noto Sans CJK KR", '${korean}' }</style><p style='font-family:"Noto Sans CJK JP", "${japanese}"'>t</p>`
+    );
+    expect(staged).toBe(
+      `<html><head><meta charset="utf-8"><style>p { font-family: "Noto Sans CJK KR", '${korean}' }</style></head><body>` +
+        `<p style="font-family:&quot;Noto Sans CJK JP&quot;, &quot;${japanese}&quot;">t</p>${STAGED_SUFFIX}`
+    );
+  });
+});
+
+describe('legacy character references', () => {
+  it('decodes them in text, and in attributes only when no "=" or letter follows', async () => {
+    const staged = await stage('<p title="&copy=1 &copyx &copy; &copy">&copy=1 &copyx &lt3 &AMP;</p>');
+    expect(staged).toBe(`${STAGED_PREFIX}<p title="&amp;copy=1 &amp;copyx \u00a9 \u00a9">\u00a9=1 \u00a9x &lt;3 &amp;</p>${STAGED_SUFFIX}`);
+  });
+
+  oracleTest('decodes them on the in-process route and keeps them in link targets', ['pdftotext'], async () => {
+    const result = await convertFile(Buffer.from(ENTITY_HTML, 'utf-8'), 'html', 'pdf', {}, 'entities.html');
+    expect({ text: normalizedText(result.buffer), links: await linkTargets(result.buffer) }).toEqual({ text: ENTITY_TEXT, links: [ENTITY_LINK] });
+  });
+});
+
+describe('embedded images bound for LibreOffice', () => {
+  it('refuses data: images whose bytes do not decode as the declared format', async () => {
+    const real = await sharp({ create: { width: 40, height: 30, channels: 3, background: { r: 1, g: 2, b: 3 } } }).png().toBuffer();
+    const sources = [
+      `data:image/png;base64,${FAKE_PNG}`,
+      `data:image/png;base64,${real.subarray(0, Math.floor(real.length / 2)).toString('base64')}`,
+      `data:image/jpeg;base64,${Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]).toString('base64')}`,
+      `data:image/gif;base64,${Buffer.from('GIF89a', 'latin1').toString('base64')}`,
+    ];
+    const documents = sources.flatMap((source) => [`<p>i</p><img src="${source}">`, `<p style="background:url(${source})">c</p>`]);
+    const outcomes = await Promise.all(
+      documents.map(async (html) => {
+        const { error } = await settle(stage(html));
+        return { html: html.slice(0, 60), name: errorOutcome(error).name };
+      })
+    );
+    expect(outcomes).toEqual(documents.map((html) => ({ html: html.slice(0, 60), name: 'ConversionFailedError' })));
+  });
+
+  it('refuses a fake PNG from Markdown', async () => {
+    const { error } = await settle(stage(markdownToSafeHtml(`![fake](data:image/png;base64,${FAKE_PNG})`, 'fake')));
+    expect(errorOutcome(error).name).toBe('ConversionFailedError');
+  });
+
+  it('refuses an image above the pixel limit of the in-process renderer', async () => {
+    const huge = await sharp({ create: { width: 6000, height: 6000, channels: 3, background: { r: 0, g: 0, b: 0 } } }).png().toBuffer();
+    const { error } = await settle(stage(`<img src="data:image/png;base64,${huge.toString('base64')}">`));
+    expect({ name: errorOutcome(error).name, pixels: /pixel/.test(errorOutcome(error).message) }).toEqual({ name: 'ConversionFailedError', pixels: true });
   });
 });
 

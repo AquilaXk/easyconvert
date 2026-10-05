@@ -6,7 +6,9 @@ import { ConversionFailedError } from '../types';
  * `image-set()`, `-webkit-image-set()` and `cross-fade()` at any depth, and `@import`.
  *
  * Readers disagree on CSS escapes, control characters and line breaks, so control characters are
- * removed first, line breaks become spaces, and any backslash or unterminated string is refused;
+ * removed first, line breaks become spaces, and any backslash, unterminated string or non-ASCII
+ * character outside a quoted string (some readers skip default-ignorable and separator characters,
+ * so `u<U+200B>rl(` still reads as url( to them) is refused;
  * comments and `<!--`/`-->` markers become spaces in the returned text, so what LibreOffice reads
  * is what was scanned. Follows the CSS Syntax tokenizer
  * for the parts that matter in one forward pass, so the work is linear in the input.
@@ -49,7 +51,15 @@ function isWhitespace(ch: string | undefined): boolean {
 }
 
 function isNameStart(ch: string | undefined): boolean {
-  return ch !== undefined && (/^[A-Za-z_]$/.test(ch) || ch.charCodeAt(0) >= NON_ASCII);
+  return ch !== undefined && /^[A-Za-z_]$/.test(ch);
+}
+
+function isNonAscii(ch: string): boolean {
+  return ch.charCodeAt(0) >= NON_ASCII;
+}
+
+function refuseNonAscii(): never {
+  throw new ConversionFailedError('HTML CSS may contain non-ASCII characters only inside quoted strings');
 }
 
 function isNameChar(ch: string | undefined): boolean {
@@ -138,6 +148,7 @@ class CssScanner {
     while (this.i < css.length && css[this.i] !== ')' && !isWhitespace(css[this.i])) {
       const ch = css[this.i];
       if (ch === MARKUP_OPEN) refuseMarkup();
+      if (isNonAscii(ch)) refuseNonAscii();
       if (ch === '"' || ch === "'" || ch === '(') throw new ConversionFailedError('HTML CSS has a malformed url()');
       this.i++;
     }
@@ -162,6 +173,7 @@ class CssScanner {
       return { kind: 'close', value: ch };
     }
     if (ch === MARKUP_OPEN) refuseMarkup();
+    if (isNonAscii(ch)) refuseNonAscii();
     if (ch === '@' && startsIdentifier(css, this.i + 1)) {
       this.i++;
       return { kind: 'at', value: lowerAscii(this.identifier()) };
