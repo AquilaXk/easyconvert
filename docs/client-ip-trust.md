@@ -27,7 +27,9 @@ proxy under your control rewrites them, so they are only read under the contract
    - All unattributed requests share the key `unattributed` and one edge bucket, sized for site-wide traffic
      (600 burst, 100/s) instead of one client (60 burst, 10/s). `GET`/`HEAD /api/health` is exempt from it.
    - Login keeps its per-email counter and lockout but skips the per-IP counter, so one client cannot lock out
-     everyone.
+     everyone. Instead a coarse global failed-login counter (300 failures per 5 minutes across all accounts)
+     applies to unattributed clients only; past it, login answers `429` with `Retry-After` until the window
+     expires. A successful login does not reset it.
    - Anonymous access shares one burst bucket (key `rate:anon:unattributed`) sized for site-wide traffic like
      the edge bucket: 600 burst, 100/s by default, overridable with `ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY` and
      `ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE`. It is deliberately not the per-client size
