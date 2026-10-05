@@ -438,12 +438,13 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
         fs.rmSync(spoolDir, { recursive: true, force: true });
       });
 
-      async function expectClosed(stream: Readable): Promise<void> {
+      /** Resolves once the stream is closed; a file stream then holds no descriptor (`fd` is null). */
+      async function closedFd(stream: fs.ReadStream): Promise<number | null> {
         await new Promise<void>((resolve) => {
           if (stream.closed) resolve();
           else stream.once('close', () => resolve());
         });
-        expect(stream.destroyed).toBe(true);
+        return stream.fd;
       }
 
       for (const [status, code] of [
@@ -458,10 +459,8 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
           const source = fs.createReadStream(file);
           await expect(
             makeClient({ maxAttempts: ATTEMPT_ONCE }).putStream('stream/fail.bin', source, { size: LARGE_SOURCE_BYTES })
-          ).rejects.toBeInstanceOf(
-            StorageAdapterError
-          );
-          await expectClosed(source);
+          ).rejects.toMatchObject({ provider: 'oci', name: status === 503 ? 'StorageServiceError' : 'StorageAuthenticationError' });
+          expect(await closedFd(source)).toBeNull();
         });
       }
 
@@ -470,8 +469,12 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
         fs.writeFileSync(file, Buffer.alloc(1000, 7));
         const source = fs.createReadStream(file);
         const unreachable = makeClient({ endpoint: 'http://127.0.0.1:1', maxAttempts: ATTEMPT_ONCE });
-        await expect(unreachable.putStream('stream/fail.bin', source, { size: 1000 })).rejects.toBeInstanceOf(StorageAdapterError);
-        await expectClosed(source);
+        await expect(unreachable.putStream('stream/fail.bin', source, { size: 1000 })).rejects.toMatchObject({
+          provider: 'oci',
+          name: 'StorageServiceError',
+          retryable: true,
+        });
+        expect(await closedFd(source)).toBeNull();
       });
 
       it('closes a part stream the store refused', async () => {
@@ -481,7 +484,7 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
         const source = fs.createReadStream(file);
         server.faults.push({ match: (req) => req.method === 'PUT', status: 403, code: 'AccessDenied', times: Infinity });
         await expect(client.uploadPart('stream/part.bin', upload, 1, source, 2000)).rejects.toBeInstanceOf(StorageAuthenticationError);
-        await expectClosed(source);
+        expect(await closedFd(source)).toBeNull();
       });
     });
 
