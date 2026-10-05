@@ -25,6 +25,7 @@ const COMMENT_OPEN_LENGTH = COMMENT_OPEN.length;
 const DOCTYPE_OPEN = '<!doctype';
 const EVENT_PREFIX = 'on';
 const STYLE_ATTRIBUTE = 'style';
+const STYLE_ELEMENT = 'style';
 const ANIMATION_VALUE_SEPARATOR = ';';
 
 /** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
@@ -456,11 +457,12 @@ function sanitizeStyleElements(src: string): string {
   let search = 0;
 
   for (;;) {
-    const start = lower.indexOf('<style', search);
-    if (start === -1) break;
-    const afterName = start + '<style'.length;
-    if (isWordCharAt(src, afterName)) {
-      search = start + 1;
+    const nameIndex = lower.indexOf(STYLE_ELEMENT, search);
+    if (nameIndex === -1) break;
+    const start = tagOpenBefore(lower, nameIndex, false);
+    const afterName = nameIndex + STYLE_ELEMENT.length;
+    if (start < copied || isWordCharAt(src, afterName)) {
+      search = nameIndex + 1;
       continue;
     }
     parts.push(src.slice(copied, start));
@@ -469,9 +471,11 @@ function sanitizeStyleElements(src: string): string {
       copied = src.length;
       break;
     }
-    const close = findCloseTag(lower, 'style', tagEnd);
+    // The qualified name (including any namespace prefix) is kept so the element stays in its namespace.
+    const qualifiedName = src.slice(start + 1, afterName);
+    const close = findCloseTag(lower, STYLE_ELEMENT, tagEnd);
     const bodyEnd = close === null ? src.length : close[0];
-    parts.push(`<style>${sanitizeCss(src.slice(tagEnd, bodyEnd))}</style>`);
+    parts.push(`<${qualifiedName}>${sanitizeCss(src.slice(tagEnd, bodyEnd))}</${qualifiedName}>`);
     copied = close === null ? src.length : close[1];
     search = copied;
   }

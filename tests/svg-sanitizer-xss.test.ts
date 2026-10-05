@@ -512,3 +512,40 @@ describe('style-targeting animations (issue #401 item 3)', () => {
     });
   }
 });
+
+describe('namespace-prefixed <style> elements (issue #401 item 4)', () => {
+  it('cleans the body of a prefixed style element like an unprefixed one', () => {
+    const out = sanitizeSvgString(
+      '<svg xmlns:s="http://www.w3.org/2000/svg"><s:style type="text/css">@import url(http://e/x.css);g{fill:url(http://e/y)}h{fill:red}</s:style></svg>'
+    );
+    expect(out).toBe('<svg xmlns:s="http://www.w3.org/2000/svg"><s:style>g{fill:none}h{fill:red}</s:style></svg>');
+  });
+
+  it('cleans escape-obfuscated prefixed style bodies, with a mixed-case prefix and name', () => {
+    const out = sanitizeSvgString('<svg><S:STYLE>@\\69mport "http://e/x.css";g{fill:u\\72l(http://e/y)}</S:STYLE ></svg>');
+    expect(out).toBe('<svg><S:STYLE>g{fill:none}</S:STYLE></svg>');
+    expect(cssLeaks(out)).toEqual([]);
+  });
+
+  it('cleans an unterminated prefixed style element and several in one document', () => {
+    const out = sanitizeSvgString('<svg><a.b:style>@import "http://e/x";</a.b:style><s:style>g{fill:url(//e/z)}');
+    expect(out).toBe('<svg><a.b:style></a.b:style><s:style>g{fill:none}</s:style>');
+  });
+
+  it('leaves names that only contain style untouched', () => {
+    const input = '<svg><s:styled>@import "http://e/x";</s:styled><restyle/></svg>';
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+
+  it('keeps benign prefixed style bodies unchanged', () => {
+    const input = '<svg><s:style>g{fill:url(#a);stroke:#000}</s:style></svg>';
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+
+  it('handles many prefixed style openers in linear time', () => {
+    const payload = `<svg>${Array.from({ length: 20000 }, (_, i) => `<p${i}:style>`).join('')}</svg>`;
+    const start = performance.now();
+    sanitizeSvgString(payload);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});
