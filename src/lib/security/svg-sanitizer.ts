@@ -309,9 +309,6 @@ export function isSvg(input: string | Buffer): boolean {
  */
 export function sanitizeSvgString(svg: string): string {
   if (!svg || typeof svg !== 'string') return '';
-  if (svg.length > MAX_SVG_INPUT_CHARS) {
-    throw new SvgSanitizationError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
-  }
 
   let result = svg;
 
@@ -391,10 +388,21 @@ export function sanitizeSvgString(svg: string): string {
 }
 
 /**
+ * Sanitizes an SVG document after enforcing the SVG input size cap. SVG entry points use this; callers that
+ * run the sanitizer over arbitrary XML use {@link sanitizeSvgString}, which has no size cap.
+ */
+export function sanitizeSvgDocument(svg: string): string {
+  if (typeof svg === 'string' && svg.length > MAX_SVG_INPUT_CHARS) {
+    throw new SvgSanitizationError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
+  }
+  return sanitizeSvgString(svg);
+}
+
+/**
  * Sanitizes an SVG buffer and returns a sanitized Buffer.
  */
 export function sanitizeSvgBuffer(buffer: Buffer): Buffer {
   const svgText = buffer.toString('utf-8');
-  const cleanText = sanitizeSvgString(svgText);
+  const cleanText = sanitizeSvgDocument(svgText);
   return Buffer.from(cleanText, 'utf-8');
 }

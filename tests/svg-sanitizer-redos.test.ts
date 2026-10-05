@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_SVG_INPUT_CHARS } from '../src/lib/conversions/svg-geometry';
-import { isSvg, sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
+import { convertVectorCad } from '../src/lib/conversions/vector-cad';
+import { simpleXmlToJson } from '../src/lib/conversions/data';
+import { isSvg, sanitizeSvgBuffer, sanitizeSvgDocument, sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { ConversionFailedError, SvgSanitizationError } from '../src/lib/types';
 
 // Every input below took more than 2 s on the regex-based sanitizer; the linear scanner must stay far below that.
@@ -132,16 +134,40 @@ describe('SVG sanitizer scanner semantics', () => {
 });
 
 describe('SVG sanitizer input size cap', () => {
-  it('rejects input above the SVG character limit with a typed error', () => {
-    const oversized = `<svg>${' '.repeat(MAX_SVG_INPUT_CHARS)}</svg>`;
-    expect(() => sanitizeSvgString(oversized)).toThrow(SvgSanitizationError);
-    expect(() => sanitizeSvgString(oversized)).toThrow(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
+  const oversizedSvg = `<svg>${' '.repeat(MAX_SVG_INPUT_CHARS)}</svg>`;
+  const OVERSIZED_MESSAGE = `SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`;
+
+  it('rejects SVG input above the limit through the capped SVG entry with a typed error', () => {
+    expect(() => sanitizeSvgDocument(oversizedSvg)).toThrow(SvgSanitizationError);
+    expect(() => sanitizeSvgDocument(oversizedSvg)).toThrow(OVERSIZED_MESSAGE);
   });
 
-  it('accepts input exactly at the limit', () => {
+  it('rejects an oversized SVG buffer with the typed error', () => {
+    expect(() => sanitizeSvgBuffer(Buffer.from(oversizedSvg, 'utf-8'))).toThrow(SvgSanitizationError);
+  });
+
+  it('rejects an oversized SVG at the SVG conversion entry', async () => {
+    await expect(convertVectorCad(Buffer.from(oversizedSvg, 'utf-8'), 'svg', 'png')).rejects.toThrow(OVERSIZED_MESSAGE);
+  });
+
+  it('accepts SVG exactly at the limit', () => {
     const atLimit = `<svg>${'a'.repeat(MAX_SVG_INPUT_CHARS - '<svg></svg>'.length)}</svg>`;
-    const out = sanitizeSvgString(atLimit);
+    const out = sanitizeSvgDocument(atLimit);
     expect(out.length).toBe(MAX_SVG_INPUT_CHARS);
     expect(out.startsWith('<svg>aaa')).toBe(true);
+  });
+
+  it('does not cap the shared string sanitizer used for arbitrary XML', () => {
+    const out = sanitizeSvgString(oversizedSvg);
+    expect(out.length).toBe(oversizedSvg.length);
+    expect(out.startsWith('<svg> ')).toBe(true);
+  });
+
+  it('converts XML larger than the SVG cap through the data path', () => {
+    const payload = 'x'.repeat(MAX_SVG_INPUT_CHARS + 1024);
+    const parsed = simpleXmlToJson(`<root><item>${payload}</item></root>`);
+    const root = parsed.root as { item: string };
+    expect(root.item.length).toBe(payload.length);
+    expect(root.item.slice(0, 8)).toBe('xxxxxxxx');
   });
 });
