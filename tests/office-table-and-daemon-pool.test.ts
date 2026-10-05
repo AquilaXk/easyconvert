@@ -272,7 +272,7 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
       expect(stats.maxJobsPerWorker).toBe(150);
     });
 
-    it('assigns isolated UNO socket ports and includes --accept argument in executor calls', async () => {
+    it('assigns isolated UNO named pipes and includes --accept argument in executor calls', async () => {
       const recordedCalls: Array<{ bin: string; args: string[] }> = [];
       const mockExecutor = vi.fn(async (bin: string, args: string[], opts?: any) => {
         recordedCalls.push({ bin, args });
@@ -302,18 +302,18 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
 
       await pool.init();
 
-      // Pre-warm call: should include --accept=socket,host=127.0.0.1,port=2002;urp;
+      // Pre-warm call: should include --accept=pipe,name=ec_worker_<id>;urp;
       expect(recordedCalls.length).toBeGreaterThanOrEqual(1);
       const prewarm = recordedCalls[0];
-      expect(prewarm.args.some((a) => a.startsWith('--accept=socket,host=127.0.0.1,port='))).toBe(true);
+      expect(prewarm.args.some((a) => a.startsWith('--accept=pipe,name=ec_worker_'))).toBe(true);
 
-      // Conversion call: should also include --accept=socket...
+      // Conversion call: should also include --accept=pipe...
       const result = await pool.convert(Buffer.from('doc content'), 'docx', 'pdf');
       expect(result).not.toBeNull();
 
       expect(recordedCalls.length).toBeGreaterThanOrEqual(2);
       const conv = recordedCalls[1];
-      expect(conv.args.some((a) => a.startsWith('--accept=socket,host=127.0.0.1,port='))).toBe(true);
+      expect(conv.args.some((a) => a.startsWith('--accept=pipe,name=ec_worker_'))).toBe(true);
       expect(conv.args).toContain('--convert-to');
       expect(conv.args).toContain('pdf');
     });
