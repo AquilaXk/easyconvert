@@ -137,6 +137,11 @@ describe('QSV capability probe', () => {
   });
 });
 
+/**
+ * End-to-end check on the real ffmpeg: on a host that lists h264_qsv without an Intel device these
+ * failed before the fix; on hosts whose ffmpeg has no QSV encoder they pass either way, so the probe
+ * tests above are the regression guard and these prove the default options encode and decode.
+ */
 describe('default H.264 transcodes of animated and still image sources', () => {
   let gif: Buffer;
   let gifSourceFrames = 0;

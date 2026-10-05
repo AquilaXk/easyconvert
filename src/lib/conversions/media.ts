@@ -323,14 +323,18 @@ async function executeFfmpegTranscode(
         timeoutMs,
         maxBuffer: 50 * 1024 * 1024,
         networkIsolated: true,
+        signal: options.signal,
       });
     try {
       await runFfmpeg(args);
     } catch (err) {
       // An advertised hardware encoder can still fail at runtime (missing device or driver).
       // Retry exactly once in software; every other failure, and a failed retry, reports the original error.
+      // Any non-zero exit counts: driver and device messages differ across vendors and versions, so
+      // matching them would miss real hardware failures. The cost is a second run for an input that
+      // fails in software too, which then reports the original error. A cancelled job is never retried.
       const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
-      if (!hardwareEncoderFailed) {
+      if (!hardwareEncoderFailed || options.signal?.aborted) {
         throw err;
       }
       const softwareArgs = buildFfmpegArguments(
