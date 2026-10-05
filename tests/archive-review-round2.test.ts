@@ -28,6 +28,11 @@ import {
   type HostileWorkspace,
 } from './helpers/hostile-archives';
 
+const LINEAR_PROBE_SMALL = 12_250;
+const LINEAR_PROBE_LARGE = 49_000;
+const MAX_LINEAR_GROWTH = 8;
+const LINEAR_PROBE_CEILING_MS = 10_000;
+
 /** Second review round of PR #499: implied directories, listing-key whitelist, collision status, remover root. */
 
 const TOOLS = ['7z', 'python3'] as const;
@@ -95,13 +100,22 @@ describe('NEW-1: implied directories count toward the entry cap', () => {
 
   it('accounts 49,000 deep entries under one prefix in linear time', () => {
     const shared = 'p/'.repeat(100);
-    const entries = Array.from({ length: 49_000 }, (_, i) => entry(`${shared}${i}`));
-    const started = performance.now();
+    const timeListing = (count: number): { ms: number; entryCount: number } => {
+      const entries = Array.from({ length: count }, (_, i) => entry(`${shared}${i}`));
+      const started = performance.now();
+      const verdict = assertSafeArchiveListing(entries, 1_000_000, ARCHIVE_SECURITY_LIMITS);
+      return { ms: performance.now() - started, entryCount: verdict.entryCount };
+    };
 
-    const verdict = assertSafeArchiveListing(entries, 1_000_000, ARCHIVE_SECURITY_LIMITS);
+    timeListing(LINEAR_PROBE_SMALL);
+    const small = timeListing(LINEAR_PROBE_SMALL);
+    const large = timeListing(LINEAR_PROBE_LARGE);
 
-    expect(verdict.entryCount).toBe(49_000);
-    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(small.entryCount).toBe(LINEAR_PROBE_SMALL);
+    expect(large.entryCount).toBe(LINEAR_PROBE_LARGE);
+    // 4x the entries: linear work grows about 4x, the old quadratic accounting about 16x.
+    expect(large.ms / Math.max(small.ms, 1)).toBeLessThan(MAX_LINEAR_GROWTH);
+    expect(large.ms).toBeLessThan(LINEAR_PROBE_CEILING_MS);
   });
 
   it('makes the post-extraction walk count directories against the same cap', () => {
