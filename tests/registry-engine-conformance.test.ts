@@ -75,6 +75,8 @@ const PROBE_TIMEOUT_MS = 20_000;
 const RAW_PROBE_TIMEOUT_MS = 180_000;
 const RATCHET_TIMEOUT_MS = 1_800_000;
 const CATEGORY_TIMEOUT_MS = 600_000;
+/** Per RAW source: its targets at the probe's per-pair ceiling, with headroom. */
+const RAW_SOURCE_TIMEOUT_MS = 900_000;
 const MEDIA_CATEGORIES = new Set(['audio', 'video']);
 const FIXTURE_ROOT = path.resolve(__dirname, 'fixtures');
 // Real camera-RAW samples are loaded explicitly below from the fetched cache, never by extension.
@@ -145,6 +147,9 @@ const RAW_CHECKS_ENABLED = STRICT_MODE || RAW_SAMPLES_MISSING.length === 0;
  * and Sigma Foveon X3F, which the distribution build of LibRaw omits. Only their embedded preview is
  * decodable, so their probes opt in; every other RAW source must convert by real sensor decode.
  */
+/** Hand-authored from the camera families the registry advertises; the manifest must cover exactly these. */
+const RAW_SOURCES = ['3fr', 'arw', 'cr2', 'cr3', 'crw', 'dcr', 'dng', 'erf', 'mos', 'mrw', 'nef', 'orf', 'pef', 'raf', 'raw', 'rw2', 'x3f'];
+const RAW_SOURCE_SET: ReadonlySet<string> = new Set(RAW_SOURCES);
 const RAW_PREVIEW_ONLY_SOURCES: ReadonlySet<string> = new Set(['raw', 'x3f']);
 /** Whether the native RAW engine (LibRaw `dcraw_emu`) is installed. */
 const HAS_NATIVE_RAW_ENGINE = probeNativeEngines().dcrawEmu;
@@ -542,10 +547,22 @@ describe('every advertised registry pair has an engine path', () => {
   const categories = [...new Set(Object.values(FORMAT_REGISTRY).map((def) => def.category))].sort();
 
   for (const category of categories.filter((c) => !MEDIA_CATEGORIES.has(c))) {
+    // Camera RAW sources decode real sensor data per pair, so each gets its own test below.
     it(`${category} sources`, async () => {
-      expect(await findUnroutedPairs(pairsFor((c) => c === category))).toEqual([]);
+      const pairs = pairsFor((c) => c === category).filter(([source]) => !RAW_CHECKS_ENABLED || !RAW_SOURCE_SET.has(source));
+      expect(await findUnroutedPairs(pairs)).toEqual([]);
     }, CATEGORY_TIMEOUT_MS);
   }
+
+  // The probe still dispatches every pair through the real engine; only the grouping differs, so a
+  // slow decode (3FR is 39 megapixels) cannot exhaust the timeout of the whole image category.
+  it.skipIf(!RAW_CHECKS_ENABLED).each(RAW_SOURCES)(
+    'camera RAW source %s',
+    async (source) => {
+      expect(await findUnroutedPairs(pairsFor(() => true).filter(([pairSource]) => pairSource === source))).toEqual([]);
+    },
+    RAW_SOURCE_TIMEOUT_MS
+  );
 
   it('audio and video sources routed outside the media transcoder', async () => {
     const mediaPairs = pairsFor((c, target) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive');
@@ -583,8 +600,6 @@ describe('inconclusive pairs ratchet', () => {
 
 describe('real camera RAW samples', () => {
   const RAW_TIMEOUT_MS = 300_000;
-  /** Hand-authored from the camera families the registry advertises; the manifest must cover exactly these. */
-  const RAW_SOURCES = ['3fr', 'arw', 'cr2', 'cr3', 'crw', 'dcr', 'dng', 'erf', 'mos', 'mrw', 'nef', 'orf', 'pef', 'raf', 'raw', 'rw2', 'x3f'];
   const SDR_TARGETS = ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'];
   const HDR_TARGETS = ['exr', 'ultrahdr'];
   const PACKAGING_TARGETS = ['pdf', 'zip'];
