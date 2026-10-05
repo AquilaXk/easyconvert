@@ -1,13 +1,360 @@
 import Papa from 'papaparse';
 import yaml from 'js-yaml';
+import iconv from 'iconv-lite';
 import PDFDocument from 'pdfkit';
-import { ConversionOptions, ConversionResult } from '../types';
+import {
+  ConversionOptions,
+  ConversionResult,
+  DataEncodingError,
+  DataParseError,
+  UnsupportedOptionError,
+} from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
 import { sanitizeSvgString } from '../security/svg-sanitizer';
 import { encodeParquet, decodeParquet } from './parquet';
 import { assertNoComplexScript } from './ctl';
 
 export { encodeParquet, decodeParquet };
+
+// ---------------------------------------------------------------------------
+// Delimited text (CSV / TSV / TAB): input decoding
+// ---------------------------------------------------------------------------
+
+type ByteRange = readonly [first: number, last: number];
+
+/** Byte-order marks that identify a Unicode encoding outright; a BOM wins over any label (WHATWG "decode"). */
+const BOM_SIGNATURES: readonly { bytes: readonly number[]; encoding: string }[] = [
+  { bytes: [0xef, 0xbb, 0xbf], encoding: 'utf-8' },
+  { bytes: [0xff, 0xfe], encoding: 'utf-16le' },
+  { bytes: [0xfe, 0xff], encoding: 'utf-16be' },
+];
+
+/** Leading bytes inspected for the NUL pattern of BOM-less UTF-16 text. */
+const UTF16_SNIFF_BYTES = 4096;
+/** Share of code units whose high byte must be NUL: ASCII-range UTF-16 text has one in every unit. */
+const UTF16_NUL_LANE_MIN_SHARE = 0.5;
+/** Share of code units whose other byte may be NUL before the NUL pattern stops looking like UTF-16. */
+const UTF16_OTHER_LANE_MAX_SHARE = 0.05;
+const ASCII_LIMIT = 0x80;
+const REPLACEMENT_CHARACTER = 0xfffd;
+
+/**
+ * Decoding tables for the WHATWG legacy CJK encodings, whose decoders are CP949, Windows-31J and
+ * GB 18030. Node's ICU TextDecoder does not implement them: its "euc-kr" lacks the CP949
+ * extension rows and turns their lead bytes into C1 controls, and its "gbk" drops some valid
+ * sequences, both without throwing in fatal mode. iconv-lite's tables match glibc iconv for
+ * every CP949 and CP932 double-byte sequence.
+ */
+const LEGACY_CJK_TABLES: ReadonlyMap<string, string> = new Map([
+  ['euc-kr', 'cp949'],
+  ['shift_jis', 'cp932'],
+  ['gbk', 'gb18030'],
+  ['gb18030', 'gb18030'],
+]);
+
+interface LegacyEncodingCandidate {
+  /** WHATWG encoding name, a key of LEGACY_CJK_TABLES. */
+  encoding: string;
+  /** Lead and trail byte ranges of the encoding's everyday repertoire. */
+  leadBytes: readonly ByteRange[];
+  trailBytes: readonly ByteRange[];
+}
+
+/**
+ * Legacy CJK encodings tried, in tie-break order, when the input is neither BOM-marked, UTF-16
+ * nor valid UTF-8. Every one of them decodes most byte soup without error, so each candidate is
+ * also scored by how much of its decoded text falls inside the repertoire that real text in that
+ * encoding uses: KS X 1001 symbols and the 2,350 common Hangul syllables, JIS X 0208 symbols,
+ * kana and level-1 kanji, and GB 2312. Korean text decoded as GBK also lands inside GB 2312, so
+ * EUC-KR comes before GBK; Japanese text decoded as GBK lands inside GBK's extension rows instead.
+ */
+const LEGACY_ENCODING_CANDIDATES: readonly LegacyEncodingCandidate[] = [
+  { encoding: 'euc-kr', leadBytes: [[0xa1, 0xac], [0xb0, 0xc8]], trailBytes: [[0xa1, 0xfe]] },
+  { encoding: 'shift_jis', leadBytes: [[0x81, 0x98]], trailBytes: [[0x40, 0x7e], [0x80, 0xfc]] },
+  { encoding: 'gbk', leadBytes: [[0xa1, 0xf7]], trailBytes: [[0xa1, 0xfe]] },
+];
+
+/** Minimum share of non-ASCII characters that must fall in a candidate's everyday repertoire. */
+const LEGACY_REPERTOIRE_MIN_SHARE = 0.5;
+
+const legacyRepertoireCache = new Map<string, ReadonlySet<number>>();
+
+/** Decodes with a legacy CJK table; null when any sequence is invalid (the table emits U+FFFD for it). */
+function decodeLegacyCjk(bytes: Uint8Array, encoding: string): string | null {
+  const table = LEGACY_CJK_TABLES.get(encoding);
+  if (!table) return null;
+  const text = iconv.decode(bytes, table, { stripBOM: false });
+  return text.includes(String.fromCodePoint(REPLACEMENT_CHARACTER)) ? null : text;
+}
+
+/** Code points of a candidate's everyday repertoire, decoded once from its byte ranges. */
+function legacyRepertoire(candidate: LegacyEncodingCandidate): ReadonlySet<number> {
+  const cached = legacyRepertoireCache.get(candidate.encoding);
+  if (cached) return cached;
+  const repertoire = new Set<number>();
+  const pair = new Uint8Array(2);
+  for (const [leadFirst, leadLast] of candidate.leadBytes) {
+    for (let lead = leadFirst; lead <= leadLast; lead++) {
+      for (const [trailFirst, trailLast] of candidate.trailBytes) {
+        for (let trail = trailFirst; trail <= trailLast; trail++) {
+          pair[0] = lead;
+          pair[1] = trail;
+          const decoded = decodeLegacyCjk(pair, candidate.encoding);
+          const codePoint = decoded?.codePointAt(0);
+          if (
+            decoded &&
+            codePoint !== undefined &&
+            codePoint >= ASCII_LIMIT &&
+            decoded.length === String.fromCodePoint(codePoint).length
+          ) {
+            repertoire.add(codePoint);
+          }
+        }
+      }
+    }
+  }
+  legacyRepertoireCache.set(candidate.encoding, repertoire);
+  return repertoire;
+}
+
+function repertoireShare(text: string, repertoire: ReadonlySet<number>): number {
+  let nonAscii = 0;
+  let inRepertoire = 0;
+  for (const char of text) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint < ASCII_LIMIT) continue;
+    nonAscii++;
+    if (repertoire.has(codePoint)) inRepertoire++;
+  }
+  return nonAscii === 0 ? 0 : inRepertoire / nonAscii;
+}
+
+function sniffBom(bytes: Uint8Array): string | null {
+  for (const { bytes: signature, encoding } of BOM_SIGNATURES) {
+    if (bytes.length >= signature.length && signature.every((byte, index) => bytes[index] === byte)) {
+      return encoding;
+    }
+  }
+  return null;
+}
+
+/** BOM-less UTF-16 from its NUL lane: Latin-script text puts a zero byte in every code unit. */
+function sniffUtf16ByNulPattern(bytes: Uint8Array): string | null {
+  const units = Math.floor(Math.min(bytes.length, UTF16_SNIFF_BYTES) / 2);
+  if (units === 0) return null;
+  let evenNul = 0;
+  let oddNul = 0;
+  for (let unit = 0; unit < units; unit++) {
+    if (bytes[unit * 2] === 0) evenNul++;
+    if (bytes[unit * 2 + 1] === 0) oddNul++;
+  }
+  const nulLaneMin = units * UTF16_NUL_LANE_MIN_SHARE;
+  const otherLaneMax = units * UTF16_OTHER_LANE_MAX_SHARE;
+  if (oddNul >= nulLaneMin && evenNul <= otherLaneMax) return 'utf-16le';
+  if (evenNul >= nulLaneMin && oddNul <= otherLaneMax) return 'utf-16be';
+  return null;
+}
+
+/** Decodes with a canonical WHATWG encoding name; invalid input throws instead of yielding U+FFFD. */
+function decodeStrict(bytes: Uint8Array, encoding: string): string {
+  if (LEGACY_CJK_TABLES.has(encoding)) {
+    const text = decodeLegacyCjk(bytes, encoding);
+    if (text === null) throw new DataEncodingError(`Input is not valid ${encoding} text.`);
+    return text;
+  }
+  try {
+    // ignoreBOM stays false, so a BOM of this encoding is stripped.
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes);
+  } catch {
+    throw new DataEncodingError(`Input is not valid ${encoding} text.`);
+  }
+}
+
+function canonicalEncoding(label: string): string {
+  try {
+    return new TextDecoder(label).encoding;
+  } catch {
+    throw new UnsupportedOptionError(`Unsupported text encoding "${label}"; pass a WHATWG encoding label.`);
+  }
+}
+
+function detectLegacyCjkText(bytes: Uint8Array): string | null {
+  let best: { text: string; share: number } | null = null;
+  for (const candidate of LEGACY_ENCODING_CANDIDATES) {
+    const text = decodeLegacyCjk(bytes, candidate.encoding);
+    if (text === null) continue;
+    const share = repertoireShare(text, legacyRepertoire(candidate));
+    // Strictly greater: on a tie the earlier candidate keeps its place.
+    if (share >= LEGACY_REPERTOIRE_MIN_SHARE && (!best || share > best.share)) {
+      best = { text, share };
+    }
+  }
+  return best ? best.text : null;
+}
+
+/**
+ * Decodes delimited-text bytes: a BOM decides first, then an explicit `encoding` option, then the
+ * NUL pattern of BOM-less UTF-16, then strict UTF-8 (TextDecoder, fatal), then the scored legacy
+ * CJK candidates. Every decode is strict, so undecodable bytes raise a DataEncodingError instead
+ * of turning into U+FFFD.
+ */
+function decodeDelimitedText(bytes: Uint8Array, requestedEncoding?: string): string {
+  const bomEncoding = sniffBom(bytes);
+  if (bomEncoding) return decodeStrict(bytes, bomEncoding);
+  if (requestedEncoding !== undefined) return decodeStrict(bytes, canonicalEncoding(requestedEncoding));
+  const utf16 = sniffUtf16ByNulPattern(bytes);
+  if (utf16) return decodeStrict(bytes, utf16);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    // Not UTF-8: fall through to the legacy candidates.
+  }
+  const legacy = detectLegacyCjkText(bytes);
+  if (legacy === null) {
+    throw new DataEncodingError(
+      'Could not detect the text encoding (tried UTF-8, UTF-16, EUC-KR/CP949, Shift_JIS and GBK); pass the "encoding" option.'
+    );
+  }
+  return legacy;
+}
+
+// ---------------------------------------------------------------------------
+// Delimited text: delimiter detection and parsing
+// ---------------------------------------------------------------------------
+
+/** Delimiters tried, in tie-break order, after the source format's own delimiter. */
+const DELIMITER_CANDIDATES: readonly string[] = [',', ';', '\t', '|'];
+/** Records sampled when detecting the delimiter. */
+const DELIMITER_SAMPLE_RECORDS = 50;
+/** Papa counts FieldMismatch rows from 0 after the header; our rows are 1-based and include the header. */
+const FIELD_MISMATCH_ROW_OFFSET = 2;
+/** Papa counts quote-error rows from 0 including the header row. */
+const QUOTE_ERROR_ROW_OFFSET = 1;
+
+interface DelimitedTable {
+  fields: string[];
+  records: Record<string, string>[];
+  /** The decoded input text. */
+  text: string;
+  delimiter: string;
+}
+
+/** Field count of the sampled records when they all agree, else 0. */
+function consistentFieldCount(text: string, delimiter: string): number {
+  const sample = Papa.parse<string[]>(text, { delimiter, preview: DELIMITER_SAMPLE_RECORDS, skipEmptyLines: true });
+  if (sample.errors.length > 0 || sample.data.length === 0) return 0;
+  const width = sample.data[0].length;
+  return sample.data.every((record) => record.length === width) ? width : 0;
+}
+
+/**
+ * The source format's own delimiter wins when it splits the sampled records into a consistent
+ * table of two or more columns; otherwise the candidate with the widest consistent table does.
+ * A file no candidate splits consistently keeps the format's delimiter (a one-column table, or a
+ * parse error that names the offending row).
+ */
+function detectDelimiter(text: string, nominal: string): string {
+  if (consistentFieldCount(text, nominal) > 1) return nominal;
+  let best = nominal;
+  let bestWidth = 1;
+  for (const candidate of DELIMITER_CANDIDATES) {
+    if (candidate === nominal) continue;
+    const width = consistentFieldCount(text, candidate);
+    if (width > bestWidth) {
+      best = candidate;
+      bestWidth = width;
+    }
+  }
+  return best;
+}
+
+function resolveDelimiter(text: string, src: string, requested?: string): string {
+  if (requested !== undefined) {
+    if (requested.length === 0 || Papa.BAD_DELIMITERS.some((bad) => requested.includes(bad))) {
+      throw new UnsupportedOptionError(`Unsupported delimiter ${JSON.stringify(requested)}.`);
+    }
+    return requested;
+  }
+  return detectDelimiter(text, src === 'csv' ? ',' : '\t');
+}
+
+function lineNumberAt(text: string, index: number): number {
+  let line = 1;
+  for (let i = 0; i < index && i < text.length; i++) {
+    if (text.charCodeAt(i) === 0x0a) line++;
+  }
+  return line;
+}
+
+function delimitedParseError(error: Papa.ParseError, text: string, src: string): DataParseError {
+  let row: number | undefined;
+  if (typeof error.row === 'number') {
+    row = error.row + (error.type === 'FieldMismatch' ? FIELD_MISMATCH_ROW_OFFSET : QUOTE_ERROR_ROW_OFFSET);
+  }
+  const line = typeof error.index === 'number' ? lineNumberAt(text, error.index) : undefined;
+  const where = [row !== undefined ? `row ${row}` : '', line !== undefined ? `line ${line}` : ''].filter(Boolean).join(', ');
+  return new DataParseError(
+    `Failed to parse ${src.toUpperCase()}: ${error.message}${where ? ` (${where})` : ''}.`,
+    { row, line }
+  );
+}
+
+/** Decodes and parses delimited text with a header record; any parse error fails closed. */
+function parseDelimitedTable(inputBuffer: Buffer, src: string, options: ConversionOptions): DelimitedTable {
+  const text = decodeDelimitedText(inputBuffer, options.encoding);
+  const delimiter = resolveDelimiter(text, src, options.delimiter);
+  const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true, delimiter });
+  if (parsed.errors.length > 0) {
+    const errors = parsed.errors.map((error) => delimitedParseError(error, text, src));
+    errors.sort((a, b) => (a.row ?? Number.MAX_SAFE_INTEGER) - (b.row ?? Number.MAX_SAFE_INTEGER));
+    throw errors[0];
+  }
+  return { fields: parsed.meta.fields ?? [], records: parsed.data, text, delimiter };
+}
+
+// ---------------------------------------------------------------------------
+// Delimited text: output
+// ---------------------------------------------------------------------------
+
+/**
+ * Cells a spreadsheet evaluates as a formula: a leading = + - @ TAB or CR. Plain numeric literals
+ * (-5, +1.5e3) are values, not formulas, so they are left alone.
+ */
+const FORMULA_TRIGGER = /^(?![+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$)[=+\-@\t\r]/;
+const UTF8_BOM_CHAR = '\uFEFF';
+
+/**
+ * Writes CSV or TSV. A UTF-8 BOM is on by default for CSV, the format spreadsheet applications
+ * open directly and decode as UTF-8 only when the BOM is present; it is off by default for TSV,
+ * which mostly feeds data tooling where a BOM would corrupt the first header. Formula cells are
+ * prefixed with ' and quoted unless `escapeFormulas` is false.
+ */
+function writeDelimited(
+  input: Record<string, unknown>[] | { fields: string[]; data: Record<string, unknown>[] },
+  tgt: string,
+  options: ConversionOptions
+): Buffer {
+  const delimiter = tgt === 'tsv' ? '\t' : ',';
+  const escapeFormulas = options.escapeFormulas ?? true;
+  const withBom = options.bom ?? tgt === 'csv';
+  const fieldCount = Array.isArray(input) ? Object.keys(input[0] ?? {}).length : input.fields.length;
+  const text = Papa.unparse(input, {
+    delimiter,
+    escapeFormulae: escapeFormulas ? FORMULA_TRIGGER : false,
+    // A one-column record whose only value is empty would otherwise be an empty line.
+    quotes: (value: unknown) => fieldCount === 1 && value === '',
+  });
+  return Buffer.from(withBom ? UTF8_BOM_CHAR + text : text, 'utf-8');
+}
+
+function delimitedResult(buffer: Buffer, tgt: string, baseName: string): ConversionResult {
+  return {
+    buffer,
+    mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
+    filename: `${baseName}.${tgt}`,
+    size: buffer.length,
+  };
+}
 
 export async function convertData(
   inputBuffer: Buffer,
@@ -29,15 +376,7 @@ export async function convertData(
       return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
     }
     if (tgt === 'csv' || tgt === 'tsv') {
-      const targetDelim = tgt === 'tsv' ? '\t' : ',';
-      const outputStr = Papa.unparse(records, { delimiter: targetDelim });
-      const buffer = Buffer.from(outputStr, 'utf-8');
-      return {
-        buffer,
-        mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
-        filename: `${baseName}.${tgt}`,
-        size: buffer.length,
-      };
+      return delimitedResult(writeDelimited(records, tgt, options), tgt, baseName);
     }
     if (tgt === 'yaml' || tgt === 'yml') {
       const yamlStr = yaml.dump(records);
@@ -104,46 +443,34 @@ export async function convertData(
     throw new Error(`Unsupported data conversion from parquet to ${targetFormat}`);
   }
 
-  const textContent = inputBuffer.toString('utf-8');
-
   // CSV, TSV, or TAB -> Target
   if (src === 'csv' || src === 'tsv' || src === 'tab') {
-    const delimiter = options.delimiter || (src === 'tsv' || src === 'tab' ? '\t' : ',');
-    const parsed = Papa.parse(textContent, {
-      header: true,
-      skipEmptyLines: true,
-      delimiter,
-    });
-
-    if (parsed.errors && parsed.errors.length > 0 && parsed.data.length === 0) {
-      throw new Error(`Failed to parse ${src.toUpperCase()}: ${parsed.errors[0].message}`);
-    }
+    const table = parseDelimitedTable(inputBuffer, src, options);
 
     if (tgt === 'json') {
-      const json = JSON.stringify(parsed.data, null, 2);
+      const json = JSON.stringify(table.records, null, 2);
       const buffer = Buffer.from(json, 'utf-8');
       return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
     }
 
     if (tgt === 'csv' || tgt === 'tsv') {
-      const targetDelim = tgt === 'tsv' ? '\t' : ',';
-      const outputStr = Papa.unparse(parsed.data, { delimiter: targetDelim });
-      const buffer = Buffer.from(outputStr, 'utf-8');
-      return {
-        buffer,
-        mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
-        filename: `${baseName}.${tgt}`,
-        size: buffer.length,
-      };
+      const buffer = writeDelimited({ fields: table.fields, data: table.records }, tgt, options);
+      return delimitedResult(buffer, tgt, baseName);
     }
 
     if (tgt === 'pdf') {
-      const pdfBuffer = await renderDataToPdf(parsed.data as Record<string, unknown>[], baseName, options);
+      const pdfBuffer = await renderDataToPdf(table.records, baseName, options);
       return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
     }
 
     if (tgt === 'xlsx') {
-      const xlsxBuffer = await generateXlsxFromData(inputBuffer, src, options, baseName);
+      // The spreadsheet writer reads UTF-8, so it gets the decoded text and the resolved delimiter.
+      const xlsxBuffer = await generateXlsxFromData(
+        Buffer.from(table.text, 'utf-8'),
+        src,
+        { ...options, delimiter: table.delimiter },
+        baseName
+      );
       return {
         buffer: xlsxBuffer,
         mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -153,10 +480,10 @@ export async function convertData(
     }
 
     if (tgt === 'ods') {
-      const headers = Object.keys((parsed.data[0] || {}) as Record<string, unknown>);
+      const headers = table.fields;
       const rows = [
         headers,
-        ...(parsed.data as Record<string, unknown>[]).map((d) => headers.map((h) => String(d[h] ?? ''))),
+        ...table.records.map((d) => headers.map((h) => String(d[h] ?? ''))),
       ];
       const odsBuffer = await generateOdsFromData(rows, baseName);
       return {
@@ -168,10 +495,10 @@ export async function convertData(
     }
 
     if (tgt === 'xls') {
-      const headers = Object.keys((parsed.data[0] || {}) as Record<string, unknown>);
+      const headers = table.fields;
       const rows = [
         headers,
-        ...(parsed.data as Record<string, unknown>[]).map((d) => headers.map((h) => String(d[h] ?? ''))),
+        ...table.records.map((d) => headers.map((h) => String(d[h] ?? ''))),
       ];
       const xlsXml = generateXlsXmlFromData(rows, baseName);
       const buffer = Buffer.from(xlsXml, 'utf-8');
@@ -184,27 +511,29 @@ export async function convertData(
     }
 
     if (tgt === 'yaml' || tgt === 'yml') {
-      const yamlStr = yaml.dump(parsed.data);
+      const yamlStr = yaml.dump(table.records);
       const buffer = Buffer.from(yamlStr, 'utf-8');
       return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
     }
 
     if (tgt === 'html') {
-      const html = generateTableHtml(parsed.data as Record<string, unknown>[], baseName);
+      const html = generateTableHtml(table.records, baseName);
       const buffer = Buffer.from(html, 'utf-8');
       return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
     }
 
     if (tgt === 'parquet') {
-      const parquetBuffer = encodeParquet(parsed.data as Record<string, unknown>[]);
+      const parquetBuffer = encodeParquet(table.records);
       return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
     }
 
     if (tgt === 'txt') {
-      const buffer = Buffer.from(textContent, 'utf-8');
+      const buffer = Buffer.from(table.text, 'utf-8');
       return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
     }
   }
+
+  const textContent = inputBuffer.toString('utf-8');
 
   // JSON -> Target
   if (src === 'json') {
@@ -217,16 +546,8 @@ export async function convertData(
     }
 
     if (tgt === 'csv' || tgt === 'tsv') {
-      const targetDelim = tgt === 'tsv' ? '\t' : ',';
-      const arrayData = Array.isArray(parsedJson) ? parsedJson : [parsedJson];
-      const outputStr = Papa.unparse(arrayData, { delimiter: targetDelim });
-      const buffer = Buffer.from(outputStr, 'utf-8');
-      return {
-        buffer,
-        mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
-        filename: `${baseName}.${tgt}`,
-        size: buffer.length,
-      };
+      const arrayData = (Array.isArray(parsedJson) ? parsedJson : [parsedJson]) as Record<string, unknown>[];
+      return delimitedResult(writeDelimited(arrayData, tgt, options), tgt, baseName);
     }
 
     if (tgt === 'yaml' || tgt === 'yml') {
@@ -366,15 +687,7 @@ export async function convertData(
 
     if (tgt === 'csv' || tgt === 'tsv') {
       const records = extractTabularRecordsFromXml(output);
-      const targetDelim = tgt === 'tsv' ? '\t' : ',';
-      const outputStr = Papa.unparse(records, { delimiter: targetDelim });
-      const buffer = Buffer.from(outputStr, 'utf-8');
-      return {
-        buffer,
-        mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
-        filename: `${baseName}.${tgt}`,
-        size: buffer.length,
-      };
+      return delimitedResult(writeDelimited(records, tgt, options), tgt, baseName);
     }
 
     if (tgt === 'parquet') {
@@ -424,15 +737,7 @@ export async function convertData(
     }
 
     if (tgt === 'csv' || tgt === 'tsv') {
-      const targetDelim = tgt === 'tsv' ? '\t' : ',';
-      const outputStr = Papa.unparse(parsedData, { delimiter: targetDelim });
-      const buffer = Buffer.from(outputStr, 'utf-8');
-      return {
-        buffer,
-        mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
-        filename: `${baseName}.${tgt}`,
-        size: buffer.length,
-      };
+      return delimitedResult(writeDelimited(parsedData, tgt, options), tgt, baseName);
     }
 
     if (tgt === 'yaml' || tgt === 'yml') {

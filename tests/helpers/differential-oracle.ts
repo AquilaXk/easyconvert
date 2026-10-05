@@ -30,6 +30,7 @@ export type ExternalOracleTool =
   | 'unrar'
   | 'qpdf'
   | 'python3'
+  | 'iconv'
   | 'raw-identify'
   | 'dcraw_emu';
 
