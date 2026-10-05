@@ -23,6 +23,15 @@ export const GLYF_MAX_COMPOSITE_DEPTH = 8;
 export const GLYF_MAX_COMPONENT_VISITS = 4096;
 /** Points one glyph may have after composites are flattened (the glyf point count is 16 bits). */
 export const GLYF_MAX_POINTS_PER_GLYPH = 0xffff;
+/**
+ * Points all glyphs of a font may have after composites are flattened: a floor for small fonts plus
+ * a share per byte of glyf (a simple glyph spends at least a byte on each point), so a few KB of
+ * composites that reuse one another cannot expand into millions of points. The absolute cap keeps
+ * padding from buying a bigger budget; it matches the budget of the CFF to TrueType conversion.
+ */
+export const GLYF_BASE_OUTPUT_POINTS = 250_000;
+export const GLYF_OUTPUT_POINTS_PER_TABLE_BYTE = 2;
+export const GLYF_ABSOLUTE_MAX_OUTPUT_POINTS = 12_000_000;
 
 const LOCA_FORMAT_SHORT = 0;
 const LOCA_FORMAT_LONG = 1;
@@ -184,8 +193,18 @@ function readSimpleGlyph(reader: GlyphReader, contourCount: number, glyphId: num
 }
 
 interface ResolveBudget {
+  /** Components visited while resolving the current glyph. */
   visits: number;
+  /** Points the current glyph has after flattening. */
   points: number;
+}
+
+/** State shared by every glyph of one font. */
+interface FontResolveState {
+  /** Points still allowed across the font; every flattened component spends from it. */
+  pointsLeft: number;
+  /** Simple glyphs already parsed, so a component shared by many composites is read once. Never mutated. */
+  simpleGlyphs: Map<number, GlyphPoint[][]>;
 }
 
 type Matrix = [number, number, number, number];
@@ -195,7 +214,8 @@ function resolveGlyph(
   offsets: number[],
   glyphId: number,
   depth: number,
-  budget: ResolveBudget
+  budget: ResolveBudget,
+  state: FontResolveState
 ): GlyphPoint[][] {
   if (glyphId < 0 || glyphId >= source.numGlyphs) {
     throw new ConversionFailedError(`Invalid font: a composite glyph references glyph ${glyphId}, but the font has ${source.numGlyphs} glyphs.`);
@@ -214,10 +234,22 @@ function resolveGlyph(
   reader.skip(GLYPH_HEADER_BYTES - 2); // bounding box: recomputed from the points by writers
   if (contourCount === 0) return [];
   if (contourCount > 0) {
-    const contours = readSimpleGlyph(reader, contourCount, glyphId);
-    budget.points += contours.reduce((sum, c) => sum + c.length, 0);
+    let contours = state.simpleGlyphs.get(glyphId);
+    if (contours === undefined) {
+      contours = readSimpleGlyph(reader, contourCount, glyphId);
+      state.simpleGlyphs.set(glyphId, contours);
+    }
+    const pointCount = contours.reduce((sum, c) => sum + c.length, 0);
+    budget.points += pointCount;
     if (budget.points > GLYF_MAX_POINTS_PER_GLYPH) {
       throw new ConversionFailedError(`Invalid font: glyph ${glyphId} expands to more than ${GLYF_MAX_POINTS_PER_GLYPH} points.`);
+    }
+    // Spent on every use: each use of a shared component copies its points into the composite.
+    state.pointsLeft -= pointCount;
+    if (state.pointsLeft < 0) {
+      throw new ConversionFailedError(
+        `Invalid font: composite glyphs expand to more points than the font budget allows (reached at component glyph ${glyphId}).`
+      );
     }
     return contours;
   }
@@ -265,7 +297,7 @@ function resolveGlyph(
       dx *= Math.hypot(xx, xy);
       dy *= Math.hypot(yy, yx);
     }
-    for (const contour of resolveGlyph(source, offsets, componentId, depth + 1, budget)) {
+    for (const contour of resolveGlyph(source, offsets, componentId, depth + 1, budget, state)) {
       result.push(contour.map((p) => ({ x: xx * p.x + xy * p.y + dx, y: yx * p.x + yy * p.y + dy, onCurve: p.onCurve })));
     }
   } while (flags & COMPONENT_MORE);
@@ -279,9 +311,16 @@ function resolveGlyph(
  */
 export function readGlyfOutlines(source: GlyfSource): GlyphPoint[][][] {
   const offsets = readLocaOffsets(source);
+  const state: FontResolveState = {
+    pointsLeft: Math.min(
+      GLYF_BASE_OUTPUT_POINTS + GLYF_OUTPUT_POINTS_PER_TABLE_BYTE * source.glyf.length,
+      GLYF_ABSOLUTE_MAX_OUTPUT_POINTS
+    ),
+    simpleGlyphs: new Map(),
+  };
   const outlines: GlyphPoint[][][] = [];
   for (let glyphId = 0; glyphId < source.numGlyphs; glyphId++) {
-    outlines.push(resolveGlyph(source, offsets, glyphId, 0, { visits: 0, points: 0 }));
+    outlines.push(resolveGlyph(source, offsets, glyphId, 0, { visits: 0, points: 0 }, state));
   }
   return outlines;
 }

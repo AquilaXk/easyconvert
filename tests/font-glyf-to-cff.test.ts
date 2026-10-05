@@ -596,6 +596,57 @@ describe('TrueType to CFF: malformed glyf data is rejected with a typed error', 
   });
 });
 
+describe('TrueType to CFF: composite expansion is bounded across the whole font', () => {
+  const RING_POINTS = 32;
+  const RING_RADIUS = 100;
+  const FULL_TURN = 2 * Math.PI;
+  const SHARED_COMPONENTS = 1000;
+  const COMPOSITE_GLYPHS = 1000;
+  const FAST_REJECT_MS = 1000;
+  const RSS_GROWTH_LIMIT_BYTES = 400 * 1024 * 1024;
+  const BYTES_PER_MB = 1024 * 1024;
+  const SMALL_FONT_BYTES = 100 * 1024;
+  const ring = Array.from({ length: RING_POINTS }, (_, i) => ({
+    x: Math.round(RING_RADIUS * Math.cos((i / RING_POINTS) * FULL_TURN)),
+    y: Math.round(RING_RADIUS * Math.sin((i / RING_POINTS) * FULL_TURN)),
+  }));
+
+  /** Glyph 1 is a ring, glyph 2 places it `shared` times, and every later glyph places glyph 2 once. */
+  function amplifierFont(shared: number, composites: number): Buffer {
+    const glyphs: GlyfGlyphSpec[] = [
+      { codePoint: 0x41, advance: 500, contours: [ring] },
+      { codePoint: 0x42, advance: 500, components: Array.from({ length: shared }, () => ({ glyphIndex: 1, dx: 0, dy: 0 })) },
+    ];
+    for (let i = 0; i < composites; i++) glyphs.push({ advance: 500, components: [{ glyphIndex: 2, dx: 0, dy: 0 }] });
+    return buildGlyfFont({ family: 'Amplifier', glyphs });
+  }
+
+  it('rejects a small font whose composites expand to tens of millions of points, quickly and without large allocations', () => {
+    const font = amplifierFont(SHARED_COMPONENTS, COMPOSITE_GLYPHS);
+    expect(font.length).toBeLessThan(SMALL_FONT_BYTES); // a few dozen KB would expand to 32 million points
+    const rssBefore = process.memoryUsage().rss;
+    const started = performance.now();
+    let caught: unknown;
+    try {
+      convertFontToOpenTypeCff(font);
+    } catch (error) {
+      caught = error;
+    }
+    const elapsed = performance.now() - started;
+    const rssGrowth = process.memoryUsage().rss - rssBefore;
+    expect(caught, 'conversion must throw').toBeInstanceOf(ConversionFailedError);
+    expect((caught as Error).message).toMatch(/points|expand/i);
+    expect(elapsed).toBeLessThan(FAST_REJECT_MS);
+    expect(rssGrowth, `rss grew by ${Math.round(rssGrowth / BYTES_PER_MB)} MB`).toBeLessThan(RSS_GROWTH_LIMIT_BYTES);
+  });
+
+  it('still converts a font whose glyphs share a component many times within the budget', () => {
+    const font = amplifierFont(2, 300); // 300 glyphs x 64 points, far below the budget
+    const out = convertFontToOpenTypeCff(font) as Buffer;
+    expect(readGlyphCount(readSfntTables(out))).toBe(2 + 300 + 1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // External oracles
 // ---------------------------------------------------------------------------
