@@ -281,15 +281,12 @@ export function parseSvgFontDocument(source: string): SvgFont | null {
   let missingTag: Map<string, string> | null = null;
   let bodyStart = 0;
 
-  for (const tag of startTags(text, FONT_ELEMENT)) {
-    fontAttributes = tag.attributes;
-    bodyStart = tag.end;
-    const tail = text.slice(bodyStart);
-    const end = FONT_END_PATTERN.exec(tail);
-    fontEnd = end === null ? text.length : bodyStart + end.index;
-    break;
-  }
-  if (fontAttributes === null) return null;
+  const fontTag = startTags(text, FONT_ELEMENT).next();
+  if (fontTag.done) return null;
+  fontAttributes = fontTag.value.attributes;
+  bodyStart = fontTag.value.end;
+  const end = FONT_END_PATTERN.exec(text.slice(bodyStart));
+  fontEnd = end === null ? text.length : bodyStart + end.index;
 
   fontAdvance = advanceAttribute(fontAttributes, 0, 'font element');
   const body = text.slice(bodyStart, fontEnd);
