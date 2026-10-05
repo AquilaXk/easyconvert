@@ -127,9 +127,42 @@ const SMALL_BLOCK_SAMPLES = 32;
 const SUBFRAME_CONSTANT = 0;
 const SUBFRAME_VERBATIM = 1;
 const SUBFRAME_FIXED = 2;
+const SUBFRAME_LPC = 3;
 const TYPE_CODE_CONSTANT = 0;
 const TYPE_CODE_VERBATIM = 1;
 const TYPE_CODE_FIXED = 8;
+const TYPE_CODE_LPC = 32;
+
+/** Highest LPC order (RFC 9639 allows 32; 12 is where gains flatten for 16-bit audio). */
+export const FLAC_MAX_LPC_ORDER = 12;
+/** Blocks shorter than this use fixed predictors only; warm-up and coefficients would cost more. */
+const LPC_MIN_BLOCK_SAMPLES = 32;
+const MIN_QLP_PRECISION = 5;
+const MAX_QLP_PRECISION = 15;
+const QLP_PRECISION_FIELD_BITS = 4;
+const QLP_SHIFT_FIELD_BITS = 5;
+const MAX_QLP_SHIFT = 15;
+/** Coefficient precisions tried above the default, stopping at the first that does not help. */
+const QLP_PRECISION_SEARCH_STEPS = 2;
+/** Orders, ranked by estimated bits, that are coded for real and compared. */
+const LPC_EXACT_ORDER_CANDIDATES = 2;
+/** Tukey window cosine-taper fraction (0.5 = half the block is tapered). */
+const TUKEY_TAPER_FRACTION = 0.5;
+/** White-noise correction keeping the normal equations well conditioned on pure tones. */
+const LPC_REGULARIZATION = 1e-9;
+const WINDOW_CACHE_LIMIT = 4;
+/** Default precision by block size for 16-bit audio: [largest block size, precision]. */
+const QLP_PRECISION_BY_BLOCK: ReadonlyArray<readonly [number, number]> = [
+  [192, 7],
+  [384, 8],
+  [576, 9],
+  [1152, 10],
+  [2304, 11],
+  [4608, 12],
+];
+const QLP_PRECISION_LARGE_BLOCK = 13;
+const QLP_PRECISION_WIDE_SAMPLES = 15;
+const QLP_PRECISION_NARROW_FLOOR = 5;
 
 const SYNC_FIXED_BLOCKING = 0xfff8;
 const SAMPLE_SIZE_CODES: ReadonlyMap<number, number> = new Map([
@@ -599,6 +632,10 @@ class SubframePlan {
   /** Exact size of the whole subframe in bits. */
   bits = 0;
   constantValue = 0;
+  /** LPC only: coefficient precision, right shift and quantised coefficients. */
+  precision = 0;
+  shift = 0;
+  readonly coefs = new Int32Array(FLAC_MAX_LPC_ORDER);
   readonly residual: Int32Array;
   readonly folded: Uint32Array;
   readonly coding = new ResidualCoding();
@@ -616,6 +653,54 @@ class ChannelSlot {
   constructor(blockSize: number) {
     this.samples = new Int32Array(blockSize);
     this.best = new SubframePlan(blockSize);
+  }
+}
+
+/** Everything one stream encode allocates up front. */
+class EncoderWorkspace {
+  readonly slots: ChannelSlot[];
+  trial: SubframePlan;
+  readonly writer: FlacBitWriter;
+  readonly bitsPerSample: number;
+  // LPC analysis buffers
+  readonly windowed: Float64Array;
+  readonly autoc = new Float64Array(FLAC_MAX_LPC_ORDER + 1);
+  /** Row (order - 1) holds the predictor weights of that order. */
+  readonly lpcWeights = new Float64Array(FLAC_MAX_LPC_ORDER * FLAC_MAX_LPC_ORDER);
+  readonly lpcErrors = new Float64Array(FLAC_MAX_LPC_ORDER);
+  readonly orderBits = new Float64Array(FLAC_MAX_LPC_ORDER);
+  readonly quantized = new Float64Array(FLAC_MAX_LPC_ORDER);
+  private readonly windows = new Map<number, Float64Array>();
+
+  constructor(blockSize: number, channels: number, bitsPerSample: number) {
+    this.bitsPerSample = bitsPerSample;
+    this.slots = [];
+    for (let c = 0; c < channels; c++) this.slots.push(new ChannelSlot(blockSize));
+    this.trial = new SubframePlan(blockSize);
+    this.windowed = new Float64Array(blockSize);
+    // Worst case is every subframe verbatim at one extra bit (side channels) plus framing.
+    const subframeBytes =
+      SUBFRAME_HEADER_BITS / BITS_PER_BYTE + Math.ceil(((bitsPerSample + 1) * blockSize) / BITS_PER_BYTE) + 1;
+    this.writer = new FlacBitWriter(FRAME_OVERHEAD_BYTES + channels * subframeBytes);
+  }
+
+  /** Tukey window for blocks of n samples; only the full and tail sizes ever occur. */
+  windowFor(n: number): Float64Array {
+    const cached = this.windows.get(n);
+    if (cached) return cached;
+    if (this.windows.size >= WINDOW_CACHE_LIMIT) {
+      const oldest = this.windows.keys().next().value as number;
+      this.windows.delete(oldest);
+    }
+    const window = new Float64Array(n).fill(1);
+    const taper = Math.floor((TUKEY_TAPER_FRACTION * (n - 1)) / 2);
+    for (let i = 0; i <= taper && taper > 0; i++) {
+      const w = 0.5 - 0.5 * Math.cos((Math.PI * i) / taper);
+      window[i] = w;
+      window[n - 1 - i] = w;
+    }
+    this.windows.set(n, window);
+    return window;
   }
 }
 
@@ -685,6 +770,197 @@ function fixedErrorSumsShort(x: Int32Array, n: number, maxOrder: number, scratch
   }
 }
 
+// ----------------------------------------------------------------------------
+// LPC analysis (RFC 9639 section 9.2.6)
+// ----------------------------------------------------------------------------
+
+/** Default quantised-coefficient precision for the stream's sample size and the block size. */
+function defaultQlpPrecision(bitsPerSample: number, n: number): number {
+  if (bitsPerSample < 16) {
+    return Math.max(QLP_PRECISION_NARROW_FLOOR, 2 + (bitsPerSample >> 1));
+  }
+  if (bitsPerSample > 16) return QLP_PRECISION_WIDE_SAMPLES;
+  for (const [limit, precision] of QLP_PRECISION_BY_BLOCK) {
+    if (n <= limit) return precision;
+  }
+  return QLP_PRECISION_LARGE_BLOCK;
+}
+
+/** Windowed autocorrelation for lags 0..maxLag into ws.autoc. */
+function autocorrelate(ws: EncoderWorkspace, x: Int32Array, n: number, maxLag: number): void {
+  const window = ws.windowFor(n);
+  const w = ws.windowed;
+  for (let i = 0; i < n; i++) w[i] = x[i] * window[i];
+  for (let lag = 0; lag <= maxLag; lag++) {
+    let sum = 0;
+    for (let i = lag; i < n; i++) sum += w[i] * w[i - lag];
+    ws.autoc[lag] = sum;
+  }
+}
+
+/**
+ * Levinson-Durbin recursion over ws.autoc. Fills ws.lpcWeights / ws.lpcErrors for orders
+ * 1..result and returns the highest order whose prediction error stayed positive.
+ */
+function levinsonDurbin(ws: EncoderWorkspace, maxOrder: number): number {
+  const autoc = ws.autoc;
+  const weights = ws.lpcWeights;
+  let error = autoc[0] * (1 + LPC_REGULARIZATION);
+  if (!(error > 0)) return 0;
+  for (let i = 0; i < maxOrder; i++) {
+    const row = i * FLAC_MAX_LPC_ORDER;
+    const prev = row - FLAC_MAX_LPC_ORDER;
+    let acc = autoc[i + 1];
+    for (let j = 0; j < i; j++) acc -= weights[prev + j] * autoc[i - j];
+    const reflection = acc / error;
+    for (let j = 0; j < i; j++) weights[row + j] = weights[prev + j] - reflection * weights[prev + i - 1 - j];
+    weights[row + i] = reflection;
+    error *= 1 - reflection * reflection;
+    if (!(error > 0) || !Number.isFinite(error)) return i;
+    ws.lpcErrors[i] = error;
+  }
+  return maxOrder;
+}
+
+/**
+ * Quantises the weights of `order` to `precision` bits with error feedback (RFC 9639 forbids
+ * negative shifts). Returns the shift, or -1 when the weights do not fit this precision.
+ */
+function quantizeWeights(ws: EncoderWorkspace, order: number, precision: number, plan: SubframePlan): number {
+  const weights = ws.lpcWeights;
+  const row = (order - 1) * FLAC_MAX_LPC_ORDER;
+  let largest = 0;
+  for (let j = 0; j < order; j++) {
+    const magnitude = Math.abs(weights[row + j]);
+    if (magnitude > largest) largest = magnitude;
+  }
+  if (!(largest > 0)) return -1;
+  const exponent = Math.floor(Math.log2(largest)) + 1;
+  const shift = Math.min(MAX_QLP_SHIFT, precision - exponent - 1);
+  if (shift < 0) return -1;
+  const scale = 2 ** shift;
+  const limit = 2 ** (precision - 1);
+  let carry = 0;
+  for (let j = 0; j < order; j++) {
+    const exact = weights[row + j] * scale + carry;
+    let q = Math.round(exact);
+    if (q >= limit) q = limit - 1;
+    else if (q < -limit) q = -limit;
+    carry = exact - q;
+    plan.coefs[j] = q;
+    ws.quantized[j] = q;
+  }
+  return shift;
+}
+
+/** Residual of the quantised predictor: x[i] - floor(sum(q[j] * x[i-1-j]) / 2^shift). */
+function lpcResidual(
+  x: Int32Array,
+  n: number,
+  order: number,
+  q: Float64Array,
+  shift: number,
+  out: Int32Array
+): void {
+  const inverse = 2 ** -shift;
+  for (let i = order; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < order; j++) sum += q[j] * x[i - 1 - j];
+    out[i - order] = x[i] - Math.floor(sum * inverse);
+  }
+}
+
+/**
+ * Codes one (order, precision) LPC candidate into ws.trial and keeps it when it is the
+ * cheapest subframe so far. Returns its exact size, or Infinity when it is unusable.
+ */
+function tryLpc(
+  ws: EncoderWorkspace,
+  slot: ChannelSlot,
+  n: number,
+  bps: number,
+  wasted: number,
+  maxAbs: number,
+  order: number,
+  precision: number
+): number {
+  const trial = ws.trial;
+  const shift = quantizeWeights(ws, order, precision, trial);
+  if (shift < 0) return Number.POSITIVE_INFINITY;
+  // The prediction must stay inside the folding range (MAX_RESIDUAL_MAGNITUDE).
+  let weightSum = 0;
+  for (let j = 0; j < order; j++) weightSum += Math.abs(ws.quantized[j]);
+  if (maxAbs * (weightSum * 2 ** -shift + 1) >= MAX_RESIDUAL_MAGNITUDE) return Number.POSITIVE_INFINITY;
+
+  lpcResidual(slot.samples, n, order, ws.quantized, shift, trial.residual);
+  const residualBits = codeResidual(trial.residual, trial.folded, n, order, trial.coding);
+  const bits =
+    SUBFRAME_HEADER_BITS +
+    wasted +
+    order * (bps + precision) +
+    QLP_PRECISION_FIELD_BITS +
+    QLP_SHIFT_FIELD_BITS +
+    residualBits;
+  if (bits < slot.best.bits) {
+    trial.kind = SUBFRAME_LPC;
+    trial.order = order;
+    trial.wasted = wasted;
+    trial.bps = bps;
+    trial.bits = bits;
+    trial.precision = precision;
+    trial.shift = shift;
+    const previous = slot.best;
+    slot.best = trial;
+    ws.trial = previous;
+  }
+  return bits;
+}
+
+/** Orders are ranked by estimated bits; the best few are coded for real. */
+function planLpc(
+  ws: EncoderWorkspace,
+  slot: ChannelSlot,
+  n: number,
+  bps: number,
+  wasted: number,
+  maxAbs: number
+): void {
+  const maxOrder = Math.min(FLAC_MAX_LPC_ORDER, n - 1);
+  autocorrelate(ws, slot.samples, n, maxOrder);
+  const usable = levinsonDurbin(ws, maxOrder);
+  if (usable === 0) return;
+
+  const basePrecision = defaultQlpPrecision(ws.bitsPerSample, n);
+  // Estimated bits: a Laplacian residual costs about log2 of its mean magnitude per sample,
+  // and each order adds warm-up and coefficient bits.
+  const errorScale = 0.5 / n;
+  for (let o = 1; o <= usable; o++) {
+    const perSample = Math.max(0, 0.5 * Math.log2(ws.lpcErrors[o - 1] * errorScale));
+    ws.orderBits[o - 1] = perSample * (n - o) + o * (basePrecision + bps);
+  }
+
+  for (let attempt = 0; attempt < LPC_EXACT_ORDER_CANDIDATES; attempt++) {
+    let order = 0;
+    let lowest = Number.POSITIVE_INFINITY;
+    for (let o = 1; o <= usable; o++) {
+      if (ws.orderBits[o - 1] < lowest) {
+        lowest = ws.orderBits[o - 1];
+        order = o;
+      }
+    }
+    if (order === 0) break;
+    ws.orderBits[order - 1] = Number.POSITIVE_INFINITY;
+
+    let bestCost = Number.POSITIVE_INFINITY;
+    const lastPrecision = Math.min(MAX_QLP_PRECISION, basePrecision + QLP_PRECISION_SEARCH_STEPS);
+    for (let precision = Math.max(MIN_QLP_PRECISION, basePrecision); precision <= lastPrecision; precision++) {
+      const cost = tryLpc(ws, slot, n, bps, wasted, maxAbs, order, precision);
+      if (cost < bestCost) bestCost = cost;
+      else if (bestCost < Number.POSITIVE_INFINITY) break;
+    }
+  }
+}
+
 /**
  * Plans one channel: constant if flat, else the cheaper of verbatim and the best fixed
  * predictor, after stripping bits that are zero in every sample.
@@ -717,6 +993,12 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
     for (let i = 0; i < n; i++) x[i] >>= wasted;
   }
   const bps = channelBps - wasted;
+  let maxAbs = 0;
+  for (let i = 0; i < n; i++) {
+    const v = x[i];
+    const magnitude = v < 0 ? -v : v;
+    if (magnitude > maxAbs) maxAbs = magnitude;
+  }
 
   best.kind = SUBFRAME_VERBATIM;
   best.order = 0;
@@ -754,12 +1036,15 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
     ws.trial = best;
     slot.best = trial;
   }
+
+  if (n >= LPC_MIN_BLOCK_SAMPLES) planLpc(ws, slot, n, bps, wasted, maxAbs);
 }
 
 function writeSubframe(writer: FlacBitWriter, plan: SubframePlan, x: Int32Array, n: number): void {
   let typeCode = TYPE_CODE_VERBATIM;
   if (plan.kind === SUBFRAME_CONSTANT) typeCode = TYPE_CODE_CONSTANT;
   else if (plan.kind === SUBFRAME_FIXED) typeCode = TYPE_CODE_FIXED + plan.order;
+  else if (plan.kind === SUBFRAME_LPC) typeCode = TYPE_CODE_LPC + plan.order - 1;
   // zero pad bit, 6-bit type, wasted-bits flag
   writer.writeBits((typeCode << 1) | (plan.wasted > 0 ? 1 : 0), SUBFRAME_HEADER_BITS);
   if (plan.wasted > 0) writer.writeBits(1, plan.wasted);
@@ -773,6 +1058,11 @@ function writeSubframe(writer: FlacBitWriter, plan: SubframePlan, x: Int32Array,
     return;
   }
   for (let i = 0; i < plan.order; i++) writer.writeSigned(x[i], plan.bps);
+  if (plan.kind === SUBFRAME_LPC) {
+    writer.writeBits(plan.precision - 1, QLP_PRECISION_FIELD_BITS);
+    writer.writeSigned(plan.shift, QLP_SHIFT_FIELD_BITS);
+    for (let j = 0; j < plan.order; j++) writer.writeSigned(plan.coefs[j], plan.precision);
+  }
   writeResidual(writer, plan.residual, plan.folded, n, plan.order, plan.coding);
 }
 
@@ -902,22 +1192,6 @@ function buildStreamInfo(
   info.writeBigUInt64BE(packed, 18);
   md5.copy(info, STREAMINFO_MD5_OFFSET);
   return info;
-}
-
-/** Everything one stream encode allocates up front. */
-class EncoderWorkspace {
-  readonly slots: ChannelSlot[];
-  trial: SubframePlan;
-  readonly writer: FlacBitWriter;
-
-  constructor(blockSize: number, channels: number, bitsPerSample: number) {
-    this.slots = [];
-    for (let c = 0; c < channels; c++) this.slots.push(new ChannelSlot(blockSize));
-    this.trial = new SubframePlan(blockSize);
-    // Worst case is every subframe verbatim at one extra bit (side channels) plus framing.
-    const subframeBytes = SUBFRAME_HEADER_BITS / BITS_PER_BYTE + Math.ceil(((bitsPerSample + 1) * blockSize) / BITS_PER_BYTE) + 1;
-    this.writer = new FlacBitWriter(FRAME_OVERHEAD_BYTES + channels * subframeBytes);
-  }
 }
 
 /**
