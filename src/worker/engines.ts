@@ -21,6 +21,7 @@ import {
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
+import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { hasComplexTextScript } from '../lib/conversions/ctl';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -1302,10 +1303,6 @@ export async function convertWithNativePoppler(
   return null;
 }
 
-/** Camera RAW sources the native RAW engine decodes from sensor data. */
-const RAW_SOURCE_FORMATS: ReadonlySet<string> = new Set([
-  '3fr', 'arw', 'cr2', 'cr3', 'crw', 'dcr', 'dng', 'erf', 'mos', 'mrw', 'nef', 'orf', 'pef', 'raf', 'raw', 'rw2', 'x3f',
-]);
 /** Targets that package the original camera file instead of rendering its pixels. */
 const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
 const RAW_DECODE_DEFAULT_TIMEOUT_MS = 120_000;
@@ -1330,7 +1327,7 @@ export async function convertWithNativeRaw(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
-  if (!RAW_SOURCE_FORMATS.has(src) || RAW_PACKAGING_TARGETS.has(tgt)) return null;
+  if (!RAW_CAMERA_FORMATS.has(src) || RAW_PACKAGING_TARGETS.has(tgt)) return null;
   const dcrawBin = resolveBinary(BINARY_PATHS.dcrawEmu, process.env.DCRAW_EMU_PATH);
   if (!dcrawBin) {
     if (options.throwOnUnavailable) {
@@ -1542,7 +1539,7 @@ export async function executeWorkerConversion(
 
   // 1c. Native RAW sensor decode (LibRaw). Formats LibRaw does not recognize may still yield an
   // embedded preview in-process, but only when the request opted in.
-  if (RAW_SOURCE_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
+  if (RAW_CAMERA_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
     try {
       const rawRes = await convertWithNativeRaw(input, src, tgt, nativeOptions, originalFilename);
       if (rawRes) {
@@ -1679,7 +1676,7 @@ export async function executeWorkerConversion(
       err instanceof UnsupportedRawCompressionError ||
       err instanceof InvalidRawSensorError ||
       err instanceof RawEngineRequiredError;
-    if (lastUnavailable && RAW_SOURCE_FORMATS.has(src) && nativeCouldDecode) {
+    if (lastUnavailable && RAW_CAMERA_FORMATS.has(src) && nativeCouldDecode) {
       throw new EngineUnavailableError(lastUnavailable.engineName, `${lastUnavailable.reason} (${err.message})`);
     }
     throw err;

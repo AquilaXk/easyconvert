@@ -25,6 +25,7 @@ import {
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { buildOdgPackage } from './odg';
+import { RAW_CAMERA_FORMATS } from './raw-formats';
 import {
   demosaicRcdBayerCfa,
   processFloat32LinearPipeline,
@@ -2277,10 +2278,6 @@ export function decodeRawBayerSensor(
   return null;
 }
 
-const RAW_CAMERA_FORMATS: ReadonlySet<string> = new Set([
-  'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'pef', 'orf', 'srw', 'kdc',
-  '3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f', 'raw',
-]);
 const JPEG_SOI_MARKER = Buffer.from([0xff, 0xd8, 0xff]);
 const JPEG_MARKER_PREFIX = 0xff;
 const JPEG_EOI = 0xd9;
