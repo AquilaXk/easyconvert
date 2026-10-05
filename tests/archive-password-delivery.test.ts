@@ -19,11 +19,14 @@ import {
   MAX_ZIP_PASSWORD_BYTES,
   assertArchivePasswordSafe,
   assertListingShowsEncryption,
+  assertZipPasswordSupported,
   execFileSyncWithPasswordStdin,
   sevenZipCreatePasswordInput,
   sevenZipReadPasswordInput,
 } from '../src/lib/conversions/archive-password';
 import { convertWithNative7z as convertWithWorker7z } from '../src/worker/engines';
+import { NextRequest } from 'next/server';
+import { POST as convertRoute } from '../src/app/api/convert/route';
 import {
   ArchiveEncryptedHeaderError,
   ArchiveNotEncryptedError,
@@ -862,6 +865,88 @@ describe('archive password delivery to the real 7z binary', () => {
       expect(sevenZipReadPasswordInput(undefined).toString('utf-8')).toBe('\n');
       expect(sevenZipReadPasswordInput('pw').toString('utf-8')).toBe('pw\n');
       expect(sevenZipCreatePasswordInput('pw').toString('utf-8')).toBe('pw\npw\n');
+    });
+
+    it('rejects a password that is not a string with a typed error instead of a TypeError', async () => {
+      for (const password of [12345, 0, true, false, {}, [], ['pw'], { toString: () => 'pw' }]) {
+        let failure: unknown;
+        try {
+          assertArchivePasswordSafe(password as unknown as string);
+        } catch (err) {
+          failure = err;
+        }
+        expect(failure, `${JSON.stringify(password)} was accepted`).toBeInstanceOf(ConversionFailedError);
+        expect((failure as Error).message, JSON.stringify(password)).toBe('Archive password must be a string.');
+      }
+      // A falsy non-string must not silently produce an unprotected archive either.
+      const files = PLAIN_FILES.map((file) => ({ filename: file.name, buffer: file.data }));
+      for (const password of [0, false]) {
+        const options = { password: password as unknown as string };
+        await expect(createZipArchive(files, options, 'out.zip')).rejects.toThrow('Archive password must be a string.');
+        expect(() => create7zArchive(files, options, 'out.7z')).toThrow('Archive password must be a string.');
+      }
+      // Absent and empty mean "no password" and stay valid.
+      expect(sevenZipReadPasswordInput(undefined).toString('utf-8')).toBe('\n');
+      expect(sevenZipReadPasswordInput('').toString('utf-8')).toBe('\n');
+    });
+
+    it('answers a non-string password on the legacy /api/convert route with HTTP 400', async () => {
+      const zip = withTempDir((dir) => {
+        writeFileSync(path.join(dir, 'a.txt'), 'x');
+        execFileSync('7z', ['a', '-y', '-tzip', path.join(dir, 'in.zip'), 'a.txt'], { cwd: dir, stdio: 'pipe' });
+        return readFileSync(path.join(dir, 'in.zip'));
+      });
+      for (const password of [12345, true, { nested: 'pw' }, ['pw']]) {
+        const form = new FormData();
+        form.append('file', new File([new Uint8Array(zip)], 'in.zip', { type: 'application/zip' }));
+        form.append('targetFormat', '7z');
+        form.append('options', JSON.stringify({ password }));
+        const res = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', body: form }));
+        const body = await res.json();
+        expect(res.status, `${JSON.stringify(password)} -> ${JSON.stringify(body)}`).toBe(400);
+        expect(body.error).toBe('Archive password must be a string.');
+      }
+    });
+
+    it('rejects lone surrogates, which UTF-8 would silently turn into U+FFFD', () => {
+      for (const password of ['\ud800', 'ab\udc00cd', 'x\ud83d', '\ude00\ud83d']) {
+        expect(() => assertArchivePasswordSafe(password), JSON.stringify(password)).toThrow(
+          'Archive password contains an unpaired surrogate and cannot be encoded as UTF-8.'
+        );
+      }
+      // A surrogate pair is a real character and is sent as its four UTF-8 bytes.
+      expect([...sevenZipReadPasswordInput('\u{1F600}')]).toEqual([0xf0, 0x9f, 0x98, 0x80, 0x0a]);
+    });
+
+    it('rejects ASCII control characters in a ZIP password, which 7-Zip fails with E_INVALIDARG', () => {
+      const BLOCKED_BY_LINE_RULE = new Set([0x0a, 0x0d]);
+      const FIRST_PRINTABLE = 0x20;
+      for (let code = 1; code < FIRST_PRINTABLE; code += 1) {
+        if (BLOCKED_BY_LINE_RULE.has(code)) continue;
+        const password = `a${String.fromCharCode(code)}b`;
+        expect(() => assertZipPasswordSupported(password), `0x${code.toString(16)}`).toThrow(UnsupportedOptionError);
+      }
+    });
+
+    oracleTest('a ZIP target refuses a tab in the password on every creation path', ['7z'], async () => {
+      const files = PLAIN_FILES.map((file) => ({ filename: file.name, buffer: file.data }));
+      const password = 'tab\there';
+      await expect(createZipArchive(files, { password }, 'out.zip')).rejects.toThrow(UnsupportedOptionError);
+      expect(() => convertWithNative7z(buildPlainZip(), 'zip', 'zip', { password }, 'in.zip')).toThrow(UnsupportedOptionError);
+      await expect(convertWithWorker7z(buildPlainZip(), 'zip', 'zip', { password, throwOnUnavailable: true }, 'in.zip')).rejects.toThrow(
+        UnsupportedOptionError
+      );
+      await expect(convertArchive(buildPlainZip(), 'zip', 'zip', { password }, 'in.zip')).rejects.toThrow(UnsupportedOptionError);
+      // A 7z target takes the same password.
+      expectPlainFiles(unpackWithOracle(create7zArchive(files, { password }, 'out.7z').buffer, '7z', password));
+    });
+
+    oracleTest('a ZIP target still accepts the printable ASCII edge cases 7-Zip accepts (space, tilde, DEL)', ['7z'], async () => {
+      const files = PLAIN_FILES.map((file) => ({ filename: file.name, buffer: file.data }));
+      for (const password of ['a b', 'a~b', 'a\u007fb']) {
+        const created = await createZipArchive(files, { password }, 'edge.zip');
+        expectPlainFiles(unpackWithOracle(created.buffer, 'zip', password));
+      }
     });
 
     it('applies the same validation before any archive is read', async () => {

@@ -37,6 +37,12 @@ export const MAX_ZIP_PASSWORD_BYTES = 99;
 /** A line break or NUL would end the password early or answer a later prompt. */
 const PASSWORD_FORBIDDEN_CHARACTERS = /[\r\n\0]/;
 
+/** A high surrogate without a low one after it, or a low surrogate without a high one before it. */
+const UNPAIRED_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+/** First printable ASCII character: 7-Zip rejects ZIP AES passwords with a code below it (E_INVALIDARG). */
+const FIRST_PRINTABLE_ASCII = 0x20;
+
 /** unrar exit status RARX_BADPWD: a RAR5 archive's password check value rejected the password. */
 export const UNRAR_BAD_PASSWORD_EXIT_STATUS = 11;
 
@@ -63,24 +69,39 @@ const ARCHIVE_TOOL_PASSWORD_FAILURE_LINES: readonly RegExp[] = [
 
 const STDERR_LINE_SEPARATOR = /\r?\n/;
 
-export function assertArchivePasswordSafe(password: string | undefined): void {
-  if (!password) return;
+/**
+ * Validates a password from a request. `undefined`, `null` and the empty string mean "no password";
+ * anything else must be a string that survives UTF-8 encoding and stays on one stdin line.
+ */
+export function assertArchivePasswordSafe(password: unknown): void {
+  if (password === undefined || password === null || password === '') return;
+  if (typeof password !== 'string') {
+    throw new ConversionFailedError('Archive password must be a string.');
+  }
   if (PASSWORD_FORBIDDEN_CHARACTERS.test(password)) {
     throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+  }
+  if (UNPAIRED_SURROGATE.test(password)) {
+    throw new ConversionFailedError('Archive password contains an unpaired surrogate and cannot be encoded as UTF-8.');
   }
   if (Buffer.byteLength(password, 'utf-8') > MAX_ARCHIVE_PASSWORD_BYTES) {
     throw new ConversionFailedError(`Archive password exceeds the ${MAX_ARCHIVE_PASSWORD_BYTES} byte limit.`);
   }
 }
 
-/** 7-Zip encrypts ZIP entries with ASCII passwords of at most 99 bytes and fails the run otherwise. */
+/**
+ * 7-Zip encrypts ZIP entries with printable ASCII passwords of at most 99 bytes and fails the run
+ * otherwise: non-ASCII text, too long a password and any control character below 0x20 (tab included)
+ * all end in E_INVALIDARG.
+ */
 export function assertZipPasswordSupported(password: string | undefined): void {
   if (!password) return;
   // ASCII-only text has the same length in UTF-16 code units and in UTF-8 bytes.
   const utf8Bytes = Buffer.byteLength(password, 'utf-8');
-  if (utf8Bytes !== password.length || utf8Bytes > MAX_ZIP_PASSWORD_BYTES) {
+  const hasControlCharacter = Array.from(password).some((char) => char.charCodeAt(0) < FIRST_PRINTABLE_ASCII);
+  if (utf8Bytes !== password.length || utf8Bytes > MAX_ZIP_PASSWORD_BYTES || hasControlCharacter) {
     throw new UnsupportedOptionError(
-      `ZIP encryption supports ASCII passwords of at most ${MAX_ZIP_PASSWORD_BYTES} characters. Use a 7z target for other passwords.`
+      `ZIP encryption supports printable ASCII passwords of at most ${MAX_ZIP_PASSWORD_BYTES} characters. Use a 7z target for other passwords.`
     );
   }
 }

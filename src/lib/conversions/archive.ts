@@ -325,6 +325,8 @@ export async function createZipArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.zip'
 ): Promise<ConversionResult> {
+  // Before the truthiness check below: a falsy non-string such as 0 must not silently skip encryption.
+  assertArchivePasswordSafe(options.password);
   const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   if (options.password) {
     const p7z = get7zBinaryPath();
@@ -2001,6 +2003,7 @@ export function create7zArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.7z'
 ): ConversionResult {
+  assertArchivePasswordSafe(options.password);
   const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   files = resolvedFiles;
   if (options.password) {
