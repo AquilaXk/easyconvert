@@ -328,20 +328,12 @@ function assertDataOptions(options: unknown): asserts options is ConversionOptio
   }
 }
 
-function lineNumberAt(text: string, index: number): number {
-  let line = 1;
-  for (let i = 0; i < index && i < text.length; i++) {
-    if (text.charCodeAt(i) === 0x0a) line++;
-  }
-  return line;
-}
-
 function delimitedParseError(error: Papa.ParseError, text: string, src: string): DataParseError {
   let row: number | undefined;
   if (typeof error.row === 'number') {
     row = error.row + (error.type === 'FieldMismatch' ? FIELD_MISMATCH_ROW_OFFSET : QUOTE_ERROR_ROW_OFFSET);
   }
-  const line = typeof error.index === 'number' ? lineNumberAt(text, error.index) : undefined;
+  const line = typeof error.index === 'number' ? positionOf(text, error.index).line : undefined;
   const where = [row !== undefined ? `row ${row}` : '', line !== undefined ? `line ${line}` : ''].filter(Boolean).join(', ');
   return new DataParseError(
     `Failed to parse ${src.toUpperCase()}: ${error.message}${where ? ` (${where})` : ''}.`,
