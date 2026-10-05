@@ -55,6 +55,7 @@ jobs:
             fonts-nanum \
             fonts-noto-core \
             fonts-noto-cjk \
+            libxml2-utils \
             python3-fitz \
             fonts-noto-ui-core \
             fonts-noto-color-emoji \
