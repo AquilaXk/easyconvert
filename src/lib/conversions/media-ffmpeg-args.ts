@@ -164,9 +164,14 @@ export const H264_ALLOWED_LEVELS = new Set([
 export const HEVC_ALLOWED_PROFILES = new Set(['main', 'main10']);
 export const AV1_ALLOWED_PROFILES = new Set(['main', '0']);
 
-let cachedHwCapabilities: HardwareAccelerationCapabilities | null = null;
-let lastProbeTime = 0;
-const PROBE_CACHE_TTL_MS = 60000;
+/**
+ * Probe results per ffmpeg binary (and DRM directory). The probe runs synchronously, so a long
+ * lifetime keeps it off the request path; the worker warms it at startup.
+ */
+const hwCapabilityCache = new Map<string, HardwareAccelerationCapabilities>();
+const PROBE_CACHE_TTL_MS = 10 * 60 * 1000;
+/** A child that ignores SIGTERM must not outlive its probe timeout. */
+const PROBE_KILL_SIGNAL = 'SIGKILL';
 const ENCODER_LIST_TIMEOUT_MS = 3000;
 /** Directory that holds the DRM nodes Intel Quick Sync needs. */
 const DRM_DEVICE_DIR = '/dev/dri';
@@ -220,7 +225,7 @@ function canOpenEncoderSession(
         ...(filter ? ['-vf', filter] : []),
         '-frames:v', '1', '-c:v', encoder, '-f', 'null', '-',
       ],
-      { stdio: 'ignore', timeout: HW_SESSION_PROBE_TIMEOUT_MS }
+      { stdio: 'ignore', timeout: HW_SESSION_PROBE_TIMEOUT_MS, killSignal: PROBE_KILL_SIGNAL }
     );
     return true;
   } catch {
@@ -235,8 +240,7 @@ export function usesHardwareVideoEncoder(args: readonly string[]): boolean {
 }
 
 export function resetHardwareAccelerationCache(): void {
-  cachedHwCapabilities = null;
-  lastProbeTime = 0;
+  hwCapabilityCache.clear();
 }
 
 /**
@@ -248,8 +252,10 @@ export function probeHardwareAcceleration(
   env: HardwareProbeEnvironment = {}
 ): HardwareAccelerationCapabilities {
   const now = Date.now();
-  if (cachedHwCapabilities && now - lastProbeTime < PROBE_CACHE_TTL_MS) {
-    return cachedHwCapabilities;
+  const cacheKey = `${ffmpegPath ?? ''}\0${env.drmDir ?? ''}`;
+  const cached = hwCapabilityCache.get(cacheKey);
+  if (cached && now - cached.probedAt < PROBE_CACHE_TTL_MS) {
+    return cached;
   }
 
   const defaultCaps: HardwareAccelerationCapabilities = {
@@ -262,8 +268,7 @@ export function probeHardwareAcceleration(
   };
 
   if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
-    cachedHwCapabilities = defaultCaps;
-    lastProbeTime = now;
+    // Not cached: a binary installed later must be seen at once, and this check costs one stat.
     return defaultCaps;
   }
 
@@ -272,6 +277,7 @@ export function probeHardwareAcceleration(
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: ENCODER_LIST_TIMEOUT_MS,
+      killSignal: PROBE_KILL_SIGNAL,
     });
 
     const supported = new Set<string>();
@@ -309,14 +315,29 @@ export function probeHardwareAcceleration(
       probedAt: now,
     };
 
-    cachedHwCapabilities = caps;
-    lastProbeTime = now;
+    hwCapabilityCache.set(cacheKey, caps);
     return caps;
   } catch {
-    cachedHwCapabilities = defaultCaps;
-    lastProbeTime = now;
+    hwCapabilityCache.set(cacheKey, defaultCaps);
     return defaultCaps;
   }
+}
+
+const VIDEO_CODECS: ReadonlySet<string> = new Set(['h264', 'hevc', 'vp9', 'av1', 'prores']);
+/** Spellings accepted for a codec; h265 is the common name of hevc. */
+const VIDEO_CODEC_ALIASES: Readonly<Record<string, string>> = { h265: 'hevc' };
+
+type VideoCodecName = 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores';
+
+/** Normalizes a requested video codec, rejecting any name this builder cannot encode. */
+function resolveVideoCodec(requested: string): VideoCodecName {
+  const name = Object.hasOwn(VIDEO_CODEC_ALIASES, requested) ? VIDEO_CODEC_ALIASES[requested] : requested;
+  if (!VIDEO_CODECS.has(name)) {
+    throw new InvalidMediaOptionError(
+      `Unsupported video codec '${requested}'. Allowed: ${[...VIDEO_CODECS].join(', ')} (h265 is accepted as hevc).`
+    );
+  }
+  return name as VideoCodecName;
 }
 
 const CHANNELS_BY_LAYOUT_NAME: Readonly<Record<string, number>> = { mono: 1, stereo: 2, '5.1': 6, '7.1': 8 };
@@ -585,7 +606,7 @@ export function buildFfmpegArguments(
       : null;
 
     const videoOpts = options.video;
-    const codec = videoOpts?.codec || options.videoCodec || (tgt === 'webm' ? 'vp9' : 'h264');
+    const codec = resolveVideoCodec(videoOpts?.codec || options.videoCodec || (tgt === 'webm' ? 'vp9' : 'h264'));
 
     // 1. Container Compatibility Gate
     if (tgt === 'webm' && codec !== 'vp9' && codec !== 'av1') {
