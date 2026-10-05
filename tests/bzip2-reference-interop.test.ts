@@ -70,6 +70,9 @@ function mixedInput(): Buffer {
 
 const allByteValues = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
 
+const SMALL_LENGTHS = [2, 3, 5, 6, 7, 8, 9, 10];
+const BLOCK_BOUNDARY_LENGTHS = [899_981, 899_982, 900_000, 900_001];
+
 const CASES: Array<[string, () => Buffer]> = [
   ['empty input', () => Buffer.alloc(0)],
   ['single byte', () => Buffer.from('a')],
@@ -81,6 +84,14 @@ const CASES: Array<[string, () => Buffer]> = [
   ['sample.tar fixture', () => fs.readFileSync(BZIP2_FIXTURE_TAR)],
   ['pseudo-random LCG data', () => lcgBytes(200_000, 42)],
   ['2.5 MB mixed multi-block input', mixedInput],
+  ...SMALL_LENGTHS.map((length): [string, () => Buffer] => [`${length} identical bytes`, () => Buffer.alloc(length, 7)]),
+  ...SMALL_LENGTHS.map((length): [string, () => Buffer] => [
+    `${length} distinct bytes`,
+    () => Buffer.from(Array.from({ length }, (_, i) => i)),
+  ]),
+  // Level 9 blocks hold 900000 - 19 bytes after the first run-length stage; random data barely changes size.
+  ...BLOCK_BOUNDARY_LENGTHS.map((length): [string, () => Buffer] => [`${length} random bytes at the block boundary`, () => lcgBytes(length, length)]),
+  ['a run straddling the first block boundary', () => Buffer.concat([lcgBytes(BLOCK_BOUNDARY_LENGTHS[0] - 3, 11), Buffer.alloc(300, 9)])],
 ];
 
 describe('bzip2 encoder output is accepted by the reference decoder', () => {
@@ -288,7 +299,7 @@ describe('bzip2 decoder rejects hostile input with a typed error', () => {
   it.skipIf(!HAS_BZIP2)('accepts zero padding after the last stream', () => {
     const reference = systemBzip2(['-c'], payload);
     const padded = Buffer.concat([reference, Buffer.alloc(512)]);
-    expect(decompressBzip2(padded).equals(payload)).toBe(true);
+    expectSameBytes(decompressBzip2(padded), payload);
   });
 
   it.skipIf(!HAS_BZIP2)('rejects a block-size digit outside 1..9', () => {

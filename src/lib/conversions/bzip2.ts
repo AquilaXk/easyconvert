@@ -34,6 +34,12 @@ const BZ_INITIAL_UNUSED_COST = 15;
 const BZ_PEEK_BITS = 20;
 const BZ_ORIG_PTR_BITS = 24;
 const BZ_CRC_POLY = 0x04c11db7;
+const BZ_CRC_INIT = 0xffffffff;
+const BZ_CRC_TOP_BIT = 0x80000000;
+const BZ_CRC_ROTATE_SHIFT = 31;
+const HALF_WORD_MASK = 0xffff;
+/** Symbol counts below which the encoder uses 2, 3, 4 and 5 coding tables (6 above), as the reference does. */
+const BZ_TREE_COUNT_THRESHOLDS = [200, 600, 1200, 2400];
 const BZ_BYTE_MASK = 0xff;
 
 const BZ_BLOCK_MAGIC = [0x31, 0x41, 0x59, 0x26, 0x53, 0x59];
@@ -67,29 +73,25 @@ function bzError(message: string): ConversionFailedError {
 // CRC-32 (MSB-first, polynomial 0x04C11DB7)
 // ---------------------------------------------------------------------------------------------
 
-const BZ_CRC_TABLE = new Uint32Array(256);
-for (let i = 0; i < 256; i++) {
+const BZ_CRC_TABLE = new Uint32Array(BZ_ALPHABET);
+for (let i = 0; i < BZ_ALPHABET; i++) {
   let c = i << 24;
   for (let j = 0; j < 8; j++) {
-    c = (c & 0x80000000) ? ((c << 1) ^ BZ_CRC_POLY) : (c << 1);
+    c = (c & BZ_CRC_TOP_BIT) ? ((c << 1) ^ BZ_CRC_POLY) : (c << 1);
   }
   BZ_CRC_TABLE[i] = c >>> 0;
 }
 
-export function updateBzCrc(crc: number, val: number): number {
-  return ((crc << 8) ^ BZ_CRC_TABLE[((crc >>> 24) ^ val) & BZ_BYTE_MASK]) >>> 0;
-}
-
 export function computeBzBlockCrc(buf: Uint8Array): number {
-  let crc = 0xffffffff;
+  let crc = BZ_CRC_INIT;
   for (let i = 0; i < buf.length; i++) {
     crc = ((crc << 8) ^ BZ_CRC_TABLE[((crc >>> 24) ^ buf[i]) & BZ_BYTE_MASK]) >>> 0;
   }
-  return (crc ^ 0xffffffff) >>> 0;
+  return (crc ^ BZ_CRC_INIT) >>> 0;
 }
 
 function combineCrc(combined: number, blockCrc: number): number {
-  return (((combined << 1) | (combined >>> 31)) ^ blockCrc) >>> 0;
+  return (((combined << 1) | (combined >>> BZ_CRC_ROTATE_SHIFT)) ^ blockCrc) >>> 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -116,7 +118,7 @@ class BitWriter {
   writeBits(value: number, width: number): void {
     if (width > HALF_WORD_BITS) {
       this.writeBits(value >>> HALF_WORD_BITS, width - HALF_WORD_BITS);
-      this.writeBits(value & 0xffff, HALF_WORD_BITS);
+      this.writeBits(value & HALF_WORD_MASK, HALF_WORD_BITS);
       return;
     }
     this.acc = (this.acc << width) | (value & ((1 << width) - 1));
@@ -356,11 +358,8 @@ function assignCanonicalCodes(lengths: Uint8Array, alphaSize: number): Int32Arra
 }
 
 function chooseTreeCount(symbolCount: number): number {
-  if (symbolCount < 200) return 2;
-  if (symbolCount < 600) return 3;
-  if (symbolCount < 1200) return 4;
-  if (symbolCount < 2400) return 5;
-  return 6;
+  const below = BZ_TREE_COUNT_THRESHOLDS.findIndex((threshold) => symbolCount < threshold);
+  return below === -1 ? BZ_MAX_TREES : BZ_MIN_TREES + below;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -445,7 +444,10 @@ function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number): vo
       groupEnd++;
       accumulated += symFreq[groupEnd];
     }
-    if (groupEnd > groupStart && part !== numTrees && part !== 1 && (numTrees - part) % 2 === 1) {
+    // Like the reference encoder, every other inner partition gives back its last symbol so the
+    // initial tables overlap less; the parity alternates from the first partition.
+    const givesBackLastSymbol = (numTrees - part) % 2 === 1;
+    if (groupEnd > groupStart && part !== numTrees && part !== 1 && givesBackLastSymbol) {
       accumulated -= symFreq[groupEnd];
       groupEnd--;
     }
@@ -654,10 +656,6 @@ class OutputSink {
   }
 }
 
-interface StreamResult {
-  combinedCrc: number;
-}
-
 function decodeSymbol(reader: BitReader, table: HuffmanDecodeTable): number {
   const window = reader.peek(BZ_PEEK_BITS);
   let len = table.minLen;
@@ -860,7 +858,7 @@ function matchesMagic(bytes: number[], expected: number[]): boolean {
   return bytes.length === expected.length && bytes.every((b, i) => b === expected[i]);
 }
 
-function decodeStream(reader: BitReader, sink: OutputSink): StreamResult {
+function decodeStream(reader: BitReader, sink: OutputSink): void {
   const sig: number[] = [];
   for (let i = 0; i < BZ_SIGNATURE.length; i++) sig.push(reader.readBits(BYTE_BITS));
   if (!matchesMagic(sig, BZ_SIGNATURE)) throw bzError('missing BZh signature');
@@ -880,7 +878,7 @@ function decodeStream(reader: BitReader, sink: OutputSink): StreamResult {
           `stream CRC mismatch (expected 0x${storedCombined.toString(16)}, got 0x${combined.toString(16)})`
         );
       }
-      return { combinedCrc: combined };
+      return;
     }
     if (!matchesMagic(magic, BZ_BLOCK_MAGIC)) throw bzError('invalid block header');
     tt ??= new Uint32Array(maxBlock);
