@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { convertFile } from '../src/lib/conversions';
+import { FontOutlinesMissingError } from '../src/lib/conversions/font';
 import { crc16Xmodem, MacFontContainerError } from '../src/lib/conversions/font-mac-resource';
 import { ConversionFailedError } from '../src/lib/types';
 import {
@@ -232,6 +233,7 @@ describe('Mac font container helpers', () => {
 // Conversions
 // ---------------------------------------------------------------------------
 
+const OUTLINE_TARGETS = new Set(['ttf', 'otf']);
 const PAIRS: ReadonlyArray<readonly [Container, string]> = [
   ['dfont', 'otf'],
   ['dfont', 'ttf'],
@@ -313,7 +315,23 @@ describe('dfont and MacBinary font containers convert through convertFile', () =
     }
   );
 
-  it.each(PAIRS)('%s -> %s preserves the identity tables of the repository golden font', async (source, target) => {
+  it.each(PAIRS.filter(([, target]) => OUTLINE_TARGETS.has(target)))(
+    '%s -> %s rejects the repository golden font because it has no glyph outlines to convert',
+    async (source, target) => {
+      // The golden font carries identity tables only (no glyf, loca or CFF), so a TrueType or CFF file
+      // would need invented glyphs: the engine fails closed with a typed error.
+      const fixture = fs.readFileSync(FIXTURE_OTF);
+      const failure = await convert(wrap(source, [fixture]), source, target).then(
+        () => null,
+        (error: unknown) => error
+      );
+      expect(failure).toBeInstanceOf(FontOutlinesMissingError);
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toMatch(/no glyph outlines/);
+    }
+  );
+
+  it.each(PAIRS.filter(([, target]) => !OUTLINE_TARGETS.has(target)))('%s -> %s preserves the identity tables of the repository golden font', async (source, target) => {
     const fixture = fs.readFileSync(FIXTURE_OTF);
     const fixtureTables = readSfntTables(fixture);
     const result = await convert(wrap(source, [fixture]), source, target);
