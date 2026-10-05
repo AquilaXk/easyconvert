@@ -21,6 +21,9 @@ const TIER_MAX_MULTIPART_BYTES: Record<UserTier | 'anonymous', number> = {
 
 const MAX_MULTIPART_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
 
+/** A presigned download URL is a bearer capability for the object, so it lives only as long as a download needs. */
+const DOWNLOAD_PRESIGN_MAX_SECONDS = 15 * 60;
+
 /** The session operations the multipart actions need; every shipped backend provides them. */
 type MultipartCapableStorage = IStorageBackend &
   Required<Pick<IStorageBackend, 'getUploadSession' | 'getUploadOwner' | 'uploadPartStream' | 'getUploadedParts'>>;
@@ -366,8 +369,11 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ success: true, ...presigned });
         }
       } else if (type === 'download') {
+        // A signed URL needs no further authentication, so it is issued only for a key the caller
+        // provably owns: an unresolved owner (job record unreadable), an ownerless key and another
+        // user's key are all answered like a missing object.
         const ownership = await resolveObjectOwnership(key);
-        if (ownership.resolved && ownership.ownerUserId && ownership.ownerUserId !== currentUser.id) {
+        if (!ownership.resolved || ownership.ownerUserId !== currentUser.id) {
           return createProblemDetailsResponse(
             404,
             STORAGE_OBJECT_NOT_FOUND,
@@ -376,7 +382,10 @@ export async function POST(req: NextRequest) {
         }
 
         if (storage.generatePresignedDownloadUrl) {
-          const presigned = await storage.generatePresignedDownloadUrl(key, expiresInSeconds);
+          const presigned = await storage.generatePresignedDownloadUrl(
+            key,
+            Math.min(expiresInSeconds ?? DOWNLOAD_PRESIGN_MAX_SECONDS, DOWNLOAD_PRESIGN_MAX_SECONDS)
+          );
           return NextResponse.json({ success: true, ...presigned });
         }
       }
