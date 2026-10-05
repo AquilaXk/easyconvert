@@ -22,6 +22,8 @@ export const dispatchEngine: ConversionEnginePort = {
       fallbackReason: res.fallbackReason,
       fallbackChain: res.fallbackChain,
       ocrExtractedText: res.ocrExtractedText,
+      sourceFrameCount: res.sourceFrameCount,
+      frameUsed: res.frameUsed,
     };
   },
 };

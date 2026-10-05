@@ -16,6 +16,7 @@ import { isUploadKey } from '../storage/key-namespace';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
+import { frameMetadataFields } from '../api/frame-headers';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
 
@@ -66,6 +67,8 @@ export const tsEngine: ConversionEnginePort = {
       engineUsed: 'ts-engine',
       executionTimeMs: Date.now() - startTime,
       ocrExtractedText: res.ocrExtractedText,
+      sourceFrameCount: res.sourceFrameCount,
+      frameUsed: res.frameUsed,
     };
   },
 };
@@ -334,6 +337,7 @@ export async function processNodeJob(
       size: finalResult.size,
       durationMs,
       ocrExtracted: Boolean(finalResult.ocrExtractedText),
+      ...frameMetadataFields(finalResult),
     };
   } finally {
     if (attemptSignal.aborted) {

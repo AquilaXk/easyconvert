@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
@@ -12,6 +13,8 @@ import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts'
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
 import { ConversionFailedError, EngineUnavailableError } from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
+
+const ZIP_MIME_TYPE = 'application/zip';
 
 export const dynamic = 'force-dynamic';
 
@@ -336,7 +339,9 @@ export async function POST(req: NextRequest) {
 
     // Record in user's file conversion history
     const baseName = file.name.replace(/\.[^/.]+$/, '');
-    const outFileName = `${baseName}.${targetDef.extension || targetDef.id}`;
+    // Multi-page results (one image per page) come back as a ZIP whatever the requested target is.
+    const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
+    const outFileName = `${baseName}.${outExtension}`;
     const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
     storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
     const downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
@@ -360,6 +365,7 @@ export async function POST(req: NextRequest) {
           'Content-Disposition': `attachment; filename="${outFileName}"`,
           'X-Conversion-Time-Ms': durationMs.toString(),
           'X-File-Id': userFile.id,
+          ...frameMetadataHeaders(conversionResult),
           ...rateLimitHeaders,
         },
       }));
@@ -386,6 +392,7 @@ export async function POST(req: NextRequest) {
         dataUri,
         downloadUrl,
         expiresAt: userFile.expiresAt,
+        ...frameMetadataFields(conversionResult),
       },
       {
         status: 200,

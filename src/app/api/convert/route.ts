@@ -5,6 +5,7 @@ import { ConversionOptions, ConversionFailedError, EngineUnavailableError } from
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
+import { frameMetadataHeaders } from '@/lib/api/frame-headers';
 
 export const dynamic = 'force-dynamic';
 
@@ -170,6 +171,7 @@ export async function POST(req: NextRequest) {
         'X-Engine-Used': result.engineUsed,
         'X-Zero-Data-Retention': 'true',
         'X-Storage-Footprint': '0-bytes',
+        ...frameMetadataHeaders(result),
       },
     });
   } catch (error: unknown) {

@@ -1,7 +1,21 @@
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
+import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
 
 /** Assignable API key scopes, including the admin wildcard. */
 export const API_KEY_SCOPES = [...ALL_API_KEY_SCOPES, '*'];
+
+/** Response headers describing the frames of a multi-frame image source (animated GIF/WebP/APNG, multi-page TIFF/HEIF). */
+export const FRAME_RESPONSE_HEADERS = {
+  [SOURCE_FRAMES_HEADER]: {
+    description:
+      'Number of frames or pages the source image holds. Sent only when the source has more than one. A still output of an animated source uses frame 1 unless `page` selects another; a multi-page source converted to a still target is packaged as a ZIP with one image per page.',
+    schema: { type: 'integer', minimum: 2 },
+  },
+  [FRAME_USED_HEADER]: {
+    description: '1-based frame or page a single-image output was taken from. Sent only when one frame was chosen.',
+    schema: { type: 'integer', minimum: 1 },
+  },
+} as const;
 
 /** RFC 9457 problem details response; legacy clients may still request plain JSON. */
 export const createProblemResponse = (description: string) => ({

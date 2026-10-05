@@ -1036,6 +1036,18 @@ export const JobResourceSchema = {
     result: {
       type: 'object',
       description: 'Job execution result metadata.',
+      properties: {
+        sourceFrameCount: {
+          type: 'integer',
+          minimum: 2,
+          description: 'Frames or pages the source image holds; present only for multi-frame sources.',
+        },
+        frameUsed: {
+          type: 'integer',
+          minimum: 1,
+          description: '1-based frame or page a single-image output was taken from; present only when one was chosen.',
+        },
+      },
     },
     tasks: {
       type: 'array',

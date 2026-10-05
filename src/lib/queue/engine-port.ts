@@ -18,6 +18,8 @@ export interface EngineResult {
   fallbackReason?: string;
   fallbackChain?: string[];
   ocrExtractedText?: string;
+  sourceFrameCount?: number;
+  frameUsed?: number;
 }
 
 export interface ConversionEnginePort {
