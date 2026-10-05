@@ -45,6 +45,7 @@ import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeTextInput } from './text-input';
 import { markdownToSafeHtml } from './markdown-pdf';
+import { renderMarkdownFragment } from './markdown';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
 
 export {
@@ -619,58 +620,35 @@ export async function convertDocument(
   throw new Error(`Unsupported document conversion from ${sourceFormat} to ${targetFormat}`);
 }
 
+// Defense in depth for the generated page: no script execution or network access beyond images,
+// even if a future renderer change let active content through.
+const MARKDOWN_HTML_CSP =
+  "default-src 'none'; img-src http: https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+
 function markdownToHtml(md: string, title: string): string {
-  // Convert markdown tables
-  let processed = md;
-  const tableRegex = /((?:\|[^\n]+\|\r?\n)+)/g;
-  processed = processed.replace(tableRegex, (match) => {
-    const lines = match.trim().split(/\r?\n/).map((l) => l.trim());
-    if (lines.length < 2) return match;
-    const headerRow = lines[0].split('|').slice(1, -1).map((c) => c.trim());
-    const dataRows = lines.slice(2).map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
-
-    let tableHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;margin:1.5rem 0;width:100%;border-color:#CCD2FC;">\n<thead><tr>';
-    headerRow.forEach((h) => {
-      tableHtml += `<th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(h)}</th>`;
-    });
-    tableHtml += '</tr></thead>\n<tbody>';
-    dataRows.forEach((r) => {
-      tableHtml += '<tr>';
-      r.forEach((c) => {
-        tableHtml += `<td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>`;
-      });
-      tableHtml += '</tr>\n';
-    });
-    tableHtml += '</tbody></table>\n';
-    return tableHtml;
-  });
-
-  let html = processed
-    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-    .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-    .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-    .replace(/\*\*\*(.*?)\*\*\*/gim, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-    .replace(/`([^`]+)`/gim, '<code>$1</code>')
-    .replace(/\n\n+/g, '</p><p>')
-    .replace(/\n/g, '<br/>');
+  const body = renderMarkdownFragment(md);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="${MARKDOWN_HTML_CSP}">
   <title>${escapeHtml(title)}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #1F2340; }
     h1, h2, h3 { color: #5C6BC0; }
     code { background: #F0F2FE; padding: 0.2rem 0.4rem; border-radius: 4px; font-family: monospace; font-size: 0.9em; }
     pre { background: #F8F9FF; border: 1px solid #CCD2FC; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+    pre code { background: none; padding: 0; }
+    blockquote { margin: 1rem 0; padding: 0 1rem; border-left: 4px solid #CCD2FC; color: #4A5078; }
+    table { border-collapse: collapse; margin: 1.5rem 0; width: 100%; }
+    th, td { border: 1px solid #E1E4EE; padding: 8px; text-align: left; }
+    th { background: #F0F2FE; color: #1F2340; }
+    img { max-width: 100%; }
   </style>
 </head>
 <body>
-  <p>${html}</p>
-</body>
+${body}</body>
 </html>`;
 }
 
