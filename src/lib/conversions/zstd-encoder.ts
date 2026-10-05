@@ -14,6 +14,8 @@ import {
   estimateHuffmanBits,
   writeHuffmanTableDescription,
 } from './zstd-huffman';
+import { OptimalParser, type ZstdOptimalParams } from './zstd-optimal';
+import { SequenceStore, llCodeOf, mlCodeOf } from './zstd-sequences';
 import {
   LL_BASELINE,
   LL_BITS,
@@ -37,8 +39,9 @@ import {
 } from './zstd-tables';
 
 /**
- * RFC 8878 compressor: LZ77 match finding (hash chains, lazy matching, repeat offsets) and
- * compressed-block emission (Huffman literals, FSE sequences).
+ * RFC 8878 compressor: LZ77 match finding (hash chains with lazy matching for levels 1-15,
+ * binary-tree optimal parsing for levels 16-19, repeat offsets) and compressed-block emission
+ * (Huffman literals, FSE sequences).
  */
 
 // ---------------------------------------------------------------------------
@@ -64,47 +67,50 @@ export interface ZstdLevelParams {
   skipStrength: number;
   /** Insert every position of an accepted match into the hash chains. */
   insertMatchInterior: boolean;
+  /** Binary-tree optimal parser settings; null selects the hash-chain lazy parser above. */
+  optimal: ZstdOptimalParams | null;
 }
 
 const LEVEL_PARAMS_TABLE: readonly ZstdLevelParams[] = [
   // level 1
-  { windowLog: 19, hashLog: 14, chainLog: 0, searchDepth: 1, minMatch: 5, niceLength: 16, lazyDepth: 0, skipStrength: 6, insertMatchInterior: false },
+  { windowLog: 19, hashLog: 14, chainLog: 0, searchDepth: 1, minMatch: 5, niceLength: 16, lazyDepth: 0, skipStrength: 6, insertMatchInterior: false, optimal: null },
   // level 2
-  { windowLog: 19, hashLog: 15, chainLog: 0, searchDepth: 1, minMatch: 5, niceLength: 24, lazyDepth: 0, skipStrength: 6, insertMatchInterior: false },
+  { windowLog: 19, hashLog: 15, chainLog: 0, searchDepth: 1, minMatch: 5, niceLength: 24, lazyDepth: 0, skipStrength: 6, insertMatchInterior: false, optimal: null },
   // level 3
-  { windowLog: 20, hashLog: 16, chainLog: 16, searchDepth: 4, minMatch: 4, niceLength: 32, lazyDepth: 0, skipStrength: 7, insertMatchInterior: true },
+  { windowLog: 20, hashLog: 16, chainLog: 16, searchDepth: 4, minMatch: 4, niceLength: 32, lazyDepth: 0, skipStrength: 7, insertMatchInterior: true, optimal: null },
   // level 4
-  { windowLog: 20, hashLog: 17, chainLog: 17, searchDepth: 6, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 7, insertMatchInterior: true },
+  { windowLog: 20, hashLog: 17, chainLog: 17, searchDepth: 6, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 7, insertMatchInterior: true, optimal: null },
   // level 5
-  { windowLog: 21, hashLog: 17, chainLog: 18, searchDepth: 8, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 8, insertMatchInterior: true },
+  { windowLog: 21, hashLog: 17, chainLog: 18, searchDepth: 8, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 8, insertMatchInterior: true, optimal: null },
   // level 6
-  { windowLog: 21, hashLog: 18, chainLog: 18, searchDepth: 12, minMatch: 4, niceLength: 64, lazyDepth: 1, skipStrength: 8, insertMatchInterior: true },
+  { windowLog: 21, hashLog: 18, chainLog: 18, searchDepth: 12, minMatch: 4, niceLength: 64, lazyDepth: 1, skipStrength: 8, insertMatchInterior: true, optimal: null },
   // level 7
-  { windowLog: 21, hashLog: 18, chainLog: 19, searchDepth: 16, minMatch: 4, niceLength: 64, lazyDepth: 1, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 21, hashLog: 18, chainLog: 19, searchDepth: 16, minMatch: 4, niceLength: 64, lazyDepth: 1, skipStrength: 0, insertMatchInterior: true, optimal: null },
   // level 8
-  { windowLog: 22, hashLog: 19, chainLog: 19, searchDepth: 24, minMatch: 4, niceLength: 96, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 22, hashLog: 19, chainLog: 19, searchDepth: 24, minMatch: 4, niceLength: 96, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: null },
   // level 9
-  { windowLog: 22, hashLog: 19, chainLog: 20, searchDepth: 32, minMatch: 4, niceLength: 128, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 22, hashLog: 19, chainLog: 20, searchDepth: 32, minMatch: 4, niceLength: 128, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: null },
   // level 10
-  { windowLog: 22, hashLog: 20, chainLog: 20, searchDepth: 48, minMatch: 4, niceLength: 128, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 22, hashLog: 20, chainLog: 20, searchDepth: 48, minMatch: 4, niceLength: 128, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: null },
   // level 11
-  { windowLog: 22, hashLog: 20, chainLog: 21, searchDepth: 64, minMatch: 4, niceLength: 160, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 22, hashLog: 20, chainLog: 21, searchDepth: 64, minMatch: 4, niceLength: 160, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: null },
   // level 12
-  { windowLog: 23, hashLog: 20, chainLog: 21, searchDepth: 96, minMatch: 4, niceLength: 192, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 20, chainLog: 21, searchDepth: 96, minMatch: 4, niceLength: 192, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: null },
   // level 13
-  { windowLog: 23, hashLog: 21, chainLog: 22, searchDepth: 128, minMatch: 4, niceLength: 224, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 21, chainLog: 22, searchDepth: 128, minMatch: 4, niceLength: 224, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: null },
   // level 14
-  { windowLog: 23, hashLog: 21, chainLog: 22, searchDepth: 160, minMatch: 4, niceLength: 256, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 21, chainLog: 22, searchDepth: 160, minMatch: 4, niceLength: 256, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: null },
   // level 15
-  { windowLog: 23, hashLog: 21, chainLog: 22, searchDepth: 192, minMatch: 4, niceLength: 256, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 21, chainLog: 22, searchDepth: 192, minMatch: 4, niceLength: 256, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: null },
+  // levels 16-19 only read windowLog from the lazy fields; their parser settings are in `optimal`.
   // level 16
-  { windowLog: 23, hashLog: 22, chainLog: 22, searchDepth: 256, minMatch: 4, niceLength: 256, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 22, chainLog: 22, searchDepth: 256, minMatch: 4, niceLength: 256, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: { hashLog: 22, btLog: 22, searchDepth: 16, minMatch: 4, targetLength: 64, seedFirstBlock: false, skipSearch: true, earlyAbort: true } },
   // level 17
-  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 320, minMatch: 4, niceLength: 384, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 320, minMatch: 4, niceLength: 384, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: { hashLog: 22, btLog: 22, searchDepth: 24, minMatch: 3, targetLength: 128, seedFirstBlock: false, skipSearch: true, earlyAbort: true } },
   // level 18
-  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 448, minMatch: 4, niceLength: 512, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 448, minMatch: 4, niceLength: 512, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: { hashLog: 22, btLog: 22, searchDepth: 32, minMatch: 3, targetLength: 256, seedFirstBlock: true, skipSearch: true, earlyAbort: true } },
   // level 19
-  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 640, minMatch: 4, niceLength: 768, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 640, minMatch: 4, niceLength: 768, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true, optimal: { hashLog: 22, btLog: 22, searchDepth: 64, minMatch: 3, targetLength: 512, seedFirstBlock: true, skipSearch: true, earlyAbort: true } },
 ];
 
 /** Search parameters for a level in 1..19. */
@@ -120,7 +126,6 @@ const HASH_MULTIPLIER_A = 2654435761;
 const HASH_MULTIPLIER_B = 2246822519;
 const HASH_READ_BYTES = 8;
 const REP_MIN_MATCH = 3;
-const MIN_MATCH_CODE_LENGTH = 3;
 /** Approximate fixed cost of a sequence: literal-length and match-length symbols plus their extras. */
 const MATCH_OVERHEAD_BITS = 10;
 /** Approximate cost of the offset symbol beyond the offset's own extra bits. */
@@ -151,10 +156,6 @@ const BLOCK_TYPE_RAW = 0;
 const BLOCK_TYPE_RLE = 1;
 const BLOCK_TYPE_COMPRESSED = 2;
 const BITS_PER_BYTE = 8;
-const SMALL_CODE_LOOKUP_SIZE = 64;
-const MATCH_CODE_LOOKUP_SIZE = 128;
-const LL_LARGE_CODE_BIAS = 19;
-const ML_LARGE_CODE_BIAS = 36;
 
 /** Worst-case compressed size of `inputLength` bytes (raw blocks plus framing). */
 export function zstdBlocksBound(inputLength: number): number {
@@ -163,48 +164,8 @@ export function zstdBlocksBound(inputLength: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Code lookup
-// ---------------------------------------------------------------------------
-
-function buildLookup(baselines: readonly number[], size: number, valueBias: number): Uint8Array {
-  const lookup = new Uint8Array(size);
-  let code = 0;
-  for (let v = 0; v < size; v++) {
-    const value = v + valueBias;
-    while (code + 1 < baselines.length && baselines[code + 1] <= value) code++;
-    lookup[v] = code;
-  }
-  return lookup;
-}
-
-const LL_CODE_LOOKUP = buildLookup(LL_BASELINE, SMALL_CODE_LOOKUP_SIZE, 0);
-const ML_CODE_LOOKUP = buildLookup(ML_BASELINE, MATCH_CODE_LOOKUP_SIZE, MIN_MATCH_CODE_LENGTH);
-
-function llCodeOf(litLen: number): number {
-  return litLen < SMALL_CODE_LOOKUP_SIZE ? LL_CODE_LOOKUP[litLen] : highBit32(litLen) + LL_LARGE_CODE_BIAS;
-}
-
-function mlCodeOf(matchLen: number): number {
-  const base = matchLen - MIN_MATCH_CODE_LENGTH;
-  return base < MATCH_CODE_LOOKUP_SIZE ? ML_CODE_LOOKUP[base] : highBit32(base) + ML_LARGE_CODE_BIAS;
-}
-
-// ---------------------------------------------------------------------------
 // Match finder
 // ---------------------------------------------------------------------------
-
-class SequenceStore {
-  public count = 0;
-  public readonly litLen: Uint32Array;
-  public readonly matchLen: Uint32Array;
-  public readonly offBase: Uint32Array;
-
-  constructor(capacity: number) {
-    this.litLen = new Uint32Array(capacity);
-    this.matchLen = new Uint32Array(capacity);
-    this.offBase = new Uint32Array(capacity);
-  }
-}
 
 class MatchFinder {
   public rep1: number = ZSTD_REP_OFFSET_INITIAL[0];
@@ -564,7 +525,9 @@ function chooseSymbolMode(
 
 export class ZstdBlockEncoder {
   private readonly data: Uint8Array;
-  private readonly finder: MatchFinder;
+  /** Hash-chain parser for levels 1-15; null when the optimal parser serves the level. */
+  private readonly finder: MatchFinder | null;
+  private readonly optimal: OptimalParser | null;
   private readonly store: SequenceStore;
   private readonly literals = new Uint8Array(ZSTD_BLOCK_SIZE_MAX);
   private readonly llCodes: Uint8Array;
@@ -583,7 +546,13 @@ export class ZstdBlockEncoder {
 
   constructor(data: Uint8Array, params: ZstdLevelParams, windowSize: number) {
     this.data = data;
-    this.finder = new MatchFinder(data, params, windowSize);
+    if (params.optimal === null) {
+      this.finder = new MatchFinder(data, params, windowSize);
+      this.optimal = null;
+    } else {
+      this.finder = null;
+      this.optimal = new OptimalParser(data, params.optimal, windowSize);
+    }
     const capacity = Math.floor(ZSTD_BLOCK_SIZE_MAX / REP_MIN_MATCH) + 2;
     this.store = new SequenceStore(capacity);
     this.llCodes = new Uint8Array(capacity);
@@ -669,20 +638,21 @@ export class ZstdBlockEncoder {
       return pos + BLOCK_HEADER_BYTES + 1;
     }
 
-    const finder = this.finder;
-    finder.literalBits = this.estimateLiteralBits(blockStart, blockEnd);
-    finder.rep1 = this.committedRep1;
-    finder.rep2 = this.committedRep2;
-    finder.rep3 = this.committedRep3;
-    const trailing = finder.parseBlock(blockStart, blockEnd, this.store);
+    const parser = this.finder ?? this.optimal;
+    if (parser === null) throw new Error('Zstandard encoder: no block parser configured.');
+    if (this.finder !== null) this.finder.literalBits = this.estimateLiteralBits(blockStart, blockEnd);
+    parser.rep1 = this.committedRep1;
+    parser.rep2 = this.committedRep2;
+    parser.rep3 = this.committedRep3;
+    const trailing = parser.parseBlock(blockStart, blockEnd, this.store);
     const payloadStart = pos + BLOCK_HEADER_BYTES;
     // A compressed block is only worth emitting when it is strictly smaller than the raw payload.
     const cap = payloadStart + size - 1;
     const end = this.emitCompressedPayload(blockStart, blockEnd, trailing, out, payloadStart, cap);
     if (end >= 0) {
-      this.committedRep1 = finder.rep1;
-      this.committedRep2 = finder.rep2;
-      this.committedRep3 = finder.rep3;
+      this.committedRep1 = parser.rep1;
+      this.committedRep2 = parser.rep2;
+      this.committedRep3 = parser.rep3;
       this.writeBlockHeader(out, pos, last, BLOCK_TYPE_COMPRESSED, end - payloadStart);
       return end;
     }
