@@ -359,7 +359,7 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
     const corpus = synthesizeHwp5CompoundCorpus();
     const expected = [
       ...corpus.doc.paragraphs.map((paragraph) => paragraph.text),
-      ...corpus.doc.tables.flatMap((table) => table.rows.flat()),
+      ...(corpus.doc.tables ?? []).flatMap((table) => table.rows.flat()),
     ].join('');
     const result = await convertFile(corpus.buffer, 'hwp', 'pdf', {}, 'enterprise-compound-document.hwp');
     expect(withoutWhitespace(pdfText(result.buffer, true))).toBe(withoutWhitespace(expected));
