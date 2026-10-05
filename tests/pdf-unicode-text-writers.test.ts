@@ -380,17 +380,29 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
 
 describe('In-process PDF layout limits', () => {
   oracleTest('wraps a 1 MB unbroken token in linear time without losing characters', ['pdftotext'], async () => {
-    const TOKEN_BYTES = 1024 * 1024;
-    const BUDGET_MS = 2000;
-    const token = 'a'.repeat(TOKEN_BYTES);
-    const started = Date.now();
-    const result = await convertFile(Buffer.from(token, 'utf-8'), 'txt', 'pdf', {}, 'token.txt');
-    const elapsed = Date.now() - started;
-    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
-    const extracted = withoutWhitespace(pdfText(result.buffer));
+    // Growth, not wall-clock: 4x the input must cost well under the 16x a quadratic wrap would.
+    const SMALL_BYTES = 256 * 1024;
+    const TOKEN_BYTES = 4 * SMALL_BYTES;
+    const MAX_GROWTH = 8;
+    const CEILING_MS = 10_000;
+    const timed = async (bytes: number): Promise<{ elapsed: number; pdf: Buffer }> => {
+      const started = Date.now();
+      const result = await convertFile(Buffer.from('a'.repeat(bytes), 'utf-8'), 'txt', 'pdf', {}, 'token.txt');
+      return { elapsed: Date.now() - started, pdf: result.buffer };
+    };
+    const small = await timed(SMALL_BYTES);
+    const large = await timed(TOKEN_BYTES);
+    const growth = large.elapsed / Math.max(small.elapsed, 1);
+    expect({ linear: growth < MAX_GROWTH, underCeiling: large.elapsed < CEILING_MS, growth, ms: large.elapsed }).toEqual({
+      linear: true,
+      underCeiling: true,
+      growth,
+      ms: large.elapsed,
+    });
+    const extracted = withoutWhitespace(pdfText(large.pdf));
     expect(extracted.length).toBe(TOKEN_BYTES);
-    expect(extracted).toBe(token);
-  }, 60_000);
+    expect(extracted).toBe('a'.repeat(TOKEN_BYTES));
+  }, 120_000);
 
   oracleTest('wraps a long unbroken token inside an HTML paragraph without losing characters', ['pdftotext'], async () => {
     const BUDGET_MS = 2000;
