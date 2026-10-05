@@ -196,8 +196,13 @@ function buildCmapTable(codePoints: number[]): Buffer {
   return Buffer.concat([header, subtable]);
 }
 
+/** The OpenType table directory is sorted by the tag bytes, not by locale collation. */
+function compareTagBytes(a: string, b: string): number {
+  return Buffer.compare(Buffer.from(a, 'latin1'), Buffer.from(b, 'latin1'));
+}
+
 function assembleSfnt(version: number, tables: Record<string, Buffer>): Buffer {
-  const tags = Object.keys(tables).sort();
+  const tags = Object.keys(tables).sort(compareTagBytes);
   const numTables = tags.length;
   const entrySelector = Math.floor(Math.log2(numTables));
   const searchRange = 16 * 2 ** entrySelector;
