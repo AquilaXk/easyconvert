@@ -6,10 +6,12 @@ import {
   assertAggregatePagePixels,
   assertAnimationBudget,
   assertFrameCount,
+  assertOutputPixels,
   COMPOSED_MEMORY,
   orientedMemory,
   RGBA_BYTES_PER_PIXEL,
 } from './image-limits';
+import { resizedDimensions } from './image-frame-output';
 import { EXIF_ORIENTATION_NORMAL, orientRgbaFrame, withUprightOrientation } from './image-orientation';
 import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './page-range';
 
@@ -44,6 +46,13 @@ const FIRST_FRAME = 1;
 const SINGLE_FRAME = 1;
 const PLAY_ONCE = 1;
 const FIRST_QUARTER_TURN_ORIENTATION = 5;
+
+/** The output size a request asks for: validated sides (at least one) and the fit that places the page in them. */
+export interface PageResize {
+  width?: number;
+  height?: number;
+  fit?: sharp.ResizeOptions['fit'];
+}
 
 /** Selection-relevant options. */
 export interface FrameOptions extends TierPageCapped {
@@ -257,7 +266,8 @@ async function selectDocumentPages(
   buffer: Buffer,
   pageCount: number,
   targetFormat: string,
-  options: FrameOptions
+  options: FrameOptions,
+  resize: PageResize | null
 ): Promise<FrameSelection> {
   const cap = resolvePageLimit(options);
   const requested = resolveRequestedPages(options, pageCount);
@@ -268,10 +278,15 @@ async function selectDocumentPages(
     );
   }
   if (pages.length === SINGLE_FRAME) return singleSource(buffer, { page: pages[0] - 1 }, pageCount, pages[0]);
+  // Every page is decoded at its source size and encoded at its resized size: charge the larger of the two.
   let pixels = 0;
   for (const page of pages) {
     const pageMeta = await sharp(buffer, { page: page - 1 }).metadata();
-    pixels += (pageMeta.width ?? 0) * (pageMeta.height ?? 0);
+    const sourceWidth = pageMeta.width ?? 0;
+    const sourceHeight = pageMeta.height ?? 0;
+    const resized = sourceWidth > 0 && sourceHeight > 0 ? resizedDimensions(sourceWidth, sourceHeight, resize) : { width: 0, height: 0 };
+    if (resize) assertOutputPixels(resized.width, resized.height);
+    pixels += Math.max(sourceWidth * sourceHeight, resized.width * resized.height);
   }
   assertAggregatePagePixels(pixels, pages.length);
   const selection: FrameSelection = { source: buffer, input: {}, keepsAnimation: false, sourceFrameCount: pageCount };
@@ -282,9 +297,15 @@ async function selectDocumentPages(
 
 /**
  * Decides which frames or pages of `buffer` the conversion to `targetFormat` decodes. Single-frame sources
- * are returned untouched (`page` is not interpreted for them).
+ * are returned untouched (`page` is not interpreted for them). `resize` is the output size the request asks
+ * for, which a multi-page document is charged for against the aggregate page budget.
  */
-export async function selectFrames(buffer: Buffer, targetFormat: string, options: FrameOptions): Promise<FrameSelection> {
+export async function selectFrames(
+  buffer: Buffer,
+  targetFormat: string,
+  options: FrameOptions,
+  resize: PageResize | null = null
+): Promise<FrameSelection> {
   const untouched: FrameSelection = { source: buffer, input: {}, keepsAnimation: false };
   const apng = parseApng(buffer);
   if (apng) return selectApng(buffer, apng, targetFormat, options);
@@ -296,7 +317,7 @@ export async function selectFrames(buffer: Buffer, targetFormat: string, options
     return selectAnimationFrames(buffer, meta, frames, targetFormat, options);
   }
   if (DOCUMENT_SOURCE_FORMATS.has(meta.format)) {
-    return selectDocumentPages(buffer, frames, targetFormat, options);
+    return selectDocumentPages(buffer, frames, targetFormat, options, resize);
   }
   return untouched;
 }

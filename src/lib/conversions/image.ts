@@ -2,7 +2,7 @@ import zlib from 'node:zlib';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
-import { selectFrames, type FrameSelection } from './image-frames';
+import { selectFrames, type FrameSelection, type PageResize } from './image-frames';
 import { encodeDecodedAnimation, joinPageTiffs, resizedDimensions, zipPageImages } from './image-frame-output';
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
@@ -2382,6 +2382,14 @@ const FULL_DITHER = 1.0;
 const NO_DITHER = 0.0;
 const QUALITY_RANGE = { min: 1, max: 100 } as const;
 
+/** The validated width, height and fit the request asks for, or null when it does not resize. */
+function requestedResizeOf(options: ConversionOptions): PageResize | null {
+  const width = outputSideOf(options.width, 'width');
+  const height = outputSideOf(options.height, 'height');
+  if (width === undefined && height === undefined) return null;
+  return { width, height, fit: options.fit || 'contain' };
+}
+
 /**
  * Resize parameters for the requested width/height, or null when the request does not resize. The sides are
  * validated here, before sharp sees them, and a box over the output pixel limit is refused.
@@ -2391,14 +2399,13 @@ function resizeOptionsOf(
   background: ReturnType<typeof parseBackground>,
   isOpaqueTarget: boolean
 ): sharp.ResizeOptions | null {
-  const width = outputSideOf(options.width, 'width');
-  const height = outputSideOf(options.height, 'height');
-  if (width === undefined && height === undefined) return null;
-  if (width !== undefined && height !== undefined) assertOutputPixels(width, height);
+  const requested = requestedResizeOf(options);
+  if (!requested) return null;
+  if (requested.width !== undefined && requested.height !== undefined) assertOutputPixels(requested.width, requested.height);
   return {
-    width,
-    height,
-    fit: options.fit || 'contain',
+    width: requested.width,
+    height: requested.height,
+    fit: requested.fit,
     background: letterboxColour(background, isOpaqueTarget),
   };
 }
@@ -2646,7 +2653,7 @@ export async function convertImage(
     } else {
       // Multi-frame sources: animated targets keep every frame, still targets take frame 1 (or `page`),
       // multi-page documents become one image per page.
-      frameSelection = await selectFrames(activeBuffer, fmt, options);
+      frameSelection = await selectFrames(activeBuffer, fmt, options, requestedResizeOf(options));
       const packaged = await packageMultiFrameSource(frameSelection);
       if (packaged) return packaged;
       pipeline = sharp(frameSelection.source, frameSelection.input);
