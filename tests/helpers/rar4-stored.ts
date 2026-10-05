@@ -76,6 +76,7 @@ function sealHeader(header: Buffer): Buffer {
 
 function deriveRar4Key(password: string, salt: Buffer): { key: Buffer; iv: Buffer } {
   const raw = Buffer.concat([Buffer.from(password, 'utf16le'), salt]);
+  // The RAR 3/4 spec mandates SHA-1 key derivation; this is a fixture generator.
   const hash = createHash('sha1');
   const iv = Buffer.alloc(AES_BLOCK_BYTES);
   for (let round = 0; round < KDF_ROUNDS; round += 1) {
@@ -98,6 +99,7 @@ function encryptEntry(data: Buffer, password: string): Buffer {
   const { key, iv } = deriveRar4Key(password, FIXED_SALT);
   const padded = Buffer.alloc(Math.ceil(data.length / AES_BLOCK_BYTES) * AES_BLOCK_BYTES);
   data.copy(padded);
+  // The RAR 3/4 spec mandates AES-CBC without padding.
   const cipher = createCipheriv('aes-128-cbc', key, iv);
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(padded), cipher.final()]);

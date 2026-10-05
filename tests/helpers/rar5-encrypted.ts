@@ -109,6 +109,7 @@ function deriveKeys(password: string, salt: Buffer): Rar5Keys {
 function encryptAes256Cbc(plain: Buffer, key: Buffer, iv: Buffer): Buffer {
   const padded = Buffer.alloc(Math.ceil(plain.length / AES_BLOCK_BYTES) * AES_BLOCK_BYTES);
   plain.copy(padded);
+  // The RAR 5.0 spec mandates AES-256-CBC without padding.
   const cipher = createCipheriv('aes-256-cbc', key, iv);
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(padded), cipher.final()]);
