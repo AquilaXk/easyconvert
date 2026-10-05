@@ -201,7 +201,12 @@ describe('queued jobs take the limit from the job owner, not from the request', 
     };
     const error = await captureError(() => processGraphNodeJob(nodeJob(free.id), undefined, s3Storage));
     expect(error.message).toContain(FREE_LIMIT_MESSAGE);
-    await expect(processGraphNodeJob(nodeJob(pro.id), undefined, s3Storage)).resolves.toBeDefined();
+    const proResult = await processGraphNodeJob(nodeJob(pro.id), undefined, s3Storage);
+    expect(proResult.status).toBe('completed');
+    const stored = s3Storage.getObject(proResult.resultKey);
+    if (!stored) throw new Error(`The graph node stored no output under ${proResult.resultKey}`);
+    const zip = await JSZip.loadAsync(stored.buffer);
+    expect(Object.keys(zip.files)).toHaveLength(PAGES);
   });
 });
 
