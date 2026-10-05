@@ -1969,7 +1969,11 @@ export function subsetVariableFont(
 
 type BezierPoint = { x: number; y: number };
 
-/** Upper bound on quadratic pieces produced for one cubic; exceeding it fails closed. */
+/**
+ * Upper bound on quadratic pieces produced for one cubic; exceeding it fails closed. A cubic spanning
+ * the whole 16-bit coordinate range needs about 23 pieces at the default tolerance, so 64 leaves headroom
+ * and is reached only by malformed coordinates or a tolerance far below one font unit.
+ */
 const MAX_QUADRATIC_PIECES_PER_CUBIC = 64;
 /**
  * Coefficient of the midpoint-quadratic error bound: the largest distance between a cubic

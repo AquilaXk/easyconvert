@@ -28,6 +28,9 @@ const QUARTER_CIRCLE_KAPPA = (4 / 3) * (Math.SQRT2 - 1);
 // Largest radial error (font units) of the kappa cubic itself against the true circle at 1000 upm.
 const KAPPA_CUBIC_RADIAL_ERROR = 0.3;
 const MAX_PIECES_FOR_ROUND_GLYPH_QUARTER = 16;
+/** The converter's documented default tolerance and piece cap (font units). */
+const DEFAULT_TOLERANCE = 1.5;
+const MAX_PIECES = 64;
 
 function cubicAt(p0: Pt, c1: Pt, c2: Pt, p3: Pt, t: number): Pt {
   const u = 1 - t;
@@ -169,7 +172,8 @@ describe('cubicToQuadraticBezier', () => {
       expect(chain[i].p0).toEqual(chain[i - 1].p);
     }
     for (const piece of chain) {
-      expect(Number.isFinite(piece.q.x) && Number.isFinite(piece.q.y)).toBe(true);
+      expect(Number.isFinite(piece.q.x)).toBe(true);
+      expect(Number.isFinite(piece.q.y)).toBe(true);
     }
   });
 
@@ -230,6 +234,38 @@ describe('cubicToQuadraticBezier', () => {
     expect(() =>
       cubicToQuadraticBezier(p0, { x: Number.NaN, y: 0 }, c2, p3, TOLERANCE_FONT_UNITS)
     ).toThrow(ConversionFailedError);
+  });
+
+  it.each([
+    ['collinear', { x: 0, y: 0 }, { x: 100, y: 100 }, { x: 200, y: 200 }, { x: 300, y: 300 }],
+    ['all coincident', { x: 50, y: 50 }, { x: 50, y: 50 }, { x: 50, y: 50 }, { x: 50, y: 50 }],
+  ])('returns one exact piece for a degenerate %s cubic', (_label, p0, c1, c2, p3) => {
+    const chain = cubicToQuadraticBezier(p0, c1, c2, p3, TOLERANCE_FONT_UNITS);
+    expect(chain).toHaveLength(1);
+    expect(chain[0].p0).toEqual(p0);
+    expect(chain[0].p).toEqual(p3);
+    // For a degree-elevated straight line the midpoint-matching control point lies on the line.
+    expect(chain[0].q).toEqual({ x: (p0.x + p3.x) / 2, y: (p0.y + p3.y) / 2 });
+  });
+
+  it('closes a loop whose end points coincide and stays within tolerance', () => {
+    const p0 = { x: 0, y: 0 };
+    const c1 = { x: 400, y: 0 };
+    const c2 = { x: 400, y: 400 };
+    const chain = cubicToQuadraticBezier(p0, c1, c2, p0, TOLERANCE_FONT_UNITS);
+    expect(chain[0].p0).toEqual(p0);
+    expect(chain[chain.length - 1].p).toEqual(p0);
+    expect(hausdorff(p0, c1, c2, p0, chain)).toBeLessThanOrEqual(TOLERANCE_FONT_UNITS + SAMPLING_SLACK);
+  });
+
+  it('converts a curve spanning the full 16-bit coordinate range within the default tolerance and the piece cap', () => {
+    const p0 = { x: -32768, y: -32768 };
+    const c1 = { x: 32767, y: -32768 };
+    const c2 = { x: -32768, y: 32767 };
+    const p3 = { x: 32767, y: 32767 };
+    const chain = cubicToQuadraticBezier(p0, c1, c2, p3);
+    expect(chain.length).toBeLessThanOrEqual(MAX_PIECES);
+    expect(hausdorff(p0, c1, c2, p3, chain)).toBeLessThanOrEqual(DEFAULT_TOLERANCE + SAMPLING_SLACK);
   });
 
   it('fails closed instead of truncating when the piece cap cannot meet the tolerance', () => {
