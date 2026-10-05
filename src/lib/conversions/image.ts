@@ -2277,6 +2277,51 @@ export function decodeRawBayerSensor(
   return null;
 }
 
+const JPEG_SOI_MARKER = Buffer.from([0xff, 0xd8, 0xff]);
+const JPEG_MARKER_PREFIX = 0xff;
+const JPEG_EOI = 0xd9;
+const JPEG_SOS = 0xda;
+const JPEG_TEM = 0x01;
+const JPEG_RST_FIRST = 0xd0;
+const JPEG_RST_LAST = 0xd7;
+const JPEG_SOI = 0xd8;
+const JPEG_MARKER_BYTES = 2;
+
+/**
+ * Walks the segments of the JPEG stream that starts at `start` and returns the offset just past its
+ * EOI marker, or -1 when the stream is truncated. Walking segments (instead of searching for the
+ * first EOI bytes) keeps an Exif thumbnail nested inside an APPn segment from ending the stream early.
+ */
+function findJpegEnd(buffer: Buffer, start: number): number {
+  let pos = start + JPEG_MARKER_BYTES;
+  while (pos + 1 < buffer.length) {
+    if (buffer[pos] !== JPEG_MARKER_PREFIX) return -1;
+    const marker = buffer[pos + 1];
+    if (marker === JPEG_MARKER_PREFIX) {
+      pos += 1;
+      continue;
+    }
+    if (marker === JPEG_EOI) return pos + JPEG_MARKER_BYTES;
+    const hasNoPayload = marker === JPEG_TEM || marker === JPEG_SOI || (marker >= JPEG_RST_FIRST && marker <= JPEG_RST_LAST);
+    if (hasNoPayload) {
+      pos += JPEG_MARKER_BYTES;
+      continue;
+    }
+    if (pos + 3 >= buffer.length) return -1;
+    pos += JPEG_MARKER_BYTES + buffer.readUInt16BE(pos + JPEG_MARKER_BYTES);
+    if (marker === JPEG_SOS) {
+      // Entropy-coded data runs until the next marker that is neither a stuffed 0xFF00 nor a restart.
+      while (pos + 1 < buffer.length) {
+        const next = buffer[pos + 1];
+        const isMarker = buffer[pos] === JPEG_MARKER_PREFIX && next !== 0 && !(next >= JPEG_RST_FIRST && next <= JPEG_RST_LAST);
+        if (isMarker) break;
+        pos += 1;
+      }
+    }
+  }
+  return -1;
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -2338,22 +2383,15 @@ export async function convertImage(
     let largestJpg: Buffer | null = null;
     let searchPos = 0;
     while (searchPos < activeBuffer.length - 4) {
-      const startIdx = activeBuffer.indexOf(Buffer.from([0xff, 0xd8, 0xff]), searchPos);
+      const startIdx = activeBuffer.indexOf(JPEG_SOI_MARKER, searchPos);
       if (startIdx === -1) break;
-      const endIdx = activeBuffer.indexOf(Buffer.from([0xff, 0xd9]), startIdx + 3);
-      if (endIdx !== -1) {
-        const candidate = activeBuffer.subarray(startIdx, endIdx + 2);
-        if (!largestJpg || candidate.length > largestJpg.length) {
-          largestJpg = candidate;
-        }
-        searchPos = endIdx + 2;
-      } else {
-        const candidate = activeBuffer.subarray(startIdx);
-        if (!largestJpg || candidate.length > largestJpg.length) {
-          largestJpg = candidate;
-        }
-        break;
+      const endIdx = findJpegEnd(activeBuffer, startIdx);
+      const candidate = activeBuffer.subarray(startIdx, endIdx === -1 ? undefined : endIdx);
+      if (!largestJpg || candidate.length > largestJpg.length) {
+        largestJpg = candidate;
       }
+      if (endIdx === -1) break;
+      searchPos = endIdx;
     }
 
     if (largestJpg && largestJpg.length >= 64) {
