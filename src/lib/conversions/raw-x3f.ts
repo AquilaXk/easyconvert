@@ -25,7 +25,7 @@
  * header (both from CAMF), producing linear sRGB, then the sRGB transfer curve.
  */
 import { RawDecodeError } from '../types';
-import { applyMatrixAndSrgbEncode, exposureScale, MAX_SAMPLE_16, RGB_CHANNELS, type Matrix3x3 } from './raw-srgb';
+import { applyMatrixAndSrgbEncode, exposureScale, MAX_SAMPLE_16, multiply3x3, RGB_CHANNELS, type Matrix3x3 } from './raw-srgb';
 
 const FOVB_MAGIC = 'FOVb';
 const SECTION_DIRECTORY_MAGIC = 'SECd';
@@ -345,7 +345,9 @@ const HUFFMAN_CODE_MASK = (1 << HUFFMAN_LENGTH_SHIFT) - 1;
 const HUFFMAN_MAX_CODE_BITS = 26;
 /** A binary trie over at most 1024 codes of at most 26 bits cannot need more nodes than this. */
 const HUFFMAN_MAX_NODES = HUFFMAN_TABLE_ENTRIES * HUFFMAN_MAX_CODE_BITS + 1;
-const HUFFMAN_ROW_WORD_BYTES = 4;
+const HUFFMAN_WORD_BYTES = 4;
+/** The section ends with one u32 byte offset (from the start of the data) per row. */
+const HUFFMAN_ROW_OFFSET_BYTES = 4;
 const HUFFMAN_WORD_BITS = 32;
 const HUFFMAN_NO_NODE = -1;
 const INT16_MIN = -0x8000;
@@ -389,9 +391,10 @@ function buildHuffmanTrie(codes: Uint32Array): HuffmanTrie {
 /**
  * Decodes an SD14/SD15-generation section (format 0x06): a 1024-entry table of signed 16-bit sample
  * differences, a 1024-entry table of Huffman code words (length in the top 5 bits), then per row the
- * three layers' codes interleaved per pixel (layer 0, 1, 2), most significant bit first, with each
- * row starting on a 32-bit word and every row's predictors starting at zero: samples are signed and
- * relative to the first (optically dark) column of their row.
+ * three layers' codes interleaved per pixel (layer 0, 1, 2), most significant bit first, each row in
+ * whole 32-bit words and every row's predictors starting at zero: samples are signed and relative to
+ * the first (optically dark) column of their row. The section ends with a table of the rows' byte
+ * offsets, which bounds every row's bit reading.
  */
 export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): FoveonLayers {
   const { columns: width, rows: height } = image;
@@ -399,9 +402,10 @@ export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): Foveo
   const tableStart = image.offset + IMAGE_HEADER_BYTES;
   const sectionEnd = image.offset + image.length;
   const dataStart = tableStart + HUFFMAN_TABLE_BYTES;
-  if (dataStart > sectionEnd) throw fail('the sensor section is shorter than its tables');
-  // Every sample costs at least one bit, and every row starts on a word boundary.
-  if ((sectionEnd - dataStart) * BITS_PER_BYTE < width * height * TRUE_PLANES) throw fail(`the sensor data is too small for ${width}x${height} pixels`);
+  const offsetsStart = sectionEnd - height * HUFFMAN_ROW_OFFSET_BYTES;
+  if (offsetsStart < dataStart) throw fail('the sensor section is shorter than its tables');
+  // Every sample costs at least one bit, so the rows cannot hold fewer than three bits per pixel.
+  if ((offsetsStart - dataStart) * BITS_PER_BYTE < width * height * TRUE_PLANES) throw fail(`the sensor data is too small for ${width}x${height} pixels`);
   const differences = new Int16Array(HUFFMAN_TABLE_ENTRIES);
   const codes = new Uint32Array(HUFFMAN_TABLE_ENTRIES);
   for (let index = 0; index < HUFFMAN_TABLE_ENTRIES; index += 1) {
@@ -411,8 +415,13 @@ export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): Foveo
   const { children, leaves } = buildHuffmanTrie(codes);
 
   const planes = [0, 1, 2].map(() => new Int16Array(width * height));
-  let position = dataStart;
+  let rowStart = file.readUInt32LE(offsetsStart);
   for (let row = 0; row < height; row += 1) {
+    const rowEnd = row + 1 < height ? file.readUInt32LE(offsetsStart + (row + 1) * HUFFMAN_ROW_OFFSET_BYTES) : offsetsStart - dataStart;
+    if (rowStart > rowEnd || rowEnd > offsetsStart - dataStart) throw fail(`row ${row} lies outside the sensor data`);
+    if ((rowEnd - rowStart) * BITS_PER_BYTE < width * TRUE_PLANES) throw fail(`row ${row} is too small for ${width} pixels`);
+    let position = dataStart + rowStart;
+    const limit = dataStart + rowEnd;
     const predictors = [0, 0, 0];
     let word = 0;
     let bit = 0;
@@ -421,9 +430,9 @@ export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): Foveo
         let node = 0;
         while (leaves[node] === HUFFMAN_NO_NODE) {
           if (bit === 0) {
-            if (position + HUFFMAN_ROW_WORD_BYTES > sectionEnd) throw fail('the compressed sensor data ends early');
+            if (position + HUFFMAN_WORD_BYTES > limit) throw fail('the compressed sensor data ends early');
             word = file.readUInt32BE(position);
-            position += HUFFMAN_ROW_WORD_BYTES;
+            position += HUFFMAN_WORD_BYTES;
             bit = HUFFMAN_WORD_BITS;
           }
           bit -= 1;
@@ -436,6 +445,7 @@ export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): Foveo
         planes[layer][row * width + column] = value;
       }
     }
+    rowStart = rowEnd;
   }
   return { width, height, planes };
 }
@@ -938,6 +948,38 @@ function usableRange(variant: SensorVariant, matrices: Map<string, CamfMatrix>, 
   return range;
 }
 
+const XYZ_ELEMENTS = 9;
+/** XYZ (D65) to linear sRGB primaries, IEC 61966-2-1. */
+const XYZ_D65_TO_SRGB: Matrix3x3 = [3.2404542, -1.5371385, -0.4985314, -0.969266, 1.8760108, 0.041556, 0.0556434, -0.2040259, 1.0572252];
+
+/**
+ * Matrix taking a layer triple (dark level removed) to linear sRGB, with the usable ranges and ISO
+ * factor folded in. The TRUE-coded generations (DP1/DP2, Merrill, Quattro) list a colour matrix and white
+ * balance gains per white balance; the SD14/SD15 generation lists one camera-to-XYZ matrix and, per
+ * white balance, a 3x3 correction applied to the layer values first, with the layers in raw counts.
+ */
+function colourMatrix(variant: SensorVariant, matrices: Map<string, CamfMatrix>, whiteBalance: string, range: number[], isoFactor: number): number[] {
+  const combined: number[] = [];
+  if (variant === 'huffman') {
+    const toXyz = requireMatrix(matrices, 'CamToXYZ_Flash', XYZ_ELEMENTS, MAX_CALIBRATION_MAGNITUDE) as unknown as Matrix3x3;
+    const correction = requireMatrix(matrices, `WBCorrection_${whiteBalance}`, XYZ_ELEMENTS, MAX_CALIBRATION_MAGNITUDE) as unknown as Matrix3x3;
+    const full = multiply3x3(correction, toXyz);
+    const toSrgb = multiply3x3(XYZ_D65_TO_SRGB, full);
+    const scale = range.reduce((sum, value) => sum + value, 0) / range.length;
+    for (const value of toSrgb) combined.push((value * isoFactor) / scale);
+    return combined;
+  }
+  const gains = requireMatrix(matrices, findWhiteBalanceEntry(matrices, whiteBalance, 'WBGain'), GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
+  const colour = requireMatrix(matrices, findWhiteBalanceEntry(matrices, whiteBalance, 'CCMatrix'), MATRIX_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
+  // Colour matrix x diag(white balance gain x ISO factor / usable range).
+  for (let row = 0; row < RGB_CHANNELS; row += 1) {
+    for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
+      combined.push((colour[row * RGB_CHANNELS + layer] * gains[layer] * isoFactor) / range[layer]);
+    }
+  }
+  return combined;
+}
+
 /**
  * Decodes a Sigma X3F file (TRUE-format sensor data) into gamma-encoded 16-bit sRGB.
  *
@@ -963,19 +1005,10 @@ export function decodeX3f(file: Buffer): DecodedX3f {
   const black = darkLevels(layers, matrices);
   const range = usableRange(variant, matrices, black);
   const fullScale = range.map((value, layer) => black[layer] + value);
-  const gains = requireMatrix(matrices, findWhiteBalanceEntry(matrices, header.whiteBalance, 'WBGain'), GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
-  const colour = requireMatrix(matrices, findWhiteBalanceEntry(matrices, header.whiteBalance, 'CCMatrix'), MATRIX_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
   const isoFactor = isoScale(matrices);
   const spatial = readSpatialGain(matrices, header.whiteBalance);
   const sampler = spatial ? new SpatialGainSampler(spatial, layers.width, layers.height) : null;
-
-  // Combined matrix: colour matrix x diag(white balance gain x ISO factor / usable range).
-  const combined: number[] = [];
-  for (let row = 0; row < RGB_CHANNELS; row += 1) {
-    for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
-      combined.push((colour[row * RGB_CHANNELS + layer] * gains[layer] * isoFactor) / range[layer]);
-    }
-  }
+  const combined = colourMatrix(variant, matrices, header.whiteBalance, range, isoFactor);
 
   if (combined.some((value) => !Number.isFinite(value))) throw fail('the combined calibration is not finite');
   const linear = new Float32Array(width * height * RGB_CHANNELS);
