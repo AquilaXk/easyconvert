@@ -7,8 +7,12 @@ import {
   deriveSigningKey,
   formatSigV4Date,
   getCanonicalHeaders,
+  hasLoneSurrogate,
+  SigV4SigningError,
   uriEncode,
 } from './sigv4-presigner';
+
+export { SigV4SigningError };
 
 /**
  * AWS Signature Version 4 header signing for S3-compatible object storage requests.
@@ -33,14 +37,9 @@ const UNSIGNABLE_HEADERS: ReadonlySet<string> = new Set([
   'transfer-encoding',
 ]);
 const SEGMENT_SEPARATOR = '/';
+/** S3 and OCI Object Storage both cap an object name at 1024 bytes of UTF-8. */
+export const MAX_OBJECT_KEY_BYTES = 1024;
 const MS_PER_SECOND = 1000;
-
-export class SigV4SigningError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SigV4SigningError';
-  }
-}
 
 export interface SigV4RequestCredentials {
   accessKeyId: string;
@@ -327,8 +326,14 @@ export function assertValidBucketName(bucket: string): void {
  * would move a path-style request into another bucket.
  */
 export function assertValidObjectKey(key: string): void {
-  if (!key) {
-    throw new SigV4SigningError('Object key must not be empty.');
+  if (typeof key !== 'string' || !key) {
+    throw new SigV4SigningError('Object key must be a non-empty string.');
+  }
+  if (Buffer.byteLength(key, 'utf-8') > MAX_OBJECT_KEY_BYTES) {
+    throw new SigV4SigningError(`Object key must be at most ${MAX_OBJECT_KEY_BYTES} bytes of UTF-8.`);
+  }
+  if (hasLoneSurrogate(key)) {
+    throw new SigV4SigningError('Object key must be valid Unicode (no unpaired surrogates).');
   }
   if (key.split(SEGMENT_SEPARATOR).some((segment) => DOT_SEGMENTS.has(segment))) {
     throw new SigV4SigningError('Object key must not contain "." or ".." path segments.');

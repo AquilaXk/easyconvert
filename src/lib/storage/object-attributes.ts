@@ -1,4 +1,5 @@
-import { StorageAdapterError } from './adapters/adapter-interface';
+import { StorageAdapterError, StorageInputError } from './adapters/adapter-interface';
+import { hasLoneSurrogate } from './sigv4-presigner';
 import type { ObjectMetadata, StoredObjectMetadata } from './object-storage';
 import type { ObjectHead, PutObjectOptions } from './s3-object-client';
 
@@ -31,10 +32,15 @@ export const MAX_CUSTOM_METADATA_BYTES = 1024;
 export const MAX_ENCODED_FILENAME_LENGTH = 1024;
 
 /** The filename cut (at a character boundary) so its URL-encoded form fits the attribute budget. */
-export function limitFilename(filename: string): string {
+export function limitFilename(filename: string, provider: string = 'storage'): string {
+  if (hasLoneSurrogate(filename)) {
+    throw new StorageInputError('The filename must be valid Unicode (no unpaired surrogates).', provider);
+  }
   let limited = filename;
   while (limited.length > 0 && encodeURIComponent(limited).length > MAX_ENCODED_FILENAME_LENGTH) {
     limited = limited.slice(0, Math.max(0, limited.length - Math.ceil(limited.length / 8)));
+    // A cut inside a surrogate pair leaves an unencodable high surrogate: drop it with its partner.
+    if (hasLoneSurrogate(limited)) limited = limited.slice(0, -1);
   }
   return limited;
 }
@@ -83,14 +89,14 @@ export function buildPutOptions(
 ): PutObjectOptions {
   const ttlSeconds = metadata?.ttlSeconds ?? defaultTtlSeconds;
   const headers: Record<string, string> = {
-    [META_FILENAME]: encodeURIComponent(limitFilename(metadata?.filename || basename(key))),
+    [META_FILENAME]: encodeURIComponent(limitFilename(metadata?.filename || basename(key), provider)),
     [META_UPLOADED_AT]: String(now),
     [META_EXPIRES_AT]: String(now + ttlSeconds * MS_PER_SECOND),
   };
   if (metadata?.customMetadata && Object.keys(metadata.customMetadata).length > 0) {
     const encoded = encodeURIComponent(JSON.stringify(metadata.customMetadata));
     if (encoded.length > MAX_CUSTOM_METADATA_BYTES) {
-      throw new StorageAdapterError(`Custom metadata exceeds ${MAX_CUSTOM_METADATA_BYTES} encoded bytes`, provider);
+      throw new StorageInputError(`Custom metadata exceeds ${MAX_CUSTOM_METADATA_BYTES} encoded bytes`, provider);
     }
     headers[META_CUSTOM] = encoded;
   }

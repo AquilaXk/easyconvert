@@ -301,7 +301,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
 
       server.faults.push({ match: (req) => req.method === 'PUT', status: 503, code: 'SlowDown', times: Infinity });
       const failed = await patch();
-      expect(failed.status).toBe(400);
+      expect(failed.status).toBe(503);
+      expect(failed.headers.get('Content-Type')).toBe('application/problem+json');
       expect(failed.headers.get('EasyConvert-Storage-Key')).toBeNull();
       expect([...server.objects.keys()]).toEqual([]);
 

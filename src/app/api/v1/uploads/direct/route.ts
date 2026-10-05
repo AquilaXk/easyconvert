@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { storageProvider } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -9,6 +10,8 @@ const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB S3 minimum
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
 const MAX_TOTAL_SIZE = 10 * 1024 * 1024 * 1024; // 10 GiB
 const MAX_PARTS_COUNT = 10000;
+/** Presigned part URLs are good for 15 minutes. */
+const PART_URL_TTL_SECONDS = 900;
 
 interface DirectUploadInitiateBody {
   filename?: string;
@@ -108,27 +111,38 @@ export async function POST(req: NextRequest) {
       chosenPartSize
     );
   } catch (err: unknown) {
-    return createProblemDetailsResponse(
-      400,
-      err instanceof Error ? err.message : 'Failed to initiate the multipart upload.',
-      instanceUri,
-      'Bad Request'
+    return (
+      storageErrorResponse(err, instanceUri) ??
+      createProblemDetailsResponse(
+        400,
+        err instanceof Error ? err.message : 'Failed to initiate the multipart upload.',
+        instanceUri,
+        'Bad Request'
+      )
     );
   }
 
   // 4. Generate presigned part URLs: object-store URLs for a remote provider, URLs on this
   // application for local storage
-  const parts = await Promise.all(
-    Array.from({ length: totalParts }, async (_, idx) => {
-      const partNumber = idx + 1;
-      const presigned = await presignPart(session.key, session.uploadId, partNumber, 900);
-      return {
-        partNumber,
-        uploadUrl: presigned.url,
-        expiresAt: presigned.expiresAt,
-      };
-    })
-  );
+  let parts;
+  try {
+    parts = await Promise.all(
+      Array.from({ length: totalParts }, async (_, idx) => {
+        const partNumber = idx + 1;
+        const presigned = await presignPart(session.key, session.uploadId, partNumber, PART_URL_TTL_SECONDS);
+        return {
+          partNumber,
+          uploadUrl: presigned.url,
+          expiresAt: presigned.expiresAt,
+        };
+      })
+    );
+  } catch (err: unknown) {
+    return (
+      storageErrorResponse(err, instanceUri) ??
+      createProblemDetailsResponse(500, 'Failed to presign the upload parts.', instanceUri, 'Internal Server Error')
+    );
+  }
 
   return NextResponse.json(
     {

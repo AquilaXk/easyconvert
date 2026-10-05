@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { MultipartUploadComplete, MultipartUploadInit, UploadedPart } from '../types';
-import { StorageAdapterError, StorageInvalidKeyError } from './adapters/adapter-interface';
+import { StorageAdapterError, StorageInputError, StorageInvalidKeyError } from './adapters/adapter-interface';
 import { S3_MAX_PART_BYTES, S3_MAX_PARTS, S3_MIN_PART_BYTES, toNodeReadable } from './adapters/s3';
 import {
   ObjectStat,
@@ -216,24 +216,24 @@ export class RemoteStorageBackend implements IStorageBackend {
     partSize?: number
   ): Promise<MultipartUploadInit> {
     if (!Number.isSafeInteger(totalSize) || totalSize < 0) {
-      throw new StorageAdapterError(`Invalid upload size: ${totalSize}`, this.providerName);
+      throw new StorageInputError(`Invalid upload size: ${totalSize}`, this.providerName);
     }
     if (typeof filename !== 'string' || filename.length === 0) {
-      throw new StorageAdapterError('An upload needs a filename', this.providerName);
+      throw new StorageInputError('An upload needs a filename', this.providerName);
     }
     if (typeof mimeType !== 'string' || !MIME_TYPE_PATTERN.test(mimeType)) {
-      throw new StorageAdapterError('An upload needs a printable ASCII content type of at most 255 characters', this.providerName);
+      throw new StorageInputError('An upload needs a printable ASCII content type of at most 255 characters', this.providerName);
     }
     const resolvedPartSize = partSize && partSize > 0 ? Math.floor(partSize) : REMOTE_DEFAULT_PART_BYTES;
     const totalParts = Math.max(1, Math.ceil(totalSize / resolvedPartSize));
     if (totalParts > S3_MAX_PARTS) {
-      throw new StorageAdapterError(
+      throw new StorageInputError(
         `An upload of ${totalSize} bytes in ${resolvedPartSize}-byte parts needs ${totalParts} parts; the limit is ${S3_MAX_PARTS}.`,
         this.providerName
       );
     }
     if (resolvedPartSize > S3_MAX_PART_BYTES || (totalParts > 1 && resolvedPartSize < S3_MIN_PART_BYTES)) {
-      throw new StorageAdapterError(
+      throw new StorageInputError(
         `Part size ${resolvedPartSize} must be between ${S3_MIN_PART_BYTES} and ${S3_MAX_PART_BYTES} bytes for a multi-part upload.`,
         this.providerName
       );
@@ -259,7 +259,7 @@ export class RemoteStorageBackend implements IStorageBackend {
     const uploadId = this.encodeToken({
       u: rawUploadId,
       k: key,
-      f: limitFilename(filename),
+      f: limitFilename(filename, this.providerName),
       m: mimeType,
       t: totalSize,
       p: resolvedPartSize,

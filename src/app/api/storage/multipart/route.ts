@@ -3,8 +3,10 @@ import { storageProvider } from '@/lib/storage';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import type { UserTier } from '@/lib/auth/types';
+import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +29,29 @@ function supportsMultipartSessions(storage: IStorageBackend): storage is Multipa
   return Boolean(
     storage.getUploadSession && storage.getUploadOwner && storage.uploadPartStream && storage.getUploadedParts
   );
+}
+
+/** The reason a presign request's key or expiry cannot be used, or undefined when both are acceptable. */
+function presignInputProblem(key: unknown, expiresInSeconds: unknown): string | undefined {
+  if (typeof key !== 'string' || key.length === 0) {
+    return 'Missing required "key" in presign payload.';
+  }
+  try {
+    assertValidObjectKey(key);
+  } catch (err: unknown) {
+    if (err instanceof SigV4SigningError) return 'The "key" in the presign payload is not a valid object key.';
+    throw err;
+  }
+  if (
+    expiresInSeconds !== undefined &&
+    (typeof expiresInSeconds !== 'number' ||
+      !Number.isInteger(expiresInSeconds) ||
+      expiresInSeconds < PRESIGN_MIN_EXPIRES_SECONDS ||
+      expiresInSeconds > PRESIGN_MAX_EXPIRES_SECONDS)
+  ) {
+    return `"expiresInSeconds" must be an integer between ${PRESIGN_MIN_EXPIRES_SECONDS} and ${PRESIGN_MAX_EXPIRES_SECONDS}.`;
+  }
+  return undefined;
 }
 
 function sameEtag(a: string, b: string): boolean {
@@ -188,6 +213,8 @@ export async function POST(req: NextRequest) {
         );
         return NextResponse.json({ success: true, ...partResult });
       } catch (err: any) {
+        const storageProblem = storageErrorResponse(err, instanceUri);
+        if (storageProblem) return storageProblem;
         const statusCode = err?.statusCode || (err?.message?.includes('exceeds') ? 413 : 400);
         return createProblemDetailsResponse(
           statusCode,
@@ -311,12 +338,9 @@ export async function POST(req: NextRequest) {
       const body = await req.json().catch(() => ({}));
       const { type = 'upload', key, partNumber, uploadId, expiresInSeconds } = body;
 
-      if (!key) {
-        return createProblemDetailsResponse(
-          400,
-          'Missing required "key" in presign payload.',
-          instanceUri
-        );
+      const inputProblem = presignInputProblem(key, expiresInSeconds);
+      if (inputProblem) {
+        return createProblemDetailsResponse(400, inputProblem, instanceUri);
       }
 
       if (type === 'upload') {
@@ -370,6 +394,8 @@ export async function POST(req: NextRequest) {
       instanceUri
     );
   } catch (error: any) {
+    const storageProblem = storageErrorResponse(error, instanceUri);
+    if (storageProblem) return storageProblem;
     console.error('Storage operation error:', error);
     const safeMessage = error instanceof Error && !error.message.includes('/') && !error.message.includes('\\')
       ? error.message

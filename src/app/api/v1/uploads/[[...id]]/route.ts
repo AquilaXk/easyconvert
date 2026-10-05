@@ -13,6 +13,7 @@ import {
 } from '@/lib/storage/tus-engine';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -286,6 +287,8 @@ export async function POST(
           return createProblemDetailsResponse(400, `Unsupported action "${action}".`, instanceUri);
       }
     } catch (err: any) {
+      const storageProblem = storageErrorResponse(err, instanceUri);
+      if (storageProblem) return storageProblem;
       return createProblemDetailsResponse(400, err?.message || 'Error executing upload operation', instanceUri);
     }
   }
@@ -370,6 +373,8 @@ export async function POST(
             'Tus-Resumable': TUS_RESUMABLE_VERSION,
           });
         }
+        const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+        if (storageProblem) return storageProblem;
         return createProblemDetailsResponse(
           400,
           err?.message || 'Error processing creation-with-upload chunk',
@@ -394,6 +399,8 @@ export async function POST(
 
     return new NextResponse(null, { status: 201, headers });
   } catch (err: any) {
+    const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+    if (storageProblem) return storageProblem;
     return createProblemDetailsResponse(
       500,
       err?.message || 'Failed to initialize TUS upload session',
@@ -572,6 +579,8 @@ export async function PATCH(
         'Tus-Resumable': TUS_RESUMABLE_VERSION,
       });
     }
+    const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+    if (storageProblem) return storageProblem;
     return createProblemDetailsResponse(400, err?.message || 'Error processing TUS chunk upload', instanceUri, undefined, undefined, {
       'Tus-Resumable': TUS_RESUMABLE_VERSION,
     });

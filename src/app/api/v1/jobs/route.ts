@@ -22,6 +22,7 @@ import {
 import { graphScheduler } from '@/lib/queue/graph';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { describeStorageError } from '@/lib/api/storage-error-response';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import {
   validateOrProblem,
@@ -99,11 +100,16 @@ export async function POST(req: NextRequest) {
 
   let reservation: { allowed: boolean; reservationId?: string } | null = null;
 
-  const failWithRollback = async (status: number, message: string, title: string = 'Bad Request') => {
+  const failWithRollback = async (
+    status: number,
+    message: string,
+    title: string = 'Bad Request',
+    headers?: Record<string, string>
+  ) => {
     if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
-    return reply(createProblemDetailsResponse(status, message, instanceUri, title));
+    return reply(createProblemDetailsResponse(status, message, instanceUri, title, undefined, headers));
   };
 
   try {
@@ -527,6 +533,10 @@ export async function POST(req: NextRequest) {
       if (err instanceof FileExtensionSpoofError) {
         return await failWithRollback(400, err.message, 'File Spoofing Detected');
       }
+      const storageProblem = describeStorageError(err);
+      if (storageProblem) {
+        return await failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, storageProblem.headers);
+      }
       console.error(`Storage file verification error: ${err instanceof Error ? err.message : String(err)}`);
       return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
     }
@@ -671,6 +681,10 @@ export async function POST(req: NextRequest) {
   } catch (error: unknown) {
     if (idempotencyCtx) {
       await idempotencyCtx.abort();
+    }
+    const storageProblem = describeStorageError(error);
+    if (storageProblem) {
+      return failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, storageProblem.headers);
     }
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');

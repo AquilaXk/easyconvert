@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { denyUnlessOwner, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { parseByteRange, satisfiedContentRange, unsatisfiedContentRange } from '@/lib/api/http-range';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,11 +41,19 @@ export async function GET(
       { status: 404, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
     );
 
+  const instanceUri = req.nextUrl?.pathname || '/api/storage/file';
   let resolvedKey = fullKey;
-  let stored = await s3Storage.stat(fullKey);
-  if (!stored) {
-    resolvedKey = rawKey;
-    stored = await s3Storage.stat(rawKey);
+  let stored;
+  try {
+    stored = await s3Storage.stat(fullKey);
+    if (!stored) {
+      resolvedKey = rawKey;
+      stored = await s3Storage.stat(rawKey);
+    }
+  } catch (err: unknown) {
+    const problem = storageErrorResponse(err, instanceUri);
+    if (problem) return problem;
+    throw err;
   }
   if (!stored) {
     return notFound();
@@ -83,7 +92,14 @@ export async function GET(
   }
 
   const byteRange = range.kind === 'partial' ? { start: range.start, end: range.end } : undefined;
-  const nodeStream = await s3Storage.openReadStream(resolvedKey, byteRange);
+  let nodeStream;
+  try {
+    nodeStream = await s3Storage.openReadStream(resolvedKey, byteRange);
+  } catch (err: unknown) {
+    const problem = storageErrorResponse(err, instanceUri);
+    if (problem) return problem;
+    throw err;
+  }
   if (!nodeStream) {
     return notFound();
   }

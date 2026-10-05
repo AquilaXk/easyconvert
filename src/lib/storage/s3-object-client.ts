@@ -5,6 +5,7 @@ import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'und
 import {
   StorageAdapterError,
   StorageAuthenticationError,
+  StorageInputError,
   StorageInvalidKeyError,
   StorageNotFoundError,
   StorageServiceError,
@@ -418,16 +419,16 @@ export class S3ObjectClient {
     let bytes = 0;
     for (const [name, value] of Object.entries(metadata ?? {})) {
       if (!METADATA_NAME_PATTERN.test(name)) {
-        throw new StorageAdapterError(`Invalid metadata name "${name}"`, this.providerName);
+        throw new StorageInputError(`Invalid metadata name "${name}"`, this.providerName);
       }
       if (!METADATA_VALUE_PATTERN.test(value)) {
-        throw new StorageAdapterError(`Metadata "${name}" must be printable ASCII`, this.providerName);
+        throw new StorageInputError(`Metadata "${name}" must be printable ASCII`, this.providerName);
       }
       bytes += name.length + value.length;
       headers[`${META_HEADER_PREFIX}${name}`] = value;
     }
     if (bytes > S3_MAX_METADATA_BYTES) {
-      throw new StorageAdapterError(`Object metadata exceeds ${S3_MAX_METADATA_BYTES} bytes`, this.providerName);
+      throw new StorageInputError(`Object metadata exceeds ${S3_MAX_METADATA_BYTES} bytes`, this.providerName);
     }
     return headers;
   }
@@ -714,7 +715,7 @@ export class S3ObjectClient {
         range.start < 0 ||
         range.end < range.start
       ) {
-        throw new StorageAdapterError(`Invalid byte range ${range.start}-${range.end}`, this.providerName);
+        throw new StorageInputError(`Invalid byte range ${range.start}-${range.end}`, this.providerName);
       }
       headers.range = `bytes=${range.start}-${range.end}`;
     }
@@ -814,7 +815,7 @@ export class S3ObjectClient {
     const contentType = options.contentType || DEFAULT_CONTENT_TYPE;
     const size = options.size;
     if (size !== undefined && (!Number.isSafeInteger(size) || size < 0)) {
-      throw new StorageAdapterError(`Invalid upload size: ${size}`, this.providerName);
+      throw new StorageInputError(`Invalid upload size: ${size}`, this.providerName);
     }
     const source = toNodeReadable(stream);
     const metadata = this.metadataHeaders(options.metadata);
@@ -831,7 +832,7 @@ export class S3ObjectClient {
     const needed = Math.ceil(size / S3_MAX_PARTS);
     const partSize = Math.max(this.partSizeBytes, Math.ceil(needed / MIB) * MIB);
     if (partSize > S3_MAX_PART_BYTES) {
-      throw new StorageAdapterError(`Object of ${size} bytes exceeds the multipart upload limit`, this.providerName);
+      throw new StorageInputError(`Object of ${size} bytes exceeds the multipart upload limit`, this.providerName);
     }
     return partSize;
   }
@@ -911,7 +912,7 @@ export class S3ObjectClient {
       const upload = async (body: Buffer): Promise<void> => {
         const partNumber = parts.length + 1;
         if (partNumber > S3_MAX_PARTS) {
-          throw new StorageAdapterError(`Upload exceeds ${S3_MAX_PARTS} parts`, this.providerName);
+          throw new StorageInputError(`Upload exceeds ${S3_MAX_PARTS} parts`, this.providerName);
         }
         const { etag } = await this.uploadPart(key, uploadId, partNumber, body);
         parts.push({ partNumber, etag });
@@ -1074,13 +1075,13 @@ export class S3ObjectClient {
 
   private assertUploadId(uploadId: string): void {
     if (!uploadId || uploadId.length > MAX_UPLOAD_ID_LENGTH) {
-      throw new StorageAdapterError('Invalid multipart upload id', this.providerName);
+      throw new StorageInputError('Invalid multipart upload id', this.providerName);
     }
   }
 
   private assertPartNumber(partNumber: number): void {
     if (!isIntegerInRange(partNumber, 1, S3_MAX_PARTS)) {
-      throw new StorageAdapterError(`Part number must be an integer between 1 and ${S3_MAX_PARTS}`, this.providerName);
+      throw new StorageInputError(`Part number must be an integer between 1 and ${S3_MAX_PARTS}`, this.providerName);
     }
   }
 
@@ -1134,7 +1135,7 @@ export class S3ObjectClient {
     const isBuffer = Buffer.isBuffer(body);
     const length = isBuffer ? body.length : contentLength;
     if (length === undefined || !isIntegerInRange(length, 0, S3_MAX_PART_BYTES)) {
-      throw new StorageAdapterError(
+      throw new StorageInputError(
         `Part length must be known and at most ${S3_MAX_PART_BYTES} bytes`,
         this.providerName
       );
@@ -1225,16 +1226,16 @@ export class S3ObjectClient {
     this.assertKey(key);
     this.assertUploadId(uploadId);
     if (parts.length === 0 || parts.length > S3_MAX_PARTS) {
-      throw new StorageAdapterError(`A multipart upload needs between 1 and ${S3_MAX_PARTS} parts`, this.providerName);
+      throw new StorageInputError(`A multipart upload needs between 1 and ${S3_MAX_PARTS} parts`, this.providerName);
     }
     let previous = 0;
     for (const part of parts) {
       this.assertPartNumber(part.partNumber);
       if (part.partNumber <= previous) {
-        throw new StorageAdapterError('Parts must be listed in ascending order without duplicates', this.providerName);
+        throw new StorageInputError('Parts must be listed in ascending order without duplicates', this.providerName);
       }
       if (!part.etag) {
-        throw new StorageAdapterError(`Part ${part.partNumber} has no ETag`, this.providerName);
+        throw new StorageInputError(`Part ${part.partNumber} has no ETag`, this.providerName);
       }
       previous = part.partNumber;
     }
@@ -1292,7 +1293,7 @@ export class S3ObjectClient {
   ): PresignedObjectUrl {
     this.assertKey(key);
     if (!isIntegerInRange(expiresInSeconds, 1, PRESIGN_MAX_EXPIRES_SECONDS)) {
-      throw new StorageAdapterError(
+      throw new StorageInputError(
         `Presign expiry must be an integer between 1 and ${PRESIGN_MAX_EXPIRES_SECONDS} seconds`,
         this.providerName
       );
