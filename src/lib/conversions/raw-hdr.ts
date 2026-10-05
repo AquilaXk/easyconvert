@@ -17,9 +17,8 @@ import {
   inverseIec61966SrgbGamma,
   decodeLosslessJpegStrip,
   validateBayerSensorCalibration,
-  demosaicAmazeBayerCfa,
-  demosaicAhdBayerCfa,
 } from './image';
+import { demosaicAmazeBayerCfa, demosaicAhdBayerCfa } from './raw-demosaic';
 
 // ============================================================================
 // Standard CIE Color Transformation Matrices & Chromatic Adaptation
@@ -538,11 +537,10 @@ export function processFloat32LinearPipeline(
   let demosaicedFloat: Float32Array;
 
   if (method === 'amaze') {
-    const amazeResult = demosaicAmazeBayerCfa(sensor);
-    demosaicedFloat = amazeResult.floatData ?? demosaicRcdBayerCfa(sensor).floatData;
+    // Only the linear float planes are used below; the 8-bit gamma buffer would be built and dropped.
+    demosaicedFloat = demosaicAmazeBayerCfa(sensor, { buildRgb8: false }).floatData;
   } else if (method === 'ahd') {
-    const ahdResult = demosaicAhdBayerCfa(sensor);
-    demosaicedFloat = ahdResult.floatData ?? demosaicRcdBayerCfa(sensor).floatData;
+    demosaicedFloat = demosaicAhdBayerCfa(sensor, { buildRgb8: false }).floatData;
   } else {
     const rcdResult = demosaicRcdBayerCfa(sensor);
     demosaicedFloat = rcdResult.floatData;

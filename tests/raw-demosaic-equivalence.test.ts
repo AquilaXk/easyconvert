@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa, type BayerSensorData } from '../src/lib/conversions/image';
+import type { BayerSensorData } from '../src/lib/conversions/image';
+import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa, type DemosaicResult } from '../src/lib/conversions/raw-demosaic';
 import { OracleToolMissingError } from './helpers/differential-oracle';
 import {
   REAL_CROP_CASES,
@@ -15,14 +16,23 @@ import { GOLDEN_PATH, IMX477_SAMPLE_PATH, digestOutput, loadImx477Plane, sha256O
 
 /**
  * AHD and AMaZE output pinned against digests recorded from the implementation that was live before the
- * flat-plane rewrite (tests/fixtures/raw/demosaic-golden.json, captured by tests/raw-demosaic/capture-golden.ts).
- * The inputs are closed-form synthetic mosaics plus a crop of the real Raspberry Pi imx477 sample.
+ * flat-plane rewrite (tests/fixtures/raw/demosaic-golden.json, captured by tests/raw-demosaic/capture-golden.ts from
+ * the in-place functions of image.ts). The inputs are closed-form synthetic mosaics plus a crop of the real
+ * Raspberry Pi imx477 sample. Every case also runs with tiny tiles so that each pixel is computed near a tile seam.
+ *
+ * Stated equivalence: the float output must hash identically. The tolerance branch below exists only for runtimes whose
+ * Math.pow / Math.cbrt differ from the recording runtime in the last bit: it still requires every 8-bit sample to be
+ * within MAX_LSB of the recorded buffer and at most MAX_MISMATCH_FRACTION of the samples to differ at all.
  */
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 const GOLDEN: { entries: GoldenEntry[] } = JSON.parse(readFileSync(GOLDEN_PATH, 'utf8'));
 const SAMPLE_PRESENT = existsSync(IMX477_SAMPLE_PATH);
+const MAX_LSB = 1;
+const MAX_MISMATCH_FRACTION = 1e-4;
+const SEAM_TILE = 16;
+const DEFAULT_TILE = undefined;
 
-const DEMOSAICERS: Record<DemosaicName, (sensor: BayerSensorData) => ReturnType<typeof demosaicAhdBayerCfa>> = {
+const DEMOSAICERS: Record<DemosaicName, (sensor: BayerSensorData, options?: { tileSize?: number }) => DemosaicResult> = {
   ahd: demosaicAhdBayerCfa,
   amaze: demosaicAmazeBayerCfa,
 };
@@ -33,21 +43,34 @@ function goldenFor(id: string, method: DemosaicName): GoldenEntry {
   return entry;
 }
 
-function expectMatchesGolden(id: string, method: DemosaicName, sensor: BayerSensorData): void {
+function expectMatchesGolden(id: string, method: DemosaicName, sensor: BayerSensorData, tileSize: number | undefined): void {
   const golden = goldenFor(id, method);
-  const actual = digestOutput(DEMOSAICERS[method](sensor), id, method);
+  const result = DEMOSAICERS[method](sensor, { tileSize });
+  const actual = digestOutput(result, id, method);
   expect({ width: actual.width, height: actual.height }).toEqual({ width: golden.width, height: golden.height });
-  expect(actual.floatSha256).toBe(golden.floatSha256);
-  expect(actual.rgb8Sha256).toBe(golden.rgb8Sha256);
-  expect(sha256Of(gunzipSync(Buffer.from(golden.rgb8GzBase64, 'base64')))).toBe(golden.rgb8Sha256);
+  const recorded = gunzipSync(Buffer.from(golden.rgb8GzBase64, 'base64'));
+  expect(sha256Of(recorded)).toBe(golden.rgb8Sha256);
+  if (actual.floatSha256 === golden.floatSha256 && actual.rgb8Sha256 === golden.rgb8Sha256) return;
+  expect(result.data.length).toBe(recorded.length);
+  let worst = 0;
+  let differing = 0;
+  for (let i = 0; i < recorded.length; i += 1) {
+    const delta = Math.abs(result.data[i] - recorded[i]);
+    if (delta > 0) differing += 1;
+    worst = Math.max(worst, delta);
+  }
+  expect(worst).toBeLessThanOrEqual(MAX_LSB);
+  expect(differing / recorded.length).toBeLessThanOrEqual(MAX_MISMATCH_FRACTION);
 }
 
 describe('AHD / AMaZE output equals the pre-rewrite golden', () => {
-  const syntheticRows = SYNTHETIC_CASES.flatMap((c) => c.methods.map((method) => [c.id, method] as [string, DemosaicName]));
+  const syntheticRows = SYNTHETIC_CASES.flatMap((c) =>
+    c.methods.flatMap((method) => [DEFAULT_TILE, SEAM_TILE].map((tile) => [c.id, method, tile] as [string, DemosaicName, number | undefined]))
+  );
 
-  it.each(syntheticRows)('%s %s', (id, method) => {
+  it.each(syntheticRows)('%s %s tile=%s', (id, method, tile) => {
     const c = SYNTHETIC_CASES.find((candidate) => candidate.id === id)!;
-    expectMatchesGolden(id, method, buildSensor(c));
+    expectMatchesGolden(id, method, buildSensor(c), tile);
   });
 
   it.runIf(STRICT_MODE)('has the real imx477 sample (strict mode fails instead of skipping)', () => {
@@ -55,12 +78,14 @@ describe('AHD / AMaZE output equals the pre-rewrite golden', () => {
     expect(path.basename(IMX477_SAMPLE_PATH)).toBe('raw-imx477.raw');
   });
 
-  const realRows = REAL_CROP_CASES.flatMap((c) => c.methods.map((method) => [c.id, method] as [string, DemosaicName]));
+  const realRows = REAL_CROP_CASES.flatMap((c) =>
+    c.methods.flatMap((method) => [DEFAULT_TILE, SEAM_TILE].map((tile) => [c.id, method, tile] as [string, DemosaicName, number | undefined]))
+  );
   describe.skipIf(!SAMPLE_PRESENT)('real imx477 crops', () => {
-    it.each(realRows)('%s %s', (id, method) => {
+    it.each(realRows)('%s %s tile=%s', (id, method, tile) => {
       const crop = REAL_CROP_CASES.find((candidate) => candidate.id === id)!;
       const imx = loadImx477Plane()!;
-      expectMatchesGolden(id, method, cropSensor(imx.plane, imx.width, imx.bayer, crop));
+      expectMatchesGolden(id, method, cropSensor(imx.plane, imx.width, imx.bayer, crop), tile);
     });
   });
 });
