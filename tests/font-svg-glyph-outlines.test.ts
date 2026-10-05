@@ -543,3 +543,78 @@ describe('SVG font: output point counts are bounded while paths are converted', 
     expect(elapsed).toBeLessThan(FAST_REJECT_MS);
   });
 });
+
+describe('SVG font: fonts with the most glyphs a 16-bit glyph id can address', () => {
+  const MAX_GLYPHS_WITH_NOTDEF = MAX_SVG_FONT_GLYPHS + 1;
+  /** post 2.0 indexes custom names from 258, and an index is 16 bits: .notdef plus 65,278 custom names. */
+  const LAST_POST_NAMED_GLYPH_COUNT = 0xffff - 258 + 1 + 1;
+  /** CFF custom strings are numbered from SID 391 and a SID is 16 bits: .notdef plus 65,145 named glyphs. */
+  const LAST_CFF_NAMED_GLYPH_COUNT = 0xffff - 391 + 1 + 1;
+  const POST_VERSION_2 = 0x00020000;
+  const POST_VERSION_3 = 0x00030000;
+  const POST_HEADER_BYTES = 32;
+  const LARGE_FONT_TIMEOUT_MS = 60_000;
+
+  /** An SVG font whose `total` glyphs include the empty .notdef; every other glyph is a triangle. */
+  function svgWithGlyphCount(total: number): string {
+    const glyphs = ['<glyph unicode="A" horiz-adv-x="500" d="M0 0 H10 V10 Z"/>'];
+    for (let i = 2; i < total; i++) glyphs.push('<glyph horiz-adv-x="500" d="M0 0 H10 V10 Z"/>');
+    return svgWith(glyphs.join(''));
+  }
+
+  it(
+    'TTF: names every glyph in post 2.0 up to the last count its 16-bit name indexes can address',
+    async () => {
+      const tables = readSfntTables(await convertSvg('ttf', svgWithGlyphCount(LAST_POST_NAMED_GLYPH_COUNT)));
+      expect(readGlyphCount(tables)).toBe(LAST_POST_NAMED_GLYPH_COUNT);
+      const post = requireTable(tables, 'post');
+      expect(post.readUInt32BE(0)).toBe(POST_VERSION_2);
+      const names = readPostCustomNames(tables);
+      expect(names.size).toBe(LAST_POST_NAMED_GLYPH_COUNT - 1);
+      expect(names.get(LAST_POST_NAMED_GLYPH_COUNT - 1)).toBe(`glyph${LAST_POST_NAMED_GLYPH_COUNT - 1}`);
+    },
+    LARGE_FONT_TIMEOUT_MS
+  );
+
+  it(
+    'TTF and WOFF2: fall back to post 3.0 (no glyph names) instead of failing when the names no longer fit',
+    async () => {
+      for (const total of [LAST_POST_NAMED_GLYPH_COUNT + 1, MAX_GLYPHS_WITH_NOTDEF]) {
+        const svg = svgWithGlyphCount(total);
+        const ttf = readSfntTables(await convertSvg('ttf', svg));
+        expect(readGlyphCount(ttf), `ttf ${total}`).toBe(total);
+        const post = requireTable(ttf, 'post');
+        expect(post.readUInt32BE(0), `ttf ${total}`).toBe(POST_VERSION_3);
+        expect(post.length, `ttf ${total}`).toBe(POST_HEADER_BYTES);
+        expect(readCmap(ttf).get(0x41), `ttf ${total}`).toBe(1);
+      }
+      const woff2 = unwrapWoff2(await convertSvg('woff2', svgWithGlyphCount(MAX_GLYPHS_WITH_NOTDEF)));
+      expect(readGlyphCount(woff2)).toBe(MAX_GLYPHS_WITH_NOTDEF);
+      expect(requireTable(woff2, 'post').readUInt32BE(0)).toBe(POST_VERSION_3);
+    },
+    LARGE_FONT_TIMEOUT_MS
+  );
+
+  it(
+    'OTF: names every glyph in the CFF charset up to the last count its 16-bit string ids can address',
+    async () => {
+      const cff = decodeCff(requireTable(readSfntTables(await convertSvg('otf', svgWithGlyphCount(LAST_CFF_NAMED_GLYPH_COUNT))), 'CFF '));
+      expect(cff.numGlyphs).toBe(LAST_CFF_NAMED_GLYPH_COUNT);
+      expect(cffGlyphName(cff, LAST_CFF_NAMED_GLYPH_COUNT - 1)).toBe(`glyph${LAST_CFF_NAMED_GLYPH_COUNT - 1}`);
+    },
+    LARGE_FONT_TIMEOUT_MS
+  );
+
+  it(
+    'OTF: rejects a font whose glyphs cannot all be named with a typed error, not a RangeError',
+    async () => {
+      for (const total of [LAST_CFF_NAMED_GLYPH_COUNT + 1, MAX_GLYPHS_WITH_NOTDEF]) {
+        const failure = await failureOf(convertSvg('otf', svgWithGlyphCount(total)));
+        expect(failure, `otf ${total}`).toBeInstanceOf(ConversionFailedError);
+        expect(failure).not.toBeInstanceOf(FontOutlinesMissingError);
+        expect((failure as Error).message, `otf ${total}`).toMatch(/CFF.*(name|string)/i);
+      }
+    },
+    LARGE_FONT_TIMEOUT_MS
+  );
+});

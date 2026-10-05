@@ -596,6 +596,51 @@ describe('TrueType to CFF: malformed glyf data is rejected with a typed error', 
   });
 });
 
+describe('TrueType to CFF: the glyph count a CFF charset can name', () => {
+  /** Custom CFF strings are numbered from SID 391 and a SID is 16 bits: .notdef plus 65,145 named glyphs. */
+  const LAST_NAMED_GLYPH_COUNT = 0xffff - FIRST_CUSTOM_SID + 1 + 1;
+  const MAX_GLYPH_COUNT = 0xffff;
+  const LARGE_FONT_TIMEOUT_MS = 60_000;
+  const TRIANGLE = [[{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 10 }]];
+
+  function fontWithGlyphCount(total: number): Buffer {
+    return buildGlyfFont({
+      family: 'Many',
+      shortLoca: false,
+      glyphs: Array.from({ length: total - 1 }, (_, i) => ({ advance: 500, contours: i === 0 ? TRIANGLE : [] })),
+    });
+  }
+
+  it(
+    'converts a font with as many glyphs as the charset can name and keeps their names',
+    () => {
+      const out = convertFontToOpenTypeCff(fontWithGlyphCount(LAST_NAMED_GLYPH_COUNT)) as Buffer;
+      const cff = decodeCff(requireTable(readSfntTables(out), 'CFF '));
+      expect(cff.numGlyphs).toBe(LAST_NAMED_GLYPH_COUNT);
+      expect(cffGlyphName(cff, LAST_NAMED_GLYPH_COUNT - 1)).toBe(`glyph${LAST_NAMED_GLYPH_COUNT - 1}`);
+    },
+    LARGE_FONT_TIMEOUT_MS
+  );
+
+  it(
+    'rejects more glyphs than the charset can name with a typed error instead of a RangeError',
+    () => {
+      for (const total of [LAST_NAMED_GLYPH_COUNT + 1, MAX_GLYPH_COUNT]) {
+        let caught: unknown;
+        try {
+          convertFontToOpenTypeCff(fontWithGlyphCount(total));
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught, `${total} glyphs`).toBeInstanceOf(ConversionFailedError);
+        expect(caught).not.toBeInstanceOf(FontOutlinesMissingError);
+        expect((caught as Error).message, `${total} glyphs`).toMatch(/CFF.*(name|string)/i);
+      }
+    },
+    LARGE_FONT_TIMEOUT_MS
+  );
+});
+
 describe('TrueType to CFF: composite expansion is bounded across the whole font', () => {
   const RING_POINTS = 32;
   const RING_RADIUS = 100;

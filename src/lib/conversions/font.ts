@@ -1412,6 +1412,8 @@ const GLYPH_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9._]{0,62}$/;
 const POST_VERSION_2 = 0x00020000;
 const POST_HEADER_BYTES = 32;
 const POST_STANDARD_GLYPH_COUNT = 258;
+/** Custom names a post 2.0 table can index: name indexes run from 258 to 65535. */
+const POST_MAX_CUSTOM_NAMES = 0xffff - POST_STANDARD_GLYPH_COUNT + 1;
 const OS2_AVG_CHAR_WIDTH_OFFSET = 2;
 const OS2_FS_SELECTION_OFFSET = 62;
 const OS2_FIRST_CHAR_OFFSET = 64;
@@ -1440,8 +1442,18 @@ function resolveGlyphNames(authored: string[] | undefined, glyphCount: number): 
   return names;
 }
 
-/** Builds a 'post' table of version 2.0 that names every glyph after .notdef with a custom string. */
+/**
+ * Builds a 'post' table of version 2.0 that names every glyph after .notdef with a custom string.
+ * A name index is 16 bits and custom names start at 258, so a font with more than
+ * POST_MAX_CUSTOM_NAMES named glyphs cannot carry its names; it gets version 3.0 instead, which the
+ * OpenType specification defines as a table without glyph names.
+ */
 function buildPostTableWithNames(names: string[]): Buffer {
+  if (names.length - 1 > POST_MAX_CUSTOM_NAMES) {
+    const unnamed = Buffer.alloc(POST_HEADER_BYTES);
+    unnamed.writeUInt32BE(POST_VERSION_3, 0);
+    return unnamed;
+  }
   const header = Buffer.alloc(POST_HEADER_BYTES + 2 + names.length * 2);
   header.writeUInt32BE(POST_VERSION_2, 0);
   header.writeUInt16BE(names.length, POST_HEADER_BYTES);
@@ -2473,6 +2485,8 @@ function buildCffIndex(items: Buffer[]): Buffer {
 
 const CFF_INDEX_MAX_OFFSET_SIZE = 4;
 const CFF_STANDARD_STRING_COUNT = 391;
+/** Glyphs after .notdef that a charset can name: custom string ids run from 391 to the 16-bit limit 65535. */
+const CFF_MAX_NAMED_GLYPHS = 0xffff - CFF_STANDARD_STRING_COUNT + 1;
 const CFF_OP_RMOVETO = 21;
 const CFF_OP_RLINETO = 5;
 const CFF_OP_RRCURVETO = 8;
@@ -2635,6 +2649,11 @@ export function buildCffTable(
   const fontName = (fontFamily || 'EasyConvertFont').replace(/[^a-zA-Z0-9]/g, '') || 'CustomFont';
   const nameIndex = buildCffIndex([Buffer.from(fontName, 'ascii')]);
 
+  if (glyphData.length - 1 > CFF_MAX_NAMED_GLYPHS) {
+    throw new ConversionFailedError(
+      `Cannot write the CFF table: a charset names its glyphs with 16-bit string ids, so it holds at most ${CFF_MAX_NAMED_GLYPHS + 1} glyphs (the font has ${glyphData.length}).`
+    );
+  }
   const charStrings = glyphData.map((glyph, g) => encodeCharstring(glyph.contours, glyph.advWidth, `glyph ${g}`));
   const charStringsIndex = buildCffIndex(charStrings);
 
