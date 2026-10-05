@@ -120,3 +120,10 @@ export function hasRepeatedTail(filePath: string, layout: DecodedTiffLayout): bo
     fs.closeSync(fd);
   }
 }
+
+/** Rejects an intermediate image whose file is shorter than its header says, before it is read. */
+export function assertCompleteDecodedImage(filePath: string, layout: DecodedTiffLayout): void {
+  if (fs.statSync(filePath).size < layout.dataOffset + layout.height * layout.rowBytes) {
+    throw invalid('the pixel data is shorter than its header declares');
+  }
+}

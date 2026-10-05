@@ -31,9 +31,11 @@ import {
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
-import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError } from './sandbox';
+import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES,
+  assertCompleteDecodedImage,
+  assertWithinPixelCap,
   hasRepeatedTail,
   readDecodedTiffLayout,
 } from './raw-decoded-tiff';
@@ -1308,6 +1310,8 @@ const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
 const RAW_DECODE_DEFAULT_TIMEOUT_MS = 120_000;
 const RAW_DECODE_MAX_TIMEOUT_MS = 600_000;
 const RAW_DECODE_MAX_STDERR_CHARS = 300;
+/** Address-space ceiling for the decoder: room for the largest sensor plus LibRaw's working buffers. */
+const RAW_DECODE_MEMORY_LIMIT_MB = 4096;
 const RAW_DECODE_UNRECOGNIZED_PATTERN = /unsupported file format|not raw file/i;
 /** dcraw_emu: write a TIFF (-T) with 16-bit samples (-6), camera white balance (-w) in sRGB (-o 1). */
 const RAW_DECODE_FLAGS: readonly string[] = ['-T', '-6', '-w', '-o', '1'];
@@ -1348,11 +1352,16 @@ export async function convertWithNativeRaw(
         timeoutMs: timeout,
         maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
         maxFileSize: RAW_DECODE_MAX_OUTPUT_BYTES,
+        memoryLimitMb: RAW_DECODE_MEMORY_LIMIT_MB,
         networkIsolated: true,
         signal: options.signal,
       });
       decoderStderr = run.stderr.toString('utf-8').trim();
     } catch (err) {
+      if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
+        // The decoder hit its output-size or memory ceiling: the input demands more than the limits allow.
+        throw new RawDecodeError(`Native RAW decoder exceeded its output limit or memory limit on the .${src} file`);
+      }
       if (err instanceof SandboxedProcessError) {
         const detail = err.stderr.trim().slice(0, RAW_DECODE_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
         throw new RawDecodeError(
@@ -1373,6 +1382,8 @@ export async function convertWithNativeRaw(
       );
     }
     const layout = readDecodedTiffLayout(decodedPath);
+    assertWithinPixelCap(layout);
+    assertCompleteDecodedImage(decodedPath, layout);
     if (hasRepeatedTail(decodedPath, layout)) {
       throw new RawDecodeError(`The .${src} file is truncated: the decoded image ends in repeated filler rows`);
     }
