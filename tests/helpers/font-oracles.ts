@@ -9,11 +9,31 @@ import os from 'node:os';
 import path from 'node:path';
 import { brotliDecompressSync as brotliDecompress, inflateSync as zlibInflate } from 'node:zlib';
 
-export const HAS_FC_SCAN = spawnSync('fc-scan', ['--version'], { stdio: 'ignore' }).status === 0;
-export const HAS_CONVERT = spawnSync('convert', ['-version'], { stdio: 'ignore' }).status === 0;
+/** Oracle binaries are resolved from fixed system directories, never from a writable PATH entry. */
+const ORACLE_BIN_DIRS = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin', '/bin'];
+const FREETYPE_OTF_FORMAT = /OTF\*?\s+.*Freetype/;
+
+function resolveOracleBinary(name: string): string | null {
+  for (const dir of ORACLE_BIN_DIRS) {
+    const candidate = path.join(dir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+const FC_SCAN_BIN = resolveOracleBinary('fc-scan');
+const CONVERT_BIN = resolveOracleBinary('convert');
+
+export const HAS_FC_SCAN = FC_SCAN_BIN !== null && spawnSync(FC_SCAN_BIN, ['--version'], { stdio: 'ignore' }).status === 0;
+export const HAS_CONVERT = CONVERT_BIN !== null && spawnSync(CONVERT_BIN, ['-version'], { stdio: 'ignore' }).status === 0;
 export const HAS_FREETYPE =
   HAS_CONVERT &&
-  spawnSync('sh', ['-c', "convert -list format | grep -q 'OTF.*Freetype'"], { stdio: 'ignore' }).status === 0;
+  FREETYPE_OTF_FORMAT.test(spawnSync(CONVERT_BIN!, ['-list', 'format'], { encoding: 'utf8' }).stdout ?? '');
+
+function requireBinary(bin: string | null, name: string): string {
+  if (bin === null) throw new Error(`${name} oracle binary is not installed in ${ORACLE_BIN_DIRS.join(', ')}`);
+  return bin;
+}
 
 /** CI runs the oracles in strict mode: a missing fc-scan must fail there instead of skipping the oracle. */
 export function requireStrictFcScan(suite: string): void {
@@ -632,7 +652,7 @@ export function fcScan(font: Buffer, extension: string): Record<string, string> 
     const file = path.join(dir, `probe.${extension}`);
     fs.writeFileSync(file, font);
     const out = execFileSync(
-      'fc-scan',
+      requireBinary(FC_SCAN_BIN, 'fc-scan'),
       ['--format', '%{family}\t%{style}\t%{fullname}\t%{postscriptname}\t%{charset}\t%{fontformat}\n', file],
       { encoding: 'utf8' }
     );
@@ -652,7 +672,7 @@ export const INK_THRESHOLD = 128;
 /** Renders one character with FreeType through ImageMagick into an 8-bit grayscale buffer. */
 export function renderGlyph(fontFile: string, char: string): Buffer {
   const pgm = execFileSync(
-    'convert',
+    requireBinary(CONVERT_BIN, 'convert'),
     [
       '-size', `${PNG_RENDER_SIZE}x${PNG_RENDER_SIZE}`, 'xc:white',
       '-font', fontFile,
