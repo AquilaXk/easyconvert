@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames } from './image-frames';
+import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground, type ImageConversionOptions } from './image-background';
 import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
@@ -2344,7 +2345,7 @@ async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
-  options: ConversionOptions = {},
+  options: ImageConversionOptions = {},
   originalFilename: string = 'image.png',
   sourceFormat?: string
 ): Promise<ConversionResult> {
@@ -2379,6 +2380,9 @@ export async function convertImage(
       ocrConfidence: ocrResult.confidence,
     };
   }
+
+  const background = parseBackground(options.background);
+  const isOpaqueTarget = OPAQUE_IMAGE_TARGETS.has(fmt);
 
   // Sanitize SVG inputs against Stored XSS
   let activeBuffer = inputBuffer;
@@ -2540,8 +2544,13 @@ export async function convertImage(
       width: options.width ? Number(options.width) : undefined,
       height: options.height ? Number(options.height) : undefined,
       fit: options.fit || 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 0 },
+      background: letterboxColour(background, isOpaqueTarget),
     });
+  }
+
+  // Targets without an alpha channel would turn transparent pixels black: flatten them onto the background.
+  if (isOpaqueTarget) {
+    pipeline = pipeline.flatten({ background: flattenColour(background) });
   }
 
 
@@ -2720,7 +2729,6 @@ export async function convertImage(
           outputBuffer = encodeOpenExr(hdrFloat, imgW, imgH, options.outputDepth !== 32);
         } else {
           const { data, info } = await pipeline
-            .removeAlpha()
             .raw()
             .toBuffer({ resolveWithObject: true });
           const floatPix = new Float32Array(info.width * info.height * 3);
@@ -2745,7 +2753,6 @@ export async function convertImage(
         );
       } else {
         const { data, info } = await pipeline
-          .removeAlpha()
           .raw()
           .toBuffer({ resolveWithObject: true });
         const floatPix = new Float32Array(info.width * info.height * 3);
@@ -2946,7 +2953,6 @@ export async function convertImage(
     case 'eps':
     case 'ps': {
       const { data: rawRgb, info } = await pipeline
-        .removeAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
       outputBuffer = encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
