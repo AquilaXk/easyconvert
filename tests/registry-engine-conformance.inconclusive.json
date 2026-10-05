@@ -1,12 +1,4 @@
 [
-  "exr->avif",
-  "exr->bmp",
-  "exr->exr",
-  "exr->jpg",
-  "exr->png",
-  "exr->tiff",
-  "exr->ultrahdr",
-  "exr->webp",
   "pdf->jpg",
   "pdf->png",
   "pdf->tiff",
@@ -18,10 +10,5 @@
   "rar->tar",
   "rar->tar.bz2",
   "rar->tar.gz",
-  "rar->zip",
-  "ultrahdr->exr",
-  "ultrahdr->jpg",
-  "ultrahdr->png",
-  "ultrahdr->tiff",
-  "ultrahdr->webp"
+  "rar->zip"
 ]
