@@ -1,5 +1,5 @@
 import zlib from 'node:zlib';
-import sharp from 'sharp';
+import sharp, { type Metadata, type Sharp } from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
@@ -2327,13 +2327,20 @@ function findJpegEnd(buffer: Buffer, start: number): number {
 const SHARP_EIGHT_BIT_DEPTH = 'uchar';
 
 /**
+ * Quality metric the AVIF encoder optimises for. sharp 0.35 defaults to a perceptual (SSIMULACRA2-based)
+ * metric that spends roughly 5 dB less PSNR than the encoder tuning of earlier releases at the same
+ * `quality`; pinning PSNR keeps a given `quality` value producing the same pixel fidelity.
+ */
+export const AVIF_TUNE = 'psnr';
+
+/**
  * Keeps ICC profile and EXIF metadata on the output. Samples deeper than 8 bit that carry no profile are
  * the exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut working
  * profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those images
  * keep only their EXIF block (orientation included) and reach the encoder as plain device RGB, so the
  * high byte of each sample is what reaches an 8-bit output.
  */
-async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
+async function preserveMetadata(pipeline: Sharp): Promise<Sharp> {
   const meta = await pipeline.metadata();
   const isDeepWithoutProfile = meta.depth !== SHARP_EIGHT_BIT_DEPTH && !meta.hasProfile;
   return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
@@ -2422,7 +2429,7 @@ export async function convertImage(
     }
   }
 
-  let pipeline: sharp.Sharp;
+  let pipeline: Sharp;
 
   try {
     if (rawDemosaiced) {
@@ -2649,7 +2656,7 @@ export async function convertImage(
       break;
 
     case 'avif':
-      outputBuffer = await pipeline.avif({ quality }).toBuffer();
+      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE }).toBuffer();
       mimeType = 'image/avif';
       break;
 
@@ -2949,7 +2956,7 @@ export async function convertImage(
 
     case 'xps': {
       let pngBuffer = inputBuffer;
-      let imgMeta: sharp.Metadata | undefined;
+      let imgMeta: Metadata | undefined;
       try {
         const s = sharp(inputBuffer);
         imgMeta = await s.metadata();
@@ -3002,7 +3009,7 @@ async function convertImageToPdf(
     activeBuffer = sanitizeSvgBuffer(activeBuffer);
   }
 
-  let pipeline: sharp.Sharp;
+  let pipeline: Sharp;
 
   if (sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
     const decoded = decodeBmp(activeBuffer);

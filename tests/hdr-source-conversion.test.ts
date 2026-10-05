@@ -30,7 +30,10 @@ import {
  */
 
 const BYTE_MAX = 255;
-const PNG_TIFF_TOLERANCE = 2;
+const PNG_TOLERANCE = 2;
+// The engine's TIFF output uses sharp's default JPEG compression, so it is lossy: measured colour error on the
+// flat patches is up to 2.2 levels with libvips 8.18 (1.2 with 8.15), which a PNG-grade tolerance cannot hold.
+const TIFF_JPEG_TOLERANCE = 3;
 const JPEG_TOLERANCE = 10;
 const WEBP_TOLERANCE = 12;
 const AVIF_TOLERANCE = 14;
@@ -53,8 +56,8 @@ const SDR_TARGET_CHECKS: Readonly<Record<SdrTarget, { format: string; tolerance:
   avif: { format: 'heif', tolerance: AVIF_TOLERANCE, magic: Buffer.from('ftyp') },
   bmp: { format: 'bmp', tolerance: 0, magic: Buffer.from('BM') },
   jpg: { format: 'jpeg', tolerance: JPEG_TOLERANCE, magic: Buffer.from([0xff, 0xd8, 0xff]) },
-  png: { format: 'png', tolerance: PNG_TIFF_TOLERANCE, magic: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
-  tiff: { format: 'tiff', tolerance: PNG_TIFF_TOLERANCE, magic: Buffer.from([0x49, 0x49, 0x2a, 0x00]) },
+  png: { format: 'png', tolerance: PNG_TOLERANCE, magic: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+  tiff: { format: 'tiff', tolerance: TIFF_JPEG_TOLERANCE, magic: Buffer.from([0x49, 0x49, 0x2a, 0x00]) },
   webp: { format: 'webp', tolerance: WEBP_TOLERANCE, magic: Buffer.from('WEBP') },
 };
 
