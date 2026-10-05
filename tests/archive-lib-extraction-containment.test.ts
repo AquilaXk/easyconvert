@@ -320,17 +320,7 @@ describe('library 7z paths containment (#458)', () => {
   });
 
   describe('archive inspection through 7-Zip', () => {
-    oracleTest('refuses to describe an archive that holds a symlink', [...TOOLS], async () => {
-      const archive = build7zFromStagedLinks(
-        path.join(ws.fixturesDir, 'link.7z'),
-        path.join(ws.fixturesDir, 'stage'),
-        [{ name: 'link', target: ws.outsideDir }],
-        [{ name: 'f.txt', data: 'hello' }]
-      );
-
-      expectUnsafe(await rejection(inspectArchive(fs.readFileSync(archive), { filename: 'link.7z' })), 'link-entry');
-    });
-
+    // Unsafe entries (links, traversal, duplicates) are reported, not refused: see archive-inspection-unsafe-report.test.ts.
     oracleTest('refuses a decompression bomb and an entry flood', [...TOOLS], async () => {
       const bomb = build7zZeroBomb(path.join(ws.fixturesDir, 'bomb.7z'), path.join(ws.fixturesDir, 'stage-bomb'), OVER_CAP_BOMB_MIB);
       const flood = build7zWithManyFiles(path.join(ws.fixturesDir, 'flood.7z'), path.join(ws.fixturesDir, 'stage-flood'), OVER_CAP_ENTRY_COUNT);

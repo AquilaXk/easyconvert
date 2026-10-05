@@ -272,15 +272,30 @@ export function parse7zTechnicalListing(stdout: string): ListedArchiveEntry[] {
   return entries;
 }
 
-function assertSafeEntryPath(rawPath: string): void {
+/** Why an entry name cannot be extracted under the root, or null when it is a plain relative path. */
+function entryPathProblem(rawPath: string): 'path-traversal' | 'absolute-path' | 'invalid-entry-name' | null {
   if (rawPath === '' || rawPath.includes('\0')) {
-    throw new UnsafeArchiveError('invalid-entry-name', 'Archive contains an entry with an empty or NUL-containing name.');
+    return 'invalid-entry-name';
   }
   const normalized = rawPath.replace(/\\/g, '/');
   if (normalized.startsWith('/') || DRIVE_LETTER_PREFIX.test(normalized)) {
-    throw new UnsafeArchiveError('absolute-path', 'Archive contains an entry with an absolute path.');
+    return 'absolute-path';
   }
   if (normalized.split('/').includes('..')) {
+    return 'path-traversal';
+  }
+  return null;
+}
+
+function assertSafeEntryPath(rawPath: string): void {
+  const problem = entryPathProblem(rawPath);
+  if (problem === 'invalid-entry-name') {
+    throw new UnsafeArchiveError('invalid-entry-name', 'Archive contains an entry with an empty or NUL-containing name.');
+  }
+  if (problem === 'absolute-path') {
+    throw new UnsafeArchiveError('absolute-path', 'Archive contains an entry with an absolute path.');
+  }
+  if (problem === 'path-traversal') {
     throw new UnsafeArchiveError('path-traversal', 'Archive contains an entry that escapes the extraction directory.');
   }
 }
@@ -824,4 +839,110 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
   }
 
   return withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
+}
+
+/**
+ * Resource caps only (entry count, declared total size, ratio): the checks that protect the server
+ * itself. Inspection enforces these and reports everything else; entries without a size are skipped.
+ */
+export function assertListingResourceCaps(
+  entries: ListedArchiveEntry[],
+  archiveBytes: number,
+  limits: ArchiveExtractionLimits
+): void {
+  if (entries.length > limits.MAX_FILES) {
+    throw entryCountError(entries.length, limits);
+  }
+  let totalBytes = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory && entry.sizeBytes !== null && Number.isSafeInteger(entry.sizeBytes)) {
+      totalBytes += entry.sizeBytes;
+      if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
+        throw sizeError(limits);
+      }
+    }
+  }
+  assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
+}
+
+export type InspectedEntryKind = 'symlink' | 'hardlink' | 'special';
+
+/** The inspection kind of a listed entry: a link, a device/FIFO/socket, or undefined for files and directories. */
+export function inspectedKindOf(entry: ListedArchiveEntry): InspectedEntryKind | undefined {
+  if (entry.linkKind !== null) return entry.linkKind;
+  return entry.isSpecial ? 'special' : undefined;
+}
+
+export interface InspectionEntryInput {
+  name: string;
+  isDirectory: boolean;
+  kind?: InspectedEntryKind;
+}
+
+export interface InspectionEntryFlags {
+  kind?: InspectedEntryKind;
+  unsafePath?: true;
+  duplicate?: true;
+}
+
+export interface InspectionSafety {
+  extractable: boolean;
+  /** One line per category that blocks extraction, with a count and the first offending name. */
+  unextractableReasons: string[];
+  /** Per-entry flags, in the order of the input entries. */
+  flags: InspectionEntryFlags[];
+}
+
+function normalizeEntryKey(name: string): string {
+  return trimTrailingSlashes(name.replace(/\\/g, '/'));
+}
+
+/**
+ * Classifies the entries of an inspected archive for reporting. Nothing here follows or resolves a name:
+ * names are only compared and pattern-checked. Linear in the number of entries.
+ */
+export function summarizeInspectionSafety(entries: InspectionEntryInput[]): InspectionSafety {
+  const groups = new Map<string, number[]>();
+  entries.forEach((entry, index) => {
+    const key = normalizeEntryKey(entry.name);
+    const group = groups.get(key);
+    if (group) {
+      group.push(index);
+    } else {
+      groups.set(key, [index]);
+    }
+  });
+
+  const flags: InspectionEntryFlags[] = entries.map((entry) => {
+    const flag: InspectionEntryFlags = {};
+    if (entry.kind !== undefined) flag.kind = entry.kind;
+    if (entryPathProblem(entry.name) !== null) flag.unsafePath = true;
+    return flag;
+  });
+
+  const duplicatePaths: string[] = [];
+  for (const [key, indexes] of groups) {
+    if (indexes.length > 1 && indexes.some((index) => !entries[index].isDirectory)) {
+      duplicatePaths.push(key);
+      for (const index of indexes) flags[index].duplicate = true;
+    }
+  }
+
+  const reasons: string[] = [];
+  const describe = (label: string, matching: number[]): void => {
+    if (matching.length > 0) {
+      reasons.push(`${label}: ${matching.length} (first: '${entries[matching[0]].name}')`);
+    }
+  };
+  const indexesWhere = (predicate: (flag: InspectionEntryFlags) => boolean): number[] =>
+    flags.flatMap((flag, index) => (predicate(flag) ? [index] : []));
+
+  describe('symbolic or hard link entries', indexesWhere((flag) => flag.kind === 'symlink' || flag.kind === 'hardlink'));
+  describe('device, FIFO or socket entries', indexesWhere((flag) => flag.kind === 'special'));
+  describe('entries with an absolute, traversal or invalid path', indexesWhere((flag) => flag.unsafePath === true));
+  if (duplicatePaths.length > 0) {
+    reasons.push(`duplicated paths: ${duplicatePaths.length} (first: '${duplicatePaths[0]}')`);
+  }
+
+  return { extractable: reasons.length === 0, unextractableReasons: reasons, flags };
 }

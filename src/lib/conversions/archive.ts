@@ -22,13 +22,15 @@ import {
   NativeRenameUnsupportedError,
   UnreadableArchiveError,
   UnsafeArchiveError,
-  assertSafeArchiveListing,
+  assertListingResourceCaps,
   extractArchiveContained,
   extractArchiveContainedSync,
   hasTarMagic,
+  inspectedKindOf,
   listingBufferLimit,
   parse7zTechnicalListing,
   sanitizeLeafFilename,
+  summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
@@ -2848,7 +2850,16 @@ export async function repairZipArchive(
   return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
+/** What the per-format inspectors return; `inspectArchive` adds the extractability report. */
+type InspectionBody = Omit<ArchiveInspectResponse, 'extractable' | 'unextractableReasons'>;
+
+const UNIX_FILE_TYPE_MASK = 0o170000;
+const UNIX_SYMLINK_TYPE = 0o120000;
+const ZIP_UNIX_HOST = 3;
+const ZIP_EXTERNAL_ATTR_MODE_SHIFT = 16;
+const ZIP_VERSION_MADE_BY_HOST_SHIFT = 8;
+
+function inspectZipBuffer(buffer: Buffer): InspectionBody {
   if (buffer.length < 22) {
     throw new ConversionFailedError('Invalid ZIP archive: buffer too small');
   }
@@ -2950,7 +2961,11 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
         }
       }
 
-      const isDirectory = rawName.endsWith('/') || (buffer.readUInt32LE(pos + 38) & 0x10) !== 0;
+      const externalAttributes = buffer.readUInt32LE(pos + 38);
+      const isDirectory = rawName.endsWith('/') || (externalAttributes & 0x10) !== 0;
+      const madeByHost = buffer.readUInt16LE(pos + 4) >>> ZIP_VERSION_MADE_BY_HOST_SHIFT;
+      const unixFileType = (externalAttributes >>> ZIP_EXTERNAL_ATTR_MODE_SHIFT) & UNIX_FILE_TYPE_MASK;
+      const isSymlink = madeByHost === ZIP_UNIX_HOST && unixFileType === UNIX_SYMLINK_TYPE;
 
       entries.push({
         name: rawName,
@@ -2960,6 +2975,7 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
         isDirectory,
         modifiedAt,
         crc32: crc32Str,
+        ...(isSymlink ? { kind: 'symlink' as const } : {}),
       });
 
       pos += 46 + fnLen + extraLen + commentLen;
@@ -3014,7 +3030,7 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
   };
 }
 
-function inspectTarBuffer(buffer: Buffer, format = 'tar'): ArchiveInspectResponse {
+function inspectTarBuffer(buffer: Buffer, format = 'tar'): InspectionBody {
   const entries: ArchiveEntryMetadata[] = [];
   let offset = 0;
   let totalUncompressedBytes = 0;
@@ -3078,7 +3094,7 @@ async function inspectArchiveVia7zCli(
   format: '7z' | 'rar',
   p7z: string,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${format}_inspect_${Date.now()}_${token}`);
@@ -3125,9 +3141,10 @@ async function inspectArchiveVia7zCli(
       throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
     }
 
-    // Inspection writes nothing, but it must not report entries an extraction would refuse, and it must
-    // not be a way to make the service parse an unbounded listing.
-    assertSafeArchiveListing(parse7zTechnicalListing(stdoutStr), buffer.length, ARCHIVE_SECURITY_LIMITS);
+    // Inspection writes nothing and reports unsafe entries rather than refusing them. Only the resource caps,
+    // which protect this service from an unbounded listing, still refuse.
+    const listed = parse7zTechnicalListing(stdoutStr);
+    assertListingResourceCaps(listed, buffer.length, ARCHIVE_SECURITY_LIMITS);
 
     const entries: ArchiveEntryMetadata[] = [];
     const blocks = stdoutStr.split(/\r?\n\r?\n/);
@@ -3153,8 +3170,9 @@ async function inspectArchiveVia7zCli(
       const modTime = record.Modified || undefined;
       const crcHex = record.CRC || undefined;
 
+      // The name stays verbatim so a traversal or absolute path is visible to the caller; it is flagged, not followed.
       entries.push({
-        name: sanitizeArchivePath(record.Path) || record.Path,
+        name: record.Path,
         uncompressedSize: uncompSize,
         compressedSize: compSize,
         isEncrypted: isEnc,
@@ -3163,6 +3181,15 @@ async function inspectArchiveVia7zCli(
         crc32: crcHex ? crcHex.toLowerCase() : undefined,
       });
     }
+
+    // Both parsers read the same blocks, so they agree entry for entry; anything else is a listing we cannot trust.
+    if (listed.length !== entries.length) {
+      throw new UnsafeArchiveError('malformed-listing', 'Archive listing could not be matched entry for entry.');
+    }
+    listed.forEach((item, index) => {
+      const kind = inspectedKindOf(item);
+      if (kind !== undefined) entries[index].kind = kind;
+    });
 
     let totalUncompressedBytes = 0;
     let totalCompressedBytes = 0;
@@ -3187,7 +3214,7 @@ async function inspectArchiveVia7zCli(
 async function inspect7zBuffer(
   buffer: Buffer,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   const p7z = get7zBinaryPath();
   if (p7z) {
     return await inspectArchiveVia7zCli(buffer, '7z', p7z, password);
@@ -3234,7 +3261,7 @@ async function inspect7zBuffer(
 async function inspectRarBuffer(
   buffer: Buffer,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   // Fast byte-level inspection for RAR header encryption (MHD_PASSWORD flag)
   if (buffer.length >= 14) {
     const isRar4 =
@@ -3333,10 +3360,34 @@ async function inspectRarBuffer(
   };
 }
 
+/**
+ * Describes an archive without extracting it. Unsafe entries are reported, not refused: links, absolute or
+ * traversing names and duplicated paths come back as per-entry flags with `extractable: false` and the
+ * reasons. Only resource caps (entry count, declared size, ratio) still reject, in the 7z/RAR listing.
+ * Tar names are normalized by the tar reader, so traversal inside a tar is not visible here.
+ */
 export async function inspectArchive(
   archiveBuffer: Buffer,
   options: { filename?: string; password?: string } = {}
 ): Promise<ArchiveInspectResponse> {
+  const body = await inspectArchiveEntries(archiveBuffer, options);
+  const safety = summarizeInspectionSafety(body.entries);
+  const entries = body.entries.map((entry, index) => {
+    const flag = safety.flags[index];
+    return {
+      ...entry,
+      ...(flag.kind !== undefined ? { kind: flag.kind } : {}),
+      ...(flag.unsafePath ? { unsafePath: true } : {}),
+      ...(flag.duplicate ? { duplicate: true } : {}),
+    };
+  });
+  return { ...body, entries, extractable: safety.extractable, unextractableReasons: safety.unextractableReasons };
+}
+
+async function inspectArchiveEntries(
+  archiveBuffer: Buffer,
+  options: { filename?: string; password?: string } = {}
+): Promise<InspectionBody> {
   if (!archiveBuffer || archiveBuffer.length === 0) {
     throw new ConversionFailedError('Archive buffer is empty.');
   }

@@ -591,6 +591,12 @@ export interface ArchiveEntryMetadata {
   isDirectory: boolean;
   modifiedAt?: string;
   crc32?: string;
+  /** Set for entries that are not plain files or directories. Links are reported, never resolved. */
+  kind?: 'symlink' | 'hardlink' | 'special';
+  /** The name is absolute, climbs out with `..`, or is otherwise invalid. `name` is kept verbatim. */
+  unsafePath?: boolean;
+  /** Another entry in the archive has the same path. */
+  duplicate?: boolean;
 }
 
 export interface ArchiveInspectResponse {
@@ -600,6 +606,10 @@ export interface ArchiveInspectResponse {
   totalCompressedBytes: number;
   isEncrypted: boolean;
   entries: ArchiveEntryMetadata[];
+  /** False when extraction would refuse the archive: links, unsafe paths, special entries or duplicates. */
+  extractable: boolean;
+  /** One line per blocking category, with a count and the first offending entry; empty when extractable. */
+  unextractableReasons: string[];
 }
 
 export class MissingVolumeError extends Error {
