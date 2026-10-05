@@ -15,6 +15,14 @@ const WAV_HEADER_BYTES = 44;
 const SOURCE_FREQUENCY_HZ = 440;
 const SOURCE_PEAK = 12000;
 const MAX_CODEC_DELAY_SAMPLES = 2600;
+/** Trailing padding a lossy codec may add past the source length (two 1152-sample MP3 frames). */
+const MAX_CODEC_PADDING_SAMPLES = 2304;
+/** A decode whose frame count differs from the source by more than this is not the source. */
+const MAX_FRAME_COUNT_DRIFT = MAX_CODEC_DELAY_SAMPLES + MAX_CODEC_PADDING_SAMPLES;
+const CHIRP_START_HZ = 200;
+const CHIRP_END_HZ = 4000;
+/** Per-channel start offset, incommensurate with the sweep so channels never coincide. */
+const CHIRP_CHANNEL_OFFSET_HZ = 137;
 const EDGE_GUARD_SAMPLES = 4096;
 const DECODE_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
@@ -43,6 +51,72 @@ export function sineSamples(sampleRate: number, channels: number, seconds: numbe
     }
   }
   return out;
+}
+
+/**
+ * Interleaved linear chirp, 200 Hz to 4 kHz over the clip. It never repeats, so a delayed or
+ * re-synthesized copy cannot align with it at any lag, and each channel sweeps from its own
+ * start frequency so the channels are mutually distinct.
+ */
+export function chirpSamples(sampleRate: number, channels: number, seconds: number): Int16Array {
+  const frames = Math.round(sampleRate * seconds);
+  const out = new Int16Array(frames * channels);
+  const sweepRate = (CHIRP_END_HZ - CHIRP_START_HZ) / seconds;
+  for (let i = 0; i < frames; i++) {
+    const t = i / sampleRate;
+    for (let c = 0; c < channels; c++) {
+      const startHz = CHIRP_START_HZ + c * CHIRP_CHANNEL_OFFSET_HZ;
+      const phase = 2 * Math.PI * (startHz * t + (sweepRate * t * t) / 2);
+      out[i * channels + c] = Math.round(Math.sin(phase) * SOURCE_PEAK);
+    }
+  }
+  return out;
+}
+
+export type RawWavEncoding = 'u8' | 's24' | 's32' | 'f32' | 'f64';
+
+const WAVE_FORMAT_PCM = 1;
+const WAVE_FORMAT_IEEE_FLOAT = 3;
+/** Low byte stamped into every widened integer sample so truncating to 16 bits loses information. */
+const WIDENED_LOW_BYTE = 0x5a;
+
+/**
+ * Hand-authored RIFF WAV carrying the 16-bit samples re-expressed in another sample format:
+ * unsigned 8-bit, signed 24/32-bit PCM (with nonzero low bits), or IEEE float 32/64.
+ */
+export function wavWithEncoding(
+  samples: Int16Array,
+  sampleRate: number,
+  channels: number,
+  encoding: RawWavEncoding
+): Buffer {
+  const widths: Record<RawWavEncoding, number> = { u8: 1, s24: 3, s32: 4, f32: 4, f64: 8 };
+  const bytesPerSample = widths[encoding];
+  const data = Buffer.alloc(samples.length * bytesPerSample);
+  samples.forEach((v, i) => {
+    const at = i * bytesPerSample;
+    if (encoding === 'u8') data.writeUInt8((v >> 8) + 128, at);
+    else if (encoding === 's24') data.writeIntLE((v << 8) | WIDENED_LOW_BYTE, at, 3);
+    else if (encoding === 's32') data.writeInt32LE((v << 16) | (WIDENED_LOW_BYTE << 8), at);
+    else if (encoding === 'f32') data.writeFloatLE(v / 32768, at);
+    else data.writeDoubleLE(v / 32768, at);
+  });
+  const isFloat = encoding === 'f32' || encoding === 'f64';
+  const header = Buffer.alloc(WAV_HEADER_BYTES);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(isFloat ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
+  header.writeUInt16LE(channels * bytesPerSample, 32);
+  header.writeUInt16LE(bytesPerSample * 8, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
 }
 
 export function wavFromSamples(samples: Int16Array, sampleRate: number, channels: number): Buffer {
@@ -127,24 +201,35 @@ export function probeStream(buffer: Buffer, extension: string, kind: 'a' | 'v'):
   return fields;
 }
 
-/** Best-lag SNR in dB of channel 0 of `decoded` against the source, tolerant of codec delay. */
+/**
+ * Best-lag SNR in dB of `decoded` against the source, tolerant of codec delay. Every channel is
+ * scored at the same lag and the weakest channel decides, so a decode whose channels are
+ * swapped, duplicated or silent cannot pass on the strength of channel 0. A decode whose frame
+ * count differs from the source by more than the codec delay plus padding is not the source and
+ * scores -Infinity, so truncated output cannot pass by matching only its prefix.
+ */
 export function bestSnrDb(reference: Int16Array, decoded: Int16Array, channels: number): number {
   const refFrames = Math.floor(reference.length / channels);
   const decFrames = Math.floor(decoded.length / channels);
+  if (Math.abs(decFrames - refFrames) > MAX_FRAME_COUNT_DRIFT) return -Infinity;
   let best = -Infinity;
   for (let lag = 0; lag <= MAX_CODEC_DELAY_SAMPLES; lag++) {
     const end = Math.min(refFrames, decFrames - lag) - EDGE_GUARD_SAMPLES;
     if (end <= EDGE_GUARD_SAMPLES) break;
-    let signal = 0;
-    let noise = 0;
-    for (let i = EDGE_GUARD_SAMPLES; i < end; i++) {
-      const r = reference[i * channels];
-      const d = decoded[(i + lag) * channels];
-      signal += r * r;
-      noise += (r - d) * (r - d);
+    let weakest = Infinity;
+    for (let c = 0; c < channels; c++) {
+      let signal = 0;
+      let noise = 0;
+      for (let i = EDGE_GUARD_SAMPLES; i < end; i++) {
+        const r = reference[i * channels + c];
+        const d = decoded[(i + lag) * channels + c];
+        signal += r * r;
+        noise += (r - d) * (r - d);
+      }
+      const snr = noise === 0 ? Infinity : 10 * Math.log10(signal / noise);
+      if (snr < weakest) weakest = snr;
     }
-    const snr = noise === 0 ? Infinity : 10 * Math.log10(signal / noise);
-    if (snr > best) best = snr;
+    if (weakest > best) best = weakest;
   }
   return best;
 }

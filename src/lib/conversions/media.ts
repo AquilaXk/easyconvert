@@ -258,16 +258,19 @@ export async function convertMedia(
     }
   }
 
-  // Without native FFmpeg only the lossless targets can be produced faithfully. Every lossy audio
-  // or video encode fails closed with EngineUnavailableError (HTTP 503); there is no in-process
-  // fallback encoder and no opt-in that emits a synthesized stream.
-  if (PURE_UNAVAILABLE_ENCODE_TARGETS.has(tgt)) {
+  // Without native FFmpeg only WAV and FLAC can be produced faithfully. Every other audio or
+  // video target fails closed with EngineUnavailableError (HTTP 503) before any decoding; there is
+  // no in-process fallback encoder and no opt-in that emits a synthesized stream.
+  if (!PURE_LOSSLESS_TARGETS.has(tgt)) {
     const cause = options.disableNativeEngine
       ? 'the native engine is disabled'
       : 'FFmpeg is not installed or not in PATH';
+    const product = PURE_UNAVAILABLE_ENCODE_TARGETS.has(tgt)
+      ? `authentic lossy ${tgt.toUpperCase()} compression`
+      : `${tgt.toUpperCase()} output`;
     throw new EngineUnavailableError(
       'ffmpeg',
-      `Native FFmpeg engine is required for authentic lossy ${tgt.toUpperCase()} compression (${cause}); there is no in-process fallback encoder (Fail-Closed).`
+      `Native FFmpeg engine is required for ${product} (${cause}); there is no in-process fallback encoder (Fail-Closed).`
     );
   }
 
@@ -290,8 +293,41 @@ export const LOSSY_PSYCHOACOUSTIC_FORMATS = new Set([
   'avi',
 ]);
 
-/** Lossy targets plus the raw ADTS alias: FFmpeg is the only engine that may produce them. */
+/** The only targets the in-process engine may emit when FFmpeg is unavailable. */
+const PURE_LOSSLESS_TARGETS: ReadonlySet<string> = new Set(['wav', 'flac']);
+
+/** Lossy targets plus the raw ADTS alias, used to word the fail-closed message. */
 const PURE_UNAVAILABLE_ENCODE_TARGETS: ReadonlySet<string> = new Set([...LOSSY_PSYCHOACOUSTIC_FORMATS, 'adts']);
+
+/** The pure path reproduces only mono and stereo, 16-bit integer PCM faithfully. */
+const PURE_MAX_CHANNELS = 2;
+const PURE_SOURCE_BITS_PER_SAMPLE = 16;
+
+/**
+ * The in-process decoders reduce every source to 16-bit integers and the encoders handle at most
+ * two channels. Anything wider would be truncated or have its channels scrambled, so it must go
+ * to FFmpeg instead of producing a lossy-looking lossless file.
+ */
+function assertPureSourceIsFaithful(decoded: DecodedAudio): void {
+  if (!Number.isInteger(decoded.channels) || decoded.channels < 1) {
+    throw new ConversionFailedError(`Invalid decoded source channel count: ${decoded.channels}`);
+  }
+  if (decoded.channels > PURE_MAX_CHANNELS) {
+    throw new EngineUnavailableError(
+      'ffmpeg',
+      `Native FFmpeg engine is required to convert ${decoded.channels}-channel audio; the in-process engine reproduces only mono and stereo faithfully (Fail-Closed).`
+    );
+  }
+  const isReducedFormat =
+    decoded.sourceBitsPerSample !== undefined &&
+    (decoded.sourceBitsPerSample !== PURE_SOURCE_BITS_PER_SAMPLE || decoded.sourceSampleFormat !== 'int');
+  if (isReducedFormat) {
+    throw new EngineUnavailableError(
+      'ffmpeg',
+      `Native FFmpeg engine is required to convert ${decoded.sourceBitsPerSample}-bit ${decoded.sourceSampleFormat} audio; the in-process engine reproduces only 16-bit integer PCM faithfully (Fail-Closed).`
+    );
+  }
+}
 
 
 
@@ -536,6 +572,7 @@ function processMediaPure(
 ): ConversionResult {
   // 1. Extract PCM audio samples from source using pure audio decoder stack
   const decoded = decodeAudioBuffer(inputBuffer, src);
+  assertPureSourceIsFaithful(decoded);
   if (!Number.isFinite(decoded.sampleRate) || decoded.sampleRate < 4000 || decoded.sampleRate > 192000) {
     throw new ConversionFailedError(`Invalid decoded source sample rate: ${decoded.sampleRate}`);
   }

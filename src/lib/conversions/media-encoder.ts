@@ -9,6 +9,7 @@
  */
 
 import { encodePureMp3 as pureEncodeMp3 } from '../edge/pure/pure-audio';
+import { ConversionFailedError } from '../types';
 import {
   AAC_SWB_OFFSET_1024_48,
   decodeScalefactorDiff,
@@ -210,7 +211,14 @@ export function encodeFlacStream(
   sampleRate: number,
   channels: number
 ): Buffer {
-  const chCount = Math.max(1, Math.min(2, channels));
+  // The subframe writer below only implements the independent mono and stereo layouts; clamping
+  // a wider layout would interleave its channels into a scrambled stereo stream.
+  if (channels !== 1 && channels !== 2) {
+    throw new ConversionFailedError(
+      `FLAC encoder supports only mono and stereo input, received ${channels} channels (Fail-Closed).`
+    );
+  }
+  const chCount = channels;
   const totalSamplesPerChannel = Math.floor(samples.length / chCount);
 
   // 1. STREAMINFO Metadata Block (42 bytes: 4 bytes "fLaC" marker + 4 bytes header + 34 bytes payload)
