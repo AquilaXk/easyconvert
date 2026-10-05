@@ -1,7 +1,8 @@
 import zlib from 'node:zlib';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
+import { selectFrames } from './image-frames';
 import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
@@ -2424,6 +2425,7 @@ export async function convertImage(
   }
 
   let pipeline: sharp.Sharp;
+  let keepsAnimation = false;
 
   try {
     if (rawDemosaiced) {
@@ -2499,7 +2501,10 @@ export async function convertImage(
         raw: { width: uHdr.width, height: uHdr.height, channels: 3 },
       });
     } else {
-      pipeline = sharp(activeBuffer);
+      // Multi-frame sources keep every frame for animated targets; still targets need `options.page`.
+      const frames = await selectFrames(activeBuffer, fmt, options.page);
+      keepsAnimation = frames.keepsAnimation;
+      pipeline = sharp(activeBuffer, frames.input);
     }
 
     if (isRawInput) {
@@ -2760,6 +2765,11 @@ export async function convertImage(
         options.ditherMethod === 'riemersma' ||
         options.ditherMethod === 'blue-noise'
       ) {
+        if (keepsAnimation) {
+          throw new UnsupportedOptionError(
+            'The oklab quantizer, riemersma and blue-noise dithering work on one frame and cannot be applied to an animated GIF; remove them or select a single frame with the "page" option'
+          );
+        }
         const { data, info } = await pipeline
           .ensureAlpha()
           .raw()

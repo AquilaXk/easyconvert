@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -99,6 +99,21 @@ export function frameDelaysMs(encoded: Buffer, extension: string): number[] {
       .split('\n')
       .map((value) => Number(value) * MS_PER_CENTISECOND)
   );
+}
+
+/** Decodes every frame of an animated image, composited onto the full canvas (`-coalesce`), to RGBA. */
+export function decodeCoalescedFrames(encoded: Buffer, extension: string): DecodedRgba[] {
+  return withTempImage(encoded, extension, (file) => {
+    const dir = path.dirname(file);
+    execFileSync(requireMagick(), convertArgs([file, '-coalesce', '+adjoin', path.join(dir, 'frame-%d.png')]), {
+      maxBuffer: MAX_DECODE_BYTES,
+    });
+    const frames: DecodedRgba[] = [];
+    for (let index = 0; existsSync(path.join(dir, `frame-${index}.png`)); index += 1) {
+      frames.push(decodeRgba(readFileSync(path.join(dir, `frame-${index}.png`)), 'png'));
+    }
+    return frames;
+  });
 }
 
 export type Rgb = readonly [number, number, number];
