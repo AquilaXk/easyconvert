@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import {
@@ -26,7 +27,9 @@ import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
-import { hasComplexTextScript } from '../lib/conversions/ctl';
+import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
+import { assertFontCoverage } from '../lib/conversions/pdf-fonts';
+import { parseHwpDocument } from '../lib/conversions/hwp';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
@@ -1460,32 +1463,99 @@ export async function convertWithInProcessRawSensor(
  */
 const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
 const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
-const COMPLEX_TEXT_FORMATS = new Set(['txt', 'html', 'htm', 'md']);
+/** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
+const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
+/** Sources LibreOffice reads directly; their text is scanned in chunks, whatever the size. */
+const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt', 'html', 'htm']);
+/** HTML always prefers LibreOffice, which keeps its full structure. */
+const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
+/** Sources LibreOffice cannot open: converted in-process to HTML, which LibreOffice then renders. */
+const HTML_STAGED_SOURCES: ReadonlySet<string> = new Set(['md', 'hwp']);
+const HTML_FORMAT = 'html';
+const TEXT_SCAN_CHUNK_BYTES = 1024 * 1024;
 
-function checkInputContainsComplexScript(input: Buffer | WorkerVfsPayload, src: string): boolean {
-  if (!COMPLEX_TEXT_FORMATS.has(src)) return false;
+interface TextPdfRoute {
+  /** Text has Arabic, Hebrew, Indic or another script the in-process writer cannot shape. */
+  readonly complexScript: boolean;
+  /** LibreOffice renders this input when installed (CJK or complex script, or HTML). */
+  readonly preferNative: boolean;
+}
+
+/** Every distinct character of a text file, read in chunks so any file size is scanned in full. */
+function distinctCharactersOfFile(filePath: string): string {
+  const seen = new Set<number>();
+  const decoder = new StringDecoder('utf8');
+  const chunk = Buffer.alloc(TEXT_SCAN_CHUNK_BYTES);
+  const fd = fs.openSync(filePath, 'r');
   try {
-    let buf: Buffer | undefined;
-    if (Buffer.isBuffer(input)) {
-      buf = input;
-    } else if (input.inputBuffer) {
-      buf = input.inputBuffer;
-    } else if (input.inputPath && fs.existsSync(input.inputPath)) {
-      const fd = fs.openSync(input.inputPath, 'r');
-      const stat = fs.fstatSync(fd);
-      const readLen = Math.min(512 * 1024, stat.size);
-      const readBuf = Buffer.alloc(readLen);
-      fs.readSync(fd, readBuf, 0, readLen, 0);
-      fs.closeSync(fd);
-      buf = readBuf;
+    let bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
+    while (bytesRead > 0) {
+      for (const ch of decoder.write(chunk.subarray(0, bytesRead))) seen.add(ch.codePointAt(0) as number);
+      bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
     }
-    if (buf) {
-      return hasComplexTextScript(buf.toString('utf-8'));
-    }
-  } catch {
-    // Ignore read errors
+    for (const ch of decoder.end()) seen.add(ch.codePointAt(0) as number);
+  } finally {
+    fs.closeSync(fd);
   }
-  return false;
+  let text = '';
+  for (const codePoint of seen) text += String.fromCodePoint(codePoint);
+  return text;
+}
+
+/** The text whose scripts decide the PDF route: the file's characters, or the HWP document text. */
+function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): string {
+  if (src === 'hwp') {
+    const hwp = parseHwpDocument(readRawInputBuffer(input));
+    return [...hwp.paragraphs.map((p) => p.text), ...hwp.tables.flatMap((t) => t.rows.flat())].join('\n');
+  }
+  const filePath = !Buffer.isBuffer(input) && !input.inputBuffer ? input.inputPath : undefined;
+  if (STREAMED_TEXT_SOURCES.has(src) && filePath && fs.existsSync(filePath)) {
+    return distinctCharactersOfFile(filePath);
+  }
+  return readRawInputBuffer(input).toString('utf-8');
+}
+
+/**
+ * Decides how text and HTML go to PDF: CJK, complex-script and HTML input prefer LibreOffice.
+ * Both engines draw with the installed fonts, so CJK or complex-script letters that no installed
+ * font covers fail first with EngineUnavailableError instead of rendering as empty boxes.
+ */
+function planTextPdfRoute(input: Buffer | WorkerVfsPayload, src: string, tgt: string): TextPdfRoute | null {
+  if (tgt !== 'pdf' || !TEXT_PDF_SOURCES.has(src)) return null;
+  const text = textForPdfRouting(input, src);
+  const complexScript = hasComplexTextScript(text);
+  const cjk = hasCjkScript(text);
+  if (complexScript || cjk) {
+    const scriptLetters = new Set<string>();
+    for (const ch of text) {
+      if (hasCjkScript(ch) || hasComplexTextScript(ch)) scriptLetters.add(ch);
+    }
+    assertFontCoverage(Array.from(scriptLetters).join(''));
+  }
+  return { complexScript, preferNative: complexScript || cjk || HTML_SOURCES.has(src) };
+}
+
+/**
+ * Renders text or HTML to PDF with LibreOffice. Markdown and HWP, which LibreOffice cannot open,
+ * are first converted in-process to HTML.
+ */
+async function convertTextPdfWithHeadlessOffice(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  options: WorkerEngineOptions,
+  originalFilename: string
+): Promise<WorkerConversionResult | null> {
+  if (!HTML_STAGED_SOURCES.has(src)) {
+    return convertWithHeadlessOffice(input, src, 'pdf', options, originalFilename);
+  }
+  if (!resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH)) {
+    throw new EngineUnavailableError('soffice', 'LibreOffice binary is not installed or not in PATH');
+  }
+  const staged = await convertFile(readRawInputBuffer(input), src, HTML_FORMAT, {}, originalFilename);
+  const stagedInput: Buffer | WorkerVfsPayload = Buffer.isBuffer(input)
+    ? staged.buffer
+    : { inputBuffer: staged.buffer, outputPath: input.outputPath };
+  return convertWithHeadlessOffice(stagedInput, HTML_FORMAT, 'pdf', options, originalFilename);
 }
 
 /** Whether text output holds any character other than whitespace (form feeds from empty pages count as blank). */
@@ -1519,13 +1589,17 @@ export async function executeWorkerConversion(
   let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
-  const isComplexText = tgt === 'pdf' && checkInputContainsComplexScript(input, src);
+  const textPdfRoute = planTextPdfRoute(input, src, tgt);
+  const isComplexText = Boolean(textPdfRoute?.complexScript);
+  const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
   // 1. Native Headless Office
-  if (isComplexText || isRecalculate || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
+  if (isNativeTextPdf || isRecalculate || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {
-      const officeRes = await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
+      const officeRes = isNativeTextPdf
+        ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename)
+        : await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
       if (officeRes) {
         return {
           ...officeRes,

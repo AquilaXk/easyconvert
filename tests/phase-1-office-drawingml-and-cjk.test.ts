@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions';
+import { EngineUnavailableError } from '../src/lib/types';
 import {
   evaluateDrawingMlGuideFormula,
   parseDrawingMlGuides,
@@ -569,18 +570,18 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       expect(pdf.length).toBeGreaterThan(200);
     });
 
-    it('fails closed on non-WinAnsi text without silent dropping if no Unicode font is available', () => {
-      const mockDoc = {
-        text: () => {
-          throw new Error('WinAnsi cannot encode character');
-        },
-        registerFont: () => {},
-        font: () => {},
-      } as any;
-
-      expect(() => {
-        renderSafePdfText(mockDoc, '주문번호: 100', false);
-      }).toThrow(/Cannot render text with standard WinAnsi font/);
+    it('fails closed with EngineUnavailableError instead of drawing boxes when no installed font covers a character', () => {
+      // U+0378 is unassigned: no real font maps it (placeholder-box fonts are never used).
+      const doc = new PDFDocument();
+      let thrown: unknown = null;
+      try {
+        renderSafePdfText(doc, 'Order ͸ 100', true);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(EngineUnavailableError);
+      expect((thrown as EngineUnavailableError).engineName).toBe('unicode-font');
+      expect((thrown as Error).message).toContain('U+0378');
     });
 
 
