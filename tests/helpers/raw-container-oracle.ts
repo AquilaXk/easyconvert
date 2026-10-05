@@ -20,6 +20,11 @@ export interface ContainerInfo {
   sensorHeight: number;
   /** Offset of the first byte of compressed or packed sensor data. */
   sensorDataOffset: number;
+  /** X3F: byte length of the sensor section including its 28-byte image header; 0 for Pi frames. */
+  sensorSectionLength: number;
+  /** X3F: the sensor section's image type and format words (for example 3 / 0x1e); 0 for Pi frames. */
+  sensorImageType: number;
+  sensorFormat: number;
 }
 
 function startsWithJpegSoi(buffer: Buffer, at: number): boolean {
@@ -29,13 +34,16 @@ function startsWithJpegSoi(buffer: Buffer, at: number): boolean {
 /** X3F: header columns/rows, directory walked from the pointer in the last four bytes. */
 export function readX3fContainer(file: Buffer): ContainerInfo {
   if (file.toString('latin1', 0, 4) !== 'FOVb') throw new Error('not an X3F file');
-  const headerColumns = file.readUInt32LE(28);
-  const headerRows = file.readUInt32LE(32);
+  // Version 4 headers (Quattro) hold the finished image size 12 bytes further on than earlier ones.
+  const major = file.readUInt16LE(6);
+  const sizeAt = major >= 4 ? 40 : 28;
+  const headerColumns = file.readUInt32LE(sizeAt);
+  const headerRows = file.readUInt32LE(sizeAt + 4);
   const directory = file.readUInt32LE(file.length - 4);
   if (file.toString('latin1', directory, directory + 4) !== 'SECd') throw new Error('X3F directory marker missing');
   const count = file.readUInt32LE(directory + 8);
   let preview: Buffer | null = null;
-  let sensor: { columns: number; rows: number; dataOffset: number } | null = null;
+  let sensor: { columns: number; rows: number; dataOffset: number; length: number; imageType: number; format: number } | null = null;
   for (let index = 0; index < count; index += 1) {
     const entry = directory + 12 + index * 12;
     const offset = file.readUInt32LE(entry);
@@ -46,8 +54,9 @@ export function readX3fContainer(file: Buffer): ContainerInfo {
     const columns = file.readUInt32LE(offset + 16);
     const rows = file.readUInt32LE(offset + 20);
     const payload = offset + 28;
-    if (imageType === 3) {
-      sensor = { columns, rows, dataOffset: payload };
+    // Sensor data is image type 3 (DP, SD14) or 1 (Merrill, Quattro); type 2 holds the previews.
+    if (imageType === 3 || imageType === 1) {
+      sensor = { columns, rows, dataOffset: payload, length, imageType, format: file.readUInt32LE(offset + 12) };
     } else if (startsWithJpegSoi(file, payload) && columns === headerColumns && rows === headerRows) {
       // The preview with the finished image's size, not the small thumbnail.
       preview = file.subarray(payload, offset + length);
@@ -61,23 +70,37 @@ export function readX3fContainer(file: Buffer): ContainerInfo {
     sensorWidth: sensor.columns,
     sensorHeight: sensor.rows,
     sensorDataOffset: sensor.dataOffset,
+    sensorSectionLength: sensor.length,
+    sensorImageType: sensor.imageType,
+    sensorFormat: sensor.format,
   };
 }
 
-/** Raspberry Pi: JPEG, then a 32768-byte "BRCM" block whose mode name ("2592x1944Slow") gives the frame size. */
+/** Raspberry Pi: JPEG, then a 32768-byte "BRCM" block that gives the frame size. */
 export function readPiFrame(file: Buffer): ContainerInfo & { stride: number } {
-  const trailer = file.indexOf('BRCM', 0, 'latin1');
+  // The JPEG preview may itself contain the letters "BRCM" (maker notes): the block is the occurrence
+  // whose length word (offset 8) is the header size minus the magic.
+  let trailer = file.indexOf('BRCM', 0, 'latin1');
+  while (trailer >= 0 && file.readUInt32LE(trailer + 8) !== 32764) trailer = file.indexOf('BRCM', trailer + 1, 'latin1');
   if (trailer < 0) throw new Error('no BRCM block');
+  // Frame size: named in the mode string for the older sensors ("2592x1944Slow"); otherwise the two
+  // copies of the geometry in the block (0xd0/0xd2 and 0x10e/0x110) must agree.
   const mode = /^(\d+)x(\d+)/.exec(file.toString('latin1', trailer + 0xb0, trailer + 0xb0 + 32));
-  if (!mode) throw new Error('BRCM block has no mode name');
+  const width = file.readUInt16LE(trailer + 0xd0);
+  const height = file.readUInt16LE(trailer + 0xd2);
+  if (width !== file.readUInt16LE(trailer + 0x10e) || height !== file.readUInt16LE(trailer + 0x110)) throw new Error('BRCM geometry copies disagree');
+  if (mode && (Number(mode[1]) !== width || Number(mode[2]) !== height)) throw new Error('BRCM mode name disagrees with the geometry');
   const stride = file.readUInt32LE(trailer + 0xa0);
   return {
     previewJpeg: file.subarray(0, trailer),
-    declaredWidth: Number(mode[1]),
-    declaredHeight: Number(mode[2]),
-    sensorWidth: Number(mode[1]),
-    sensorHeight: Number(mode[2]),
+    declaredWidth: width,
+    declaredHeight: height,
+    sensorWidth: width,
+    sensorHeight: height,
     sensorDataOffset: trailer + 32768,
+    sensorSectionLength: 0,
+    sensorImageType: 0,
+    sensorFormat: 0,
     stride,
   };
 }
@@ -128,6 +151,36 @@ const chromaticity = (cell: number[]) => {
 };
 const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
 
+/** Average ranks (ties share the mean of their positions) of the values. */
+function ranksOf(values: number[]): number[] {
+  const order = values.map((value, index) => ({ value, index })).sort((a, b) => a.value - b.value);
+  const ranks = new Array<number>(values.length);
+  for (let start = 0; start < order.length; ) {
+    let end = start;
+    while (end + 1 < order.length && order[end + 1].value === order[start].value) end += 1;
+    for (let k = start; k <= end; k += 1) ranks[order[k].index] = (start + end) / 2;
+    start = end + 1;
+  }
+  return ranks;
+}
+
+/** Pearson correlation of the ranks: Spearman's rho. */
+function spearman(a: number[], b: number[]): number {
+  const ra = ranksOf(a);
+  const rb = ranksOf(b);
+  const ma = mean(ra);
+  const mb = mean(rb);
+  let covariance = 0;
+  let varianceA = 0;
+  let varianceB = 0;
+  for (let k = 0; k < ra.length; k += 1) {
+    covariance += (ra[k] - ma) * (rb[k] - mb);
+    varianceA += (ra[k] - ma) ** 2;
+    varianceB += (rb[k] - mb) ** 2;
+  }
+  return covariance / Math.sqrt(varianceA * varianceB);
+}
+
 export interface RegionComparison {
   /** Largest per-cell difference of luma divided by the image's own mean luma (exposure-invariant). */
   lumaRatioError: number;
@@ -135,6 +188,11 @@ export interface RegionComparison {
   chromaRelativeError: number;
   /** Largest per-cell chromaticity difference without removing the cast. */
   chromaAbsoluteError: number;
+  /**
+   * Spearman rank correlation of the 36 cell lumas (1 = identical ordering). A monotonic tone curve, which
+   * is what a camera's rendering applies, leaves it at 1, so it separates tone curves from wrong content.
+   */
+  lumaRankCorrelation: number;
 }
 
 /**
@@ -184,5 +242,5 @@ export async function compareWithPreview(decoded: Buffer, previewJpeg: Buffer): 
       );
     }
   }
-  return { lumaRatioError, chromaRelativeError, chromaAbsoluteError };
+  return { lumaRatioError, chromaRelativeError, chromaAbsoluteError, lumaRankCorrelation: spearman(previewLuma, decodedLuma) };
 }

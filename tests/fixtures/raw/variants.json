@@ -1,0 +1,42 @@
+[
+  {
+    "format": "x3f",
+    "variant": "sd14",
+    "filename": "Sigma - SIGMA SD14 - 3:2.X3F",
+    "url": "https://raw.pixls.us/getfile.php/4462/nice/Sigma - SIGMA SD14 - 3:2.X3F",
+    "sha256": "c32f247eb372c3e66ad3b433518ec11f898fdc317c8432ebe025b46d4917bcf3",
+    "bytes": 12180112
+  },
+  {
+    "format": "x3f",
+    "variant": "merrill",
+    "filename": "Sigma - SIGMA SD1 Merrill - 3:2.X3F",
+    "url": "https://raw.pixls.us/getfile.php/4918/nice/Sigma - SIGMA SD1 Merrill - 3:2.X3F",
+    "sha256": "74c0421f53e82b6a37a9ed63c7963f7cf34e49b5a51e70ff0ea7b41f726b2141",
+    "bytes": 47774136
+  },
+  {
+    "format": "x3f",
+    "variant": "quattro",
+    "filename": "Sigma - SIGMA dp2 Quattro - 3:2.X3F",
+    "url": "https://raw.pixls.us/getfile.php/5540/nice/Sigma - SIGMA dp2 Quattro - 3:2.X3F",
+    "sha256": "e89f40df6881bbf60a83e56eee92d04f71b89e9ff55d6ff5d498afd4590cfcb3",
+    "bytes": 54740948
+  },
+  {
+    "format": "raw",
+    "variant": "imx219",
+    "filename": "RaspberryPi - RP_imx219 - 3:2.raw",
+    "url": "https://raw.pixls.us/getfile.php/4200/nice/RaspberryPi - RP_imx219 - 3:2.raw",
+    "sha256": "375894180c4da0d8b0ceefba3ea8527a8ac59725e44185b76603f57101683973",
+    "bytes": 10479543
+  },
+  {
+    "format": "raw",
+    "variant": "imx477",
+    "filename": "RaspberryPi - RP_imx477 - 4:3.raw",
+    "url": "https://raw.pixls.us/getfile.php/4173/nice/RaspberryPi - RP_imx477 - 4:3.raw",
+    "sha256": "1cf00a1c4fc14dc15bfbbf615d81ee9cd864aecf34db96084845f5c2323ea997",
+    "bytes": 24498694
+  }
+]

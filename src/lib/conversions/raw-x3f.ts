@@ -3,16 +3,23 @@
  *
  * Container (little-endian): a "FOVb" header, sections addressed by a directory whose offset is the
  * last u32 of the file ("SECd": version, count, then offset/length/type entries). Image sections
- * ("SECi") carry a 28-byte header: version, image type (2 preview, 3 sensor data), format, columns,
+ * ("SECi") carry a 28-byte header: version, image type (2 preview, 3 or 1 sensor data), format, columns,
  * rows, row size. The CAMF section ("SECc") holds the camera calibration as named matrices.
  *
- * Sensor data format 0x0003001e ("TRUE", used by the DP1/DP2/SD14 generation) holds three full-resolution
- * layers (bottom/red, middle/green, top/blue), each stored as an independent bit plane:
+ * Sensor data comes in four encodings, told apart by the section's image type and format words:
+ *  - type 3, format 0x1e ("TRUE", DP1/DP2 generation) and type 1, format 0x1e (Merrill generation):
+ *    three full-resolution layers (bottom/red, middle/green, top/blue), each an independent bit plane:
  *
- *   u16 seed[3] (initial predictor per layer), u16 reserved,
- *   Huffman table: (code length, left-aligned code) byte pairs ended by a pair with length 0;
- *     the leaf value of the n-th pair is n, the number of extra bits that follow the code,
- *   u32 planeSize[3], then the planes, each starting on a 16-byte boundary.
+ *      u16 seed[3] (initial predictor per layer), u16 reserved,
+ *      Huffman table: (code length, left-aligned code) byte pairs ended by a pair with length 0;
+ *        the leaf value of the n-th pair is n, the number of extra bits that follow the code,
+ *      u32 planeSize[3], then the planes, each starting on a 16-byte boundary.
+ *
+ *  - type 1, format 0x23 (Quattro): the same coding, preceded by three (u16 columns, u16 rows) layer
+ *    sizes and with one zero word between the Huffman table and the plane sizes; the third layer has the
+ *    sensor's full resolution, the first two half the columns and rows;
+ *  - type 3, format 0x06 (SD14/SD15): tables of 1024 sample differences and 1024 Huffman code words,
+ *    rows of interleaved three-layer samples, and a trailing table of the rows' byte offsets.
  *
  * A sample is the sum of a predictor and a signed difference. The difference is a Huffman-coded bit
  * count n followed by n bits: when the first bit is 0 the difference is the n-bit value minus (2^n - 1),
@@ -21,17 +28,19 @@
  * two columns to the left.
  *
  * Colour: black level from the CAMF dark-shield rectangles, white level from the CAMF saturation
- * levels, white balance gains and the colour correction matrix of the white balance named in the file
- * header (both from CAMF), producing linear sRGB, then the sRGB transfer curve.
+ * levels (or the converter depth for Merrill and Quattro), white balance gains and the colour correction
+ * matrix of the white balance named in the file header (both from CAMF; SD14/SD15 files list a
+ * camera-to-XYZ matrix and a per-white-balance XYZ correction instead), producing linear sRGB, then the
+ * sRGB transfer curve.
  */
 import { RawDecodeError } from '../types';
-import { applyMatrixAndSrgbEncode, exposureScale, MAX_SAMPLE_16, RGB_CHANNELS, type Matrix3x3 } from './raw-srgb';
+import { applyMatrixAndSrgbEncode, exposureScale, MAX_SAMPLE_16, multiply3x3, RGB_CHANNELS, type Matrix3x3 } from './raw-srgb';
 
 const FOVB_MAGIC = 'FOVb';
 const SECTION_DIRECTORY_MAGIC = 'SECd';
 const SECTION_IMAGE_MAGIC = 'SECi';
 const SECTION_CAMF_MAGIC = 'SECc';
-const SUPPORTED_MAJOR_VERSION = 2;
+const SUPPORTED_MAJOR_VERSIONS: ReadonlySet<number> = new Set([2, 3, 4]);
 const VERSION_MAJOR_SHIFT = 16;
 
 const HEADER_VERSION_OFFSET = 4;
@@ -54,8 +63,15 @@ const TRUE_PLANE_ALIGNMENT = 16;
 const TRUE_MAX_CODE_BITS = 8;
 const TRUE_MAX_TABLE_PAIRS = 256;
 const TRUE_MAX_EXTRA_BITS = 16;
-/** Largest Foveon sensor array (the 15 MP x 3 layer sensors) with headroom. */
-const X3F_MAX_PIXELS = 30_000_000;
+/**
+ * Pixel caps per layer, from the sensor arrays (margins included) of each generation, each with a few
+ * percent of headroom: DP1/DP2 and SD14/SD15 sensors are 2688 x 1792, Merrill sensors 4928 x 3264
+ * (16.1 MP) and the Quattro top layer 6272 x 3672 (23.0 MP). Anything larger is rejected before allocation.
+ */
+const X3F_TRUE_MAX_PIXELS = 5_000_000;
+const X3F_HUFFMAN_MAX_PIXELS = 5_000_000;
+const X3F_MERRILL_MAX_PIXELS = 17_000_000;
+const X3F_QUATTRO_MAX_PIXELS = 24_000_000;
 const SAMPLE_MAX = 0xffff;
 const BITS_PER_BYTE = 8;
 const BIT_WINDOW = 32;
@@ -120,7 +136,7 @@ export function readX3fDirectory(file: Buffer): X3fSection[] {
   if (!isX3f(file)) throw new RawDecodeError('The file is not a Sigma X3F container', true);
   if (file.length < HEADER_VERSION_OFFSET + 4 + DIRECTORY_POINTER_BYTES) throw fail('the header is cut short');
   const version = file.readUInt32LE(HEADER_VERSION_OFFSET);
-  if (version >>> VERSION_MAJOR_SHIFT !== SUPPORTED_MAJOR_VERSION) {
+  if (!SUPPORTED_MAJOR_VERSIONS.has(version >>> VERSION_MAJOR_SHIFT)) {
     throw new RawDecodeError(`Sigma X3F version ${version >>> VERSION_MAJOR_SHIFT}.${version & 0xffff} is not supported`, true);
   }
   const directoryOffset = file.readUInt32LE(file.length - DIRECTORY_POINTER_BYTES);
@@ -261,39 +277,252 @@ function readDifference(reader: BitReader, lookup: HuffmanLookup): number {
   return first === 0 ? value - ((1 << bits) - 1) : value;
 }
 
+/** One decoded sensor layer; the older Huffman format stores signed samples relative to the sensor's own black. */
+export type LayerPlane = Uint16Array | Int16Array;
+
 export interface FoveonLayers {
   width: number;
   height: number;
-  /** Three planes (bottom, middle, top), each width*height 16-bit samples. */
-  planes: Uint16Array[];
+  /** Three planes (bottom, middle, top), each width*height samples. */
+  planes: LayerPlane[];
 }
 
-/** Decodes the three layers of a TRUE-format sensor section. */
-export function decodeTrueLayers(file: Buffer, image: X3fImageSection): FoveonLayers {
-  const { columns: width, rows: height } = image;
-  if (width < 2 || height < 2 || width * height > X3F_MAX_PIXELS) {
-    throw new RawDecodeError(`Decoded RAW image of ${width}x${height} pixels exceeds the ${X3F_MAX_PIXELS} pixel limit`);
+function checkPlaneSize(width: number, height: number, maxPixels: number): void {
+  if (width < 2 || height < 2 || width * height > maxPixels) {
+    throw new RawDecodeError(`Decoded RAW image of ${width}x${height} pixels exceeds the ${maxPixels} pixel limit`);
   }
-  const sectionEnd = image.offset + image.length;
-  const seedStart = image.offset + IMAGE_HEADER_BYTES;
+}
+
+interface TrueHeader {
+  seeds: number[];
+  lookup: HuffmanLookup;
+  /** Byte range of each layer's compressed plane. */
+  ranges: { start: number; end: number }[];
+}
+
+/**
+ * Seeds, Huffman table and plane locations of a TRUE-coded section. `seedStart` is where the seeds begin;
+ * Quattro sections hold one reserved word (zero) between the table and the plane sizes.
+ */
+function readTrueHeader(file: Buffer, seedStart: number, sectionEnd: number, reservedWordAfterTable: boolean): TrueHeader {
   if (seedStart + TRUE_SEED_BYTES > sectionEnd) throw fail('the sensor section is shorter than its header');
   const seeds = [file.readUInt16LE(seedStart), file.readUInt16LE(seedStart + 2), file.readUInt16LE(seedStart + 4)];
   const { lookup, next } = readHuffmanTable(file, seedStart + TRUE_SEED_BYTES, sectionEnd);
-  const sizesEnd = next + TRUE_PLANES * 4;
+  let sizesAt = next;
+  if (reservedWordAfterTable) {
+    if (next + 4 > sectionEnd) throw fail('the plane size table is cut short');
+    if (file.readUInt32LE(next) !== 0) throw new RawDecodeError('Sigma X3F Quattro section carries an unknown header word', true);
+    sizesAt += 4;
+  }
+  const sizesEnd = sizesAt + TRUE_PLANES * 4;
   if (sizesEnd > sectionEnd) throw fail('the plane size table is cut short');
-  const planeSizes = [file.readUInt32LE(next), file.readUInt32LE(next + 4), file.readUInt32LE(next + 8)];
-
-  const planes: Uint16Array[] = [];
+  const ranges: { start: number; end: number }[] = [];
   let planeStart = sizesEnd;
   for (let layer = 0; layer < TRUE_PLANES; layer += 1) {
-    const planeEnd = planeStart + planeSizes[layer];
-    if (planeEnd > sectionEnd) throw fail(`layer ${layer} extends past its section`);
-    // Every sample costs at least one bit, so a smaller plane cannot hold the declared image.
-    if (planeSizes[layer] * BITS_PER_BYTE < width * height) throw fail(`layer ${layer} is too small for ${width}x${height} samples`);
-    planes.push(decodeTruePlane(file, planeStart, planeEnd, width, height, seeds[layer], lookup));
-    planeStart += Math.ceil(planeSizes[layer] / TRUE_PLANE_ALIGNMENT) * TRUE_PLANE_ALIGNMENT;
+    const size = file.readUInt32LE(sizesAt + layer * 4);
+    const end = planeStart + size;
+    if (end > sectionEnd) throw fail(`layer ${layer} extends past its section`);
+    ranges.push({ start: planeStart, end });
+    planeStart += Math.ceil(size / TRUE_PLANE_ALIGNMENT) * TRUE_PLANE_ALIGNMENT;
+  }
+  return { seeds, lookup, ranges };
+}
+
+/** Every sample costs at least one bit, so a smaller plane cannot hold the declared image. */
+function checkPlaneCapacity(range: { start: number; end: number }, width: number, height: number, layer: number): void {
+  if ((range.end - range.start) * BITS_PER_BYTE < width * height) throw fail(`layer ${layer} is too small for ${width}x${height} samples`);
+}
+
+/** Decodes the three full-resolution layers of a TRUE-format sensor section (DP1/DP2 and Merrill generations). */
+export function decodeTrueLayers(file: Buffer, image: X3fImageSection, maxPixels: number = X3F_TRUE_MAX_PIXELS): FoveonLayers {
+  const { columns: width, rows: height } = image;
+  checkPlaneSize(width, height, maxPixels);
+  const header = readTrueHeader(file, image.offset + IMAGE_HEADER_BYTES, image.offset + image.length, false);
+  const planes: LayerPlane[] = header.ranges.map((range, layer) => {
+    checkPlaneCapacity(range, width, height, layer);
+    return decodeTruePlane(file, range.start, range.end, width, height, header.seeds[layer], header.lookup);
+  });
+  return { width, height, planes };
+}
+
+/** Entries of the difference table and of the code table in a Huffman-coded (SD14/SD15 generation) section. */
+const HUFFMAN_TABLE_ENTRIES = 1024;
+const HUFFMAN_TABLE_BYTES = HUFFMAN_TABLE_ENTRIES * 2 + HUFFMAN_TABLE_ENTRIES * 4;
+/** A code word entry holds the code length in its top 5 bits and the code in the rest. */
+const HUFFMAN_LENGTH_SHIFT = 27;
+const HUFFMAN_CODE_MASK = (1 << HUFFMAN_LENGTH_SHIFT) - 1;
+const HUFFMAN_MAX_CODE_BITS = 26;
+/** A binary trie over at most 1024 codes of at most 26 bits cannot need more nodes than this. */
+const HUFFMAN_MAX_NODES = HUFFMAN_TABLE_ENTRIES * HUFFMAN_MAX_CODE_BITS + 1;
+const HUFFMAN_WORD_BYTES = 4;
+/** The section ends with one u32 byte offset (from the start of the data) per row. */
+const HUFFMAN_ROW_OFFSET_BYTES = 4;
+const HUFFMAN_WORD_BITS = 32;
+const HUFFMAN_NO_NODE = -1;
+const INT16_MIN = -0x8000;
+const INT16_MAX = 0x7fff;
+
+interface HuffmanTrie {
+  /** Child node of (node, bit) at index node * 2 + bit, or HUFFMAN_NO_NODE. */
+  children: Int32Array;
+  /** Index into the difference table for leaf nodes, HUFFMAN_NO_NODE otherwise. */
+  leaves: Int32Array;
+}
+
+function buildHuffmanTrie(codes: Uint32Array): HuffmanTrie {
+  const children = new Int32Array(HUFFMAN_MAX_NODES * 2).fill(HUFFMAN_NO_NODE);
+  const leaves = new Int32Array(HUFFMAN_MAX_NODES).fill(HUFFMAN_NO_NODE);
+  let nodeCount = 1;
+  for (let leaf = 0; leaf < codes.length; leaf += 1) {
+    const entry = codes[leaf];
+    if (entry === 0) continue;
+    const length = entry >>> HUFFMAN_LENGTH_SHIFT;
+    if (length > HUFFMAN_MAX_CODE_BITS) throw fail(`a Huffman code is ${length} bits long`);
+    const code = entry & HUFFMAN_CODE_MASK;
+    let node = 0;
+    for (let bit = length - 1; bit >= 0; bit -= 1) {
+      if (leaves[node] !== HUFFMAN_NO_NODE) throw fail('the Huffman table has overlapping codes');
+      const slot = node * 2 + ((code >>> bit) & 1);
+      if (children[slot] === HUFFMAN_NO_NODE) {
+        children[slot] = nodeCount;
+        nodeCount += 1;
+      }
+      node = children[slot];
+    }
+    if (leaves[node] !== HUFFMAN_NO_NODE || children[node * 2] !== HUFFMAN_NO_NODE || children[node * 2 + 1] !== HUFFMAN_NO_NODE) {
+      throw fail('the Huffman table has overlapping codes');
+    }
+    leaves[node] = leaf;
+  }
+  return { children, leaves };
+}
+
+/**
+ * Decodes an SD14/SD15-generation section (format 0x06): a 1024-entry table of signed 16-bit sample
+ * differences, a 1024-entry table of Huffman code words (length in the top 5 bits), then per row the
+ * three layers' codes interleaved per pixel (layer 0, 1, 2), most significant bit first, each row in
+ * whole 32-bit words and every row's predictors starting at zero: samples are signed and relative to
+ * the first (optically dark) column of their row. The section ends with a table of the rows' byte
+ * offsets, which bounds every row's bit reading.
+ */
+export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): FoveonLayers {
+  const { columns: width, rows: height } = image;
+  checkPlaneSize(width, height, X3F_HUFFMAN_MAX_PIXELS);
+  const tableStart = image.offset + IMAGE_HEADER_BYTES;
+  const sectionEnd = image.offset + image.length;
+  const dataStart = tableStart + HUFFMAN_TABLE_BYTES;
+  const offsetsStart = sectionEnd - height * HUFFMAN_ROW_OFFSET_BYTES;
+  if (offsetsStart < dataStart) throw fail('the sensor section is shorter than its tables');
+  // Every sample costs at least one bit, so the rows cannot hold fewer than three bits per pixel.
+  if ((offsetsStart - dataStart) * BITS_PER_BYTE < width * height * TRUE_PLANES) throw fail(`the sensor data is too small for ${width}x${height} pixels`);
+  const differences = new Int16Array(HUFFMAN_TABLE_ENTRIES);
+  const codes = new Uint32Array(HUFFMAN_TABLE_ENTRIES);
+  for (let index = 0; index < HUFFMAN_TABLE_ENTRIES; index += 1) {
+    differences[index] = file.readInt16LE(tableStart + index * 2);
+    codes[index] = file.readUInt32LE(tableStart + HUFFMAN_TABLE_ENTRIES * 2 + index * 4);
+  }
+  const { children, leaves } = buildHuffmanTrie(codes);
+
+  const planes = [0, 1, 2].map(() => new Int16Array(width * height));
+  let rowStart = file.readUInt32LE(offsetsStart);
+  for (let row = 0; row < height; row += 1) {
+    const rowEnd = row + 1 < height ? file.readUInt32LE(offsetsStart + (row + 1) * HUFFMAN_ROW_OFFSET_BYTES) : offsetsStart - dataStart;
+    if (rowStart > rowEnd || rowEnd > offsetsStart - dataStart) throw fail(`row ${row} lies outside the sensor data`);
+    if ((rowEnd - rowStart) * BITS_PER_BYTE < width * TRUE_PLANES) throw fail(`row ${row} is too small for ${width} pixels`);
+    let position = dataStart + rowStart;
+    const limit = dataStart + rowEnd;
+    const predictors = [0, 0, 0];
+    let word = 0;
+    let bit = 0;
+    for (let column = 0; column < width; column += 1) {
+      for (let layer = 0; layer < TRUE_PLANES; layer += 1) {
+        let node = 0;
+        while (leaves[node] === HUFFMAN_NO_NODE) {
+          if (bit === 0) {
+            if (position + HUFFMAN_WORD_BYTES > limit) throw fail('the compressed sensor data ends early');
+            word = file.readUInt32BE(position);
+            position += HUFFMAN_WORD_BYTES;
+            bit = HUFFMAN_WORD_BITS;
+          }
+          bit -= 1;
+          node = children[node * 2 + ((word >>> bit) & 1)];
+          if (node === HUFFMAN_NO_NODE) throw fail('the compressed data holds an unassigned Huffman code');
+        }
+        const value = predictors[layer] + differences[leaves[node]];
+        if (value < INT16_MIN || value > INT16_MAX) throw fail('a decoded sample is outside the 16-bit range');
+        predictors[layer] = value;
+        planes[layer][row * width + column] = value;
+      }
+    }
+    // The row table gives each row's exact extent: a row that ends early or late was decoded from damaged data.
+    if (position !== limit) throw fail(`row ${row} does not end where the row table says`);
+    rowStart = rowEnd;
   }
   return { width, height, planes };
+}
+
+const QUATTRO_DIMENSION_BYTES = 12;
+const QUATTRO_TOP_LAYER = 2;
+/** The two lower layers have half the columns and rows of the sensor image. */
+const QUATTRO_LOWER_SCALE = 2;
+
+/**
+ * Decodes a Quattro section: three TRUE-coded planes whose sizes are listed in the section. The top
+ * layer is the sensor's full resolution; the two lower layers hold a quarter of the samples (half the
+ * columns and rows) and are upsampled to the top layer's grid with bilinear interpolation.
+ */
+export function decodeQuattroLayers(file: Buffer, image: X3fImageSection): FoveonLayers {
+  const dimsAt = image.offset + IMAGE_HEADER_BYTES;
+  if (dimsAt + QUATTRO_DIMENSION_BYTES > image.offset + image.length) throw fail('the sensor section is shorter than its header');
+  const dims = [0, 1, 2].map((layer) => ({ columns: file.readUInt16LE(dimsAt + layer * 4), rows: file.readUInt16LE(dimsAt + layer * 4 + 2) }));
+  const top = dims[QUATTRO_TOP_LAYER];
+  checkPlaneSize(top.columns, top.rows, X3F_QUATTRO_MAX_PIXELS);
+  if (top.columns < image.columns || top.rows !== image.rows) throw fail('the top layer does not cover the sensor image');
+  for (const lower of dims.slice(0, QUATTRO_TOP_LAYER)) {
+    if (lower.columns < 2 || lower.rows < 2 || lower.columns * QUATTRO_LOWER_SCALE < image.columns || lower.columns * QUATTRO_LOWER_SCALE > top.columns || lower.rows * QUATTRO_LOWER_SCALE !== top.rows) {
+      throw fail('a lower layer does not match half the top layer');
+    }
+  }
+  const header = readTrueHeader(file, dimsAt + QUATTRO_DIMENSION_BYTES, image.offset + image.length, true);
+  const decoded = header.ranges.map((range, layer) => {
+    checkPlaneCapacity(range, dims[layer].columns, dims[layer].rows, layer);
+    return decodeTruePlane(file, range.start, range.end, dims[layer].columns, dims[layer].rows, header.seeds[layer], header.lookup);
+  });
+  const planes = decoded.map((plane, layer) =>
+    layer === QUATTRO_TOP_LAYER ? plane : upsampleBilinear(plane, dims[layer].columns, dims[layer].rows, top.columns, top.rows)
+  );
+  return { width: top.columns, height: top.rows, planes };
+}
+
+/**
+ * Bilinear 2x upsampling by sample-centre alignment (output sample x lies at (x + 0.5) / 2 - 0.5 of the
+ * input grid, clamped to the edges) into a plane of `outWidth` x `outHeight`; columns past the doubled
+ * width repeat the last column.
+ */
+function upsampleBilinear(plane: LayerPlane, width: number, height: number, outWidth: number, outHeight: number): Uint16Array {
+  const out = new Uint16Array(outWidth * outHeight);
+  const columnLow = new Int32Array(outWidth);
+  const columnWeight = new Float32Array(outWidth);
+  for (let x = 0; x < outWidth; x += 1) {
+    const position = Math.min(width - 1, Math.max(0, (x + 0.5) / QUATTRO_LOWER_SCALE - 0.5));
+    columnLow[x] = Math.min(width - 2, Math.floor(position));
+    columnWeight[x] = position - columnLow[x];
+  }
+  for (let y = 0; y < outHeight; y += 1) {
+    const position = Math.min(height - 1, Math.max(0, (y + 0.5) / QUATTRO_LOWER_SCALE - 0.5));
+    const rowLow = Math.min(height - 2, Math.floor(position));
+    const rowWeight = position - rowLow;
+    const upper = rowLow * width;
+    const lower = upper + width;
+    for (let x = 0; x < outWidth; x += 1) {
+      const left = columnLow[x];
+      const weight = columnWeight[x];
+      const top = plane[upper + left] + weight * (plane[upper + left + 1] - plane[upper + left]);
+      const bottom = plane[lower + left] + weight * (plane[lower + left + 1] - plane[lower + left]);
+      out[y * outWidth + x] = Math.round(top + rowWeight * (bottom - top));
+    }
+  }
+  return out;
 }
 
 function decodeTruePlane(
@@ -346,6 +575,8 @@ export function decodeCamfBytes(file: Buffer, section: X3fSection): Buffer {
 const CAMF_XOR_MULTIPLIER = 1597;
 const CAMF_XOR_INCREMENT = 51749;
 const CAMF_XOR_MODULUS = 244944;
+/** The generator runs in 32-bit unsigned arithmetic: the first step from a large seed wraps. */
+const UINT32_RANGE = 0x1_0000_0000;
 const CAMF_XOR_SCALE = 301593171;
 const CAMF_XOR_SHIFT_DIVISOR = 1 << 24;
 
@@ -353,7 +584,7 @@ function decodeCamfXor(data: Buffer, cryptKey: number): Buffer {
   const out = Buffer.alloc(data.length);
   let key = cryptKey;
   for (let i = 0; i < data.length; i += 1) {
-    key = (key * CAMF_XOR_MULTIPLIER + CAMF_XOR_INCREMENT) % CAMF_XOR_MODULUS;
+    key = ((key * CAMF_XOR_MULTIPLIER + CAMF_XOR_INCREMENT) % UINT32_RANGE) % CAMF_XOR_MODULUS;
     const scaled = Math.floor((key * CAMF_XOR_SCALE) / CAMF_XOR_SHIFT_DIVISOR);
     const mask = ((((key << 8) - scaled) >> 1) + scaled) >>> 17;
     out[i] = data[i] ^ (mask & 0xff);
@@ -376,6 +607,10 @@ function decodeCamfBlocks(file: Buffer, start: number, end: number, decodedSize:
   const streamStart = start + CAMF_STREAM_OFFSET;
   if (streamStart > end) throw fail('the CAMF stream is cut short');
   assertCamfSize(decodedSize, end - streamStart, BLOCK_BYTES_PER_VALUE);
+  // The block grid bounds the loop: an empty or undersized grid would spin without producing output.
+  if (blockSize === 0 || blockCount === 0 || blockSize * blockCount * BLOCK_BYTES_PER_VALUE < decodedSize) {
+    throw fail(`the CAMF block grid ${blockSize}x${blockCount} cannot hold ${decodedSize} decoded bytes`);
+  }
   const reader = new BitReader(file, streamStart, end);
   const out = Buffer.alloc(decodedSize);
   const rowStart = [bias, bias, bias, bias];
@@ -510,6 +745,12 @@ const HEADER_OFFSET_ROWS = 32;
 const HEADER_OFFSET_WHITE_BALANCE = 40;
 const HEADER_WHITE_BALANCE_BYTES = 32;
 const HEADER_EXTENDED_MINOR_VERSION = 1;
+/** From version 3 on the header always carries the white balance name; version 4 replaces the fixed fields by a tag table. */
+const HEADER_FIXED_FIELDS_MAJOR_VERSION = 3;
+const HEADER_TAG_TABLE_MAJOR_VERSION = 4;
+/** Version 4 headers hold the finished image size at these offsets. */
+const HEADER_V4_OFFSET_COLUMNS = 40;
+const HEADER_V4_OFFSET_ROWS = 44;
 const DEFAULT_WHITE_BALANCE = 'Auto';
 const WHITE_BALANCE_NAME_PATTERN = /^[A-Za-z]{1,24}$/;
 const MATRIX_ELEMENTS = 9;
@@ -539,10 +780,15 @@ export interface DecodedX3f {
 export function readX3fHeaderInfo(file: Buffer): X3fHeaderInfo {
   if (!isX3f(file) || file.length < HEADER_OFFSET_WHITE_BALANCE) throw fail('the header is cut short');
   const version = file.readUInt32LE(HEADER_VERSION_OFFSET);
+  const major = version >>> VERSION_MAJOR_SHIFT;
+  if (major >= HEADER_TAG_TABLE_MAJOR_VERSION) {
+    if (file.length < HEADER_V4_OFFSET_ROWS + 4) throw fail('the header is cut short');
+    return { columns: file.readUInt32LE(HEADER_V4_OFFSET_COLUMNS), rows: file.readUInt32LE(HEADER_V4_OFFSET_ROWS), whiteBalance: DEFAULT_WHITE_BALANCE };
+  }
   const columns = file.readUInt32LE(HEADER_OFFSET_COLUMNS);
   const rows = file.readUInt32LE(HEADER_OFFSET_ROWS);
   let whiteBalance = DEFAULT_WHITE_BALANCE;
-  if ((version & 0xffff) >= HEADER_EXTENDED_MINOR_VERSION) {
+  if (major >= HEADER_FIXED_FIELDS_MAJOR_VERSION || (version & 0xffff) >= HEADER_EXTENDED_MINOR_VERSION) {
     if (file.length < HEADER_OFFSET_WHITE_BALANCE + HEADER_WHITE_BALANCE_BYTES) throw fail('the header is cut short');
     const field = file.subarray(HEADER_OFFSET_WHITE_BALANCE, HEADER_OFFSET_WHITE_BALANCE + HEADER_WHITE_BALANCE_BYTES);
     const end = field.indexOf(0);
@@ -660,6 +906,99 @@ class SpatialGainSampler {
   }
 }
 
+type SensorVariant = 'true' | 'merrill' | 'quattro' | 'huffman';
+
+/** Sensor data sections: type 3 is the DP1/DP2/SD14 generation, type 1 the Merrill and Quattro generations. */
+const IMAGE_TYPE_RAW_V1 = 1;
+const IMAGE_FORMAT_HUFFMAN = 0x06;
+const IMAGE_FORMAT_QUATTRO = 0x23;
+
+function findSensorSection(images: X3fImageSection[]): { sensor: X3fImageSection; variant: SensorVariant } {
+  const sensor = images.find((image) => image.imageType === IMAGE_TYPE_RAW || image.imageType === IMAGE_TYPE_RAW_V1);
+  if (!sensor) throw fail('the file holds no sensor data section');
+  const describe = `type ${sensor.imageType} format 0x${sensor.format.toString(16)}`;
+  if (sensor.imageType === IMAGE_TYPE_RAW && sensor.format === IMAGE_FORMAT_TRUE) return { sensor, variant: 'true' };
+  if (sensor.imageType === IMAGE_TYPE_RAW && sensor.format === IMAGE_FORMAT_HUFFMAN) return { sensor, variant: 'huffman' };
+  if (sensor.imageType === IMAGE_TYPE_RAW_V1 && sensor.format === IMAGE_FORMAT_TRUE) return { sensor, variant: 'merrill' };
+  if (sensor.imageType === IMAGE_TYPE_RAW_V1 && sensor.format === IMAGE_FORMAT_QUATTRO) return { sensor, variant: 'quattro' };
+  throw new RawDecodeError(`Sigma X3F sensor data (${describe}) is not supported`, true);
+}
+
+function decodeLayers(file: Buffer, sensor: X3fImageSection, variant: SensorVariant): FoveonLayers {
+  switch (variant) {
+    case 'huffman':
+      return decodeHuffmanLayers(file, sensor);
+    case 'quattro':
+      return decodeQuattroLayers(file, sensor);
+    default:
+      return decodeTrueLayers(file, sensor, variant === 'merrill' ? X3F_MERRILL_MAX_PIXELS : X3F_TRUE_MAX_PIXELS);
+  }
+}
+
+/**
+ * The Merrill and Quattro generations record no saturation level; their sensors clip a little below the
+ * converter's full scale (Merrill 4073..4077 of 4095, Quattro 16383 of 16383), so a layer counts as
+ * saturated from this share of the full scale of the CAMF ImageDepth.
+ */
+const SENSOR_CLIP_FRACTION = 0.99;
+const IMAGE_DEPTH_MIN = 8;
+const IMAGE_DEPTH_MAX = 16;
+
+/** Per-layer span between the dark level and saturation, in the planes' own units. */
+function usableRange(variant: SensorVariant, matrices: Map<string, CamfMatrix>, black: number[]): number[] {
+  let range: number[];
+  if (variant === 'true') {
+    range = requireMatrix(matrices, 'RawSaturationLevel', GAIN_ELEMENTS, SAMPLE_MAX).map((level, layer) => level - black[layer]);
+  } else if (variant === 'huffman') {
+    // Samples are relative to each row's dark first column: the span is the calibration's own.
+    const saturation = requireMatrix(matrices, 'SaturationLevel', GAIN_ELEMENTS, SAMPLE_MAX);
+    const dark = requireMatrix(matrices, 'DarkLevel', GAIN_ELEMENTS, SAMPLE_MAX);
+    range = saturation.map((level, layer) => level - dark[layer]);
+  } else {
+    const [depth] = requireMatrix(matrices, 'ImageDepth', 1, IMAGE_DEPTH_MAX);
+    if (!Number.isInteger(depth) || depth < IMAGE_DEPTH_MIN) throw fail(`the calibration image depth ${depth} is not valid`);
+    range = black.map((level) => ((1 << depth) - 1) * SENSOR_CLIP_FRACTION - level);
+  }
+  if (range.some((value) => !(value > 1))) throw fail('the saturation level is not above the dark level');
+  return range;
+}
+
+const XYZ_ELEMENTS = 9;
+const TEMPERATURE_GAIN_ENTRY = 'TempGainFact';
+/** XYZ (D65) to linear sRGB primaries, IEC 61966-2-1. */
+const XYZ_D65_TO_SRGB: Matrix3x3 = [3.2404542, -1.5371385, -0.4985314, -0.969266, 1.8760108, 0.041556, 0.0556434, -0.2040259, 1.0572252];
+
+/**
+ * Matrix taking a layer triple (dark level removed) to linear sRGB, with the usable ranges and ISO
+ * factor folded in. The TRUE-coded generations (DP1/DP2, Merrill, Quattro) list a colour matrix and white
+ * balance gains per white balance; the SD14/SD15 generation lists one camera-to-XYZ matrix and, per
+ * white balance, a 3x3 correction applied to the layer values first, with the layers in raw counts.
+ */
+function colourMatrix(variant: SensorVariant, matrices: Map<string, CamfMatrix>, whiteBalance: string, range: number[], isoFactor: number): number[] {
+  const combined: number[] = [];
+  if (variant === 'huffman') {
+    const toXyz = requireMatrix(matrices, 'CamToXYZ_Flash', XYZ_ELEMENTS, MAX_CALIBRATION_MAGNITUDE) as unknown as Matrix3x3;
+    const correction = requireMatrix(matrices, `WBCorrection_${whiteBalance}`, XYZ_ELEMENTS, MAX_CALIBRATION_MAGNITUDE) as unknown as Matrix3x3;
+    const full = multiply3x3(correction, toXyz);
+    const toSrgb = multiply3x3(XYZ_D65_TO_SRGB, full);
+    const scale = range.reduce((sum, value) => sum + value, 0) / range.length;
+    for (const value of toSrgb) combined.push((value * isoFactor) / scale);
+    return combined;
+  }
+  const gains = requireMatrix(matrices, findWhiteBalanceEntry(matrices, whiteBalance, 'WBGain'), GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
+  const colour = requireMatrix(matrices, findWhiteBalanceEntry(matrices, whiteBalance, 'CCMatrix'), MATRIX_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
+  // Sensor temperature compensation, when the calibration lists one.
+  const temperature = matrices.has(TEMPERATURE_GAIN_ENTRY) ? requireMatrix(matrices, TEMPERATURE_GAIN_ENTRY, GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE) : [1, 1, 1];
+  if (temperature.some((value) => !(value > 0))) throw fail(`the calibration entry ${TEMPERATURE_GAIN_ENTRY} holds a non-positive gain`);
+  // Colour matrix x diag(white balance gain x temperature gain x ISO factor / usable range).
+  for (let row = 0; row < RGB_CHANNELS; row += 1) {
+    for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
+      combined.push((colour[row * RGB_CHANNELS + layer] * gains[layer] * temperature[layer] * isoFactor) / range[layer]);
+    }
+  }
+  return combined;
+}
+
 /**
  * Decodes a Sigma X3F file (TRUE-format sensor data) into gamma-encoded 16-bit sRGB.
  *
@@ -671,38 +1010,24 @@ export function decodeX3f(file: Buffer): DecodedX3f {
   const header = readX3fHeaderInfo(file);
   const sections = readX3fDirectory(file);
   const images = readX3fImageSections(file, sections);
-  const sensor = images.find((image) => image.imageType === IMAGE_TYPE_RAW);
-  if (!sensor) throw fail('the file holds no sensor data section');
-  if (sensor.format !== IMAGE_FORMAT_TRUE) {
-    throw new RawDecodeError(`Sigma X3F sensor data format 0x${sensor.format.toString(16)} is not supported`, true);
-  }
+  const { sensor, variant } = findSensorSection(images);
   const camf = sections.find((section) => section.type === 'CAMF');
   if (!camf) throw fail('the file holds no CAMF calibration section');
   const matrices = parseCamfMatrices(decodeCamfBytes(file, camf));
 
-  const layers = decodeTrueLayers(file, sensor);
+  const layers = decodeLayers(file, sensor, variant);
   const active = readRectangle(matrices, 'ActiveImageArea', layers.width, layers.height);
   if (!active) throw fail('the calibration holds no valid active image area');
   const width = active.right - active.left + 1;
   const height = active.bottom - active.top + 1;
 
   const black = darkLevels(layers, matrices);
-  const saturation = requireMatrix(matrices, 'RawSaturationLevel', GAIN_ELEMENTS, SAMPLE_MAX);
-  const range = saturation.map((level, layer) => level - black[layer]);
-  if (range.some((value) => !(value > 1))) throw fail('the saturation level is not above the dark level');
-  const gains = requireMatrix(matrices, findWhiteBalanceEntry(matrices, header.whiteBalance, 'WBGain'), GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
-  const colour = requireMatrix(matrices, findWhiteBalanceEntry(matrices, header.whiteBalance, 'CCMatrix'), MATRIX_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
+  const range = usableRange(variant, matrices, black);
+  const fullScale = range.map((value, layer) => black[layer] + value);
   const isoFactor = isoScale(matrices);
   const spatial = readSpatialGain(matrices, header.whiteBalance);
   const sampler = spatial ? new SpatialGainSampler(spatial, layers.width, layers.height) : null;
-
-  // Combined matrix: colour matrix x diag(white balance gain x ISO factor / usable range).
-  const combined: number[] = [];
-  for (let row = 0; row < RGB_CHANNELS; row += 1) {
-    for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
-      combined.push((colour[row * RGB_CHANNELS + layer] * gains[layer] * isoFactor) / range[layer]);
-    }
-  }
+  const combined = colourMatrix(variant, matrices, header.whiteBalance, range, isoFactor);
 
   if (combined.some((value) => !Number.isFinite(value))) throw fail('the combined calibration is not finite');
   const linear = new Float32Array(width * height * RGB_CHANNELS);
@@ -714,7 +1039,7 @@ export function decodeX3f(file: Buffer): DecodedX3f {
       let clipped = false;
       for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
         const value = layers.planes[layer][sourceRow + x];
-        if (value >= saturation[layer]) clipped = true;
+        if (value >= fullScale[layer]) clipped = true;
         const gain = sampler ? sampler.gain(x + active.left, layer) : 1;
         normalised[layer] = Math.max(0, value - black[layer]) * gain;
       }

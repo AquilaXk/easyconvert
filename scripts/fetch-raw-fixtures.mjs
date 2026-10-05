@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-// Downloads the camera-RAW sample files listed in tests/fixtures/raw/manifest.json into
-// tests/fixtures/raw/.cache/<format>.<format>, verifying byte size and SHA-256.
+// Downloads the camera-RAW sample files listed in tests/fixtures/raw/manifest.json (one per format) and
+// tests/fixtures/raw/variants.json (further sensor-data variants of a format) into tests/fixtures/raw/.cache/,
+// verifying byte size and SHA-256. A manifest file is <format>.<format>, a variant file is
+// <format>-<variant>.<format>. Optional arguments restrict the download to those cache names
+// (for example `x3f raw x3f-sd14`).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -8,15 +11,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'fixtures', 'raw');
-const MANIFEST_PATH = path.join(ROOT, 'manifest.json');
+const MANIFEST_PATHS = [path.join(ROOT, 'manifest.json'), path.join(ROOT, 'variants.json')];
 const CACHE_DIR = path.join(ROOT, '.cache');
 const MAX_ATTEMPTS = 4;
 const RETRY_BASE_DELAY_MS = 1_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 const HTTP_OK = 200;
 
+function cacheNameFor(entry) {
+  return entry.variant ? `${entry.format}-${entry.variant}` : entry.format;
+}
+
 function cachePathFor(entry) {
-  return path.join(CACHE_DIR, `${entry.format}.${entry.format}`);
+  return path.join(CACHE_DIR, `${cacheNameFor(entry)}.${entry.format}`);
 }
 
 function sha256Of(buffer) {
@@ -73,7 +80,7 @@ async function fetchEntry(entry) {
 function relaunchWithEnvProxy() {
   const proxied = process.env.HTTPS_PROXY ?? process.env.https_proxy;
   if (!proxied || process.env.NODE_USE_ENV_PROXY) return;
-  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
+  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
     stdio: 'inherit',
     env: { ...process.env, NODE_USE_ENV_PROXY: '1' },
   });
@@ -82,16 +89,23 @@ function relaunchWithEnvProxy() {
 
 async function main() {
   relaunchWithEnvProxy();
-  const manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
+  const wanted = new Set(process.argv.slice(2));
+  const entries = MANIFEST_PATHS.flatMap((manifestPath) => JSON.parse(readFileSync(manifestPath, 'utf8')));
+  const unknown = [...wanted].filter((name) => !entries.some((entry) => cacheNameFor(entry) === name));
+  if (unknown.length > 0) {
+    console.error(`unknown RAW sample name(s): ${unknown.join(', ')}`);
+    process.exit(1);
+  }
+  const manifest = wanted.size === 0 ? entries : entries.filter((entry) => wanted.has(cacheNameFor(entry)));
   mkdirSync(CACHE_DIR, { recursive: true });
   let failures = 0;
   for (const entry of manifest) {
     try {
       const status = await fetchEntry(entry);
-      console.log(`${status}: ${entry.format} (${entry.bytes} bytes)`);
+      console.log(`${status}: ${cacheNameFor(entry)} (${entry.bytes} bytes)`);
     } catch (err) {
       failures += 1;
-      console.error(`FAILED: ${entry.format}: ${err.message}`);
+      console.error(`FAILED: ${cacheNameFor(entry)}: ${err.message}`);
     }
   }
   if (failures > 0) {

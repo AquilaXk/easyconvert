@@ -128,17 +128,37 @@ const RAW_MANIFEST: readonly { format: string; filename: string; sha256: string;
 );
 const RAW_SAMPLES = new Map<string, Buffer>();
 const RAW_SAMPLES_MISSING: string[] = [];
-for (const entry of RAW_MANIFEST) {
-  const cached = path.join(RAW_FIXTURE_DIR, '.cache', `${entry.format}.${entry.format}`);
-  if (!existsSync(cached)) {
-    RAW_SAMPLES_MISSING.push(entry.format);
-    continue;
-  }
+
+/** Reads a cached sample, failing hard when it is present but does not match its manifest entry. */
+function loadRawSample(name: string, entry: { format: string; sha256: string; bytes: number }): Buffer | null {
+  const cached = path.join(RAW_FIXTURE_DIR, '.cache', `${name}.${entry.format}`);
+  if (!existsSync(cached)) return null;
   const bytes = readFileSync(cached);
   if (bytes.length !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
-    throw new Error(`RAW sample ${entry.format} does not match its manifest entry; delete tests/fixtures/raw/.cache and rerun npm run fixtures:raw`);
+    throw new Error(`RAW sample ${name} does not match its manifest entry; delete tests/fixtures/raw/.cache and rerun npm run fixtures:raw`);
   }
-  RAW_SAMPLES.set(entry.format, bytes);
+  return bytes;
+}
+
+for (const entry of RAW_MANIFEST) {
+  const bytes = loadRawSample(entry.format, entry);
+  if (bytes) RAW_SAMPLES.set(entry.format, bytes);
+  else RAW_SAMPLES_MISSING.push(entry.format);
+}
+
+/**
+ * Further public-domain samples of formats whose sensor data comes in several encodings (older and newer
+ * Sigma generations, more Raspberry Pi sensors), cached as `<format>-<variant>.<format>`.
+ */
+const RAW_VARIANT_MANIFEST: readonly { format: string; variant: string; sha256: string; bytes: number }[] = JSON.parse(
+  readFileSync(path.join(RAW_FIXTURE_DIR, 'variants.json'), 'utf-8')
+);
+const RAW_VARIANT_SAMPLES = new Map<string, Buffer>();
+for (const entry of RAW_VARIANT_MANIFEST) {
+  const name = `${entry.format}-${entry.variant}`;
+  const bytes = loadRawSample(name, entry);
+  if (bytes) RAW_VARIANT_SAMPLES.set(name, bytes);
+  else RAW_SAMPLES_MISSING.push(name);
 }
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 /** Strict mode keeps the RAW checks enabled so that missing samples fail instead of skipping. */
@@ -808,6 +828,12 @@ describe('real camera RAW samples', () => {
     expect([...RAW_SAMPLES.keys()].sort()).toEqual(RAW_SOURCES);
   });
 
+  it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
+    expect(RAW_VARIANT_MANIFEST.length).toBeGreaterThanOrEqual(MIN_VARIANT_SAMPLES);
+    expect(RAW_SAMPLES_MISSING).toEqual([]);
+    expect([...RAW_VARIANT_SAMPLES.keys()].sort()).toEqual(RAW_VARIANT_MANIFEST.map((entry) => `${entry.format}-${entry.variant}`).sort());
+  });
+
   it('has a validator for every target the RAW sources advertise', () => {
     expect(rawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
   });
@@ -829,6 +855,29 @@ describe('real camera RAW samples', () => {
       await expectValidOutput(result.buffer, target, await referenceDimensions(source), sample);
     },
     RAW_TIMEOUT_MS
+  );
+
+  const VARIANT_TIMEOUT_MS = 600_000;
+  const MIN_VARIANT_SAMPLES = 5;
+  /** Sigma SD14, Merrill and Quattro generations, Raspberry Pi imx219 and imx477. */
+  const variantPairs = RAW_VARIANT_MANIFEST.flatMap((entry) =>
+    FORMAT_REGISTRY[entry.format].targetFormats.map((target) => [`${entry.format}-${entry.variant}`, target] as [string, string])
+  );
+
+  it.skipIf(!RAW_CHECKS_ENABLED).each(variantPairs)(
+    '%s -> %s converts the real sample to a valid file',
+    async (name, target) => {
+      const sample = RAW_VARIANT_SAMPLES.get(name);
+      if (!sample) throw new OracleToolMissingError('raw-fixtures', `RAW sample ${name} is missing. Run npm run fixtures:raw.`);
+      const source = name.split('-')[0];
+      const result = await dispatchConversion(sample, source, target, {}, `probe.${source}`);
+      if (target !== 'zip') expect(result.engineUsed).toBe('in-process-raw');
+      const declared = source === 'x3f' ? readX3fContainer(sample) : readPiFrame(sample);
+      const reference = { width: declared.declaredWidth, height: declared.declaredHeight };
+      expectPlausible(reference);
+      await expectValidOutput(result.buffer, target, reference, sample);
+    },
+    VARIANT_TIMEOUT_MS
   );
 });
 

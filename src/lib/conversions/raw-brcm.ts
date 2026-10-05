@@ -11,11 +11,13 @@
  *   0x0B0  mode name ("2592x1944Slow")
  *   0x0D0  u16  frame width, 0x0D2 u16 frame height
  *   0x0F4  u8   Bayer order (0 RGGB, 1 GBRG, 2 BGGR, 3 GRBG)
+ *   0x0F6  u8   bits per pixel of the packed dump (10 or 12)
  *   0x10E  u16  frame width, 0x110 u16 frame height (second copy of the geometry)
  *
- * The dump is MIPI RAW10: every 5 bytes hold 4 pixels (four high bytes, then one byte with the
- * four 2-bit remainders, pixel 0 in the lowest bits). Rows are padded to the stride and the frame is
- * padded with extra rows to a multiple of 16.
+ * The dump is MIPI RAW10 (ov5647, imx219): every 5 bytes hold 4 pixels (four high bytes, then one byte
+ * with the four 2-bit remainders, pixel 0 in the lowest bits); or MIPI RAW12 (imx477): every 3 bytes
+ * hold 2 pixels (two high bytes, then one byte with the two 4-bit remainders, pixel 0 in the low
+ * nibble). Rows are padded to the stride and the frame is padded with extra rows to a multiple of 16.
  *
  * Colour handling: black level per sensor, grey-world white balance, Malvar-He-Cutler demosaic,
  * a generic CMOS colour-filter-array saturation matrix (no per-sensor characterisation exists in
@@ -35,6 +37,7 @@ const OFFSET_STRIDE = 0xa0;
 const OFFSET_WIDTH = 0xd0;
 const OFFSET_HEIGHT = 0xd2;
 const OFFSET_BAYER_ORDER = 0xf4;
+const OFFSET_BIT_DEPTH = 0xf6;
 const OFFSET_WIDTH_COPY = 0x10e;
 const OFFSET_HEIGHT_COPY = 0x110;
 const HEADER_FIELDS_END = 0x112;
@@ -43,27 +46,33 @@ const PRINTABLE_ASCII_MAX = 0x7e;
 
 const BAYER_ORDERS: readonly BayerOrder[] = ['RGGB', 'GBRG', 'BGGR', 'GRBG'];
 
-const BITS_PER_PIXEL = 10;
-const BITS_PER_BYTE = 8;
-const PIXELS_PER_GROUP = 4;
-const BYTES_PER_GROUP = 5;
-const LOW_BITS_PER_PIXEL = 2;
-const LOW_BITS_MASK = 0x3;
-const SENSOR_MAX_VALUE = (1 << BITS_PER_PIXEL) - 1;
 const STRIDE_ALIGNMENT_BYTES = 32;
 const MIN_DIMENSION = 4;
 
+/** MIPI CSI-2 packing of one bit depth: `pixels` pixels in `bytes` bytes, the low bits of all pixels in the last byte. */
+interface Packing {
+  bitDepth: number;
+  pixels: number;
+  bytes: number;
+  lowBits: number;
+}
+
+const RAW10_PACKING: Packing = { bitDepth: 10, pixels: 4, bytes: 5, lowBits: 2 };
+const RAW12_PACKING: Packing = { bitDepth: 12, pixels: 2, bytes: 3, lowBits: 4 };
+
 interface SensorCalibration {
-  /** Black level in 10-bit counts: the sensor's pedestal in the camera stack's tuning data (1024 and 4096 on its 16-bit scale). */
+  /** Black level in counts of the sensor's own bit depth: the pedestal in the camera stack's tuning data (a 16-bit value of 1024 is 16 counts at 10 bits). */
   blackLevel: number;
+  packing: Packing;
   /** Full pixel array of the sensor; a frame cannot be larger. */
   maxWidth: number;
   maxHeight: number;
 }
 
 const SENSORS: ReadonlyMap<string, SensorCalibration> = new Map([
-  ['ov5647', { blackLevel: 16, maxWidth: 2592, maxHeight: 1944 }],
-  ['imx219', { blackLevel: 64, maxWidth: 3280, maxHeight: 2464 }],
+  ['ov5647', { blackLevel: 16, packing: RAW10_PACKING, maxWidth: 2592, maxHeight: 1944 }],
+  ['imx219', { blackLevel: 64, packing: RAW10_PACKING, maxWidth: 3280, maxHeight: 2464 }],
+  ['imx477', { blackLevel: 256, packing: RAW12_PACKING, maxWidth: 4056, maxHeight: 3040 }],
 ]);
 
 function sensorOf(name: string): SensorCalibration | undefined {
@@ -88,6 +97,7 @@ export interface BrcmFrame {
   height: number;
   stride: number;
   bayer: BayerOrder;
+  packing: Packing;
   /** Offset of the first Bayer row in the file. */
   dataOffset: number;
 }
@@ -155,17 +165,20 @@ export function parseBrcmHeader(file: Buffer, trailer: number): BrcmFrame {
   if (width !== file.readUInt16LE(trailer + OFFSET_WIDTH_COPY) || height !== file.readUInt16LE(trailer + OFFSET_HEIGHT_COPY)) {
     throw fail('the two copies of the frame size disagree');
   }
-  if (width < MIN_DIMENSION || height < MIN_DIMENSION || width % PIXELS_PER_GROUP !== 0 || height % 2 !== 0) {
+  const { packing } = calibration;
+  if (width < MIN_DIMENSION || height < MIN_DIMENSION || width % packing.pixels !== 0 || height % 2 !== 0) {
     throw fail(`unsupported frame size ${width}x${height}`);
   }
   if (width > calibration.maxWidth || height > calibration.maxHeight) {
     throw fail(`the ${width}x${height} frame is larger than the ${calibration.maxWidth}x${calibration.maxHeight} ${sensor.split(' ')[0]} sensor`);
   }
 
-  const rowBytes = (width / PIXELS_PER_GROUP) * BYTES_PER_GROUP;
+  const bitDepth = file[trailer + OFFSET_BIT_DEPTH];
+  if (bitDepth !== packing.bitDepth) throw unsupported(`the ${sensor.split(' ')[0]} dump is ${bitDepth} bits per pixel, not ${packing.bitDepth}`);
+  const rowBytes = (width / packing.pixels) * packing.bytes;
   const stride = file.readUInt32LE(trailer + OFFSET_STRIDE);
   if (stride !== alignUp(rowBytes, STRIDE_ALIGNMENT_BYTES)) {
-    throw unsupported(`the row stride ${stride} does not match packed 10-bit rows of ${width} pixels`);
+    throw unsupported(`the row stride ${stride} does not match packed ${packing.bitDepth}-bit rows of ${width} pixels`);
   }
   const order = file[trailer + OFFSET_BAYER_ORDER];
   if (order >= BAYER_ORDERS.length) throw fail(`unknown Bayer order ${order}`);
@@ -174,26 +187,29 @@ export function parseBrcmHeader(file: Buffer, trailer: number): BrcmFrame {
   if (dataOffset + stride * height > file.length) {
     throw fail(`the sensor data is truncated: ${file.length - dataOffset} bytes present, ${stride * height} required`);
   }
-  return { sensor, width, height, stride, bayer: BAYER_ORDERS[order], dataOffset };
+  return { sensor, width, height, stride, bayer: BAYER_ORDERS[order], packing, dataOffset };
 }
 
-/** Unpacks the MIPI RAW10 rows into one 16-bit value (0..1023) per pixel. */
-export function unpackRaw10(file: Buffer, frame: BrcmFrame): Uint16Array {
-  const { width, height, stride, dataOffset } = frame;
-  const pixels = new Uint16Array(width * height);
+/** Unpacks the MIPI RAW10 or RAW12 rows into one 16-bit value (0 .. 2^bitDepth - 1) per pixel. */
+export function unpackMipiRaw(file: Buffer, frame: BrcmFrame): Uint16Array {
+  const { width, height, stride, dataOffset, packing } = frame;
+  const { pixels: groupPixels, bytes: groupBytes, lowBits } = packing;
+  const highBytes = groupBytes - 1;
+  const lowMask = (1 << lowBits) - 1;
+  const out = new Uint16Array(width * height);
   for (let row = 0; row < height; row += 1) {
     let source = dataOffset + row * stride;
     let target = row * width;
-    for (let group = 0; group < width / PIXELS_PER_GROUP; group += 1) {
-      const low = file[source + PIXELS_PER_GROUP];
-      for (let k = 0; k < PIXELS_PER_GROUP; k += 1) {
-        pixels[target + k] = (file[source + k] << LOW_BITS_PER_PIXEL) | ((low >> (LOW_BITS_PER_PIXEL * k)) & LOW_BITS_MASK);
+    for (let group = 0; group < width / groupPixels; group += 1) {
+      const low = file[source + highBytes];
+      for (let k = 0; k < groupPixels; k += 1) {
+        out[target + k] = (file[source + k] << lowBits) | ((low >> (lowBits * k)) & lowMask);
       }
-      source += BYTES_PER_GROUP;
-      target += PIXELS_PER_GROUP;
+      source += groupBytes;
+      target += groupPixels;
     }
   }
-  return pixels;
+  return out;
 }
 
 /** Channel (0 R, 1 G, 2 B) of the colour-filter cell at (x, y). */
@@ -314,10 +330,10 @@ export function decodeBrcmRaw(file: Buffer): DecodedRgb16 {
   if (trailer < 0) throw new RawDecodeError('The file has no Raspberry Pi "BRCM" sensor block', true);
   const frame = parseBrcmHeader(file, trailer);
   const { width, height, bayer } = frame;
-  const blackLevel = sensorOf(frame.sensor)!.blackLevel;
-  const whiteRange = SENSOR_MAX_VALUE - blackLevel;
+  const { blackLevel, packing } = sensorOf(frame.sensor)!;
+  const whiteRange = (1 << packing.bitDepth) - 1 - blackLevel;
 
-  const raw = unpackRaw10(file, frame);
+  const raw = unpackMipiRaw(file, frame);
   const levels = new Float32Array(raw.length);
   for (let i = 0; i < raw.length; i += 1) levels[i] = Math.max(0, raw[i] - blackLevel);
 
