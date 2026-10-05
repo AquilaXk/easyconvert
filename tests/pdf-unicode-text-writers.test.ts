@@ -455,6 +455,23 @@ describe('In-process PDF layout limits', () => {
 });
 
 describe('HTML parsing robustness', () => {
+  oracleTest('keeps structure when the text holds characters whose lowercase form is longer (Turkish dotted I)', ['pdftotext'], async () => {
+    for (const [source, input] of [
+      ['html', '<h1>Başlık</h1><p>İstanbul güzel.</p><ul><li>bir</li><li>iki</li></ul><script>var hidden = 1</script><p>son</p>'],
+      ['md', '# Başlık\n\nİstanbul güzel.\n\n- bir\n- iki\n\nson\n'],
+    ] as const) {
+      const result = await convertFile(Buffer.from(input, 'utf-8'), source, 'pdf', {}, `turkish.${source}`);
+      const lines = pdfText(result.buffer, true)
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      expect({ source, lines: lines.map((line) => line.replace(/\s+/g, ' ')) }).toEqual({
+        source,
+        lines: ['Başlık', 'İstanbul güzel.', '• bir', '• iki', 'son'],
+      });
+    }
+  });
+
   it('parses a body with 150,000 paragraphs without exhausting the call stack', async () => {
     const PARAGRAPHS = 150_000;
     const parsed = await parseHtmlToPdfBlocks(`<html><body>${'<p>x</p>'.repeat(PARAGRAPHS)}</body></html>`);

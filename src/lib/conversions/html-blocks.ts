@@ -233,7 +233,7 @@ function parseAttributes(source: string, from: number): { attrs: Map<string, str
     if (i >= length || source[i] === '>') break;
     const nameStart = i;
     while (i < length && !ATTRIBUTE_NAME_END.test(source[i])) i++;
-    const name = source.slice(nameStart, i).toLowerCase();
+    const name = asciiLowerCase(source.slice(nameStart, i));
     while (i < length && SPACE.test(source[i])) i++;
     let value = '';
     if (source[i] === '=') {
@@ -256,6 +256,15 @@ function parseAttributes(source: string, from: number): { attrs: Map<string, str
   return { attrs, end: i };
 }
 
+/**
+ * Lowercases ASCII letters only. HTML tag and attribute names are ASCII-case-insensitive, and
+ * keeping every other character (such as U+0130, whose full lowercase form is two code units)
+ * keeps offsets into the lowercased copy valid for the original text.
+ */
+function asciiLowerCase(text: string): string {
+  return text.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
+}
+
 /** Index of the end tag `</tag` (followed by whitespace, '/' or '>') at or after `from`, or -1. */
 function findRawTextEnd(lowerHtml: string, tag: string, from: number): number {
   const needle = `</${tag}`;
@@ -271,7 +280,7 @@ function findRawTextEnd(lowerHtml: string, tag: string, from: number): number {
 /** Builds an element tree from HTML source with the HTML implied-end-tag rules used for layout. */
 function parseHtmlTree(html: string): HtmlTreeBuilder {
   const builder = new HtmlTreeBuilder();
-  const lowerHtml = html.toLowerCase();
+  const lowerHtml = asciiLowerCase(html);
   const length = html.length;
   let i = 0;
   let textStart = 0;
