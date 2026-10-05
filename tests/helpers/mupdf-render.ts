@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -24,8 +24,22 @@ for x, y in points:
 print(json.dumps({"width": pix.width, "height": pix.height, "pixels": out}))
 `;
 
+/** Oracle binaries are resolved from fixed system directories, never from a writable PATH entry. */
+const ORACLE_BIN_DIRS = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin', '/bin'];
+
+function resolveOracleBinary(name: string): string | null {
+  for (const dir of ORACLE_BIN_DIRS) {
+    const candidate = path.join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+const PYTHON_BIN = resolveOracleBinary('python3');
+
 function detect(): boolean {
-  const probe = spawnSync('python3', ['-c', 'try:\n import pymupdf\nexcept ImportError:\n import fitz'], { encoding: 'utf8' });
+  if (PYTHON_BIN === null) return false;
+  const probe = spawnSync(PYTHON_BIN, ['-c', 'try:\n import pymupdf\nexcept ImportError:\n import fitz'], { encoding: 'utf8' });
   return probe.status === 0;
 }
 
@@ -40,12 +54,14 @@ export interface XpsRender {
 }
 
 export function renderXpsPoints(xps: Buffer, pointsInDips: Array<[number, number]>): XpsRender {
-  if (!HAS_MUPDF) throw new Error('PyMuPDF is required by this oracle test but is not installed (ORACLE_STRICT_MODE=1)');
+  if (!HAS_MUPDF || PYTHON_BIN === null) {
+    throw new Error('PyMuPDF is required by this oracle test but is not installed (ORACLE_STRICT_MODE=1)');
+  }
   const dir = mkdtempSync(path.join(os.tmpdir(), 'xps-render-'));
   try {
     const file = path.join(dir, 'in.xps');
     writeFileSync(file, xps);
-    const out = execFileSync('python3', ['-c', RENDER_SCRIPT, file, JSON.stringify(pointsInDips)], { encoding: 'utf8' });
+    const out = execFileSync(PYTHON_BIN, ['-c', RENDER_SCRIPT, file, JSON.stringify(pointsInDips)], { encoding: 'utf8' });
     return JSON.parse(out) as XpsRender;
   } finally {
     rmSync(dir, { recursive: true, force: true });
