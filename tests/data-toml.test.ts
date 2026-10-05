@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { convertFile } from '../src/lib/conversions';
@@ -19,18 +19,15 @@ import { oracleTest } from './helpers/oracle-test';
 const VECTOR_ROOT = path.resolve(__dirname, 'fixtures/toml-test');
 const SLOW_BATCH_TIMEOUT_MS = 120_000;
 
-function listVectors(dir: string): string[] {
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const full = path.join(dir, name);
-    if (statSync(full).isDirectory()) out.push(...listVectors(full));
-    else if (name.endsWith('.toml')) out.push(full);
-  }
-  return out.sort();
-}
-
-const VALID_VECTORS = listVectors(path.join(VECTOR_ROOT, 'valid'));
-const INVALID_VECTORS = listVectors(path.join(VECTOR_ROOT, 'invalid'));
+/** toml-test's own list of the vectors that apply to TOML v1.0.0, vendored with them. */
+const VECTOR_LIST = readFileSync(path.join(VECTOR_ROOT, 'files-toml-1.0.0'), 'utf-8')
+  .split('\n')
+  .filter((entry) => entry.endsWith('.toml'))
+  .map((entry) => path.join(VECTOR_ROOT, entry));
+const VALID_VECTORS = VECTOR_LIST.filter((file) => file.includes(`${path.sep}valid${path.sep}`));
+const INVALID_VECTORS = VECTOR_LIST.filter((file) => file.includes(`${path.sep}invalid${path.sep}`));
+const VALID_VECTOR_COUNT = 205;
+const INVALID_VECTOR_COUNT = 474;
 
 /** Comparators run by Python: toml-test's tagged JSON and tomllib's native values are the expectations. */
 const TOML_ORACLE = String.raw`
@@ -216,9 +213,10 @@ describe('TOML registry entry', () => {
 });
 
 describe('TOML input against toml-test and tomllib', () => {
-  it('ships a toml-test subset with both valid and invalid vectors', () => {
-    expect(VALID_VECTORS.length).toBeGreaterThanOrEqual(100);
-    expect(INVALID_VECTORS.length).toBeGreaterThanOrEqual(90);
+  it('ships every toml-test v2.2.0 vector for TOML v1.0.0', () => {
+    expect(VALID_VECTORS).toHaveLength(VALID_VECTOR_COUNT);
+    expect(INVALID_VECTORS).toHaveLength(INVALID_VECTOR_COUNT);
+    for (const file of VECTOR_LIST) expect(existsSync(file)).toBe(true);
   });
 
   oracleTest(
@@ -271,14 +269,40 @@ describe('TOML input against toml-test and tomllib', () => {
   );
 
   it('rejects every invalid vector with a typed error', async () => {
-    const untyped: string[] = [];
+    const notRejected: string[] = [];
     for (const file of INVALID_VECTORS) {
-      const err = await rejection(convertVector(file, 'json'));
-      if (!(err instanceof ConversionFailedError) || !['DataParseError', 'DataEncodingError'].includes(err.name)) {
-        untyped.push(`${vectorName(file)}: ${err.name}: ${err.message}`);
+      let err: unknown;
+      try {
+        await convertVector(file, 'json');
+      } catch (caught) {
+        err = caught;
+      }
+      if (err === undefined) {
+        notRejected.push(`${vectorName(file)}: accepted`);
+      } else if (!(err instanceof ConversionFailedError) || !['DataParseError', 'DataEncodingError'].includes(err.name)) {
+        notRejected.push(`${vectorName(file)}: ${(err as Error).name}: ${(err as Error).message}`);
       }
     }
-    expect(untyped).toEqual([]);
+    expect(notRejected).toEqual([]);
+  });
+
+  it('rejects TOML 1.1 relaxations and impossible dates instead of rolling them over', async () => {
+    const cases: readonly [toml: string, reason: RegExp, line: number][] = [
+      ['ok = 2024-02-29\nd = 1988-02-30T15:15:15Z\n', /1988-02 has no day 30/, 2],
+      ['t = 17:45\n', /must include seconds/, 1],
+      ['t = { a = 1,\n b = 2 }\n', /line break inside an inline table/, 1],
+      ['t = { a = 1, }\n', /trailing comma inside an inline table/, 1],
+      ['s = "\\e[0m"\n', /escape \\e is not a TOML 1\.0 escape/, 1],
+    ];
+    for (const [toml, reason, line] of cases) {
+      const err = await rejection(convertFile(Buffer.from(toml, 'utf-8'), 'toml', 'json', {}, 'v.toml'));
+      expect(err.name).toBe('DataParseError');
+      expect(err.message).toMatch(reason);
+      expect((err as Error & { line?: number }).line).toBe(line);
+    }
+    // Date-shaped bare keys and table names are keys, not dates; arrays inside inline tables may span lines.
+    const keys = await convertFile(Buffer.from('2001-02-30 = 1\n[2002-02-31]\nt = { a = [1,\n 2] }\n'), 'toml', 'json', {}, 'k.toml');
+    expect(JSON.parse(keys.buffer.toString('utf-8'))).toEqual({ '2001-02-30': 1, '2002-02-31': { t: { a: [1, 2] } } });
   });
 
   it('reports the line of a TOML syntax error', async () => {

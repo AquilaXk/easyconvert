@@ -4,18 +4,12 @@ Source: https://github.com/toml-lang/toml-test, tag v2.2.0
         (commit ce08da1ddb075d1c7596d663c7fcba9a2ae02c5c), directory tests/.
 License: MIT, see LICENSE in this directory (copied unchanged from the repository root).
 
-The files are copied byte for byte. Only vectors listed in tests/files-toml-1.0.0 are
-included, restricted to this subset:
+Every vector listed in the repository's tests/files-toml-1.0.0 is included (205 valid
+documents with their expected JSON, 474 invalid documents), copied byte for byte together
+with that list itself. Run from the toml-test checkout's tests/ directory:
 
-  valid/*.toml and valid/*.json at the top level
-  valid/{spec-1.0.0,integer,float,datetime,string}/
-  invalid/{spec-1.0.0,encoding,control,integer}/
-
-Selection, run from the toml-test checkout's tests/ directory:
-
-  grep -E '^valid/(spec-1\.0\.0|integer|float|datetime|string)/|^valid/[^/]+$' files-toml-1.0.0 >  subset.txt
-  grep -E '^invalid/(spec-1\.0\.0|encoding|control|integer)/' files-toml-1.0.0              >> subset.txt
-  xargs cp --parents -t <easyconvert>/tests/fixtures/toml-test < subset.txt
+  xargs cp --parents -t <easyconvert>/tests/fixtures/toml-test < files-toml-1.0.0
+  cp files-toml-1.0.0 <easyconvert>/tests/fixtures/toml-test/
 
 Each valid/<name>.toml has valid/<name>.json in toml-test's tagged form: every scalar is
 {"type": T, "value": "text"} with T one of string, integer, float, bool, datetime,

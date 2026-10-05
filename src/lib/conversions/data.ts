@@ -37,6 +37,7 @@ import {
   type DataValue,
 } from './data-json';
 import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMl } from './data-xml';
+import { assertToml10Syntax } from './data-toml';
 
 export { encodeParquet, decodeParquet };
 
@@ -620,6 +621,7 @@ function parseYamlText(text: string): DataValue {
 }
 
 function parseTomlText(text: string): DataValue {
+  assertToml10Syntax(text);
   let raw: unknown;
   try {
     raw = parseToml(text, { integersAsBigInt: 'asNeeded', maxDepth: MAX_DATA_NESTING_DEPTH });
