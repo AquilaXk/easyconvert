@@ -492,6 +492,35 @@ describe('SVG font: fonts without outlines and malformed paths are rejected with
   });
 });
 
+describe('SVG font: only default glyph forms enter the cmap (SVG 1.1 section 20.8.3)', () => {
+  const PATH = 'M0 0 H100 V100 Z';
+  const BEH = 0x628;
+  const ALEF = 0x627;
+  const MEEM = 0x645;
+  const TAH = 0x637;
+
+  async function cmapOf(glyphs: string): Promise<Map<number, number>> {
+    return readCmap(readSfntTables(await convertSvg('ttf', svgWith(glyphs))));
+  }
+
+  it('skips glyphs for a language or for a non-isolated Arabic form even when they come first', async () => {
+    const cmap = await cmapOf(
+      `<glyph unicode="&#x628;" arabic-form="initial" d="${PATH}"/>` + // glyph 1
+        `<glyph unicode="&#x628;" d="${PATH}"/>` + // glyph 2: the default form
+        `<glyph unicode="A" lang="fr" d="${PATH}"/>` + // glyph 3
+        `<glyph unicode="A" d="${PATH}"/>` + // glyph 4: applies to every language
+        `<glyph unicode="&#x627;" arabic-form="isolated" d="${PATH}"/>` + // glyph 5: isolated is the default form
+        `<glyph unicode="&#x645;" arabic-form="medial" d="${PATH}"/>` + // glyph 6: only a contextual form
+        `<glyph unicode="&#x637;" arabic-form="terminal" lang="ar" d="${PATH}"/>` // glyph 7: both restrictions
+    );
+    expect(cmap.get(BEH)).toBe(2);
+    expect(cmap.get(0x41)).toBe(4);
+    expect(cmap.get(ALEF)).toBe(5);
+    expect(cmap.has(MEEM)).toBe(false);
+    expect(cmap.has(TAH)).toBe(false);
+  });
+});
+
 describe('SVG font: output point counts are bounded while paths are converted', () => {
   const FAST_REJECT_MS = 1000;
   const AMPLIFIED_GLYPHS = 100;

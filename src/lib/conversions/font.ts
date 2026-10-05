@@ -1389,8 +1389,9 @@ export function decodeSvgFont(buffer: Buffer, defaultName: string): ParsedFont {
       advWidth: glyph.advance,
     });
     glyphNames.push(glyph.glyphName ?? '');
-    // The first glyph for a character wins; a multi-character unicode (ligature) has no cmap entry.
-    if (glyph.codePoint !== null && !mapped.has(glyph.codePoint)) {
+    // The first glyph for a character wins; a multi-character unicode (ligature) has no cmap entry,
+    // and neither has a glyph that only serves one language or one contextual Arabic form.
+    if (glyph.codePoint !== null && glyph.isDefaultForm && !mapped.has(glyph.codePoint)) {
       mapped.add(glyph.codePoint);
       mappings.push({ charCode: glyph.codePoint, glyphId });
     }

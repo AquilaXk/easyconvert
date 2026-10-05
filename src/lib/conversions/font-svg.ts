@@ -24,6 +24,12 @@ export interface SvgFontGlyph {
   /** The unicode attribute has more than one character (a ligature, which needs GSUB to apply). */
   isSequence: boolean;
   glyphName: string | null;
+  /**
+   * True for the glyph form that serves a character in every context: no lang attribute, and an
+   * arabic-form that is absent or isolated (SVG 1.1 20.8.3). Other glyphs are contextual variants
+   * that a character map must not point to.
+   */
+  isDefaultForm: boolean;
   advance: number;
   d: string | null;
   /** Human readable identification used in error messages. */
@@ -46,6 +52,7 @@ const DEFAULT_UNITS_PER_EM = 1000;
 /** SVG 1.1 leaves descent unspecified; a fifth of an em is the conventional value. */
 const DEFAULT_DESCENT_PER_EM = 0.2;
 const MAX_ADVANCE = 0xffff;
+const ARABIC_FORM_ISOLATED = 'isolated';
 const CODE_POINT_MAX = 0x10ffff;
 const SURROGATE_MIN = 0xd800;
 const SURROGATE_MAX = 0xdfff;
@@ -321,6 +328,7 @@ export function parseSvgFontDocument(source: string): SvgFont | null {
       codePoint: characters.length === 1 ? first : null,
       isSequence: characters.length > 1,
       glyphName: glyphName === '' ? null : glyphName,
+      isDefaultForm: !attributes.has('lang') && (!attributes.has('arabic-form') || attributes.get('arabic-form')?.trim() === ARABIC_FORM_ISOLATED),
       advance: advanceAttribute(attributes, fontAdvance, label),
       d: attributes.get('d') ?? null,
       label,
