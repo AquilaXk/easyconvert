@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
-import { ConversionOptions, ConversionFailedError, EngineUnavailableError } from '@/lib/types';
+import {
+  ConversionOptions,
+  ConversionFailedError,
+  EngineUnavailableError,
+  ArchiveEntryCollisionError,
+} from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
@@ -178,6 +183,9 @@ export async function POST(req: NextRequest) {
     }
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
+    }
+    if (error instanceof ArchiveEntryCollisionError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =

@@ -152,11 +152,28 @@ const DECODE_ERROR_PATTERN = /Data Error/i;
 /** With no password supplied, 7-Zip prompts for one and aborts when stdin is closed ("Break signaled", exit 255). */
 const PASSWORD_PROMPT_PATTERN = /Break signaled|Enter password/i;
 
+/**
+ * Every `-slt` key 7-Zip 16.02, 21.07, 22.01 and 23.01 print for the archives in the test corpus, plus the
+ * remaining per-item property names 7-Zip defines. A key outside this set can only come from a forged value
+ * (p7zip 16.02 prints raw line breaks), so the listing is rejected.
+ */
+const KNOWN_LISTING_KEYS = new Set([
+  'Path', 'Name', 'Extension', 'Folder', 'Size', 'Packed Size', 'Modified', 'Created', 'Accessed', 'Attributes',
+  'Encrypted', 'Comment', 'CRC', 'Method', 'Block', 'Solid', 'Anti', 'Characteristics', 'Host OS', 'Version',
+  'Volume Index', 'Offset', 'Position', 'Split Before', 'Split After', 'Dictionary Size', 'File System',
+  'Link', 'Hard Link', 'Symbolic Link', 'Links', 'iNode', 'Mode', 'User', 'Group', 'User ID', 'Group ID',
+  'Device Major', 'Device Minor', 'Dev Major', 'Dev Minor', 'Short Name', 'Alternate Stream', 'Alternate Streams',
+  'NT Security', 'Stream ID', 'Checksum', 'SHA-1', 'SHA-256', 'BLAKE2sp', 'MD5', 'XXH64', 'Commented', 'Deleted',
+  'Path Prefix', 'Local Name', 'Provider', 'Aux', 'Tree', 'Type',
+]);
+
 /** Deepest entry path (in segments) an archive may contain or an extraction may produce. */
 export const MAX_ENTRY_PATH_DEPTH = 256;
 const MAX_ENTRY_FILTER_PATTERNS = 1_000;
 const MAX_ENTRY_FILTER_TOTAL_BYTES = 64 * 1024;
 const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
+/** NUL, and CR/LF: line breaks in names are how listing fields get forged, and newer builds rewrite them anyway. */
+const ENTRY_NAME_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
 /** Single-stream wrapper extensions and the suffix 7-Zip's output name gets ("tgz" unpacks to "<name>.tar"). */
 const WRAPPER_EXTENSION_SUFFIXES = new Map<string, string>([
   ['gz', ''],
@@ -314,6 +331,9 @@ export function parse7zTechnicalListing(stdout: string, options: ListingParseOpt
     if (!match) {
       throw new UnsafeArchiveError('malformed-listing', 'Archive listing contains an unrecognized line.');
     }
+    if (!KNOWN_LISTING_KEYS.has(match[1])) {
+      throw new UnsafeArchiveError('malformed-listing', 'Archive listing contains an unknown field.');
+    }
     if (fields.has(match[1])) {
       throw new UnsafeArchiveError('malformed-listing', 'Archive listing repeats a field within one entry.');
     }
@@ -327,7 +347,7 @@ export function parse7zTechnicalListing(stdout: string, options: ListingParseOpt
 
 /** Why an entry name cannot be extracted under the root, or null when it is a plain relative path. */
 function entryPathProblem(rawPath: string): 'path-traversal' | 'absolute-path' | 'invalid-entry-name' | null {
-  if (rawPath === '' || rawPath.includes('\0')) {
+  if (rawPath === '' || ENTRY_NAME_FORBIDDEN_CHARACTERS.test(rawPath)) {
     return 'invalid-entry-name';
   }
   const normalized = rawPath.replace(/\\/g, '/');
@@ -351,10 +371,25 @@ function entryPathDepth(rawPath: string): number {
   return depth;
 }
 
+/**
+ * Records the path an entry occupies and every ancestor directory it implies. Each recorded path already
+ * has all its ancestors recorded, so climbing stops at the first one present: linear overall.
+ */
+function occupyPath(occupied: Set<string>, rawPath: string): void {
+  const key = normalizeEntryKey(rawPath);
+  if (key === '') return;
+  occupied.add(key);
+  for (let slash = key.lastIndexOf('/'); slash > 0; slash = key.lastIndexOf('/', slash - 1)) {
+    const parent = key.slice(0, slash);
+    if (occupied.has(parent)) break;
+    occupied.add(parent);
+  }
+}
+
 function assertSafeEntryPath(rawPath: string): void {
   const problem = entryPathProblem(rawPath);
   if (problem === 'invalid-entry-name') {
-    throw new UnsafeArchiveError('invalid-entry-name', 'Archive contains an entry with an empty or NUL-containing name.');
+    throw new UnsafeArchiveError('invalid-entry-name', 'Archive contains an entry with an empty name or one holding NUL or a line break.');
   }
   if (problem === 'absolute-path') {
     throw new UnsafeArchiveError('absolute-path', 'Archive contains an entry with an absolute path.');
@@ -388,6 +423,9 @@ export function assertSafeArchiveListing(
   }
   let totalBytes = 0;
   const skippedLinks: string[] = [];
+  // Unique paths the extraction will create: listed entries plus the directories they imply. An entry
+  // such as `N/d/d/.../f` is one listing line but creates a directory per level.
+  const occupied = new Set<string>();
   for (const entry of entries) {
     assertSafeEntryPath(entry.path);
     if (entry.linkKind !== null) {
@@ -402,6 +440,10 @@ export function assertSafeArchiveListing(
     }
     if (entry.isSpecial) {
       throw new UnsafeArchiveError('special-entry', 'Archive contains a device, FIFO or socket entry.');
+    }
+    occupyPath(occupied, entry.path);
+    if (occupied.size > limits.MAX_FILES) {
+      throw entryCountError(occupied.size, limits);
     }
     if (entry.sizeBytes === null) {
       // A wrapper's stream size may be unstated; RLIMIT_FSIZE and the post-extraction walk bound it.
@@ -582,6 +624,9 @@ export function assertExtractionContained(
  * something cannot be removed.
  */
 export function removeDirectoryTree(root: string): void {
+  if (fs.lstatSync(root).isSymbolicLink()) {
+    throw new UnsafeArchiveError('link-entry', 'Refusing to remove a directory tree through a symbolic link.');
+  }
   const directories: string[] = [];
   const pending = [root];
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {

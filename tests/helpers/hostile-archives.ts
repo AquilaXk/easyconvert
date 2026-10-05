@@ -184,6 +184,14 @@ with tarfile.open(out, 'w') as t:
     t.addfile(info, io.BytesIO(b'leaf'))
 `;
 
+const PY_FAN_ZIP = `
+import sys, zipfile
+out, fan, depth = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
+    for i in range(fan):
+        z.writestr('%d/' % i + 'd/' * depth + 'f', '')
+`;
+
 const PY_MANY_ENTRIES_TAR = `
 import sys, tarfile, io, os
 out, count = sys.argv[1], int(sys.argv[2])
@@ -395,5 +403,14 @@ export function build7zEncrypted(
     ['a', '-t7z', `-mhe=${encryptHeaders ? 'on' : 'off'}`, `${AES_PASSWORD_SWITCH_PREFIX}${password}`, '-y', outPath, ...files.map((f) => f.name)],
     stageDir
   );
+  return outPath;
+}
+
+/**
+ * A ZIP of `fan` empty files, each under its own chain of `depth` nested directories. The listing holds
+ * only `fan` entries, yet extraction creates about `fan * (depth + 1)` directories.
+ */
+export function buildFanZip(outPath: string, fan: number, depth: number): string {
+  runPython(PY_FAN_ZIP, [outPath, String(fan), String(depth)]);
   return outPath;
 }
