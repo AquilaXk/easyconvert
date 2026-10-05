@@ -128,7 +128,7 @@ function utf16be(text: string): Buffer {
   return out;
 }
 
-function buildNameTable(family: string, style: string): Buffer {
+export function buildNameTable(family: string, style: string): Buffer {
   const records: Array<[number, string]> = [
     [NAME_ID_FAMILY, family],
     [NAME_ID_SUBFAMILY, style],
@@ -157,7 +157,7 @@ function buildNameTable(family: string, style: string): Buffer {
   return Buffer.concat([header, ...strings]);
 }
 
-function buildCmapTable(codePoints: number[]): Buffer {
+export function buildCmapTable(codePoints: number[]): Buffer {
   // One format 4 segment per code point plus the 0xFFFF terminator.
   const segCount = codePoints.length + 1;
   const subtable = Buffer.alloc(16 + segCount * 8);
@@ -201,7 +201,7 @@ function compareTagBytes(a: string, b: string): number {
   return Buffer.compare(Buffer.from(a, 'latin1'), Buffer.from(b, 'latin1'));
 }
 
-function assembleSfnt(version: number, tables: Record<string, Buffer>): Buffer {
+export function assembleSfnt(version: number, tables: Record<string, Buffer>): Buffer {
   const tags = Object.keys(tables).sort(compareTagBytes);
   const numTables = tags.length;
   const entrySelector = Math.floor(Math.log2(numTables));
