@@ -84,8 +84,12 @@ const TAB_STOP_SPACES = '    ';
 const LONG_TOKEN_CHARS = 64;
 /** Points kept free at the end of a pre-broken line, so kerning never pushes it past the width. */
 const LINE_FIT_MARGIN = 1;
-/** A base character with the combining marks, joiners and variation selectors that follow it. */
-const CLUSTER = /[^\p{M}\u200D\uFE00-\uFE0F][\p{M}\u200D\uFE00-\uFE0F]*|[\p{M}\u200D\uFE00-\uFE0F]+/gu;
+/** Characters that stay with the preceding character when a token is broken: marks, joiners, selectors. */
+const CLUSTER_EXTENDER = /[\p{M}\u200D\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
+/** First code point that can extend a cluster (U+0300 COMBINING GRAVE ACCENT). */
+const FIRST_CLUSTER_EXTENDER = 0x300;
+const ASCII_LIMIT = 0x80;
+const SUPPLEMENTARY_PLANE = 0x10000;
 /** Variation selectors: kept after their base character when the font maps the sequence. */
 const VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 /**
@@ -495,29 +499,52 @@ export class PdfUnicodeTextWriter {
     return this.doc.page.width - (x ?? this.doc.x) - this.doc.page.margins.right;
   }
 
-  /** Breaks one long token into line-width pieces, measuring each character cluster once. */
-  private splitToken(token: string, lineWidth: number, widths: Map<string, number>): string {
+  /** Index just past the character cluster that starts at `index`. */
+  private static clusterEnd(token: string, index: number): number {
+    let end = index + ((token.codePointAt(index) as number) >= SUPPLEMENTARY_PLANE ? 2 : 1);
+    while (end < token.length) {
+      const codePoint = token.codePointAt(end) as number;
+      if (codePoint < FIRST_CLUSTER_EXTENDER || !CLUSTER_EXTENDER.test(String.fromCodePoint(codePoint))) break;
+      end += codePoint >= SUPPLEMENTARY_PLANE ? 2 : 1;
+    }
+    return end;
+  }
+
+  /**
+   * Breaks one long token into line-width pieces, measuring each distinct character cluster once
+   * (ASCII through a table) and slicing the token by index, so the work is linear.
+   */
+  private splitToken(token: string, lineWidth: number, widths: Map<string, number>, asciiWidths: Float64Array): string {
     const limit = lineWidth - LINE_FIT_MARGIN;
-    let out = '';
-    let line = '';
+    const pieces: string[] = [];
+    let lineStart = 0;
     let lineWidthSoFar = 0;
-    CLUSTER.lastIndex = 0;
-    for (let match = CLUSTER.exec(token); match; match = CLUSTER.exec(token)) {
-      const cluster = match[0];
-      let width = widths.get(cluster);
-      if (width === undefined) {
-        width = this.doc.widthOfString(cluster);
+    let index = 0;
+    while (index < token.length) {
+      const end = PdfUnicodeTextWriter.clusterEnd(token, index);
+      const code = token.charCodeAt(index);
+      let width: number;
+      if (end === index + 1 && code < ASCII_LIMIT) {
+        width = asciiWidths[code];
+        if (Number.isNaN(width)) {
+          width = this.doc.widthOfString(token[index]);
+          asciiWidths[code] = width;
+        }
+      } else {
+        const cluster = token.slice(index, end);
+        width = widths.get(cluster) ?? this.doc.widthOfString(cluster);
         widths.set(cluster, width);
       }
-      if (line && lineWidthSoFar + width > limit) {
-        out += `${line}\n`;
-        line = '';
+      if (index > lineStart && lineWidthSoFar + width > limit) {
+        pieces.push(token.slice(lineStart, index));
+        lineStart = index;
         lineWidthSoFar = 0;
       }
-      line += cluster;
       lineWidthSoFar += width;
+      index = end;
     }
-    return out + line;
+    pieces.push(token.slice(lineStart));
+    return pieces.join('\n');
   }
 
   /**
@@ -527,11 +554,12 @@ export class PdfUnicodeTextWriter {
   private breakLongTokens(text: string, lineWidth: number): string {
     if (text.length < LONG_TOKEN_CHARS || !(lineWidth > 0)) return text;
     const widths = new Map<string, number>();
+    const asciiWidths = new Float64Array(ASCII_LIMIT).fill(Number.NaN);
     let out = '';
     let tokenStart = 0;
     const flushToken = (end: number): void => {
       const token = text.slice(tokenStart, end);
-      out += token.length >= LONG_TOKEN_CHARS ? this.splitToken(token, lineWidth, widths) : token;
+      out += token.length >= LONG_TOKEN_CHARS ? this.splitToken(token, lineWidth, widths, asciiWidths) : token;
     };
     for (let i = 0; i < text.length; i++) {
       const code = text.charCodeAt(i);
