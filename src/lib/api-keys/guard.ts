@@ -5,7 +5,7 @@ import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
-import { ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
+import { ClientIpError, UNATTRIBUTED_CLIENT_KEY, rateLimitKey } from '@/lib/security/client-ip';
 import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 
 export { extractClientIp };
@@ -316,6 +316,18 @@ function resolveClientIpForAuth(request: Request): { clientIp: string } | { reje
   }
 }
 
+function buildAnonymousUser(id: string): User {
+  return {
+    id,
+    email: 'anonymous@easyconvert.local',
+    name: 'Anonymous Client',
+    tier: 'free',
+    provider: 'email',
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
 async function verifyAnonymousAccess(
   clientIp: string,
   requiredUnits: number
@@ -349,6 +361,11 @@ async function verifyAnonymousAccess(
 
   // 2. Check anonymous daily quota
   const anonUserId = `anon:${anonBucket}`;
+  if (clientIp === UNATTRIBUTED_CLIENT_KEY) {
+    // Degraded mode trade-off: every unattributed caller would share this one daily quota, so a single client
+    // could exhaust it for everyone. Only the burst limiter above applies until TRUSTED_PROXIES is declared.
+    return { authorized: true, user: buildAnonymousUser(anonUserId), authMethod: 'session' };
+  }
   const quota = await checkQuotaAndReserve(anonUserId, 'anonymous', requiredUnits);
   if (!quota.allowed) {
     if (quota.serviceUnavailable) {
@@ -369,19 +386,9 @@ async function verifyAnonymousAccess(
     };
   }
 
-  const anonUser: User = {
-    id: anonUserId,
-    email: 'anonymous@easyconvert.local',
-    name: 'Anonymous Client',
-    tier: 'free',
-    provider: 'email',
-    createdAt: 0,
-    updatedAt: 0,
-  };
-
   return {
     authorized: true,
-    user: anonUser,
+    user: buildAnonymousUser(anonUserId),
     authMethod: 'session',
     reservationId: quota.reservationId,
     remaining: quota.remaining,

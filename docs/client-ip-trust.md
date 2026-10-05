@@ -14,15 +14,30 @@ proxy under your control rewrites them, so they are only read under the contract
    that the nearest hop appends the address it saw to `X-Forwarded-For` (or `Forwarded`). The chain is walked
    right to left, skipping trusted hops; the first untrusted address is the client. Entries to its left are never
    read.
-3. **With nothing configured the request is unattributed** (the default). Rate limits and quotas use the single
-   shared key `unattributed`, and IP allowlists never match it. Production without `TRUSTED_PROXIES` is therefore
-   throttled as one client (the edge middleware logs a one-time warning) rather than trusting spoofable headers.
-4. When the socket peer is known (`peerIp`), an untrusted peer is the client and its headers are ignored. A
+3. **Production must declare a trust mode.** Set `TRUSTED_PROXIES` to a CIDR list, or to `none`. With
+   `NODE_ENV=production` and neither `TRUSTED_PROXIES` nor `TRUSTED_CDN` set, the edge middleware answers
+   `/api/*` with `503` (`client-ip-trust-unconfigured`, with `Retry-After`) and logs once; `GET`/`HEAD
+   /api/health` and non-API pages stay up. Nothing throws at import time, and development and tests keep
+   running undeclared.
+4. **A directly exposed deployment cannot attribute clients.** Without a proxy the middleware never sees the
+   socket peer, and a forwarding header from an unknown sender could be anything, so no per-client limit is
+   possible. `TRUSTED_PROXIES=none` acknowledges this: forwarding headers are never read, and every request is
+   *unattributed*. Unset in development behaves the same way.
+5. **Unattributed is a degraded mode, not fairness.**
+   - All unattributed requests share the key `unattributed` and one edge bucket, sized for site-wide traffic
+     (600 burst, 100/s) instead of one client (60 burst, 10/s). `GET`/`HEAD /api/health` is exempt from it.
+   - Login keeps its per-email counter and lockout but skips the per-IP counter, so one client cannot lock out
+     everyone.
+   - Anonymous access keeps the burst limiter but has no daily quota, because a shared quota would let one
+     client exhaust it for all. Trade-off: until a trust mode is declared, anonymous callers are limited only
+     by the shared burst bucket. Declare `TRUSTED_PROXIES` to restore per-client daily quotas.
+   - IP allowlists never match `unattributed`.
+6. When the socket peer is known (`peerIp`), an untrusted peer is the client and its headers are ignored. A
    trusted peer defaults to loopback and private ranges when `TRUSTED_PROXIES` is unset.
-5. `CF-Connecting-IP` is honoured only with `TRUSTED_CDN=cloudflare` and only when the nearest hop is inside the
+7. `CF-Connecting-IP` is honoured only with `TRUSTED_CDN=cloudflare` and only when the nearest hop is inside the
    Cloudflare ranges (shipped in `CLOUDFLARE_IP_RANGES`; override with `TRUSTED_CDN_RANGES`). Cloudflare edge
    addresses are also treated as skippable hops while walking `X-Forwarded-For`.
-6. If both `X-Forwarded-For` and `Forwarded` (RFC 7239) are present they must agree on the client, otherwise the
+8. If both `X-Forwarded-For` and `Forwarded` (RFC 7239) are present they must agree on the client, otherwise the
    request is unattributed. Placeholder hops (`unknown`, obfuscated `_token`) also yield `unattributed`.
 
 ## Operator checklist
@@ -36,7 +51,7 @@ proxy under your control rewrites them, so they are only read under the contract
 
 | Variable | Meaning |
 | --- | --- |
-| `TRUSTED_PROXIES` | Comma-separated CIDRs or addresses of trusted hops (at most 256). Setting it declares a front proxy. |
+| `TRUSTED_PROXIES` | Comma-separated CIDRs or addresses of trusted hops (at most 256), or `none` for direct exposure. Required in production. |
 | `TRUSTED_CDN` | `cloudflare`. Enables `CF-Connecting-IP` for a verified edge hop. |
 | `TRUSTED_CDN_RANGES` | CIDR list replacing the shipped ranges for the configured CDN. Requires `TRUSTED_CDN`. |
 

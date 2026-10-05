@@ -28,14 +28,24 @@ function cleanStaleAttempts() {
 }
 
 /**
+ * A null ip means the client could not be attributed. Every unattributed caller would share one per-IP
+ * counter, letting one client lock out everyone, so the per-IP counter is skipped (the per-email counter and
+ * lockout still apply). An empty string keeps the legacy loopback key.
+ */
+function normalizeLoginIp(ip: string | null): string {
+  if (ip === null) return '';
+  return ip ? ip.trim() : '127.0.0.1';
+}
+
+/**
  * Checks whether login is permitted for the given IP address and email.
  */
 export async function checkLoginRateLimit(
-  ip: string,
+  ip: string | null,
   email: string
 ): Promise<LoginRateLimitCheckResult> {
   const normEmail = email ? email.toLowerCase().trim() : '';
-  const normIp = ip ? ip.trim() : '127.0.0.1';
+  const normIp = normalizeLoginIp(ip);
 
   const redis = redisUserStore.getRedisClient();
   const prefix = redisUserStore.getKeyPrefix();
@@ -92,9 +102,9 @@ export async function checkLoginRateLimit(
 /**
  * Increments failed login attempt counters for the IP and email.
  */
-export async function recordFailedLogin(ip: string, email: string): Promise<void> {
+export async function recordFailedLogin(ip: string | null, email: string): Promise<void> {
   const normEmail = email ? email.toLowerCase().trim() : '';
-  const normIp = ip ? ip.trim() : '127.0.0.1';
+  const normIp = normalizeLoginIp(ip);
 
   const redis = redisUserStore.getRedisClient();
   const prefix = redisUserStore.getKeyPrefix();
@@ -145,9 +155,9 @@ export async function recordFailedLogin(ip: string, email: string): Promise<void
 /**
  * Resets failed login attempt counters after a successful authentication.
  */
-export async function resetLoginAttempts(ip: string, email: string): Promise<void> {
+export async function resetLoginAttempts(ip: string | null, email: string): Promise<void> {
   const normEmail = email ? email.toLowerCase().trim() : '';
-  const normIp = ip ? ip.trim() : '127.0.0.1';
+  const normIp = normalizeLoginIp(ip);
 
   const redis = redisUserStore.getRedisClient();
   const prefix = redisUserStore.getKeyPrefix();

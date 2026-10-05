@@ -99,6 +99,9 @@ export const CLOUDFLARE_IP_RANGES: readonly string[] = [
 
 const CDN_PROVIDER_RANGES: ReadonlyMap<string, readonly string[]> = new Map([['cloudflare', CLOUDFLARE_IP_RANGES]]);
 
+/** TRUSTED_PROXIES value that declares the server is exposed directly (no proxy in front). */
+const NO_TRUSTED_PROXIES = 'none';
+
 const HTTP_BAD_REQUEST = 400;
 const HTTP_INTERNAL_ERROR = 500;
 
@@ -419,6 +422,14 @@ function parseCidrList(raw: string, label: string): ParsedCidr[] {
   );
 }
 
+/**
+ * True once the operator chose a trust mode (TRUSTED_PROXIES as a CIDR list or "none", or TRUSTED_CDN).
+ * Production deployments must not run undeclared.
+ */
+export function isClientIpTrustDeclared(config: ClientIpConfig): boolean {
+  return config.trustedProxies !== null || config.cdnRanges !== null;
+}
+
 function isBlank(value: string | null | undefined): boolean {
   return value === undefined || value === null || value.trim() === '';
 }
@@ -429,7 +440,11 @@ export function parseClientIpConfig(input: ClientIpConfigInput): ClientIpConfig 
   if (Array.isArray(input.trustedProxies)) {
     trustedProxies = parseCidrEntries(input.trustedProxies, 'TRUSTED_PROXIES');
   } else if (typeof input.trustedProxies === 'string' && !isBlank(input.trustedProxies)) {
-    trustedProxies = parseCidrList(input.trustedProxies, 'TRUSTED_PROXIES');
+    // "none" acknowledges direct exposure: an explicit, empty trusted set.
+    trustedProxies =
+      input.trustedProxies.trim().toLowerCase() === NO_TRUSTED_PROXIES
+        ? []
+        : parseCidrList(input.trustedProxies, 'TRUSTED_PROXIES');
   }
 
   let cdnRanges: ParsedCidr[] | null = null;

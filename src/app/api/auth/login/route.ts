@@ -3,7 +3,7 @@ import { verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { extractClientIp } from '@/lib/api-keys/ip-utils';
-import { ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
+import { ClientIpError, UNATTRIBUTED_CLIENT_KEY, rateLimitKey } from '@/lib/security/client-ip';
 import {
   checkLoginRateLimit,
   recordFailedLogin,
@@ -27,9 +27,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let clientIp: string;
+  // null = unattributed client: no shared per-IP login counter (per-email lockout still applies).
+  let clientIp: string | null;
   try {
-    clientIp = rateLimitKey(extractClientIp(req));
+    const resolvedIp = extractClientIp(req);
+    clientIp = resolvedIp === UNATTRIBUTED_CLIENT_KEY ? null : rateLimitKey(resolvedIp);
   } catch (error) {
     if (!(error instanceof ClientIpError)) throw error;
     return NextResponse.json(

@@ -10,6 +10,7 @@ import {
   UNATTRIBUTED_CLIENT_KEY,
   clientIpKey,
   isAddressInCidr,
+  isClientIpTrustDeclared,
   normalizeClientAddress,
   parseClientIpConfig,
   rateLimitKey,
@@ -571,5 +572,31 @@ describe('rateLimitKey: IPv6 clients are bucketed by /64', () => {
     expect(resolved).toBe('2001:db8:1:2::77');
     expect(isAddressInCidr(resolved as string, '2001:db8:1:2::77/128')).toBe(true);
     expect(isAddressInCidr(resolved as string, '2001:db8:1:2::78/128')).toBe(false);
+  });
+});
+
+describe('TRUSTED_PROXIES=none (direct exposure acknowledged)', () => {
+  it('is a declaration with an empty trusted set, case-insensitively', () => {
+    for (const raw of ['none', ' None ', 'NONE']) {
+      const c = parseClientIpConfig({ trustedProxies: raw });
+      expect(c.trustedProxies).toEqual([]);
+      expect(isClientIpTrustDeclared(c)).toBe(true);
+    }
+  });
+
+  it('reports blank configuration as undeclared and any explicit mode as declared', () => {
+    expect(isClientIpTrustDeclared(parseClientIpConfig({}))).toBe(false);
+    expect(isClientIpTrustDeclared(parseClientIpConfig({ trustedProxies: '10.0.0.0/8' }))).toBe(true);
+    expect(isClientIpTrustDeclared(parseClientIpConfig({ trustedCdn: 'cloudflare' }))).toBe(true);
+  });
+
+  it('cannot be mixed with CIDR entries', () => {
+    expect(() => parseClientIpConfig({ trustedProxies: 'none,10.0.0.0/8' })).toThrow(ClientIpConfigError);
+  });
+
+  it('never honours forwarding headers: unknown peer is unattributed, known peer is the client', () => {
+    const none = parseClientIpConfig({ trustedProxies: 'none' });
+    expect(resolveClientIp(req({ 'x-forwarded-for': '198.51.100.7' }), { config: none })).toEqual({ ip: null, source: 'unattributed' });
+    expect(ipOf({ 'x-forwarded-for': '198.51.100.7' }, none, '10.0.0.5')).toBe('10.0.0.5');
   });
 });
