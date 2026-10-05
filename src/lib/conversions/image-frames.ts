@@ -192,7 +192,12 @@ function orientedAnimation(buffer: Buffer, meta: sharp.Metadata, frames: number,
     metadata,
     async frame(index): Promise<RawFrame> {
       if (!stack) {
-        const decoded = await sharp(buffer, { animated: true }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+        // A kept ICC profile means the pixels stay in the profile space; without it libvips converts to sRGB.
+        const decoder = sharp(buffer, { animated: true });
+        const decoded = await (options.stripMetadata === true ? decoder : decoder.keepIccProfile())
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
         if (decoded.data.length !== frameBytes * frames) {
           throw new ConversionFailedError(`The animation decoded to ${decoded.data.length} bytes, expected ${frames} frames of ${frameBytes} bytes`);
         }

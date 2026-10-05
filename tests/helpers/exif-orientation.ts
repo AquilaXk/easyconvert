@@ -38,6 +38,33 @@ export function buildTiffWithOrientation(orientation: number): Buffer {
   return tiff;
 }
 
+const TAG_IMAGE_DESCRIPTION = 0x010e;
+const TYPE_ASCII = 2;
+
+/** TIFF block with ImageDescription (out-of-line ASCII) and Orientation in IFD0, in tag order. */
+export function buildTiffWithOrientationAndDescription(orientation: number, description: string): Buffer {
+  const entries = 2;
+  const text = Buffer.from(`${description}\0`, 'latin1');
+  const ifdBytes = 2 + entries * IFD_ENTRY_BYTES + 4;
+  const tiff = Buffer.alloc(IFD0_OFFSET + ifdBytes + text.length);
+  tiff.write('II', 0, 'latin1');
+  tiff.writeUInt16LE(TIFF_MAGIC, 2);
+  tiff.writeUInt32LE(IFD0_OFFSET, 4);
+  tiff.writeUInt16LE(entries, IFD0_OFFSET);
+  const first = IFD0_OFFSET + 2;
+  tiff.writeUInt16LE(TAG_IMAGE_DESCRIPTION, first);
+  tiff.writeUInt16LE(TYPE_ASCII, first + 2);
+  tiff.writeUInt32LE(text.length, first + 4);
+  tiff.writeUInt32LE(IFD0_OFFSET + ifdBytes, first + 8);
+  const second = first + IFD_ENTRY_BYTES;
+  tiff.writeUInt16LE(TAG_ORIENTATION, second);
+  tiff.writeUInt16LE(TYPE_SHORT, second + 2);
+  tiff.writeUInt32LE(1, second + 4);
+  tiff.writeUInt16LE(orientation, second + 8);
+  text.copy(tiff, IFD0_OFFSET + ifdBytes);
+  return tiff;
+}
+
 /** Inserts an EXIF APP1 segment with the given Orientation into a JPEG, after its JFIF APP0 when present. */
 export function injectExifOrientation(jpeg: Buffer, orientation: number): Buffer {
   if (jpeg.readUInt16BE(0) !== JPEG_SOI) throw new Error('not a JPEG');

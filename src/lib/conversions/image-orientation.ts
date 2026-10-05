@@ -6,12 +6,18 @@ import { ConversionFailedError } from '../types';
  */
 
 export const EXIF_ORIENTATION_NORMAL = 1;
+const MIRROR_HORIZONTAL = 2;
+const ROTATE_HALF_TURN = 3;
+const MIRROR_VERTICAL = 4;
+const TRANSPOSE = 5;
+const ROTATE_CLOCKWISE = 6;
+const TRANSVERSE = 7;
 
 const RGBA_BYTES_PER_PIXEL = 4;
 const MIN_ORIENTATION = 1;
 const MAX_ORIENTATION = 8;
 /** Orientations 5 to 8 turn the picture a quarter turn, so width and height swap. */
-const FIRST_QUARTER_TURN_ORIENTATION = 5;
+const FIRST_QUARTER_TURN_ORIENTATION = TRANSPOSE;
 
 const TAG_ORIENTATION = 0x0112;
 const TYPE_SHORT = 3;
@@ -61,19 +67,19 @@ export function orientRgbaFrame(frame: OrientableFrame, orientation: number): Or
 /** Destination of source pixel (x, y) of a width x height frame for EXIF orientation 2 to 8. */
 function mapPixel(orientation: number, x: number, y: number, width: number, height: number): [number, number] {
   switch (orientation) {
-    case 2:
+    case MIRROR_HORIZONTAL:
       return [width - 1 - x, y];
-    case 3:
+    case ROTATE_HALF_TURN:
       return [width - 1 - x, height - 1 - y];
-    case 4:
+    case MIRROR_VERTICAL:
       return [x, height - 1 - y];
-    case 5:
+    case TRANSPOSE:
       return [y, x];
-    case 6:
+    case ROTATE_CLOCKWISE:
       return [height - 1 - y, x];
-    case 7:
+    case TRANSVERSE:
       return [height - 1 - y, width - 1 - x];
-    default:
+    default: // 8: rotate counter-clockwise
       return [y, width - 1 - x];
   }
 }

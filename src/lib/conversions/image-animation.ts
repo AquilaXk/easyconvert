@@ -80,6 +80,10 @@ const NETSCAPE_ID = 'NETSCAPE2.0';
 const NETSCAPE_SUBBLOCK_LOOP = 1;
 const SINGLE_PLAY = 1;
 const NETSCAPE_BLOCK_BYTES = 19;
+const NETSCAPE_ID_OFFSET = 3;
+const NETSCAPE_SUBBLOCK_OFFSET = 14;
+const NETSCAPE_LOOP_OFFSET = 16;
+const NETSCAPE_SUBBLOCK_LENGTH = 3;
 
 interface ParsedGifFrame {
   descriptor: Buffer;
@@ -195,9 +199,9 @@ async function encodeGif(source: FrameSource, options: AnimationEncodeOptions): 
   if (source.timing.loop !== SINGLE_PLAY) {
     const netscape = Buffer.alloc(NETSCAPE_BLOCK_BYTES);
     netscape.set([GIF_BLOCK_EXTENSION, GIF_LABEL_APPLICATION, NETSCAPE_ID.length], 0);
-    netscape.write(NETSCAPE_ID, 3, 'latin1');
-    netscape.set([3, NETSCAPE_SUBBLOCK_LOOP], 14);
-    netscape.writeUInt16LE(gifLoopField(source.timing.loop), 16);
+    netscape.write(NETSCAPE_ID, NETSCAPE_ID_OFFSET, 'latin1');
+    netscape.set([NETSCAPE_SUBBLOCK_LENGTH, NETSCAPE_SUBBLOCK_LOOP], NETSCAPE_SUBBLOCK_OFFSET);
+    netscape.writeUInt16LE(gifLoopField(source.timing.loop), NETSCAPE_LOOP_OFFSET);
     parts.push(netscape);
   }
   // Frames are full composited pictures. When any of them has transparency, every frame restores the
