@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { RawDecodeError } from '../lib/types';
+import { RAW_DECODE_MAX_PIXELS } from '../lib/conversions/raw-formats';
 
 const TIFF_HEADER_READ_BYTES = 8192;
 const TIFF_IFD_ENTRY_BYTES = 12;
@@ -16,11 +17,7 @@ const BITS_PER_BYTE = 8;
 const EXPECTED_BITS_PER_SAMPLE = 16;
 const EXPECTED_SAMPLES_PER_PIXEL = 3;
 
-/**
- * Pixel cap for a decoded RAW image: the largest sensors in the registry's camera families are
- * about 150 megapixels, and the 16-bit RGB intermediate is 6 bytes per pixel.
- */
-export const RAW_DECODE_MAX_PIXELS = 150_000_000;
+export { RAW_DECODE_MAX_PIXELS };
 const DECODED_BYTES_PER_PIXEL = (EXPECTED_BITS_PER_SAMPLE / BITS_PER_BYTE) * EXPECTED_SAMPLES_PER_PIXEL;
 const TIFF_HEADER_SLACK_BYTES = 64 * 1024;
 /** Upper bound for the decoder's output file, derived from the pixel cap. */

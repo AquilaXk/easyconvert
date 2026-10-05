@@ -22,6 +22,10 @@ import {
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
+import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
+import { isX3f } from '../lib/conversions/raw-x3f';
+import { decodeRawInThread } from './raw-decode-host';
+import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasComplexTextScript } from '../lib/conversions/ctl';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -70,7 +74,7 @@ export interface WorkerEngineOptions extends ConversionOptions {
 }
 
 export interface WorkerConversionResult extends ConversionResult {
-  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-raw' | 'internal-fallback';
+  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-raw' | 'in-process-raw' | 'internal-fallback';
   executionTimeMs: number;
   filePath?: string;
   metadata?: Record<string, unknown>;
@@ -1395,6 +1399,62 @@ export async function convertWithNativeRaw(
 }
 
 /**
+ * Camera RAW formats LibRaw's distribution build cannot open and that are decoded in-process from the
+ * real sensor data instead: Sigma X3F (Foveon) and Raspberry Pi frames (a JPEG followed by a "BRCM" Bayer dump).
+ */
+const IN_PROCESS_RAW_SENSOR_FORMATS: ReadonlySet<string> = new Set(['x3f', 'raw']);
+
+/** Reads the whole input into memory, within the in-memory payload limit. */
+function readRawInputBuffer(input: Buffer | WorkerVfsPayload): Buffer {
+  if (Buffer.isBuffer(input)) return input;
+  if (input.inputBuffer) return input.inputBuffer;
+  if (input.inputPath && fs.existsSync(input.inputPath)) {
+    const size = fs.statSync(input.inputPath).size;
+    if (size > getMaxInMemoryBytes()) {
+      throw new PayloadTooLargeForMemoryError(
+        `Payload size (${size} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
+        { size, limit: getMaxInMemoryBytes() }
+      );
+    }
+    return fs.readFileSync(input.inputPath);
+  }
+  throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
+}
+
+/**
+ * Decodes Sigma X3F and Raspberry Pi RAW frames in-process into 16-bit sRGB and encodes the requested
+ * target from it. Returns null when the file is not one of those layouts (a `.raw` file without a
+ * "BRCM" block belongs to the LibRaw engine), so the caller can route it elsewhere.
+ */
+export async function convertWithInProcessRawSensor(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult | null> {
+  const src = validateFormat(sourceFormat);
+  const tgt = validateFormat(targetFormat);
+  if (!IN_PROCESS_RAW_SENSOR_FORMATS.has(src) || RAW_PACKAGING_TARGETS.has(tgt)) return null;
+  const file = readRawInputBuffer(input);
+  const recognized = src === 'x3f' ? isX3f(file) : findBrcmTrailer(file) >= 0;
+  if (!recognized) return null;
+
+  const startTime = Date.now();
+  const timeout = Math.min(options.timeoutMs || RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_MAX_TIMEOUT_MS);
+  const decoded = await decodeRawInThread(src as 'x3f' | 'raw', file, timeout, options.signal);
+  const intermediate = encode16BitTiff(decoded.width, decoded.height, decoded.rgb16);
+  const converted = await convertImage(intermediate, tgt, options, originalFilename, 'tiff');
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  return withSandboxDir('easyconvert-raw-', async (tempDir) => {
+    const tempOutputPath = path.join(tempDir, `output.${tgt}`);
+    fs.writeFileSync(tempOutputPath, converted.buffer);
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);
+    return createConversionResult(persistedPath, tgt, baseName, 'in-process-raw', Date.now() - startTime);
+  });
+}
+
+/**
  * Universal Worker Conversion Orchestrator.
  * Dispatches to native container engines first, with fail-closed security and pure TS fallback.
  */
@@ -1537,7 +1597,27 @@ export async function executeWorkerConversion(
     }
   }
 
-  // 1c. Native RAW sensor decode (LibRaw). Formats LibRaw does not recognize may still yield an
+  // 1c. In-process sensor decode for the camera files LibRaw cannot open (Sigma X3F, Raspberry Pi frames).
+  if (IN_PROCESS_RAW_SENSOR_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
+    try {
+      const sensorRes = await convertWithInProcessRawSensor(input, src, tgt, nativeOptions, originalFilename);
+      if (sensorRes) {
+        return {
+          ...sensorRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
+    } catch (err) {
+      if (err instanceof RawDecodeError && err.unrecognized && options.allowEmbeddedPreview) {
+        fallbackChain.push(`native-raw: ${err.message}`);
+        fallbackReason = err.message;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // 1d. Native RAW sensor decode (LibRaw). Formats LibRaw does not recognize may still yield an
   // embedded preview in-process, but only when the request opted in.
   if (RAW_CAMERA_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
     try {

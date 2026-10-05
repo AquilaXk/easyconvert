@@ -18,6 +18,7 @@ import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
+import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 
 /**
  * Registry/engine conformance gate.
@@ -142,21 +143,20 @@ for (const entry of RAW_MANIFEST) {
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 /** Strict mode keeps the RAW checks enabled so that missing samples fail instead of skipping. */
 const RAW_CHECKS_ENABLED = STRICT_MODE || RAW_SAMPLES_MISSING.length === 0;
-/**
- * Camera files LibRaw does not recognize at all: a Raspberry Pi frame (JPEG with a trailing Bayer dump)
- * and Sigma Foveon X3F, which the distribution build of LibRaw omits. Only their embedded preview is
- * decodable, so their probes opt in; every other RAW source must convert by real sensor decode.
- */
 /** Hand-authored from the camera families the registry advertises; the manifest must cover exactly these. */
 const RAW_SOURCES = ['3fr', 'arw', 'cr2', 'cr3', 'crw', 'dcr', 'dng', 'erf', 'mos', 'mrw', 'nef', 'orf', 'pef', 'raf', 'raw', 'rw2', 'x3f'];
 const RAW_SOURCE_SET: ReadonlySet<string> = new Set(RAW_SOURCES);
-const RAW_PREVIEW_ONLY_SOURCES: ReadonlySet<string> = new Set(['raw', 'x3f']);
+/**
+ * Camera files LibRaw's distribution build cannot open (a Raspberry Pi frame, Sigma Foveon X3F) are decoded
+ * in-process from their sensor data, so they convert with plain options and need no external engine.
+ */
+const IN_PROCESS_RAW_SOURCES: ReadonlySet<string> = new Set(['raw', 'x3f']);
 /** Whether the native RAW engine (LibRaw `dcraw_emu`) is installed. */
 const HAS_NATIVE_RAW_ENGINE = probeNativeEngines().dcrawEmu;
 
-/** Plain options when the native engine can decode the sample, so only real sensor decode resolves a pair. */
+/** Plain options whenever a sensor decoder is available, so only real sensor decode resolves a pair. */
 function rawSampleOptions(source: string): Record<string, unknown> {
-  return HAS_NATIVE_RAW_ENGINE && !RAW_PREVIEW_ONLY_SOURCES.has(source) ? {} : { allowEmbeddedPreview: true };
+  return HAS_NATIVE_RAW_ENGINE || IN_PROCESS_RAW_SOURCES.has(source) ? {} : { allowEmbeddedPreview: true };
 }
 
 /** Seed formats used to derive a structurally valid probe input for a source format. */
@@ -674,28 +674,36 @@ describe('real camera RAW samples', () => {
   const OUTPUT_SIZE_PATTERN = /Output size:\s+(\d+) x (\d+)/;
   const rawSamplePath = (source: string) => path.join(RAW_FIXTURE_DIR, '.cache', `${source}.${source}`);
 
+  /** Frame size declared by the container of an in-process source, from the independent parsers. */
+  function declaredFrameSize(source: string, bytes: Buffer): Dimensions {
+    const info = source === 'x3f' ? readX3fContainer(bytes) : readPiFrame(bytes);
+    return { width: info.declaredWidth, height: info.declaredHeight };
+  }
+
   const referenceCache = new Map<string, Promise<Dimensions>>();
   /**
-   * Expected size of the decoded image. For sensor-decoded sources it is the output size LibRaw's own
-   * identify tool reports; for preview-only sources (and without the tool) it is the size of the
-   * dispatcher's PNG, which the sharp decode of that PNG reports independently.
+   * Expected size of the decoded image: the output size LibRaw's own identify tool reports; for the
+   * in-process sources, the frame size the file's container declares (read by an independent parser);
+   * without the tool, the size of the dispatcher's PNG, which the sharp decode of that PNG reports independently.
    */
   function referenceDimensions(source: string): Promise<Dimensions> {
     let pending = referenceCache.get(source);
     if (!pending) {
-      const identified = HAS_NATIVE_RAW_ENGINE && RAW_IDENTIFY && !RAW_PREVIEW_ONLY_SOURCES.has(source);
-      pending = identified
-        ? Promise.resolve(OUTPUT_SIZE_PATTERN.exec(execFileSync(RAW_IDENTIFY, ['-v', rawSamplePath(source)], { encoding: 'utf-8' })))
-            .then((match) => {
-              if (!match) throw new Error(`raw-identify reported no output size for ${source}`);
-              return { width: Number(match[1]), height: Number(match[2]) };
-            })
-        : dispatchConversion(RAW_SAMPLES.get(source)!, source, 'png', rawSampleOptions(source), `probe.${source}`).then((r) =>
-            decodedDimensions(r.buffer, 'png')
-          );
+      pending = resolveReferenceDimensions(source);
       referenceCache.set(source, pending);
     }
     return pending;
+  }
+
+  async function resolveReferenceDimensions(source: string): Promise<Dimensions> {
+    if (IN_PROCESS_RAW_SOURCES.has(source)) return declaredFrameSize(source, RAW_SAMPLES.get(source)!);
+    if (HAS_NATIVE_RAW_ENGINE && RAW_IDENTIFY) {
+      const match = OUTPUT_SIZE_PATTERN.exec(execFileSync(RAW_IDENTIFY, ['-v', rawSamplePath(source)], { encoding: 'utf-8' }));
+      if (!match) throw new Error(`raw-identify reported no output size for ${source}`);
+      return { width: Number(match[1]), height: Number(match[2]) };
+    }
+    const decoded = await dispatchConversion(RAW_SAMPLES.get(source)!, source, 'png', rawSampleOptions(source), `probe.${source}`);
+    return decodedDimensions(decoded.buffer, 'png');
   }
 
   async function expectValidOutput(buffer: Buffer, target: string, reference: Dimensions, sourceBytes: Buffer): Promise<void> {
@@ -812,7 +820,9 @@ describe('real camera RAW samples', () => {
       }
       const sample = RAW_SAMPLES.get(source)!;
       const result = await dispatchConversion(sample, source, target, rawSampleOptions(source), `probe.${source}`);
-      if (HAS_NATIVE_RAW_ENGINE && !RAW_PREVIEW_ONLY_SOURCES.has(source) && target !== 'zip') {
+      if (IN_PROCESS_RAW_SOURCES.has(source) && target !== 'zip') {
+        expect(result.engineUsed).toBe('in-process-raw');
+      } else if (HAS_NATIVE_RAW_ENGINE && target !== 'zip') {
         expect(result.engineUsed).toBe('native-raw');
       }
       expectPlausible(await referenceDimensions(source));
