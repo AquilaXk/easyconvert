@@ -123,10 +123,17 @@ function channelList(names: readonly string[], pixelType: number): Buffer {
   return Buffer.concat([...entries, Buffer.from([0])]);
 }
 
+/** OpenEXR orders channels by the bytes of their names, not by locale collation. */
+function compareChannelNames(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 /** Builds an OpenEXR 2.0 scanline image with NO_COMPRESSION. */
 export function writeOpenExr(image: ExrImage): Buffer {
   const { width, height, sampleType } = image;
-  const names = Object.keys(image.channels).sort();
+  const names = Object.keys(image.channels).sort(compareChannelNames);
   if (names.length === 0) throw new Error('writeOpenExr requires at least one channel');
   for (const name of names) {
     if (image.channels[name].length !== width * height) {
