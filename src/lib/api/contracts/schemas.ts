@@ -370,6 +370,12 @@ export const ConversionOptionsSchema = {
       items: { type: 'string' },
       description: 'Glob patterns for selective extraction from archives.',
     },
+    skipLinks: {
+      type: 'boolean',
+      default: false,
+      description:
+        'Extract archives that contain symbolic or hard links by leaving those entries out. By default such archives are rejected. The skipped entry names are reported in the result as skippedLinks.',
+    },
     repair: {
       type: 'boolean',
       description: 'Attempt archive repair mode (supported for ZIP via zip -FF).',

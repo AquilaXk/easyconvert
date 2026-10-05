@@ -168,6 +168,11 @@ export interface ConversionOptions {
   solid?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
   entries?: string[];
+  /**
+   * Opt in to extracting archives that contain symbolic or hard links by leaving those entries out.
+   * Without it such archives are rejected. Skipped names are reported in `ConversionResult.skippedLinks`.
+   */
+  skipLinks?: boolean;
   repair?: boolean;
   // Audio options
   audio?: AudioEncodingOptions;
@@ -334,6 +339,8 @@ export interface ConversionResult {
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
+  /** Link entries left out of an extraction because `skipLinks` was set. */
+  skippedLinks?: string[];
 }
 
 // S3 Chunked Upload Types

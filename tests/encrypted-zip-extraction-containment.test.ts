@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { extractZipArchive } from '../src/lib/conversions/archive';
+import { convertArchive, extractZipArchive } from '../src/lib/conversions/archive';
 import { ConversionFailedError } from '../src/lib/types';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -28,8 +28,9 @@ const OVER_CAP_BOMB_MIB = 600;
 /** The bomb must stay a tiny file, orders of magnitude below its uncompressed size. */
 const MAX_BOMB_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const RATIO_BOMB_MIB = 3;
-const OVER_CAP_ENTRY_COUNT = 1001;
-const AT_CAP_ENTRY_COUNT = 1000;
+const OVER_CAP_ENTRY_COUNT = 50_001;
+/** Above the former 1000-entry cap; a full 50,000 AES entries would exceed the 60 s extraction timeout. */
+const ABOVE_FORMER_CAP_ENTRY_COUNT = 1_500;
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   return promise.then(
@@ -192,6 +193,7 @@ describe('encrypted ZIP extraction containment (#458)', () => {
     buildEncryptedZip(zipPath, path.join(ws.fixturesDir, 'stage-many'), {
       password: PASSWORD,
       manyFiles: OVER_CAP_ENTRY_COUNT,
+      cipher: 'ZipCrypto',
     });
     const before = ws.snapshot();
 
@@ -202,18 +204,61 @@ describe('encrypted ZIP extraction containment (#458)', () => {
     expect(ws.snapshot()).toEqual(before);
   }, SLOW_TEST_TIMEOUT_MS);
 
-  oracleTest('extracts an encrypted archive holding exactly the file-count cap', [...TOOLS], async () => {
+  oracleTest('extracts an encrypted archive larger than the former 1000-entry cap', [...TOOLS], async () => {
     const zipPath = path.join(ws.fixturesDir, 'at-cap.zip');
     buildEncryptedZip(zipPath, path.join(ws.fixturesDir, 'stage-at-cap'), {
       password: PASSWORD,
-      manyFiles: AT_CAP_ENTRY_COUNT,
+      manyFiles: ABOVE_FORMER_CAP_ENTRY_COUNT,
     });
 
     const files = await extract(zipPath);
 
-    expect(files).toHaveLength(AT_CAP_ENTRY_COUNT);
+    expect(files).toHaveLength(ABOVE_FORMER_CAP_ENTRY_COUNT);
     expect(files.every((file) => file.buffer.toString('utf-8') === 'x')).toBe(true);
   }, SLOW_TEST_TIMEOUT_MS);
+
+  oracleTest('leaves symlinks out and names them when skipLinks is set', [...TOOLS], async () => {
+    const zipPath = path.join(ws.fixturesDir, 'skip-links.zip');
+    buildEncryptedZip(zipPath, path.join(ws.fixturesDir, 'stage-skip-links'), {
+      password: PASSWORD,
+      files: [{ name: 'real.txt', data: 'real content' }],
+      links: [
+        { name: 'alias.txt', target: 'real.txt' },
+        { name: 'escape', target: ws.outsideDir },
+      ],
+    });
+    const before = ws.snapshot();
+    let skipped: string[] = [];
+
+    const files = await ws.withTmpdir(() =>
+      extractZipArchive(fs.readFileSync(zipPath), {
+        password: PASSWORD,
+        skipLinks: true,
+        onSkippedLinks: (names) => {
+          skipped = names;
+        },
+      })
+    );
+
+    expect(files.map((file) => [file.filename, file.buffer.toString('utf-8')])).toEqual([['real.txt', 'real content']]);
+    expect([...skipped].sort()).toEqual(['alias.txt', 'escape']);
+    expect(ws.snapshot()).toEqual(before);
+  });
+
+  oracleTest('reports skipped links on the conversion result', [...TOOLS], async () => {
+    const zipPath = path.join(ws.fixturesDir, 'skip-convert.zip');
+    buildEncryptedZip(zipPath, path.join(ws.fixturesDir, 'stage-skip-convert'), {
+      password: PASSWORD,
+      files: [{ name: 'real.txt', data: 'real content' }],
+      links: [{ name: 'alias.txt', target: 'real.txt' }],
+    });
+
+    const result = await ws.withTmpdir(() =>
+      convertArchive(fs.readFileSync(zipPath), 'zip', 'zip', { password: PASSWORD, skipLinks: true }, 'skip-convert.zip')
+    );
+
+    expect(result.skippedLinks).toEqual(['alias.txt']);
+  });
 
   oracleTest('still decrypts a benign archive and returns the decoded content', [...TOOLS], async () => {
     const zipPath = path.join(ws.fixturesDir, 'benign.zip');

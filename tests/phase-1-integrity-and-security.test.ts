@@ -120,9 +120,9 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
   });
 
   describe('3. Zip Bomb & Archive Security Limits', () => {
-    it('enforces maximum file count limit (1000 files)', async () => {
+    it('enforces maximum file count limit (50,000 files)', async () => {
       const zip = new JSZip();
-      for (let i = 0; i < 1005; i++) {
+      for (let i = 0; i < 50_001; i++) {
         zip.file(`file_${i}.txt`, 'a');
       }
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });

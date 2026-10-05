@@ -11,6 +11,8 @@ import { getOracleToolPath } from './differential-oracle';
 
 const MIB = 1024 * 1024;
 const BUILD_TIMEOUT_MS = 120_000;
+/** Room for the listing of an archive with tens of thousands of entries. */
+const LISTING_MAX_BUFFER_BYTES = 128 * MIB;
 const AES_PASSWORD_SWITCH_PREFIX = '-p';
 
 /** A scratch world with a controlled TMPDIR and a canary directory outside every extraction root. */
@@ -117,7 +119,7 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
 const PY_TAR_ENTRIES = `
 import sys, tarfile, io, json
 out, spec = sys.argv[1], json.loads(sys.argv[2])
-with tarfile.open(out, 'w') as t:
+with tarfile.open(out, 'w:gz' if out.endswith(('.gz', '.tgz')) else 'w') as t:
     for e in spec:
         info = tarfile.TarInfo(e['name'])
         kind = e.get('kind', 'file')
@@ -128,6 +130,9 @@ with tarfile.open(out, 'w') as t:
         elif kind == 'hardlink':
             info.type = tarfile.LNKTYPE
             info.linkname = e['target']
+            t.addfile(info)
+        elif kind == 'directory':
+            info.type = tarfile.DIRTYPE
             t.addfile(info)
         elif kind == 'fifo':
             info.type = tarfile.FIFOTYPE
@@ -156,6 +161,16 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
         z.writestr('f%05d.txt' % i, 'x')
 `;
 
+const PY_MANY_ENTRIES_TAR = `
+import sys, tarfile, io, os
+out, count = sys.argv[1], int(sys.argv[2])
+with tarfile.open(out, 'w:gz' if out.endswith(('.gz', '.tgz')) else 'w') as t:
+    for i in range(count):
+        # Random names keep the headers from compressing away, so the entry count (not the ratio) is the limit hit.
+        info = tarfile.TarInfo('f%05d-%s' % (i, os.urandom(32).hex()))
+        t.addfile(info, io.BytesIO(b''))
+`;
+
 export interface ZipEntrySpec {
   name: string;
   data?: string;
@@ -171,7 +186,7 @@ export function buildZipWithEntries(outPath: string, entries: ZipEntrySpec[]): s
 
 export interface TarEntrySpec {
   name: string;
-  kind?: 'file' | 'symlink' | 'hardlink' | 'fifo';
+  kind?: 'file' | 'symlink' | 'hardlink' | 'fifo' | 'directory';
   data?: string;
   target?: string;
 }
@@ -226,6 +241,8 @@ export interface EncryptedZipSpec {
   zeroFileMib?: number;
   /** Extra one-byte files named f00000.txt, f00001.txt, ... */
   manyFiles?: number;
+  /** ZipCrypto is far cheaper per entry than AES, which matters for tens of thousands of entries. */
+  cipher?: 'AES256' | 'ZipCrypto';
 }
 
 /** An AES-256 encrypted ZIP built by 7-Zip from a staged directory. */
@@ -252,7 +269,7 @@ export function buildEncryptedZip(outPath: string, stageDir: string, spec: Encry
     members.push(name);
   }
   run7z(
-    ['a', '-tzip', '-snl', '-mx=1', '-mem=AES256', `${AES_PASSWORD_SWITCH_PREFIX}${spec.password}`, '-y', outPath, ...members],
+    ['a', '-tzip', '-snl', '-mx=1', `-mem=${spec.cipher ?? 'AES256'}`, `${AES_PASSWORD_SWITCH_PREFIX}${spec.password}`, '-y', outPath, ...members],
     stageDir
   );
   return outPath;
@@ -291,9 +308,36 @@ export function list7zEntryPaths(archivePath: string): string[] {
     encoding: 'utf-8',
     stdio: 'pipe',
     timeout: BUILD_TIMEOUT_MS,
+    maxBuffer: LISTING_MAX_BUFFER_BYTES,
   });
   return out
     .split('\n')
     .filter((line) => line.startsWith('Path = '))
     .map((line) => line.slice('Path = '.length));
+}
+
+/** A TAR (gzip-compressed when the name ends in .gz or .tgz) of `count` empty files with incompressible names. */
+export function buildManyEntriesTar(outPath: string, count: number): string {
+  runPython(PY_MANY_ENTRIES_TAR, [outPath, String(count)]);
+  return outPath;
+}
+
+/** A 7z archive, packed by 7-Zip, of `count` empty files staged in `stageDir`. */
+export function build7zWithManyFiles(outPath: string, stageDir: string, count: number): string {
+  fs.mkdirSync(stageDir, { recursive: true });
+  for (let i = 0; i < count; i++) {
+    fs.writeFileSync(path.join(stageDir, `f${String(i).padStart(5, '0')}.txt`), '');
+  }
+  run7z(['a', '-t7z', '-mx=1', '-y', outPath, '.'], stageDir);
+  return outPath;
+}
+
+/** A 7z archive holding one sparse zero file of `mib` MiB (compresses to a few KiB). */
+export function build7zZeroBomb(outPath: string, stageDir: string, mib: number): string {
+  fs.mkdirSync(stageDir, { recursive: true });
+  const zeroPath = path.join(stageDir, 'zeros.bin');
+  fs.closeSync(fs.openSync(zeroPath, 'w'));
+  fs.truncateSync(zeroPath, mib * MIB);
+  run7z(['a', '-t7z', '-mx=1', '-y', outPath, 'zeros.bin'], stageDir);
+  return outPath;
 }

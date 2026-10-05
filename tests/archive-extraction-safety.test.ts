@@ -4,14 +4,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  NativeRenameUnsupportedError,
   UnsafeArchiveError,
+  assertArchivePasswordSafe,
+  assertCollisionPolicy,
+  assertExclusionExact,
   assertExtractionContained,
   assertSafeArchiveListing,
+  findEntryCollision,
   parse7zTechnicalListing,
   sanitizeLeafFilename,
   type ListedArchiveEntry,
 } from '../src/lib/conversions/archive-extraction-safety';
-import { ConversionFailedError } from '../src/lib/types';
+import { ArchiveEntryCollisionError, ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import {
@@ -24,12 +29,14 @@ import {
 
 /**
  * Unit coverage for the shared extraction-safety primitives. The thresholds below are written out
- * independently of the production constants (1000 entries, 500 MiB, 100:1), so a drift in either
+ * independently of the production constants (50,000 entries, 500 MiB, 100:1), so a drift in either
  * side fails a test. Listing fixtures are parsed from the real 7z CLI's output.
  */
 
-const LIMITS = { MAX_FILES: 1000, MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, MAX_RATIO: 100 };
+const LIMITS = { MAX_FILES: 50_000, MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, MAX_RATIO: 100 };
 const MIB = 1024 * 1024;
+/** Generous wall-clock bound for walking 50,000 entries; a quadratic walk would exceed it by far. */
+const WALK_TIME_BUDGET_MS = 30_000;
 
 function file(entryPath: string, sizeBytes: number | null = 1): ListedArchiveEntry {
   return { path: entryPath, isDirectory: false, sizeBytes, linkKind: null, isSpecial: false };
@@ -48,6 +55,16 @@ function unsafeReason(operation: () => unknown): string {
     return (error as UnsafeArchiveError).reason;
   }
   throw new Error('Expected an UnsafeArchiveError but the operation completed');
+}
+
+/** The name of the error an operation throws, or null when it completes. */
+function thrownName(operation: () => unknown): string | null {
+  try {
+    operation();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.name : String(error);
+  }
 }
 
 function list7z(archivePath: string): string {
@@ -151,15 +168,19 @@ describe('parse7zTechnicalListing against the real 7z CLI', () => {
 
 describe('assertSafeArchiveListing', () => {
   it('accepts exactly the entry-count cap and rejects one more', () => {
-    const atCap = Array.from({ length: 1000 }, (_, i) => file(`f${i}.txt`));
-    expect(assertSafeArchiveListing(atCap, 1000, LIMITS)).toEqual({ entryCount: 1000, totalBytes: 1000 });
+    const atCap = Array.from({ length: 50_000 }, (_, i) => file(`f${i}.txt`));
+    expect(assertSafeArchiveListing(atCap, 50_000, LIMITS)).toEqual({
+      entryCount: 50_000,
+      totalBytes: 50_000,
+      skippedLinks: [],
+    });
 
     const overCap = [...atCap, file('one-more.txt')];
-    expect(unsafeReason(() => assertSafeArchiveListing(overCap, 1000, LIMITS))).toBe('entry-count');
+    expect(unsafeReason(() => assertSafeArchiveListing(overCap, 50_000, LIMITS))).toBe('entry-count');
   });
 
   it('counts directories toward the entry cap', () => {
-    const dirs = Array.from({ length: 1001 }, (_, i) => directory(`d${i}`));
+    const dirs = Array.from({ length: 50_001 }, (_, i) => directory(`d${i}`));
 
     expect(unsafeReason(() => assertSafeArchiveListing(dirs, 1000, LIMITS))).toBe('entry-count');
   });
@@ -193,6 +214,7 @@ describe('assertSafeArchiveListing', () => {
     expect(assertSafeArchiveListing([directory('d'), file('d/a', 10)], 1000, LIMITS)).toEqual({
       entryCount: 2,
       totalBytes: 10,
+      skippedLinks: [],
     });
   });
 
@@ -230,6 +252,131 @@ describe('assertSafeArchiveListing', () => {
     expect(unsafeReason(() => assertSafeArchiveListing([symlink], 1000, LIMITS))).toBe('link-entry');
     expect(unsafeReason(() => assertSafeArchiveListing([hardlink], 1000, LIMITS))).toBe('link-entry');
     expect(unsafeReason(() => assertSafeArchiveListing([fifo], 1000, LIMITS))).toBe('special-entry');
+  });
+});
+
+describe('assertSafeArchiveListing with skipLinks', () => {
+  const symlink = (entryPath: string): ListedArchiveEntry => ({ ...file(entryPath, 10), linkKind: 'symlink' });
+  const hardlink = (entryPath: string): ListedArchiveEntry => ({ ...file(entryPath, 0), linkKind: 'hardlink' });
+
+  it('lets link entries pass, names them in listing order, and leaves their size out of the total', () => {
+    const entries = [file('a.txt', 5), symlink('s'), hardlink('h'), file('b.txt', 7)];
+
+    expect(assertSafeArchiveListing(entries, 100, LIMITS, { skipLinks: true })).toEqual({
+      entryCount: 4,
+      totalBytes: 12,
+      skippedLinks: ['s', 'h'],
+    });
+  });
+
+  it('rejects the same listing without the option', () => {
+    expect(unsafeReason(() => assertSafeArchiveListing([symlink('s')], 100, LIMITS))).toBe('link-entry');
+  });
+
+  it('still rejects traversal and special entries', () => {
+    expect(unsafeReason(() => assertSafeArchiveListing([symlink('../s')], 100, LIMITS, { skipLinks: true }))).toBe(
+      'path-traversal'
+    );
+    const fifo: ListedArchiveEntry = { ...file('p'), isSpecial: true };
+    expect(unsafeReason(() => assertSafeArchiveListing([fifo], 100, LIMITS, { skipLinks: true }))).toBe('special-entry');
+  });
+
+  it('refuses to skip a link whose name holds an exclusion wildcard', () => {
+    expect(unsafeReason(() => assertSafeArchiveListing([symlink('we*ird')], 100, LIMITS, { skipLinks: true }))).toBe(
+      'link-entry'
+    );
+    expect(unsafeReason(() => assertSafeArchiveListing([symlink('q?')], 100, LIMITS, { skipLinks: true }))).toBe('link-entry');
+  });
+
+  it('refuses to skip a link that shares its path with a regular entry', () => {
+    const entries = [file('same', 3), symlink('same')];
+
+    expect(unsafeReason(() => assertSafeArchiveListing(entries, 100, LIMITS, { skipLinks: true }))).toBe('link-entry');
+  });
+});
+
+describe('assertExclusionExact', () => {
+  it('accepts a filtered listing that lost only the links', () => {
+    const full = [file('a'), { ...file('s'), linkKind: 'symlink' as const }, file('b')];
+
+    expect(thrownName(() => assertExclusionExact(full, [file('a'), file('b')]))).toBeNull();
+  });
+
+  it('rejects a filtered listing that also lost a regular entry', () => {
+    const full = [file('a'), { ...file('s'), linkKind: 'symlink' as const }, file('s/inner')];
+
+    expect(unsafeReason(() => assertExclusionExact(full, [file('a')]))).toBe('link-entry');
+  });
+
+  it('rejects a filtered listing that kept a link', () => {
+    const full = [file('a'), { ...file('s'), linkKind: 'symlink' as const }];
+
+    expect(unsafeReason(() => assertExclusionExact(full, [file('a'), file('s')]))).toBe('link-entry');
+  });
+});
+
+describe('entry collisions', () => {
+  it('finds no collision among distinct paths', () => {
+    expect(findEntryCollision([file('a'), file('b'), file('dir/a')])).toBeNull();
+  });
+
+  it('finds the first path that two entries share', () => {
+    expect(findEntryCollision([file('x'), file('a.txt'), file('a.txt')])).toBe('a.txt');
+    expect(findEntryCollision([file('x'), file('a.txt'), file('y'), file('a.txt'), file('x')])).toBe('x');
+  });
+
+  it('treats a directory entry and a file with the same path as one collision', () => {
+    expect(findEntryCollision([directory('d/'), file('d')])).toBe('d');
+    expect(findEntryCollision([file('d'), directory('d')])).toBe('d');
+  });
+
+  it('does not count repeated directory entries, nor link entries that are being skipped', () => {
+    expect(findEntryCollision([directory('d'), directory('d/')])).toBeNull();
+    expect(findEntryCollision([file('a'), { ...file('a'), linkKind: 'symlink' }])).toBeNull();
+  });
+
+  it("rejects under 'error' with the collision error (HTTP 422) naming the path", () => {
+    try {
+      assertCollisionPolicy([file('a.txt'), file('a.txt')], 'error');
+      throw new Error('expected a collision error');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArchiveEntryCollisionError);
+      expect((error as ArchiveEntryCollisionError).status).toBe(422);
+      expect((error as Error).message).toBe("Archive entry collision detected for 'a.txt' under collision policy 'error'.");
+    }
+  });
+
+  it("hands duplicates to another engine under 'rename', which is also the default", () => {
+    for (const policy of ['rename', undefined] as const) {
+      try {
+        assertCollisionPolicy([file('a.txt'), file('a.txt')], policy);
+        throw new Error('expected the native engine to decline');
+      } catch (error) {
+        expect(error).toBeInstanceOf(NativeRenameUnsupportedError);
+        expect(error).toBeInstanceOf(EngineUnavailableError);
+        expect(error).toMatchObject({ engineName: '7z' });
+      }
+    }
+  });
+
+  it("accepts duplicates under 'overwrite' and accepts any policy without duplicates", () => {
+    expect(thrownName(() => assertCollisionPolicy([file('a.txt'), file('a.txt')], 'overwrite'))).toBeNull();
+    for (const policy of ['rename', 'error', 'overwrite'] as const) {
+      expect(thrownName(() => assertCollisionPolicy([file('a'), file('b')], policy))).toBeNull();
+    }
+  });
+});
+
+describe('assertArchivePasswordSafe', () => {
+  for (const password of ['a\nb', 'a\rb', 'a\0b']) {
+    it(`rejects ${JSON.stringify(password)}`, () => {
+      expect(() => assertArchivePasswordSafe(password)).toThrow('Archive password contains invalid newline or null characters.');
+    });
+  }
+
+  it('accepts ordinary passwords and the absence of one', () => {
+    expect(thrownName(() => assertArchivePasswordSafe('correct horse battery staple ünï'))).toBeNull();
+    expect(thrownName(() => assertArchivePasswordSafe(undefined))).toBeNull();
   });
 });
 
@@ -333,11 +480,11 @@ describe('assertExtractionContained', () => {
   });
 
   it('rejects more entries than the cap', () => {
-    for (let i = 0; i < 1001; i++) {
+    for (let i = 0; i < 50_001; i++) {
       fs.writeFileSync(path.join(root, `f${i}.txt`), 'x');
     }
 
-    expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('entry-count');
+    expect(unsafeReason(() => assertExtractionContained(root, 50_001, LIMITS))).toBe('entry-count');
   });
 
   it('rejects output over the size cap even when the listing claimed less', () => {
@@ -355,6 +502,25 @@ describe('assertExtractionContained', () => {
 
     expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('compression-ratio');
   });
+
+  it('accepts exactly the entry cap of files within a reasonable time', () => {
+    const fanOut = 100;
+    for (let dir = 0; dir < fanOut; dir++) {
+      const dirPath = path.join(root, `d${dir}`);
+      fs.mkdirSync(dirPath);
+      for (let i = 0; i < 499; i++) {
+        fs.writeFileSync(path.join(dirPath, `f${i}`), '');
+      }
+    }
+    // 100 directories + 100 * 499 files = 50,000 entries, the cap.
+    const started = performance.now();
+
+    const tree = assertExtractionContained(root, 50_000, LIMITS);
+
+    expect(performance.now() - started).toBeLessThan(WALK_TIME_BUDGET_MS);
+    expect(tree.entryCount).toBe(50_000);
+    expect(tree.files).toHaveLength(49_900);
+  }, 60_000);
 
   it('accepts a root reached through a symlinked parent', () => {
     fs.writeFileSync(path.join(root, 'a.txt'), 'a');

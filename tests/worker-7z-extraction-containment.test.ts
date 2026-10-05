@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { convertWithNative7z, executeWorkerConversion, type WorkerConversionResult } from '../src/worker/engines';
 import { ConversionFailedError } from '../src/lib/types';
 import { getOracleToolPath } from './helpers/differential-oracle';
@@ -9,6 +10,7 @@ import { withMissingBinary } from './helpers/native-tools';
 import { oracleTest } from './helpers/oracle-test';
 import {
   build7zFromStagedLinks,
+  buildManyEntriesTar,
   buildManyEntriesZip,
   buildTarWithEntries,
   buildZeroBombZip,
@@ -32,9 +34,11 @@ const OVER_CAP_BOMB_MIB = 600;
 const MAX_BOMB_ARCHIVE_BYTES = 8 * 1024 * 1024;
 /** Below the size cap yet far above the 100:1 ratio cap. */
 const RATIO_BOMB_MIB = 3;
-/** One above the 1000-entry cap. */
-const OVER_CAP_ENTRY_COUNT = 1001;
-const AT_CAP_ENTRY_COUNT = 1000;
+/** One above the 50,000-entry cap. */
+const OVER_CAP_ENTRY_COUNT = 50_001;
+const AT_CAP_ENTRY_COUNT = 50_000;
+/** Generous bound for converting a 50,000-entry archive end to end (about 13 s measured). */
+const ENTRY_CAP_TIME_BUDGET_MS = 90_000;
 
 interface Outcome {
   ok: boolean;
@@ -318,8 +322,11 @@ describe('worker 7z route extraction containment (#458)', () => {
     oracleTest('accepts an archive holding exactly the file-count cap', [...TOOLS], async () => {
       const zip = buildManyEntriesZip(path.join(ws.fixturesDir, 'at-cap.zip'), AT_CAP_ENTRY_COUNT);
       const outputPath = path.join(ws.fixturesDir, 'at-cap.tar');
+      const started = performance.now();
 
       const result = await convert(zip, 'zip', 'tar', outputPath);
+
+      expect(performance.now() - started).toBeLessThan(ENTRY_CAP_TIME_BUDGET_MS);
 
       expect(result?.engineUsed).toBe('native-7z');
       const expectedNames = Array.from({ length: AT_CAP_ENTRY_COUNT }, (_, i) => `f${String(i).padStart(5, '0')}.txt`);
@@ -375,7 +382,7 @@ describe('worker 7z route extraction containment (#458)', () => {
     oracleTest('throws a typed error for bytes that are not an archive', [...TOOLS], async () => {
       await expectRejection(
         ws.withTmpdir(() => convertWithNative7z(Buffer.from('this is not a zip archive'), 'zip', 'tar', {}, 'bad.zip')),
-        { name: 'ConversionFailedError' },
+        { name: 'UnreadableArchiveError' },
         /could not read the archive/i
       );
     });
@@ -434,6 +441,200 @@ describe('worker 7z route extraction containment (#458)', () => {
       expect(listed).toEqual(['docs/deep/notes.txt', 'docs/readme.txt', 'top.txt']);
       const deep = execFileSync(tarBinary ?? 'tar', ['-xOf', outputPath, 'docs/deep/notes.txt'], { encoding: 'utf-8' });
       expect(deep).toBe('deep notes');
+    });
+  });
+
+  describe('password validation', () => {
+    for (const password of ['line\nbreak', 'carriage\rreturn', 'nul\0byte']) {
+      it(`rejects the password ${JSON.stringify(password)} before touching 7z`, async () => {
+        await expectRejection(
+          convertWithNative7z(Buffer.from('hello'), 'txt', 'zip', { password }, 'hello.txt'),
+          { name: 'ConversionFailedError' },
+          /Archive password contains invalid newline or null characters\./
+        );
+      });
+    }
+  });
+
+  describe('compressed tarballs list their inner tar', () => {
+    const WRAPPED_SOURCES = ['tar.gz', 'tgz'] as const;
+
+    for (const src of WRAPPED_SOURCES) {
+      oracleTest(`rejects a symlink hidden inside a ${src} source`, [...TOOLS], async () => {
+        const archive = buildTarWithEntries(path.join(ws.fixturesDir, `link.${src}`), [
+          { name: 'ok.txt', data: 'fine' },
+          { name: 'escape', kind: 'symlink', target: ws.outsideDir },
+        ]);
+        const before = ws.snapshot();
+
+        await expectRejection(convert(archive, src, 'zip'), { name: 'UnsafeArchiveError', reason: 'link-entry' });
+
+        expect(ws.snapshot()).toEqual(before);
+      });
+
+      oracleTest(`rejects a traversal entry hidden inside a ${src} source`, [...TOOLS], async () => {
+        const archive = buildTarWithEntries(path.join(ws.fixturesDir, `slip.${src}`), [
+          { name: '../../../outside/pwned.txt', data: 'pwned' },
+        ]);
+        const before = ws.snapshot();
+
+        await expectRejection(convert(archive, src, 'zip'), { name: 'UnsafeArchiveError', reason: 'path-traversal' });
+
+        expect(ws.snapshot()).toEqual(before);
+      });
+    }
+
+    oracleTest('rejects a tar.gz whose inner tar holds more entries than the cap', [...TOOLS], async () => {
+      const archive = buildManyEntriesTar(path.join(ws.fixturesDir, 'many.tar.gz'), OVER_CAP_ENTRY_COUNT);
+      const before = ws.snapshot();
+
+      await expectRejection(
+        convert(archive, 'tar.gz', 'zip'),
+        { name: 'UnsafeArchiveError', reason: 'entry-count' },
+        /Archive bomb detected: file count/
+      );
+
+      expect(ws.snapshot()).toEqual(before);
+    }, SLOW_TEST_TIMEOUT_MS);
+
+    oracleTest('still converts a benign tar.gz and a gzip of a non-tar payload', [...TOOLS], async () => {
+      const benign = buildTarWithEntries(path.join(ws.fixturesDir, 'benign.tar.gz'), [{ name: 'a.txt', data: 'alpha' }]);
+      const benignOut = path.join(ws.fixturesDir, 'benign-out.zip');
+      const plain = path.join(ws.fixturesDir, 'plain.txt.gz');
+      fs.writeFileSync(plain, gzipSync(Buffer.from('plain text payload')));
+      const plainOut = path.join(ws.fixturesDir, 'plain-out.zip');
+
+      const benignResult = await convert(benign, 'tar.gz', 'zip', benignOut);
+      const plainResult = await convert(plain, 'gz', 'zip', plainOut);
+
+      expect(benignResult?.engineUsed).toBe('native-7z');
+      expect(list7zEntryPaths(benignOut)).toHaveLength(1);
+      expect(plainResult?.engineUsed).toBe('native-7z');
+      expect(list7zEntryPaths(plainOut)).toHaveLength(1);
+    });
+  });
+
+  describe('skipLinks opt-in', () => {
+    function convertSkippingLinks(
+      archivePath: string,
+      src: string,
+      outputPath: string
+    ): Promise<WorkerConversionResult | null> {
+      const input = { inputBuffer: fs.readFileSync(archivePath), outputPath };
+      return ws.withTmpdir(() => convertWithNative7z(input, src, 'zip', { skipLinks: true }, path.basename(archivePath)));
+    }
+
+    oracleTest('leaves tar symlink and hardlink entries out and reports each name', [...TOOLS], async () => {
+      const tar = buildTarWithEntries(path.join(ws.fixturesDir, 'links.tar'), [
+        { name: 'ok.txt', data: 'fine' },
+        { name: 'sym', kind: 'symlink', target: ws.outsideDir },
+        { name: 'hard', kind: 'hardlink', target: 'ok.txt' },
+      ]);
+      const outputPath = path.join(ws.fixturesDir, 'links-out.zip');
+      const before = ws.snapshot();
+
+      const result = await convertSkippingLinks(tar, 'tar', outputPath);
+
+      expect(result?.engineUsed).toBe('native-7z');
+      expect(result?.skippedLinks).toEqual(['sym', 'hard']);
+      expect(list7zEntryPaths(outputPath)).toEqual(['ok.txt']);
+      expect(ws.snapshot()).toEqual(before);
+    });
+
+    oracleTest('leaves a 7z symlink out and reports it', [...TOOLS], async () => {
+      const archive = build7zFromStagedLinks(
+        path.join(ws.fixturesDir, 'skip.7z'),
+        path.join(ws.fixturesDir, 'stage-skip'),
+        [{ name: 'link', target: ws.outsideDir }],
+        [{ name: 'f.txt', data: 'hello' }]
+      );
+      const outputPath = path.join(ws.fixturesDir, 'skip-out.zip');
+      const before = ws.snapshot();
+
+      const result = await convertSkippingLinks(archive, '7z', outputPath);
+
+      expect(result?.skippedLinks).toEqual(['link']);
+      expect(list7zEntryPaths(outputPath)).toEqual(['f.txt']);
+      expect(ws.snapshot()).toEqual(before);
+    });
+
+    oracleTest('leaves a zip symlink out and reports it', [...TOOLS], async () => {
+      const zip = buildZipWithEntries(path.join(ws.fixturesDir, 'skip.zip'), [
+        { name: 'f.txt', data: 'hello' },
+        { name: 'alias', mode: 0o120777, data: 'f.txt' },
+      ]);
+      const outputPath = path.join(ws.fixturesDir, 'skip-zip-out.zip');
+
+      const result = await convertSkippingLinks(zip, 'zip', outputPath);
+
+      expect(result?.skippedLinks).toEqual(['alias']);
+      expect(list7zEntryPaths(outputPath)).toEqual(['f.txt']);
+    });
+
+    oracleTest('reports nothing when the archive has no links', [...TOOLS], async () => {
+      const zip = buildZipWithEntries(path.join(ws.fixturesDir, 'nolinks.zip'), [{ name: 'f.txt', data: 'hello' }]);
+
+      const result = await convertSkippingLinks(zip, 'zip', path.join(ws.fixturesDir, 'nolinks-out.zip'));
+
+      expect(result?.skippedLinks).toBeUndefined();
+    });
+
+    oracleTest('still rejects when skipping would also drop an entry written through the link', [...TOOLS], async () => {
+      const tar = buildTarWithEntries(path.join(ws.fixturesDir, 'through.tar'), [
+        { name: 'link', kind: 'symlink', target: ws.outsideDir },
+        { name: 'link/pwn.txt', data: 'pwned' },
+      ]);
+      const before = ws.snapshot();
+
+      await expectRejection(
+        ws.withTmpdir(() =>
+          convertWithNative7z(fs.readFileSync(tar), 'tar', 'zip', { skipLinks: true }, 'through.tar')
+        ),
+        { name: 'UnsafeArchiveError', reason: 'link-entry' },
+        /would also drop regular entries/
+      );
+
+      expect(ws.snapshot()).toEqual(before);
+      expect(fs.existsSync(path.join(ws.outsideDir, 'pwn.txt'))).toBe(false);
+    });
+
+    oracleTest('refuses to skip a link whose name contains a wildcard', [...TOOLS], async () => {
+      const tar = buildTarWithEntries(path.join(ws.fixturesDir, 'wild.tar'), [
+        { name: 'ok.txt', data: 'fine' },
+        { name: 'we*ird', kind: 'symlink', target: 'ok.txt' },
+      ]);
+
+      await expectRejection(
+        ws.withTmpdir(() => convertWithNative7z(fs.readFileSync(tar), 'tar', 'zip', { skipLinks: true }, 'wild.tar')),
+        { name: 'UnsafeArchiveError', reason: 'link-entry' },
+        /wildcard/
+      );
+    });
+
+    oracleTest('still rejects traversal entries when links are skipped', [...TOOLS], async () => {
+      const zip = buildZipWithEntries(path.join(ws.fixturesDir, 'skip-slip.zip'), [
+        { name: '../../evil.txt', data: 'x' },
+        { name: 'alias', mode: 0o120777, data: 'x' },
+      ]);
+
+      await expectRejection(
+        ws.withTmpdir(() => convertWithNative7z(fs.readFileSync(zip), 'zip', 'tar', { skipLinks: true }, 'skip-slip.zip')),
+        { name: 'UnsafeArchiveError', reason: 'path-traversal' }
+      );
+    });
+
+    oracleTest('reports skipped links through the worker dispatcher', [...TOOLS], async () => {
+      const tar = buildTarWithEntries(path.join(ws.fixturesDir, 'dispatch-skip.tar'), [
+        { name: 'ok.txt', data: 'fine' },
+        { name: 'sym', kind: 'symlink', target: 'ok.txt' },
+      ]);
+
+      const result = await ws.withTmpdir(() =>
+        executeWorkerConversion(fs.readFileSync(tar), 'tar', 'zip', { skipLinks: true }, 'dispatch-skip.tar')
+      );
+
+      expect(result.engineUsed).toBe('native-7z');
+      expect(result.skippedLinks).toEqual(['sym']);
     });
   });
 

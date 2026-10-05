@@ -1,8 +1,16 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ConversionFailedError } from '../types';
+import {
+  ArchiveEntryCollisionError,
+  ConversionFailedError,
+  EngineUnavailableError,
+  type ArchiveCollisionPolicy,
+} from '../types';
 import {
   executeSandboxedBinary,
+  getSanitizedEnvironment,
+  resolveSandboxedCommand,
   SandboxedBufferLimitError,
   SandboxedProcessError,
 } from '../security/process-sandbox';
@@ -16,6 +24,8 @@ import {
  *
  *  1. List the archive first (`7z l -slt -ba`) and reject traversal, absolute, link and special
  *     entries, plus anything over the entry-count, uncompressed-size or compression-ratio caps.
+ *     With `skipLinks`, link entries are instead excluded from extraction and reported; they are
+ *     never skipped silently.
  *  2. Extract only archives that passed, with a per-file size rlimit as a second bound.
  *  3. Walk the output with `lstat`, `realpath`-check every entry against the extraction root,
  *     reject any link, and re-enforce the caps on what was actually written.
@@ -74,11 +84,42 @@ export interface ContainedTree {
   /** Files plus directories found below the root. */
   entryCount: number;
   totalBytes: number;
+  /** Link entries left out of the extraction because the caller opted in with `skipLinks`. */
+  skippedLinks: string[];
+}
+
+/** The archive is damaged or in a format 7-Zip cannot read (as opposed to a policy violation). */
+export class UnreadableArchiveError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnreadableArchiveError';
+  }
+}
+
+/**
+ * 7-Zip extraction cannot keep two entries that share a path, so the 'rename' policy (the default)
+ * is not honourable natively. Callers with another engine (the in-process readers) fall back to it.
+ */
+export class NativeRenameUnsupportedError extends EngineUnavailableError {
+  constructor(entryPath: string) {
+    super('7z', `entry '${entryPath}' appears more than once and 7-Zip extraction cannot rename duplicate entries`);
+    this.name = 'NativeRenameUnsupportedError';
+  }
+}
+
+export interface ListingVerdict {
+  entryCount: number;
+  totalBytes: number;
+  /** Paths of link entries that `skipLinks` allowed past the policy; empty otherwise. */
+  skippedLinks: string[];
 }
 
 const BYTES_PER_MB = 1024 * 1024;
-/** A listing of MAX_FILES entries is well under 1 MiB; anything near this is an entry-count bomb. */
-const LISTING_MAX_BUFFER_BYTES = 16 * BYTES_PER_MB;
+/** `7z l -slt` prints roughly 300 bytes of fields per entry; this budget leaves room for long names. */
+const LISTING_BYTES_PER_ENTRY = 1024;
+const LISTING_BUFFER_SLACK_BYTES = BYTES_PER_MB;
+/** 7-Zip wildcard characters; a link name containing one cannot be excluded with an exact `-x!` pattern. */
+const EXCLUDE_WILDCARD_PATTERN = /[*?]/;
 const MAX_LEAF_FILENAME_BYTES = 255;
 const UNIX_MODE_SHIFT = 16;
 
@@ -93,6 +134,11 @@ const WINDOWS_ATTRIBUTE_LETTERS = /^[RHS8DAdNTsLCOIEV]+$/;
 const HEX_ATTRIBUTE = /^[0-9A-F]{8}$/;
 const DRIVE_LETTER_PREFIX = /^[A-Za-z]:/;
 const PASSWORD_FAILURE_PATTERN = /Wrong password|Can not open encrypted|Data Error/i;
+
+/** Output bound for a listing that may hold at most `limits.MAX_FILES` entries. */
+export function listingBufferLimit(limits: ArchiveExtractionLimits): number {
+  return (limits.MAX_FILES + 1) * LISTING_BYTES_PER_ENTRY + LISTING_BUFFER_SLACK_BYTES;
+}
 
 const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
@@ -239,23 +285,38 @@ function assertSafeEntryPath(rawPath: string): void {
   }
 }
 
+export interface ListingPolicyOptions {
+  /** Let link entries pass (reported in `skippedLinks`) instead of rejecting the archive. */
+  skipLinks?: boolean;
+}
+
 /**
  * Enforces the extraction policy on a listing before anything is written to disk.
  * Counts every listed entry (directories included) so empty-directory floods are bounded too.
+ * One pass over the entries, so the cost is linear in the entry count.
  */
 export function assertSafeArchiveListing(
   entries: ListedArchiveEntry[],
   archiveBytes: number,
-  limits: ArchiveExtractionLimits
-): { entryCount: number; totalBytes: number } {
+  limits: ArchiveExtractionLimits,
+  policy: ListingPolicyOptions = {}
+): ListingVerdict {
   if (entries.length > limits.MAX_FILES) {
     throw entryCountError(entries.length, limits);
   }
   let totalBytes = 0;
+  const skippedLinks: string[] = [];
   for (const entry of entries) {
     assertSafeEntryPath(entry.path);
     if (entry.linkKind !== null) {
-      throw new UnsafeArchiveError('link-entry', 'Archive contains a symbolic or hard link entry, which is not extracted.');
+      if (!policy.skipLinks) {
+        throw new UnsafeArchiveError('link-entry', 'Archive contains a symbolic or hard link entry, which is not extracted.');
+      }
+      if (EXCLUDE_WILDCARD_PATTERN.test(entry.path)) {
+        throw new UnsafeArchiveError('link-entry', 'A link entry name contains a wildcard and cannot be skipped safely.');
+      }
+      skippedLinks.push(entry.path);
+      continue;
     }
     if (entry.isSpecial) {
       throw new UnsafeArchiveError('special-entry', 'Archive contains a device, FIFO or socket entry.');
@@ -269,8 +330,91 @@ export function assertSafeArchiveListing(
       throw sizeError(limits);
     }
   }
+  if (skippedLinks.length > 0) {
+    // An exclusion pattern removes every entry with that path, so a regular entry sharing a link's path
+    // would be dropped without being reported.
+    const linkPaths = new Set(skippedLinks);
+    const shared = entries.some((entry) => entry.linkKind === null && linkPaths.has(entry.path));
+    if (shared) {
+      throw new UnsafeArchiveError('link-entry', 'A link entry shares its path with another entry and cannot be skipped safely.');
+    }
+  }
   assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
-  return { entryCount: entries.length, totalBytes };
+  return { entryCount: entries.length, totalBytes, skippedLinks };
+}
+
+const PATH_SLASH_CHAR_CODE = 0x2f;
+
+/** Strips trailing '/' characters in linear time. */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === PATH_SLASH_CHAR_CODE) end--;
+  return value.slice(0, end);
+}
+
+/**
+ * The first path two extracted entries would share, or null. A directory entry ('d/') and a file ('d')
+ * name the same path; two directory entries for one path do not collide. One pass, linear in the entries.
+ */
+export function findEntryCollision(entries: ListedArchiveEntry[]): string | null {
+  const seen = new Map<string, { count: number; hasNonDirectory: boolean }>();
+  for (const entry of entries) {
+    if (entry.linkKind !== null) continue;
+    const normalized = trimTrailingSlashes(entry.path.replace(/\\/g, '/'));
+    const state = seen.get(normalized);
+    if (state) {
+      state.count++;
+      state.hasNonDirectory = state.hasNonDirectory || !entry.isDirectory;
+    } else {
+      seen.set(normalized, { count: 1, hasNonDirectory: !entry.isDirectory });
+    }
+  }
+  for (const [normalized, state] of seen) {
+    if (state.count > 1 && state.hasNonDirectory) return normalized;
+  }
+  return null;
+}
+
+/**
+ * Applies the extraction collision policy to a vetted listing, before anything is written.
+ * 'overwrite' keeps the last entry (what 7-Zip does); 'error' rejects; 'rename' hands the archive to an
+ * engine that can rename.
+ */
+export function assertCollisionPolicy(entries: ListedArchiveEntry[], policy: ArchiveCollisionPolicy = 'rename'): void {
+  if (policy === 'overwrite') return;
+  const collision = findEntryCollision(entries);
+  if (collision === null) return;
+  if (policy === 'error') {
+    throw new ArchiveEntryCollisionError(
+      collision,
+      `Archive entry collision detected for '${collision}' under collision policy 'error'.`
+    );
+  }
+  throw new NativeRenameUnsupportedError(collision);
+}
+
+/**
+ * After excluding link entries, the listing must lose exactly those entries and nothing else:
+ * proof that the exclusion patterns did not silently drop regular files.
+ */
+export function assertExclusionExact(full: ListedArchiveEntry[], filtered: ListedArchiveEntry[]): void {
+  const balance = new Map<string, number>();
+  for (const entry of full) {
+    if (entry.linkKind === null) {
+      balance.set(entry.path, (balance.get(entry.path) ?? 0) + 1);
+    }
+  }
+  for (const entry of filtered) {
+    balance.set(entry.path, (balance.get(entry.path) ?? 0) - 1);
+  }
+  for (const remaining of balance.values()) {
+    if (remaining !== 0) {
+      throw new UnsafeArchiveError(
+        'link-entry',
+        'Skipping link entries would also drop regular entries, so the archive was rejected.'
+      );
+    }
+  }
 }
 
 function isInside(realRoot: string, candidate: string): boolean {
@@ -330,7 +474,7 @@ export function assertExtractionContained(
 
   assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
   files.sort((a, b) => (a.relPath < b.relPath ? -1 : 1));
-  return { files, entryCount, totalBytes };
+  return { files, entryCount, totalBytes, skippedLinks: [] };
 }
 
 /**
@@ -369,10 +513,34 @@ export interface ContainedExtractionRequest {
   typeFlag?: string;
   /** Selective extraction patterns, passed to both the listing and the extraction as `-i!`. */
   includePatterns?: string[];
+  /**
+   * Divisor for the compression-ratio cap when the archive is a layer inside a larger input, such as
+   * the tar inside a .tar.gz: the ratio is then measured against the original upload.
+   */
+  ratioBaseBytes?: number;
+  /** Opt in to leaving link entries out of the extraction (reported in `skippedLinks`) instead of rejecting. */
+  skipLinks?: boolean;
+  /** What to do when two entries share a path. Defaults to 'rename', which native extraction hands to another engine. */
+  collisionPolicy?: ArchiveCollisionPolicy;
+  /**
+   * The archive is a compression wrapper (gz, bz2, xz, ...). When it unpacks to a single `.tar`, that
+   * tar is listed and vetted too, because the caller repackages it without extracting it.
+   */
+  validateNestedTar?: boolean;
   signal?: AbortSignal;
 }
 
+const PASSWORD_FORBIDDEN_CHARACTERS = /[\r\n\0]/;
+
+/** The password travels on 7z's stdin, so a line break or NUL could answer further prompts. */
+export function assertArchivePasswordSafe(password: string | undefined): void {
+  if (password && PASSWORD_FORBIDDEN_CHARACTERS.test(password)) {
+    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+  }
+}
+
 function passwordArgs(request: ContainedExtractionRequest): { args: string[]; stdin: Buffer | undefined } {
+  assertArchivePasswordSafe(request.password);
   if (!request.password) {
     return { args: [], stdin: undefined };
   }
@@ -383,51 +551,192 @@ function includeArgs(request: ContainedExtractionRequest): string[] {
   return (request.includePatterns ?? []).map((pattern) => `-i!${pattern}`);
 }
 
+function typeArgs(request: ContainedExtractionRequest): string[] {
+  return request.typeFlag ? [request.typeFlag] : [];
+}
+
+interface RunFailure {
+  kind: 'buffer' | 'process';
+  exitCode: number | null;
+  text: string;
+}
+
+interface SpawnSyncFailure extends Error {
+  code?: string;
+  status?: number | null;
+  signal?: string | null;
+  stderr?: Buffer | string;
+  stdout?: Buffer | string;
+}
+
+/** Normalizes the failure shapes of the async sandbox executor and of execFileSync. */
+function classifyRunFailure(err: unknown): RunFailure | null {
+  if (err instanceof SandboxedBufferLimitError) {
+    return { kind: 'buffer', exitCode: null, text: '' };
+  }
+  if (err instanceof SandboxedProcessError) {
+    return { kind: 'process', exitCode: err.exitCode, text: `${err.message}\n${err.stderr}` };
+  }
+  if (err instanceof Error) {
+    const failure = err as SpawnSyncFailure;
+    if (failure.code === 'ENOBUFS' || failure.signal === 'SIGXFSZ') {
+      return { kind: 'buffer', exitCode: null, text: '' };
+    }
+    if (typeof failure.status === 'number') {
+      return {
+        kind: 'process',
+        exitCode: failure.status,
+        text: `${failure.message}\n${failure.stderr?.toString() ?? ''}\n${failure.stdout?.toString() ?? ''}`,
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * Maps a failed 7z run to a typed error. Policy errors pass through; infrastructure failures
  * (timeouts, aborts, memory limits) keep their own types so callers can tell them apart.
  */
 function toArchiveFailure(err: unknown, label: string, phase: 'list' | 'extract', limits: ArchiveExtractionLimits): unknown {
-  if (err instanceof ConversionFailedError) {
+  // The collision error carries a numeric `status` like a child-process failure, so match it explicitly.
+  if (err instanceof ConversionFailedError || err instanceof ArchiveEntryCollisionError) {
     return err;
   }
-  if (err instanceof SandboxedBufferLimitError) {
+  const failure = classifyRunFailure(err);
+  if (failure === null) {
+    return err;
+  }
+  if (failure.kind === 'buffer') {
     return phase === 'list' ? entryCountError(null, limits) : sizeError(limits);
   }
-  if (err instanceof SandboxedProcessError) {
-    if (PASSWORD_FAILURE_PATTERN.test(`${err.message}\n${err.stderr}`)) {
-      return new ConversionFailedError(`Invalid password for encrypted ${label}.`);
-    }
-    return new ConversionFailedError(
-      `Could not read the archive: 7-Zip rejected the ${label} as malformed or unsupported (exit code ${err.exitCode ?? 'unknown'}).`
-    );
+  if (PASSWORD_FAILURE_PATTERN.test(failure.text)) {
+    return new ConversionFailedError(`Invalid password for encrypted ${label}.`);
   }
-  return err;
+  return new UnreadableArchiveError(
+    `Could not read the archive: 7-Zip rejected the ${label} as malformed or unsupported (exit code ${failure.exitCode ?? 'unknown'}).`
+  );
 }
 
-async function listArchive(request: ContainedExtractionRequest): Promise<ListedArchiveEntry[]> {
-  const { args: pwArgs, stdin } = passwordArgs(request);
-  const result = await executeSandboxedBinary(
-    request.p7zBin,
-    [
-      'l',
-      '-slt',
-      '-ba',
-      ...(request.typeFlag ? [request.typeFlag] : []),
-      ...pwArgs,
-      ...includeArgs(request),
+interface ListTarget {
+  archivePath: string;
+  typeFlag?: string;
+  includePatterns?: string[];
+  password?: string;
+}
+
+function listArgs(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): { args: string[]; stdin: Buffer | undefined } {
+  const pw = passwordArgs({ ...request, password: target.password });
+  const include = (target.includePatterns ?? []).map((pattern) => `-i!${pattern}`);
+  return {
+    args: ['l', '-slt', '-ba', ...(target.typeFlag ? [target.typeFlag] : []), ...pw.args, ...include, ...exclude, target.archivePath],
+    stdin: pw.stdin,
+  };
+}
+
+function extractArgs(request: ContainedExtractionRequest, exclude: string[]): { args: string[]; stdin: Buffer | undefined } {
+  const pw = passwordArgs(request);
+  return {
+    args: [
+      'x',
+      '-y',
+      ...typeArgs(request),
+      ...pw.args,
+      `-o${request.extractDir}`,
       request.archivePath,
+      ...includeArgs(request),
+      ...exclude,
     ],
-    {
-      cwd: request.cwd,
-      timeoutMs: request.timeoutMs,
-      maxBuffer: LISTING_MAX_BUFFER_BYTES,
-      networkIsolated: true,
-      stdin,
-      signal: request.signal,
-    }
-  );
+    stdin: pw.stdin,
+  };
+}
+
+function requestTarget(request: ContainedExtractionRequest): ListTarget {
+  return {
+    archivePath: request.archivePath,
+    typeFlag: request.typeFlag,
+    includePatterns: request.includePatterns,
+    password: request.password,
+  };
+}
+
+async function listArchive(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): Promise<ListedArchiveEntry[]> {
+  const { args, stdin } = listArgs(request, target, exclude);
+  const result = await executeSandboxedBinary(request.p7zBin, args, {
+    cwd: request.cwd,
+    timeoutMs: request.timeoutMs,
+    maxBuffer: listingBufferLimit(request.limits),
+    networkIsolated: true,
+    stdin,
+    signal: request.signal,
+  });
   return parse7zTechnicalListing(result.stdout.toString('utf-8'));
+}
+
+function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): ListedArchiveEntry[] {
+  const { args, stdin } = listArgs(request, target, exclude);
+  const resolved = resolveSandboxedCommand(request.p7zBin, args, { networkIsolated: true });
+  const stdout = execFileSync(resolved.binary, resolved.args, {
+    cwd: request.cwd,
+    env: getSanitizedEnvironment({}, true),
+    timeout: request.timeoutMs,
+    maxBuffer: listingBufferLimit(request.limits),
+    input: stdin,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  return parse7zTechnicalListing(stdout.toString('utf-8'));
+}
+
+function excludeArgsFor(skippedLinks: string[]): string[] {
+  return skippedLinks.map((linkPath) => `-x!${linkPath}`);
+}
+
+/** Vets a listing and, when links are being skipped, returns the exclusion patterns plus the verdict. */
+function vetListing(
+  request: ContainedExtractionRequest,
+  listing: ListedArchiveEntry[],
+  ratioBytes: number
+): ListingVerdict {
+  return assertSafeArchiveListing(listing, ratioBytes, request.limits, { skipLinks: request.skipLinks });
+}
+
+function withSkippedLinks(tree: ContainedTree, skippedLinks: string[]): ContainedTree {
+  return { ...tree, skippedLinks };
+}
+
+const TAR_MAGIC_OFFSET = 257;
+const TAR_MAGIC = 'ustar';
+const TAR_HEADER_BYTES = 512;
+
+/** POSIX and GNU tars carry `ustar` in their first header; compression wrappers do not rename the inner file reliably. */
+export function hasTarMagic(filePath: string): boolean {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const header = Buffer.alloc(TAR_HEADER_BYTES);
+    const read = fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0);
+    return read === TAR_HEADER_BYTES && header.toString('latin1', TAR_MAGIC_OFFSET, TAR_MAGIC_OFFSET + TAR_MAGIC.length) === TAR_MAGIC;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * A compression wrapper that unpacks to one file may hold a tar the caller repackages unopened. List it so
+ * links and traversal names inside it are seen. A payload that is not a tar is left alone; a tar that
+ * cannot be read fails closed.
+ */
+async function vetNestedTar(request: ContainedExtractionRequest, tree: ContainedTree, ratioBytes: number): Promise<void> {
+  if (tree.files.length !== 1) return;
+  const candidate = tree.files[0];
+  const isTar = hasTarMagic(candidate.absPath);
+  try {
+    const inner = await listArchive(request, { archivePath: candidate.absPath, typeFlag: '-ttar' }, []);
+    // The inner tar is repackaged as a whole, so its links cannot be skipped selectively.
+    assertSafeArchiveListing(inner, ratioBytes, request.limits);
+  } catch (err) {
+    const failure = toArchiveFailure(err, request.label, 'list', request.limits);
+    if (failure instanceof UnreadableArchiveError && !isTar) return;
+    throw failure;
+  }
 }
 
 /**
@@ -437,41 +746,82 @@ async function listArchive(request: ContainedExtractionRequest): Promise<ListedA
 export async function extractArchiveContained(request: ContainedExtractionRequest): Promise<ContainedTree> {
   // stat, not lstat: the input archive is trusted storage, and its real size is the ratio's divisor.
   const archiveBytes = fs.statSync(request.archivePath).size;
+  const ratioBytes = request.ratioBaseBytes ?? archiveBytes;
+  let skippedLinks: string[] = [];
+  let exclude: string[] = [];
 
   try {
-    const listing = await listArchive(request);
-    assertSafeArchiveListing(listing, archiveBytes, request.limits);
+    const listing = await listArchive(request, requestTarget(request), []);
+    skippedLinks = vetListing(request, listing, ratioBytes).skippedLinks;
+    if (skippedLinks.length > 0) {
+      exclude = excludeArgsFor(skippedLinks);
+      assertExclusionExact(listing, await listArchive(request, requestTarget(request), exclude));
+    }
+    assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
     throw toArchiveFailure(err, request.label, 'list', request.limits);
   }
 
   try {
-    const { args: pwArgs, stdin } = passwordArgs(request);
-    await executeSandboxedBinary(
-      request.p7zBin,
-      [
-        'x',
-        '-y',
-        ...(request.typeFlag ? [request.typeFlag] : []),
-        ...pwArgs,
-        `-o${request.extractDir}`,
-        request.archivePath,
-        ...includeArgs(request),
-      ],
-      {
-        cwd: request.cwd,
-        timeoutMs: request.timeoutMs,
-        maxBuffer: request.maxBuffer,
-        // Second bound for archives whose headers understate a file: no single file may pass the total cap.
-        maxFileSize: request.limits.MAX_UNCOMPRESSED_SIZE,
-        networkIsolated: true,
-        stdin,
-        signal: request.signal,
-      }
-    );
+    const { args, stdin } = extractArgs(request, exclude);
+    await executeSandboxedBinary(request.p7zBin, args, {
+      cwd: request.cwd,
+      timeoutMs: request.timeoutMs,
+      maxBuffer: request.maxBuffer,
+      // Second bound for archives whose headers understate a file: no single file may pass the total cap.
+      maxFileSize: request.limits.MAX_UNCOMPRESSED_SIZE,
+      networkIsolated: true,
+      stdin,
+      signal: request.signal,
+    });
   } catch (err) {
     throw toArchiveFailure(err, request.label, 'extract', request.limits);
   }
 
-  return assertExtractionContained(request.extractDir, archiveBytes, request.limits);
+  const tree = withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
+
+  if (request.validateNestedTar) {
+    await vetNestedTar(request, tree, ratioBytes);
+  }
+  return tree;
+}
+
+/** Synchronous twin of {@link extractArchiveContained} for the library's synchronous conversion path. */
+export function extractArchiveContainedSync(request: ContainedExtractionRequest): ContainedTree {
+  const archiveBytes = fs.statSync(request.archivePath).size;
+  const ratioBytes = request.ratioBaseBytes ?? archiveBytes;
+  let skippedLinks: string[] = [];
+  let exclude: string[] = [];
+
+  try {
+    const listing = listArchiveSync(request, requestTarget(request), []);
+    skippedLinks = vetListing(request, listing, ratioBytes).skippedLinks;
+    if (skippedLinks.length > 0) {
+      exclude = excludeArgsFor(skippedLinks);
+      assertExclusionExact(listing, listArchiveSync(request, requestTarget(request), exclude));
+    }
+    assertCollisionPolicy(listing, request.collisionPolicy);
+  } catch (err) {
+    throw toArchiveFailure(err, request.label, 'list', request.limits);
+  }
+
+  try {
+    const { args, stdin } = extractArgs(request, exclude);
+    const resolved = resolveSandboxedCommand(request.p7zBin, args, {
+      networkIsolated: true,
+      maxFileSize: request.limits.MAX_UNCOMPRESSED_SIZE,
+    });
+    execFileSync(resolved.binary, resolved.args, {
+      cwd: request.cwd,
+      env: getSanitizedEnvironment({}, true),
+      timeout: request.timeoutMs,
+      maxBuffer: request.maxBuffer,
+      input: stdin,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    throw toArchiveFailure(err, request.label, 'extract', request.limits);
+  }
+
+  return withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
 }

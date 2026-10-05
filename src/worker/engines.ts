@@ -46,12 +46,12 @@ import {
   hasRepeatedTail,
   readDecodedTiffLayout,
 } from './raw-decoded-tiff';
+import { ARCHIVE_SECURITY_LIMITS, extractWithSpannedStream7z } from '../lib/conversions/archive';
 import {
-  ARCHIVE_SECURITY_LIMITS,
-  stitchMultiVolumeToDisk,
-  validateAndSortSplitParts,
-} from '../lib/conversions/archive';
-import { extractArchiveContained, sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
+  assertArchivePasswordSafe,
+  extractArchiveContained,
+  sanitizeLeafFilename,
+} from '../lib/conversions/archive-extraction-safety';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
@@ -740,23 +740,41 @@ interface ExtractArchiveParams {
   options?: WorkerEngineOptions;
 }
 
-/** 7z `-t` switches for the container types a multi-volume part list can resolve to. */
-const SPANNED_ARCHIVE_TYPE_FLAGS: Record<string, string> = {
-  tar: '-ttar',
-  zip: '-tzip',
-  '7z': '-t7z',
-  rar: '-trar',
-};
-const SPANNED_ARCHIVE_FILENAME = 'spanned-archive.bin';
+/** Compression wrappers that unpack to a single tar, which is repackaged without being extracted. */
+const COMPRESSED_STREAM_FORMATS = new Set([
+  'gz', 'gzip', 'tgz', 'tar.gz',
+  'bz2', 'bzip2', 'tbz2', 'tar.bz2',
+  'xz', 'txz', 'tar.xz',
+]);
+
+interface SourceExtraction {
+  entryCount: number;
+  skippedLinks: string[];
+}
 
 /**
  * Extracts the source archive into `extractDir` through the contained 7z pipeline (list, vet,
- * extract, re-verify) and returns the number of entries it produced. Throws a typed error for any
- * unsafe, oversized or unreadable archive; it never returns a partial result.
+ * extract, re-verify). Throws a typed error for any unsafe, oversized or unreadable archive; it
+ * never returns a partial result.
  */
-async function extractSourceArchive(params: ExtractArchiveParams): Promise<number> {
+async function extractSourceArchive(params: ExtractArchiveParams, src: string): Promise<SourceExtraction> {
   const { p7zBin, inputPath, extractDir, tempDir, timeout, maxBuffer, options } = params;
-  const request = {
+
+  if (options?.archiveParts && options.archiveParts.length > 0) {
+    // Multi-volume input is stitched to one seekable file so it is listed like any other archive.
+    const spanned = await extractWithSpannedStream7z(options.archiveParts, extractDir, {
+      timeoutMs: timeout,
+      maxBuffer,
+      password: options.password,
+      skipLinks: options.skipLinks,
+      collisionPolicy: options.collisionPolicy,
+      signal: options.signal,
+    });
+    return { entryCount: spanned.entryCount, skippedLinks: spanned.skippedLinks };
+  }
+
+  const includePatterns = options?.entries && options.entries.length > 0 ? options.entries : undefined;
+  const tree = await extractArchiveContained({
     p7zBin,
     archivePath: inputPath,
     extractDir,
@@ -766,25 +784,13 @@ async function extractSourceArchive(params: ExtractArchiveParams): Promise<numbe
     limits: ARCHIVE_SECURITY_LIMITS,
     label: 'archive',
     password: options?.password,
+    includePatterns,
+    skipLinks: options?.skipLinks,
+    collisionPolicy: options?.collisionPolicy,
+    validateNestedTar: COMPRESSED_STREAM_FORMATS.has(src),
     signal: options?.signal,
-  };
-
-  if (options?.archiveParts && options.archiveParts.length > 0) {
-    // Multi-volume input is spooled to one seekable file so it can be listed before it is extracted.
-    const { sortedParts, metadata } = validateAndSortSplitParts(options.archiveParts);
-    const stitchedPath = path.join(tempDir, SPANNED_ARCHIVE_FILENAME);
-    await stitchMultiVolumeToDisk(sortedParts, stitchedPath);
-    const tree = await extractArchiveContained({
-      ...request,
-      archivePath: stitchedPath,
-      typeFlag: SPANNED_ARCHIVE_TYPE_FLAGS[metadata.format],
-    });
-    return tree.entryCount;
-  }
-
-  const includePatterns = options?.entries && options.entries.length > 0 ? options.entries : undefined;
-  const tree = await extractArchiveContained({ ...request, includePatterns });
-  return tree.entryCount;
+  });
+  return { entryCount: tree.entryCount, skippedLinks: tree.skippedLinks };
 }
 
 /**
@@ -799,6 +805,7 @@ export async function convertWithNative7z(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
+  assertArchivePasswordSafe(options.password);
 
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
@@ -836,16 +843,22 @@ export async function convertWithNative7z(
 
     // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
     let entryCount: number;
+    let skippedLinks: string[] = [];
     if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
-      entryCount = await extractSourceArchive({
-        p7zBin,
-        inputPath,
-        extractDir,
-        tempDir,
-        timeout,
-        maxBuffer,
-        options,
-      });
+      const extraction = await extractSourceArchive(
+        {
+          p7zBin,
+          inputPath,
+          extractDir,
+          tempDir,
+          timeout,
+          maxBuffer,
+          options,
+        },
+        src
+      );
+      entryCount = extraction.entryCount;
+      skippedLinks = extraction.skippedLinks;
     } else {
       // The caller-supplied name becomes a single path component inside the extraction root.
       const destPath = path.join(extractDir, sanitizeLeafFilename(originalFilename || `file.${src}`));
@@ -880,13 +893,11 @@ export async function convertWithNative7z(
     const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
 
-    return createConversionResult(
-      persistedPath,
-      tgt,
-      baseName,
-      'native-7z',
-      Date.now() - startTime
-    );
+    const result = createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime);
+    if (skippedLinks.length > 0) {
+      result.skippedLinks = skippedLinks;
+    }
+    return result;
   });
 }
 
