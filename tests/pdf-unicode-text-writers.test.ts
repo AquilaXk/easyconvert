@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -164,6 +165,24 @@ function expectEmbeddedFontsOnly(pdf: Buffer): void {
 function expectNoBranding(pdf: Buffer): void {
   expect(pdfText(pdf)).not.toMatch(BRANDING);
   expect(runPoppler('pdfinfo', [], pdf)).not.toMatch(BRANDING);
+}
+
+/** The JPEG streams of the PDF exactly as stored, extracted with `pdfimages -j`. */
+function extractedJpegs(pdf: Buffer): Buffer[] {
+  const binary = requireOracleTool('pdfimages');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdfimages-j-'));
+  try {
+    const file = path.join(dir, 'input.pdf');
+    fs.writeFileSync(file, pdf);
+    execFileSync(binary, ['-j', file, path.join(dir, 'img')]);
+    return fs
+      .readdirSync(dir)
+      .filter((name) => name.endsWith('.jpg'))
+      .sort()
+      .map((name) => fs.readFileSync(path.join(dir, name)));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Number of images pdfimages lists in the PDF. */
@@ -541,6 +560,47 @@ describe('HTML parsing robustness', () => {
     expect((error as Error)?.name).toBe('ConversionFailedError');
     expect((error as Error).message).toMatch(/6000x6000/);
     expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+  });
+
+  oracleTest('embeds a plain sRGB baseline JPEG byte for byte', ['pdfimages'], async () => {
+    const jpeg = await sharp({ create: { width: 64, height: 48, channels: 3, background: { r: 20, g: 120, b: 220 } } })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+    const result = await convertFile(Buffer.from(`<img src="data:image/jpeg;base64,${jpeg.toString('base64')}">`), 'html', 'pdf', {}, 'photo.html');
+    const [embedded] = extractedJpegs(result.buffer);
+    const sha256 = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
+    expect({ bytes: embedded.length, sha256: sha256(embedded) }).toEqual({ bytes: jpeg.length, sha256: sha256(jpeg) });
+  });
+
+  oracleTest('re-encodes JPEGs it must transform at full quality without chroma subsampling', ['pdfimages'], async () => {
+    const rotated = await sharp({ create: { width: 64, height: 48, channels: 3, background: { r: 200, g: 30, b: 30 } } })
+      .jpeg({ quality: 80 })
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+    const result = await convertFile(Buffer.from(`<img src="data:image/jpeg;base64,${rotated.toString('base64')}">`), 'html', 'pdf', {}, 'rotated.html');
+    const [embedded] = extractedJpegs(result.buffer);
+    const metadata = await sharp(embedded).metadata();
+    expect({ width: metadata.width, height: metadata.height, chroma: metadata.chromaSubsampling, orientation: metadata.orientation ?? 1 }).toEqual({
+      width: 48,
+      height: 64,
+      chroma: '4:4:4',
+      orientation: 1,
+    });
+  });
+
+  it('caps the images of one document by count and by total pixels', async () => {
+    const tiny = buildRgbPng(2, 2).toString('base64');
+    const manyImages = Array.from({ length: 65 }, () => `<img src="data:image/png;base64,${tiny}">`).join('');
+    const tooMany = await settle(convertFile(Buffer.from(manyImages, 'utf-8'), 'html', 'pdf', {}, 'many.html'));
+    expect((tooMany.error as Error)?.name).toBe('ConversionFailedError');
+    expect((tooMany.error as Error).message).toMatch(/65 images/);
+
+    const side = 4500;
+    const large = await sharp({ create: { width: side, height: side, channels: 3, background: { r: 255, g: 255, b: 255 } } }).png().toBuffer();
+    const fiveLarge = Array.from({ length: 5 }, () => `<img src="data:image/png;base64,${large.toString('base64')}">`).join('');
+    const tooLarge = await settle(convertFile(Buffer.from(fiveLarge, 'utf-8'), 'html', 'pdf', {}, 'large.html'));
+    expect((tooLarge.error as Error)?.name).toBe('ConversionFailedError');
+    expect((tooLarge.error as Error).message).toMatch(/101250000 pixels/);
   });
 
   it('refuses non-PNG/JPEG image data before decoding it', async () => {

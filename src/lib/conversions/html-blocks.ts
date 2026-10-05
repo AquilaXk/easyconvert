@@ -627,16 +627,73 @@ class HtmlBlockBuilder {
   }
 }
 
+/** JPEG markers: start of image, and the frame types a PDF DCTDecode filter reads (baseline, extended, progressive). */
+const JPEG_SOI = 0xffd8;
+const JPEG_MARKER = 0xff;
+const PDF_JPEG_FRAMES: ReadonlySet<number> = new Set([0xc0, 0xc1, 0xc2]);
+/** Frame markers of every JPEG coding process (SOF0 to SOF15, which excludes DHT, JPG and DAC). */
+const JPEG_FRAMES: ReadonlySet<number> = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+/** Markers without a length field. */
+const JPEG_STANDALONE: ReadonlySet<number> = new Set([0x01, 0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7]);
+const JPEG_PASSTHROUGH_SPACES: ReadonlySet<string> = new Set(['srgb', 'b-w']);
+const EIGHT_BIT_DEPTH = 'uchar';
+const UPRIGHT_ORIENTATION = 1;
+const LOSSLESS_JPEG_QUALITY = 100;
+/** Most images one document may embed, and the most pixels they may hold together. */
+const MAX_IMAGES_PER_DOCUMENT = 64;
+const MAX_DOCUMENT_IMAGE_PIXELS = 100_000_000;
+
+/** The frame marker of a JPEG (0xC0 for baseline...), or null when none is found. */
+function jpegFrameMarker(data: Buffer): number | null {
+  if (data.length < 4 || data.readUInt16BE(0) !== JPEG_SOI) return null;
+  let offset = 2;
+  while (offset + 4 <= data.length && data[offset] === JPEG_MARKER) {
+    const marker = data[offset + 1];
+    if (JPEG_FRAMES.has(marker)) return marker;
+    if (JPEG_STANDALONE.has(marker) || marker === JPEG_MARKER) {
+      offset += marker === JPEG_MARKER ? 1 : 2;
+      continue;
+    }
+    offset += 2 + data.readUInt16BE(offset + 2);
+  }
+  return null;
+}
+
 /**
- * Checks each embedded image from its header (format, then a pixel limit) before decoding it, then
- * decodes it once into an 8-bit sRGB PNG or JPEG with the orientation tag applied, which is what
- * the PDF embeds. Only PNG and JPEG are drawn.
+ * Whether a JPEG can go into the PDF unchanged: upright, 8-bit sRGB or grayscale, no ICC profile,
+ * and a baseline, extended or progressive frame.
+ */
+function canEmbedJpegAsIs(data: Buffer, metadata: sharp.Metadata): boolean {
+  const frame = jpegFrameMarker(data);
+  return (
+    (metadata.orientation ?? UPRIGHT_ORIENTATION) === UPRIGHT_ORIENTATION &&
+    metadata.depth === EIGHT_BIT_DEPTH &&
+    JPEG_PASSTHROUGH_SPACES.has(metadata.space ?? '') &&
+    !metadata.icc &&
+    frame !== null &&
+    PDF_JPEG_FRAMES.has(frame)
+  );
+}
+
+/**
+ * Checks every embedded image from its header before decoding any: only PNG and JPEG, at most
+ * MAX_IMAGE_PIXELS each, at most MAX_IMAGES_PER_DOCUMENT and MAX_DOCUMENT_IMAGE_PIXELS together.
+ * A JPEG that a PDF can carry unchanged is embedded byte for byte after one verifying decode;
+ * other images are decoded once into 8-bit sRGB with the orientation tag applied (PNG stays PNG,
+ * JPEG is re-encoded at quality 100 without chroma subsampling).
  */
 async function verifyImages(images: readonly PendingImage[]): Promise<void> {
+  if (images.length > MAX_IMAGES_PER_DOCUMENT) {
+    throw new ConversionFailedError(
+      `HTML embeds ${images.length} images; the in-process PDF renderer draws at most ${MAX_IMAGES_PER_DOCUMENT} per document`
+    );
+  }
+  const headers: sharp.Metadata[] = [];
+  let totalPixels = 0;
   for (const pending of images) {
     let metadata: sharp.Metadata;
     try {
-      // The header alone: the pixel limit below is checked before any pixel is decoded.
+      // The header alone: pixel limits are checked before any pixel is decoded.
       metadata = await sharp(pending.bytes, { limitInputPixels: false }).metadata();
     } catch (err) {
       throw new ConversionFailedError(`HTML embedded image could not be read: ${(err as Error).message}`);
@@ -651,9 +708,26 @@ async function verifyImages(images: readonly PendingImage[]): Promise<void> {
         `HTML embedded image is ${width}x${height} pixels, above the ${MAX_IMAGE_PIXELS}-pixel limit of the in-process PDF renderer`
       );
     }
+    totalPixels += width * height;
+    headers.push(metadata);
+  }
+  if (totalPixels > MAX_DOCUMENT_IMAGE_PIXELS) {
+    throw new ConversionFailedError(
+      `HTML embeds images totalling ${totalPixels} pixels, above the ${MAX_DOCUMENT_IMAGE_PIXELS}-pixel limit per document`
+    );
+  }
+  for (const [index, pending] of images.entries()) {
+    const metadata = headers[index];
     try {
-      const pipeline = sharp(pending.bytes, { limitInputPixels: MAX_IMAGE_PIXELS }).rotate().toColourspace('srgb');
-      const encoded = format === 'png' ? pipeline.png() : pipeline.jpeg({ quality: JPEG_REENCODE_QUALITY });
+      const decoder = sharp(pending.bytes, { limitInputPixels: MAX_IMAGE_PIXELS });
+      if (metadata.format === 'jpeg' && canEmbedJpegAsIs(pending.bytes, metadata)) {
+        await decoder.raw().toBuffer();
+        pending.block.image = { data: pending.bytes, widthPx: metadata.width ?? 0, heightPx: metadata.height ?? 0 };
+        continue;
+      }
+      const pipeline = decoder.rotate().toColourspace('srgb');
+      const encoded =
+        metadata.format === 'png' ? pipeline.png() : pipeline.jpeg({ quality: LOSSLESS_JPEG_QUALITY, chromaSubsampling: '4:4:4' });
       const { data, info } = await encoded.toBuffer({ resolveWithObject: true });
       pending.block.image = { data, widthPx: info.width, heightPx: info.height };
     } catch (err) {
