@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -413,6 +414,81 @@ describe('dictionary frames produced by the zstd CLI', () => {
       // A frame for another dictionary id is refused, not decoded against the wrong history.
       const frame = zstd(['-3', '-D', dictFile, '-c', '-q'], samples[0]);
       expect(captureError(() => decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV))).toBeInstanceOf(ConversionFailedError);
+    });
+  });
+
+  /** Uneven write sizes, including a 1-byte write and sizes that straddle the 128 KiB block boundary. */
+  const STREAM_WRITE_SIZES = [65537, 131072, 1, 200000, 3, 262145, 77777];
+
+  function streamCompress(compressor: ZstdDictionaryStreamCompressor, payload: Buffer): Buffer {
+    const parts: Buffer[] = [];
+    let offset = 0;
+    for (let step = 0; offset < payload.length; step++) {
+      const size = STREAM_WRITE_SIZES[step % STREAM_WRITE_SIZES.length];
+      parts.push(compressor.write(payload.subarray(offset, offset + size)));
+      offset += size;
+    }
+    parts.push(compressor.end());
+    return Buffer.concat(parts);
+  }
+
+  function jsonPayload(size: number, source: Buffer[]): Buffer {
+    const rows = Buffer.concat(source);
+    return Buffer.concat(Array.from({ length: Math.ceil(size / rows.length) }, () => rows)).subarray(0, size);
+  }
+
+  function sha256Hex(data: Buffer): string {
+    return crypto.createHash('sha256').update(data).digest('hex');
+  }
+
+  oracleTest('decodes stream-compressor output (raw dictionary, dictId 0, uneven writes) with zstd -D', ['zstd'], () => {
+    withTempDir((dir) => {
+      const content = Buffer.concat(sampleRecords(40));
+      const dictFile = path.join(dir, 'raw.dict');
+      fs.writeFileSync(dictFile, content);
+      const source = sampleRecords(3000).map((record, index) => Buffer.concat([record, Buffer.from(`#${index}\n`)]));
+      for (const size of [3_000_000, 4 * MIB]) {
+        const payload = jsonPayload(size, source);
+        const frame = streamCompress(new ZstdDictionaryStreamCompressor({ dictionary: content, dictId: 0 }), payload);
+        assertFrameChecksum(frame, payload);
+        const decoded = zstd(['-d', '-D', dictFile, '-c', '-q'], frame);
+        expect(decoded.length, `${size} bytes`).toBe(size);
+        expect(sha256Hex(decoded), `${size} bytes: sha256`).toBe(sha256Hex(payload));
+        expect(Buffer.compare(decompressWithZstdDict(frame, content), payload), `${size} bytes: repo`).toBe(0);
+        expect(frame.length, 'dictionary and repeats make the stream compress').toBeLessThan(payload.length / 2);
+      }
+    });
+  });
+
+  oracleTest('decodes stream-compressor output made with a trained dictionary under its real id', ['zstd'], () => {
+    withTempDir((dir) => {
+      const samples = sampleRecords(800);
+      const paths: string[] = [];
+      samples.forEach((sample, index) => {
+        const file = path.join(dir, `sample-${index}.json`);
+        fs.writeFileSync(file, sample);
+        paths.push(file);
+      });
+      const dictFile = path.join(dir, 'trained.dict');
+      zstd(['--train', '-q', '--maxdict=4096', '-o', dictFile, ...paths]);
+      const dictionary = fs.readFileSync(dictFile);
+      const realId = dictionary.readUInt32LE(4);
+      expect(realId).not.toBe(0);
+
+      const source = sampleRecords(3000).map((record, index) => Buffer.concat([record, Buffer.from(`#${index}\n`)]));
+      for (const size of [3_000_000, 4 * MIB]) {
+        const payload = jsonPayload(size, source);
+        const compressor = new ZstdDictionaryStreamCompressor({ dictionary });
+        expect(compressor.getDictionaryId()).toBe(realId);
+        const frame = streamCompress(compressor, payload);
+        assertFrameChecksum(frame, payload);
+        // Frame_Header_Descriptor 0x?? | window byte | four-byte Dictionary_ID
+        expect(frame.readUInt32LE(6), 'frame carries the dictionary id').toBe(realId);
+        const decoded = zstd(['-d', '-D', dictFile, '-c', '-q'], frame);
+        expect(decoded.length, `${size} bytes`).toBe(size);
+        expect(sha256Hex(decoded), `${size} bytes: sha256`).toBe(sha256Hex(payload));
+        expect(Buffer.compare(decompressWithZstdDict(frame, dictionary), payload), `${size} bytes: repo`).toBe(0);
+      }
     });
   });
 });
