@@ -17,6 +17,7 @@ import {
   ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
 } from '../types';
+import { extractArchiveContained } from './archive-extraction-safety';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
 import {
@@ -415,51 +416,27 @@ export async function extractZipArchive(
         fs.writeFileSync(zipPath, zipBuffer);
         const extractDir = path.join(workDir, 'out');
         fs.mkdirSync(extractDir, { recursive: true });
-        try {
-          const pwArgs = options.password ? ['-p'] : [];
-          await executeSandboxedBinary(
-            p7z,
-            ['x', '-y', ...pwArgs, `-o${extractDir}`, zipPath],
-            {
-              cwd: workDir,
-              timeoutMs: 60000,
-              maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-              networkIsolated: true,
-              stdin: options.password ? Buffer.from(options.password + '\n') : undefined,
-            }
-          );
-        } catch (err: any) {
-          const msg = (err?.message || '') + (err?.stderr?.toString() || '');
-          if (msg.includes('Wrong password') || msg.includes('Can not open encrypted') || msg.includes('Data Error')) {
-            throw new ConversionFailedError('Invalid password for encrypted ZIP archive.');
-          }
-          throw new ConversionFailedError(`Failed to decrypt ZIP archive: ${err.message}`);
-        }
+
+        // List, vet, extract and re-verify: traversal, link, entry-count, size and ratio violations
+        // are rejected before or right after extraction, never silently followed.
+        const tree = await extractArchiveContained({
+          p7zBin: p7z,
+          archivePath: zipPath,
+          extractDir,
+          cwd: workDir,
+          timeoutMs: 60000,
+          maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+          limits: ARCHIVE_SECURITY_LIMITS,
+          label: 'ZIP archive',
+          password: options.password,
+        });
 
         const results: { filename: string; buffer: Buffer }[] = [];
-        let totalSize = 0;
-        const readRec = (dir: string, prefix = '') => {
-          for (const item of fs.readdirSync(dir)) {
-            const full = path.join(dir, item);
-            const rel = prefix ? `${prefix}/${item}` : item;
-            const stat = fs.statSync(full);
-            if (stat.isDirectory()) {
-              readRec(full, rel);
-            } else {
-              if (!matchArchiveGlob(rel, options.entries)) {
-                continue;
-              }
-              totalSize += stat.size;
-              if (totalSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-                throw new ConversionFailedError(
-                  `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-                );
-              }
-              results.push({ filename: rel, buffer: fs.readFileSync(full) });
-            }
+        for (const file of tree.files) {
+          if (matchArchiveGlob(file.relPath, options.entries)) {
+            results.push({ filename: file.relPath, buffer: fs.readFileSync(file.absPath) });
           }
-        };
-        readRec(extractDir);
+        }
         return results;
       } finally {
         try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
