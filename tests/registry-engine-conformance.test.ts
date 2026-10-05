@@ -20,6 +20,7 @@ import { OracleToolMissingError, getOracleToolPath } from './helpers/differentia
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
+import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 
 /**
@@ -258,6 +259,14 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // SVG fonts (also read from the plain svg extension) need glyph paths to become outlines.
   svg: () => SVG_FONT_SEED,
   svgfont: () => SVG_FONT_SEED,
+  // Font probes need real outlines: a font without glyf or CFF glyphs makes conversion fail closed, which
+  // the gate would read as inconclusive. Both seeds come from the independent writers in tests/helpers.
+  ttf: () => FONT_TTF_SEED,
+  otf: () => FONT_OTF_SEED,
+  // Web font containers wrapped around the TrueType seed.
+  woff: () => wrapFontSeed('woff'),
+  woff2: () => wrapFontSeed('woff2'),
+  eot: () => wrapFontSeed('eot'),
   // Macintosh font containers wrapping a hand-built TrueType font.
   dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
   bin: () => buildMacBinary({ resourceFork: buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]) }),
@@ -266,6 +275,24 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   exr: () => buildPatchExr('half'),
   ultrahdr: () => buildPatchUltraHdr(),
 };
+
+/** TrueType probe font: glyf/loca outlines for A, B and C, mapped in the cmap. */
+const FONT_TTF_SEED = buildTrueTypeFont({ family: 'Probe Sans' });
+
+/** OpenType probe font: a CFF charstring rectangle mapped to U+0041 in the cmap. */
+const FONT_OTF_SEED = buildOtf({
+  family: 'Probe Sans CFF',
+  glyphs: [
+    { charstring: cs('endchar'), advance: 500, lsb: 0 },
+    { charstring: cs(100, 0, 'rmoveto', 400, 700, -400, 'hlineto', 'endchar'), advance: 600, lsb: 100 },
+  ],
+  codePoints: [0x41],
+  cff: { defaultWidthX: 600, nominalWidthX: 0 },
+});
+
+async function wrapFontSeed(target: 'woff' | 'woff2' | 'eot'): Promise<Buffer> {
+  return (await convertFile(FONT_TTF_SEED, 'ttf', target, {}, 'probe.ttf')).buffer;
+}
 
 async function requireDerived(format: string): Promise<Buffer> {
   const derived = await deriveProbeInput(format);

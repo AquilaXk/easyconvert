@@ -1,15 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { convertFile } from '../src/lib/conversions';
-import { convertFontToTrueType, decodeSfnt, encodeSvgFont } from '../src/lib/conversions/font';
 import {
+  convertFontToTrueType,
+  decodeSfnt,
+  encodeSvgFont,
+  extractCffGlyphs,
+  parseFontToSfnt,
+} from '../src/lib/conversions/font';
+import {
+  CFF_ABSOLUTE_MAX_SEGMENTS_PER_FONT,
+  CFF_ABSOLUTE_MAX_STEPS_PER_FONT,
+  CFF_BASE_SEGMENTS_PER_FONT,
   CFF_BASE_STEPS_PER_FONT,
   CFF_MAX_SEGMENTS_PER_GLYPH,
   CffCharStringError,
   CffFormatError,
+  cffFontBudgets,
   parseCff,
 } from '../src/lib/conversions/font-cff';
 import { ConversionFailedError } from '../src/lib/types';
@@ -17,7 +27,9 @@ import {
   buildCff,
   buildCffWithLayout,
   buildOtf,
+  buildOverlappingPrivateCff,
   cs,
+  padCff,
   sidForAscii,
   type CharstringItem,
   type OtfGlyph,
@@ -1594,5 +1606,152 @@ describe('SVG font output uses the font metrics', () => {
     const svg = encodeSvgFont(font, 'Short Metrics').toString('utf8');
     const advances = [...svg.matchAll(/<glyph unicode="[ABC]" horiz-adv-x="(\d+)"/g)].map((m) => Number(m[1]));
     expect(advances).toEqual([640, 640, 640]);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Absolute ceilings, SVG route limits, non-finite numbers and Private DICT overlap
+// ---------------------------------------------------------------------------
+
+const MIB = 1024 * 1024;
+const CEILING_REJECT_MS = 10_000;
+const PADDED_TABLE_BYTES = 24 * MIB;
+
+/**
+ * A font whose glyphs each spend about 157,000 interpreter steps (under the per-glyph limit) in a
+ * four-level global subroutine fan-out that draws nothing. The table is zero padded to a size at
+ * which a per-byte budget alone would allow far more steps than the absolute ceiling.
+ */
+function paddedFanOutFont(glyphCount: number, paddedBytes: number): Buffer {
+  const fan = (child: number): Buffer => cs(...repeatItems([child, 'callgsubr'], 16), 'return');
+  const gsubrs = [cs('return'), fan(-107), fan(-106), fan(-105)];
+  const charstrings = [
+    cs('endchar'),
+    ...Array.from({ length: glyphCount - 1 }, () => cs(...repeatItems([-104, 'callgsubr'], 12), 'endchar')),
+  ];
+  const cff = padCff(buildCff({ fontName: 'Padded', charstrings, globalSubrs: gsubrs }), paddedBytes);
+  return buildOtf({
+    family: 'Padded',
+    glyphs: charstrings.map(() => ({ charstring: Buffer.alloc(0), advance: 500, lsb: 0 })),
+    codePoints: Array.from({ length: glyphCount - 1 }, (_, i) => 0x4e00 + i),
+    cffOverride: cff,
+  });
+}
+
+describe('CFF limits that hold whatever the table size', () => {
+  it('caps the scaled budgets at the absolute ceilings and scales small tables', () => {
+    expect(cffFontBudgets(1000)).toEqual({
+      steps: CFF_BASE_STEPS_PER_FONT + 4 * 1000,
+      segments: CFF_BASE_SEGMENTS_PER_FONT + 2 * 1000,
+    });
+    expect(cffFontBudgets(8 * MIB)).toEqual({
+      steps: CFF_ABSOLUTE_MAX_STEPS_PER_FONT,
+      segments: CFF_ABSOLUTE_MAX_SEGMENTS_PER_FONT,
+    });
+    expect(cffFontBudgets(64 * MIB)).toEqual(cffFontBudgets(8 * MIB));
+  });
+
+  it('keeps the ceilings above the largest real fonts measured (5.5M steps, 4.1M segments)', () => {
+    expect(CFF_ABSOLUTE_MAX_STEPS_PER_FONT).toBeGreaterThanOrEqual(4 * 5_500_000);
+    expect(CFF_ABSOLUTE_MAX_SEGMENTS_PER_FONT).toBeGreaterThanOrEqual(1.9 * 4_100_000);
+  });
+
+  it.each([
+    ['TrueType', 'ttf'],
+    ['SVG', 'svg'],
+  ] as const)('stops a padded %s conversion at the absolute step ceiling', async (_route, target) => {
+    const font = paddedFanOutFont(300, PADDED_TABLE_BYTES);
+    expect(font.length).toBeGreaterThan(PADDED_TABLE_BYTES);
+    const started = performance.now();
+    let caught: unknown;
+    try {
+      await convertFile(font, 'otf', target, {}, 'padded.otf');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(CffCharStringError);
+    expect((caught as Error).message).toContain(`budget of ${CFF_ABSOLUTE_MAX_STEPS_PER_FONT} charstring steps`);
+    expect(performance.now() - started).toBeLessThan(CEILING_REJECT_MS);
+  });
+
+  it('rejects SVG path data beyond the character budget with a typed error', () => {
+    const font = parseFontToSfnt(fixtureFont([BASIC_FIXTURES[0]]), 'otf', 'probe');
+    // The rectangle is "M100 0 L500 0 L500 700 L100 700 Z", 33 characters.
+    expect(extractCffGlyphs(font, 33)).toHaveLength(1);
+    expect(() => extractCffGlyphs(font, 32)).toThrow(ConversionFailedError);
+    expect(() => extractCffGlyphs(font, 32)).toThrow(/32 characters of path data/);
+  });
+
+  it('turns a string-length RangeError while writing the SVG font into a typed error', () => {
+    const font = parseFontToSfnt(fixtureFont([BASIC_FIXTURES[0]]), 'otf', 'probe');
+    const join = vi.spyOn(Array.prototype, 'join').mockImplementation(() => {
+      throw new RangeError('Invalid string length');
+    });
+    let caught: unknown;
+    try {
+      encodeSvgFont(font, 'probe');
+    } catch (error) {
+      caught = error;
+    } finally {
+      join.mockRestore();
+    }
+    expect(caught).toBeInstanceOf(ConversionFailedError);
+    expect(caught).not.toBeInstanceOf(RangeError);
+    expect((caught as Error).message).toMatch(/too large for one document/);
+  });
+});
+
+describe('CFF to SVG and TrueType: non-finite and absurd numbers', () => {
+  const squared: CharstringItem[] = [32767];
+  for (let i = 0; i < 8; i++) squared.push('dup', 'mul'); // 32767^256 overflows to Infinity
+
+  function singleFont(charstring: Buffer, omitTables: string[] = []): Buffer {
+    const cff = buildCff({ fontName: 'N', charstrings: [cs('endchar'), charstring] });
+    return buildOtf({
+      family: 'N',
+      glyphs: [
+        { charstring: cs('endchar'), advance: 500, lsb: 0 },
+        { charstring, advance: 500, lsb: 0 },
+      ],
+      codePoints: [0x41],
+      cffOverride: cff,
+      omitTables,
+    });
+  }
+
+  it.each([
+    ['Infinity', cs(...squared, 0, 'rmoveto', 10, 10, 'rlineto', 10, 'hlineto', 'endchar')],
+    ['NaN', cs(...squared, 'dup', 'sub', 0, 'rmoveto', 10, 10, 'rlineto', 10, 'hlineto', 'endchar')],
+    ['finite but beyond a billion', cs(32767, 'dup', 'mul', 'dup', 'mul', 0, 'rmoveto', 10, 10, 'rlineto', 10, 'hlineto', 'endchar')],
+  ])('refuses to write %s into an SVG path', async (_name, charstring) => {
+    const font = singleFont(charstring);
+    const failure = await convertFile(font, 'otf', 'svg', {}, 'n.otf').then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect((failure as Error).message).toMatch(/not a usable finite number/);
+  });
+
+  it.each(['svg', 'ttf'] as const)('rejects an infinite charstring width for %s output when hmtx is missing', async (target) => {
+    // rmoveto with three operands: the first is the width delta, here Infinity.
+    const font = singleFont(cs(...squared, 0, 0, 'rmoveto', 10, 10, 'rlineto', 10, 'hlineto', 'endchar'), ['hmtx']);
+    await expect(convertFile(font, 'otf', target, {}, 'n.otf')).rejects.toThrow(/advance width Infinity/);
+  });
+});
+
+describe('CFF parsing: Private DICT work is bounded by the table size', () => {
+  it('rejects font DICTs whose shifted Private ranges overlap one large range', async () => {
+    const otf = buildOtf({
+      family: 'Overlap',
+      glyphs: [
+        { charstring: Buffer.alloc(0), advance: 500, lsb: 0 },
+        { charstring: Buffer.alloc(0), advance: 500, lsb: 0 },
+      ],
+      codePoints: [0x41],
+      cffOverride: buildOverlappingPrivateCff(MIB, 256),
+    });
+    await expectRejected(otf, CffFormatError, /Private DICT data overlaps/);
   });
 });

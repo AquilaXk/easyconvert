@@ -52,6 +52,18 @@ export const CFF_STEPS_PER_TABLE_BYTE = 4;
 export const CFF_BASE_SEGMENTS_PER_FONT = 250_000;
 /** Extra path segments allowed per byte of CFF table. */
 export const CFF_SEGMENTS_PER_TABLE_BYTE = 2;
+/*
+ * Absolute ceilings that hold whatever the table size, because the API accepts tables of tens of
+ * megabytes and zero padding would otherwise buy an attacker any budget. They sit well above real
+ * fonts. Measured on the largest fonts available (the Unifont family, 5 MB tables): 5.5 million
+ * steps and 4.1 million segments, and a CFF charstring costs about one step per byte. 32 million
+ * steps leave room for the largest CJK tables (about 16-20 MB); 8 million segments are about twice the
+ * Unifont maximum. Reaching either ceiling costs a few seconds of CPU, not minutes.
+ */
+/** Interpreter steps allowed across all glyphs of one font, whatever its table size. */
+export const CFF_ABSOLUTE_MAX_STEPS_PER_FONT = 32_000_000;
+/** Path segments allowed across all glyphs of one font, whatever its table size. */
+export const CFF_ABSOLUTE_MAX_SEGMENTS_PER_FONT = 8_000_000;
 /** Path segments allowed in one glyph before it is rejected. */
 export const CFF_MAX_SEGMENTS_PER_GLYPH = 32_767;
 /** Largest CFF table accepted. */
@@ -266,6 +278,17 @@ interface CffIndex {
 interface Range {
   start: number;
   end: number;
+}
+
+/** Font-wide interpreter budgets for a CFF table of `tableBytes` bytes: the scaled budget under the absolute ceiling. */
+export function cffFontBudgets(tableBytes: number): { steps: number; segments: number } {
+  return {
+    steps: Math.min(CFF_BASE_STEPS_PER_FONT + CFF_STEPS_PER_TABLE_BYTE * tableBytes, CFF_ABSOLUTE_MAX_STEPS_PER_FONT),
+    segments: Math.min(
+      CFF_BASE_SEGMENTS_PER_FONT + CFF_SEGMENTS_PER_TABLE_BYTE * tableBytes,
+      CFF_ABSOLUTE_MAX_SEGMENTS_PER_FONT
+    ),
+  };
 }
 
 function readUIntBE(data: Buffer, pos: number, size: number, what: string): number {
@@ -700,8 +723,9 @@ export class CffFont {
     this.numGlyphs = charStrings.count;
     this.charset = charset;
     this.isCidKeyed = isCidKeyed;
-    this.stepBudget = CFF_BASE_STEPS_PER_FONT + CFF_STEPS_PER_TABLE_BYTE * data.length;
-    this.segmentBudget = CFF_BASE_SEGMENTS_PER_FONT + CFF_SEGMENTS_PER_TABLE_BYTE * data.length;
+    const budgets = cffFontBudgets(data.length);
+    this.stepBudget = budgets.steps;
+    this.segmentBudget = budgets.segments;
   }
 
   /** Interpreter steps spent so far across all glyphs interpreted by this instance. */
@@ -1387,16 +1411,35 @@ function validateCffHeader(data: Buffer): number {
 }
 
 /** Returns the Private DICT data a font DICT (or the Top DICT) refers to; absent references mean empty defaults. */
-function readPrivateFor(data: Buffer, dict: DictMap, what: string, cache: Map<string, PrivateData>): PrivateData {
+function readPrivateFor(
+  data: Buffer,
+  dict: DictMap,
+  what: string,
+  cache: Map<string, PrivateData>,
+  budget: { remaining: number }
+): PrivateData {
   const reference = privateReference(dict, what);
   if (reference === null) return EMPTY_PRIVATE;
   const key = `${reference.offset}:${reference.size}`;
   let privateData = cache.get(key);
   if (privateData === undefined) {
+    // Distinct Private DICTs of a real font do not overlap, so together they cannot exceed the table.
+    // Overlapping ranges would let a few font DICTs make the parser re-read the same bytes many times.
+    chargePrivateBudget(budget, reference.size, what);
     privateData = readPrivate(data, reference.size, reference.offset, what);
+    if (privateData.subrs !== null) {
+      chargePrivateBudget(budget, privateData.subrs.end - privateData.subrs.offsetArrayStart, what);
+    }
     cache.set(key, privateData);
   }
   return privateData;
+}
+
+function chargePrivateBudget(budget: { remaining: number }, bytes: number, what: string): void {
+  budget.remaining -= bytes;
+  if (budget.remaining < 0) {
+    throw new CffFormatError(`CFF ${what} Private DICT data overlaps other Private DICTs or exceeds the table size.`);
+  }
 }
 
 function readCidFontDicts(
@@ -1418,6 +1461,7 @@ function readCidFontDicts(
     throw new CffFormatError(`CFF FDArray holds ${fdArray.count} font DICTs.`);
   }
   const privateCache = new Map<string, PrivateData>();
+  const privateBudget = { remaining: data.length };
   const fontDicts: FontDictInfo[] = [];
   for (let i = 0; i < fdArray.count; i++) {
     const what = `font DICT ${i}`;
@@ -1425,7 +1469,7 @@ function readCidFontDicts(
     const fdMatrix = dictMatrix(fdDict, what);
     let matrix: CffMatrix | null = fdMatrix ?? topMatrix;
     if (fdMatrix !== null && topMatrix !== null) matrix = composeMatrices(topMatrix, fdMatrix);
-    fontDicts.push({ privateData: readPrivateFor(data, fdDict, what, privateCache), matrix });
+    fontDicts.push({ privateData: readPrivateFor(data, fdDict, what, privateCache, privateBudget), matrix });
   }
   return { fontDicts, fdSelect: readFdSelect(data, fdSelectOffset, numGlyphs, fontDicts.length) };
 }
@@ -1464,7 +1508,7 @@ function parseCffUnchecked(data: Buffer): CffFont {
     const { fontDicts, fdSelect } = readCidFontDicts(data, topDict, topMatrix, charStrings.count);
     return new CffFont(data, charStrings, globalSubrs, fontDicts, fdSelect, charset, true);
   }
-  const privateData = readPrivateFor(data, topDict, 'Top DICT', new Map());
+  const privateData = readPrivateFor(data, topDict, 'Top DICT', new Map(), { remaining: data.length });
   const fontDicts: FontDictInfo[] = [{ privateData, matrix: topMatrix }];
   return new CffFont(data, charStrings, globalSubrs, fontDicts, null, charset, false);
 }
