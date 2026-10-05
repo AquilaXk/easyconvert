@@ -589,8 +589,26 @@ function writeJsonMlElement(element: JsonMlElement, out: string[]): void {
 
 /** An XML element name for an arbitrary JSON key: invalid characters become "_", a bad start gets a "_" prefix. */
 function elementNameForKey(key: string): string {
+  if (key === '') throw new DataRepresentationError('An empty JSON key cannot become an XML element name.');
   const name = key.replace(NON_NCNAME_CHAR, '_');
   return NCNAME_START_PATTERN.test(name) ? name : `_${name}`;
+}
+
+/**
+ * Element names for an object's keys. Distinct keys that map to the same name ("a b", "a_b",
+ * "a:b") would merge into one repeated element on the way back, so they are rejected.
+ */
+function elementNamesForKeys(keys: string[]): string[] {
+  const keyByName = new Map<string, string>();
+  return keys.map((key) => {
+    const name = elementNameForKey(key);
+    const earlier = keyByName.get(name);
+    if (earlier !== undefined) {
+      throw new DataRepresentationError(`JSON keys "${earlier}" and "${key}" would both become the XML element <${name}>.`);
+    }
+    keyByName.set(name, key);
+    return name;
+  });
 }
 
 /** Generic mapping: objects become child elements per key, arrays repeat the element (top level: item). */
@@ -606,8 +624,10 @@ function writeGenericElement(value: DataValue, tag: string, out: string[], depth
   if (Array.isArray(value)) {
     for (const item of value) writeGenericElement(item, 'item', out, depth + 1);
   } else if (isDataObject(value)) {
-    for (const [key, child] of Object.entries(value)) {
-      const name = elementNameForKey(key);
+    const entries = Object.entries(value);
+    const names = elementNamesForKeys(entries.map(([key]) => key));
+    for (const [index, [, child]] of entries.entries()) {
+      const name = names[index];
       if (Array.isArray(child)) {
         for (const item of child) writeGenericElement(item, name, out, depth + 1);
       } else {

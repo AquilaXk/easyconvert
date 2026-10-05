@@ -317,13 +317,37 @@ describe('XML input fails closed', () => {
 
 describe('JSON to XML', () => {
   oracleTest('writes well-formed XML for arbitrary JSON keys and top-level arrays', ['xmllint'], async () => {
-    const value = [{ '1st': 1, 'a b': 'x<y&z', '': true, nested: { list: [1, [2, 3]], none: null } }, 'tail'];
+    const value = [{ '1st': 1, 'a b': 'x<y&z', 'c:d': true, nested: { list: [1, [2, 3]], none: null } }, 'tail'];
     const output = await jsonToXml(value);
     assertWellFormedXml(output);
     expect(output.toString('utf-8')).toBe(
-      '<?xml version="1.0" encoding="UTF-8"?>\n<root><item><_1st>1</_1st><a_b>x&lt;y&amp;z</a_b><_>true</_>' +
+      '<?xml version="1.0" encoding="UTF-8"?>\n<root><item><_1st>1</_1st><a_b>x&lt;y&amp;z</a_b><c_d>true</c_d>' +
         '<nested><list>1</list><list><item>2</item><item>3</item></list><none/></nested></item><item>tail</item></root>'
     );
+  });
+
+  it('rejects sibling keys that would become the same element name', async () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [{ 'a b': 1, a_b: 2 }, 'JSON keys "a b" and "a_b" would both become the XML element <a_b>.'],
+      [{ 'a:b': 1, 'a b': 2 }, 'JSON keys "a:b" and "a b" would both become the XML element <a_b>.'],
+      [{ nested: { '1st': 1, _1st: 2 } }, 'JSON keys "1st" and "_1st" would both become the XML element <_1st>.'],
+    ];
+    for (const [value, message] of cases) {
+      const err = await rejection(jsonToXml(value));
+      expect(err).toBeInstanceOf(DataRepresentationError);
+      expect(err.message).toBe(message);
+    }
+    // The same key in different objects is not a collision.
+    const output = await jsonToXml([{ a_b: 1 }, { 'a b': 2 }]);
+    expect(output.toString('utf-8')).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?>\n<root><item><a_b>1</a_b></item><item><a_b>2</a_b></item></root>'
+    );
+  });
+
+  it('rejects an empty JSON key, which has no XML element name', async () => {
+    const err = await rejection(jsonToXml({ list: [{ '': true }] }));
+    expect(err).toBeInstanceOf(DataRepresentationError);
+    expect(err.message).toBe('An empty JSON key cannot become an XML element name.');
   });
 
   oracleTest('writes a JsonML-shaped array without the envelope through the generic mapping', ['xmllint'], async () => {
