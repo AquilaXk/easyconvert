@@ -1060,6 +1060,68 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     });
   });
 
+  it('refuses every URL attribute outside the allowlist, inline SVG included, before LibreOffice could load it', async () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-url-marker-')), 'invoked');
+    const recordingSoffice = failingSoffice(`touch '${marker}'; exit 3`);
+    const cases: Array<[string, string]> = [
+      ['<p>svg image</p><svg><image href="file:///tmp/local.png" width="10" height="10"/></svg>', 'file:///tmp/local.png'],
+      ['<p>svg xlink</p><svg><image xlink:href="http://192.0.2.2:18765/a.png"/></svg>', 'http://192.0.2.2:18765/a.png'],
+      ['<p>svg use</p><svg><use href="file:///x#a"/></svg>', 'file:///x#a'],
+      ['<p>svg prefix</p><svg xmlns:xl="http://www.w3.org/1999/xlink"><image XL:HREF="file:///etc/hosts"/></svg>', 'file:///etc/hosts'],
+      ['<p>filter</p><svg><filter id="f"><feImage href="http://192.0.2.2:18765/f.png"/></filter></svg>', 'http://192.0.2.2:18765/f.png'],
+      ['<p>svg sheet</p><svg><style>rect { fill: url(file:///x.svg#g) }</style><rect/></svg>', 'file:///x.svg#g'],
+      ['<p>paint</p><svg><rect fill="url(http://192.0.2.2:18765/p.svg#g)"/></svg>', 'http://192.0.2.2:18765/p.svg#g'],
+      ['<p>object</p><object data="file:///etc/hosts"></object>', 'file:///etc/hosts'],
+      ['<form action="http://192.0.2.2:18765/submit"><p>form</p></form>', 'http://192.0.2.2:18765/submit'],
+      ['<form><button formaction="file:///etc/hosts">go</button></form>', 'file:///etc/hosts'],
+      ['<blockquote cite="http://192.0.2.2:18765/q">quote</blockquote>', 'http://192.0.2.2:18765/q'],
+      ['<script src="http://192.0.2.2:18765/s.js"></script><p>script</p>', 'http://192.0.2.2:18765/s.js'],
+      ['<p>relative</p><img src="images/logo.png">', 'images/logo.png'],
+      ['<p><a href="file:///etc/hosts">local link</a></p>', 'file:///etc/hosts'],
+      ['<p><a href="java\tscript:alert(1)">script link</a></p>', 'java\tscript:alert(1)'],
+      ['<p><a href="https://example.com/" ping="http://192.0.2.2:18765/ping">ping</a></p>', 'http://192.0.2.2:18765/ping'],
+      ['<p>srcset</p><img srcset="data:image/png;base64,AAAA 1x, file:///etc/hosts 2x">', 'file:///etc/hosts'],
+      ['<meta http-equiv="refresh" content="0; url=file:///etc/hosts"><p>refresh</p>', 'file:///etc/hosts'],
+    ];
+    for (const [html, reference] of cases) {
+      const { error } = await settle(
+        withEnvValue('SOFFICE_PATH', recordingSoffice, () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'urls.html'))
+      );
+      expect({ html, name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ html, name: 'ConversionFailedError', invoked: false });
+      expect((error as Error).message).toContain(`"${reference}" is an external reference`);
+    }
+  });
+
+  oracleTest('still sends same-document fragments, web and mail links, and data: sources to LibreOffice', ['pdftotext'], async () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-url-allowed-')), 'invoked');
+    const png = `data:image/png;base64,${buildRgbPng(2, 2).toString('base64')}`;
+    const html =
+      `<p><a href="#target">jump</a> <a href="https://example.com/a">web</a> <a href="HTTP://example.com/b">plain</a> ` +
+      `<a href="mailto:team@example.com">mail</a> <a href="">self</a></p>` +
+      `<p><img src="${png}" srcset="${png} 1x, ${png} 2x" alt="pixel"></p><h2 id="target">Target</h2>`;
+    const result = await withEnvValue('SOFFICE_PATH', failingSoffice(`touch '${marker}'; exit 3`), () =>
+      executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'links.html')
+    );
+    expect({ invoked: fs.existsSync(marker), engine: result.engineUsed, text: normalizeText(pdfText(result.buffer)) }).toEqual({
+      invoked: true,
+      engine: 'internal-fallback',
+      text: 'jump web plain mail self Target',
+    });
+
+    // Inline SVG that refers only to its own fragments and data: images also reaches LibreOffice; the
+    // in-process renderer cannot draw SVG, so the stand-in's failure then surfaces as the engine being unavailable.
+    const svgMarker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-svg-allowed-')), 'invoked');
+    const svg =
+      `<p>shapes</p><svg xmlns:xlink="http://www.w3.org/1999/xlink"><defs><rect id="r" width="4" height="4" fill="url(#g)"/></defs>` +
+      `<use href="#r"/><use xlink:href="#r"/><image href="${png}" width="2" height="2"/></svg>`;
+    const { error } = await settle(
+      withEnvValue('SOFFICE_PATH', failingSoffice(`touch '${svgMarker}'; exit 3`), () =>
+        executeWorkerConversion(Buffer.from(svg, 'utf-8'), 'html', 'pdf', {}, 'shapes.html')
+      )
+    );
+    expect({ invoked: fs.existsSync(svgMarker), name: (error as Error)?.name }).toEqual({ invoked: true, name: 'EngineUnavailableError' });
+  });
+
   it('reports a LibreOffice failure on complex-script text as EngineUnavailableError (503)', async () => {
     const { error } = await settle(
       withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () =>

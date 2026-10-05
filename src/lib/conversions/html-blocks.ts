@@ -740,51 +740,171 @@ async function verifyImages(images: readonly PendingImage[]): Promise<void> {
   }
 }
 
-/** Attributes that make an element load another resource when the document is laid out. */
-const RESOURCE_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
-  ['img', ['src', 'srcset']],
-  ['source', ['src', 'srcset']],
-  ['input', ['src']],
-  ['video', ['src', 'poster']],
-  ['audio', ['src']],
-  ['track', ['src']],
-  ['iframe', ['src']],
-  ['frame', ['src']],
-  ['embed', ['src']],
-  ['object', ['data']],
-  ['link', ['href']],
+/**
+ * Attributes whose value is a URL the document may load, submit to or navigate to. On HTML bound
+ * for LibreOffice each must stay inside the document (a data: URI or a `#fragment`); only `<a href>`
+ * may also link to the web or mail. Namespaced `*:href` (SVG `xlink:href` under any prefix) counts too.
+ */
+const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'src', 'srcset', 'imagesrcset', 'href', 'background', 'poster', 'data', 'codebase', 'action', 'formaction', 'cite',
+  'longdesc', 'lowsrc', 'dynsrc', 'manifest', 'ping', 'archive', 'classid', 'profile', 'usemap', 'icon',
 ]);
-const SRCSET_ATTRIBUTE = 'srcset';
-/** The legacy background attribute (body, table, tr, td, th) loads an image on any element LibreOffice reads. */
-const BACKGROUND_ATTRIBUTE = 'background';
+/** URL attributes holding a srcset (comma-separated candidates with descriptors). */
+const SRCSET_ATTRIBUTES: ReadonlySet<string> = new Set(['srcset', 'imagesrcset']);
+/** URL attributes holding a whitespace-separated list of URLs. */
+const URL_LIST_ATTRIBUTES: ReadonlySet<string> = new Set(['ping', 'archive', 'profile']);
+/** SVG presentation attributes whose value may be a CSS `url()` paint, filter, mask, marker or cursor reference. */
+const PRESENTATION_URL_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'fill', 'stroke', 'filter', 'clip-path', 'mask', 'marker-start', 'marker-mid', 'marker-end', 'cursor',
+]);
+/** SVG animation elements, which write their to/from/by/values into the attribute they target. */
+const ANIMATION_ELEMENTS: ReadonlySet<string> = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
+const ANIMATION_VALUE_ATTRIBUTES = ['to', 'from', 'by', 'values'] as const;
+const ANIMATION_VALUE_SEPARATOR = ';';
+const ANCHOR_ELEMENT = 'a';
+const ANCHOR_HREF = 'href';
+const NAMESPACED_HREF_SUFFIX = ':href';
+const META_ELEMENT = 'meta';
+const REFRESH_PRAGMA = 'refresh';
+/** The delay and optional `url=` label before the target of a `<meta http-equiv="refresh">`. */
+const REFRESH_TARGET_PREFIX = /^[\s\d.]*[;,]?\s*(?:url\s*=\s*)?/i;
+const QUOTE_CHARACTERS = /^['"]|['"]$/g;
 const STYLE_ATTRIBUTE = 'style';
 const DATA_URI_PREFIX = /^data:/i;
+const FRAGMENT_PREFIX = '#';
+/** Schemes an `<a href>` may link to outside the document; LibreOffice keeps them as links and loads nothing. */
+const ANCHOR_SCHEME = /^(?:https?|mailto):/i;
+/** Tab and newlines, which URL parsers drop from anywhere inside a URL. */
+const URL_IGNORED_CHARACTERS = /[\t\n\r]/g;
+const LAST_C0_OR_SPACE = 0x20;
+const URL_LIST_SEPARATOR = /[ \t\n\f\r]+/;
 
-/** URLs an attribute loads: one for src-like attributes, each candidate for srcset. */
-function resourceUrls(attribute: string, value: string): string[] {
-  const urls = attribute === SRCSET_ATTRIBUTE ? value.split(',').map((candidate) => candidate.trim().split(/\s+/)[0] ?? '') : [value];
-  return urls.map((url) => url.trim()).filter((url) => url.length > 0);
+function isHtmlSpace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r';
+}
+
+/** Strips leading and trailing C0 controls and spaces, as URL parsers do. */
+function trimUrl(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= LAST_C0_OR_SPACE) start++;
+  while (end > start && value.charCodeAt(end - 1) <= LAST_C0_OR_SPACE) end--;
+  return value.slice(start, end);
+}
+
+/** The URLs of a srcset: each candidate's URL, skipping its descriptors (data: URIs may contain commas). */
+function srcsetUrls(value: string): string[] {
+  const urls: string[] = [];
+  const length = value.length;
+  let i = 0;
+  while (i < length) {
+    while (i < length && (isHtmlSpace(value[i]) || value[i] === ',')) i++;
+    const start = i;
+    while (i < length && !isHtmlSpace(value[i])) i++;
+    let end = i;
+    if (end > start && value[end - 1] === ',') {
+      while (end > start && value[end - 1] === ',') end--;
+    } else {
+      let depth = 0;
+      for (; i < length && (depth > 0 || value[i] !== ','); i++) {
+        if (value[i] === '(') depth++;
+        else if (value[i] === ')' && depth > 0) depth--;
+      }
+    }
+    if (end > start) urls.push(value.slice(start, end));
+  }
+  return urls;
+}
+
+function isUrlAttribute(name: string): boolean {
+  return URL_ATTRIBUTES.has(name) || name.endsWith(NAMESPACED_HREF_SUFFIX);
+}
+
+/** URLs an attribute names: each srcset candidate, each entry of a URL list, or the single URL. */
+function attributeUrls(name: string, value: string): string[] {
+  if (SRCSET_ATTRIBUTES.has(name)) return srcsetUrls(value);
+  if (URL_LIST_ATTRIBUTES.has(name)) return value.split(URL_LIST_SEPARATOR).filter((url) => url.length > 0);
+  return [value];
 }
 
 /**
- * The first resource the document would load from outside itself (anything but a data: URI), or
- * null: element references, legacy background attributes, and url()/@import/image-set() in style
- * attributes and <style> sheets. Used before HTML goes to LibreOffice, which would otherwise try
- * to open or fetch it.
+ * Whether a URL stays inside the document: empty (the document itself), a `#fragment` or a data:
+ * URI; an `<a href>` may also link to http, https or mailto.
+ */
+function isAllowedUrl(url: string, isAnchorLink: boolean): boolean {
+  const normalized = trimUrl(url).replace(URL_IGNORED_CHARACTERS, '');
+  if (normalized.length === 0 || normalized.startsWith(FRAGMENT_PREFIX)) return true;
+  return isAnchorLink ? ANCHOR_SCHEME.test(normalized) : DATA_URI_PREFIX.test(normalized);
+}
+
+/** The first URL in an attribute that leaves the document, or null. */
+function findAttributeReference(name: string, value: string, isAnchorLink: boolean): string | null {
+  const external = attributeUrls(name, value).find((url) => !isAllowedUrl(url, isAnchorLink));
+  return external === undefined ? null : trimUrl(external);
+}
+
+/** The target of `<meta http-equiv="refresh" content="5; url=...">`, or null for any other element. */
+function refreshTarget(element: HtmlElement): string | null {
+  if (element.tag !== META_ELEMENT) return null;
+  if (asciiLowerCase(trimUrl(element.attrs.get('http-equiv') ?? '')) !== REFRESH_PRAGMA) return null;
+  const content = element.attrs.get('content') ?? '';
+  return trimUrl(content.replace(REFRESH_TARGET_PREFIX, '')).replace(QUOTE_CHARACTERS, '');
+}
+
+/** A URL an SVG animation would write into a URL or presentation attribute, or null. */
+function findAnimationReference(element: HtmlElement): string | null {
+  const target = asciiLowerCase(trimUrl(element.attrs.get('attributename') ?? ''));
+  const writesUrl = isUrlAttribute(target);
+  if (!writesUrl && !PRESENTATION_URL_ATTRIBUTES.has(target)) return null;
+  for (const attribute of ANIMATION_VALUE_ATTRIBUTES) {
+    for (const value of (element.attrs.get(attribute) ?? '').split(ANIMATION_VALUE_SEPARATOR)) {
+      const reference = writesUrl ? findAttributeReference(target, value, false) : findCssExternalReference(value);
+      if (reference) return reference;
+    }
+  }
+  return null;
+}
+
+/** The first reference in an element's attributes to something outside the document, or null. */
+function findAttributesReference(element: HtmlElement): string | null {
+  for (const [name, value] of element.attrs) {
+    let reference: string | null = null;
+    if (isUrlAttribute(name)) {
+      const isAnchorLink = element.tag === ANCHOR_ELEMENT && (name === ANCHOR_HREF || name.endsWith(NAMESPACED_HREF_SUFFIX));
+      reference = findAttributeReference(name, value, isAnchorLink);
+    } else if (name === STYLE_ATTRIBUTE || PRESENTATION_URL_ATTRIBUTES.has(name)) {
+      reference = findCssExternalReference(value);
+    }
+    if (reference) return reference;
+  }
+  return null;
+}
+
+/** The first reference an element makes to something outside the document, or null. */
+function findElementReference(element: HtmlElement): string | null {
+  const attributeReference = findAttributesReference(element);
+  if (attributeReference) return attributeReference;
+  const refresh = refreshTarget(element);
+  if (refresh && !isAllowedUrl(refresh, false)) return refresh;
+  if (ANIMATION_ELEMENTS.has(element.tag)) return findAnimationReference(element);
+  if (element.tag !== STYLE_ELEMENT) return null;
+  return findCssExternalReference(element.children.filter((child): child is string => typeof child === 'string').join(''));
+}
+
+/**
+ * The first reference the document makes to anything outside itself, or null. URL attributes on
+ * every element (inline SVG included) must be data: URIs or `#fragment`s, except that `<a href>`
+ * may link to http, https or mailto; style attributes, SVG presentation attributes, SVG animations,
+ * refresh pragmas and `<style>` sheets are checked too. Used before HTML goes to LibreOffice, which
+ * would otherwise try to open, fetch or submit to it.
  */
 export function findExternalResourceReference(html: string): string | null {
-  const pending: HtmlNode[] = [...parseHtmlTree(html.replace(/^\ufeff/, '')).root.children];
+  const pending: HtmlNode[] = [...parseHtmlTree(html.replace(/^﻿/, '')).root.children];
   while (pending.length > 0) {
     const node = pending.pop() as HtmlNode;
     if (typeof node === 'string') continue;
-    for (const attribute of [...(RESOURCE_ATTRIBUTES.get(node.tag) ?? []), BACKGROUND_ATTRIBUTE]) {
-      const external = resourceUrls(attribute, node.attrs.get(attribute) ?? '').find((url) => !DATA_URI_PREFIX.test(url));
-      if (external) return external;
-    }
-    const inlineStyle = node.attrs.get(STYLE_ATTRIBUTE);
-    const styleSheet = node.tag === STYLE_ELEMENT ? node.children.filter((child): child is string => typeof child === 'string').join('') : '';
-    const cssReference = (inlineStyle && findCssExternalReference(inlineStyle)) || (styleSheet && findCssExternalReference(styleSheet));
-    if (cssReference) return cssReference;
+    const reference = findElementReference(node);
+    if (reference) return reference;
     appendAll(pending, node.children);
   }
   return null;

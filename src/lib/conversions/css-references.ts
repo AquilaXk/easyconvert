@@ -17,6 +17,7 @@ const IMPORT_RULE = 'import';
 /** Functions whose string arguments are URLs. */
 const URL_STRING_FUNCTIONS: ReadonlySet<string> = new Set(['url', 'src', 'image-set', '-webkit-image-set']);
 const DATA_URI = /^data:/i;
+const FRAGMENT_PREFIX = '#';
 
 function isWhitespace(ch: string | undefined): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f';
@@ -162,8 +163,8 @@ class CssScanner {
 }
 
 /**
- * The first URL the CSS would load from outside itself (anything but a data: URI), or null.
- * Covers `url()`, `@import`, `src()` and `image-set()`.
+ * The first URL the CSS would load from outside itself (anything but a data: URI or a
+ * same-document `#fragment`), or null. Covers `url()`, `@import`, `src()` and `image-set()`.
  */
 export function findCssExternalReference(css: string): string | null {
   const scanner = new CssScanner(css);
@@ -171,7 +172,8 @@ export function findCssExternalReference(css: string): string | null {
   let afterImport = false;
   const external = (url: string): string | null => {
     const trimmed = url.trim();
-    return trimmed.length > 0 && !DATA_URI.test(trimmed) ? trimmed : null;
+    const inDocument = trimmed.length === 0 || trimmed.startsWith(FRAGMENT_PREFIX) || DATA_URI.test(trimmed);
+    return inDocument ? null : trimmed;
   };
   for (scanner.skipInsignificant(); !scanner.done; scanner.skipInsignificant()) {
     const token = scanner.next();

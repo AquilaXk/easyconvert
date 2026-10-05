@@ -1562,14 +1562,15 @@ async function planTextPdfRoute(
 }
 
 /**
- * Refuses HTML that would make LibreOffice open a local file or fetch a URL; the in-process
- * renderer refuses the same references. Embedded data: URIs are fine.
+ * Refuses HTML whose URLs point outside the document, which LibreOffice could open, fetch or
+ * submit to. Embedded data: URIs, `#fragment`s and http/https/mailto `<a href>` links are fine.
  */
 function assertNoExternalResources(html: string): void {
   const reference = findExternalResourceReference(html);
   if (reference) {
     throw new ConversionFailedError(
-      `HTML resource "${reference}" is an external reference; external resources are not fetched, so embed it as a data: URI`
+      `HTML resource "${reference}" is an external reference; external resources are not fetched, so embed it as a data: URI ` +
+        '(only <a href> may link to http, https or mailto)'
     );
   }
 }
