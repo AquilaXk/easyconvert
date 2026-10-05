@@ -166,6 +166,8 @@ describe('API-key IP allowlists use the shared trusted-proxy client-IP resolver'
     const res = await loginHandler(req);
     expect(res.status).toBe(503);
     expect(Number(res.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
+    const body = await res.json();
+    expect(body.error).toBe("Server misconfiguration: the server's client-IP trust configuration is missing or invalid.");
   });
 
   it('the login route answers a malformed forwarding chain with HTTP 400', async () => {

@@ -191,7 +191,8 @@ export function middleware(request: NextRequest) {
         HTTP_SERVICE_UNAVAILABLE,
         PROBLEM_TRUST_UNCONFIGURED,
         'Service Unavailable',
-        'Client IP trust mode is not configured. Set TRUSTED_PROXIES to the proxy CIDR list, or to "none" when this server is exposed directly.',
+        'Client IP trust mode is not configured. Set TRUSTED_PROXIES to the proxy CIDR list, or to "none" when this server is exposed directly. ' +
+          'Note that TRUSTED_PROXIES=none means all clients share one rate-limit bucket.',
         pathname,
         { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) }
       );

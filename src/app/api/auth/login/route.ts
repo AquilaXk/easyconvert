@@ -18,6 +18,8 @@ import {
 export const dynamic = 'force-dynamic';
 
 const HTTP_SERVICE_UNAVAILABLE = 503;
+const CLIENT_IP_MALFORMED_MESSAGE = 'Client address could not be determined from the request headers.';
+const CLIENT_IP_CONFIG_MESSAGE = "Server misconfiguration: the server's client-IP trust configuration is missing or invalid.";
 
 // Static dummy hash/salt to prevent email enumeration timing attacks
 const DUMMY_HASH = '0'.repeat(128);
@@ -41,13 +43,13 @@ export async function POST(req: NextRequest) {
     clientIp = resolvedIp === UNATTRIBUTED_CLIENT_KEY ? null : rateLimitKey(resolvedIp);
   } catch (error) {
     if (!(error instanceof ClientIpError)) throw error;
-    return NextResponse.json(
-      { success: false, error: 'Client address could not be determined from the request headers.' },
-      {
-        status: error.status,
-        headers: error.status === HTTP_SERVICE_UNAVAILABLE ? { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) } : {},
-      }
-    );
+    if (error.status === HTTP_SERVICE_UNAVAILABLE) {
+      return NextResponse.json(
+        { success: false, error: CLIENT_IP_CONFIG_MESSAGE },
+        { status: error.status, headers: { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) } }
+      );
+    }
+    return NextResponse.json({ success: false, error: CLIENT_IP_MALFORMED_MESSAGE }, { status: error.status });
   }
 
   try {

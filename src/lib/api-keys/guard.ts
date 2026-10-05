@@ -326,7 +326,7 @@ const CLIENT_IP_INVALID_ERROR_MESSAGE = 'Bad Request: malformed client address i
 
 /**
  * Resolves the client identity through the shared trusted-proxy resolver. A malformed forwarding chain
- * becomes a 400 rejection and invalid trust configuration a 500, so no request is ever attributed by guess.
+ * becomes a 400 rejection and invalid trust configuration a 503 (with Retry-After), so no request is ever attributed by guess.
  */
 function resolveClientIpForAuth(request: Request): { clientIp: string } | { rejection: ApiAuthResult } {
   try {
@@ -392,8 +392,8 @@ async function verifyAnonymousAccess(
   // 2. Check anonymous daily quota
   const anonUserId = `anon:${anonBucket}`;
   if (clientIp === UNATTRIBUTED_CLIENT_KEY) {
-    // Degraded mode trade-off: every unattributed caller would share this one daily quota, so a single client
-    // could exhaust it for everyone. Only the burst limiter above applies until TRUSTED_PROXIES is declared.
+    // No daily quota for the shared identity: it would let a single client exhaust it for every caller
+    // (docs/client-ip-trust.md, item 5). Only the shared burst limiter above applies until TRUSTED_PROXIES is declared.
     return { authorized: true, user: buildAnonymousUser(anonUserId), authMethod: 'session' };
   }
   const quota = await checkQuotaAndReserve(anonUserId, 'anonymous', requiredUnits);

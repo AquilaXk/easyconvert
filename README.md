@@ -193,6 +193,11 @@ npm install
 ### Configuration
 
 - `KEY_HASH_PEPPER`: server-side secret used to store API key hashes as HMAC-SHA256 instead of plain SHA-256; set it to a long random value (at least 32 bytes) in production, and note that rotating it invalidates every key created or rehashed under the previous value.
+- `TRUSTED_PROXIES`: client-IP trust mode, required when `NODE_ENV=production`. Set it to the CIDR list of the proxy hops in front of the server, or to `none` when the server is exposed directly (every client then shares one rate-limit bucket). Without it the edge answers `/api/*` with 503.
+- `TRUSTED_CDN`: set to `cloudflare` to honour `CF-Connecting-IP` from verified Cloudflare edge hops.
+- `TRUSTED_PROXY_HEADER`: the single forwarding header your proxy maintains, `x-forwarded-for` (default) or `forwarded`.
+
+See [docs/client-ip-trust.md](docs/client-ip-trust.md) for the full deployment contract.
 
 ### Development Server
 

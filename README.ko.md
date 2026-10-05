@@ -193,6 +193,11 @@ npm install
 ### 환경 변수 설정
 
 - `KEY_HASH_PEPPER`: API 키 해시를 일반 SHA-256 대신 HMAC-SHA256으로 저장하는 서버 측 비밀 값입니다. 프로덕션에서는 32바이트 이상의 긴 무작위 값으로 설정해야 하며, 값을 교체하면 이전 값으로 생성되거나 재해시된 모든 키가 무효화됩니다.
+- `TRUSTED_PROXIES`: 클라이언트 IP 신뢰 모드이며 `NODE_ENV=production`에서는 필수입니다. 서버 앞단 프록시 홉의 CIDR 목록으로 설정하거나, 서버가 직접 노출된 경우 `none`으로 설정합니다(이 경우 모든 클라이언트가 하나의 속도 제한 버킷을 공유합니다). 설정하지 않으면 엣지가 `/api/*`에 503을 반환합니다.
+- `TRUSTED_CDN`: 검증된 Cloudflare 엣지 홉의 `CF-Connecting-IP`를 신뢰하려면 `cloudflare`로 설정합니다.
+- `TRUSTED_PROXY_HEADER`: 프록시가 관리하는 단일 전달 헤더이며 `x-forwarded-for`(기본값) 또는 `forwarded`입니다.
+
+전체 배포 규약은 [docs/client-ip-trust.md](docs/client-ip-trust.md)를 참고하세요.
 
 ### 개발 서버 실행
 

@@ -223,6 +223,7 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
       expect(body.type).toBe(PROBLEM_TYPE);
       expect(body.status).toBe(503);
       expect(body.instance).toBe(PROBE_PATH);
+      expect(body.detail).toContain('TRUSTED_PROXIES=none means all clients share one rate-limit bucket');
 
       expect(middleware(apiRequest({}, '/api/convert', 'POST')).status).toBe(503);
       // Logged once, not once per request.
