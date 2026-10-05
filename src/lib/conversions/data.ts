@@ -42,6 +42,7 @@ import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlTo
 import { assertToml10Syntax } from './data-toml';
 import { assertConversionOptionsObject } from './options-guard';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
+import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter } from './delimited-detect';
 
 export { encodeParquet, decodeParquet };
 
@@ -361,10 +362,6 @@ function decodeDelimitedText(bytes: Uint8Array, requestedEncoding?: string): str
 // Delimited text: delimiter detection and parsing
 // ---------------------------------------------------------------------------
 
-/** Delimiters tried, in tie-break order, after the source format's own delimiter. */
-const DELIMITER_CANDIDATES: readonly string[] = [',', ';', '\t', '|'];
-/** Records sampled when detecting the delimiter. */
-const DELIMITER_SAMPLE_RECORDS = 50;
 /** Papa counts FieldMismatch rows from 0 after the header; our rows are 1-based and include the header. */
 const FIELD_MISMATCH_ROW_OFFSET = 2;
 /** Papa counts quote-error rows from 0 including the header row. */
@@ -378,37 +375,8 @@ interface DelimitedTable {
   delimiter: string;
 }
 
-/** Field count of the sampled records when they all agree, else 0. */
-function consistentFieldCount(text: string, delimiter: string): number {
-  const sample = Papa.parse<string[]>(text, { delimiter, preview: DELIMITER_SAMPLE_RECORDS, skipEmptyLines: true });
-  if (sample.errors.length > 0 || sample.data.length === 0) return 0;
-  const width = sample.data[0].length;
-  return sample.data.every((record) => record.length === width) ? width : 0;
-}
-
-/**
- * The source format's own delimiter wins when it splits the sampled records into a consistent
- * table of two or more columns; otherwise the candidate with the widest consistent table does.
- * A file no candidate splits consistently keeps the format's delimiter (a one-column table, or a
- * parse error that names the offending row).
- */
-function detectDelimiter(text: string, nominal: string): string {
-  if (consistentFieldCount(text, nominal) > 1) return nominal;
-  let best = nominal;
-  let bestWidth = 1;
-  for (const candidate of DELIMITER_CANDIDATES) {
-    if (candidate === nominal) continue;
-    const width = consistentFieldCount(text, candidate);
-    if (width > bestWidth) {
-      best = candidate;
-      bestWidth = width;
-    }
-  }
-  return best;
-}
-
 function resolveDelimiter(text: string, src: string, requested?: string): string {
-  return requested ?? detectDelimiter(text, src === 'csv' ? ',' : '\t');
+  return requested ?? detectDelimiter(text, nominalDelimiter(src));
 }
 
 const ALLOWED_DELIMITERS: ReadonlySet<string> = new Set(DELIMITER_CANDIDATES);

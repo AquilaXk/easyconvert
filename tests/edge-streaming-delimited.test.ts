@@ -1,12 +1,21 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveChunkTransformer, type ChunkTransformerFn } from '../src/lib/edge/workers/opfs-vfs.worker';
+import { resolveChunkTransformer, runOpfsWorkerJob, type ChunkTransformerFn } from '../src/lib/edge/workers/opfs-vfs.worker';
+import { rehydrateWorkerError, serializeWorkerError } from '../src/lib/edge/workers/worker-errors';
+import { streamConvertWithOpfs } from '../src/lib/edge/pipelines/opfs-streaming-pipeline';
 import { resolveConversionTier } from '../src/lib/edge/tier-router';
 import { convertFile } from '../src/lib/conversions';
-import { DataEncodingError, DataLimitExceededError, DataParseError, UnsupportedOptionError } from '../src/lib/types';
+import {
+  ConversionFailedError,
+  DataEncodingError,
+  DataLimitExceededError,
+  DataParseError,
+  DataRepresentationError,
+  UnsupportedOptionError,
+} from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 
@@ -130,6 +139,121 @@ describe('streamed CSV <-> TSV applies the server output rules', () => {
     // Quoting and the ' prefix add at most a few bytes per record; nothing accumulates across chunks.
     expect(largest).toBeLessThan(chunk.byteLength * 2);
     expect(largest).toBeGreaterThan(chunk.byteLength / 2);
+  });
+});
+
+/** Byte-for-byte comparison with the server engine at the given cut points of the input. */
+async function expectServerParity(input: string, src: string, tgt: string, cutSets: number[][], options: Record<string, unknown> = {}): Promise<Buffer> {
+  const bytes = Buffer.from(input, 'utf-8');
+  const server = (await convertFile(bytes, src, tgt, options, `data.${src}`)).buffer;
+  for (const cuts of cutSets) {
+    const streamed = await convertStreamed(bytes, src, tgt, options, cuts);
+    expect({ cuts: cuts.slice(0, 3), hex: streamed.toString('hex') }).toEqual({ cuts: cuts.slice(0, 3), hex: server.toString('hex') });
+  }
+  return server;
+}
+
+function everyCut(length: number): number[][] {
+  return [[], ...Array.from({ length: length - 1 }, (_, index) => [index + 1])];
+}
+
+describe('streamed CSV <-> TSV matches the server parser', () => {
+  const SEMICOLON_CSV = 'name;price;note\r\n"Müller, K";3,50;=1+1\r\nKim;4,20;"a;b"\r\nLee;5,00;plain\r\n';
+
+  oracleTest('detects a semicolon delimiter like the server at every cut point', ['python3'], async () => {
+    const server = await expectServerParity(SEMICOLON_CSV, 'csv', 'tsv', everyCut(Buffer.byteLength(SEMICOLON_CSV)));
+    expect(pythonRows(server, '\t')).toEqual([
+      ['name', 'price', 'note'],
+      ['Müller, K', '3,50', "'=1+1"],
+      ['Kim', '4,20', 'a;b'],
+      ['Lee', '5,00', 'plain'],
+    ]);
+  });
+
+  it('decides the delimiter from the first 50 records of a multi-chunk file like the server', async () => {
+    // More than 1 MiB, so the sample is decided before the end of the input, in several chunk layouts.
+    const records = Array.from({ length: 60_000 }, (_, index) => `${index};"v ${index}";=x${index % 7}`);
+    const input = `id;value;formula\n${records.join('\n')}\n`;
+    const size = Buffer.byteLength(input);
+    await expectServerParity(input, 'csv', 'tsv', [[], [1_048_576], [700_000, 1_100_000], [3, 1_048_580, size - 2]]);
+  });
+
+  it('keeps the format delimiter when it splits the sample, and honours an explicit delimiter', async () => {
+    const mixed = 'a,b;c\n1,2;3\n4,5;6\n';
+    await expectServerParity(mixed, 'csv', 'tsv', everyCut(Buffer.byteLength(mixed)));
+    const explicit = await expectServerParity(mixed, 'csv', 'tsv', [[], [4], [9]], { delimiter: ';' });
+    expect(explicit.toString('utf-8')).toBe('a,b\tc\r\n1,2\t3\r\n4,5\t6');
+    const pipeTsv = 'x|y\n1|2\n';
+    await expectServerParity(pipeTsv, 'tsv', 'csv', everyCut(Buffer.byteLength(pipeTsv)));
+  });
+
+  it('renames duplicate headers like the server at every cut point', async () => {
+    const duplicates = 'a,a,a_1,b,a,\uFEFFc\r\n1,2,3,4,5,6\r\n';
+    const server = await expectServerParity(duplicates, 'csv', 'tsv', everyCut(Buffer.byteLength(duplicates)));
+    // Hand-written: Papa-style renaming skips names already used (a_1 is taken, so the second a is a_2).
+    expect(server.toString('utf-8')).toBe('a\ta_2\ta_1\tb\ta_3\tc\r\n1\t2\t3\t4\t5\t6');
+  });
+
+  it('refuses to buffer a delimiter sample beyond its cap', async () => {
+    const transformer = resolveChunkTransformer('csv', 'tsv', {});
+    const huge = new TextEncoder().encode(`a\n"${'x'.repeat(32 * 1024 * 1024 + 1)}`);
+    const err = await rejection(Promise.resolve().then(() => transformer(huge, 0, huge.byteLength + 1)));
+    expect(err).toBeInstanceOf(DataLimitExceededError);
+    expect(err.message).toBe(
+      'The first CSV records exceed 33554432 characters before the delimiter can be detected; pass the "delimiter" option.'
+    );
+  });
+});
+
+describe('typed errors survive the Worker boundary', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('serialises and rehydrates every data error class with its location', () => {
+    const errors = [
+      new DataEncodingError('enc'),
+      new DataLimitExceededError('limit'),
+      new DataParseError('parse', { row: 3, line: 4, column: 5 }),
+      new DataRepresentationError('repr'),
+      new UnsupportedOptionError('opt'),
+    ];
+    for (const original of errors) {
+      const payload = JSON.parse(JSON.stringify(serializeWorkerError(original)));
+      const restored = rehydrateWorkerError(payload);
+      expect(restored.constructor).toBe(original.constructor);
+      expect(restored).toBeInstanceOf(ConversionFailedError);
+      expect(restored.message).toBe(original.message);
+      expect(restored.name).toBe(original.name);
+    }
+    const parse = rehydrateWorkerError(serializeWorkerError(new DataParseError('p', { row: 3, line: 4, column: 5 }))) as DataParseError;
+    expect([parse.row, parse.line, parse.column]).toEqual([3, 4, 5]);
+    const unknown = rehydrateWorkerError({ name: 'RangeError', message: 'boom' });
+    expect(unknown).not.toBeInstanceOf(ConversionFailedError);
+    expect([unknown.name, unknown.message]).toEqual(['RangeError', 'boom']);
+  });
+
+  it('rejects the main-thread promise with the class the worker threw', async () => {
+    const invalidUtf8 = new File([Uint8Array.from([0x61, 0x0a, 0xc7, 0xd1, 0x0a])], 'big.csv', { type: 'text/csv' });
+    const posted: Record<string, unknown>[] = [];
+    // The worker side: the real job runner posts the serialised error.
+    class FakeWorker {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror: ((event: { message: string }) => void) | null = null;
+      postMessage(data: Record<string, unknown>): void {
+        void runOpfsWorkerJob(data, (message) => {
+          posted.push(message);
+          this.onmessage?.({ data: message });
+        });
+      }
+      terminate(): void {}
+    }
+    vi.stubGlobal('window', globalThis);
+    vi.stubGlobal('Worker', FakeWorker);
+    const err = await rejection(streamConvertWithOpfs(invalidUtf8, 'csv', 'tsv'));
+    expect(err).toBeInstanceOf(DataEncodingError);
+    expect(err.message).toBe('Streamed CSV input is not valid UTF-8 text; pass the "encoding" option to convert it on the server.');
+    expect(posted.at(-1)).toMatchObject({ type: 'ERROR', error: { name: 'DataEncodingError' } });
   });
 });
 

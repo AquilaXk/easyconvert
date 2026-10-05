@@ -1,10 +1,14 @@
 /**
  * Streaming CSV <-> TSV conversion for the L3 OPFS pipeline (files over 100 MB).
  *
- * Applies the server engine's delimited-output rules (src/lib/conversions/delimited-rules.ts):
- * RFC 4180 parsing and quoting, formula cells prefixed with ' unless they are numeric literals,
- * a UTF-8 BOM by default for CSV only, the `bom` and `escapeFormulas` options, CRLF between
- * records, blank lines skipped and every record checked against the header's field count.
+ * Reads input like the server engine (src/lib/conversions/delimited-detect.ts): the delimiter is
+ * detected from the first 50 records with the same algorithm unless `delimiter` is given (the
+ * stream buffers just enough text for the sample to be complete), and duplicate header names are
+ * renamed the same way. Writes under the server's delimited-output rules
+ * (src/lib/conversions/delimited-rules.ts): RFC 4180 parsing and quoting, formula cells prefixed
+ * with ' unless they are numeric literals, a UTF-8 BOM by default for CSV only, the `bom` and
+ * `escapeFormulas` options, CRLF between records, blank lines skipped and every record checked
+ * against the header's field count.
  *
  * Input must be UTF-8 (a leading BOM is dropped): it is decoded strictly, so a file in another
  * encoding fails with a DataEncodingError asking for the `encoding` option, which the tier
@@ -19,19 +23,28 @@ import {
   UTF8_BOM_CHAR,
   writesBomByDefault,
 } from '../../conversions/delimited-rules';
+import {
+  DELIMITER_CANDIDATES,
+  detectDelimiter,
+  isDelimiterSampleComplete,
+  nominalDelimiter,
+  renameDuplicateHeaders,
+} from '../../conversions/delimited-detect';
 import { DataEncodingError, DataLimitExceededError, DataParseError, UnsupportedOptionError } from '../../types';
 
 /** Characters one record may hold while it is being read; larger records are not streamed. */
 export const MAX_STREAMED_RECORD_CHARS = 16 * 1024 * 1024;
+/** Text buffered at most while the delimiter sample (the first 50 records) is incomplete. */
+export const MAX_DELIMITER_SAMPLE_CHARS = 2 * MAX_STREAMED_RECORD_CHARS;
+/** papaparse guesses the line break from the first 1 MiB of text, so the sample covers it too. */
+const PAPA_LINE_BREAK_WINDOW_CHARS = 1024 * 1024;
 
-const TAB = '\t';
-const COMMA = ',';
 const QUOTE = '"';
 const ESCAPED_QUOTE = '""';
 const ALL_QUOTES = /"/g;
 /** Characters that force quoting besides the output delimiter (Papa's BAD_DELIMITERS). */
 const NEEDS_QUOTING = /["\r\n﻿]/;
-const ALLOWED_DELIMITERS: ReadonlySet<string> = new Set([',', ';', '\t', '|']);
+const ALLOWED_DELIMITERS: ReadonlySet<string> = new Set(DELIMITER_CANDIDATES);
 const STREAMABLE_SOURCES: ReadonlySet<string> = new Set(['csv', 'tsv', 'tab']);
 
 type ParseState = 'fieldStart' | 'unquoted' | 'quoted' | 'quoteInQuoted';
@@ -67,10 +80,6 @@ function optionalBoolean(options: DelimitedStreamOptions, name: 'bom' | 'escapeF
   return value;
 }
 
-function delimiterFor(format: string): string {
-  return format === 'csv' ? COMMA : TAB;
-}
-
 /**
  * A stateful transformer for one stream: call it with consecutive chunks; the chunk that reaches
  * `totalSize` flushes the last record. Returns the UTF-8 output bytes for each chunk.
@@ -92,8 +101,10 @@ export function createDelimitedStreamTransformer(
   if (requestedDelimiter !== undefined && (typeof requestedDelimiter !== 'string' || !ALLOWED_DELIMITERS.has(requestedDelimiter))) {
     throw new UnsupportedOptionError('Option "delimiter" must be one of ",", ";", TAB or "|".');
   }
-  const inDelimiter = (requestedDelimiter as string | undefined) ?? delimiterFor(src);
-  const outDelimiter = delimiterFor(tgt);
+  // Set once the delimiter is known: the option, or detection on the buffered sample.
+  let inDelimiter = requestedDelimiter as string | undefined;
+  let sample = '';
+  const outDelimiter = nominalDelimiter(tgt);
   const escapeFormulas = optionalBoolean(options, 'escapeFormulas') ?? true;
   const withBom = optionalBoolean(options, 'bom') ?? writesBomByDefault(tgt);
 
@@ -144,8 +155,10 @@ export function createDelimitedStreamTransformer(
     // A blank line is skipped, as the server parser does.
     if (fields.length === 1 && fields[0] === '') return;
     recordNumber++;
+    let written = fields;
     if (headerFieldCount === null) {
       headerFieldCount = fields.length;
+      written = renameDuplicateHeaders(fields);
     } else if (fields.length !== headerFieldCount) {
       const amount = fields.length > headerFieldCount ? 'many' : 'few';
       throw parseError(
@@ -154,7 +167,7 @@ export function createDelimitedStreamTransformer(
       );
     }
     if (wroteRecord) out.push(DELIMITED_RECORD_SEPARATOR);
-    out.push(fields.map((value) => writeField(value, fields.length)).join(outDelimiter));
+    out.push(written.map((value) => writeField(value, written.length)).join(outDelimiter));
     wroteRecord = true;
   };
 
@@ -167,12 +180,38 @@ export function createDelimitedStreamTransformer(
     }
   };
 
-  // The delimiter is one of , ; TAB | (checked above); escaped for the character class.
-  const boundary = new RegExp(`[\\${inDelimiter}\\r\\n]`, 'g');
+  // The delimiter is one of , ; TAB | (checked or detected); escaped for the character class.
+  let boundary = /[\r\n]/g;
   /** Index of the next delimiter, CR or LF at or after `from`, or the text length. */
   const nextBoundary = (text: string, from: number): number => {
     boundary.lastIndex = from;
     return boundary.exec(text)?.index ?? text.length;
+  };
+  const adoptDelimiter = (delimiter: string): void => {
+    inDelimiter = delimiter;
+    boundary = new RegExp(`[\\${delimiter}\\r\\n]`, 'g');
+  };
+  if (inDelimiter !== undefined) adoptDelimiter(inDelimiter);
+
+  /**
+   * Text ready to parse once the delimiter is known; null while the sample is still incomplete.
+   * Detection runs on the same records the server samples, so both pick the same delimiter.
+   */
+  const takeParsableText = (text: string, last: boolean): string | null => {
+    if (inDelimiter !== undefined) return text;
+    sample += text;
+    if (!last) {
+      if (sample.length > MAX_DELIMITER_SAMPLE_CHARS) {
+        throw new DataLimitExceededError(
+          `The first ${label} records exceed ${MAX_DELIMITER_SAMPLE_CHARS} characters before the delimiter can be detected; pass the "delimiter" option.`
+        );
+      }
+      if (!isDelimiterSampleComplete(sample, PAPA_LINE_BREAK_WINDOW_CHARS)) return null;
+    }
+    adoptDelimiter(detectDelimiter(sample, nominalDelimiter(src)));
+    const buffered = sample;
+    sample = '';
+    return buffered;
   };
 
   const parse = (text: string, out: string[]): void => {
@@ -251,7 +290,8 @@ export function createDelimitedStreamTransformer(
     }
     const out: string[] = [];
     if (withBom && offset === 0) out.push(UTF8_BOM_CHAR);
-    parse(text, out);
+    const parsable = takeParsableText(text, last);
+    if (parsable !== null) parse(parsable, out);
     if (last) {
       finish(out);
       finished = true;
