@@ -3,6 +3,8 @@ import dns from 'node:dns';
 import { Dispatcher, MockAgent } from 'undici';
 import { safeFetch, OutboundRequestBlockedError } from '../src/lib/security/safe-fetch';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
+import { sealGraphNode } from '../src/lib/queue/graph/sealed-nodes';
+import type { GraphNode } from '../src/lib/queue/graph/types';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import type { IStorageBackend } from '../src/lib/storage/oci-storage';
@@ -205,7 +207,8 @@ describe('graph URL nodes', () => {
         options: {},
         graphId: 'g_ssrf',
         graphNodeId: 'n1',
-        graphNode,
+        // The scheduler seals URL nodes before they are queued; the worker refuses plaintext.
+        graphNode: sealGraphNode(graphNode as unknown as GraphNode, 'g_ssrf:n1'),
         inputArtifacts: [],
       },
       opts: { attempts: 1 },

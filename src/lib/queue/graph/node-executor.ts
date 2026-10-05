@@ -10,6 +10,9 @@ import type { ConversionEnginePort } from '../engine-port';
 import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { safeFetch } from '../../security/safe-fetch';
+import { redactUrl } from '../../security/redact';
+import { graphNodeJobId } from './node-jobs';
+import { openUrlNodeSecrets } from './sealed-nodes';
 import {
   createTarArchive,
   extractTarArchive,
@@ -102,7 +105,9 @@ export async function processGraphNodeJob(
       }
 
       case 'import.url': {
-        outputKeys = [await importUrlArtifact(effectiveStorage, graphId, nodeId, node.url, node.headers, attemptSignal)];
+        // Secrets are opened here, at the point of use, and never stored back anywhere.
+        const { url, headers } = openUrlNodeSecrets(node, graphNodeJobId(graphId, nodeId));
+        outputKeys = [await importUrlArtifact(effectiveStorage, graphId, nodeId, url, headers, attemptSignal)];
         await job.log(`Node "${nodeId}" imported from URL: ${outputKeys[0]}`);
         break;
       }
@@ -436,10 +441,18 @@ export async function processGraphNodeJob(
       }
 
       case 'export.url': {
+        const destination = openUrlNodeSecrets(node, graphNodeJobId(graphId, nodeId));
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          await exportArtifactToUrl(effectiveStorage, inputKey, node.url, node.method || 'PUT', attemptSignal);
+          await exportArtifactToUrl(
+            effectiveStorage,
+            inputKey,
+            destination.url,
+            node.method || 'PUT',
+            destination.headers,
+            attemptSignal
+          );
         }
         outputKeys = inputArtifacts;
         break;
@@ -508,12 +521,6 @@ function urlImportMaxBytes(): number {
 }
 
 /** Streams a public URL into intermediate storage, refusing internal targets and oversized bodies. */
-/** Origin and path of a user-supplied URL, so query-string tokens stay out of job errors and logs. */
-function redactUrl(url: string): string {
-  const parsed = new URL(url);
-  return `${parsed.origin}${parsed.pathname}`;
-}
-
 async function importUrlArtifact(
   storage: IStorageBackend,
   graphId: string,
@@ -559,12 +566,20 @@ async function importUrlArtifact(
   return key;
 }
 
+/** Headers the worker sets itself from the stored artifact; a customer-supplied copy would misdescribe the body. */
+const EXPORT_FRAMING_HEADERS: ReadonlySet<string> = new Set(['content-type', 'content-length']);
+
+function withoutFramingHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !EXPORT_FRAMING_HEADERS.has(name.toLowerCase())));
+}
+
 /** Streams one stored artifact to the destination URL and fails unless it answers 2xx. */
 async function exportArtifactToUrl(
   storage: IStorageBackend,
   inputKey: string,
   url: string,
   method: string,
+  customerHeaders: Record<string, string> | undefined,
   signal: AbortSignal
 ): Promise<void> {
   const stat = storage.stat(inputKey);
@@ -577,6 +592,7 @@ async function exportArtifactToUrl(
     body: Readable.from(stream),
     duplex: 'half',
     headers: {
+      ...withoutFramingHeaders(customerHeaders),
       'Content-Type': stat.mimeType || 'application/octet-stream',
       'Content-Length': String(stat.size),
     },

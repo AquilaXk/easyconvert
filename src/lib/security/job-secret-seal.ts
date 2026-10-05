@@ -54,7 +54,8 @@ export type SecretSealErrorCode =
   | 'PLAINTEXT_TOO_LARGE'
   | 'MALFORMED_BLOB'
   | 'UNSUPPORTED_VERSION'
-  | 'AUTHENTICATION_FAILED';
+  | 'AUTHENTICATION_FAILED'
+  | 'UNSEALED_SECRET';
 
 /** A secret could not be sealed or opened. Messages never carry plaintext, ciphertext or key material. */
 export class SecretSealError extends Error {
