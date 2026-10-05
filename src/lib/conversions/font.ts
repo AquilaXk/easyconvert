@@ -3,8 +3,11 @@ import { ConversionFailedError, ConversionOptions, ConversionResult } from '../t
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
+import { WOFF2_KNOWN_TAGS, decodeUIntBase128, encodeUIntBase128 } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
+
+export { WOFF2_KNOWN_TAGS, decodeUIntBase128, encodeUIntBase128 };
 
 /**
  * Universal Font Conversion Engine
@@ -425,46 +428,6 @@ export function decodeWoff(buffer: Buffer, defaultName: string): ParsedFont {
     tables,
     fontFamily,
   };
-}
-
-export const WOFF2_KNOWN_TAGS: string[] = [
-  'cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name', 'OS/2', 'post', 'cvt ', 'fpgm',
-  'glyf', 'loca', 'prep', 'CFF ', 'VORG', 'EBDT', 'EBLC', 'gasp', 'hdmx', 'kern',
-  'LTSH', 'PCLT', 'VDMX', 'vhea', 'vmtx', 'BASE', 'GDEF', 'GPOS', 'GSUB', 'JSTF',
-  'MATH', 'CBDT', 'CBLC', 'COLR', 'CPAL', 'SVG ', 'sbix', 'acnt', 'avar', 'bdat',
-  'bloc', 'bhed', 'bsln', 'cvar', 'fdsc', 'feat', 'fmtx', 'fvar', 'gvar', 'hsty',
-  'just', 'lcar', 'mort', 'morx', 'opbd', 'prop', 'trak', 'Zapf', 'Silf', 'Glat',
-  'Gloc', 'Feat', 'Sill',
-];
-
-export function encodeUIntBase128(value: number): number[] {
-  let val = value >>> 0;
-  const result: number[] = [];
-  while (true) {
-    let byte = val & 0x7f;
-    val >>>= 7;
-    if (result.length > 0) {
-      byte |= 0x80;
-    }
-    result.unshift(byte);
-    if (val === 0) break;
-  }
-  return result;
-}
-
-export function decodeUIntBase128(buffer: Buffer, cursor: { offset: number }): number {
-  let accum = 0;
-  for (let i = 0; i < 5; i++) {
-    if (cursor.offset >= buffer.length) {
-      throw new Error('Unexpected EOF reading UIntBase128 in WOFF2');
-    }
-    const byte = buffer[cursor.offset++];
-    accum = accum * 128 + (byte & 0x7f);
-    if ((byte & 0x80) === 0) {
-      return accum >>> 0;
-    }
-  }
-  throw new Error('UIntBase128 overflow in WOFF2');
 }
 
 const WOFF2_NULL_TRANSFORM = 3;
