@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { convertImage } from '../src/lib/conversions/image';
-import { ConversionFailedError, InvalidPageRangeError, UnsupportedOptionError } from '../src/lib/types';
 import {
   countFrames,
   decodeCoalescedFrames,
@@ -13,6 +12,7 @@ import {
   type DecodedRgba,
   type Rgb,
 } from './helpers/imagemagick';
+import { captureError } from './helpers/capture-error';
 import { buildApng, readGifLoopCount, readWebpLoopCount } from './helpers/animation-containers';
 import { injectExifOrientation } from './helpers/exif-orientation';
 
@@ -66,15 +66,6 @@ function expectFrameColour(frame: DecodedRgba, expected: Rgb, label: string): vo
       .toBeLessThanOrEqual(COLOUR_TOLERANCE);
   });
   expect(a, `${label} alpha`).toBe(OPAQUE);
-}
-
-async function captureError(run: () => Promise<unknown>): Promise<unknown> {
-  try {
-    await run();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('expected the conversion to reject');
 }
 
 describe('fixtures', () => {
@@ -132,24 +123,25 @@ describe('convertImage keeps animation for animated targets', () => {
     const error = await captureError(() =>
       convertImage(buildAnimatedGif(), 'gif', { quantizer: 'oklab' }, 'anim.gif', 'gif')
     );
-    expect(error).toBeInstanceOf(UnsupportedOptionError);
+    expect(error.name).toBe('UnsupportedOptionError');
+    expect(error.message).toMatch(/cannot be applied to an animated GIF/);
   });
 });
 
 describe('convertImage with a still target', () => {
   it.skipIf(SKIP_WITHOUT_MAGICK).each(STILL_TARGETS)('%s output of an animated gif without page fails closed', async (target) => {
     const error = await captureError(() => convertImage(buildAnimatedGif(), target, {}, 'anim.gif', 'gif'));
-    expect(error).toBeInstanceOf(ConversionFailedError);
-    expect((error as Error).message).toMatch(/3 frames/);
-    expect((error as Error).message).toMatch(/page/);
+    expect(error.name).toBe('ConversionFailedError');
+    expect(error.message).toMatch(/has 3 frames but \.\w+ holds a single image/);
+    expect(error.message).toMatch(/"page" option/);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('png output of an animated webp without page fails closed', async () => {
     const error = await captureError(() =>
       convertImage(buildAnimatedWebp(buildAnimatedGif()), 'png', {}, 'anim.webp', 'webp')
     );
-    expect(error).toBeInstanceOf(ConversionFailedError);
-    expect((error as Error).message).toMatch(/3 frames/);
+    expect(error.name).toBe('ConversionFailedError');
+    expect(error.message).toMatch(/has 3 frames but \.png holds a single image/);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK).each([1, 2, 3])('page %i selects exactly that frame', async (page) => {
@@ -173,7 +165,8 @@ describe('convertImage with a still target', () => {
 
   it.skipIf(SKIP_WITHOUT_MAGICK).each([0, 4, -1, 1.5])('page %s is outside 1..3 and is rejected', async (page) => {
     const error = await captureError(() => convertImage(buildAnimatedGif(), 'png', { page }, 'anim.gif', 'gif'));
-    expect(error).toBeInstanceOf(InvalidPageRangeError);
+    expect(error.name).toBe('InvalidPageRangeError');
+    expect(error.message).toMatch(/out of range: the image has 3 frames/);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('a single-frame gif still converts to png without page', async () => {
@@ -192,8 +185,8 @@ describe('convertImage with animated sources that carry an EXIF orientation', ()
     const error = await captureError(async () =>
       convertImage(await orientedAnimatedWebp(6), 'gif', {}, 'anim.webp', 'webp')
     );
-    expect(error).toBeInstanceOf(ConversionFailedError);
-    expect((error as Error).message).toMatch(/orient/i);
+    expect(error.name).toBe('ConversionFailedError');
+    expect(error.message).toMatch(/EXIF orientation 6/);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('orients the selected frame when page is given', async () => {
@@ -219,13 +212,14 @@ describe('convertImage with an animated PNG source', () => {
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('fails closed instead of keeping only the default image', async () => {
     const error = await captureError(() => convertImage(buildTwoFrameApng(), 'jpg', {}, 'anim.png', 'png'));
-    expect(error).toBeInstanceOf(ConversionFailedError);
-    expect((error as Error).message).toMatch(/2 frames/);
+    expect(error.name).toBe('ConversionFailedError');
+    expect(error.message).toMatch(/has 2 frames but \.jpg holds a single image/);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('cannot animate APNG frames for an animated target either', async () => {
     const error = await captureError(() => convertImage(buildTwoFrameApng(), 'gif', {}, 'anim.png', 'png'));
-    expect(error).toBeInstanceOf(ConversionFailedError);
+    expect(error.name).toBe('ConversionFailedError');
+    expect(error.message).toMatch(/animation cannot be converted to \.gif/);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('page 1 selects the default image', async () => {
@@ -235,6 +229,7 @@ describe('convertImage with an animated PNG source', () => {
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('later APNG frames cannot be selected', async () => {
     const error = await captureError(() => convertImage(buildTwoFrameApng(), 'png', { page: 2 }, 'anim.png', 'png'));
-    expect(error).toBeInstanceOf(ConversionFailedError);
+    expect(error.name).toBe('ConversionFailedError');
+    expect(error.message).toMatch(/Frame 2 of this animated PNG cannot be decoded/);
   });
 });

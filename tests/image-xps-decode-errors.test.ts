@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { convertImage } from '../src/lib/conversions/image';
-import { ConversionFailedError } from '../src/lib/types';
+import { captureError } from './helpers/capture-error';
 import { decodeRgba, runConvert, sampleAt, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
 import { injectExifOrientation } from './helpers/exif-orientation';
 
@@ -83,13 +83,15 @@ describe('convertImage to xps', () => {
     const truncatedPng = (): Buffer => runConvert(['-size', '8x8', 'xc:red', 'png24:-']).subarray(0, 40);
 
     it('rejects text with a typed ConversionFailedError', async () => {
-      await expect(convertImage(garbage, 'xps', options, 'bad.png', 'png')).rejects.toBeInstanceOf(ConversionFailedError);
+      const error = await captureError(() => convertImage(garbage, 'xps', options, 'bad.png', 'png'));
+      expect(error.name).toBe('ConversionFailedError');
+      expect(error.message).toMatch(/^Unable to decode the image: .*unsupported image format/);
     });
 
     it.skipIf(SKIP_WITHOUT_MAGICK)('rejects a truncated PNG with a typed ConversionFailedError', async () => {
-      await expect(convertImage(truncatedPng(), 'xps', options, 'cut.png', 'png')).rejects.toBeInstanceOf(
-        ConversionFailedError
-      );
+      const error = await captureError(() => convertImage(truncatedPng(), 'xps', options, 'cut.png', 'png'));
+      expect(error.name).toBe('ConversionFailedError');
+      expect(error.message).toMatch(/^Unable to decode the image: /);
     });
   });
 });

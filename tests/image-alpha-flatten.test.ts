@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { UnsupportedOptionError } from '../src/lib/types';
+import { captureError } from './helpers/capture-error';
 import { decodeRgba, runConvert, sampleAt, SKIP_WITHOUT_MAGICK, type DecodedRgba, type Rgb } from './helpers/imagemagick';
 import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR } from './helpers/ffmpeg-exr';
 
@@ -156,10 +156,11 @@ describe('convertImage flattens transparency for opaque targets', () => {
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('rejects a background that is not a #rgb or #rrggbb colour', async () => {
     for (const background of ['red', '#12', '#gggggg', '']) {
-      await expect(
-        convertImage(buildTransparentSource(), 'jpg', { background }, 'alpha.png', 'png'),
-        `background ${JSON.stringify(background)}`
-      ).rejects.toBeInstanceOf(UnsupportedOptionError);
+      const error = await captureError(() =>
+        convertImage(buildTransparentSource(), 'jpg', { background }, 'alpha.png', 'png')
+      );
+      expect(error.name, `background ${JSON.stringify(background)}`).toBe('UnsupportedOptionError');
+      expect(error.message).toContain(`Unsupported background ${JSON.stringify(background)}`);
     }
   });
 });
