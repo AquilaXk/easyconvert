@@ -12,6 +12,7 @@ import {
 import { fcScan, HAS_FC_SCAN, readGlyf, readSfntTables, requireStrictFcScan } from './helpers/font-oracles';
 
 requireStrictFcScan('WOFF2 decode');
+import { firstFlagOffset, SFNT_FLAG_OVERLAP_SIMPLE } from './helpers/woff2-reference';
 import {
   brotliFont,
   buildWoff2,
@@ -91,19 +92,6 @@ function expectTablesEqual(font: ParsedFont, reference: Map<string, SfntRecord>,
     expect(decoded.length).toBe(record.data.length);
     if (normalise(tag, decoded.data) === decoded.data) expect(decoded.checkSum, `checksum of '${tag}'`).toBe(record.checkSum);
   }
-}
-
-const SFNT_FLAG_OVERLAP_SIMPLE = 0x40;
-
-/** The offset of the first flag byte of a simple glyph, from the loca and glyf tables of an sfnt. */
-function firstFlagOffset(tables: Map<string, Buffer>, glyphId: number): number {
-  const loca = tables.get('loca')!;
-  const glyf = tables.get('glyf')!;
-  const long = tables.get('head')!.readInt16BE(50) === 1;
-  const start = long ? loca.readUInt32BE(glyphId * 4) : loca.readUInt16BE(glyphId * 2) * 2;
-  const contours = glyf.readInt16BE(start);
-  const instructionLength = glyf.readUInt16BE(start + 10 + 2 * contours);
-  return start + 10 + 2 * contours + 2 + instructionLength;
 }
 
 const RINGS_GLYPH = 7; // the glyph of synthetic-triplets that carries the overlap bit

@@ -1,5 +1,5 @@
 import zlib from 'node:zlib';
-import { readXMins, reconstructGlyf, reconstructHmtx, serializeLoca, type GlyfReconstruction } from './font-woff2-glyf';
+import { readXMins, reconstructGlyf, reconstructHmtx, serializeLoca, transformGlyf, transformHmtx, type GlyfReconstruction } from './font-woff2-glyf';
 import {
   WOFF2_KNOWN_TAGS,
   WOFF2_MAX_DECODED_BYTES,
@@ -10,6 +10,7 @@ import {
   alignUp,
   decode255UInt16,
   decodeUIntBase128,
+  encodeUIntBase128,
   sfntChecksum,
   truncated,
 } from './font-woff2-primitives';
@@ -36,6 +37,8 @@ const HEADER_LENGTH_AT = 8;
 const HEADER_NUM_TABLES_AT = 12;
 const HEADER_TOTAL_SFNT_AT = 16;
 const HEADER_COMPRESSED_SIZE_AT = 20;
+const HEADER_MAJOR_VERSION_AT = 24;
+const HEADER_MINOR_VERSION_AT = 26;
 const HEADER_META_OFFSET_AT = 28;
 const HEADER_META_LENGTH_AT = 32;
 const HEADER_META_ORIG_LENGTH_AT = 36;
@@ -382,4 +385,173 @@ function buildFonts(fonts: FontSlice[], entries: DirectoryEntry[], stream: Buffe
     }
     return { flavor: font.flavor, tables };
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Encoder
+// ---------------------------------------------------------------------------------------------
+
+export interface Woff2InputTable {
+  tag: string;
+  data: Uint8Array;
+}
+
+const WOFF2_MAJOR_VERSION = 1;
+const WOFF2_MINOR_VERSION = 0;
+const HEAD_FLAGS_AT = 16;
+const HEAD_FLAGS_LOSSLESS_TRANSFORM = 0x0800;
+const HEAD_INDEX_FORMAT_VALUES = 2;
+const LOCA_SHORT_MAX_BYTES = 0x1fffe;
+const GLYF_HEADER_INDEX_FORMAT_AT = 6;
+const BROTLI_QUALITY = 11;
+const PAD_BYTE = 0;
+const TAG_PAD_CHAR = ' ';
+const DSIG_TAG = 'DSIG';
+
+interface EncodedTable {
+  tag: string;
+  /** Table as the reconstructed sfnt holds it. */
+  data: Uint8Array;
+  /** Bytes stored in the Brotli stream. */
+  stored: Uint8Array;
+  /** Transform version for the flags byte; 0 for tables without a transform. */
+  version: number;
+  transformed: boolean;
+}
+
+function normaliseTag(tag: string): string {
+  if (tag.length > TAG_BYTES) throw new Woff2FormatError(`Cannot encode WOFF2: table tag '${tag}' is longer than ${TAG_BYTES} characters.`);
+  const padded = tag.padEnd(TAG_BYTES, TAG_PAD_CHAR);
+  for (let i = 0; i < TAG_BYTES; i++) {
+    const c = padded.charCodeAt(i);
+    if (c < TAG_FIRST_PRINTABLE || c > TAG_LAST_PRINTABLE) throw new Woff2FormatError('Cannot encode WOFF2: a table tag holds a non-printable character.');
+  }
+  return padded;
+}
+
+function dataView(bytes: Uint8Array): DataView {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+/**
+ * Encodes the tables of an sfnt as WOFF2: tables in ascending tag order, the glyf/loca transform and,
+ * where it applies, the hmtx transform, head.flags bit 11 set to announce the lossless modifying
+ * transform, DSIG dropped (the transform invalidates it), and the table data compressed with Brotli
+ * at its strongest setting in font mode.
+ */
+export function encodeWoff2Container(flavor: number, input: ReadonlyArray<Woff2InputTable>): Buffer {
+  const byTag = new Map<string, Woff2InputTable>();
+  let inputBytes = 0;
+  for (const table of input) {
+    const tag = normaliseTag(table.tag);
+    if (tag === DSIG_TAG) continue;
+    if (byTag.has(tag)) throw new Woff2FormatError(`Cannot encode WOFF2: table '${tag}' appears twice.`);
+    inputBytes += table.data.length;
+    if (inputBytes > WOFF2_MAX_DECODED_BYTES) throw new Woff2LimitError(`The font holds more than ${WOFF2_MAX_DECODED_BYTES} bytes of table data.`);
+    byTag.set(tag, { tag, data: table.data });
+    if (byTag.size > WOFF2_MAX_TABLES) throw new Woff2LimitError(`The font has more than ${WOFF2_MAX_TABLES} tables.`);
+  }
+  if (byTag.size === 0) throw new Woff2FormatError('Cannot encode WOFF2: the font has no tables.');
+  const tags = [...byTag.keys()].sort();
+
+  const glyf = byTag.get('glyf');
+  const loca = byTag.get('loca');
+  if ((glyf === undefined) !== (loca === undefined)) throw new Woff2FormatError('Cannot encode WOFF2: glyf and loca must both be present or both be absent.');
+
+  const encoded = new Map<string, EncodedTable>();
+  for (const tag of tags) {
+    const { data } = byTag.get(tag)!;
+    encoded.set(tag, { tag, data, stored: data, version: 0, transformed: false });
+  }
+
+  let reconstruction: GlyfReconstruction | undefined;
+  let indexFormat = 0;
+  const head = byTag.get('head');
+  if (glyf !== undefined && loca !== undefined) {
+    const maxp = byTag.get('maxp');
+    if (head === undefined || head.data.length < HEAD_MIN_BYTES) throw new Woff2FormatError('Cannot encode WOFF2: the glyf transform needs a head table of 54 bytes.');
+    if (maxp === undefined || maxp.data.length < MAXP_MIN_BYTES) throw new Woff2FormatError('Cannot encode WOFF2: the glyf transform needs a maxp table.');
+    const sourceFormat = dataView(head.data).getInt16(HEAD_INDEX_TO_LOC_AT);
+    if (sourceFormat < 0 || sourceFormat >= HEAD_INDEX_FORMAT_VALUES) {
+      throw new Woff2FormatError(`Cannot encode WOFF2: head.indexToLocFormat ${sourceFormat} is neither 0 nor 1.`);
+    }
+    const numGlyphs = dataView(maxp.data).getUint16(MAXP_NUM_GLYPHS_AT);
+    const transformedGlyf = transformGlyf(glyf.data, loca.data, numGlyphs, sourceFormat === 1);
+    // reconstructing our own output yields the table sizes the directory must declare, and proves the stream decodes
+    reconstruction = reconstructGlyf(transformedGlyf, null);
+    // four-byte alignment can push a font with 16-bit offsets past what they address
+    indexFormat = sourceFormat === 1 || reconstruction.offsets[numGlyphs] > LOCA_SHORT_MAX_BYTES ? 1 : 0;
+    dataView(transformedGlyf).setUint16(GLYF_HEADER_INDEX_FORMAT_AT, indexFormat);
+    encoded.set('glyf', { tag: 'glyf', data: reconstruction.glyf, stored: transformedGlyf, version: GLYF_LOCA_TRANSFORMED, transformed: true });
+    const locaBytes = serializeLoca(reconstruction.offsets, indexFormat);
+    encoded.set('loca', { tag: 'loca', data: locaBytes, stored: new Uint8Array(0), version: GLYF_LOCA_TRANSFORMED, transformed: true });
+
+    const hmtx = byTag.get('hmtx');
+    const hhea = byTag.get('hhea');
+    if (hmtx !== undefined && hhea !== undefined && hhea.data.length >= HHEA_MIN_BYTES) {
+      const numHMetrics = dataView(hhea.data).getUint16(HHEA_NUM_H_METRICS_AT);
+      const storedHmtx = transformHmtx(hmtx.data, reconstruction.numGlyphs, numHMetrics, reconstruction.xMin);
+      if (storedHmtx !== null) encoded.set('hmtx', { tag: 'hmtx', data: hmtx.data, stored: storedHmtx, version: HMTX_TRANSFORMED, transformed: true });
+    }
+  }
+
+  // head: lossless-transform flag, the loca format the decoder will rebuild, and the checksum adjustment
+  if (head !== undefined && head.data.length >= HEAD_MIN_BYTES) {
+    const patched = Uint8Array.from(head.data);
+    const headView = dataView(patched);
+    headView.setUint16(HEAD_FLAGS_AT, headView.getUint16(HEAD_FLAGS_AT) | HEAD_FLAGS_LOSSLESS_TRANSFORM);
+    if (reconstruction !== undefined) headView.setInt16(HEAD_INDEX_TO_LOC_AT, indexFormat);
+    headView.setUint32(HEAD_ADJUSTMENT_AT, 0);
+    const sums = tags.map((tag) => {
+      const table = tag === 'head' ? patched : encoded.get(tag)!.data;
+      return { tag, length: table.length, checkSum: sfntChecksum(table) };
+    });
+    headView.setUint32(HEAD_ADJUSTMENT_AT, checksumAdjustment(flavor, sums));
+    encoded.set('head', { tag: 'head', data: patched, stored: patched, version: 0, transformed: false });
+  }
+
+  // table directory and the stream of stored table data
+  const directory: number[] = [];
+  let sfntSize = SFNT_HEADER_BYTES + SFNT_RECORD_BYTES * tags.length;
+  let streamSize = 0;
+  for (const tag of tags) {
+    const table = encoded.get(tag)!;
+    const known = WOFF2_KNOWN_TAGS.indexOf(tag);
+    directory.push((known >= 0 ? known : TAG_EXPLICIT) | (table.version << TRANSFORM_SHIFT));
+    if (known < 0) for (let i = 0; i < TAG_BYTES; i++) directory.push(tag.charCodeAt(i));
+    directory.push(...encodeUIntBase128(table.data.length));
+    if (table.transformed) directory.push(...encodeUIntBase128(table.stored.length));
+    sfntSize += alignUp(table.data.length);
+    streamSize += table.stored.length;
+  }
+  const stream = Buffer.allocUnsafe(streamSize);
+  let at = 0;
+  for (const tag of tags) {
+    const { stored } = encoded.get(tag)!;
+    stream.set(stored, at);
+    at += stored.length;
+  }
+
+  const compressed = zlib.brotliCompressSync(stream, {
+    params: {
+      [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_FONT,
+      [zlib.constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+      [zlib.constants.BROTLI_PARAM_SIZE_HINT]: stream.length,
+    },
+  });
+
+  const fontBytes = HEADER_BYTES + directory.length + compressed.length;
+  const total = alignUp(fontBytes);
+  const out = Buffer.alloc(total, PAD_BYTE);
+  out.writeUInt32BE(WOFF2_SIGNATURE, 0);
+  out.writeUInt32BE(flavor >>> 0, HEADER_FLAVOR_AT);
+  out.writeUInt32BE(total, HEADER_LENGTH_AT);
+  out.writeUInt16BE(tags.length, HEADER_NUM_TABLES_AT);
+  out.writeUInt32BE(sfntSize, HEADER_TOTAL_SFNT_AT);
+  out.writeUInt32BE(compressed.length, HEADER_COMPRESSED_SIZE_AT);
+  out.writeUInt16BE(WOFF2_MAJOR_VERSION, HEADER_MAJOR_VERSION_AT);
+  out.writeUInt16BE(WOFF2_MINOR_VERSION, HEADER_MINOR_VERSION_AT);
+  Buffer.from(directory).copy(out, HEADER_BYTES);
+  compressed.copy(out, HEADER_BYTES + directory.length);
+  return out;
 }

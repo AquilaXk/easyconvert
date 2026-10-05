@@ -243,3 +243,24 @@ export function minimalTransformedFont(overrides: Partial<TransformedGlyfSpec> =
     { tag: 'maxp', data: sfntMaxp(2) },
   ];
 }
+
+/** A plain sfnt (tables in ascending tag order, four-byte aligned) around the given tables. */
+export function sfntFromTables(version: number, tables: Map<string, Buffer>): Buffer {
+  const tags = [...tables.keys()].sort();
+  const directory = Buffer.alloc(12 + 16 * tags.length);
+  directory.writeUInt32BE(version, 0);
+  directory.writeUInt16BE(tags.length, 4);
+  const parts: Buffer[] = [directory];
+  let offset = directory.length;
+  tags.forEach((tag, i) => {
+    const data = tables.get(tag)!;
+    const at = 12 + i * 16;
+    directory.write(tag, at, 'latin1');
+    directory.writeUInt32BE(offset, at + 8);
+    directory.writeUInt32BE(data.length, at + 12);
+    const padded = Buffer.concat([data, Buffer.alloc((4 - (data.length % 4)) % 4)]);
+    parts.push(padded);
+    offset += padded.length;
+  });
+  return Buffer.concat(parts);
+}

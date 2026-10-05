@@ -188,6 +188,43 @@ export class GrowBuffer {
     this.view.setUint16(at, value);
   }
 
+  /** Appends one byte. */
+  u8(value: number): void {
+    this.reserve(1);
+    this.bytes[this.length++] = value;
+  }
+
+  /** Appends a 16-bit unsigned integer, big endian. */
+  u16be(value: number): void {
+    this.reserve(2);
+    this.bytes[this.length++] = value >> 8;
+    this.bytes[this.length++] = value & 0xff;
+  }
+
+  /** Appends the bytes of `source`. */
+  append(source: Uint8Array): void {
+    this.reserve(source.length);
+    this.bytes.set(source, this.length);
+    this.length += source.length;
+  }
+
+  /** Appends a 255UInt16 (the value must be a 16-bit unsigned integer). */
+  u255(value: number): void {
+    if (value < U255_LOWEST_UCODE) {
+      this.u8(value);
+    } else if (value < U255_BYTE_2_BASE) {
+      this.u8(U255_ONE_MORE_BYTE_1);
+      this.u8(value - U255_BYTE_1_BASE);
+    } else if (value < U255_WORD_BASE) {
+      this.u8(U255_ONE_MORE_BYTE_2);
+      this.u8(value - U255_BYTE_2_BASE);
+    } else {
+      this.u8(U255_WORD_CODE);
+      this.u8(value >> 8);
+      this.u8(value & 0xff);
+    }
+  }
+
   i16(at: number, value: number): void {
     this.view.setInt16(at, value);
   }

@@ -7,7 +7,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { brotliDecompressSync as brotliDecompress, inflateSync as zlibInflate } from 'node:zlib';
+import { inflateSync as zlibInflate } from 'node:zlib';
+import { readWoff2Reference } from './woff2-reference';
 
 /** Oracle binaries are resolved from fixed system directories, never from a writable PATH entry. */
 const ORACLE_BIN_DIRS = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin', '/bin'];
@@ -746,66 +747,12 @@ export function unwrapWoff(woff: Buffer): Map<string, Buffer> {
   return tables;
 }
 
-// Known table tags by index, WOFF2 recommendation section 5.1
-const WOFF2_KNOWN_TAGS = [
-  'cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name', 'OS/2', 'post', 'cvt ', 'fpgm', 'glyf', 'loca', 'prep',
-  'CFF ', 'VORG', 'EBDT', 'EBLC', 'gasp', 'hdmx', 'kern', 'LTSH', 'PCLT', 'VDMX', 'vhea', 'vmtx', 'BASE',
-  'GDEF', 'GPOS', 'GSUB', 'EBSC', 'JSTF', 'MATH', 'CBDT', 'CBLC', 'COLR', 'CPAL', 'SVG ', 'sbix', 'acnt',
-  'avar', 'bdat', 'bloc', 'bsln', 'cvar', 'fdsc', 'feat', 'fmtx', 'fvar', 'gvar', 'hsty', 'just', 'lcar',
-  'mort', 'morx', 'opbd', 'prop', 'trak', 'Zapf', 'Silf', 'Glat', 'Gloc', 'Feat', 'Sill',
-];
-const WOFF2_HEADER_SIZE = 48;
-const WOFF2_CUSTOM_TAG_INDEX = 63;
-const WOFF2_TRANSFORM_SHIFT = 6;
-const WOFF2_NULL_TRANSFORM = 3;
-
-function readBase128(data: Buffer, at: number): { value: number; next: number } {
-  let value = 0;
-  for (let i = 0; i < 5; i++) {
-    const byte = data[at + i];
-    value = value * 128 + (byte & 0x7f);
-    if ((byte & 0x80) === 0) return { value, next: at + i + 1 };
-  }
-  throw new Error('UIntBase128 is longer than five bytes');
-}
-
 /**
- * Returns the sfnt tables stored in a WOFF2 file. Only tables without a transform are supported:
- * a transformed glyf, loca or hmtx makes the reader throw rather than guess.
+ * Returns the sfnt tables stored in a WOFF2 file, with the glyf, loca and hmtx transforms reversed by
+ * the spec-literal reader in woff2-reference.ts (pinned to the Google reference decoder in tests).
  */
 export function unwrapWoff2(woff2: Buffer): Map<string, Buffer> {
-  if (woff2.toString('latin1', 0, 4) !== 'wOF2') throw new Error('not a WOFF2 file');
-  const numTables = woff2.readUInt16BE(12);
-  const compressedSize = woff2.readUInt32BE(20);
-  let at = WOFF2_HEADER_SIZE;
-  const entries: Array<{ tag: string; length: number }> = [];
-  for (let i = 0; i < numTables; i++) {
-    const flags = woff2[at++];
-    const index = flags & 0x3f;
-    let tag: string;
-    if (index === WOFF2_CUSTOM_TAG_INDEX) {
-      tag = woff2.toString('latin1', at, at + 4);
-      at += 4;
-    } else {
-      tag = WOFF2_KNOWN_TAGS[index];
-    }
-    const transform = flags >> WOFF2_TRANSFORM_SHIFT;
-    const orig = readBase128(woff2, at);
-    at = orig.next;
-    const isGlyfOrLoca = tag === 'glyf' || tag === 'loca';
-    const transformed = isGlyfOrLoca ? transform !== WOFF2_NULL_TRANSFORM : transform !== 0;
-    if (transformed) throw new Error(`table ${tag} uses WOFF2 transform ${transform}, which the test reader does not model`);
-    entries.push({ tag, length: orig.value });
-  }
-  const stream = brotliDecompress(woff2.subarray(at, at + compressedSize));
-  const tables = new Map<string, Buffer>();
-  let offset = 0;
-  for (const entry of entries) {
-    tables.set(entry.tag, stream.subarray(offset, offset + entry.length));
-    offset += entry.length;
-  }
-  if (offset !== stream.length) throw new Error('WOFF2 table lengths do not add up to the decompressed stream');
-  return tables;
+  return readWoff2Reference(woff2).tables;
 }
 
 /** Returns the embedded sfnt of an EOT file (FontDataSize bytes at the end of the file). */
