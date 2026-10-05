@@ -89,4 +89,15 @@ describe.skipIf(!ENABLED)('in-process RAW decoders bound their work by real hard
     expect(error).toBeInstanceOf(RawDecodeError);
     expect((error as RawDecodeError).message).toMatch(/time limit/);
   }, DECODE_TIMEOUT_MS);
+
+  it('rejects a CAMF block declaring more decoded bytes than its stream can produce', async () => {
+    const file = Buffer.from(readFileSync(samplePath('x3f')));
+    const directory = file.readUInt32LE(file.length - 4);
+    const count = file.readUInt32LE(directory + 8);
+    for (let index = 0; index < count; index += 1) {
+      const entry = directory + 12 + index * 12;
+      if (file.toString('latin1', entry + 8, entry + 12) === 'CAMF') file.writeUInt32LE(50_000_000, file.readUInt32LE(entry) + 12);
+    }
+    await expectQuickRejection(file, 'x3f', /more than its stream can hold/);
+  });
 });

@@ -67,6 +67,8 @@ const CAMF_TYPE_BYTE_HUFFMAN = 5;
 const CAMF_MAX_DECODED_BYTES = 64 * 1024 * 1024;
 const CAMF_TABLE_AREA_BYTES = 28;
 const CAMF_STREAM_OFFSET = 32;
+/** Type 4 packs two 12-bit values into three bytes. */
+const BLOCK_BYTES_PER_VALUE = 1.5;
 const CAMF_ENTRY_HEADER_BYTES = 20;
 const CAMF_ENTRY_MATRIX = 'CMbM';
 const CAMF_ENTRY_PROPERTY = 'CMbP';
@@ -359,17 +361,21 @@ function decodeCamfXor(data: Buffer, cryptKey: number): Buffer {
   return out;
 }
 
-function assertCamfSize(decodedSize: number): void {
+/** Every decoded value costs at least one bit of stream, so the stream bounds the output size. */
+function assertCamfSize(decodedSize: number, streamBytes: number, bytesPerValue: number): void {
   if (decodedSize > CAMF_MAX_DECODED_BYTES) throw fail(`the CAMF block claims ${decodedSize} decoded bytes`);
+  if (decodedSize > Math.ceil(streamBytes * BITS_PER_BYTE * bytesPerValue)) {
+    throw fail(`the CAMF block declares ${decodedSize} decoded bytes, more than its stream can hold`);
+  }
 }
 
 /** CAMF type 4: 12-bit values packed two per three bytes, coded like the sensor planes in blocks. */
 function decodeCamfBlocks(file: Buffer, start: number, end: number, decodedSize: number, bias: number, blockSize: number, blockCount: number): Buffer {
-  assertCamfSize(decodedSize);
   const { lookup, next } = readHuffmanTable(file, start, Math.min(end, start + CAMF_TABLE_AREA_BYTES));
   if (next > start + CAMF_TABLE_AREA_BYTES) throw fail('the CAMF Huffman table overruns its area');
   const streamStart = start + CAMF_STREAM_OFFSET;
   if (streamStart > end) throw fail('the CAMF stream is cut short');
+  assertCamfSize(decodedSize, end - streamStart, BLOCK_BYTES_PER_VALUE);
   const reader = new BitReader(file, streamStart, end);
   const out = Buffer.alloc(decodedSize);
   const rowStart = [bias, bias, bias, bias];
@@ -405,11 +411,11 @@ function decodeCamfBlocks(file: Buffer, start: number, end: number, decodedSize:
 
 /** CAMF type 5: one running byte, a single difference per output byte. */
 function decodeCamfBytesHuffman(file: Buffer, start: number, end: number, decodedSize: number, bias: number): Buffer {
-  assertCamfSize(decodedSize);
   const { lookup, next } = readHuffmanTable(file, start, Math.min(end, start + CAMF_TABLE_AREA_BYTES));
   if (next > start + CAMF_TABLE_AREA_BYTES) throw fail('the CAMF Huffman table overruns its area');
   const streamStart = start + CAMF_STREAM_OFFSET;
   if (streamStart > end) throw fail('the CAMF stream is cut short');
+  assertCamfSize(decodedSize, end - streamStart, 1);
   const reader = new BitReader(file, streamStart, end);
   const out = Buffer.alloc(decodedSize);
   let accumulator = bias;
