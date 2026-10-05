@@ -9,6 +9,7 @@ import { objectStorage, storageProvider } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { resolveDeclaredFormat } from './declared-format';
+import { MAX_CONTENT_TYPE_LENGTH, isValidContentType } from './object-attributes';
 
 export class TusOffsetMismatchError extends Error {
   constructor(public readonly expectedOffset: number) {
@@ -42,6 +43,14 @@ export class TusUploadExceededLengthError extends Error {
   constructor(exceededBytes: number, uploadLength: number) {
     super(`Uploaded bytes (${exceededBytes}) exceed declared Upload-Length (${uploadLength})`);
     this.name = 'TusUploadExceededLengthError';
+  }
+}
+
+/** The metadata sent when creating an upload cannot be accepted (for example a content type that is not a header value). */
+export class TusInvalidMetadataError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TusInvalidMetadataError';
   }
 }
 
@@ -449,6 +458,11 @@ export class TusEngine {
 
     const filename = parsed.filename || parsed.name || `upload-${id}.bin`;
     const mimeType = parsed.filetype || parsed.contentType || 'application/octet-stream';
+    if (!isValidContentType(mimeType)) {
+      throw new TusInvalidMetadataError(
+        `The upload's content type must be a printable ASCII content type of at most ${MAX_CONTENT_TYPE_LENGTH} characters.`
+      );
+    }
     const now = Date.now();
     const expiresAt = now + (params.ttlSeconds || this.defaultTtlSeconds) * 1000;
 

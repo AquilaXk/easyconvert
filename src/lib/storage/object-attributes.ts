@@ -24,6 +24,13 @@ export const META_CUSTOM = 'custom';
 
 export const DEFAULT_OBJECT_TTL_SECONDS = 3600;
 export const DEFAULT_MIME_TYPE = 'application/octet-stream';
+/** A content type travels as an HTTP header value: printable ASCII only, at most this long. */
+export const MAX_CONTENT_TYPE_LENGTH = 255;
+const CONTENT_TYPE_PATTERN = new RegExp(`^[\\x20-\\x7e]{1,${MAX_CONTENT_TYPE_LENGTH}}$`);
+
+export function isValidContentType(value: unknown): value is string {
+  return typeof value === 'string' && CONTENT_TYPE_PATTERN.test(value);
+}
 const MS_PER_SECOND = 1000;
 /** Keeps the encoded custom metadata well inside S3's 2 KiB header budget. */
 export const MAX_CUSTOM_METADATA_BYTES = 1024;

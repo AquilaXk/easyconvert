@@ -11,6 +11,7 @@ import {
   TusUnsupportedChecksumAlgorithmError,
   TusUploadExceededLengthError,
   TusNotFoundError,
+  TusInvalidMetadataError,
 } from '@/lib/storage/tus-engine';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -488,6 +489,11 @@ export async function POST(
 
     return new NextResponse(null, { status: 201, headers });
   } catch (err: any) {
+    if (err instanceof TusInvalidMetadataError) {
+      return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
+        'Tus-Resumable': TUS_RESUMABLE_VERSION,
+      });
+    }
     const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
     if (storageProblem) return storageProblem;
     return createProblemDetailsResponse(
