@@ -14,7 +14,8 @@ import { oracleTest } from './helpers/oracle-test';
 import { OracleToolMissingError, requireOracleTool } from './helpers/differential-oracle';
 
 /**
- * WOFF2 Recommendation section 5.1 (known table tags), 5.2 (UIntBase128) and 5.3 (255UInt16).
+ * WOFF2 Recommendation: the known table tags of the table directory format, and the UIntBase128 and
+ * 255UInt16 data types.
  * The expectations are hand-written from the specification text and cross-checked against the
  * fontTools implementation when it is installed.
  */
@@ -31,7 +32,7 @@ const SPEC_KNOWN_TAGS = [
 
 const KNOWN_TAG_COUNT = 63;
 
-describe('WOFF2 known table tags (section 5.1)', () => {
+describe('WOFF2 known table tags', () => {
   it('lists the 63 tags of the specification in index order', () => {
     expect([...WOFF2_KNOWN_TAGS]).toEqual(SPEC_KNOWN_TAGS);
     expect(WOFF2_KNOWN_TAGS).toHaveLength(KNOWN_TAG_COUNT);
@@ -60,7 +61,7 @@ describe('WOFF2 known table tags (section 5.1)', () => {
   });
 });
 
-describe('UIntBase128 (section 5.2)', () => {
+describe('UIntBase128', () => {
   const vectors: Array<[number, number[]]> = [
     [0, [0x00]],
     [63, [0x3f]],
@@ -112,7 +113,7 @@ describe('UIntBase128 (section 5.2)', () => {
   });
 });
 
-describe('255UInt16 (section 5.3)', () => {
+describe('255UInt16', () => {
   const vectors: Array<[number, number[]]> = [
     [0, [0]],
     [252, [252]],

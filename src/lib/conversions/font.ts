@@ -3,7 +3,7 @@ import { ConversionFailedError, ConversionOptions, ConversionResult } from '../t
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
-import { WOFF2_KNOWN_TAGS, decodeUIntBase128, encodeUIntBase128 } from './font-woff2';
+import { WOFF2_KNOWN_TAGS, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
 
@@ -489,88 +489,34 @@ export function encodeWoff2(font: ParsedFont): Buffer {
   return Buffer.concat([header, tableDirBuf, compressedStream]);
 }
 
+/** Builds the canonical font model from a font that decodeWoff2Fonts reconstructed. */
+function parsedFontFromWoff2(decoded: Woff2DecodedFont, defaultName: string): ParsedFont {
+  const tables: Record<string, SfntTable> = {};
+  for (const table of decoded.tables) {
+    tables[table.tag] = { tag: table.tag, checkSum: table.checkSum, offset: 0, length: table.data.length, data: table.data };
+  }
+  const fontFamily = tables['name'] ? extractFontFamilyFromNameTable(tables['name'].data) || defaultName : defaultName;
+  return {
+    sfntVersion: decoded.flavor,
+    flavor: decoded.flavor === 0x4f54544f ? 'OTTO' : 'TrueType',
+    numTables: decoded.tables.length,
+    tables,
+    fontFamily,
+  };
+}
+
 /**
- * Decodes W3C WOFF2 container format into ParsedFont
+ * Decodes W3C WOFF2 container format into ParsedFont. The glyf, loca and hmtx transforms are reversed
+ * and the font is checksummed like any sfnt. Only Brotli compressed WOFF2 is accepted; malformed input
+ * throws a Woff2FormatError. A collection yields its first font; decodeWoff2Collection returns all.
  */
 export function decodeWoff2(buffer: Buffer, defaultName: string): ParsedFont {
-  if (buffer.length < 48 || buffer.toString('ascii', 0, 4) !== 'wOF2') {
-    throw new Error('Invalid WOFF2 font: missing wOF2 magic signature.');
-  }
+  return parsedFontFromWoff2(decodeWoff2Fonts(buffer)[0], defaultName);
+}
 
-  const flavor = buffer.readUInt32BE(4);
-  const numTables = buffer.readUInt16BE(12);
-
-  const cursor = { offset: 48 };
-  const tableEntries: Array<{ tag: string; origLength: number }> = [];
-
-  for (let i = 0; i < numTables && cursor.offset < buffer.length; i++) {
-    const flags = buffer[cursor.offset++];
-    const tagIdx = flags & 0x3f;
-    let tag = '';
-    if (tagIdx === 63) {
-      tag = buffer.toString('ascii', cursor.offset, cursor.offset + 4);
-      cursor.offset += 4;
-    } else {
-      tag = WOFF2_KNOWN_TAGS[tagIdx] || `tab${i}`;
-    }
-    const origLength = decodeUIntBase128(buffer, cursor);
-    tableEntries.push({ tag, origLength });
-  }
-
-  const compressedStream = buffer.subarray(cursor.offset);
-
-  try {
-    const decompressed = zlib.brotliDecompressSync(compressedStream);
-
-    // If decompressed stream is already full SFNT (e.g. from legacy or direct encoding)
-    if (decompressed.length >= 12 && (decompressed.readUInt32BE(0) === 0x00010000 || decompressed.readUInt32BE(0) === 0x4f54544f)) {
-      return decodeSfnt(decompressed, defaultName);
-    }
-
-    // Split decompressed stream into tables according to table directory
-    if (tableEntries.length > 0) {
-      let streamOff = 0;
-      const tables: Record<string, SfntTable> = {};
-      for (const entry of tableEntries) {
-        const tableEnd = Math.min(decompressed.length, streamOff + entry.origLength);
-        const data = decompressed.subarray(streamOff, tableEnd);
-        streamOff += entry.origLength;
-        tables[entry.tag] = {
-          tag: entry.tag,
-          checkSum: calculateTableChecksum(data),
-          offset: 0,
-          length: entry.origLength,
-          data: Buffer.from(data),
-        };
-      }
-
-      let fontFamily = defaultName;
-      if (tables['name']) {
-        fontFamily = extractFontFamilyFromNameTable(tables['name'].data) || defaultName;
-      }
-
-      return {
-        sfntVersion: flavor,
-        flavor: flavor === 0x4f54544f ? 'OTTO' : 'TrueType',
-        numTables: tableEntries.length,
-        tables,
-        fontFamily,
-      };
-    }
-  } catch (brotliErr: any) {
-    // If Brotli fails, try zlib inflate fallback
-    try {
-      const inflated = zlib.inflateSync(compressedStream);
-      if (inflated.length >= 12) {
-        return decodeSfnt(inflated, defaultName);
-      }
-    } catch {
-      // Ignored
-    }
-    throw new Error(`Failed to decode WOFF2: compressed table stream is corrupted or invalid: ${brotliErr.message}`);
-  }
-
-  throw new Error('Failed to decode WOFF2: no valid table entries found.');
+/** Decodes every font of a WOFF2 file (several for a collection, one otherwise). */
+export function decodeWoff2Collection(buffer: Buffer, defaultName: string): ParsedFont[] {
+  return decodeWoff2Fonts(buffer).map((font) => parsedFontFromWoff2(font, defaultName));
 }
 
 /**
