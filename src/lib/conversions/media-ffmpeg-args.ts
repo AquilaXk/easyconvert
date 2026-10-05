@@ -11,6 +11,13 @@ import {
   MediaPackagingOptions,
   MediaPackagingFormat,
 } from '../types';
+import {
+  assertEncoderAvailable,
+  AudioTargetSpec,
+  isAudioOnlyTarget,
+  NoAudioStreamError,
+  resolveAudioTargetSpec,
+} from './media-audio-targets';
 
 export interface HardwareAccelerationCapabilities {
   nvenc: boolean;
@@ -123,6 +130,12 @@ export function probeAudioChannels(filePath: string, ffprobe: FfprobePath): numb
   return parsed;
 }
 
+/** Number of audio streams in the file; 0 when it has none. Throws when ffprobe cannot read the file. */
+export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): number {
+  const out = runFfprobe(ffprobe, filePath, ['-select_streams', 'a', '-show_entries', 'stream=index']);
+  return out === '' ? 0 : out.split('\n').length;
+}
+
 /** Transfer characteristic of the first video stream (e.g. `bt709`, `smpte2084`), or '' when unknown. */
 export function probeVideoColorTransfer(filePath: string, ffprobe: FfprobePath): string {
   return runFfprobe(ffprobe, filePath, ['-select_streams', 'v:0', '-show_entries', 'stream=color_transfer']);
@@ -147,6 +160,11 @@ const DRM_RENDER_NODE = /^renderD\d+$/;
 const QSV_SESSION_PROBE_TIMEOUT_MS = 5000;
 const QSV_PROBE_FRAME_SIZE = '256x256';
 const QSV_ENCODERS = ['h264_qsv', 'hevc_qsv'];
+/**
+ * One `ffmpeg -encoders` row: a type letter (V, A, S) and five capability flags (F, S, X, B, D or
+ * a dot), then the encoder name. Most encoders carry the D (direct rendering) flag.
+ */
+const ENCODER_LISTING_LINE = /^\s*[VAS][.FSXBD]{5}\s+([a-zA-Z0-9_-]+)/;
 const HARDWARE_ENCODER_NAME = /_(nvenc|vaapi|qsv|videotoolbox)$/;
 
 /** Test seam for the host facts the probe reads. */
@@ -232,7 +250,7 @@ export function probeHardwareAcceleration(
     const supported = new Set<string>();
     const lines = output.split('\n');
     for (const line of lines) {
-      const match = line.match(/^\s*[VAF.S]{6}\s+([a-zA-Z0-9_-]+)/);
+      const match = line.match(ENCODER_LISTING_LINE);
       if (match) {
         supported.add(match[1]);
       }
@@ -264,6 +282,68 @@ export function probeHardwareAcceleration(
     lastProbeTime = now;
     return defaultCaps;
   }
+}
+
+const CHANNELS_BY_LAYOUT_NAME: Readonly<Record<string, number>> = { mono: 1, stereo: 2, '5.1': 6, '7.1': 8 };
+const DOWNMIX_CHANNELS = 2;
+
+/** Channel count the caller asked for, in the same precedence the encoder arguments use. */
+function requestedChannelCount(options: ConversionOptions): number | undefined {
+  if (options.audio?.downmix === 'itu-r-bs775') return DOWNMIX_CHANNELS;
+  if (options.audio?.channels) return options.audio.channels;
+  if (options.audioChannels && Object.hasOwn(CHANNELS_BY_LAYOUT_NAME, options.audioChannels)) {
+    return CHANNELS_BY_LAYOUT_NAME[options.audioChannels];
+  }
+  return undefined;
+}
+
+/** Rejects a sample rate or channel count request that an encoder with a fixed format cannot honour. */
+function assertFixedAudioFormat(tgt: string, spec: AudioTargetSpec, options: ConversionOptions): void {
+  const sampleRate = options.audio?.sampleRate ?? options.audioSampleRate;
+  if (spec.fixedSampleRate !== undefined && sampleRate !== undefined && sampleRate !== spec.fixedSampleRate) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target only supports a ${spec.fixedSampleRate} Hz sample rate, but ${sampleRate} Hz was requested.`
+    );
+  }
+  const channels = requestedChannelCount(options);
+  if (spec.fixedChannels !== undefined && channels !== undefined && channels !== spec.fixedChannels) {
+    throw new InvalidMediaOptionError(
+      `The '${tgt}' target only supports ${spec.fixedChannels} audio channel(s), but ${channels} were requested.`
+    );
+  }
+}
+
+/**
+ * Output arguments that keep exactly one audio stream: every other stream class is dropped and the
+ * selected audio stream (the first by default) is mapped explicitly. An input without that stream
+ * throws instead of producing an empty or video-carrying file.
+ */
+function audioOnlyStreamArgs(
+  tgt: string,
+  inputPath: string,
+  options: ConversionOptions,
+  ffmpegBin?: string | null
+): string[] {
+  const track = options.audio?.track;
+  if (track === 'all') {
+    throw new InvalidMediaOptionError(`The '${tgt}' target holds a single audio stream; audio.track 'all' is not supported.`);
+  }
+  const index = track ?? 0;
+  if (!Number.isInteger(index) || index < 0) {
+    throw new InvalidMediaOptionError('Audio track index must be a non-negative integer.');
+  }
+  if (fs.existsSync(inputPath)) {
+    const available = probeAudioStreamCount(inputPath, resolveFfprobeBinary(ffmpegBin));
+    if (available === 0) {
+      throw new NoAudioStreamError(`The input has no audio stream, so it cannot be converted to '${tgt}'.`);
+    }
+    if (index >= available) {
+      throw new InvalidMediaOptionError(
+        `Audio track ${index} does not exist; the input has ${available} audio stream(s).`
+      );
+    }
+  }
+  return ['-vn', '-sn', '-dn', '-map', `0:a:${index}`];
 }
 
 /**
@@ -349,7 +429,7 @@ export function buildFfmpegArguments(
   }
 
   const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(tgt);
-  const isAudioOnly = ['mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma'].includes(tgt);
+  const audioSpec = isAudioOnlyTarget(tgt) ? resolveAudioTargetSpec(tgt) : undefined;
 
   if (options.subtitles?.mode === 'burn' && !isVideo) {
     throw new InvalidMediaOptionError("Subtitle 'burn' mode is only supported for video targets.");
@@ -377,10 +457,18 @@ export function buildFfmpegArguments(
     if ((tgt === 'mp4' || tgt === 'mov') && ac === 'vorbis') {
       throw new InvalidMediaOptionError("MP4/MOV container does not support 'vorbis' audio codec.");
     }
+    if (audioSpec && !audioSpec.userCodecs.includes(ac)) {
+      throw new InvalidMediaOptionError(`The '${tgt}' target does not support the '${ac}' audio codec.`);
+    }
+  }
+  if (audioSpec) {
+    assertFixedAudioFormat(tgt, audioSpec, options);
   }
 
   // Stream mapping
-  if (options.subtitles?.mode === 'soft') {
+  if (audioSpec) {
+    outputArgs.push(...audioOnlyStreamArgs(tgt, inputPath, options, ffmpegBin));
+  } else if (options.subtitles?.mode === 'soft') {
     outputArgs.push('-map', '0:v');
     if (options.audio?.track === 'all') {
       outputArgs.push('-map', '0:a');
@@ -760,35 +848,20 @@ export function buildFfmpegArguments(
     } else {
       resolvedAudioCodec = 'aac';
     }
-  } else if (isAudioOnly) {
-    switch (tgt) {
-      case 'mp3':
-        resolvedAudioCodec = 'libmp3lame';
-        break;
-      case 'aac':
-      case 'm4a':
-        resolvedAudioCodec = 'aac';
-        break;
-      case 'ogg':
-        resolvedAudioCodec = 'libvorbis';
-        break;
-      case 'opus':
-        resolvedAudioCodec = 'libopus';
-        break;
-      case 'flac':
-        resolvedAudioCodec = 'flac';
-        break;
-      case 'wav':
-        resolvedAudioCodec = 'pcm_s16le';
-        break;
-      default:
-        resolvedAudioCodec = 'aac';
-    }
+  } else if (audioSpec) {
+    resolvedAudioCodec = audioSpec.encoder;
   } else {
     resolvedAudioCodec = 'aac';
   }
 
+  if (audioSpec && ffmpegBin) {
+    assertEncoderAvailable(tgt, resolvedAudioCodec, probeHardwareAcceleration(ffmpegBin).supportedEncoders);
+  }
+
   outputArgs.push('-c:a', resolvedAudioCodec);
+  if (audioSpec) {
+    outputArgs.push('-f', audioSpec.muxer);
+  }
 
   // Audio bitrate
   if (typeof options.audio?.bitrateK === 'number') {
@@ -798,6 +871,12 @@ export function buildFfmpegArguments(
     outputArgs.push('-b:a', `${Math.floor(options.audio.bitrateK)}k`);
   } else if (options.audioBitrate && /^\d+[kK]?$/.test(options.audioBitrate)) {
     outputArgs.push('-b:a', options.audioBitrate.toLowerCase().endsWith('k') ? options.audioBitrate : `${options.audioBitrate}k`);
+  } else if (audioSpec && !options.audio?.codec) {
+    if (audioSpec.defaultBitrate !== undefined) {
+      outputArgs.push('-b:a', audioSpec.defaultBitrate);
+    } else if (audioSpec.defaultQuality !== undefined) {
+      outputArgs.push('-q:a', audioSpec.defaultQuality);
+    }
   } else if (resolvedAudioCodec !== 'flac' && resolvedAudioCodec !== 'pcm_s16le') {
     if (tgt === 'webm' || resolvedAudioCodec === 'libopus') {
       outputArgs.push('-b:a', '128k');
@@ -808,7 +887,9 @@ export function buildFfmpegArguments(
 
   // Audio filters and ITU-R BS.775 downmix
   const audioFilters: string[] = [];
-  if (options.audio?.downmix === 'itu-r-bs775') {
+  if (audioSpec?.fixedChannels !== undefined) {
+    outputArgs.push('-ac', String(audioSpec.fixedChannels));
+  } else if (options.audio?.downmix === 'itu-r-bs775') {
     const is71 =
       options.audio.channels === 8 ||
       options.audioChannels === '7.1' ||
@@ -830,7 +911,9 @@ export function buildFfmpegArguments(
   }
 
   // Audio sample rate
-  if (typeof options.audio?.sampleRate === 'number') {
+  if (audioSpec?.fixedSampleRate !== undefined) {
+    outputArgs.push('-ar', String(audioSpec.fixedSampleRate));
+  } else if (typeof options.audio?.sampleRate === 'number') {
     if (!Number.isFinite(options.audio.sampleRate) || options.audio.sampleRate < 8000 || options.audio.sampleRate > 192000) {
       throw new InvalidMediaOptionError(`Invalid audio sample rate: ${options.audio.sampleRate}. Allowed range: 8000 to 192000 Hz.`);
     }
@@ -855,7 +938,7 @@ export function buildFfmpegArguments(
     outputArgs.push('-filter:a', audioFilters.join(','));
   }
 
-  if (tgt === 'm4a') {
+  if (audioSpec?.muxer === 'ipod') {
     outputArgs.push('-movflags', '+faststart');
   }
 
