@@ -3,7 +3,7 @@ import type { IObjectStorage } from './object-storage';
 import type { IStorageBackend } from './oci-storage';
 import { createRemoteStorage } from './remote-storage-factory';
 import { s3Storage } from './s3-storage';
-import { isRemoteStorageConfig, resolveStorageConfig, type StorageConfig } from './storage-config';
+import { assertSigningSecretConfigured, isRemoteStorageConfig, resolveStorageConfig, type StorageConfig } from './storage-config';
 
 /**
  * Storage selection, made once at startup from STORAGE_DRIVER (see storage-config.ts). An
@@ -11,6 +11,9 @@ import { isRemoteStorageConfig, resolveStorageConfig, type StorageConfig } from 
  * this module loads rather than falling back to local disk.
  */
 export const storageConfig: StorageConfig = resolveStorageConfig();
+
+// Every driver signs URLs or upload tokens with the signing secret, so production checks it up front.
+assertSigningSecretConfigured();
 
 const remote = isRemoteStorageConfig(storageConfig) ? createRemoteStorage(storageConfig) : undefined;
 

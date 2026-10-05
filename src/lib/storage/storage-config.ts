@@ -143,12 +143,52 @@ export function isProductionRuntime(env: Env = process.env): boolean {
 }
 
 /**
+ * Signing secrets that are published in the repository (the docker-compose development defaults).
+ * Anyone can read them, so production refuses to sign with one.
+ */
+export const KNOWN_PUBLIC_SIGNING_SECRETS: ReadonlySet<string> = new Set(['easyconvert-local-dev-signing-secret']);
+/** The shortest signing secret production accepts, in bytes (the size of the HMAC-SHA-256 key). */
+export const MIN_PRODUCTION_SIGNING_SECRET_BYTES = 32;
+
+/**
  * The secret that signs capability URLs served by this application (local emulation and upload
  * tokens). It is distinct from the object store credentials. Returns undefined when none is set;
- * callers must refuse to sign then, never invent a secret.
+ * callers must refuse to sign then, never invent a secret. In production the secret must not be a
+ * known public one and must be at least MIN_PRODUCTION_SIGNING_SECRET_BYTES long; this is the one
+ * place every backend reads it, so the rule holds for every driver.
  */
 export function resolveSigningSecret(env: Env = process.env): string | undefined {
-  return firstVar(env, SIGNING_SECRET_VARIABLES)?.value;
+  const found = firstVar(env, SIGNING_SECRET_VARIABLES);
+  if (found === undefined) return undefined;
+  if (isProductionRuntime(env)) {
+    if (KNOWN_PUBLIC_SIGNING_SECRETS.has(found.value)) {
+      throw new StorageConfigError(
+        `${found.name} is a publicly known development secret and cannot be used in production.`,
+        [found.name]
+      );
+    }
+    if (Buffer.byteLength(found.value, 'utf-8') < MIN_PRODUCTION_SIGNING_SECRET_BYTES) {
+      throw new StorageConfigError(
+        `${found.name} must be at least ${MIN_PRODUCTION_SIGNING_SECRET_BYTES} bytes long in production.`,
+        [found.name]
+      );
+    }
+  }
+  return found.value;
+}
+
+/**
+ * Startup check for every driver: in production a signing secret must be configured and pass the
+ * policy of resolveSigningSecret. Outside production nothing is required.
+ */
+export function assertSigningSecretConfigured(env: Env = process.env): void {
+  if (!isProductionRuntime(env)) return;
+  if (resolveSigningSecret(env) === undefined) {
+    throw new StorageConfigError(
+      'STORAGE_SIGNING_SECRET is required in production to sign upload and download URLs.',
+      ['STORAGE_SIGNING_SECRET']
+    );
+  }
 }
 
 /**
