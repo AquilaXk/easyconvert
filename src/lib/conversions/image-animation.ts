@@ -37,7 +37,10 @@ export interface FrameSource {
   height: number;
   frameCount: number;
   timing: AnimationTiming;
-  /** Frame `index` (0-based); called once per frame, in order. */
+  /**
+   * Frame `index` (0-based); called once per frame, in order. The pixels may be a buffer the source reuses
+   * for the next frame, so they are only valid until the next call: consume them (encode them) first.
+   */
   frame(index: number): Promise<RawFrame>;
 }
 

@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import { assembleAnimation, type AnimationEncodeOptions, type FrameSource, type RawFrame } from './image-animation';
 import type { DecodedAnimation } from './image-frames';
-import { assertAnimationBudget, RGBA_BYTES_PER_PIXEL } from './image-limits';
+import { assertAnimationBudget, COMPOSED_MEMORY, RGBA_BYTES_PER_PIXEL } from './image-limits';
 import { joinTiffPages } from './image-tiff-merge';
 import { pageEntryName } from './page-range';
 import type { ConversionResult } from '../types';
@@ -56,7 +56,7 @@ export async function encodeDecodedAnimation(
   encode: AnimationEncodeOptions
 ): Promise<Buffer> {
   const bound = resizedDimensions(animation.width, animation.height, resize);
-  assertAnimationBudget(bound.width, bound.height, animation.frameCount, 'The resized animation');
+  assertAnimationBudget(bound.width, bound.height, animation.frameCount, 'The resized animation', COMPOSED_MEMORY);
   const transform = async (frame: RawFrame) => (resize ? resizeFrame(frame, resize) : frame);
   const first = await transform(await animation.frame(FIRST_FRAME_INDEX));
   const source: FrameSource = {

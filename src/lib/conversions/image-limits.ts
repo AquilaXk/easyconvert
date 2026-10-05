@@ -13,6 +13,45 @@ export const RGBA_BYTES_PER_PIXEL = 4;
 /** Upper bound for the RGBA bytes of all frames of one decoded or resized animation. */
 export const MAX_DECODED_ANIMATION_BYTES = 512 * BYTES_PER_MIB;
 
+/** Most frames an animation may have; each frame is decoded, transformed and encoded on its own. */
+export const MAX_ANIMATION_FRAMES = 4096;
+
+/**
+ * Copies of a stacked animation alive at once while it is decoded: libvips holds the decoded stack and
+ * sharp copies it out as raw pixels. Measured on a 10-frame 2500 x 2500 animation.
+ */
+export const STACK_DECODE_COPIES = 2;
+
+/**
+ * Frame-sized buffers alive at once while a stacked animation is converted, besides the stack: the oriented
+ * or resized copy of the current frame, the encoder's working copies and buffers freed but not yet collected.
+ */
+export const STACKED_WORKING_COPIES = 4;
+
+/**
+ * Frame-sized buffers alive at once while frames are composed one by one: the canvas, the decoded frame, the
+ * decoder's own image, the encoder's copies and buffers freed but not yet collected. Measured on 5000 x 5000
+ * and 4000 x 4000 animated PNGs, where peak memory above the process baseline was about five frames.
+ */
+export const COMPOSED_WORKING_COPIES = 5;
+
+/** How many frame-sized buffers a conversion keeps in memory at the same time. */
+export interface AnimationMemory {
+  /** Frames held for the whole conversion (all of them for a stacked animation, none when streamed). */
+  residentFrames: number;
+  /** Frame-sized working buffers on top of the resident frames. */
+  workingCopies: number;
+}
+
+/** Memory shape of an animation decoded as one stack of `frames` frames. */
+export const stackedMemory = (frames: number): AnimationMemory => ({
+  residentFrames: frames * STACK_DECODE_COPIES,
+  workingCopies: STACKED_WORKING_COPIES,
+});
+
+/** Memory shape of frames that are composed and encoded one at a time. */
+export const COMPOSED_MEMORY: AnimationMemory = { residentFrames: 0, workingCopies: COMPOSED_WORKING_COPIES };
+
 /** Upper bound for the pixels of all pages converted from one multi-page image (each page is decoded alone). */
 export const MAX_AGGREGATE_PAGE_PIXELS = 400_000_000;
 
@@ -24,13 +63,32 @@ export function rgbaBytes(width: number, height: number, frames: number): number
   return width * height * frames * RGBA_BYTES_PER_PIXEL;
 }
 
-/** Throws when the RGBA bytes of `frames` frames of `width` x `height` exceed the decoded animation budget. */
-export function assertAnimationBudget(width: number, height: number, frames: number, what: string): void {
-  const bytes = rgbaBytes(width, height, frames);
-  if (!Number.isFinite(bytes) || bytes > MAX_DECODED_ANIMATION_BYTES) {
-    const mib = Number.isFinite(bytes) ? Math.ceil(bytes / BYTES_PER_MIB) : Infinity;
+/** Throws when an animation has more frames than the frame limit allows. */
+export function assertFrameCount(frames: number, what: string): void {
+  if (frames > MAX_ANIMATION_FRAMES) {
+    throw new ConversionFailedError(`${what} has ${frames} frames, over the limit of ${MAX_ANIMATION_FRAMES} frames`);
+  }
+}
+
+/**
+ * Throws when `frames` frames of `width` x `height` pixels exceed the decoded animation budget: either their
+ * RGBA bytes in total (the work to do), or the frame-sized buffers `memory` keeps alive at once (the peak).
+ */
+export function assertAnimationBudget(
+  width: number,
+  height: number,
+  frames: number,
+  what: string,
+  memory: AnimationMemory = stackedMemory(frames)
+): void {
+  assertFrameCount(frames, what);
+  const total = rgbaBytes(width, height, frames);
+  const peak = rgbaBytes(width, height, memory.residentFrames + memory.workingCopies);
+  const worst = Math.max(total, peak);
+  if (!Number.isFinite(worst) || worst > MAX_DECODED_ANIMATION_BYTES) {
+    const mib = Number.isFinite(worst) ? Math.ceil(worst / BYTES_PER_MIB) : Infinity;
     throw new ConversionFailedError(
-      `${what} would hold ${frames} frames of ${width}x${height} pixels (${mib} MiB as RGBA), over the ${
+      `${what} would hold ${frames} frames of ${width}x${height} pixels (${mib} MiB as RGBA at its peak), over the ${
         MAX_DECODED_ANIMATION_BYTES / BYTES_PER_MIB
       } MiB decoded animation limit`
     );

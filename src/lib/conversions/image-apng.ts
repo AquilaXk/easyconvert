@@ -352,7 +352,7 @@ function blendOver(canvas: Buffer, at: number, source: Buffer, from: number): vo
 
 /**
  * Renders the animation frame by frame onto one canvas. `advance()` draws the next frame (after disposing
- * of the previous one) and `snapshot()` copies the canvas as that frame's full RGBA picture.
+ * of the previous one) and `snapshot()` exposes the canvas as that frame's full RGBA picture.
  */
 export class ApngCompositor {
   private readonly canvas: Buffer;
@@ -378,8 +378,12 @@ export class ApngCompositor {
     this.next += 1;
   }
 
+  /**
+   * The canvas as the picture of the frame just drawn. It is the canvas itself, not a copy, so it is valid
+   * only until the next `advance()`; callers consume it (encode it) before asking for the next frame.
+   */
   snapshot(): Buffer {
-    return Buffer.from(this.canvas);
+    return this.canvas;
   }
 
   private rowStart(x: number, y: number): number {

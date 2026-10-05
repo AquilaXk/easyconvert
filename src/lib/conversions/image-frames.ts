@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import { ConversionFailedError, InvalidPageRangeError } from '../types';
 import { ApngCompositor, parseApng, type ApngAnimation } from './image-apng';
 import type { AnimationMetadata, FrameSource, RawFrame } from './image-animation';
-import { assertAggregatePagePixels, assertAnimationBudget, RGBA_BYTES_PER_PIXEL } from './image-limits';
+import { assertAggregatePagePixels, assertAnimationBudget, assertFrameCount, COMPOSED_MEMORY, RGBA_BYTES_PER_PIXEL } from './image-limits';
 import { EXIF_ORIENTATION_NORMAL, orientRgbaFrame, withUprightOrientation } from './image-orientation';
 import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './page-range';
 
@@ -131,9 +131,10 @@ async function selectApng(
 ): Promise<FrameSelection> {
   const frames = animation.frameCount;
   const { width, height } = animation;
+  assertFrameCount(frames, 'The animated PNG');
   const requested = resolveRequestedPages(options, frames);
   if (requested === undefined && ANIMATED_IMAGE_TARGETS.has(targetFormat)) {
-    assertAnimationBudget(width, height, frames, 'The animated PNG');
+    assertAnimationBudget(width, height, frames, 'The animated PNG', COMPOSED_MEMORY);
     return {
       source: buffer,
       input: {},
@@ -143,7 +144,7 @@ async function selectApng(
       sourceFrameCount: frames,
     };
   }
-  assertAnimationBudget(width, height, SINGLE_FRAME, 'The animated PNG canvas');
+  assertAnimationBudget(width, height, SINGLE_FRAME, 'The animated PNG canvas', COMPOSED_MEMORY);
   if (requested === undefined) {
     // Frame 1 is the default image when an fcTL precedes it; otherwise the default image is not a frame.
     return singleSource(buffer, {}, frames, animation.defaultIsFirstFrame ? FIRST_FRAME : undefined);
@@ -213,6 +214,7 @@ function selectAnimationFrames(
   targetFormat: string,
   options: FrameOptions
 ): FrameSelection {
+  assertFrameCount(frames, 'The animation');
   const requested = resolveRequestedPages(options, frames);
   if (requested === undefined && ANIMATED_IMAGE_TARGETS.has(targetFormat)) {
     const orientation = meta.orientation ?? EXIF_ORIENTATION_NORMAL;
