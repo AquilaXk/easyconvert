@@ -21,7 +21,7 @@ import {
 } from '../src/lib/security/svg-sanitizer';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { convertImage } from '../src/lib/conversions/image';
-import { convertData, simpleXmlToJson } from '../src/lib/conversions/data';
+import { convertData } from '../src/lib/conversions/data';
 import JSZip from 'jszip';
 import {
   extractZipArchive,
@@ -500,16 +500,15 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(clean).toContain('href="#local-symbol"');
     });
 
-    it('sanitizes XML data in simpleXmlToJson and convertData', async () => {
-      const maliciousXml = `<root><item><name>Product</name><script>alert(1)</script><desc onclick="evil()">Desc</desc></item></root>`;
-      const parsed = simpleXmlToJson(maliciousXml) as any;
-      expect(parsed.root.item.script).toBeUndefined();
-      expect(parsed.root.item.desc.onclick).toBeUndefined();
-
-      const res = await convertData(Buffer.from(maliciousXml, 'utf-8'), 'xml', 'json', {}, 'test.xml');
-      const jsonStr = res.buffer.toString('utf-8');
-      expect(jsonStr).not.toContain('alert(1)');
-      expect(jsonStr).not.toContain('onclick');
+    it('keeps script-like XML data verbatim: data XML is not an SVG to sanitize (#455)', async () => {
+      const userXml = `<root><item><name>Product</name><script>alert(1)</script><desc onclick="evil()">Desc</desc></item></root>`;
+      const res = await convertData(Buffer.from(userXml, 'utf-8'), 'xml', 'json', {}, 'test.xml');
+      expect(res.mimeType).toBe('application/json');
+      // The JSON output is inert data; dropping these elements would silently lose the user's content.
+      expect(JSON.parse(res.buffer.toString('utf-8'))).toEqual([
+        'root',
+        ['item', ['name', 'Product'], ['script', 'alert(1)'], ['desc', { onclick: 'evil()' }, 'Desc']],
+      ]);
     });
 
     it('enforces SVG sanitization in vector-cad conversions', async () => {

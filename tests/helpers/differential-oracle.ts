@@ -31,6 +31,8 @@ export type ExternalOracleTool =
   | 'qpdf'
   | 'python3'
   | 'iconv'
+  | 'xmllint'
+  | 'jq'
   | 'raw-identify'
   | 'dcraw_emu';
 

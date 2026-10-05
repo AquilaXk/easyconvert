@@ -1,0 +1,22 @@
+TOML v1.0.0 conformance vectors for tests/data-toml.test.ts.
+
+Source: https://github.com/toml-lang/toml-test, tag v2.2.0
+        (commit ce08da1ddb075d1c7596d663c7fcba9a2ae02c5c), directory tests/.
+License: MIT, see LICENSE in this directory (copied unchanged from the repository root).
+
+The files are copied byte for byte. Only vectors listed in tests/files-toml-1.0.0 are
+included, restricted to this subset:
+
+  valid/*.toml and valid/*.json at the top level
+  valid/{spec-1.0.0,integer,float,datetime,string}/
+  invalid/{spec-1.0.0,encoding,control,integer}/
+
+Selection, run from the toml-test checkout's tests/ directory:
+
+  grep -E '^valid/(spec-1\.0\.0|integer|float|datetime|string)/|^valid/[^/]+$' files-toml-1.0.0 >  subset.txt
+  grep -E '^invalid/(spec-1\.0\.0|encoding|control|integer)/' files-toml-1.0.0              >> subset.txt
+  xargs cp --parents -t <easyconvert>/tests/fixtures/toml-test < subset.txt
+
+Each valid/<name>.toml has valid/<name>.json in toml-test's tagged form: every scalar is
+{"type": T, "value": "text"} with T one of string, integer, float, bool, datetime,
+datetime-local, date-local, time-local. Every invalid/*.toml must be rejected.

@@ -497,6 +497,22 @@ export class DataParseError extends ConversionFailedError {
   }
 }
 
+/** Structured-data input that exceeds a safety cap: entity or alias expansion, expanded size, nesting depth. */
+export class DataLimitExceededError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DataLimitExceededError';
+  }
+}
+
+/** A parsed value that the target data format cannot represent (TOML null, JSON infinity, XML control characters). */
+export class DataRepresentationError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DataRepresentationError';
+  }
+}
+
 export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
   readonly status = 400;
   constructor(message: string) {

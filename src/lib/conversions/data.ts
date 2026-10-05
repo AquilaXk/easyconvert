@@ -1,18 +1,38 @@
 import Papa from 'papaparse';
-import yaml from 'js-yaml';
 import iconv from 'iconv-lite';
 import PDFDocument from 'pdfkit';
+import { parse as parseToml, stringify as stringifyToml, TomlError } from 'smol-toml';
+import {
+  Document as YamlDocument,
+  Scalar as YamlScalar,
+  parseDocument as parseYamlDocument,
+  visit as visitYaml,
+  type ScalarTag,
+} from 'yaml';
 import {
   ConversionOptions,
   ConversionResult,
   DataEncodingError,
+  DataLimitExceededError,
   DataParseError,
+  DataRepresentationError,
   UnsupportedOptionError,
+  UnsupportedTargetError,
 } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
-import { sanitizeSvgString } from '../security/svg-sanitizer';
 import { encodeParquet, decodeParquet } from './parquet';
 import { assertNoComplexScript } from './ctl';
+import {
+  MAX_DATA_NESTING_DEPTH,
+  isDataObject,
+  normalizeDataValue,
+  parseJsonLossless,
+  setOwn,
+  stringifyJsonLossless,
+  type DataObject,
+  type DataValue,
+} from './data-json';
+import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMl } from './data-xml';
 
 export { encodeParquet, decodeParquet };
 
@@ -329,21 +349,20 @@ const UTF8_BOM_CHAR = '\uFEFF';
  * which mostly feeds data tooling where a BOM would corrupt the first header. Formula cells are
  * prefixed with ' and quoted unless `escapeFormulas` is false.
  */
-function writeDelimited(
-  input: Record<string, unknown>[] | { fields: string[]; data: Record<string, unknown>[] },
-  tgt: string,
-  options: ConversionOptions
-): Buffer {
+function writeDelimited(fields: string[], rows: readonly (readonly unknown[])[], tgt: string, options: ConversionOptions): Buffer {
   const delimiter = tgt === 'tsv' ? '\t' : ',';
   const escapeFormulas = options.escapeFormulas ?? true;
   const withBom = options.bom ?? tgt === 'csv';
-  const fieldCount = Array.isArray(input) ? Object.keys(input[0] ?? {}).length : input.fields.length;
-  const text = Papa.unparse(input, {
-    delimiter,
-    escapeFormulae: escapeFormulas ? FORMULA_TRIGGER : false,
-    // A one-column record whose only value is empty would otherwise be an empty line.
-    quotes: (value: unknown) => fieldCount === 1 && value === '',
-  });
+  const data = rows.map((row) => row.map((cell) => cell ?? ''));
+  const text = Papa.unparse(
+    { fields, data },
+    {
+      delimiter,
+      escapeFormulae: escapeFormulas ? FORMULA_TRIGGER : false,
+      // A one-column record whose only value is empty would otherwise be an empty line.
+      quotes: (value: unknown) => fields.length === 1 && value === '',
+    }
+  );
   return Buffer.from(withBom ? UTF8_BOM_CHAR + text : text, 'utf-8');
 }
 
@@ -354,6 +373,352 @@ function delimitedResult(buffer: Buffer, tgt: string, baseName: string): Convers
     filename: `${baseName}.${tgt}`,
     size: buffer.length,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tables from structured data
+// ---------------------------------------------------------------------------
+
+const JSON_INDENT = 2;
+/** Targets written from the flattened table of records. */
+const TABLE_TARGETS: ReadonlySet<string> = new Set(['csv', 'tsv', 'parquet', 'html', 'pdf', 'ods', 'xls', 'xlsx']);
+
+interface DataTable {
+  fields: string[];
+  rows: DataValue[][];
+}
+
+/** Writes one table cell per leaf: nested objects become dot paths, arrays their JSON text. */
+function flattenInto(value: DataValue, path: string, cells: Map<string, DataValue>): void {
+  if (isDataObject(value)) {
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      setCell(cells, path, '{}');
+      return;
+    }
+    for (const key of keys) flattenInto(value[key], path === '' ? key : `${path}.${key}`, cells);
+    return;
+  }
+  setCell(cells, path, Array.isArray(value) ? stringifyJsonLossless(value) : value);
+}
+
+function setCell(cells: Map<string, DataValue>, path: string, value: DataValue): void {
+  if (cells.has(path)) {
+    throw new DataRepresentationError(`Two values flatten to the same column "${path}"; rename one of the keys.`);
+  }
+  cells.set(path, value);
+}
+
+/** A table over the union of all records' columns in first-seen order; a non-object record fills "value". */
+function tabulate(records: DataValue[], leadingFields: readonly string[] = []): DataTable {
+  const fieldIndex = new Map<string, number>(leadingFields.map((field, index) => [field, index]));
+  const flattened = records.map((record) => {
+    const cells = new Map<string, DataValue>();
+    if (isDataObject(record)) flattenInto(record, '', cells);
+    else setCell(cells, 'value', Array.isArray(record) ? stringifyJsonLossless(record) : record);
+    for (const field of cells.keys()) {
+      if (!fieldIndex.has(field)) fieldIndex.set(field, fieldIndex.size);
+    }
+    return cells;
+  });
+  const fields = [...fieldIndex.keys()];
+  return { fields, rows: flattened.map((cells) => fields.map((field) => cells.get(field) ?? null)) };
+}
+
+function tableRecords(table: DataTable): DataObject[] {
+  return table.rows.map((row) => {
+    const record: DataObject = {};
+    table.fields.forEach((field, index) => setOwn(record, field, row[index]));
+    return record;
+  });
+}
+
+function cellText(value: DataValue): string {
+  return value === null ? '' : String(value);
+}
+
+function tableStrings(table: DataTable): string[][] {
+  return [table.fields, ...table.rows.map((row) => row.map(cellText))];
+}
+
+// ---------------------------------------------------------------------------
+// Structured sources: JSON, NDJSON, YAML, TOML, XML, parquet, delimited text
+// ---------------------------------------------------------------------------
+
+/** Alias resolutions per YAML document (the yaml library's default); more indicates an expansion attack. */
+const MAX_YAML_ALIAS_COUNT = 100;
+/** Values a YAML document may expand to per value written in its source. */
+const YAML_EXPANSION_FACTOR = 10;
+/** Values every YAML document may expand to regardless of its own size. */
+const YAML_MIN_EXPANDED_VALUES = 100_000;
+const INT64_MIN = -(BigInt(2) ** BigInt(63));
+const INT64_MAX = BigInt(2) ** BigInt(63) - BigInt(1);
+/** Leading bytes searched for the XML declaration's encoding pseudo-attribute. */
+const XML_DECLARATION_SCAN_BYTES = 256;
+const XML_DECLARATION_ENCODING =
+  /^<\?xml[\x20\t\r\n][^>]*?encoding[\x20\t\r\n]*=[\x20\t\r\n]*(["'])([A-Za-z][A-Za-z0-9._-]*)\1/;
+const UTF16LE_XML_SIGNATURE: readonly number[] = [0x3c, 0x00, 0x3f, 0x00];
+const UTF16BE_XML_SIGNATURE: readonly number[] = [0x00, 0x3c, 0x00, 0x3f];
+
+interface StructuredSource {
+  /** The whole document as data: the JSON, YAML, TOML and XML writers serialize it. */
+  value: DataValue;
+  /** Records for table targets (CSV, TSV, parquet, spreadsheets, HTML, PDF). */
+  records: () => DataValue[];
+  /** Columns that lead every table even when no record has them (a CSV header). */
+  fields?: string[];
+  /** Plain-text rendering for the txt target. */
+  text: () => string;
+}
+
+function startsWithBytes(bytes: Uint8Array, signature: readonly number[]): boolean {
+  return bytes.length >= signature.length && signature.every((byte, index) => bytes[index] === byte);
+}
+
+/** Strict UTF-8, the only encoding JSON (RFC 8259), NDJSON and TOML allow; a UTF-8 BOM is dropped. */
+function decodeUtf8Text(bytes: Uint8Array, format: string): string {
+  const bom = sniffBom(bytes);
+  if (bom !== null && bom !== 'utf-8') {
+    throw new DataEncodingError(`${format} input must be UTF-8, but it starts with a ${bom} byte-order mark.`);
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new DataEncodingError(`${format} input is not valid UTF-8 text.`);
+  }
+}
+
+/** XML 1.0 Appendix F: a BOM, then the UTF-16 form of "<?", then the declared encoding, then UTF-8. */
+function decodeXmlText(bytes: Uint8Array): string {
+  const bom = sniffBom(bytes);
+  if (bom) return decodeStrict(bytes, bom);
+  if (startsWithBytes(bytes, UTF16LE_XML_SIGNATURE)) return decodeStrict(bytes, 'utf-16le');
+  if (startsWithBytes(bytes, UTF16BE_XML_SIGNATURE)) return decodeStrict(bytes, 'utf-16be');
+  const head = Buffer.from(bytes.subarray(0, XML_DECLARATION_SCAN_BYTES)).toString('latin1');
+  const declared = XML_DECLARATION_ENCODING.exec(head)?.[2];
+  if (declared === undefined) return decodeStrict(bytes, 'utf-8');
+  let encoding: string;
+  try {
+    encoding = new TextDecoder(declared).encoding;
+  } catch {
+    throw new DataEncodingError(`Unsupported XML encoding declaration "${declared}".`);
+  }
+  return decodeStrict(bytes, encoding);
+}
+
+function parseYamlText(text: string): DataValue {
+  const document = parseYamlDocument(text, { intAsBigInt: true, merge: true, uniqueKeys: true });
+  const [first] = document.errors;
+  if (first) {
+    const position = first.linePos?.[0];
+    throw new DataParseError(`YAML parsing failed: ${first.message.split('\n')[0]}`, {
+      line: position?.line,
+      column: position?.col,
+    });
+  }
+  let sourceValues = 0;
+  visitYaml(document, {
+    Node() {
+      sourceValues++;
+    },
+  });
+  let raw: unknown;
+  try {
+    raw = document.toJS({ maxAliasCount: MAX_YAML_ALIAS_COUNT });
+  } catch (err) {
+    if (err instanceof ReferenceError) {
+      throw new DataLimitExceededError(`YAML alias expansion exceeds the cap of ${MAX_YAML_ALIAS_COUNT} aliases: ${err.message}.`);
+    }
+    throw new DataParseError(`YAML parsing failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return normalizeDataValue(raw, {
+    maxValues: Math.max(YAML_MIN_EXPANDED_VALUES, sourceValues * YAML_EXPANSION_FACTOR),
+    label: 'YAML document',
+  });
+}
+
+function parseTomlText(text: string): DataValue {
+  let raw: unknown;
+  try {
+    raw = parseToml(text, { integersAsBigInt: 'asNeeded', maxDepth: MAX_DATA_NESTING_DEPTH });
+  } catch (err) {
+    if (err instanceof TomlError) {
+      throw new DataParseError(`TOML parsing failed: ${err.message.split('\n')[0]}`, { line: err.line, column: err.column });
+    }
+    throw err;
+  }
+  // TOML has no aliases, so its value count is bounded by the source itself.
+  return normalizeDataValue(raw, { maxValues: Number.POSITIVE_INFINITY, label: 'TOML document' });
+}
+
+/** A line holding only JSON whitespace; any other content must parse as a JSON value. */
+const NDJSON_BLANK_LINE = /^[\x20\t]*$/;
+
+/** One JSON value per line; blank lines are skipped and a malformed line fails with its 1-based number. */
+function parseNdjsonText(text: string, src: string): DataValue[] {
+  const label = src.toUpperCase();
+  const records: DataValue[] = [];
+  text.split('\n').forEach((rawLine, index) => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (!NDJSON_BLANK_LINE.test(line)) records.push(parseJsonLossless(line, label, index + 1));
+  });
+  if (records.length === 0) {
+    throw new DataParseError(`${label} parsing failed: no JSON records found.`);
+  }
+  return records;
+}
+
+function asRecords(value: DataValue): DataValue[] {
+  return Array.isArray(value) ? value : [value];
+}
+
+function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, options: ConversionOptions): StructuredSource {
+  if (src === 'csv' || src === 'tsv' || src === 'tab') {
+    const table = parseDelimitedTable(inputBuffer, src, options);
+    return { value: table.records, records: () => table.records, fields: table.fields, text: () => table.text };
+  }
+  if (src === 'json') {
+    const value = parseJsonLossless(decodeUtf8Text(inputBuffer, 'JSON'));
+    return { value, records: () => asRecords(value), text: () => stringifyJsonLossless(value, JSON_INDENT) };
+  }
+  if (src === 'ndjson' || src === 'jsonl') {
+    const records = parseNdjsonText(decodeUtf8Text(inputBuffer, src.toUpperCase()), src);
+    return { value: records, records: () => records, text: () => stringifyJsonLossless(records, JSON_INDENT) };
+  }
+  if (src === 'yaml' || src === 'yml') {
+    const bom = sniffBom(inputBuffer);
+    const text = decodeStrict(inputBuffer, bom ?? 'utf-8');
+    const value = parseYamlText(text);
+    return { value, records: () => asRecords(value), text: () => text };
+  }
+  if (src === 'toml') {
+    const text = decodeUtf8Text(inputBuffer, 'TOML');
+    const value = parseTomlText(text);
+    return { value, records: () => [value], text: () => text };
+  }
+  if (src === 'xml') {
+    const root = parseXmlDocument(decodeXmlText(inputBuffer));
+    return { value: xmlToJsonMl(root), records: () => xmlRecords(root), text: () => xmlStringValue(root) };
+  }
+  if (src === 'parquet') {
+    const records = asRecords(
+      normalizeDataValue(decodeParquet(inputBuffer), { maxValues: Number.POSITIVE_INFINITY, label: 'Parquet file' })
+    );
+    return { value: records, records: () => records, text: () => stringifyJsonLossless(records, JSON_INDENT) };
+  }
+  throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
+}
+
+// ---------------------------------------------------------------------------
+// Structured targets
+// ---------------------------------------------------------------------------
+
+/**
+ * Characters a YAML stream may carry only as escapes (outside c-printable: C0 and C1 controls,
+ * DEL, unpaired surrogates, U+FFFE/U+FFFF), plus NEL, LS and PS, which YAML 1.1 reads as line breaks.
+ */
+const YAML_ESCAPE_ONLY = /[\0-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u2028\u2029\uFFFE\uFFFF\uD800-\uDFFF]/u;
+const YAML_ESCAPE_ONLY_ALL = new RegExp(YAML_ESCAPE_ONLY.source, 'gu');
+const YAML_NAMED_ESCAPES: ReadonlyMap<number, string> = new Map([
+  [0x85, '\\N'],
+  [0x2028, '\\L'],
+  [0x2029, '\\P'],
+]);
+const BYTE_ESCAPE_LIMIT = 0xff;
+const BYTE_ESCAPE_DIGITS = 2;
+const UNICODE_ESCAPE_DIGITS = 4;
+
+/** Exponent-form number text whose mantissa has no decimal point, e.g. "5e+22" or "1e-7". */
+const EXPONENT_WITHOUT_POINT = /^(-?\d+)(e[-+]\d+)$/;
+
+/**
+ * Writes a double in exponent form with an explicit ".0" mantissa ("5.0e+22"): YAML 1.1 readers
+ * need the decimal point to read it as a float, and YAML 1.2 reads both spellings the same.
+ * Placed first in the schema, so it wins over the core number tags for exactly these values.
+ */
+const YAML_EXPONENT_FLOAT_TAG: ScalarTag = {
+  identify: (value) => typeof value === 'number' && EXPONENT_WITHOUT_POINT.test(String(value)),
+  default: true,
+  tag: 'tag:yaml.org,2002:float',
+  test: /^-?\d+\.0e[-+]\d+$/,
+  resolve: (text) => parseFloat(text),
+  stringify: ({ value }) => String(value).replace(EXPONENT_WITHOUT_POINT, '$1.0$2'),
+};
+
+function yamlEscape(char: string): string {
+  const codePoint = char.codePointAt(0) ?? 0;
+  const named = YAML_NAMED_ESCAPES.get(codePoint);
+  if (named) return named;
+  const hex = codePoint.toString(16).toUpperCase();
+  return codePoint <= BYTE_ESCAPE_LIMIT
+    ? `\\x${hex.padStart(BYTE_ESCAPE_DIGITS, '0')}`
+    : `\\u${hex.padStart(UNICODE_ESCAPE_DIGITS, '0')}`;
+}
+
+/**
+ * YAML 1.2 output that YAML 1.1 readers load the same way: strings such as "yes", "on" or
+ * "2024-01-01" are quoted, exponent floats carry a decimal point, and BigInt values are written
+ * as exact integers. A scalar holding a tab or an escape-only character is double-quoted and the
+ * character escaped, which the yaml library leaves to the caller for DEL, C1 controls and
+ * U+FFFE/U+FFFF.
+ */
+function writeYamlText(value: DataValue): string {
+  const document = new YamlDocument(value, {
+    compat: 'yaml-1.1',
+    aliasDuplicateObjects: false,
+    customTags: (tags) => [YAML_EXPONENT_FLOAT_TAG, ...tags],
+  });
+  visitYaml(document, {
+    Scalar(_key, node) {
+      // YAML 1.1 readers also reject a tab inside a plain scalar, which YAML 1.2 allows.
+      if (typeof node.value === 'string' && (node.value.includes('\t') || YAML_ESCAPE_ONLY.test(node.value))) {
+        node.type = YamlScalar.QUOTE_DOUBLE;
+      }
+    },
+  });
+  return document.toString().replace(YAML_ESCAPE_ONLY_ALL, yamlEscape);
+}
+
+const UNPAIRED_SURROGATE = /[\uD800-\uDFFF]/u;
+
+/**
+ * Rejects values TOML cannot hold before smol-toml sees them: it would drop null, accept any
+ * BigInt and replace unpaired surrogates with U+FFFD.
+ */
+function assertTomlRepresentable(value: DataValue, path: string): void {
+  if (value === null) {
+    throw new DataRepresentationError(`TOML has no null value (at "${path}").`);
+  }
+  if (typeof value === 'string' && UNPAIRED_SURROGATE.test(value)) {
+    throw new DataRepresentationError(`TOML text must be valid Unicode; "${path}" holds an unpaired surrogate.`);
+  }
+  if (typeof value === 'bigint' && (value < INT64_MIN || value > INT64_MAX)) {
+    throw new DataRepresentationError(`TOML integers are 64-bit; ${value} at "${path}" is out of range.`);
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertTomlRepresentable(item, `${path}[${index}]`));
+  } else if (isDataObject(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      const childPath = path === '' ? key : `${path}.${key}`;
+      if (UNPAIRED_SURROGATE.test(key)) {
+        throw new DataRepresentationError(`TOML keys must be valid Unicode; "${childPath}" holds an unpaired surrogate.`);
+      }
+      assertTomlRepresentable(child, childPath);
+    }
+  }
+}
+
+function writeTomlText(value: DataValue): string {
+  if (!isDataObject(value)) {
+    throw new DataRepresentationError('A TOML document is a table; the input must be a JSON object or YAML mapping.');
+  }
+  assertTomlRepresentable(value, '');
+  return stringifyToml(value, { maxDepth: MAX_DATA_NESTING_DEPTH });
+}
+
+function textResult(text: string, mimeType: string, baseName: string, extension: string): ConversionResult {
+  const buffer = Buffer.from(text, 'utf-8');
+  return { buffer, mimeType, filename: `${baseName}.${extension}`, size: buffer.length };
 }
 
 export async function convertData(
@@ -367,435 +732,72 @@ export async function convertData(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
-  // PARQUET -> Target
-  if (src === 'parquet') {
-    const records = decodeParquet(inputBuffer);
-    if (tgt === 'json') {
-      const json = JSON.stringify(records, null, 2);
-      const buffer = Buffer.from(json, 'utf-8');
-      return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
-    }
-    if (tgt === 'csv' || tgt === 'tsv') {
-      return delimitedResult(writeDelimited(records, tgt, options), tgt, baseName);
-    }
-    if (tgt === 'yaml' || tgt === 'yml') {
-      const yamlStr = yaml.dump(records);
-      const buffer = Buffer.from(yamlStr, 'utf-8');
-      return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
-    }
-    if (tgt === 'xlsx') {
-      const csvStr = Papa.unparse(records);
-      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csvStr, 'utf-8'), 'csv', options, baseName);
-      return {
-        buffer: xlsxBuffer,
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        filename: `${baseName}.xlsx`,
-        size: xlsxBuffer.length,
-      };
-    }
-    if (tgt === 'ods') {
-      const headers = Object.keys((records[0] || {}) as Record<string, unknown>);
-      const rows = [
-        headers,
-        ...records.map((d) => headers.map((h) => String(d[h] ?? ''))),
-      ];
-      const odsBuffer = await generateOdsFromData(rows, baseName);
-      return {
-        buffer: odsBuffer,
-        mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
-        filename: `${baseName}.ods`,
-        size: odsBuffer.length,
-      };
-    }
-    if (tgt === 'pdf') {
-      const pdfBuffer = await renderDataToPdf(records, baseName, options);
-      return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
-    }
-    if (tgt === 'txt') {
-      const buffer = Buffer.from(JSON.stringify(records, null, 2), 'utf-8');
-      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-    }
-    if (tgt === 'xml') {
-      const xmlStr = jsonToXml(records, 'root');
-      const buffer = Buffer.from(xmlStr, 'utf-8');
-      return { buffer, mimeType: 'application/xml', filename: `${baseName}.xml`, size: buffer.length };
-    }
-    if (tgt === 'html') {
-      const html = generateTableHtml(records, baseName);
-      const buffer = Buffer.from(html, 'utf-8');
-      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-    }
-    if (tgt === 'ndjson') {
-      const ndjsonStr = records.map((r) => JSON.stringify(r)).join('\n');
-      const buffer = Buffer.from(ndjsonStr, 'utf-8');
-      return { buffer, mimeType: 'application/x-ndjson', filename: `${baseName}.ndjson`, size: buffer.length };
-    }
-    if (tgt === 'xls') {
-      const headers = Object.keys((records[0] || {}) as Record<string, unknown>);
-      const rows = [headers, ...records.map((d) => headers.map((h) => String(d[h] ?? '')))];
-      const xlsXml = generateXlsXmlFromData(rows, baseName);
-      const buffer = Buffer.from(xlsXml, 'utf-8');
-      return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
-    }
-    if (tgt === 'parquet') {
-      return { buffer: inputBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: inputBuffer.length };
-    }
-    throw new Error(`Unsupported data conversion from parquet to ${targetFormat}`);
+  if (src === 'parquet' && tgt === 'parquet') {
+    // Decoding re-infers column types (INT32 -> INT64, FLOAT -> DOUBLE) and drops the codec, so a
+    // re-encode would not reproduce the file; returning the input unchanged is not a conversion.
+    throw new UnsupportedTargetError('Parquet to Parquet is not a supported conversion.');
   }
 
-  // CSV, TSV, or TAB -> Target
-  if (src === 'csv' || src === 'tsv' || src === 'tab') {
-    const table = parseDelimitedTable(inputBuffer, src, options);
+  const source = readStructuredSource(inputBuffer, src, tgt, options);
 
-    if (tgt === 'json') {
-      const json = JSON.stringify(table.records, null, 2);
-      const buffer = Buffer.from(json, 'utf-8');
-      return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
-    }
-
-    if (tgt === 'csv' || tgt === 'tsv') {
-      const buffer = writeDelimited({ fields: table.fields, data: table.records }, tgt, options);
-      return delimitedResult(buffer, tgt, baseName);
-    }
-
-    if (tgt === 'pdf') {
-      const pdfBuffer = await renderDataToPdf(table.records, baseName, options);
-      return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
-    }
-
-    if (tgt === 'xlsx') {
-      // The spreadsheet writer reads UTF-8, so it gets the decoded text and the resolved delimiter.
-      const xlsxBuffer = await generateXlsxFromData(
-        Buffer.from(table.text, 'utf-8'),
-        src,
-        { ...options, delimiter: table.delimiter },
-        baseName
+  switch (tgt) {
+    case 'json':
+      return textResult(stringifyJsonLossless(source.value, JSON_INDENT), 'application/json', baseName, 'json');
+    case 'yaml':
+    case 'yml':
+      return textResult(writeYamlText(source.value), 'application/x-yaml', baseName, 'yaml');
+    case 'toml':
+      return textResult(writeTomlText(source.value), 'application/toml', baseName, 'toml');
+    case 'xml':
+      return textResult(serializeDataToXml(source.value), 'application/xml', baseName, 'xml');
+    case 'txt':
+      return textResult(source.text(), 'text/plain', baseName, 'txt');
+    case 'ndjson':
+      return textResult(
+        source.records().map((record) => stringifyJsonLossless(record)).join('\n'),
+        'application/x-ndjson',
+        baseName,
+        'ndjson'
       );
-      return {
-        buffer: xlsxBuffer,
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        filename: `${baseName}.xlsx`,
-        size: xlsxBuffer.length,
-      };
-    }
-
-    if (tgt === 'ods') {
-      const headers = table.fields;
-      const rows = [
-        headers,
-        ...table.records.map((d) => headers.map((h) => String(d[h] ?? ''))),
-      ];
-      const odsBuffer = await generateOdsFromData(rows, baseName);
-      return {
-        buffer: odsBuffer,
-        mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
-        filename: `${baseName}.ods`,
-        size: odsBuffer.length,
-      };
-    }
-
-    if (tgt === 'xls') {
-      const headers = table.fields;
-      const rows = [
-        headers,
-        ...table.records.map((d) => headers.map((h) => String(d[h] ?? ''))),
-      ];
-      const xlsXml = generateXlsXmlFromData(rows, baseName);
-      const buffer = Buffer.from(xlsXml, 'utf-8');
-      return {
-        buffer,
-        mimeType: 'application/vnd.ms-excel',
-        filename: `${baseName}.xls`,
-        size: buffer.length,
-      };
-    }
-
-    if (tgt === 'yaml' || tgt === 'yml') {
-      const yamlStr = yaml.dump(table.records);
-      const buffer = Buffer.from(yamlStr, 'utf-8');
-      return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
-    }
-
-    if (tgt === 'html') {
-      const html = generateTableHtml(table.records, baseName);
-      const buffer = Buffer.from(html, 'utf-8');
-      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-    }
-
-    if (tgt === 'parquet') {
-      const parquetBuffer = encodeParquet(table.records);
-      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
-    }
-
-    if (tgt === 'txt') {
-      const buffer = Buffer.from(table.text, 'utf-8');
-      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-    }
+    default:
+      break;
   }
 
-  const textContent = inputBuffer.toString('utf-8');
-
-  // JSON -> Target
-  if (src === 'json') {
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(textContent);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Invalid JSON';
-      throw new Error(`JSON parsing failed: ${msg}`);
-    }
-
-    if (tgt === 'csv' || tgt === 'tsv') {
-      const arrayData = (Array.isArray(parsedJson) ? parsedJson : [parsedJson]) as Record<string, unknown>[];
-      return delimitedResult(writeDelimited(arrayData, tgt, options), tgt, baseName);
-    }
-
-    if (tgt === 'yaml' || tgt === 'yml') {
-      const yamlStr = yaml.dump(parsedJson);
-      const buffer = Buffer.from(yamlStr, 'utf-8');
-      return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
-    }
-
-    if (tgt === 'pdf') {
-      const arrayData = Array.isArray(parsedJson) ? parsedJson : [parsedJson];
-      const pdfBuffer = await renderDataToPdf(arrayData as Record<string, unknown>[], baseName, options);
-      return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
-    }
-
-    if (tgt === 'xlsx') {
-      const xlsxBuffer = await generateXlsxFromData(inputBuffer, 'json', options, baseName);
-      return {
-        buffer: xlsxBuffer,
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        filename: `${baseName}.xlsx`,
-        size: xlsxBuffer.length,
-      };
-    }
-
-    if (tgt === 'ods') {
-      const arrayData = Array.isArray(parsedJson) ? parsedJson : [parsedJson];
-      const headers = Object.keys((arrayData[0] || {}) as Record<string, unknown>);
-      const rows = [
-        headers,
-        ...(arrayData as Record<string, unknown>[]).map((d) => headers.map((h) => String(d[h] ?? ''))),
-      ];
-      const odsBuffer = await generateOdsFromData(rows, baseName);
-      return {
-        buffer: odsBuffer,
-        mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
-        filename: `${baseName}.ods`,
-        size: odsBuffer.length,
-      };
-    }
-
-    if (tgt === 'xls') {
-      const arrayData = Array.isArray(parsedJson) ? parsedJson : [parsedJson];
-      const headers = Object.keys((arrayData[0] || {}) as Record<string, unknown>);
-      const rows = [
-        headers,
-        ...(arrayData as Record<string, unknown>[]).map((d) => headers.map((h) => String(d[h] ?? ''))),
-      ];
-      const xlsXml = generateXlsXmlFromData(rows, baseName);
-      const buffer = Buffer.from(xlsXml, 'utf-8');
-      return {
-        buffer,
-        mimeType: 'application/vnd.ms-excel',
-        filename: `${baseName}.xls`,
-        size: buffer.length,
-      };
-    }
-
-    if (tgt === 'xml') {
-      const xmlStr = jsonToXml(parsedJson, 'root');
-      const buffer = Buffer.from(xmlStr, 'utf-8');
-      return { buffer, mimeType: 'application/xml', filename: `${baseName}.xml`, size: buffer.length };
-    }
-
-    if (tgt === 'html') {
-      const arrayData = Array.isArray(parsedJson)
-        ? (parsedJson as Record<string, unknown>[])
-        : [parsedJson as Record<string, unknown>];
-      const html = generateTableHtml(arrayData, baseName);
-      const buffer = Buffer.from(html, 'utf-8');
-      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-    }
-
-    if (tgt === 'parquet') {
-      const arrayData = Array.isArray(parsedJson)
-        ? (parsedJson as Record<string, unknown>[])
-        : [parsedJson as Record<string, unknown>];
-      const parquetBuffer = encodeParquet(arrayData);
-      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
-    }
-
-    if (tgt === 'txt') {
-      const buffer = Buffer.from(JSON.stringify(parsedJson, null, 2), 'utf-8');
-      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-    }
+  if (!TABLE_TARGETS.has(tgt)) {
+    throw new Error(`Unsupported data conversion from ${sourceFormat} to ${targetFormat}`);
   }
+  const table = tabulate(source.records(), source.fields);
 
-  // YAML -> Target
-  if (src === 'yaml' || src === 'yml') {
-    let parsedYaml: unknown;
-    try {
-      parsedYaml = yaml.load(textContent);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Invalid YAML';
-      throw new Error(`YAML parsing failed: ${msg}`);
-    }
-
-    if (tgt === 'json') {
-      const json = JSON.stringify(parsedYaml, null, 2);
-      const buffer = Buffer.from(json, 'utf-8');
-      return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
-    }
-
-    if (tgt === 'parquet') {
-      const arrayData = Array.isArray(parsedYaml)
-        ? (parsedYaml as Record<string, unknown>[])
-        : [parsedYaml as Record<string, unknown>];
-      const parquetBuffer = encodeParquet(arrayData);
-      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
-    }
-
-    if (tgt === 'txt') {
-      const buffer = Buffer.from(textContent, 'utf-8');
-      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-    }
+  if (tgt === 'csv' || tgt === 'tsv') {
+    return delimitedResult(writeDelimited(table.fields, table.rows, tgt, options), tgt, baseName);
   }
-
-  // XML -> Target
-  if (src === 'xml') {
-    const sanitizedXml = sanitizeSvgString(textContent);
-    const parsed = simpleXmlToJson(sanitizedXml);
-    const output =
-      parsed.root && typeof parsed.root === 'object' && Object.keys(parsed).length === 1
-        ? parsed.root
-        : parsed;
-
-    if (tgt === 'json') {
-      const json = JSON.stringify(output, null, 2);
-      const buffer = Buffer.from(json, 'utf-8');
-      return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
-    }
-
-    if (tgt === 'yaml' || tgt === 'yml') {
-      const yamlStr = yaml.dump(output);
-      const buffer = Buffer.from(yamlStr, 'utf-8');
-      return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
-    }
-
-    if (tgt === 'csv' || tgt === 'tsv') {
-      const records = extractTabularRecordsFromXml(output);
-      return delimitedResult(writeDelimited(records, tgt, options), tgt, baseName);
-    }
-
-    if (tgt === 'parquet') {
-      const records = extractTabularRecordsFromXml(output);
-      const parquetBuffer = encodeParquet(records);
-      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
-    }
-
-    if (tgt === 'txt') {
-      // Clean XML to plain text
-      const clean = textContent
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/\s+/g, ' ')
-        .trim();
-      const buffer = Buffer.from(clean || textContent, 'utf-8');
-      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-    }
+  if (tgt === 'parquet') {
+    const parquetBuffer = encodeParquet(tableRecords(table));
+    return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
   }
-
-  // NDJSON or JSONL -> Target
-  if (src === 'ndjson' || src === 'jsonl') {
-    const lines = textContent
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const parsedData: Record<string, unknown>[] = [];
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line);
-        parsedData.push(typeof obj === 'object' && obj !== null ? obj : { value: obj });
-      } catch {
-        // skip malformed lines
-      }
-    }
-    if (parsedData.length === 0) {
-      throw new Error(`Failed to parse ${src.toUpperCase()}: no valid JSON records found.`);
-    }
-
-    if (tgt === 'json') {
-      const json = JSON.stringify(parsedData, null, 2);
-      const buffer = Buffer.from(json, 'utf-8');
-      return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
-    }
-
-    if (tgt === 'csv' || tgt === 'tsv') {
-      return delimitedResult(writeDelimited(parsedData, tgt, options), tgt, baseName);
-    }
-
-    if (tgt === 'yaml' || tgt === 'yml') {
-      const yamlStr = yaml.dump(parsedData);
-      const buffer = Buffer.from(yamlStr, 'utf-8');
-      return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
-    }
-
-    if (tgt === 'pdf') {
-      const pdfBuffer = await renderDataToPdf(parsedData, baseName, options);
-      return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
-    }
-
-    if (tgt === 'xlsx') {
-      const headers = Object.keys(parsedData[0] || {});
-      const rows = [headers, ...parsedData.map((d) => headers.map((h) => String(d[h] ?? '')))];
-      const csv = rows.map((r) => r.map((c) => (c.includes(',') ? `"${c}"` : c)).join(',')).join('\n');
-      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
-      return {
-        buffer: xlsxBuffer,
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        filename: `${baseName}.xlsx`,
-        size: xlsxBuffer.length,
-      };
-    }
-
-    if (tgt === 'ods') {
-      const headers = Object.keys(parsedData[0] || {});
-      const rows = [headers, ...parsedData.map((d) => headers.map((h) => String(d[h] ?? '')))];
-      const odsBuffer = await generateOdsFromData(rows, baseName);
-      return {
-        buffer: odsBuffer,
-        mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
-        filename: `${baseName}.ods`,
-        size: odsBuffer.length,
-      };
-    }
-
-    if (tgt === 'xls') {
-      const headers = Object.keys(parsedData[0] || {});
-      const rows = [headers, ...parsedData.map((d) => headers.map((h) => String(d[h] ?? '')))];
-      const xlsXml = generateXlsXmlFromData(rows, baseName);
-      const buffer = Buffer.from(xlsXml, 'utf-8');
-      return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
-    }
-
-    if (tgt === 'parquet') {
-      const parquetBuffer = encodeParquet(parsedData);
-      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
-    }
-
-    if (tgt === 'txt') {
-      const buffer = Buffer.from(JSON.stringify(parsedData, null, 2), 'utf-8');
-      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-    }
+  if (tgt === 'html') {
+    return textResult(generateTableHtml(tableRecords(table), baseName), 'text/html', baseName, 'html');
   }
-
-  throw new Error(`Unsupported data conversion from ${sourceFormat} to ${targetFormat}`);
+  if (tgt === 'pdf') {
+    const pdfBuffer = await renderDataToPdf(tableRecords(table), baseName, options);
+    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  }
+  if (tgt === 'ods') {
+    const odsBuffer = await generateOdsFromData(tableStrings(table), baseName);
+    return { buffer: odsBuffer, mimeType: 'application/vnd.oasis.opendocument.spreadsheet', filename: `${baseName}.ods`, size: odsBuffer.length };
+  }
+  if (tgt === 'xls') {
+    return textResult(generateXlsXmlFromData(tableStrings(table), baseName), 'application/vnd.ms-excel', baseName, 'xls');
+  }
+  // xlsx: the workbook writer reads RFC 4180 CSV, so it gets the table without BOM or formula escaping.
+  const csvText = Papa.unparse({ fields: table.fields, data: table.rows.map((row) => row.map(cellText)) });
+  const xlsxBuffer = await generateXlsxFromData(Buffer.from(csvText, 'utf-8'), 'csv', { ...options, delimiter: ',' }, baseName);
+  return {
+    buffer: xlsxBuffer,
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    filename: `${baseName}.xlsx`,
+    size: xlsxBuffer.length,
+  };
 }
 
 function generateTableHtml(data: Record<string, unknown>[], title: string): string {
@@ -849,156 +851,6 @@ function generateTableHtml(data: Record<string, unknown>[], title: string): stri
 
 function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function jsonToXml(obj: unknown, rootName = 'root'): string {
-  function toXml(val: unknown, tag: string): string {
-    if (val === null || val === undefined) return `<${tag}/>`;
-    if (typeof val !== 'object') {
-      return `<${tag}>${escapeHtml(String(val))}</${tag}>`;
-    }
-    if (Array.isArray(val)) {
-      return val.map((item) => toXml(item, 'item')).join('');
-    }
-    const children = Object.entries(val as Record<string, unknown>)
-      .map(([k, v]) => toXml(v, k.replace(/[^a-zA-Z0-9_-]/g, '_')))
-      .join('');
-    return `<${tag}>${children}</${tag}>`;
-  }
-
-  return `<?xml version="1.0" encoding="UTF-8"?>\n${toXml(obj, rootName)}`;
-}
-
-export function simpleXmlToJson(xml: string): Record<string, unknown> {
-  const cleanXml = sanitizeSvgString(xml)
-    .replace(/<\?xml.*?\?>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .trim();
-  if (!cleanXml) return {};
-
-  type ElementNode = {
-    tag: string;
-    attributes: Record<string, string>;
-    children: ElementNode[];
-    text: string;
-  };
-
-  const root: ElementNode = { tag: '__root__', attributes: {}, children: [], text: '' };
-  const stack: ElementNode[] = [root];
-
-  let i = 0;
-  const len = cleanXml.length;
-
-  while (i < len) {
-    if (cleanXml[i] === '<') {
-      if (cleanXml.slice(i, i + 9) === '<![CDATA[') {
-        const endCdata = cleanXml.indexOf(']]>', i + 9);
-        const cdataContent =
-          endCdata === -1 ? cleanXml.slice(i + 9) : cleanXml.slice(i + 9, endCdata);
-        if (stack.length > 0) {
-          stack[stack.length - 1].text += cdataContent;
-        }
-        i = endCdata === -1 ? len : endCdata + 3;
-        continue;
-      }
-      if (cleanXml[i + 1] === '/') {
-        // Closing tag: </tagName>
-        const endClose = cleanXml.indexOf('>', i + 2);
-        if (endClose === -1) break;
-        const closeTagName = cleanXml.slice(i + 2, endClose).trim().split(/\s+/)[0];
-        // Pop matching tag from stack
-        for (let s = stack.length - 1; s > 0; s--) {
-          if (stack[s].tag === closeTagName) {
-            stack.length = s;
-            break;
-          }
-        }
-        i = endClose + 1;
-        continue;
-      }
-      // Opening or self-closing tag: <tagName ... /> or <tagName ...>
-      const endOpen = cleanXml.indexOf('>', i + 1);
-      if (endOpen === -1) break;
-      const tagContent = cleanXml.slice(i + 1, endOpen).trim();
-      const isSelfClosing = tagContent.endsWith('/');
-      const cleanTagContent = isSelfClosing ? tagContent.slice(0, -1).trim() : tagContent;
-
-      const spaceIdx = cleanTagContent.search(/\s/);
-      const tagName = spaceIdx === -1 ? cleanTagContent : cleanTagContent.slice(0, spaceIdx);
-
-      if (tagName && /^[a-zA-Z0-9_:-]+$/.test(tagName)) {
-        const node: ElementNode = { tag: tagName, attributes: {}, children: [], text: '' };
-        if (spaceIdx !== -1) {
-          const attrStr = cleanTagContent.slice(spaceIdx + 1);
-          const attrRegex = /([a-zA-Z0-9_:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
-          let attrMatch;
-          while ((attrMatch = attrRegex.exec(attrStr)) !== null) {
-            node.attributes[attrMatch[1]] = attrMatch[2] ?? attrMatch[3] ?? '';
-          }
-        }
-        stack[stack.length - 1].children.push(node);
-        if (!isSelfClosing) {
-          stack.push(node);
-        }
-      }
-      i = endOpen + 1;
-    } else {
-      // Text node
-      const nextOpen = cleanXml.indexOf('<', i);
-      const textChunk = nextOpen === -1 ? cleanXml.slice(i) : cleanXml.slice(i, nextOpen);
-      stack[stack.length - 1].text += textChunk;
-      i = nextOpen === -1 ? len : nextOpen;
-    }
-  }
-
-  function nodeToValue(node: ElementNode): unknown {
-    if (node.children.length === 0) {
-      const trimmed = node.text.trim();
-      if (Object.keys(node.attributes).length > 0) {
-        return {
-          ...node.attributes,
-          ...(trimmed ? { _text: trimmed } : {}),
-        };
-      }
-      return trimmed;
-    }
-    const result: Record<string, unknown> = { ...node.attributes };
-    for (const child of node.children) {
-      const childVal = nodeToValue(child);
-      if (result[child.tag] !== undefined) {
-        if (Array.isArray(result[child.tag])) {
-          (result[child.tag] as unknown[]).push(childVal);
-        } else {
-          result[child.tag] = [result[child.tag], childVal];
-        }
-      } else {
-        result[child.tag] = childVal;
-      }
-    }
-    const trimmed = node.text.trim();
-    if (trimmed) {
-      result._text = trimmed;
-    }
-    return result;
-  }
-
-  const output: Record<string, unknown> = {};
-  for (const child of root.children) {
-    const val = nodeToValue(child);
-    if (output[child.tag] !== undefined) {
-      if (Array.isArray(output[child.tag])) {
-        (output[child.tag] as unknown[]).push(val);
-      } else {
-        output[child.tag] = [output[child.tag], val];
-      }
-    } else {
-      output[child.tag] = val;
-    }
-  }
-
-  return Object.keys(output).length > 0
-    ? output
-    : { text: cleanXml.replace(/<[^>]+>/g, '').trim() };
 }
 
 /**
@@ -1100,28 +952,4 @@ async function renderDataToPdf(
 
     doc.end();
   });
-}
-
-function extractTabularRecordsFromXml(parsed: unknown): Record<string, unknown>[] {
-  if (Array.isArray(parsed)) return parsed as Record<string, unknown>[];
-  if (!parsed || typeof parsed !== 'object') return [{ value: parsed }];
-
-  const obj = parsed as Record<string, unknown>;
-  for (const key of Object.keys(obj)) {
-    const val = obj[key];
-    if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object') {
-      return val as Record<string, unknown>[];
-    }
-    if (val && typeof val === 'object') {
-      const childObj = val as Record<string, unknown>;
-      for (const innerKey of Object.keys(childObj)) {
-        const innerVal = childObj[innerKey];
-        if (Array.isArray(innerVal) && innerVal.length > 0) {
-          return innerVal as Record<string, unknown>[];
-        }
-      }
-      return [childObj];
-    }
-  }
-  return [obj];
 }
