@@ -53,9 +53,28 @@ const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object'
 /** Elements removed as a single opening tag. */
 const VOID_DANGEROUS_ELEMENTS = ['meta', 'link', '!ENTITY'] as const;
 
-const EXTERNAL_CSS_URL_START = /url\s*\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/gi;
-const EXTERNAL_CSS_URL_PROBE = /url\s*\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/i;
-const CSS_IMPORT_PROBE = /@import/i;
+/** ASCII tab and newlines, which URL parsers drop from anywhere inside a URL. */
+const URL_IGNORED_CHARS = '[\\t\\n\\r]*';
+
+/** Matches `word` with optional ignored characters between its letters. */
+function spaced(word: string): string {
+  return [...word].join(URL_IGNORED_CHARS);
+}
+
+/** An external target: an http(s)/file/ftp scheme, or a network-path reference (`//`, `/\\`, `\\/`, `\\\\`). */
+const EXTERNAL_TARGET_SOURCE =
+  `(?:${['https', 'http', 'file', 'ftp'].map(spaced).join('|')})${URL_IGNORED_CHARS}:` +
+  `|[/\\\\]${URL_IGNORED_CHARS}[/\\\\]`;
+/** Sticky: tested at the position right after the opening parenthesis of url()/src(). */
+const EXTERNAL_FUNCTION_TARGET = new RegExp(`\\s*(?:['"]\\s*)?(?:${EXTERNAL_TARGET_SOURCE})`, 'iy');
+/** Tested on the arguments of an image-set(): an external target after the opening parenthesis, a quote, a comma or whitespace. */
+const EXTERNAL_IMAGE_SET_TARGET = new RegExp(`(?:^|[\\s'",(])(?:${EXTERNAL_TARGET_SOURCE})`, 'i');
+const CSS_URL_FUNCTION_START = /(url|src|(?:-webkit-)?image-set)\s*\(/gi;
+const IMAGE_SET_SUFFIX = 'image-set';
+const CHAR_DOUBLE_QUOTE = 0x22;
+const CHAR_SINGLE_QUOTE = 0x27;
+const CHAR_OPEN_PAREN = 0x28;
+const CHAR_CLOSE_PAREN = 0x29;
 const CSS_EXPRESSION_PROBE = /expression\s*\(/i;
 const SCRIPT_URI_PROBE = 'javascript:';
 const CSS_IMPORT_RULE = /@import[^;]*;?/gi;
@@ -70,6 +89,7 @@ const CHAR_STAR = 0x2a;
 const CHAR_HASH = 0x23;
 const CHAR_SEMICOLON = 0x3b;
 const CHAR_LOWER_X = 0x78;
+const CHAR_UPPER_X = 0x58;
 const CHAR_SLASH = 0x2f;
 const CHAR_BACKSLASH = 0x5c;
 const CHAR_DIGIT_0 = 0x30;
@@ -319,6 +339,8 @@ interface DecodedCss {
   text: string;
   starts: Uint32Array;
   ends: Uint32Array;
+  /** 1 for a unit produced by a CSS escape: it never acts as a quote or parenthesis in the CSS. */
+  escaped: Uint8Array;
 }
 
 function isHexDigitCode(code: number): boolean {
@@ -353,39 +375,47 @@ class DecodeBuffer {
   private readonly units: Uint16Array;
   private readonly starts: Uint32Array;
   private readonly ends: Uint32Array;
+  private readonly escaped: Uint8Array;
   private count = 0;
 
   constructor(capacity: number) {
     this.units = new Uint16Array(capacity);
     this.starts = new Uint32Array(capacity);
     this.ends = new Uint32Array(capacity);
+    this.escaped = new Uint8Array(capacity);
   }
 
-  push(unit: number, start: number, end: number): void {
+  push(unit: number, start: number, end: number, escaped = false): void {
     this.units[this.count] = unit;
     this.starts[this.count] = start;
     this.ends[this.count] = end;
+    this.escaped[this.count] = escaped ? 1 : 0;
     this.count++;
   }
 
   /** Appends a code point (two units when astral). Invalid code points fail closed. */
-  pushCodePoint(codePoint: number, start: number, end: number, what: string): void {
+  pushCodePoint(codePoint: number, start: number, end: number, what: string, escaped = false): void {
     const isSurrogate = codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX;
     if (codePoint === 0 || isSurrogate || codePoint > MAX_CODE_POINT) {
       throw new SvgSanitizationError(`SVG contains ${what} that decodes to an invalid code point.`);
     }
     if (codePoint <= BMP_MAX) {
-      this.push(codePoint, start, end);
+      this.push(codePoint, start, end, escaped);
       return;
     }
     const offset = codePoint - BMP_MAX - 1;
-    this.push(HIGH_SURROGATE_BASE + (offset >> SURROGATE_SHIFT), start, end);
-    this.push(LOW_SURROGATE_BASE + (offset & SURROGATE_LOW_MASK), start, end);
+    this.push(HIGH_SURROGATE_BASE + (offset >> SURROGATE_SHIFT), start, end, escaped);
+    this.push(LOW_SURROGATE_BASE + (offset & SURROGATE_LOW_MASK), start, end, escaped);
   }
 
   finish(): DecodedCss {
     const text = Buffer.from(this.units.buffer, 0, this.count * Uint16Array.BYTES_PER_ELEMENT).toString('utf16le');
-    return { text, starts: this.starts.subarray(0, this.count), ends: this.ends.subarray(0, this.count) };
+    return {
+      text,
+      starts: this.starts.subarray(0, this.count),
+      ends: this.ends.subarray(0, this.count),
+      escaped: this.escaped.subarray(0, this.count),
+    };
   }
 }
 
@@ -422,7 +452,7 @@ function decodeCss(css: string): DecodedCss | null {
       continue;
     }
     if (!isHexDigitCode(next)) {
-      out.push(next, escapeStart, i + 1);
+      out.push(next, escapeStart, i + 1, true);
       i++;
       continue;
     }
@@ -437,7 +467,7 @@ function decodeCss(css: string): DecodedCss | null {
     if (i < length && isCssWhitespaceCode(css.charCodeAt(i))) {
       i += isCssNewlineCode(css.charCodeAt(i)) ? cssNewlineLength(css, i) : 1;
     }
-    out.pushCodePoint(codePoint, escapeStart, i, 'a CSS escape');
+    out.pushCodePoint(codePoint, escapeStart, i, 'a CSS escape', true);
   }
   return out.finish();
 }
@@ -452,7 +482,7 @@ function readXmlReference(text: string, amp: number): { codePoint: number; end: 
   let i = amp + 1;
   if (text.charCodeAt(i) === CHAR_HASH) {
     i++;
-    const hex = text.charCodeAt(i) === CHAR_LOWER_X;
+    const hex = text.charCodeAt(i) === CHAR_LOWER_X || text.charCodeAt(i) === CHAR_UPPER_X;
     if (hex) i++;
     const digitsStart = i;
     let value = 0;
@@ -524,27 +554,66 @@ function decodeForMatching(raw: string, cdata: boolean): DecodedCss | null {
     starts[k] = entities.starts[css.starts[k]];
     ends[k] = entities.ends[css.ends[k] - 1];
   }
-  return { text: css.text, starts, ends };
+  return { text: css.text, starts, ends, escaped: css.escaped };
 }
 
-/** Finds the `@import` rules and external url() references in already decoded CSS. */
-function collectCssEdits(text: string): CssEdit[] {
+/**
+ * Index just past the parenthesis closing the one opened right before `from`, or the end of text when it never
+ * closes. Quoted strings are skipped; quotes and parentheses produced by CSS escapes are plain characters.
+ */
+function findClosingParen(text: string, from: number, escaped: Uint8Array | null): number {
+  let depth = 1;
+  let quote = 0;
+  for (let i = from; i < text.length; i++) {
+    if (escaped !== null && escaped[i] === 1) continue;
+    const code = text.charCodeAt(i);
+    if (quote !== 0) {
+      if (code === quote) quote = 0;
+    } else if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) {
+      quote = code;
+    } else if (code === CHAR_OPEN_PAREN) {
+      depth++;
+    } else if (code === CHAR_CLOSE_PAREN && --depth === 0) {
+      return i + 1;
+    }
+  }
+  return text.length;
+}
+
+/** Replacements for external url(), src() and image-set() references; a reference swallows what it contains. */
+function collectExternalReferenceEdits(text: string, escaped: Uint8Array | null): CssEdit[] {
+  const edits: CssEdit[] = [];
+  let scanned = 0;
+  for (const match of text.matchAll(CSS_URL_FUNCTION_START)) {
+    if (match.index < scanned) continue;
+    const argsStart = match.index + match[0].length;
+    if (match[1].toLowerCase().endsWith(IMAGE_SET_SUFFIX)) {
+      const end = findClosingParen(text, argsStart, escaped);
+      scanned = end;
+      if (EXTERNAL_IMAGE_SET_TARGET.test(text.slice(argsStart, end))) {
+        edits.push({ start: match.index, end, replacement: 'none' });
+      }
+      continue;
+    }
+    EXTERNAL_FUNCTION_TARGET.lastIndex = argsStart;
+    if (!EXTERNAL_FUNCTION_TARGET.test(text)) continue;
+    const close = text.indexOf(')', argsStart);
+    scanned = close === -1 ? text.length : close + 1;
+    edits.push({ start: match.index, end: scanned, replacement: 'none' });
+  }
+  return edits;
+}
+
+/** Finds the `@import` rules and external references in already decoded CSS. */
+function collectCssEdits(text: string, escaped: Uint8Array | null): CssEdit[] {
   const imports = [...text.matchAll(CSS_IMPORT_RULE)].map((match) => ({
     start: match.index,
     end: match.index + match[0].length,
     replacement: '',
   }));
-  const urls: CssEdit[] = [];
-  let urlEnd = 0;
-  for (const match of text.matchAll(EXTERNAL_CSS_URL_START)) {
-    if (match.index < urlEnd) continue;
-    const close = text.indexOf(')', match.index + match[0].length);
-    urlEnd = close === -1 ? text.length : close + 1;
-    urls.push({ start: match.index, end: urlEnd, replacement: 'none' });
-  }
   const edits: CssEdit[] = [];
   let lastEnd = 0;
-  for (const edit of [...imports, ...urls].sort((a, b) => a.start - b.start)) {
+  for (const edit of [...imports, ...collectExternalReferenceEdits(text, escaped)].sort((a, b) => a.start - b.start)) {
     if (edit.start < lastEnd) continue;
     edits.push(edit);
     lastEnd = edit.end;
@@ -558,7 +627,7 @@ function collectCssEdits(text: string): CssEdit[] {
  */
 function sanitizeCss(css: string, cdata: boolean): string {
   const decoded = decodeForMatching(css, cdata);
-  const edits = collectCssEdits(decoded === null ? css : decoded.text);
+  const edits = collectCssEdits(decoded === null ? css : decoded.text, decoded === null ? null : decoded.escaped);
   if (edits.length === 0) return css;
   let out = '';
   let last = 0;
@@ -756,15 +825,17 @@ function localNameOf(qualified: string): string {
 /** True when a value written into `style` would import, fetch externally or execute once parsed as CSS. */
 function isHostileStyleValue(raw: string): boolean {
   let text = raw;
+  let hasCssReference = false;
   try {
-    text = decodeForMatching(raw, false)?.text ?? raw;
+    const decoded = decodeForMatching(raw, false);
+    text = decoded?.text ?? raw;
+    hasCssReference = collectCssEdits(text, decoded === null ? null : decoded.escaped).length > 0;
   } catch (error) {
     if (error instanceof SvgSanitizationError) return true;
     throw error;
   }
   return (
-    CSS_IMPORT_PROBE.test(text) ||
-    EXTERNAL_CSS_URL_PROBE.test(text) ||
+    hasCssReference ||
     CSS_EXPRESSION_PROBE.test(text) ||
     text.replace(/[\s\x00-\x1f]/g, '').toLowerCase().includes(SCRIPT_URI_PROBE)
   );

@@ -357,7 +357,10 @@ function cssLeaks(out: string): string[] {
   ];
   for (const parsed of bodies) {
     if (/@import/i.test(parsed)) found.push(`@import in ${parsed}`);
-    if (/url\(\s*['"]?(?:https?:|file:|ftp:|\/\/)/i.test(parsed)) found.push(`external url in ${parsed}`);
+    // URL parsers drop ASCII tab and newlines anywhere in the value, and treat '\\' like '/' before the host.
+    const flat = parsed.replace(/[\t\n\r]/g, '');
+    if (/(?:url|src)\(\s*['"]?\s*(?:https?:|file:|ftp:|\/\/|\\\\|\/\\)/i.test(flat)) found.push(`external url in ${parsed}`);
+    if (/image-set\([^)]*?['"(\s,](?:https?:|file:|ftp:|\/\/)/i.test(flat)) found.push(`external image-set in ${parsed}`);
   }
   return found;
 }
@@ -760,5 +763,68 @@ describe('</style> inside CDATA does not end the style element (PR #402 review i
     expect(performance.now() - start).toBeLessThan(2000);
     expect(out).not.toContain('@import');
     expect(out.endsWith('</style></svg>')).toBe(true);
+  });
+});
+
+describe('external CSS reference forms (PR #402 review item 3)', () => {
+  const external: Array<[string, string, string]> = [
+    ['whitespace after the quote', 'g{fill:url(" http://e/x")}', 'g{fill:none}'],
+    ['escaped tab inside the scheme', 'g{fill:url("ht\\9 tp://e/x")}', 'g{fill:none}'],
+    ['escaped newline character inside the scheme', 'g{fill:url(ht\\a tp://e/x)}', 'g{fill:none}'],
+    ['entity tab inside the scheme', 'g{fill:url(ht&#9;tp://e/x)}', 'g{fill:none}'],
+    ['entity carriage return inside the scheme', 'g{fill:url(h&#13;ttp://e/x)}', 'g{fill:none}'],
+    ['raw newline inside the scheme', 'g{fill:url("ht\ntp://e/x")}', 'g{fill:none}'],
+    ['slash then backslash authority', 'g{fill:url(/\\\\e.com/x)}', 'g{fill:none}'],
+    ['backslash then slash authority', 'g{fill:url(\\\\/e.com/x)}', 'g{fill:none}'],
+    ['double backslash authority', 'g{fill:url(\\\\\\\\e.com/x)}', 'g{fill:none}'],
+    ['image-set with a string', 'g{fill:image-set("http://e/x" 1x)}', 'g{fill:none}'],
+    ['image-set with a later external string', 'g{fill:image-set("a.png" 1x,"//e/x" 2x)}', 'g{fill:none}'],
+    ['prefixed image-set with url()', 'g{fill:-webkit-image-set(url(http://e/x) 1x)}', 'g{fill:none}'],
+    ['image-set with an escaped quote and parenthesis in an earlier string', 'g{fill:image-set("a\\"b)" 1x,"http://e/x" 2x)}', 'g{fill:none}'],
+    ['src()', 'g{fill:src(http://e/x)}', 'g{fill:none}'],
+    ['quoted src() with an entity tab', 'g{fill:src("ht&#9;tp://e/x")}', 'g{fill:none}'],
+    ['uppercase X hex reference', '&#X40;import "http://e/x";g{fill:blue}', 'g{fill:blue}'],
+  ];
+
+  for (const [label, css, expected] of external) {
+    it(`neutralizes in a <style> body: ${label}`, () => {
+      const out = sanitizeSvgString(`<svg><style>${css}</style></svg>`);
+      expect(cssLeaks(out)).toEqual([]);
+      expect(out).toBe(`<svg><style>${expected}</style></svg>`);
+    });
+
+    it(`neutralizes in a style attribute: ${label}`, () => {
+      const out = sanitizeSvgString(`<svg><rect style='${css}'/></svg>`);
+      expect(cssLeaks(out)).toEqual([]);
+      expect(out).toBe(`<svg><rect style="${expected}"/></svg>`);
+    });
+  }
+
+  it('keeps local references, relative urls, data urls and local image-sets intact', () => {
+    const css = 'g{fill:url(#a);b:url(/rel/x.png);c:url("data:image/png;base64,AAAA");d:image-set("a.png" 1x,"b.png" 2x);e:image-set(url(#a) 1x);f:src(local-font)}';
+    expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(`<svg><style>${css}</style></svg>`);
+  });
+
+  describe('linear time on 5 MB adversarial CSS', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const BUDGET_MS = 2000;
+    const adversarial: Array<[string, string]> = [
+      ['unterminated image-set openers', 'image-set('.repeat(FIVE_MB / 10)],
+      ['nested benign image-sets', `${'image-set('.repeat(FIVE_MB / 20)}${')'.repeat(FIVE_MB / 20)}`],
+      ['nested image-sets with an external tail', `${'image-set('.repeat(FIVE_MB / 20)}"http://e/x"${')'.repeat(FIVE_MB / 20)}`],
+      ['url openers', 'url('.repeat(FIVE_MB / 4)],
+      ['whitespace after url(', `url(${' '.repeat(FIVE_MB)}`],
+      ['tab runs inside schemes', 'url(h\t\t\t\t\t\t\t\tt\t\t\t\t'.repeat(FIVE_MB / 28)],
+      ['src openers', 'src("'.repeat(FIVE_MB / 5)],
+      ['backslash authorities', 'url(\\\\'.repeat(FIVE_MB / 6)],
+    ];
+
+    for (const [label, css] of adversarial) {
+      it(`handles ${label}`, () => {
+        const start = performance.now();
+        sanitizeSvgString(`<svg><style>${css}</style></svg>`);
+        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+      });
+    }
   });
 });
