@@ -5,6 +5,7 @@ import path from 'node:path';
 import { decodeBrcmRaw } from '../src/lib/conversions/raw-brcm';
 import {
   decodeHuffmanLayers,
+  decodeQuattroLayers,
   decodeTrueLayers,
   readX3fDirectory,
   readX3fImageSections,
@@ -17,7 +18,8 @@ import {
  * with the camera preview (raw-x3f-pi-decode.test.ts) averages 6x6 cells, so a half-pixel shift in the
  * Quattro upsampling or a small bias in one layer would not move it; these hashes pin every sample.
  * They were recorded from the decoders before the memory refactor of the X3F output stage, so the
- * refactor is proven to leave each decoded sample unchanged. Hashes cover the little-endian bytes.
+ * refactor is proven to leave each decoded sample unchanged. Layer hashes are of the planes as stored
+ * (the Quattro lower layers at half resolution). Hashes cover the little-endian bytes.
  */
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 const CACHE_DIR = path.join(__dirname, 'fixtures', 'raw', '.cache');
@@ -25,6 +27,7 @@ const DECODE_TIMEOUT_MS = 120_000;
 /** Sensor data section types: 3 (DP1/DP2/SD14 generation) and 1 (Merrill/Quattro generation). */
 const SENSOR_IMAGE_TYPES = new Set([1, 3]);
 const IMAGE_FORMAT_HUFFMAN = 0x06;
+const IMAGE_FORMAT_QUATTRO = 0x23;
 
 interface Golden {
   width: number;
@@ -43,8 +46,9 @@ const missing = (name: string) => !STRICT_MODE && !existsSync(samplePath(name));
 function decodeSensorLayers(file: Buffer): LayerPlane[] {
   const sensor = readX3fImageSections(file, readX3fDirectory(file)).find((image) => SENSOR_IMAGE_TYPES.has(image.imageType));
   if (!sensor) throw new Error('the sample holds no sensor section');
-  const layers = sensor.format === IMAGE_FORMAT_HUFFMAN ? decodeHuffmanLayers(file, sensor) : decodeTrueLayers(file, sensor, sensor.columns * sensor.rows);
-  return layers.planes;
+  if (sensor.format === IMAGE_FORMAT_HUFFMAN) return decodeHuffmanLayers(file, sensor).planes;
+  if (sensor.format === IMAGE_FORMAT_QUATTRO) return decodeQuattroLayers(file, sensor).planes;
+  return decodeTrueLayers(file, sensor, sensor.columns * sensor.rows).planes;
 }
 
 describe('in-process RAW decode golden hashes', () => {

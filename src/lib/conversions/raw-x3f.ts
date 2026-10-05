@@ -284,8 +284,13 @@ export type LayerPlane = Uint16Array | Int16Array;
 export interface FoveonLayers {
   width: number;
   height: number;
-  /** Three planes (bottom, middle, top), each width*height samples. */
+  /**
+   * Three planes (bottom, middle, top) at their stored resolution: width*height samples each, except the
+   * Quattro lower layers, which hold half the columns and rows and are upsampled row by row on reading.
+   */
   planes: LayerPlane[];
+  /** Columns and rows of each plane. */
+  dims: { columns: number; rows: number }[];
 }
 
 function checkPlaneSize(width: number, height: number, maxPixels: number): void {
@@ -343,7 +348,11 @@ export function decodeTrueLayers(file: Buffer, image: X3fImageSection, maxPixels
     checkPlaneCapacity(range, width, height, layer);
     return decodeTruePlane(file, range.start, range.end, width, height, header.seeds[layer], header.lookup);
   });
-  return { width, height, planes };
+  return { width, height, planes, dims: fullResolutionDims(width, height) };
+}
+
+function fullResolutionDims(columns: number, rows: number): { columns: number; rows: number }[] {
+  return [0, 1, 2].map(() => ({ columns, rows }));
 }
 
 /** Entries of the difference table and of the code table in a Huffman-coded (SD14/SD15 generation) section. */
@@ -459,7 +468,7 @@ export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): Foveo
     if (position !== limit) throw fail(`row ${row} does not end where the row table says`);
     rowStart = rowEnd;
   }
-  return { width, height, planes };
+  return { width, height, planes, dims: fullResolutionDims(width, height) };
 }
 
 const QUATTRO_DIMENSION_BYTES = 12;
@@ -470,7 +479,7 @@ const QUATTRO_LOWER_SCALE = 2;
 /**
  * Decodes a Quattro section: three TRUE-coded planes whose sizes are listed in the section. The top
  * layer is the sensor's full resolution; the two lower layers hold a quarter of the samples (half the
- * columns and rows) and are upsampled to the top layer's grid with bilinear interpolation.
+ * columns and rows) and stay at that resolution: `LayerRowReader` upsamples them one row at a time.
  */
 export function decodeQuattroLayers(file: Buffer, image: X3fImageSection): FoveonLayers {
   const dimsAt = image.offset + IMAGE_HEADER_BYTES;
@@ -485,45 +494,75 @@ export function decodeQuattroLayers(file: Buffer, image: X3fImageSection): Foveo
     }
   }
   const header = readTrueHeader(file, dimsAt + QUATTRO_DIMENSION_BYTES, image.offset + image.length, true);
-  const decoded = header.ranges.map((range, layer) => {
+  const planes = header.ranges.map((range, layer) => {
     checkPlaneCapacity(range, dims[layer].columns, dims[layer].rows, layer);
     return decodeTruePlane(file, range.start, range.end, dims[layer].columns, dims[layer].rows, header.seeds[layer], header.lookup);
   });
-  const planes = decoded.map((plane, layer) =>
-    layer === QUATTRO_TOP_LAYER ? plane : upsampleBilinear(plane, dims[layer].columns, dims[layer].rows, top.columns, top.rows)
-  );
-  return { width: top.columns, height: top.rows, planes };
+  return { width: top.columns, height: top.rows, planes, dims };
 }
 
-/**
- * Bilinear 2x upsampling by sample-centre alignment (output sample x lies at (x + 0.5) / 2 - 0.5 of the
- * input grid, clamped to the edges) into a plane of `outWidth` x `outHeight`; columns past the doubled
- * width repeat the last column.
- */
-function upsampleBilinear(plane: LayerPlane, width: number, height: number, outWidth: number, outHeight: number): Uint16Array {
-  const out = new Uint16Array(outWidth * outHeight);
-  const columnLow = new Int32Array(outWidth);
-  const columnWeight = new Float32Array(outWidth);
-  for (let x = 0; x < outWidth; x += 1) {
-    const position = Math.min(width - 1, Math.max(0, (x + 0.5) / QUATTRO_LOWER_SCALE - 0.5));
-    columnLow[x] = Math.min(width - 2, Math.floor(position));
-    columnWeight[x] = position - columnLow[x];
+/** Bilinear 2x upsampling of one lower Quattro layer, one output row at a time into a reused buffer. */
+class UpsampledRows {
+  private readonly columnLow: Int32Array;
+  private readonly columnWeight: Float32Array;
+  private readonly out: Uint16Array;
+
+  constructor(private readonly plane: LayerPlane, private readonly width: number, private readonly height: number, outWidth: number) {
+    this.out = new Uint16Array(outWidth);
+    this.columnLow = new Int32Array(outWidth);
+    this.columnWeight = new Float32Array(outWidth);
+    for (let x = 0; x < outWidth; x += 1) {
+      const position = Math.min(width - 1, Math.max(0, (x + 0.5) / QUATTRO_LOWER_SCALE - 0.5));
+      this.columnLow[x] = Math.min(width - 2, Math.floor(position));
+      this.columnWeight[x] = position - this.columnLow[x];
+    }
   }
-  for (let y = 0; y < outHeight; y += 1) {
+
+  /**
+   * Output row `y`, by sample-centre alignment (output sample x lies at (x + 0.5) / 2 - 0.5 of the input
+   * grid, clamped to the edges); columns past the doubled width repeat the last column. The returned
+   * buffer is overwritten by the next call.
+   */
+  row(y: number): Uint16Array {
+    const { plane, width, height, out, columnLow, columnWeight } = this;
     const position = Math.min(height - 1, Math.max(0, (y + 0.5) / QUATTRO_LOWER_SCALE - 0.5));
     const rowLow = Math.min(height - 2, Math.floor(position));
     const rowWeight = position - rowLow;
     const upper = rowLow * width;
     const lower = upper + width;
-    for (let x = 0; x < outWidth; x += 1) {
+    for (let x = 0; x < out.length; x += 1) {
       const left = columnLow[x];
       const weight = columnWeight[x];
       const top = plane[upper + left] + weight * (plane[upper + left + 1] - plane[upper + left]);
       const bottom = plane[lower + left] + weight * (plane[lower + left + 1] - plane[lower + left]);
-      out[y * outWidth + x] = Math.round(top + rowWeight * (bottom - top));
+      out[x] = Math.round(top + rowWeight * (bottom - top));
     }
+    return out;
   }
-  return out;
+}
+
+/**
+ * Reads the layers row by row on the full-resolution grid: full-resolution planes are viewed in place,
+ * reduced ones are upsampled on demand, so no full-size copy of a reduced layer is ever held.
+ */
+class LayerRowReader {
+  private readonly upsampled: (UpsampledRows | null)[];
+
+  constructor(private readonly layers: FoveonLayers) {
+    this.upsampled = layers.planes.map((plane, layer) => {
+      const { columns, rows } = layers.dims[layer];
+      if (columns === layers.width && rows === layers.height) return null;
+      return new UpsampledRows(plane, columns, rows, layers.width);
+    });
+  }
+
+  /** Row `y` of `layer`, `width` samples; a reduced layer's row is valid until the next read of that layer. */
+  row(layer: number, y: number): LayerPlane {
+    const upsampled = this.upsampled[layer];
+    if (upsampled) return upsampled.row(y);
+    const { width } = this.layers;
+    return this.layers.planes[layer].subarray(y * width, (y + 1) * width);
+  }
 }
 
 function decodeTruePlane(
@@ -834,17 +873,18 @@ function readRectangle(matrices: Map<string, CamfMatrix>, name: string, width: n
 }
 
 /** Mean level of each layer inside the optically dark rectangles. */
-function darkLevels(layers: FoveonLayers, matrices: Map<string, CamfMatrix>): number[] {
+function darkLevels(layers: FoveonLayers, reader: LayerRowReader, matrices: Map<string, CamfMatrix>): number[] {
   const rectangles = ['DarkShieldTop', 'DarkShieldBottom']
     .map((name) => readRectangle(matrices, name, layers.width, layers.height))
     .filter((rectangle): rectangle is Rectangle => rectangle !== null);
   if (rectangles.length === 0) throw fail('the calibration holds no valid dark-shield area');
-  return layers.planes.map((plane) => {
+  return layers.planes.map((_, layer) => {
     let sum = 0;
     let count = 0;
     for (const { left, top, right, bottom } of rectangles) {
       for (let y = top; y <= bottom; y += 1) {
-        for (let x = left; x <= right; x += 1) sum += plane[y * layers.width + x];
+        const row = reader.row(layer, y);
+        for (let x = left; x <= right; x += 1) sum += row[x];
         count += right - left + 1;
       }
     }
@@ -1022,7 +1062,8 @@ export function decodeX3f(file: Buffer): DecodedX3f {
   const width = active.right - active.left + 1;
   const height = active.bottom - active.top + 1;
 
-  const black = darkLevels(layers, matrices);
+  const reader = new LayerRowReader(layers);
+  const black = darkLevels(layers, reader, matrices);
   const range = usableRange(variant, matrices, black);
   const fullScale = range.map((value, layer) => black[layer] + value);
   const isoFactor = isoScale(matrices);
@@ -1031,35 +1072,73 @@ export function decodeX3f(file: Buffer): DecodedX3f {
   const combined = colourMatrix(variant, matrices, header.whiteBalance, range, isoFactor);
 
   if (combined.some((value) => !Number.isFinite(value))) throw fail('the combined calibration is not finite');
-  const linear = new Float32Array(width * height * RGB_CHANNELS);
+  assertDecodeMemory(layers, width * height);
+
+  // Linear sRGB of one pixel, single precision; computed twice per sampled pixel rather than kept for the
+  // whole image, which would cost 12 bytes per pixel.
+  const pixel = new Float32Array(RGB_CHANNELS);
   const normalised: number[] = [0, 0, 0];
-  for (let y = 0; y < height; y += 1) {
-    const sourceRow = (y + active.top) * layers.width + active.left;
+  const rows: LayerPlane[] = [];
+  const loadRow = (y: number) => {
     sampler?.setRow(y + active.top);
-    for (let x = 0; x < width; x += 1) {
-      let clipped = false;
-      for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
-        const value = layers.planes[layer][sourceRow + x];
-        if (value >= fullScale[layer]) clipped = true;
-        const gain = sampler ? sampler.gain(x + active.left, layer) : 1;
-        normalised[layer] = Math.max(0, value - black[layer]) * gain;
-      }
-      const out = (y * width + x) * RGB_CHANNELS;
-      for (let row = 0; row < RGB_CHANNELS; row += 1) {
-        linear[out + row] =
-          combined[row * RGB_CHANNELS] * normalised[0] +
-          combined[row * RGB_CHANNELS + 1] * normalised[1] +
-          combined[row * RGB_CHANNELS + 2] * normalised[2];
-      }
-      if (clipped) neutralise(linear, out);
+    for (let layer = 0; layer < RGB_CHANNELS; layer += 1) rows[layer] = reader.row(layer, y + active.top);
+  };
+  const linearPixel = (x: number) => {
+    let clipped = false;
+    for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
+      const value = rows[layer][x + active.left];
+      if (value >= fullScale[layer]) clipped = true;
+      const gain = sampler ? sampler.gain(x + active.left, layer) : 1;
+      normalised[layer] = Math.max(0, value - black[layer]) * gain;
+    }
+    for (let row = 0; row < RGB_CHANNELS; row += 1) {
+      pixel[row] =
+        combined[row * RGB_CHANNELS] * normalised[0] +
+        combined[row * RGB_CHANNELS + 1] * normalised[1] +
+        combined[row * RGB_CHANNELS + 2] * normalised[2];
+    }
+    if (clipped) neutralise(pixel);
+  };
+
+  // First pass over the statistics grid only: the exposure that brings the scene average to mid-grey.
+  const samples: number[] = [];
+  for (let y = 0; y < height; y += STATISTICS_STEP) {
+    loadRow(y);
+    for (let x = 0; x < width; x += STATISTICS_STEP) {
+      linearPixel(x);
+      samples.push(Math.max(0, LUMA_RED * pixel[0] + LUMA_GREEN * pixel[1] + LUMA_BLUE * pixel[2]));
     }
   }
+  const exposure = exposureScale(Float32Array.from(samples));
 
-  const exposure = sampledLinearExposure(linear, width, height);
-  const rgb16 = new Uint16Array(linear.length);
-  for (let i = 0; i < linear.length; i += 1) rgb16[i] = Math.round(Math.min(1, Math.max(0, linear[i] * exposure)) * MAX_SAMPLE_16);
+  const rgb16 = new Uint16Array(width * height * RGB_CHANNELS);
+  for (let y = 0; y < height; y += 1) {
+    loadRow(y);
+    for (let x = 0; x < width; x += 1) {
+      linearPixel(x);
+      const out = (y * width + x) * RGB_CHANNELS;
+      for (let channel = 0; channel < RGB_CHANNELS; channel += 1) {
+        rgb16[out + channel] = Math.round(Math.min(1, Math.max(0, pixel[channel] * exposure)) * MAX_SAMPLE_16);
+      }
+    }
+  }
   applyMatrixAndSrgbEncode(rgb16, IDENTITY);
   return { width, height, rgb16 };
+}
+
+/**
+ * Ceiling of the typed arrays a decode holds at once: the stored layer planes plus the 16-bit output.
+ * The per-generation pixel caps keep the largest real layouts (Quattro at its cap: about 216 MB) below
+ * it; the thread's heap limit does not cover these buffers, so this check is what bounds them.
+ */
+export const X3F_DECODE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
+
+function assertDecodeMemory(layers: FoveonLayers, outputPixels: number): void {
+  const planeBytes = layers.planes.reduce((sum, plane) => sum + plane.byteLength, 0);
+  const outputBytes = outputPixels * RGB_CHANNELS * Uint16Array.BYTES_PER_ELEMENT;
+  if (planeBytes + outputBytes > X3F_DECODE_MEMORY_BUDGET_BYTES) {
+    throw new RawDecodeError(`Sigma X3F decode needs ${planeBytes + outputBytes} bytes, above its ${X3F_DECODE_MEMORY_BUDGET_BYTES} byte limit`);
+  }
 }
 
 const IDENTITY: Matrix3x3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
@@ -1068,22 +1147,11 @@ const LUMA_GREEN = 0.7152;
 const LUMA_BLUE = 0.0722;
 
 /** Replaces a pixel whose layer reached saturation by its luminance: clipped colour is meaningless. */
-function neutralise(linear: Float32Array, at: number): void {
-  const luma = LUMA_RED * linear[at] + LUMA_GREEN * linear[at + 1] + LUMA_BLUE * linear[at + 2];
-  linear[at] = luma;
-  linear[at + 1] = luma;
-  linear[at + 2] = luma;
-}
-
-function sampledLinearExposure(linear: Float32Array, width: number, height: number): number {
-  const samples: number[] = [];
-  for (let y = 0; y < height; y += STATISTICS_STEP) {
-    for (let x = 0; x < width; x += STATISTICS_STEP) {
-      const at = (y * width + x) * RGB_CHANNELS;
-      samples.push(Math.max(0, LUMA_RED * linear[at] + LUMA_GREEN * linear[at + 1] + LUMA_BLUE * linear[at + 2]));
-    }
-  }
-  return exposureScale(Float32Array.from(samples));
+function neutralise(pixel: Float32Array): void {
+  const luma = LUMA_RED * pixel[0] + LUMA_GREEN * pixel[1] + LUMA_BLUE * pixel[2];
+  pixel[0] = luma;
+  pixel[1] = luma;
+  pixel[2] = luma;
 }
 
 /** Ratio of the capture ISO to the sensor's native ISO: the layers are stored at the native sensitivity. */

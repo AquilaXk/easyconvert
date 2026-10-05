@@ -32,7 +32,12 @@
   "x3f-quattro": {
     "width": 5424,
     "height": 3616,
-    "rgb16Sha256": "832af9a508876acf39de486117a3adeb4ee221dbbeb3a333870117284299962f"
+    "rgb16Sha256": "832af9a508876acf39de486117a3adeb4ee221dbbeb3a333870117284299962f",
+    "layerSha256": [
+      "68c16416e56e099659bec8325b881ed9a33d547c4ea0d2cb027ac14b76f2b45d",
+      "2fd0f8f246e32f20343452300bea43376fec042da026528e1d05152c8856a198",
+      "e9d8bf016dd7dcee510961708c9ffaec8c643caf04222cada73210a987642bf2"
+    ]
   },
   "raw": {
     "width": 2592,
