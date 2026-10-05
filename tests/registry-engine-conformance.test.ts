@@ -20,6 +20,7 @@ import { OracleToolMissingError, getOracleToolPath } from './helpers/differentia
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
+import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 
 /**
  * Registry/engine conformance gate.
@@ -242,6 +243,10 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   'tar.xz': () => compressXz(TAR_SEED),
   'tar.7z': () => create7zArchive([{ filename: 'probe.tar', buffer: TAR_SEED }]).buffer,
   rar: () => buildStoredRar4([{ name: 'probe.txt', data: PLAIN_TEXT }]),
+  // HDR sources need a structurally valid OpenEXR file and an Ultra HDR JPEG with a gain map; both
+  // come from independent writers in tests/helpers, not from the engine's own encoders.
+  exr: () => buildPatchExr('half'),
+  ultrahdr: () => buildPatchUltraHdr(),
 };
 
 async function requireDerived(format: string): Promise<Buffer> {

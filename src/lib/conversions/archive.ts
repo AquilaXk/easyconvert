@@ -2256,7 +2256,10 @@ function decompress7zFolder(
   }
   if (id.length === 3 && id[0] === 0x04 && id[1] === 0x02 && id[2] === 0x02) {
     // BZip2
-    return decompressBzip2(packSlice);
+    const bzipLimit = unpackSize > 0
+      ? Math.min(unpackSize, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE)
+      : ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
+    return decompressBzip2(packSlice, bzipLimit);
   }
   throw new Error(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
 }
@@ -3433,7 +3436,7 @@ export async function inspectArchive(
 
   if (archiveBuffer.length >= 3 && archiveBuffer[0] === 0x42 && archiveBuffer[1] === 0x5a && archiveBuffer[2] === 0x68) {
     try {
-      const decompressed = decompressBzip2(archiveBuffer);
+      const decompressed = decompressBzip2(archiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
       return inspectTarBuffer(decompressed, 'tar.bz2');
     } catch {
       throw new ConversionFailedError('Failed to decompress bzip2 archive.');
@@ -3568,7 +3571,7 @@ export async function convertArchive(
     }
   } else if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || src === 'bz2' || src === 'bz') {
     try {
-      const uncompressed = decompressBzip2(effectiveBuffer);
+      const uncompressed = decompressBzip2(effectiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
         throw new Error(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
