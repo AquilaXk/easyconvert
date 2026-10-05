@@ -1356,9 +1356,10 @@ export function getXzBinaryPath(): string | null {
 }
 
 /**
- * 7-Zip executable names, best first. `7zz` is what upstream 7-Zip, Debian's `7zip` package and
- * Homebrew install; `7z`, `7za` and `7zr` are the p7zip names (`7zr` reads and writes 7z only).
- * A modern `7zz` is preferred over a p7zip `7z` that may sit on the same host.
+ * 7-Zip executable names, best first. `7zz` is what upstream 7-Zip and Homebrew install; Debian and
+ * Ubuntu's `7zip` package installs `7z`, `7za` and `7zr` (`7zr` reads and writes 7z only). `7zz` is
+ * preferred because the worker image ships only the pinned upstream build, and a modern `7zz` also
+ * wins over a legacy `7z` that may sit on the same host.
  */
 export const SEVEN_ZIP_BINARY_NAMES = ['7zz', '7z', '7za', '7zr'] as const;
 const SEVEN_ZIP_BINARY_DIRECTORIES = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'] as const;
