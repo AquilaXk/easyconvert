@@ -138,6 +138,32 @@ describe('JSON numbers beyond 2^53 stay exact', () => {
   });
 });
 
+describe('table targets refuse text that is not valid Unicode', () => {
+  // Every target the data engine writes from the flattened table (HTML is reached from CSV and parquet
+  // sources, so the engine is called directly); UTF-8 writers would turn the surrogate into U+FFFD.
+  const TABLE_TARGETS = ['csv', 'tsv', 'parquet', 'xlsx', 'ods', 'html', 'xls', 'pdf'];
+
+  for (const target of TABLE_TARGETS) {
+    it(`rejects an unpaired surrogate in a ${target} cell or column name`, async () => {
+      const label = target.toUpperCase();
+      const cell = await rejection(
+        convertData(Buffer.from('[{"a": "ok"}, {"a": "x\\ud800y"}]', 'utf-8'), 'json', target, {}, 'cell.json')
+      );
+      expect(cell).toBeInstanceOf(DataRepresentationError);
+      expect(cell.message).toBe(`${label} text must be valid Unicode; row 2, column "a" holds an unpaired surrogate.`);
+
+      const column = await rejection(convertData(Buffer.from('{"k\\udc00": 1}', 'utf-8'), 'json', target, {}, 'key.json'));
+      expect(column).toBeInstanceOf(DataRepresentationError);
+      expect(column.message).toBe(`${label} text must be valid Unicode; the column name "k\\udc00" holds an unpaired surrogate.`);
+    });
+  }
+
+  oracleTest('still writes a paired surrogate (an astral character) to CSV', ['python3'], async () => {
+    const result = await convertFile(Buffer.from('[{"a": "\\ud83d\\ude00"}]', 'utf-8'), 'json', 'csv', {}, 'emoji.json');
+    expect(pythonCsvRows(result.buffer)).toEqual([['a'], ['\u{1F600}']]);
+  });
+});
+
 describe('JSON to CSV flattens nested values', () => {
   oracleTest('writes dot paths for objects and JSON for arrays across the union of keys', ['python3'], async () => {
     const records = [

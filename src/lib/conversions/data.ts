@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import Papa from 'papaparse';
 import iconv from 'iconv-lite';
 import PDFDocument from 'pdfkit';
@@ -466,6 +467,27 @@ function cellText(value: DataValue): string {
   return value === null ? '' : String(value);
 }
 
+/** Rejects unpaired surrogates in a table: every table writer would silently turn them into U+FFFD. */
+function assertTableUnicode(table: DataTable, tgt: string): void {
+  const label = tgt.toUpperCase();
+  for (const field of table.fields) {
+    if (UNPAIRED_SURROGATE.test(field)) {
+      throw new DataRepresentationError(
+        `${label} text must be valid Unicode; the column name ${JSON.stringify(field)} holds an unpaired surrogate.`
+      );
+    }
+  }
+  table.rows.forEach((row, rowIndex) => {
+    row.forEach((cell, column) => {
+      if (typeof cell === 'string' && UNPAIRED_SURROGATE.test(cell)) {
+        throw new DataRepresentationError(
+          `${label} text must be valid Unicode; row ${rowIndex + 1}, column ${JSON.stringify(table.fields[column])} holds an unpaired surrogate.`
+        );
+      }
+    });
+  });
+}
+
 function tableStrings(table: DataTable): string[][] {
   return [table.fields, ...table.rows.map((row) => row.map(cellText))];
 }
@@ -817,12 +839,41 @@ function assertTomlRepresentable(value: DataValue, path: string): void {
   }
 }
 
+/** TOML literal for a negative zero: only a float keeps the sign (an integer -0 is 0). */
+const TOML_NEGATIVE_ZERO = '-0.0';
+
+/** A copy of the value with every negative zero replaced by `marker`; counts the replacements. */
+function markNegativeZeros(value: DataValue, marker: string, count: { replaced: number }): DataValue {
+  if (typeof value === 'number' && Object.is(value, -0)) {
+    count.replaced++;
+    return marker;
+  }
+  if (Array.isArray(value)) return value.map((item) => markNegativeZeros(item, marker, count));
+  if (isDataObject(value)) {
+    const copy: DataObject = {};
+    for (const [key, child] of Object.entries(value)) setOwn(copy, key, markNegativeZeros(child, marker, count));
+    return copy;
+  }
+  return value;
+}
+
 function writeTomlText(value: DataValue): string {
   if (!isDataObject(value)) {
     throw new DataRepresentationError('A TOML document is a table; the input must be a JSON object or YAML mapping.');
   }
   assertTomlRepresentable(value, '');
-  return stringifyToml(value, { maxDepth: MAX_DATA_NESTING_DEPTH });
+  // smol-toml writes -0 as 0, so each negative zero goes through as a unique quoted marker string
+  // that is then replaced by -0.0. The count check proves no user string produced the marker.
+  const marker = `negative-zero-${randomUUID()}`;
+  const count = { replaced: 0 };
+  const marked = markNegativeZeros(value, marker, count);
+  const toml = stringifyToml(marked, { maxDepth: MAX_DATA_NESTING_DEPTH });
+  if (count.replaced === 0) return toml;
+  const pieces = toml.split(JSON.stringify(marker));
+  if (pieces.length - 1 !== count.replaced) {
+    throw new DataRepresentationError('A negative zero could not be written as the TOML float -0.0.');
+  }
+  return pieces.join(TOML_NEGATIVE_ZERO);
 }
 
 function textResult(text: string, mimeType: string, baseName: string, extension: string): ConversionResult {
@@ -877,6 +928,7 @@ export async function convertData(
     throw new Error(`Unsupported data conversion from ${sourceFormat} to ${targetFormat}`);
   }
   const table = tabulate(source.records(), source.fields);
+  assertTableUnicode(table, tgt);
 
   if (tgt === 'csv' || tgt === 'tsv') {
     return delimitedResult(writeDelimited(table.fields, table.rows, tgt, options), tgt, baseName);

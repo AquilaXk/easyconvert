@@ -374,6 +374,29 @@ describe('TOML output', () => {
     expect(tooBig.message).toMatch(/64-bit/);
   });
 
+  oracleTest('keeps the sign of a negative zero as the float -0.0', ['python3'], async () => {
+    const json = '{"z": -0.0, "list": [-0.0, 0, "-0.0"], "t": {"w": -0}}';
+    const result = await convertFile(Buffer.from(json, 'utf-8'), 'json', 'toml', {}, 'zero.json');
+    const signs = spawnSync(
+      requireOracleTool('python3'),
+      [
+        '-c',
+        'import json, math, sys, tomllib; d = tomllib.loads(sys.stdin.read()); ' +
+          'print(json.dumps([[type(v).__name__, math.copysign(1, v) if not isinstance(v, str) else v] ' +
+          'for v in (d["z"], d["list"][0], d["list"][1], d["list"][2], d["t"]["w"])]))',
+      ],
+      { input: result.buffer, encoding: 'utf-8' }
+    );
+    expect(signs.stderr).toBe('');
+    expect(JSON.parse(signs.stdout)).toEqual([
+      ['float', -1],
+      ['float', -1],
+      ['int', 1],
+      ['str', '-0.0'],
+      ['float', -1],
+    ]);
+  });
+
   it('returns the TOML text itself for a text target', async () => {
     const source = readFileSync(path.join(VECTOR_ROOT, 'valid/spec-example-1.toml'));
     const result = await convertFile(source, 'toml', 'txt', {}, 'example.toml');
