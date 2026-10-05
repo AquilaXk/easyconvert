@@ -445,6 +445,8 @@ export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): Foveo
         planes[layer][row * width + column] = value;
       }
     }
+    // The row table gives each row's exact extent: a row that ends early or late was decoded from damaged data.
+    if (position !== limit) throw fail(`row ${row} does not end where the row table says`);
     rowStart = rowEnd;
   }
   return { width, height, planes };

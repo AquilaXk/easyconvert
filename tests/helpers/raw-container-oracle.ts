@@ -20,6 +20,11 @@ export interface ContainerInfo {
   sensorHeight: number;
   /** Offset of the first byte of compressed or packed sensor data. */
   sensorDataOffset: number;
+  /** X3F: byte length of the sensor section including its 28-byte image header; 0 for Pi frames. */
+  sensorSectionLength: number;
+  /** X3F: the sensor section's image type and format words (for example 3 / 0x1e); 0 for Pi frames. */
+  sensorImageType: number;
+  sensorFormat: number;
 }
 
 function startsWithJpegSoi(buffer: Buffer, at: number): boolean {
@@ -38,7 +43,7 @@ export function readX3fContainer(file: Buffer): ContainerInfo {
   if (file.toString('latin1', directory, directory + 4) !== 'SECd') throw new Error('X3F directory marker missing');
   const count = file.readUInt32LE(directory + 8);
   let preview: Buffer | null = null;
-  let sensor: { columns: number; rows: number; dataOffset: number } | null = null;
+  let sensor: { columns: number; rows: number; dataOffset: number; length: number; imageType: number; format: number } | null = null;
   for (let index = 0; index < count; index += 1) {
     const entry = directory + 12 + index * 12;
     const offset = file.readUInt32LE(entry);
@@ -51,7 +56,7 @@ export function readX3fContainer(file: Buffer): ContainerInfo {
     const payload = offset + 28;
     // Sensor data is image type 3 (DP, SD14) or 1 (Merrill, Quattro); type 2 holds the previews.
     if (imageType === 3 || imageType === 1) {
-      sensor = { columns, rows, dataOffset: payload };
+      sensor = { columns, rows, dataOffset: payload, length, imageType, format: file.readUInt32LE(offset + 12) };
     } else if (startsWithJpegSoi(file, payload) && columns === headerColumns && rows === headerRows) {
       // The preview with the finished image's size, not the small thumbnail.
       preview = file.subarray(payload, offset + length);
@@ -65,6 +70,9 @@ export function readX3fContainer(file: Buffer): ContainerInfo {
     sensorWidth: sensor.columns,
     sensorHeight: sensor.rows,
     sensorDataOffset: sensor.dataOffset,
+    sensorSectionLength: sensor.length,
+    sensorImageType: sensor.imageType,
+    sensorFormat: sensor.format,
   };
 }
 
@@ -90,6 +98,9 @@ export function readPiFrame(file: Buffer): ContainerInfo & { stride: number } {
     sensorWidth: width,
     sensorHeight: height,
     sensorDataOffset: trailer + 32768,
+    sensorSectionLength: 0,
+    sensorImageType: 0,
+    sensorFormat: 0,
     stride,
   };
 }
@@ -140,6 +151,36 @@ const chromaticity = (cell: number[]) => {
 };
 const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
 
+/** Average ranks (ties share the mean of their positions) of the values. */
+function ranksOf(values: number[]): number[] {
+  const order = values.map((value, index) => ({ value, index })).sort((a, b) => a.value - b.value);
+  const ranks = new Array<number>(values.length);
+  for (let start = 0; start < order.length; ) {
+    let end = start;
+    while (end + 1 < order.length && order[end + 1].value === order[start].value) end += 1;
+    for (let k = start; k <= end; k += 1) ranks[order[k].index] = (start + end) / 2;
+    start = end + 1;
+  }
+  return ranks;
+}
+
+/** Pearson correlation of the ranks: Spearman's rho. */
+function spearman(a: number[], b: number[]): number {
+  const ra = ranksOf(a);
+  const rb = ranksOf(b);
+  const ma = mean(ra);
+  const mb = mean(rb);
+  let covariance = 0;
+  let varianceA = 0;
+  let varianceB = 0;
+  for (let k = 0; k < ra.length; k += 1) {
+    covariance += (ra[k] - ma) * (rb[k] - mb);
+    varianceA += (ra[k] - ma) ** 2;
+    varianceB += (rb[k] - mb) ** 2;
+  }
+  return covariance / Math.sqrt(varianceA * varianceB);
+}
+
 export interface RegionComparison {
   /** Largest per-cell difference of luma divided by the image's own mean luma (exposure-invariant). */
   lumaRatioError: number;
@@ -147,6 +188,11 @@ export interface RegionComparison {
   chromaRelativeError: number;
   /** Largest per-cell chromaticity difference without removing the cast. */
   chromaAbsoluteError: number;
+  /**
+   * Spearman rank correlation of the 36 cell lumas (1 = identical ordering). A monotonic tone curve, which
+   * is what a camera's rendering applies, leaves it at 1, so it separates tone curves from wrong content.
+   */
+  lumaRankCorrelation: number;
 }
 
 /**
@@ -196,5 +242,5 @@ export async function compareWithPreview(decoded: Buffer, previewJpeg: Buffer): 
       );
     }
   }
-  return { lumaRatioError, chromaRelativeError, chromaAbsoluteError };
+  return { lumaRatioError, chromaRelativeError, chromaAbsoluteError, lumaRankCorrelation: spearman(previewLuma, decodedLuma) };
 }
