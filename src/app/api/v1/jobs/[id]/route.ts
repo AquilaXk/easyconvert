@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { graphScheduler, type GraphExecutionState, type NodeExecutionStatus } from '@/lib/queue/graph';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { redactSecrets, redactText } from '@/lib/security/redact';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +14,11 @@ const TERMINAL_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExe
   'cancelled',
   'skipped',
 ]);
+
+/** Stored text is masked again on the way out: rows written by older versions may still quote a secret. */
+function maskedText(text: string | undefined): string | undefined {
+  return text === undefined ? undefined : redactText(text);
+}
 
 interface RouteContext {
   params: Promise<{ id: string }> | { id: string };
@@ -70,7 +76,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
     ? Object.fromEntries(
         Object.entries(graphState.nodes).map(([nid, ns]) => [
           nid,
-          { status: ns.status, outputs: ns.outputs || [], error: ns.error },
+          { status: ns.status, outputs: ns.outputs || [], error: maskedText(ns.error) },
         ])
       )
     : undefined;
@@ -88,9 +94,9 @@ export async function GET(req: NextRequest, context: RouteContext) {
       originalFilename: state.originalFilename,
       createdAt: state.createdAt,
       finishedOn: state.finishedAt,
-      failedReason: state.failedReason,
-      tasks: state.tasks,
-      graph: state.graph,
+      failedReason: maskedText(state.failedReason),
+      tasks: redactSecrets(state.tasks),
+      graph: redactSecrets(state.graph),
       nodes: nodesResponse,
     });
   }
@@ -108,12 +114,12 @@ export async function GET(req: NextRequest, context: RouteContext) {
     processedOn: job.processedOn,
     finishedOn: job.finishedOn,
     attemptsMade: job.attemptsMade,
-    failedReason: graphState?.failedReason || job.failedReason,
+    failedReason: maskedText(graphState?.failedReason || job.failedReason),
     result: job.returnvalue,
-    tasks: job.data?.tasks,
-    graph: graphState?.graph || job.data?.graph,
+    tasks: redactSecrets(job.data?.tasks),
+    graph: redactSecrets(graphState?.graph || job.data?.graph),
     nodes: nodesResponse,
-    logs: job.logs,
+    logs: job.logs?.map(redactText),
   });
 }
 

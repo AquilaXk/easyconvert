@@ -60,9 +60,19 @@ export class RedactionLimitError extends Error {
   }
 }
 
-export function isSecretKey(key: string): boolean {
-  return SECRET_KEY_NAMES.has(key.toLowerCase().replaceAll(/[-_\s]/g, ''));
+function normalizeKeyName(key: string): string {
+  return key.toLowerCase().replaceAll(/[-_\s]/g, '');
 }
+
+export function isSecretKey(key: string): boolean {
+  return SECRET_KEY_NAMES.has(normalizeKeyName(key));
+}
+
+/**
+ * Keys that hold a link the service itself minted for the job owner, such as a presigned result
+ * URL. Its recipient is the owner, so the query string is the point of the link and stays as it is.
+ */
+const OWNER_DELIVERED_URL_KEYS: ReadonlySet<string> = new Set(['downloadurl']);
 
 const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s"'<>]+/gi;
 const URL_PARTS = /^([a-z][a-z0-9+.-]{1,15}:\/\/)([^\s/?#@"'<>]*@)?([^\s?#"'<>]*)(\?[^\s#"'<>]*)?(#[^\s"'<>]*)?$/i;
@@ -209,6 +219,10 @@ function walk(value: unknown, depth: number, state: WalkState): unknown {
     }
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
+      if (typeof item === 'string' && OWNER_DELIVERED_URL_KEYS.has(normalizeKeyName(key))) {
+        out[key] = item;
+        continue;
+      }
       const keep = item === undefined || item === null;
       out[key] = isSecretKey(key) && !keep ? REDACTION_MASK : walk(item, depth + 1, state);
     }

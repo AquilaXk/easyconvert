@@ -19,6 +19,7 @@ import {
   JobGraphValidationError,
 } from '@/lib/jobs';
 import { graphScheduler } from '@/lib/queue/graph';
+import { redactSecrets, redactText } from '@/lib/security/redact';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
@@ -606,7 +607,7 @@ export async function POST(req: NextRequest) {
             sourceFormat: sourceDef.id,
             targetFormat: targetDef.id,
             originalFilename,
-            graph: graphState.graph,
+            graph: redactSecrets(graphState.graph),
             nodes: nodesResponse,
           },
           { status: 202 }
@@ -710,7 +711,7 @@ export async function GET(req: NextRequest) {
       createdAt: j.timestamp,
       processedOn: j.processedOn,
       finishedOn: j.finishedOn,
-      failedReason: j.failedReason,
+      failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
       result: j.returnvalue,
     })),
   });
