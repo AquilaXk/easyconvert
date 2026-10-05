@@ -82,6 +82,26 @@ jobs:
           ORACLE_STRICT_MODE: "1"
         run: npm test
 
+      # The worker image ships only the pinned upstream 7-Zip build, so run the archive suites
+      # against that exact binary too. URL and digest mirror Dockerfile.worker (x64).
+      - name: Run archive tests against pinned 7-Zip
+        env:
+          ORACLE_STRICT_MODE: "1"
+          SEVEN_ZIP_VERSION: "26.01"
+          SEVEN_ZIP_RELEASE: "2601"
+          SEVEN_ZIP_SHA256_X64: 8ea0fc8a135e7b848e80a4116fe22dff56c8c4518dde1f43cce67f4e340b437a
+        run: |
+          SEVEN_ZIP_DIR="${RUNNER_TEMP}/seven-zip"
+          mkdir -p "${SEVEN_ZIP_DIR}"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "${SEVEN_ZIP_DIR}/7zip.tar.xz" \
+            "https://github.com/ip7z/7zip/releases/download/${SEVEN_ZIP_VERSION}/7z${SEVEN_ZIP_RELEASE}-linux-x64.tar.xz"
+          echo "${SEVEN_ZIP_SHA256_X64}  ${SEVEN_ZIP_DIR}/7zip.tar.xz" | sha256sum --check --strict -
+          tar -xJf "${SEVEN_ZIP_DIR}/7zip.tar.xz" -C "${SEVEN_ZIP_DIR}" 7zzs
+          "${SEVEN_ZIP_DIR}/7zzs" i | grep -q ' Rar5 '
+          P7ZIP_PATH="${SEVEN_ZIP_DIR}/7zzs" npx vitest run \
+            tests/*archive* tests/*7z* tests/*rar* tests/worker-seven-zip-packaging.test.ts
+
       # Kept separate from `npm test`: some suites assume no Redis is configured.
       - name: Run Redis-mode queue tests
         env:
