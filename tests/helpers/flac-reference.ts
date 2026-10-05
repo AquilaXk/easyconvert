@@ -432,6 +432,37 @@ export function flacCliDecodeRaw(stream: Uint8Array): Buffer {
   });
 }
 
+/**
+ * `flac -d` to WAV, returning the data chunk. Used for sample sizes the raw writer refuses
+ * (12 and 20 bit): the WAV writer left-justifies them in a 16/24-bit container.
+ */
+export function flacCliDecodeWavData(stream: Uint8Array): Buffer {
+  return withTempDir((dir) => {
+    const file = path.join(dir, 'in.flac');
+    const out = path.join(dir, 'out.wav');
+    fs.writeFileSync(file, stream);
+    execFileSync(requireTool('flac'), ['-d', '-s', '-f', '-o', out, file], { timeout: TOOL_TIMEOUT_MS });
+    const wav = fs.readFileSync(out);
+    let offset = 12;
+    while (offset + 8 <= wav.length) {
+      const id = wav.toString('ascii', offset, offset + 4);
+      const size = wav.readUInt32LE(offset + 4);
+      if (id === 'data') return wav.subarray(offset + 8, offset + 8 + size);
+      offset += 8 + size + (size & 1);
+    }
+    throw new Error('flac -d produced a WAV without a data chunk');
+  });
+}
+
+/** Little-endian PCM bytes with each sample left-justified in a whole-byte container. */
+export function leftJustifiedPcmBytes(samples: Int32Array, bitsPerSample: number): Buffer {
+  const bytes = Math.ceil(bitsPerSample / 8);
+  const shift = bytes * 8 - bitsPerSample;
+  const out = Buffer.alloc(samples.length * bytes);
+  for (let i = 0; i < samples.length; i++) out.writeIntLE(samples[i] * 2 ** shift, i * bytes, bytes);
+  return out;
+}
+
 /** Size in bytes of `flac -<level>` run over raw little-endian signed PCM. */
 export function flacCliEncodedSize(
   pcm: Uint8Array,
