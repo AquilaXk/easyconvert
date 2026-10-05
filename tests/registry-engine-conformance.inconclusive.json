@@ -4,9 +4,6 @@
   "dfont->otf",
   "dfont->ttf",
   "dfont->woff",
-  "gif->mkv",
-  "gif->mov",
-  "gif->mp4",
   "pdf->jpg",
   "pdf->png",
   "pdf->tiff",
@@ -18,8 +15,5 @@
   "rar->tar",
   "rar->tar.bz2",
   "rar->tar.gz",
-  "rar->zip",
-  "webp->mkv",
-  "webp->mov",
-  "webp->mp4"
+  "rar->zip"
 ]
