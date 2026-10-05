@@ -20,6 +20,7 @@ import {
 } from '@/lib/jobs';
 import { graphScheduler } from '@/lib/queue/graph';
 import { redactSecrets, redactText } from '@/lib/security/redact';
+import { SealingKeyConfigError } from '@/lib/security/job-secret-seal';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
@@ -658,6 +659,15 @@ export async function POST(req: NextRequest) {
   } catch (error: unknown) {
     if (idempotencyCtx) {
       await idempotencyCtx.abort();
+    }
+    if (error instanceof SealingKeyConfigError) {
+      // The detail names server configuration, so it stays in the server log.
+      console.error('[Jobs] Job secret sealing is not configured:', error.message);
+      return failWithRollback(
+        503,
+        'Job credentials cannot be stored securely right now. Try again later.',
+        'Service Unavailable'
+      );
     }
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');
