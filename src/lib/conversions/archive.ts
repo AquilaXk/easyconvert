@@ -52,7 +52,7 @@ import {
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
   archivePasswordError,
-  archiveFailureOutput,
+  archiveFailureStderr,
   assertArchivePasswordSafe,
   assertListingShowsEncryption,
   assertZipPasswordSupported,
@@ -263,7 +263,7 @@ function assertCreatedArchiveEncrypted(p7z: string, archivePath: string, format:
     });
     outcome = { listing: out.toString('utf-8') };
   } catch (err) {
-    outcome = { failureOutput: archiveFailureOutput(err) };
+    outcome = { failureOutput: archiveFailureStderr(err) };
   }
   assertListingShowsEncryption(format, outcome);
 }

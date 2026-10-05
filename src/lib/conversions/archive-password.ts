@@ -41,13 +41,27 @@ const PASSWORD_FORBIDDEN_CHARACTERS = /[\r\n\0]/;
 export const UNRAR_BAD_PASSWORD_EXIT_STATUS = 11;
 
 /**
- * What a failed decryption reports on stderr: 7-Zip ("Wrong password", "Cannot open encrypted
- * archive. Wrong password?", "Data Error in encrypted file. Wrong password?", identical across
- * p7zip 16.02 and 7-Zip 21.07 to 23.01) and unrar ("Corrupt file or wrong password" for RAR 4,
- * "Incorrect password for <name>" and "The specified password is incorrect." for RAR5).
+ * The complaints a failed decryption prints on stderr, one pattern per message the tools use. Each is
+ * anchored to the whole line, because entry and archive names are chosen by whoever built the
+ * archive and the tools print them inside their messages ("ERROR: CRC Failed : Wrong password.txt").
+ * 7-Zip (identical on p7zip 16.02 and 7-Zip 21.07 to 23.01) puts the name after the message
+ * ("ERROR: Wrong password : a.txt", "ERROR: Data Error in encrypted file. Wrong password? : a.txt",
+ * "ERROR: CRC Failed in encrypted file. Wrong password? : a.txt")
+ * and prints a header failure either on one line behind the archive path or on a second line
+ * ("ERROR: /work/h.7z" then "Cannot open encrypted archive. Wrong password?").
+ * unrar prints "Checksum error in the encrypted file <name>. Corrupt file or wrong password." for
+ * RAR 4, and "Incorrect password for <name>" or "The specified password is incorrect." for RAR5.
  */
-const ARCHIVE_TOOL_PASSWORD_FAILURE =
-  /wrong password|Can(?: )?not open encrypted|incorrect password|specified password is incorrect/i;
+const ARCHIVE_TOOL_PASSWORD_FAILURE_LINES: readonly RegExp[] = [
+  /^ERROR: Wrong password(?: : .*)?$/,
+  /^ERROR: (?:Data Error|CRC Failed) in encrypted file\. Wrong password\?(?: : .*)?$/,
+  /^(?:ERROR: .+ : )?Can(?: )?not open encrypted archive\. Wrong password\?$/,
+  /^Checksum error in the encrypted file .+\. Corrupt file or wrong password\.$/,
+  /^Incorrect password for .+$/,
+  /^The specified password is incorrect\.$/,
+];
+
+const STDERR_LINE_SEPARATOR = /\r?\n/;
 
 export function assertArchivePasswordSafe(password: string | undefined): void {
   if (!password) return;
@@ -120,16 +134,21 @@ export function execFileSyncWithPasswordStdin(
   }
 }
 
-export function isArchivePasswordFailure(output: string): boolean {
-  return ARCHIVE_TOOL_PASSWORD_FAILURE.test(output);
+/** True when a line of the tool's stderr is one of its password complaints (see the patterns above). */
+export function isArchivePasswordFailure(stderr: string): boolean {
+  return stderr
+    .split(STDERR_LINE_SEPARATOR)
+    .some((line) => ARCHIVE_TOOL_PASSWORD_FAILURE_LINES.some((pattern) => pattern.test(line)));
 }
 
-/** Message, stderr and stdout of a failed child, whichever shape the caller's runner throws. */
-export function archiveFailureOutput(err: unknown): string {
-  const failure = err as { message?: unknown; stderr?: unknown; stdout?: unknown } | null;
-  return [failure?.message, failure?.stderr, failure?.stdout]
-    .map((part) => (part === undefined || part === null ? '' : String(part)))
-    .join('\n');
+/**
+ * Stderr of a failed child, whichever shape the caller's runner throws. The error message and stdout
+ * are left out: the message carries the command line, and with it the caller-chosen archive path.
+ */
+export function archiveFailureStderr(err: unknown): string {
+  const stderr = (err as { stderr?: unknown } | null)?.stderr;
+  if (stderr === undefined || stderr === null) return '';
+  return String(stderr);
 }
 
 /** Exit status of a failed child, whichever shape the caller's runner throws. */
@@ -153,7 +172,7 @@ export function archivePasswordError(
   request: { password: string | undefined; label: string; tool?: 'unrar' }
 ): ConversionFailedError | null {
   const badPasswordStatus = request.tool === 'unrar' && archiveFailureExitStatus(err) === UNRAR_BAD_PASSWORD_EXIT_STATUS;
-  if (!badPasswordStatus && !isArchivePasswordFailure(archiveFailureOutput(err))) return null;
+  if (!badPasswordStatus && !isArchivePasswordFailure(archiveFailureStderr(err))) return null;
   if (!request.password) {
     const subject = request.label.charAt(0).toUpperCase() + request.label.slice(1);
     return new ArchivePasswordRequiredError(`${subject} is password protected. A password is required to extract.`);
@@ -168,7 +187,7 @@ export const MAX_ENCRYPTION_LISTING_BYTES = 16 * 1024 * 1024;
 export interface EncryptionListingOutcome {
   /** stdout of a listing that succeeded. */
   listing?: string;
-  /** Message, stderr and stdout of a listing that failed. */
+  /** Stderr of a listing that failed. */
   failureOutput?: string;
 }
 

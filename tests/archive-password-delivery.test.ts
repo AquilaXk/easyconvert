@@ -530,7 +530,84 @@ describe('archive password delivery to the real 7z binary', () => {
       process.env.P7ZIP_PATH = wrapper;
     }
 
+    /** Like the prompt-ignoring wrapper, but every listing dies with an error that has nothing to do with passwords. */
+    function installPromptIgnoringFailingListingWrapper(dir: string): void {
+      const real = get7zBinaryPath();
+      if (!real) throw new Error('7z binary missing');
+      const wrapper = path.join(dir, '7z-fails-listing.sh');
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\ncase "$1" in\n  l) echo "ERROR: disk exploded" >&2; exit 2 ;;\nesac\nfor arg in "$@"; do\n  shift\n  [ "$arg" = "-p" ] || set -- "$@" "$arg"\ndone\nexec '${real}' "$@"\n`
+      );
+      chmodSync(wrapper, 0o755);
+      process.env.P7ZIP_PATH = wrapper;
+    }
+
     const FILES = PLAIN_FILES.map((file) => ({ filename: file.name, buffer: file.data }));
+
+    oracleTest('an archive named after the password message is not taken for an encrypted one when its listing fails', ['7z'], async () => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'archive-password-named-'));
+      try {
+        installPromptIgnoringFailingListingWrapper(dir);
+        // The wrapper writes a plaintext archive and its listing then fails for an unrelated reason. The
+        // failed command line contains the archive path, which the caller controls.
+        for (const archiveName of ['wrong password.7z', 'Cannot open encrypted archive.7z']) {
+          let failure: unknown;
+          try {
+            create7zArchive(FILES, { password: PASSWORD }, archiveName);
+          } catch (err) {
+            failure = err;
+          }
+          expect(failure, `${archiveName} was returned`).toBeInstanceOf(ConversionFailedError);
+          expect((failure as Error).message, archiveName).toBe('Could not verify that the archive is encrypted.');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    oracleTest('a CRC error in an entry named "Wrong password" is not reported as a password error', ['7z'], async () => {
+      const content = Buffer.from('stored bytes that will be damaged on disk\n', 'utf-8');
+      for (const entryName of ['Wrong password.txt', 'plain-name.txt']) {
+        const damaged = withTempDir((dir) => {
+          writeFileSync(path.join(dir, entryName), content);
+          const archive = path.join(dir, 'crc.zip');
+          execFileSync(oracle7z(), ['a', '-y', '-tzip', '-mx0', archive, entryName], { cwd: dir, stdio: 'pipe' });
+          const bytes = readFileSync(archive);
+          const at = bytes.indexOf(content);
+          expect(at, 'stored data located in the zip').toBeGreaterThan(0);
+          bytes[at] ^= 0xff;
+          return bytes;
+        });
+        // The reference CLI itself calls this a CRC failure on an unencrypted entry, not a password problem.
+        const oracleFailure = oracleOpenFailure(damaged, 'zip', undefined) ?? '';
+        expect(oracleFailure, `${entryName} oracle verdict`).toMatch(/CRC Failed/);
+        for (const options of [{}, { password: PASSWORD }]) {
+          const label = `${entryName} ${JSON.stringify(options)}`;
+          // The lib engine turns an untyped 7z failure into null so the caller falls back to the TS engine.
+          let libFailure: unknown;
+          let libResult: unknown;
+          try {
+            libResult = convertWithNative7z(damaged, 'zip', '7z', options, 'crc.zip');
+          } catch (err) {
+            libFailure = err;
+          }
+          expect(libFailure, `lib ${label}`).not.toBeInstanceOf(ArchivePasswordRequiredError);
+          expect(libFailure, `lib ${label}`).not.toBeInstanceOf(InvalidArchivePasswordError);
+          expect(libResult ?? null, `lib ${label} returned an archive`).toBeNull();
+
+          let workerFailure: unknown;
+          try {
+            await convertWithWorker7z(damaged, 'zip', '7z', { ...options, throwOnUnavailable: true }, 'crc.zip');
+          } catch (err) {
+            workerFailure = err;
+          }
+          expect(workerFailure, `worker ${label} did not fail`).toBeInstanceOf(Error);
+          expect(workerFailure, `worker ${label}`).not.toBeInstanceOf(ArchivePasswordRequiredError);
+          expect(workerFailure, `worker ${label}`).not.toBeInstanceOf(InvalidArchivePasswordError);
+        }
+      }
+    });
 
     oracleTest('a 7-Zip that ignores the prompt never yields a plaintext archive from any creation path', ['7z'], async () => {
       const dir = mkdtempSync(path.join(os.tmpdir(), 'archive-password-ignored-'));
@@ -613,6 +690,24 @@ describe('archive password delivery to the real 7z binary', () => {
         ]) {
           expect(assertListingShowsEncryption('7z', { failureOutput })).toEqual({ protection: 'header', encryptedEntries: 0 });
         }
+      });
+
+      it('reads only the tool\'s own password complaints on stderr, never an entry name that repeats them', () => {
+        for (const failureOutput of [
+          'ERROR: CRC Failed : Wrong password.txt',
+          'ERROR: Unsupported Method : Cannot open encrypted archive. Wrong password?.txt',
+          'ERROR: disk exploded',
+          'WARNING: Wrong password in the middle',
+        ]) {
+          expect(() => assertListingShowsEncryption('7z', { failureOutput }), failureOutput).toThrow(
+            'Could not verify that the archive is encrypted.'
+          );
+        }
+      });
+
+      it('accepts the two-line wording of the header failure printed by extraction and test runs', () => {
+        const failureOutput = 'ERROR: /work/h.7z\nCannot open encrypted archive. Wrong password?\n';
+        expect(assertListingShowsEncryption('7z', { failureOutput })).toEqual({ protection: 'header', encryptedEntries: 0 });
       });
 
       it('fails closed when the listing breaks for a reason other than the password', () => {

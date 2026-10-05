@@ -51,7 +51,7 @@ import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
   archivePasswordError,
   MAX_ENCRYPTION_LISTING_BYTES,
-  archiveFailureOutput,
+  archiveFailureStderr,
   assertArchivePasswordSafe,
   assertListingShowsEncryption,
   assertZipPasswordSupported,
@@ -690,7 +690,7 @@ async function assertCreatedArchiveEncrypted(
     });
     outcome = { listing: result.stdout.toString('utf-8') };
   } catch (err) {
-    outcome = { failureOutput: archiveFailureOutput(err) };
+    outcome = { failureOutput: archiveFailureStderr(err) };
   }
   assertListingShowsEncryption(format, outcome);
 }
