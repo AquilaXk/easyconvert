@@ -31,6 +31,8 @@ const MEAN_MAX = 250;
 const TRUNCATED_SAMPLE_BYTES = 300_000;
 const JUNK_BYTES = 4096;
 const TEMP_PREFIX = 'easyconvert-raw-';
+// A private temp root keeps outputs of concurrent test files out of the cleanup assertions.
+process.env.TMPDIR = mkdtempSync(path.join(os.tmpdir(), 'raw-native-decode-'));
 const VFS_DIR = path.join(os.tmpdir(), 'easyconvert-vfs');
 
 function samplePath(format: string): string {
