@@ -29,8 +29,11 @@ function startsWithJpegSoi(buffer: Buffer, at: number): boolean {
 /** X3F: header columns/rows, directory walked from the pointer in the last four bytes. */
 export function readX3fContainer(file: Buffer): ContainerInfo {
   if (file.toString('latin1', 0, 4) !== 'FOVb') throw new Error('not an X3F file');
-  const headerColumns = file.readUInt32LE(28);
-  const headerRows = file.readUInt32LE(32);
+  // Version 4 headers (Quattro) hold the finished image size 12 bytes further on than earlier ones.
+  const major = file.readUInt16LE(6);
+  const sizeAt = major >= 4 ? 40 : 28;
+  const headerColumns = file.readUInt32LE(sizeAt);
+  const headerRows = file.readUInt32LE(sizeAt + 4);
   const directory = file.readUInt32LE(file.length - 4);
   if (file.toString('latin1', directory, directory + 4) !== 'SECd') throw new Error('X3F directory marker missing');
   const count = file.readUInt32LE(directory + 8);
@@ -46,7 +49,8 @@ export function readX3fContainer(file: Buffer): ContainerInfo {
     const columns = file.readUInt32LE(offset + 16);
     const rows = file.readUInt32LE(offset + 20);
     const payload = offset + 28;
-    if (imageType === 3) {
+    // Sensor data is image type 3 (DP, SD14) or 1 (Merrill, Quattro); type 2 holds the previews.
+    if (imageType === 3 || imageType === 1) {
       sensor = { columns, rows, dataOffset: payload };
     } else if (startsWithJpegSoi(file, payload) && columns === headerColumns && rows === headerRows) {
       // The preview with the finished image's size, not the small thumbnail.
