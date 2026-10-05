@@ -94,9 +94,14 @@ const SUPPLEMENTARY_PLANE = 0x10000;
 const VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 /**
  * Invisible characters with no glyph of their own: controls other than line feed, and default
- * ignorables other than variation selectors.
+ * ignorables other than variation selectors. Default-ignorable code points are dropped even when
+ * unassigned (for example U+2065 or U+E0000 to U+E0FFF): Unicode requires them to render as
+ * nothing, so they are not refused as unrenderable.
  */
 const NON_RENDERING_CHARACTERS = /(?![\uFE00-\uFE0F\u{E0100}-\u{E01EF}])[\p{Default_Ignorable_Code_Point}\p{Cc}]/gu;
+/** Most combining marks one character may carry; measuring a longer stack is quadratic in its length. */
+const MAX_COMBINING_MARKS = 32;
+const COMBINING_MARK = /\p{M}/u;
 /** Code points no font can render: unassigned (including noncharacters), private-use and lone surrogates. */
 const NON_FONTABLE_CODE_POINT = /[\p{Cn}\p{Co}\p{Cs}]/u;
 
@@ -350,11 +355,25 @@ function uncoveredError(codePoint: number): EngineUnavailableError {
   );
 }
 
-/** Distinct code points of drawable text that need a glyph; rejects code points no font can render. */
+/**
+ * Distinct code points of drawable text that need a glyph. Rejects code points no font can render
+ * and characters stacked with more than MAX_COMBINING_MARKS combining marks.
+ */
 function glyphCodePoints(text: string): number[] {
   const codePoints = new Set<number>();
+  let stackedMarks = 0;
   for (const ch of text) {
     const cp = ch.codePointAt(0) as number;
+    if (cp >= FIRST_CLUSTER_EXTENDER && COMBINING_MARK.test(ch)) {
+      stackedMarks++;
+      if (stackedMarks > MAX_COMBINING_MARKS) {
+        throw new ConversionFailedError(
+          `Text stacks ${stackedMarks} combining marks on one character; at most ${MAX_COMBINING_MARKS} are supported`
+        );
+      }
+    } else {
+      stackedMarks = 0;
+    }
     if (needsGlyph(cp)) codePoints.add(cp);
   }
   const distinct = Array.from(codePoints);
@@ -556,20 +575,26 @@ export class PdfUnicodeTextWriter {
     const widths = new Map<string, number>();
     const asciiWidths = new Float64Array(ASCII_LIMIT).fill(Number.NaN);
     let out = '';
-    let tokenStart = 0;
-    const flushToken = (end: number): void => {
-      const token = text.slice(tokenStart, end);
-      out += token.length >= LONG_TOKEN_CHARS ? this.splitToken(token, lineWidth, widths, asciiWidths) : token;
-    };
-    for (let i = 0; i < text.length; i++) {
-      const code = text.charCodeAt(i);
-      if (code === SPACE || code === LINE_FEED) {
-        flushToken(i);
-        out += text[i];
-        tokenStart = i + 1;
+    let index = 0;
+    while (index < text.length) {
+      const code = text.charCodeAt(index);
+      if (code === LINE_FEED) {
+        out += '\n';
+        index++;
+        continue;
       }
+      // A run of spaces or a run of other characters; long runs of either are broken by width.
+      const isSpace = code === SPACE;
+      let end = index + 1;
+      while (end < text.length) {
+        const next = text.charCodeAt(end);
+        if (next === LINE_FEED || (next === SPACE) !== isSpace) break;
+        end++;
+      }
+      const run = text.slice(index, end);
+      out += run.length >= LONG_TOKEN_CHARS ? this.splitToken(run, lineWidth, widths, asciiWidths) : run;
+      index = end;
     }
-    flushToken(text.length);
     return out;
   }
 

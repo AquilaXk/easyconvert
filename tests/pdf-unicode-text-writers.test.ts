@@ -412,6 +412,49 @@ describe('In-process PDF layout limits', () => {
     expect(extracted).toBe('a'.repeat(TOKEN_BYTES));
   }, 120_000);
 
+  oracleTest('wraps long runs of spaces and tabs in linear time without losing the text around them', ['pdftotext'], async () => {
+    // Growth, not wall clock: 8x the input must cost well under the 64x a quadratic wrap would.
+    const SMALL = 25_000;
+    const LARGE = 8 * SMALL;
+    const MAX_GROWTH = 20;
+    const CEILING_MS = 10_000;
+    for (const [label, whitespace] of [
+      ['spaces', ' '],
+      ['tabs', '\t'],
+    ] as const) {
+      const timed = async (count: number): Promise<{ elapsed: number; pdf: Buffer }> => {
+        const started = Date.now();
+        const result = await convertFile(Buffer.from(`start${whitespace.repeat(count)}end`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt');
+        return { elapsed: Date.now() - started, pdf: result.buffer };
+      };
+      const small = await timed(SMALL);
+      const large = await timed(LARGE);
+      const growth = large.elapsed / Math.max(small.elapsed, 1);
+      expect({ label, linear: growth < MAX_GROWTH, underCeiling: large.elapsed < CEILING_MS, growth, ms: large.elapsed }).toEqual({
+        label,
+        linear: true,
+        underCeiling: true,
+        growth,
+        ms: large.elapsed,
+      });
+      expect(withoutWhitespace(pdfText(large.pdf))).toBe('startend');
+    }
+  }, 120_000);
+
+  oracleTest('allows up to 32 combining marks on one character and refuses longer runs', ['pdftotext'], async () => {
+    const MARK_CAP = 32;
+    // Distinct marks (U+0300 onwards): pdftotext drops identical glyphs drawn at the same spot.
+    const marks = Array.from({ length: MARK_CAP }, (_, i) => String.fromCodePoint(0x300 + i)).join('');
+    requireCoveringFonts(marks);
+    const accepted = await convertFile(Buffer.from(`ok a${marks} end`, 'utf-8'), 'txt', 'pdf', {}, 'marks.txt');
+    // pdftotext orders stacked marks by position, so compare the characters as a multiset.
+    const sortedCharacters = (text: string): string => Array.from(withoutWhitespace(text).normalize('NFD')).sort().join('');
+    expect(sortedCharacters(pdfText(accepted.buffer))).toBe(sortedCharacters(`oka${marks}end`));
+    const { error } = await settle(convertFile(Buffer.from(`a${'\u0301'.repeat(MARK_CAP + 1)}`, 'utf-8'), 'txt', 'pdf', {}, 'marks.txt'));
+    expect((error as Error)?.name).toBe('ConversionFailedError');
+    expect((error as Error).message).toMatch(/33 combining marks/);
+  });
+
   oracleTest('wraps a long unbroken token inside an HTML paragraph without losing characters', ['pdftotext'], async () => {
     const BUDGET_MS = 2000;
     const token = 'x'.repeat(50_000);
