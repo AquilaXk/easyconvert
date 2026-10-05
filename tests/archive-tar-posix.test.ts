@@ -190,7 +190,7 @@ function writerOracleSuite(label: string, resolveBin: () => string, wrap: typeof
       const archive = createTarArchive(WRITER_FILES, {}, 'x.tar', { defaultMtime: FIXED_MTIME }).buffer;
       const names = listWithTool(resolveBin(), archive);
       expect(names).toEqual(WRITER_FILES.map((f) => f.filename));
-      expect(LONG_ASCII_NAME.length).toBe(150);
+      expect(LONG_ASCII_NAME).toHaveLength(150);
     });
 
     register('extracts every file byte-for-byte under its full UTF-8 path', () => {
@@ -231,7 +231,7 @@ describe('TAR writer: POSIX header layout', () => {
     ).buffer;
 
     // header + one data block + two end-of-archive blocks, no 'x' extension header
-    expect(archive.length).toBe(BLOCK * 4);
+    expect(archive).toHaveLength(BLOCK * 4);
     expect(typeflagOf(archive, 0)).toBe('0');
     const prefix = archive.toString('utf8', 345, 345 + 155).replace(/\0.*$/, '');
     const name = archive.toString('utf8', 0, 100).replace(/\0.*$/, '');
@@ -399,7 +399,7 @@ function expectTreeEntries(entries: ReturnType<typeof readTarEntries>, tree: Sou
     }
   }
   expect(byName.get('emptydir')!.type).toBe('directory');
-  expect(byName.get('emptydir')!.buffer.length).toBe(0);
+  expect(byName.get('emptydir')!.buffer).toHaveLength(0);
   const symlink = byName.get('link-to-plain')!;
   expect(symlink.type).toBe('symlink');
   expect(symlink.linkTarget).toBe('plain.txt');

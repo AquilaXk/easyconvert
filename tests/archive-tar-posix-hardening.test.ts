@@ -171,7 +171,7 @@ describe('TAR reader: shared uncompressed-size budget', () => {
       END_OF_ARCHIVE,
     ]);
     // the file alone fits; file + hardlink exceed the limit
-    expect(readTarEntries(tar.subarray(0, TAR_TEST_BLOCK + padToBlock(big).length)).length).toBe(1);
+    expect(readTarEntries(tar.subarray(0, TAR_TEST_BLOCK + padToBlock(big).length))).toHaveLength(1);
     expect(() => extractTarArchive(tar)).toThrow(ConversionFailedError);
     expect(() => extractTarArchive(tar)).toThrow(/Archive bomb detected/);
   });
