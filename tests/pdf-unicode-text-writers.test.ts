@@ -166,6 +166,14 @@ function expectNoBranding(pdf: Buffer): void {
   expect(runPoppler('pdfinfo', [], pdf)).not.toMatch(BRANDING);
 }
 
+/** Number of images pdfimages lists in the PDF. */
+function imageCount(pdf: Buffer): number {
+  return runPoppler('pdfimages', ['-list'], pdf)
+    .split('\n')
+    .slice(2)
+    .filter((line) => line.trim().length > 0).length;
+}
+
 /** Index of the first line at or after `from` matching the pattern; fails when none does. */
 function lineIndex(lines: string[], pattern: RegExp, from: number): number {
   const index = lines.findIndex((line, i) => i >= from && pattern.test(line));
@@ -584,6 +592,50 @@ describe('Markdown to PDF keeps literal text and structure', () => {
     lineIndex(layout, /code <b>kept<\/b>/, row + 1);
     expect(await linkTargets(result.buffer)).toEqual(['https://example.com/notes']);
   });
+
+  oracleTest('tokenizes inline Markdown once: no attribute break-out, intact URLs, allowed schemes only', ['pdftotext', 'pdfimages'], async () => {
+    const png = buildRgbPng(4, 3).toString('base64');
+    const cases: Array<{ markdown: string; text: string; links: string[]; images: number }> = [
+      { markdown: '![ [p](q) ](r)', text: '[p ](r)', links: [], images: 0 },
+      { markdown: '[a](http://x.example/*b*)', text: 'a', links: ['http://x.example/*b*'], images: 0 },
+      { markdown: '[x](javascript:void0) and [f](file:///etc/hosts)', text: 'x and f', links: [], images: 0 },
+      { markdown: '[x](javascript:alert(1))', text: '[x](javascript:alert(1))', links: [], images: 0 },
+      { markdown: '![local](file:///etc/passwd) ![remote](http://192.0.2.2/m.png)', text: 'local remote', links: [], images: 0 },
+      { markdown: '[a](b"onmouseover=x) [mail](mailto:team@example.com)', text: 'a mail', links: ['mailto:team@example.com'], images: 0 },
+      { markdown: `before ![dot](data:image/png;base64,${png}) after`, text: 'before after', links: [], images: 1 },
+    ];
+    for (const { markdown, text, links, images } of cases) {
+      const result = await convertFile(Buffer.from(markdown, 'utf-8'), 'md', 'pdf', {}, 'inline.md');
+      expect({
+        markdown,
+        text: normalizeText(pdfText(result.buffer)),
+        links: await linkTargets(result.buffer),
+        images: imageCount(result.buffer),
+      }).toEqual({ markdown, text, links, images });
+    }
+  });
+
+  oracleTest('keeps the start number of an ordered list', ['pdftotext'], async () => {
+    const result = await convertFile(Buffer.from('3. third\n4. fourth\n', 'utf-8'), 'md', 'pdf', {}, 'start.md');
+    const layout = pdfText(result.buffer, true).split('\n');
+    const third = lineIndex(layout, /3\.\s+third/, 0);
+    lineIndex(layout, /4\.\s+fourth/, third + 1);
+  });
+
+  oracleTest(
+    'sends LibreOffice no local or remote images and no script or file links from Markdown',
+    LIBREOFFICE_TOOLS,
+    async () => {
+      requireCoveringFonts('한국어 문서');
+      const markdown = '한국어 문서\n\n![x](file:///etc/hosts)\n\n![y](http://192.0.2.2:18765/m.png)\n\n[js](javascript:void0) [f](file:///etc/hosts) [ok](https://example.com/a)\n';
+      const result = await executeWorkerConversion(Buffer.from(markdown, 'utf-8'), 'md', 'pdf', {}, 'risky.md');
+      expect(result.engineUsed).toMatch(/^native-soffice/);
+      expect(imageCount(result.buffer)).toBe(0);
+      expect(await linkTargets(result.buffer)).toEqual(['https://example.com/a']);
+      expect(normalizeText(pdfText(result.buffer))).toBe('한국어 문서 x y js f ok');
+    },
+    LIBREOFFICE_TIMEOUT_MS
+  );
 
   oracleTest('converts long runs of table pipes in linear time', ['pdftotext'], async () => {
     const BUDGET_MS = 2000;

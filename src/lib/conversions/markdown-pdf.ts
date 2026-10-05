@@ -1,51 +1,92 @@
 /**
  * Markdown to HTML for the PDF routes (in-process renderer and LibreOffice staging).
  *
- * Every piece of source text is HTML-escaped first, so raw HTML and text such as `List<String>`
- * or `a<b` stay literal; the only tags are the ones built here. Block parsing is line by line and
- * the inline patterns are bounded, so the work is linear in the input size. Covers ATX headings,
- * paragraphs, bullet and ordered lists, pipe tables, fenced code, code spans, strong and emphasis
- * with asterisks, links and images.
+ * Inline Markdown is tokenized in one left-to-right pass: code spans, images, links and plain text
+ * are recognised once and each is emitted as escaped HTML, so no pattern ever runs over generated
+ * markup. Raw HTML and text such as `List<String>` or `a<b` stay literal. Links keep only http,
+ * https and mailto targets, and images only embedded PNG/JPEG data URIs (as on the HTML route);
+ * anything else keeps its text without a link or image, so nothing is fetched or opened.
+ * Block parsing is line by line and every scan is bounded, so the work is linear in the input.
  */
 
 const MAX_HEADING_LEVEL = 6;
 const MIN_FENCE_LENGTH = 3;
-const MAX_LINK_TEXT = 1000;
-const MAX_LINK_TARGET = 2000;
+/** Longest link or image label recognised; a longer bracket run stays literal text. */
+const MAX_LINK_LABEL = 200;
 const LIST_ITEM = /^\s{0,3}([-*+]|\d{1,9}[.)])\s+(.*)$/;
 const ORDERED_MARKER = /^\d/;
+const DECIMAL_RADIX = 10;
 const TABLE_DELIMITER_CELL = /^:?-+:?$/;
-const IMAGE = new RegExp(`!\\[([^\\]\\n]{0,${MAX_LINK_TEXT}})\\]\\(([^()\\s]{1,${MAX_LINK_TARGET}})\\)`, 'g');
-const LINK = new RegExp(`\\[([^\\]\\n]{1,${MAX_LINK_TEXT}})\\]\\(([^()\\s]{1,${MAX_LINK_TARGET}})\\)`, 'g');
+/** Link targets kept: web and mail addresses. */
+const LINK_TARGET = /^(?:https?:|mailto:)/i;
+/** Image sources kept: embedded PNG or JPEG data. */
+const IMAGE_SOURCE = /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/i;
 /** Asterisk emphasis that opens and closes next to non-space characters; `2 * 3 * 4` stays literal. */
 const STRONG = /\*\*(?=\S)([^*\n]*?\S)\*\*/g;
 const EMPHASIS = /\*(?=\S)([^*\n]*?\S)\*/g;
-const CODE_SPAN_MARK = '`';
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-/** Inline Markdown of already-escaped text outside code spans. */
-function inlineOutsideCode(escaped: string): string {
-  return escaped
-    .replace(IMAGE, (_match, alt: string, src: string) => `<img alt="${alt}" src="${src}">`)
-    .replace(LINK, (_match, text: string, href: string) => `<a href="${href}">${text}</a>`)
-    .replace(STRONG, '<strong>$1</strong>')
-    .replace(EMPHASIS, '<em>$1</em>');
+/** Plain text: escaped, then asterisk emphasis, which only ever sees this text segment. */
+function renderText(text: string): string {
+  return escapeHtml(text).replace(STRONG, '<strong>$1</strong>').replace(EMPHASIS, '<em>$1</em>');
 }
 
-/** Escapes inline text and renders code spans, links, images and asterisk emphasis. */
+/** A `[label](target)` at `open` (the '[' index), or null when the syntax does not match. */
+function parseLinkAt(text: string, open: number): { label: string; target: string; end: number } | null {
+  let close = open + 1;
+  const labelLimit = Math.min(text.length, open + 1 + MAX_LINK_LABEL);
+  while (close < labelLimit && text[close] !== ']' && text[close] !== '\n') close++;
+  if (text[close] !== ']' || text[close + 1] !== '(') return null;
+  let end = close + 2;
+  while (end < text.length && text[end] !== ')' && text[end] !== '(' && !/\s/.test(text[end])) end++;
+  if (text[end] !== ')' || end === close + 2) return null;
+  return { label: text.slice(open + 1, close), target: text.slice(close + 2, end), end: end + 1 };
+}
+
+/** Renders inline Markdown in a single pass: code spans, images, links, then plain text. */
 function renderInline(text: string): string {
-  const parts = escapeHtml(text).split(CODE_SPAN_MARK);
-  // An unmatched last backtick is literal text.
-  const closed = parts.length % 2 === 1 ? parts.length : parts.length - 1;
   let html = '';
-  for (let i = 0; i < parts.length; i++) {
-    if (i >= closed) html += CODE_SPAN_MARK + parts[i];
-    else if (i % 2 === 1) html += `<code>${parts[i]}</code>`;
-    else html += inlineOutsideCode(parts[i]);
+  let plainStart = 0;
+  let i = 0;
+  const flushPlain = (until: number): void => {
+    if (until > plainStart) html += renderText(text.slice(plainStart, until));
+  };
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '`') {
+      const close = text.indexOf('`', i + 1);
+      if (close > i) {
+        flushPlain(i);
+        html += `<code>${escapeHtml(text.slice(i + 1, close))}</code>`;
+        i = close + 1;
+        plainStart = i;
+        continue;
+      }
+    } else if (ch === '[' || (ch === '!' && text[i + 1] === '[')) {
+      const isImage = ch === '!';
+      const link = parseLinkAt(text, isImage ? i + 1 : i);
+      if (link) {
+        flushPlain(i);
+        if (isImage) {
+          html += IMAGE_SOURCE.test(link.target)
+            ? `<img alt="${escapeHtml(link.label)}" src="${escapeHtml(link.target)}">`
+            : escapeHtml(link.label);
+        } else if (LINK_TARGET.test(link.target)) {
+          html += `<a href="${escapeHtml(link.target)}">${renderText(link.label)}</a>`;
+        } else {
+          html += renderText(link.label);
+        }
+        i = link.end;
+        plainStart = i;
+        continue;
+      }
+    }
+    i++;
   }
+  flushPlain(text.length);
   return html;
 }
 
@@ -91,7 +132,7 @@ export function markdownToSafeHtml(markdown: string, title: string): string {
   const lines = markdown.replace(/^﻿/, '').split(/\r\n?|\n/);
   const out: string[] = [];
   let paragraph: string[] = [];
-  let list: { ordered: boolean; items: string[] } | null = null;
+  let list: { ordered: boolean; start: number; items: string[] } | null = null;
 
   const flushParagraph = (): void => {
     if (paragraph.length > 0) out.push(`<p>${renderInline(paragraph.join('\n'))}</p>`);
@@ -100,7 +141,8 @@ export function markdownToSafeHtml(markdown: string, title: string): string {
   const flushList = (): void => {
     if (!list) return;
     const tag = list.ordered ? 'ol' : 'ul';
-    out.push(`<${tag}>${list.items.map((item) => `<li>${renderInline(item)}</li>`).join('')}</${tag}>`);
+    const start = list.ordered && list.start !== 1 ? ` start="${list.start}"` : '';
+    out.push(`<${tag}${start}>${list.items.map((item) => `<li>${renderInline(item)}</li>`).join('')}</${tag}>`);
     list = null;
   };
 
@@ -148,7 +190,7 @@ export function markdownToSafeHtml(markdown: string, title: string): string {
       flushParagraph();
       const ordered = ORDERED_MARKER.test(item[1]);
       if (list && list.ordered !== ordered) flushList();
-      if (!list) list = { ordered, items: [] };
+      if (!list) list = { ordered, start: ordered ? Number.parseInt(item[1], DECIMAL_RADIX) : 1, items: [] };
       list.items.push(item[2]);
       continue;
     }
