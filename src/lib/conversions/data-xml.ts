@@ -34,7 +34,18 @@ const MAX_XML_ENTITY_DEPTH = 16;
 /** Longest replacement text one entity may expand to. */
 const MAX_XML_ENTITY_CHARS = 1_000_000;
 /** Characters all entity references of a document may insert, per character of input. */
-const XML_ENTITY_AMPLIFICATION = 10;
+const XML_ENTITY_AMPLIFICATION = 4;
+/**
+ * Characters all entity references of one document may insert, whatever its size. Without a
+ * ceiling a 50 MB input could expand past V8's string limit (an untyped RangeError) after
+ * seconds of work.
+ */
+const MAX_XML_EXPANDED_CHARS = 16_000_000;
+
+/** Insertion budget of a document: proportional to its size, between one entity's cap and the absolute cap. */
+function entityBudget(inputChars: number): number {
+  return Math.min(MAX_XML_EXPANDED_CHARS, Math.max(MAX_XML_ENTITY_CHARS, inputChars * XML_ENTITY_AMPLIFICATION));
+}
 
 const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>';
 /** JsonML position of the optional attributes object, right after the element name. */
@@ -255,10 +266,11 @@ class EntityExpander {
   reference(name: string): string | undefined {
     if (!this.declarations.has(name)) return undefined;
     const value = this.expand(name, []);
-    this.inserted += value.length;
-    if (this.inserted > this.documentBudget) {
+    // Checked before the parser appends the text, so the budget is never overshot.
+    if (this.inserted + value.length > this.documentBudget) {
       throw new DataLimitExceededError(`XML entity expansion exceeds ${this.documentBudget} characters for this document.`);
     }
+    this.inserted += value.length;
     return value;
   }
 
@@ -281,6 +293,12 @@ class EntityExpander {
     }
     const replacement = declaration.replacement;
     let out = '';
+    const append = (piece: string): void => {
+      if (out.length + piece.length > MAX_XML_ENTITY_CHARS) {
+        throw new DataLimitExceededError(`XML entity expansion of &${name}; exceeds ${MAX_XML_ENTITY_CHARS} characters.`);
+      }
+      out += piece;
+    };
     let pos = 0;
     while (pos < replacement.length) {
       const amp = replacement.indexOf('&', pos);
@@ -289,20 +307,17 @@ class EntityExpander {
         throw dtdError(`entity &${name}; contains markup, which data conversion does not expand.`);
       }
       if (amp === -1) {
-        out += replacement.slice(pos);
+        append(replacement.slice(pos));
         break;
       }
-      out += replacement.slice(pos, amp);
+      append(replacement.slice(pos, amp));
       const end = replacement.indexOf(';', amp);
       if (end === -1) throw dtdError(`unterminated reference in entity &${name};.`);
       const reference = replacement.slice(amp + 1, end);
       if (reference.startsWith('#')) {
-        out += decodeCharacterReference(reference);
+        append(decodeCharacterReference(reference));
       } else {
-        out += PREDEFINED_ENTITIES.get(reference) ?? this.expand(reference, [...chain, name]);
-      }
-      if (out.length > MAX_XML_ENTITY_CHARS) {
-        throw new DataLimitExceededError(`XML entity expansion of &${name}; exceeds ${MAX_XML_ENTITY_CHARS} characters.`);
+        append(PREDEFINED_ENTITIES.get(reference) ?? this.expand(reference, [...chain, name]));
       }
       pos = end + 1;
     }
@@ -331,7 +346,7 @@ function appendText(parent: XmlElement, text: string): void {
  */
 export function parseXmlDocument(text: string): XmlElement {
   const parser = new SaxesParser({ xmlns: true, position: true, defaultXMLVersion: '1.0', forceXMLVersion: true });
-  const expander = new EntityExpander(Math.max(MAX_XML_ENTITY_CHARS, text.length * XML_ENTITY_AMPLIFICATION));
+  const expander = new EntityExpander(entityBudget(text.length));
   parser.ENTITIES = new Proxy(parser.ENTITIES, {
     get(target, name, receiver) {
       if (typeof name !== 'string' || PREDEFINED_ENTITIES.has(name)) return Reflect.get(target, name, receiver);

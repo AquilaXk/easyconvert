@@ -5,6 +5,7 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { convertFile } from '../src/lib/conversions';
+import { parseXmlDocument } from '../src/lib/conversions/data-xml';
 import {
   ConversionFailedError,
   DataLimitExceededError,
@@ -270,6 +271,22 @@ describe('XML input fails closed', () => {
     expect(err).toBeInstanceOf(DataLimitExceededError);
     expect(err).toBeInstanceOf(ConversionFailedError);
     expect(err.message).toMatch(/entity expansion/i);
+  });
+
+  it('caps the characters all entity references may insert, however large the input', () => {
+    // 20M expanded characters from a 5 MB document: within a pure 10x-of-input budget (50M),
+    // beyond the absolute cap of 16M characters.
+    const references = '&b;'.repeat(200_000);
+    const padding = 'p'.repeat(4_400_000);
+    const xml = `<!DOCTYPE r [<!ENTITY b "${'A'.repeat(100)}">]><r>${padding}${references}</r>`;
+    let error: unknown;
+    try {
+      parseXmlDocument(xml);
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(DataLimitExceededError);
+    expect((error as Error).message).toBe('XML entity expansion exceeds 16000000 characters for this document.');
   });
 
   it('rejects parameter entities and recursive entities', async () => {
