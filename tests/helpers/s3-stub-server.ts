@@ -438,6 +438,11 @@ export async function startS3StubServer(options: {
     res.end(slice);
   }
 
+  /** S3 orders keys by UTF-8 binary order, which differs from UTF-16 code unit order for astral characters. */
+  function compareUtf8Binary(a: string, b: string): number {
+    return Buffer.compare(Buffer.from(a, 'utf-8'), Buffer.from(b, 'utf-8'));
+  }
+
   /** ListObjectsV2: lexicographic keys, `prefix`, `max-keys`, and an opaque continuation token. */
   function handleListObjects(record: StubRequestRecord, bucket: string, res: http.ServerResponse): void {
     const prefix = record.query.get('prefix') ?? '';
@@ -445,8 +450,8 @@ export async function startS3StubServer(options: {
     const token = record.query.get('continuation-token');
     const after = token ? Buffer.from(token, 'base64url').toString('utf-8') : '';
     const matching = [...objects.keys()]
-      .filter((key) => key.startsWith(prefix) && key > after)
-      .sort();
+      .filter((key) => key.startsWith(prefix) && compareUtf8Binary(key, after) > 0)
+      .sort(compareUtf8Binary);
     const page = matching.slice(0, maxKeys);
     const truncated = matching.length > page.length;
     const next = truncated ? Buffer.from(page[page.length - 1], 'utf-8').toString('base64url') : '';
