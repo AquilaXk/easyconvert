@@ -726,13 +726,13 @@ function ConversionGridCard({
 }
 
 interface DynamicPageProps {
-  params: {
+  params: Promise<{
     slug: string;
-  };
+  }>;
 }
 
 export default function DynamicConverterPage({ params }: DynamicPageProps) {
-  const { slug } = params;
+  const { slug } = React.use(params);
   const parsed = parseConverterSlug(slug);
 
   const defaultTarget =

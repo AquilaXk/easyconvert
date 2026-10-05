@@ -183,7 +183,7 @@ describe('Webhook DLQ owner scoping (#242)', () => {
     it('returns 404 (not 403) when another owner reads, deletes, or replays an entry', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('ok', { status: 200 }));
       const itemPath = `/api/webhooks/dlq/${aliceEntryId}`;
-      const params = { params: { id: aliceEntryId } };
+      const params = { params: Promise.resolve({ id: aliceEntryId }) };
 
       expect((await getDlqItemRoute(sessionRequest(bob, itemPath), params)).status).toBe(404);
       expect((await deleteDlqItemRoute(sessionRequest(bob, itemPath, 'DELETE'), params)).status).toBe(404);
@@ -205,7 +205,7 @@ describe('Webhook DLQ owner scoping (#242)', () => {
     it('lets the owner replay and delete their own entry', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('ok', { status: 200 }));
       const itemPath = `/api/webhooks/dlq/${aliceEntryId}`;
-      const params = { params: { id: aliceEntryId } };
+      const params = { params: Promise.resolve({ id: aliceEntryId }) };
 
       const replayRes = await replayDlqRoute(sessionRequest(alice, `${itemPath}/replay`, 'POST'), params);
       expect(replayRes.status).toBe(200);

@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is a high-performance universal file conversion platform built with Next.js 14 (App Router), TypeScript, and a signature lavender design system. It delivers deterministic conversion across **292 file formats** and **2,156 verified conversion specifications** spanning **12 distinct categories**.
+EasyConvert is a high-performance universal file conversion platform built with Next.js 15 (App Router), TypeScript, and a signature lavender design system. It delivers deterministic conversion across **292 file formats** and **2,156 verified conversion specifications** spanning **12 distinct categories**.
 
 Powered by authentic in-memory pure-TypeScript binary engines, distributed BullMQ job queues, and S3/OCI chunked multipart storage, EasyConvert enforces a strict zero-retention, fail-closed privacy architecture for both browser and API workflows.
 

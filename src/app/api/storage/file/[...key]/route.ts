@@ -28,9 +28,10 @@ function decodeStorageKey(rawKey: string): string | undefined {
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { key: string[] } }
+  { params }: { params: Promise<{ key: string[] }> }
 ) {
-  const rawKey = Array.isArray(params.key) ? params.key.join('/') : params.key;
+  const { key: keySegments } = await params;
+  const rawKey = Array.isArray(keySegments) ? keySegments.join('/') : keySegments;
   const fullKey = decodeStorageKey(rawKey) ?? rawKey;
   // Owned objects answer other callers with this same response, so their existence is not revealed.
   const notFound = () =>
