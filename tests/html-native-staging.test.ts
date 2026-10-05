@@ -192,6 +192,26 @@ describe('HTML bound for LibreOffice is rebuilt from the parsed tree', () => {
     );
   }
 
+  // Some CSS readers swallow the character after U+FFFF or a code point whose low 16 bits are below 0x20,
+  // which moves the closing quote: the url() below would then sit outside any string.
+  for (const codePoint of [0xe0001, 0x10000, 0xffff]) {
+    const label = `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
+    oracleTest(
+      `refuses a CSS string holding ${label} on the LibreOffice route`,
+      LIBREOFFICE_TOOLS,
+      async () => {
+        const c = String.fromCodePoint(codePoint);
+        const html = `<p style='height:60px; content:"${c}";a:"b;background:url(${LOCAL_URL});c"'>quote parity</p>`;
+        const { value, error } = await convertHtml(html);
+        expect({ name: errorOutcome(error).name, images: value ? embeddedImageCount(value.buffer) : 0 }).toEqual({
+          name: 'ConversionFailedError',
+          images: 0,
+        });
+      },
+      LIBREOFFICE_TIMEOUT_MS
+    );
+  }
+
   const nonAsciiCss: Array<[string, string]> = [
     ['U+200B before url(', `<p style="background:${String.fromCodePoint(0x200b)}url(${LOCAL_URL}); height:60px">zero width</p>`],
     ['U+E0001 inside url', `<p style="background:u${String.fromCodePoint(0xe0001)}rl(${LOCAL_URL}); height:60px">tag</p>`],
@@ -401,6 +421,35 @@ describe('CSS outside quoted strings is ASCII only', () => {
       expect(outcomes).toEqual(documents.map((html) => ({ html, name: 'ConversionFailedError', nonAscii: true })));
     });
   }
+
+  const unprintable: Array<[string, string]> = [
+    ['U+10000', String.fromCodePoint(0x10000)],
+    ['U+20000', String.fromCodePoint(0x20000)],
+    ['U+E0001', String.fromCodePoint(0xe0001)],
+    ['U+F0000', String.fromCodePoint(0xf0000)],
+    ['U+FFFF', String.fromCodePoint(0xffff)],
+    ['U+1F600', String.fromCodePoint(0x1f600)],
+    ['U+FDD0', String.fromCodePoint(0xfdd0)],
+    ['a lone surrogate', String.fromCharCode(0xd800)],
+  ];
+  for (const [label, c] of unprintable) {
+    it(`refuses ${label} inside a quoted CSS string`, async () => {
+      const documents = [`<p style='content:"a${c}b"'>t</p>`, `<style>p { content: 'a${c}b' }</style><p>t</p>`];
+      const outcomes = await Promise.all(
+        documents.map(async (html) => {
+          const { error } = await settle(stage(html));
+          return { html, name: errorOutcome(error).name, printable: /printable Basic Multilingual Plane/.test(errorOutcome(error).message) };
+        })
+      );
+      expect(outcomes).toEqual(documents.map((html) => ({ html, name: 'ConversionFailedError', printable: true })));
+    });
+  }
+
+  it('keeps printable symbols inside quoted CSS strings', async () => {
+    const symbols = '\u2192 \u00a9';
+    const staged = await stage(`<p style='content:"${symbols}"; font-family:"Noto Sans CJK KR"'>t</p>`);
+    expect(staged).toBe(`${STAGED_PREFIX}<p style="content:&quot;${symbols}&quot;; font-family:&quot;Noto Sans CJK KR&quot;">t</p>${STAGED_SUFFIX}`);
+  });
 
   it('keeps non-ASCII text inside quoted CSS strings', async () => {
     const korean = '\ub9d1\uc740 \uace0\ub515';

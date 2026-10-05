@@ -35,6 +35,14 @@ const COMMENT_CLOSE = '*/';
 const CDO = '<!--';
 const CDC = '-->';
 const BACKSLASH = '\\';
+/**
+ * What a quoted CSS string may hold: assigned, printable characters (letters, numbers, marks,
+ * punctuation, symbols, spaces). Unassigned code points and noncharacters (U+FDD0-FDEF, U+FFFE,
+ * U+FFFF) fail it.
+ */
+const PRINTABLE_STRING = /^[\p{L}\p{N}\p{M}\p{P}\p{S}\p{Zs}]*$/u;
+/** UTF-16 surrogates: any character outside the Basic Multilingual Plane, or a lone surrogate. */
+const SURROGATE = /[\uD800-\uDFFF]/;
 const MARKUP_OPEN = '<';
 const IMPORT_REFERENCE = '@import';
 const EMPTY_URL_REFERENCE = 'url()';
@@ -128,7 +136,12 @@ class CssScanner {
     return this.css.slice(start, this.i);
   }
 
-  /** A string token; the opening quote is at the current index. An unterminated string is refused. */
+  /**
+   * A string token; the opening quote is at the current index. An unterminated string is refused,
+   * and so is any character outside the printable Basic Multilingual Plane: some readers swallow
+   * the character after U+FFFF or after a supplementary code point whose low 16 bits are below
+   * 0x20, which would move the closing quote.
+   */
   private string(): string {
     const css = this.css;
     const quote = css[this.i++];
@@ -138,7 +151,11 @@ class CssScanner {
       this.i++;
     }
     if (this.i >= css.length) throw new ConversionFailedError('HTML CSS has an unterminated string');
-    return css.slice(start, this.i++);
+    const value = css.slice(start, this.i++);
+    if (SURROGATE.test(value) || !PRINTABLE_STRING.test(value)) {
+      throw new ConversionFailedError('HTML CSS strings may contain only printable Basic Multilingual Plane characters');
+    }
+    return value;
   }
 
   /** The value of an unquoted url( token; the index is just after `url(` and any whitespace. */
