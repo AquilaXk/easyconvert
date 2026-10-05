@@ -32,6 +32,11 @@ import {
 } from '../lib/conversions/media-ffmpeg-args';
 import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
 import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError } from './sandbox';
+import {
+  RAW_DECODE_MAX_OUTPUT_BYTES,
+  hasRepeatedTail,
+  readDecodedTiffLayout,
+} from './raw-decoded-tiff';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
 
@@ -1303,8 +1308,6 @@ const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
 const RAW_DECODE_DEFAULT_TIMEOUT_MS = 120_000;
 const RAW_DECODE_MAX_TIMEOUT_MS = 600_000;
 const RAW_DECODE_MAX_STDERR_CHARS = 300;
-/** Largest decoded 16-bit TIFF the engine accepts: guards the disk and the in-process encoders. */
-const RAW_DECODE_MAX_OUTPUT_BYTES = 1024 * 1024 * 1024;
 const RAW_DECODE_UNRECOGNIZED_PATTERN = /unsupported file format|not raw file/i;
 /** dcraw_emu: write a TIFF (-T) with 16-bit samples (-6), camera white balance (-w) in sRGB (-o 1). */
 const RAW_DECODE_FLAGS: readonly string[] = ['-T', '-6', '-w', '-o', '1'];
@@ -1338,8 +1341,9 @@ export async function convertWithNativeRaw(
   return withSandboxDir('easyconvert-raw-', async (tempDir) => {
     const { inputPath } = resolveInputContext(input, src, tempDir);
     const decodedPath = path.join(tempDir, 'decoded.tiff');
+    let decoderStderr = '';
     try {
-      await executeSandboxedBinary(dcrawBin, [...RAW_DECODE_FLAGS, '-Z', decodedPath, inputPath], {
+      const run = await executeSandboxedBinary(dcrawBin, [...RAW_DECODE_FLAGS, '-Z', decodedPath, inputPath], {
         cwd: tempDir,
         timeoutMs: timeout,
         maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
@@ -1347,6 +1351,7 @@ export async function convertWithNativeRaw(
         networkIsolated: true,
         signal: options.signal,
       });
+      decoderStderr = run.stderr.toString('utf-8').trim();
     } catch (err) {
       if (err instanceof SandboxedProcessError) {
         const detail = err.stderr.trim().slice(0, RAW_DECODE_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
@@ -1359,6 +1364,17 @@ export async function convertWithNativeRaw(
     }
     if (!fs.existsSync(decodedPath) || fs.statSync(decodedPath).size === 0) {
       throw new RawDecodeError(`Native RAW decoder produced no image for the .${src} file`);
+    }
+
+    // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
+    if (decoderStderr) {
+      throw new RawDecodeError(
+        `Native RAW decoder reported a problem with the .${src} file: ${decoderStderr.slice(0, RAW_DECODE_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>')}`
+      );
+    }
+    const layout = readDecodedTiffLayout(decodedPath);
+    if (hasRepeatedTail(decodedPath, layout)) {
+      throw new RawDecodeError(`The .${src} file is truncated: the decoded image ends in repeated filler rows`);
     }
 
     const converted = await convertImage(fs.readFileSync(decodedPath), tgt, options, originalFilename, 'tiff');
