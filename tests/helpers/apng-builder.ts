@@ -56,6 +56,8 @@ export interface PngImage {
   pixels: Buffer;
   palette?: Buffer;
   transparency?: Buffer;
+  /** Pixels per metre written as a pHYs chunk (both axes); omitted when undefined. */
+  pixelsPerMetre?: number;
 }
 
 function deflateScanlines(image: PngImage): Buffer {
@@ -79,6 +81,13 @@ export function ihdrOf(image: PngImage): Buffer {
 
 export function encodePng(image: PngImage): Buffer {
   const chunks: Chunk[] = [{ type: 'IHDR', data: ihdrOf(image) }];
+  if (image.pixelsPerMetre !== undefined) {
+    const phys = Buffer.alloc(9);
+    phys.writeUInt32BE(image.pixelsPerMetre, 0);
+    phys.writeUInt32BE(image.pixelsPerMetre, 4);
+    phys[8] = 1; // unit: metre
+    chunks.push({ type: 'pHYs', data: phys });
+  }
   if (image.palette) chunks.push({ type: 'PLTE', data: image.palette });
   if (image.transparency) chunks.push({ type: 'tRNS', data: image.transparency });
   chunks.push({ type: 'IDAT', data: deflateScanlines(image) }, { type: 'IEND', data: Buffer.alloc(0) });

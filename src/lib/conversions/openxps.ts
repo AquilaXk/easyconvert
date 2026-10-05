@@ -20,6 +20,9 @@ export interface XpsPageInput {
     /** Pixel size of the embedded picture; required because it defines the image brush viewbox. */
     width: number;
     height: number;
+    /** Pixels per inch of the picture along each axis; XPS measures in 1/96 inch, so 96 is the default. */
+    dpiX?: number;
+    dpiY?: number;
   };
 }
 
@@ -32,7 +35,45 @@ function escapeXml(unsafe: string): string {
     .replace(/'/g, '&apos;');
 }
 
-function assertImageSize(image: { width?: number; height?: number }, pageNum: number): void {
+const XPS_UNITS_PER_INCH = 96;
+const PNG_SIGNATURE_BYTES = 8;
+const PNG_CHUNK_OVERHEAD = 12;
+const PHYS_UNIT_METRE = 1;
+const INCHES_PER_METRE = 39.3701;
+/** Digits kept when a viewbox size is not a whole number of units. */
+const VIEWBOX_DECIMALS = 4;
+
+/**
+ * Pixels per inch of a PNG along x and y, from its pHYs chunk. A PNG without a physical size (or with only an
+ * aspect ratio) is taken as 96 dpi, the density XPS measures its units in.
+ */
+export function pngDpi(png: Buffer): { dpiX: number; dpiY: number } {
+  let pos = PNG_SIGNATURE_BYTES;
+  while (pos + PNG_CHUNK_OVERHEAD <= png.length) {
+    const length = png.readUInt32BE(pos);
+    const type = png.toString('latin1', pos + 4, pos + 8);
+    if (type === 'pHYs' && length === 9 && pos + PNG_CHUNK_OVERHEAD + length <= png.length && png[pos + 16] === PHYS_UNIT_METRE) {
+      const perMetreX = png.readUInt32BE(pos + 8);
+      const perMetreY = png.readUInt32BE(pos + 12);
+      if (perMetreX > 0 && perMetreY > 0) return { dpiX: perMetreX / INCHES_PER_METRE, dpiY: perMetreY / INCHES_PER_METRE };
+    }
+    if (type === 'IDAT' || type === 'IEND') break;
+    pos += PNG_CHUNK_OVERHEAD + length;
+  }
+  return { dpiX: XPS_UNITS_PER_INCH, dpiY: XPS_UNITS_PER_INCH };
+}
+
+function viewboxSize(pixels: number, dpi: number | undefined): string {
+  const units = (pixels * XPS_UNITS_PER_INCH) / (dpi ?? XPS_UNITS_PER_INCH);
+  return String(Number(units.toFixed(VIEWBOX_DECIMALS)));
+}
+
+function assertImageSize(image: { width?: number; height?: number; dpiX?: number; dpiY?: number }, pageNum: number): void {
+  for (const dpi of [image.dpiX, image.dpiY]) {
+    if (dpi !== undefined && !(Number.isFinite(dpi) && dpi > 0)) {
+      throw new ConversionFailedError(`XPS image on page ${pageNum} needs a positive density, got ${String(dpi)} dpi`);
+    }
+  }
   const isPositiveInteger = (value: number | undefined) => Number.isInteger(value) && (value as number) > 0;
   if (!isPositiveInteger(image.width) || !isPositiveInteger(image.height)) {
     throw new ConversionFailedError(
@@ -172,8 +213,8 @@ ${fdocRelsEntries}
 </Relationships>`;
       zip.file(`Documents/1/Pages/_rels/${pageNum}.fpage.rels`, pageRelXml);
 
-      const imgW = page.image.width;
-      const imgH = page.image.height;
+      const imgW = viewboxSize(page.image.width, page.image.dpiX);
+      const imgH = viewboxSize(page.image.height, page.image.dpiY);
       imageXml = `  <Path Data="M 48,90 L 745,90 L 745,1070 L 48,1070 Z">
     <Path.Fill>
       <ImageBrush ImageSource="/${imgPath}" Viewbox="0,0,${imgW},${imgH}" ViewboxUnits="Absolute" Viewport="48,90,697,980" ViewportUnits="Absolute"/>

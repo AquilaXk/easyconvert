@@ -6,7 +6,7 @@ import { selectFrames, type FrameSelection } from './image-frames';
 import { encodeDecodedAnimation, joinPageTiffs, resizedDimensions, zipPageImages } from './image-frame-output';
 import { assertAnimationBudget } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
-import { buildOpenXpsPackage } from './openxps';
+import { buildOpenXpsPackage, pngDpi } from './openxps';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -3102,6 +3102,7 @@ export async function convertImage(
               format: 'png',
               width: picture.info.width,
               height: picture.info.height,
+              ...pngDpi(picture.data),
             },
           },
         ],
