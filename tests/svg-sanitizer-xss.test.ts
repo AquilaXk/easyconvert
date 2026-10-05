@@ -94,3 +94,30 @@ describe('SVG sanitizer output is a fixed point of dangerous-markup removal (ite
     }
   });
 });
+
+describe('inline style rewrite keeps quote structure (item 3)', () => {
+  it('escapes a double quote hidden in a single-quoted style value', () => {
+    const out = sanitizeSvgString(`<svg><rect style='x"/onload="alert(1)'/></svg>`);
+    const rect = parseTags(out).find((tag) => tag.name === 'rect');
+    expect(rect?.attrs.map((attr) => attr.name)).toEqual(['style']);
+    expect(rect?.attrs[0].quote).toBe('"');
+    expect(rect?.attrs[0].value).toBe('x&quot;/onload=&quot;alert(1)');
+    expect(executableConstructs(out)).toEqual([]);
+  });
+
+  it('escapes a double quote hidden in an unquoted style value', () => {
+    const out = sanitizeSvgString('<svg><rect style=x"/onload="alert(1)/></svg>');
+    expect(parseTags(out).flatMap((tag) => tag.attrs.map((attr) => attr.name)).filter((name) => /^on/i.test(name))).toEqual([]);
+    expect(out).toContain('style="x&quot;/onload=&quot;alert(1)/"');
+  });
+
+  it('keeps ordinary double-quoted styles unchanged', () => {
+    expect(sanitizeSvgString('<svg><rect style="fill:red;stroke:blue"/></svg>')).toBe('<svg><rect style="fill:red;stroke:blue"/></svg>');
+  });
+
+  it('escapes double quotes of a single-quoted font-family style', () => {
+    expect(sanitizeSvgString(`<svg><text style='font-family:"A"'/></svg>`)).toBe(
+      '<svg><text style="font-family:&quot;A&quot;"/></svg>'
+    );
+  });
+});

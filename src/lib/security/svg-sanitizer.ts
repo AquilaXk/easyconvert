@@ -364,7 +364,8 @@ function sanitizePass(input: string): string {
 
   result = result.replace(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (full, s1, s2, s3) => {
     const styleBody = s1 !== undefined ? s1 : (s2 !== undefined ? s2 : s3);
-    return `style="${sanitizeCss(styleBody)}"`;
+    // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
+    return `style="${sanitizeCss(styleBody).replace(/"/g, '&quot;')}"`;
   });
 
   return result;
