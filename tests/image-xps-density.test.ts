@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { convertImage } from '../src/lib/conversions/image';
-import { buildOpenXpsPackage } from '../src/lib/conversions/openxps';
-import { crc32, encodePng, rgbaImage, type PngImage } from './helpers/apng-builder';
+import { buildOpenXpsPackage, withPngDensity96 } from '../src/lib/conversions/openxps';
+import { crc32, encodePng, rgbaImage, serializeChunks, type Chunk, type PngImage } from './helpers/apng-builder';
 import { SKIP_WITHOUT_MUPDF, renderXpsPoints } from './helpers/mupdf-render';
 import { captureError } from './helpers/capture-error';
 
@@ -141,5 +141,79 @@ describe('convertImage to xps normalises the embedded picture to 96 dpi', () => 
     const at = png.indexOf('pHYs', 0, 'latin1');
     expect(png.readUInt32BE(at + 9 + 4)).toBe(crc32(png.subarray(at, at + 4 + 9)));
     expect(png.subarray(png.length - 8, png.length - 4).toString('latin1')).toBe('IEND');
+  });
+});
+
+describe('withPngDensity96 does not leave a second, stale density in the picture', () => {
+  const PNG_SIGNATURE_BYTES = 8;
+  const CHUNK_OVERHEAD = 12;
+  const TIFF_HEADER_BYTES = 8;
+  const IFD_ENTRY_BYTES = 12;
+  const TAG_X_RESOLUTION = 282;
+  const TAG_Y_RESOLUTION = 283;
+  const TAG_RESOLUTION_UNIT = 296;
+  const TYPE_SHORT = 3;
+  const TYPE_RATIONAL = 5;
+  const INCHES = 2;
+  const STALE_DPI = 300;
+  const ENTRY_COUNT = 3;
+  const RATIONAL_BYTES = 8;
+
+  /** Little-endian TIFF/EXIF block that says the picture is 300 dpi (XResolution, YResolution, ResolutionUnit = inch). */
+  function exifAt300Dpi(): Buffer {
+    const ifdBytes = 2 + ENTRY_COUNT * IFD_ENTRY_BYTES + 4;
+    const rationalsAt = TIFF_HEADER_BYTES + ifdBytes;
+    const block = Buffer.alloc(rationalsAt + 2 * RATIONAL_BYTES);
+    block.write('II', 0, 'latin1');
+    block.writeUInt16LE(42, 2);
+    block.writeUInt32LE(TIFF_HEADER_BYTES, 4);
+    block.writeUInt16LE(ENTRY_COUNT, TIFF_HEADER_BYTES);
+    const entry = (index: number, tag: number, type: number, value: number) => {
+      const at = TIFF_HEADER_BYTES + 2 + index * IFD_ENTRY_BYTES;
+      block.writeUInt16LE(tag, at);
+      block.writeUInt16LE(type, at + 2);
+      block.writeUInt32LE(1, at + 4);
+      block.writeUInt32LE(value, at + 8);
+    };
+    entry(0, TAG_X_RESOLUTION, TYPE_RATIONAL, rationalsAt);
+    entry(1, TAG_Y_RESOLUTION, TYPE_RATIONAL, rationalsAt + RATIONAL_BYTES);
+    entry(2, TAG_RESOLUTION_UNIT, TYPE_SHORT, INCHES);
+    [0, 1].forEach((index) => {
+      block.writeUInt32LE(STALE_DPI, rationalsAt + index * RATIONAL_BYTES);
+      block.writeUInt32LE(1, rationalsAt + index * RATIONAL_BYTES + 4);
+    });
+    return block;
+  }
+
+  function readChunks(png: Buffer): Chunk[] {
+    const chunks: Chunk[] = [];
+    let pos = PNG_SIGNATURE_BYTES;
+    while (pos + CHUNK_OVERHEAD <= png.length) {
+      const length = png.readUInt32BE(pos);
+      chunks.push({ type: png.toString('latin1', pos + 4, pos + 8), data: png.subarray(pos + 8, pos + 8 + length) });
+      pos += CHUNK_OVERHEAD + length;
+    }
+    return chunks;
+  }
+
+  const png300WithExif = (): Buffer => {
+    const chunks = readChunks(encodePng(quadrants(PIXELS_PER_METRE[300])));
+    chunks.splice(1, 0, { type: 'eXIf', data: exifAt300Dpi() });
+    return serializeChunks(chunks);
+  };
+
+  it('drops the EXIF block whose resolution would contradict the 96 dpi chunk', () => {
+    const source = png300WithExif();
+    expect(readChunks(source).map((chunk) => chunk.type)).toEqual(['IHDR', 'eXIf', 'pHYs', 'IDAT', 'IEND']);
+    const chunks = readChunks(withPngDensity96(source));
+    expect(chunks.map((chunk) => chunk.type)).toEqual(['IHDR', 'pHYs', 'IDAT', 'IEND']);
+    const physical = chunks[1].data;
+    expect([physical.readUInt32BE(0), physical.readUInt32BE(4), physical[8]]).toEqual([PIXELS_PER_METRE[96], PIXELS_PER_METRE[96], 1]);
+  });
+
+  it('leaves the image data untouched', () => {
+    const before = readChunks(png300WithExif()).find((chunk) => chunk.type === 'IDAT')!;
+    const after = readChunks(withPngDensity96(png300WithExif())).find((chunk) => chunk.type === 'IDAT')!;
+    expect(after.data.toString('hex')).toBe(before.data.toString('hex'));
   });
 });

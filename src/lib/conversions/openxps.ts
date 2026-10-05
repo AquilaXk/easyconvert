@@ -43,6 +43,8 @@ const PNG_CHUNK_TYPE_OFFSET = 4;
 const PNG_CHUNK_DATA_OFFSET = 8;
 const PHYS_DATA_BYTES = 9;
 const PHYS_UNIT_METRE = 1;
+/** Chunks dropped from the picture: the old density, and EXIF whose own resolution would contradict the new one. */
+const REPLACED_PNG_CHUNKS: ReadonlySet<string> = new Set(['pHYs', 'eXIf']);
 const INCHES_PER_METRE = 39.3701;
 /** Pixels per metre of a 96 dpi picture, the density an XPS unit (1/96 inch) is measured in. */
 const PIXELS_PER_METRE_AT_96_DPI = Math.round(XPS_UNITS_PER_INCH * INCHES_PER_METRE);
@@ -61,7 +63,8 @@ function pngChunk(type: string, data: Buffer): Buffer {
 /**
  * Copy of a PNG whose physical size says 96 dpi on both axes (a pHYs chunk replaced or added right after
  * IHDR). XPS measures an image brush in 1/96 inch, and renderers disagree about what a picture stored at
- * another density means; at 96 dpi its viewbox is its pixel size everywhere. The image data is not touched.
+ * another density means; at 96 dpi its viewbox is its pixel size everywhere. An eXIf chunk is dropped, since the
+ * resolution it carries would contradict the new one. The image data is not touched.
  */
 export function withPngDensity96(png: Buffer): Buffer {
   const physical = Buffer.alloc(PHYS_DATA_BYTES);
@@ -76,7 +79,7 @@ export function withPngDensity96(png: Buffer): Buffer {
     const type = png.toString('latin1', pos + PNG_CHUNK_TYPE_OFFSET, pos + PNG_CHUNK_DATA_OFFSET);
     const end = pos + PNG_CHUNK_OVERHEAD + length;
     if (end > png.length) throw new ConversionFailedError('Cannot set the density of a truncated PNG');
-    if (type !== 'pHYs') parts.push(png.subarray(pos, end));
+    if (!REPLACED_PNG_CHUNKS.has(type)) parts.push(png.subarray(pos, end));
     if (type === 'IHDR' && !insertedAfterHeader) {
       parts.push(pngChunk('pHYs', physical));
       insertedAfterHeader = true;
