@@ -459,7 +459,7 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
           if (stream.closed) resolve();
           else stream.once('close', () => resolve());
         });
-        return stream.fd;
+        return (stream as unknown as { fd: number | null }).fd;
       }
 
       for (const [status, code] of [

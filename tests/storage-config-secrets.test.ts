@@ -31,9 +31,9 @@ const S3_ENV = {
 
 describe('the resolved storage configuration does not expose the secret key', () => {
   it.each([
-    ['oci', OCI_ENV, OCI_SECRET],
-    ['s3', S3_ENV, S3_SECRET],
-  ])('keeps the %s secret out of serialization, enumeration, spreading and inspection', (_driver, env, secret) => {
+    ['oci', OCI_ENV, OCI_SECRET, OCI_ENV.OCI_ACCESS_KEY_ID],
+    ['s3', S3_ENV, S3_SECRET, S3_ENV.S3_ACCESS_KEY_ID],
+  ])('keeps the %s secret out of serialization, enumeration, spreading and inspection', (_driver, env, secret, accessKeyId) => {
     const config = resolveStorageConfig(env);
     expect(isRemoteStorageConfig(config)).toBe(true);
     if (!isRemoteStorageConfig(config)) return;
@@ -46,7 +46,7 @@ describe('the resolved storage configuration does not expose the secret key', ()
 
     // The code that builds the client still reads it by name.
     expect(config.secretAccessKey).toBe(secret);
-    expect(config.accessKeyId).toBe(env.OCI_ACCESS_KEY_ID ?? env.S3_ACCESS_KEY_ID);
+    expect(config.accessKeyId).toBe(accessKeyId);
   });
 
   it('cannot be overwritten or redefined by a caller holding the config', () => {
