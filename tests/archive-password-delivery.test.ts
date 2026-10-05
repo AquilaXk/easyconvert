@@ -202,7 +202,7 @@ function oracleListing(archive: Buffer, extension: string, password: string): st
 }
 
 /** Formats a 7-Zip build lists with `7z i`: a RAR reader shows up as a "Rar" or "Rar5" row. */
-const RAR_FORMAT_ROW = /^\s*\d+\s+\S+\s+Rar5?\s/m;
+const RAR_FORMAT_ROW = /^\s*(?:\d+\s+)?\S+\s+Rar5?\s/m;
 
 /**
  * Throws OracleToolMissingError (an explicit skip, a failure under ORACLE_STRICT_MODE=1) when the
