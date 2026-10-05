@@ -83,6 +83,8 @@ const XML_VALUE_SATURATION = 0x110000;
 const XML_NAME_MAX_LENGTH = 4;
 const CDATA_OPEN = '<![CDATA[';
 const CDATA_CLOSE = ']]>';
+const PI_OPEN = '<?';
+const PI_CLOSE = '?>';
 /** Predefined XML entities mapped to their code points. */
 const XML_PREDEFINED_ENTITIES = new Map<string, number>([
   ['amp', 0x26],
@@ -682,6 +684,32 @@ function readTag(src: string, lt: number): TagToken {
   }
 }
 
+/**
+ * When the markup at `lt` is a comment, CDATA section or processing instruction, returns the index just past
+ * its terminator (the end of input when unterminated), so its contents are never tokenized as tags. Returns -1
+ * for anything else. The HTML-only shorthands `<!-->` and `<!--->` are parsed differently by XML and HTML
+ * parsers, so they are rejected (fail closed).
+ */
+function skipNonTagMarkup(src: string, lt: number): number {
+  if (src.startsWith(COMMENT_OPEN, lt)) {
+    const bodyStart = lt + COMMENT_OPEN_LENGTH;
+    if (src.startsWith('>', bodyStart) || src.startsWith('->', bodyStart)) {
+      throw new SvgSanitizationError('SVG contains a malformed comment that parsers disagree on.');
+    }
+    const close = src.indexOf(COMMENT_CLOSE, bodyStart);
+    return close === -1 ? src.length : close + COMMENT_CLOSE.length;
+  }
+  if (src.startsWith(CDATA_OPEN, lt)) {
+    const close = src.indexOf(CDATA_CLOSE, lt + CDATA_OPEN.length);
+    return close === -1 ? src.length : close + CDATA_CLOSE.length;
+  }
+  if (src.startsWith(PI_OPEN, lt)) {
+    const close = src.indexOf(PI_CLOSE, lt + PI_OPEN.length);
+    return close === -1 ? src.length : close + PI_CLOSE.length;
+  }
+  return -1;
+}
+
 function isEventHandlerName(attributeName: string): boolean {
   const lowered = attributeName.replace(/^["'=]+/, '').toLowerCase();
   const local = lowered.slice(lowered.lastIndexOf(':') + 1);
@@ -754,6 +782,11 @@ function stripEventHandlerAttributes(src: string): string {
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
+    const skipTo = skipNonTagMarkup(src, lt);
+    if (skipTo !== -1) {
+      search = skipTo;
+      continue;
+    }
     if (!isTagNameStart(src, lt + 1)) {
       search = lt + 1;
       continue;
@@ -812,6 +845,11 @@ function rewriteAttributes(src: string): string {
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
+    const skipTo = skipNonTagMarkup(src, lt);
+    if (skipTo !== -1) {
+      search = skipTo;
+      continue;
+    }
     if (!isTagNameStart(src, lt + 1)) {
       search = lt + 1;
       continue;

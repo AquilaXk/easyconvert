@@ -656,3 +656,70 @@ describe('XML entity layer before CSS matching (issue #401 entity follow-up)', (
     }
   });
 });
+
+describe('comments, CDATA and processing instructions are not tokenized as tags (PR #402 review item 1)', () => {
+  const decoys: Array<[string, string]> = [
+    ['double-quote comment', '<!-- <a x=" -->'],
+    ['single-quote comment', "<!-- <a x=' -->"],
+    ['processing instruction', '<?p <a x=" ?>'],
+    ['CDATA', '<![CDATA[ <a x=" ]]>'],
+  ];
+  const targets: Array<[string, string, string]> = [
+    ['javascript href', '<a href="javascript:alert(1)" y=""/>', '<a href="#" y=""/>'],
+    ['javascript xlink:href', '<a xlink:href="javascript:alert(1)" y=""/>', '<a href="#" y=""/>'],
+    ['external style url', '<a style="fill:url(http://e/x)" y=""/>', '<a style="fill:none" y=""/>'],
+    ['animation to', '<a to="javascript:alert(1)" y=""/>', '<a to="#" y=""/>'],
+    ['event handler', '<a onclick="alert(1)" y=""/>', '<a y=""/>'],
+    ['single-quoted href', "<a href='javascript:alert(1)' y=''/>", `<a href="#" y=''/>`],
+  ];
+
+  for (const [decoyLabel, decoy] of decoys) {
+    for (const [targetLabel, target, expected] of targets) {
+      it(`neutralizes the ${targetLabel} after a ${decoyLabel}`, () => {
+        expect(sanitizeSvgString(`<svg>${decoy}${target}</svg>`)).toBe(`<svg>${decoy}${expected}</svg>`);
+      });
+    }
+  }
+
+  it('still leaves attribute-looking text inside comments, CDATA and PIs untouched', () => {
+    const input = `<svg><!-- <a href="javascript:1" onclick="x"/> --><?p <a href=javascript:1> ?><![CDATA[ <a style='x'/> ]]></svg>`;
+    expect(sanitizeSvgString(input)).toBe(input);
+  });
+
+  it('rejects the HTML-only comment shorthands that XML and HTML parse differently', () => {
+    for (const shorthand of ['<!-->', '<!--->']) {
+      expect(() => sanitizeSvgString(`<svg>${shorthand}<a onclick="alert(1)"/> --></svg>`)).toThrow(SvgSanitizationError);
+    }
+  });
+
+  it('treats an unterminated comment, PI or CDATA as running to the end of input', () => {
+    for (const opener of ['<!-- ', '<? ', '<![CDATA[ ']) {
+      const input = `<svg>${opener}<a href="javascript:1"/>`;
+      expect(sanitizeSvgString(input)).toBe(input);
+    }
+  });
+
+  describe('linear time on 5 MB adversarial input', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const BUDGET_MS = 2000;
+    const adversarial: Array<[string, string]> = [
+      ['unterminated comment openers', '<!--'.repeat(FIVE_MB / 4)],
+      ['unterminated PI openers', '<?'.repeat(FIVE_MB / 2)],
+      ['unterminated CDATA openers', '<![CDATA['.repeat(FIVE_MB / 9)],
+      ['terminated decoy comments', '<!-- <a x=" -->'.repeat(FIVE_MB / 15)],
+      ['terminated decoy PIs', '<?p <a x=" ?>'.repeat(Math.floor(FIVE_MB / 13))],
+      ['terminated decoy CDATA', '<![CDATA[ <a x=" ]]>'.repeat(FIVE_MB / 20)],
+      ['decoys followed by real tags', '<!-- <a x=" --><a href="javascript:1" y=""/>'.repeat(Math.floor(FIVE_MB / 46))],
+    ];
+
+    for (const [label, body] of adversarial) {
+      it(`handles ${label}`, () => {
+        const start = performance.now();
+        const out = sanitizeSvgString(`<svg>${body}</svg>`);
+        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+        expect(out.startsWith('<svg>')).toBe(true);
+        expect(out).not.toContain('javascript:1');
+      });
+    }
+  });
+});
