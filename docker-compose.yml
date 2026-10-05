@@ -51,8 +51,8 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       # STORAGE_DRIVER=local keeps objects on the shared volume below and passes production start-up
-      # validation (it logs one warning). For oci, set every OCI_* value (no defaults: a missing one
-      # stops startup); for s3, set the S3_* values instead.
+      # validation once STORAGE_SIGNING_SECRET is set (it logs one warning). For oci, set every OCI_*
+      # value (no defaults: a missing one stops startup); for s3, set the S3_* values instead.
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
       # Public origin of the application (https://...). NODE_ENV=production has no fallback origin, so
       # building a local multipart upload URL stops with a configuration error while this is empty.
@@ -68,9 +68,9 @@ services:
       - S3_BUCKET=${S3_BUCKET:-}
       - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-}
       - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-}
-      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - S3_SIGNING_SECRET=${S3_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - OCI_SIGNING_SECRET=${OCI_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
+      # Required, no default: NODE_ENV=production refuses an unset, short (< 32 bytes) or publicly known
+      # signing secret and stops the worker at startup. Generate one with `openssl rand -hex 32`.
+      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:?set a random secret of at least 32 bytes}
       - WORKER_CONCURRENCY=3
       - EASYCONVERT_STORAGE_DIR=/shared/storage
       - STRICT_SANDBOX=true
@@ -121,8 +121,8 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       # STORAGE_DRIVER=local keeps objects on the shared volume below and passes production start-up
-      # validation (it logs one warning). For oci, set every OCI_* value (no defaults: a missing one
-      # stops startup); for s3, set the S3_* values instead.
+      # validation once STORAGE_SIGNING_SECRET is set (it logs one warning). For oci, set every OCI_*
+      # value (no defaults: a missing one stops startup); for s3, set the S3_* values instead.
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
       # Public origin of the application (https://...). NODE_ENV=production has no fallback origin, so
       # building a local multipart upload URL stops with a configuration error while this is empty.
@@ -138,9 +138,9 @@ services:
       - S3_BUCKET=${S3_BUCKET:-}
       - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-}
       - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-}
-      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - S3_SIGNING_SECRET=${S3_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - OCI_SIGNING_SECRET=${OCI_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
+      # Required, no default: NODE_ENV=production refuses an unset, short (< 32 bytes) or publicly known
+      # signing secret and stops the worker at startup. Generate one with `openssl rand -hex 32`.
+      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:?set a random secret of at least 32 bytes}
       - WORKER_CONCURRENCY=3
       - EASYCONVERT_STORAGE_DIR=/shared/storage
       - STRICT_SANDBOX=true
