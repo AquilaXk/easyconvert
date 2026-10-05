@@ -146,6 +146,11 @@ const MAX_QLP_SHIFT = 15;
 const QLP_PRECISION_SEARCH_STEPS = 2;
 /** Orders, ranked by estimated bits, that are coded for real and compared. */
 const LPC_EXACT_ORDER_CANDIDATES = 2;
+const SLOT_LEFT = 0;
+const SLOT_RIGHT = 1;
+const SLOT_MID = 2;
+const SLOT_SIDE = 3;
+const STEREO_SLOTS = 4;
 /** Tukey window cosine-taper fraction (0.5 = half the block is tapered). */
 const TUKEY_TAPER_FRACTION = 0.5;
 /** White-noise correction keeping the normal equations well conditioned on pure tones. */
@@ -649,6 +654,13 @@ class SubframePlan {
 class ChannelSlot {
   readonly samples: Int32Array;
   best: SubframePlan;
+  /** Row (order - 1) holds the predictor weights of that order, from Levinson-Durbin. */
+  readonly weights = new Float64Array(FLAC_MAX_LPC_ORDER * FLAC_MAX_LPC_ORDER);
+  readonly errors = new Float64Array(FLAC_MAX_LPC_ORDER);
+  /** Highest order with a positive prediction error; 0 when LPC was not analysed. */
+  usable = 0;
+  /** Windowed signal energy (autocorrelation at lag 0). */
+  energy = 0;
 
   constructor(blockSize: number) {
     this.samples = new Int32Array(blockSize);
@@ -665,9 +677,6 @@ class EncoderWorkspace {
   // LPC analysis buffers
   readonly windowed: Float64Array;
   readonly autoc = new Float64Array(FLAC_MAX_LPC_ORDER + 1);
-  /** Row (order - 1) holds the predictor weights of that order. */
-  readonly lpcWeights = new Float64Array(FLAC_MAX_LPC_ORDER * FLAC_MAX_LPC_ORDER);
-  readonly lpcErrors = new Float64Array(FLAC_MAX_LPC_ORDER);
   readonly orderBits = new Float64Array(FLAC_MAX_LPC_ORDER);
   readonly quantized = new Float64Array(FLAC_MAX_LPC_ORDER);
   private readonly windows = new Map<number, Float64Array>();
@@ -675,7 +684,9 @@ class EncoderWorkspace {
   constructor(blockSize: number, channels: number, bitsPerSample: number) {
     this.bitsPerSample = bitsPerSample;
     this.slots = [];
-    for (let c = 0; c < channels; c++) this.slots.push(new ChannelSlot(blockSize));
+    // Stereo keeps left, right, mid and side so the cheapest assignment can be chosen.
+    const slotCount = channels === 2 ? STEREO_SLOTS : 1;
+    for (let c = 0; c < slotCount; c++) this.slots.push(new ChannelSlot(blockSize));
     this.trial = new SubframePlan(blockSize);
     this.windowed = new Float64Array(blockSize);
     // Worst case is every subframe verbatim at one extra bit (side channels) plus framing.
@@ -799,12 +810,12 @@ function autocorrelate(ws: EncoderWorkspace, x: Int32Array, n: number, maxLag: n
 }
 
 /**
- * Levinson-Durbin recursion over ws.autoc. Fills ws.lpcWeights / ws.lpcErrors for orders
+ * Levinson-Durbin recursion over ws.autoc. Fills slot.weights / slot.errors for orders
  * 1..result and returns the highest order whose prediction error stayed positive.
  */
-function levinsonDurbin(ws: EncoderWorkspace, maxOrder: number): number {
+function levinsonDurbin(ws: EncoderWorkspace, slot: ChannelSlot, maxOrder: number): number {
   const autoc = ws.autoc;
-  const weights = ws.lpcWeights;
+  const weights = slot.weights;
   let error = autoc[0] * (1 + LPC_REGULARIZATION);
   if (!(error > 0)) return 0;
   for (let i = 0; i < maxOrder; i++) {
@@ -817,7 +828,7 @@ function levinsonDurbin(ws: EncoderWorkspace, maxOrder: number): number {
     weights[row + i] = reflection;
     error *= 1 - reflection * reflection;
     if (!(error > 0) || !Number.isFinite(error)) return i;
-    ws.lpcErrors[i] = error;
+    slot.errors[i] = error;
   }
   return maxOrder;
 }
@@ -826,8 +837,14 @@ function levinsonDurbin(ws: EncoderWorkspace, maxOrder: number): number {
  * Quantises the weights of `order` to `precision` bits with error feedback (RFC 9639 forbids
  * negative shifts). Returns the shift, or -1 when the weights do not fit this precision.
  */
-function quantizeWeights(ws: EncoderWorkspace, order: number, precision: number, plan: SubframePlan): number {
-  const weights = ws.lpcWeights;
+function quantizeWeights(
+  ws: EncoderWorkspace,
+  slot: ChannelSlot,
+  order: number,
+  precision: number,
+  plan: SubframePlan
+): number {
+  const weights = slot.weights;
   const row = (order - 1) * FLAC_MAX_LPC_ORDER;
   let largest = 0;
   for (let j = 0; j < order; j++) {
@@ -885,7 +902,7 @@ function tryLpc(
   precision: number
 ): number {
   const trial = ws.trial;
-  const shift = quantizeWeights(ws, order, precision, trial);
+  const shift = quantizeWeights(ws, slot, order, precision, trial);
   if (shift < 0) return Number.POSITIVE_INFINITY;
   // The prediction must stay inside the folding range (MAX_RESIDUAL_MAGNITUDE).
   let weightSum = 0;
@@ -916,6 +933,48 @@ function tryLpc(
   return bits;
 }
 
+/** Analyses a channel's LPC models before any wasted-bit shift (scale does not change the weights). */
+function analyzeChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number): void {
+  slot.usable = 0;
+  slot.energy = 0;
+  if (n < LPC_MIN_BLOCK_SAMPLES) return;
+  const maxOrder = Math.min(FLAC_MAX_LPC_ORDER, n - 1);
+  autocorrelate(ws, slot.samples, n, maxOrder);
+  slot.energy = ws.autoc[0];
+  slot.usable = levinsonDurbin(ws, slot, maxOrder);
+}
+
+/** Estimated bits per sample of a Laplacian residual with the given prediction error energy. */
+function estimatedBitsPerSample(error: number, n: number, wasted: number): number {
+  return Math.max(0, 0.5 * Math.log2(error * (0.5 / n)) - wasted);
+}
+
+/**
+ * Fills ws.orderBits with the estimated size of each usable LPC order (residual plus warm-up
+ * and coefficients) and returns the best estimate over those orders and "no prediction".
+ */
+function estimateOrderBits(
+  ws: EncoderWorkspace,
+  slot: ChannelSlot,
+  n: number,
+  bps: number,
+  wasted: number
+): number {
+  const basePrecision = defaultQlpPrecision(ws.bitsPerSample, n);
+  let best = n * estimatedBitsPerSample(slot.energy, n, wasted);
+  for (let o = 1; o <= slot.usable; o++) {
+    const bits = estimatedBitsPerSample(slot.errors[o - 1], n, wasted) * (n - o) + o * (basePrecision + bps);
+    ws.orderBits[o - 1] = bits;
+    if (bits < best) best = bits;
+  }
+  return best;
+}
+
+/** Estimated subframe size of an analysed channel, used to choose a stereo assignment. */
+function estimateChannelBits(ws: EncoderWorkspace, slot: ChannelSlot, n: number, bps: number): number {
+  return SUBFRAME_HEADER_BITS + estimateOrderBits(ws, slot, n, bps, 0);
+}
+
 /** Orders are ranked by estimated bits; the best few are coded for real. */
 function planLpc(
   ws: EncoderWorkspace,
@@ -925,19 +984,10 @@ function planLpc(
   wasted: number,
   maxAbs: number
 ): void {
-  const maxOrder = Math.min(FLAC_MAX_LPC_ORDER, n - 1);
-  autocorrelate(ws, slot.samples, n, maxOrder);
-  const usable = levinsonDurbin(ws, maxOrder);
+  const usable = slot.usable;
   if (usable === 0) return;
-
   const basePrecision = defaultQlpPrecision(ws.bitsPerSample, n);
-  // Estimated bits: a Laplacian residual costs about log2 of its mean magnitude per sample,
-  // and each order adds warm-up and coefficient bits.
-  const errorScale = 0.5 / n;
-  for (let o = 1; o <= usable; o++) {
-    const perSample = Math.max(0, 0.5 * Math.log2(ws.lpcErrors[o - 1] * errorScale));
-    ws.orderBits[o - 1] = perSample * (n - o) + o * (basePrecision + bps);
-  }
+  estimateOrderBits(ws, slot, n, bps, wasted);
 
   for (let attempt = 0; attempt < LPC_EXACT_ORDER_CANDIDATES; attempt++) {
     let order = 0;
@@ -972,11 +1022,14 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
 
   let allEqual = true;
   let orAll = 0;
+  let maxAbs = 0;
   const first = x[0];
   for (let i = 0; i < n; i++) {
     const v = x[i];
     orAll |= v;
     if (v !== first) allEqual = false;
+    const magnitude = v < 0 ? -v : v;
+    if (magnitude > maxAbs) maxAbs = magnitude;
   }
   if (allEqual) {
     best.kind = SUBFRAME_CONSTANT;
@@ -993,12 +1046,7 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
     for (let i = 0; i < n; i++) x[i] >>= wasted;
   }
   const bps = channelBps - wasted;
-  let maxAbs = 0;
-  for (let i = 0; i < n; i++) {
-    const v = x[i];
-    const magnitude = v < 0 ? -v : v;
-    if (magnitude > maxAbs) maxAbs = magnitude;
-  }
+  maxAbs >>= wasted;
 
   best.kind = SUBFRAME_VERBATIM;
   best.order = 0;
@@ -1037,7 +1085,7 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
     slot.best = trial;
   }
 
-  if (n >= LPC_MIN_BLOCK_SAMPLES) planLpc(ws, slot, n, bps, wasted, maxAbs);
+  planLpc(ws, slot, n, bps, wasted, maxAbs);
 }
 
 function writeSubframe(writer: FlacBitWriter, plan: SubframePlan, x: Int32Array, n: number): void {
@@ -1087,6 +1135,9 @@ function writeCodedNumber(writer: FlacBitWriter, value: number): void {
 
 const FRAME_OVERHEAD_BYTES = 32;
 const CHANNEL_ASSIGNMENT_INDEPENDENT_BASE = 0;
+const ASSIGNMENT_LEFT_SIDE = 8;
+const ASSIGNMENT_SIDE_RIGHT = 9;
+const ASSIGNMENT_MID_SIDE = 10;
 
 function writeFrameHeader(
   writer: FlacBitWriter,
@@ -1194,6 +1245,83 @@ function buildStreamInfo(
   return info;
 }
 
+/** Channel assignment code -> slots of the first and second subframe. */
+const STEREO_FIRST_SLOT: Readonly<Record<number, number>> = {
+  [CHANNEL_ASSIGNMENT_INDEPENDENT_BASE + 1]: SLOT_LEFT,
+  [ASSIGNMENT_LEFT_SIDE]: SLOT_LEFT,
+  [ASSIGNMENT_SIDE_RIGHT]: SLOT_SIDE,
+  [ASSIGNMENT_MID_SIDE]: SLOT_MID,
+};
+const STEREO_SECOND_SLOT: Readonly<Record<number, number>> = {
+  [CHANNEL_ASSIGNMENT_INDEPENDENT_BASE + 1]: SLOT_RIGHT,
+  [ASSIGNMENT_LEFT_SIDE]: SLOT_SIDE,
+  [ASSIGNMENT_SIDE_RIGHT]: SLOT_RIGHT,
+  [ASSIGNMENT_MID_SIDE]: SLOT_SIDE,
+};
+const ASSIGNMENT_INDEPENDENT_STEREO = CHANNEL_ASSIGNMENT_INDEPENDENT_BASE + 1;
+
+/**
+ * Builds left, right, mid ((L+R)>>1) and side (L-R) for a block, estimates each from its LPC
+ * analysis, picks the cheapest assignment among independent, left/side, side/right and
+ * mid/side, and plans only the two channels it uses. Returns the channel assignment code.
+ */
+function planStereo(
+  ws: EncoderWorkspace,
+  samples: Int16Array | Int32Array,
+  offset: number,
+  n: number,
+  bitsPerSample: number
+): number {
+  const left = ws.slots[SLOT_LEFT];
+  const right = ws.slots[SLOT_RIGHT];
+  const mid = ws.slots[SLOT_MID];
+  const side = ws.slots[SLOT_SIDE];
+  const l = left.samples;
+  const r = right.samples;
+  const m = mid.samples;
+  const sd = side.samples;
+  for (let i = 0; i < n; i++) {
+    const a = samples[(offset + i) * 2];
+    const b = samples[(offset + i) * 2 + 1];
+    l[i] = a;
+    r[i] = b;
+    m[i] = (a + b) >> 1;
+    sd[i] = a - b;
+  }
+
+  const sideBps = bitsPerSample + 1;
+  let assignment = ASSIGNMENT_INDEPENDENT_STEREO;
+  if (n >= LPC_MIN_BLOCK_SAMPLES) {
+    analyzeChannel(ws, left, n);
+    analyzeChannel(ws, right, n);
+    analyzeChannel(ws, mid, n);
+    analyzeChannel(ws, side, n);
+    const costLeft = estimateChannelBits(ws, left, n, bitsPerSample);
+    const costRight = estimateChannelBits(ws, right, n, bitsPerSample);
+    const costMid = estimateChannelBits(ws, mid, n, bitsPerSample);
+    const costSide = estimateChannelBits(ws, side, n, sideBps);
+    let lowest = costLeft + costRight;
+    if (costLeft + costSide < lowest) {
+      lowest = costLeft + costSide;
+      assignment = ASSIGNMENT_LEFT_SIDE;
+    }
+    if (costRight + costSide < lowest) {
+      lowest = costRight + costSide;
+      assignment = ASSIGNMENT_SIDE_RIGHT;
+    }
+    if (costMid + costSide < lowest) {
+      assignment = ASSIGNMENT_MID_SIDE;
+    }
+  }
+
+  const firstSlot = ws.slots[STEREO_FIRST_SLOT[assignment]];
+  const secondSlot = ws.slots[STEREO_SECOND_SLOT[assignment]];
+  for (const slot of [firstSlot, secondSlot]) {
+    planChannel(ws, slot, n, slot === side ? sideBps : bitsPerSample);
+  }
+  return assignment;
+}
+
 /**
  * Encodes interleaved PCM into a complete FLAC stream (marker, STREAMINFO, frames).
  */
@@ -1215,18 +1343,22 @@ export function encodeFlacStream(
 
   for (let offset = 0; offset < totalFrames; offset += blockSize) {
     const n = Math.min(blockSize, totalFrames - offset);
-    for (let c = 0; c < channels; c++) {
-      const target = ws.slots[c].samples;
-      for (let i = 0; i < n; i++) target[i] = samples[(offset + i) * channels + c];
-    }
-
     const writer = ws.writer;
     writer.reset();
-    writeFrameHeader(writer, frameNumber, n, sampleRate, CHANNEL_ASSIGNMENT_INDEPENDENT_BASE + channels - 1, sizeCode);
-    for (let c = 0; c < channels; c++) {
-      const slot = ws.slots[c];
+    if (channels === 1) {
+      const slot = ws.slots[SLOT_LEFT];
+      for (let i = 0; i < n; i++) slot.samples[i] = samples[offset + i];
+      analyzeChannel(ws, slot, n);
       planChannel(ws, slot, n, bitsPerSample);
+      writeFrameHeader(writer, frameNumber, n, sampleRate, CHANNEL_ASSIGNMENT_INDEPENDENT_BASE, sizeCode);
       writeSubframe(writer, slot.best, slot.samples, n);
+    } else {
+      const assignment = planStereo(ws, samples, offset, n, bitsPerSample);
+      writeFrameHeader(writer, frameNumber, n, sampleRate, assignment, sizeCode);
+      const first = ws.slots[STEREO_FIRST_SLOT[assignment]];
+      const second = ws.slots[STEREO_SECOND_SLOT[assignment]];
+      writeSubframe(writer, first.best, first.samples, n);
+      writeSubframe(writer, second.best, second.samples, n);
     }
     writer.alignToByte();
     writer.writeBits(flacCrc16(writer.bytes, writer.bytePosition), 16);
