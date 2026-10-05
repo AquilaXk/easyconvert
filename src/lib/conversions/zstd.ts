@@ -5,6 +5,7 @@ import {
   ZstdOutputBuffer,
   createFrameDecodeState,
   decodeCompressedBlock,
+  type ZstdParsedDictionary,
 } from './zstd-decoder';
 import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
 import {
@@ -482,12 +483,26 @@ export function parseZstdFrameHeader(buf: Buffer, offset: number): ZstdFrameHead
  * Every failure surfaces as a ConversionFailedError; there is no fallback decoder.
  */
 export function decompressZstd(inputBuffer: Buffer): Buffer {
+  return decodeZstdFrames(inputBuffer, null);
+}
+
+/**
+ * Same decoder and guards as `decompressZstd`, with the dictionary content as match history and
+ * (for full RFC 8878 section 5 dictionaries) its entropy tables and repeat offsets as the
+ * starting state of every frame.
+ */
+export function decompressZstdWithDictionary(inputBuffer: Buffer, dictionary: ZstdParsedDictionary): Buffer {
+  return decodeZstdFrames(inputBuffer, dictionary);
+}
+
+function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary | null): Buffer {
   if (!inputBuffer || inputBuffer.length < 4) {
     throw new ConversionFailedError('Decompress error: input buffer too small for Zstandard stream.');
   }
 
   const src = inputBuffer;
-  const out = new ZstdOutputBuffer(ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE + ZSTD_BLOCK_SIZE_MAX);
+  const dictionaryLength = dictionary === null ? 0 : dictionary.content.length;
+  const out = new ZstdOutputBuffer(ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE + ZSTD_BLOCK_SIZE_MAX + dictionaryLength);
   let offset = 0;
 
   while (offset < src.length) {
@@ -521,9 +536,19 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
         `Zstandard frame window size ${frameHeader.windowSize} exceeds the decoder limit of ${ZSTD_DECODER_WINDOW_SIZE_MAX} bytes.`
       );
     }
-    if (frameHeader.dictionaryId !== 0) {
+    if (dictionary === null && frameHeader.dictionaryId !== 0) {
       throw new ConversionFailedError(
         `Zstandard frame requires dictionary ${frameHeader.dictionaryId}; use the dictionary decoder.`
+      );
+    }
+    if (
+      dictionary !== null &&
+      frameHeader.dictionaryId !== 0 &&
+      dictionary.id !== null &&
+      frameHeader.dictionaryId !== dictionary.id
+    ) {
+      throw new ConversionFailedError(
+        `Decoding error (36): Dictionary mismatch: frame requires dictionary ID 0x${frameHeader.dictionaryId.toString(16)}, but provided dictionary has ID 0x${dictionary.id.toString(16)}`
       );
     }
     const declaredSize = frameHeader.frameContentSize;
@@ -533,11 +558,18 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
       if (exceedsZstdRatioGuard(out.length + declaredSize, src.length)) {
         throw bombRatioError(out.length + declaredSize, src.length);
       }
-      out.reserve(declaredSize);
+      out.reserve(declaredSize + dictionaryLength);
     }
 
+    // The dictionary content sits right before the frame's output so offsets reach it directly;
+    // it is squeezed out again once the frame is verified.
+    if (dictionary !== null) {
+      out.ensure(dictionaryLength);
+      out.data.set(dictionary.content, out.length);
+      out.length += dictionaryLength;
+    }
     const frameStart = out.length;
-    const state = createFrameDecodeState(frameHeader.windowSize, declaredSize);
+    const state = createFrameDecodeState(frameHeader.windowSize, declaredSize, dictionary);
 
     let isLast = false;
     while (!isLast) {
@@ -586,14 +618,15 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
         offset += blockSize;
       }
 
-      // Cumulative security limits
-      if (out.length > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      // Cumulative security limits, on decoded bytes only (the dictionary prefix does not count)
+      const produced = out.length - dictionaryLength;
+      if (produced > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
         throw bombSizeError();
       }
-      if (exceedsZstdRatioGuard(out.length, src.length)) {
-        throw bombRatioError(out.length, src.length);
+      if (exceedsZstdRatioGuard(produced, src.length)) {
+        throw bombRatioError(produced, src.length);
       }
-      out.projectedTotal = Math.ceil((out.length * src.length) / offset);
+      out.projectedTotal = Math.ceil((produced * src.length) / offset) + dictionaryLength;
     }
 
     const frameLength = out.length - frameStart;
@@ -615,6 +648,11 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
           `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(16)}, computed 0x${actualChecksum.toString(16)}`
         );
       }
+    }
+
+    if (dictionaryLength > 0) {
+      out.data.copyWithin(frameStart - dictionaryLength, frameStart, out.length);
+      out.length -= dictionaryLength;
     }
   }
 

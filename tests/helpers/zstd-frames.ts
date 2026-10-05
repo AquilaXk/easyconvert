@@ -46,6 +46,8 @@ export interface TestFrameOptions {
   /** Frame_Content_Size; written with the smallest legal field. */
   contentSize?: number;
   checksum?: Buffer;
+  /** Dictionary_ID, written as the 4-byte field. */
+  dictionaryId?: number;
 }
 
 /** Builds a frame from explicit blocks. The last block gets the last-block flag. */
@@ -72,9 +74,15 @@ export function buildFrame(blocks: TestBlock[], options: TestFrameOptions = {}):
       fcs.writeBigUInt64LE(BigInt(contentSize));
     }
   }
-  const fhd = (fcsFlag << 6) | ((singleSegment ? 1 : 0) << 5) | ((options.checksum ? 1 : 0) << 2);
+  const dictFlag = options.dictionaryId === undefined ? 0 : 3;
+  const fhd = (fcsFlag << 6) | ((singleSegment ? 1 : 0) << 5) | ((options.checksum ? 1 : 0) << 2) | dictFlag;
   const parts: Buffer[] = [ZSTD_TEST_MAGIC, Buffer.from([fhd])];
   if (!singleSegment) parts.push(Buffer.from([((options.windowLog ?? 17) - WINDOW_LOG_MIN) << 3]));
+  if (options.dictionaryId !== undefined) {
+    const id = Buffer.alloc(4);
+    id.writeUInt32LE(options.dictionaryId);
+    parts.push(id);
+  }
   parts.push(fcs);
   blocks.forEach((block, index) => {
     parts.push(blockHeader(block, index === blocks.length - 1), block.payload);
@@ -469,4 +477,123 @@ export function referenceXxh64(data: Buffer): bigint {
 export function assertFrameChecksum(frame: Buffer, input: Buffer): void {
   expect((frame[4] >> 2) & 1, 'checksum flag').toBe(1);
   expect(frame.readUInt32LE(frame.length - 4), 'content checksum').toBe(Number(referenceXxh64(input) & 0xffffffffn));
+}
+
+// ---------------------------------------------------------------------------
+// Predefined-table decoding walk: builds blocks that expand as much as the format allows
+// ---------------------------------------------------------------------------
+
+interface WalkTable {
+  symbol: number[];
+  nbBits: number[];
+  base: number[];
+}
+
+/** Decoding table per RFC 8878 section 4.1.1 (state -> symbol, bits to read, next-state baseline). */
+function decodeTableFor(distribution: number[], accuracyLog: number): WalkTable {
+  const size = 1 << accuracyLog;
+  const symbol = stateSymbols(distribution, accuracyLog);
+  const next = distribution.map((count) => (count === -1 ? 1 : count));
+  const nbBits: number[] = [];
+  const base: number[] = [];
+  for (let state = 0; state < size; state++) {
+    const counter = next[symbol[state]]++;
+    const bits = accuracyLog - Math.floor(Math.log2(counter));
+    nbBits.push(bits);
+    base.push(counter * 2 ** bits - size);
+  }
+  return { symbol, nbBits, base };
+}
+
+const LL_WALK = decodeTableFor(LL_DEFAULT, 6);
+const OF_WALK = decodeTableFor(OF_DEFAULT, 5);
+const ML_WALK = decodeTableFor(ML_DEFAULT, 6);
+const ML_BASELINES = [
+  3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+  35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539,
+];
+const ML_EXTRA_BITS = [
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+];
+
+function bestNextState(table: WalkTable, state: number, score: (symbol: number) => number): { next: number; bits: number; value: number } {
+  const bits = table.nbBits[state];
+  let bestValue = 0;
+  let bestScore = -Infinity;
+  for (let v = 0; v < 2 ** bits; v++) {
+    const candidate = score(table.symbol[table.base[state] + v]);
+    if (candidate > bestScore) {
+      bestScore = candidate;
+      bestValue = v;
+    }
+  }
+  return { next: table.base[state] + bestValue, bits, value: bestValue };
+}
+
+/**
+ * A compressed block (raw literals, predefined tables) of `sequenceCount` sequences chosen to
+ * decode to as many bytes as possible: every state transition picks the longest match length and
+ * the smallest literal length and offset. Returns the payload and the exact decoded size.
+ */
+export function maxExpansionPredefinedBlock(sequenceCount: number, literalBytes: number): { payload: Buffer; decodedSize: number } {
+  const reads: Array<[number, number]> = [];
+  const argmax = (table: WalkTable, score: (symbol: number) => number): number => {
+    let bestState = 0;
+    let bestScore = -Infinity;
+    for (let state = 0; state < table.symbol.length; state++) {
+      const candidate = score(table.symbol[state]);
+      if (candidate > bestScore) {
+        bestScore = candidate;
+        bestState = state;
+      }
+    }
+    return bestState;
+  };
+  const llScore = (symbol: number): number => -symbol;
+  const mlScore = (symbol: number): number => ML_BASELINES[symbol];
+  let llState = argmax(LL_WALK, llScore);
+  let ofState = argmax(OF_WALK, llScore);
+  let mlState = argmax(ML_WALK, mlScore);
+  reads.push([llState, 6], [ofState, 5], [mlState, 6]);
+  let decodedSize = 0;
+  let literalsUsed = 0;
+  for (let i = 0; i < sequenceCount; i++) {
+    const ofCode = OF_WALK.symbol[ofState];
+    const mlCode = ML_WALK.symbol[mlState];
+    const llCode = LL_WALK.symbol[llState];
+    reads.push([0, ofCode]);
+    reads.push([2 ** ML_EXTRA_BITS[mlCode] - 1, ML_EXTRA_BITS[mlCode]]);
+    reads.push([0, LL_EXTRA[llCode]]);
+    decodedSize += ML_BASELINES[mlCode] + 2 ** ML_EXTRA_BITS[mlCode] - 1 + LL_BASE[llCode];
+    literalsUsed += LL_BASE[llCode];
+    if (literalsUsed > literalBytes) throw new Error('Test fixture: literal section too small for the chosen sequences.');
+    if (i < sequenceCount - 1) {
+      const ll = bestNextState(LL_WALK, llState, llScore);
+      const ml = bestNextState(ML_WALK, mlState, mlScore);
+      const of = bestNextState(OF_WALK, ofState, llScore);
+      reads.push([ll.value, ll.bits], [ml.value, ml.bits], [of.value, of.bits]);
+      llState = ll.next;
+      mlState = ml.next;
+      ofState = of.next;
+    }
+  }
+  const writer = new TestBitWriter();
+  for (let i = reads.length - 1; i >= 0; i--) writer.write(reads[i][0], reads[i][1]);
+  const stream = writer.finish();
+  const literals = Buffer.alloc(literalBytes, 0x61);
+  return {
+    payload: Buffer.concat([rawLiteralsSection(literals), sequenceCountBytes(sequenceCount), Buffer.from([0x00]), stream]),
+    decodedSize: decodedSize + (literalBytes - literalsUsed),
+  };
+}
+
+/**
+ * Block with `literalBytes` of noise and a single long match, so it decodes to `decodedSize` bytes
+ * from about `literalBytes + 12` bytes. Used to stay under the 100:1 ratio while still expanding.
+ */
+export function denseExpansionBlock(literalBytes: number, decodedSize: number, seed: number): Buffer {
+  const litLen = literalBytes;
+  const matchLen = decodedSize - literalBytes;
+  return singleSequenceBlock(noiseBytes(literalBytes, seed), { litLen, matchLen, offsetValue: 4 });
 }

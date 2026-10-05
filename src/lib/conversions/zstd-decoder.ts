@@ -12,6 +12,7 @@ import {
   ML_BASELINE,
   ML_BITS,
   ZSTD_BLOCK_SIZE_MAX,
+  ZSTD_DECODER_WINDOW_SIZE_MAX,
   ZSTD_LL_DEFAULT_ACCURACY_LOG,
   ZSTD_LL_DEFAULT_DISTRIBUTION,
   ZSTD_LL_MAX_ACCURACY_LOG,
@@ -72,8 +73,99 @@ const RAW_HEADER_BYTES_ONE = 1;
 const RAW_HEADER_BYTES_TWO = 2;
 const RAW_HEADER_BYTES_THREE = 3;
 
+/** RFC 8878 section 5 dictionary magic; the 4 bytes after it are the Dictionary_ID. */
+export const ZSTD_DICTIONARY_MAGIC = 0xec30a437;
+/** Legacy header used by this project's content-only formatted dictionaries. */
+export const ZSTD_DICTIONARY_MAGIC_LEGACY = 0xec30a428;
+const DICTIONARY_HEADER_BYTES = 8;
+const DICTIONARY_REP_OFFSET_COUNT = 3;
+const DICTIONARY_REP_OFFSET_BYTES = 4 * DICTIONARY_REP_OFFSET_COUNT;
+
+export interface ZstdParsedDictionary {
+  /** Dictionary_ID from the header, or null for raw-content dictionaries. */
+  id: number | null;
+  /** History made available to matches: the dictionary content. */
+  content: Uint8Array;
+  /** Entropy state and repeat offsets a frame starts from; null when the dictionary has none. */
+  entropy: {
+    huffman: HuffmanDecodeTable;
+    llTable: FseDecodeTable;
+    ofTable: FseDecodeTable;
+    mlTable: FseDecodeTable;
+    reps: [number, number, number];
+  } | null;
+}
+
+function tryParseDictionaryEntropy(dictionary: Uint8Array): ZstdParsedDictionary['entropy'] & { contentStart: number } | null {
+  try {
+    let pos = DICTIONARY_HEADER_BYTES;
+    const huffman = readHuffmanTable(dictionary, pos, dictionary.length);
+    pos += huffman.bytesRead;
+    const of = readFseNormalizedTable(dictionary, pos, dictionary.length, ZSTD_OF_MAX_CODE, ZSTD_OF_MAX_ACCURACY_LOG);
+    pos += of.bytesRead;
+    const ml = readFseNormalizedTable(dictionary, pos, dictionary.length, ZSTD_ML_MAX_CODE, ZSTD_ML_MAX_ACCURACY_LOG);
+    pos += ml.bytesRead;
+    const ll = readFseNormalizedTable(dictionary, pos, dictionary.length, ZSTD_LL_MAX_CODE, ZSTD_LL_MAX_ACCURACY_LOG);
+    pos += ll.bytesRead;
+    if (pos + DICTIONARY_REP_OFFSET_BYTES > dictionary.length) return null;
+    const view = new DataView(dictionary.buffer, dictionary.byteOffset, dictionary.byteLength);
+    const contentStart = pos + DICTIONARY_REP_OFFSET_BYTES;
+    const contentLength = dictionary.length - contentStart;
+    const reps: [number, number, number] = [
+      view.getUint32(pos, true),
+      view.getUint32(pos + 4, true),
+      view.getUint32(pos + 8, true),
+    ];
+    // Repeat offsets must point into the content (RFC 8878 section 5).
+    if (reps.some((rep) => rep === 0 || rep > contentLength)) return null;
+    return {
+      huffman: huffman.table,
+      ofTable: buildFseDecodeTable(of.table.counts, of.table.maxSymbol, of.table.accuracyLog),
+      mlTable: buildFseDecodeTable(ml.table.counts, ml.table.maxSymbol, ml.table.accuracyLog),
+      llTable: buildFseDecodeTable(ll.table.counts, ll.table.maxSymbol, ll.table.accuracyLog),
+      reps,
+      contentStart,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const parsedDictionaryCache = new WeakMap<Uint8Array, ZstdParsedDictionary>();
+
+/**
+ * Interprets a dictionary buffer: a full RFC 8878 section 5 dictionary (entropy tables, repeat
+ * offsets, content), a content-only dictionary behind the 8-byte header, or raw content.
+ * A magic-prefixed buffer whose entropy section does not parse is treated as content-only.
+ */
+export function parseZstdDictionary(dictionary: Uint8Array): ZstdParsedDictionary {
+  const cached = parsedDictionaryCache.get(dictionary);
+  if (cached !== undefined) return cached;
+  let parsed: ZstdParsedDictionary;
+  const magic =
+    dictionary.length >= DICTIONARY_HEADER_BYTES
+      ? new DataView(dictionary.buffer, dictionary.byteOffset, dictionary.byteLength).getUint32(0, true)
+      : 0;
+  if (magic === ZSTD_DICTIONARY_MAGIC || magic === ZSTD_DICTIONARY_MAGIC_LEGACY) {
+    const id = new DataView(dictionary.buffer, dictionary.byteOffset, dictionary.byteLength).getUint32(4, true);
+    const entropy = magic === ZSTD_DICTIONARY_MAGIC ? tryParseDictionaryEntropy(dictionary) : null;
+    if (entropy === null) {
+      parsed = { id, content: dictionary.subarray(DICTIONARY_HEADER_BYTES), entropy: null };
+    } else {
+      const { contentStart, ...tables } = entropy;
+      parsed = { id, content: dictionary.subarray(contentStart), entropy: tables };
+    }
+  } else {
+    parsed = { id: null, content: dictionary, entropy: null };
+  }
+  parsedDictionaryCache.set(dictionary, parsed);
+  return parsed;
+}
+
 export interface ZstdFrameDecodeState {
   windowSize: number;
+  /** Bytes of dictionary content that sit immediately before the frame's output and may be matched. */
+  dictionaryLength: number;
   blockMaxSize: number;
   /** Declared Frame_Content_Size, or null when the frame does not state one. */
   contentSize: number | null;
@@ -86,18 +178,24 @@ export interface ZstdFrameDecodeState {
   ofTable: FseDecodeTable | null;
 }
 
-export function createFrameDecodeState(windowSize: number, contentSize: number | null = null): ZstdFrameDecodeState {
+export function createFrameDecodeState(
+  windowSize: number,
+  contentSize: number | null = null,
+  dictionary: ZstdParsedDictionary | null = null
+): ZstdFrameDecodeState {
+  const entropy = dictionary?.entropy ?? null;
   return {
     windowSize,
+    dictionaryLength: dictionary === null ? 0 : dictionary.content.length,
     blockMaxSize: Math.min(windowSize, ZSTD_BLOCK_SIZE_MAX),
     contentSize,
-    rep1: ZSTD_REP_OFFSET_INITIAL[0],
-    rep2: ZSTD_REP_OFFSET_INITIAL[1],
-    rep3: ZSTD_REP_OFFSET_INITIAL[2],
-    huffman: null,
-    llTable: null,
-    mlTable: null,
-    ofTable: null,
+    rep1: entropy === null ? ZSTD_REP_OFFSET_INITIAL[0] : entropy.reps[0],
+    rep2: entropy === null ? ZSTD_REP_OFFSET_INITIAL[1] : entropy.reps[1],
+    rep3: entropy === null ? ZSTD_REP_OFFSET_INITIAL[2] : entropy.reps[2],
+    huffman: entropy === null ? null : entropy.huffman,
+    llTable: entropy === null ? null : entropy.llTable,
+    mlTable: entropy === null ? null : entropy.mlTable,
+    ofTable: entropy === null ? null : entropy.ofTable,
   };
 }
 
@@ -358,7 +456,9 @@ export function decodeCompressedBlock(
   let rep1 = state.rep1;
   let rep2 = state.rep2;
   let rep3 = state.rep3;
-  const windowLimit = state.windowSize;
+  // With a dictionary, matches may reach back into its content on top of the declared window.
+  const windowLimit = state.windowSize + state.dictionaryLength;
+  const availableHistoryBase = frameStart - state.dictionaryLength;
   const litTotal = literals.length;
 
   for (let i = 0; i < numSeq; i++) {
@@ -416,7 +516,7 @@ export function decodeCompressedBlock(
     litPos += litLen;
     outLen += litLen;
 
-    if (offset > outLen - frameStart || offset > windowLimit) {
+    if (offset > outLen - availableHistoryBase || offset > windowLimit) {
       zstdFail(`Corrupt Zstandard sequence: offset ${offset} exceeds the available window.`);
     }
     const from = outLen - offset;
@@ -439,4 +539,35 @@ export function decodeCompressedBlock(
   state.rep1 = rep1;
   state.rep2 = rep2;
   state.rep3 = rep3;
+}
+
+/**
+ * Decodes one compressed block against explicit history: the dictionary content followed by the
+ * given earlier blocks. Used by chunked callers that frame blocks themselves. Bounded by the
+ * block maximum like every other block.
+ */
+export function decodeBlockWithHistory(
+  payload: Uint8Array,
+  dictionary: ZstdParsedDictionary | null,
+  previousBlocks: readonly Uint8Array[]
+): Buffer {
+  if (payload.length === 0) return Buffer.alloc(0);
+  let historyLength = dictionary === null ? 0 : dictionary.content.length;
+  for (const block of previousBlocks) historyLength += block.length;
+  const out = new ZstdOutputBuffer(historyLength + ZSTD_BLOCK_SIZE_MAX);
+  out.reserve(historyLength + ZSTD_BLOCK_SIZE_MAX);
+  let cursor = 0;
+  if (dictionary !== null) {
+    out.data.set(dictionary.content, cursor);
+    cursor += dictionary.content.length;
+  }
+  for (const block of previousBlocks) {
+    out.data.set(block, cursor);
+    cursor += block.length;
+  }
+  out.length = historyLength;
+  const state = createFrameDecodeState(ZSTD_DECODER_WINDOW_SIZE_MAX, null, dictionary);
+  state.dictionaryLength = historyLength;
+  decodeCompressedBlock(payload, 0, payload.length, out, historyLength, state);
+  return Buffer.from(out.data.subarray(historyLength, out.length));
 }
