@@ -304,6 +304,7 @@ describe('SVG path data: arcs with extreme radii or end points stay finite (impl
         caught = error;
       }
       expect(caught, d).toBeInstanceOf(SvgPathDataError);
+      expect((caught as Error).message, d).toMatch(/Cannot convert an elliptical arc/);
     }
   });
 });
