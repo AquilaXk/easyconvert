@@ -3,16 +3,23 @@
  *
  * Container (little-endian): a "FOVb" header, sections addressed by a directory whose offset is the
  * last u32 of the file ("SECd": version, count, then offset/length/type entries). Image sections
- * ("SECi") carry a 28-byte header: version, image type (2 preview, 3 sensor data), format, columns,
+ * ("SECi") carry a 28-byte header: version, image type (2 preview, 3 or 1 sensor data), format, columns,
  * rows, row size. The CAMF section ("SECc") holds the camera calibration as named matrices.
  *
- * Sensor data format 0x0003001e ("TRUE", used by the DP1/DP2/SD14 generation) holds three full-resolution
- * layers (bottom/red, middle/green, top/blue), each stored as an independent bit plane:
+ * Sensor data comes in four encodings, told apart by the section's image type and format words:
+ *  - type 3, format 0x1e ("TRUE", DP1/DP2 generation) and type 1, format 0x1e (Merrill generation):
+ *    three full-resolution layers (bottom/red, middle/green, top/blue), each an independent bit plane:
  *
- *   u16 seed[3] (initial predictor per layer), u16 reserved,
- *   Huffman table: (code length, left-aligned code) byte pairs ended by a pair with length 0;
- *     the leaf value of the n-th pair is n, the number of extra bits that follow the code,
- *   u32 planeSize[3], then the planes, each starting on a 16-byte boundary.
+ *      u16 seed[3] (initial predictor per layer), u16 reserved,
+ *      Huffman table: (code length, left-aligned code) byte pairs ended by a pair with length 0;
+ *        the leaf value of the n-th pair is n, the number of extra bits that follow the code,
+ *      u32 planeSize[3], then the planes, each starting on a 16-byte boundary.
+ *
+ *  - type 1, format 0x23 (Quattro): the same coding, preceded by three (u16 columns, u16 rows) layer
+ *    sizes and with one zero word between the Huffman table and the plane sizes; the third layer has the
+ *    sensor's full resolution, the first two half the columns and rows;
+ *  - type 3, format 0x06 (SD14/SD15): tables of 1024 sample differences and 1024 Huffman code words,
+ *    rows of interleaved three-layer samples, and a trailing table of the rows' byte offsets.
  *
  * A sample is the sum of a predictor and a signed difference. The difference is a Huffman-coded bit
  * count n followed by n bits: when the first bit is 0 the difference is the n-bit value minus (2^n - 1),
@@ -21,8 +28,10 @@
  * two columns to the left.
  *
  * Colour: black level from the CAMF dark-shield rectangles, white level from the CAMF saturation
- * levels, white balance gains and the colour correction matrix of the white balance named in the file
- * header (both from CAMF), producing linear sRGB, then the sRGB transfer curve.
+ * levels (or the converter depth for Merrill and Quattro), white balance gains and the colour correction
+ * matrix of the white balance named in the file header (both from CAMF; SD14/SD15 files list a
+ * camera-to-XYZ matrix and a per-white-balance XYZ correction instead), producing linear sRGB, then the
+ * sRGB transfer curve.
  */
 import { RawDecodeError } from '../types';
 import { applyMatrixAndSrgbEncode, exposureScale, MAX_SAMPLE_16, multiply3x3, RGB_CHANNELS, type Matrix3x3 } from './raw-srgb';

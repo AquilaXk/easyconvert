@@ -17,6 +17,8 @@ const MIN_TICKS = 40;
 const IMAGE_HEADER_BYTES = 28;
 const OFFSET_COLUMNS = 16;
 const OFFSET_ROWS = 20;
+const TRUE_SEED_BYTES = 8;
+const TINY_PLANE_BYTES = 64;
 const BRCM_OFFSET_STRIDE = 0xa0;
 const BRCM_OFFSET_WIDTH = 0xd0;
 const BRCM_OFFSET_HEIGHT = 0xd2;
@@ -61,9 +63,10 @@ describe.skipIf(!ENABLED)('in-process RAW decoders bound their work by real hard
 
   it('rejects X3F planes too small to hold one bit per sample before allocating', async () => {
     const file = Buffer.from(readFileSync(samplePath('x3f')));
-    const at = readX3fContainer(file).sensorDataOffset - IMAGE_HEADER_BYTES;
-    file.writeUInt32LE(5000, at + OFFSET_COLUMNS);
-    file.writeUInt32LE(5000, at + OFFSET_ROWS);
+    // Plane sizes follow the seeds (8 bytes) and the Huffman table, which ends with a zero length byte.
+    let at = readX3fContainer(file).sensorDataOffset + TRUE_SEED_BYTES;
+    while (file[at] !== 0) at += 2;
+    file.writeUInt32LE(TINY_PLANE_BYTES, at + 2);
     await expectQuickRejection(file, 'x3f', /too small for/);
   });
 
