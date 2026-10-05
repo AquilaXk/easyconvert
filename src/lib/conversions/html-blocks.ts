@@ -45,7 +45,7 @@ const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
 ]);
 /** Elements that are never displayed. */
 const HIDDEN_ELEMENTS: ReadonlySet<string> = new Set([
-  'head', 'script', 'style', 'template', 'noembed', 'noframes', 'meta', 'link', 'base', 'title',
+  'head', 'script', 'style', 'template', 'noembed', 'noframes', 'meta', 'link', 'base', 'title', 'noscript',
 ]);
 /** Embedded or interactive content the in-process renderer cannot draw. */
 const UNSUPPORTED_ELEMENTS: ReadonlySet<string> = new Set([
@@ -79,10 +79,17 @@ const PREFORMATTED_ELEMENTS: ReadonlySet<string> = new Set(['pre', 'listing', 'p
 const BLOCK_ELEMENTS: ReadonlySet<string> = new Set([
   'html', 'body', 'address', 'article', 'aside', 'center', 'details', 'dialog', 'div', 'dl', 'dd', 'dt', 'fieldset',
   'figcaption', 'figure', 'footer', 'form', 'header', 'hgroup', 'legend', 'main', 'nav', 'section', 'summary',
-  'caption', 'noscript', 'p', 'table', 'blockquote', 'hr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol',
+  'caption', 'p', 'table', 'blockquote', 'hr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol',
   'menu', 'dir', 'pre', 'listing', 'plaintext',
 ]);
 const ALLOWED_IMAGE_FORMATS: ReadonlySet<string> = new Set(['png', 'jpeg']);
+/** Largest embedded image, in pixels, the in-process renderer decodes. */
+const MAX_IMAGE_PIXELS = 25_000_000;
+const JPEG_REENCODE_QUALITY = 95;
+/** An inline style that hides the element (CSS display: none). */
+const DISPLAY_NONE = /(?:^|;)\s*display\s*:\s*none\s*(?:!\s*important\s*)?(?:;|$)/i;
+/** Characters a PDF URI action must not carry raw: anything outside printable ASCII (PDF 32000-1, 12.6.4.7). */
+const NON_URI_CHARACTER = /[^\x21-\x7e]/gu;
 /** Link targets kept as PDF link annotations; other targets keep their text without a link. */
 const LINK_SCHEMES = /^(?:https?|mailto):/i;
 const DATA_URI = /^data:([^,]*),(.*)$/is;
@@ -207,7 +214,12 @@ class HtmlTreeBuilder {
       this.start('br', new Map());
       return;
     }
-    this.closeOpen(new Set([tag]));
+    for (let i = this.stack.length - 1; i > 0; i--) {
+      if (this.stack[i].tag === tag) {
+        this.stack.length = i;
+        return;
+      }
+    }
   }
 }
 
@@ -346,6 +358,24 @@ function columnSpan(cell: HtmlElement): number {
   return Math.min(span, MAX_COLUMN_SPAN);
 }
 
+/** Whether the element is never displayed: hidden elements, the hidden attribute, or display: none. */
+function isHidden(node: HtmlElement): boolean {
+  return HIDDEN_ELEMENTS.has(node.tag) || node.attrs.has('hidden') || DISPLAY_NONE.test(node.attrs.get('style') ?? '');
+}
+
+/** Percent-encodes characters outside printable ASCII as UTF-8; undefined when the target is not encodable. */
+function encodeLinkTarget(href: string): string | undefined {
+  try {
+    return href.replace(NON_URI_CHARACTER, (ch) => encodeURIComponent(ch));
+  } catch {
+    return undefined;
+  }
+}
+
+function appendAll<T>(target: T[], items: readonly T[]): void {
+  for (const item of items) target.push(item);
+}
+
 interface InlineContext {
   readonly segments: PdfTextSegment[];
   /** Images met inside inline content, drawn after the paragraph that holds them. */
@@ -375,7 +405,7 @@ class HtmlBlockBuilder {
       context.segments.push({ text: preserve ? node : node.replace(HTML_WHITESPACE, ' '), link });
       return;
     }
-    if (HIDDEN_ELEMENTS.has(node.tag)) return;
+    if (isHidden(node)) return;
     this.assertDrawable(node);
     if (node.tag === 'br') {
       context.segments.push({ text: '\n', link });
@@ -386,12 +416,15 @@ class HtmlBlockBuilder {
       return;
     }
     const href = node.tag === 'a' ? node.attrs.get('href')?.trim() : undefined;
-    const childLink = href && LINK_SCHEMES.test(href) ? href : link;
+    const childLink = href && LINK_SCHEMES.test(href) ? encodeLinkTarget(href) ?? link : link;
     const childPreserve = preserve || PREFORMATTED_ELEMENTS.has(node.tag);
     const block = this.isBlock(node);
     if (block) context.segments.push({ text: '\n' });
     for (const child of node.children) this.inline(child, childLink, context, childPreserve);
     if (block) context.segments.push({ text: '\n' });
+    // Table parts met inside inline content keep their cells apart: a space after a cell, a line break after a row.
+    if (TABLE_CELL_ELEMENTS.has(node.tag)) context.segments.push({ text: ' ' });
+    if (node.tag === 'tr') context.segments.push({ text: '\n' });
   }
 
   /**
@@ -462,9 +495,9 @@ class HtmlBlockBuilder {
       pendingInline = [];
     };
     for (const node of nodes) {
-      if (this.isBlock(node) && !HIDDEN_ELEMENTS.has(node.tag)) {
+      if (this.isBlock(node) && !isHidden(node)) {
         flush();
-        blocks.push(...this.block(node));
+        appendAll(blocks, this.block(node));
       } else {
         pendingInline.push(node);
       }
@@ -505,7 +538,7 @@ class HtmlBlockBuilder {
       if (typeof child !== 'string' && child.tag === 'li') {
         if (loose.length > 0) items.push(this.blocks(loose));
         loose = [];
-        items.push(this.blocks(child.children));
+        if (!isHidden(child)) items.push(this.blocks(child.children));
       } else if (typeof child !== 'string' || child.trim().length > 0) {
         loose.push(child);
       }
@@ -526,13 +559,13 @@ class HtmlBlockBuilder {
     const visit = (element: HtmlElement): void => {
       for (const child of element.children) {
         if (typeof child === 'string') {
-          if (child.trim().length > 0) before.push(...this.blocks([child]));
+          if (child.trim().length > 0) appendAll(before, this.blocks([child]));
         } else if (TABLE_SECTION_ELEMENTS.has(child.tag)) {
           visit(child);
         } else if (child.tag === 'tr') {
-          rows.push(this.row(child, before));
+          if (!isHidden(child)) rows.push(this.row(child, before));
         } else if (!TABLE_COLUMN_ELEMENTS.has(child.tag)) {
-          before.push(...this.blocks(child.tag === 'caption' ? child.children : [child]));
+          appendAll(before, this.blocks(child.tag === 'caption' ? child.children : [child]));
         }
       }
     };
@@ -546,7 +579,7 @@ class HtmlBlockBuilder {
       if (typeof child !== 'string' && TABLE_CELL_ELEMENTS.has(child.tag)) {
         cells.push({ content: this.cellContent(child), span: columnSpan(child) });
       } else if (typeof child !== 'string' || child.trim().length > 0) {
-        before.push(...this.blocks([child]));
+        appendAll(before, this.blocks([child]));
       }
     }
     return cells;
@@ -560,7 +593,7 @@ class HtmlBlockBuilder {
         if (block.kind === 'rule') continue;
         if (segments.length > 0) segments.push({ text: '\n' });
         if (block.kind === 'paragraph' || block.kind === 'heading') {
-          segments.push(...block.content);
+          appendAll(segments, block.content);
         } else if (block.kind === 'preformatted') {
           segments.push({ text: block.text });
         } else if (block.kind === 'list') {
@@ -585,22 +618,38 @@ class HtmlBlockBuilder {
   }
 }
 
-/** Decodes each embedded image once to verify it and read its size; only PNG and JPEG are drawn. */
+/**
+ * Checks each embedded image from its header (format, then a pixel limit) before decoding it, then
+ * decodes it once into an 8-bit sRGB PNG or JPEG with the orientation tag applied, which is what
+ * the PDF embeds. Only PNG and JPEG are drawn.
+ */
 async function verifyImages(images: readonly PendingImage[]): Promise<void> {
   for (const pending of images) {
-    let format: string | undefined;
-    let widthPx = 0;
-    let heightPx = 0;
+    let metadata: sharp.Metadata;
     try {
-      format = (await sharp(pending.bytes).metadata()).format;
-      const decoded = await sharp(pending.bytes).raw().toBuffer({ resolveWithObject: true });
-      widthPx = decoded.info.width;
-      heightPx = decoded.info.height;
+      // The header alone: the pixel limit below is checked before any pixel is decoded.
+      metadata = await sharp(pending.bytes, { limitInputPixels: false }).metadata();
+    } catch (err) {
+      throw new ConversionFailedError(`HTML embedded image could not be read: ${(err as Error).message}`);
+    }
+    const format = metadata.format;
+    if (!format || !ALLOWED_IMAGE_FORMATS.has(format)) throw unsupported(`<img> with ${format ?? 'unknown'} data`);
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (width <= 0 || height <= 0) throw new ConversionFailedError('HTML embedded image declares no pixel size');
+    if (width * height > MAX_IMAGE_PIXELS) {
+      throw new ConversionFailedError(
+        `HTML embedded image is ${width}x${height} pixels, above the ${MAX_IMAGE_PIXELS}-pixel limit of the in-process PDF renderer`
+      );
+    }
+    try {
+      const pipeline = sharp(pending.bytes, { limitInputPixels: MAX_IMAGE_PIXELS }).rotate().toColourspace('srgb');
+      const encoded = format === 'png' ? pipeline.png() : pipeline.jpeg({ quality: JPEG_REENCODE_QUALITY });
+      const { data, info } = await encoded.toBuffer({ resolveWithObject: true });
+      pending.block.image = { data, widthPx: info.width, heightPx: info.height };
     } catch (err) {
       throw new ConversionFailedError(`HTML embedded image could not be decoded: ${(err as Error).message}`);
     }
-    if (!format || !ALLOWED_IMAGE_FORMATS.has(format)) throw unsupported(`<img> with ${format ?? 'unknown'} data`);
-    pending.block.image = { data: pending.bytes, widthPx, heightPx };
   }
 }
 

@@ -5,9 +5,11 @@ import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions/index';
 import { buildHwpCompoundFile } from '../src/lib/conversions/hwp';
+import { parseHtmlToPdfBlocks } from '../src/lib/conversions/html-blocks';
 import { executeWorkerConversion } from '../src/worker/engines';
 import {
   ComplexScriptRequiresNativeEngineError,
@@ -398,6 +400,79 @@ describe('In-process PDF layout limits', () => {
     const layout = pdfText(result.buffer, true).split('\n');
     const spanning = lineIndex(layout, new RegExp(wide), 0);
     lineIndex(layout, /left cell\s+right cell/, spanning + 1);
+  });
+});
+
+describe('HTML parsing robustness', () => {
+  it('parses a body with 150,000 paragraphs without exhausting the call stack', async () => {
+    const PARAGRAPHS = 150_000;
+    const parsed = await parseHtmlToPdfBlocks(`<html><body>${'<p>x</p>'.repeat(PARAGRAPHS)}</body></html>`);
+    expect(parsed.blocks.length).toBe(PARAGRAPHS);
+    expect(parsed.blocks.every((block) => block.kind === 'paragraph' && block.content.map((c) => c.text).join('') === 'x')).toBe(true);
+  });
+
+  it('refuses an embedded image above the pixel limit from its header, without decoding it', async () => {
+    const SIDE = 6000;
+    const BUDGET_MS = 1500;
+    const png = await sharp({ create: { width: SIDE, height: SIDE, channels: 3, background: { r: 255, g: 255, b: 255 } } }).png().toBuffer();
+    const html = `<p>x</p><img src="data:image/png;base64,${png.toString('base64')}">`;
+    const started = Date.now();
+    const { error } = await settle(convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'bomb.html'));
+    const elapsed = Date.now() - started;
+    expect((error as Error)?.name).toBe('ConversionFailedError');
+    expect((error as Error).message).toMatch(/6000x6000/);
+    expect({ elapsedWithinBudget: elapsed < BUDGET_MS, elapsed }).toEqual({ elapsedWithinBudget: true, elapsed });
+  });
+
+  it('refuses non-PNG/JPEG image data before decoding it', async () => {
+    const gif = await sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 0, g: 0, b: 0 } } }).gif().toBuffer();
+    const { error } = await settle(convertFile(Buffer.from(`<img src="data:image/gif;base64,${gif.toString('base64')}">`), 'html', 'pdf', {}, 'gif.html'));
+    expect((error as Error)?.name).toBe('EngineUnavailableError');
+    expect((error as EngineUnavailableError).engineName).toBe('soffice');
+    expect((error as Error).message).toMatch(/gif/);
+  });
+
+  oracleTest('applies the JPEG orientation tag so the image keeps its aspect ratio', ['pdfimages'], async () => {
+    const jpeg = await sharp({ create: { width: 64, height: 48, channels: 3, background: { r: 200, g: 30, b: 30 } } })
+      .jpeg()
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+    const result = await convertFile(Buffer.from(`<img src="data:image/jpeg;base64,${jpeg.toString('base64')}">`), 'html', 'pdf', {}, 'rot.html');
+    const [image] = runPoppler('pdfimages', ['-list'], result.buffer)
+      .split('\n')
+      .slice(2)
+      .filter((line) => line.trim().length > 0)
+      .map((line) => line.trim().split(/\s+/));
+    expect({ width: Number(image[3]), height: Number(image[4]), xPpi: image[12], yPpi: image[13] }).toEqual({
+      width: 48,
+      height: 64,
+      xPpi: image[13],
+      yPpi: image[13],
+    });
+  });
+
+  oracleTest('separates table cells and rows that sit inside inline elements', ['pdftotext'], async () => {
+    const html = '<span><table><tr><td>Name</td><td>Qty</td></tr><tr><td>Apple</td><td>3</td></tr></table></span>';
+    const result = await convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'inline-table.html');
+    const lines = pdfText(result.buffer)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    expect(lines).toEqual(['Name Qty', 'Apple 3']);
+  });
+
+  oracleTest('skips hidden, display:none, noscript and template content', ['pdftotext'], async () => {
+    const html =
+      '<div hidden>secret one</div><p style="color: red; display : none !important">secret two</p>' +
+      '<noscript>secret three</noscript><template><p>secret four</p></template><p>visible text</p>';
+    const result = await convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'hidden.html');
+    expect(normalizeText(pdfText(result.buffer))).toBe('visible text');
+  });
+
+  it('percent-encodes non-ASCII characters and spaces in link targets', async () => {
+    const html = '<p><a href="https://example.com/문서 목록?q=한&amp;x=%20">docs</a></p>';
+    const result = await convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'link.html');
+    expect(await linkTargets(result.buffer)).toEqual(['https://example.com/%EB%AC%B8%EC%84%9C%20%EB%AA%A9%EB%A1%9D?q=%ED%95%9C&x=%20']);
   });
 });
 
